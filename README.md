@@ -9,30 +9,43 @@ it byte for byte or item by item.
 
 ## Status
 
+**Read this first.** An independent review round on 2026-11-18 returned STOP on all seven areas
+it covered (`docs/reviews/`). The scores below are real, but they cover two projects with default
+flags, and the reviews found wrong behaviour outside that: flags that are accepted and silently
+ignored, error paths that differ from Bazel or panic, and action keys that are wrong for
+non-ASCII strings. Treat Blaze as a demo of the approach, not a Bazel replacement.
+
 Two real projects are the targets: [brotli](https://github.com/google/brotli) (simple C) and
 [re2](https://github.com/google/re2) (C++ with abseil, a pybind11 Python extension via
-rules_python, googletest). Through the `blaze` binary, compared with Bazel 9.3.2:
+rules_python, googletest). Compared with Bazel 9.3.2 by `scripts/oracle`:
 
 | Surface | brotli | re2 |
 | --- | --- | --- |
 | `query` (label_kind, streamed_jsonproto, incl. `deps()`) | 162/162 | 1091/1091 |
-| `cquery` label_kind | 176/176 | 3295/3295 |
+| `cquery` label_kind (compared as a set; output order differs from Bazel) | 176/176 | 3295/3295 |
 | `cquery` jsonproto | 16/16 | 37/37 |
-| `aquery` actions (argv, inputs, outputs, action keys) | 60/60 | 1420/1420 |
+| `aquery` actions (compared as a set; allow-listed runfiles-manifest keys) | 60/60 | 1420/1420 |
 | `mod graph --output=json` | byte-identical | byte-identical |
 | `MODULE.bazel.lock` | byte-identical | byte-identical |
 | fetched external repositories | 67/67 | 81/81 |
 | build configuration checksums (target, exec, test) | all | all |
-| `version`, `info`, `clean`, `shutdown`, rc/`--config` | match | match |
 
-Execution is ported and validated by replaying the oracle's recorded work (every spawn through
-Blaze's linux-sandbox runner: 43/43 and 551/551; brotli's 96 outputs; re2's 21 tests). Wiring
-`build` and `test` into the binary end to end is in progress; see `docs/STATUS.md`.
+How these were measured: the query, cquery and aquery rows came from the `blaze` binary reading
+external repositories from an oracle output base; the repository and lockfile rows came from a
+separate dev binary. A newer, not yet committed integration build runs `blaze build` (brotli) and
+`blaze test` (re2) end to end with Blaze's own fetching and matches on outputs, exec log and test
+results; it will be recorded against a commit when it lands. Numbers are not yet bound to
+commits; that is being fixed.
 
-Known limits: Linux x86-64 only; one command per process (no persistent server yet);
-`linux-sandbox`, `process-wrapper` and `@bazel_tools` are taken from Bazel 9.3.2's install base;
-external repositories for `query`/`cquery`/`aquery` currently come from an oracle output base
-(Blaze's own fetching is ported and verified separately, wiring in progress).
+`version`, `clean`, `shutdown`, rc/`--config` handling and `info <key>` match for 39 of 57
+compared cases; the other 18 are not ported and fail loudly (among them `info` with no key and
+the JVM-only keys).
+
+Known limits: Linux x86-64 only; one command per process (no persistent server); two Blaze
+commands in one output base are not locked against each other; `linux-sandbox`,
+`process-wrapper` and `@bazel_tools` are taken from Bazel 9.3.2's install base; Starlark flags
+(`--//pkg:flag=value`) are not applied; aspects, genrule and symbolic macros are not ported;
+remote caching and execution are not ported; non-ASCII strings do not follow Bazel's semantics.
 
 ## Build
 
@@ -44,11 +57,14 @@ it exists under `~/.cache/blaze/oracle-out/ur/install/`).
 scripts/cargo-capped build -p blaze      # -> target/debug/blaze
 ```
 
+Note: commits between `0388d76` and the next "building checkpoint" commit do not build (a
+partial commit); use the checkpoint or later.
+
 ## Demo
 
 ```sh
 target/debug/blaze version
-cd /path/to/brotli && /path/to/blaze/target/debug/blaze info
+cd /path/to/brotli && /path/to/blaze/target/debug/blaze info release output_base
 
 # Run a command the way the referee does (workspace copy, clean env), on a corpus project:
 scripts/w4a/run brotli query //... --output=label_kind

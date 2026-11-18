@@ -1,5 +1,9 @@
 # Status
 
+**2026-11-18: review round 1 returned STOP on all seven areas (docs/reviews/). The fix wave is
+the current priority; numbers below predate it and several are stale or overstated (see
+docs/reviews/2026-11-18-integrity-audit.md, claims table).**
+
 Updated 2026-11-17 (root).
 
 ## Done (committed, tests green)
@@ -11,7 +15,7 @@ Updated 2026-11-17 (root).
 - blaze_options: framework + rc handling ported; OptionsParserTest still being ported.
 
 ## Milestones reached against the oracle (2026-11-18)
-- `version`, `info` (39/39 comparable checks), `clean`, `shutdown`, rc/`--config`: match (W1).
+- `version`, `info` (39 of 57 compared cases; 18 unported), `clean`, `shutdown`, rc/`--config`: match (W1).
 - `mod graph --output=json`: byte-identical for brotli and re2; lockfile resolution part matches (W2).
 - Every build configuration checksum (top-level, test-trimmed, exec, no-config) matches (W4 config).
 - CppCompile argv for brotli dictionary.c equals the oracle's (blaze_cc_features).
