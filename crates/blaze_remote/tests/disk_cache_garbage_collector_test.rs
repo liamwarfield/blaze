@@ -1,4 +1,6 @@
 #![cfg(feature = "wip")]
+// Options and protos are filled in field by field, as the Java tests set them.
+#![allow(clippy::field_reassign_with_default)]
 //! Port of `lib/remote/disk/DiskCacheGarbageCollectorTest.java`.
 //!
 //! PORT: the Rust collector is sequential and takes no executor service (see the `// PORT:` note

@@ -1,0 +1,13 @@
+load(":defs.bzl", "script_test")
+
+script_test(
+    name = "pass_test",
+    size = "small",
+    exit_code = 0,
+)
+
+script_test(
+    name = "fail_test",
+    size = "small",
+    exit_code = 1,
+)

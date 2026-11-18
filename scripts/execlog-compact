@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""Decode and compare compact execution logs (--execution_log_compact_file). See `help`."""
+
+import collections
+import hashlib
+import json
+import os
+import subprocess
+import sys
+
+USAGE = """\
+usage: scripts/execlog-compact dump <log>              one JSON line per ExecLogEntry, in order
+       scripts/execlog-compact canon <log>             entries with references resolved (below)
+       scripts/execlog-compact compare <expected> <actual>
+       scripts/execlog-compact record <binary> <project> <name> [build flags...]
+       scripts/execlog-compact help
+
+<log> is a compact execution log as Bazel writes it: zstd-compressed, varint-delimited
+tools.protos.ExecLogEntry messages (src/main/protobuf/spawn.proto at the pin). The proto is
+compiled with protoc into ~/.cache/blaze/execlog/spawn.desc on first use.
+
+canon replaces every entry reference (fields named *_id / *_ids, the values of
+SymlinkEntrySet.direct_entries) by the canonical hash of the referenced entry, drops the entry's
+own id, the invocation id and the spawn metrics (timings), and hashes the result. Two logs of
+the same build then have the same multiset of canonical entries whatever the order in which
+the spawns ran, and an input set that Bazel logs once (shared between spawns, referred to by
+its id) but another log writes once per spawn shows up as a duplicate.
+
+record copies the corpus checkout of <project> (corpus/projects.json) to
+~/.cache/blaze/work/execlog-<name>, runs `<binary> --nohome_rc --nosystem_rc
+--output_user_root=~/.cache/blaze/oracle-out/execlog-<name> build <the project's patterns>
+--repository_cache=~/.cache/blaze/repo-cache --execution_log_compact_file=<log> [build flags]` in
+a systemd-run scope (MemoryMax=12G) from a cold output user root, then `shutdown`, and prints
+the log's path (~/.cache/blaze/execlog/<name>.binpb.zst).
+
+compare prints: whether the uncompressed streams are byte-identical; the number of entries per
+type in each log; the entries (type and canonical form) of each log that the other lacks, as
+multisets; and the duplicated canonical entries of each log. Exits 1 when the multisets differ.
+"""
+
+PROTO_ROOT = os.path.expanduser("~/.cache/blaze/src/bazel-9.3.2/src/main/protobuf")
+CACHE = os.path.expanduser("~/.cache/blaze/execlog")
+
+
+def die(msg):
+    sys.stderr.write("execlog-compact: %s\n" % msg)
+    sys.exit(2)
+
+
+def entry_class():
+    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+
+    desc = os.path.join(CACHE, "spawn.desc")
+    if not os.path.exists(desc):
+        os.makedirs(CACHE, exist_ok=True)
+        # The well-known types spawn.proto imports come from the protobuf Python package (no
+        # .proto sources of them are installed).
+        from google.protobuf import duration_pb2, timestamp_pb2
+        wkt = descriptor_pb2.FileDescriptorSet()
+        for module in (duration_pb2, timestamp_pb2):
+            module.DESCRIPTOR.CopyToProto(wkt.file.add())
+        wkt_path = os.path.join(CACHE, "wkt.desc")
+        with open(wkt_path, "wb") as f:
+            f.write(wkt.SerializeToString())
+        subprocess.run(
+            ["protoc", "--include_imports", "--descriptor_set_in=" + wkt_path, "-I", PROTO_ROOT,
+             "--descriptor_set_out=" + desc, "spawn.proto"],
+            check=True, cwd=PROTO_ROOT)
+    fds = descriptor_pb2.FileDescriptorSet()
+    with open(desc, "rb") as f:
+        fds.ParseFromString(f.read())
+    pool = descriptor_pool.DescriptorPool()
+    for fd in fds.file:
+        pool.Add(fd)
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName("tools.protos.ExecLogEntry"))
+
+
+def raw_stream(path):
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:4] == b"\x28\xb5\x2f\xfd":
+        import zstandard
+        data = zstandard.ZstdDecompressor().decompressobj().decompress(data)
+    return data
+
+
+def entries(path):
+    from google.protobuf.json_format import MessageToDict
+
+    cls = entry_class()
+    data = raw_stream(path)
+    pos = 0
+    out = []
+    while pos < len(data):
+        size = 0
+        shift = 0
+        while True:
+            b = data[pos]
+            pos += 1
+            size |= (b & 0x7F) << shift
+            shift += 7
+            if not b & 0x80:
+                break
+        msg = cls()
+        msg.ParseFromString(data[pos:pos + size])
+        pos += size
+        out.append(MessageToDict(msg, preserving_proto_field_name=True))
+    return out
+
+
+def entry_type(e):
+    kinds = [k for k in e if k != "id"]
+    return kinds[0] if kinds else "?"
+
+
+def canonical(path):
+    """[(type, canonical json, hash)] in log order."""
+    by_id = {}
+    result = []
+
+    def resolve(value, key):
+        if isinstance(value, dict):
+            out = {}
+            for k, v in value.items():
+                if k == "direct_entries" and isinstance(v, dict):
+                    out[k] = {p: by_id.get(int(r), "<missing %s>" % r) for p, r in v.items()}
+                else:
+                    out[k] = resolve(v, k)
+            return out
+        if isinstance(value, list):
+            return [resolve(v, key) for v in value]
+        if key.endswith("_id") or key.endswith("_ids"):
+            return by_id.get(int(value), "<missing %s>" % value)
+        return value
+
+    for e in entries(path):
+        own_id = int(e.get("id", 0))
+        body = {k: v for k, v in e.items() if k != "id"}
+        t = entry_type(body)
+        if t == "invocation":
+            body["invocation"] = {k: v for k, v in body["invocation"].items() if k != "id"}
+        if t == "spawn":
+            body["spawn"] = {k: v for k, v in body["spawn"].items() if k != "metrics"}
+        resolved = resolve(body, "")
+        text = json.dumps(resolved, sort_keys=True)
+        h = hashlib.sha256(text.encode()).hexdigest()[:16]
+        if own_id:
+            by_id[own_id] = h
+        result.append((t, text, h))
+    return result
+
+
+def record(binary, project, name, flags):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "corpus", "projects.json")) as f:
+        spec = json.load(f)["projects"][project]
+    checkout = os.path.expanduser(spec["checkout"])
+    work = os.path.expanduser("~/.cache/blaze/work/execlog-%s" % name)
+    ur = os.path.expanduser("~/.cache/blaze/oracle-out/execlog-%s" % name)
+    log = os.path.join(CACHE, "%s.binpb.zst" % name)
+    os.makedirs(CACHE, exist_ok=True)
+    for path in (work, ur):
+        if os.path.exists(path):
+            subprocess.run(["chmod", "-R", "u+w", path], check=False)
+            subprocess.run(["rm", "-rf", path], check=True)
+    subprocess.run(["rsync", "-a", "--exclude", "bazel-*", "--exclude", ".git", checkout + "/", work + "/"],
+                   check=True)
+    patterns = [a for a in spec["commands"][0][1:]]
+    startup = [os.path.abspath(binary), "--nohome_rc", "--nosystem_rc", "--output_user_root=" + ur]
+    cmd = startup + ["build"] + patterns + [
+        "--repository_cache=" + os.path.expanduser("~/.cache/blaze/repo-cache"),
+        "--execution_log_compact_file=" + log, "--color=no", "--curses=no"] + flags
+    scope = ["systemd-run", "--user", "--collect", "--quiet", "--pipe", "--wait", "--same-dir",
+             "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "--setenv=HOME=" + os.path.expanduser("~"),
+             "--setenv=PATH=/usr/bin:/bin"]
+    r = subprocess.run(scope + cmd, cwd=work)
+    subprocess.run(scope + startup + ["shutdown"], cwd=work)
+    print("exit %d: %s" % (r.returncode, log))
+    return r.returncode
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("help", "-h", "--help"):
+        sys.stdout.write(USAGE)
+        return 0
+    cmd = argv[1]
+    if cmd == "record" and len(argv) >= 5:
+        return record(argv[2], argv[3], argv[4], argv[5:])
+    if cmd == "dump" and len(argv) == 3:
+        for e in entries(argv[2]):
+            print(json.dumps(e, sort_keys=True))
+        return 0
+    if cmd == "canon" and len(argv) == 3:
+        for t, text, h in canonical(argv[2]):
+            print("%s %s %s" % (h, t, text))
+        return 0
+    if cmd == "compare" and len(argv) == 4:
+        expected, actual = argv[2], argv[3]
+        print("byte-identical uncompressed streams: %s" % (raw_stream(expected) == raw_stream(actual)))
+        a, b = canonical(expected), canonical(actual)
+        for name, log in (("expected", a), ("actual", b)):
+            counts = collections.Counter(t for t, _, _ in log)
+            print("%s: %d entries %s" % (name, len(log), dict(sorted(counts.items()))))
+        ca = collections.Counter((t, text) for t, text, _ in a)
+        cb = collections.Counter((t, text) for t, text, _ in b)
+        missing = ca - cb
+        extra = cb - ca
+        for label, diff in (("only in expected", missing), ("only in actual", extra)):
+            print("%s: %d" % (label, sum(diff.values())))
+            for (t, text), n in sorted(diff.items()):
+                print("  %dx %s %s" % (n, t, text[:400]))
+        for name, c in (("expected", ca), ("actual", cb)):
+            dups = {k: n for k, n in c.items() if n > 1}
+            print("%s duplicated canonical entries: %d" % (name, sum(n - 1 for n in dups.values())))
+            for (t, text), n in sorted(dups.items())[:20]:
+                print("  %dx %s %s" % (n, t, text[:200]))
+        return 1 if missing or extra else 0
+    die("bad arguments (see `help`)")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

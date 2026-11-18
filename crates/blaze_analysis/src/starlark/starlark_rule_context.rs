@@ -374,9 +374,11 @@ impl<'v> StarlarkRuleContext<'v> {
         // Populate ctx.attr.
         let collection = {
             let rc = handle.borrow();
+            let semantics = rc.get_starlark_semantics().clone();
             let mut builder = StarlarkAttributesCollectionBuilder::new(
                 rc.get_rule_prerequisites_collection(),
                 heap,
+                &semantics,
             );
             for attribute in &attributes {
                 let value = rc
@@ -607,14 +609,19 @@ fn build_split_attribute_info<'v>(
                 .collect();
             let value = if attr.get_type() == Type::Label {
                 blaze_util::check_state!(prereqs.len() == 1);
-                target_to_starlark(&targets[0], heap)
+                target_to_starlark(&targets[0], heap, rule_context.get_starlark_semantics())
             } else if attr.get_type() == Type::LabelDictUnary {
                 match rule_context
                     .attributes()
                     .get(attr.get_name(), Type::LabelDictUnary)
                 {
                     Some(blaze_packages::types::AttrValue::LabelDictUnary(m)) => {
-                        convert_string_to_label_map(heap, &m, &targets)
+                        convert_string_to_label_map(
+                            heap,
+                            &m,
+                            &targets,
+                            rule_context.get_starlark_semantics(),
+                        )
                     }
                     other => panic!("ClassCastException: LABEL_DICT_UNARY value {other:?}"),
                 }
@@ -624,7 +631,12 @@ fn build_split_attribute_info<'v>(
                     .get(attr.get_name(), Type::LabelListDict)
                 {
                     Some(blaze_packages::types::AttrValue::LabelListDict(m)) => {
-                        convert_string_to_label_list_map(heap, &m, &targets)
+                        convert_string_to_label_list_map(
+                            heap,
+                            &m,
+                            &targets,
+                            rule_context.get_starlark_semantics(),
+                        )
                     }
                     other => panic!("ClassCastException: LABEL_LIST_DICT value {other:?}"),
                 }
@@ -634,7 +646,7 @@ fn build_split_attribute_info<'v>(
                     heap,
                     targets
                         .iter()
-                        .map(|t| target_to_starlark(t, heap))
+                        .map(|t| target_to_starlark(t, heap, rule_context.get_starlark_semantics()))
                         .collect(),
                 )
             };

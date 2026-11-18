@@ -175,6 +175,8 @@ impl Scrubber {
     /// Returns a `SpawnScrubber` suitable for a `Spawn`, or `None` if the spawn does not need to
     /// be scrubbed.
     // Java: com/google/devtools/build/lib/remote/Scrubber.java:91 Scrubber.forSpawn
+    // Kept as Java's loop.
+    #[allow(clippy::manual_find)]
     pub fn for_spawn(&self, spawn: &dyn Spawn) -> Option<&SpawnScrubber> {
         for spawn_scrubber in &self.spawn_scrubbers {
             if spawn_scrubber.matches(spawn) {

@@ -1,0 +1,10 @@
+load(":defs.bzl", "r")
+
+filegroup(name = "leaf")
+
+[r(name = k, kind = k, dep = ":leaf") for k in [
+    "dict_of_dicts_int_key",
+    "dict_of_dicts_second_int_key",
+    "dict_of_dicts_ok",
+    "dict_of_dicts_first_undeclared",
+]]

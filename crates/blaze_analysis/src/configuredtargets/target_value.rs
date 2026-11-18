@@ -333,11 +333,16 @@ impl<'v> StarlarkValue<'v> for StarlarkTarget {
         None
     }
 
+    // Java `Starlark.hasattr`: `((Structure) x).getValue(name) != null`, the one-argument
+    // `getValue(String)`, which neither rejects non-special names nor reads
+    // `--incompatible_disable_target_default_provider_fields` (so `hasattr(t, "files")` is
+    // True with the flag although `t.files` fails).
+    // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr
     fn has_attr(&self, attribute: &str, heap: Heap<'v>) -> bool {
         if attribute == ACTIONS_FIELD_NAME {
             return matches!(self.target, ConfiguredTarget::Rule(_));
         }
-        SPECIAL_FIELD_NAMES.contains(&attribute) && self.get_attr(attribute, heap).is_some()
+        self.get_value(attribute, heap).is_some()
     }
 
     fn dir_attr(&self) -> Vec<String> {

@@ -125,6 +125,13 @@ pub(crate) enum PendingAction {
     Spawn {
         builder: Box<SpawnActionBuilder>,
         command_line: Vec<CommandLinePart>,
+        /// A `resource_set` callback (Java `StarlarkActionResourceSetBuilder`): the callable's
+        /// index in the keep-alive list, the action's mnemonic and the rule's semantics.
+        resource_set_callback: Option<(
+            usize,
+            String,
+            std::sync::Arc<blaze_starlark::StarlarkSemantics>,
+        )>,
     },
     /// `ctx.actions.write` with an `Args` content (Java `new ParameterFileWriteAction(...)`).
     ParameterFileWrite {

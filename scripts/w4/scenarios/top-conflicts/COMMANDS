@@ -1,6 +1,6 @@
 # Action conflicts between targets (analysis review S2-1, exec review S2-2): ArtifactConflictFinder,
 # Actions.findArtifactPrefixConflicts, and how SkyframeBuildView reports them.
-# Only the first line of each message is compared.
+# Full transcripts are compared (scripts/w4/probe help).
 #
 # Two lines of this transcript depend on thread timing in Bazel itself, so a difference confined
 # to them is not a defect of the port:

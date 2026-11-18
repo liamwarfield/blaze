@@ -4,6 +4,7 @@ pub mod abstract_spawn_strategy;
 pub mod action_execution_context;
 pub mod bin_tools;
 pub mod compact_spawn_log_context;
+pub mod evaluation_stack;
 pub mod exec_command_environment;
 pub mod executor_setup;
 pub mod expanded_spawn_log_context;

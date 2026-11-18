@@ -23,6 +23,7 @@ use blaze_exec::exec::bin_tools::BinTools;
 use blaze_exec::exec::exec_command_environment::ExecCommandEnvironment;
 use blaze_exec::exec::executor_setup::build_spawn_strategy_registry;
 use blaze_exec::exec::spawn_log_context::SpawnLogContext;
+use blaze_exec::exec::spawn_strategy_registry::AbruptExitException;
 use blaze_exec::runtime::spawn_stats::SpawnStats;
 use blaze_exec::sandbox::sandbox_module::SandboxModule;
 use blaze_optdefs::command::execution_options::ExecutionOptions;
@@ -141,9 +142,28 @@ pub struct PreparedExecution {
     /// `--nouse_action_cache`.
     pub action_cache: Option<Arc<dyn ActionCache>>,
     pub action_cache_checker: Arc<ActionCacheChecker>,
+    /// The `AbruptExitException` of `SpawnStrategyRegistry.Builder.build` (an unknown or
+    /// unsandboxed strategy in `--spawn_strategy`, `--strategy`, `--strategy_regexp`, ...),
+    /// which Java's `ExecutionTool.<init>` throws. The executor then has no spawn strategy
+    /// registry; the build command throws it where Java constructs the `ExecutionTool` (see
+    /// [`PreparedExecution::check_execution_tool_created`]).
+    ///
+    /// PORT: Blaze creates the executor with the command's `SkyframeExecutor`, before the target
+    /// patterns are loaded, and Java only after them, so the exception is kept for later.
+    pub spawn_strategy_registry_error: Option<AbruptExitException>,
 }
 
 impl PreparedExecution {
+    /// `new ExecutionTool(env, request)`: the `AbruptExitException` its constructor throws, if
+    /// any (see [`PreparedExecution::spawn_strategy_registry_error`]).
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:151 ExecutionTool.<init>
+    pub fn check_execution_tool_created(&self) -> Result<(), AbruptExitException> {
+        match &self.spawn_strategy_registry_error {
+            Some(e) => Err(e.clone()),
+            None => Ok(()),
+        }
+    }
+
     /// Writes the action cache files to disk, reporting any errors that occurred during writing
     /// and capturing statistics: posts `PostableActionCacheStats` (which
     /// [`ExecutionEventCollector`] records for the `N processes: ... action cache hit` line).
@@ -228,7 +248,7 @@ pub fn prepare_for_execution(
     spawn_log_context: Option<Arc<dyn SpawnLogContext>>,
     register_contexts: &dyn Fn(&mut ActionContexts, &ExecCommandEnvironment),
 ) -> Result<PreparedExecution, String> {
-    prepare_for_execution_with_action_cache(
+    let prepared = prepare_for_execution_with_action_cache(
         config,
         reporter,
         spawn_log_context,
@@ -237,7 +257,11 @@ pub fn prepare_for_execution(
             use_action_cache: false,
             ..ActionCacheOptions::default()
         },
-    )
+    )?;
+    prepared
+        .check_execution_tool_created()
+        .map_err(|e| e.get_message().to_owned())?;
+    Ok(prepared)
 }
 
 /// [`prepare_for_execution`] with the action cache: loads `<output_base>/action_cache` when
@@ -345,10 +369,12 @@ pub fn prepare_for_execution_with_action_cache(
     configure_resource_manager(&env.resource_manager, &env.execution_options);
     let mut sandbox_module = SandboxModule::new();
     sandbox_module.before_command(&env);
-    let registry =
-        build_spawn_strategy_registry(&env, &mut sandbox_module).map_err(|e| format!("{e:?}"))?;
     let mut contexts = ActionContexts::default();
-    contexts.spawn_strategy_registry = Some(Arc::new(registry));
+    let mut spawn_strategy_registry_error = None;
+    match build_spawn_strategy_registry(&env, &mut sandbox_module) {
+        Ok(registry) => contexts.spawn_strategy_registry = Some(Arc::new(registry)),
+        Err(e) => spawn_strategy_registry_error = Some(e),
+    }
     contexts.spawn_log_context = spawn_log_context.clone();
     contexts.spawn_cache = Some(blaze_exec::exec::action_execution_context::no_cache());
     register_contexts(&mut contexts, &env);
@@ -385,6 +411,7 @@ pub fn prepare_for_execution_with_action_cache(
         spawn_log_context,
         action_cache,
         action_cache_checker,
+        spawn_strategy_registry_error,
     })
 }
 
@@ -489,8 +516,11 @@ pub fn evaluate_build_driver_keys(
         // (blaze_shell's JavaProcess runs Java's child-side steps in a pre_exec hook), and with
         // the kernel's heuristic overcommit a fork must account every writable private mapping
         // of the parent, including the reserved evaluator thread stacks: hundreds of threads at
-        // the analysis default (256 MB) exceed RAM and the fork fails with ENOMEM. The execution
-        // phase evaluates no BUILD/.bzl code that needs deep native stacks.
+        // the analysis default (256 MB) exceed RAM and the fork fails with ENOMEM. The Starlark
+        // code of the execution phase (map_each callbacks of command lines and action keys) does
+        // not run on these stacks: SkyframeActionExecutor runs `Action.execute` and the action
+        // key computations on an EVAL_STACK_SIZE thread
+        // (blaze_exec::exec::evaluation_stack::on_evaluation_stack).
         thread_stack_size: 16 << 20,
         ..EvaluationContext::default()
     };

@@ -1,5 +1,6 @@
 === 1: run aquery //... --output=jsonproto
 exit 0
+--- stdout
 {
   "artifacts": [
     {
@@ -230,7 +231,20 @@ exit 0
     }
   ]
 }
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 3 targets (5 packages loaded, 15 targets configured).
+INFO: Found 3 targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
 INFO: Build completed successfully, 0 total actions
 === 2: run build //...
 exit 0
+--- stdout
+--- stderr
+INFO: Analyzed 3 targets (0 packages loaded, 0 targets configured).
+INFO: Found 3 targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 4 processes: 1 internal, 3 linux-sandbox.
 INFO: Build completed successfully, 4 total actions

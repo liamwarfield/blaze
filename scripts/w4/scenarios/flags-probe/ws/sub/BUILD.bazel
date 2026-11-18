@@ -1,0 +1,5 @@
+load("//:defs.bzl", "string_flag")
+
+string_flag(name = "one", build_setting_default = "")
+string_flag(name = "two", build_setting_default = "")
+alias(name = "cyc_two", actual = "//:cyc_three")

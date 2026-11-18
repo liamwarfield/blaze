@@ -301,7 +301,6 @@ pub fn check_client_server_compatibility(
         if remote_options.remote_upload_local_results
             && !cache_cap
                 .action_cache_update_capabilities
-                .clone()
                 .unwrap_or_default()
                 .update_enabled
         {

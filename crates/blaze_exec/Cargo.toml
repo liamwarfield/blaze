@@ -18,6 +18,8 @@ blaze_optdefs = { path = "../blaze_optdefs" }
 blaze_collect = { path = "../blaze_collect" }
 # Adapters of the execution traits for blaze_actions types (see src/actions/mod.rs).
 blaze_actions = { path = "../blaze_actions" }
+# EVAL_STACK_SIZE / run_on_evaluation_thread for Starlark callbacks run during execution.
+blaze_starlark = { path = "../blaze_starlark" }
 indexmap.workspace = true
 parking_lot.workspace = true
 sha2.workspace = true

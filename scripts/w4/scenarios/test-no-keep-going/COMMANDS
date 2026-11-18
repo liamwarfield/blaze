@@ -1,0 +1,8 @@
+# N1: TestRunnerAction throws TestExecException ("Test failed, aborting") without
+# --test_keep_going; SkyframeErrorProcessor.rethrow rethrows it, BuildTool.processRequest reports
+# it with a successful build exit code, TestCommand.doTest returns 3. (A second failing run on
+# the oracle's warm server reports the target as failed to build, as the abort races with its
+# completion, so the failing test runs once without --keep_going.)
+run test --notest_keep_going //:fail_test
+run test --notest_keep_going //:pass_test
+run test --notest_keep_going --keep_going //:fail_test

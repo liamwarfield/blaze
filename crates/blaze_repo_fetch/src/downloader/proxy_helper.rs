@@ -104,6 +104,50 @@ static URL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+/// `s.split("\\s*,\\s*")` (Java `String.split(regex)` with limit 0): the separator is a comma
+/// with the whitespace (`\s`: space, `\t`, `\n`, `\x0B`, `\f`, `\r`) around it, so the first
+/// entry keeps its leading and the last entry its trailing whitespace; a separator at the start
+/// gives a leading empty entry, and trailing empty entries are dropped.
+// Java: com/google/devtools/build/lib/bazel/repository/downloader/ProxyHelper.java:85 ProxyHelper.createProxyIfNeeded
+// PORT: JDK `String.split(String regex)` (limit 0) for this one regex.
+fn java_split_comma(s: &str) -> Vec<&str> {
+    fn is_java_whitespace(b: u8) -> bool {
+        matches!(b, b' ' | b'\t' | b'\n' | 0x0B | 0x0C | b'\r')
+    }
+    let bytes = s.as_bytes();
+    let mut entries: Vec<&str> = Vec::new();
+    // End of the previous match: where the next entry starts.
+    let mut index = 0;
+    let mut comma = index;
+    while let Some(offset) = s[comma..].find(',') {
+        let comma_at = comma + offset;
+        // The match starts at the first whitespace of the run just before the comma (the regex
+        // engine tries each start position from the left), but not inside the previous match.
+        let mut match_start = comma_at;
+        while match_start > index && is_java_whitespace(bytes[match_start - 1]) {
+            match_start -= 1;
+        }
+        let mut match_end = comma_at + 1;
+        while match_end < bytes.len() && is_java_whitespace(bytes[match_end]) {
+            match_end += 1;
+        }
+        entries.push(&s[index..match_start]);
+        index = match_end;
+        comma = match_end;
+    }
+    if entries.is_empty() {
+        // If no match was found, return this.
+        return vec![s];
+    }
+    // Add remaining segment.
+    entries.push(&s[index..]);
+    // Construct result: trailing empty strings are removed.
+    while entries.last() == Some(&"") {
+        entries.pop();
+    }
+    entries
+}
+
 fn non_empty(s: Option<&String>) -> Option<&String> {
     s.filter(|s| !s.is_empty())
 }
@@ -160,11 +204,7 @@ impl ProxyHelper {
         // Check no_proxy/NO_PROXY environment variables
         let no_proxy_url = non_empty(self.env.get("no_proxy")).or_else(|| self.env.get("NO_PROXY"));
         if let Some(no_proxy_url) = non_empty(no_proxy_url) {
-            // Java String.split("\\s*,\\s*") drops trailing empty strings.
-            let mut entries: Vec<&str> = no_proxy_url.split(',').map(|s| s.trim()).collect();
-            while entries.last() == Some(&"") {
-                entries.pop();
-            }
+            let entries = java_split_comma(no_proxy_url);
             // PORT: Java dereferences getHost() and would throw NullPointerException.
             let requested_host = requested_url.get_host().unwrap_or("");
             for entry in entries {
@@ -270,4 +310,40 @@ pub fn create_proxy_info(
         username,
         password,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Expected values: Java's `String.split("\\s*,\\s*")`, which ProxyHelper.java:85 applies to
+    // `no_proxy`, printed by OpenJDK 25.0.5 (the oracle embeds JDK 25) for each input below.
+    #[test]
+    fn java_split_comma_trims_around_separators() {
+        assert_eq!(java_split_comma("a , b,c,,"), vec!["a", "b", "c"]);
+        assert_eq!(java_split_comma(" a"), vec![" a"]);
+        assert_eq!(java_split_comma(" a , b ,c "), vec![" a", "b", "c "]);
+        assert_eq!(java_split_comma(", a"), vec!["", "a"]);
+        assert_eq!(java_split_comma(" , a"), vec!["", "a"]);
+        assert_eq!(java_split_comma("a , , b"), vec!["a", "", "b"]);
+        assert_eq!(java_split_comma("a\t,\nb"), vec!["a", "b"]);
+        assert_eq!(java_split_comma(","), Vec::<&str>::new());
+        assert_eq!(java_split_comma("a b,c"), vec!["a b", "c"]);
+    }
+
+    /// `no_proxy=" example.com"` keeps the leading space, so the host does not match and the
+    /// proxy is used (ProxyHelper.java:85-99).
+    #[test]
+    fn no_proxy_entry_with_leading_whitespace_does_not_match() {
+        let mut env = HashMap::new();
+        env.insert("no_proxy".to_owned(), " example.com".to_owned());
+        env.insert(
+            "https_proxy".to_owned(),
+            "http://proxy.local:3128".to_owned(),
+        );
+        let helper = ProxyHelper::new(env);
+        let url = JavaUri::create("https://example.com/file").unwrap();
+        let info = helper.create_proxy_if_needed(&url).unwrap();
+        assert_eq!(info.proxy_type, ProxyType::HTTP);
+    }
 }

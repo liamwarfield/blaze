@@ -1,8 +1,16 @@
 === 1: run build //:w
 exit 0
-  bazel-bin/w.params
-INFO: Build completed successfully, 3 total actions
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:w (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
 Target //:w up-to-date:
+  bazel-bin/w.params
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 3 processes: 2 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 3 total actions
 === 2: cat bazel-bin/w.params
 --first
 bazel-out/k8-fastbuild/bin/w.dir/a.txt
@@ -22,9 +30,15 @@ dir 555
 file 555
 === 6: run build //:w
 exit 0
-  bazel-bin/w.params
-INFO: Build completed successfully, 1 total action
+--- stdout
+--- stderr
+INFO: Analyzed target //:w (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
 Target //:w up-to-date:
+  bazel-bin/w.params
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
 === 7: cat bazel-bin/w.params
 --first
 bazel-out/k8-fastbuild/bin/w.dir/a.txt

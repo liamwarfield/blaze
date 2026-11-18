@@ -758,6 +758,123 @@ fn parse_resource_set_from_dict(resource_set_unchecked: Value) -> starlark::Resu
     })
 }
 
+/// `print()` in a `resource_set` callback: Java's thread keeps `StarlarkThread`'s default print
+/// handler, `System.err.println(thread.getCallerLocation() + ": " + msg)` (the server's stderr).
+// Java: net/starlark/java/eval/StarlarkThread.java:366 StarlarkThread.defaultPrintHandler
+struct ResourceSetCallbackEvents;
+
+impl blaze_starlark::thread::StarlarkEvents for ResourceSetCallbackEvents {
+    fn debug(&self, location: Option<&blaze_starlark::Location>, message: &str) {
+        match location {
+            Some(l) => eprintln!("{l}: {message}"),
+            None => eprintln!(": {message}"),
+        }
+    }
+
+    fn warn(&self, location: Option<&blaze_starlark::Location>, message: &str) {
+        self.debug(location, message);
+    }
+}
+
+/// The `resource_set` callback of `ctx.actions.run` / `run_shell`: called at execution with the
+/// OS and the number of inputs, its dict result becomes the spawn's local resources.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:902 StarlarkActionResourceSetBuilder
+pub(crate) struct StarlarkActionResourceSetBuilder {
+    pub(crate) fn_: starlark::values::OwnedFrozenValue,
+    pub(crate) mnemonic: String,
+    pub(crate) semantics: Arc<StarlarkSemantics>,
+}
+
+impl fmt::Debug for StarlarkActionResourceSetBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "StarlarkActionResourceSetBuilder({})", self.mnemonic)
+    }
+}
+
+impl blaze_actions::analysis::actions::spawn_action::ResourceSetBuilder
+    for StarlarkActionResourceSetBuilder
+{
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:923 StarlarkActionResourceSetBuilder.buildResourceSet
+    fn build_resource_set(
+        &self,
+        os: OS,
+        inputs_size: i32,
+    ) -> Result<ResourceSet, blaze_actions::analysis::actions::spawn_action::ResourceSetBuildError>
+    {
+        // Java: StarlarkThread.create(mu, semantics, "resource_set callback", ...): a thread
+        // with the rule's semantics and no thread-locals.
+        let ctx = blaze_starlark::ThreadContext::new(
+            blaze_starlark::thread::Phase::Other,
+            self.semantics.clone(),
+            Arc::new(ResourceSetCallbackEvents),
+        );
+        let result = blaze_starlark::eval::call_frozen(
+            &self.fn_,
+            &ctx,
+            &blaze_starlark::eval::EvalOptions::default(),
+            |module| {
+                let heap = module.heap();
+                (
+                    vec![
+                        heap.alloc_str(os.get_canonical_name()).to_value(),
+                        heap.alloc(inputs_size),
+                    ],
+                    Vec::new(),
+                )
+            },
+            |response, _module, _eval| {
+                resource_set_from_callback_response(response)
+                    .map_err(|e| blaze_starlark::EvalError::from_starlark(&e))
+            },
+        );
+        match result {
+            Ok(resource_set) => Ok(resource_set),
+            Err(e) => match e.kind {
+                blaze_starlark::error::EvalErrorKind::Panic => panic!("{}", e.message),
+                // Java: catch (EvalException e) -> UserExecException("Could not build
+                // resources for %s. %s", mnemonic, e.getMessage()).
+                _ => Err(
+                    blaze_actions::analysis::actions::spawn_action::ResourceSetBuildError {
+                        message: format!(
+                            "Could not build resources for {}. {}",
+                            self.mnemonic, e.message
+                        ),
+                    },
+                ),
+            },
+        }
+    }
+}
+
+/// The body of `buildResourceSet` after the call: `Dict.cast(response, ...)`, the key check and
+/// `ResourceSet.create(memory, cpu, (int) local_test)`.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:934 StarlarkActionResourceSetBuilder.buildResourceSet
+fn resource_set_from_callback_response(response: Value) -> starlark::Result<ResourceSet> {
+    let resource_set_map_raw = dict_cast_string_object(response, "resource_set")?;
+    let illegal: Vec<&str> = resource_set_map_raw
+        .keys()
+        .map(|k| k.as_str())
+        .filter(|k| !VALID_RESOURCES.contains(k))
+        .collect();
+    if !illegal.is_empty() {
+        return Err(errorf(format!(
+            "Illegal resource keys: ({})",
+            illegal.join(",")
+        )));
+    }
+    let default = ResourceSet::default_resource_set();
+    Ok(ResourceSet {
+        memory_mb: get_numeric_or_default(&resource_set_map_raw, "memory", default.memory_mb)?,
+        cpu_usage: get_numeric_or_default(&resource_set_map_raw, "cpu", default.cpu_usage)?,
+        extra_resource_usage: IndexMap::new(),
+        local_test_count: get_numeric_or_default(
+            &resource_set_map_raw,
+            "local_test",
+            default.local_test_count as f64,
+        )? as i32,
+    })
+}
+
 /// Java `executableUnchecked` / `toolUnchecked` of type `FilesToRunProvider`.
 fn files_to_run_provider(v: Value) -> Option<Arc<FilesToRunProvider>> {
     files_to_run_provider_from_value(v)
@@ -935,6 +1052,7 @@ fn register_starlark_action<'v>(
         blaze_util::unported!("StarlarkActionFactory.registerStarlarkAction(shadowed_action)");
     }
 
+    let mut resource_set_callback = None;
     if !resource_set_unchecked.is_none() {
         if DictRef::from_value(resource_set_unchecked).is_some() {
             builder.set_resources(parse_resource_set_from_dict(resource_set_unchecked)?);
@@ -955,18 +1073,15 @@ fn register_starlark_action<'v>(
             {
                 validate_is_top_level_starlark_function(resource_set_unchecked, eval)?;
             }
-            // Java: builder.setResources(new StarlarkActionResourceSetBuilder(fn, mnemonic,
-            // getSemantics())): the callback is called at execution with the OS and the number
-            // of inputs to estimate the local resources of the spawn.
-            // PORT: not carried. blaze_actions' `SpawnActionBuilder::set_resources` only takes a
-            // fixed `ResourceSet` (no `ResourceSetOrBuilder`), and no executor reads an action's
-            // resource set yet (`SpawnAction::get_resource_set_or_builder` has no caller), so
-            // the action keeps the default resource set. This cannot be `unported!` here:
-            // rules_cc's link action passes a callback on every C++ link
-            // (@rules_cc//cc/private/link:finalize_link_action.bzl), so analysis of any cc_binary
-            // would stop. The loud failure belongs where the resource set is consumed (request
-            // in the wave report: `SpawnActionBuilder::set_resources_or_builder`). Resources are
-            // neither in the action key nor in aquery output.
+            // Java: builder.setResources(StarlarkActionResourceSetBuilder.create(
+            // (StarlarkCallable) resourceSetUnchecked, mnemonic, getSemantics())): the callable
+            // is kept with the module and called at execution (`finish_pending_actions` builds
+            // the `StarlarkActionResourceSetBuilder` once the module is frozen).
+            resource_set_callback = Some((
+                keep_alive_push(eval, resource_set_unchecked)?,
+                mnemonic.clone(),
+                handle.borrow().get_starlark_semantics().clone(),
+            ));
         }
     }
 
@@ -976,6 +1091,7 @@ fn register_starlark_action<'v>(
         PendingAction::Spawn {
             builder: Box::new(builder),
             command_line,
+            resource_set_callback,
         },
         eval,
     )
@@ -1168,8 +1284,8 @@ fn command_helper_script_maybe(
     script_name_suffix: &str,
     execution_os: OS,
 ) -> Option<(Artifact, FileWriteAction)> {
-    // Java: String.length() counts UTF-16 code units.
-    if command.encode_utf16().count()
+    // Java: `command.length()` of an internal string: its UTF-8 bytes (analysis review R2-5).
+    if crate::rule::command_helper::java_string_length(command)
         <= crate::rule::command_helper::max_command_length(execution_os)
     {
         return None;
@@ -2030,7 +2146,22 @@ pub(crate) fn finish_pending_actions(
             PendingAction::Spawn {
                 mut builder,
                 command_line,
+                resource_set_callback,
             } => {
+                // PORT: pending in blaze_exec (execution owner): `new_action_spawn` must pass
+                // `SpawnAction::get_resource_set_builder()` to the spawn (Java
+                // `BaseSpawn.getLocalResources` -> `buildLocalResources(OS.getCurrent(),
+                // inputsSize, ...)`) and turn a `ResourceSetBuildError` into the action's
+                // `UserExecException`. Until it does, the spawn books the default resource set
+                // (250 MB, 1 CPU); failing loudly there would stop every C++ link, since rules_cc
+                // passes a callback on each one.
+                if let Some((index, mnemonic, semantics)) = resource_set_callback {
+                    builder.set_resources_builder(Arc::new(StarlarkActionResourceSetBuilder {
+                        fn_: FrozenAnalysisKeepAlive::get_owned(keep_alive, index),
+                        mnemonic,
+                        semantics,
+                    }));
+                }
                 for part in command_line {
                     match part {
                         CommandLinePart::Strings(strings) => {
@@ -2144,6 +2275,142 @@ pub(crate) fn finish_pending_actions(
 /// (Java `ruleContext.getActionOwner()`), for natives that build actions themselves.
 pub fn get_action_owner(handle: RuleContextHandle) -> ActionOwner {
     handle.borrow_mut().get_action_owner()
+}
+
+#[cfg(test)]
+mod resource_set_builder_tests {
+    //! Ports of StarlarkRuleContextTest.testCreateStarlarkActionArgumentsWithResourceSet_* at the
+    //! level they assert on: `action.getResourceSetOrBuilder().buildResourceSet(os, n)` of the
+    //! `StarlarkActionResourceSetBuilder` the factory installs (the factory part needs
+    //! BuildViewTestCase; see java_tests.rs). Expected values are the Java tests'.
+    use super::*;
+    use blaze_actions::analysis::actions::spawn_action::ResourceSetBuilder;
+    use blaze_starlark::eval;
+    use blaze_starlark::loader::LoadMap;
+    use blaze_starlark::{FileKind, Phase};
+
+    fn builder(src: &str) -> StarlarkActionResourceSetBuilder {
+        let src = src.to_owned();
+        let semantics = Arc::new(StarlarkSemantics::default());
+        let module = eval::run_on_evaluation_thread(move || {
+            let ctx = blaze_starlark::ThreadContext::new(
+                Phase::BzlLoad,
+                semantics,
+                Arc::new(ResourceSetCallbackEvents),
+            );
+            let globals = blaze_starlark::env::NativeRegistry::with_blaze_starlark_builtins()
+                .build(FileKind::Bzl, &StarlarkSemantics::default());
+            eval::compile(FileKind::Bzl, "test.bzl", src)
+                .and_then(|c| {
+                    eval::exec_module(c, &globals, &LoadMap::new(), &ctx, &Default::default())
+                })
+                .expect("module")
+        });
+        StarlarkActionResourceSetBuilder {
+            fn_: module.get("get_resources").expect("get_resources"),
+            mnemonic: "Action".to_owned(),
+            semantics: Arc::new(StarlarkSemantics::default()),
+        }
+    }
+
+    fn build(b: &StarlarkActionResourceSetBuilder, os: OS, n: i32) -> Result<ResourceSet, String> {
+        eval::run_on_evaluation_thread(|| b.build_resource_set(os, n)).map_err(|e| e.message)
+    }
+
+    /// Java `ResourceSet.create(memoryMb, cpu, localTestCount)`.
+    fn create(memory_mb: f64, cpu_usage: f64, local_test_count: i32) -> ResourceSet {
+        ResourceSet {
+            memory_mb,
+            cpu_usage,
+            extra_resource_usage: IndexMap::new(),
+            local_test_count,
+        }
+    }
+
+    #[test]
+    fn test_create_starlark_action_arguments_with_resource_set_success() {
+        let b = builder(
+            "def get_resources(os, inputs_size):\n  if os == \"osx\":\n    return {\"cpu\": 2., \"memory\": 350. + inputs_size * 20, \"local_test\": 2.}\n  return {\"cpu\": 1., \"memory\": 350. + inputs_size * 10, \"local_test\": 0.}\n",
+        );
+        assert_eq!(build(&b, OS::Linux, 2), Ok(create(370.0, 1.0, 0)));
+        assert_eq!(build(&b, OS::Darwin, 2), Ok(create(390.0, 2.0, 2)));
+    }
+
+    #[test]
+    fn test_create_starlark_action_arguments_with_resource_set_illegal_resource() {
+        let b = builder(
+            "def get_resources(os, inputs_size):\n  return {\"cpu\": 2., \"memory\": 350., \"local_test\": 2., \"gpu\": 1.}\n",
+        );
+        let e = build(&b, OS::Linux, 2).unwrap_err();
+        assert!(e.contains("Illegal resource keys: (gpu)"), "{e}");
+        assert!(
+            e.starts_with("Could not build resources for Action. "),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn test_create_starlark_action_arguments_with_resource_set_default_value() {
+        let b = builder(
+            "def get_resources(os, inputs_size):\n  return {\"cpu\": 2., \"local_test\": 2.}\n",
+        );
+        assert_eq!(build(&b, OS::Linux, 2), Ok(create(250.0, 2.0, 2)));
+    }
+
+    #[test]
+    fn test_create_starlark_action_arguments_with_resource_set_int_dict() {
+        let b = builder(
+            "def get_resources(os, inputs_size):\n  return {\"cpu\": 1, \"memory\": 2, \"local_test\": 3}\n",
+        );
+        assert_eq!(build(&b, OS::Linux, 0), Ok(create(2.0, 1.0, 3)));
+    }
+
+    #[test]
+    fn test_create_starlark_action_arguments_with_resource_set_not_dict() {
+        let b = builder("def get_resources(os, inputs_size):\n  return \"keks\"\n");
+        let e = build(&b, OS::Linux, 2).unwrap_err();
+        assert!(
+            e.contains("got string for 'resource_set', want dict"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn test_create_starlark_action_arguments_with_resource_set_wrong_dict() {
+        let b = builder(
+            "def get_resources(os, inputs_size):\n  return {\"cpu\": 1, \"memory\": 2, \"local_test\": \"hi\"}\n",
+        );
+        let e = build(&b, OS::Linux, 2).unwrap_err();
+        assert!(
+            e.contains("Illegal resource value type for key local_test"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    #[ignore = "starlark-rust's own arity error text differs from Java's (accepted core-language text, docs/decisions.md); the failure itself is checked by incorrect_signature_fails"]
+    fn test_create_starlark_action_arguments_with_resource_set_incorrect_signature() {
+        let b = builder(
+            "def get_resources(os):\n  return {\"cpu\": 1, \"memory\": 2, \"local_test\": \"hi\"}\n",
+        );
+        let e = build(&b, OS::Linux, 2).unwrap_err();
+        assert!(
+            e.contains("get_resources() accepts no more than 1 positional argument but got 2"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn incorrect_signature_fails() {
+        let b = builder(
+            "def get_resources(os):\n  return {\"cpu\": 1, \"memory\": 2, \"local_test\": \"hi\"}\n",
+        );
+        let e = build(&b, OS::Linux, 2).unwrap_err();
+        assert!(
+            e.starts_with("Could not build resources for Action. "),
+            "{e}"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -246,11 +246,22 @@ impl KeyInputMetadataProvider for KeyMetadataAdapter<'_> {
 /// compact execution log, see the same nodes Java does (Java upcasts the same object).
 // `NestedSetNode` hashes and compares by node identity (Java `Node.equals`), not by the
 // artifacts' interior state.
+///
+/// The conversion is memoized for the process: every spawn that holds a node of one
+/// `NestedSet<Artifact>` (for example the depset of headers shared by many compile actions) gets
+/// the same converted node, as every Java spawn holds the same object, so that
+/// `CompactSpawnLogContext` logs a shared set once and refers to it by its entry ID.
 #[allow(clippy::mutable_key_type)]
 pub fn to_action_input_set(set: &NestedSet<BlazeArtifact>) -> NestedSet<ActionInputRef> {
-    let mut memo: HashMap<NestedSetNode<BlazeArtifact>, NestedSet<ActionInputRef>> = HashMap::new();
+    let mut memo = ACTION_INPUT_SETS.lock();
     convert_set(set, &mut memo)
 }
+
+/// The converted node of each `NestedSet<Artifact>` node (see [`to_action_input_set`]).
+#[allow(clippy::mutable_key_type)]
+static ACTION_INPUT_SETS: std::sync::LazyLock<
+    parking_lot::Mutex<HashMap<NestedSetNode<BlazeArtifact>, NestedSet<ActionInputRef>>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
 #[allow(clippy::mutable_key_type)]
 fn convert_set(

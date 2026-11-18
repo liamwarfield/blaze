@@ -138,3 +138,143 @@ by Blaze. Scenario names below are directories under `scripts/w4/scenarios/`.
 ## Evidence
 
 See the final table in docs/reviews/2026-11-18-exec-response.md ("Evidence for both responses").
+
+# Round 2 response
+
+Analysis fixer, 2026-11-18. Covers the "Round 2" section of docs/reviews/2026-11-18-analysis.md
+(bound to `12ca29e`). State described: HEAD `4c29efc` plus the uncommitted working tree, which also
+holds the in-flight edits of the execution fixer (blaze_exec, blaze_sky_exec, blaze_buildtool,
+blaze_runtime commands) and of the remote lead (blaze_remote); binary
+`~/.cache/blaze/int-bin/blaze-anafix-1` (sha256 `5c6616b9582f`, built from that tree). Every
+expected value below comes from the Java at the pin or from an oracle transcript.
+
+## Blocking
+
+| id | disposition | where | test |
+| --- | --- | --- | --- |
+| R2-1 nine cpp lists immutable | FIXED | `blaze_rules/src/cpp/cpp_configuration.rs` `string_list` is now `Starlark.fromJava` of an `ImmutableList` (a new mutable list per access) for `copts`, `cxxopts`, `conlyopts`, `objccopts`, `linkopts`, `lto_index_options`, `lto_backend_options`; `strip_opts` stays `immutableCopyOf` (`CppConfiguration.java:392`). `cc_starlark_internal.rs` `mutable_string_list` for `per_file_copts` and `collect_per_file_lto_backend_opts`; `expand_and_tokenize` keeps `immutableCopyOf` / the frozen `"[]"` default (`CcStarlarkInternal.java:1295`). | scenario `ctx-immutable` steps 15-20 and 24-29 (six public lists appended and re-read, oracle: `["-DPROBE"] 0` each) |
+| R2-1 re-audit of every S2-6 immutable value | DONE, no other overshoot | each `alloc_immutable_*` site checked against the Java return: `ctx.attr` / `ctx.files` / split attrs / `ctx.outputs` lists (`StarlarkAttributesCollection.java:221-369`, `StarlarkRuleContext.java:233,557,576`), `ctx.var` (`buildImmutable`, :847), `tokenize` (:926), `super()` empty (:660; the non-empty case is `StarlarkList.of(thread.mutability(), ...)`, mutable, as in Rust), `toolchain_types()` (`StarlarkToolchainContext.java:83`), `cc_common` tool requirements / execution requirements / command line / env (`CcModule.java:83-128`), `HeaderInfo` lists (`CcCompilationContext.java:710-725`), `default_features_and_action_configs` (`CcToolchainFeatures.java:1308`), `intern_string_sequence_variable_value`, `cc_internal.freeze` | as above; `ctx-immutable` steps 2-14 |
+| R2-2 accepted-but-unread semantics keys | FIXED: one key ported, three guarded, the rest read | `--incompatible_disable_target_default_provider_fields` is read (see table); `blaze_build_config/src/top_level.rs` `check_unported_semantics_keys`, called by `starlark_semantics_from` (the function SkyframeExecutor uses), fails with `unported!` naming the flag for the three keys whose Java readers are not ported anywhere | `build_language_options_semantics_test.rs`: `unread_key_*_is_loud` (3), `keys_without_java_reader_are_accepted` |
+
+### R2-2: the 63 keys of `BuildLanguageOptions.setFlags`
+
+"Java readers" lists the classes that read the key (grep of the constant and of its flag string
+at the pin); "ported" says whether Blaze reads the key where those classes do. A key whose reader
+lives in a class that is itself not ported is loud through that class's `unported!`, noted.
+
+| # | key | Java readers | ported | guard |
+| --- | --- | --- | --- | --- |
+| 1 | incompatible_stop_exporting_language_modules | BazelRuleClassProvider, CcBootstrap, AppleBootstrap | yes (`builtins/registered.rs`) | - |
+| 2 | incompatible_allow_tags_propagation | RuleContext, StarlarkActionFactory | yes | - |
+| 3 | experimental_builtins_bzl_path | BzlLoadFunction, PackageFunction, StarlarkBuiltinsFunction | yes | - |
+| 4 | incompatible_autoload_externally | AutoloadSymbols | non-empty: `unported!("AutoloadSymbols.<init>")` | existing |
+| 5 | repositories_without_autoloads | AutoloadSymbols (only when 4 is non-empty) | through 4 | existing (4) |
+| 6 | incompatible_disable_autoloads_in_main_repo | AutoloadSymbols | yes | - |
+| 7 | experimental_builtins_dummy | GenericRules | yes | - |
+| 8 | experimental_builtins_injection_override | StarlarkBuiltinsFunction | yes | - |
+| 9 | experimental_bzl_visibility | BazelBuildApiGlobals | yes | - |
+| 10 | allow_experimental_loads | BzlLoadFunction | yes | - |
+| 11 | check_bzl_visibility | BzlLoadFunction, PackageFunction | yes | - |
+| 12 | experimental_enable_android_migration_apis | none at the pin | no-op in both | - |
+| 13 | experimental_single_package_toolchain_binding | ModuleFileGlobals | yes | - |
+| 14 | experimental_enable_first_class_macros | StarlarkRuleClassFunctions, TargetDefinitionContext | yes | - |
+| 15 | experimental_enable_scl_dialect | BzlLoadFunction | yes | - |
+| 16 | experimental_isolated_extension_usages | ModuleFileGlobals, ModuleExtensionContext (`enableOnlyWithFlag`) | yes | - |
+| 17 | incompatible_no_implicit_watch_label | StarlarkBaseExternalContext | yes | - |
+| 18 | experimental_google_legacy_api | JavaStarlarkCommon; ActionApi.execution_info, JavaInfoApi (`enableOnlyWithFlag`) | java_common yes; `Target.actions` is `unported!` | existing |
+| 19 | experimental_platforms_api | ConstraintCollectionApi methods; PlatformInfo / ConstraintSettingInfo / ConstraintValueInfo fields (`enableOnlyWithFlag`) | methods yes; the fields are always readable (deviation at the default, not at a non-default value; blocked like S2-7, below) | - |
+| 20 | experimental_cc_shared_library | CcModule | yes | - |
+| 21 | experimental_repo_remote_exec | StarlarkRepositoryModule, StarlarkBaseExternalContext | yes | - |
+| 22 | experimental_disable_external_package | none at the pin | no-op in both | - |
+| 23 | experimental_sibling_repository_layout | Label, ConfiguredTargetFactory, StarlarkActionFactory, BuildConfigurationFunction, ProcessPackageDirectory, ActionExecutionFunction, SkyframeExecutor | yes | - |
+| 24 | incompatible_always_check_depset_elements | Depset | yes | - |
+| 25 | incompatible_check_external_repo_source_dir_package_boundary | RecursiveFilesystemTraversalFunction (not ported) | no | **new** `unported!` |
+| 26 | incompatible_disallow_empty_glob | StarlarkNativeModule | yes | - |
+| 27 | incompatible_package_group_has_public_syntax | StarlarkNativeModule | yes | - |
+| 28 | incompatible_fix_package_group_reporoot_syntax | StarlarkNativeModule | yes | - |
+| 29 | incompatible_java_info_merge_runtime_module_flags | JavaStarlarkCommon | yes | - |
+| 30 | incompatible_no_attr_license | StarlarkAttrModuleApi | yes | - |
+| 31 | incompatible_no_implicit_file_export | PackageFactory | yes | - |
+| 32 | incompatible_no_rule_outputs_param | StarlarkRuleFunctionsApi | yes | - |
+| 33 | incompatible_run_shell_command_string | StarlarkActionFactory | yes | - |
+| 34 | PRINT_TEST_MARKER (`--internal_starlark_flag_test_canary`) | MethodLibrary | yes | - |
+| 35 | incompatible_do_not_split_linking_cmdline | none at the pin | no-op in both | - |
+| 36 | incompatible_enforce_starlark_utf8 | BzlCompileFunction, PackageFunction, RepoFileFunction, CompiledModuleFile, StarlarkUtil, VendorFileFunction | yes (vendor mode is not ported) | - |
+| 37 | incompatible_use_cc_configure_from_rules_cc | StarlarkRepositoryModule.failWithIncompatibleUseCcConfigureFromRulesCc (not ported) | no | **new** `unported!` |
+| 38 | incompatible_unambiguous_label_stringification | Label | yes | - |
+| 39 | max_computation_steps | PackageFactory | yes | - |
+| 40 | nested_set_depth_limit | Depset, Runfiles | yes | - |
+| 41 | incompatible_disable_starlark_host_transitions | StarlarkAttrModule | yes | - |
+| 42 | incompatible_disable_objc_library_transition | CcModule | yes | - |
+| 43 | incompatible_disable_transitions_on | ConfigGlobalLibrary (and StarlarkDefinedConfigTransition) | yes | - |
+| 44 | add_go_exec_groups_to_binary_rules | CcModule | yes | - |
+| 45 | incompatible_fail_on_unknown_attributes | StarlarkRuleClassFunctions, RuleFactory | yes | - |
+| 46 | incompatible_enable_proto_toolchain_resolution | BazelProtoCommon, AutoloadSymbols | yes (autoloads: through 4) | - |
+| 47 | incompatible_disable_non_executable_java_binary | JavaStarlarkCommon | yes | - |
+| 48 | incompatible_disable_target_default_provider_fields | AbstractConfiguredTarget.getValue | **now yes** (`configuredtargets/mod.rs` `target_to_starlark` takes the rule's semantics) | - |
+| 49 | experimental_rule_extension_api | StarlarkRuleClassFunctions | yes | - |
+| 50 | experimental_dormant_deps | StarlarkAttrModuleApi | yes | - |
+| 51 | experimental_starlark_type_syntax | BzlCompileFunction | yes | - |
+| 52 | experimental_starlark_type_checking | BzlCompileFunction, Eval, StarlarkFunction | with type syntax: `unported!` in `bzl_compile.rs`; without it Java has no function type to check | existing |
+| 53 | experimental_starlark_types_allowed_paths | BzlCompileFunction | yes | - |
+| 54 | incompatible_enable_deprecated_label_apis | Label, StarlarkNativeModuleApi | yes | - |
+| 55 | incompatible_stop_exporting_build_file_path | StarlarkRuleContext | yes | - |
+| 56 | incompatible_disallow_ctx_resolve_tools | StarlarkRuleContext | yes | - |
+| 57 | incompatible_simplify_unconditional_selects_in_rule_attrs | PackageFactory | yes | - |
+| 58 | incompatible_locations_prefers_executable | StarlarkRuleContext, CcStarlarkInternal | yes | - |
+| 59 | incompatible_resolve_select_keys_eagerly | SelectorList | yes | - |
+| 60 | experimental_enable_starlark_set | MethodLibrary, EvalUtils | the `set` builtin only (`env.rs`); set operators on natively created sets are not gated | - |
+| 61 | INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS | Json, StringModule, FactsAdapter | no (code-point strings, decisions.md 2026-11-17) | **new** `unported!` on the non-default `false` |
+| 62 | experimental_repository_ctx_execute_wasm | StarlarkBaseExternalContext | yes | - |
+| 63 | FORCE_STARLARK_STACK_TRACE | MethodLibrary | yes | - |
+
+The options `--experimental_starlark_types` and `--experimental_cc_skylark_api_enabled_packages`
+reach no key and have no reader in Java either.
+
+## Open S2 and new findings
+
+| id | disposition | where | test |
+| --- | --- | --- | --- |
+| S2-10 `resource_set` callback | PORTED in analysis; one call pending in blaze_exec | `blaze_actions/.../spawn_action.rs` (additive): `ResourceSetBuilder` trait (`buildResourceSet(OS, inputsSize)`), `ResourceSetBuildError`, `SpawnActionBuilder::set_resources_builder`, `SpawnAction::get_resource_set_builder`. `blaze_analysis/.../starlark_action_factory.rs`: `StarlarkActionResourceSetBuilder` (callable kept with the frozen module, called on a fresh thread with the rule's semantics, `Dict.cast`, illegal keys, `getNumericOrDefault`, "Could not build resources for <mnemonic>. <message>"). The `// PORT:` in `finish_pending_actions` names the pending call. Making the dropped callback loud would stop every C++ link (rules_cc `finalize_link_action.bzl:412`), so it is not loud. | `resource_set_builder_tests` (7 ported StarlarkRuleContextTest cases + 1; `_incorrect_signature` ignored: starlark-rust's arity text) |
+| S2-5 residual / R2-3 request rounds | DEFERRED, needs root | the two approximations stay: Java's Driver lookup rounds need "is this value done" from the evaluator (blaze_skyframe, not mine) | `graph-order` (its one-line DIFF remains) |
+| S2-7 `getattr(x, name, default)` | BLOCKED, not loud | needs a fallible attribute hook in the vendored starlark-rust (a patch 0026: `StarlarkValue::get_attr_fallible`, called by `getattr` before the default); `third_party/` is not mine. The same hook is what the `--experimental_platforms_api` fields need (attribute functions get no evaluator). | `ctx-errors` steps 2-3 |
+| S2-8 helper of another .bzl | BLOCKED, not loud | needs the evaluator in the index operator (vendored crate) | `ctx-toolchains-string` step 6 |
+| S2-14 emulated addAttributes | DEFERRED | the override hook belongs in blaze_query (another owner) | - |
+| S2-15 OpaqueAttributeDefault | FIXED for the four classes Blaze can tell apart; loud for the rest | `config/transitions.rs`: `StarlarkComputedDefault`, `LabelLateBoundDefault`, `LabelListLateBoundDefault`, `AlwaysNullLateBoundDefault` values with Java's `type()` and `repr`; a native rule's own `ComputedDefault` subclass prints via `unported!` (its `type()` still says "unknown": starlark-rust type names are static) | `attribute_default_value_tests` |
+| R2-4 flag-package events | DEFERRED to the owner | `blaze_runtime/src/dispatcher.rs` is not mine. The call: report the stored events right after `parse_starlark_options` succeeds, as `BlazeOptionHandler.java:352` does. | - |
+| R2-5 helper-script length unit | FIXED | `rule/command_helper.rs` `java_string_length` counts internal-string chars (UTF-8 bytes); `starlark_action_factory.rs` uses it; `cpp/util.rs` `java_string_hash_code` hashes the bytes | `java_string_length_counts_internal_string_chars`, `java_string_hash_code_matches_java` (non-ASCII case added) |
+| R2-6 AnalysisFailureEvent for incompatible explicit targets | FIXED (posted) | `build_view.rs` `check_target_compatibility_of_build_driver_keys` posts `AnalysisFailureEvent.whileAnalyzingTarget(key, [])` before the keep_going branch (`SkyframeErrorProcessor.java:411`). No Blaze subscriber reads it yet (BEP, AggregatingTestListener are other owners'). | none (needs a subscriber) |
+| R2-7 shouldCheckForConflicts | FIXED | `skyframe_build_view.rs`: `!largestTopLevelKeySetCheckedForConflicts.containsAll(newKeys)` with the empty set of a fresh view | `fresh_view_checks_any_non_empty_key_set` |
+| R2-8 cquery targetsForProjectResolution | FIXED | `cquery_command.rs` sets it for `somepath` / `allpaths`; `BuildRequest::targets_for_project_resolution`; `build_tool.rs` evaluates those patterns with a no-op handler for `evaluate_project_file` (`BuildTool.java:315`) | scenario `cquery-project-resolution` (new) |
+| R2-9 codes and supersets | FIXED: NoSuchThing code; DEFERRED: the rest | `skyframe_executor.rs` wraps a `NoSuchThingException` / `NoSuchPackageException` / `NoSuchTargetException` with its own PackageLoading code (`InvalidConfigurationException::with_package_loading_code`, mapped in `build_tool.rs`); the wrong "exit code of both is 2" comment is gone (PACKAGE_MISSING exits 1). `get_package_roots` superset and the tree-bin `remove` stay (incremental-only / documented). | `wrapped_no_such_thing_keeps_its_package_loading_code` |
+| R2-10 | S3, loud, unchanged | - | - |
+| R2-11 dict of dicts with a non-string inner key | FIXED | `blaze_build_config/src/starlark_transition.rs`: the inner `Dict.cast` failure falls through to the patch-transition attempt, after earlier entries' validation errors | scenario `transition-results` (new; oracle: "undeclared output 'a'") |
+| R2-12 evidence | FIXED | see "Evidence" | - |
+| R2-13 Variables repr; hasattr(target, "files") | FIXED | `cpp/starlark_values.rs` prints `CcToolchainVariables$MapVariables` / `$SingleVariables`; `target_value.rs` `has_attr` is Java's one-argument `getValue(name) != null` | `repr_names_the_runtime_subclass`; hasattr: no test (needs a configured target) |
+| R2-14 absolute_symlink | FIXED | `cc_starlark_internal.rs` accepts any `StarlarkActionContext` (rule or subrule context, `starlark_subrule::starlark_action_context_rule_context`), Java's type error text otherwise | none (needs a subrule test bed) |
+
+Found while fixing (same class as S2-4): `Dict.cast(x, String.class, Object.class, what)` said
+"for resource_set, got string, want dict" and "want dict<string, any>"; Java says
+"got string for 'resource_set', want dict" and "dict<string, unknown>"
+(`Dict.java:663-677`, `Starlark.classType(Object.class)`). Fixed in `starlark/util.rs` and
+`cpp/util.rs`; `blaze_sky_loading/src/starlark_builtins.rs:214` has the same text (not mine).
+
+### The call blaze_exec must add (S2-10)
+
+In `crates/blaze_exec/src/analysis/actions/spawn_action.rs` `new_action_spawn`, replace
+`Arc::new(to_resource_set(parent.get_resource_set_or_builder()))` by
+
+```rust
+match parent.get_resource_set_builder() {
+    // Java BaseSpawn.getLocalResources -> buildLocalResources(OS.getCurrent(), inputsSize, ...)
+    Some(builder) => Arc::new(StarlarkResourceSet(builder.clone())),
+    None => Arc::new(to_resource_set(parent.get_resource_set_or_builder())),
+}
+```
+
+with `StarlarkResourceSet` implementing blaze_exec's `ResourceSetOrBuilder` by
+`builder.build_resource_set(OS::get_current(), inputs_size).map(|r| to_resource_set(&r))`,
+mapping `ResourceSetBuildError { message }` to a `UserExecException` with
+`FailureDetail { message, StarlarkAction { code: STARLARK_ACTION_UNKNOWN } }`. That needs
+`ResourceSetOrBuilder::build_resource_set` to return `Result<ResourceSet, ExecException>` (Java
+throws `ExecException`); `SimpleSpawn::get_local_resources` already returns a `Result`.

@@ -1,0 +1,4 @@
+common --flag_alias=myint=//:int_flag
+build:rcflags --//:string_flag=fromrc
+build:rcflags --//:multi=rc1
+build:rcall --//:bool_flag=false --//:int_flag=42 --//pkg:pkg_flag=p

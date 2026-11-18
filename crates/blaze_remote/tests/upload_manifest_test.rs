@@ -1,4 +1,6 @@
 #![cfg(feature = "wip")]
+// Options and protos are filled in field by field, as the Java tests set them.
+#![allow(clippy::field_reassign_with_default)]
 // The deprecated ActionResult symlink fields are still written by Java and asserted by the tests.
 #![allow(deprecated)]
 //! Port of `src/test/java/com/google/devtools/build/lib/remote/UploadManifestTest.java`.

@@ -1243,13 +1243,23 @@ impl StarlarkDefinedConfigTransition {
                 });
                 if all_dicts {
                     let mut builder = IndexMap::new();
-                    for (k, v) in entries {
+                    // Java: an `EvalException` of the inner `Dict.cast(entry.getValue(),
+                    // String.class, Object.class, "dictionary of options")` (a non-string key)
+                    // falls through to the patch-transition attempt below; a
+                    // `ValidationException` of an earlier entry is reported first (analysis
+                    // review R2-11).
+                    let mut fall_through = false;
+                    for (k, v) in &entries {
                         let (JavaObject::Str(k), JavaObject::Map(raw)) = (k, v) else {
                             unreachable!()
                         };
-                        match self.canonicalize_transition_output_dict(&raw) {
+                        if raw.iter().any(|(ik, _)| !matches!(ik, JavaObject::Str(_))) {
+                            fall_through = true;
+                            break;
+                        }
+                        match self.canonicalize_transition_output_dict(raw) {
                             Ok(d) => {
-                                builder.insert(k, d);
+                                builder.insert(k.clone(), d);
                             }
                             Err(message) => {
                                 self.errorf(
@@ -1263,7 +1273,9 @@ impl StarlarkDefinedConfigTransition {
                             }
                         }
                     }
-                    return Some(builder);
+                    if !fall_through {
+                        return Some(builder);
+                    }
                 }
                 // Try if this is a patch transition.
                 // Java: net/starlark/java/eval/Dict.java:659 Dict.cast

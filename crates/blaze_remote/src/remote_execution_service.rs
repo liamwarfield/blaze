@@ -19,9 +19,9 @@ use blaze_actions::actions::command_lines::ParamFileActionInput;
 use blaze_events::{Event, ExtendedEventHandler};
 use blaze_exec::actions::action_adapters::as_blaze_artifact;
 use blaze_exec::actions::{
-    ActionInput, ActionInputRef, ExecException, FileArtifactValue, FileContentsProxy, PlatformInfo,
-    Spawn, SpawnResult, Status as SpawnResultStatus, VirtualActionInput, execution_requirements,
-    spawns,
+    ActionExecutionMetadata, ActionInput, ActionInputRef, ActionOwner, ExecException,
+    FileArtifactValue, FileContentsProxy, PlatformInfo, Spawn, SpawnResult,
+    Status as SpawnResultStatus, VirtualActionInput, execution_requirements, spawns,
 };
 use blaze_exec::exec::SpawnExecutionContext;
 use blaze_exec::exec::action_execution_context::SpawnCacheError;
@@ -206,6 +206,8 @@ impl BackgroundTaskExecutor {
 
     /// `execute(task::run)`. Gives the task back when the executor has been shut down (Java:
     /// throws `RejectedExecutionException`).
+    // The rejected task is given back whole, as Java's caller keeps it.
+    #[allow(clippy::result_large_err)]
     fn execute(&self, task: OutputUpload) -> Result<(), OutputUpload> {
         let mut state = self.state.lock();
         if state.shutdown {
@@ -648,17 +650,75 @@ pub struct ServerLogs {
     pub last_log_path: Option<Path>,
 }
 
+/// The spawn owner of an action (`action.getRemoteActionExecutionContext().getSpawnOwner()`) as
+/// a background upload keeps it: a copy of what the owner answers, taken on the calling thread.
+///
+/// PORT: Java's background upload keeps the action itself. The upload posts
+/// `ActionUploadStartedEvent`s and `ActionUploadFinishedEvent`s, which read the owner, its
+/// mnemonic, its progress message and its primary output.
+// Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1822 RemoteExecutionService.OutputUploadTask.spawnOwner
+#[derive(Debug)]
+struct SpawnOwner {
+    mnemonic: String,
+    progress_message: Option<String>,
+    owner: ActionOwner,
+    primary_output: ActionInputRef,
+    execution_platform: Option<PlatformInfo>,
+    pretty_print: String,
+    describe: String,
+}
+
+impl SpawnOwner {
+    fn of(spawn_owner: &dyn ActionExecutionMetadata) -> SpawnOwner {
+        SpawnOwner {
+            mnemonic: spawn_owner.get_mnemonic(),
+            progress_message: spawn_owner.get_progress_message(),
+            owner: spawn_owner.get_owner().clone(),
+            primary_output: spawn_owner.get_primary_output(),
+            execution_platform: spawn_owner.get_execution_platform().cloned(),
+            pretty_print: spawn_owner.pretty_print(),
+            describe: spawn_owner.describe(),
+        }
+    }
+}
+
+impl ActionExecutionMetadata for SpawnOwner {
+    fn get_mnemonic(&self) -> String {
+        self.mnemonic.clone()
+    }
+    fn get_progress_message(&self) -> Option<String> {
+        self.progress_message.clone()
+    }
+    fn get_owner(&self) -> &ActionOwner {
+        &self.owner
+    }
+    fn get_primary_output(&self) -> ActionInputRef {
+        self.primary_output.clone()
+    }
+    fn get_execution_platform(&self) -> Option<&PlatformInfo> {
+        self.execution_platform.as_ref()
+    }
+    fn pretty_print(&self) -> String {
+        self.pretty_print.clone()
+    }
+    fn describe(&self) -> String {
+        self.describe.clone()
+    }
+}
+
 /// The background upload of an action's outputs: the `CancellableTask` of an
 /// `OutputUploadTask`, with its body (`doUploadOutputs`) and its completion action
 /// (`onUploadComplete`).
 ///
 /// PORT: the body starts where `doUploadOutputs` no longer needs the spawn: the
-/// `UploadManifest` is already built (see [`OutputUploadTask::start`]) and the context is the
-/// detached copy of the action's context.
+/// `UploadManifest` is already built (see [`OutputUploadTask::start`]), the context is the
+/// detached copy of the action's context and the spawn owner is a copy too.
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1821 RemoteExecutionService.OutputUploadTask.upload
 struct OutputUpload {
     manifest: UploadManifest,
     context: RemoteActionExecutionContext<'static>,
+    /// `context.getSpawnOwner()` of the action's own context.
+    spawn_owner: Option<SpawnOwner>,
     combined_cache: Arc<CombinedCache>,
     upload_error_reporter: UploadErrorReporter,
     force: bool,
@@ -671,8 +731,14 @@ impl OutputUpload {
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1872 RemoteExecutionService.OutputUploadTask.run
     fn run(self) {
         // The rest of `doUploadOutputs(action, spawnResult, force, /* onUploadComplete= */ () -> {})`.
-        match self.manifest.upload(
+        //
+        // PORT: the detached context has no spawn, so the spawn owner that `manifest.upload`
+        // reads from its context (for the upload events) is passed next to it.
+        match self.manifest.upload_for_spawn_owner(
             &self.context,
+            self.spawn_owner
+                .as_ref()
+                .map(|spawn_owner| spawn_owner as &dyn ActionExecutionMetadata),
             &self.combined_cache,
             &*self.upload_error_reporter.reporter,
             self.force,
@@ -763,8 +829,9 @@ impl<'t, 'a> OutputUploadTask<'t, 'a> {
     ///
     /// What runs in the background is `manifest.upload(...)` (the `FindMissingBlobs` query, the
     /// uploads of the blobs and of the action result), the reporting of its error and
-    /// `onUploadComplete`. It uses `context.detached()`, which has no spawn owner, so the
-    /// background upload posts no `ActionUploadStartedEvent` / `ActionUploadFinishedEvent`.
+    /// `onUploadComplete`. It uses `context.detached()` and a copy of the spawn owner
+    /// ([`SpawnOwner`]), for which it posts the `ActionUploadStartedEvent`s and
+    /// `ActionUploadFinishedEvent`s that Java posts.
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1846 RemoteExecutionService.OutputUploadTask.start
     fn start(self) {
         let service = self.service;
@@ -792,6 +859,11 @@ impl<'t, 'a> OutputUploadTask<'t, 'a> {
         let upload = OutputUpload {
             manifest,
             context: self.action.get_remote_action_execution_context().detached(),
+            spawn_owner: self
+                .action
+                .get_remote_action_execution_context()
+                .get_spawn_owner()
+                .map(SpawnOwner::of),
             combined_cache: service.combined_cache_not_null().clone(),
             upload_error_reporter,
             force: self.force,
@@ -1302,6 +1374,8 @@ impl RemoteExecutionService {
             }
             Ok(server_highest_version)
         };
+        // Kept as Java's try/catch.
+        #[allow(clippy::manual_unwrap_or_default)]
         let server_highest_version: Option<ApiVersion> = match compute_server_highest_version() {
             Ok(server_highest_version) => server_highest_version,
             Err(_e) => {
@@ -1754,6 +1828,8 @@ impl RemoteExecutionService {
     }
 
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1908 RemoteExecutionService.checkForConcurrentModifications
+    // The two `continue` branches are separate conditions in Java.
+    #[allow(clippy::if_same_then_else)]
     fn check_for_concurrent_modifications(
         &self,
         action: &RemoteAction<'_>,

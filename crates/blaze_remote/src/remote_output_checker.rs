@@ -584,6 +584,7 @@ impl RemoteOutputChecker {
     /// and `SkyFunctions.ASPECT_COMPLETION` are "TARGET_COMPLETION" and "ASPECT_COMPLETION").
     /// The evaluator lives in a crate above this one.
     // Java: com/google/devtools/build/lib/remote/RemoteOutputChecker.java:382 RemoteOutputChecker.maybeInvalidateSkyframeValues
+    #[allow(clippy::type_complexity)]
     pub fn maybe_invalidate_skyframe_values(
         &self,
         memoizing_evaluator_delete: &mut dyn FnMut(&dyn Fn(&str) -> bool),

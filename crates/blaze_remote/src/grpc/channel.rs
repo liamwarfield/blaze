@@ -252,6 +252,10 @@ struct Inner {
     tls: bool,
     interceptors: Vec<Arc<dyn ClientInterceptor>>,
     max_inbound_message_size: usize,
+    /// The `methodConfig[].timeout` entries of the channel's default service config.
+    method_timeouts: Vec<MethodTimeout>,
+    /// `RemoteDownloadIdleTimeoutInterceptor` (`--experimental_remote_grpc_download_idle_timeout`).
+    download_idle_timeout: Option<Duration>,
     capabilities_fetcher: Option<CapabilitiesFetcher>,
     server_capabilities: tokio::sync::OnceCell<Result<ServerCapabilities, Arc<io::Error>>>,
     ref_cnt: AtomicI32,
@@ -301,11 +305,56 @@ impl ReferenceCountedChannel {
                 tls,
                 interceptors,
                 max_inbound_message_size,
+                method_timeouts: Vec::new(),
+                download_idle_timeout: None,
                 capabilities_fetcher,
                 server_capabilities: tokio::sync::OnceCell::new(),
                 ref_cnt: AtomicI32::new(1),
                 shutdown: AtomicBool::new(false),
             }),
+        }
+    }
+
+    /// `builder.defaultServiceConfig(serviceConfig)`: applies the `methodConfig[].timeout`
+    /// entries of a gRPC service config (`RemoteGrpcServiceConfig`) as the deadline of every
+    /// call to a matching method. Must be called before the channel is shared.
+    ///
+    /// PORT: grpc-java applies the timeout of the selected method config as the call's deadline
+    /// (`ManagedChannelImpl.ConfigSelectingClientCall`); the other service config features are
+    /// rejected by `RemoteGrpcServiceConfig` before they get here.
+    pub fn with_service_config(
+        mut self,
+        service_config: &serde_json::Map<String, serde_json::Value>,
+    ) -> io::Result<ReferenceCountedChannel> {
+        let timeouts = parse_method_timeouts(service_config)?;
+        match Arc::get_mut(&mut self.inner) {
+            Some(inner) => inner.method_timeouts = timeouts,
+            None => panic!("IllegalStateException: the channel is already shared"),
+        }
+        Ok(self)
+    }
+
+    /// Cancels remote downloads (`ByteStream.Read`) after `timeout` without response data,
+    /// with DEADLINE_EXCEEDED. Must be called before the channel is shared.
+    ///
+    /// PORT: Java's `RemoteDownloadIdleTimeoutInterceptor` is a channel interceptor that wraps
+    /// the call and its listener; here the response stream of a Read call applies the timeout
+    /// between messages (and before the first one).
+    // Java: com/google/devtools/build/lib/remote/RemoteDownloadIdleTimeoutInterceptor.java:38 RemoteDownloadIdleTimeoutInterceptor
+    pub fn with_download_idle_timeout(mut self, timeout: Duration) -> ReferenceCountedChannel {
+        match Arc::get_mut(&mut self.inner) {
+            Some(inner) => inner.download_idle_timeout = Some(timeout),
+            None => panic!("IllegalStateException: the channel is already shared"),
+        }
+        self
+    }
+
+    /// The deadline of a call: the earlier of the explicit one and the service config's.
+    fn deadline_for(&self, method: &Method, options: &CallOptions) -> Option<Duration> {
+        let configured = lookup_method_timeout(&self.inner.method_timeouts, method);
+        match (effective_deadline(options), configured) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
     }
 
@@ -467,10 +516,14 @@ impl ReferenceCountedChannel {
             .max_encoding_message_size(usize::MAX)
     }
 
-    fn request<T>(message: T, headers: MetadataMap, options: &CallOptions) -> tonic::Request<T> {
+    fn request<T>(
+        message: T,
+        headers: MetadataMap,
+        deadline: Option<Duration>,
+    ) -> tonic::Request<T> {
         let mut request = tonic::Request::new(message);
         *request.metadata_mut() = headers;
-        if let Some(deadline) = effective_deadline(options) {
+        if let Some(deadline) = deadline {
             // The `grpc-timeout` header, as Java sends it for a call with a deadline.
             request.set_timeout(deadline);
         }
@@ -490,18 +543,19 @@ impl ReferenceCountedChannel {
     {
         let (headers, mut listeners) = self.start_call(&method, &options).await?;
         listeners.on_request(&request);
+        let deadline = self.deadline_for(&method, &options);
         let call = async {
             let mut grpc = self.grpc();
             grpc.ready().await.map_err(not_ready)?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
             grpc.unary(
-                Self::request(request, headers, &options),
+                Self::request(request, headers, deadline),
                 PathAndQuery::from_static(method.path),
                 codec,
             )
             .await
         };
-        let result = with_deadline(effective_deadline(&options), call).await;
+        let result = with_deadline(deadline, call).await;
         match result {
             Ok(response) => {
                 let message = response.into_inner();
@@ -531,23 +585,32 @@ impl ReferenceCountedChannel {
     {
         let (headers, mut listeners) = self.start_call(&method, &options).await?;
         listeners.on_request(&request);
-        let deadline = effective_deadline(&options).map(|d| tokio::time::Instant::now() + d);
+        let deadline = self.deadline_for(&method, &options);
+        let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
         let call = async {
             let mut grpc = self.grpc();
             grpc.ready().await.map_err(not_ready)?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
             grpc.server_streaming(
-                Self::request(request, headers, &options),
+                Self::request(request, headers, deadline),
                 PathAndQuery::from_static(method.path),
                 codec,
             )
             .await
         };
-        match with_deadline_at(deadline, call).await {
+        let idle_timeout = if method == methods::READ {
+            self.inner.download_idle_timeout
+        } else {
+            None
+        };
+        let started = with_idle_timeout(idle_timeout, &method, with_deadline_at(deadline_at, call));
+        match started.await {
             Ok(response) => Ok(ResponseStream {
                 inner: response.into_inner(),
                 listeners,
-                deadline,
+                deadline: deadline_at,
+                idle_timeout,
+                method,
             }),
             Err(status) => {
                 listeners.on_close(&status);
@@ -572,6 +635,7 @@ impl ReferenceCountedChannel {
     {
         let (headers, listeners) = self.start_call(&method, &options).await?;
         let listeners = Arc::new(Mutex::new(listeners));
+        let deadline = self.deadline_for(&method, &options);
         let observed = {
             let listeners = listeners.clone();
             requests.inspect(move |message| listeners.lock().on_request(message))
@@ -581,13 +645,13 @@ impl ReferenceCountedChannel {
             grpc.ready().await.map_err(not_ready)?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
             grpc.client_streaming(
-                Self::request(observed, headers, &options),
+                Self::request(observed, headers, deadline),
                 PathAndQuery::from_static(method.path),
                 codec,
             )
             .await
         };
-        let result = with_deadline(effective_deadline(&options), call).await;
+        let result = with_deadline(deadline, call).await;
         let mut listeners = listeners.lock();
         match result {
             Ok(response) => {
@@ -604,7 +668,106 @@ impl ReferenceCountedChannel {
     }
 }
 
-/// `--remote_timeout=0` and an absent deadline both mean "no deadline".
+/// One `methodConfig[]` name with its timeout: `service` empty is the default config, `method`
+/// empty covers the whole service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MethodTimeout {
+    service: String,
+    method: String,
+    timeout: Duration,
+}
+
+/// Reads the `methodConfig[].timeout` entries of a service config (grpc-java
+/// `ManagedChannelServiceConfig.fromServiceConfig` + `ServiceConfigUtil.getTimeoutFromMethodConfig`).
+fn parse_method_timeouts(
+    service_config: &serde_json::Map<String, serde_json::Value>,
+) -> io::Result<Vec<MethodTimeout>> {
+    let invalid = |m: String| io::Error::new(io::ErrorKind::InvalidInput, m);
+    let mut out = Vec::new();
+    let Some(method_configs) = service_config.get("methodConfig") else {
+        return Ok(out);
+    };
+    let method_configs = method_configs
+        .as_array()
+        .ok_or_else(|| invalid("methodConfig must be a list".to_string()))?;
+    for method_config in method_configs {
+        let method_config = method_config
+            .as_object()
+            .ok_or_else(|| invalid("methodConfig entry must be an object".to_string()))?;
+        let Some(timeout) = method_config.get("timeout") else {
+            continue;
+        };
+        let timeout = timeout
+            .as_str()
+            .ok_or_else(|| invalid("timeout must be a string".to_string()))?;
+        let timeout = parse_proto_duration(timeout)
+            .ok_or_else(|| invalid(format!("Invalid duration string: {timeout}")))?;
+        let names = match method_config.get("name") {
+            Some(serde_json::Value::Array(names)) => names.as_slice(),
+            Some(_) => return Err(invalid("name must be a list".to_string())),
+            None => &[],
+        };
+        for name in names {
+            let name = name
+                .as_object()
+                .ok_or_else(|| invalid("name entry must be an object".to_string()))?;
+            let field = |key: &str| -> String {
+                name.get(key)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            out.push(MethodTimeout {
+                service: field("service"),
+                method: field("method"),
+                timeout,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// A JSON `google.protobuf.Duration` (`"30s"`, `"1.5s"`), as `JsonUtil.parseDuration` reads it.
+fn parse_proto_duration(value: &str) -> Option<Duration> {
+    let seconds = value.strip_suffix('s')?;
+    let (whole, fraction) = match seconds.split_once('.') {
+        Some((w, f)) => (w, f),
+        None => (seconds, ""),
+    };
+    if whole.is_empty()
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+        || fraction.len() > 9
+    {
+        return None;
+    }
+    let secs: u64 = whole.parse().ok()?;
+    let nanos: u32 = if fraction.is_empty() {
+        0
+    } else {
+        format!("{fraction:0<9}").parse().ok()?
+    };
+    Some(Duration::new(secs, nanos))
+}
+
+/// The timeout of the method config gRPC selects for `method`: the exact method, else its
+/// service, else the default config.
+fn lookup_method_timeout(timeouts: &[MethodTimeout], method: &Method) -> Option<Duration> {
+    let service = method.service_name();
+    let full = method.full_method_name();
+    let name = &full[service.len() + 1..];
+    let find = |s: &str, m: &str| {
+        timeouts
+            .iter()
+            .find(|t| t.service == s && t.method == m)
+            .map(|t| t.timeout)
+    };
+    find(service, name)
+        .or_else(|| find(service, ""))
+        .or_else(|| find("", ""))
+}
+
+/// An explicit zero deadline and an absent one both mean "no deadline".
 fn effective_deadline(options: &CallOptions) -> Option<Duration> {
     options.deadline.filter(|d| !d.is_zero())
 }
@@ -657,6 +820,56 @@ async fn with_deadline_at<T>(
             }
         }
     }
+}
+
+/// `RemoteDownloadIdleTimeoutInterceptor.IdleTimeoutCall`: fails with DEADLINE_EXCEEDED when
+/// `step` (waiting for the headers or for the next message) takes longer than the idle timeout.
+// Java: com/google/devtools/build/lib/remote/RemoteDownloadIdleTimeoutInterceptor.java:176 IdleTimeoutCall.onTimeout
+async fn with_idle_timeout<T>(
+    idle_timeout: Option<Duration>,
+    method: &Method,
+    step: impl Future<Output = Result<T, tonic::Status>>,
+) -> Result<T, tonic::Status> {
+    match idle_timeout {
+        None => step.await,
+        Some(timeout) => match tokio::time::timeout(timeout, step).await {
+            Ok(result) => result,
+            // Java: IdleTimeoutCall.timeoutMessage
+            Err(_) => Err(tonic::Status::deadline_exceeded(format!(
+                "Remote download idle timeout exceeded after {} for {}",
+                java_duration_to_string(timeout),
+                method.full_method_name()
+            ))),
+        },
+    }
+}
+
+/// `java.time.Duration.toString()` (`PT1M`, `PT1H2M3.5S`, `PT0S`) for a non-negative duration.
+pub fn java_duration_to_string(d: Duration) -> String {
+    if d.is_zero() {
+        return "PT0S".to_string();
+    }
+    let total = d.as_secs();
+    let (hours, minutes, secs) = (total / 3600, (total % 3600) / 60, total % 60);
+    let nanos = d.subsec_nanos();
+    let mut out = String::from("PT");
+    if hours != 0 {
+        out.push_str(&format!("{hours}H"));
+    }
+    if minutes != 0 {
+        out.push_str(&format!("{minutes}M"));
+    }
+    if secs == 0 && nanos == 0 {
+        return out;
+    }
+    out.push_str(&secs.to_string());
+    if nanos > 0 {
+        let fraction = format!("{nanos:09}");
+        out.push('.');
+        out.push_str(fraction.trim_end_matches('0'));
+    }
+    out.push('S');
+    out
 }
 
 /// `GoogleAuthLibraryCallCredentials.serviceUri(authority, method)`:
@@ -718,6 +931,8 @@ pub struct ResponseStream<Resp> {
     inner: tonic::Streaming<Resp>,
     listeners: Listeners,
     deadline: Option<tokio::time::Instant>,
+    idle_timeout: Option<Duration>,
+    method: Method,
 }
 
 impl<Resp: Send + Sync + 'static> ResponseStream<Resp> {
@@ -728,13 +943,18 @@ impl<Resp: Send + Sync + 'static> ResponseStream<Resp> {
             return Ok(None);
         }
         let start = tokio::time::Instant::now();
-        let next = match self.deadline {
-            None => self.inner.message().await,
-            Some(at) => match tokio::time::timeout_at(at, self.inner.message()).await {
-                Ok(result) => result,
-                Err(_) => Err(deadline_exceeded(start.elapsed())),
-            },
-        };
+        let deadline = self.deadline;
+        let inner = &mut self.inner;
+        let next = with_idle_timeout(self.idle_timeout, &self.method, async {
+            match deadline {
+                None => inner.message().await,
+                Some(at) => match tokio::time::timeout_at(at, inner.message()).await {
+                    Ok(result) => result,
+                    Err(_) => Err(deadline_exceeded(start.elapsed())),
+                },
+            }
+        })
+        .await;
         match next {
             Ok(Some(message)) => {
                 self.listeners.on_response(&message);

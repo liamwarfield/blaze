@@ -132,23 +132,33 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
 
     let mut top_level_targets: Vec<String> = cquery_options.universe_scope.clone();
     let mut target_pattern_set: indexmap::IndexSet<String> = indexmap::IndexSet::new();
+    let mut targets_for_project_resolution: Option<Vec<String>> = None;
     if top_level_targets.is_empty() {
         expr.collect_target_patterns(&mut |p| {
             target_pattern_set.insert(p);
         });
         top_level_targets = target_pattern_set.iter().cloned().collect();
-        // PORT: targetsForProjectResolution (the first pattern of a somepath()/allpaths() query)
-        // is only read by BuildTool's PROJECT.scl resolution, which belongs to
-        // blaze_sky_top::build_tool (BuildTool.java:342) and is not ported there.
+        // Java: functionExpr.getFunction() instanceof SomePathFunction / AllPathsFunction.
+        // PORT: the builtin functions are told apart by their query-language name.
+        if let blaze_query_engine::query_expression::QueryExpression::Function(function_expr) =
+            &expr
+            && matches!(
+                function_expr.get_function().get_name().as_str(),
+                "somepath" | "allpaths"
+            )
+        {
+            targets_for_project_resolution = target_pattern_set.first().cloned().map(|p| vec![p]);
+        }
     }
 
-    let request = BuildRequest::new(
+    let mut request = BuildRequest::new(
         "cquery",
         env.options,
         top_level_targets,
         /* check_for_action_conflicts= */ false,
         /* report_incompatible_targets= */ false,
     );
+    request.targets_for_project_resolution = targets_for_project_resolution;
     // PORT: skipped, incremental: QueryCommandUtils.resetDeserializedKeysFromRemoteAnalysisCache
     // deletes the values a previous command of the server deserialized from the remote analysis
     // cache.

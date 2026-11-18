@@ -1,0 +1,22 @@
+# S1-3: ActionOutputDirectoryHelper.createOutputDirectories on outputs left by earlier builds.
+run build //:foo_file
+stat bazel-bin/foo
+run build //:foo_dir
+stat bazel-bin/foo
+stat bazel-bin/foo/bar.txt
+cat bazel-bin/foo/bar.txt
+run build //:tree
+stat bazel-bin/t
+stat bazel-bin/t/inner
+run build //:in_tree
+stat bazel-bin/t
+stat bazel-bin/t/inner
+stat bazel-bin/t/inner/sub
+cat bazel-bin/t/inner/sub/x.txt
+run build //:link
+stat bazel-bin/l
+run build //:under_link
+stat bazel-bin/l
+cat bazel-bin/l/y.txt
+run build //:foo_file
+stat bazel-bin/foo

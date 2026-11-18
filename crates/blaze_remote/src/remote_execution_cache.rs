@@ -2,19 +2,25 @@
 //!
 //! PORT: Java builds `ensureInputsPresent` from RxJava flows whose subscriptions live on other
 //! threads. Per docs/remote.md the port runs everything on the calling task: one
-//! `ensure_inputs_present` call owns the futures of its upload tasks and drives them together
-//! with its `findMissingDigests` query. The pieces of the Java machinery map as follows:
+//! `ensure_inputs_present` call owns the futures of its upload tasks and drives them. The pieces
+//! of the Java machinery map as follows:
 //!
-//! - `findMissingCache` is the same [`AsyncTaskCache`] of "is this digest missing remotely".
+//! - Work that Java shares between calls through an `AsyncTaskCache` (the answer of
+//!   `findMissingCache` for a digest, and the upload of a digest in `casUploadCache`) is a
+//!   [`SharedTask`]: a future that every interested call holds a clone of and drives. Like a
+//!   Java `Execution` with its subscribers, it keeps running while one call is left and is
+//!   cancelled (dropped) when the last one goes away. It borrows nothing: it has the detached
+//!   copy of the context of the call that started it.
 //! - `UploadTask.continuation` (the `SingleEmitter<Boolean>` a task gets when the cache makes it
-//!   the one that has to supply the answer) is a [`Continuation`]: a `oneshot` sender registered
-//!   by the task the cache runs. Java learns who got a continuation while it subscribes the
-//!   tasks; the port polls every task once for the same effect.
+//!   the one that has to supply the answer): the call that starts the `SharedTask` of a digest
+//!   puts the digest into its `findMissingDigests` query, and the task takes its answer from the
+//!   result of that query, which is itself shared by the tasks that wait for it.
 //! - `UploadTask.completion` is the output of the task's future, and disposing a task
 //!   (`uploadTask.disposable`) is dropping that future, which happens when the call returns or
 //!   is itself dropped (Java: the calling thread is interrupted).
 
-use std::io::{self, Read};
+use std::collections::HashMap;
+use std::io;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::task::Poll;
@@ -23,25 +29,104 @@ use async_trait::async_trait;
 use blaze_exec::actions::VirtualActionInput;
 use blaze_optdefs::misc::remote_options::ChunkingFunctionValue;
 use blaze_vfs::Path;
-use futures::future::BoxFuture;
+use futures::FutureExt;
+use futures::future::{BoxFuture, Shared, WeakShared};
 use futures::stream::{FuturesUnordered, StreamExt};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use parking_lot::{Mutex, RwLock};
-use tokio::sync::oneshot;
 
 use crate::combined_cache::CombinedCache;
 use crate::common::bulk_transfer_exception::BulkTransferException;
 use crate::common::cache_not_found_exception::CacheNotFoundException;
 use crate::common::errors;
 use crate::common::remote_action_execution_context::RemoteActionExecutionContext;
-use crate::common::remote_cache_client::{Blob, RemoteCacheClient};
+use crate::common::remote_cache_client::RemoteCacheClient;
 use crate::common::remote_path_resolver::RemotePathResolver;
 use crate::disk::DiskCacheClient;
 use crate::merkletree::{MerkleTreeUploadable, MerkleTreeUploader};
 use crate::reapi::Digest;
 use crate::runtime::get_from_future;
-use crate::util::async_task_cache::AsyncTaskCache;
 use crate::util::digest_util::DigestUtil;
+
+/// The outcome of a [`SharedTask`]: every call that waits for the task gets the same error
+/// (Java hands every observer the same exception object).
+type SharedResult<T> = Result<T, Arc<io::Error>>;
+
+/// A task shared between `ensure_inputs_present` calls, with the subscriber semantics of a Java
+/// `AsyncTaskCache.Execution`: every call that needs the task holds a clone and drives it, the
+/// task runs while at least one clone is left, and dropping the last clone cancels it.
+///
+/// PORT: `crate::util::async_task_cache::AsyncTaskCache` cannot be used for this. Its tasks are
+/// driven by the first caller only, and when that caller goes away the task is cancelled and a
+/// waiting caller starts it again; Java keeps the task running for the waiting caller.
+// Java: com/google/devtools/build/lib/remote/util/AsyncTaskCache.java:142 AsyncTaskCache.Execution
+type SharedTask<T> = Shared<BoxFuture<'static, SharedResult<T>>>;
+
+/// A [`SharedTask`] as its cache knows it: the cache does not keep the task running.
+type WeakSharedTask<T> = WeakShared<BoxFuture<'static, SharedResult<T>>>;
+
+/// The `inProgress` map of a Java `AsyncTaskCache`: the tasks that are running, by digest. A
+/// task whose calls have all gone away is no longer running.
+// Java: com/google/devtools/build/lib/remote/util/AsyncTaskCache.java:83 AsyncTaskCache.inProgress
+struct InProgress<T: Clone> {
+    /// Identifies a task, so that a task that ends only removes its own entry.
+    next_id: u64,
+    tasks: HashMap<Digest, (u64, WeakSharedTask<T>)>,
+}
+
+impl<T: Clone> InProgress<T> {
+    fn new() -> InProgress<T> {
+        InProgress {
+            next_id: 0,
+            tasks: HashMap::new(),
+        }
+    }
+
+    /// `inProgress.get(key)`.
+    fn get(&self, key: &Digest) -> Option<SharedTask<T>> {
+        self.tasks.get(key).and_then(|(_, task)| task.upgrade())
+    }
+
+    fn next_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// `inProgress.put(key, execution)`.
+    fn put(&mut self, key: Digest, id: u64, task: &SharedTask<T>) {
+        let task = task
+            .downgrade()
+            .expect("a task that was just created has not completed");
+        self.tasks.insert(key, (id, task));
+    }
+
+    /// `inProgress.remove(key)`, by the task `id` when it ends.
+    fn remove(&mut self, key: &Digest, id: u64) {
+        if self.tasks.get(key).is_some_and(|(task, _)| *task == id) {
+            self.tasks.remove(key);
+        }
+    }
+}
+
+/// `findMissingCache`: an `AsyncTaskCache<Digest, Boolean>` of "is this digest missing from the
+/// remote cache".
+// Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:97 RemoteExecutionCache.findMissingCache
+struct FindMissingCache {
+    /// `AsyncTaskCache.finished`.
+    finished: HashMap<Digest, bool>,
+    /// `AsyncTaskCache.inProgress`.
+    in_progress: InProgress<bool>,
+}
+
+/// What `findMissingCache.execute` gives the upload task of a digest.
+enum ShouldUpload {
+    /// The cache has the answer (`onAlreadyFinished`).
+    Finished(bool),
+    /// The answer is being found out, by this call (the task has `UploadTask.continuation`) or
+    /// by another one (`onAlreadyRunning`).
+    Running(SharedTask<bool>),
+}
 
 /// An interface used to check whether a given `Path` is available without contacting the remote
 /// cache, i.e., it is present on the local disk, perhaps after being downloaded from the disk
@@ -91,7 +176,15 @@ pub struct RemoteExecutionCache {
     /// invocations. Results reported as "present" stay cached until explicitly invalidated, but
     /// a "missing" result is invalidated as soon as the triggered upload attempt terminates.
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:97 RemoteExecutionCache.findMissingCache
-    find_missing_cache: AsyncTaskCache<Digest, bool>,
+    find_missing_cache: Arc<Mutex<FindMissingCache>>,
+
+    /// The uploads that the calls of this cache are waiting for.
+    ///
+    /// PORT: stands for the subscribers of `remoteCacheClient.casUploadCache`: an upload that
+    /// several `ensure_inputs_present` calls wait for is one [`SharedTask`], which is what calls
+    /// the client. (The client's own cache still deduplicates it against other uploads.)
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:57 RemoteCacheClient.casUploadCache
+    uploads: Arc<Mutex<InProgress<()>>>,
 
     remote_path_checker: RwLock<Arc<dyn RemotePathChecker>>,
 }
@@ -110,32 +203,6 @@ impl Deref for RemoteExecutionCache {
     fn deref(&self) -> &CombinedCache {
         &self.combined_cache
     }
-}
-
-/// `UploadTask.continuation` of the upload task of `digest`: the task has to tell
-/// `findMissingCache` whether the digest is missing.
-// Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:314 RemoteExecutionCache.UploadTask
-struct Continuation {
-    digest: Digest,
-    continuation: oneshot::Sender<bool>,
-}
-
-/// What happened while waiting for the upload tasks.
-enum Step {
-    /// The upload task with this index completed (`UploadTask.completion`).
-    Completed(usize, io::Result<()>),
-    /// An upload task got a continuation after the `findMissingDigests` query was sent.
-    GotContinuation,
-    /// All upload tasks completed.
-    Done,
-}
-
-/// `new CancellationException("cancelled")`.
-fn cancellation_exception() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Interrupted,
-        "CancellationException: cancelled",
-    )
 }
 
 /// `Digest.toString()`: the protobuf text format of the message.
@@ -177,27 +244,6 @@ fn digest_to_text_format(digest: &Digest) -> String {
     out
 }
 
-/// The blob of a `VirtualActionInput`.
-///
-/// PORT: Java avoids materializing `VirtualActionInput.getBytes()` during the upload by writing
-/// the input into a `PipedOutputStream` on a virtual thread and handing the upload the
-/// `PipedInputStream`, which bounds the memory of an upload to the pipe's buffer. The port has
-/// no borrowed-data pipe thread: `get` materializes the bytes of the input, for the lifetime of
-/// the returned stream only.
-// Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:246 RemoteExecutionCache.VirtualActionInputBlob
-struct VirtualActionInputBlob<'a> {
-    virtual_action_input: &'a dyn VirtualActionInput,
-}
-
-impl Blob for VirtualActionInputBlob<'_> {
-    // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:253 RemoteExecutionCache.VirtualActionInputBlob.get
-    fn get(&self) -> io::Result<Box<dyn Read + Send + '_>> {
-        Ok(Box::new(io::Cursor::new(
-            self.virtual_action_input.get_bytes()?,
-        )))
-    }
-}
-
 impl RemoteExecutionCache {
     /// `new RemoteExecutionCache(remoteCacheClient, diskCacheClient, symlinkTemplate, digestUtil,
     /// chunkingFunction)`.
@@ -218,7 +264,11 @@ impl RemoteExecutionCache {
                 digest_util,
                 chunking_function,
             )),
-            find_missing_cache: AsyncTaskCache::create(),
+            find_missing_cache: Arc::new(Mutex::new(FindMissingCache {
+                finished: HashMap::new(),
+                in_progress: InProgress::new(),
+            })),
+            uploads: Arc::new(Mutex::new(InProgress::new())),
             remote_path_checker: RwLock::new(Arc::new(DefaultRemotePathChecker)),
         }
     }
@@ -295,96 +345,87 @@ impl RemoteExecutionCache {
             .chain(additional_inputs.keys().cloned())
             .collect();
 
-        // The upload tasks that got a continuation and have not been answered yet.
-        let continuations: Mutex<Vec<Continuation>> = Mutex::new(Vec::new());
+        // The digests of the upload tasks that have a continuation, and the `findMissingDigests`
+        // query for them (`findMissingBlobs`), which starts when it is first awaited.
+        //
+        // Use AsyncSubject so that if downstream is disposed, the findMissingDigests call is not
+        // cancelled (because it may be needed by other threads).
+        //
+        // PORT: the query is shared by the tasks of the digests it asks for, so it runs while a
+        // call waits for one of them, also after this call is gone. (Java never cancels it.)
+        // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:417 RemoteExecutionCache.findMissingBlobs
+        let digests_to_query: Arc<Mutex<Vec<Digest>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut missing_digests: SharedTask<Arc<IndexSet<Digest>>> = {
+            let remote_cache_client = self.remote_cache_client().clone();
+            let context = context.detached();
+            let digests_to_query = digests_to_query.clone();
+            async move {
+                let digests_to_query: Vec<Digest> = std::mem::take(&mut *digests_to_query.lock());
+                remote_cache_client
+                    .find_missing_digests(&context, &digests_to_query)
+                    .await
+                    .map(Arc::new)
+                    .map_err(Arc::new)
+            }
+            .boxed()
+            .shared()
+        };
+
         // The upload tasks that have not completed, and the completions of those that have.
         let mut upload_tasks: FuturesUnordered<BoxFuture<'_, (usize, io::Result<()>)>> =
             FuturesUnordered::new();
         let mut completions: Vec<(usize, io::Result<()>)> = Vec::with_capacity(all_digests.len());
 
         // PORT: skipped, profiling ("collect digests").
-        for (index, digest) in all_digests.iter().enumerate() {
-            let mut upload_task = self.maybe_create_upload_task(
-                index,
-                digest,
-                context,
-                merkle_tree,
-                additional_inputs,
-                force,
-                remote_path_resolver,
-                &continuations,
-            );
-            // Java subscribes the task to `findMissingCache` while it creates it, which is when
-            // the cache decides whether the task gets a continuation.
-            match futures::poll!(upload_task.as_mut()) {
-                Poll::Ready(completion) => completions.push(completion),
-                Poll::Pending => upload_tasks.push(upload_task),
+        {
+            // Java subscribes each task to `findMissingCache` (under the lock of the cache) while
+            // it creates it, which is when the cache decides whether the task gets a
+            // continuation.
+            let mut find_missing_cache = self.find_missing_cache.lock();
+            for (index, digest) in all_digests.iter().enumerate() {
+                let should_upload =
+                    self.execute_find_missing(&mut find_missing_cache, digest, force, || {
+                        // `uploadTask.continuation = continuation;`
+                        digests_to_query.lock().push(digest.clone());
+                        missing_digests.clone()
+                    });
+                upload_tasks.push(self.maybe_create_upload_task(
+                    index,
+                    digest,
+                    should_upload,
+                    context,
+                    merkle_tree,
+                    additional_inputs,
+                    force,
+                    remote_path_resolver,
+                ));
             }
         }
 
-        loop {
-            // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:417 RemoteExecutionCache.findMissingBlobs
-            // PORT: skipped, profiling ("findMissingDigests").
-            //
-            // PORT: Java sends one query, for the tasks that have a continuation once all tasks
-            // are created, and keeps that query running when the call is disposed (the
-            // `AsyncSubject`), because the tasks of other calls may wait for its answer. Here a
-            // disposed call takes its query with it; `AsyncTaskCache` then lets a waiting task of
-            // another call run the cache's task itself, so that task gets its continuation late.
-            // Hence the loop: continuations that show up after the first query are answered by a
-            // further query. Without a disposed call there is exactly one query, as in Java.
-            let tasks_with_continuation: Vec<Continuation> =
-                std::mem::take(&mut *continuations.lock());
-            if !tasks_with_continuation.is_empty() {
-                let digests_to_query: Vec<Digest> = tasks_with_continuation
-                    .iter()
-                    .map(|upload_task| upload_task.digest.clone())
-                    .collect();
-                let mut find_missing_digests = self
-                    .remote_cache_client()
-                    .find_missing_digests(context, &digests_to_query);
-                let missing_digests = futures::future::poll_fn(|cx| {
-                    // The tasks that did not need the answer (`findMissingCache` had it) are
-                    // uploading already; keep them moving.
-                    while let Poll::Ready(Some(completion)) = upload_tasks.poll_next_unpin(cx) {
-                        completions.push(completion);
-                    }
-                    find_missing_digests.as_mut().poll(cx)
-                })
-                .await?;
-                for upload_task in tasks_with_continuation {
-                    // `uploadTask.continuation.onSuccess(missingDigests.contains(uploadTask.digest))`;
-                    // the receiver is gone when the task was disposed.
-                    let _ = upload_task
-                        .continuation
-                        .send(missing_digests.contains(&upload_task.digest));
+        // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:417 RemoteExecutionCache.findMissingBlobs
+        // PORT: skipped, profiling ("findMissingDigests").
+        let has_digests_to_query = !digests_to_query.lock().is_empty();
+        if has_digests_to_query {
+            futures::future::poll_fn(|cx| {
+                // The tasks that do not need the answer (`findMissingCache` had it) are uploading
+                // already; keep them moving.
+                while let Poll::Ready(Some(completion)) = upload_tasks.poll_next_unpin(cx) {
+                    completions.push(completion);
                 }
-            }
-
-            // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:455 RemoteExecutionCache.waitForUploadTasks
-            // PORT: skipped, profiling ("upload").
-            let step = futures::future::poll_fn(|cx| match upload_tasks.poll_next_unpin(cx) {
-                Poll::Ready(Some((index, completion))) => {
-                    Poll::Ready(Step::Completed(index, completion))
-                }
-                Poll::Ready(None) => Poll::Ready(Step::Done),
-                Poll::Pending => {
-                    if continuations.lock().is_empty() {
-                        Poll::Pending
-                    } else {
-                        Poll::Ready(Step::GotContinuation)
-                    }
-                }
+                missing_digests.poll_unpin(cx)
             })
-            .await;
-            match step {
-                Step::Completed(index, completion) => completions.push((index, completion)),
-                Step::GotContinuation => {}
-                Step::Done => break,
-            }
+            .await
+            .map_err(|e| errors::shared(&e))?;
+        }
+        drop(missing_digests);
+
+        // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:455 RemoteExecutionCache.waitForUploadTasks
+        // PORT: skipped, profiling ("upload").
+        while let Some(completion) = upload_tasks.next().await {
+            completions.push(completion);
         }
         // The upload tasks are disposed here (Java: the disposer of `Flowable.using`); all of
-        // them have completed. On the early returns above, and when this future is dropped,
+        // them have completed. On the early return above, and when this future is dropped,
         // dropping `upload_tasks` disposes the ones that are still running.
         drop(upload_tasks);
 
@@ -421,6 +462,60 @@ impl RemoteExecutionCache {
         Ok(())
     }
 
+    /// `findMissingCache.execute(digest, task, onAlreadyRunning, onAlreadyFinished, force)`, as
+    /// far as it runs when the upload task subscribes: looks the digest up and, if the cache has
+    /// no answer and no task is finding it out, starts one. `continuation` is called in that
+    /// case and gives the query whose result has the answer.
+    // Java: com/google/devtools/build/lib/remote/util/AsyncTaskCache.java:307 AsyncTaskCache.execute
+    fn execute_find_missing(
+        &self,
+        find_missing_cache: &mut FindMissingCache,
+        digest: &Digest,
+        force: bool,
+        continuation: impl FnOnce() -> SharedTask<Arc<IndexSet<Digest>>>,
+    ) -> ShouldUpload {
+        if !force {
+            if let Some(cached) = find_missing_cache.finished.get(digest) {
+                // onAlreadyFinished
+                return ShouldUpload::Finished(*cached);
+            }
+        } else {
+            find_missing_cache.finished.remove(digest);
+        }
+
+        if let Some(execution) = find_missing_cache.in_progress.get(digest) {
+            // onAlreadyRunning
+            return ShouldUpload::Running(execution);
+        }
+
+        let id = find_missing_cache.in_progress.next_id();
+        let execution: SharedTask<bool> = {
+            let missing_digests = continuation();
+            let find_missing_cache = self.find_missing_cache.clone();
+            let digest = digest.clone();
+            async move {
+                // `uploadTask.continuation.onSuccess(missingDigests.contains(uploadTask.digest))`
+                let should_upload = missing_digests
+                    .await
+                    .map(|missing_digests| missing_digests.contains(&digest));
+                // Java: com/google/devtools/build/lib/remote/util/AsyncTaskCache.java:197 AsyncTaskCache.Execution.onSuccess
+                // Java: com/google/devtools/build/lib/remote/util/AsyncTaskCache.java:217 AsyncTaskCache.Execution.onError
+                let mut find_missing_cache = find_missing_cache.lock();
+                find_missing_cache.in_progress.remove(&digest, id);
+                if let Ok(should_upload) = &should_upload {
+                    find_missing_cache.finished.insert(digest, *should_upload);
+                }
+                should_upload
+            }
+            .boxed()
+            .shared()
+        };
+        find_missing_cache
+            .in_progress
+            .put(digest.clone(), id, &execution);
+        ShouldUpload::Running(execution)
+    }
+
     /// Creates the upload task of `digest`. Its output is `UploadTask.completion` (with the
     /// index of the task).
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:348 RemoteExecutionCache.maybeCreateUploadTask
@@ -428,34 +523,21 @@ impl RemoteExecutionCache {
         &'a self,
         index: usize,
         digest: &'a Digest,
+        should_upload: ShouldUpload,
         context: &'a RemoteActionExecutionContext<'a>,
         merkle_tree: &'a MerkleTreeUploadable,
         additional_inputs: &'a IndexMap<Digest, bytes::Bytes>,
         force: bool,
         remote_path_resolver: Option<&'a dyn RemotePathResolver>,
-        continuations: &'a Mutex<Vec<Continuation>>,
     ) -> BoxFuture<'a, (usize, io::Result<()>)> {
         Box::pin(async move {
             let upload = async {
-                let should_upload = self
-                    .find_missing_cache
-                    .execute(
-                        digest.clone(),
-                        // The task of the cache: runs only if the cache has no answer and no
-                        // other upload task is supplying one (Java: `onAlreadyRunning` and
-                        // `onAlreadyFinished` are the other two cases).
-                        async {
-                            let (continuation, should_upload) = oneshot::channel();
-                            // `uploadTask.continuation = continuation;`
-                            continuations.lock().push(Continuation {
-                                digest: digest.clone(),
-                                continuation,
-                            });
-                            should_upload.await.map_err(|_| cancellation_exception())
-                        },
-                        force,
-                    )
-                    .await?;
+                let should_upload = match should_upload {
+                    ShouldUpload::Finished(should_upload) => should_upload,
+                    ShouldUpload::Running(execution) => {
+                        execution.await.map_err(|e| errors::shared(&e))?
+                    }
+                };
                 if !should_upload {
                     return Ok::<(), io::Error>(());
                 }
@@ -476,17 +558,71 @@ impl RemoteExecutionCache {
                     // the upload path. On failure, invalidate so a subsequent caller
                     // (e.g., after action rewinding) re-queries the remote.
                     Ok(()) => {
-                        self.find_missing_cache.put(digest.clone(), false);
+                        // `findMissingCache.put(digest, false)`
+                        self.find_missing_cache
+                            .lock()
+                            .finished
+                            .insert(digest.clone(), false);
                         Ok(())
                     }
                     Err(t) => {
-                        self.find_missing_cache.invalidate(digest);
+                        // `findMissingCache.invalidate(digest)`
+                        self.find_missing_cache.lock().finished.remove(digest);
                         Err(t)
                     }
                 }
             };
             (index, upload.await)
         })
+    }
+
+    /// Runs an upload of `digest` as a task shared with the other calls that wait for the
+    /// upload of that digest (see the `uploads` field). `start` makes the upload when none is
+    /// running.
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:225 RemoteCacheClient.dedupUpload
+    async fn shared_upload(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        start: impl FnOnce(
+            Arc<dyn RemoteCacheClient>,
+            RemoteActionExecutionContext<'static>,
+            Digest,
+        ) -> BoxFuture<'static, io::Result<()>>,
+    ) -> io::Result<()> {
+        let running = self.uploads.lock().get(digest);
+        let upload: SharedTask<()> = match running {
+            Some(upload) => upload,
+            None => {
+                let upload = start(
+                    self.remote_cache_client().clone(),
+                    context.detached(),
+                    digest.clone(),
+                );
+                let mut uploads = self.uploads.lock();
+                // Another call may have started the upload since the first look.
+                match uploads.get(digest) {
+                    Some(upload) => upload,
+                    None => {
+                        let id = uploads.next_id();
+                        let upload: SharedTask<()> = {
+                            let uploads = self.uploads.clone();
+                            let digest = digest.clone();
+                            async move {
+                                let result = upload.await.map_err(Arc::new);
+                                uploads.lock().remove(&digest, id);
+                                result
+                            }
+                            .boxed()
+                            .shared()
+                        };
+                        uploads.put(digest.clone(), id, &upload);
+                        upload
+                    }
+                }
+            }
+        };
+        upload.await.map_err(|e| errors::shared(&e))
     }
 
     /// `uploadBlob(context, digest, merkleTree, additionalInputs, remotePathResolver, force)`.
@@ -507,9 +643,8 @@ impl RemoteExecutionCache {
 
         let message = additional_inputs.get(digest);
         if let Some(message) = message {
-            return self
-                .remote_cache_client()
-                .upload_bytes(context, digest, message.clone(), force)
+            // `remoteCacheClient.uploadBlob(context, digest, message.toByteString(), force)`
+            return MerkleTreeUploader::upload_blob(self, context, digest, message.clone(), force)
                 .await;
         }
 
@@ -530,9 +665,15 @@ impl MerkleTreeUploader for RemoteExecutionCache {
         data: bytes::Bytes,
         force: bool,
     ) -> io::Result<()> {
-        self.remote_cache_client()
-            .upload_bytes(context, digest, data, force)
-            .await
+        self.shared_upload(context, digest, |remote_cache_client, context, digest| {
+            async move {
+                remote_cache_client
+                    .upload_bytes(&context, &digest, data, force)
+                    .await
+            }
+            .boxed()
+        })
+        .await
     }
 
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:208 RemoteExecutionCache.uploadFile
@@ -569,9 +710,16 @@ impl MerkleTreeUploader for RemoteExecutionCache {
                 .into());
             }
         }
-        self.remote_cache_client()
-            .upload_file(context, digest, path, force)
-            .await
+        let path = path.clone();
+        self.shared_upload(context, digest, |remote_cache_client, context, digest| {
+            async move {
+                remote_cache_client
+                    .upload_file(&context, &digest, &path, force)
+                    .await
+            }
+            .boxed()
+        })
+        .await
     }
 
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:237 RemoteExecutionCache.uploadVirtualActionInput
@@ -582,12 +730,23 @@ impl MerkleTreeUploader for RemoteExecutionCache {
         virtual_action_input: &dyn VirtualActionInput,
         force: bool,
     ) -> io::Result<()> {
-        let blob = VirtualActionInputBlob {
-            virtual_action_input,
-        };
-        self.remote_cache_client()
-            .upload_blob(context, digest, &blob, force)
-            .await
+        // PORT: Java uploads a `VirtualActionInputBlob`, which avoids materializing
+        // `VirtualActionInput.getBytes()` during the upload: it writes the input into a
+        // `PipedOutputStream` on a virtual thread and hands the upload the `PipedInputStream`, so
+        // that an upload needs no more memory than the buffer of the pipe. The upload here is a
+        // task shared between calls, which cannot borrow the input of one of them, so the call
+        // that starts it materializes the bytes of the input, for the time of the upload.
+        // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:246 RemoteExecutionCache.VirtualActionInputBlob
+        self.shared_upload(context, digest, |remote_cache_client, context, digest| {
+            let data = virtual_action_input.get_bytes();
+            async move {
+                remote_cache_client
+                    .upload_bytes(&context, &digest, bytes::Bytes::from(data?), force)
+                    .await
+            }
+            .boxed()
+        })
+        .await
     }
 
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:198 RemoteExecutionCache.ensureInputsPresent

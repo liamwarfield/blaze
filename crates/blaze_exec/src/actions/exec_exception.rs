@@ -32,6 +32,11 @@ impl ExecException {
         }
     }
 
+    /// `this instanceof TestExecException`.
+    pub fn is_test_exec_exception(&self) -> bool {
+        matches!(self, ExecException::User(e) if e.test_exec_exception)
+    }
+
     /// `isCatastrophic()`.
     pub fn is_catastrophic(&self) -> bool {
         match self {
@@ -91,6 +96,10 @@ fn message_with_cause(message: &str, cause: Option<&str>) -> String {
 pub struct UserExecException {
     pub message: String,
     pub failure_detail: FailureDetail,
+    /// This is a `TestExecException` (see [`test_exec_exception`]).
+    ///
+    /// [`test_exec_exception`]: crate::analysis::test::test_runner_action::test_exec_exception
+    pub test_exec_exception: bool,
 }
 
 impl UserExecException {
@@ -99,6 +108,7 @@ impl UserExecException {
         UserExecException {
             message: failure_detail.message.clone(),
             failure_detail,
+            test_exec_exception: false,
         }
     }
     /// `new UserExecException(Throwable cause, FailureDetail)`.
@@ -106,6 +116,7 @@ impl UserExecException {
         UserExecException {
             message: message_with_cause(&failure_detail.message, Some(&cause.to_string())),
             failure_detail,
+            test_exec_exception: false,
         }
     }
 }

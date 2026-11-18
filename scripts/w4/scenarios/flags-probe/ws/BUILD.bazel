@@ -1,0 +1,80 @@
+load(
+    ":defs.bzl",
+    "bool_flag",
+    "int_flag",
+    "multi_string_flag",
+    "repeatable_flag",
+    "show",
+    "string_flag",
+    "string_list_flag",
+    "repeatable_set_flag",
+    "string_set_flag",
+    "string_setting",
+    "tool",
+)
+
+bool_flag(name = "bool_flag", build_setting_default = True)
+int_flag(name = "int_flag", build_setting_default = 1)
+string_flag(name = "string_flag", build_setting_default = "dflt")
+string_list_flag(name = "string_list_flag", build_setting_default = ["x", "y"])
+multi_string_flag(name = "multi", build_setting_default = "m0")
+repeatable_flag(name = "rep", build_setting_default = ["r0"])
+string_setting(name = "setting", build_setting_default = "internal")
+string_flag(name = "universal_flag", build_setting_default = "u", scope = "universal")
+string_flag(name = "target_flag", build_setting_default = "t", scope = "target")
+alias(name = "alias_to_int", actual = ":int_flag")
+alias(name = "alias_to_alias", actual = ":alias_to_int")
+alias(name = "alias_to_file", actual = "defs.bzl")
+alias(name = "alias_select", actual = select({"//conditions:default": ":int_flag"}))
+
+filegroup(name = "lf_default")
+filegroup(name = "lf_other")
+label_flag(name = "lf", build_setting_default = ":lf_default")
+label_flag(name = "lf_universal", build_setting_default = ":lf_default", scope = "universal")
+string_flag(name = "bad_scope", build_setting_default = "", scope = "galaxy")
+string_set_flag(name = "sset", build_setting_default = set(["s0"]))
+repeatable_set_flag(name = "rsset", build_setting_default = set(["r0"]))
+alias(name = "cyc_one", actual = "//sub:cyc_two")
+alias(name = "cyc_three", actual = ":cyc_one")
+alias(
+    name = "alias_real_select",
+    actual = select({":int_is_7": ":int_flag", "//conditions:default": ":bool_flag"}),
+)
+
+config_setting(name = "int_is_7", flag_values = {":int_flag": "7"})
+config_setting(name = "string_is_abc", flag_values = {":string_flag": "abc"})
+config_setting(name = "list_has_b", flag_values = {":string_list_flag": "b"})
+config_setting(name = "bool_off", flag_values = {":bool_flag": "False"})
+
+filegroup(name = "seven")
+filegroup(name = "abc")
+filegroup(name = "has_b")
+filegroup(name = "off")
+filegroup(name = "none")
+
+filegroup(
+    name = "selected",
+    srcs = select({":int_is_7": [":seven"], "//conditions:default": [":none"]}) +
+           select({":string_is_abc": [":abc"], "//conditions:default": []}) +
+           select({":list_has_b": [":has_b"], "//conditions:default": []}) +
+           select({":bool_off": [":off"], "//conditions:default": []}),
+)
+
+tool(name = "tool", flag = ":string_flag")
+
+show(
+    name = "t",
+    flags = [
+        ":bool_flag",
+        ":int_flag",
+        ":string_flag",
+        ":string_list_flag",
+        ":multi",
+        ":rep",
+        ":universal_flag",
+        ":target_flag",
+        "//pkg:pkg_flag",
+    ],
+    lf = ":lf",
+    tool = ":tool",
+)

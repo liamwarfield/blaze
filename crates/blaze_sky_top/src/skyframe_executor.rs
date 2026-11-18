@@ -950,13 +950,41 @@ impl SkyframeExecutor {
                 toolchain_code_of_invalid_configuration(e.get_detailed_code()),
             ));
         }
+        if wrap_any_exception {
+            // Wrap exceptions related to loading.
+            let no_such_thing = error
+                .exception_as::<blaze_packages::exceptions::NoSuchThingException>()
+                .map(|e| (e.get_message(), e.get_detailed_exit_code()))
+                .or_else(|| {
+                    error
+                        .exception_as::<blaze_packages::exceptions::NoSuchPackageException>()
+                        .map(|e| (e.get_message(), e.get_detailed_exit_code()))
+                })
+                .or_else(|| {
+                    error
+                        .exception_as::<blaze_packages::exceptions::NoSuchTargetException>()
+                        .map(|e| (e.to_string(), e.get_detailed_exit_code()))
+                });
+            if let Some((message, detailed_exit_code)) = no_such_thing {
+                return Err(match detailed_exit_code.code {
+                    blaze_packages::exceptions::FailureCode::PackageLoading(code) => {
+                        InvalidConfigurationException::with_package_loading_code(
+                            message,
+                            code as i32,
+                        )
+                    }
+                    blaze_packages::exceptions::FailureCode::Other(other) => {
+                        blaze_util::unported!(
+                            "SkyframeExecutor.createBuildConfigurationKey",
+                            "NoSuchThingException with detailed exit code {other}"
+                        )
+                    }
+                });
+            }
+        }
         if wrap_any_exception && let Some(e) = error.get_exception() {
             // If we get here, e is non-null but not an InvalidConfigurationException, so wrap it
-            // and throw (a toolchain or platform lookup error, a loading error of a platform's
-            // package, ...).
-            // PORT: Java gives a NoSuchThingException's own detailed exit code to the wrapper;
-            // the wrapper here always carries PLATFORM_MAPPING_EVALUATION_FAILURE (the exit
-            // code of both is 2).
+            // and throw (a toolchain or platform lookup error, ...).
             return Err(InvalidConfigurationException::with_code(
                 e.to_string(),
                 "PLATFORM_MAPPING_EVALUATION_FAILURE",

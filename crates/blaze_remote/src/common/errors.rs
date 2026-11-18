@@ -42,10 +42,7 @@ pub fn downcast_ref<T: Error + Send + Sync + 'static>(e: &io::Error) -> Option<&
         if let Some(t) = inner.downcast_ref::<T>() {
             return Some(t);
         }
-        match inner.downcast_ref::<SharedIoError>() {
-            Some(s) => inner = s.0.get_ref()?,
-            None => return None,
-        }
+        inner = inner.downcast_ref::<SharedIoError>()?.0.get_ref()?;
     }
 }
 

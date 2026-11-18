@@ -1,5 +1,6 @@
 === 1: aquery //:snap
 exit 0
+--- stdout
 {"actionKey": "4c541b63671229e040a8bf9165d9e93c27360d78489733e87382952e298f633c", "argv": ["/bin/true", "x"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "First", "outputs": ["bazel-out/k8-fastbuild/bin/snap.o1"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.o1", "ruleClass": "snap", "target": "//:snap"}
 {"actionKey": "02e5ee2372ffdbfbc6d02369d616d2e8258b157c49826cbad2842a49480c69cf", "argv": ["/bin/true", "s", "x", "y"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "Second", "outputs": ["bazel-out/k8-fastbuild/bin/snap.o2"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.o2", "ruleClass": "snap", "target": "//:snap"}
 {"actionKey": "fecd0685a013ce67ff764513fadf24f6c7826d496d9336e23ce94cc097149c50", "argv": ["/bin/bash", "-c", "true", "", "x", "y", "p", "q"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "Third", "outputs": ["bazel-out/k8-fastbuild/bin/snap.o3"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.o3", "ruleClass": "snap", "target": "//:snap"}
@@ -12,17 +13,30 @@ exit 0
 {"actionKey": "814f7c7a20b7f858ccf6ff4afe8cba5d67782c43b3a91957b49cfb7b694ab9a6", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/snap.f2"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.f2", "ruleClass": "snap", "target": "//:snap"}
 {"actionKey": "d85fd3589714e67685775c2b8d492ae7e77220ce7987339f4f900edc3770b3e4", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["tmpl.txt"], "mnemonic": "TemplateExpand", "outputs": ["bazel-out/k8-fastbuild/bin/snap.t1"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.t1", "ruleClass": "snap", "substitutions": [{"key": "%A%", "value": "one"}], "target": "//:snap", "templateContent": "A=%A% B=%B%\n"}
 {"actionKey": "b3e5647f69dce2f4907e0bd404c55915265e109fbcdb5ffd11a3c4292190d9bb", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["tmpl.txt"], "mnemonic": "TemplateExpand", "outputs": ["bazel-out/k8-fastbuild/bin/snap.t2"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.t2", "ruleClass": "snap", "substitutions": [{"key": "%A%", "value": "one"}, {"key": "%B%", "value": "two"}], "target": "//:snap", "templateContent": "A=%A% B=%B%\n"}
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:snap (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
 INFO: Build completed successfully, 0 total actions
 === 2: run build //:snap
 exit 0
+--- stdout
+--- stderr
+INFO: Analyzed target //:snap (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
+Target //:snap up-to-date:
+  bazel-bin/snap.w1
+  bazel-bin/snap.w2
   bazel-bin/snap.f1
   bazel-bin/snap.f2
   bazel-bin/snap.t1
   bazel-bin/snap.t2
-  bazel-bin/snap.w1
-  bazel-bin/snap.w2
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 7 processes: 7 internal.
 INFO: Build completed successfully, 7 total actions
-Target //:snap up-to-date:
 === 3: cat bazel-bin/snap.w1
 x
 y

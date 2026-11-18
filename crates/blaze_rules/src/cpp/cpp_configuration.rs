@@ -23,7 +23,7 @@ use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::starlark_simple_value;
 use starlark::values::ValueLike;
-use starlark::values::list::alloc_immutable_list;
+use starlark::values::list::{AllocList, alloc_immutable_list};
 use starlark::values::none::NoneOr;
 use starlark::values::{Demand, Heap, NoSerialize, StarlarkValue, Value, starlark_value};
 
@@ -101,12 +101,21 @@ pub fn cpp_configuration_param<'v>(
         })
 }
 
-/// An `ImmutableList<String>` / `StarlarkList.immutableCopyOf(...)` result: an immutable list
-/// (`Starlark.fromJava` wraps a Java `List` with `StarlarkList.immutableCopyOf`).
+/// A `StarlarkList.immutableCopyOf(...)` result: an immutable list (only `strip_opts`).
 // Java: net/starlark/java/eval/StarlarkList.java:168 StarlarkList.immutableCopyOf
-fn string_list<'v>(heap: Heap<'v>, items: &[String]) -> Value<'v> {
+fn immutable_string_list<'v>(heap: Heap<'v>, items: &[String]) -> Value<'v> {
     let values: Vec<Value<'v>> = items.iter().map(|s| heap.alloc_str(s).to_value()).collect();
     alloc_immutable_list(heap, &values)
+}
+
+/// An `ImmutableList<String>` returned by a `@StarlarkMethod`: `MethodDescriptor.call` converts
+/// it with `Starlark.fromJava(result, thread.mutability())`, i.e. `StarlarkList.copyOf`, a new
+/// mutable list on every call.
+// Java: net/starlark/java/eval/Starlark.java:214 Starlark.fromJava
+fn string_list<'v>(heap: Heap<'v>, items: &[String]) -> Value<'v> {
+    heap.alloc(AllocList(
+        items.iter().map(|s| heap.alloc_str(s).to_value()),
+    ))
 }
 
 fn label_or_none<'v>(heap: Heap<'v>, label: Option<&Label>) -> Value<'v> {
@@ -179,7 +188,10 @@ fn cpp_configuration_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
         check_private_starlarkification_allowlist(eval)?;
-        Ok(string_list(eval.heap(), &this.cpp().get_strip_opts()))
+        Ok(immutable_string_list(
+            eval.heap(),
+            &this.cpp().get_strip_opts(),
+        ))
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppConfiguration.java:400 CppConfiguration.getSaveTempsForStarlark

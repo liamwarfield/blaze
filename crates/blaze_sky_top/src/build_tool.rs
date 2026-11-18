@@ -73,6 +73,27 @@ pub struct BuildRequest {
     needs_instrumentation_filter: bool,
     /// `CommandEnvironment.withMergedAnalysisAndExecutionSourceOfTruth()` for this request.
     merged_analysis_and_execution: bool,
+    /// The `targetsForProjectResolution` argument of `BuildTool.processRequest` (cquery sets it
+    /// to the first pattern of a `somepath()` / `allpaths()` query; `None` otherwise).
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:262 BuildTool.buildTargets
+    pub targets_for_project_resolution: Option<Vec<String>>,
+}
+
+/// `ExtendedEventHandler.NOOP` as an owned handler (blaze_events' `NullEventHandler` has only a
+/// static instance).
+// Java: com/google/devtools/build/lib/events/ExtendedEventHandler.java:25 ExtendedEventHandler.NOOP
+struct NoopHandler;
+
+impl blaze_events::EventHandler for NoopHandler {
+    fn handle(&self, _event: &Event) {}
+
+    fn as_extended_event_handler(&self) -> Option<&dyn ExtendedEventHandler> {
+        Some(self)
+    }
+}
+
+impl ExtendedEventHandler for NoopHandler {
+    fn post(&self, _obj: Arc<dyn blaze_events::Postable>) {}
 }
 
 /// `AspectCollection.VALIDATION_ASPECT_NAME`.
@@ -127,6 +148,7 @@ impl BuildRequest {
             run_tests: false,
             needs_instrumentation_filter: false,
             merged_analysis_and_execution: false,
+            targets_for_project_resolution: None,
         }
     }
 
@@ -430,14 +452,42 @@ impl<'a> BuildTool<'a> {
         // to the UI.
         let target_pattern_phase_value = self.evaluate_target_patterns(request)?;
 
-        // PORT: `targetsForProjectResolution` is null for every ported command, so the project
-        // files are those of the build's own target patterns.
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:315 BuildTool.buildTargets
+        let target_patterns_for_project_resolution = match &request.targets_for_project_resolution {
+            None => None,
+            // Don't report this because it'll throw off our tracking of the complete target set.
+            Some(targets) => Some(
+                self.skyframe_executor
+                    .load_target_patterns_with_filters_detailed(
+                        Arc::new(NoopHandler),
+                        targets,
+                        &self.relative_working_directory,
+                        &request.loading_options,
+                        request.loading_phase_threads,
+                        request.keep_going,
+                        request.should_run_tests(),
+                    )
+                    .map_err(|e| match e {
+                        TargetPatternPhaseDetailedError::TargetParsing {
+                            exception,
+                            detailed_exit_code,
+                        } => BuildToolError::TargetParsing {
+                            exception,
+                            detailed_exit_code,
+                        },
+                        TargetPatternPhaseDetailedError::Interrupted => BuildToolError::Interrupted,
+                    })?,
+            ),
+        };
+        let target_patterns_for_project_resolution = target_patterns_for_project_resolution
+            .as_ref()
+            .unwrap_or(&target_pattern_phase_value);
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:343 BuildTool.buildTargets
         crate::project::evaluate_project_file(
             request.get_remote_analysis_caching_options(),
             request.get_build_options(),
             &build_options,
-            target_pattern_phase_value.get_non_expanded_labels(),
+            target_patterns_for_project_resolution.get_non_expanded_labels(),
             self.skyframe_executor,
             self.reporter.clone(),
         )
@@ -550,6 +600,17 @@ pub fn invalid_configuration_detailed_exit_code(
     // An InvalidConfigurationException that wraps a ToolchainException keeps its Toolchain code
     // (SkyframeExecutor.getConfiguration: `new InvalidConfigurationException(
     // detailedException.getDetailedExitCode(), e)`).
+    // A wrapped NoSuchThingException keeps its PackageLoading code
+    // (SkyframeExecutor.createBuildConfigurationKey: `new InvalidConfigurationException(
+    // noSuchThingException.getDetailedExitCode(), e)`; analysis review R2-9).
+    if let Some(code) = e.package_loading_code {
+        return DetailedExitCode::of(FailureDetail {
+            message: e.get_message().to_owned(),
+            category: Some(Category::PackageLoading(failure_details::PackageLoading {
+                code,
+            })),
+        });
+    }
     if let Some(toolchain_code) = e.code.strip_prefix("Toolchain.") {
         let code = failure_details::toolchain::Code::from_str_name(toolchain_code)
             .unwrap_or_else(|| panic!("IllegalArgumentException: Toolchain.Code {toolchain_code}"));
@@ -583,5 +644,19 @@ mod tests {
         assert_eq!(build_configuration_exit_code(1), 2);
         assert_eq!(build_configuration_exit_code(3), 1);
         assert_eq!(build_configuration_exit_code(6), 2);
+    }
+
+    // SkyframeExecutor.createBuildConfigurationKey wraps a NoSuchThingException with its own
+    // detailed exit code; PACKAGE_MISSING (11) has exit_code 1 in failure_details.proto, where
+    // PLATFORM_MAPPING_EVALUATION_FAILURE has 2 (analysis review R2-9).
+    #[test]
+    fn wrapped_no_such_thing_keeps_its_package_loading_code() {
+        let e = InvalidConfigurationException::with_package_loading_code("no such package", 11);
+        let d = invalid_configuration_detailed_exit_code(&e);
+        assert_eq!(d.get_exit_code(), 1);
+        assert!(matches!(
+            d.get_failure_detail().and_then(|f| f.category.as_ref()),
+            Some(Category::PackageLoading(p)) if p.code == 11
+        ));
     }
 }

@@ -1,27 +1,55 @@
 === 1: run build //:remote_impl
 exit 0
-  bazel-bin/remote_impl.txt
-INFO: Build completed successfully, 2 total actions
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:remote_impl (79 packages loaded, 428 targets configured).
+INFO: Found 1 target...
 Target //:remote_impl up-to-date:
+  bazel-bin/remote_impl.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
 === 2: cat bazel-bin/remote_impl.txt
 toolchain: None, in: True
 === 3: run build //:local_impl
 exit 0
-  bazel-bin/local_impl.txt
-INFO: Build completed successfully, 2 total actions
+--- stdout
+--- stderr
+INFO: Analyzed target //:local_impl (1 packages loaded, 2 targets configured).
+INFO: Found 1 target...
 Target //:local_impl up-to-date:
+  bazel-bin/local_impl.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
 === 4: cat bazel-bin/local_impl.txt
 toolchain: None, in: True
 === 5: run build //:local_wrong
 exit 1
-ERROR: <WS>/BUILD.bazel:7:12: Analysis of target '//:local_wrong' (config: a7a71fd) failed
+--- stdout
+--- stderr
 ERROR: <WS>/BUILD.bazel:7:12: in local_wrong rule //:local_wrong:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 26, column 62, in _local_wrong_impl
+		ctx.actions.write(out, "toolchain: %s\n" % ctx.toolchains["//x:type"])
+Error: In local_wrong rule //:local_wrong, toolchain type //x:type was requested but only types [@@rules_a+//x:type] are configured
+ERROR: <WS>/BUILD.bazel:7:12: Analysis of target '//:local_wrong' (config: a7a71fd) failed
 ERROR: Analysis of target '//:local_wrong' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
 ERROR: Build did NOT complete successfully
 === 6: run build //:helper
 exit 0
-  bazel-bin/helper.txt
-INFO: Build completed successfully, 2 total actions
+--- stdout
+--- stderr
+INFO: Analyzed target //:helper (0 packages loaded, 1 target configured).
+INFO: Found 1 target...
 Target //:helper up-to-date:
+  bazel-bin/helper.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
 === 7: cat bazel-bin/helper.txt
 toolchain: None, in: True

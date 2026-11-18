@@ -1,0 +1,7 @@
+load("//:defs.bzl", "noisy")
+
+noisy(
+    name = "old",
+    deprecation = "use something else",
+    visibility = ["//visibility:public"],
+)

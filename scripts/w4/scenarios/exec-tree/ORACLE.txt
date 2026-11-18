@@ -1,8 +1,16 @@
 === 1: run build //:consume
 exit 0
-  bazel-bin/consume.txt
-INFO: Build completed successfully, 3 total actions
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:consume (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
 Target //:consume up-to-date:
+  bazel-bin/consume.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 3 processes: 1 internal, 2 local.
+INFO: Build completed successfully, 3 total actions
 === 2: cat bazel-bin/consume.txt
 bazel-out/k8-fastbuild/bin/tree.dir/link_to_file: top
 bazel-out/k8-fastbuild/bin/tree.dir/link_to_sub/deep/d.txt: deep
@@ -30,18 +38,30 @@ run
 run
 === 12: run build //:consume
 exit 0
-  bazel-bin/consume.txt
-INFO: Build completed successfully, 1 total action
+--- stdout
+--- stderr
+INFO: Analyzed target //:consume (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
 Target //:consume up-to-date:
+  bazel-bin/consume.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
 === 13: cat producer.log
 run
 === 14: cat consumer.log
 run
 === 15: run build //:sandboxed_consume
 exit 0
-  bazel-bin/sandboxed_consume.txt
-INFO: Build completed successfully, 2 total actions
+--- stdout
+--- stderr
+INFO: Analyzed target //:sandboxed_consume (0 packages loaded, 1 target configured).
+INFO: Found 1 target...
 Target //:sandboxed_consume up-to-date:
+  bazel-bin/sandboxed_consume.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
 === 16: cat bazel-bin/sandboxed_consume.txt
 .
 ./link_to_file
@@ -58,29 +78,50 @@ Target //:sandboxed_consume up-to-date:
 run
 === 18: run build //:dangling
 exit 1
-ERROR: <WS>/BUILD.bazel:17:9: Action dangling.dir failed: not all outputs were created or valid
+--- stdout
+--- stderr
+INFO: Analyzed target //:dangling (0 packages loaded, 1 target configured).
 ERROR: <WS>/BUILD.bazel:17:9: error while validating output tree artifact dangling.dir: child sub/dangling is a dangling symbolic link
-ERROR: Build did NOT complete successfully
+ERROR: <WS>/BUILD.bazel:17:9: Action dangling.dir failed: not all outputs were created or valid
 Target //:dangling failed to build
 Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 1 internal, 1 local.
+ERROR: Build did NOT complete successfully
 === 19: run build //:fifo
 exit 1
-ERROR: <WS>/BUILD.bazel:22:9: Action fifo.dir failed: not all outputs were created or valid
+--- stdout
+--- stderr
+INFO: Analyzed target //:fifo (0 packages loaded, 1 target configured).
 ERROR: <WS>/BUILD.bazel:22:9: error while validating output tree artifact fifo.dir: child pipe has an unsupported type
-ERROR: Build did NOT complete successfully
+ERROR: <WS>/BUILD.bazel:22:9: Action fifo.dir failed: not all outputs were created or valid
 Target //:fifo failed to build
 Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 1 internal, 1 local.
+ERROR: Build did NOT complete successfully
 === 20: run build //:removed
 exit 1
-ERROR: <WS>/BUILD.bazel:27:9: Action removed.dir failed: not all outputs were created or valid
+--- stdout
+--- stderr
+INFO: Analyzed target //:removed (0 packages loaded, 1 target configured).
 ERROR: <WS>/BUILD.bazel:27:9: output tree artifact removed.dir was not created
-ERROR: Build did NOT complete successfully
+ERROR: <WS>/BUILD.bazel:27:9: Action removed.dir failed: not all outputs were created or valid
 Target //:removed failed to build
 Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 1 internal, 1 local.
+ERROR: Build did NOT complete successfully
 === 21: run build //:empty
 exit 0
-  bazel-bin/empty.dir
-INFO: Build completed successfully, 2 total actions
+--- stdout
+--- stderr
+INFO: Analyzed target //:empty (0 packages loaded, 1 target configured).
+INFO: Found 1 target...
 Target //:empty up-to-date:
+  bazel-bin/empty.dir
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 1 internal, 1 local.
+INFO: Build completed successfully, 2 total actions
 === 22: stat bazel-bin/empty.dir
 dir 555

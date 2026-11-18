@@ -101,12 +101,22 @@ fn ctx_rule_context(
     }
 }
 
-/// An `ImmutableList<String>` / `StarlarkList.immutableCopyOf(...)` result: an immutable list
-/// (`Starlark.fromJava` wraps a Java `List` with `StarlarkList.immutableCopyOf`).
+/// A `StarlarkList.immutableCopyOf(...)` result (or the immutable `"[]"` parameter default):
+/// an immutable list.
 // Java: net/starlark/java/eval/StarlarkList.java:168 StarlarkList.immutableCopyOf
-fn string_list<'v>(heap: Heap<'v>, items: &[String]) -> Value<'v> {
+fn immutable_string_list<'v>(heap: Heap<'v>, items: &[String]) -> Value<'v> {
     let values: Vec<Value<'v>> = items.iter().map(|s| heap.alloc_str(s).to_value()).collect();
     starlark::values::list::alloc_immutable_list(heap, &values)
+}
+
+/// An `ImmutableList<String>` returned by a `@StarlarkMethod`: `MethodDescriptor.call` converts
+/// it with `Starlark.fromJava(result, thread.mutability())` = `StarlarkList.copyOf`, a new
+/// mutable list per call.
+// Java: net/starlark/java/eval/Starlark.java:214 Starlark.fromJava
+fn mutable_string_list<'v>(heap: Heap<'v>, items: &[String]) -> Value<'v> {
+    heap.alloc(starlark::values::list::AllocList(
+        items.iter().map(|s| heap.alloc_str(s).to_value()),
+    ))
 }
 
 /// `TargetUtils.getExecutionInfo(rule, allowTagsPropagation)` in Java's iteration order
@@ -731,9 +741,17 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
         let _ = this;
-        // PORT: Java accepts any StarlarkActionContext (rule or subrule context); only the rule
-        // context is reached here.
-        let handle = ctx_rule_context(ctx, "absolute_symlink", "ctx")?;
+        // Java: the parameter is typed `StarlarkActionContext` (a rule or a subrule context);
+        // `Starlark.classType` of that interface is its simple name.
+        let Some(handle) =
+            blaze_analysis::starlark::starlark_subrule::starlark_action_context_rule_context(ctx)
+        else {
+            return Err(errorf(format!(
+                "in call to absolute_symlink(), parameter 'ctx' got value of type '{}', want \
+                 'StarlarkActionContext'",
+                ctx.get_type()
+            )));
+        };
         let output = artifact_param(output, "absolute_symlink", "output")?;
         let action = SymlinkAction::to_absolute_path(
             handle.borrow().get_action_owner(),
@@ -911,7 +929,7 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
                 options.extend(per_label_options.get_options().iter().cloned());
             }
         }
-        Ok(string_list(heap, &options))
+        Ok(mutable_string_list(heap, &options))
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:552 CcStarlarkInternal.isTreeArtifact
@@ -1209,7 +1227,7 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
                 options.extend(per_label_options.get_options().iter().cloned());
             }
         }
-        Ok(string_list(heap, &options))
+        Ok(mutable_string_list(heap, &options))
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:1000 CcStarlarkInternal.declareCompileOutputFile
@@ -1422,7 +1440,7 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
         let flags = match flags {
             Some(f) => f,
             // Java: `defaultValue = "[]"`, the immutable empty list.
-            None => return Ok(string_list(heap, &[])),
+            None => return Ok(immutable_string_list(heap, &[])),
         };
         let flag_strings = sequence_cast_strings(flags, attr, heap)?;
         if flag_strings.is_empty() {
@@ -1465,7 +1483,7 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
             .get_expander_with_label_map(label_map)
             .with_data_exec_locations();
         let expanded_flags = expander.tokenized(attr, &flag_strings);
-        Ok(string_list(heap, &expanded_flags))
+        Ok(immutable_string_list(heap, &expanded_flags))
     }
 }
 

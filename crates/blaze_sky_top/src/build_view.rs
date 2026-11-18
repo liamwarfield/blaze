@@ -436,6 +436,21 @@ fn check_target_compatibility_of_build_driver_keys(
                 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:302 SkyframeErrorProcessor.processErrors
                 // (`processIndividualError`: a TargetCompatibilityCheckException has no root
                 // causes and is an analysis error).
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:411 SkyframeErrorProcessor.maybePostFailureEventsForNonConflictError
+                // (the effective error key is the BuildDriverKey's ActionLookupKey; analysis
+                // review R2-6).
+                if let Some(ct_key) = configured_target
+                    .get_lookup_key()
+                    .as_any()
+                    .downcast_ref::<ConfiguredTargetKey>()
+                {
+                    event_handler.post(Arc::new(
+                        crate::analysis_failure_event::AnalysisFailureEvent::while_analyzing_target(
+                            ct_key.clone(),
+                            Vec::new(),
+                        ),
+                    ));
+                }
                 if options.keep_going {
                     // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:665 SkyframeErrorProcessor.logOrPrintWarningsKeepGoing
                     let mut message = format!(

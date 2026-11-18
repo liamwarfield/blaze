@@ -97,6 +97,33 @@ impl ResourceSet {
     }
 }
 
+/// The failure of a [`ResourceSetBuilder`]: Java's `UserExecException` with a `FailureDetail`
+/// whose message is `message` and whose code is `StarlarkAction.Code.STARLARK_ACTION_UNKNOWN`.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:954 StarlarkActionResourceSetBuilder.buildResourceSet
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceSetBuildError {
+    /// `FailureDetail.message` (e.g. `Could not build resources for CppLink. ...`).
+    pub message: String,
+}
+
+/// A `ResourceSetOrBuilder` that computes the resource set at execution time from the OS and
+/// the number of inputs (Java `StarlarkActionFactory.StarlarkActionResourceSetBuilder`, the
+/// `resource_set` callback of `ctx.actions.run` / `run_shell`).
+///
+/// A fixed resource set stays [`ResourceSet`] (`SpawnAction::get_resource_set_or_builder`);
+/// an action built with [`SpawnActionBuilder::set_resources_builder`] carries this instead, and
+/// the execution layer must call it where Java calls `BaseSpawn.getLocalResources`.
+// Java: com/google/devtools/build/lib/actions/ResourceSetOrBuilder.java:22 ResourceSetOrBuilder
+pub trait ResourceSetBuilder: Send + Sync + fmt::Debug {
+    /// `buildResourceSet(OS os, int inputsSize)`.
+    // Java: com/google/devtools/build/lib/actions/ResourceSetOrBuilder.java:29 ResourceSetOrBuilder.buildResourceSet
+    fn build_resource_set(
+        &self,
+        os: blaze_shell::util::os::OS,
+        inputs_size: i32,
+    ) -> Result<ResourceSet, ResourceSetBuildError>;
+}
+
 /// The configuration values `SpawnAction.Builder.build(owner, configuration)` reads from
 /// `BuildConfigurationValue`.
 ///
@@ -148,6 +175,9 @@ pub struct SpawnAction {
     progress_message: Option<String>,
     mnemonic: String,
     resource_set: ResourceSet,
+    /// Set instead of `resource_set` when the builder was given a [`ResourceSetBuilder`] (Java
+    /// keeps one `ResourceSetOrBuilder` field).
+    resource_set_builder: Option<Arc<dyn ResourceSetBuilder>>,
     /// `ImmutableSortedMap` of the execution info.
     sorted_execution_info: BTreeMap<String, String>,
     output_paths_mode: OutputPathsMode,
@@ -220,6 +250,7 @@ impl SpawnAction {
             progress_message,
             mnemonic,
             resource_set,
+            resource_set_builder: None,
             sorted_execution_info: execution_info
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
@@ -273,6 +304,13 @@ impl SpawnAction {
     // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:311 SpawnAction.getResourceSetOrBuilder
     pub fn get_resource_set_or_builder(&self) -> &ResourceSet {
         &self.resource_set
+    }
+
+    /// The `ResourceSetOrBuilder` when it is a builder (a Starlark `resource_set` callback);
+    /// `None` when it is the fixed [`get_resource_set_or_builder`](Self::get_resource_set_or_builder).
+    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:311 SpawnAction.getResourceSetOrBuilder
+    pub fn get_resource_set_builder(&self) -> Option<&Arc<dyn ResourceSetBuilder>> {
+        self.resource_set_builder.as_ref()
     }
 
     // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:511 SpawnAction.getIncompleteEnvironmentForTesting
@@ -605,6 +643,7 @@ pub struct SpawnActionBuilder {
     inputs_builder: NestedSetBuilder<Artifact>,
     outputs: Vec<Artifact>,
     resource_set: ResourceSet,
+    resource_set_builder: Option<Arc<dyn ResourceSetBuilder>>,
     environment: IndexMap<String, String>,
     action_environment: Option<Arc<ActionEnvironment>>,
     output_paths_mode: Option<OutputPathsMode>,
@@ -649,6 +688,7 @@ impl SpawnActionBuilder {
             inputs_builder: NestedSetBuilder::stable_order(),
             outputs: Vec::new(),
             resource_set: ResourceSet::default_resource_set(),
+            resource_set_builder: None,
             environment: IndexMap::new(),
             action_environment: None,
             output_paths_mode: None,
@@ -729,7 +769,7 @@ impl SpawnActionBuilder {
     pub fn build_for_starlark_action_template(&mut self, owner: ActionOwner) -> SpawnAction {
         let tools = self.tools_builder.build();
         let inputs = self.inputs_builder.add_transitive(&tools).build();
-        SpawnAction::new(
+        let mut action = SpawnAction::new(
             owner,
             tools,
             inputs,
@@ -744,7 +784,9 @@ impl SpawnActionBuilder {
             self.mnemonic.clone(),
             self.output_paths_mode
                 .expect("NullPointerException: outputPathsMode"),
-        )
+        );
+        action.resource_set_builder = self.resource_set_builder.clone();
+        action
     }
 
     // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:699 SpawnAction.Builder.buildCommandLines
@@ -797,7 +839,7 @@ impl SpawnActionBuilder {
             None => self.execution_info.clone(),
             Some(c) => c.modified_execution_info(&self.execution_info, &self.mnemonic),
         };
-        self.create_spawn_action(
+        let mut action = self.create_spawn_action(
             owner,
             tools,
             inputs_and_tools,
@@ -809,7 +851,9 @@ impl SpawnActionBuilder {
             execution_info,
             self.progress_message.clone(),
             self.mnemonic.clone(),
-        )
+        );
+        action.resource_set_builder = self.resource_set_builder.clone();
+        action
     }
 
     // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:770 SpawnAction.Builder.createSpawnAction
@@ -965,6 +1009,16 @@ impl SpawnActionBuilder {
     // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:886 SpawnAction.Builder.setResources
     pub fn set_resources(&mut self, resource_set: ResourceSet) -> &mut Self {
         self.resource_set = resource_set;
+        self.resource_set_builder = None;
+        self
+    }
+
+    /// `setResources(ResourceSetOrBuilder)` with a builder (Java's single slot: the last call
+    /// wins over [`set_resources`](Self::set_resources)).
+    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:886 SpawnAction.Builder.setResources
+    pub fn set_resources_builder(&mut self, builder: Arc<dyn ResourceSetBuilder>) -> &mut Self {
+        self.resource_set = ResourceSet::default_resource_set();
+        self.resource_set_builder = Some(builder);
         self
     }
 

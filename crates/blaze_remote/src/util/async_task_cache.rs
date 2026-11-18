@@ -145,10 +145,17 @@ impl<K: Eq + Hash + Clone, V: Clone> AsyncTaskCache<K, V> {
     where
         F: Future<Output = io::Result<V>>,
     {
+        enum Decision<V> {
+            Finished(V),
+            Wait(watch::Receiver<Outcome<V>>, Arc<()>),
+            Drive(watch::Sender<Outcome<V>>, u64, Arc<()>),
+        }
+
         let mut force = force;
+        let mut task = Some(task);
         loop {
             // Either wait for a running execution or become the driver.
-            let (mut rx, _subscription) = {
+            let decision = {
                 let mut inner = self.inner.lock();
                 if inner.state != STATE_ACTIVE {
                     return Err(io::Error::new(
@@ -156,61 +163,75 @@ impl<K: Eq + Hash + Clone, V: Clone> AsyncTaskCache<K, V> {
                         "CancellationException: already shutdown",
                     ));
                 }
-                if !force {
-                    if let Some(cached) = inner.finished.get(&key) {
-                        return Ok(cached.clone());
-                    }
-                } else {
+                let cached = if force {
                     inner.finished.remove(&key);
-                }
-                match inner.in_progress.get(&key) {
-                    Some(execution) => (execution.rx.clone(), execution.subscribers.clone()),
-                    None => {
-                        let (tx, rx) = watch::channel(None);
-                        let id = inner.next_id;
-                        inner.next_id += 1;
-                        let subscribers = Arc::new(());
-                        inner.in_progress.insert(
-                            key.clone(),
-                            Execution {
-                                id,
-                                rx,
-                                subscribers: subscribers.clone(),
-                            },
-                        );
-                        drop(inner);
-                        let mut guard = DriverGuard {
-                            cache: self,
-                            key: key.clone(),
-                            id,
-                            done: false,
-                        };
-                        let _subscription = subscribers;
-                        let result = task.await;
-                        let outcome = result.map_err(Arc::new);
-                        {
-                            let mut inner = self.inner.lock();
-                            inner.in_progress.remove(&key);
-                            if let Ok(value) = &outcome {
-                                inner.finished.insert(key.clone(), value.clone());
-                            }
+                    None
+                } else {
+                    inner.finished.get(&key).cloned()
+                };
+                match cached {
+                    Some(cached) => Decision::Finished(cached),
+                    None => match inner.in_progress.get(&key) {
+                        Some(execution) => {
+                            Decision::Wait(execution.rx.clone(), execution.subscribers.clone())
                         }
-                        guard.done = true;
-                        let _ = tx.send(Some(outcome.clone()));
-                        self.idle.notify_waiters();
-                        return outcome.map_err(|e| shared(&e));
-                    }
+                        None => {
+                            let (tx, rx) = watch::channel(None);
+                            let id = inner.next_id;
+                            inner.next_id += 1;
+                            let subscribers = Arc::new(());
+                            inner.in_progress.insert(
+                                key.clone(),
+                                Execution {
+                                    id,
+                                    rx,
+                                    subscribers: subscribers.clone(),
+                                },
+                            );
+                            Decision::Drive(tx, id, subscribers)
+                        }
+                    },
                 }
             };
-            // A running execution always satisfies this call (Java ignores `force` then).
-            force = false;
-            loop {
-                if let Some(outcome) = rx.borrow().clone() {
+            match decision {
+                Decision::Finished(cached) => return Ok(cached),
+                Decision::Drive(tx, id, _subscription) => {
+                    let mut guard = DriverGuard {
+                        cache: self,
+                        key: key.clone(),
+                        id,
+                        done: false,
+                    };
+                    let task = task.take().expect("a call drives at most once");
+                    let result = task.await;
+                    let outcome = result.map_err(Arc::new);
+                    {
+                        let mut inner = self.inner.lock();
+                        inner.in_progress.remove(&key);
+                        if let Ok(value) = &outcome {
+                            inner.finished.insert(key.clone(), value.clone());
+                        }
+                    }
+                    guard.done = true;
+                    let _ = tx.send(Some(outcome.clone()));
+                    self.idle.notify_waiters();
                     return outcome.map_err(|e| shared(&e));
                 }
-                if rx.changed().await.is_err() {
-                    // The driver went away without finishing: try again (and maybe drive).
-                    break;
+                Decision::Wait(mut rx, _subscription) => {
+                    // A running execution always satisfies this call (Java ignores `force`
+                    // then).
+                    force = false;
+                    loop {
+                        let current = rx.borrow().clone();
+                        if let Some(outcome) = current {
+                            return outcome.map_err(|e| shared(&e));
+                        }
+                        if rx.changed().await.is_err() {
+                            // The driver went away without finishing: try again (and maybe
+                            // drive).
+                            break;
+                        }
+                    }
                 }
             }
         }

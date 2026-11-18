@@ -1,0 +1,8 @@
+# S1-6: shared actions (ActionExecutionValue.transformForSharedAction), file and tree outputs.
+run build //:merge_shared_rules
+cat bazel-bin/merge_shared_rules.out
+stat bazel-bin/shared-tree
+stat bazel-bin/shared-tree/d/copy.txt
+run build //:shared_2
+cat bazel-bin/shared_2.out
+run build //:shared_1 //:shared_2 --keep_going

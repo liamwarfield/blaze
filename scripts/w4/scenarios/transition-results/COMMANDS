@@ -1,0 +1,6 @@
+# Analysis review R2-11: a dict-of-dicts transition result whose inner dict has a non-string key
+# falls through to the patch-transition attempt (StarlarkDefinedConfigTransition.evaluate).
+run cquery "deps(//:dict_of_dicts_int_key)"
+run cquery "deps(//:dict_of_dicts_second_int_key)"
+run cquery "deps(//:dict_of_dicts_ok)"
+run cquery "deps(//:dict_of_dicts_first_undeclared)"

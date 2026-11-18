@@ -191,10 +191,10 @@ pub fn configure_targets(
 
     let mut inter_target_conflicts = ActionConflicts::new();
     let mut build_graph_metrics = None;
-    // PORT: `newKeys` (the top-level keys of this build) only feeds the incremental conditions of
-    // shouldCheckForConflicts.
+    // Java: newKeys = ImmutableSet of the top-level configured-target (and aspect) keys.
     if should_check_for_conflicts(
         check_for_action_conflicts,
+        ct_keys.len(),
         skyframe_executor.get_evaluator(),
     ) {
         // This operation is somewhat expensive, so we only do it if the graph might have changed
@@ -451,27 +451,47 @@ fn make_artifact_conflict_analysis_failed_cause(
     }
 }
 
-/// `shouldCheckForConflicts`: a build request checks unless it opted out (cquery); in a
-/// one-build process the graph changed iff some `ActionLookupValue` was evaluated.
+/// `shouldCheckForConflicts`: a build request checks unless it opted out (cquery).
 ///
 /// PORT: Java's `someActionLookupValueEvaluated` is set by the progress receiver; the command's
-/// evaluator is fresh, so it is true iff the graph holds a rule configured target. The
-/// incremental conditions (dirtied keys, the previous check's conflicts, a larger key set) cannot
-/// hold in a fresh graph.
+/// evaluator is fresh, so it is true iff the graph holds a rule configured target.
+/// `dirtiedActionLookupKeys` and `foundActionConflictInLatestCheck` are empty / false in a fresh
+/// process, and `largestTopLevelKeySetCheckedForConflicts` is the empty set, so its
+/// `containsAll(newKeys)` is false for any non-empty `newKeys` (analysis review R2-7: e.g.
+/// `build //pkg:a.txt` of a source file still runs the traversal and reports graph metrics).
 // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1254 SkyframeBuildView.shouldCheckForConflicts
-fn should_check_for_conflicts(specified_value_in_request: bool, evaluator: &Evaluator) -> bool {
+fn should_check_for_conflicts(
+    specified_value_in_request: bool,
+    new_keys_count: usize,
+    evaluator: &Evaluator,
+) -> bool {
     if !specified_value_in_request {
         // A build request by default enables action conflict checking, except for some cases e.g.
         // cquery.
         return false;
     }
-    evaluator.get_all_keys_for_testing().iter().any(|key| {
-        key.downcast::<ConfiguredTargetKey>().is_some()
-            && evaluator
-                .get_existing_value(key)
-                .and_then(|v| v.downcast::<ConfiguredTargetValue>().ok())
-                .is_some_and(|v| matches!(v.get_configured_target(), ConfiguredTarget::Rule(_)))
-    })
+
+    // A top-level target was added and may introduce a conflict, or a top-level target was
+    // recomputed and may introduce or resolve a conflict.
+    let some_action_lookup_value_evaluated =
+        evaluator.get_all_keys_for_testing().iter().any(|key| {
+            key.downcast::<ConfiguredTargetKey>().is_some()
+                && evaluator
+                    .get_existing_value(key)
+                    .and_then(|v| v.downcast::<ConfiguredTargetValue>().ok())
+                    .is_some_and(|v| matches!(v.get_configured_target(), ConfiguredTarget::Rule(_)))
+        });
+    if some_action_lookup_value_evaluated {
+        return true;
+    }
+
+    // Java: !largestTopLevelKeySetCheckedForConflicts.containsAll(newKeys), with the empty set
+    // of a fresh process.
+    if new_keys_count > 0 {
+        return true;
+    }
+
+    false
 }
 
 /// Represents the traversal of the `ActionLookupValue`s in a build.
@@ -717,6 +737,23 @@ pub fn get_evaluated_counts(evaluator: &Evaluator, time_in_ms: i64) -> AnalysisP
         time_in_ms,
         packages_successfully_loaded,
         actions_constructed_by_mnemonic: action_count_by_mnemonic.into_iter().collect(),
+    }
+}
+
+#[cfg(test)]
+mod should_check_for_conflicts_tests {
+    use super::should_check_for_conflicts;
+
+    // Java SkyframeBuildView.shouldCheckForConflicts on a fresh SkyframeBuildView (empty
+    // largestTopLevelKeySetCheckedForConflicts, nothing dirtied, no earlier conflict) and a graph
+    // without rule configured targets (e.g. `build //pkg:a.txt` of a source file): true for any
+    // non-empty key set, false for none or when the request opts out (analysis review R2-7).
+    #[test]
+    fn fresh_view_checks_any_non_empty_key_set() {
+        let evaluator = blaze_skyframe::EvaluatorBuilder::new().build();
+        assert!(should_check_for_conflicts(true, 1, &evaluator));
+        assert!(!should_check_for_conflicts(true, 0, &evaluator));
+        assert!(!should_check_for_conflicts(false, 1, &evaluator));
     }
 }
 

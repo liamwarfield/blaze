@@ -314,7 +314,7 @@ pub fn is_tls_enabled(target: &str) -> bool {
 /// their labels. A section whose body is not base64 is skipped.
 ///
 /// This is the form rustls reads (`-----BEGIN <label>-----` ... `-----END <label>-----`).
-fn pem_sections<'a>(pem: &'a str, label: impl Fn(&str) -> bool) -> Vec<(&'a str, Vec<u8>)> {
+fn pem_sections(pem: &str, label: impl Fn(&str) -> bool) -> Vec<(&str, Vec<u8>)> {
     use base64::Engine as _;
     let mut sections = Vec::new();
     let mut lines = pem.lines();

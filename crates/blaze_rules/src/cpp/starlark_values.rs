@@ -48,11 +48,16 @@ impl fmt::Debug for CcToolchainVariablesValue {
 }
 
 impl fmt::Display for CcToolchainVariablesValue {
-    // Java: StarlarkValue.repr default (`<unknown object <class name>>`).
-    // PORT: Java prints the runtime subclass (`CcToolchainVariables$MapVariables`, ...), which
-    // the Rust enum does not expose; the base class name is printed.
+    // Java: StarlarkValue.repr default (`<unknown object <class name>>`) with the runtime class,
+    // `CcToolchainVariables$MapVariables` or `CcToolchainVariables$SingleVariables`
+    // (`cc_common.empty_variables()` is a `MapVariables`: `builder().build()` of an empty map).
+    // Java: net/starlark/java/eval/StarlarkValue.java:41 StarlarkValue.repr
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<unknown object com.google.devtools.build.lib.rules.cpp.CcToolchainVariables>")
+        write!(
+            f,
+            "<unknown object com.google.devtools.build.lib.rules.cpp.CcToolchainVariables${}>",
+            variables_class(&self.0)
+        )
     }
 }
 
@@ -66,6 +71,14 @@ impl fmt::Display for CcToolchainVariablesValue {
 // Java: com/google/devtools/build/lib/rules/cpp/CcToolchainVariables.java:953 CcToolchainVariables.MapVariables.isImmutable
 // Java: net/starlark/java/eval/StarlarkValue.java:92 StarlarkValue.isImmutable
 fn variables_is_immutable(variables: &CcToolchainVariables) -> bool {
+    variables_class(variables) == "MapVariables"
+}
+
+/// The simple name of the Java subclass of `variables` (`MapVariables` or `SingleVariables`).
+///
+/// PORT: `blaze_cc_features` keeps the variant private (requested: a public accessor); the name
+/// is read from what its `Debug` implementation prints first; any other name fails loudly.
+fn variables_class(variables: &CcToolchainVariables) -> &'static str {
     /// Keeps the first bytes of what is written to it and then stops the formatting.
     struct Prefix(String);
     impl fmt::Write for Prefix {
@@ -82,12 +95,12 @@ fn variables_is_immutable(variables: &CcToolchainVariables) -> bool {
     // An `Err` only says that the prefix is complete.
     let _ = fmt::Write::write_fmt(&mut prefix, format_args!("{variables:?}"));
     if prefix.0.starts_with("MapVariables") {
-        true
+        "MapVariables"
     } else if prefix.0.starts_with("SingleVariables") {
-        false
+        "SingleVariables"
     } else {
         blaze_util::unported!(
-            "CcToolchainVariables.isImmutable (unknown CcToolchainVariables subclass)",
+            "CcToolchainVariables (unknown CcToolchainVariables subclass)",
             "{}",
             prefix.0
         )
@@ -377,6 +390,20 @@ mod tests {
             builder.add_variable(name, VariableObject::string(value));
         }
         builder.build()
+    }
+
+    /// Java: the default `StarlarkValue.repr` prints the runtime class: `MapVariables` for an
+    /// empty or multi-variable build, `SingleVariables` for one variable (analysis review R2-13).
+    #[test]
+    fn repr_names_the_runtime_subclass() {
+        assert_eq!(
+            CcToolchainVariablesValue(variables(&[])).to_string(),
+            "<unknown object com.google.devtools.build.lib.rules.cpp.CcToolchainVariables$MapVariables>"
+        );
+        assert_eq!(
+            CcToolchainVariablesValue(variables(&[("a", "1")])).to_string(),
+            "<unknown object com.google.devtools.build.lib.rules.cpp.CcToolchainVariables$SingleVariables>"
+        );
     }
 
     /// Java: `Builder.build()` makes a `MapVariables` unless there is exactly one variable

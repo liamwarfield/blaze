@@ -1,6 +1,6 @@
 # Starlark flags set by transitions and matched by config_setting(flag_values) (analysis review
 # S1-10, S1-11, S2-2, S2-3, S2-4): configuration checksums, DEBUG lines of print() in transition
-# implementations, and the first line of each error.
+# implementations, and the full text of each error.
 run cquery "deps(//:t_list)"
 run cquery "deps(//:t_list)" --//:copts=-DX,-DY
 run cquery "deps(//:t_tuple)"

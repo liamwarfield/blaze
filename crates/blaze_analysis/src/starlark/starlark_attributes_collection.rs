@@ -27,6 +27,7 @@ use crate::providers::alias_provider::AliasProvider;
 use crate::providers::file_provider::FilesToRunProvider;
 use crate::rule::prerequisite_artifacts::PrerequisiteArtifacts;
 use crate::rule::prerequisites_collection::PrerequisitesCollection;
+use blaze_starlark::semantics::StarlarkSemantics;
 
 /// Java `StarlarkAttributesCollection.ERROR_MESSAGE_FOR_NO_ATTR`.
 // PORT: Java builds `ctx.attr` with `StructProvider.STRUCT.create(attrs, ERROR_MESSAGE_FOR_NO_ATTR)`
@@ -63,6 +64,7 @@ pub(crate) fn alloc_struct<'v>(heap: Heap<'v>, fields: Vec<(String, Value<'v>)>)
 pub struct StarlarkAttributesCollectionBuilder<'a, 'v> {
     prerequisites: &'a PrerequisitesCollection,
     heap: Heap<'v>,
+    semantics: &'a StarlarkSemantics,
     attr_builder: IndexMap<String, Value<'v>>,
     executable_builder: IndexMap<String, Value<'v>>,
     executable_runfiles_builder: IndexMap<Artifact, Arc<FilesToRunProvider>>,
@@ -73,10 +75,14 @@ pub struct StarlarkAttributesCollectionBuilder<'a, 'v> {
 }
 
 /// The configured targets of `prerequisites` as Starlark `Target` values.
-fn targets_to_starlark<'v>(heap: Heap<'v>, prerequisites: &[ConfiguredTarget]) -> Vec<Value<'v>> {
+fn targets_to_starlark<'v>(
+    heap: Heap<'v>,
+    prerequisites: &[ConfiguredTarget],
+    semantics: &StarlarkSemantics,
+) -> Vec<Value<'v>> {
     prerequisites
         .iter()
-        .map(|t| target_to_starlark(t, heap))
+        .map(|t| target_to_starlark(t, heap, semantics))
         .collect()
 }
 
@@ -99,8 +105,9 @@ pub(crate) fn convert_string_to_label_map<'v>(
     heap: Heap<'v>,
     unconfigured_value: &IndexMap<String, Label>,
     prerequisites: &[ConfiguredTarget],
+    semantics: &StarlarkSemantics,
 ) -> Value<'v> {
-    let values = targets_to_starlark(heap, prerequisites);
+    let values = targets_to_starlark(heap, prerequisites, semantics);
     let prerequisite_map = build_prerequisite_map(prerequisites, &values);
     // Java: Dict.immutableCopyOf(builder.buildOrThrow())
     alloc_immutable_dict(
@@ -126,8 +133,9 @@ pub(crate) fn convert_string_to_label_list_map<'v>(
     heap: Heap<'v>,
     unconfigured_value: &IndexMap<String, Vec<Label>>,
     prerequisites: &[ConfiguredTarget],
+    semantics: &StarlarkSemantics,
 ) -> Value<'v> {
-    let values = targets_to_starlark(heap, prerequisites);
+    let values = targets_to_starlark(heap, prerequisites, semantics);
     let prerequisite_map = build_prerequisite_map(prerequisites, &values);
     // Java: Dict.immutableCopyOf of StarlarkList.immutableCopyOf(Lists.transform(labels,
     // prerequisiteMap::get)) values.
@@ -221,6 +229,7 @@ pub fn convert_attribute_value<'v>(
     a: &Attribute,
     val: Option<&AttrValue>,
     heap: Heap<'v>,
+    semantics: &StarlarkSemantics,
 ) -> Option<Value<'v>> {
     if should_ignore(a) {
         return None;
@@ -237,14 +246,14 @@ pub fn convert_attribute_value<'v>(
         let prerequisites = prerequisite_supplier();
         Some(match prerequisites.first() {
             None => Value::new_none(),
-            Some(p) => target_to_starlark(p, heap),
+            Some(p) => target_to_starlark(p, heap, semantics),
         })
     } else if type_ == Type::LabelList || (type_ == Type::Label && is_split) {
         let all_prereq = prerequisite_supplier();
         // Java: StarlarkList.immutableCopyOf(allPrereq)
         Some(alloc_immutable_list(
             heap,
-            targets_to_starlark(heap, &all_prereq),
+            targets_to_starlark(heap, &all_prereq, semantics),
         ))
     } else if type_ == Type::LabelDictUnary {
         let Some(AttrValue::LabelDictUnary(m)) = val else {
@@ -254,6 +263,7 @@ pub fn convert_attribute_value<'v>(
             heap,
             m,
             &prerequisite_supplier(),
+            semantics,
         ))
     } else if type_ == Type::LabelKeyedStringDict {
         let Some(AttrValue::LabelKeyedStringDict(original)) = val else {
@@ -262,7 +272,7 @@ pub fn convert_attribute_value<'v>(
         let all_prereq = prerequisite_supplier();
         let mut entries: Vec<(Value<'v>, Value<'v>)> = Vec::with_capacity(original.len());
         for prereq in &all_prereq {
-            let key = target_to_starlark(prereq, heap);
+            let key = target_to_starlark(prereq, heap, semantics);
             let value = match original.get(&AliasProvider::get_dependency_label(prereq)) {
                 Some(s) => heap.alloc_str(s).to_value(),
                 None => Value::new_none(),
@@ -279,6 +289,7 @@ pub fn convert_attribute_value<'v>(
             heap,
             m,
             &prerequisite_supplier(),
+            semantics,
         ))
     } else {
         panic!(
@@ -295,10 +306,12 @@ impl<'a, 'v> StarlarkAttributesCollectionBuilder<'a, 'v> {
     pub fn new(
         prerequisites: &'a PrerequisitesCollection,
         heap: Heap<'v>,
+        semantics: &'a StarlarkSemantics,
     ) -> StarlarkAttributesCollectionBuilder<'a, 'v> {
         StarlarkAttributesCollectionBuilder {
             prerequisites,
             heap,
+            semantics,
             attr_builder: IndexMap::new(),
             executable_builder: IndexMap::new(),
             executable_runfiles_builder: IndexMap::new(),
@@ -322,9 +335,13 @@ impl<'a, 'v> StarlarkAttributesCollectionBuilder<'a, 'v> {
 
         let prerequisites = self.prerequisites;
         let name = a.get_name().to_owned();
-        let Some(starlark_val) =
-            convert_attribute_value(&|| prerequisites.get_prerequisites(&name), a, val, heap)
-        else {
+        let Some(starlark_val) = convert_attribute_value(
+            &|| prerequisites.get_prerequisites(&name),
+            a,
+            val,
+            heap,
+            self.semantics,
+        ) else {
             return;
         };
 

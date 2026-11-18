@@ -491,6 +491,7 @@ dependencies = [
  "blaze_options",
  "blaze_protos",
  "blaze_shell",
+ "blaze_starlark",
  "blaze_util",
  "blaze_vfs",
  "hex",

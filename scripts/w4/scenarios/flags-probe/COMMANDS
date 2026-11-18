@@ -1,0 +1,145 @@
+# Starlark flags on the command line, in .bazelrc and through --flag_alias (analysis review
+# S1-1, R2-12): for each case, cquery deps() with --output=label_kind, then the configurations of
+# //:t with --output=jsonproto. Former scripts/w4/flags-probe cases 1-71, in order.
+run cquery 'deps(//:t + //:selected)' --output=label_kind
+run cquery //:t --output=jsonproto
+run cquery --//:bool_flag 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:bool_flag //:t --output=jsonproto
+run cquery --no//:bool_flag 'deps(//:t + //:selected)' --output=label_kind
+run cquery --no//:bool_flag //:t --output=jsonproto
+run cquery --//:bool_flag=false 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:bool_flag=false //:t --output=jsonproto
+run cquery --//:bool_flag=0 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:bool_flag=0 //:t --output=jsonproto
+run cquery --//:int_flag=7 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:int_flag=7 //:t --output=jsonproto
+run cquery --//:int_flag=1 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:int_flag=1 //:t --output=jsonproto
+run cquery --//:int_flag=0x10 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:int_flag=0x10 //:t --output=jsonproto
+run cquery --//:string_flag=abc 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:string_flag=abc //:t --output=jsonproto
+run cquery --//:string_flag= 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:string_flag= //:t --output=jsonproto
+run cquery --//:string_list_flag=a,b 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:string_list_flag=a,b //:t --output=jsonproto
+run cquery --//:string_list_flag=x,y 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:string_list_flag=x,y //:t --output=jsonproto
+run cquery --//:string_list_flag= 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:string_list_flag= //:t --output=jsonproto
+run cquery --//:multi=a --//:multi=b 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:multi=a --//:multi=b //:t --output=jsonproto
+run cquery --//:multi=m0 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:multi=m0 //:t --output=jsonproto
+run cquery --//:rep=a --//:rep=b,c 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:rep=a --//:rep=b,c //:t --output=jsonproto
+run cquery --//:rep=r0 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:rep=r0 //:t --output=jsonproto
+run cquery --//:lf=//:lf_other 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:lf=//:lf_other //:t --output=jsonproto
+run cquery --//:lf=//:lf_default 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:lf=//:lf_default //:t --output=jsonproto
+run cquery --//:lf=:lf_other 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:lf=:lf_other //:t --output=jsonproto
+run cquery --//:alias_to_int=3 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:alias_to_int=3 //:t --output=jsonproto
+run cquery --//:alias_to_alias=3 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:alias_to_alias=3 //:t --output=jsonproto
+run cquery --//:int_flag=3 --//:alias_to_int=7 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:int_flag=3 --//:alias_to_int=7 //:t --output=jsonproto
+run cquery --myint=5 'deps(//:t + //:selected)' --output=label_kind
+run cquery --myint=5 //:t --output=jsonproto
+run cquery --config=rcflags 'deps(//:t + //:selected)' --output=label_kind
+run cquery --config=rcflags //:t --output=jsonproto
+run cquery --config=rcflags --//:multi=cl 'deps(//:t + //:selected)' --output=label_kind
+run cquery --config=rcflags --//:multi=cl //:t --output=jsonproto
+run cquery --config=rcall 'deps(//:t + //:selected)' --output=label_kind
+run cquery --config=rcall //:t --output=jsonproto
+run cquery --//:universal_flag=uu 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:universal_flag=uu //:t --output=jsonproto
+run cquery --//:target_flag=tt 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:target_flag=tt //:t --output=jsonproto
+run cquery --//:universal_flag=uu --//:target_flag=tt --//:string_flag=abc 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:universal_flag=uu --//:target_flag=tt --//:string_flag=abc //:t --output=jsonproto
+run cquery --//pkg:pkg_flag=v --@//:int_flag=7 --@flags_probe//:string_flag=abc 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//pkg:pkg_flag=v --@//:int_flag=7 --@flags_probe//:string_flag=abc //:t --output=jsonproto
+run cquery --//:int_flag=7 --//:string_flag=abc --//:string_list_flag=b --no//:bool_flag 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:int_flag=7 --//:string_flag=abc --//:string_list_flag=b --no//:bool_flag //:t --output=jsonproto
+run cquery --//:string_flag=abc --incompatible_exclude_starlark_flags_from_exec_config 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:string_flag=abc --incompatible_exclude_starlark_flags_from_exec_config //:t --output=jsonproto
+run cquery --//:string_flag=abc --noincompatible_exclude_starlark_flags_from_exec_config 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:string_flag=abc --noincompatible_exclude_starlark_flags_from_exec_config //:t --output=jsonproto
+run cquery --//:nonexistent=1 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:nonexistent=1 //:t --output=jsonproto
+run cquery --//nopkg:flag=1 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//nopkg:flag=1 //:t --output=jsonproto
+run cquery --//:int_flag=abc 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:int_flag=abc //:t --output=jsonproto
+run cquery --//:int_flag 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:int_flag //:t --output=jsonproto
+run cquery --no//:int_flag 'deps(//:t + //:selected)' --output=label_kind
+run cquery --no//:int_flag //:t --output=jsonproto
+run cquery --//:bool_flag=maybe 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:bool_flag=maybe //:t --output=jsonproto
+run cquery --//:setting=x 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:setting=x //:t --output=jsonproto
+run cquery --//:lf_default=x 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:lf_default=x //:t --output=jsonproto
+run cquery --//:alias_to_file=x 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:alias_to_file=x //:t --output=jsonproto
+run cquery --//:alias_select=3 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:alias_select=3 //:t --output=jsonproto
+run cquery --//:defs.bzl=x 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:defs.bzl=x //:t --output=jsonproto
+run cquery --//:universal_flag uu 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:universal_flag uu //:t --output=jsonproto
+run cquery --//:lf_universal=//:lf_other 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:lf_universal=//:lf_other //:t --output=jsonproto
+run cquery --//:bad_scope=x 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:bad_scope=x //:t --output=jsonproto
+run cquery --//sub:all=x 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//sub:all=x //:t --output=jsonproto
+run cquery --//:cyc_one=1 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:cyc_one=1 //:t --output=jsonproto
+run cquery --//:alias_real_select=3 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:alias_real_select=3 //:t --output=jsonproto
+run cquery --//:sset=b,a,b 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:sset=b,a,b //:t --output=jsonproto
+run cquery --//:sset=s0 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:sset=s0 //:t --output=jsonproto
+run cquery --//:sset= 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:sset= //:t --output=jsonproto
+run cquery --//:rsset=a --//:rsset=b --//:rsset=a 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:rsset=a --//:rsset=b --//:rsset=a //:t --output=jsonproto
+run cquery --//:rsset=r0 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:rsset=r0 //:t --output=jsonproto
+run cquery --//:int_flag=010 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:int_flag=010 //:t --output=jsonproto
+run cquery --//:int_flag=-0x10 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:int_flag=-0x10 //:t --output=jsonproto
+run cquery --//:string_flag=a=b 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:string_flag=a=b //:t --output=jsonproto
+run cquery --config=rcflags --//:string_flag=cl 'deps(//:t + //:selected)' --output=label_kind
+run cquery --config=rcflags --//:string_flag=cl //:t --output=jsonproto
+run cquery --//:string_flag=cl --config=rcflags 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:string_flag=cl --config=rcflags //:t --output=jsonproto
+run cquery --//:multi=a --config=rcflags 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:multi=a --config=rcflags //:t --output=jsonproto
+run cquery --//:bool_flag=1 --no//:bool_flag 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:bool_flag=1 --no//:bool_flag //:t --output=jsonproto
+run cquery --//:universal_flag=u 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:universal_flag=u //:t --output=jsonproto
+run cquery --//:universal_flag=uu --//:string_flag=abc --incompatible_exclude_starlark_flags_from_exec_config 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:universal_flag=uu --//:string_flag=abc --incompatible_exclude_starlark_flags_from_exec_config //:t --output=jsonproto
+run cquery --//:string_flag=abc --//pkg:pkg_flag=p --incompatible_exclude_starlark_flags_from_exec_config --experimental_propagate_custom_flag=//:string_flag 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:string_flag=abc --//pkg:pkg_flag=p --incompatible_exclude_starlark_flags_from_exec_config --experimental_propagate_custom_flag=//:string_flag //:t --output=jsonproto
+run cquery --//:string_flag=abc --//pkg:pkg_flag=p --incompatible_exclude_starlark_flags_from_exec_config --experimental_propagate_custom_flag=//pkg/... 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:string_flag=abc --//pkg:pkg_flag=p --incompatible_exclude_starlark_flags_from_exec_config --experimental_propagate_custom_flag=//pkg/... //:t --output=jsonproto
+run cquery --//:rep=a,b 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:rep=a,b //:t --output=jsonproto
+run cquery --//:multi=a,b 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:multi=a,b //:t --output=jsonproto
+run cquery --//:string_list_flag=a,,b 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:string_list_flag=a,,b //:t --output=jsonproto
+run cquery --//:lf=@flags_probe//:lf_other 'deps(//:t + //:selected)' --output=label_kind
+run cquery --//:lf=@flags_probe//:lf_other //:t --output=jsonproto

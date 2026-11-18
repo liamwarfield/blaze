@@ -1,4 +1,6 @@
 #![cfg(feature = "wip")]
+// Options and protos are filled in field by field, as the Java tests set them.
+#![allow(clippy::field_reassign_with_default)]
 //! Port of `lib/remote/RemotePathResolverTest.java`.
 //!
 //! PORT: Java uses an `InMemoryFileSystem`; the tests do no I/O, so the paths are plain

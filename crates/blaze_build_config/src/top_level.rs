@@ -30,13 +30,62 @@ pub fn create_build_options(
 /// set by `SkyframeExecutor.sync` from the command's `BuildLanguageOptions`).
 // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1722 SkyframeExecutor.getEffectiveStarlarkSemantics
 pub fn starlark_semantics_from(options: &OptionsParser) -> StarlarkSemantics {
-    match options.get_options::<BuildLanguageOptions>() {
+    let semantics = match options.get_options::<BuildLanguageOptions>() {
         Some(build_language_options) => to_starlark_semantics(&build_language_options),
         // PORT: Java only syncs package loading for commands that have BuildLanguageOptions; a
         // parser without the class gets the semantics of the option defaults.
         None => {
             to_starlark_semantics(&blaze_options::Options::<BuildLanguageOptions>::get_defaults())
         }
+    };
+    check_unported_semantics_keys(&semantics);
+    semantics
+}
+
+/// Semantics keys whose Java readers are not ported anywhere in Blaze, so a non-default value
+/// would be accepted and silently ignored (analysis review R2-2). Each entry names the Java
+/// readers; setting the key to a non-default value fails loudly instead. Keys with no Java reader
+/// at the pin (`EXPERIMENTAL_ENABLE_ANDROID_MIGRATION_APIS`,
+/// `EXPERIMENTAL_DISABLE_EXTERNAL_PACKAGE`, `INCOMPATIBLE_DO_NOT_SPLIT_LINKING_CMDLINE`, and the
+/// options `--experimental_cc_skylark_api_enabled_packages` / `--experimental_starlark_types`,
+/// which reach no key) are no-ops in Bazel too and are not listed.
+pub fn check_unported_semantics_keys(semantics: &StarlarkSemantics) {
+    let defaults = StarlarkSemantics::default();
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunction.java (the
+    // only reader; the function is not ported).
+    if semantics.incompatible_check_external_repo_source_dir_package_boundary
+        != defaults.incompatible_check_external_repo_source_dir_package_boundary
+    {
+        blaze_util::unported!(
+            "RecursiveFilesystemTraversalFunction",
+            "--incompatible_check_external_repo_source_dir_package_boundary={}",
+            semantics.incompatible_check_external_repo_source_dir_package_boundary
+        );
+    }
+    // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryModule.java:197
+    // StarlarkRepositoryModule.failWithIncompatibleUseCcConfigureFromRulesCc (not ported).
+    if semantics.incompatible_use_cc_configure_from_rules_cc
+        != defaults.incompatible_use_cc_configure_from_rules_cc
+    {
+        blaze_util::unported!(
+            "StarlarkRepositoryModule.failWithIncompatibleUseCcConfigureFromRulesCc",
+            "--incompatible_use_cc_configure_from_rules_cc={}",
+            semantics.incompatible_use_cc_configure_from_rules_cc
+        );
+    }
+    // Java: net/starlark/java/lib/json/Json.java, net/starlark/java/eval/StringModule.java,
+    // com/google/devtools/build/lib/bazel/bzlmod/FactsAdapter.java read
+    // StarlarkSemantics.INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS; Blaze keeps code-point strings
+    // (docs/decisions.md 2026-11-17, byte-string migration pending), which is the default's
+    // behaviour for ASCII only.
+    if semantics.internal_starlark_utf_8_byte_strings
+        != defaults.internal_starlark_utf_8_byte_strings
+    {
+        blaze_util::unported!(
+            "StarlarkSemantics.INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS",
+            "--internal_starlark_utf_8_byte_strings={}",
+            semantics.internal_starlark_utf_8_byte_strings
+        );
     }
 }
 

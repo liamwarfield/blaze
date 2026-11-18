@@ -933,14 +933,21 @@ pub fn base_visibility(base: &ConfiguredTargetBase) -> Visibility {
 
 /// A configured target as a Starlark `Target` value.
 ///
-/// PORT: Java reads `--incompatible_disable_target_default_provider_fields` from the thread's
-/// semantics when a field is accessed; a `Heap` carries no semantics, so this uses the flag's
-/// default (false). Callers with an evaluator can use `target_value::StarlarkTarget::new`.
+/// Java reads `--incompatible_disable_target_default_provider_fields` from the semantics of the
+/// thread that accesses a field (`AbstractConfiguredTarget.getValue(semantics, name)`). A
+/// `StarlarkValue::get_attr` has no thread, so the value carries the flag of the semantics it was
+/// created under: the analysis semantics of the rule (or subrule) whose `ctx` exposes it. Every
+/// analysis thread of one build has the same `BuildLanguageOptions`, so the value equals Java's.
+// Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:131 AbstractConfiguredTarget.getValue
 pub fn target_to_starlark<'v>(
     target: &ConfiguredTarget,
     heap: starlark::values::Heap<'v>,
+    semantics: &blaze_starlark::semantics::StarlarkSemantics,
 ) -> starlark::values::Value<'v> {
-    heap.alloc(target_value::StarlarkTarget::new(target.clone(), false))
+    heap.alloc(target_value::StarlarkTarget::new(
+        target.clone(),
+        semantics.incompatible_disable_target_default_provider_fields,
+    ))
 }
 
 /// The configured target of a Starlark `Target` value.

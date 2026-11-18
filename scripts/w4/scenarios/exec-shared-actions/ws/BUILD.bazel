@@ -1,0 +1,30 @@
+load(":shared.bzl", "shared")
+
+genrule(
+    name = "shared_input",
+    srcs = [],
+    outs = ["shared_input.txt"],
+    cmd = 'echo "hi i am a shared input" > $@',
+)
+
+shared(
+    name = "shared_1",
+    src = "shared_input.txt",
+    out = "shared_1.out",
+)
+
+shared(
+    name = "shared_2",
+    src = "shared_input.txt",
+    out = "shared_2.out",
+)
+
+genrule(
+    name = "merge_shared_rules",
+    srcs = [
+        "shared_1.out",
+        "shared_2.out",
+    ],
+    outs = ["merge_shared_rules.out"],
+    cmd = "cat $(SRCS) > $@",
+)

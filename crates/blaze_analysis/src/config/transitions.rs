@@ -151,34 +151,95 @@ impl TransitionAttrObject for TransitionAttributes {
 /// they are wrapped here in [`OpaqueAttributeDefault`] and every other value goes through it.
 // Java: com/google/devtools/build/lib/packages/Attribute.java:2442 Attribute.valueToStarlark
 fn transition_attr_value_to_starlark<'v>(v: Option<&AttrValue>, heap: Heap<'v>) -> Value<'v> {
+    use blaze_packages::attribute::computed_default::{ComputedDefaultKind, LateBoundDefaultKind};
     match v {
-        Some(AttrValue::ComputedDefault(_)) => heap.alloc(OpaqueAttributeDefault {
-            java_class: "com.google.devtools.build.lib.packages.Attribute$ComputedDefault",
-        }),
-        Some(AttrValue::LateBound(_)) => heap.alloc(OpaqueAttributeDefault {
-            java_class: "com.google.devtools.build.lib.packages.Attribute$LateBoundDefault",
-        }),
+        Some(AttrValue::ComputedDefault(c)) => match c.kind() {
+            ComputedDefaultKind::Starlark(_) => heap.alloc(StarlarkComputedDefaultValue),
+            // Java: a native rule's own `ComputedDefault` subclass (often anonymous).
+            ComputedDefaultKind::Native(_) => heap.alloc(OpaqueAttributeDefault),
+        },
+        Some(AttrValue::LateBound(l)) => match l.kind() {
+            LateBoundDefaultKind::Label => heap.alloc(LabelLateBoundDefaultValue),
+            LateBoundDefaultKind::LabelList => heap.alloc(LabelListLateBoundDefaultValue),
+            LateBoundDefaultKind::AlwaysNull => heap.alloc(AlwaysNullLateBoundDefaultValue),
+            LateBoundDefaultKind::Other => heap.alloc(OpaqueAttributeDefault),
+        },
         _ => Attribute::value_to_starlark(v, heap),
     }
 }
 
-/// A Java `Attribute.ComputedDefault` / `Attribute.LateBoundDefault` seen as a Starlark value:
-/// neither declares any Starlark method or field.
+/// A Java `ComputedDefault` / `LateBoundDefault` subclass seen as a Starlark value: it declares
+/// no Starlark method or field; `type()` is the class's simple name (`Starlark.classType`) and
+/// `repr` the default `<unknown object <class name>>` (analysis review S2-15).
+// Java: net/starlark/java/eval/Starlark.java:337 Starlark.classType
+// Java: net/starlark/java/eval/StarlarkValue.java:41 StarlarkValue.repr
+macro_rules! attribute_default_value {
+    ($name:ident, $type_name:literal, $java_class:literal) => {
+        #[derive(
+            Debug,
+            starlark::any::ProvidesStaticType,
+            starlark::values::NoSerialize,
+            allocative::Allocative,
+        )]
+        struct $name;
+
+        starlark::starlark_simple_value!($name);
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(concat!("<unknown object ", $java_class, ">"))
+            }
+        }
+
+        #[starlark::values::starlark_value(type = $type_name)]
+        impl<'v> starlark::values::StarlarkValue<'v> for $name {}
+    };
+}
+
+// Java: com/google/devtools/build/lib/packages/Attribute.java:1523 Attribute.StarlarkComputedDefault
+attribute_default_value!(
+    StarlarkComputedDefaultValue,
+    "StarlarkComputedDefault",
+    "com.google.devtools.build.lib.packages.Attribute$StarlarkComputedDefault"
+);
+// Java: com/google/devtools/build/lib/packages/Attribute.java:1720 Attribute.LabelLateBoundDefault
+attribute_default_value!(
+    LabelLateBoundDefaultValue,
+    "LabelLateBoundDefault",
+    "com.google.devtools.build.lib.packages.Attribute$LabelLateBoundDefault"
+);
+// Java: com/google/devtools/build/lib/packages/Attribute.java:1789 Attribute.LabelListLateBoundDefault
+attribute_default_value!(
+    LabelListLateBoundDefaultValue,
+    "LabelListLateBoundDefault",
+    "com.google.devtools.build.lib.packages.Attribute$LabelListLateBoundDefault"
+);
+// Java: com/google/devtools/build/lib/packages/Attribute.java:1710 Attribute.AlwaysNullLateBoundDefault
+attribute_default_value!(
+    AlwaysNullLateBoundDefaultValue,
+    "AlwaysNullLateBoundDefault",
+    "com.google.devtools.build.lib.packages.Attribute$AlwaysNullLateBoundDefault"
+);
+
+/// A native rule's own `ComputedDefault` subclass or another `SimpleLateBoundDefault`: the Java
+/// class is not recorded by blaze_packages, so its `repr` fails loudly.
+/// PORT: `type()` of this value still answers "unknown" (starlark-rust's type name is static);
+/// Java answers the subclass's simple name.
 // Java: com/google/devtools/build/lib/packages/Attribute.java:1275 Attribute.ComputedDefault
-// Java: com/google/devtools/build/lib/packages/Attribute.java:1616 Attribute.LateBoundDefault
+// Java: com/google/devtools/build/lib/packages/Attribute.java:1580 Attribute.SimpleLateBoundDefault
 #[derive(
     Debug, starlark::any::ProvidesStaticType, starlark::values::NoSerialize, allocative::Allocative,
 )]
-struct OpaqueAttributeDefault {
-    java_class: &'static str,
-}
+struct OpaqueAttributeDefault;
 
 starlark::starlark_simple_value!(OpaqueAttributeDefault);
 
 impl fmt::Display for OpaqueAttributeDefault {
-    // Java: net/starlark/java/eval/StarlarkValue.java:50 StarlarkValue.repr (default; Java prints the concrete class)
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<unknown object {}>", self.java_class)
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        blaze_util::unported!(
+            "StarlarkValue.repr",
+            "the Java class of a native ComputedDefault / LateBoundDefault"
+        )
     }
 }
 
@@ -1236,4 +1297,35 @@ mod tests {
     #[test]
     #[ignore = "needs a BuildOptions fixture with TestOptions (ComposingTransitionFactoryTest)"]
     fn composing_transition_applies_both() {}
+}
+
+#[cfg(test)]
+mod attribute_default_value_tests {
+    use super::*;
+
+    // Java Starlark.type / repr of an Attribute.StarlarkComputedDefault and of the late-bound
+    // defaults seen by a transition's `attr` (analysis review S2-15).
+    #[test]
+    fn computed_and_late_bound_defaults_have_their_java_names() {
+        starlark::values::Heap::temp(|heap| {
+            let v = heap.alloc(StarlarkComputedDefaultValue);
+            assert_eq!(v.get_type(), "StarlarkComputedDefault");
+            assert_eq!(
+                v.to_repr(),
+                "<unknown object com.google.devtools.build.lib.packages.Attribute$StarlarkComputedDefault>"
+            );
+            assert_eq!(
+                heap.alloc(LabelLateBoundDefaultValue).get_type(),
+                "LabelLateBoundDefault"
+            );
+            assert_eq!(
+                heap.alloc(LabelListLateBoundDefaultValue).get_type(),
+                "LabelListLateBoundDefault"
+            );
+            assert_eq!(
+                heap.alloc(AlwaysNullLateBoundDefaultValue).to_repr(),
+                "<unknown object com.google.devtools.build.lib.packages.Attribute$AlwaysNullLateBoundDefault>"
+            );
+        });
+    }
 }

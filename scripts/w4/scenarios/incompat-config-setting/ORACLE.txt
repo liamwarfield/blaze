@@ -1,97 +1,205 @@
 === 1: run build //pkg:cs_one
 exit 1
-ERROR: Analysis of target '//pkg:cs_one' failed; build aborted: Target //pkg:cs_one is incompatible and cannot be built, but was explicitly requested.
-ERROR: Build did NOT complete successfully
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
 Target //pkg:cs_one failed to build
 Use --verbose_failures to see the command lines of failed build steps.
+ERROR: Analysis of target '//pkg:cs_one' failed; build aborted: Target //pkg:cs_one is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_one (a7a71f)   <-- target configuration didn't match config_setting //pkg:is_opt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
 === 2: run build //pkg:cs_two
 exit 1
-ERROR: Analysis of target '//pkg:cs_two' failed; build aborted: Target //pkg:cs_two is incompatible and cannot be built, but was explicitly requested.
-ERROR: Build did NOT complete successfully
+--- stdout
+--- stderr
 Target //pkg:cs_two failed to build
 Use --verbose_failures to see the command lines of failed build steps.
+ERROR: Analysis of target '//pkg:cs_two' failed; build aborted: Target //pkg:cs_two is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_two (a7a71f)   <-- target configuration didn't match config_settings [//pkg:is_dbg, //pkg:is_opt]
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
 === 3: run build //pkg:cs_mixed
 exit 1
-ERROR: Analysis of target '//pkg:cs_mixed' failed; build aborted: Target //pkg:cs_mixed is incompatible and cannot be built, but was explicitly requested.
-ERROR: Build did NOT complete successfully
+--- stdout
+--- stderr
 Target //pkg:cs_mixed failed to build
 Use --verbose_failures to see the command lines of failed build steps.
+ERROR: Analysis of target '//pkg:cs_mixed' failed; build aborted: Target //pkg:cs_mixed is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_mixed (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint //pkg:vanilla and target configuration didn't match config_setting //pkg:is_opt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
 === 4: run build //pkg:cs_ok
 exit 0
-INFO: Build completed successfully, 1 total action
+--- stdout
+--- stderr
+INFO: Analyzed target //pkg:cs_ok (0 packages loaded, 2 targets configured).
+INFO: Found 1 target...
 Target //pkg:cs_ok up-to-date (nothing to build)
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
 === 5: run build //pkg:cs_one -c opt
 exit 0
-INFO: Build completed successfully, 1 total action
+--- stdout
+--- stderr
+WARNING: Build option --compilation_mode has changed, discarding analysis cache (this can be expensive, see https://bazel.build/advanced/performance/iteration-speed).
+INFO: Analyzed target //pkg:cs_one (0 packages loaded, 2 targets configured).
+INFO: Found 1 target...
 Target //pkg:cs_one up-to-date (nothing to build)
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
 === 6: run build //pkg:alias_to_cs_one
 exit 1
-ERROR: Analysis of target '//pkg:alias_to_cs_one' failed; build aborted: Target //pkg:alias_to_cs_one is incompatible and cannot be built, but was explicitly requested.
-ERROR: Build did NOT complete successfully
+--- stdout
+--- stderr
+WARNING: Build option --compilation_mode has changed, discarding analysis cache (this can be expensive, see https://bazel.build/advanced/performance/iteration-speed).
 Target //pkg:alias_to_cs_one failed to build
 Use --verbose_failures to see the command lines of failed build steps.
+ERROR: Analysis of target '//pkg:alias_to_cs_one' failed; build aborted: Target //pkg:alias_to_cs_one is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:alias_to_cs_one (e722a2)
+    //pkg:cs_one (a7a71f)   <-- target configuration didn't match config_setting //pkg:is_opt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
 === 7: run build //pkg:duplicate_setting
 exit 1
+--- stdout
+--- stderr
 ERROR: <WS>/pkg/BUILD.bazel:56:10: Duplicate constraint values detected: constraint_setting //pkg:flavor has [//pkg:vanilla, //pkg:chocolate]
 ERROR: Analysis of target '//pkg:duplicate_setting' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
 ERROR: Build did NOT complete successfully
 === 8: run build //pkg:uses_tool
 exit 1
-ERROR: Analysis of target '//pkg:uses_tool' failed; build aborted: Target //pkg:uses_tool is incompatible and cannot be built, but was explicitly requested.
-ERROR: Build did NOT complete successfully
+--- stdout
+--- stderr
 Target //pkg:uses_tool failed to build
 Use --verbose_failures to see the command lines of failed build steps.
+ERROR: Analysis of target '//pkg:uses_tool' failed; build aborted: Target //pkg:uses_tool is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:uses_tool (a7a71f)
+    //pkg:tool (04bf13)   <-- target platform (@@platforms//host:host) didn't satisfy constraint //pkg:vanilla
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
 === 9: run build //pkg:a.txt //pkg:cs_ok
 exit 0
-INFO: Build completed successfully, 1 total action
-Target //pkg:cs_ok up-to-date (nothing to build)
+--- stdout
+--- stderr
 WARNING: <WS>/pkg/BUILD.bazel:81:14: //pkg:a.txt is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency
+INFO: Analyzed 2 targets (0 packages loaded, 3 targets configured).
+INFO: Found 2 targets...
+Target //pkg:cs_ok up-to-date (nothing to build)
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
 === 10: run build //pkg:all
 exit 1
+--- stdout
+--- stderr
 ERROR: <WS>/pkg/BUILD.bazel:56:10: Duplicate constraint values detected: constraint_setting //pkg:flavor has [//pkg:vanilla, //pkg:chocolate]
-ERROR: Analysis of target '//pkg:duplicate_setting' failed; build aborted
-ERROR: Build did NOT complete successfully
 Use --verbose_failures to see the command lines of failed build steps.
+ERROR: Analysis of target '//pkg:duplicate_setting' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
 === 11: run cquery //pkg:all --output=label_kind
 exit 1
+--- stdout
+--- stderr
 ERROR: <WS>/pkg/BUILD.bazel:56:10: Duplicate constraint values detected: constraint_setting //pkg:flavor has [//pkg:vanilla, //pkg:chocolate]
 ERROR: Analysis of target '//pkg:duplicate_setting' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
 ERROR: Build did NOT complete successfully
 === 12: run cquery "deps(//pkg:uses_tool, 1)"
 exit 0
+--- stdout
 //pkg:uses_tool (a7a71fd)
 @bazel_tools//tools/genrule:genrule-setup.sh (null)
 @bazel_tools//tools:host_platform (3030ed4)
 //pkg:tool (04bf134)
 @platforms//host:host (3030ed4)
+--- stderr
+INFO: Analyzed target //pkg:uses_tool (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
 INFO: Build completed successfully, 0 total actions
 === 13: run aquery //pkg:cs_two
 exit 1
-ERROR: Build did NOT complete successfully
+--- stdout
+--- stderr
 ERROR: Target //pkg:cs_two is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_two (a7a71f)   <-- target configuration didn't match config_settings [//pkg:is_dbg, //pkg:is_opt]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
 === 14: run aquery //pkg:all
 exit 1
+--- stdout
+--- stderr
 ERROR: <WS>/pkg/BUILD.bazel:56:10: Duplicate constraint values detected: constraint_setting //pkg:flavor has [//pkg:vanilla, //pkg:chocolate]
 ERROR: Analysis of target '//pkg:duplicate_setting' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
 ERROR: Build did NOT complete successfully
 === 15: run build //pkg:cs_one //pkg:cs_two --keep_going
 exit 1
-ERROR: Build did NOT complete successfully
-ERROR: command succeeded, but not all targets were analyzed
-Target //pkg:cs_one is incompatible and cannot be built, but was explicitly requested.
-Target //pkg:cs_two is incompatible and cannot be built, but was explicitly requested.
-Use --verbose_failures to see the command lines of failed build steps.
+--- stdout
+--- stderr
+INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured).
 WARNING: errors encountered while analyzing target '//pkg:cs_one', it will not be built.
+Target //pkg:cs_one is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_one (a7a71f)   <-- target configuration didn't match config_setting //pkg:is_opt
 WARNING: errors encountered while analyzing target '//pkg:cs_two', it will not be built.
+Target //pkg:cs_two is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_two (a7a71f)   <-- target configuration didn't match config_settings [//pkg:is_dbg, //pkg:is_opt]
+INFO: Found 2 targets...
+Use --verbose_failures to see the command lines of failed build steps.
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
 === 16: run aquery "//pkg:cs_one + //pkg:cs_two + //pkg:cs_ok" --keep_going
 exit 1
-ERROR: Build did NOT complete successfully
-ERROR: command succeeded, but not all targets were analyzed
+--- stdout
+--- stderr
 WARNING: Target //pkg:cs_one is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_one (a7a71f)   <-- target configuration didn't match config_setting //pkg:is_opt
 WARNING: Target //pkg:cs_two is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_two (a7a71f)   <-- target configuration didn't match config_settings [//pkg:is_dbg, //pkg:is_opt]
+INFO: Analyzed 3 targets (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
 === 17: run cquery "//pkg:cs_one + //pkg:cs_two + //pkg:cs_ok" --keep_going
 exit 0
+--- stdout
 //pkg:cs_one (a7a71fd)
 //pkg:cs_two (a7a71fd)
 //pkg:cs_ok (a7a71fd)
+--- stderr
+INFO: Analyzed 3 targets (0 packages loaded, 0 targets configured).
+INFO: Found 3 targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
 INFO: Build completed successfully, 0 total actions

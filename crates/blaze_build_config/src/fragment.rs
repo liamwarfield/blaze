@@ -20,6 +20,10 @@ pub struct InvalidConfigurationException {
     pub message: String,
     /// `FailureDetails.BuildConfiguration.Code` name (Java's `DetailedExitCode`).
     pub code: &'static str,
+    /// The `PackageLoading.Code` number when the exception wraps a `NoSuchThingException` and
+    /// carries its detailed exit code (Java `new InvalidConfigurationException(
+    /// noSuchThingException.getDetailedExitCode(), e)`); `code` is then unused.
+    pub package_loading_code: Option<i32>,
 }
 
 impl InvalidConfigurationException {
@@ -27,6 +31,7 @@ impl InvalidConfigurationException {
         InvalidConfigurationException {
             message: message.into(),
             code: "BUILD_CONFIGURATION_UNKNOWN",
+            package_loading_code: None,
         }
     }
 
@@ -34,6 +39,18 @@ impl InvalidConfigurationException {
         InvalidConfigurationException {
             message: message.into(),
             code,
+            package_loading_code: None,
+        }
+    }
+
+    /// `new InvalidConfigurationException(detailedExitCode, cause)` for a `NoSuchThingException`'s
+    /// `PackageLoading` code.
+    // Java: com/google/devtools/build/lib/analysis/config/InvalidConfigurationException.java:62 InvalidConfigurationException.<init>
+    pub fn with_package_loading_code(message: impl Into<String>, code: i32) -> Self {
+        InvalidConfigurationException {
+            message: message.into(),
+            code: "BUILD_CONFIGURATION_UNKNOWN",
+            package_loading_code: Some(code),
         }
     }
 

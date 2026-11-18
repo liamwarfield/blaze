@@ -1,0 +1,13 @@
+load(":defs.bzl", "file_at", "symlink_at", "tree_at")
+
+# A file where a later build needs a directory.
+file_at(name = "foo_file", path = "foo")
+file_at(name = "foo_dir", path = "foo/bar.txt")
+
+# A tree artifact (read-only directories) below which a later build writes.
+tree_at(name = "tree", path = "t")
+file_at(name = "in_tree", path = "t/inner/sub/x.txt")
+
+# A symlink where a later build needs a directory.
+symlink_at(name = "link", path = "l", target = "src.txt")
+file_at(name = "under_link", path = "l/y.txt")

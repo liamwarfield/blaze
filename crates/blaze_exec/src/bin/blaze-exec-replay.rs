@@ -285,7 +285,10 @@ fn main() -> ExitCode {
     let registry = match build_spawn_strategy_registry(&env, &mut sandbox_module) {
         Ok(r) => Arc::new(r),
         Err(e) => {
-            eprintln!("cannot build the spawn strategy registry: {e:?}");
+            eprintln!(
+                "cannot build the spawn strategy registry: {}",
+                e.get_message()
+            );
             return ExitCode::from(1);
         }
     };

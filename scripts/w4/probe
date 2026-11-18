@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Scenario probes: run a scratch workspace's command list on the oracle or on Blaze. See `probe help`."""
 
+import difflib
 import json
 import os
 import re
@@ -19,19 +20,45 @@ USAGE = """\
 usage: scripts/w4/probe list
        scripts/w4/probe <oracle|blaze> <scenario> [--only N]   transcript on stdout
        scripts/w4/probe record <scenario>                      oracle transcript -> ORACLE.txt
-       scripts/w4/probe compare <scenario> [--only N]          runs Blaze, diffs with ORACLE.txt
+       scripts/w4/probe compare <scenario> [--only N] [--messages]
+                                                               runs Blaze, compares with ORACLE.txt
+       scripts/w4/probe compare-all [--messages] [--skip a,b]  compare for every recorded scenario
        scripts/w4/probe help
 
 A scenario is a directory scripts/w4/scenarios/<name>/ with
   ws/         the workspace (MODULE.bazel, BUILD.bazel files, .bzl files, sources)
   COMMANDS    one step per line (# comments, blank lines ignored), shell-quoted:
-                run <command> [args...]   exit code, stdout, the kept stderr lines (sorted)
+                run <command> [args...]   exit code, full stdout, full stderr
                 aquery [args...]          `aquery --output=jsonproto --include_param_files
                                           --include_file_write_contents`; one JSON line per action
-                                          in output order (ids resolved, scripts/oracle summary)
+                                          in output order (ids resolved, scripts/oracle summary),
+                                          then the full stderr
                 cat <path>                file content, path relative to the workspace
                 stat <path>               type and octal mode
   ORACLE.txt  the transcript of the oracle (Bazel 9.3.2), written by `record`; the expected output.
+
+Transcript of a run step:
+  === N: <step>
+  exit <code>
+  --- stdout
+  <stdout, normalised>
+  --- stderr
+  <every stderr line, in order, normalised>
+
+Normalisation (run-specific values only): paths (<WS>, <OUTPUT_BASE>, <OUTPUT_USER_ROOT>, <HOME>),
+sandbox numbers, durations (<DUR>), UUIDs, ANSI escapes and carriage-return redraws; dropped
+stderr lines are only the rate-limited progress lines whose number and content depend on timing
+("Computing main repo mapping:", "Loading:", "Analyzing:", "Fetching ...", "[n / m] ...",
+"Building:", "Testing:", blank lines). Action keys of SourceSymlinkManifest and SymlinkTree actions
+(they fingerprint absolute paths) are printed as <path-dependent>. Nothing else is dropped, so
+a step matches only when exit code, stdout and stderr are identical.
+
+compare prints one line per step (MATCH or DIFF, with a unified diff for each DIFF), then
+`probe <scenario>: M of N steps match` and exits 1 when any step differs. --messages compares a
+narrower view, reported as such: exit code, stdout, and the complete text (every line, not only
+the first) of each ERROR/WARNING/DEBUG/INFO/FAILED message and build-result line, as a sorted
+list. compare-all prints, per scenario, the steps matching in full and in the --messages view,
+and the totals; it exits 1 on any difference (in the --messages view when given).
 
 Each run copies ws/ to ~/.cache/blaze/work/probe-<scenario> (the same path for both binaries, so
 do not record and compare one scenario at the same time), uses the output user root
@@ -39,18 +66,25 @@ do not record and compare one scenario at the same time), uses the output user r
 --nosystem_rc, command options --repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no,
 env HOME and PATH=/usr/bin:/bin, each command in a systemd-run scope (MemoryMax=8G), then
 `shutdown`. Both the workspace copy and the output user root are deleted first, so every run
-starts cold. Action keys of SourceSymlinkManifest and SymlinkTree actions (they fingerprint
-absolute paths) are printed as <path-dependent>. Kept stderr lines: ERROR:, WARNING:, DEBUG:,
-FAILED:, `Target ...`, `Aspect ...`, `INFO: Build ...`, `Use --verbose_failures ...`, test summary
-lines and two-space-indented single paths (the output lists of the build result); first line of
-each message only. Paths are normalised (<WS>, <OUTPUT_BASE>,
-<HOME>), sandbox numbers and durations too. Environment: BLAZE (binary, default
-target/debug/blaze).
+starts cold. Environment: BLAZE (binary, default target/debug/blaze).
 """
 
 ORACLE = os.path.expanduser("~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
-KEEP = re.compile(r"^(ERROR: |WARNING: |DEBUG: |FAILED: |Target |Aspect |Use --verbose_failures |INFO: Build |//\S+ +\S|Executed \d|  \S+$)")
-DROP = re.compile(r"discarding analysis cache|^WARNING: Running Bazel server needs to be killed")
+# Rate-limited progress output: present or absent depending on timing.
+PROGRESS = re.compile(
+    r"^(Computing main repo mapping:|Loading:|Analyzing:|Fetching |Building:|Testing:|"
+    r"\[[\d,]+ / [\d,]+\])"
+)
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
+# --messages: lines that start a message; following lines that start none of these continue it.
+MESSAGE_START = re.compile(r"^(ERROR: |WARNING: |DEBUG: |INFO: |FAILED: |FAIL: |Target |Aspect |"
+                           r"Use --verbose_failures |//\S+ +\S|@\S+ +\S|Executed \d|There were tests|"
+                           r"Starting local |Extracting |Server terminated|Another command)")
+MESSAGE_KEEP = re.compile(r"^(ERROR: |WARNING: |DEBUG: |INFO: |FAILED: |FAIL: |Target |Aspect |"
+                          r"Use --verbose_failures |//\S+ +\S|@\S+ +\S|Executed \d|There were tests)")
+MESSAGE_DROP = re.compile(r"^INFO: (Elapsed time|Invocation ID|Streaming build results|Build Event Protocol)"
+                          r"|discarding analysis cache|^WARNING: Running Bazel server needs to be killed")
 # Action keys of these mnemonics fingerprint absolute paths (see scripts/oracle/README.md).
 PATH_DEPENDENT_KEYS = {"SourceSymlinkManifest", "SymlinkTree"}
 
@@ -98,6 +132,7 @@ class Run:
         text = text.replace(self.ur, "<OUTPUT_USER_ROOT>").replace(self.ws, "<WS>").replace(self.home, "<HOME>")
         text = re.sub(r"/sandbox/([a-z-]+)/\d+/", r"/sandbox/\1/<N>/", text)
         text = re.sub(r"\b\d+(\.\d+)?m?s\b", "<DUR>", text)
+        text = UUID.sub("<UUID>", text)
         return text
 
     @staticmethod
@@ -117,22 +152,33 @@ class Run:
         return json.dumps(doc, indent=2) + "\n"
 
     def stderr_lines(self, err):
-        lines = [self.norm(l.rstrip()) for l in err.splitlines()]
-        return sorted(l for l in lines if KEEP.match(l) and not DROP.search(l))
+        out = []
+        for raw in err.splitlines():
+            line = ANSI.sub("", raw)
+            if "\r" in line:
+                line = line.split("\r")[-1]
+            line = line.rstrip()
+            if not line or PROGRESS.match(line):
+                continue
+            out.append(self.norm(line))
+        return out
 
     def step(self, kind, args, out):
         if kind == "run":
             code, stdout, stderr = self.exec(args[0], args[1:])
             out.append("exit %d" % code)
+            out.append("--- stdout")
             stdout = self.norm(self.raw_aquery(stdout))
             if stdout:
                 out.append(stdout.rstrip("\n"))
+            out.append("--- stderr")
             out.extend(self.stderr_lines(stderr))
         elif kind == "aquery":
             import surfaces  # scripts/oracle
             code, stdout, stderr = self.exec("aquery", ["--output=jsonproto", "--include_param_files",
                                                         "--include_file_write_contents"] + args)
             out.append("exit %d" % code)
+            out.append("--- stdout")
             try:
                 doc = json.loads(stdout)
             except ValueError:
@@ -142,6 +188,9 @@ class Run:
                     if rec.get("mnemonic") in PATH_DEPENDENT_KEYS:
                         rec["actionKey"] = "<path-dependent>"
                     out.append(self.norm(json.dumps({"primaryOutput": primary, **rec}, sort_keys=True)))
+            elif stdout:
+                out.append(self.norm(stdout).rstrip("\n"))
+            out.append("--- stderr")
             out.extend(self.stderr_lines(stderr))
         elif kind == "cat":
             path = os.path.join(self.ws, args[0])
@@ -180,17 +229,102 @@ class Run:
         return "\n".join(out) + "\n"
 
 
+def split_steps(text):
+    """Transcript -> ordered {header: body lines}."""
+    steps = {}
+    header = None
+    for line in text.splitlines():
+        if line.startswith("=== ") and re.match(r"^=== \d+: ", line):
+            header = line
+            steps[header] = []
+        elif header is not None:
+            steps[header].append(line)
+    return steps
+
+
+def messages_view(body):
+    """--messages: exit, stdout, and the sorted complete messages of the stderr section."""
+    if "--- stderr" not in body:
+        return body
+    i = body.index("--- stderr")
+    head, err = body[:i + 1], body[i + 1:]
+    blocks = []
+    for line in err:
+        if MESSAGE_START.match(line) or not blocks:
+            blocks.append([line])
+        else:
+            blocks[-1].append(line)
+    kept = ["\n".join(b) for b in blocks if MESSAGE_KEEP.match(b[0]) and not MESSAGE_DROP.search(b[0])]
+    return head + sorted(kept)
+
+
+def compare(scenario, only=None, messages=False, quiet=False):
+    """Returns (matching steps, total steps, steps matching in the --messages view)."""
+    expected = os.path.join(SCENARIOS, scenario, "ORACLE.txt")
+    with open(expected) as f:
+        want = split_steps(f.read())
+    got = split_steps(Run("blaze", scenario).transcript(only))
+    if only is not None:
+        want = {h: b for h, b in want.items() if h.startswith("=== %d: " % only)}
+    matched = 0
+    matched_messages = 0
+    for header, want_body in want.items():
+        got_body = got.get(header)
+        if got_body is None:
+            print("%s  DIFF (step missing from Blaze's transcript)" % header)
+            continue
+        if messages_view(want_body) == messages_view(got_body):
+            matched_messages += 1
+        a, b = (messages_view(want_body), messages_view(got_body)) if messages else (want_body, got_body)
+        if a == b:
+            matched += 1
+            if not quiet:
+                print("%s  MATCH" % header)
+        else:
+            print("%s  DIFF" % header)
+            if not quiet:
+                sys.stdout.writelines(l + "\n" for l in difflib.unified_diff(a, b, "oracle", "blaze", lineterm=""))
+    for header in got:
+        if header not in want:
+            print("%s  DIFF (step not in ORACLE.txt)" % header)
+    view = " (--messages view)" if messages else ""
+    print("probe %s: %d of %d steps match%s" % (scenario, matched, len(want), view))
+    return matched, len(want), matched_messages
+
+
 def main(argv):
     if len(argv) < 2 or argv[1] in ("help", "--help", "-h"):
         sys.stdout.write(USAGE)
         return 0
     cmd = argv[1]
+    messages = "--messages" in argv
     if cmd == "list":
         for name in sorted(os.listdir(SCENARIOS)):
             if os.path.isdir(os.path.join(SCENARIOS, name, "ws")):
                 recorded = os.path.exists(os.path.join(SCENARIOS, name, "ORACLE.txt"))
                 print("%s%s" % (name, "" if recorded else "  (no ORACLE.txt)"))
         return 0
+    if cmd == "compare-all":
+        skip = set()
+        if "--skip" in argv:
+            skip = set(argv[argv.index("--skip") + 1].split(","))
+        total_m = total_n = total_mm = 0
+        rows = []
+        for name in sorted(os.listdir(SCENARIOS)):
+            if name in skip or not os.path.exists(os.path.join(SCENARIOS, name, "ORACLE.txt")):
+                continue
+            m, n, mm = compare(name, messages=messages, quiet=True)
+            rows.append((name, m, n, mm))
+            total_m += m
+            total_n += n
+            total_mm += mm
+        print("%-28s %11s %11s" % ("scenario", "full", "--messages"))
+        for name, m, n, mm in rows:
+            print("%-28s %4d / %-4d %4d / %-4d %s" % (name, m, n, mm, n, "MATCH" if m == n else "DIFF"))
+        print("probe: %d of %d steps match in %d scenarios (%d scenarios fully match); "
+              "--messages view: %d of %d"
+              % (total_m, total_n, len(rows), sum(1 for _, m, n, _ in rows if m == n), total_mm, total_n))
+        return 0 if (total_mm if messages else total_m) == total_n else 1
     if len(argv) < 3:
         die("missing scenario; see `probe help`")
     scenario = argv[2]
@@ -208,19 +342,8 @@ def main(argv):
         print("wrote %s (%d lines)" % (expected, text.count("\n")))
         return 0
     if cmd == "compare":
-        got = Run("blaze", scenario).transcript(only)
-        with open(expected) as f:
-            want = f.read()
-        if only is not None:
-            blocks = re.split(r"(?m)^(?==== \d+: )", want)
-            want = "".join(b for b in blocks if b.startswith("=== %d: " % only))
-        if got == want:
-            print("probe %s: MATCH" % scenario)
-            return 0
-        import difflib
-        sys.stdout.writelines(difflib.unified_diff(want.splitlines(True), got.splitlines(True), "oracle", "blaze"))
-        print("probe %s: DIFF" % scenario)
-        return 1
+        m, n, _ = compare(scenario, only, messages)
+        return 0 if m == n else 1
     die("unknown command %r; see `probe help`" % cmd)
 
 

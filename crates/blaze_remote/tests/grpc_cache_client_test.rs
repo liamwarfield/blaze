@@ -1,4 +1,6 @@
 #![cfg(feature = "wip")]
+// Options and protos are filled in field by field, as the Java tests set them.
+#![allow(clippy::field_reassign_with_default)]
 // The deprecated ActionResult fields are part of the messages the tests compare.
 #![allow(deprecated)]
 //! Port of `src/test/java/com/google/devtools/build/lib/remote/GrpcCacheClientTest.java`.
@@ -1314,7 +1316,10 @@ fn test_upload_cache_misses_with_retries() {
                             Err(t) => panic!("An error occurred: {t}"),
                         };
                         // onNext(request)
-                        if num_errors.fetch_sub(1, Ordering::SeqCst) - 1 >= 0 {
+                        // Java: `numErrors.decrementAndGet() >= 0`.
+                        #[allow(clippy::int_plus_one)]
+                        let erroring = num_errors.fetch_sub(1, Ordering::SeqCst) - 1 >= 0;
+                        if erroring {
                             return Err(Status::unavailable(""));
                         }
                         assert!(request.finish_write);

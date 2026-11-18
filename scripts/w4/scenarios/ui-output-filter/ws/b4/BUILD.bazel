@@ -1,0 +1,9 @@
+load("//:defs.bzl", "noisy")
+
+print("loading of package b4")
+
+# The deprecation warning is reported by the analysis of this target (tagged with its label).
+noisy(
+    name = "t",
+    deps = ["//dep:old"],
+)

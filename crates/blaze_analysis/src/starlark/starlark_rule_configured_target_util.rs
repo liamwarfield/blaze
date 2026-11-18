@@ -303,7 +303,7 @@ pub(crate) fn eval_rule<'v>(
         Ok(v) => v,
         Err(e) => {
             // An error occurred during the rule.implementation call
-            let ex = EvalError::from_starlark(&e);
+            let ex = native_call_stack(EvalError::from_starlark(&e));
 
             // If the error was expected by an analysis test, return None, to produce an empty
             // target.
@@ -1021,5 +1021,69 @@ mod tests {
     #[test]
     fn artifacts_description_of_nothing_is_empty() {
         assert_eq!(artifacts_description(Vec::<&Artifact>::new()), "");
+    }
+}
+
+/// The call stack of an error raised by a Starlark function that native code called directly
+/// (Java `Starlark.fastcall(thread, fn, ...)` on a fresh thread): Java's stack starts at the
+/// callee's frame. starlark-rust reports the outermost frame of such a call without a call site,
+/// which `EvalError::from_starlark` turns into a leading `<toplevel>` entry at `<builtin>`; it is
+/// dropped here (scripts/w4/scenarios/ctx-immutable: the oracle's traceback has no
+/// `File "<builtin>", in <toplevel>` line).
+/// PORT: the general fix belongs in blaze_starlark's `EvalError::from_starlark` (requested).
+// Java: net/starlark/java/eval/StarlarkThread.java:603 StarlarkThread.getCallStack
+pub(crate) fn native_call_stack(mut ex: EvalError) -> EvalError {
+    if ex.callstack.len() >= 2
+        && ex.callstack[0].name == "<toplevel>"
+        && ex.callstack[0].location.is_none()
+    {
+        ex.callstack.remove(0);
+    }
+    ex
+}
+
+#[cfg(test)]
+mod native_call_stack_tests {
+    use super::native_call_stack;
+    use blaze_starlark::error::{EvalError, EvalErrorKind, StackEntry};
+    use blaze_starlark::Location;
+
+    // Oracle (scripts/w4/scenarios/ctx-immutable step 2): the traceback of a failing rule
+    // implementation starts at the implementation's frame.
+    #[test]
+    fn leading_builtin_toplevel_is_dropped() {
+        let at = |line| Location {
+            file: "<WS>/defs.bzl".to_owned(),
+            line,
+            column: 30,
+        };
+        let ex = EvalError {
+            kind: EvalErrorKind::Eval,
+            message: "trying to mutate a frozen list value".to_owned(),
+            callstack: vec![
+                StackEntry {
+                    name: "<toplevel>".to_owned(),
+                    location: None,
+                    source_line: None,
+                },
+                StackEntry {
+                    name: "_mut_impl".to_owned(),
+                    location: Some(at(8)),
+                    source_line: Some("ctx.files.srcs.append(ctx.files.srcs[0])".to_owned()),
+                },
+                StackEntry {
+                    name: "append".to_owned(),
+                    location: None,
+                    source_line: None,
+                },
+            ],
+            include_stack: true,
+        };
+        assert_eq!(
+            native_call_stack(ex).message_with_stack(),
+            "Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 8, column 30, in \
+             _mut_impl\n\t\tctx.files.srcs.append(ctx.files.srcs[0])\nError in append: trying \
+             to mutate a frozen list value"
+        );
     }
 }

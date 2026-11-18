@@ -141,9 +141,13 @@ pub fn call_subrule<'v>(
             }
         } else if attribute.get_type() == Type::LabelList {
             let targets = prerequisites.get_prerequisites(attribute.get_name());
-            Some(heap.alloc(AllocList(
-                targets.iter().map(|t| target_to_starlark(t, heap)),
-            )))
+            Some(
+                heap.alloc(AllocList(
+                    targets
+                        .iter()
+                        .map(|t| target_to_starlark(t, heap, rc.get_starlark_semantics())),
+                )),
+            )
         } else if attribute.get_type() == Type::Label {
             if attribute.is_single_artifact() {
                 prerequisites
@@ -153,7 +157,7 @@ pub fn call_subrule<'v>(
                 prerequisites
                     .get_prerequisites(attribute.get_name())
                     .first()
-                    .map(|t| target_to_starlark(t, heap))
+                    .map(|t| target_to_starlark(t, heap, rc.get_starlark_semantics()))
             }
         } else {
             // this should never happen, we've already validated the type while evaluating the
@@ -269,6 +273,20 @@ pub struct SubruleContext<'v> {
     /// The package context for string toolchain keys.
     #[allocative(skip)]
     package_context: Option<blaze_cmdline::LabelPackageContext>,
+}
+
+/// The rule context behind a live `StarlarkActionContext` value: a rule `ctx` or a subrule
+/// context (Java `StarlarkActionContext.getRuleContext()`), for natives whose parameter is typed
+/// `StarlarkActionContext`. `None` for any other value.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:1298 StarlarkActionContext.getRuleContext
+pub fn starlark_action_context_rule_context(
+    v: Value,
+) -> Option<super::thread_payload::RuleContextHandle> {
+    if let Some(c) = super::starlark_rule_context::starlark_rule_context_from_value(v) {
+        return Some(c.get_rule_context());
+    }
+    v.downcast_ref::<SubruleContext>()
+        .map(|c| c.context.handle)
 }
 
 impl<'v> SubruleContext<'v> {

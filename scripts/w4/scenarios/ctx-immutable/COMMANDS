@@ -1,5 +1,4 @@
-# S2-6: mutating a value Bazel returns immutable fails the analysis; mutable ones succeed.
-# Only exit codes and first message lines are compared (Starlark error text is in later lines).
+# S2-6, R2-1: mutating a value Bazel returns immutable fails the analysis; mutable ones succeed.
 run build //:read_only
 run build //:files_append
 run build //:files_empty_append
@@ -14,6 +13,18 @@ run build //:tokenize_append
 run build //:features_append
 run build //:disabled_features_append
 run build //:toolchain_types_append
+run build //:cpp_copts_append
+run build //:cpp_cxxopts_append
+run build //:cpp_conlyopts_append
+run build //:cpp_objccopts_append
+run build //:cpp_linkopts_append
+run build //:cpp_lto_backend_options_append
 cat bazel-bin/read_only.txt
 cat bazel-bin/features_append.txt
 cat bazel-bin/disabled_features_append.txt
+cat bazel-bin/cpp_copts_append.txt
+cat bazel-bin/cpp_cxxopts_append.txt
+cat bazel-bin/cpp_conlyopts_append.txt
+cat bazel-bin/cpp_objccopts_append.txt
+cat bazel-bin/cpp_linkopts_append.txt
+cat bazel-bin/cpp_lto_backend_options_append.txt

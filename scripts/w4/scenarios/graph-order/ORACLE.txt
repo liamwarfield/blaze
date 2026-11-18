@@ -1,5 +1,6 @@
 === 1: run cquery "deps(//pkg:top)"
 exit 0
+--- stdout
 //pkg:top (a7a71fd)
 @platforms//os:linux (3030ed4)
 //pkg:d (9c995fc)
@@ -23,9 +24,17 @@ exit 0
 @platforms//cpu:x86_64 (3030ed4)
 @platforms//os:os (3030ed4)
 @platforms//cpu:cpu (3030ed4)
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //pkg:top (80 packages loaded, 444 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
 INFO: Build completed successfully, 0 total actions
 === 2: run cquery "deps(//pkg:top, 1)" --output=label_kind
 exit 0
+--- stdout
 node rule //pkg:top (a7a71fd)
 constraint_value rule @platforms//os:linux (3030ed4)
 leaf rule //pkg:d (9c995fc)
@@ -45,9 +54,15 @@ leaf rule //pkg:e (a7a71fd)
 leaf rule //pkg:tool (04bf134)
 platform rule @platforms//host:host (3030ed4)
 source file //pkg:y.txt (null)
+--- stderr
+INFO: Analyzed target //pkg:top (80 packages loaded, 444 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
 INFO: Build completed successfully, 0 total actions
 === 3: run cquery "deps(//pkg:plain) + deps(//pkg:top, 1)"
 exit 0
+--- stdout
 //pkg:plain (a7a71fd)
 //pkg:tt (a7a71fd)
 //pkg:g (a7a71fd)
@@ -72,9 +87,15 @@ exit 0
 //pkg:e (a7a71fd)
 //pkg:tool (04bf134)
 //pkg:y.txt (null)
+--- stderr
+INFO: Analyzed 2 targets (0 packages loaded, 2 targets configured).
+INFO: Found 2 targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
 INFO: Build completed successfully, 0 total actions
 === 4: run cquery "kind(leaf, deps(//pkg:top))"
 exit 0
+--- stdout
 //pkg:d (9c995fc)
 //pkg:c (3030ed4)
 //pkg:f (3030ed4)
@@ -82,4 +103,9 @@ exit 0
 //pkg:a (a7a71fd)
 //pkg:e (a7a71fd)
 //pkg:tool (04bf134)
+--- stderr
+INFO: Analyzed target //pkg:top (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
 INFO: Build completed successfully, 0 total actions

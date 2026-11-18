@@ -122,6 +122,8 @@ pub struct ActionExecutionException {
     failure_detail: Option<FailureDetail>,
     /// This is an `AlreadyReportedActionExecutionException`: the error was already shown.
     already_reported: bool,
+    /// `getCause() instanceof TestExecException`.
+    cause_is_test_exec_exception: bool,
 }
 
 impl ActionExecutionException {
@@ -154,6 +156,7 @@ impl ActionExecutionException {
             catastrophe,
             failure_detail,
             already_reported: false,
+            cause_is_test_exec_exception: false,
         }
     }
 
@@ -188,6 +191,7 @@ impl ActionExecutionException {
             catastrophe,
             failure_detail,
             already_reported: false,
+            cause_is_test_exec_exception: false,
         }
     }
 
@@ -226,13 +230,15 @@ impl ActionExecutionException {
         let code =
             exception.get_failure_detail(&format!("{} failed: {}", action.describe(), message));
         // PORT: LostInputsExecException (rewinding) is not ported.
-        Self::with_cause(
+        let mut e = Self::with_cause(
             message,
             &exception.get_message(),
             Some(action),
             exception.is_catastrophic(),
             code,
-        )
+        );
+        e.cause_is_test_exec_exception = exception.is_test_exec_exception();
+        e
     }
 
     /// `getMessage()`.
@@ -243,6 +249,22 @@ impl ActionExecutionException {
     /// `getCause().getMessage()`, if there is a cause.
     pub fn get_cause_message(&self) -> Option<&str> {
         self.cause.as_deref()
+    }
+
+    /// `getCause() instanceof TestExecException`: the action is a test that failed without
+    /// `--test_keep_going` (`SkyframeErrorProcessor.rethrow` rethrows the cause).
+    pub fn is_caused_by_test_exec_exception(&self) -> bool {
+        self.cause_is_test_exec_exception
+    }
+
+    /// This exception with a `TestExecException` as its cause, as
+    /// [`ActionExecutionException::from_exec_exception`] makes it for a test that failed without
+    /// `--test_keep_going`; for tests of the code that handles such exceptions.
+    pub fn with_test_exec_exception_cause_for_testing(self) -> ActionExecutionException {
+        ActionExecutionException {
+            cause_is_test_exec_exception: true,
+            ..self
+        }
     }
 
     /// `getAction()`.

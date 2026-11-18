@@ -518,13 +518,11 @@ impl GrpcCacheClient {
                 // onNext(readResponse)
                 Ok(Some(read_response)) => {
                     let data = read_response.data;
-                    if let Err(e) = out.write_all(&data) {
-                        // The output stream either refused to accept more bytes than expected for
-                        // the digest or was closed due to cancellation (e.g. dynamic execution
-                        // choosing the local branch).
-                        // requestStream.cancel(e.getMessage(), e): the stream is dropped here.
-                        return Err(e);
-                    }
+                    // On failure the output stream either refused to accept more bytes than
+                    // expected for the digest or was closed due to cancellation (e.g. dynamic
+                    // execution choosing the local branch).
+                    // requestStream.cancel(e.getMessage(), e): the stream is dropped here.
+                    out.write_all(&data)?;
                     // reset the stall backoff because we've made progress or been kept alive
                     progressive_backoff.reset();
                 }

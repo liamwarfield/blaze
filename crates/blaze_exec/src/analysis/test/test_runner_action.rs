@@ -1405,12 +1405,16 @@ impl TestRunnerAction {
 /// `new TestExecException(message, failureDetail)`.
 ///
 /// PORT: `TestExecException` behaves as a `UserExecException` with its own message (not
-/// catastrophic, `getFailureDetail(message)` replaces the detail's message), so it is one.
+/// catastrophic, `getFailureDetail(message)` replaces the detail's message), so it is one,
+/// marked `test_exec_exception` for the `instanceof TestExecException` of
+/// `SkyframeErrorProcessor.rethrow` (see
+/// [`ActionExecutionException::is_caused_by_test_exec_exception`]).
 // Java: com/google/devtools/build/lib/actions/TestExecException.java:24 TestExecException.<init>
 pub fn test_exec_exception(message: String, failure_detail: FailureDetail) -> ExecException {
     ExecException::User(UserExecException {
         message,
         failure_detail,
+        test_exec_exception: true,
     })
 }
 

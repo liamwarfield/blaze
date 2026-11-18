@@ -46,6 +46,7 @@ use blaze_exec::analysis::test::test_runner_action::TestRunnerAction;
 use blaze_exec::exec::action_execution_context::{
     ActionContextRegistry, ActionExecutionContext, SpawnCache,
 };
+use blaze_exec::exec::evaluation_stack::on_evaluation_stack;
 use blaze_exec::exec::single_build_file_cache::SingleBuildFileCache;
 use blaze_exec::exec::spawn_log_context::SpawnLogContext;
 use blaze_exec::exec::spawn_runner::ProgressStatus;
@@ -230,12 +231,15 @@ fn can_be_shared(
     a: &dyn Action,
     b: &dyn Action,
 ) -> Result<bool, ExecutionFailure> {
-    let key_a = a
-        .get_key(action_key_context, None)
-        .map_err(|_| ExecutionFailure::Interrupted)?;
-    let key_b = b
-        .get_key(action_key_context, None)
-        .map_err(|_| ExecutionFailure::Interrupted)?;
+    // The action keys may run Starlark callbacks (map_each): an evaluation-sized stack.
+    let (key_a, key_b) = on_evaluation_stack(|| {
+        (
+            a.get_key(action_key_context, None).ok(),
+            b.get_key(action_key_context, None).ok(),
+        )
+    });
+    let key_a = key_a.ok_or(ExecutionFailure::Interrupted)?;
+    let key_b = key_b.ok_or(ExecutionFailure::Interrupted)?;
     if !(a.get_mnemonic() == b.get_mnemonic() && key_a == key_b) {
         return Ok(false);
     }
@@ -700,7 +704,8 @@ impl SkyframeActionExecutor {
                 action.as_ref(),
                 context.get_input_metadata_provider(),
             )
-            .and_then(|()| executable.execute(context))
+            // Starlark callbacks (map_each) run on an evaluation-sized stack.
+            .and_then(|()| on_evaluation_stack(|| executable.execute(context)))
         {
             Ok(r) => r,
             Err(e) => {
@@ -2124,12 +2129,14 @@ impl CacheCheckAction for CacheCheckActionAdapter<'_> {
         &self,
         input_metadata_provider: &dyn InputMetadataProvider,
     ) -> Result<String, InterruptedException> {
-        self.action
-            .get_key(
+        // The key may run Starlark callbacks (map_each): an evaluation-sized stack.
+        on_evaluation_stack(|| {
+            self.action.get_key(
                 self.action_key_context,
                 Some(&KeyMetadataAdapter(input_metadata_provider)),
             )
-            .map_err(|_| InterruptedException)
+        })
+        .map_err(|_| InterruptedException)
     }
 
     fn get_inputs(&self) -> NestedSet<ActionInputRef> {

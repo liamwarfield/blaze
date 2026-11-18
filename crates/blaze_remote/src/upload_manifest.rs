@@ -557,7 +557,29 @@ impl UploadManifest {
         reporter: &dyn ExtendedEventHandler,
         force: bool,
     ) -> Result<ActionResult, SpawnCacheError> {
-        let action = context.get_spawn_owner();
+        self.upload_for_spawn_owner(
+            context,
+            context.get_spawn_owner(),
+            combined_cache,
+            reporter,
+            force,
+        )
+    }
+
+    /// [`UploadManifest::upload`] with the spawn owner given explicitly.
+    ///
+    /// PORT: a background upload runs with a detached context (no borrowed spawn) and passes an
+    /// owned copy of the owner, so that the upload events Java posts are still posted.
+    // Java: com/google/devtools/build/lib/remote/UploadManifest.java:609 UploadManifest.upload
+    pub fn upload_for_spawn_owner(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        spawn_owner: Option<&dyn blaze_exec::actions::ActionExecutionMetadata>,
+        combined_cache: &CombinedCache,
+        reporter: &dyn ExtendedEventHandler,
+        force: bool,
+    ) -> Result<ActionResult, SpawnCacheError> {
+        let action = spawn_owner;
         // PORT: java-hash-order. `Sets.union(digestToBlobs.keySet(), digestToFile.keySet())`
         // iterates two `ConcurrentHashMap`s in Java; the order only decides the order of the
         // digests in the FindMissingBlobs request and the order in which the uploads start.

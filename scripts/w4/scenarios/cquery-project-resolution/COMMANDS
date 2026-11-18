@@ -1,0 +1,4 @@
+# Analysis review R2-8: cquery resolves PROJECT.scl files only for the first pattern of a
+# somepath() / allpaths() query (CqueryCommand.targetsForProjectResolution); //b has one.
+run cquery "somepath(//a:a, //b:b)"
+run cquery "allpaths(//a:a, //b:b)"

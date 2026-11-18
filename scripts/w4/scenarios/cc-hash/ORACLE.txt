@@ -1,8 +1,16 @@
 === 1: run build //:probe
 exit 0
-  bazel-bin/probe.txt
-INFO: Build completed successfully, 2 total actions
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:probe (86 packages loaded, 464 targets configured).
+INFO: Found 1 target...
 Target //:probe up-to-date:
+  bazel-bin/probe.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
 === 2: cat bazel-bin/probe.txt
 cpp key count: 1
 fragment keys: 4

@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Compare two --remote_grpc_log files RPC by RPC after normalising volatile fields.
+
+See `compare-grpc-log help`.
+"""
+
+import collections
+import json
+import os
+import re
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+DUMP = os.path.join(ROOT, "target", "debug", "blaze-remote-grpc-log")
+
+USAGE = """\
+usage: scripts/remote/compare-grpc-log <reference.log> <candidate.log> [--verbose] [--max N]
+       scripts/remote/compare-grpc-log help
+
+Both files are --remote_grpc_log outputs (length-delimited remote_logging.LogEntry); the
+reference is real Bazel's, the candidate Blaze's. Each is dumped with
+target/debug/blaze-remote-grpc-log (build it with
+`scripts/cargo-capped build -p blaze_remote --features wip --bins`) and every entry is
+normalised:
+
+  dropped       startTime, endTime
+  metadata      toolInvocationId and correlatedInvocationsId -> <id> (per-invocation UUIDs)
+  Write         the upload UUID in `uploads/<uuid>/blobs/...` -> <uuid>
+  ActionResult  executionMetadata timestamps (worker/execution start/completed, ...) -> <time>
+                in UpdateActionResult requests/responses and GetActionResult responses
+  digest lists  FindMissingBlobs request.blobDigests and response.missingBlobDigests are sorted
+                (Java iterates a ConcurrentHashMap there; the order is not defined)
+  Read          numReads -> <n> (chunking of the server's stream)
+  Operation     names of Execute/WaitExecution operations -> <operation>; execution metadata
+                timestamps as above
+
+Entries are then compared as multisets (concurrent RPCs have no defined order): an RPC of the
+reference matches one candidate RPC with the same method, action id, status and normalised
+request/response details. Two refinements, both printed in the result:
+  * Which action uploads a blob shared by several actions, and which action's FindMissingBlobs
+    asks for it (the client asks once per digest and build), depends on the order the actions
+    run in, and Bazel runs them concurrently. When the plain multisets differ only in
+    `ByteStream/Write` and `FindMissingBlobs` entries, the comparison is repeated
+    attribution-insensitively: Write entries are keyed by blob (action metadata dropped), and
+    FindMissingBlobs entries are replaced by one item per queried digest and one per digest
+    reported missing, plus the number of FindMissingBlobs RPCs. The result line then says
+    `attribution-insensitive`.
+Prints per method: reference count, candidate count, matched; then every unmatched entry
+(--verbose prints them in full, else the first 300 characters; --max N limits the list,
+default 20). Exit code 0 iff every reference RPC is matched and the candidate has no extra RPC.
+"""
+
+UPLOAD = re.compile(r"uploads/[0-9a-f-]{36}/")
+TIME_KEYS = {
+    "queuedTimestamp", "workerStartTimestamp", "workerCompletedTimestamp",
+    "inputFetchStartTimestamp", "inputFetchCompletedTimestamp", "executionStartTimestamp",
+    "executionCompletedTimestamp", "outputUploadStartTimestamp", "outputUploadCompletedTimestamp",
+    "virtualExecutionDuration",
+}
+
+
+def dump(path):
+    r = subprocess.run([DUMP, path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if r.returncode != 0:
+        sys.exit("cannot dump %s: %s" % (path, r.stderr.strip()))
+    return [json.loads(line) for line in r.stdout.splitlines()]
+
+
+def scrub(v):
+    if isinstance(v, dict):
+        out = {}
+        for k, x in v.items():
+            if k in TIME_KEYS:
+                out[k] = "<time>"
+            elif k in ("blobDigests", "missingBlobDigests") and isinstance(x, list):
+                out[k] = sorted(x, key=lambda d: (d.get("hash", ""), d.get("sizeBytes", "0")))
+            elif k == "resourceNames" and isinstance(x, list):
+                out[k] = [UPLOAD.sub("uploads/<uuid>/", s) for s in x]
+            elif k == "numReads":
+                out[k] = "<n>"
+            elif k == "name" and isinstance(x, str) and ("operations/" in x or re.fullmatch(r"[0-9a-f-]{36}", x)):
+                out[k] = "<operation>"
+            else:
+                out[k] = scrub(x)
+        return out
+    if isinstance(v, list):
+        return [scrub(x) for x in v]
+    return v
+
+
+def normalise(e, insensitive):
+    """Returns the normalised items an entry contributes to the multiset."""
+    e = dict(e)
+    e.pop("startTime", None)
+    e.pop("endTime", None)
+    md = dict(e.get("metadata", {}))
+    for k in ("toolInvocationId", "correlatedInvocationsId"):
+        if k in md:
+            md[k] = "<id>"
+    e["metadata"] = md
+    e["details"] = scrub(e.get("details", {}))
+    if insensitive:
+        method = e.get("methodName", "")
+        if method.endswith("ByteStream/Write"):
+            e["metadata"] = {"toolDetails": md.get("toolDetails")}
+        elif method.endswith("FindMissingBlobs"):
+            d = e["details"].get("findMissingBlobs", {})
+            items = [json.dumps({"methodName": method, "rpc": "<one FindMissingBlobs call>",
+                                 "status": e.get("status")}, sort_keys=True)]
+            req = dict(d.get("request", {}))
+            digests = req.pop("blobDigests", [])
+            for x in digests:
+                items.append(json.dumps({"methodName": method, "queried": x, "request": req}, sort_keys=True))
+            for x in d.get("response", {}).get("missingBlobDigests", []):
+                items.append(json.dumps({"methodName": method, "missing": x}, sort_keys=True))
+            return items
+    return [json.dumps(e, sort_keys=True)]
+
+
+def compare(ref, cand, insensitive):
+    a = collections.Counter(i for e in ref for i in normalise(e, insensitive))
+    b = collections.Counter(i for e in cand for i in normalise(e, insensitive))
+    missing = a - b
+    extra = b - a
+    return a, b, missing, extra
+
+
+def method_of(s):
+    return json.loads(s)["methodName"].split(".")[-1]
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    verbose = "--verbose" in args
+    limit = 20
+    if "--max" in args:
+        limit = int(args[args.index("--max") + 1])
+    files = [a for i, a in enumerate(args) if not a.startswith("--") and (i == 0 or args[i - 1] != "--max")]
+    if len(files) != 2:
+        print(USAGE, end="", file=sys.stderr)
+        return 2
+    ref, cand = dump(files[0]), dump(files[1])
+    a, b, missing, extra = compare(ref, cand, False)
+    mode = "exact"
+    if missing or extra:
+        only = {method_of(s) for s in list(missing) + list(extra)}
+        if only <= {"ByteStream/Write", "ContentAddressableStorage/FindMissingBlobs"}:
+            a2, b2, missing2, extra2 = compare(ref, cand, True)
+            if not missing2 and not extra2:
+                a, b, missing, extra, mode = a2, b2, missing2, extra2, "attribution-insensitive"
+    per = collections.OrderedDict()
+    for s, n in a.items():
+        per.setdefault(method_of(s), [0, 0, 0])[0] += n
+    for s, n in b.items():
+        per.setdefault(method_of(s), [0, 0, 0])[1] += n
+    for s, n in (a & b).items():
+        per.setdefault(method_of(s), [0, 0, 0])[2] += n
+    print("%-48s %9s %9s %8s" % ("method", "reference", "candidate", "matched"))
+    for m, (x, y, z) in sorted(per.items()):
+        print("%-48s %9d %9d %8d" % (m, x, y, z))
+    total_ref, total_cand = sum(a.values()), sum(b.values())
+    matched = sum((a & b).values())
+    unit = "RPCs" if mode == "exact" else "items (FindMissingBlobs split per digest)"
+    print("%s: reference %d, candidate %d, matched %d (%s comparison; %d and %d RPCs)" % (
+        unit, total_ref, total_cand, matched, mode, len(ref), len(cand)))
+    shown = 0
+    for label, bag in (("only in reference", missing), ("only in candidate", extra)):
+        for s, n in bag.items():
+            if shown >= limit:
+                break
+            shown += 1
+            print("  [%s x%d] %s" % (label, n, s if verbose else s[:300]))
+    ok = not missing and not extra
+    print("RESULT: %s" % ("MATCH" if ok else "DIFFERENT"))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,6 +1,6 @@
 # Analysis errors (analysis review S3 "SkyframeErrorProcessor.processAnalysisErrors"; workerd #17):
 # the wrapper lines and exit codes of build, cquery and aquery, with and without --keep_going.
-# Only the first line of each message is compared.
+# Full transcripts are compared (scripts/w4/probe help).
 
 # An error while loading a dependency's package.
 run build //:dep_bad_package

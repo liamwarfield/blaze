@@ -436,6 +436,7 @@ pub struct FakeContentAddressableStorage {
     pub find_missing_blobs: Option<UnaryHandler<FindMissingBlobsRequest, FindMissingBlobsResponse>>,
     pub batch_update_blobs: Option<UnaryHandler<BatchUpdateBlobsRequest, BatchUpdateBlobsResponse>>,
     pub batch_read_blobs: Option<UnaryHandler<BatchReadBlobsRequest, BatchReadBlobsResponse>>,
+    #[allow(clippy::type_complexity)]
     pub get_tree: Option<
         Box<dyn Fn(Request<GetTreeRequest>) -> ResponseStream<GetTreeResponse> + Send + Sync>,
     >,

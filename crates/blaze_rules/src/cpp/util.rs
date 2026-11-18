@@ -196,7 +196,8 @@ pub fn dict_cast_string_string(x: Value, what: &str) -> starlark::Result<IndexMa
     Ok(result)
 }
 
-/// `Dict.cast(x, String.class, Object.class, what)`, keeping the dict's order.
+/// `Dict.cast(x, String.class, Object.class, what)`, keeping the dict's order
+/// (`Starlark.classType(Object.class)` is "unknown").
 // Java: net/starlark/java/eval/Dict.java:659 Dict.cast
 pub fn dict_cast_string_object<'v>(
     x: Value<'v>,
@@ -212,7 +213,7 @@ pub fn dict_cast_string_object<'v>(
     for (k, v) in dict.iter() {
         let Some(ks) = k.unpack_str() else {
             return Err(errorf(format!(
-                "got dict<{}, {}> for '{what}', want dict<string, Object>",
+                "got dict<{}, {}> for '{what}', want dict<string, unknown>",
                 k.get_type(),
                 v.get_type()
             )));
@@ -399,12 +400,15 @@ pub fn allowlist_entry_allows(
 // -------------------------------------------------------------------------------------------
 // Java HashMap iteration order
 
-/// Java `String.hashCode()` (over UTF-16 code units).
+/// Java `String.hashCode()` of a Bazel internal string (a Latin-1 Java string holding the UTF-8
+/// bytes, `StringEncoding`; tags and other BUILD-file strings are internal): one char per byte
+/// (analysis review R2-5).
+// PORT: StringEncoding identity
 // Java: java/lang/String.java String.hashCode
 pub fn java_string_hash_code(s: &str) -> i32 {
     let mut h: i32 = 0;
-    for unit in s.encode_utf16() {
-        h = h.wrapping_mul(31).wrapping_add(unit as i32);
+    for byte in s.bytes() {
+        h = h.wrapping_mul(31).wrapping_add(byte as i32);
     }
     h
 }
@@ -514,6 +518,8 @@ mod tests {
         assert_eq!(java_string_hash_code(""), 0);
         // "no-remote".hashCode() (Java) == -724727342.
         assert_eq!(java_string_hash_code("no-remote"), -724727342);
+        // The internal string of "é" is "\u00c3\u00a9": 0xC3 * 31 + 0xA9 (Java String.hashCode).
+        assert_eq!(java_string_hash_code("\u{e9}"), 195 * 31 + 169);
     }
 
     #[test]

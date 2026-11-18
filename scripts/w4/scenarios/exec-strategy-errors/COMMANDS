@@ -1,0 +1,8 @@
+# N3: SpawnStrategyRegistry's AbruptExitExceptions (ExecutionTool.<init>): message and exit code.
+run build --spawn_strategy=bogus //:one
+run build --strategy=Genrule=bogus //:one
+run build --strategy_regexp=one=bogus //:one
+run build --spawn_strategy=local,bogus //:one
+run build --spawn_strategy=bogus //:nosuchtarget
+run test --spawn_strategy=bogus //:one
+run build --spawn_strategy=local //:one

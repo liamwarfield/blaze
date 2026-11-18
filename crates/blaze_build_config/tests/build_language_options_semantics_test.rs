@@ -24,6 +24,17 @@ fn semantics_of(args: &[&str]) -> StarlarkSemantics {
     starlark_semantics_from(&parser)
 }
 
+fn mapped_semantics_of(args: &[&str]) -> StarlarkSemantics {
+    let mut parser = OptionsParser::builder()
+        .options_classes(&[BuildLanguageOptions::class()])
+        .build()
+        .unwrap();
+    parser
+        .parse(args)
+        .unwrap_or_else(|e| panic!("{}", e.get_message()));
+    to_starlark_semantics(&parser.get_options::<BuildLanguageOptions>().unwrap())
+}
+
 // Every key's default is its option's default, so the default options give the default
 // semantics.
 #[test]
@@ -85,7 +96,9 @@ fn non_default_flags_reach_the_semantics() {
 // "experimental_starlark_types").
 #[test]
 fn options_with_differently_named_keys() {
-    let semantics = semantics_of(&[
+    // The mapping itself (`to_starlark_semantics`): two of these keys are guarded by
+    // `starlark_semantics_from` (R2-2, see below).
+    let semantics = mapped_semantics_of(&[
         "--noincompatible_allow_tags_propagation",
         "--internal_starlark_flag_test_canary",
         "--noincompatible_enable_deprecated_label_apis",
@@ -116,4 +129,37 @@ fn options_without_a_semantics_key() {
         ]),
         StarlarkSemantics::default()
     );
+}
+
+// Analysis review R2-2: keys whose Java readers are not ported fail loudly when set to a
+// non-default value instead of being accepted and ignored.
+#[test]
+#[should_panic(expected = "--incompatible_check_external_repo_source_dir_package_boundary=true")]
+fn unread_key_check_external_repo_source_dir_package_boundary_is_loud() {
+    semantics_of(&["--incompatible_check_external_repo_source_dir_package_boundary"]);
+}
+
+#[test]
+#[should_panic(expected = "--incompatible_use_cc_configure_from_rules_cc=true")]
+fn unread_key_use_cc_configure_from_rules_cc_is_loud() {
+    semantics_of(&["--incompatible_use_cc_configure_from_rules_cc"]);
+}
+
+#[test]
+#[should_panic(expected = "--internal_starlark_utf_8_byte_strings=false")]
+fn unread_key_utf_8_byte_strings_is_loud() {
+    semantics_of(&["--nointernal_starlark_utf_8_byte_strings"]);
+}
+
+// Keys that Bazel 9.3.2 itself never reads stay accepted (no Java reader at the pin).
+#[test]
+fn keys_without_java_reader_are_accepted() {
+    let semantics = semantics_of(&[
+        "--experimental_enable_android_migration_apis",
+        "--experimental_disable_external_package",
+        "--noincompatible_do_not_split_linking_cmdline",
+    ]);
+    assert!(semantics.experimental_enable_android_migration_apis);
+    assert!(semantics.experimental_disable_external_package);
+    assert!(!semantics.incompatible_do_not_split_linking_cmdline);
 }

@@ -1,0 +1,10 @@
+# S2-5 / N2: --output_filter and --auto_output_filter reach the Reporter
+# (OutputFilteringModule.buildStarting / targetParsingComplete): tagged warnings of the analysis
+# (a dependency on a deprecated target) and action output are filtered; DEBUG and ERROR never.
+# Every step builds packages no earlier step loaded (the oracle's server would not report cached
+# loading and analysis again).
+run build //a1:t //b1:t
+run build //a2:t //b2:t --output_filter=^//a2
+run build //a3:t //b3:t --output_filter=nothingmatches
+run build //a4:t //b4:t --auto_output_filter=all
+run build //a5:t //b5:t --auto_output_filter=none

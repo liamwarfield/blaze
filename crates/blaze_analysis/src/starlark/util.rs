@@ -250,15 +250,16 @@ pub(crate) fn dict_noneable_cast_string_string(
     dict_cast_string_string(x, what)
 }
 
-/// `Dict.cast(x, String.class, Object.class, what)`.
-// Java: net/starlark/java/eval/Dict.java Dict.cast
+/// `Dict.cast(x, String.class, Object.class, what)` (`Starlark.classType(Object.class)` is
+/// "unknown").
+// Java: net/starlark/java/eval/Dict.java:659 Dict.cast
 pub(crate) fn dict_cast_string_object<'v>(
     x: Value<'v>,
     what: &str,
 ) -> starlark::Result<IndexMap<String, Value<'v>>> {
     let Some(d) = DictRef::from_value(x) else {
         return Err(errorf(format!(
-            "for {what}, got {}, want dict",
+            "got {} for '{what}', want dict",
             x.get_type()
         )));
     };
@@ -266,7 +267,7 @@ pub(crate) fn dict_cast_string_object<'v>(
     for (k, v) in d.iter() {
         let Some(ks) = k.unpack_str() else {
             return Err(errorf(format!(
-                "got dict<{}, {}> for '{what}', want dict<string, any>",
+                "got dict<{}, {}> for '{what}', want dict<string, unknown>",
                 k.get_type(),
                 v.get_type()
             )));

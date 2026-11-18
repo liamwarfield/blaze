@@ -1,4 +1,6 @@
 #![cfg(feature = "wip")]
+// Options and protos are filled in field by field, as the Java tests set them.
+#![allow(clippy::field_reassign_with_default)]
 //! Port of `lib/remote/disk/DiskCacheClientTest.java`.
 //!
 //! PORT: Java uses an `InMemoryFileSystem` rooted at `/`; these tests use the real file system

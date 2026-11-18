@@ -286,7 +286,10 @@ fn run_build_with_bep(
         &mut spawn_log_module,
         &SpawnLogModuleEnv {
             execution_options: Some(&execution_options),
-            remote_options: None,
+            // env.getOptions().getOptions(RemoteOptions.class)
+            remote_options: options
+                .get_options::<blaze_optdefs::misc::remote_options::RemoteOptions>()
+                .map(Arc::new),
             sibling_repository_layout: build_language_options
                 .experimental_sibling_repository_layout,
             file_system: &file_system,
@@ -304,6 +307,9 @@ fn run_build_with_bep(
             return BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(e.failure_detail));
         }
     };
+
+    // OutputFilteringModule: the reporter's filter (see `output_filter`).
+    let reporter_output_filter = output_filter(options, &build_request_options);
 
     let jobs = if build_request_options.jobs > 0 {
         build_request_options.jobs as usize
@@ -340,7 +346,7 @@ fn run_build_with_bep(
             .get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
             .map(|o| o.experimental_writable_outputs)
             .unwrap_or(false),
-        output_filter: output_filter(options, &build_request_options),
+        output_filter: reporter_output_filter.clone(),
     };
     let summary_for_contexts = Arc::new(test_summary_options.clone());
     let workspace_for_contexts = workspace.clone();
@@ -461,6 +467,7 @@ fn run_build_with_bep(
             &execution_options,
         )),
         results_shown: Cell::new(false),
+        execution_tool_failed: Cell::new(false),
         build_result_listener: build_result_listener.clone(),
         request_view: RuntimeBuildRequestView {
             build_options: build_request_options.clone(),
@@ -471,7 +478,9 @@ fn run_build_with_bep(
         },
         bep: bep.cloned(),
     };
-    let post_processor = NoPostProcessor;
+    let post_processor = ExecutionToolConstruction {
+        execution_phase: &execution_phase,
+    };
     let build_tool = BuildTool::new(
         &skyframe_executor,
         reporter.clone(),
@@ -479,8 +488,13 @@ fn run_build_with_bep(
         &post_processor,
     )
     .with_execution_phase(&execution_phase);
-    // BuildTool.buildTargets: BuildStartingEvent.
+    // BuildTool.buildTargets: BuildStartingEvent. Its subscriber OutputFilteringModule sets the
+    // reporter's output filter.
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:288 BuildTool.buildTargets
+    // Java: com/google/devtools/build/lib/outputfilter/OutputFilteringModule.java:78 OutputFilteringModule.buildStarting
+    if let Some(filter) = &reporter_output_filter {
+        env.get_reporter().set_output_filter(filter.clone());
+    }
     if let Some(bep) = bep {
         bep.build_starting(
             env,
@@ -516,6 +530,7 @@ fn run_build_with_bep(
         &execution_options,
     ));
     if !execution_phase.results_shown.get()
+        && !execution_phase.execution_tool_failed.get()
         && merged_analysis_and_execution
         && target_patterns_were_evaluated(
             &skyframe_executor,
@@ -688,16 +703,51 @@ fn to_util_detailed_exit_code(code: &DetailedExitCode) -> blaze_util::DetailedEx
     }
 }
 
-/// `build` and `test` have no analysis post processor.
-struct NoPostProcessor;
+/// `build` and `test` have no analysis post processor. It is where the request's
+/// `ExecutionTool` is constructed instead.
+///
+/// `new ExecutionTool(env, request)` throws the `AbruptExitException` of the spawn strategy
+/// registry (`BuildTool.processRequest` reports it, sets the catastrophe and returns its exit
+/// code). Java constructs the tool in `BuildTool.buildTargets` right after the analysis
+/// (`--noexperimental_merged_skyframe_analysis_execution`, `--nobuild`) or right before the
+/// merged analysis and execution (`buildTargetsWithMergedAnalysisExecution`, outside its
+/// `try`/`finally`, so no build result is shown).
+///
+/// PORT: blaze_sky_top's `BuildTool` has no hook between the target patterns and the analysis;
+/// with Skymeld, an analysis error that Java never reaches (the exception comes first) is
+/// reported instead.
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:520 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:613 BuildTool.buildTargetsWithMergedAnalysisExecution
+struct ExecutionToolConstruction<'a> {
+    execution_phase: &'a RuntimeExecutionPhase,
+}
 
-impl AnalysisPostProcessor for NoPostProcessor {
+impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
     fn process(
         &self,
         _request: &BuildRequest,
-        _skyframe_executor: &SkyframeExecutor,
+        skyframe_executor: &SkyframeExecutor,
         _analysis_result: &AnalysisResult,
     ) -> Result<(), BuildToolError> {
+        let state = skyframe_executor
+            .get_execution()
+            .expect("IllegalStateException: the executor was created without execution");
+        if let Err(e) = state.prepared.check_execution_tool_created() {
+            // catch (AbruptExitException e): result.setCatastrophe().
+            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:999 BuildTool.processRequest
+            self.execution_phase
+                .build_result
+                .borrow_mut()
+                .set_catastrophe();
+            self.execution_phase.execution_tool_failed.set(true);
+            let failure_detail = e.failure_detail;
+            return Err(BuildToolError::Exit(
+                blaze_query_engine::DetailedExitCode::of_exit_code(
+                    blaze_query_engine::DetailedExitCode::get_exit_code_for(&failure_detail),
+                    failure_detail,
+                ),
+            ));
+        }
         Ok(())
     }
 }
@@ -1015,6 +1065,9 @@ struct RuntimeExecutionPhase {
     /// Whether `execute_build` reached `ExecutionTool.nonCatastrophicFinalizations` ("Show
     /// results").
     results_shown: Cell<bool>,
+    /// Whether `new ExecutionTool(env, request)` threw (see [`ExecutionToolConstruction`]): Java
+    /// then never entered the `try` whose `finally` shows the results.
+    execution_tool_failed: Cell<bool>,
     /// `env.getBuildResultListener()`.
     build_result_listener: Arc<BuildResultListener>,
     /// The `BuildRequest` as `BuildResultPrinter` reads it.
@@ -1432,23 +1485,42 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:421 ExecutionTool.executeBuild
         let _explanation_handler = self.install_explanation_handler();
 
-        let result = evaluate_build_driver_keys(
+        let evaluated = evaluate_build_driver_keys(
             skyframe_executor.get_evaluator(),
             &keys_to_execute,
             &state.seam.get_workspace_status_artifacts(),
             &state.config,
             reporter.clone(),
-        )
-        .map_err(|_| BuildToolError::Interrupted)?;
-        state.prepared.save_action_cache(reporter.as_ref());
+        );
+        // An interrupt (InterruptedException out of analyzeAndExecuteTargets) still reaches the
+        // finally block below, with buildCompleted false: the action cache is not saved and the
+        // targets built so far are shown.
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:620 BuildTool.buildTargetsWithMergedAnalysisExecution
+        let interrupted = evaluated.is_err();
+        let evaluation = match evaluated {
+            Ok(result) => result.evaluation,
+            Err(blaze_skyframe::Interrupted) => blaze_skyframe::EvaluationResult {
+                values: Vec::new(),
+                errors: Vec::new(),
+                catastrophe: None,
+            },
+        };
+        // ExecutionTool.nonCatastrophicFinalizations: `if (buildCompleted)
+        // saveActionCache(actionCache)`.
+        if !interrupted {
+            state.prepared.save_action_cache(reporter.as_ref());
+        }
 
         // SkyframeErrorProcessor.processErrors of the evaluation (the Skymeld path:
         // SkyframeBuildView.analyzeAndExecuteTargets; the other path: SkyframeBuilder
         // .buildArtifacts, which rethrows the same way). Without --keep_going it throws, and Java
         // reaches the finally block below ("Show results") with the exception pending.
         // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:853 SkyframeBuildView.analyzeAndExecuteTargets
-        let execution_error: Option<BuildToolError> =
-            match process_execution_errors(&result.evaluation, request.keep_going) {
+        let mut test_exec_exception: Option<String> = None;
+        let execution_error: Option<BuildToolError> = if interrupted {
+            Some(BuildToolError::Interrupted)
+        } else {
+            match process_execution_errors(&evaluation, request.keep_going) {
                 Ok(None) => None,
                 // This is the --keep_going code path: Time to throw the delayed exceptions.
                 // Keeping legacy behavior: for execution errors, keep the message of the
@@ -1461,8 +1533,25 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                         .cloned()
                         .expect("an execution exit code has a failure detail"),
                 }),
-                Err(e) => Some(e),
-            };
+                Err(RethrownException::BuildFailed {
+                    error,
+                    catastrophic,
+                }) => {
+                    // BuildTool.processRequest: `if (e.isCatastrophic()) result.setCatastrophe()`.
+                    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:938 BuildTool.processRequest
+                    if catastrophic {
+                        self.build_result.borrow_mut().set_catastrophe();
+                    }
+                    Some(error)
+                }
+                // Non-catastrophic: the results are shown below, then BuildTool.processRequest
+                // reports it.
+                Err(RethrownException::TestExec(message)) => {
+                    test_exec_exception = Some(message);
+                    None
+                }
+            }
+        };
 
         // BuildView.update, after analyzeAndExecuteTargets returned (it does not return when
         // processErrors threw): the successful targets are the BuildDriverKeys with a value,
@@ -1470,13 +1559,13 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // Java: com/google/devtools/build/lib/analysis/BuildView.java:440 BuildView.update
         // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1183 SkyframeBuildView.getSuccessfulConfiguredTargets
         if request.with_merged_analysis_and_execution_source_of_truth()
-            && (request.keep_going || execution_error.is_none())
+            && (request.keep_going || (execution_error.is_none() && test_exec_exception.is_none()))
         {
             let num_targets_to_analyze = label_to_target_map.len();
             let num_successful = skipped_keys.len()
                 + keys_to_execute
                     .iter()
-                    .filter(|key| result.evaluation.get(*key).is_some())
+                    .filter(|key| evaluation.get(*key).is_some())
                     .count();
             // PORT: this is the line of BuildView.update for `includeExecutionPhase`.
             // blaze_sky_top's BuildView.update returns before the execution, so it must not print
@@ -1515,11 +1604,7 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             let top_level_label = target.get_original_label();
             let built = keys_to_execute.iter().any(|key| {
                 key.action_lookup_key.get_label().as_ref() == Some(&top_level_label)
-                    && top_level_target_built(
-                        skyframe_executor.get_evaluator(),
-                        &result.evaluation,
-                        key,
-                    )
+                    && top_level_target_built(skyframe_executor.get_evaluator(), &evaluation, key)
             });
             if built {
                 successful_targets.push(view.clone());
@@ -1556,6 +1641,16 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         if let Some(execution_error) = execution_error {
             return Err(execution_error);
         }
+        if let Some(message) = test_exec_exception {
+            // BuildTool.processRequest, `catch (TestExecException e)`: ExitCode.SUCCESS means that
+            // build was successful. Real return code of program is going to be calculated in
+            // TestCommand.doTest(). reportExceptionError(e).
+            // PORT: the exception is caught here, not in blaze_sky_top's BuildTool: nothing of
+            // BuildTool.buildTargets runs after the execution phase on this path (a delayed
+            // analysis failure needs --keep_going, which never rethrows).
+            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:976 BuildTool.processRequest
+            reporter.handle(&Event::error(message));
+        }
         Ok(())
     }
 }
@@ -1563,11 +1658,11 @@ impl ExecutionPhase for RuntimeExecutionPhase {
 /// `SkyframeErrorProcessor.isExecutionException(cause)`, with the cause's class.
 ///
 /// PORT: `TestExecException` is not a class of its own in blaze_exec (the test strategy raises
-/// it as a `UserExecException`, and an `ActionExecutionException` keeps its cause as a message),
-/// so Java's `cause.getCause() instanceof TestExecException` branch of `rethrow` (the build then
-/// counts as successful and `TestCommand.doTest` computes the exit code) cannot be told apart
-/// from an action failure here. `TopLevelOutputException` (action rewinding, staging of
-/// top-level outputs) is not raised by the ported functions.
+/// it as a marked `UserExecException`); the `ActionExecutionException` it causes tells
+/// (`is_caused_by_test_exec_exception`), which is the `cause.getCause() instanceof
+/// TestExecException` of `rethrow`. A `TestExecException` is never the error of a node itself.
+/// `TopLevelOutputException` (action rewinding, staging of top-level outputs) is not raised by
+/// the ported functions.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:873 SkyframeErrorProcessor.isExecutionException
 enum ExecutionExceptionCause<'a> {
     ActionExecution(&'a ActionExecutionException),
@@ -1644,7 +1739,7 @@ fn create_unknown_execution_detailed_exit_code(
 fn process_execution_errors(
     result: &blaze_skyframe::EvaluationResult,
     keep_going: bool,
-) -> Result<Option<blaze_util::DetailedExitCode>, BuildToolError> {
+) -> Result<Option<blaze_util::DetailedExitCode>, RethrownException> {
     let mut execution_detailed_exit_code: Option<blaze_util::DetailedExitCode> = None;
     for (error_key, error_info) in result.error_map() {
         let nullable_cause = error_info.get_exception();
@@ -1685,12 +1780,42 @@ fn process_execution_errors(
     Ok(execution_detailed_exit_code)
 }
 
+/// What [`rethrow`] throws.
+#[derive(Debug)]
+enum RethrownException {
+    /// A `BuildFailedException` (`BuildToolError::BuildFailed`), with its `isCatastrophic()`.
+    BuildFailed {
+        error: BuildToolError,
+        catastrophic: bool,
+    },
+    /// The `TestExecException` (its message) that caused an `ActionExecutionException`: a test
+    /// failed without `--test_keep_going`.
+    TestExec(String),
+}
+
+impl RethrownException {
+    fn build_failed(error: BuildToolError) -> RethrownException {
+        RethrownException::BuildFailed {
+            error,
+            catastrophic: false,
+        }
+    }
+}
+
 /// Figure out why an action's analysis/execution failed and rethrow the right kind of exception.
 ///
 /// PORT: returns the `BuildFailedException`; an empty message stands for
 /// `isErrorAlreadyShown()` (`BuildTool.processRequest` reports the others).
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:974 SkyframeErrorProcessor.rethrow
-fn rethrow(cause: &ExecutionExceptionCause<'_>) -> BuildToolError {
+fn rethrow(cause: &ExecutionExceptionCause<'_>) -> RethrownException {
+    if let ExecutionExceptionCause::ActionExecution(e) = cause
+        && e.is_caused_by_test_exec_exception()
+    {
+        // innerCause instanceof TestExecException: throw testExecException.
+        // PORT: the ActionExecutionException's message is the TestExecException's
+        // (`ActionExecutionException.fromExecException` without a subtask).
+        return RethrownException::TestExec(e.get_message().to_owned());
+    }
     match cause {
         ExecutionExceptionCause::ActionExecution(action_execution_cause) => {
             let mut message = action_execution_cause.get_message().to_owned();
@@ -1705,26 +1830,29 @@ fn rethrow(cause: &ExecutionExceptionCause<'_>) -> BuildToolError {
                 .get_failure_detail()
                 .cloned()
                 .expect("NullPointerException: detailedExitCode");
-            BuildToolError::BuildFailed {
-                // errorAlreadyShown = !actionExecutionCause.showError()
-                message: if action_execution_cause.show_error() {
-                    message
-                } else {
-                    String::new()
+            RethrownException::BuildFailed {
+                error: BuildToolError::BuildFailed {
+                    // errorAlreadyShown = !actionExecutionCause.showError()
+                    message: if action_execution_cause.show_error() {
+                        message
+                    } else {
+                        String::new()
+                    },
+                    failure_detail,
                 },
-                failure_detail,
+                catastrophic: action_execution_cause.is_catastrophe(),
             }
         }
         // throw inputFileErrorException: a BuildFailedException whose error is already shown.
         ExecutionExceptionCause::InputFileError(input_file_error_exception) => {
-            BuildToolError::BuildFailed {
+            RethrownException::build_failed(BuildToolError::BuildFailed {
                 message: String::new(),
                 failure_detail: input_file_error_exception
                     .detailed_exit_code
                     .get_failure_detail()
                     .cloned()
                     .expect("NullPointerException: detailedExitCode"),
-            }
+            })
         }
         // We encountered an exception we don't think we should have encountered. This can
         // indicate an exception-processing bug in our code, such as lower level exceptions not
@@ -1735,10 +1863,10 @@ fn rethrow(cause: &ExecutionExceptionCause<'_>) -> BuildToolError {
                 .get_failure_detail()
                 .cloned()
                 .expect("NullPointerException: unknownExitCode.getFailureDetail()");
-            BuildToolError::BuildFailed {
+            RethrownException::build_failed(BuildToolError::BuildFailed {
                 message: failure_detail.message.clone(),
                 failure_detail,
-            }
+            })
         }
     }
 }
@@ -1765,12 +1893,23 @@ impl blaze_events::EventBus for UiTestSummaryCounter {
     }
 }
 
-/// The reporter's `OutputFilter` (`None`: `OutputFilter.OUTPUT_EVERYTHING`).
+/// The reporter's `OutputFilter` (`None`: `OutputFilter.OUTPUT_EVERYTHING`, the reporter's
+/// default, left as it is).
 ///
-/// PORT: Java's module sets the filter on the reporter at `BuildStartingEvent`
-/// (`--output_filter`) or `TargetParsingCompleteEvent` (`--auto_output_filter`); the executor
-/// takes it when it is created.
+/// Java's module sets the filter on the reporter at `BuildStartingEvent` (`--output_filter`) or
+/// at `TargetParsingCompleteEvent` (`--auto_output_filter`); the command sets it at
+/// `BuildStartingEvent`, and the action executor (which reports through the reporter but asks
+/// `reporter.showOutput` itself before it reports an action's output) takes it when it is
+/// created.
+///
+/// PORT: the `--auto_output_filter` values that do not depend on the parsed targets (`none`,
+/// `all`) are set at `BuildStartingEvent`, before the target patterns are parsed: the events of
+/// that phase have no tag (only the analysis and execution functions tag their events), so the
+/// filter has no effect on them either way. `packages` and `subpackages` need the labels of the
+/// `TargetParsingCompleteEvent`, which blaze_sky_top's target pattern phase does not post; they
+/// fail loudly.
 // Java: com/google/devtools/build/lib/outputfilter/OutputFilteringModule.java:78 OutputFilteringModule.buildStarting
+// Java: com/google/devtools/build/lib/outputfilter/OutputFilteringModule.java:98 OutputFilteringModule.targetParsingComplete
 fn output_filter(
     options: &OptionsParsingResult,
     request_options: &BuildRequestOptions,
@@ -1861,9 +2000,13 @@ mod tests {
     #[test]
     fn rethrow_of_a_source_error_reports_location_and_action() {
         let result = result_with_error(missing_input_exception());
-        let Err(BuildToolError::BuildFailed {
-            message,
-            failure_detail,
+        let Err(RethrownException::BuildFailed {
+            error:
+                BuildToolError::BuildFailed {
+                    message,
+                    failure_detail,
+                },
+            catastrophic: false,
         }) = process_execution_errors(&result, /* keep_going= */ false)
         else {
             panic!("expected a BuildFailedException");
@@ -1889,12 +2032,70 @@ mod tests {
         let result = result_with_error(ActionExecutionException::already_reported(
             missing_input_exception(),
         ));
-        let Err(BuildToolError::BuildFailed { message, .. }) =
-            process_execution_errors(&result, /* keep_going= */ false)
+        let Err(RethrownException::BuildFailed {
+            error: BuildToolError::BuildFailed { message, .. },
+            ..
+        }) = process_execution_errors(&result, /* keep_going= */ false)
         else {
             panic!("expected a BuildFailedException");
         };
         assert_eq!(message, "");
+    }
+
+    /// The TestExecException of `TestRunnerAction.executeAllAttempts` without
+    /// `--test_keep_going` ("Test failed, aborting", TestAction.NO_KEEP_GOING_TEST_FAILURE),
+    /// already reported by the action executor as `<loc>: Testing //:fail_test failed: Test
+    /// failed, aborting`.
+    fn test_failed_aborting() -> ActionExecutionException {
+        ActionExecutionException::already_reported(
+            ActionExecutionException::with_root_causes(
+                "Test failed, aborting",
+                None,
+                Vec::new(),
+                false,
+                Some(FailureDetail {
+                    message: "Testing //:fail_test failed: Test failed, aborting".to_owned(),
+                    category: Some(Category::TestAction(failure_details::TestAction {
+                        code: failure_details::test_action::Code::NoKeepGoingTestFailure as i32,
+                    })),
+                }),
+            )
+            .with_test_exec_exception_cause_for_testing(),
+        )
+    }
+
+    /// test-no-keep-going step 1 (`test --notest_keep_going //:fail_test`): `rethrow` throws
+    /// the TestExecException (`SkyframeErrorProcessor.java:978`), which BuildTool reports as
+    /// `ERROR: Test failed, aborting` with a successful build; TestCommand exits with 3.
+    #[test]
+    fn rethrow_of_a_test_exec_exception_throws_it() {
+        let result = result_with_error(test_failed_aborting());
+        let Err(RethrownException::TestExec(message)) =
+            process_execution_errors(&result, /* keep_going= */ false)
+        else {
+            panic!("expected a TestExecException");
+        };
+        assert_eq!(message, "Test failed, aborting");
+    }
+
+    /// `rethrow` passes `actionExecutionCause.isCatastrophe()` to the BuildFailedException
+    /// (`SkyframeErrorProcessor.java:992`), which BuildTool turns into `result.setCatastrophe()`
+    /// (`BuildTool.java:939`).
+    #[test]
+    fn rethrow_keeps_the_catastrophe() {
+        let catastrophic = ActionExecutionException::with_root_causes(
+            "catastrophic failure",
+            None,
+            Vec::new(),
+            true,
+            Some(source_input_missing()),
+        );
+        let Err(RethrownException::BuildFailed { catastrophic, .. }) =
+            process_execution_errors(&result_with_error(catastrophic), false)
+        else {
+            panic!("expected a BuildFailedException");
+        };
+        assert!(catastrophic);
     }
 
     /// exec-source-errors step 8 (`build --keep_going ...`): nothing more is printed for the

@@ -47,6 +47,13 @@ def _mut_impl(ctx):
         t = ctx.toolchains.toolchain_types()
         t.append(Label("//:x"))
         r = str(t)
+    elif op.startswith("cpp_") and op.endswith("_append"):
+        # CppConfigurationApi: ImmutableList results, converted by Starlark.fromJava into a new
+        # mutable list per access (analysis review R2-1).
+        name = op[len("cpp_"):-len("_append")]
+        f = getattr(ctx.fragments.cpp, name)
+        f.append("-DPROBE")
+        r = str(f[-1:]) + " " + str(len(getattr(ctx.fragments.cpp, name)))
     elif op == "read_only":
         r = "%d %d %s %s %s" % (
             len(ctx.files.srcs),
@@ -62,6 +69,7 @@ def _mut_impl(ctx):
 
 mut = rule(
     implementation = _mut_impl,
+    fragments = ["cpp"],
     attrs = {
         "op": attr.string(),
         "srcs": attr.label_list(allow_files = True),
@@ -89,4 +97,10 @@ OPS = [
     "features_append",
     "disabled_features_append",
     "toolchain_types_append",
+    "cpp_copts_append",
+    "cpp_cxxopts_append",
+    "cpp_conlyopts_append",
+    "cpp_objccopts_append",
+    "cpp_linkopts_append",
+    "cpp_lto_backend_options_append",
 ]

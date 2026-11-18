@@ -1,4 +1,6 @@
 #![cfg(feature = "wip")]
+// Options and protos are filled in field by field, as the Java tests set them.
+#![allow(clippy::field_reassign_with_default)]
 //! Port of the `ensureInputsPresent_*` tests of
 //! `src/test/java/com/google/devtools/build/lib/remote/CombinedCacheTest.java`, which test
 //! `RemoteExecutionCache` (the other tests of that class are in `combined_cache_test.rs`).
@@ -111,11 +113,13 @@ impl<T: Clone + Send + Sync + 'static> SettableFuture<T> {
     /// The future, as the code under test gets it.
     fn future(&self) -> BoxFuture<'static, T> {
         let mut value = self.value.subscribe();
-        let mut cancelled_on_drop = CancelledOnDrop {
+        let cancelled_on_drop = CancelledOnDrop {
             done: false,
             cancelled: self.cancelled.clone(),
         };
         Box::pin(async move {
+            // The future owns the whole guard (not only the field it assigns).
+            let mut cancelled_on_drop = cancelled_on_drop;
             loop {
                 let current: Option<T> = value.borrow().clone();
                 if let Some(current) = current {
@@ -1050,10 +1054,6 @@ fn ensure_inputs_present_multiple_consumers_interrupted_one_during_find_missing_
 
         // act
         // thread1.interrupt(); ensureInterrupted.await();
-        //
-        // PORT: thread1 is the call whose query is in flight. Java keeps that query running for
-        // thread2; here thread2 sends the query again (see the PORT note in
-        // `ensure_inputs_present_with_additional_inputs_async`).
         drop(thread1);
         find_missing_digests_future.set(merkle_tree.all_digests().into_iter().collect());
 
@@ -1157,17 +1157,9 @@ fn ensure_inputs_present_multiple_consumers_interrupted_one_during_upload_blobs_
         run_until(&mut thread2, || upload_calls.load(Ordering::SeqCst) >= 5).await;
         assert_eq!(upload_futures.lock().len(), 5);
         assert_eq!(cache_protocol.get_in_progress_uploads().len(), 5);
-        let first_bar_upload = upload_futures.lock().get(&bar_digest).unwrap().clone();
 
         // thread1.interrupt(); ensureInterrupted.await();
         drop(thread1);
-        // PORT: thread1 ran the upload of bar, which both calls wait for. Java keeps that upload
-        // running for thread2; with the port's `AsyncTaskCache` it ends with thread1, and
-        // thread2 starts it again when it runs next. The upload of bar that the assertions below
-        // look at is that second one.
-        assert!(first_bar_upload.is_cancelled());
-        assert!(futures::poll!(thread2.as_mut()).is_pending());
-        assert_eq!(upload_calls.load(Ordering::SeqCst), 6);
 
         // assert
         assert_eq!(cache_protocol.get_in_progress_uploads().len(), 3);

@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""Replay the spawns of an oracle build through blaze_remote and compare with the oracle.
+
+See `replay help`.
+"""
+
+import glob
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+CACHE = os.path.expanduser("~/.cache/blaze")
+WORK = os.path.join(CACHE, "work", "remote")
+OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-remote")
+BIN = os.path.join(ROOT, "target", "debug", "blaze-remote-replay")
+
+USAGE = """\
+usage: scripts/remote/replay <oracle-run>/<step> <project> --name NAME --mode cache|remote
+                             [--sample N] [--keep] [--expect-hits] [--expect-ac-in DIR]
+                             [--no-inline-dotd] [--owner-metadata-from GRPC_JSONL]
+                             [--toplevel-from ORACLE_RUN] [--sources-from ORACLE_RUN]...
+                             [-- <Bazel remote options>]
+       scripts/remote/replay help
+
+Takes the exec log of an oracle build made with scripts/remote/oracle-run
+(~/.cache/blaze/work/remote/<oracle-run>/<step>/execlog.json), selects its linux-sandbox /
+cache-hit / remote spawns (all of them; `--sample N` takes a deterministic sample of N per
+project as scripts/w6/replay-spawns does), and
+
+  1. materialises every input into a scratch execroot
+     ~/.cache/blaze/work/remote/<NAME>/output_base/execroot/_main, copied from the oracle run's
+     execroot after checking its sha256 against the recorded digest (as scripts/w6/replay-spawns);
+  2. runs target/debug/blaze-remote-replay (--mode and the options after `--` are passed on:
+     --disk_cache=..., --remote_cache=grpc://..., --remote_executor=..., --remote_grpc_log=...;
+     `{work}` in an option is replaced by the work directory of NAME);
+  3. compares per spawn with the oracle's exec log entry:
+       digest    Blaze's action digest == the oracle's `digest` (hash and size)
+       outputs   sha256 of every output Blaze left on disk or injected as remote metadata ==
+                 the oracle's actualOutputs (test logs under testlogs/ excluded: timing-dependent)
+       exit      exit code
+     and counts cache hits (`runner` ends with "cache hit") and runners.
+
+  --expect-hits        every replayed spawn must be a cache hit
+  --expect-ac-in DIR   for every spawn, DIR/ac/<2 hex>/<Blaze's action digest hash> must exist
+                       (DIR is a disk cache written by real Bazel)
+  --owner-metadata-from F
+                       give each spawn's action owner the configuration checksum the oracle
+                       sent for it: F is an oracle --remote_grpc_log dumped with
+                       target/debug/blaze-remote-grpc-log (metadata.actionId ->
+                       metadata.configurationId). The checksum comes from analysis, which the
+                       exec log does not record; without it Blaze's RequestMetadata has no
+                       configuration_id.
+  --toplevel-from R    the outputs of top-level targets (downloaded under the default
+                       --remote_download_outputs=toplevel): every spawn output that is on disk
+                       in the execroot of oracle run R, which must be a build that had only
+                       cache hits after `clean` (Bazel then wrote exactly the top-level outputs)
+  --sources-from R     also look for input files in the execroot of oracle run R (every file is
+                       still checked against the recorded sha256); needed when the run the exec
+                       log comes from did not keep its intermediate outputs on disk
+  --keep               keep the scratch output base of an earlier replay with the same NAME
+
+Prints the counts, every mismatch, the events blaze_remote reported and its
+`N processes: ...` line; writes ~/.cache/blaze/work/remote/<NAME>/{spec,results,summary}.json.
+Prerequisite: scripts/cargo-capped build -p blaze_remote --features wip --bin blaze-remote-replay.
+Exit code 0 iff every comparison (and every --expect) holds.
+"""
+
+
+def load(path, name):
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_loader(name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    extra = []
+    if "--" in args:
+        i = args.index("--")
+        args, extra = args[:i], args[i + 1:]
+    if len(args) < 2:
+        print(USAGE, end="", file=sys.stderr)
+        return 2
+    run_step, project = args[0], args[1]
+    name = mode = expect_ac = owner_meta = toplevel_from = None
+    sample = None
+    keep = expect_hits = False
+    harness_flags = []
+    extra_sources = []
+    rest = args[2:]
+    while rest:
+        a = rest.pop(0)
+        if a == "--name":
+            name = rest.pop(0)
+        elif a == "--mode":
+            mode = rest.pop(0)
+        elif a == "--sample":
+            sample = int(rest.pop(0))
+        elif a == "--keep":
+            keep = True
+        elif a == "--expect-hits":
+            expect_hits = True
+        elif a == "--expect-ac-in":
+            expect_ac = os.path.expanduser(rest.pop(0))
+        elif a == "--owner-metadata-from":
+            owner_meta = rest.pop(0)
+        elif a == "--sources-from":
+            extra_sources.append(rest.pop(0))
+        elif a == "--toplevel-from":
+            toplevel_from = rest.pop(0)
+        elif a == "--no-inline-dotd":
+            harness_flags.append(a)
+        else:
+            print("unknown option: " + a, file=sys.stderr)
+            return 2
+    if not name or mode not in ("cache", "remote"):
+        print(USAGE, end="", file=sys.stderr)
+        return 2
+
+    w6 = load(os.path.join(ROOT, "scripts", "w6", "replay-spawns"), "w6_replay")
+    oracle_run = run_step.split("/")[0]
+    execroots = glob.glob(os.path.join(OUT_ROOT, oracle_run, "*", "execroot", "_main"))
+    if len(execroots) != 1:
+        print("expected one oracle execroot for %s, found %r" % (oracle_run, execroots), file=sys.stderr)
+        return 2
+    w6.SOURCE_EXECROOTS[project] = list(execroots)
+    for r in extra_sources:
+        w6.SOURCE_EXECROOTS[project] += glob.glob(os.path.join(OUT_ROOT, r, "*", "execroot", "_main"))
+    oracle_ob = os.path.dirname(os.path.dirname(execroots[0]))
+
+    entries = w6.read_json_stream(os.path.join(WORK, run_step, "execlog.json"))
+    replayable = [(i, e) for i, e in enumerate(entries)
+                  if e.get("runner") == "linux-sandbox" or e.get("runner", "").endswith("cache hit")
+                  or e.get("runner") == "remote"]
+    if sample is not None:
+        saved = w6.select
+        groups = {}
+        for i, e in replayable:
+            groups.setdefault(e["mnemonic"], []).append((i, e))
+        total = len(replayable)
+        chosen = []
+        for m, lst in sorted(groups.items()):
+            n = max(1, round(sample * len(lst) / total))
+            step = max(1, len(lst) // n)
+            chosen.extend(lst[::step][:n])
+        chosen.sort(key=lambda x: x[0])
+        replayable = chosen
+
+    work = os.path.join(WORK, name)
+    output_base = os.path.join(work, "output_base")
+    execroot = os.path.join(output_base, "execroot", "_main")
+    if os.path.exists(output_base) and not keep:
+        subprocess.run(["chmod", "-R", "u+w", output_base], check=False)
+        shutil.rmtree(output_base)
+    os.makedirs(execroot, exist_ok=True)
+    print("%s: %d recorded spawns, replaying %d (mode %s)" % (project, len(entries), len(replayable), mode))
+
+    checksums = {}
+    if owner_meta:
+        for line in open(owner_meta):
+            md = json.loads(line).get("metadata", {})
+            if md.get("configurationId"):
+                checksums[md.get("actionId")] = md["configurationId"]
+    exec_info = w6.aquery_exec_info(project)
+    specs = w6.materialise(project, replayable, execroot, print)
+    spec = {"output_base": output_base, "exec_root": execroot,
+            "install_base": w6.INSTALL_BASE, "spawns": []}
+    ok = True
+    for idx, e, inputs, problem in specs:
+        if problem:
+            ok = False
+            continue
+        actual = [f["path"] for f in e.get("actualOutputs", [])]
+        outs = actual + [o for o in e.get("listedOutputs", []) if o not in actual]
+        info = {}
+        for o in outs:
+            if o in exec_info:
+                info = exec_info[o]
+                break
+        info = dict(info)
+        if int(e.get("timeoutMillis", "0")) and "timeout" not in info:
+            info["timeout"] = str(int(e["timeoutMillis"]) // 1000)
+        spec["spawns"].append({
+            "index": idx,
+            "argv": e["commandArgs"],
+            "env": [[v["name"], v["value"]] for v in e.get("environmentVariables", [])],
+            "inputs": inputs,
+            "outputs": outs,
+            "mnemonic": e["mnemonic"],
+            "target_label": e.get("targetLabel"),
+            "execution_info": info,
+            "timeout_millis": int(e.get("timeoutMillis", "0")),
+            "configuration_checksum": checksums.get(e.get("digest", {}).get("hash")),
+        })
+    if toplevel_from:
+        roots = glob.glob(os.path.join(OUT_ROOT, toplevel_from, "*", "execroot", "_main"))
+        if len(roots) != 1:
+            print("expected one execroot for %s, found %r" % (toplevel_from, roots), file=sys.stderr)
+            return 2
+        top = sorted({o for sp in spec["spawns"] for o in sp["outputs"]
+                      if os.path.isfile(os.path.join(roots[0], o))})
+        top_path = os.path.join(work, "toplevel.json")
+        json.dump(top, open(top_path, "w"), indent=1)
+        harness_flags += ["--toplevel-outputs", top_path]
+        print("%s: %d top-level outputs (from %s)" % (project, len(top), toplevel_from))
+    spec_path = os.path.join(work, "spec.json")
+    json.dump(spec, open(spec_path, "w"), indent=1)
+    results_path = os.path.join(work, "results.json")
+    exec_log = os.path.join(work, "execlog.json")
+    cmd = [BIN, "--spec", spec_path, "--results", results_path, "--execution-log-json", exec_log,
+           "--mode", mode] + harness_flags + ["--"] + [x.replace("{work}", work) for x in extra]
+    r = subprocess.run(cmd, cwd=execroot, env={"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/")},
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    out_lines = r.stdout.splitlines()
+    shown = {}
+    for line in out_lines:
+        shown[line] = shown.get(line, 0) + 1
+    for line, n in shown.items():
+        print("  blaze: " + line + (" (x%d)" % n if n > 1 else ""))
+    if r.returncode != 0:
+        print("  blaze-remote-replay exited %d" % r.returncode)
+        print(r.stderr[-4000:])
+        return 1
+    results = {x["index"]: x for x in json.load(open(results_path))}
+
+    counts = {"replayed": 0, "digest": 0, "outputs": 0, "exit": 0, "hits": 0, "ac_in_oracle_cache": 0}
+    runners = {}
+    for idx, e, inputs, problem in specs:
+        if problem:
+            continue
+        counts["replayed"] += 1
+        res = results.get(idx, {})
+        key = w6.key_of(e)
+        runner = res.get("runner")
+        runners[runner] = runners.get(runner, 0) + 1
+        if runner and runner.endswith("cache hit"):
+            counts["hits"] += 1
+        elif expect_hits:
+            ok = False
+            print("  [miss] %s: runner %s%s" % (key, runner, (" error: " + res["error"]) if res.get("error") else ""))
+        od = e.get("digest", {})
+        want = "%s/%s" % (od.get("hash"), od.get("sizeBytes"))
+        if res.get("digest") == want:
+            counts["digest"] += 1
+        else:
+            ok = False
+            print("  [digest] %s: blaze %s vs oracle %s" % (key, res.get("digest"), want))
+        if res.get("exit_code") == e.get("exitCode", 0):
+            counts["exit"] += 1
+        else:
+            ok = False
+            print("  [exit] %s: blaze %s (%s) vs oracle %s %s" % (
+                key, res.get("exit_code"), res.get("status"), e.get("exitCode", 0), res.get("error", "")))
+        o_out = {f["path"]: f.get("digest", {}).get("hash") for f in e.get("actualOutputs", [])
+                 if "/testlogs/" not in f["path"]}
+        m_out = {p: h for p, h in (res.get("outputs") or {}).items() if h and "/testlogs/" not in p}
+        for inj in res.get("injected") or []:
+            if "/testlogs/" not in inj["path"]:
+                m_out.setdefault(inj["path"], inj["hash"])
+        if o_out == m_out:
+            counts["outputs"] += 1
+        else:
+            ok = False
+            bad = sorted(p for p in set(o_out) | set(m_out) if o_out.get(p) != m_out.get(p))
+            print("  [outputs] %s: %s" % (key, ", ".join(bad)))
+        if expect_ac:
+            h = (res.get("digest") or "/").split("/")[0]
+            if h and os.path.isfile(os.path.join(expect_ac, "ac", h[:2], h)):
+                counts["ac_in_oracle_cache"] += 1
+            else:
+                ok = False
+                print("  [ac] %s: no ac entry for %s in %s" % (key, h, expect_ac))
+    n = counts["replayed"]
+    line = "%s: replayed %d; action digest == oracle %d/%d; outputs == oracle %d/%d; exit code %d/%d; cache hits %d/%d" % (
+        project, n, counts["digest"], n, counts["outputs"], n, counts["exit"], n, counts["hits"], n)
+    if expect_ac:
+        line += "; ac entry in oracle cache %d/%d" % (counts["ac_in_oracle_cache"], n)
+    print(line)
+    print("%s: runners %s" % (project, json.dumps(runners, sort_keys=True)))
+    json.dump({"counts": counts, "runners": runners, "ok": ok, "stdout": out_lines,
+               "command": cmd, "oracle": run_step},
+              open(os.path.join(work, "summary.json"), "w"), indent=1)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

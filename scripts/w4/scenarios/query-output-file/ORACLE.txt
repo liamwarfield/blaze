@@ -1,10 +1,24 @@
 === 1: run cquery //:x --output_file=out.txt
 exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
 INFO: Build completed successfully, 0 total actions
 === 2: cat out.txt
 //:x (a7a71fd)
 === 3: run cquery "deps(//:x)" --output=label_kind --output_file=sub/out2.txt
 exit 0
+--- stdout
+--- stderr
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
 INFO: Build completed successfully, 0 total actions
 === 4: cat sub/out2.txt
 w rule //:x (a7a71fd)
@@ -17,6 +31,12 @@ constraint_setting rule @@platforms//cpu:cpu (3030ed4)
 constraint_setting rule @@platforms//os:os (3030ed4)
 === 5: run aquery //:x --output=jsonproto --output_file=aq.json
 exit 0
+--- stdout
+--- stderr
+INFO: Analyzed target //:x (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
 INFO: Build completed successfully, 0 total actions
 === 6: cat aq.json
 {
@@ -67,25 +87,53 @@ INFO: Build completed successfully, 0 total actions
 }
 === 7: run cquery //:x --output_file=missing-dir/out.txt
 exit 36
-ERROR: Build did NOT complete successfully
+--- stdout
+--- stderr
+INFO: Analyzed target //:x (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
 ERROR: Could not open query output file <WS>/missing-dir/out.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
 === 8: run aquery //:x --output=jsonproto --output_file=missing-dir/out.txt
 exit 36
-ERROR: Build did NOT complete successfully
+--- stdout
+--- stderr
+INFO: Analyzed target //:x (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
 ERROR: Could not open query output file <WS>/missing-dir/out.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
 === 9: run cquery //:x --output_file=sub
 exit 36
-ERROR: Build did NOT complete successfully
+--- stdout
+--- stderr
+INFO: Analyzed target //:x (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
 ERROR: Could not open query output file <WS>/sub
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
 === 10: run cquery //:x --output_file=
 exit 0
+--- stdout
 //:x (a7a71fd)
+--- stderr
+INFO: Analyzed target //:x (0 packages loaded, 0 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
 INFO: Build completed successfully, 0 total actions
 === 11: run cquery "//:nosuch" --output_file=err.txt
 exit 1
-ERROR: Build did NOT complete successfully
+--- stdout
+--- stderr
+WARNING: Target pattern parsing failed.
 ERROR: Skipping '//:nosuch': no such target '//:nosuch': target 'nosuch' not declared in package '' defined by <WS>/BUILD.bazel
 ERROR: no such target '//:nosuch': target 'nosuch' not declared in package '' defined by <WS>/BUILD.bazel
-WARNING: Target pattern parsing failed.
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
 === 12: stat err.txt
 cannot stat: FileNotFoundError

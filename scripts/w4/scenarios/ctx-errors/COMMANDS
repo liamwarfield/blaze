@@ -1,5 +1,5 @@
-# S2-7, S2-9, S2-4: errors Bazel raises (exit codes and first message lines are compared;
-# the Starlark error text is on later lines of each message).
+# S2-7, S2-9, S2-4: errors Bazel raises (full transcripts are compared, including
+# the Starlark error text on the later lines of each message).
 # Steps frag_undeclared_getattr_default and frag_undeclared_hasattr need a fallible attribute
 # hook in the vendored starlark-rust (see the wave report).
 run build //:frag_undeclared

@@ -15,6 +15,8 @@ pub mod circuitbreaker;
 pub mod client_api_version;
 #[cfg(feature = "wip")]
 pub mod combined_cache;
+#[cfg(feature = "wip")]
+pub mod combined_cache_client_factory;
 pub mod common;
 #[cfg(feature = "wip")]
 pub mod disk;
@@ -25,6 +27,8 @@ pub mod execution_status_exception;
 pub mod grpc;
 #[cfg(feature = "wip")]
 pub mod grpc_cache_client;
+#[cfg(feature = "wip")]
+pub mod grpc_remote_executor;
 pub mod hooks;
 #[cfg(feature = "wip")]
 pub mod logging;
@@ -46,13 +50,27 @@ pub mod remote_execution_service;
 #[allow(deprecated)]
 pub mod remote_execution_service_download;
 #[cfg(feature = "wip")]
+pub mod remote_grpc_service_config;
+#[cfg(feature = "wip")]
+pub mod remote_module;
+#[cfg(feature = "wip")]
 pub mod remote_output_checker;
+#[cfg(feature = "wip")]
+// Java still writes the deprecated `Command.platform`.
+#[allow(deprecated)]
+pub mod remote_repository_remote_executor;
 #[cfg(feature = "wip")]
 pub mod remote_retrier;
 #[cfg(feature = "wip")]
 pub mod remote_retrier_utils;
 #[cfg(feature = "wip")]
 pub mod remote_server_capabilities;
+#[cfg(feature = "wip")]
+pub mod remote_spawn_cache;
+#[cfg(feature = "wip")]
+pub mod remote_spawn_runner;
+#[cfg(feature = "wip")]
+pub mod remote_spawn_strategy;
 #[cfg(feature = "wip")]
 pub mod retrier;
 pub mod runtime;
