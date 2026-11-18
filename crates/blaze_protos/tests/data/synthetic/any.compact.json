@@ -1,0 +1,1 @@
+{"startTime":"2023-11-14T22:13:20.120Z","strategyDetails":[{"@type":"type.googleapis.com/tools.protos.SpawnExec","commandArgs":["echo"],"timeoutMillis":"-5","mnemonic":"M","exitCode":-1},{"@type":"type.googleapis.com/google.protobuf.Duration","value":"-1.500s"},{"@type":"type.googleapis.com/google.protobuf.Timestamp","value":"1970-01-01T00:00:01.000001Z"},{}]}

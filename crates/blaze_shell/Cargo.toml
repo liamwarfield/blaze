@@ -1,0 +1,15 @@
+[package]
+name = "blaze_shell"
+description = "Port of Bazel's lib/shell and the command-description parts of lib/util"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_util = { path = "../blaze_util" }
+blaze_vfs = { path = "../blaze_vfs" }
+blaze_cmdline = { path = "../blaze_cmdline" }
+indexmap.workspace = true
+parking_lot.workspace = true
+libc = "0.2"

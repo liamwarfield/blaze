@@ -1,0 +1,30 @@
+{
+  "commandArgs": [],
+  "environmentVariables": [],
+  "inputs": [{
+    "path": "p",
+    "digest": {
+      "hash": "",
+      "sizeBytes": "0",
+      "hashFunctionName": ""
+    },
+    "isTool": false,
+    "symlinkTargetPath": ""
+  }, {
+    "path": "",
+    "isTool": false,
+    "symlinkTargetPath": ""
+  }],
+  "listedOutputs": [],
+  "remotable": false,
+  "cacheable": false,
+  "timeoutMillis": "0",
+  "mnemonic": "",
+  "actualOutputs": [],
+  "runner": "",
+  "cacheHit": false,
+  "status": "",
+  "exitCode": 0,
+  "remoteCacheable": false,
+  "targetLabel": ""
+}

@@ -1,0 +1,61 @@
+{
+  "commandArgs": ["/bin/bash", "-c", "source external/bazel_tools/tools/genrule/genrule-setup.sh; cat in.txt \u003e bazel-out/k8-fastbuild/bin/out.txt \u0026\u0026 echo \u0027a\u003db \u003cc\u003e \u0026 d Ã© \"q\"\u0027 \u003e\u003e bazel-out/k8-fastbuild/bin/out.txt"],
+  "environmentVariables": [{
+    "name": "PATH",
+    "value": "/bin:/usr/bin:/usr/local/bin"
+  }],
+  "inputs": [{
+    "path": "external/bazel_tools/tools/genrule/genrule-setup.sh",
+    "digest": {
+      "hash": "2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f",
+      "sizeBytes": "866",
+      "hashFunctionName": "SHA-256"
+    },
+    "isTool": false,
+    "symlinkTargetPath": ""
+  }, {
+    "path": "in.txt",
+    "digest": {
+      "hash": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+      "sizeBytes": "6",
+      "hashFunctionName": "SHA-256"
+    },
+    "isTool": false,
+    "symlinkTargetPath": ""
+  }],
+  "listedOutputs": ["bazel-out/k8-fastbuild/bin/out.txt"],
+  "remotable": true,
+  "cacheable": true,
+  "timeoutMillis": "0",
+  "mnemonic": "Genrule",
+  "actualOutputs": [{
+    "path": "bazel-out/k8-fastbuild/bin/out.txt",
+    "digest": {
+      "hash": "51f0861eaff23b6586b3dc8345024fd4ad54d2926b7e1e60ca4a8123061e46cf",
+      "sizeBytes": "25",
+      "hashFunctionName": "SHA-256"
+    },
+    "isTool": false,
+    "symlinkTargetPath": ""
+  }],
+  "runner": "linux-sandbox",
+  "cacheHit": false,
+  "status": "",
+  "exitCode": 0,
+  "remoteCacheable": true,
+  "targetLabel": "//:gen",
+  "metrics": {
+    "totalTime": "0.004s",
+    "executionWallTime": "0.004s",
+    "inputBytes": "0",
+    "inputFiles": "0",
+    "memoryEstimateBytes": "0",
+    "inputBytesLimit": "0",
+    "inputFilesLimit": "0",
+    "outputBytesLimit": "0",
+    "outputFilesLimit": "0",
+    "memoryBytesLimit": "0",
+    "startTime": "2026-11-18T05:50:25.418Z",
+    "measuredMemoryPeakBytes": "3497984"
+  }
+}

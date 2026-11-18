@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Records tests/data/synthetic/* : Java protobuf (binary and JsonFormat) output for messages
+# built in scripts/JavaSynthetic.java, using the classes in the oracle's server jar.
+# Usage: crates/blaze_protos/scripts/record-synthetic [help]   (needs `java` 11+ on PATH)
+set -euo pipefail
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,4p' "$0"; exit 0; fi
+crate="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+jar="$HOME/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9/A-server.jar"
+mkdir -p "$crate/tests/data/synthetic"
+systemd-run --user --collect --quiet --pipe --wait -p MemoryMax=12G -p MemorySwapMax=0 \
+  --setenv=PATH="$PATH" java -cp "$jar" "$crate/scripts/JavaSynthetic.java" \
+  "$crate/tests/data/synthetic"
+ls -l "$crate/tests/data/synthetic"

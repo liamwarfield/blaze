@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Records the byte-exact golden files of crates/blaze_protos/tests/data from the pinned oracle
+# (Bazel 9.3.2) on a tiny scratch workspace (~/.cache/blaze/work/protos-ws).
+# Usage: crates/blaze_protos/scripts/record-goldens [help]
+# Runs the oracle under systemd-run with MemoryMax=12G. Overwrites tests/data/*.
+set -euo pipefail
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,5p' "$0"; exit 0; fi
+crate="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+data="$crate/tests/data"
+ws="$HOME/.cache/blaze/work/protos-ws"
+ur="$HOME/.cache/blaze/oracle-out/ur-protos"
+bazel="$HOME/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+mkdir -p "$ws" "$data"
+cat > "$ws/MODULE.bazel" <<'M'
+module(name = "protos_ws")
+M
+printf 'hello\n' > "$ws/in.txt"
+cat > "$ws/BUILD" <<'B'
+genrule(
+    name = "gen",
+    srcs = ["in.txt"],
+    outs = ["out.txt"],
+    cmd = "cat $< > $@ && echo 'a=b <c> & d é \"q\"' >> $@",
+    tags = ["manual-not", "x=y"],
+)
+
+filegroup(
+    name = "fg",
+    srcs = [
+        "in.txt",
+        ":gen",
+    ],
+)
+B
+run() {
+  systemd-run --user --collect --quiet --pipe --wait --same-dir -p MemoryMax=12G -p MemorySwapMax=0 \
+    --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin \
+    "$bazel" --output_user_root="$ur" --nohome_rc --nosystem_rc "$@"
+}
+cd "$ws"
+c=(--repository_cache="$HOME/.cache/blaze/repo-cache" --color=no --curses=no)
+run query "${c[@]}" '//:all' --output=proto > "$data/query.pb"
+run query "${c[@]}" '//:all' --output=streamed_proto > "$data/query.streamed.pb"
+run query "${c[@]}" '//:all' --output=streamed_jsonproto > "$data/query.streamed.jsonl"
+run cquery "${c[@]}" '//:all' --output=proto > "$data/cquery.pb"
+run cquery "${c[@]}" '//:all' --output=jsonproto > "$data/cquery.json"
+run aquery "${c[@]}" '//:gen' --output=proto > "$data/aquery.pb"
+run aquery "${c[@]}" '//:gen' --output=jsonproto > "$data/aquery.json"
+run clean "${c[@]}"
+run build "${c[@]}" //:fg --execution_log_binary_file="$data/execlog.pb" \
+  --build_event_json_file="$data/bep.json" --build_event_binary_file="$data/bep.pb"
+run clean "${c[@]}"
+run build "${c[@]}" //:fg --execution_log_json_file="$data/execlog.json"
+run shutdown
+ls -l "$data"
