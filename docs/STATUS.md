@@ -15,14 +15,16 @@ Updated 2026-11-17 (root).
 - `mod graph --output=json`: byte-identical for brotli and re2; lockfile resolution part matches (W2).
 - Every build configuration checksum (top-level, test-trimmed, exec, no-config) matches (W4 config).
 - CppCompile argv for brotli dictionary.c equals the oracle's (blaze_cc_features).
+- Action keys: 238/238 rebuilt oracle actions match; aquery dump replay byte-identical (W5).
+- Spawn replay: 43/43 brotli, 551/551 re2 spawns match through Blaze's linux-sandbox runner (W6).
+- `query` (W3, interim): brotli 162/162; re2 main targets match; re2 deps() in progress.
 
 ## In flight
-- W3 lead: packages, rule-definition builtins, @_builtins, loading SkyFunctions, `query`.
-- Repo-rules lead: repository_rule/repository_ctx, module extensions, REPOSITORY_DIRECTORY, lockfile
-  moduleExtensions.
-- W5 lead: blaze_actions (artifacts, actions, byte-exact action keys, runfiles, aquery dump).
-- W6 lead: blaze_exec (spawn runners, linux-sandbox, exec log, action cache) via spawn replay.
-- Upstream integration-test shim (Bazel's shell/py tests against any binary; oracle baseline).
+- W3 lead: finishing re2 `deps()` query.
+- Repo-rules lead: repository_rule/repository_ctx, module extensions, real fetching.
+- Analysis lead: platforms/toolchains, configured targets, ctx API, cc/py natives, cquery/aquery.
+- Build-driver/test lead: ACTION_EXECUTION, BuildDriver, symlink forest, summaries, test strategy.
+- Upstream integration-test shim.
 
 ## Next
 Analysis lead (configured targets, toolchains/platforms, ctx API, providers, cc_internal/cc_common
