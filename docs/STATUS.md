@@ -21,6 +21,8 @@ Updated 2026-11-17 (root).
 - Repos: every fetched repo tree identical to the oracle (brotli 67/67, re2 74/74); marker files
   and one lockfile entry per project pending Label() repo-mapping recording.
 - Execution replay: brotli action graph reproduces all 96 outputs; re2 tests 21/21.
+- Through the real `blaze` binary (brotli): query 162/162, cquery label_kind 176/176, cquery
+  jsonproto 16/16, aquery actions 60/60 (2 allowed). Lockfiles byte-identical (both projects).
 - Upstream integration tests: harness ready; oracle baseline 211/237 targets, 2,878 functions.
 
 ## In flight
