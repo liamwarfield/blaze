@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+"""W6: replay the oracle's recorded linux-sandbox spawns through Blaze's LinuxSandboxedSpawnRunner.
+
+See `replay-spawns help`.
+"""
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+CACHE = os.path.expanduser("~/.cache/blaze")
+RECORDS = os.path.join(CACHE, "oracle-records", "oracle-9.3.2")
+INSTALL_BASE = os.path.join(CACHE, "oracle-out", "ur", "install", "58cf1ecbff441bac762b0050d6da21e9")
+WORK = os.path.join(CACHE, "work", "w6")
+BIN = os.path.join(ROOT, "target", "debug", "blaze-exec-replay")
+
+# Execroots of earlier oracle builds of each project (read-only): every recorded input digest is
+# checked against the file found there before it is copied.
+SOURCE_EXECROOTS = {
+    "brotli": [
+        os.path.join(CACHE, "oracle-out", "ur", "583b18a54a0812f6ca106c9c2c1eb80c", "execroot", "_main"),
+    ],
+    "re2": [
+        os.path.join(CACHE, "oracle-out", "rec-oracle-9.3.2", "d4c1ff46e292915bfbb425566b16402b", "execroot", "_main"),
+        os.path.join(CACHE, "oracle-out", "ur", "f5418354f8881fd01f338636721e5f81", "execroot", "_main"),
+    ],
+}
+
+EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+
+USAGE = """\
+usage: scripts/w6/replay-spawns [--project brotli|re2|all] [--sample N] [--keep] [--verbose]
+       scripts/w6/replay-spawns help
+
+For each project, takes the oracle's recorded exec log
+(~/.cache/blaze/oracle-records/oracle-9.3.2/<p>/raw/execlog.json, --execution_log_json_file with
+--execution_log_sort), selects the linux-sandbox spawns (brotli: all; re2: a deterministic sample of
+N per mnemonic group, default --sample 60 in total), and:
+
+  1. materialises every input into a scratch execroot
+     ~/.cache/blaze/work/w6/<p>/output_base/execroot/_main by copying it from an earlier oracle
+     execroot (read-only; listed in SOURCE_EXECROOTS) after checking its sha256 against the
+     recorded digest; `.params` files become virtual inputs (written by the sandbox), empty
+     recorded files become VirtualActionInput.EMPTY_MARKER-like empty files, recorded
+     symlinkTargetPath entries become symlinks;
+  2. writes a spec (argv, env, inputs, tools, outputs, mnemonic, target label, executionInfo from
+     the oracle's aquery) and runs target/debug/blaze-exec-replay, which runs each spawn through
+     blaze_exec's LinuxSandboxedSpawnRunner (strategy chosen by Blaze's SpawnStrategyRegistry with
+     default options), with the oracle's linux-sandbox binary
+     (~/.cache/blaze/oracle-out/ur/install/58cf.../linux-sandbox), and logs it with
+     ExpandedSpawnLogContext (JSON, sorted) to ~/.cache/blaze/work/w6/<p>/execlog.json;
+  3. compares per spawn: exit code, actual output digests against the oracle's, and the whole
+     exec-log entry against the oracle's (both without `metrics`/`walltime`; absolute paths of
+     the two output bases replaced by <OUTPUT_BASE>); for brotli (all spawns) also the whole
+     sorted log text, byte for byte, with the timing-dependent `metrics` blocks removed.
+
+Prints counts per project and lists every mismatch (--verbose: the differing fields).
+Prerequisite: scripts/cargo-capped build -p blaze_exec --bin blaze-exec-replay.
+Exit code 0 iff every replayed spawn matches.
+"""
+
+
+def read_json_stream(path):
+    dec = json.JSONDecoder()
+    s = open(path).read()
+    i, out = 0, []
+    while i < len(s):
+        while i < len(s) and s[i].isspace():
+            i += 1
+        if i >= len(s):
+            break
+        o, i = dec.raw_decode(s, i)
+        out.append(o)
+    return out
+
+
+def sha256_file(p):
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def select(project, entries, sample):
+    sandboxed = [(i, e) for i, e in enumerate(entries) if e.get("runner") == "linux-sandbox"]
+    if project == "brotli":
+        return sandboxed
+    # Deterministic stratified sample: every k-th spawn of each mnemonic, proportional, at least
+    # one per mnemonic.
+    groups = {}
+    for i, e in sandboxed:
+        groups.setdefault(e["mnemonic"], []).append((i, e))
+    total = len(sandboxed)
+    chosen = []
+    for m, lst in sorted(groups.items()):
+        n = max(1, round(sample * len(lst) / total))
+        step = max(1, len(lst) // n)
+        chosen.extend(lst[::step][:n])
+    chosen.sort(key=lambda x: x[0])
+    return chosen
+
+
+def aquery_exec_info(project):
+    items = json.load(open(os.path.join(RECORDS, project, "items", "aquery_actions.json")))["items"]
+    by_output = {}
+    for key, a in items.items():
+        for o in a.get("outputs", []):
+            by_output[o] = a.get("executionInfo", {}) or {}
+        by_output.setdefault(key.split(" #")[0], a.get("executionInfo", {}) or {})
+    return by_output
+
+
+def find_source(project, path, digest):
+    for root in SOURCE_EXECROOTS[project]:
+        p = os.path.join(root, path)
+        if os.path.isfile(p) and sha256_file(p) == digest:
+            return p
+    return None
+
+
+def materialise(project, spawns, execroot, log):
+    """Copies inputs; returns per-spawn input specs (or a reason the spawn cannot be replayed)."""
+    done = {}
+    specs = []
+    for idx, e in spawns:
+        inputs, problem = [], None
+        for f in e["inputs"]:
+            path = f["path"]
+            dest = os.path.join(execroot, path)
+            entry = {"path": path, "is_tool": f.get("isTool", False)}
+            target = f.get("symlinkTargetPath", "")
+            digest = f.get("digest", {}).get("hash")
+            if target:
+                entry["kind"] = "symlink"
+                entry["target"] = target
+                if path not in done:
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    if os.path.lexists(dest):
+                        os.unlink(dest)
+                    os.symlink(target, dest)
+                    done[path] = True
+            elif digest is None:
+                entry["kind"] = "empty_marker"
+            elif path.endswith(".params"):
+                src = find_source(project, path, digest)
+                if src is None:
+                    problem = "no source for virtual input " + path
+                    break
+                entry["kind"] = "virtual"
+                entry["content_file"] = src
+            else:
+                if path not in done:
+                    if digest == EMPTY_SHA256 and find_source(project, path, digest) is None:
+                        os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        open(dest, "wb").close()
+                    else:
+                        src = find_source(project, path, digest)
+                        if src is None:
+                            problem = "no source with digest %s for %s" % (digest, path)
+                            break
+                        os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        if os.path.lexists(dest):
+                            os.unlink(dest)
+                        shutil.copy2(src, dest)
+                    done[path] = True
+                entry["kind"] = "file"
+            inputs.append(entry)
+        specs.append((idx, e, inputs, problem))
+        if problem:
+            log("  cannot replay spawn %d: %s" % (idx, problem))
+    return specs
+
+
+STRIP = ("metrics", "walltime")
+
+
+def normalise(entry, output_base):
+    e = {k: v for k, v in entry.items() if k not in STRIP}
+    # As the oracle normaliser does: digests of outputs under testlogs/ are timing-dependent.
+    outs = []
+    for f in e.get("actualOutputs", []):
+        if "/testlogs/" in f.get("path", "") and "digest" in f:
+            f = dict(f, digest="<timing-dependent>")
+        outs.append(f)
+    if outs:
+        e["actualOutputs"] = outs
+    s = json.dumps(e, sort_keys=True)
+    if output_base:
+        s = s.replace(output_base, "<OUTPUT_BASE>")
+    return json.loads(s)
+
+
+def diff_paths(a, b, prefix=""):
+    if type(a) is not type(b):
+        return [prefix or "/"]
+    if isinstance(a, dict):
+        out = []
+        for k in sorted(set(a) | set(b)):
+            if k not in a or k not in b:
+                out.append(prefix + "/" + k)
+            else:
+                out.extend(diff_paths(a[k], b[k], prefix + "/" + k))
+        return out
+    if isinstance(a, list):
+        if len(a) != len(b):
+            return [prefix + "[len %d vs %d]" % (len(a), len(b))]
+        out = []
+        for i, (x, y) in enumerate(zip(a, b)):
+            out.extend(diff_paths(x, y, "%s[%d]" % (prefix, i)))
+        return out
+    return [] if a == b else [prefix]
+
+
+def key_of(e):
+    outs = e.get("listedOutputs") or []
+    return outs[0] if outs else e["mnemonic"] + " " + " ".join(e["commandArgs"])
+
+
+def run_project(project, sample, keep, verbose):
+    log = print
+    rec = os.path.join(RECORDS, project)
+    manifest = json.load(open(os.path.join(rec, "manifest.json")))
+    oracle_ob = manifest["context"]["paths"]["output_base"]
+    entries = read_json_stream(os.path.join(rec, "raw", "execlog.json"))
+    spawns = select(project, entries, sample)
+    work = os.path.join(WORK, project)
+    output_base = os.path.join(work, "output_base")
+    execroot = os.path.join(output_base, "execroot", "_main")
+    if os.path.exists(work) and not keep:
+        subprocess.run(["chmod", "-R", "u+w", work], check=False)
+        shutil.rmtree(work)
+    os.makedirs(execroot, exist_ok=True)
+    log("%s: %d recorded spawns, %d linux-sandbox, replaying %d" % (
+        project, len(entries), sum(1 for e in entries if e.get("runner") == "linux-sandbox"), len(spawns)))
+    exec_info = aquery_exec_info(project)
+    specs = materialise(project, spawns, execroot, log)
+    spec = {"output_base": output_base, "exec_root": execroot,
+            "install_base": INSTALL_BASE, "spawns": []}
+    for idx, e, inputs, problem in specs:
+        if problem:
+            continue
+        # Spawn.getOutputFiles() order: the exec log lists outputs sorted (listedOutputs) but
+        # actualOutputs in spawn order, so take that order and append outputs never produced.
+        actual = [f["path"] for f in e.get("actualOutputs", [])]
+        outs = actual + [o for o in e.get("listedOutputs", []) if o not in actual]
+        info = {}
+        for o in outs:
+            if o in exec_info:
+                info = exec_info[o]
+                break
+        info = dict(info)
+        if int(e.get("timeoutMillis", "0")) and "timeout" not in info:
+            # StandaloneTestStrategy puts the test timeout into the spawn's execution info
+            # ("timeout", seconds); aquery shows the action's info, without it.
+            info["timeout"] = str(int(e["timeoutMillis"]) // 1000)
+        spec["spawns"].append({
+            "index": idx,
+            "argv": e["commandArgs"],
+            "env": [[v["name"], v["value"]] for v in e.get("environmentVariables", [])],
+            "inputs": inputs,
+            "outputs": outs,
+            "mnemonic": e["mnemonic"],
+            "target_label": e.get("targetLabel"),
+            "execution_info": info,
+            "timeout_millis": int(e.get("timeoutMillis", "0")),
+        })
+    spec_path = os.path.join(work, "spec.json")
+    json.dump(spec, open(spec_path, "w"), indent=1)
+    exec_log = os.path.join(work, "execlog.json")
+    results_path = os.path.join(work, "results.json")
+    cmd = [BIN, "--spec", spec_path, "--execution-log-json", exec_log, "--results", results_path]
+    r = subprocess.run(cmd, env={"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/")})
+    if r.returncode != 0:
+        log("  blaze-exec-replay exited %d" % r.returncode)
+        return False
+    results = {x["index"]: x for x in json.load(open(results_path))}
+    mine = {key_of(e): e for e in read_json_stream(exec_log)}
+    counts = {"replayed": 0, "exit": 0, "outputs": 0, "entry": 0, "runner": 0}
+    nondeterministic = []
+    ok = True
+    for idx, e, inputs, problem in specs:
+        if problem:
+            ok = False
+            continue
+        counts["replayed"] += 1
+        res = results.get(idx, {})
+        k = key_of(e)
+        m = mine.get(k)
+        if res.get("exit_code") == e.get("exitCode", 0):
+            counts["exit"] += 1
+        else:
+            ok = False
+            log("  [exit] %s: blaze %s (%s) vs oracle %s" % (k, res.get("exit_code"), res.get("status"), e.get("exitCode", 0)))
+            if verbose and res.get("stderr"):
+                log("    stderr: " + res["stderr"][-2000:])
+        if res.get("runner") == "linux-sandbox":
+            counts["runner"] += 1
+        else:
+            ok = False
+            log("  [runner] %s: %s" % (k, res.get("runner")))
+        if m is None:
+            ok = False
+            log("  [entry] %s: no exec log entry from Blaze" % k)
+            continue
+        o_out = {f["path"]: f.get("digest", {}).get("hash") for f in e.get("actualOutputs", [])}
+        m_out = {f["path"]: f.get("digest", {}).get("hash") for f in m.get("actualOutputs", [])}
+        timing = sorted(p for p in o_out if "/testlogs/" in p and o_out.get(p) != m_out.get(p))
+        if timing:
+            nondeterministic.extend(timing)
+            log("  [note] %s: timing-dependent test outputs differ (excluded): %s" % (k, ", ".join(timing)))
+            for p in timing:
+                o_out.pop(p, None)
+                m_out.pop(p, None)
+        if o_out == m_out:
+            counts["outputs"] += 1
+        else:
+            ok = False
+            bad = sorted(p for p in set(o_out) | set(m_out) if o_out.get(p) != m_out.get(p))
+            nondeterministic.extend(bad)
+            log("  [outputs] %s: %s" % (k, ", ".join(bad)))
+        a, b = normalise(e, oracle_ob), normalise(m, output_base)
+        if a == b:
+            counts["entry"] += 1
+        else:
+            ok = False
+            d = diff_paths(a, b)
+            log("  [entry] %s: %d differing fields%s" % (k, len(d), (": " + ", ".join(d[:12])) if verbose else ""))
+    n = counts["replayed"]
+    log("%s: replayed %d/%d; exit code %d/%d; runner linux-sandbox %d/%d; output digests %d/%d; "
+        "exec-log entry %d/%d" % (project, n, len(spawns), counts["exit"], n, counts["runner"], n,
+                                   counts["outputs"], n, counts["entry"], n))
+    if project == "brotli" and n == len(entries):
+        o_text = open(os.path.join(rec, "raw", "execlog.json")).read()
+        m_text = open(exec_log).read()
+        metrics = re.compile(r',\n  "metrics": \{.*?\n  \}', re.S)
+        same = metrics.sub("", o_text) == metrics.sub("", m_text)
+        log("%s: whole log bytes without metrics %s" % (project, "identical" if same else "DIFFER"))
+        ok = ok and same
+        log("%s: whole sorted log order %s" % (project, "matches" if [key_of(x) for x in read_json_stream_text(o_text)] == [key_of(x) for x in read_json_stream_text(m_text)] else "DIFFERS"))
+    json.dump({"counts": counts, "nondeterministic_outputs": nondeterministic},
+              open(os.path.join(work, "summary.json"), "w"), indent=1)
+    return ok
+
+
+def read_json_stream_text(s):
+    dec = json.JSONDecoder()
+    i, out = 0, []
+    while i < len(s):
+        while i < len(s) and s[i].isspace():
+            i += 1
+        if i >= len(s):
+            break
+        o, i = dec.raw_decode(s, i)
+        out.append(o)
+    return out
+
+
+def main(argv):
+    if argv and argv[0] in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    project, sample, keep, verbose = "all", 60, False, False
+    it = iter(argv)
+    for a in it:
+        if a == "--project":
+            project = next(it)
+        elif a == "--sample":
+            sample = int(next(it))
+        elif a == "--keep":
+            keep = True
+        elif a == "--verbose":
+            verbose = True
+        else:
+            print(USAGE, file=sys.stderr)
+            return 2
+    projects = ["brotli", "re2"] if project == "all" else [project]
+    ok = True
+    for p in projects:
+        ok = run_project(p, sample, keep, verbose) and ok
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

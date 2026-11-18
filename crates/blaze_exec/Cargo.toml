@@ -1,0 +1,32 @@
+[package]
+name = "blaze_exec"
+description = "Port of Bazel's lib/exec (+local), lib/sandbox (Linux), lib/standalone, Spawn* and the action cache."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_util = { path = "../blaze_util" }
+blaze_vfs = { path = "../blaze_vfs" }
+blaze_cmdline = { path = "../blaze_cmdline" }
+blaze_shell = { path = "../blaze_shell" }
+blaze_events = { path = "../blaze_events" }
+blaze_protos = { path = "../blaze_protos" }
+blaze_options = { path = "../blaze_options" }
+blaze_optdefs = { path = "../blaze_optdefs" }
+blaze_collect = { path = "../blaze_collect" }
+indexmap.workspace = true
+parking_lot.workspace = true
+sha2.workspace = true
+hex.workspace = true
+libc.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
