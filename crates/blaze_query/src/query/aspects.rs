@@ -6,12 +6,13 @@
 //! its declared attributes with their defaults (Java substitutes the rule's values for public
 //! parameter attributes, which are never label-typed in practice); a native aspect's definition
 //! needs its Java class and is `unported!`. `AspectDefinition.satisfies` (required providers) is
-//! not ported either: callers only ask it for aspects that have label dependencies.
+//! ported for Starlark aspects; callers only ask it for aspects that have label dependencies.
 
 use blaze_cmdline::Label;
 use blaze_packages::attribute::Attribute;
 use blaze_packages::attribute::dependency_filter::{AttributeInfoProvider, DependencyFilter};
-use blaze_packages::rule_class::AspectDetails;
+use blaze_packages::rule_class::{AdvertisedProviderSet, AspectDetails, RequiredProviders};
+use blaze_packages::starlark_defs::aspect::aspect_data;
 use blaze_packages::types::{LabelClass, Type};
 
 /// Java `Aspect` as an `AttributeInfoProvider`: "All aspect attributes are implicit."
@@ -68,12 +69,30 @@ pub fn label_deps_from_all_attributes_of_aspect(
     result
 }
 
-/// Java `AspectDefinition.satisfies(aspect, advertisedProviders)`.
-// Java: com/google/devtools/build/lib/packages/AspectDefinition.java:233 AspectDefinition.satisfies
-pub fn satisfies_unported(aspect: &AspectDetails) -> bool {
-    blaze_util::unported!(
-        "AspectDefinition.satisfies",
-        "required providers of aspect {}",
-        aspect.get_name()
-    )
+/// Java `AspectDefinition.satisfies(aspect, advertisedProviders)`: the aspect definition's
+/// required providers (`aspect(required_providers = ...)`; Java `AspectDefinition.Builder
+/// .requireStarlarkProviderSets` skips empty sets) are satisfied by `advertised`.
+// Java: com/google/devtools/build/lib/packages/AspectDefinition.java:216 AspectDefinition.satisfies
+pub fn satisfies(aspect: &AspectDetails, advertised: &AdvertisedProviderSet) -> bool {
+    match aspect {
+        AspectDetails::Starlark { info, .. } => {
+            let data = aspect_data(info.aspect.value().to_value())
+                .expect("StarlarkAspectInfo holds a StarlarkDefinedAspect");
+            // Java: com/google/devtools/build/lib/packages/StarlarkDefinedAspect.java:243 StarlarkDefinedAspect.getDefinition
+            let mut required_providers = RequiredProviders::accept_any_builder();
+            // Java: com/google/devtools/build/lib/packages/AspectDefinition.java:308 AspectDefinition.Builder.requireStarlarkProviderSets
+            for provider_set in &data.required_providers {
+                if !provider_set.is_empty() {
+                    required_providers.add_starlark_set(provider_set.clone());
+                }
+            }
+            required_providers.build().is_satisfied_by(advertised)
+        }
+        AspectDetails::Native {
+            aspect_class_name, ..
+        } => blaze_util::unported!(
+            "AspectDefinition.satisfies",
+            "required providers of native aspect {aspect_class_name}"
+        ),
+    }
 }

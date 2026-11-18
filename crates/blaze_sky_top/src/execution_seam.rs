@@ -1,0 +1,594 @@
+//! The real [`AnalysisSeam`] of the execution phase: the execution SkyFunctions
+//! (`blaze_sky_exec`) read the analysis values of the same evaluator through it.
+//!
+//! Java has no seam: `ActionExecutionFunction` (`ArtifactFunction.getActionLookupValue`),
+//! `BuildDriverFunction`, `TargetCompletor` and `TestCompletionFunction` call
+//! `env.getValue(actionLookupKey)` and read providers off the `ConfiguredTarget`. This file holds
+//! those reads, plus the parts of `SkyframeBuildView.analyzeAndExecuteTargets`,
+//! `BuildRequest.getTopLevelArtifactContext` and `AnalysisAndExecutionPhaseRunner` that create
+//! the `BuildDriverKey`s of a build or test request.
+
+use std::sync::Arc;
+
+use blaze_actions::analysis::workspace_status_action::BUILD_INFO_FUNCTION_NAME;
+use blaze_actions::{ActionLookupKeyRef, ActionRef, Artifact};
+use blaze_analysis::analysis_services::{
+    AnalysisServices, WorkspaceStatusKey, WorkspaceStatusValue,
+};
+use blaze_analysis::configured_target::ConfiguredTarget;
+use blaze_analysis::configured_target_key::{CONFIGURED_TARGET, ConfiguredTargetKey};
+use blaze_analysis::configured_target_value::ConfiguredTargetValue;
+use blaze_analysis::configuredtargets::{get_files_to_run_provider, get_rule_class_string};
+use blaze_analysis::info::downcast_info;
+use blaze_analysis::providers::file_provider::FileProvider;
+use blaze_analysis::providers::output_group_info::{
+    self, DEFAULT, HIDDEN_OUTPUT_GROUP_PREFIX, OutputGroupInfo, ValidationMode,
+};
+use blaze_analysis::test::test_provider::TestProvider;
+use blaze_build_config::build_configuration_value::BuildConfigurationValue;
+use blaze_cmdline::repository_name::MAIN;
+use blaze_cmdline::{Label, RepositoryMapping, TargetPatternParser, TargetPatternType};
+use blaze_collect::{NestedSet, NestedSetBuilder};
+use blaze_events::{Event, ExtendedEventHandler};
+use blaze_optdefs::command::build_request_options::BuildRequestOptions;
+use blaze_packages::starlark_defs::builtin_providers::OUTPUT_GROUP_INFO;
+use blaze_packages::target::target_utils;
+use blaze_packages::target::{InputFile, OutputFile, Target};
+use blaze_sky_exec::analysis_seam::{
+    ActionLookupValue, AnalysisSeam, ConfiguredTargetView, TestParams,
+};
+use blaze_sky_exec::keys::{BuildDriverKey, TestType};
+use blaze_skyframe::{ComputeError, Environment};
+use blaze_util::unported;
+use blaze_vfs::PathFragment;
+use indexmap::{IndexMap, IndexSet};
+
+// -------------------------------------------------------------------------------------------
+// Action lookup values
+
+/// `RuleConfiguredTargetValue` / `NonRuleConfiguredTargetValue` as an `ActionLookupValue`.
+// Java: com/google/devtools/build/lib/skyframe/RuleConfiguredTargetValue.java:32 RuleConfiguredTargetValue
+// PORT: a newtype because ConfiguredTargetValue (blaze_analysis) and ActionLookupValue
+// (blaze_sky_exec) are both foreign here.
+struct ConfiguredTargetActionLookupValue(Arc<ConfiguredTargetValue>);
+
+impl ActionLookupValue for ConfiguredTargetActionLookupValue {
+    // Java: com/google/devtools/build/lib/skyframe/RuleConfiguredTargetValue.java:46 RuleConfiguredTargetValue.getActions
+    fn get_actions(&self) -> &[ActionRef] {
+        self.0.get_actions()
+    }
+}
+
+/// The `ActionLookupValue` view of the workspace status node's value.
+// Java: com/google/devtools/build/lib/skyframe/WorkspaceStatusValue.java:33 WorkspaceStatusValue
+pub struct WorkspaceStatusActionLookupValue(pub Arc<WorkspaceStatusValue>);
+
+impl ActionLookupValue for WorkspaceStatusActionLookupValue {
+    fn get_actions(&self) -> &[ActionRef] {
+        &self.0.actions
+    }
+}
+
+// -------------------------------------------------------------------------------------------
+// The seam
+
+/// [`AnalysisSeam`] over the analysis values of the command's evaluator.
+pub struct SkyframeAnalysisSeam {
+    services: Arc<AnalysisServices>,
+}
+
+impl SkyframeAnalysisSeam {
+    pub fn new(services: Arc<AnalysisServices>) -> SkyframeAnalysisSeam {
+        SkyframeAnalysisSeam { services }
+    }
+
+    /// The artifacts every build requests besides its top-level targets' outputs.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1604 SkyframeExecutor.getWorkspaceStatusArtifacts
+    pub fn get_workspace_status_artifacts(&self) -> Vec<Artifact> {
+        let artifacts = self.services.get_workspace_status_artifacts();
+        vec![
+            artifacts.stable_artifact.clone(),
+            artifacts.volatile_artifact.clone(),
+        ]
+    }
+}
+
+/// The `ConfiguredTargetKey` inside an `ActionLookupKeyRef`, `None` for other key kinds.
+fn as_configured_target_key(key: &ActionLookupKeyRef) -> Option<&ConfiguredTargetKey> {
+    key.as_any().downcast_ref::<ConfiguredTargetKey>()
+}
+
+impl AnalysisSeam for SkyframeAnalysisSeam {
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:378 ArtifactFunction.getActionLookupValue
+    fn get_action_lookup_value(
+        &self,
+        key: &ActionLookupKeyRef,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<Arc<dyn ActionLookupValue>>, ComputeError> {
+        match key.function_name() {
+            name if name == CONFIGURED_TARGET.0 => {
+                let ct_key = as_configured_target_key(key).unwrap_or_else(|| {
+                    panic!("ClassCastException: {key} is not a ConfiguredTargetKey")
+                });
+                let Some(value) = env.get_value(ct_key.clone())? else {
+                    return Ok(None);
+                };
+                Ok(Some(Arc::new(ConfiguredTargetActionLookupValue(value))
+                    as Arc<dyn ActionLookupValue>))
+            }
+            BUILD_INFO_FUNCTION_NAME => {
+                let Some(value) = env.get_value(WorkspaceStatusKey)? else {
+                    return Ok(None);
+                };
+                Ok(Some(
+                    Arc::new(WorkspaceStatusActionLookupValue(value)) as Arc<dyn ActionLookupValue>
+                ))
+            }
+            // Java: AspectKeyCreator.AspectKey / TopLevelAspectsKey -> AspectValue.
+            "ASPECT" | "TOP_LEVEL_ASPECTS" => unported!("AspectValue.getActions"),
+            // Java: ActionTemplateExpansionValue.ActionTemplateExpansionKey.
+            "ACTION_TEMPLATE_EXPANSION" => unported!("ActionTemplateExpansionValue.getActions"),
+            // Java: CoverageReportValue.COVERAGE_REPORT_KEY.
+            "COVERAGE_REPORT" => unported!("CoverageReportValue.getActions"),
+            other => unported!("ArtifactFunction.getActionLookupValue", "{other} ({key})"),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TargetCompletor.java:66 TargetCompletor.getValueAndArtifactsToBuild
+    fn get_configured_target(
+        &self,
+        key: &ActionLookupKeyRef,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<Arc<dyn ConfiguredTargetView>>, ComputeError> {
+        let Some(ct_key) = as_configured_target_key(key) else {
+            if key.function_name() == "ASPECT" || key.function_name() == "TOP_LEVEL_ASPECTS" {
+                unported!("AspectCompletor.getValueAndArtifactsToBuild");
+            }
+            panic!("ClassCastException: {key} is not a ConfiguredTargetKey");
+        };
+        let Some(value) = env.get_value(ct_key.clone())? else {
+            return Ok(None);
+        };
+        let configured_target = value.get_configured_target().clone();
+        // Java: BuildDriverFunction reads the target's BuildConfigurationValue
+        // (getConfiguration(env, configuredTarget)) for the TestAnalyzedEvent.
+        let mut configuration_mnemonic = None;
+        if let Some(config_key) = configured_target.get_configuration_key() {
+            let Some(configuration) = env.get_value(config_key)? else {
+                return Ok(None);
+            };
+            configuration_mnemonic = Some(configuration.get_mnemonic().to_owned());
+        }
+        let location = value
+            .get_target()
+            .map(|t| blaze_sky_loading::starlark_util::event_location(&t.get_location()));
+        Ok(Some(Arc::new(SkyframeConfiguredTargetView {
+            configured_target,
+            configuration_mnemonic,
+            location,
+        }) as Arc<dyn ConfiguredTargetView>))
+    }
+}
+
+// -------------------------------------------------------------------------------------------
+// The configured target view
+
+/// [`ConfiguredTargetView`] over a `ConfiguredTarget` (the value of a `ConfiguredTargetKey`, or
+/// an element of `AnalysisResult.getTargetsToBuild()`).
+#[derive(Debug)]
+pub struct SkyframeConfiguredTargetView {
+    configured_target: ConfiguredTarget,
+    configuration_mnemonic: Option<String>,
+    /// The target's location (`ConfiguredTargetAndData.getLocation()`).
+    location: Option<blaze_events::location::Location>,
+}
+
+impl SkyframeConfiguredTargetView {
+    pub fn new(configured_target: ConfiguredTarget) -> SkyframeConfiguredTargetView {
+        SkyframeConfiguredTargetView {
+            configured_target,
+            configuration_mnemonic: None,
+            location: None,
+        }
+    }
+
+    /// The viewed target.
+    pub fn get_configured_target(&self) -> &ConfiguredTarget {
+        &self.configured_target
+    }
+}
+
+/// `TopLevelArtifactHelper.getAllArtifactsToBuild(target, context)` over every output group the
+/// target can contribute (`default` first, then the `OutputGroupInfo` groups in their order),
+/// without the groups that have no artifacts.
+///
+/// PORT: Java iterates over the requested output groups (`context.outputGroups()`); the seam
+/// returns every group and the callers (`TargetCompletor`, `BuildResultPrinter`) select the
+/// requested ones. A group's artifacts are computed as Java computes them for a requested group,
+/// and a group without artifacts is left out as Java's loop skips it ("Ignore output groups that
+/// have no artifacts").
+// Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:199 TopLevelArtifactHelper.getAllArtifactsToBuild
+pub fn get_all_artifacts_to_build(
+    target: &ConfiguredTarget,
+) -> IndexMap<String, NestedSet<Artifact>> {
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:173 OutputGroupInfo.get
+    let output_group_info_value = target.get(&OUTPUT_GROUP_INFO.key());
+    let output_group_info: Option<&OutputGroupInfo> = output_group_info_value
+        .as_ref()
+        .map(|v| downcast_info::<OutputGroupInfo>(v).expect("OutputGroupInfo"));
+    let files_to_build = get_files_to_build(target);
+
+    let mut output_groups: Vec<String> = vec![DEFAULT.to_owned()];
+    if let Some(info) = output_group_info {
+        for group in info.groups() {
+            if group != DEFAULT {
+                output_groups.push(group);
+            }
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:204 TopLevelArtifactHelper.getAllArtifactsToBuild
+    let mut all_output_groups: IndexMap<String, NestedSet<Artifact>> = IndexMap::new();
+    for output_group in output_groups {
+        let mut results = NestedSetBuilder::stable_order();
+
+        if output_group == DEFAULT
+            && let Some(files_to_build) = &files_to_build
+        {
+            results.add_transitive(files_to_build);
+        }
+
+        if let Some(info) = output_group_info {
+            results.add_transitive(&info.get_output_group(&output_group));
+        }
+
+        // Ignore output groups that have no artifacts.
+        if results.is_empty() {
+            continue;
+        }
+
+        // PORT: `isImportantGroup` (`!outputGroup.startsWith(HIDDEN_OUTPUT_GROUP_PREFIX)`) is
+        // recomputed from the name by the callers (see `is_important_group`).
+        all_output_groups.insert(output_group, results.build());
+    }
+    all_output_groups
+}
+
+/// `ArtifactsInOutputGroup.areImportant()` of a group: whether the user should know about it.
+// Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:225 TopLevelArtifactHelper.getAllArtifactsToBuild
+pub fn is_important_group(output_group: &str) -> bool {
+    !output_group.starts_with(HIDDEN_OUTPUT_GROUP_PREFIX)
+}
+
+/// Returns files to build directly from `FileProvider` or from `files` under `DefaultInfo`.
+// Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:247 TopLevelArtifactHelper.getFilesToBuild
+fn get_files_to_build(target: &ConfiguredTarget) -> Option<NestedSet<Artifact>> {
+    if let Some(file_provider) = target.get_provider::<FileProvider>() {
+        return Some(file_provider.get_files_to_build().clone());
+    }
+    // PORT: every ported configured target class but EnvironmentGroupConfiguredTarget carries a
+    // FileProvider; the DefaultInfo branch reads `DefaultInfo.getFiles()`, which the native
+    // DefaultInfo port does not expose for that case.
+    unported!(
+        "TopLevelArtifactHelper.getFilesToBuild",
+        "DefaultInfo.getFiles() of {}",
+        target.get_label()
+    )
+}
+
+impl ConfiguredTargetView for SkyframeConfiguredTargetView {
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTarget.java:37 ConfiguredTarget.getLabel
+    fn get_label(&self) -> Label {
+        self.configured_target.get_label()
+    }
+
+    // Java: com/google/devtools/build/lib/rules/AliasConfiguredTarget.java:176 AliasConfiguredTarget.getOriginalLabel
+    fn get_original_label(&self) -> Label {
+        self.configured_target.get_original_label()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:55 AbstractConfiguredTarget.getConfigurationChecksum
+    fn get_configuration_checksum(&self) -> Option<String> {
+        self.configured_target.get_configuration_checksum()
+    }
+
+    /// `ConfiguredTargetKey.fromConfiguredTarget(configuredTarget)`: the lookup key of the
+    /// (unmerged) target, which differs from the requested key when the requested key delegated
+    /// to another (a top-level rule transition).
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:236 ConfiguredTargetKey.fromConfiguredTarget
+    fn get_lookup_key(&self) -> ActionLookupKeyRef {
+        self.configured_target
+            .unwrap_if_merged()
+            .get_lookup_key()
+            .clone()
+    }
+
+    /// The rule class (`getRuleClassString()`) for rules, aliases (`""`, as Java's
+    /// `AbstractConfiguredTarget.getRuleClassString`) and merged targets; the target kind of
+    /// `InputFileConfiguredTarget` (`source file`) and `OutputFileConfiguredTarget`
+    /// (`generated file`), the two classes `TopLevelArtifactHelper.shouldConsiderForDisplay` and
+    /// `BuildResultPrinter.filterTargetsToPrint` test with `instanceof`.
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:236 AbstractConfiguredTarget.getRuleClassString
+    fn get_rule_class_or_kind(&self) -> String {
+        match &self.configured_target {
+            ConfiguredTarget::InputFile(_) => InputFile::target_kind().to_owned(),
+            ConfiguredTarget::OutputFile(_) => OutputFile::target_kind().to_owned(),
+            ct => get_rule_class_string(ct),
+        }
+    }
+
+    fn get_output_groups(&self) -> IndexMap<String, NestedSet<Artifact>> {
+        get_all_artifacts_to_build(&self.configured_target)
+    }
+
+    fn get_configuration_mnemonic(&self) -> Option<String> {
+        self.configuration_mnemonic.clone()
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetAndData.java ConfiguredTargetAndData.getLocation
+    fn get_location(&self) -> blaze_events::location::Location {
+        self.location
+            .clone()
+            .expect("IllegalStateException: configured target view without its target")
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/FilesToRunProvider.java:84 FilesToRunProvider.getExecutable
+    fn get_executable(&self) -> Option<Artifact> {
+        get_files_to_run_provider(&self.configured_target).and_then(|p| p.get_executable().cloned())
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/test/TestProvider.java:42 TestProvider.getTestParams
+    fn get_test_params(&self) -> Option<TestParams> {
+        let provider = self.configured_target.get_provider::<TestProvider>()?;
+        let params = provider.get_test_params();
+        Some(TestParams {
+            runs: params.get_runs(),
+            shards: params.get_shards(),
+            runs_detects_flakes: params.runs_detects_flakes(),
+            timeout: params.get_timeout(),
+            test_rule_class: params.get_test_rule_class().to_owned(),
+            test_status_artifacts: params.get_test_status_artifacts().to_vec(),
+        })
+    }
+}
+
+/// The views of `AnalysisResult.getTargetsToBuild()` (for `BuildResultPrinter` and the test
+/// summary).
+pub fn configured_target_views(targets: &[ConfiguredTarget]) -> Vec<Arc<dyn ConfiguredTargetView>> {
+    targets
+        .iter()
+        .map(|ct| {
+            Arc::new(SkyframeConfiguredTargetView::new(ct.clone())) as Arc<dyn ConfiguredTargetView>
+        })
+        .collect()
+}
+
+// -------------------------------------------------------------------------------------------
+// Build driver keys
+
+/// `BuildRequest.validationMode()`.
+// Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:452 BuildRequest.validationMode
+pub fn validation_mode(build_options: &BuildRequestOptions) -> ValidationMode {
+    if !build_options.run_validation_actions {
+        return ValidationMode::Off;
+    }
+    if build_options.use_validation_aspect {
+        ValidationMode::Aspect
+    } else {
+        ValidationMode::OutputGroup
+    }
+}
+
+/// `BuildRequest.getTopLevelArtifactContext().outputGroups()`: the requested output groups, in
+/// `ImmutableSortedSet` order. `should_run_tests` is `BuildRequest.shouldRunTests()` (true for
+/// `test`).
+///
+/// PORT: the other `TopLevelArtifactContext` fields are not part of `BuildDriverKey` here:
+/// `runTestsExclusively` (`--test_strategy=exclusive`) is read by [`build_driver_keys`] through
+/// [`BuildDriverKeyTestContext`], `expandFilesets` and `forRunCommand` only matter to BEP and
+/// `run`.
+// Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:410 BuildRequest.getTopLevelArtifactContext
+pub fn top_level_output_groups(
+    build_options: &BuildRequestOptions,
+    should_run_tests: bool,
+) -> Vec<String> {
+    OutputGroupInfo::determine_output_groups(
+        &output_group_info::default_groups(),
+        &build_options.output_groups,
+        validation_mode(build_options),
+        should_run_tests,
+    )
+    .into_iter()
+    .collect()
+}
+
+/// Returns the set of labels of target patterns that represent single targets, in their order
+/// on the command line. `offset` is the relative working directory and `main_repo_mapping` the
+/// main repository's mapping.
+// Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:246 AnalysisAndExecutionPhaseRunner.getExplicitTargetPatterns
+pub fn get_explicit_target_patterns(
+    offset: &PathFragment,
+    main_repo_mapping: &RepositoryMapping,
+    requested_target_patterns: &[String],
+) -> IndexSet<Label> {
+    let mut explicit_target_patterns: IndexSet<Label> = IndexSet::new();
+
+    let parser = TargetPatternParser::new(offset.clone(), MAIN.clone(), main_repo_mapping.clone());
+
+    for requested_target_pattern in requested_target_patterns {
+        if requested_target_pattern.starts_with('-') {
+            // Excluded patterns are by definition not explicitly requested so we can move on to
+            // the next target pattern.
+            continue;
+        }
+
+        // Parse the pattern. This should always work because this is at least the second time
+        // we're doing it. The previous time is in runAnalysisAndExecutionPhase(). Still, if
+        // parsing does fail we propagate the exception up.
+        let parsed_pattern = match parser.parse(requested_target_pattern) {
+            Ok(p) => p,
+            Err(e) => unported!(
+                "ViewCreationFailedException",
+                "Failed to parse target pattern even though it was previously parsed \
+                 successfully: {}",
+                e.get_message()
+            ),
+        };
+
+        if parsed_pattern.get_type() == TargetPatternType::SingleTarget {
+            explicit_target_patterns.insert(parsed_pattern.get_single_target_label().clone());
+        }
+    }
+
+    explicit_target_patterns
+}
+
+/// Encapsulates the context required to construct a test BuildDriverKey.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1553 SkyframeBuildView.BuildDriverKeyTestContext
+#[derive(Clone, Debug)]
+pub struct BuildDriverKeyTestContext {
+    /// `getTestStrategy()`: `ExecutionOptions.testStrategy`.
+    pub test_strategy: String,
+    /// `forceExclusiveTestsInParallel()`: the `TestActionContext`'s.
+    pub force_exclusive_tests_in_parallel: bool,
+    /// `forceExclusiveIfLocalTestsInParallel()`: the `TestActionContext`'s.
+    pub force_exclusive_if_local_tests_in_parallel: bool,
+}
+
+/// `BuildDriverKey.TestType.getMsg()`.
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:150 BuildDriverKey.TestType
+fn test_type_msg(test_type: TestType) -> &'static str {
+    match test_type {
+        TestType::NOT_TEST => "not-test",
+        TestType::PARALLEL => "parallel",
+        TestType::EXCLUSIVE => "exclusive",
+        TestType::EXCLUSIVE_IF_LOCAL => "exclusive-if-local",
+    }
+}
+
+/// The test type of the top-level target `label` (the configured target's `getLabel()`).
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1115 SkyframeBuildView.determineTestTypeImpl
+pub fn determine_test_type_impl(
+    tests_to_run: Option<&IndexSet<Label>>,
+    label_target_map: &IndexMap<Label, Target>,
+    label: &Label,
+    build_driver_key_test_context: &BuildDriverKeyTestContext,
+    event_handler: &dyn ExtendedEventHandler,
+) -> TestType {
+    if !tests_to_run.is_some_and(|t| t.contains(label)) {
+        return TestType::NOT_TEST;
+    }
+    let Some(Target::Rule(rule)) = label_target_map.get(label) else {
+        return TestType::NOT_TEST;
+    };
+
+    let from_explicit_flag_or_tag = if build_driver_key_test_context.test_strategy == "exclusive"
+        || target_utils::is_exclusive_test_rule(rule)
+        || (target_utils::is_exclusive_if_local_test_rule(rule)
+            && target_utils::is_local_test_rule(rule))
+    {
+        TestType::EXCLUSIVE
+    } else if target_utils::is_exclusive_if_local_test_rule(rule) {
+        TestType::EXCLUSIVE_IF_LOCAL
+    } else {
+        TestType::PARALLEL
+    };
+
+    if (from_explicit_flag_or_tag == TestType::EXCLUSIVE
+        && build_driver_key_test_context.force_exclusive_tests_in_parallel)
+        || (from_explicit_flag_or_tag == TestType::EXCLUSIVE_IF_LOCAL
+            && build_driver_key_test_context.force_exclusive_if_local_tests_in_parallel)
+    {
+        event_handler.handle(&Event::warn(format!(
+            "{} is tagged {}, but --test_strategy={} forces parallel test execution.",
+            label.get_canonical_form(),
+            test_type_msg(from_explicit_flag_or_tag),
+            build_driver_key_test_context.test_strategy
+        )));
+        return TestType::PARALLEL;
+    }
+    from_explicit_flag_or_tag
+}
+
+/// Creates the `BuildDriverKey`s of the top-level configured targets of a build or test request
+/// (the `buildDriverCTKeys` of `SkyframeBuildView.analyzeAndExecuteTargets`).
+///
+/// Inputs:
+/// - `label_to_target_map`: `BuildView.constructLabelToTargetMap(loadingResult)` (the top-level
+///   labels of `TargetPatternPhaseValue.getTargetLabels()` with their `Target`s, in order).
+/// - `top_level_configuration`: `AnalysisResult.getConfiguration()`; the keys are Java's
+///   `topLevelCtKeys` (`BuildView.update`): one `ConfiguredTargetKey` per label with this
+///   configuration, so a target whose analysis failed still gets its key (its build driver
+///   fails) as in Java.
+/// - `targets_to_build`: `AnalysisResult.getTargetsToBuild()`, to resolve each key's configured
+///   target for the test type (Java resolves it from the key's value in `BuildDriverFunction`).
+/// - `tests_to_run`: `TargetPatternPhaseValue.getTestsToRunLabels()` (`None` for `build`).
+/// - `explicit_target_patterns`: [`get_explicit_target_patterns`].
+/// - `output_groups`: [`top_level_output_groups`].
+/// - `skip_incompatible_explicit_targets`: `AnalysisOptions.skipIncompatibleExplicitTargets`;
+///   `extra_action_top_level_only`: `AnalysisOptions.extraActionTopLevelOnly`.
+/// - `test_context`: `--test_strategy` and the test action context's `forceExclusive*`.
+///
+/// PORT: Java's key does not carry the test type: `BuildDriverFunction` asks the
+/// `TestTypeResolver` (`determineTestTypeImpl` over `configuredTarget.getLabel()`) once the
+/// target is analyzed. Analysis runs before execution here, so the type is resolved now, from the
+/// analyzed target with the key's label (`getOriginalLabel()`, the label analysis was asked
+/// for); the warning of `determineTestTypeImpl` is posted now rather than during execution. A
+/// key whose target failed analysis gets `NOT_TEST` (Java never resolves it). Java's
+/// `keepGoing` field of the key is not part of the Rust key.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:618 SkyframeBuildView.analyzeAndExecuteTargets
+pub fn build_driver_keys(
+    label_to_target_map: &IndexMap<Label, Target>,
+    top_level_configuration: &BuildConfigurationValue,
+    targets_to_build: &[ConfiguredTarget],
+    tests_to_run: Option<&IndexSet<Label>>,
+    explicit_target_patterns: &IndexSet<Label>,
+    output_groups: &[String],
+    skip_incompatible_explicit_targets: bool,
+    extra_action_top_level_only: bool,
+    test_context: &BuildDriverKeyTestContext,
+    event_handler: &dyn ExtendedEventHandler,
+) -> Vec<BuildDriverKey> {
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:361 BuildView.update
+    let configuration_key = top_level_configuration.get_key();
+    let top_level_ct_keys: Vec<ConfiguredTargetKey> = label_to_target_map
+        .keys()
+        .map(|label| {
+            ConfiguredTargetKey::builder()
+                .set_label(label.clone())
+                .set_configuration_key(Some(configuration_key.clone()))
+                .build()
+        })
+        .collect();
+
+    let mut analyzed: IndexMap<Label, &ConfiguredTarget> = IndexMap::new();
+    for ct in targets_to_build {
+        analyzed.entry(ct.get_original_label()).or_insert(ct);
+    }
+
+    let mut build_driver_ct_keys: IndexSet<BuildDriverKey> = IndexSet::new();
+    for ct_key in top_level_ct_keys {
+        let label = ct_key.get_label().clone();
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:219 BuildDriverFunction.compute
+        let test_type = match analyzed.get(&label) {
+            Some(ct) => determine_test_type_impl(
+                tests_to_run,
+                label_to_target_map,
+                &ct.get_label(),
+                test_context,
+                event_handler,
+            ),
+            None => TestType::NOT_TEST,
+        };
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:72 BuildDriverKey.ofConfiguredTarget
+        build_driver_ct_keys.insert(BuildDriverKey {
+            action_lookup_key: ActionLookupKeyRef::new(ct_key),
+            output_groups: output_groups.to_vec(),
+            explicitly_requested: explicit_target_patterns.contains(&label),
+            skip_incompatible_explicit_targets,
+            extra_action_top_level_only,
+            test_type,
+        });
+    }
+    build_driver_ct_keys.into_iter().collect()
+}

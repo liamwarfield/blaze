@@ -6,13 +6,18 @@
 //! Design and ownership: `crates/blaze_analysis/DESIGN.md`.
 
 #![allow(clippy::too_many_arguments, clippy::new_without_default)]
-#![allow(clippy::collapsible_if, clippy::type_complexity, clippy::if_same_then_else)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::type_complexity,
+    clippy::if_same_then_else
+)]
 
 pub mod apple;
 pub mod bazel_environment;
 pub mod build_info;
 pub mod config;
 pub mod cpp;
+pub mod executable_actions;
 pub mod fragments;
 pub mod generic;
 pub mod platform;

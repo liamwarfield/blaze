@@ -152,6 +152,7 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
         slot,
         env.reporter.clone(),
         env.output.clone(),
+        env.working_directory.clone(),
     );
     BuildTool::new(
         env.skyframe_executor,

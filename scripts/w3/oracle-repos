@@ -195,6 +195,19 @@ def dump_mappings(oracle, repos):
                 result[repo] = [list(p) for p in json.loads(line, object_pairs_hook=list)]
             return result, not_found
         m = NOT_FOUND_RE.search(err)
+        if not m and len(remaining) > 1 and "error evaluating module extension" in err:
+            # A failing module extension (workerd: protobuf's crate_universe `crates`, which
+            # fails on the oracle too) fails the whole batch: query each repo alone and record
+            # the ones whose mapping cannot be computed as not found.
+            result = {}
+            for repo in remaining:
+                one, nf = dump_mappings(oracle, [repo])
+                result.update(one)
+                not_found += nf
+            return result, not_found
+        if not m and len(remaining) == 1 and "error evaluating module extension" in err:
+            not_found += remaining
+            return {}, not_found
         if not m:
             oc.die("dump_repo_mapping failed (exit %d):\n%s" % (rc, err[-4000:]))
         missing = [s.strip() for s in m.group(1).split(",")]
@@ -245,6 +258,9 @@ def associated_module(repo, found, modules_by_repo):
         if r and repo.startswith(r + "+") and "+" in repo[len(r) + 1:]:
             if best is None or len(r) > len(best[0]):
                 best = (r, mod)
+    if best is None and repo.startswith("+") and "" in modules_by_repo:
+        # An extension (or use_repo_rule) of the root module, whose canonical repo name is "".
+        best = ("", modules_by_repo[""])
     if best is None:
         oc.die("cannot find the module hosting the extension that generates @@" + repo)
     return "extension", best[1]["name"], best[1]["version"]
@@ -270,7 +286,9 @@ def run_project(args, project, spec):
     try:
         rc, out, err = oracle.run("mod_graph", ["mod", "graph", "--output=json",
                                                 "--include_builtin"])
-        if rc != 0:
+        # Exit 2 with "Results may be incomplete as N extension(s) failed." still prints the
+        # whole graph (workerd: protobuf's crate_universe extension fails on the oracle too).
+        if rc != 0 and not (rc == 2 and "Results may be incomplete as" in err and out.strip()):
             oc.die("mod graph failed (exit %d):\n%s" % (rc, err[-4000:]))
         modules = {}
         walk_graph(json.loads(out), modules)

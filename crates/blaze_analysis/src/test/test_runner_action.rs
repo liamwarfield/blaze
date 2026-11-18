@@ -4,7 +4,7 @@
 
 use std::any::Any;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use blaze_actions::actions::action::{CommandLineError, merge_maps};
 use blaze_actions::{
@@ -127,6 +127,9 @@ pub struct TestRunnerAction {
     network_allowlist: Arc<PackageSpecificationProvider>,
     /// If not null, the reason why this test can't be run in the current build.
     unrunnable_reason: Option<String>,
+    /// PORT: the execution half of this action (`blaze_exec`'s `TestRunnerAction`), built on
+    /// first use from the fields above; see `test_runner_action_execution`.
+    execution: OnceLock<Arc<blaze_exec::analysis::test::test_runner_action::TestRunnerAction>>,
 }
 
 impl TestRunnerAction {
@@ -272,7 +275,20 @@ impl TestRunnerAction {
             lcov_merger_files_to_run: args.lcov_merger_files_to_run,
             network_allowlist: args.network_allowlist,
             unrunnable_reason: args.unrunnable_reason,
+            execution: OnceLock::new(),
         }
+    }
+
+    /// The cell holding the execution half of this action (see `test_runner_action_execution`).
+    pub(crate) fn execution_cell(
+        &self,
+    ) -> &OnceLock<Arc<blaze_exec::analysis::test::test_runner_action::TestRunnerAction>> {
+        &self.execution
+    }
+
+    /// Environment variables specific to running code coverage (`coverageEnv`).
+    pub fn get_coverage_env(&self) -> &IndexMap<String, String> {
+        &self.coverage_env
     }
 
     fn test_configuration(&self) -> &TestConfiguration {
@@ -755,8 +771,13 @@ impl Action for TestRunnerAction {
 
     // Java: com/google/devtools/build/lib/analysis/test/TestRunnerAction.java:565 TestRunnerAction.executeUnconditionally
     fn execute_unconditionally(&self) -> bool {
-        // PORT: reads the previous test status from disk (TestResultData); execution-phase.
-        blaze_util::unported!("TestRunnerAction.executeUnconditionally")
+        // Note: isVolatile must return true if executeUnconditionally can ever return true
+        // for this instance.
+        // PORT: reads the previous test status from disk (`maybeReadCacheStatus`), which the
+        // execution half of this action holds.
+        Action::execute_unconditionally(
+            &**crate::test::test_runner_action_execution::execution_action(self),
+        )
     }
 
     // Java: com/google/devtools/build/lib/analysis/test/TestRunnerAction.java:603 TestRunnerAction.isVolatile

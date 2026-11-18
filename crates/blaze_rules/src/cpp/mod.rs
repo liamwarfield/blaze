@@ -15,6 +15,7 @@ pub mod cc_toolchain_provider;
 pub mod cpp_compile_action;
 pub mod cpp_configuration;
 pub mod cpp_file_types;
+pub mod cpp_include_extraction_context;
 pub mod header_info;
 pub mod link_command_line;
 pub mod starlark_values;

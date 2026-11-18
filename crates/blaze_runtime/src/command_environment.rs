@@ -23,6 +23,15 @@ use crate::workspace::BlazeWorkspace;
 /// Encapsulates the state needed for a single command.
 // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:105 CommandEnvironment
 pub struct CommandEnvironment {
+    /// Java `eventBus`.
+    event_bus: Arc<CommandEventBus>,
+    /// The client's command line (`BlazeCommandDispatcher.execExclusively`'s `args`).
+    client_args: Vec<String>,
+    /// The client's startup options tagged with the rc file that set them.
+    startup_options_tagged_with_bazel_rc: Option<Vec<(String, String)>>,
+    /// Java `repoEnv` / `nonstrictRepoEnv`.
+    repo_env: IndexMap<String, String>,
+    nonstrict_repo_env: IndexMap<String, String>,
     runtime: Arc<BlazeRuntime>,
     workspace: Arc<BlazeWorkspace>,
     directories: BlazeDirectories,
@@ -55,9 +64,9 @@ impl CommandEnvironment {
         warnings: &mut Vec<String>,
     ) -> CommandEnvironment {
         let directories = workspace.get_directories().clone();
-        // PORT: Java's Reporter is constructed with the command's EventBus; Blaze has no event
-        // bus yet.
-        let reporter = Reporter::new(None);
+        // Java: new Reporter(eventBus, ...) with the command's EventBus.
+        let event_bus = Arc::new(CommandEventBus::default());
+        let reporter = Reporter::new(Some(event_bus.clone() as Arc<dyn blaze_events::EventBus>));
 
         let command_options = options.get_options::<CommonCommandOptions>().expect(
             "CommandEnvironment needs its options provider to have CommonCommandOptions loaded.",
@@ -96,8 +105,17 @@ impl CommandEnvironment {
             .expect("CommandEnvironment needs its options provider to have ClientOptions loaded.");
         let client_env = make_map_from_map_entries(&client_options.client_env);
         let command_id = Self::compute_command_id(&command_options, &client_env, warnings);
-        // PORT: buildRequestId, repoEnv and nonstrictRepoEnv are not ported (no repository
-        // fetching yet); only the allowlisted action/test env computation is.
+        // PORT: buildRequestId is not ported.
+        // Java: ALWAYS_INHERITED_REPO_ENV (Linux: PATH).
+        let mut repo_env_builder: std::collections::BTreeMap<String, String> = client_env
+            .iter()
+            .filter(|(k, _)| !command_options.use_strict_repo_env || k.as_str() == "PATH")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut nonstrict_repo_env_builder: std::collections::BTreeMap<String, String> = client_env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         let mut visible_action_env = std::collections::BTreeSet::new();
         let mut visible_test_env = std::collections::BTreeSet::new();
         // TODO: This only needs to check for loads() rather than analyzes() due to the effect of
@@ -110,14 +128,22 @@ impl CommandEnvironment {
                 .expect("CoreOptions");
             for env_var in &core_options.action_environment {
                 match env_var {
-                    blaze_options::EnvVar::Set { name, .. } => {
+                    blaze_options::EnvVar::Set { name, value } => {
                         visible_action_env.remove(name);
+                        if !command_options.repo_env_ignores_action_env {
+                            repo_env_builder.insert(name.clone(), value.clone());
+                            nonstrict_repo_env_builder.insert(name.clone(), value.clone());
+                        }
                     }
                     blaze_options::EnvVar::Inherit { name } => {
                         visible_action_env.insert(name.clone());
                     }
                     blaze_options::EnvVar::Unset { name } => {
                         visible_action_env.remove(name);
+                        if !command_options.repo_env_ignores_action_env {
+                            repo_env_builder.remove(name);
+                            nonstrict_repo_env_builder.remove(name);
+                        }
                     }
                 }
             }
@@ -133,7 +159,42 @@ impl CommandEnvironment {
             }
         }
 
+        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:384 CommandEnvironment.<init>
+        let bazel_workspace = directories
+            .get_workspace()
+            .map(|w| w.get_path_string().to_string());
+        for env_var in &command_options.repository_environment {
+            match env_var {
+                blaze_options::EnvVar::Set { name, value } => {
+                    let value = match &bazel_workspace {
+                        Some(w) => value.replace("%bazel_workspace%", w),
+                        None => value.clone(),
+                    };
+                    repo_env_builder.insert(name.clone(), value.clone());
+                    nonstrict_repo_env_builder.insert(name.clone(), value);
+                }
+                blaze_options::EnvVar::Inherit { name } => {
+                    if let Some(value) = client_env.get(name) {
+                        repo_env_builder.insert(name.clone(), value.clone());
+                        nonstrict_repo_env_builder.insert(name.clone(), value.clone());
+                    }
+                }
+                blaze_options::EnvVar::Unset { name } => {
+                    repo_env_builder.remove(name);
+                    nonstrict_repo_env_builder.remove(name);
+                }
+            }
+        }
+        let repo_env: IndexMap<String, String> = repo_env_builder.into_iter().collect();
+        let nonstrict_repo_env: IndexMap<String, String> =
+            nonstrict_repo_env_builder.into_iter().collect();
+
         CommandEnvironment {
+            event_bus,
+            client_args: Vec::new(),
+            startup_options_tagged_with_bazel_rc: None,
+            repo_env,
+            nonstrict_repo_env,
             runtime,
             workspace,
             directories,
@@ -267,6 +328,45 @@ impl CommandEnvironment {
     }
 
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:523 CommandEnvironment.getClientEnv
+    /// The client's command line (Java: `execExclusively`'s `args`, kept for the BEP's
+    /// unstructured command line).
+    pub fn get_client_args(&self) -> &[String] {
+        &self.client_args
+    }
+
+    /// Java `CommandEnvironment.setCommandLine...`: the dispatcher records the client's command
+    /// line and its rc-tagged startup options.
+    pub fn set_client_command_line(
+        &mut self,
+        args: Vec<String>,
+        startup_options_tagged_with_bazel_rc: Option<Vec<(String, String)>>,
+    ) {
+        self.client_args = args;
+        self.startup_options_tagged_with_bazel_rc = startup_options_tagged_with_bazel_rc;
+    }
+
+    /// The client's startup options tagged with the rc file that set them.
+    pub fn get_startup_options_tagged_with_bazel_rc(&self) -> Option<&[(String, String)]> {
+        self.startup_options_tagged_with_bazel_rc.as_deref()
+    }
+
+    /// The command's event bus (Java `getEventBus()`): every `Reporter::post` reaches the
+    /// subscribers registered on it.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java CommandEnvironment.getEventBus
+    pub fn get_event_bus(&self) -> &Arc<CommandEventBus> {
+        &self.event_bus
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java CommandEnvironment.getRepoEnv
+    pub fn get_repo_env(&self) -> &IndexMap<String, String> {
+        &self.repo_env
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java CommandEnvironment.getNonstrictRepoEnv
+    pub fn get_nonstrict_repo_env(&self) -> &IndexMap<String, String> {
+        &self.nonstrict_repo_env
+    }
+
     pub fn get_client_env(&self) -> &IndexMap<String, String> {
         &self.client_env
     }
@@ -410,4 +510,27 @@ fn make_map_from_map_entries(entries: &[(String, String)]) -> IndexMap<String, S
         result.insert(k.clone(), v.clone());
     }
     result.into_iter().collect()
+}
+
+/// The command's event bus (Java: Guava's `EventBus` of the command). Subscribers receive every
+/// posted event in registration order; each ignores the events it does not subscribe to.
+#[derive(Default)]
+pub struct CommandEventBus {
+    subscribers: parking_lot::RwLock<Vec<Arc<dyn blaze_events::EventBus>>>,
+}
+
+impl CommandEventBus {
+    /// `eventBus.register(subscriber)`.
+    pub fn register(&self, subscriber: Arc<dyn blaze_events::EventBus>) {
+        self.subscribers.write().push(subscriber);
+    }
+}
+
+impl blaze_events::EventBus for CommandEventBus {
+    fn post(&self, event: Arc<dyn blaze_events::Postable>) {
+        let subscribers = self.subscribers.read().clone();
+        for subscriber in subscribers {
+            subscriber.post(event.clone());
+        }
+    }
 }

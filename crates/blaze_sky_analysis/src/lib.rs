@@ -3,8 +3,13 @@
 //! `AspectFunction`). Design and ownership: `crates/blaze_analysis/DESIGN.md`.
 
 #![allow(clippy::too_many_arguments, clippy::new_without_default)]
-#![allow(clippy::collapsible_if, clippy::type_complexity, clippy::if_same_then_else)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::type_complexity,
+    clippy::if_same_then_else
+)]
 
+pub mod analysis_progress_receiver;
 pub mod aspect_function;
 pub mod configured_target_function;
 pub mod dependency_resolver;

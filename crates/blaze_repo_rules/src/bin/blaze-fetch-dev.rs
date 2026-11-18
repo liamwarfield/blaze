@@ -4,6 +4,10 @@
 //! Usage: `blaze-fetch-dev [--workspace DIR] [--output_base DIR] [--install_base DIR]
 //!         fetch [options...] [--repo=@@name ...] [--dev_extension=<lockfile id> ...]`
 //!
+//! `blaze-fetch-dev [--workspace DIR] [--output_base DIR] [--install_base DIR] mod [options...]
+//! <subcommand> [args...]` runs `bazel mod` (like `blaze-mod-dev`) on this evaluator, so that
+//! non-registry overrides (`archive_override`, `git_override`) are really fetched.
+//!
 //! `--dev_extension` (not a Bazel option) also evaluates the module extension with that lockfile
 //! id (e.g. `@@rules_python+//python/uv:uv.bzl%uv`), so that the lockfile can hold the same
 //! extensions as one written by a whole Bazel build.
@@ -106,10 +110,14 @@ fn real_main() -> i32 {
             _ => break,
         }
     }
-    if args.first().map(String::as_str) != Some("fetch") {
+    let verb = args.first().cloned();
+    if verb.as_deref() != Some("fetch") && verb.as_deref() != Some("mod") {
         usage();
     }
     args.remove(0);
+    if verb.as_deref() == Some("mod") {
+        return mod_main(args, &cwd, workspace, output_base, &install_base);
+    }
     let mut dev_extensions = Vec::new();
     args.retain(|a| match a.strip_prefix("--dev_extension=") {
         Some(id) => {
@@ -243,6 +251,137 @@ fn real_main() -> i32 {
         }
     };
     after_command(evaluator, &workspace, &output_base, lockfile_mode);
+    code
+}
+
+/// `bazel mod` on the fetching evaluator: `ModCommand.execInternal` +
+/// `BazelLockFileModule.afterCommand`, as `blaze-mod-dev` does with its local-only config.
+// PORT: dev tool, not a Bazel class.
+fn mod_main(
+    args: Vec<String>,
+    cwd: &std::path::Path,
+    workspace: PathBuf,
+    output_base: Option<PathBuf>,
+    install_base: &std::path::Path,
+) -> i32 {
+    use blaze_bzlmod::modcommand::mod_command::{
+        ModCommandResult, exec_after_evaluation, exec_before_evaluation, report_evaluation_error,
+    };
+    use blaze_bzlmod::skyframe::{BazelDepGraphKey, BazelModuleInspectorKey};
+    use blaze_optdefs::command::loading_phase_threads_option::LoadingPhaseThreadsOption;
+    use blaze_optdefs::command::ui_options::UiOptions;
+    use blaze_optdefs::misc::mod_options::ModOptions;
+    use std::io::Write;
+
+    fn exit_code(r: &ModCommandResult) -> i32 {
+        match r {
+            ModCommandResult::Success => 0,
+            ModCommandResult::Failure { exit_code, .. } => *exit_code,
+        }
+    }
+
+    let workspace = std::fs::canonicalize(&workspace).unwrap_or(workspace);
+    let output_base = output_base.unwrap_or_else(|| workspace.join(".blaze-fetch-dev-ob"));
+    std::fs::create_dir_all(&output_base).expect("create output base");
+    let output_base = std::fs::canonicalize(&output_base).unwrap_or(output_base);
+    let reporter: Arc<StderrHandler> = Arc::new(StderrHandler);
+
+    let mut parser = OptionsParser::builder()
+        .options_classes(&[
+            ModOptions::class(),
+            RepositoryOptions::class(),
+            BuildLanguageOptions::class(),
+            CommonCommandOptions::class(),
+            LoadingPhaseThreadsOption::class(),
+            UiOptions::class(),
+        ])
+        .allow_residue(true)
+        .build()
+        .unwrap_or_else(|e| e.throw());
+    if let Err(e) = parser.parse_with_priority(PriorityCategory::COMMAND_LINE, None, args) {
+        reporter.handle(&Event::error(e.get_message().to_string()));
+        return 2;
+    }
+    let mod_options: ModOptions = parser.get_options().expect("ModOptions");
+    let repo_options: RepositoryOptions = parser.get_options().expect("RepositoryOptions");
+    let common_options: CommonCommandOptions = parser.get_options().expect("CommonCommandOptions");
+    let residue = parser.get_residue();
+    let request = match exec_before_evaluation(&residue, &mod_options, reporter.as_ref()) {
+        Ok(r) => r,
+        Err(r) => return exit_code(&r),
+    };
+
+    // PORT: BuildLanguageOptions.toStarlarkSemantics is not wired yet; Bazel's defaults.
+    let semantics = StarlarkSemantics::default();
+    let client_env: IndexMap<String, String> = std::env::vars().collect();
+    let (repo_env, nonstrict_repo_env) = compute_repo_env(
+        &client_env,
+        &common_options,
+        &workspace.display().to_string(),
+    );
+    let fetch = match create_evaluator(FetchSetup {
+        workspace: &workspace,
+        working_directory: cwd,
+        output_base: &output_base,
+        install_base,
+        repo_options: &repo_options,
+        starlark_semantics: semantics,
+        client_env: client_env.clone(),
+        repo_env,
+        nonstrict_repo_env,
+        precomputed: RepoPrecomputedValues::default(),
+        reporter: reporter.clone(),
+    }) {
+        Ok(f) => f,
+        Err(message) => {
+            reporter.handle(&Event::error(message));
+            return 2;
+        }
+    };
+    let evaluator = &fetch.evaluator;
+    let ctx = EvaluationContext {
+        keep_going: true,
+        event_handler: reporter.clone(),
+        ..EvaluationContext::default()
+    };
+    let roots = [
+        SkyKey::new(BazelDepGraphKey),
+        SkyKey::new(BazelModuleInspectorKey),
+    ];
+    let code = match evaluator.evaluate(&roots, &ctx) {
+        Err(_) => {
+            reporter.handle(&Event::error("mod command interrupted: null"));
+            8
+        }
+        Ok(result) if result.has_error() => {
+            let message = result
+                .get_first_error()
+                .and_then(|e| e.get_exception())
+                .map(|e| e.to_string());
+            exit_code(&report_evaluation_error(
+                reporter.as_ref(),
+                message.as_deref(),
+            ))
+        }
+        Ok(result) => {
+            let dep_graph = result.get(&BazelDepGraphKey).expect("dep graph");
+            let inspector = result.get(&BazelModuleInspectorKey).expect("inspector");
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            let r = exec_after_evaluation(
+                request.subcommand,
+                &request.args,
+                &mod_options,
+                &dep_graph,
+                &inspector,
+                reporter.as_ref(),
+                &mut out,
+            );
+            out.flush().ok();
+            exit_code(&r)
+        }
+    };
+    after_command(evaluator, &workspace, &output_base, fetch.lockfile_mode);
     code
 }
 

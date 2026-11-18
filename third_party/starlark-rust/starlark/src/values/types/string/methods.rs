@@ -39,7 +39,6 @@ use crate::values::none::NoneOr;
 use crate::values::string::dot_format;
 use crate::values::tuple::UnpackTuple;
 use crate::values::type_repr::StarlarkTypeRepr;
-use crate::values::types::string::iter::iterate_chars;
 use crate::values::types::string::iter::iterate_codepoints;
 use crate::values::typing::iter::StarlarkIter;
 
@@ -121,11 +120,16 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// list("Hello, 世界".elems()) == ["H", "e", "l", "l", "o", ",", " ", "世", "界"]
     /// # "#);
     /// ```
-    fn elems<'v>(
-        this: StringValue<'v>,
-        heap: Heap<'v>,
-    ) -> anyhow::Result<ValueOfUnchecked<'v, StarlarkIter<String>>> {
-        Ok(iterate_chars(this, heap))
+    // BLAZE PATCH 0005: an immutable list of 1-element strings, not a lazy iterator (Java
+    // net/starlark/java/eval/StringModule.java:932 `elems`: `StarlarkList.wrap(null, strings)`),
+    // so `s.elems()[:]`, `len(s.elems())` and indexing work as in Bazel.
+    fn elems<'v>(this: StringValue<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        let chars: Vec<Value<'v>> = this // BLAZE PATCH 0005
+            .as_str()
+            .chars()
+            .map(|c| heap.alloc_char(c).to_value())
+            .collect();
+        Ok(crate::values::list::alloc_immutable_list(heap, &chars)) // BLAZE PATCH 0005
     }
 
     /// [string.capitalize](

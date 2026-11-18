@@ -232,6 +232,7 @@ impl BlazeCommandDispatcher {
             options.clone(),
             &mut command_env_warnings,
         );
+        env.set_client_command_line(args.to_vec(), startup_options_tagged_with_bazel_rc.clone());
 
         let common_options = options
             .get_options::<CommonCommandOptions>()
@@ -371,8 +372,19 @@ impl BlazeCommandDispatcher {
             // loading is creating the command's executor
             // (`crate::commands::query::create_skyframe_executor`), which reports its own errors.
             // The commands create their own executor again in `exec`.
+            // PORT: Java computes the main repository mapping on the executor the command then
+            // uses, so its events (MODULE.bazel warnings, fetches) are reported once. Blaze's
+            // command creates a new executor that evaluates them again; this one stores its
+            // events and reports them only if the command stops here.
+            let stored_events = Arc::new(blaze_events::StoredEventHandler::new());
             let skyframe_executor =
-                match crate::commands::query::create_skyframe_executor(&env, None) {
+                match crate::commands::query::create_skyframe_executor_reporting_to(
+                    &env,
+                    env.get_options().clone(),
+                    None,
+                    None,
+                    stored_events.clone(),
+                ) {
                     Ok(skyframe_executor) => skyframe_executor,
                     Err(result) => {
                         // PORT: NoBuildEvent (no event bus).
@@ -391,9 +403,10 @@ impl BlazeCommandDispatcher {
             // values for label-typed options.
             // PORT: MainRepoMappingComputationStartingEvent (no event bus) and the profiler task.
             // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:701 BlazeCommandDispatcher.execExclusively
-            let event_handler = crate::commands::query::reporter(&env);
+            let event_handler: Arc<dyn blaze_events::ExtendedEventHandler> = stored_events.clone();
             let interrupted = || {
                 let message = "command interrupted while computing main repo mapping";
+                stored_events.replay_on(env.get_reporter().as_ref());
                 reporter.handle(&Event::error(message));
                 interrupted_detailed_exit_code(message)
             };
@@ -449,6 +462,7 @@ impl BlazeCommandDispatcher {
                     early_exit_code = interrupted();
                 }
                 Err(RepositoryMappingResolutionOrInterrupted::Resolution(e)) => {
+                    stored_events.replay_on(env.get_reporter().as_ref());
                     reporter.handle(&Event::error(e.to_string()));
                     early_exit_code = crate::commands::query::to_runtime_detailed_exit_code(
                         blaze_query::compat::failure_details::from_packages(&e.detailed_exit_code),
@@ -485,9 +499,23 @@ impl BlazeCommandDispatcher {
         }
 
         // Parse starlark options.
-        // PORT: BlazeOptionHandler.parseStarlarkOptions needs Starlark flag resolution (W4);
-        // commands that do not analyze carry no Starlark options (skipStarlarkOptionPrefixes
-        // leaves them in the residue).
+        // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:417 BlazeOptionHandler.parseStarlarkOptions
+        // For now, restrict starlark options to commands that already build to ensure that
+        // loading will work.
+        if command_annotation.build_phase.analyzes() {
+            // PORT: StarlarkOptionsParser (loading the build settings of `--//pkg:flag` options
+            // and putting their values into the options) is not ported; a command line or rc
+            // file that carries Starlark options fails loudly instead of analysing the default
+            // configuration.
+            let skipped_args = options.get_skipped_args();
+            if !skipped_args.is_empty() {
+                blaze_util::unported!(
+                    "BlazeOptionHandler.parseStarlarkOptions",
+                    "Starlark options {:?}",
+                    skipped_args
+                );
+            }
+        }
 
         // PORT: the command-line BEP events (OriginalCommandLineEvent, ...) are not posted (no
         // event bus yet).

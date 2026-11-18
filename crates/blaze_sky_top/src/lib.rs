@@ -12,7 +12,8 @@
 pub mod analysis_phase_runner;
 pub mod build_tool;
 pub mod build_view;
-pub mod external_repos;
+pub mod execution_phase;
+pub mod execution_seam;
 pub mod skyframe_build_view;
 pub mod skyframe_executor;
 pub mod target_pattern_phase;

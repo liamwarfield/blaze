@@ -266,6 +266,15 @@ impl TestTargetExecutionSettings {
         Ok(args)
     }
 
+    /// Java `getArgs()`: `CommandLine.concat(targetArgs, testConfig.getTestArguments())`.
+    // Java: com/google/devtools/build/lib/analysis/test/TestTargetExecutionSettings.java:101 TestTargetExecutionSettings.getArgs
+    pub fn get_args(&self) -> CommandLineRef {
+        blaze_actions::actions::command_line::concat(
+            self.target_args.clone(),
+            self.test_arguments.clone(),
+        )
+    }
+
     // Java: com/google/devtools/build/lib/analysis/test/TestTargetExecutionSettings.java:105 TestTargetExecutionSettings.getTestFilter
     pub fn get_test_filter(&self) -> Option<&str> {
         self.test_filter.as_deref()

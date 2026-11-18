@@ -30,8 +30,10 @@ pub struct CcCompilationContext {
     non_code_inputs: NestedSet<Artifact>,
     cpp_module_map: Option<Artifact>,
     header_info: Arc<HeaderInfoData>,
+    include_dirs: Result<Vec<PathFragment>, String>,
     quote_include_dirs: Result<Vec<PathFragment>, String>,
     system_include_dirs: Result<Vec<PathFragment>, String>,
+    framework_include_dirs: Result<Vec<PathFragment>, String>,
     external_include_dirs: Result<Vec<PathFragment>, String>,
 }
 
@@ -93,8 +95,10 @@ impl CcCompilationContext {
             non_code_inputs: artifact_set(info, "_non_code_inputs"),
             cpp_module_map: get_cpp_module_map(info),
             header_info,
+            include_dirs: path_fragment_list(info, "includes"),
             quote_include_dirs: path_fragment_list(info, "quote_includes"),
             system_include_dirs: path_fragment_list(info, "system_includes"),
+            framework_include_dirs: path_fragment_list(info, "framework_includes"),
             external_include_dirs: path_fragment_list(info, "external_includes"),
         }
     }
@@ -170,6 +174,24 @@ impl CcCompilationContext {
             }
         }
         NestedSetBuilder::wrap(Order::STABLE_ORDER, modules)
+    }
+
+    /// Returns the immutable list of include directories to be added with "-I" (possibly empty
+    /// but never null).
+    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:99 CcCompilationContext.getIncludeDirs
+    pub fn get_include_dirs(&self) -> Vec<PathFragment> {
+        self.include_dirs
+            .clone()
+            .unwrap_or_else(|e| panic!("IllegalStateException: {e}"))
+    }
+
+    /// Returns the immutable list of include directories to be added with "-F" (possibly empty
+    /// but never null).
+    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:132 CcCompilationContext.getFrameworkIncludeDirs
+    pub fn get_framework_include_dirs(&self) -> Vec<PathFragment> {
+        self.framework_include_dirs
+            .clone()
+            .unwrap_or_else(|e| panic!("IllegalStateException: {e}"))
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:110 CcCompilationContext.getQuoteIncludeDirs

@@ -165,6 +165,7 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
         aquery_options,
         env.reporter.clone(),
         env.output.clone(),
+        env.working_directory.clone(),
     ) {
         Ok(p) => p,
         Err(e) => {

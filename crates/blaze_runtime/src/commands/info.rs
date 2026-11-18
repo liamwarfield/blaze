@@ -33,6 +33,13 @@ pub struct BuildConfigurationSupplier {
     exec_root_base: blaze_vfs::Path,
     product_name: String,
     workspace: Option<blaze_vfs::Path>,
+    working_directory: blaze_vfs::Path,
+    output_base: blaze_vfs::Path,
+    install_base: blaze_vfs::Path,
+    workspace_name: String,
+    client_env: IndexMap<String, String>,
+    repo_env: IndexMap<String, String>,
+    nonstrict_repo_env: IndexMap<String, String>,
     reporter: Arc<blaze_events::Reporter>,
     configuration:
         Option<Arc<blaze_build_config::build_configuration_value::BuildConfigurationValue>>,
@@ -46,6 +53,13 @@ impl BuildConfigurationSupplier {
             exec_root_base: env.get_directories().get_exec_root_base().clone(),
             product_name: env.get_runtime().get_product_name().to_string(),
             workspace: env.get_workspace().cloned(),
+            working_directory: env.get_working_directory().clone(),
+            output_base: env.get_output_base().clone(),
+            install_base: env.get_directories().get_install_base().clone(),
+            workspace_name: env.get_workspace_name().to_string(),
+            client_env: env.get_client_env().clone(),
+            repo_env: env.get_repo_env().clone(),
+            nonstrict_repo_env: env.get_nonstrict_repo_env().clone(),
             reporter: env.get_reporter().clone(),
             configuration: None,
         }
@@ -59,53 +73,68 @@ impl BuildConfigurationSupplier {
         AbruptExitException,
     > {
         use blaze_build_config::bazel_rule_class_provider::BazelRuleClassProvider;
-        use blaze_build_config::top_level::{
-            TopLevelConfigurationInputs, create_build_options, create_top_level_configuration,
-            starlark_semantics_from,
-        };
+        use blaze_build_config::top_level::create_build_options;
+        use blaze_sky_top::skyframe_executor::{SkyframeExecutor, SkyframeExecutorInputs};
         if let Some(c) = &self.configuration {
             return Ok(c.clone());
         }
         // In order to be able to answer configuration-specific queries, we need to set up the
         // package path. Since info inherits all the build options, all the necessary information
         // is available here.
-        // PORT: ensureSyncPackageLoading(env, optionsParsingResult) is not ported
-        // (CommandEnvironment.syncPackageLoading); configuration creation reads the package
-        // path roots (the workspace, `--package_path=%workspace%`) directly.
+        // ensureSyncPackageLoading(env, optionsParsingResult): Blaze creates the command's
+        // executor here, with the configuration's build options as its baseline.
         let rule_class_provider = Arc::new(BazelRuleClassProvider::create());
         // TODO(bazel-team): What if there are multiple configurations? [multi-config]
         let build_options = create_build_options(&rule_class_provider, &self.options);
-        // PORT: PlatformFunction (analysis of platform targets) is not ported; platform facts
-        // come from BLAZE_W4_ORACLE_PLATFORMS (scripts/w4/oracle-platforms) when set.
-        let platforms: blaze_build_config::platform::SharedPlatformValueProvider =
-            match std::env::var("BLAZE_W4_ORACLE_PLATFORMS") {
-                Ok(path) => Arc::new(
-                    blaze_build_config::platform::OraclePlatforms::load(std::path::Path::new(
-                        &path,
-                    ))
-                    .unwrap_or_else(|e| panic!("BLAZE_W4_ORACLE_PLATFORMS: {}", e)),
-                ),
-                Err(_) => Arc::new(blaze_build_config::platform::UnportedPlatforms),
-            };
-        let result = create_top_level_configuration(
-            TopLevelConfigurationInputs {
-                directories: blaze_build_config::output_directories::ConfigDirectories {
-                    exec_root_base: self.exec_root_base.clone(),
-                    product_name: self.product_name.clone(),
-                },
-                rule_class_provider,
-                starlark_semantics: Arc::new(starlark_semantics_from(&self.options)),
-                package_path_roots: self.workspace.iter().cloned().collect(),
-                platforms,
-                event_handler: self.reporter.clone(),
-            },
-            build_options,
-            /* keep_going= */ true,
+        let reporter: Arc<dyn blaze_events::ExtendedEventHandler> = self.reporter.clone();
+        let Some(workspace) = self.workspace.clone() else {
+            blaze_util::unported!("InfoCommand.exec (configuration outside a workspace)");
+        };
+        let executor = SkyframeExecutor::create(SkyframeExecutorInputs {
+            workspace,
+            working_directory: self.working_directory.clone(),
+            output_base: self.output_base.clone(),
+            install_base: self.install_base.clone(),
+            exec_root_base: self.exec_root_base.clone(),
+            product_name: self.product_name.clone(),
+            workspace_name: self.workspace_name.clone(),
+            options: self.options.clone(),
+            reporter: reporter.clone(),
+            client_env: self.client_env.clone(),
+            repo_env: self.repo_env.clone(),
+            nonstrict_repo_env: self.nonstrict_repo_env.clone(),
+            repo_precomputed: Default::default(),
+            keep_going: true,
+            top_level_build_options: Some(build_options.clone()),
+            execution: None,
+        });
+        let executor = match executor {
+            Ok(e) => e,
+            Err(e) => {
+                self.reporter.handle(&Event::error(e.to_string()));
+                return Err(AbruptExitException::new(DetailedExitCode::of(FailureDetail {
+                    message: e.to_string(),
+                    category: Some(Category::BuildConfiguration(
+                        failure_details::BuildConfiguration {
+                            code: failure_details::build_configuration::Code::BuildConfigurationUnknown
+                                as i32,
+                        },
+                    )),
+                })));
+            }
+        };
+        let _after_command = crate::commands::query::AfterCommand(&executor);
+        // The main repository mapping (label-typed options and platform labels resolve with it).
+        let _ = executor.get_main_repo_mapping(
+            true,
+            blaze_sky_top::skyframe_executor::DEFAULT_THREAD_COUNT,
+            reporter.clone(),
         );
+        let result = executor.create_configuration(reporter, Arc::new(build_options), true);
         match result {
-            Ok(top) => {
-                self.configuration = Some(top.configuration.clone());
-                Ok(top.configuration)
+            Ok(configuration) => {
+                self.configuration = Some(configuration.clone());
+                Ok(configuration)
             }
             Err(e) => {
                 self.reporter.handle(&Event::error(e.get_message()));

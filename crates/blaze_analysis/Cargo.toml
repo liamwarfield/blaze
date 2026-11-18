@@ -17,6 +17,8 @@ blaze_packages = { path = "../blaze_packages" }
 blaze_config = { path = "../blaze_config" }
 blaze_build_config = { path = "../blaze_build_config" }
 blaze_actions = { path = "../blaze_actions" }
+# ExecutableAction impls for the action classes this crate defines (orphan rule).
+blaze_exec = { path = "../blaze_exec" }
 blaze_optdefs = { path = "../blaze_optdefs" }
 blaze_options = { path = "../blaze_options" }
 blaze_protos = { path = "../blaze_protos" }

@@ -73,7 +73,67 @@ fn to_path(fs: &FileSystemRef, p: &StdPath) -> Path {
 /// wrapper, overrides) plus the Skyframe function registrations of the bzlmod, loading and
 /// repository functions.
 pub fn create_evaluator(setup: FetchSetup<'_>) -> Result<FetchEvaluator, String> {
-    let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+    let RepositoryFunctions {
+        directories,
+        services,
+        bzlmod_config,
+        repository_overrides,
+        repo_contents_cache_path,
+    } = prepare_repository_functions(&setup)?;
+    let lockfile_mode = bzlmod_config.lockfile_mode;
+    let rule_class_provider =
+        Arc::new(blaze_packages::native_rules::RuleClassProvider::create_bazel());
+    let starlark_environment = bazel_starlark_environment(&rule_class_provider);
+    let fetch_function = repository_fetch_function(services.clone());
+    let external_repos = Arc::new(BzlmodExternalRepos::new(fetch_function));
+    let mut loading_config = LoadingFunctionsConfig::for_bazel(
+        directories,
+        external_repos,
+        Arc::new(LoadingFunctionsConfig::default_native_registry()),
+        starlark_environment,
+        Some(rule_class_provider),
+    );
+    loading_config.repo_contents_cache_path = repo_contents_cache_path;
+
+    let builder = register_bzlmod_functions(EvaluatorBuilder::new(), Arc::new(bzlmod_config));
+    let builder = register_loading_functions(builder, &loading_config);
+    let builder = inject_loading_precomputed(
+        builder,
+        &loading_config,
+        setup.starlark_semantics,
+        repository_overrides,
+    );
+    let builder = register_repo_rules_functions(builder, services);
+    let builder = inject_repo_precomputed(builder, &setup.precomputed);
+    Ok(FetchEvaluator {
+        evaluator: builder.build(),
+        lockfile_mode,
+    })
+}
+
+/// What `BazelRepositoryModule.beforeCommand` sets up for a command's evaluator: the
+/// repository services (caches, download manager, repo env, process wrapper), the Bzlmod
+/// configuration and `--override_repository`.
+pub struct RepositoryFunctions {
+    pub directories: LoadingDirectories,
+    pub services: Arc<RepoServices>,
+    pub bzlmod_config: BzlmodConfig,
+    pub repository_overrides: IndexMap<String, PathFragment>,
+    pub repo_contents_cache_path: Option<Path>,
+}
+
+/// The `BazelRepositoryModule.beforeCommand` part of [`create_evaluator`], shared with the
+/// runtime's `SkyframeExecutor`.
+pub fn prepare_repository_functions(setup: &FetchSetup<'_>) -> Result<RepositoryFunctions, String> {
+    prepare_repository_functions_in(setup, UnixFileSystem::create(DigestHashFunction::Sha256))
+}
+
+/// [`prepare_repository_functions`] with the paths on `fs` (the runtime's file system: paths of
+/// different file system instances never compare equal or nest).
+pub fn prepare_repository_functions_in(
+    setup: &FetchSetup<'_>,
+    fs: FileSystemRef,
+) -> Result<RepositoryFunctions, String> {
     let repo_options = setup.repo_options;
 
     // The repository cache (Java `repositoryCache.setPath(...)`): `--repository_cache`, else
@@ -154,7 +214,8 @@ pub fn create_evaluator(setup: FetchSetup<'_>) -> Result<FetchEvaluator, String>
         fetcher,
     )
     .map_err(|e| e.message.clone())?;
-    let lockfile_mode = bzlmod_config.lockfile_mode;
+    let mut bzlmod_config = bzlmod_config;
+    bzlmod_config.repository_directory_lookup = Arc::new(RepositoryDirectoryFunctionLookup);
 
     // `--override_repository` (Java BazelRepositoryModule.beforeCommand overrideMap).
     let mut repository_overrides: IndexMap<String, PathFragment> = IndexMap::new();
@@ -175,32 +236,44 @@ pub fn create_evaluator(setup: FetchSetup<'_>) -> Result<FetchEvaluator, String>
         );
     }
 
-    let rule_class_provider =
-        Arc::new(blaze_packages::native_rules::RuleClassProvider::create_bazel());
-    let starlark_environment = bazel_starlark_environment(&rule_class_provider);
-    let fetch_function = repository_fetch_function(services.clone());
-    let external_repos = Arc::new(BzlmodExternalRepos::new(fetch_function));
-    let mut loading_config = LoadingFunctionsConfig::for_bazel(
+    Ok(RepositoryFunctions {
         directories,
-        external_repos,
-        Arc::new(LoadingFunctionsConfig::default_native_registry()),
-        starlark_environment,
-        Some(rule_class_provider),
-    );
-    loading_config.repo_contents_cache_path = repo_contents_cache_path;
-
-    let builder = register_bzlmod_functions(EvaluatorBuilder::new(), Arc::new(bzlmod_config));
-    let builder = register_loading_functions(builder, &loading_config);
-    let builder = inject_loading_precomputed(
-        builder,
-        &loading_config,
-        setup.starlark_semantics,
+        services,
+        bzlmod_config,
         repository_overrides,
-    );
-    let builder = register_repo_rules_functions(builder, services);
-    let builder = inject_repo_precomputed(builder, &setup.precomputed);
-    Ok(FetchEvaluator {
-        evaluator: builder.build(),
-        lockfile_mode,
+        repo_contents_cache_path,
     })
+}
+
+/// `ModuleFileFunction`'s lookup of a non-registry override's repository directory through
+/// REPOSITORY_DIRECTORY (Java: `env.getValue(RepositoryDirectoryValue.key(canonicalRepoName))`,
+/// then `((Success) repoDir).root()`), replacing bzlmod's builtin local-only lookup.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunction.java:756 ModuleFileFunction.getModuleFile
+pub struct RepositoryDirectoryFunctionLookup;
+
+impl blaze_bzlmod::skyframe::RepositoryDirectoryLookup for RepositoryDirectoryFunctionLookup {
+    fn repo_root(
+        &self,
+        name: &blaze_cmdline::RepositoryName,
+        env: &mut blaze_skyframe::Environment<'_>,
+    ) -> Result<Option<PathBuf>, blaze_skyframe::ComputeError> {
+        use blaze_sky_loading::repos::{RepositoryDirectoryKey, RepositoryDirectoryValue};
+        let Some(repo_dir) = env.get_value(RepositoryDirectoryKey::key(name.clone()))? else {
+            return Ok(None);
+        };
+        // This repo _definitely_ exists, since it has a non-registry override, which directly
+        // gets "translated" into a repo spec. So we can cast `repoDir` to `Success`.
+        match &*repo_dir {
+            RepositoryDirectoryValue::Success { root, .. } => Ok(Some(PathBuf::from(
+                root.as_path()
+                    .expect("repository root is a path")
+                    .get_path_string(),
+            ))),
+            // PORT: Java's cast throws ClassCastException here.
+            RepositoryDirectoryValue::Failure { error_msg } => panic!(
+                "class RepositoryDirectoryValue$Failure cannot be cast to class \
+                 RepositoryDirectoryValue$Success ({name}: {error_msg})"
+            ),
+        }
+    }
 }

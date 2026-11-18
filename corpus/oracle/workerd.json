@@ -1,0 +1,111 @@
+{
+ "binary_sha256": "2e14c55c298752d71e8a0bbd762665ffce5966c9ad00ec5d1a8b82a58e7bfa06",
+ "checkout_commit": "6ee5f1717a0a984d971672bc75dcdfda415fb842",
+ "created": "2026-11-18T15:12:21+00:00",
+ "exit_codes": {
+  "aquery_deps_jsonproto": 0,
+  "cquery_deps_label_kind": 0,
+  "cquery_jsonproto": 0,
+  "info": 0,
+  "mod_graph": 2,
+  "query_deps_jsonproto": 3,
+  "query_deps_label_kind": 3,
+  "query_jsonproto": 0,
+  "query_label_kind": 0
+ },
+ "files_sha256": {
+  "items/aquery_actions.json": "b6ac166365b542f28b154c4406d67a0402bf8b096592609c98566e1be5f40b7a",
+  "items/bep.json": "8d1061f40304b1f3481c560b7e78b2dd070d7e6c94a9124e954b9767a870e436",
+  "items/build_stderr.json": "000e48353060197c1b2ffe3972ec9c7c1ea0ad28d868a3a698e6ee2e091f3aa8",
+  "items/cquery_jsonproto.json": "7e65e006032e7a1d7aa0604f1cf82f815316d77f3dc4cb12d721c43883e75fd9",
+  "items/cquery_label_kind.json": "09c7c6445e4762105e263a3514eb43fdde54ad72a0912b67978e6dd2d80de54a",
+  "items/execlog.json": "dae472471a682876e6588d29d9fa9881ac27c692a1a53950917b959b6c4a05da",
+  "items/exit_codes.json": "ff273a82394224d5e351eb57f2f3773bf9cb920540b393e42765d2134cc71cfb",
+  "items/lockfile.json": "5872e001fcab719b1fe2495b05bf27e3e767ed6367b67fd1dccf7bc249f525aa",
+  "items/mod_graph.json": "650555665ddebab28878ddbc8e3c8032e6443e8456fe49d7fa9c4f4f2e130a35",
+  "items/outputs.json": "718bf63bd171f944fe8470faa3251dbbaf8c628d67f145b391ed61e8b32535f5",
+  "items/query_jsonproto.json": "a48448d4f367af9d594028114b2e59f2115544d9ada9512f553b3c12ce27e458",
+  "items/query_label_kind.json": "9a7468d775eb63e8ad923027df7b0d7ed7e86055154f3d13604c57702595102f",
+  "items/tests.json": "8a8ae18dc75e81ea370f884fe93a88af9900c7d394d4a04741066aa7733bc11f",
+  "norm/aquery_actions.json": "e1cf78519a0dcb910273830b0caefd90b43cd77a241ef6e75607913e3f83e55f",
+  "norm/aquery_deps_jsonproto.json": "3a7ec1fbd45979986b994ec34e2b52d8868437028d09b6dc9db57728f9858da1",
+  "norm/cquery_deps_label_kind.txt": "03ad72e00fcea419cbdcc40212864849624854735f44e42c0d02d55d46e4b541",
+  "norm/cquery_jsonproto.json": "a2f2df628ccd5972c9d7a42901b11fae911ae19dd5eb650ac88e1b7bd9d6035a",
+  "norm/query_deps_jsonproto.jsonl": "fb1b337975b0575c38bb1f56b65923238892d50da2d15890ba13307db5d49f4a",
+  "norm/query_deps_label_kind.txt": "7136910aa1be5e3b2142d6d9ea54ee45aa953191142501401535c2d90a826cc7",
+  "norm/query_jsonproto.jsonl": "cbc10357d2791fdbbaeaa7c2fd92b033581c6780486653e3c7fd42920258329e",
+  "norm/query_label_kind.txt": "110da9e1992662c67309281ce5c70e22dc78969db82ffb6368eebf8a9e9f884d"
+ },
+ "label": "oracle-9.3.2",
+ "project": "workerd",
+ "project_command": [
+  "build",
+  "//src/workerd/server:workerd"
+ ],
+ "surfaces": {
+  "aquery_actions": {
+   "items": 13416,
+   "status": "OK"
+  },
+  "bep": {
+   "items": 0,
+   "status": "SKIPPED"
+  },
+  "build_stderr": {
+   "items": 0,
+   "status": "SKIPPED"
+  },
+  "cquery_jsonproto": {
+   "items": 2,
+   "status": "OK"
+  },
+  "cquery_label_kind": {
+   "items": 38891,
+   "status": "OK"
+  },
+  "execlog": {
+   "items": 0,
+   "status": "SKIPPED"
+  },
+  "exit_codes": {
+   "items": 9,
+   "status": "OK"
+  },
+  "lockfile": {
+   "items": 0,
+   "status": "FAILED"
+  },
+  "mod_graph": {
+   "items": 0,
+   "status": "FAILED"
+  },
+  "outputs": {
+   "items": 0,
+   "status": "SKIPPED"
+  },
+  "query_jsonproto": {
+   "items": 46371,
+   "status": "OK"
+  },
+  "query_label_kind": {
+   "items": 46371,
+   "status": "OK"
+  },
+  "tests": {
+   "items": 0,
+   "status": "SKIPPED"
+  }
+ },
+ "timings_s": {
+  "aquery_deps_jsonproto": 1.47,
+  "cquery_deps_label_kind": 5.75,
+  "cquery_jsonproto": 0.36,
+  "info": 0.03,
+  "mod_graph": 5.02,
+  "query_deps_jsonproto": 0.81,
+  "query_deps_label_kind": 1.12,
+  "query_jsonproto": 0.21,
+  "query_label_kind": 0.36
+ },
+ "total_duration_s": 15.71
+}

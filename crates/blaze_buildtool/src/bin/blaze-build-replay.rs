@@ -679,6 +679,16 @@ fn main() -> ExitCode {
         keep_going,
         verbose_failures: false,
         jobs,
+        execution_options: None,
+        sandbox_options: None,
+        local_execution_options: None,
+        package_path_entries: Vec::new(),
+        repo_contents_cache_path: None,
+        test_arguments: Vec::new(),
+        // BlazeDirectories.getActionTempsDirectory(execRoot).
+        action_temps_directory: exec_root.get_relative_str("bazel-out/_tmp/actions"),
+        writable_outputs: false,
+        output_filter: None,
     };
     let ws_for_status = workspace.clone();
     let prepared = match prepare_for_execution(&config, reporter.clone(), None, &|contexts, env| {

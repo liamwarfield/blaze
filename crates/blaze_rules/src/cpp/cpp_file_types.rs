@@ -111,6 +111,16 @@ pub static CPP_MODULE: FileType = FileType {
     apply: |p| has_any_extension(p, &[".pcm", ".gcm", ".ifc"]),
 };
 
+// Java: com/google/devtools/build/lib/rules/cpp/CppFileTypes.java:272 CppFileTypes.COVERAGE_NOTES
+pub static COVERAGE_NOTES: FileType = FileType {
+    apply: |p| has_extension(p, ".gcno"),
+};
+
+// Java: com/google/devtools/build/lib/rules/cpp/CppFileTypes.java:281 CppFileTypes.OBJC_MODULE_MAP
+pub static OBJC_MODULE_MAP: FileType = FileType {
+    apply: |p| has_extension(p, "module.modulemap"),
+};
+
 /// Java `CppFileTypes.headerDiscoveryRequired(source)`.
 // Java: com/google/devtools/build/lib/rules/cpp/CppFileTypes.java:299 CppFileTypes.headerDiscoveryRequired
 pub fn header_discovery_required(source: &Artifact) -> bool {

@@ -24,9 +24,11 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
 use blaze_events::{Event, EventHandler, EventKind};
-use blaze_shell::InterruptedException;
+/// `InterruptedException` as the checker throws it (re-exported for callers that do not depend on
+/// `blaze_shell`).
+pub use blaze_shell::InterruptedException;
 use blaze_util::{check_argument, check_state, unported};
-use blaze_vfs::PathFragment;
+use blaze_vfs::{PathFragment, Root};
 use indexmap::{IndexMap, IndexSet};
 
 use super::action_input::{ActionInput, ActionInputRef};
@@ -98,6 +100,11 @@ pub trait CacheCheckAction: Send + Sync {
     /// `action instanceof ActionCacheAwareAction`.
     fn as_action_cache_aware_action(&self) -> Option<&dyn ActionCacheAwareAction> {
         None
+    }
+
+    /// `action instanceof TestRunnerAction` (read by `CheckUpToDateFilter.apply`).
+    fn is_test_runner_action(&self) -> bool {
+        false
     }
 
     /// Downcasting for the execution filter and adapters.
@@ -176,11 +183,23 @@ impl ProxyMetadataFactory for NoProxies {
     }
 }
 
-/// The `PackageRootResolver` passed through to [`ArtifactResolver::resolve_source_artifacts`]
-/// (seam: `blaze_actions` owns the port; adapters downcast).
-// Java: com/google/devtools/build/lib/actions/PackageRootResolver.java PackageRootResolver
-pub trait PackageRootResolver: Send + Sync {
-    fn as_any(&self) -> &dyn Any;
+/// Represents logic that evaluates the root of the package containing an exec path, for
+/// constructing artifacts out of the action cache. Passed through to
+/// [`ArtifactResolver::resolve_source_artifacts`].
+///
+/// PORT: not `Send + Sync`: the Skyframe implementation (`ActionExecutionFunction
+/// .PackageRootResolverWithEnvironment`) holds the function's `Environment` for one call.
+// Java: com/google/devtools/build/lib/actions/PackageRootResolver.java:31 PackageRootResolver
+pub trait PackageRootResolver {
+    /// Returns mapping from exec path to root. The root is `None` if the path has no containing
+    /// package. Returns `None` if for some reason the result cannot be determined at this time
+    /// (such as when used within a SkyFunction with missing dependencies).
+    // Java: com/google/devtools/build/lib/actions/PackageRootResolver.java:42 PackageRootResolver.findPackageRootsForFiles
+    #[allow(clippy::type_complexity)]
+    fn find_package_roots_for_files(
+        &self,
+        exec_paths: &[PathFragment],
+    ) -> Result<Option<HashMap<PathFragment, Option<Root>>>, PackageRootExceptionOrInterrupted>;
 }
 
 /// Port of `PackageRootResolver.PackageRootException` (message only).
@@ -249,7 +268,7 @@ pub trait TreeArtifactFactory: Send + Sync {
     ) -> Result<TreeArtifactValue, IoOrInterruptedException>;
 }
 
-/// The default [`TreeArtifactFactory`]: nothing is ported yet.
+/// The default [`TreeArtifactFactory`]: only `TreeArtifactValue.Builder.build` is ported.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnportedTreeArtifactFactory;
 
@@ -265,10 +284,11 @@ impl TreeArtifactFactory for UnportedTreeArtifactFactory {
     fn build_tree_artifact_value(
         &self,
         _parent: &ActionInputRef,
-        _children: Vec<(ActionInputRef, FileArtifactValue)>,
-        _archived_representation: Option<(ActionInputRef, FileArtifactValue)>,
+        children: Vec<(ActionInputRef, FileArtifactValue)>,
+        archived_representation: Option<(ActionInputRef, FileArtifactValue)>,
     ) -> TreeArtifactValue {
-        unported!("TreeArtifactValue.Builder.build")
+        // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:686 TreeArtifactValue.Builder.build
+        TreeArtifactValue::build(children, archived_representation, None)
     }
 
     fn construct_proxy_tree_metadata(

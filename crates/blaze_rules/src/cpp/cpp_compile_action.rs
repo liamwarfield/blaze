@@ -1,12 +1,15 @@
-//! `CppCompileAction` and `CppCompileActionBuilder` (analysis-time parts): the action's inputs,
-//! outputs, environment, execution info, command line, mnemonic and action key.
+//! `CppCompileAction` and `CppCompileActionBuilder`: the action's inputs, outputs, environment,
+//! execution info, command line, mnemonic and action key, and its execution half
+//! (`discoverInputs`, `execute`, `.d` file parsing through `blaze_cc_features`' `DependencySet`
+//! and `HeaderDiscovery`, include validation, `updateInputs`) as
+//! `blaze_exec::actions::ExecutableAction`.
 //!
-//! PORT: execution-time behaviour (`discoverInputs`, `execute`, `.d` file parsing, include
-//! validation, `updateInputs`) belongs to the execution layer and is not ported here; the
-//! Starlark-independent pieces exist in `blaze_cc_features` (`header_discovery`,
-//! `dependency_set`, `cpp_compile_action::validate_inclusions`).
+//! PORT: include scanning (`--experimental_cc_include_scanning`), C++ module discovery after
+//! include scanning and `/showIncludes` parsing (MSVC) are `unported!`.
 
 use std::any::Any;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use blaze_actions::Artifact;
@@ -16,11 +19,15 @@ use blaze_actions::actions::action::{
 use blaze_actions::actions::action_environment::ActionEnvironment;
 use blaze_actions::actions::action_key_context::ActionKeyContext;
 use blaze_actions::actions::action_owner::ActionOwner;
+use blaze_actions::actions::artifact_factory::ArtifactFactory;
+use blaze_actions::actions::command_lines::ParamFileActionInput;
 use blaze_actions::actions::fingerprint_util::add_paths;
+use blaze_actions::actions::parameter_file::ParameterFileType;
 use blaze_actions::actions::path_mapper::OutputPathsMode;
 use blaze_actions::analysis::actions::path_mappers;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_build_config::fragments::cpp_configuration::CppConfiguration;
+use blaze_cc_features::actions as cc;
 use blaze_cc_features::actions::NOOP as CC_NOOP;
 use blaze_cc_features::cc_common::CoptsFilter;
 use blaze_cc_features::cc_toolchain_features::FeatureConfiguration;
@@ -29,15 +36,34 @@ use blaze_cc_features::compile_build_variables::CompileBuildVariables;
 use blaze_cc_features::compile_command_line::CompileCommandLine;
 use blaze_cc_features::cpp_action_names::CppActionNames;
 use blaze_cc_features::cpp_rule_classes;
+use blaze_cc_features::dependency_set::DependencySet;
+use blaze_cc_features::header_discovery::{self, DiscoveringAction};
+use blaze_cc_features::include_problems::IncludeProblems;
+use blaze_cmdline::label_constants::{EXPERIMENTAL_EXTERNAL_PATH_PREFIX, EXTERNAL_PATH_PREFIX};
 use blaze_collect::command_line_item::{CommandLineExpansionException, MapFnError};
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
+use blaze_exec::actions::action_adapters::{ActionMetadataSnapshot, artifact_input};
+use blaze_exec::actions::execution_requirements::REMOTE_EXECUTION_INLINE_OUTPUTS;
+use blaze_exec::actions::{
+    ActionExecutionException, ActionInputRef, ActionResult, ExecutableAction,
+    PathMapper as SpawnPathMapper, ResourceSet, ResourceSetOrBuilder, SimpleSpawn, SpawnResult,
+};
+use blaze_exec::analysis::actions::{get_input_path, to_action_input_set};
+use blaze_exec::exec::action_execution_context::{ActionExecutionContext, get_context};
+use blaze_exec::exec::spawn_strategy_resolver::SpawnStrategyResolver;
+use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
 use blaze_shell::ShellEscaper;
-use blaze_util::{Fingerprint, check_state};
-use blaze_vfs::PathFragment;
+use blaze_util::{Fingerprint, check_argument, check_state};
+use blaze_vfs::{Path, PathFragment};
 use indexmap::IndexMap;
+use parking_lot::Mutex;
 
+use super::cc_artifact::{CcArtifact, CcPathMapper};
 use super::cc_compilation_context::CcCompilationContext;
 use super::cpp_file_types;
+use super::cpp_include_extraction_context::{
+    experimental_sibling_repository_layout, get_cpp_include_extraction_context,
+};
 
 /// `UUID.fromString("97493805-894f-493a-be66-9a698f45c31d")`: (least, most) significant bits.
 // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:122 CppCompileAction.GUID
@@ -51,6 +77,9 @@ pub const OBJC_COMPILE_MNEMONIC: &str = "ObjcCompile";
 
 // Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:130 ExecutionRequirements.REQUIRES_DARWIN
 const REQUIRES_DARWIN: &str = "requires-darwin";
+
+// Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:396 ExecutionRequirements.DIFFERENTIATE_WORKSPACE_CACHE
+const DIFFERENTIATE_WORKSPACE_CACHE: &str = "internal-differentiate-workspace-cache";
 
 fn cc_error(e: blaze_cc_features::actions::CommandLineExpansionException) -> MapFnError {
     MapFnError::CommandLineExpansion(CommandLineExpansionException::new(e.message))
@@ -91,10 +120,20 @@ pub struct CppCompileAction {
     action_name: String,
     feature_configuration: Arc<FeatureConfiguration>,
     built_in_include_directories: Vec<PathFragment>,
+    /// Set when the action prepares for execution. Used to preserve state between preparation
+    /// and execution.
+    additional_inputs: Mutex<Option<NestedSet<Artifact>>>,
+    // PORT: `usedModules` is set only by the include-scanning path of `discoverInputs`, which is
+    // `unported!`; without include scanning it is always null.
+    used_cpp20_modules: Mutex<Option<Vec<Artifact>>>,
+    inputs_discovered: AtomicBool,
+    /// This field is set only for C++ module compiles (compiling .cppmap files into .pcm files).
+    /// It stores the modules necessary for building this module as they will later also be
+    /// required for building users of this module.
+    discovered_modules: Mutex<Option<NestedSet<Artifact>>>,
     /// Used modules that are not transitively used through other topLevelModules.
-    top_level_modules: Option<NestedSet<Artifact>>,
-    /// Set only for C++ module compiles (see Java).
-    discovered_modules: Option<NestedSet<Artifact>>,
+    top_level_modules: Mutex<Option<NestedSet<Artifact>>>,
+    param_file_action_input: Mutex<Option<ParamFileActionInput>>,
     param_file_path: Option<PathFragment>,
     module_files: Option<NestedSet<Artifact>>,
     modmap_input_file: Option<Artifact>,
@@ -257,8 +296,12 @@ impl CppCompileAction {
             action_name,
             feature_configuration,
             built_in_include_directories,
-            top_level_modules: None,
-            discovered_modules: None,
+            additional_inputs: Mutex::new(None),
+            used_cpp20_modules: Mutex::new(None),
+            inputs_discovered: AtomicBool::new(false),
+            discovered_modules: Mutex::new(None),
+            top_level_modules: Mutex::new(None),
+            param_file_action_input: Mutex::new(None),
             param_file_path,
             module_files,
             modmap_input_file,
@@ -285,7 +328,7 @@ impl CppCompileAction {
         let top_level_modules = self
             .cc_compilation_context
             .get_direct_modules(self.use_pic, separate);
-        self.top_level_modules = Some(top_level_modules.clone());
+        *self.top_level_modules.get_mut() = Some(top_level_modules.clone());
         if cpp_file_types::CPP_MODULE.matches_artifact(&primary_output)
             && !is_cpp20_module_compilation_action(&self.action_name)
         {
@@ -294,7 +337,7 @@ impl CppCompileAction {
                     .get_transitive_modules(self.use_pic),
             );
             b.add_transitive(&top_level_modules);
-            self.discovered_modules = Some(b.build());
+            *self.discovered_modules.get_mut() = Some(b.build());
         }
     }
 
@@ -338,6 +381,7 @@ impl CppCompileAction {
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:807 CppCompileAction.getDiscoveredModules
     pub fn get_discovered_modules(&self) -> NestedSet<Artifact> {
         self.discovered_modules
+            .lock()
             .clone()
             .unwrap_or_else(|| NestedSetBuilder::empty_set(Order::STABLE_ORDER))
     }
@@ -351,11 +395,6 @@ impl CppCompileAction {
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:817 CppCompileAction.getCcCompilationContext
     pub fn get_cc_compilation_context(&self) -> &CcCompilationContext {
         &self.cc_compilation_context
-    }
-
-    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1305 CppCompileAction.getAllowedDerivedInputs
-    pub fn get_allowed_derived_inputs(&self) -> &NestedSet<Artifact> {
-        &self.allowed_derived_inputs
     }
 
     /// Returns explicitly listed header files.
@@ -426,8 +465,8 @@ impl CppCompileAction {
             //    in the constructor.
             // 3. After the action is loaded from the local action cache, leaving topLevelModules
             //    null in the case of include scanning.
-            match &self.top_level_modules {
-                Some(modules) => Self::calculate_module_variable(modules),
+            match self.get_top_level_modules() {
+                Some(modules) => Self::calculate_module_variable(&modules),
                 None => Self::calculate_module_variable(&self.get_inputs()),
             }
         } else {
@@ -677,9 +716,39 @@ impl Action for CppCompileAction {
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:547 CppCompileAction.inputsDiscovered
-    // PORT: input discovery runs at execution; at analysis inputs are never discovered.
     fn inputs_discovered(&self) -> bool {
-        false
+        self.inputs_discovered.load(Ordering::SeqCst)
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:552 CppCompileAction.setInputsDiscovered
+    fn set_inputs_discovered(&self, inputs_discovered: bool) {
+        self.inputs_discovered
+            .store(inputs_discovered, Ordering::SeqCst);
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1305 CppCompileAction.getAllowedDerivedInputs
+    fn get_allowed_derived_inputs(&self) -> NestedSet<Artifact> {
+        self.allowed_derived_inputs.clone()
+    }
+
+    /// If this is compiling a module, restores the value of `discoveredModules`, which is used
+    /// to create the `ActionExecutionValue` after an action cache hit.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1317 CppCompileAction.updateInputs
+    fn update_inputs(&self, inputs: NestedSet<Artifact>) {
+        // super.updateInputs(inputs)
+        self.abstract_update_inputs(inputs.clone());
+        if cpp_file_types::CPP_MODULE.matches_artifact(&self.get_primary_output())
+            && !is_cpp20_module_compilation_action(&self.action_name)
+        {
+            *self.discovered_modules.lock() = Some(NestedSetBuilder::wrap(
+                Order::STABLE_ORDER,
+                inputs
+                    .to_list()
+                    .iter()
+                    .filter(|input| cpp_file_types::CPP_MODULE.matches_artifact(input))
+                    .cloned(),
+            ));
+        }
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:764 CppCompileAction.getOriginalInputs
@@ -831,6 +900,1175 @@ impl CommandAction for CppCompileAction {
         self.compile_command_line
             .get_arguments(self.param_file_path.as_ref(), Some(&*overwritten), &CC_NOOP)
             .map_err(cc_error)
+    }
+}
+
+// -------------------------------------------------------------------------------------------
+// Execution
+
+/// `createFailureDetail(message, detailedCode)` (`createDetailedExitCode` wraps it in
+/// `DetailedExitCode.of`, which the execution layer derives from the detail).
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:2104 CppCompileAction.createDetailedExitCode
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:2108 CppCompileAction.createFailureDetail
+fn create_failure_detail(
+    message: &str,
+    detailed_code: failure_details::cpp_compile::Code,
+) -> FailureDetail {
+    FailureDetail {
+        message: message.to_owned(),
+        category: Some(Category::CppCompile(failure_details::CppCompile {
+            code: detailed_code as i32,
+        })),
+    }
+}
+
+// Java: com/google/devtools/build/lib/vfs/FileSystemUtils.java:919 FileSystemUtils.startsWithAny
+fn starts_with_any(path: &PathFragment, prefixes: &[PathFragment]) -> bool {
+    prefixes.iter().any(|prefix| path.starts_with(prefix))
+}
+
+/// Java `String.trim()`: removes leading and trailing characters `<= ' '`.
+fn java_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| c <= ' ')
+}
+
+/// `MSVC_CHARS`: `[mM] [sS] [vV] [cC]`.
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:910 CppCompileAction.MSVC_CHARS
+const MSVC_CHARS: [&[u8]; 4] = [b"mM", b"sS", b"vV", b"cC"];
+/// `INCLUDE_PREFIX_CHARS`: `[-/] [iI]`.
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:916 CppCompileAction.INCLUDE_PREFIX_CHARS
+const INCLUDE_PREFIX_CHARS: [&[u8]; 2] = [b"-/", b"iI"];
+
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:919 CppCompileAction.substrMatchesChars
+fn substr_matches_chars(s: &[u8], start_pos: usize, substr: &[&[u8]]) -> bool {
+    for (i, chars) in substr.iter().enumerate() {
+        if !chars.contains(&s[start_pos + i]) {
+            return false;
+        }
+    }
+    true
+}
+
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:929 CppCompileAction.matchesCaseInsensitiveMsvc
+fn matches_case_insensitive_msvc(s: &str) -> bool {
+    // PORT: StringEncoding identity; the matched characters are ASCII, so bytes compare as Java's
+    // Latin-1 chars do.
+    s.len() >= 4 && substr_matches_chars(s.as_bytes(), 0, &MSVC_CHARS)
+}
+
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:933 CppCompileAction.matchesIncludeCaseInsensitiveMsvc
+fn matches_include_case_insensitive_msvc(s: &str) -> bool {
+    s.len() >= 6
+        && substr_matches_chars(s.as_bytes(), 0, &INCLUDE_PREFIX_CHARS)
+        && substr_matches_chars(s.as_bytes(), 2, &MSVC_CHARS)
+}
+
+/// The `-I` part of `getIncludeDirs()`: the include directories given in `copts`.
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:843 CppCompileAction.getIncludeDirs
+fn include_dirs_from_copts(copts: &[String], result: &mut Vec<PathFragment>) {
+    for opt in copts {
+        if opt.starts_with("-I") || opt.starts_with("/I") {
+            // We insist on the combined form "-Idir".
+            let include_dir = &opt[2..];
+            if include_dir.is_empty() {
+                continue;
+            }
+            if matches_case_insensitive_msvc(include_dir) {
+                // This is actually a "-imsvc", a system include dir.
+                continue;
+            }
+            result.push(PathFragment::create(&opt[2..]));
+        }
+    }
+}
+
+/// `getSystemIncludeDirs(compilerOptions)`; `pretty_print` is the action's `prettyPrint()` for
+/// the dangling-flag warning.
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:873 CppCompileAction.getSystemIncludeDirs
+fn system_include_dirs_from_options(
+    compiler_options: &[String],
+    pretty_print: &dyn Fn() -> String,
+) -> Vec<PathFragment> {
+    // TODO(bazel-team): parsing the command line flags here couples us to gcc- and
+    // clang-cl-style compiler command lines; use a different way to specify system includes (for
+    // example through a system_includes attribute in cc_toolchain); note that that would disallow
+    // users from specifying system include paths via the copts attribute.
+    // Currently, this works together with the include_paths features because getCommandLine()
+    // will get the system include paths from the {@code CcCompilationContext} instead.
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < compiler_options.len() {
+        let opt = &compiler_options[i];
+        let system_include_flag: Option<&str> = if opt.starts_with("-isystem") {
+            Some("-isystem")
+        } else if matches_include_case_insensitive_msvc(opt) {
+            Some(&opt[0..6])
+        } else {
+            None
+        };
+        let Some(system_include_flag) = system_include_flag else {
+            i += 1;
+            continue;
+        };
+
+        if opt.len() > system_include_flag.len() {
+            result.push(PathFragment::create(java_trim(
+                &opt[system_include_flag.len()..],
+            )));
+        } else if i + 1 < compiler_options.len() {
+            i += 1;
+            result.push(PathFragment::create(&compiler_options[i]));
+        } else {
+            eprintln!(
+                "WARNING: dangling {} flag in options for {}",
+                system_include_flag,
+                pretty_print()
+            );
+        }
+        i += 1;
+    }
+    result
+}
+
+/// `(os, inputsSize) -> estimateResourceConsumptionLocal(enabled, mnemonic, os, inputsSize)`, the
+/// spawn's local resources.
+#[derive(Debug)]
+struct CppCompileLocalResources {
+    enabled: bool,
+    mnemonic: String,
+}
+
+impl ResourceSetOrBuilder for CppCompileLocalResources {
+    fn build_resource_set(&self, inputs_size: i32) -> ResourceSet {
+        // PORT: the OS argument is the host OS; Blaze runs on Linux only.
+        estimate_resource_consumption_local(
+            self.enabled,
+            Some(self.mnemonic.as_str()),
+            cc::OS::LINUX,
+            inputs_size,
+        )
+    }
+}
+
+/// `AbstractAction.DEFAULT_RESOURCE_SET`.
+// Java: com/google/devtools/build/lib/actions/AbstractAction.java:78 AbstractAction.DEFAULT_RESOURCE_SET
+fn default_resource_set() -> ResourceSet {
+    ResourceSet::create_with_ram_cpu(
+        blaze_actions::actions::action::DEFAULT_RESOURCE_SET_MEMORY_MB,
+        blaze_actions::actions::action::DEFAULT_RESOURCE_SET_CPU,
+    )
+}
+
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1351 CppCompileAction.estimateResourceConsumptionLocal
+fn estimate_resource_consumption_local(
+    enabled: bool,
+    mnemonic: Option<&str>,
+    os: cc::OS,
+    inputs: i32,
+) -> ResourceSet {
+    if !enabled {
+        return default_resource_set();
+    }
+
+    let Some(mnemonic) = mnemonic else {
+        return default_resource_set();
+    };
+
+    match mnemonic {
+        CPP_COMPILE_MNEMONIC => match os {
+            cc::OS::DARWIN | cc::OS::LINUX => ResourceSet::create_with_ram_cpu(
+                /* memoryMb= */ 80.0 + 0.7 * f64::from(inputs),
+                /* cpu= */ 1.0,
+            ),
+            _ => default_resource_set(),
+        },
+        OBJC_COMPILE_MNEMONIC => match os {
+            cc::OS::DARWIN => ResourceSet::create_with_ram_cpu(
+                /* memoryMb= */ 80.0 + 0.2 * f64::from(inputs),
+                /* cpu= */ 1.0,
+            ),
+            _ => default_resource_set(),
+        },
+        _ => default_resource_set(),
+    }
+}
+
+/// `ImmutableMap.Builder.put` followed by `buildOrThrow()`: a duplicate key throws.
+fn put_or_throw(map: &mut IndexMap<String, String>, key: &str, value: String) {
+    if let Some(existing) = map.get(key) {
+        panic!(
+            "IllegalArgumentException: Multiple entries with same key: {key}={value} and \
+             {key}={existing}"
+        );
+    }
+    map.insert(key.to_owned(), value);
+}
+
+/// `FileSystemUtils.readLinesAsLatin1(path)`: the lines of the file, split at `\n`, `\r` and
+/// `\r\n` (Guava `CharSource.readLines`).
+// Java: com/google/devtools/build/lib/vfs/FileSystemUtils.java:794 FileSystemUtils.readLinesAsLatin1
+fn read_lines_as_latin1(path: &Path) -> std::io::Result<Vec<String>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    path.get_input_stream()?.read_to_end(&mut bytes)?;
+    // PORT: StringEncoding identity: Latin-1 decoding keeps the raw bytes, which is Rust's
+    // natural (UTF-8) form of a path string.
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars().peekable();
+    let mut pending = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\n' => {
+                lines.push(std::mem::take(&mut current));
+                pending = false;
+            }
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                lines.push(std::mem::take(&mut current));
+                pending = false;
+            }
+            c => {
+                current.push(c);
+                pending = true;
+            }
+        }
+    }
+    if pending {
+        lines.push(current);
+    }
+    Ok(lines)
+}
+
+/// Maps the `blaze_cc_features` artifact handles that `HeaderDiscovery` works on back to the
+/// real artifacts.
+///
+/// PORT: Java has one `Artifact` class; `blaze_cc_features::actions::Artifact` offers no
+/// downcast, so each wrapped artifact is remembered here.
+#[derive(Default)]
+struct CcArtifactTable(Mutex<HashMap<cc::ArtifactRef, Artifact>>);
+
+impl CcArtifactTable {
+    fn wrap(&self, artifact: &Artifact) -> cc::ArtifactRef {
+        let r = cc::ArtifactRef(Arc::new(CcArtifact::new(artifact.clone())));
+        self.0
+            .lock()
+            .entry(r.clone())
+            .or_insert_with(|| artifact.clone());
+        r
+    }
+
+    fn wrap_set(&self, set: &NestedSet<Artifact>) -> NestedSet<cc::ArtifactRef> {
+        NestedSetBuilder::wrap(
+            Order::STABLE_ORDER,
+            set.to_list()
+                .iter()
+                .map(|a| self.wrap(a))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn unwrap(&self, r: &cc::ArtifactRef) -> Artifact {
+        match self.0.lock().get(r) {
+            Some(a) => a.clone(),
+            None => panic!(
+                "IllegalStateException: header discovery returned an unknown artifact {}",
+                r.get_exec_path_string()
+            ),
+        }
+    }
+}
+
+/// The compile action as `HeaderDiscovery` reads it.
+struct CppDiscoveringAction<'a> {
+    action: &'a CppCompileAction,
+    table: &'a CcArtifactTable,
+}
+
+impl DiscoveringAction for CppDiscoveringAction<'_> {
+    fn get_owner_label(&self) -> String {
+        self.action.owner_label_string()
+    }
+
+    fn get_owner_repository_name(&self) -> String {
+        match self.action.get_owner().get_label() {
+            Some(label) => label.get_repository().get_name().to_owned(),
+            None => panic!("NullPointerException: action.getOwner().getLabel()"),
+        }
+    }
+
+    // PORT: skipped, Windows only. Java computes `getOsFromConstraintsOrHost(
+    // action.getExecutionPlatform())`, which HeaderDiscovery only compares with WINDOWS (for
+    // case-insensitive file systems); Blaze executes on Linux only, and `blaze_actions`'
+    // `PlatformInfo` does not expose the platform's constraints.
+    fn get_execution_os(&self) -> cc::OS {
+        cc::OS::LINUX
+    }
+
+    fn get_inputs(&self) -> NestedSet<cc::ArtifactRef> {
+        self.table.wrap_set(&self.action.get_inputs())
+    }
+}
+
+/// The `ArtifactFactory` as the `blaze_cc_features` `ArtifactResolver`.
+struct CcArtifactResolver<'a> {
+    factory: &'a ArtifactFactory,
+    table: &'a CcArtifactTable,
+}
+
+impl cc::ArtifactResolver for CcArtifactResolver<'_> {
+    // Java: com/google/devtools/build/lib/actions/ArtifactFactory.java:570 ArtifactFactory.resolveSourceArtifact
+    fn resolve_source_artifact(
+        &self,
+        exec_path: &PathFragment,
+        repository_name: &blaze_cmdline::RepositoryName,
+    ) -> Option<cc::ArtifactRef> {
+        self.factory
+            .resolve_source_artifact(exec_path, repository_name)
+            .map(|a| self.table.wrap(&a))
+    }
+
+    // Java: com/google/devtools/build/lib/actions/ArtifactFactory.java:576 ArtifactFactory.resolveSourceArtifactsAsciiCaseInsensitively
+    fn resolve_source_artifacts_ascii_case_insensitively(
+        &self,
+        exec_path: &PathFragment,
+        repository_name: &blaze_cmdline::RepositoryName,
+    ) -> Vec<cc::ArtifactRef> {
+        self.factory
+            .resolve_source_artifacts_ascii_case_insensitively(exec_path, repository_name)
+            .iter()
+            .map(|a| self.table.wrap(a))
+            .collect()
+    }
+
+    // Java: com/google/devtools/build/lib/actions/ArtifactFactory.java:722 ArtifactFactory.isDerivedArtifact
+    fn is_derived_artifact(&self, exec_path: &PathFragment) -> bool {
+        self.factory.is_derived_artifact(exec_path)
+    }
+}
+
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1117 CppCompileAction.validateInclude
+#[allow(clippy::mutable_key_type)]
+fn validate_include(
+    allowed_includes: &HashSet<Artifact>,
+    ignore_dirs: &[PathFragment],
+    include: &Artifact,
+) -> bool {
+    // Only declared modules are added to an action and so they are always valid.
+    cpp_file_types::CPP_MODULE.matches_artifact(include)
+        ||
+        // TODO(b/145253507): Exclude objc module maps from check, due to bad interaction with
+        // local_objc_modules feature.
+        cpp_file_types::OBJC_MODULE_MAP.matches_artifact(include)
+        ||
+        // It's a declared include/
+        allowed_includes.contains(include)
+        ||
+        // Ignore headers from built-in include directories.
+        starts_with_any(include.get_exec_path(), ignore_dirs)
+}
+
+// The execution layer's `ActionExecutionException` carries the Java exception's fields (large).
+#[allow(clippy::result_large_err)]
+impl CppCompileAction {
+    /// `getOwner().getLabel()` as Java's `String.valueOf`.
+    fn owner_label_string(&self) -> String {
+        self.get_owner()
+            .get_label()
+            .map_or_else(|| "null".to_owned(), |l| l.to_string())
+    }
+
+    /// The `ActionExecutionException` thrown for a `CommandLineExpansionException` while building
+    /// the compile command line.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:676 CppCompileAction.discoverInputs
+    fn command_generation_failure(&self, cause_message: &str) -> ActionExecutionException {
+        let message = format!(
+            "failed to generate compile command for rule '{}: {}",
+            self.owner_label_string(),
+            cause_message
+        );
+        let code = create_failure_detail(
+            &message,
+            failure_details::cpp_compile::Code::CommandGenerationFailure,
+        );
+        ActionExecutionException::new(
+            message,
+            Some(self),
+            /* catastrophe= */ false,
+            Some(code),
+        )
+    }
+
+    /// A `blaze_cc_features` include-check exception as the execution layer's
+    /// `ActionExecutionException` (`new ActionExecutionException(message, action, catastrophe,
+    /// createDetailedExitCode(message, code))`).
+    // Java: com/google/devtools/build/lib/rules/cpp/IncludeProblems.java:43 IncludeProblems.assertProblemFree
+    fn from_cc_exception(&self, e: cc::ActionExecutionException) -> ActionExecutionException {
+        let code = match e.code {
+            cc::CppCompileCode::UNDECLARED_INCLUSIONS => {
+                failure_details::cpp_compile::Code::UndeclaredInclusions
+            }
+            cc::CppCompileCode::COMMAND_GENERATION_FAILURE => {
+                failure_details::cpp_compile::Code::CommandGenerationFailure
+            }
+        };
+        let detail = create_failure_detail(&e.message, code);
+        ActionExecutionException::new(e.message, Some(self), e.catastrophe, Some(detail))
+    }
+
+    /// Returns the list of additional inputs found by dependency discovery, during action
+    /// preparation. `discover_inputs` must be called before this method is called on each action
+    /// execution.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:529 CppCompileAction.getAdditionalInputs
+    pub fn get_additional_inputs(&self) -> NestedSet<Artifact> {
+        self.additional_inputs
+            .lock()
+            .clone()
+            .unwrap_or_else(|| panic!("NullPointerException: additionalInputs"))
+    }
+
+    /// Clears the discovered `additionalInputs`.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:534 CppCompileAction.clearAdditionalInputs
+    fn clear_additional_inputs(&self) {
+        *self.additional_inputs.lock() = None;
+    }
+
+    /// Make sure to clear the additional inputs potentially left over from an old build (in case
+    /// we ran discoverInputs, but not beginExecution).
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:651 CppCompileAction.prepareInputDiscovery
+    pub fn prepare_input_discovery(&self) {
+        self.clear_additional_inputs();
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:569 CppCompileAction.getTopLevelModules
+    fn get_top_level_modules(&self) -> Option<NestedSet<Artifact>> {
+        self.top_level_modules.lock().clone()
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:484 CppCompileAction.enabledCppCompileResourcesEstimation
+    fn enabled_cpp_compile_resources_estimation(&self) -> bool {
+        self.cpp_configuration()
+            .get_experimental_cpp_compile_resources_estimation()
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:822 CppCompileAction.getQuoteIncludeDirs
+    pub fn get_quote_include_dirs(&self) -> Vec<PathFragment> {
+        let mut result = self.cc_compilation_context.get_quote_include_dirs();
+        let copts = self.compile_command_line.get_copts(&CC_NOOP);
+        let mut i = 0;
+        while i < copts.len() {
+            let opt = &copts[i];
+            if opt.starts_with("-iquote") {
+                if opt.len() > 7 {
+                    result.push(PathFragment::create(java_trim(&opt[7..])));
+                } else if i + 1 < copts.len() {
+                    i += 1;
+                    result.push(PathFragment::create(&copts[i]));
+                } else {
+                    eprintln!(
+                        "WARNING: dangling -iquote flag in options for {}",
+                        self.pretty_print()
+                    );
+                }
+            }
+            i += 1;
+        }
+        result
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:843 CppCompileAction.getIncludeDirs
+    pub fn get_include_dirs(&self) -> Vec<PathFragment> {
+        let mut result = self.cc_compilation_context.get_include_dirs();
+        include_dirs_from_copts(&self.compile_command_line.get_copts(&CC_NOOP), &mut result);
+        result
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:864 CppCompileAction.getFrameworkIncludeDirs
+    pub fn get_framework_include_dirs(&self) -> Vec<PathFragment> {
+        self.cc_compilation_context.get_framework_include_dirs()
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:869 CppCompileAction.getSystemIncludeDirs
+    pub fn get_system_include_dirs(&self) -> Result<Vec<PathFragment>, CommandLineError> {
+        Ok(self.get_system_include_dirs_from(&self.get_compiler_options()?))
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:873 CppCompileAction.getSystemIncludeDirs
+    fn get_system_include_dirs_from(&self, compiler_options: &[String]) -> Vec<PathFragment> {
+        system_include_dirs_from_options(compiler_options, &|| self.pretty_print())
+    }
+
+    /// `getArguments(pathMapper)`.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1032 CppCompileAction.getArguments
+    fn get_arguments_with(
+        &self,
+        path_mapper: &dyn cc::PathMapper,
+    ) -> Result<Vec<String>, cc::CommandLineExpansionException> {
+        let overwritten = self.get_overwritten_variables();
+        self.compile_command_line.get_arguments(
+            self.param_file_path.as_ref(),
+            Some(&*overwritten),
+            path_mapper,
+        )
+    }
+
+    /// Enforce that the includes actually visited during the compile were properly declared in
+    /// the rules.
+    ///
+    /// The technique is to walk through all of the reported includes that gcc emits into the .d
+    /// file, and verify that they came from acceptable relative include directories.
+    ///
+    /// Fails iff there was an undeclared dependency.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1152 CppCompileAction.validateInclusions
+    // PORT: Java's unused `actionExecutionContext` parameter is dropped.
+    #[allow(clippy::mutable_key_type)]
+    pub fn validate_inclusions(
+        &self,
+        inputs_for_validation: &NestedSet<Artifact>,
+    ) -> Result<(), ActionExecutionException> {
+        if !self.needs_include_validation {
+            return Ok(());
+        }
+        let mut errors = IncludeProblems::new();
+        let mut allowed_includes: HashSet<Artifact> = HashSet::new();
+        allowed_includes.extend(self.mandatory_inputs.to_list().iter().cloned());
+        allowed_includes.extend(
+            self.cc_compilation_context
+                .get_declared_include_srcs()
+                .to_list()
+                .iter()
+                .cloned(),
+        );
+        allowed_includes.extend(self.additional_prunable_headers.to_list().iter().cloned());
+
+        let ignore_dirs = if self.cpp_configuration().is_strict_system_includes() {
+            self.get_built_in_include_directories().to_vec()
+        } else {
+            self.get_validation_ignored_dirs()
+        };
+
+        // Copy the nested sets to hash sets for fast contains checking, but do so lazily.
+        // Avoid immutable sets here to limit memory churn.
+        for input in inputs_for_validation.to_list().iter() {
+            if !validate_include(&allowed_includes, &ignore_dirs, input) {
+                errors.add(input.get_exec_path().get_path_string());
+            }
+        }
+        errors
+            .assert_problem_free(&format!(
+                "undeclared inclusion(s) in rule '{}':\nthis rule is missing dependency \
+                 declarations for the following files included by '{}':",
+                self.owner_label_string(),
+                self.get_source_file().pretty_print()
+            ))
+            .map_err(|e| self.from_cc_exception(e))
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1187 CppCompileAction.getValidationIgnoredDirs
+    fn get_validation_ignored_dirs(&self) -> Vec<PathFragment> {
+        let mut dirs = self.get_built_in_include_directories().to_vec();
+        dirs.extend(self.cc_compilation_context.get_system_include_dirs());
+        dirs.extend(self.cc_compilation_context.get_external_include_dirs());
+        dirs
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1196 CppCompileAction.verifyActionIncludePaths
+    pub fn verify_action_include_paths(
+        &self,
+        system_include_dirs: &[PathFragment],
+        sibling_repository_layout: bool,
+    ) -> Result<(), ActionExecutionException> {
+        let ignored_dirs_list = self.get_validation_ignored_dirs();
+        let ignored_dirs: HashSet<&PathFragment> = ignored_dirs_list.iter().collect();
+        // We currently do not check the output of:
+        // - getBuiltinIncludeDirs(): while in practice this doesn't happen, bazel can be
+        //   configured to use an absolute system root, in which case the builtin include dirs
+        //   might be absolute.
+
+        let include_paths_to_verify = self
+            .get_include_dirs()
+            .into_iter()
+            .chain(self.get_quote_include_dirs())
+            .chain(system_include_dirs.iter().cloned());
+        for mut include_path in include_paths_to_verify {
+            // includePathsToVerify contains all paths that are added as -isystem directive on the
+            // command line, most of which are added for include directives in the
+            // CcCompilationContext and are thus also in ignoredDirs. The hash lookup prevents
+            // this from becoming O(N^2) for these.
+            if ignored_dirs.contains(&include_path)
+                || starts_with_any(&include_path, &ignored_dirs_list)
+            {
+                continue;
+            }
+
+            // Two conditions:
+            // 1. Paths cannot be absolute (e.g. multiple uplevels to /etc/passwd)
+            // 2. For relative paths, one starting ../ is okay for getting to a sibling
+            //    repository.
+            let prefix: &PathFragment = if sibling_repository_layout {
+                &*EXPERIMENTAL_EXTERNAL_PATH_PREFIX
+            } else {
+                &*EXTERNAL_PATH_PREFIX
+            };
+            if include_path.starts_with(prefix) {
+                include_path = include_path.relative_to(prefix);
+            }
+            if include_path.is_absolute() || include_path.contains_uplevel_references() {
+                let message = format!(
+                    "The include path '{}' references a path outside of the execution root.",
+                    include_path.get_path_string()
+                );
+                let code = create_failure_detail(
+                    &message,
+                    failure_details::cpp_compile::Code::IncludePathOutsideExecRoot,
+                );
+                return Err(ActionExecutionException::new(
+                    message,
+                    Some(self),
+                    /* catastrophe= */ false,
+                    Some(code),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// `super.updateInputs(inputs)`: `AbstractAction.updateInputs`.
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:215 AbstractAction.updateInputs
+    fn abstract_update_inputs(&self, inputs: NestedSet<Artifact>) {
+        check_state!(
+            self.discovers_inputs(),
+            "Not an input-discovering action: {}",
+            self.to_string_java()
+        );
+        self.abstract_action().set_inputs(inputs);
+        self.set_inputs_discovered(true);
+    }
+
+    /// Recalculates this action's live input collection.
+    ///
+    /// Can only be called if `discoversInputs`, and must be called after execution in that case.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1245 CppCompileAction.updateActionInputs
+    pub fn update_action_inputs(&self, discovered_inputs: Option<NestedSet<Artifact>>) {
+        check_state!(
+            self.discovers_inputs(),
+            "Can't call if not discovering inputs: {} {}",
+            discovered_inputs
+                .as_ref()
+                .map_or_else(|| "null".to_owned(), |s| s.to_string()),
+            self.to_string_java()
+        );
+        // PORT: skipped, profiling (ACTION_UPDATE).
+        let mut inputs_builder = NestedSetBuilder::<Artifact>::stable_order();
+        inputs_builder.add_transitive(&self.mandatory_inputs);
+        if let Some(discovered_inputs) = &discovered_inputs {
+            inputs_builder.add_transitive(discovered_inputs);
+        }
+        self.abstract_update_inputs(inputs_builder.build());
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1659 CppCompileAction.getDotDContents
+    fn get_dot_d_contents(&self, spawn_result: &SpawnResult) -> Option<Vec<u8>> {
+        if let Some(dotd_file) = self.get_dotd_file()
+            && let Some(content) = spawn_result.get_in_memory_output(&artifact_input(dotd_file))
+        {
+            return Some(content.to_vec());
+        }
+        None
+    }
+
+    /// Dynamically compute the dependencies of a compilation using C++20 modules.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1674 CppCompileAction.computeUsedCpp20Modules
+    fn compute_used_cpp20_modules(
+        &self,
+        action_execution_context: &dyn ActionExecutionContext,
+    ) -> Result<Vec<Artifact>, ActionExecutionException> {
+        if !self
+            .feature_configuration
+            .is_enabled(cpp_rule_classes::CPP_MODULES)
+        {
+            return Ok(Vec::new());
+        }
+        // Module dependency scanning only needs source and header files.
+        if self.action_name == CppActionNames::CPP_MODULE_DEPS_SCANNING {
+            return Ok(Vec::new());
+        }
+        if !is_cpp20_module_compilation_action(&self.action_name)
+            && !cpp_file_types::CPP_SOURCE.matches_path(self.source_file.get_exec_path())
+        {
+            return Ok(Vec::new());
+        }
+        let modmap_input_file = self
+            .modmap_input_file
+            .as_ref()
+            .unwrap_or_else(|| panic!("NullPointerException: modmapInputFile"));
+        // Read the file paths as raw bytes, which matches Bazel's internal encoding of path
+        // strings (see StringEncoding).
+        let used_module_paths: HashSet<String> = match read_lines_as_latin1(&get_input_path(
+            action_execution_context,
+            modmap_input_file,
+        )) {
+            Ok(lines) => lines.into_iter().collect(),
+            Err(_) => {
+                let message = format!(
+                    "failed to read modmap input: {}",
+                    modmap_input_file.get_exec_path_string()
+                );
+                let code = create_failure_detail(
+                    &message,
+                    failure_details::cpp_compile::Code::ModmapInputFileReadFailure,
+                );
+                return Err(ActionExecutionException::new(
+                    message,
+                    Some(self),
+                    /* catastrophe= */ false,
+                    Some(code),
+                ));
+            }
+        };
+        // PORT: the blaze_actions PathMappers.create ignores the input metadata provider (it is
+        // only read for STRIP, which is unported there).
+        let path_mapper = path_mappers::create(self, self.output_paths_mode, false, None);
+        // All module files referenced in the modmap input file are expected to be known modules.
+        // We delegate error reporting to the compiler by silently skipping over unknown files.
+        let module_files = self
+            .module_files
+            .as_ref()
+            .unwrap_or_else(|| panic!("NullPointerException: moduleFiles"));
+        Ok(module_files
+            .to_list()
+            .iter()
+            .filter(|module_file| {
+                used_module_paths.contains(&path_mapper.get_mapped_exec_path_string(module_file))
+            })
+            .cloned()
+            .collect())
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1715 CppCompileAction.createSpawn
+    fn create_spawn(
+        &self,
+        exec_root: &Path,
+        client_env: &IndexMap<String, String>,
+        path_mapper: &dyn cc::PathMapper,
+    ) -> Result<SimpleSpawn, ActionExecutionException> {
+        // Intentionally not adding {@link CppCompileAction#inputsForInvalidation}, those are not
+        // needed for execution.
+        let mut inputs_builder = NestedSetBuilder::<ActionInputRef>::stable_order();
+        inputs_builder.add_transitive(&to_action_input_set(&self.mandatory_spawn_inputs));
+
+        if self.discovers_inputs() {
+            inputs_builder.add_transitive(&to_action_input_set(&self.get_additional_inputs()));
+        }
+        if let Some(param_file_action_input) = self.param_file_action_input.lock().clone() {
+            inputs_builder.add(ActionInputRef::new(param_file_action_input));
+        }
+        let inputs = inputs_builder.build();
+
+        let mut execution_info = self.get_execution_info();
+        if let Some(dotd_file) = self.get_dotd_file()
+            && self.use_in_memory_dotd_files()
+        {
+            // CppCompileAction does dotd file scanning locally inside the Bazel process and thus
+            // requires the dotd file contents to be available locally. In remote execution, we
+            // generally don't want to stage all remote outputs on the local file system and thus
+            // we need to tell the remote strategy (if any) to at least make the .d file available
+            // in-memory. We can do that via ExecutionRequirements.REMOTE_EXECUTION_INLINE_OUTPUTS.
+            put_or_throw(
+                &mut execution_info,
+                REMOTE_EXECUTION_INLINE_OUTPUTS,
+                dotd_file.get_exec_path_string().to_owned(),
+            );
+        }
+
+        if self.should_parse_show_includes() {
+            // Hack on Windows. The included headers dumped by cl.exe in stdout contain absolute
+            // paths. When compiling the file from different workspace, the shared cache will
+            // cause header dependency checking to fail. This was initially fixed by a hack (see
+            // https://github.com/bazelbuild/bazel/issues/9172 for more details), but is broken
+            // again due to cl/356735700. We require execution service to ignore caches from
+            // other workspace.
+            put_or_throw(
+                &mut execution_info,
+                DIFFERENTIATE_WORKSPACE_CACHE,
+                exec_root.get_base_name().to_owned(),
+            );
+        }
+
+        let outputs = self.get_outputs();
+        let mandatory_outputs: Option<HashSet<ActionInputRef>> = match &self.gcno_file {
+            // All outputs must be created.
+            None => None,
+            // In coverage mode, the .gcno file is not produced for an empty translation unit, but
+            // the spawn should still succeed.
+            Some(gcno_file) => Some(
+                outputs
+                    .iter()
+                    .filter(|output| *output != gcno_file)
+                    .map(artifact_input)
+                    .collect(),
+            ),
+        };
+
+        let arguments = self
+            .get_arguments_with(path_mapper)
+            .map_err(|e| self.command_generation_failure(&e.message))?;
+        // PORT: the trait's getEffectiveEnvironment uses PathMapper.NOOP; path mapping is OFF
+        // (PathMappers.create returns NOOP for every supported mode).
+        let environment = self
+            .get_effective_environment(client_env)
+            .map_err(|e| self.command_generation_failure(&e.message))?;
+        Ok(SimpleSpawn::new(
+            ActionMetadataSnapshot::of(self),
+            arguments,
+            environment,
+            execution_info,
+            inputs,
+            /* tools= */ NestedSetBuilder::empty_set(Order::STABLE_ORDER),
+            outputs.iter().map(artifact_input).collect(),
+            mandatory_outputs,
+            Arc::new(CppCompileLocalResources {
+                enabled: self.enabled_cpp_compile_resources_estimation(),
+                mnemonic: self.get_mnemonic(),
+            }),
+            SpawnPathMapper::NOOP,
+        ))
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1839 CppCompileAction.discoverInputsFromDotdFiles
+    pub fn discover_inputs_from_dotd_files(
+        &self,
+        action_execution_context: &dyn ActionExecutionContext,
+        exec_root: &Path,
+        artifact_resolver: &ArtifactFactory,
+        dot_d_contents: Option<Vec<u8>>,
+        sibling_repository_layout: bool,
+        path_mapper: &dyn cc::PathMapper,
+    ) -> Result<NestedSet<Artifact>, ActionExecutionException> {
+        if self.get_dotd_file().is_none() {
+            panic!("NullPointerException: Trying to scan .d file which is unset");
+        }
+        let dep_set = self.process_depset(action_execution_context, exec_root, dot_d_contents)?;
+        let table = CcArtifactTable::default();
+        let discovered = header_discovery::discover_inputs_from_dependencies(
+            &CppDiscoveringAction {
+                action: self,
+                table: &table,
+            },
+            &table.wrap(self.get_source_file()),
+            self.needs_include_validation,
+            dep_set.get_dependencies(),
+            &self.get_permitted_system_include_prefixes(exec_root),
+            &table.wrap_set(&self.get_allowed_derived_inputs()),
+            exec_root,
+            &CcArtifactResolver {
+                factory: artifact_resolver,
+                table: &table,
+            },
+            sibling_repository_layout,
+            path_mapper,
+        )
+        .map_err(|e| self.from_cc_exception(e))?;
+        Ok(NestedSetBuilder::wrap(
+            Order::STABLE_ORDER,
+            discovered
+                .to_list()
+                .iter()
+                .map(|r| table.unwrap(r))
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1861 CppCompileAction.processDepset
+    fn process_depset(
+        &self,
+        action_execution_context: &dyn ActionExecutionContext,
+        exec_root: &Path,
+        dot_d_contents: Option<Vec<u8>>,
+    ) -> Result<DependencySet, ActionExecutionException> {
+        let mut dep_set = DependencySet::new(exec_root.clone());
+        let result = match dot_d_contents {
+            Some(contents) if self.cpp_configuration().get_inmemory_dotd_files() => {
+                dep_set.process(contents).map(|_| ())
+            }
+            _ => {
+                let dotd_file = self
+                    .get_dotd_file()
+                    .unwrap_or_else(|| panic!("NullPointerException: dotdFile"));
+                dep_set
+                    .read(&get_input_path(action_execution_context, dotd_file))
+                    .map(|_| ())
+            }
+        };
+        match result {
+            Ok(()) => Ok(dep_set),
+            Err(e) => {
+                // Some kind of IO or parse exception--wrap & rethrow it to stop the build.
+                let message = format!("error while parsing .d file: {e}");
+                let code = create_failure_detail(
+                    &message,
+                    failure_details::cpp_compile::Code::DFileParseFailure,
+                );
+                Err(ActionExecutionException::with_cause(
+                    message,
+                    &e,
+                    Some(self),
+                    false,
+                    Some(code),
+                ))
+            }
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1878 CppCompileAction.getPermittedSystemIncludePrefixes
+    fn get_permitted_system_include_prefixes(&self, exec_root: &Path) -> Vec<Path> {
+        let mut system_include_prefixes = Vec::new();
+        for include_path in self.get_built_in_include_directories() {
+            if include_path.is_absolute() {
+                system_include_prefixes.push(Path::create(
+                    include_path.clone(),
+                    exec_root.get_file_system(),
+                ));
+            }
+        }
+        system_include_prefixes
+    }
+
+    /// Gcc only creates a ".gcno" file if the compilation unit is non-empty. To ensure that the
+    /// set of outputs for a CppCompileAction remains consistent and doesn't vary dynamically
+    /// depending on the _contents_ of the input files, we create an empty ".gcno" file if gcc
+    /// didn't create it.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1893 CppCompileAction.ensureCoverageNotesFileExists
+    fn ensure_coverage_notes_file_exists(
+        &self,
+        action_execution_context: &dyn ActionExecutionContext,
+    ) -> Result<(), ActionExecutionException> {
+        let Some(gcno_file) = &self.gcno_file else {
+            return Ok(());
+        };
+        if !cpp_file_types::COVERAGE_NOTES.matches_artifact(gcno_file) {
+            // PORT: BugReport.sendNonFatalBugReport is not ported; the non-fatal report is
+            // printed to stderr.
+            eprintln!(
+                "java.lang.IllegalStateException: In coverage mode but gcno artifact is not \
+                 correct type: {}, {}",
+                gcno_file,
+                self.to_string_java()
+            );
+            return Ok(());
+        }
+        let output_path = get_input_path(action_execution_context, gcno_file);
+        if output_path.exists() {
+            return Ok(());
+        }
+        if let Err(e) =
+            blaze_exec::analysis::actions::file_system_utils::create_empty_file(&output_path)
+        {
+            let message = format!(
+                "Error creating file '{}': {}",
+                output_path.get_path_string(),
+                e
+            );
+            let code = create_failure_detail(
+                &message,
+                failure_details::cpp_compile::Code::CoverageNotesCreationFailure,
+            );
+            return Err(ActionExecutionException::with_cause(
+                message,
+                &e,
+                Some(self),
+                false,
+                Some(code),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[allow(clippy::result_large_err)]
+impl ExecutableAction for CppCompileAction {
+    /// This method returns null when a required SkyValue is missing and a Skyframe restart is
+    /// required.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:663 CppCompileAction.discoverInputs
+    fn discover_inputs(
+        &self,
+        action_execution_context: &dyn ActionExecutionContext,
+    ) -> Result<Option<NestedSet<Artifact>>, ActionExecutionException> {
+        check_argument!(
+            !cpp_file_types::CPP_MODULE.matches_artifact(&self.source_file)
+                || is_cpp20_module_compilation_action(&self.action_name)
+        );
+
+        let additional_inputs_unset = self.additional_inputs.lock().is_none();
+        if additional_inputs_unset {
+            let options = match self
+                .compile_command_line
+                .get_compiler_options(None, &CC_NOOP)
+            {
+                Ok(options) => options,
+                Err(e) => return Err(self.command_generation_failure(&e.message)),
+            };
+            // commandLineKey = computeCommandLineKey(options);
+            // PORT: the key is kept in a OnceLock; Java recomputes the same value here.
+            let _ = self
+                .command_line_key
+                .get_or_init(|| compute_command_line_key(&options));
+            let system_include_dirs = self.get_system_include_dirs_from(&options);
+            let sibling_layout = experimental_sibling_repository_layout(action_execution_context);
+            if !self.should_scan_includes {
+                let used_cpp20_modules =
+                    self.compute_used_cpp20_modules(action_execution_context)?;
+                // When not actually doing include scanning, add all prunable headers to
+                // additionalInputs. This is necessary because the inputs that can be pruned by .d
+                // file parsing must be returned from discoverInputs() and they cannot be in
+                // mandatoryInputs. Thus, even with include scanning turned off, we pretend that we
+                // "discover" these headers.
+                let mut builder = NestedSetBuilder::from_nested_set(
+                    self.cc_compilation_context.get_declared_include_srcs(),
+                );
+                builder
+                    .add_transitive(&self.additional_prunable_headers)
+                    .add_all(used_cpp20_modules.iter().cloned());
+                let additional_inputs = builder.build();
+                *self.used_cpp20_modules.lock() = Some(used_cpp20_modules);
+                *self.additional_inputs.lock() = Some(additional_inputs.clone());
+                if self.needs_include_validation {
+                    self.verify_action_include_paths(&system_include_dirs, sibling_layout)?;
+                }
+                return Ok(Some(additional_inputs));
+            }
+            blaze_util::unported!(
+                "CppCompileAction.discoverInputs",
+                "include scanning (IncludeScanningHeaderData, CppIncludeScanningContext.findAdditionalInputs)"
+            );
+        }
+
+        // usedModules == null: there are two paths in which this can be reached:
+        // 1. This is not a modular compilation or one without include scanning. In either case,
+        //    we never compute used modules.
+        // 2. This function has completed on a previous execution, adding all used modules to
+        //    additionalInputs and resetting usedModules to null below.
+        // In either case, there is nothing more to do here.
+        // PORT: usedModules is only set by the include-scanning path (unported above).
+        Ok(self.additional_inputs.lock().clone())
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1484 CppCompileAction.execute
+    fn execute(
+        &self,
+        action_execution_context: &dyn ActionExecutionContext,
+    ) -> Result<ActionResult, ActionExecutionException> {
+        // PORT: the blaze_actions PathMappers.create ignores the input metadata provider (it is
+        // only read for STRIP, which is unported there).
+        let path_mapper_ref = path_mappers::create(self, self.output_paths_mode, false, None);
+        let path_mapper = CcPathMapper(&*path_mapper_ref);
+
+        if self
+            .feature_configuration
+            .is_enabled(cpp_rule_classes::COMPILER_PARAM_FILE)
+        {
+            let overwritten = self.get_overwritten_variables();
+            match self
+                .compile_command_line
+                .get_compiler_options(Some(&*overwritten), &path_mapper)
+            {
+                Ok(compiler_options) => {
+                    *self.param_file_action_input.lock() = Some(ParamFileActionInput::new(
+                        self.param_file_path
+                            .clone()
+                            .unwrap_or_else(|| panic!("NullPointerException: paramFilePath")),
+                        compiler_options,
+                        // TODO(b/132888308): Support MSVC, which has its own method of escaping
+                        // strings.
+                        ParameterFileType::GCC_QUOTED,
+                    ));
+                }
+                Err(e) => return Err(self.command_generation_failure(&e.message)),
+            }
+        }
+
+        if self.should_scan_includes {
+            let additional_inputs = self.additional_inputs.lock().clone();
+            self.update_action_inputs(additional_inputs);
+        }
+
+        if self.should_parse_show_includes() {
+            // PORT: /showIncludes parsing (ShowIncludesFilter over a child FileOutErr) is used
+            // with MSVC only.
+            blaze_util::unported!(
+                "CppCompileAction.execute",
+                "parse_showincludes (ShowIncludesFilter, FileOutErr.childOutErr)"
+            );
+        }
+
+        let spawn = self.create_spawn(
+            action_execution_context.get_exec_root(),
+            action_execution_context.get_client_env(),
+            &path_mapper,
+        );
+        // finally
+        self.clear_additional_inputs();
+        let spawn = spawn?;
+
+        let resolver = get_context::<SpawnStrategyResolver>(action_execution_context)
+            .unwrap_or_else(|| {
+                panic!(
+                    "NullPointerException: getContext(SpawnStrategyResolver.class) returned null"
+                )
+            });
+        let spawn_results = resolver
+            .exec(&spawn, action_execution_context)
+            .map_err(|e| ActionExecutionException::from_exec_exception(&e, None, self))?;
+        // SpawnActionContext guarantees that the first list entry exists and corresponds to the
+        // executed spawn.
+        let dot_d_contents = self.get_dot_d_contents(&spawn_results[0]);
+        // copyTempOutErrToActionOutErrMaybe: a no-op unless shouldParseShowIncludes().
+
+        self.ensure_coverage_notes_file_exists(action_execution_context)?;
+
+        let scanning_context = get_cpp_include_extraction_context(action_execution_context);
+        let exec_root = action_execution_context.get_exec_root();
+        let sibling_repository_layout =
+            experimental_sibling_repository_layout(action_execution_context);
+
+        if self.get_dotd_file().is_none() {
+            return Ok(ActionResult::create(spawn_results));
+        }
+
+        // Post-execute "include scanning", which modifies the action inputs to match what the
+        // compile action actually used by incorporating the results of .d file parsing.
+        let scanning_context = scanning_context.unwrap_or_else(|| {
+            panic!(
+                "NullPointerException: getContext(CppIncludeExtractionContext.class) returned null"
+            )
+        });
+        let mut discovered_inputs = self.discover_inputs_from_dotd_files(
+            action_execution_context,
+            exec_root,
+            scanning_context.get_artifact_resolver(),
+            dot_d_contents,
+            sibling_repository_layout,
+            &path_mapper,
+        )?;
+
+        let used_cpp20_modules = self.used_cpp20_modules.lock().clone();
+        if let Some(used_cpp20_modules) = used_cpp20_modules {
+            let mut builder = NestedSetBuilder::<Artifact>::stable_order();
+            builder
+                .add_all(used_cpp20_modules)
+                .add_transitive(&discovered_inputs);
+            discovered_inputs = builder.build();
+        }
+        self.update_action_inputs(Some(discovered_inputs.clone()));
+
+        // hdrs_check: This cannot be switched off for C++ build actions,
+        // because doing so would allow for incorrect builds.
+        // HeadersCheckingMode.NONE should only be used for ObjC build actions.
+        self.validate_inclusions(&discovered_inputs)?;
+        Ok(ActionResult::create(spawn_results))
     }
 }
 
@@ -1471,6 +2709,125 @@ mod tests {
             "CppLinkstampCompile"
         );
     }
+
+    fn strings(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/rules/cpp/CcCommonTest.java testClangClParameters
+    // PORT: the Java test builds the action through BuildViewTestCase; this checks the option
+    // parsing of getSystemIncludeDirs / getIncludeDirs over the same copts.
+    #[test]
+    fn test_clang_cl_parameters() {
+        let copts = strings(&[
+            "/imsvc",
+            "SYSTEM_INCLUDE_1",
+            "-imsvcSYSTEM_INCLUDE_2",
+            "/ISTANDARD_INCLUDE",
+            "/FI",
+            "forced_include_1",
+            "-FIforced_include_2",
+        ]);
+        let system_include1 = PathFragment::create("SYSTEM_INCLUDE_1");
+        let system_include2 = PathFragment::create("SYSTEM_INCLUDE_2");
+        let standard_include = PathFragment::create("STANDARD_INCLUDE");
+
+        let system = system_include_dirs_from_options(&copts, &|| "action".to_owned());
+        assert!(system.contains(&system_include1));
+        assert!(system.contains(&system_include2));
+        assert!(!system.contains(&standard_include));
+
+        let mut include_dirs = Vec::new();
+        include_dirs_from_copts(&copts, &mut include_dirs);
+        assert!(!include_dirs.contains(&system_include1));
+        assert!(!include_dirs.contains(&system_include2));
+        assert!(include_dirs.contains(&standard_include));
+    }
+
+    #[test]
+    fn system_include_dirs_separate_and_joined_forms() {
+        let options = strings(&["-isystem", "a/b", "-isystemc/d", "-isystem  e ", "-I", "x"]);
+        assert_eq!(
+            system_include_dirs_from_options(&options, &|| "action".to_owned()),
+            vec![
+                PathFragment::create("a/b"),
+                PathFragment::create("c/d"),
+                PathFragment::create("e"),
+            ]
+        );
+        // A dangling flag is skipped (with a warning).
+        assert!(
+            system_include_dirs_from_options(&strings(&["-isystem"]), &|| "action".to_owned())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn include_dirs_require_combined_form() {
+        let mut dirs = Vec::new();
+        include_dirs_from_copts(&strings(&["-I", "a", "-Ib", "/Ic", "-Imsvcd"]), &mut dirs);
+        assert_eq!(
+            dirs,
+            vec![PathFragment::create("b"), PathFragment::create("c")]
+        );
+    }
+
+    #[test]
+    fn estimate_resource_consumption_local_values() {
+        let default = default_resource_set();
+        assert_eq!(default.get_memory_mb(), 250.0);
+        assert_eq!(default.get_cpu_usage(), 1.0);
+        let disabled =
+            estimate_resource_consumption_local(false, Some("CppCompile"), cc::OS::LINUX, 10);
+        assert_eq!(disabled.get_memory_mb(), 250.0);
+        let linux =
+            estimate_resource_consumption_local(true, Some("CppCompile"), cc::OS::LINUX, 10);
+        assert_eq!(linux.get_memory_mb(), 87.0);
+        assert_eq!(linux.get_cpu_usage(), 1.0);
+        let objc_linux =
+            estimate_resource_consumption_local(true, Some("ObjcCompile"), cc::OS::LINUX, 10);
+        assert_eq!(objc_linux.get_memory_mb(), 250.0);
+        let objc_darwin =
+            estimate_resource_consumption_local(true, Some("ObjcCompile"), cc::OS::DARWIN, 10);
+        assert_eq!(objc_darwin.get_memory_mb(), 82.0);
+        let none = estimate_resource_consumption_local(true, None, cc::OS::LINUX, 10);
+        assert_eq!(none.get_memory_mb(), 250.0);
+    }
+
+    #[test]
+    fn msvc_matchers() {
+        assert!(matches_case_insensitive_msvc("mSvC"));
+        assert!(matches_case_insensitive_msvc("msvcfoo"));
+        assert!(!matches_case_insensitive_msvc("msv"));
+        assert!(matches_include_case_insensitive_msvc("/imsvc"));
+        assert!(matches_include_case_insensitive_msvc("-IMSVCdir"));
+        assert!(!matches_include_case_insensitive_msvc("-isystem"));
+    }
+
+    #[test]
+    #[should_panic(expected = "IllegalArgumentException: Multiple entries with same key")]
+    fn put_or_throw_rejects_duplicate_keys() {
+        let mut m = IndexMap::new();
+        m.insert("k".to_owned(), "v".to_owned());
+        put_or_throw(&mut m, "k", "w".to_owned());
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/rules/cpp/CcLibraryConfiguredTargetTest.java
+    #[test]
+    #[ignore = "needs BuildViewTestCase (getCppCompileAction of a configured cc_library)"]
+    fn test_include_paths_outside_execution_root() {}
+
+    #[test]
+    #[ignore = "needs BuildViewTestCase (getCppCompileAction of a configured cc_library)"]
+    fn test_absolute_include_paths_outside_execution_root() {}
+
+    #[test]
+    #[ignore = "needs BuildViewTestCase (getCppCompileAction of a configured cc_library)"]
+    fn test_system_include_paths_outside_execution_root() {}
+
+    #[test]
+    #[ignore = "needs BuildViewTestCase (getCppCompileAction of a configured cc_library)"]
+    fn test_absolute_system_include_paths_outside_execution_root() {}
 
     #[test]
     fn cpp20_module_actions() {

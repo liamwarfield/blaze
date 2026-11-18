@@ -10,3 +10,7 @@ pub mod version;
 pub mod aquery;
 pub mod cquery;
 pub mod query;
+// Integration lead: mod, build, test.
+pub mod bep;
+pub mod build;
+pub mod mod_command;

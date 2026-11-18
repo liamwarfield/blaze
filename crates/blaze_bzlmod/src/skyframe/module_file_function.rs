@@ -983,11 +983,76 @@ fn maybe_patch_module_file(
     }
 
     // Apply the patches to the module file only.
-    blaze_util::unported!(
-        "PatchUtil.applyToSingleFile",
-        "single_version_override patches for {}",
-        module_file.location
-    )
+    // PORT: Java patches a copy in an InMemoryFileSystem; PatchUtil (blaze_repo_fetch) works on
+    // real paths, so the copy lives in a fresh directory under the output base's tmp/ that is
+    // removed afterwards.
+    let module_root = config
+        .output_base
+        .join("tmp")
+        .join(format!("module-file-patch-{}", uuid::Uuid::new_v4()))
+        .join("module");
+    let result = apply_patches_to_module_file(
+        &module_root,
+        &module_file,
+        &patch_paths,
+        single_version_override.patch_strip,
+    );
+    if let Some(parent) = module_root.parent() {
+        let _ = std::fs::remove_dir_all(parent);
+    }
+    result.map(Some)
+}
+
+// Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunction.java:935 ModuleFileFunction.maybePatchModuleFile
+fn apply_patches_to_module_file(
+    module_root: &Path,
+    module_file: &ModuleFile,
+    patch_paths: &[(PathBuf, PathFragment)],
+    patch_strip: i32,
+) -> Result<ModuleFile, ComputeError> {
+    let io_error = |e: std::io::Error| {
+        errorf(
+            ExternalDepsCode::BadModule,
+            format!("error applying single_version_override patches to module file: {e}"),
+        )
+    };
+    std::fs::create_dir_all(module_root).map_err(io_error)?;
+    let module_file_path = module_root.join("MODULE.bazel");
+    std::fs::write(&module_file_path, &module_file.content).map_err(io_error)?;
+    for (root, relative) in patch_paths {
+        let patch_path = root.join(relative.get_path_string());
+        use blaze_repo_fetch::decompressor::patch_util::{PatchError, apply_to_single_file};
+        let fs: blaze_vfs::FileSystemRef = Arc::new(blaze_vfs::UnixFileSystem::new(
+            blaze_vfs::DigestHashFunction::Sha256,
+        ));
+        let vfs_path = |p: &Path| blaze_vfs::Path::create_from_str(&p.to_string_lossy(), &fs);
+        match apply_to_single_file(
+            &vfs_path(&patch_path),
+            patch_strip,
+            &vfs_path(module_root),
+            &vfs_path(&module_file_path),
+        ) {
+            Ok(()) => {}
+            Err(PatchError::Patch(e)) => {
+                return Err(errorf(
+                    ExternalDepsCode::BadModule,
+                    format!(
+                        "error applying single_version_override patch {} to module file: {}",
+                        patch_path.display(),
+                        e.message
+                    ),
+                ));
+            }
+            Err(PatchError::Io(e)) => {
+                return Err(errorf(
+                    ExternalDepsCode::BadModule,
+                    format!("error applying single_version_override patches to module file: {e}"),
+                ));
+            }
+        }
+    }
+    let content = std::fs::read(&module_file_path).map_err(io_error)?;
+    Ok(ModuleFile::create(content, module_file.location.clone()))
 }
 
 // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunction.java:964 ModuleFileFunction.readModuleFile

@@ -39,7 +39,10 @@ pub struct AqueryProcessor {
     action_filters: AqueryActionFilter,
     aquery_options: AqueryOptions,
     reporter: Arc<dyn ExtendedEventHandler>,
+    /// `env.getReporter().getOutErr().getOutputStream()` and `env.getWorkingDirectory()`, for
+    /// the `QueryRuntimeHelper`.
     output: OutputStream,
+    working_directory: blaze_vfs::Path,
 }
 
 impl AqueryProcessor {
@@ -50,6 +53,7 @@ impl AqueryProcessor {
         aquery_options: AqueryOptions,
         reporter: Arc<dyn ExtendedEventHandler>,
         output: OutputStream,
+        working_directory: blaze_vfs::Path,
     ) -> Result<Self, AqueryActionFilterException> {
         let action_filters = build_action_filters(query_expression.as_ref())?;
         Ok(AqueryProcessor {
@@ -59,6 +63,7 @@ impl AqueryProcessor {
             aquery_options,
             reporter,
             output,
+            working_directory,
         })
     }
 
@@ -207,11 +212,17 @@ impl AnalysisPostProcessor for AqueryProcessor {
             transitive_configurations,
             walkable_graph,
         );
+        // env.getRuntime().getQueryRuntimeHelperFactory().create(env, getQueryOptions(env))
+        let query_output = super::post_analysis_query_processor::create_query_runtime_helper(
+            &self.output,
+            &self.working_directory,
+            &self.aquery_options.output_file,
+        )?;
         let callbacks = aquery::get_default_output_formatters(
             &env,
             &self.aquery_options,
             self.reporter.clone(),
-            self.output.clone(),
+            query_output,
             &self.action_filters,
         );
         let result = do_post_analysis_query(

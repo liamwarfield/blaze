@@ -10,6 +10,7 @@ pub mod starlark_testing_module;
 pub mod test_action_builder;
 pub mod test_provider;
 pub mod test_runner_action;
+pub mod test_runner_action_execution;
 pub mod test_target_properties;
 
 pub use instrumented_files_info::register_coverage_common;

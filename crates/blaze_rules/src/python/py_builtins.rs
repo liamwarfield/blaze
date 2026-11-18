@@ -677,6 +677,37 @@ impl AbstractFileWriteAction for CopyWithoutCachingAction {
     }
 }
 
+// Java: com/google/devtools/build/lib/analysis/actions/AbstractFileWriteAction.java:60 AbstractFileWriteAction.execute
+#[allow(clippy::result_large_err)]
+impl blaze_exec::actions::ExecutableAction for CopyWithoutCachingAction {
+    fn execute(
+        &self,
+        ctx: &dyn blaze_exec::exec::action_execution_context::ActionExecutionContext,
+    ) -> Result<blaze_exec::actions::ActionResult, blaze_exec::actions::ActionExecutionException>
+    {
+        blaze_exec::analysis::actions::abstract_file_write_action::execute_file_write(
+            self,
+            ctx,
+            || {
+                // Java: com/google/devtools/build/lib/rules/python/PyBuiltins.java:318 CopyWithoutCachingAction.newDeterministicWriter
+                // out -> ctx.getInputPath(getPrimaryInput()).getInputStream().transferTo(out)
+                let primary_input = self.primary_input();
+                let writer: Box<dyn DeterministicWriter + '_> =
+                    Box::new(abstract_file_write_action::FnDeterministicWriter(
+                        move |out: &mut dyn std::io::Write| -> std::io::Result<()> {
+                            let mut input =
+                                blaze_exec::analysis::actions::get_input_path(ctx, &primary_input)
+                                    .get_input_stream()?;
+                            std::io::copy(&mut input, out)?;
+                            Ok(())
+                        },
+                    ));
+                Ok(writer)
+            },
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -878,6 +878,11 @@ fn iterable_elements<'v>(
     if let Some(set) = SetRef::from_value(x) {
         return Ok(Some(set.iter().collect()));
     }
+    // A Java `Dict` is an `Iterable` over its keys (`StarlarkIterable<K>`), so a dict converts
+    // to the list of its keys (workerd's ncrypto: `local_defines = {"NAME": select(...)}`).
+    if let Some(d) = DictRef::from_value(x) {
+        return Ok(Some(d.keys().collect()));
+    }
     match x.get_type() {
         // range is a Java Iterable; starlark-rust iterates it only with a heap.
         "range" | "set" => match heap {

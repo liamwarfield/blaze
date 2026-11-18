@@ -43,17 +43,24 @@ pub fn bazel_starlark_environment(
     let rule_functions =
         env_from_registration(&|b| add_rule_functions(b, rule_class_provider.get_rule_functions()));
     let mut registrations = RuleClassProviderRegistrations::bazel();
-    for (name, entry) in
-        env_from_registration(&crate::starlark::repository_module::register_repository_module)
-    {
-        registrations.registered_bzl_toplevels.insert(name, entry);
-    }
+    add_repository_module_toplevels(&mut registrations);
     Arc::new(BazelStarlarkEnvironment::new(
         StarlarkGlobals::new(&blaze_sky_loading::environment::bazel_starlark_globals_fns()),
         blaze_sky_loading::environment::BAZEL_VERSION,
         rule_functions,
         &registrations,
     ))
+}
+
+/// Adds `StarlarkRepositoryModule`'s .bzl toplevels (`repository_rule`, `module_extension`,
+/// `tag_class`) to `registrations`, replacing `blaze_packages`' placeholders.
+// Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java BazelRepositoryModule.initializeRuleClasses
+pub fn add_repository_module_toplevels(registrations: &mut RuleClassProviderRegistrations) {
+    for (name, entry) in
+        env_from_registration(&crate::starlark::repository_module::register_repository_module)
+    {
+        registrations.registered_bzl_toplevels.insert(name, entry);
+    }
 }
 
 /// The precomputed values of repository fetching (Java `BazelRepositoryModule.

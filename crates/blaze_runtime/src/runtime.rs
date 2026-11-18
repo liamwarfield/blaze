@@ -43,7 +43,7 @@ pub struct BlazeRuntime {
     blaze_modules: Vec<Arc<dyn BlazeModule>>,
     command_map: IndexMap<String, Arc<dyn BlazeCommand>>,
     info_items: IndexMap<String, Arc<dyn InfoItem>>,
-    startup_options_provider: OptionsParsingResult,
+    startup_options_provider: Arc<OptionsParsingResult>,
     product_name: String,
     workspace: OnceLock<Arc<BlazeWorkspace>>,
 }
@@ -81,6 +81,11 @@ impl BlazeRuntime {
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:862 BlazeRuntime.getStartupOptionsProvider
     pub fn get_startup_options_provider(&self) -> &OptionsParsingResult {
         &self.startup_options_provider
+    }
+
+    /// The startup options provider, shared (for the BEP's command-line events).
+    pub fn get_startup_options_provider_arc(&self) -> Arc<OptionsParsingResult> {
+        self.startup_options_provider.clone()
     }
 
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:866 BlazeRuntime.getCommandMap
@@ -509,7 +514,7 @@ impl BlazeRuntime {
             blaze_modules,
             command_map: IndexMap::new(),
             info_items: server_builder.get_info_items().clone(),
-            startup_options_provider: options,
+            startup_options_provider: Arc::new(options),
             product_name,
             workspace: OnceLock::new(),
         };

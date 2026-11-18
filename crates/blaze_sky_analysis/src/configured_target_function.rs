@@ -272,7 +272,7 @@ impl ConfiguredTargetFunction {
             .exec_group_collection_builder
             .clone()
             .unwrap_or_else(UnloadedToolchainContextsInputs::empty);
-        create_configured_target(
+        let ans = create_configured_target(
             &self.services,
             env,
             target_and_configuration,
@@ -283,7 +283,11 @@ impl ConfiguredTargetFunction {
             toolchain_contexts.as_ref(),
             &exec_group_collection_builder,
             state.transitive_state.transitive_packages(),
-        )
+        );
+        if let Ok(Some(_)) = &ans {
+            crate::analysis_progress_receiver::ANALYSIS_PROGRESS.done_configure_target();
+        }
+        ans
     }
 
     // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetFunction.java:537 ConfiguredTargetFunction.computeTargetAndConfiguration
@@ -458,7 +462,18 @@ fn create_configured_target(
             .clone(),
         required_config_fragments,
     ) {
-        Ok(ct) => ct,
+        Ok(ct) => {
+            // Java: CachingAnalysisEnvironment.getWorkspaceStatusValue's
+            // env.getValue(WorkspaceStatusValue.BUILD_INFO_KEY) (see there).
+            if analysis_environment.was_workspace_status_requested()
+                && env
+                    .get_value(blaze_analysis::analysis_services::WorkspaceStatusKey)?
+                    .is_none()
+            {
+                return Ok(None);
+            }
+            ct
+        }
         Err(ConfiguredTargetFactoryError::InvalidExecGroup(e)) => {
             return Err(CaughtException::ConfiguredValueCreation(
                 ConfiguredValueCreationException::for_target(

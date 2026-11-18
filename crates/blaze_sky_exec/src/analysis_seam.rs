@@ -86,6 +86,18 @@ pub trait ConfiguredTargetView: Send + Sync + fmt::Debug {
     /// `TestProvider.getTestParams()` for test rules, `None` otherwise.
     fn get_test_params(&self) -> Option<TestParams>;
 
+    /// `ConfiguredTargetAndData.getLocation()`: the target's location.
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetAndData.java ConfiguredTargetAndData.getLocation
+    fn get_location(&self) -> blaze_events::location::Location {
+        blaze_util::unported!("ConfiguredTargetAndData.getLocation (view without its target)")
+    }
+
+    /// `getMnemonic()` of the target's `BuildConfigurationValue` when the view knows it (the
+    /// `TestAnalyzedEvent` the build driver posts carries it).
+    fn get_configuration_mnemonic(&self) -> Option<String> {
+        None
+    }
+
     /// `ConfiguredTarget` of a `test_suite`: the expanded tests are handled by
     /// `TestsForTargetPatternFunction`, so the suite itself builds nothing.
     fn is_test_suite(&self) -> bool {

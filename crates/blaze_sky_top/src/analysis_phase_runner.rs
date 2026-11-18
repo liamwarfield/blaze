@@ -38,6 +38,9 @@ pub fn execute(
             build_options,
         )?;
 
+        // AnalysisPhaseCompleteEvent → UiEventHandler.analysisComplete.
+        report_analysis_complete(reporter.as_ref(), target_pattern_phase_value);
+
         // PORT: BlazeModule.afterAnalysis is not dispatched (no module hooks yet).
 
         if request.should_run_tests() {
@@ -160,4 +163,28 @@ fn report_targets(reporter: &dyn ExtendedEventHandler, target_count: usize) {
             " targets..."
         }
     )));
+}
+
+/// The UI's summary of the analysis phase, `Analyzed N targets (P packages loaded, T targets
+/// configured).` (Java: `UiEventHandler.analysisComplete` on `AnalysisPhaseCompleteEvent`, with
+/// the labels of `LoadingPhaseCompleteEvent`).
+// Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:199 SkymeldUiStateTracker.analysisComplete
+fn report_analysis_complete(
+    reporter: &dyn ExtendedEventHandler,
+    loading_result: &TargetPatternPhaseValue,
+) {
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:178 SkymeldUiStateTracker.loadingComplete
+    let labels = loading_result.get_target_labels();
+    let additional_message = if labels.len() == 1 {
+        format!("target {}", labels.iter().next().expect("one label"))
+    } else {
+        format!("{} targets", labels.len())
+    };
+    let work_done = format!(
+        "Analyzed {} ({}, {}).",
+        additional_message,
+        blaze_sky_loading::package_progress_receiver::PACKAGE_PROGRESS.progress_state(),
+        blaze_sky_analysis::analysis_progress_receiver::ANALYSIS_PROGRESS.get_progress_string()
+    );
+    reporter.handle(&Event::info(work_done));
 }

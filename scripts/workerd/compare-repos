@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""scripts/w5r/compare-repos for the workerd stress project.
+
+usage: scripts/workerd/compare-repos [--ascii-readme] [compare-repos options...]
+       scripts/workerd/compare-repos help
+
+Runs scripts/w5r/compare-repos --project workerd with the oracle output base of the full oracle
+build (scripts/workerd/run oracle build ...: ~/.cache/blaze/oracle-out/ur-workerd/<md5 of
+~/.cache/blaze/work/workerd>), without adding workerd to that tool's `--project all`.
+Workspace, output base and contents cache: ~/.cache/blaze/work/repos/workerd{,-ob,-contents}.
+
+--ascii-readme   after preparing the workspace, drop the emoji from the first line of README.md.
+                 aspect_tools_telemetry hashes the README's first lines with a Starlark SHA-1 that
+                 needs Bazel's byte-string semantics (docs/workerd.md); without the fix-up the
+                 telemetry repo fails to fetch on Blaze. The repo's contents then differ from the
+                 oracle's by design (the hash), every other repo is comparable.
+Other options are compare-repos' (--repo, --no-run, --keep-output-base, --diffs, --timeout,
+--binary, --shared-contents-cache, --no-scope).
+"""
+import hashlib
+import importlib.machinery
+import importlib.util
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+TOOL = os.path.join(HERE, "..", "w5r", "compare-repos")
+
+
+def load_tool():
+    loader = importlib.machinery.SourceFileLoader("w5r_compare_repos", TOOL)
+    spec = importlib.util.spec_from_loader("w5r_compare_repos", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("help", "--help", "-h"):
+        print(__doc__)
+        return 0
+    argv = sys.argv[1:]
+    if "--no-scope" not in argv and os.environ.get("BLAZE_ORACLE_SCOPE") != "1":
+        # compare-repos re-executes its own file in a scope, which would drop the workerd entry
+        # added below; scope this wrapper instead.
+        os.execvp("systemd-run", [
+            "systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
+            "-p", "MemorySwapMax=0", "--", "env", "BLAZE_ORACLE_SCOPE=1", sys.executable, "-I",
+            os.path.abspath(__file__)] + argv)
+    argv = [a for a in argv if a != "--no-scope"] + ["--no-scope"]
+    ascii_readme = "--ascii-readme" in argv
+    argv = [a for a in argv if a != "--ascii-readme"]
+    tool = load_tool()
+    oc = tool.oc
+    ws = os.path.realpath(os.path.join(oc.WORK, "workerd"))
+    tool.ORACLE_OUTPUT_BASES.clear()
+    tool.ORACLE_OUTPUT_BASES["workerd"] = os.path.join(
+        oc.OUTPUT_ROOTS, "ur-workerd", hashlib.md5(ws.encode()).hexdigest())
+    if ascii_readme:
+        prepare = tool.record.prepare_workspace
+
+        def prepare_and_fix(checkout, dest):
+            fixed = prepare(checkout, dest)
+            readme = os.path.join(dest, "README.md")
+            lines = open(readme, encoding="utf-8").read().split("\n")
+            lines[0] = "".join(c for c in lines[0] if ord(c) < 128).replace("#  ", "# ")
+            open(readme, "w", encoding="utf-8").write("\n".join(lines))
+            return fixed
+
+        tool.record.prepare_workspace = prepare_and_fix
+    sys.argv = [TOOL, "--project", "workerd"] + argv
+    return tool.main()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

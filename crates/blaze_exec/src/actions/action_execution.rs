@@ -281,6 +281,23 @@ pub trait ExecutableAction: Action {
         action_execution_context: &dyn ActionExecutionContext,
     ) -> Result<ActionResult, ActionExecutionException>;
 
+    /// Method used to find inputs before execution for an action that
+    /// [`Action::discovers_inputs`]. Returns the set of discovered inputs (`None`: none) and may
+    /// call [`Action::update_inputs`]; called by `ActionExecutionFunction` before `execute` when
+    /// `!inputs_known()`.
+    // Java: com/google/devtools/build/lib/actions/Action.java:172 Action.discoverInputs
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:145 AbstractAction.discoverInputs
+    fn discover_inputs(
+        &self,
+        _action_execution_context: &dyn ActionExecutionContext,
+    ) -> Result<Option<blaze_collect::NestedSet<blaze_actions::Artifact>>, ActionExecutionException>
+    {
+        panic!(
+            "IllegalStateException: Not an input-discovering action: {}",
+            self.to_string_java()
+        )
+    }
+
     /// Prepares for executing this action; called by the Builder prior to executing the Action
     /// itself. This method should prepare the file system, so that the execution of the Action can
     /// write the output files. At a minimum that means removing any files or directories with the
@@ -371,3 +388,63 @@ pub fn as_executable(action: &dyn Action) -> Option<&dyn ExecutableAction> {
 
 /// Shared handle for registering contexts in `ActionContextRegistry::get_context_any`.
 pub type ActionContextRef = Arc<dyn Any + Send + Sync>;
+
+/// `ActionExecutionContext.maybeReportSubcommand`: reports the command line of `spawn` as a
+/// `SUBCOMMAND` event when `--subcommands` is set.
+///
+/// PORT: Java reads `executor.reportsSubcommands()`; the executor passes its
+/// `ExecutionOptions.showSubcommands`. The resource owner's `ActionOwner` is never null here.
+// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:459 ActionExecutionContext.maybeReportSubcommand
+pub fn maybe_report_subcommand(
+    show_subcommands: blaze_optdefs::command::action_execution_context::ShowSubcommands,
+    spawn: &dyn super::Spawn,
+    spawn_runner: Option<&str>,
+    exec_root: &blaze_vfs::Path,
+    event_handler: &dyn blaze_events::EventHandler,
+) {
+    if !show_subcommands.should_show_subcommands() {
+        return;
+    }
+
+    let mut reason = String::new();
+    let resource_owner = spawn.get_resource_owner();
+    let owner = resource_owner.get_owner();
+    reason.push_str(&java_string(owner.description.as_deref()));
+    reason.push_str(" [");
+    reason.push_str(&resource_owner.pretty_print());
+    reason.push_str(", configuration: ");
+    reason.push_str(&java_string(owner.configuration_checksum.as_deref()));
+    if let Some(execution_platform) = resource_owner.get_execution_platform() {
+        reason.push_str(", execution platform: ");
+        reason.push_str(&execution_platform.label.to_string());
+    }
+    reason.push_str(", mnemonic: ");
+    reason.push_str(&spawn.get_mnemonic());
+    reason.push(']');
+
+    // We print this command out in such a way that it can safely be
+    // copied+pasted as a Bourne shell command.  This is extremely valuable for
+    // debugging.
+    let configuration_checksum = spawn.get_configuration_checksum();
+    let execution_platform_label = spawn.get_execution_platform_label();
+    let message = blaze_shell::CommandFailureUtils::describe_command(
+        blaze_shell::CommandDescriptionForm::Complete,
+        show_subcommands.pretty_print_args(),
+        spawn.get_arguments(),
+        Some(spawn.get_environment()),
+        /* environment_variables_to_clear= */ None,
+        Some(exec_root.get_path_string()),
+        configuration_checksum.as_deref(),
+        execution_platform_label.as_ref(),
+        spawn_runner,
+    );
+    event_handler.handle(&blaze_events::Event::of(
+        blaze_events::EventKind::Subcommand,
+        format!("# {reason}\n{message}"),
+    ));
+}
+
+/// Java string concatenation of a nullable `String`.
+fn java_string(s: Option<&str>) -> String {
+    s.unwrap_or("null").to_string()
+}

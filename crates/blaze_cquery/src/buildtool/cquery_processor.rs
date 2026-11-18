@@ -31,7 +31,10 @@ pub struct CqueryProcessor {
     cquery_options: CqueryOptions,
     config_function_slot: ConfigFunctionSlot,
     reporter: Arc<dyn ExtendedEventHandler>,
+    /// `env.getReporter().getOutErr().getOutputStream()` and `env.getWorkingDirectory()`, for
+    /// the `QueryRuntimeHelper`.
     output: OutputStream,
+    working_directory: blaze_vfs::Path,
 }
 
 impl CqueryProcessor {
@@ -43,6 +46,7 @@ impl CqueryProcessor {
         config_function_slot: ConfigFunctionSlot,
         reporter: Arc<dyn ExtendedEventHandler>,
         output: OutputStream,
+        working_directory: blaze_vfs::Path,
     ) -> Self {
         CqueryProcessor {
             query_expression,
@@ -51,6 +55,7 @@ impl CqueryProcessor {
             config_function_slot,
             reporter,
             output,
+            working_directory,
         }
     }
 
@@ -113,6 +118,12 @@ impl AnalysisPostProcessor for CqueryProcessor {
             transitive_configurations,
             walkable_graph,
         );
+        // env.getRuntime().getQueryRuntimeHelperFactory().create(env, getQueryOptions(env))
+        let query_output = super::post_analysis_query_processor::create_query_runtime_helper(
+            &self.output,
+            &self.working_directory,
+            &self.cquery_options.output_file,
+        )?;
         // PORT: ConfigFunction reaches the environment through this slot (see
         // config_function.rs).
         *self.config_function_slot.write() = Some(env.graph_lookup());
@@ -120,7 +131,7 @@ impl AnalysisPostProcessor for CqueryProcessor {
             &env,
             &self.cquery_options,
             self.reporter.clone(),
-            self.output.clone(),
+            query_output,
             skyframe_executor,
         );
         let result = do_post_analysis_query(

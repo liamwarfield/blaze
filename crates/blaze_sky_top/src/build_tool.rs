@@ -99,6 +99,12 @@ impl BuildRequest {
         }
     }
 
+    /// `BuildRequest.Builder.setRunTests(true)` (the `test` command).
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:190 BuildRequest.Builder.setRunTests
+    pub fn set_run_tests(&mut self, run_tests: bool) {
+        self.run_tests = run_tests;
+    }
+
     // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:310 BuildRequest.shouldRunTests
     pub fn should_run_tests(&self) -> bool {
         self.run_tests
@@ -152,6 +158,19 @@ pub trait AnalysisPostProcessor {
     ) -> Result<(), BuildToolError>;
 }
 
+/// The execution phase of a build (Java `ExecutionTool.executeBuild` and the Skymeld
+/// execution of `BuildTool.buildTargetsWithMergedAnalysisExecution`), implemented by the
+/// command, which holds the execution options and the event subscribers.
+pub trait ExecutionPhase {
+    fn execute_build(
+        &self,
+        request: &BuildRequest,
+        skyframe_executor: &SkyframeExecutor,
+        loading_result: &crate::target_pattern_phase::TargetPatternPhaseValue,
+        analysis_result: &AnalysisResult,
+    ) -> Result<(), BuildToolError>;
+}
+
 /// Provides the bulk of the implementation of the 'blaze build' command.
 // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:206 BuildTool
 pub struct BuildTool<'a> {
@@ -159,6 +178,7 @@ pub struct BuildTool<'a> {
     reporter: Arc<dyn ExtendedEventHandler>,
     relative_working_directory: PathFragment,
     analysis_post_processor: &'a dyn AnalysisPostProcessor,
+    execution_phase: Option<&'a dyn ExecutionPhase>,
 }
 
 impl<'a> BuildTool<'a> {
@@ -174,7 +194,14 @@ impl<'a> BuildTool<'a> {
             reporter,
             relative_working_directory,
             analysis_post_processor: post_processor,
+            execution_phase: None,
         }
+    }
+
+    /// A build tool whose requests may execute (`build`, `test`).
+    pub fn with_execution_phase(mut self, execution_phase: &'a dyn ExecutionPhase) -> Self {
+        self.execution_phase = Some(execution_phase);
+        self
     }
 
     /// The crux of the build system: performs loading and analysis (and runs the post
@@ -258,6 +285,10 @@ impl<'a> BuildTool<'a> {
             .cloned()
             .expect("IllegalStateException: the executor has no build options");
 
+        // PORT: the progress receivers are process-wide (one command per process); Java resets
+        // them when the build's loading starts (SkyframeExecutor / SkyframeBuildView).
+        blaze_sky_loading::package_progress_receiver::PACKAGE_PROGRESS.reset();
+        blaze_sky_analysis::analysis_progress_receiver::ANALYSIS_PROGRESS.reset();
         // PORT: BuildStartingEvent is not posted (event bus); initializeOutputFilter belongs to
         // the UI.
         let target_pattern_phase_value = self.evaluate_target_patterns(request)?;
@@ -283,7 +314,15 @@ impl<'a> BuildTool<'a> {
             )?;
 
             if request.perform_execution_phase {
-                blaze_util::unported!("ExecutionTool.executeBuild");
+                match self.execution_phase {
+                    Some(execution_phase) => execution_phase.execute_build(
+                        request,
+                        self.skyframe_executor,
+                        &target_pattern_phase_value,
+                        &analysis_result,
+                    )?,
+                    None => blaze_util::unported!("ExecutionTool.executeBuild"),
+                }
             }
             // PORT: NoExecutionEvent is not posted (event bus).
             if let Some(delayed_failure_detail) = analysis_result.get_failure_detail() {

@@ -80,12 +80,23 @@ pub fn registrations() -> RuleClassProviderRegistrations {
 pub fn bazel_starlark_environment(
     rule_class_provider: &RuleClassProvider,
 ) -> Arc<BazelStarlarkEnvironment> {
+    bazel_starlark_environment_with(rule_class_provider, &|_| {})
+}
+
+/// [`bazel_starlark_environment`] with further registrations of other modules (Java: each
+/// `BlazeModule.initializeRuleClasses`, e.g. `BazelRepositoryModule`'s `repository_rule`).
+pub fn bazel_starlark_environment_with(
+    rule_class_provider: &RuleClassProvider,
+    extra: &dyn Fn(&mut RuleClassProviderRegistrations),
+) -> Arc<BazelStarlarkEnvironment> {
     let rule_functions =
         env_from_registration(&|b| add_rule_functions(b, rule_class_provider.get_rule_functions()));
+    let mut registrations = registrations();
+    extra(&mut registrations);
     Arc::new(BazelStarlarkEnvironment::new(
         StarlarkGlobals::new(&bazel_starlark_globals_fns()),
         blaze_sky_loading::environment::BAZEL_VERSION,
         rule_functions,
-        &registrations(),
+        &registrations,
     ))
 }

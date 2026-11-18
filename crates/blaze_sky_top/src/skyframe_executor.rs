@@ -30,8 +30,7 @@ use blaze_build_config::platform::SharedPlatformValueProvider;
 use blaze_build_config::skyframe::{
     ConfigurationEnvironment, ConfigurationError, register_configuration_functions,
 };
-use blaze_bzlmod::registry_fetcher::LocalDownloadManagerFetcher;
-use blaze_bzlmod::skyframe::{BzlmodConfig, register_bzlmod_functions};
+use blaze_bzlmod::skyframe::register_bzlmod_functions;
 use blaze_cmdline::{
     Label, PackageIdentifier, RepositoryMapping, TargetParsingException, TargetPatternsCode,
 };
@@ -58,11 +57,12 @@ use blaze_starlark::StarlarkSemantics;
 use blaze_vfs::{DigestHashFunction, Path, PathFragment};
 use indexmap::IndexMap;
 
-use crate::external_repos::create_external_repos;
 use crate::target_pattern_phase::{
     TargetPatternPhaseKey, TargetPatternPhaseValue, TestFilter,
     register_target_pattern_phase_functions,
 };
+use blaze_repo_rules::external_repos::BzlmodExternalRepos;
+use blaze_repo_rules::setup::FetchSetup;
 
 /// `SkyframeExecutor.DEFAULT_THREAD_COUNT`.
 pub const DEFAULT_THREAD_COUNT: usize = 200;
@@ -86,18 +86,27 @@ pub struct SkyframeExecutorInputs {
     pub reporter: Arc<dyn ExtendedEventHandler>,
     /// `env.getClientEnv()`.
     pub client_env: IndexMap<String, String>,
+    /// `env.getRepoEnv()`.
+    pub repo_env: IndexMap<String, String>,
+    /// `env.getNonstrictRepoEnv()`.
+    pub nonstrict_repo_env: IndexMap<String, String>,
+    /// The repository precomputed values (`BazelRepositoryModule.getPrecomputedValues`; `fetch`
+    /// sets the force-fetch ones).
+    pub repo_precomputed: blaze_repo_rules::registration::RepoPrecomputedValues,
     /// `--keep_going`.
     pub keep_going: bool,
     /// The top-level build options of a command that analyzes (Java
     /// `runtime.createBuildOptions(request)`, set as baseline by `BuildView.update`); `None` for
     /// commands that only load (`query`).
     pub top_level_build_options: Option<BuildOptions>,
+    /// The execution setup of a command that executes actions (`build`, `test`).
+    pub execution: Option<crate::execution_phase::ExecutionSetup>,
 }
 
 /// Why the executor could not be created.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum SkyframeExecutorCreationError {
-    /// The external repositories (oracle facts) could not be read.
+    /// The repository setup (`BazelRepositoryModule.beforeCommand`) failed.
     #[error("{0}")]
     ExternalRepos(String),
     /// `BzlmodConfigError` (message and `ExternalRepository` code name).
@@ -106,6 +115,9 @@ pub enum SkyframeExecutorCreationError {
     /// `setBaselineConfiguration` failed (the exec transition could not be loaded or applied).
     #[error("{}", .0.get_message())]
     InvalidConfiguration(InvalidConfigurationException),
+    /// `ExecutionTool.<init>` / `prepareForExecution` failed (an `AbruptExitException`).
+    #[error("{0}")]
+    Execution(String),
 }
 
 /// The configuration-related state (Java: the precomputed baseline values).
@@ -126,6 +138,11 @@ pub struct SkyframeExecutor {
     analysis_services: Option<Arc<AnalysisServices>>,
     configuration: Option<ConfigurationState>,
     rule_class_provider: Arc<blaze_packages::native_rules::RuleClassProvider>,
+    /// For `BazelLockFileModule.afterCommand`.
+    workspace: PathBuf,
+    output_base: PathBuf,
+    lockfile_mode: blaze_bzlmod_model::LockfileMode,
+    execution: Option<crate::execution_phase::ExecutionState>,
 }
 
 fn to_std_path(p: &Path) -> PathBuf {
@@ -157,72 +174,83 @@ impl SkyframeExecutor {
             output_base: inputs.output_base.clone(),
             install_base: inputs.install_base.clone(),
         };
-        let external_repos = create_external_repos(&directories)
-            .map_err(SkyframeExecutorCreationError::ExternalRepos)?;
+        // Bzlmod and repository fetching (Java: BazelRepositoryModule.beforeCommand and the
+        // bzlmod / repository SkyFunctions).
+        let repo_options: RepositoryOptions = options
+            .get_options::<RepositoryOptions>()
+            .unwrap_or_else(Options::<RepositoryOptions>::get_defaults);
+        let workspace_std = to_std_path(&inputs.workspace);
+        let working_directory_std = to_std_path(&inputs.working_directory);
+        let output_base_std = to_std_path(&inputs.output_base);
+        let install_base_std = to_std_path(&inputs.install_base);
+        let repository_functions = blaze_repo_rules::setup::prepare_repository_functions_in(
+            &FetchSetup {
+                workspace: &workspace_std,
+                working_directory: &working_directory_std,
+                output_base: &output_base_std,
+                install_base: &install_base_std,
+                repo_options: &repo_options,
+                starlark_semantics: starlark_semantics.clone(),
+                client_env: inputs.client_env.clone(),
+                repo_env: inputs.repo_env.clone(),
+                nonstrict_repo_env: inputs.nonstrict_repo_env.clone(),
+                precomputed: inputs.repo_precomputed.clone(),
+                reporter: inputs.reporter.clone(),
+            },
+            inputs.output_base.get_file_system().clone(),
+        )
+        .map_err(SkyframeExecutorCreationError::ExternalRepos)?;
+        let lockfile_mode = repository_functions.bzlmod_config.lockfile_mode;
+        let external_repos: Arc<dyn blaze_sky_loading::repos::ExternalRepos> = Arc::new(
+            BzlmodExternalRepos::new(blaze_repo_rules::registration::repository_fetch_function(
+                repository_functions.services.clone(),
+            )),
+        );
 
-        // Java: ruleClassProvider (BazelRuleClassProvider) and its BazelStarlarkEnvironment.
+        // Java: ruleClassProvider (BazelRuleClassProvider) and its BazelStarlarkEnvironment
+        // (with BazelRepositoryModule's repository_rule / module_extension / tag_class).
         let rule_class_provider =
             Arc::new(blaze_packages::native_rules::RuleClassProvider::create_bazel());
         let bazel_starlark_environment =
-            blaze_rules::bazel_environment::bazel_starlark_environment(&rule_class_provider);
-        let loading_config = LoadingFunctionsConfig::for_bazel(
+            blaze_rules::bazel_environment::bazel_starlark_environment_with(
+                &rule_class_provider,
+                &blaze_repo_rules::registration::add_repository_module_toplevels,
+            );
+        let mut loading_config = LoadingFunctionsConfig::for_bazel(
             directories.clone(),
             external_repos,
             Arc::new(LoadingFunctionsConfig::default_native_registry()),
             bazel_starlark_environment.clone(),
             Some(rule_class_provider.clone()),
         );
+        let repo_contents_cache_path = repository_functions.repo_contents_cache_path.clone();
+        loading_config.repo_contents_cache_path = repo_contents_cache_path.clone();
         let pkg_locator = loading_config.pkg_locator.read().clone();
 
-        // Bzlmod (Java: BazelRepositoryModule.beforeCommand + the bzlmod SkyFunctions).
-        let repo_options: RepositoryOptions = options
-            .get_options::<RepositoryOptions>()
-            .unwrap_or_else(Options::<RepositoryOptions>::get_defaults);
-        let output_base = to_std_path(&inputs.output_base);
-        // The repository cache: `--repository_cache`, else `<output_user_root>/cache/repos/v1`.
-        let repo_cache_path: Option<PathBuf> = match &repo_options.repository_cache {
-            Some(p) if p.get_path_string().is_empty() => None,
-            Some(p) => Some(PathBuf::from(p.get_path_string())),
-            None => output_base.parent().map(|p| p.join("cache/repos/v1")),
-        };
-        let fetcher = Arc::new(LocalDownloadManagerFetcher::new(
-            repo_cache_path,
-            inputs.reporter.clone(),
-            repo_options.repository_downloader_retries,
-        ));
-        // PORT: the repository environment (CommandEnvironment.getNonstrictRepoEnv) is the client
-        // environment until the repo env is ported in blaze_runtime.
-        let bzlmod_config = BzlmodConfig::from_repository_options(
-            &repo_options,
-            &to_std_path(&inputs.workspace),
-            &to_std_path(&inputs.working_directory),
-            &output_base,
-            &to_std_path(&inputs.install_base),
-            starlark_semantics.clone(),
-            inputs.client_env.clone(),
-            inputs.client_env.clone(),
-            fetcher,
-        )
-        .map_err(|e| SkyframeExecutorCreationError::Bzlmod {
-            message: e.message.clone(),
-            code: e.code,
-        })?;
-
-        let mut builder =
-            register_bzlmod_functions(EvaluatorBuilder::new(), Arc::new(bzlmod_config));
+        let mut builder = register_bzlmod_functions(
+            EvaluatorBuilder::new(),
+            Arc::new(repository_functions.bzlmod_config),
+        );
         builder = register_loading_functions(builder, &loading_config);
-        // PORT: --override_repository is applied by the repo-rules lead's repository functions;
-        // the oracle repositories ignore it.
         builder = inject_loading_precomputed(
             builder,
             &loading_config,
             starlark_semantics.clone(),
-            IndexMap::new(),
+            repository_functions.repository_overrides,
+        );
+        builder = blaze_repo_rules::registration::register_repo_rules_functions(
+            builder,
+            repository_functions.services,
+        );
+        builder = blaze_repo_rules::registration::inject_repo_precomputed(
+            builder,
+            &inputs.repo_precomputed,
         );
         builder = register_target_pattern_phase_functions(builder);
 
         let mut analysis_services = None;
         let mut configuration = None;
+        let mut execution = None;
         if let Some(build_options) = inputs.top_level_build_options {
             // Java: done by the rule class provider's construction (subrule calls, fragment
             // Starlark values, build info files).
@@ -254,6 +282,10 @@ impl SkyframeExecutor {
                 main_repo_mapping: parking_lot::RwLock::new(None),
                 keep_going: inputs.keep_going,
                 workspace_status: std::sync::OnceLock::new(),
+                // Java: StandardSystemProperty.USER_NAME (the server's user.name) and
+                // NetUtil.getCachedShortHostName().
+                workspace_status_user_name: std::env::var("USER").unwrap_or_default(),
+                workspace_status_host_name: short_host_name(),
             });
             let platforms: SharedPlatformValueProvider = Arc::new(
                 blaze_sky_analysis::platform::PlatformFunction::new(services.clone()),
@@ -285,6 +317,31 @@ impl SkyframeExecutor {
             );
             builder =
                 blaze_sky_analysis::configured_target_function::register(builder, services.clone());
+            // Java: WorkspaceStatusFunction (SkyFunctions.BUILD_INFO).
+            let status_services = services.clone();
+            builder = builder
+                .typed_function::<blaze_analysis::analysis_services::WorkspaceStatusKey, _>(
+                    move |_, _| Ok(Some(status_services.compute_workspace_status_value())),
+                );
+            if let Some(mut setup) = inputs.execution {
+                // Java: CommandEnvironment's package locator path entries and
+                // `--repo_contents_cache` (the sandbox mounts those under a hermetic /tmp).
+                setup.config.package_path_entries = pkg_locator
+                    .get_path_entries()
+                    .iter()
+                    .filter_map(|r| r.as_path().cloned())
+                    .collect();
+                setup.config.repo_contents_cache_path = repo_contents_cache_path.clone();
+                let (b, state) = crate::execution_phase::prepare_execution(
+                    builder,
+                    setup,
+                    &services,
+                    inputs.reporter.clone(),
+                )
+                .map_err(SkyframeExecutorCreationError::Execution)?;
+                builder = b;
+                execution = Some(state);
+            }
             analysis_services = Some(services);
             configuration = Some(ConfigurationState { client, baseline });
         }
@@ -307,6 +364,10 @@ impl SkyframeExecutor {
             analysis_services,
             configuration,
             rule_class_provider,
+            workspace: workspace_std,
+            output_base: output_base_std,
+            lockfile_mode,
+            execution,
         })
     }
 
@@ -343,6 +404,52 @@ impl SkyframeExecutor {
                 "no Starlark exec transition (native exec transition is not in Bazel 9)"
             ),
         }
+    }
+
+    /// The prepared execution phase of a command that executes actions.
+    pub fn get_execution(&self) -> Option<&crate::execution_phase::ExecutionState> {
+        self.execution.as_ref()
+    }
+
+    /// The source roots of every package loaded by this command (Java
+    /// `SkyframeBuildView` / `PackageRoots` collected from the analyzed targets' transitive
+    /// packages).
+    ///
+    /// PORT: Java collects the transitive packages of the top-level targets; Blaze takes every
+    /// package loaded in the command's evaluator (a superset: the symlink forest then also links
+    /// packages only loaded for target pattern expansion).
+    pub fn get_package_roots(&self) -> IndexMap<PackageIdentifier, blaze_vfs::Root> {
+        let mut roots: Vec<(PackageIdentifier, blaze_vfs::Root)> = Vec::new();
+        for key in self.evaluator.get_all_keys_for_testing() {
+            if key.function_name() != PackageKey::FUNCTION {
+                continue;
+            }
+            let Some(value) = self.evaluator.get_existing_value(&key) else {
+                continue;
+            };
+            let Ok(value) = value.downcast::<PackageValue>() else {
+                continue;
+            };
+            let package = value.get_package();
+            roots.push((
+                package.get_package_identifier().clone(),
+                package.get_source_root().clone(),
+            ));
+        }
+        roots.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
+        roots.into_iter().collect()
+    }
+
+    /// Writes the workspace and hidden lockfiles from this command's evaluation (Java
+    /// `BazelLockFileModule.afterCommand`, run after every command).
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileModule.java:62 BazelLockFileModule.afterCommand
+    pub fn after_command(&self) {
+        blaze_bzlmod::skyframe::after_command(
+            &self.evaluator,
+            &self.workspace,
+            &self.output_base,
+            self.lockfile_mode,
+        );
     }
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1105 SkyframeExecutor.getEvaluator
@@ -451,30 +558,13 @@ impl SkyframeExecutor {
         let Some(dep_graph_value) = eval_result.get(&key) else {
             return Ok(None);
         };
-        let modules: Vec<blaze_build_config::flag_aliases::FlagAliasModule> = dep_graph_value
-            .dep_graph
-            .iter()
-            .map(|(module_key, module)| {
-                // depGraphValue.getCanonicalRepoNameLookup().inverse().get(moduleKey)
-                let canonical_repo_name = dep_graph_value
-                    .canonical_repo_name_lookup
-                    .iter()
-                    .find(|(_, k)| *k == module_key)
-                    .map(|(name, _)| name.clone())
-                    .expect("every module of the dep graph has a canonical repo name");
-                blaze_build_config::flag_aliases::FlagAliasModule {
-                    name: module.name.clone(),
-                    version: module.version.to_string(),
-                    canonical_repo_name,
-                    flag_aliases: module.flag_aliases.clone(),
-                }
-            })
-            .collect();
-        Ok(Some(blaze_build_config::flag_aliases::get_flag_aliases(
-            &modules,
-            ensure_py_aliases,
-            ensure_bazel_py_aliases,
-        )))
+        Ok(Some(
+            blaze_build_config::flag_aliases::get_flag_aliases_from_dep_graph(
+                &dep_graph_value,
+                ensure_py_aliases,
+                ensure_bazel_py_aliases,
+            ),
+        ))
     }
 
     /// Returns the already loaded package, if any.
@@ -888,4 +978,11 @@ pub fn analysis_evaluation_context(
         event_handler,
         ..EvaluationContext::default()
     }
+}
+
+/// `NetUtil.getCachedShortHostName()`: the host name up to its first dot.
+// Java: com/google/devtools/build/lib/util/NetUtil.java:39 NetUtil.getCachedShortHostName
+pub fn short_host_name() -> String {
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+    host.trim().split('.').next().unwrap_or("").to_owned()
 }

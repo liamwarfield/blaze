@@ -65,11 +65,11 @@ pub enum PropagationEdges<T: std::hash::Hash + Eq> {
     Function,
 }
 
-/// Java `AspectPropagationEdgesSupplier.ALL_TOOLCHAINS`.
-// PORT: represented by the pseudo-label Java uses.
-// Java: com/google/devtools/build/lib/packages/AspectPropagationEdgesSupplier.java AspectPropagationEdgesSupplier.ALL_TOOLCHAINS
-fn all_toolchains() -> Label {
-    blaze_util::unported!("AspectPropagationEdgesSupplier.ALL_TOOLCHAINS")
+/// Java `AspectPropagationEdgesSupplier.ALL_TOOLCHAINS`: the pseudo-label standing for "all
+/// toolchain types" in `toolchains_aspects`.
+// Java: com/google/devtools/build/lib/packages/AspectPropagationEdgesSupplier.java:48 AspectPropagationEdgesSupplier.ALL_TOOLCHAINS
+pub fn all_toolchains() -> Label {
+    Label::parse_canonical_unchecked("//__toolchains_aspects__:all")
 }
 
 /// The non-Starlark part of an aspect.

@@ -327,22 +327,21 @@ impl Visitor<'_> {
         depth: i32,
         count: i32,
     ) {
-        let (Target::Rule(_), Target::Rule(_)) = (from, to) else {
+        let (Target::Rule(_), Target::Rule(to_rule)) = (from, to) else {
             return;
         };
         let attribute = attribute.expect("NullPointerException: attribute of a rule edge");
         for aspect in aspects::get_aspects(attribute) {
-            // PORT: the label deps are computed before `satisfies`, which is only asked when
-            // there are some (see `aspects`).
-            let deps = aspects::label_deps_from_all_attributes_of_aspect(
+            if aspects::satisfies(
                 aspect,
-                &self.label_visitor.edge_filter,
-            );
-            if deps.is_empty() {
-                continue;
-            }
-            if aspects::satisfies_unported(aspect) {
-                for (aspect_attribute, aspect_label) in &deps {
+                to_rule.get_rule_class_object().get_advertised_providers(),
+            ) {
+                for (aspect_attribute, aspect_label) in
+                    &aspects::label_deps_from_all_attributes_of_aspect(
+                        aspect,
+                        &self.label_visitor.edge_filter,
+                    )
+                {
                     self.enqueue_target(
                         Some(from),
                         Some(aspect_attribute),

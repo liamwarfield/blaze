@@ -21,6 +21,18 @@ blaze_vfs = { path = "../blaze_vfs" }
 blaze_build_config = { path = "../blaze_build_config" }
 blaze_protos = { path = "../blaze_protos" }
 blaze_shell = { path = "../blaze_shell" }
+# Integration lead: mod, build and test commands.
+blaze_bzlmod = { path = "../blaze_bzlmod" }
+blaze_bep = { path = "../blaze_bep" }
+blaze_packages = { path = "../blaze_packages" }
+blaze_skyframe = { path = "../blaze_skyframe" }
+blaze_buildtool = { path = "../blaze_buildtool" }
+blaze_sky_exec = { path = "../blaze_sky_exec" }
+blaze_exec = { path = "../blaze_exec" }
+blaze_actions = { path = "../blaze_actions" }
+blaze_analysis = { path = "../blaze_analysis" }
+blaze_rules = { path = "../blaze_rules" }
+blaze_cmdline = { path = "../blaze_cmdline" }
 indexmap.workspace = true
 parking_lot.workspace = true
 libc.workspace = true

@@ -107,6 +107,27 @@ fn patch_0004_recursion_check() {
     });
 }
 
+/// Java StringModule.elems returns `StarlarkList.wrap(null, ...)`: an immutable list, so slicing,
+/// indexing and `len` work (rules_python's parse_requirements_txt does `content.elems()[:]`).
+#[test]
+fn patch_0005_elems_list() {
+    let ok = |src: &'static str, want: &str| {
+        assert_eq!(eval_with_probe(src), Ok(want.to_owned()), "{src}");
+    };
+    ok(
+        "x = 'abc'.elems()\nr = (type(x), x, len(x), x[1], x[1:], list_is_immutable(x))",
+        r#"("list", ["a", "b", "c"], 3, "b", ["b", "c"], True)"#,
+    );
+    ok(
+        "y = 'ab'.elems()[:]\ny.append('c')\nr = (y, ''.elems(), list_is_immutable(y))",
+        r#"(["a", "b", "c"], [], False)"#,
+    );
+    assert_eq!(
+        eval_with_probe("x = 'ab'.elems()\nx.append('c')\nr = x"),
+        Err("trying to mutate a frozen list value".to_owned())
+    );
+}
+
 #[test]
 fn patch_0006_list_pop_negative_index() {
     assert_eq!(
@@ -522,4 +543,16 @@ fn patch_0018_immutable_dict() {
             .unwrap_err()
             .contains("not hashable")
     );
+}
+
+/// Java Dict.get / Dict.setdefault / Dict.pop: `default` is `named = true`; `key` is positional.
+#[test]
+fn patch_0019_dict_named_default() {
+    assert_eq!(
+        eval_with_probe(
+            "d = {'a': 1}\nr = (d.get('b', default = 2), d.get('a', default = 2), d.setdefault('c', default = 3), d.pop('a', default = 4), d)"
+        ),
+        Ok(r#"(2, 1, 3, 1, {"c": 3})"#.to_owned())
+    );
+    assert!(eval_with_probe("r = {}.get(key = 'a')").is_err());
 }

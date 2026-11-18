@@ -186,12 +186,66 @@ pub fn apple_common() -> StubObject {
     }
 }
 
-/// `_builtins.internal.py_builtins` (Java `BazelPyBuiltins`).
-pub fn py_builtins() -> StubObject {
-    StubObject {
-        type_name: "py_builtins",
-        struct_fields: &[],
+/// `_builtins.internal.py_builtins` (Java `BazelPyBuiltins`) while loading: `regex_match` (a pure
+/// function rules_python's `py_internal` also calls from repository rules and module
+/// extensions) is ported; every other member is an analysis-time [`StubMethod`]. The analysis
+/// environment (blaze_rules `bazel_environment`) replaces this object with the full port.
+#[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
+pub struct PyBuiltinsLoading;
+
+starlark_simple_value!(PyBuiltinsLoading);
+
+impl fmt::Display for PyBuiltinsLoading {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<py_builtins>")
     }
+}
+
+#[starlark_value(type = "py_builtins")]
+impl<'v> StarlarkValue<'v> for PyBuiltinsLoading {
+    fn get_methods() -> Option<&'static Methods> {
+        static RES: MethodsStatic = MethodsStatic::new("py_builtins", py_builtins_loading_methods);
+        Some(RES.methods())
+    }
+
+    fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+        // Methods are found through get_methods first; any other member is analysis-time.
+        Some(heap.alloc(StubMethod {
+            owner: "py_builtins",
+            name: attribute.to_owned(),
+        }))
+    }
+}
+
+#[starlark_module]
+fn py_builtins_loading_methods(builder: &mut MethodsBuilder) {
+    /// Return true if subject matches pattern; pattern is implicitly anchored with ^ and $
+    // Java: com/google/devtools/build/lib/rules/python/PyBuiltins.java:98 PyBuiltins.regexMatch
+    fn regex_match<'v>(
+        this: Value<'v>,
+        #[starlark(require = pos)] subject: &str,
+        #[starlark(require = pos)] pattern: &str,
+    ) -> anyhow::Result<bool> {
+        let _ = this;
+        // Java `subject.matches(pattern)` (java.util.regex, whole-input match).
+        // PORT: the regex crate implements the common subset of java.util.regex. Java's `(?U)`
+        // (UNICODE_CHARACTER_CLASS) is the regex crate's default for `\w` etc., while the regex
+        // crate's `(?U)` swaps greediness, which cannot change whether the whole input matches;
+        // so `(?U)` is dropped. A pattern the crate cannot compile is not ported.
+        let translated = pattern.replace("(?U)", "");
+        match regex::Regex::new(&format!("^(?:{translated})$")) {
+            Ok(re) => Ok(re.is_match(subject)),
+            Err(e) => blaze_util::unported!(
+                "String.matches",
+                "pattern {pattern:?} is not supported by the regex crate: {e}"
+            ),
+        }
+    }
+}
+
+/// `_builtins.internal.py_builtins` (Java `BazelPyBuiltins`), loading-phase form.
+pub fn py_builtins() -> PyBuiltinsLoading {
+    PyBuiltinsLoading
 }
 
 /// `android_common` (Java `AndroidStarlarkCommon`).

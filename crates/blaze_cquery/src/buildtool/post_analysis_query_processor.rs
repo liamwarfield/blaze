@@ -215,3 +215,22 @@ pub fn before_post_analysis_query() -> Result<(), BuildToolError> {
     // per process); the executor always tracks state for incrementality.
     Ok(())
 }
+
+/// `env.getRuntime().getQueryRuntimeHelperFactory().create(env, getQueryOptions(env))` of
+/// `PostAnalysisQueryProcessor.process`; a `QueryRuntimeHelperException` is its
+/// `ExitException(DetailedExitCode.of(e.getFailureDetail()))`.
+// Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:104 PostAnalysisQueryProcessor.process
+pub fn create_query_runtime_helper(
+    stdout: &blaze_query::query::output::output_formatter::OutputStream,
+    working_directory: &blaze_vfs::Path,
+    output_file: &str,
+) -> Result<blaze_query::query::output::output_formatter::OutputStream, BuildToolError> {
+    blaze_query::query::output::query_runtime_helper::create(stdout, working_directory, output_file)
+        .map_err(|e| {
+            let failure_detail = e.get_failure_detail();
+            BuildToolError::Exit(blaze_query_engine::DetailedExitCode::of_exit_code(
+                blaze_util::DetailedExitCode::get_numeric_exit_code(&failure_detail),
+                failure_detail,
+            ))
+        })
+}

@@ -37,6 +37,7 @@ pub mod action_cache_checker;
 pub mod action_execution;
 pub mod action_execution_metadata;
 pub mod action_input;
+pub mod action_output_directory_helper;
 pub mod cache;
 pub mod exec_exception;
 pub mod execution_requirements;

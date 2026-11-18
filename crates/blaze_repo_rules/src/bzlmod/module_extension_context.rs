@@ -214,23 +214,6 @@ pub fn module_ctx_methods(builder: &mut MethodsBuilder) {
         Ok(unpack_tag("tag_sort_key", tag)?.get_sort_key())
     }
 
-    /// Whether this particular usage of the extension had `isolate = True` specified and is thus
-    /// isolated from all other usages. Only available with
-    /// `--experimental_isolated_extension_usages`.
-    // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionContext.java:195 ModuleExtensionContext.isIsolated
-    #[starlark(attribute)]
-    fn is_isolated(this: &ModuleCtx) -> starlark::Result<bool> {
-        if !this.fields.experimental_isolated_extension_usages {
-            // PORT: Java omits the field when the flag is off (`enableOnlyWithFlag`); the
-            // attribute exists here and fails with Java's unknown-field message (without the
-            // did-you-mean suffix over dir(module_ctx)).
-            return Err(eval_error(
-                "'module_ctx' value has no field or method 'is_isolated'",
-            ));
-        }
-        Ok(this.fields.is_isolated)
-    }
-
     /// Whether the root module uses this extension as a non-dev dependency.
     // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionContext.java:203 ModuleExtensionContext.rootModuleHasNonDevDependency
     #[starlark(attribute)]
@@ -270,4 +253,16 @@ pub fn module_ctx_methods(builder: &mut MethodsBuilder) {
         )
         .map_err(eval_error)
     }
+}
+
+/// `module_ctx.is_isolated`: whether this particular usage of the extension had `isolate = True`
+/// specified and is thus isolated from all other usages. Only available with
+/// `--experimental_isolated_extension_usages` (`enableOnlyWithFlag`): without the flag the field
+/// does not exist, so `getattr(module_ctx, "is_isolated", default)` gives the default and
+/// `hasattr` is false. Served by `ModuleCtx`'s `get_attr`/`has_attr`/`dir_attr`.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionContext.java:195 ModuleExtensionContext.isIsolated
+pub fn is_isolated(fields: &ModuleCtxFields) -> Option<bool> {
+    fields
+        .experimental_isolated_extension_usages
+        .then_some(fields.is_isolated)
 }

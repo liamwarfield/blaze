@@ -932,6 +932,9 @@ impl PackageFunction {
 
         // From this point on, no matter whether the function returns successfully or throws an
         // exception, there will be no more Skyframe restarts.
+        // PORT: Java notes `packageProgress.doneReadPackage(packageId)` in the finally block once
+        // committed; counted here (the count is the same, no restart follows).
+        crate::package_progress_receiver::PACKAGE_PROGRESS.done_read_package(package_id);
 
         let package_directory = build_file_rooted_path
             .as_path()

@@ -34,6 +34,28 @@ pub fn create_build_options(
 /// from the parsed options here.
 pub fn starlark_semantics_from(options: &OptionsParser) -> StarlarkSemantics {
     let mut semantics = StarlarkSemantics::default();
+    // PORT: BuildLanguageOptions.toStarlarkSemantics is not ported in full: only the two flags
+    // below reach the semantics. Any other semantics flag set to a non-default value fails
+    // loudly instead of being ignored.
+    if let Some(parsed) = options.get_options::<BuildLanguageOptions>() {
+        let defaults = blaze_options::Options::<BuildLanguageOptions>::get_defaults();
+        for ((key, value), (_, default_value)) in
+            parsed.set_flags().into_iter().zip(defaults.set_flags())
+        {
+            if value != default_value
+                && key != blaze_optdefs::command::build_language_options::EXPERIMENTAL_SIBLING_REPOSITORY_LAYOUT
+                && key != "incompatible_disable_transitions_on"
+            {
+                blaze_util::unported!(
+                    "BuildLanguageOptions.toStarlarkSemantics",
+                    "semantics flag {} = {:?} (default {:?})",
+                    key,
+                    value,
+                    default_value
+                );
+            }
+        }
+    }
     if let Some(build_language) = options.get_options_dyn(BuildLanguageOptions::class()) {
         for def in BuildLanguageOptions::class().definitions() {
             let name = def.get_option_name();

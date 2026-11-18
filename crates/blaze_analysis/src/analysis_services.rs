@@ -53,9 +53,60 @@ pub struct AnalysisServices {
     /// The workspace status artifacts (Java `WorkspaceStatusValue`, computed once per build by
     /// `WorkspaceStatusFunction`); see [`AnalysisServices::get_workspace_status_artifacts`].
     pub workspace_status: std::sync::OnceLock<WorkspaceStatusArtifacts>,
+    /// What `BazelStatusActionFactory` passes to the `BazelWorkspaceStatusAction`: the client's
+    /// user name (`StandardSystemProperty.USER_NAME`) and `NetUtil.getCachedShortHostName()`.
+    pub workspace_status_user_name: String,
+    pub workspace_status_host_name: String,
+}
+
+/// `WorkspaceStatusValue.BUILD_INFO_KEY` as a Skyframe key: the node of the workspace status
+/// action (`WorkspaceStatusFunction`), requested by analysis when a rule reads the workspace
+/// status artifacts (`CachingAnalysisEnvironment.getWorkspaceStatusValue`).
+// Java: com/google/devtools/build/lib/skyframe/WorkspaceStatusValue.java:55 WorkspaceStatusValue.BuildInfoKey
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WorkspaceStatusKey;
+
+impl blaze_skyframe::Key for WorkspaceStatusKey {
+    type Value = WorkspaceStatusValue;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java SkyFunctions.BUILD_INFO
+    const FUNCTION: blaze_skyframe::SkyFunctionName = blaze_skyframe::SkyFunctionName(
+        blaze_actions::analysis::workspace_status_action::BUILD_INFO_FUNCTION_NAME,
+    );
+}
+
+/// Value that stores the workspace status artifacts and their generating action. There should be
+/// only one of these values in the graph at any time.
+// Java: com/google/devtools/build/lib/skyframe/WorkspaceStatusValue.java:33 WorkspaceStatusValue
+#[derive(Debug)]
+pub struct WorkspaceStatusValue {
+    /// `BasicActionLookupValue.actions`: the single `WorkspaceStatusAction`.
+    pub actions: Vec<blaze_actions::ActionRef>,
+    pub stable_artifact: blaze_actions::Artifact,
+    pub volatile_artifact: blaze_actions::Artifact,
 }
 
 impl AnalysisServices {
+    /// `WorkspaceStatusFunction.compute`: the workspace status action over the artifacts of
+    /// [`AnalysisServices::get_workspace_status_artifacts`] (which carry its generating action key).
+    // Java: com/google/devtools/build/lib/skyframe/WorkspaceStatusFunction.java:38 WorkspaceStatusFunction.compute
+    pub fn compute_workspace_status_value(&self) -> WorkspaceStatusValue {
+        let artifacts = self.get_workspace_status_artifacts();
+        // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:278 BazelStatusActionFactory.createWorkspaceStatusAction
+        let action: blaze_actions::ActionRef = Arc::new(
+            blaze_actions::bazel::bazel_workspace_status_module::BazelWorkspaceStatusAction::new(
+                artifacts.stable_artifact.clone(),
+                artifacts.volatile_artifact.clone(),
+                self.workspace_status_user_name.clone(),
+                self.workspace_status_host_name.clone(),
+            ),
+        );
+        WorkspaceStatusValue {
+            actions: vec![action],
+            stable_artifact: artifacts.stable_artifact.clone(),
+            volatile_artifact: artifacts.volatile_artifact.clone(),
+        }
+    }
+
     /// Java `env.getValue(WorkspaceStatusValue.BUILD_INFO_KEY)`: the stable and volatile
     /// workspace status artifacts.
     ///

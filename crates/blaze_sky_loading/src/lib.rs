@@ -56,6 +56,7 @@ pub mod local_repository_lookup;
 pub mod package_function;
 pub mod package_lookup;
 pub mod package_manager;
+pub mod package_progress_receiver;
 pub mod pkgcache;
 pub mod precomputed;
 pub mod recursive_pkg;

@@ -379,17 +379,19 @@ impl<'v, 'a> Visitor<'v, 'a> {
         attribute: Option<&Attribute>,
         to: &Target,
     ) -> Result<(), VisitError> {
-        let (Target::Rule(_), Target::Rule(_)) = (from, to) else {
+        let (Target::Rule(_), Target::Rule(to_rule)) = (from, to) else {
             return Ok(());
         };
         let attribute = attribute.expect("NullPointerException: attribute of a rule edge");
         for aspect in aspects::get_aspects(attribute) {
-            let all_labels =
-                aspects::label_deps_from_all_attributes_of_aspect(aspect, &self.outer.edge_filter);
-            if all_labels.is_empty() {
-                continue;
-            }
-            if aspects::satisfies_unported(aspect) {
+            if aspects::satisfies(
+                aspect,
+                to_rule.get_rule_class_object().get_advertised_providers(),
+            ) {
+                let all_labels = aspects::label_deps_from_all_attributes_of_aspect(
+                    aspect,
+                    &self.outer.edge_filter,
+                );
                 // PORT: Java collects into a HashMultimap (unordered); the definition order is
                 // kept here.
                 for (aspect_attribute, aspect_label) in &all_labels {

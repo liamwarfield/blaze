@@ -9,7 +9,8 @@ use crate::command::{BlazeCommand, BlazeCommandResult, CommandAnnotation};
 use crate::command_environment::CommandEnvironment;
 use crate::command_registry::AQUERY_COMMAND;
 use crate::commands::query::{
-    create_skyframe_executor, query_output_stream, reporter, to_runtime_detailed_exit_code,
+    AfterCommand, create_skyframe_executor, query_output_stream, reporter,
+    to_runtime_detailed_exit_code,
 };
 use crate::options_result::OptionsParsingResult;
 
@@ -43,6 +44,7 @@ impl BlazeCommand for AqueryCommand {
             Ok(e) => e,
             Err(result) => return result,
         };
+        let _after_command = AfterCommand(&skyframe_executor);
         let command_env = PostAnalysisCommandEnvironment {
             skyframe_executor: &skyframe_executor,
             reporter: reporter(env),

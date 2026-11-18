@@ -707,6 +707,7 @@ version = "0.1.0"
 dependencies = [
  "blaze_actions",
  "blaze_analysis",
+ "blaze_bep",
  "blaze_build_config",
  "blaze_buildtool",
  "blaze_bzlmod",
@@ -716,6 +717,7 @@ dependencies = [
  "blaze_exec",
  "blaze_optdefs",
  "blaze_options",
+ "blaze_packages",
  "blaze_protos",
  "blaze_query",
  "blaze_query_engine",

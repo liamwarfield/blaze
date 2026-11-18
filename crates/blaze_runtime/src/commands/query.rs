@@ -61,11 +61,50 @@ pub(crate) fn create_skyframe_executor(
     create_skyframe_executor_with_options(env, env.get_options().clone(), top_level_build_options)
 }
 
+/// Runs the modules' `afterCommand` hooks that read the command's evaluator when dropped (Java
+/// `BazelLockFileModule.afterCommand`, called by `BlazeRuntime.afterCommand` on every exit path
+/// of a command). Bind it right after creating the command's executor.
+pub(crate) struct AfterCommand<'a>(pub &'a SkyframeExecutor);
+
+impl Drop for AfterCommand<'_> {
+    fn drop(&mut self) {
+        self.0.after_command();
+    }
+}
+
 /// [`create_skyframe_executor`] over the given (re-parsed) command options.
 pub(crate) fn create_skyframe_executor_with_options(
     env: &CommandEnvironment,
     options: Arc<OptionsParsingResult>,
     top_level_build_options: Option<BuildOptions>,
+) -> Result<SkyframeExecutor, BlazeCommandResult> {
+    create_skyframe_executor_with_execution(env, options, top_level_build_options, None)
+}
+
+/// [`create_skyframe_executor_with_options`] for a command that executes actions.
+pub(crate) fn create_skyframe_executor_with_execution(
+    env: &CommandEnvironment,
+    options: Arc<OptionsParsingResult>,
+    top_level_build_options: Option<BuildOptions>,
+    execution: Option<blaze_sky_top::execution_phase::ExecutionSetup>,
+) -> Result<SkyframeExecutor, BlazeCommandResult> {
+    create_skyframe_executor_reporting_to(
+        env,
+        options,
+        top_level_build_options,
+        execution,
+        reporter(env),
+    )
+}
+
+/// [`create_skyframe_executor_with_execution`] whose evaluations report to `event_handler`
+/// (creation errors still go to the command's reporter).
+pub(crate) fn create_skyframe_executor_reporting_to(
+    env: &CommandEnvironment,
+    options: Arc<OptionsParsingResult>,
+    top_level_build_options: Option<BuildOptions>,
+    execution: Option<blaze_sky_top::execution_phase::ExecutionSetup>,
+    event_handler: Arc<dyn ExtendedEventHandler>,
 ) -> Result<SkyframeExecutor, BlazeCommandResult> {
     let keep_going = options
         .get_options::<KeepGoingOption>()
@@ -84,8 +123,12 @@ pub(crate) fn create_skyframe_executor_with_options(
         product_name: env.get_runtime().get_product_name().to_owned(),
         workspace_name: env.get_workspace_name().to_owned(),
         options,
-        reporter: reporter(env),
+        reporter: event_handler,
         client_env: env.get_client_env().clone(),
+        repo_env: env.get_repo_env().clone(),
+        nonstrict_repo_env: env.get_nonstrict_repo_env().clone(),
+        repo_precomputed: Default::default(),
+        execution,
         keep_going,
         top_level_build_options,
     };
@@ -110,8 +153,26 @@ pub(crate) fn create_skyframe_executor_with_options(
                     detailed,
                 ));
             }
-            // PORT: the oracle repository facts are a Blaze stand-in for repository fetching
-            // (see blaze_sky_top::external_repos); a missing file is a local environment error.
+            // Java: ExecutionTool's AbruptExitExceptions (action cache, strategies).
+            SkyframeExecutorCreationError::Execution(message) => {
+                if message.starts_with("Couldn't create action cache: ") {
+                    FailureDetail {
+                        message: message.clone(),
+                        category: Some(Category::ActionCache(failure_details::ActionCache {
+                            code: failure_details::action_cache::Code::InitializationFailure
+                                as i32,
+                        })),
+                    }
+                } else {
+                    FailureDetail {
+                        message: message.clone(),
+                        category: Some(Category::Execution(failure_details::Execution {
+                            code: failure_details::execution::Code::ExecutionUnknown as i32,
+                        })),
+                    }
+                }
+            }
+            // Java: BazelRepositoryModule.beforeCommand / BzlmodConfig errors (caches, overrides).
             SkyframeExecutorCreationError::ExternalRepos(message) => {
                 return BlazeCommandResult::detailed_exit_code(DetailedExitCode::of_exit_code(
                     ExitCode::LOCAL_ENVIRONMENTAL_ERROR,
@@ -172,6 +233,7 @@ impl BlazeCommand for QueryCommand {
             Ok(e) => e,
             Err(result) => return result,
         };
+        let _after_command = AfterCommand(&skyframe_executor);
         let reporter = reporter(env);
         let query_options: QueryOptions = options.get_options().expect("QueryOptions");
         let keep_going = options
@@ -213,10 +275,25 @@ impl BlazeCommand for QueryCommand {
             }
         };
 
+        // env.getRuntime().getQueryRuntimeHelperFactory().create(env, queryOptions)
+        // Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:169 QueryEnvironmentBasedCommand.execInternal
+        let query_output = match blaze_query::query::output::query_runtime_helper::create(
+            &query_output_stream(env),
+            env.get_working_directory(),
+            &query_options.output_file,
+        ) {
+            Ok(output) => output,
+            Err(e) => {
+                env.get_reporter().handle(&Event::error(e.get_message()));
+                return BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(
+                    e.get_failure_detail(),
+                ));
+            }
+        };
         let query_env = blaze_cquery::commands::query_adapters::query_command_environment(
             &skyframe_executor,
             reporter,
-            query_output_stream(env),
+            query_output,
             env.get_relative_working_directory().clone(),
             main_repo_mapping,
         );

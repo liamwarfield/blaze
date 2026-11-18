@@ -68,7 +68,35 @@ fn last_modified_millis<R: Read>(entry: &mut tar::Entry<'_, R>) -> Result<i64, I
             }
         }
     }
-    Ok((entry.header().mtime()? as i64).wrapping_mul(1000))
+    let header = entry.header();
+    // Commons Compress TarUtils.parseOctal: a field starting with NUL, or holding only spaces and
+    // NULs, is 0 (old crates.io archives leave mtime blank); the tar crate rejects those.
+    if commons_compress_octal_is_zero(&header.as_old().mtime) {
+        return Ok(0);
+    }
+    Ok((header.mtime()? as i64).wrapping_mul(1000))
+}
+
+/// Commons Compress `TarUtils.parseOctal` returns 0 for a field whose first byte is NUL or which
+/// is empty after skipping leading spaces and trimming trailing NULs and spaces (binary fields,
+/// first byte >= 0x80, are parsed elsewhere).
+// Java: org/apache/commons/compress/archivers/tar/TarUtils.java parseOctal (commons-compress 1.x)
+fn commons_compress_octal_is_zero(field: &[u8]) -> bool {
+    if field.is_empty() || field[0] == 0 {
+        return true;
+    }
+    if field[0] & 0x80 != 0 {
+        return false;
+    }
+    let mut start = 0;
+    let mut end = field.len();
+    while start < end && field[start] == b' ' {
+        start += 1;
+    }
+    while start < end && (field[end - 1] == 0 || field[end - 1] == b' ') {
+        end -= 1;
+    }
+    start == end
 }
 
 fn parse_pax_time_millis(v: &str) -> Option<i64> {

@@ -789,14 +789,8 @@ macro_rules! unported_command {
     };
 }
 
-unported_command!(
-    /// Handles the 'build' command on the Blaze command line, including targets named by
-    /// arguments passed to Blaze.
-    // Java: com/google/devtools/build/lib/runtime/commands/BuildCommand.java:68 BuildCommand
-    BuildCommand,
-    BUILD_COMMAND,
-    "BuildCommand.exec"
-);
+// Integration lead: implemented in crate::commands::build.
+pub use crate::commands::build::BuildCommand;
 unported_command!(
     /// The 'blaze canonicalize-flags' command.
     // Java: com/google/devtools/build/lib/runtime/commands/CanonicalizeCommand.java:70 CanonicalizeCommand
@@ -836,13 +830,8 @@ unported_command!(
     RUN_COMMAND,
     "RunCommand.exec"
 );
-unported_command!(
-    /// Handles the 'test' command on the Blaze command line.
-    // Java: com/google/devtools/build/lib/runtime/commands/TestCommand.java:75 TestCommand
-    TestCommand,
-    TEST_COMMAND,
-    "TestCommand.exec"
-);
+// Integration lead: implemented in crate::commands::build.
+pub use crate::commands::build::TestCommand;
 // W4 analysis lead: implemented in crate::commands::aquery.
 pub use crate::commands::aquery::AqueryCommand;
 // W4 analysis lead: implemented in crate::commands::cquery.
@@ -875,13 +864,8 @@ unported_command!(
     FETCH_COMMAND,
     "FetchCommand.exec"
 );
-unported_command!(
-    /// Queries the Bzlmod external dependency graph.
-    // Java: com/google/devtools/build/lib/bazel/commands/ModCommand.java:119 ModCommand
-    ModCommand,
-    MOD_COMMAND,
-    "ModCommand.exec"
-);
+// Integration lead: implemented in crate::commands::mod_command.
+pub use crate::commands::mod_command::ModCommand;
 unported_command!(
     /// Fetches external repositories into a specified directory.
     /// PORT: Java constructs it with the repository module's non-strict repo env supplier.

@@ -509,6 +509,29 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Bitwise `^` operator.
      fn bit_xor(&self, other: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
          ValueError::unsupported_with(self, "^", other)
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/methods.rs starlark/src/values/types/dict/methods.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/methods.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/dict/methods.rs	2026-11-18 08:10:39.694237883 -0700
+@@ -83,7 +83,8 @@
+     fn get<'v>(
+         this: DictRef<'v>,
+         #[starlark(require = pos)] key: Value<'v>,
+-        #[starlark(require = pos)] default: Option<Value<'v>>,
++        // BLAZE PATCH 0019: `default` may be passed by name (Java Dict.get: `named = true`).
++        default: Option<Value<'v>>,
+     ) -> starlark::Result<Value<'v>> {
+         match this.get(key)? {
+             None => Ok(default.unwrap_or_else(Value::new_none)),
+@@ -262,7 +263,8 @@
+     fn setdefault<'v>(
+         this: Value<'v>,
+         #[starlark(require = pos)] key: Value<'v>,
+-        #[starlark(require = pos)] default: Option<Value<'v>>,
++        // BLAZE PATCH 0019: `default` may be passed by name (Java Dict.setdefault: `named = true`).
++        default: Option<Value<'v>>,
+     ) -> starlark::Result<Value<'v>> {
+         let mut this = DictMut::from_value(this)?;
+         let key = key.get_hashed()?;
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/refs.rs starlark/src/values/types/dict/refs.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/refs.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/dict/refs.rs	2026-11-18 07:16:15.929235902 -0700
@@ -1059,6 +1082,50 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                      Some(s) => res.push_str(s),
                  }
              }
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/iter.rs starlark/src/values/types/string/iter.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/iter.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/string/iter.rs	2026-11-18 07:57:12.584746662 -0700
+@@ -56,6 +56,7 @@
+     produce_char: bool, // if not char, then int
+ }
+ 
++#[allow(dead_code)] // BLAZE PATCH 0005: `elems` returns a list
+ pub(crate) fn iterate_chars<'v>(
+     string: StringValue<'v>,
+     heap: Heap<'v>,
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/methods.rs starlark/src/values/types/string/methods.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/methods.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/string/methods.rs	2026-11-18 07:57:12.584321635 -0700
+@@ -39,7 +39,6 @@
+ use crate::values::string::dot_format;
+ use crate::values::tuple::UnpackTuple;
+ use crate::values::type_repr::StarlarkTypeRepr;
+-use crate::values::types::string::iter::iterate_chars;
+ use crate::values::types::string::iter::iterate_codepoints;
+ use crate::values::typing::iter::StarlarkIter;
+ 
+@@ -121,11 +120,16 @@
+     /// list("Hello, 世界".elems()) == ["H", "e", "l", "l", "o", ",", " ", "世", "界"]
+     /// # "#);
+     /// ```
+-    fn elems<'v>(
+-        this: StringValue<'v>,
+-        heap: Heap<'v>,
+-    ) -> anyhow::Result<ValueOfUnchecked<'v, StarlarkIter<String>>> {
+-        Ok(iterate_chars(this, heap))
++    // BLAZE PATCH 0005: an immutable list of 1-element strings, not a lazy iterator (Java
++    // net/starlark/java/eval/StringModule.java:932 `elems`: `StarlarkList.wrap(null, strings)`),
++    // so `s.elems()[:]`, `len(s.elems())` and indexing work as in Bazel.
++    fn elems<'v>(this: StringValue<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
++        let chars: Vec<Value<'v>> = this // BLAZE PATCH 0005
++            .as_str()
++            .chars()
++            .map(|c| heap.alloc_char(c).to_value())
++            .collect();
++        Ok(crate::values::list::alloc_immutable_list(heap, &chars)) // BLAZE PATCH 0005
+     }
+ 
+     /// [string.capitalize](
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/str_type.rs starlark/src/values/types/string/str_type.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/str_type.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/string/str_type.rs	2026-11-17 22:49:07.484514763 -0700

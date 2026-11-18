@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Runs the oracle (Bazel 9.3.2) or Blaze on the workerd stress project copy.
+# usage: scripts/workerd/run <oracle|blaze> [--sync] <command> [args...]
+#        scripts/workerd/run help
+# Workspaces: oracle ~/.cache/blaze/work/workerd, blaze ~/.cache/blaze/work/workerd-blaze (rsyncs
+# of the read-only checkout ~/.cache/blaze/corpus/workerd minus bazel-* and .git; --sync
+# refreshes it and restores the committed MODULE.bazel.lock). Output user roots:
+# oracle ~/.cache/blaze/oracle-out/ur-workerd, blaze ~/.cache/blaze/oracle-out/ur-workerd-blaze.
+# Startup --nohome_rc --nosystem_rc; command --repository_cache=~/.cache/blaze/repo-cache
+# --color=no --curses=no; env HOME, PATH=/usr/bin:/bin; under systemd-run MemoryMax=$MEM (20G).
+# Environment: BLAZE (binary, default target/debug/blaze), MEM, BLAZE_ORACLE_REPOS and
+# RUST_BACKTRACE pass through to Blaze. The exit code is the binary's.
+set -euo pipefail
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,12p' "$0"; exit 0; fi
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+who="$1"; shift
+checkout="$HOME/.cache/blaze/corpus/workerd"
+ws="$HOME/.cache/blaze/work/workerd"
+[[ "$who" == "blaze" ]] && ws="$HOME/.cache/blaze/work/workerd-blaze"
+if [[ "${1:-}" == "--sync" || ! -d "$ws" ]]; then
+  [[ "${1:-}" == "--sync" ]] && shift
+  mkdir -p "$ws"
+  rsync -a --delete --exclude '/bazel-*' --exclude '/.git' "$checkout/" "$ws/"
+fi
+case "$who" in
+  oracle) bin="$HOME/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"; ur="$HOME/.cache/blaze/oracle-out/ur-workerd" ;;
+  blaze) bin="${BLAZE:-$root/target/debug/blaze}"; ur="$HOME/.cache/blaze/oracle-out/ur-workerd-blaze" ;;
+  *) echo "first argument must be oracle or blaze" >&2; exit 2 ;;
+esac
+cmd="$1"; shift
+cd "$ws"
+exec systemd-run --user --scope --collect --quiet -p MemoryMax="${MEM:-20G}" -p MemorySwapMax=0 \
+  env -i HOME="$HOME" PATH=/usr/bin:/bin RUST_BACKTRACE="${RUST_BACKTRACE:-}" \
+  ${BLAZE_ORACLE_REPOS:+BLAZE_ORACLE_REPOS="$BLAZE_ORACLE_REPOS"} \
+  "$bin" --output_user_root="$ur" --nohome_rc --nosystem_rc "$cmd" \
+  --repository_cache="$HOME/.cache/blaze/repo-cache" --color=no --curses=no "$@"

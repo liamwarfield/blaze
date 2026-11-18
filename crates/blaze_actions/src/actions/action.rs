@@ -287,6 +287,53 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
         )
     }
 
+    /// Informs input-discovering actions about their discovery state so that they can correctly
+    /// implement [`Action::inputs_discovered`].
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:183 AbstractAction.setInputsDiscovered
+    fn set_inputs_discovered(&self, _inputs_discovered: bool) {
+        panic!(
+            "IllegalStateException: Must be overridden by input-discovering action: {}",
+            self.to_string_java()
+        )
+    }
+
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:151 AbstractAction.resetDiscoveredInputs
+    fn reset_discovered_inputs(&self) {
+        check_state!(
+            self.discovers_inputs(),
+            "Not an input-discovering action: {}",
+            self.to_string_java()
+        );
+        if !self.inputs_known() {
+            return;
+        }
+        self.abstract_action()
+            .set_inputs(self.get_original_inputs());
+        self.set_inputs_discovered(false);
+    }
+
+    /// Should be called when the inputs of the action become known, that is, either during
+    /// `discoverInputs` or during `execute`. Also called by the action cache when an action's
+    /// inputs are loaded from it.
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:215 AbstractAction.updateInputs
+    fn update_inputs(&self, inputs: NestedSet<Artifact>) {
+        check_state!(
+            self.discovers_inputs(),
+            "Not an input-discovering action: {}",
+            self.to_string_java()
+        );
+        self.abstract_action().set_inputs(inputs);
+        self.set_inputs_discovered(true);
+    }
+
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:194 AbstractAction.getAllowedDerivedInputs
+    fn get_allowed_derived_inputs(&self) -> NestedSet<Artifact> {
+        panic!(
+            "IllegalStateException: Must be overridden for action that may have unknown inputs: {}",
+            self.to_string_java()
+        )
+    }
+
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:157 AbstractAction.getOriginalInputs
     fn get_original_inputs(&self) -> NestedSet<Artifact> {
         check_state!(

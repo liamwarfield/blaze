@@ -15,7 +15,7 @@ by adding.
 | 0002 | applied | allocation limits (repeat, concat, extend) and nesting-depth guards (repr/str/to_json) |
 | 0003 | applied | raw strings keep the backslash before a quote |
 | 0004 | applied | opt-in recursion check (`Evaluator::set_forbid_recursion`) |
-| 0005 | queued | string methods: named `sep`/`maxsplit`, negative `replace` count, `elems()` sequence, `rsplit("")` error |
+| 0005 | partly applied | string methods: `elems()` sequence (applied); named `sep`/`maxsplit`, negative `replace` count, `rsplit("")` error (queued) |
 | 0006 | applied | `list.pop` with a negative index |
 | 0007 | queued | set semantics (in-place augmented assignment, variadic methods, `pop` order, repr, missing methods) |
 | 0008 | queued | float repr (shortest round-trip), `%` on floats, exact int/float comparison |
@@ -29,6 +29,7 @@ by adding.
 | 0016 | applied | immutable lists on a mutable heap (`list::alloc_immutable_list`, `list::list_is_immutable`) |
 | 0017 | applied | a function's defining module (`eval::DefModule`, `Evaluator::innermost_enclosing_def_module`) |
 | 0018 | applied | immutable dicts on a mutable heap (`dict::alloc_immutable_dict`, `dict::dict_is_immutable`) |
+| 0019 | applied | `dict.get` / `dict.setdefault` accept `default` by name |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -90,6 +91,19 @@ the native stack; Blaze runs evaluation on threads with large stacks
   active below the top frame (`CheapCallStack::has_active_def_below_top`). Cost: one stack scan
   per `def` call, as in Java.
 - Test: `patch_0004_recursion_check`.
+
+## 0005 — string methods (part: `elems()`)
+
+- Gap: Java `str.elems()` returns `StarlarkList.wrap(null, strings)` (net/starlark/java/eval/
+  StringModule.java:932), an immutable list; starlark-rust returned a lazy `iterator` value, so
+  `content.elems()[:]` (rules_python `parse_requirements_txt.bzl:59`, reached from workerd's
+  `pip` extension) failed with "Operation `[::]` not supported on type `iterator`".
+- Fix: `types/string/methods.rs` `elems` allocates the 1-element strings into an immutable list
+  (`alloc_immutable_list`, patch 0016); `iter.rs` `iterate_chars` is now unused. Elements are
+  code points (decisions.md: code-point string semantics); Java yields the internal Latin-1
+  chars, i.e. UTF-8 bytes, which differ only for non-ASCII strings.
+- Queued: named `sep`/`maxsplit`, negative `replace` count, `rsplit("")` error.
+- Test: `patch_0005_elems_list`.
 
 ## 0006 — `list.pop(negative)`
 
@@ -223,3 +237,14 @@ the native stack; Blaze runs evaluation on threads with large stacks
   stay unhashable. `refs.rs` drops its now unused `RefCell` import.
 - Users: blaze_starlark `dict::dict_immutable_copy_of` (`cc_internal.freeze`).
 - Test: `patch_0018_immutable_dict`.
+
+## 0019 — named `default` in `dict.get` and `dict.setdefault`
+
+- Gap: Java `Dict.get`, `Dict.pop` and `Dict.setdefault` declare `default` with `named = true`
+  (net/starlark/java/eval/Dict.java:227, 260, 312), so `d.get(k, default = "")` works;
+  starlark-rust made it positional-only for `get` and `setdefault` ("Found `default` extra named
+  parameter(s) for call to function"). toolchains_llvm's `llvm_distributions.bzl:236` does
+  `rctx.attr.sha256.get(key, default = "")` (workerd's LLVM toolchain repo).
+- Fix: `types/dict/methods.rs`: drop `require = pos` from `default` in `get` and `setdefault`
+  (`pop` already accepted it). `key` stays positional-only, as in Java.
+- Test: `patch_0019_dict_named_default`.

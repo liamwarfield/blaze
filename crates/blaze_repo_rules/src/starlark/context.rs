@@ -27,8 +27,10 @@ use starlark::environment::MethodsBuilder;
 use starlark::environment::MethodsStatic;
 use starlark::eval::Evaluator;
 use starlark::starlark_simple_value;
+use starlark::values::Heap;
 use starlark::values::NoSerialize;
 use starlark::values::StarlarkValue;
+use starlark::values::Value;
 use starlark::values::starlark_value;
 
 use crate::bzlmod::eval_thread_context::ModuleExtensionEvalStarlarkThreadContext;
@@ -246,5 +248,27 @@ impl<'v> StarlarkValue<'v> for ModuleCtx {
     fn get_methods() -> Option<&'static Methods> {
         static RES: MethodsStatic = MethodsStatic::new("module_ctx", module_ctx_all_methods);
         Some(RES.methods())
+    }
+
+    // The flag-gated `is_isolated` field (Java `enableOnlyWithFlag =
+    // "-experimental_isolated_extension_usages"`) exists only when the flag is on.
+    fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+        match attribute {
+            "is_isolated" => crate::bzlmod::module_extension_context::is_isolated(&self.fields)
+                .map(|b| heap.alloc(b)),
+            _ => None,
+        }
+    }
+
+    fn has_attr(&self, attribute: &str, _heap: Heap<'v>) -> bool {
+        attribute == "is_isolated"
+            && crate::bzlmod::module_extension_context::is_isolated(&self.fields).is_some()
+    }
+
+    fn dir_attr(&self) -> Vec<String> {
+        match crate::bzlmod::module_extension_context::is_isolated(&self.fields) {
+            Some(_) => vec!["is_isolated".to_owned()],
+            None => Vec::new(),
+        }
     }
 }

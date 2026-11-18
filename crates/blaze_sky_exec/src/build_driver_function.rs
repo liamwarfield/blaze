@@ -5,7 +5,7 @@ use std::sync::Arc;
 use blaze_skyframe::{ComputeError, Environment, SkyKey};
 
 use crate::analysis_seam::{AnalysisSeam, ConfiguredTargetView};
-use crate::events::TopLevelTargetPendingExecutionEvent;
+use crate::events::{TestAnalyzedEvent, TopLevelTargetPendingExecutionEvent};
 use crate::keys::{BuildDriverKey, TargetCompletionKey, TestCompletionKey, TestType};
 
 /// The value of a [`BuildDriverKey`]: the analyzed top-level target and whether it was skipped.
@@ -40,6 +40,19 @@ pub fn compute_build_driver(
             is_test: test_type.is_test(),
         }));
     // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:590 BuildDriverFunction.requestConfiguredTargetExecution
+    if test_type != TestType::NOT_TEST {
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:615 BuildDriverFunction.requestConfiguredTargetExecution
+        env.listener().post(Arc::new(TestAnalyzedEvent {
+            configured_target: configured_target.clone(),
+            configuration_checksum: configured_target
+                .get_configuration_checksum()
+                .expect("NullPointerException: buildConfigurationValue"),
+            configuration_mnemonic: configured_target
+                .get_configuration_mnemonic()
+                .expect("NullPointerException: buildConfigurationValue"),
+            is_skipped: false,
+        }));
+    }
     let completion_key: SkyKey = match test_type {
         TestType::NOT_TEST => SkyKey::new(TargetCompletionKey {
             action_lookup_key: key.action_lookup_key.clone(),

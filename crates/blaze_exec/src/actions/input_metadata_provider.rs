@@ -2,7 +2,7 @@
 //! `RunfilesArtifactValue`, `RunfilesTree`, `FilesetOutputTree`), as far as the execution layer
 //! reads them. Seam with `blaze_actions` / `blaze_sky_exec`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::io;
 use std::sync::Arc;
@@ -10,7 +10,10 @@ use std::sync::Arc;
 use blaze_collect::NestedSet;
 use blaze_vfs::PathFragment;
 
+use blaze_util::Fingerprint;
+
 use super::action_input::ActionInputRef;
+use super::cache::metadata_digest_utils::{MetadataDigestUtils, add_to};
 use super::file_artifact_value::FileArtifactValue;
 
 /// Port of `InputMetadataProvider`: metadata of the inputs of the action being executed.
@@ -108,6 +111,89 @@ impl TreeArtifactValue {
             .as_ref()
             .map(|(a, _)| a.clone())
     }
+
+    /// `TreeArtifactValue.newBuilder(parent)`, `putChild` for each child,
+    /// `setArchivedRepresentation`, `setResolvedPath`, then `build()`: sorts the children and
+    /// computes the aggregate metadata (`getMetadata()`) over them.
+    ///
+    /// PORT: `getMetadata()` is Java's `TreeArtifactCompositeFileArtifactValue(digest,
+    /// entirelyRemote, resolvedPath)`. For a local tree without a resolved path it behaves as
+    /// `FileArtifactValue::HashedDirectory { digest }` in every method the port reads (type
+    /// DIRECTORY, the digest, size 0, not remote, no resolved path); remote or resolved-path
+    /// trees are not ported.
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:686 TreeArtifactValue.Builder.build
+    pub fn build(
+        mut child_values: Vec<(ActionInputRef, FileArtifactValue)>,
+        archived_representation: Option<(ActionInputRef, FileArtifactValue)>,
+        resolved_path: Option<PathFragment>,
+    ) -> TreeArtifactValue {
+        // ImmutableSortedMap<TreeFileArtifact, ...>: TreeFileArtifacts compare by exec path.
+        child_values.sort_by(|(a, _), (b, _)| a.get_exec_path().cmp(b.get_exec_path()));
+        for w in child_values.windows(2) {
+            if w[0].0.get_exec_path() == w[1].0.get_exec_path() {
+                panic!(
+                    "IllegalArgumentException: Multiple entries with same key: {}",
+                    w[0].0
+                );
+            }
+        }
+        if child_values.is_empty() && archived_representation.is_none() && resolved_path.is_none() {
+            // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:195 TreeArtifactValue.EMPTY
+            return TreeArtifactValue {
+                child_values,
+                archived_representation: None,
+                metadata: Some(FileArtifactValue::HashedDirectory {
+                    digest: MetadataDigestUtils::from_metadata(&HashMap::new()),
+                }),
+                resolved_path: None,
+            };
+        }
+
+        let mut fingerprint = Fingerprint::new();
+        let mut entirely_remote = archived_representation
+            .as_ref()
+            .is_none_or(|(_, archived_file_value)| archived_file_value.is_remote());
+
+        for (child, metadata) in &child_values {
+            // Digest will be deterministic because children are sorted.
+            let parent_relative_path = child
+                .as_artifact()
+                .and_then(|a| a.get_parent_relative_path())
+                .unwrap_or_else(|| {
+                    panic!("tree artifact child {} is not a TreeFileArtifact", child)
+                });
+            fingerprint.add_string(parent_relative_path.get_path_string());
+            add_to(metadata, &mut fingerprint);
+
+            // Tolerate a mix of local and remote children (b/152496153#comment80).
+            entirely_remote &= metadata.is_remote();
+        }
+
+        if let Some((_, archived_file_value)) = &archived_representation {
+            add_to(archived_file_value, &mut fingerprint);
+        }
+
+        let digest = fingerprint.digest_and_reset();
+        if entirely_remote || resolved_path.is_some() {
+            blaze_util::unported!(
+                "TreeArtifactValue.getMetadata",
+                "TreeArtifactCompositeFileArtifactValue of a remote tree or one with a resolved path"
+            );
+        }
+        TreeArtifactValue {
+            child_values,
+            archived_representation,
+            metadata: Some(FileArtifactValue::HashedDirectory { digest }),
+            resolved_path,
+        }
+    }
+
+    /// `getDigest()`: the digest of [`TreeArtifactValue::build`] (`None` for values not built
+    /// through it).
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:335 TreeArtifactValue.getDigest
+    pub fn get_digest(&self) -> Option<&[u8]> {
+        self.metadata.as_ref().and_then(|m| m.get_digest())
+    }
 }
 
 /// Port of `RunfilesTree`: a runfiles tree as an input.
@@ -162,4 +248,158 @@ pub struct FilesetOutputSymlink {
 #[derive(Debug, Clone, Default)]
 pub struct FilesetOutputTree {
     pub symlinks: Vec<FilesetOutputSymlink>,
+}
+
+/// Port of (the digest part of) `TreeArtifactValueTest`.
+#[cfg(test)]
+mod tree_artifact_value_test {
+    use std::any::Any;
+
+    use blaze_vfs::PathFragment;
+
+    use super::TreeArtifactValue;
+    use crate::actions::action_input::{ActionInput, ActionInputRef, Artifact};
+    use crate::actions::file_artifact_value::FileArtifactValue;
+
+    /// A `TreeFileArtifact` under `bin/tree`.
+    #[derive(Debug)]
+    struct TreeFile {
+        exec_path: PathFragment,
+        parent_relative_path: PathFragment,
+    }
+
+    impl ActionInput for TreeFile {
+        fn get_exec_path(&self) -> &PathFragment {
+            &self.exec_path
+        }
+        fn is_directory(&self) -> bool {
+            false
+        }
+        fn is_symlink(&self) -> bool {
+            false
+        }
+        fn as_artifact(&self) -> Option<&dyn Artifact> {
+            Some(self)
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    impl Artifact for TreeFile {
+        fn is_source_artifact(&self) -> bool {
+            false
+        }
+        fn is_tree_artifact(&self) -> bool {
+            false
+        }
+        fn is_runfiles_tree(&self) -> bool {
+            false
+        }
+        fn is_fileset(&self) -> bool {
+            false
+        }
+        fn is_child_of_declared_directory(&self) -> bool {
+            true
+        }
+        fn get_parent_relative_path(&self) -> Option<PathFragment> {
+            Some(self.parent_relative_path.clone())
+        }
+        fn get_root_relative_path(&self) -> PathFragment {
+            PathFragment::create("tree").get_relative(&self.parent_relative_path)
+        }
+        fn get_root_exec_path(&self) -> PathFragment {
+            PathFragment::create("bin")
+        }
+    }
+
+    /// `TreeFileArtifact.createTreeOutput(parent, relative)` for the parent `bin/tree`.
+    fn create_tree_output(relative: &str) -> ActionInputRef {
+        ActionInputRef::new(TreeFile {
+            exec_path: PathFragment::create("bin/tree")
+                .get_relative(&PathFragment::create(relative)),
+            parent_relative_path: PathFragment::create(relative),
+        })
+    }
+
+    /// `metadataWithId(id)`.
+    fn metadata_with_id(id: u8) -> FileArtifactValue {
+        FileArtifactValue::create_for_normal_file(Some(vec![id]), None, id as i64)
+    }
+
+    #[test]
+    fn creates_correct_value() {
+        let child1 = create_tree_output("child1");
+        let child2 = create_tree_output("child2");
+        let tree = TreeArtifactValue::build(
+            vec![
+                (child1.clone(), metadata_with_id(1)),
+                (child2.clone(), metadata_with_id(2)),
+            ],
+            None,
+            None,
+        );
+        assert_eq!(tree.get_children(), vec![child1, child2]);
+        assert!(tree.get_digest().is_some());
+        assert_eq!(
+            tree.metadata.as_ref().unwrap().get_digest(),
+            tree.get_digest()
+        );
+    }
+
+    #[test]
+    #[ignore = "needs ArchivedTreeArtifact (not ported)"]
+    fn creates_correct_value_with_archived_representation() {}
+
+    #[test]
+    #[ignore = "needs TreeArtifactCompositeFileArtifactValue with a resolved path (not ported)"]
+    fn creates_correct_value_with_resolved_path() {}
+
+    #[test]
+    fn empty() {
+        let tree = TreeArtifactValue::build(Vec::new(), None, None);
+        assert!(tree.get_children().is_empty());
+        assert!(tree.get_digest().is_some());
+        assert_eq!(
+            tree.metadata.as_ref().unwrap().get_digest(),
+            tree.get_digest()
+        );
+    }
+
+    #[test]
+    fn creates_canonical_empty_instance() {
+        let a = TreeArtifactValue::build(Vec::new(), None, None);
+        let b = TreeArtifactValue::build(Vec::new(), None, None);
+        assert_eq!(a.get_digest(), b.get_digest());
+    }
+
+    #[test]
+    fn order_independence() {
+        let child1 = create_tree_output("child1");
+        let child2 = create_tree_output("child2");
+        let tree1 = TreeArtifactValue::build(
+            vec![
+                (child1.clone(), metadata_with_id(1)),
+                (child2.clone(), metadata_with_id(2)),
+            ],
+            None,
+            None,
+        );
+        let tree2 = TreeArtifactValue::build(
+            vec![(child2, metadata_with_id(2)), (child1, metadata_with_id(1))],
+            None,
+            None,
+        );
+        assert_eq!(tree1.get_digest(), tree2.get_digest());
+        assert_eq!(tree1.get_children(), tree2.get_children());
+    }
+
+    /// Changing a child's contents changes the tree's digest (what the action cache relies on).
+    #[test]
+    fn child_metadata_change_changes_digest() {
+        let child1 = create_tree_output("child1");
+        let a = TreeArtifactValue::build(vec![(child1.clone(), metadata_with_id(1))], None, None);
+        let b = TreeArtifactValue::build(vec![(child1, metadata_with_id(2))], None, None);
+        assert_ne!(a.get_digest(), b.get_digest());
+    }
 }

@@ -80,11 +80,8 @@ fn get_numeric_exit_code(failure_detail: &FailureDetail) -> i32 {
         Some(Category::ConfigurableQuery(q)) => configurable_query_code_exit_code(q.code()),
         Some(Category::PackageLoading(p)) => package_loading_code_exit_code(p.code),
         Some(Category::TargetPatterns(t)) => target_patterns_code_exit_code(t.code),
-        _ => blaze_util::unported!(
-            "DetailedExitCode.getNumericExitCode",
-            "exit code metadata of {:?}",
-            failure_detail.category
-        ),
+        // The generated FailureDetails metadata of every other category.
+        _ => blaze_util::DetailedExitCode::get_numeric_exit_code(failure_detail),
     }
 }
 

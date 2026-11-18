@@ -11,8 +11,11 @@ use blaze_actions::actions::action::ActionRef;
 use blaze_actions::{ActionLookupData, Artifact};
 use blaze_cmdline::Label;
 use blaze_events::Postable;
+use blaze_exec::actions::file_artifact_value::FileArtifactValue;
 use blaze_exec::actions::{ActionExecutionException, ActionResult};
 use blaze_vfs::{Path, PathFragment};
+
+use crate::analysis_seam::ConfiguredTargetView;
 
 /// This event is fired during the build, when an action is started.
 // Java: com/google/devtools/build/lib/actions/ActionStartedEvent.java:24 ActionStartedEvent
@@ -78,6 +81,44 @@ pub struct TargetCompleteEvent {
     pub output_groups: Vec<(String, Vec<Artifact>)>,
     pub is_test: bool,
     pub failed: bool,
+    /// `artifactsToBuild.getAllArtifactsByOutputGroup()` (succeeded) or the
+    /// `SuccessfulArtifactFilter`-filtered groups (failed), in order.
+    pub artifacts_by_output_group: Vec<(String, ArtifactsInOutputGroup)>,
+    /// The `CompletionContext`'s important input map: metadata of the built important artifacts.
+    pub important_input_map: Vec<(Artifact, FileArtifactValue)>,
+    /// Important tree artifacts with their metadata and their children's.
+    pub important_tree_artifacts: Vec<(
+        Artifact,
+        FileArtifactValue,
+        Vec<(Artifact, FileArtifactValue)>,
+    )>,
+    /// `getRootCauses()` with their failure details (failed targets).
+    pub root_cause_details: Vec<CompletionRootCause>,
+}
+
+/// `TargetCompleteEvent.ArtifactsInOutputGroup`: an output group's artifacts.
+// Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:85 TopLevelArtifactHelper.ArtifactsInOutputGroup
+#[derive(Clone, Debug)]
+pub struct ArtifactsInOutputGroup {
+    pub artifacts: blaze_collect::NestedSet<Artifact>,
+    pub important: bool,
+    pub incomplete: bool,
+}
+
+/// A root cause of a failed top-level target (Java `Cause`: `ActionFailed` or `LabelCause`).
+// Java: com/google/devtools/build/lib/causes/Cause.java:26 Cause
+#[derive(Clone, Debug, PartialEq)]
+pub enum CompletionRootCause {
+    ActionFailed {
+        exec_path: blaze_vfs::PathFragment,
+        label: Option<Label>,
+        configuration_checksum: Option<String>,
+        failure_detail: blaze_protos::failure_details::FailureDetail,
+    },
+    Label {
+        label: Label,
+        failure_detail: blaze_protos::failure_details::FailureDetail,
+    },
 }
 
 impl TargetCompleteEvent {
@@ -93,6 +134,23 @@ impl TargetCompleteEvent {
 pub struct TopLevelTargetPendingExecutionEvent {
     pub label: Label,
     pub is_test: bool,
+}
+
+/// Posted when a top-level test target finished analysis (Skymeld), before its tests are
+/// requested; `AggregatingTestListener.populateTest` creates the target's aggregator from it.
+///
+/// PORT: Java holds the `BuildConfigurationValue`; the test summary classes read its
+/// `checksum()` and `getMnemonic()` only (`ConfigurationView`), and this crate sits below the
+/// configuration crate, so the event carries those two values.
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:185 TopLevelStatusEvents.TestAnalyzedEvent
+#[derive(Clone, Debug)]
+pub struct TestAnalyzedEvent {
+    pub configured_target: Arc<dyn ConfiguredTargetView>,
+    /// `buildConfigurationValue().checksum()`.
+    pub configuration_checksum: String,
+    /// `buildConfigurationValue().getMnemonic()`.
+    pub configuration_mnemonic: String,
+    pub is_skipped: bool,
 }
 
 /// Posted when a top-level target was built (Skymeld).
@@ -125,6 +183,7 @@ postable! {
 impl Postable for TargetCompleteEvent {}
 impl Postable for TopLevelTargetPendingExecutionEvent {}
 impl Postable for TopLevelTargetBuiltEvent {}
+impl Postable for TestAnalyzedEvent {}
 
 /// Downcasts a posted event (`Arc<dyn Postable>`) to `T`.
 pub fn downcast_event<T: 'static>(event: &Arc<dyn Postable>) -> Option<&T> {

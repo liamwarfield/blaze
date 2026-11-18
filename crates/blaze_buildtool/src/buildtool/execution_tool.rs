@@ -7,7 +7,17 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Instant;
 
 use blaze_actions::Artifact;
-use blaze_events::{Event, EventBus, EventHandler, ExtendedEventHandler, Postable};
+use blaze_actions::actions::artifact_factory::ArtifactFactory;
+use blaze_events::{
+    Event, EventBus, EventHandler, ExtendedEventHandler, JavaClock, OutputFilter, Postable,
+};
+use blaze_exec::actions::CacheCheckAction;
+use blaze_exec::actions::action_cache_checker::{
+    ActionCacheChecker, ActionCacheCheckerCacheConfig, ExecutionFilter, NoProxies,
+};
+use blaze_exec::actions::cache::{
+    ActionCache, ActionCacheStatistics, CompactPersistentActionCache, PostableActionCacheStats,
+};
 use blaze_exec::actions::resource_manager::{ResourceManager, configure_resource_manager};
 use blaze_exec::exec::bin_tools::BinTools;
 use blaze_exec::exec::exec_command_environment::ExecCommandEnvironment;
@@ -24,7 +34,8 @@ use blaze_sky_exec::events::{
 };
 use blaze_sky_exec::keys::{BuildDriverKey, artifact_key};
 use blaze_sky_exec::skyframe_action_executor::{
-    ActionContexts, OutputPermissions, SkyframeActionExecutor, SkyframeActionExecutorConfig,
+    ActionCacheSetup, ActionContexts, ArtifactFactoryResolver, ContainingPackageRootLookup,
+    OutputPermissions, SkyframeActionExecutor, SkyframeActionExecutorConfig,
 };
 use blaze_skyframe::{EvaluationContext, EvaluationResult, Evaluator, Interrupted, SkyKey};
 use blaze_vfs::{FileSystemRef, Path};
@@ -44,6 +55,25 @@ pub struct ExecutionToolConfig {
     pub verbose_failures: bool,
     /// `--jobs`.
     pub jobs: usize,
+    /// The command's `ExecutionOptions`, `SandboxOptions` and `LocalExecutionOptions` (`None`:
+    /// the defaults, with `verbose_failures` from above).
+    pub execution_options: Option<ExecutionOptions>,
+    pub sandbox_options: Option<SandboxOptions>,
+    pub local_execution_options: Option<LocalExecutionOptions>,
+    /// `pkgLocator.getPathEntries()` (the sandbox mounts those under /tmp).
+    pub package_path_entries: Vec<Path>,
+    /// `--repo_contents_cache` (the sandbox mounts it when under /tmp).
+    pub repo_contents_cache_path: Option<Path>,
+    /// `--test_arg`s (`TestOptions.testArguments`).
+    pub test_arguments: Vec<String>,
+    /// `BlazeDirectories.getActionTempsDirectory(execRoot)`:
+    /// `<execroot>/bazel-out/_tmp/actions`, where action stdout/stderr files live.
+    pub action_temps_directory: Path,
+    /// `--experimental_writable_outputs` (`CoreOptions.experimentalWritableOutputs`).
+    pub writable_outputs: bool,
+    /// The reporter's `OutputFilter` from `--output_filter` / `--auto_output_filter`
+    /// (`Reporter.setOutputFilter`); `None` is `OutputFilter.OUTPUT_EVERYTHING`.
+    pub output_filter: Option<Arc<dyn OutputFilter>>,
 }
 
 /// `BuildSummaryStatsModule` + the `UiStateTracker` counters, as an event-bus subscriber.
@@ -79,6 +109,10 @@ impl EventBus for ExecutionEventCollector {
             self.spawn_stats.increment_action_count();
             // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:620 UiStateTracker.actionCompletion
             self.actions_completed.fetch_add(1, Ordering::SeqCst);
+        } else if let Some(e) = downcast_event::<PostableActionCacheStats>(&event) {
+            // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:149 BuildSummaryStatsModule.actionCacheStats
+            self.spawn_stats
+                .record_action_cache_stats(e.as_proto().hits);
         } else if let Some(e) = downcast_event::<TargetCompleteEvent>(&event) {
             self.target_complete_events.lock().push(e.clone());
         }
@@ -94,12 +128,89 @@ pub struct PreparedExecution {
     pub executor: Arc<SkyframeActionExecutor>,
     pub sandbox_module: SandboxModule,
     pub spawn_log_context: Option<Arc<dyn SpawnLogContext>>,
+    /// The persistent action cache (`BlazeWorkspace.getOrLoadPersistentActionCache`), `None` with
+    /// `--nouse_action_cache`.
+    pub action_cache: Option<Arc<dyn ActionCache>>,
+    pub action_cache_checker: Arc<ActionCacheChecker>,
+}
+
+impl PreparedExecution {
+    /// Writes the action cache files to disk, reporting any errors that occurred during writing
+    /// and capturing statistics: posts `PostableActionCacheStats` (which
+    /// [`ExecutionEventCollector`] records for the `N processes: ... action cache hit` line).
+    /// Call once after the execution phase, before the build summary (Java calls it from
+    /// `ExecutionTool.nonCatastrophicFinalizations`, before `BuildCompleteEvent`).
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:973 ExecutionTool.saveActionCache
+    pub fn save_action_cache(&self, reporter: &dyn ExtendedEventHandler) {
+        let mut builder = ActionCacheStatistics::default();
+
+        if let Some(action_cache) = &self.action_cache {
+            action_cache.merge_into_action_cache_statistics(&mut builder);
+            if let Some(duration) = action_cache.get_load_time() {
+                builder.load_time_in_ms = duration.as_millis() as u64;
+            }
+            let total_cache_check_semaphore_wait_millis = self
+                .action_cache_checker
+                .get_total_cache_check_semaphore_wait_millis();
+            if total_cache_check_semaphore_wait_millis > 0 {
+                builder.cache_check_semaphore_wait_time_in_ms =
+                    total_cache_check_semaphore_wait_millis as u64;
+            }
+
+            let start = Instant::now();
+            match action_cache.save() {
+                Ok(size) => builder.size_in_bytes = size as u64,
+                Err(e) => {
+                    builder.size_in_bytes = 0;
+                    reporter.handle(&Event::error(format!(
+                        "I/O error while writing action log: {e}"
+                    )));
+                }
+            }
+            builder.save_time_in_ms = start.elapsed().as_millis() as u64;
+        }
+        reporter.post(Arc::new(PostableActionCacheStats::new(builder)));
+    }
+}
+
+/// What `ExecutionTool` reads to set up the action cache of a build.
+pub struct ActionCacheOptions {
+    /// `--use_action_cache` (`BuildRequestOptions.useActionCache`, default true).
+    pub use_action_cache: bool,
+    /// `--explain` is set (`BuildRequestOptions.explanationPath != null`).
+    pub explain: bool,
+    /// `--check_up_to_date` (`ExecutionOptions.checkUpToDate`).
+    pub check_up_to_date: bool,
+    /// `--check_tests_up_to_date` (`ExecutionOptions.testCheckUpToDate`).
+    pub test_check_up_to_date: bool,
+    /// `env.getSkyframeBuildView().getArtifactFactory()`: resolves the source inputs that
+    /// input-discovering actions (C++ compiles) recorded in the action cache.
+    pub artifact_factory: Option<Arc<ArtifactFactory>>,
+    /// The `CONTAINING_PACKAGE_LOOKUP` requests of `PackageRootResolverWithEnvironment`, needed
+    /// when a cached input is not a source artifact analysis already created.
+    pub containing_package_root_lookup: Option<Arc<dyn ContainingPackageRootLookup>>,
+}
+
+impl Default for ActionCacheOptions {
+    fn default() -> Self {
+        ActionCacheOptions {
+            use_action_cache: true,
+            explain: false,
+            check_up_to_date: false,
+            test_check_up_to_date: false,
+            artifact_factory: None,
+            containing_package_root_lookup: None,
+        }
+    }
 }
 
 /// `ExecutionTool.<init>` + `prepareForExecution`: creates the action log directory, builds the
 /// spawn strategy registry (`linux-sandbox` first on Linux) and the `SkyframeActionExecutor`.
 /// `register_contexts` adds the action contexts other crates own (`FileWriteActionContext`,
 /// `SymlinkTreeActionContext`, `TestActionContext`, ...).
+///
+/// The action cache is disabled (`--nouse_action_cache`), as before the action cache was wired;
+/// builds use [`prepare_for_execution_with_action_cache`].
 // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:151 ExecutionTool.<init>
 // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:264 ExecutionTool.prepareForExecution
 pub fn prepare_for_execution(
@@ -108,15 +219,72 @@ pub fn prepare_for_execution(
     spawn_log_context: Option<Arc<dyn SpawnLogContext>>,
     register_contexts: &dyn Fn(&mut ActionContexts, &ExecCommandEnvironment),
 ) -> Result<PreparedExecution, String> {
-    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:956 ExecutionTool.createActionLogDirectory
-    let action_out_dir = config.output_base.get_child("action_outs");
-    let _ = action_out_dir.delete_tree();
-    action_out_dir
-        .create_directory_and_parents()
-        .map_err(|e| format!("Couldn't delete action output directory: {e}"))?;
+    prepare_for_execution_with_action_cache(
+        config,
+        reporter,
+        spawn_log_context,
+        register_contexts,
+        ActionCacheOptions {
+            use_action_cache: false,
+            ..ActionCacheOptions::default()
+        },
+    )
+}
 
-    let mut execution_options = Options::<ExecutionOptions>::get_defaults();
-    execution_options.verbose_failures = config.verbose_failures;
+/// [`prepare_for_execution`] with the action cache: loads `<output_base>/action_cache` when
+/// `--use_action_cache` (`BlazeWorkspace.getOrLoadPersistentActionCache`, then
+/// `resetStatistics`) and builds the `ActionCacheChecker` (`ExecutionTool.createBuilder`). After
+/// the execution phase call [`PreparedExecution::save_action_cache`].
+///
+/// An `Err` that starts with `Couldn't create action cache: ` is Java's `AbruptExitException`
+/// with `FailureDetails.ActionCache.Code.INITIALIZATION_FAILURE`.
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:264 ExecutionTool.prepareForExecution
+pub fn prepare_for_execution_with_action_cache(
+    config: &ExecutionToolConfig,
+    reporter: Arc<dyn ExtendedEventHandler>,
+    spawn_log_context: Option<Arc<dyn SpawnLogContext>>,
+    register_contexts: &dyn Fn(&mut ActionContexts, &ExecCommandEnvironment),
+    action_cache_options: ActionCacheOptions,
+) -> Result<PreparedExecution, String> {
+    let action_out_dir = create_action_log_directory(config)?;
+
+    let mut action_cache: Option<Arc<dyn ActionCache>> = None;
+    if action_cache_options.use_action_cache {
+        let cache = get_or_load_action_cache(&config.output_base, &*reporter)?;
+        cache.reset_statistics();
+        action_cache = Some(cache);
+    }
+    let execution_options = match &config.execution_options {
+        Some(o) => o.clone(),
+        None => {
+            let mut o = Options::<ExecutionOptions>::get_defaults();
+            o.verbose_failures = config.verbose_failures;
+            o
+        }
+    };
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:915 ExecutionTool.createBuilder
+    // PORT: the ActionCacheOptions flags are kept for callers that set them there.
+    let execution_filter = check_up_to_date_filter_from_options(
+        execution_options.test_check_up_to_date || action_cache_options.test_check_up_to_date,
+        execution_options.check_up_to_date || action_cache_options.check_up_to_date,
+    );
+    // LocalOutputService: no proxy metadata, no remote output metadata in the action cache.
+    let action_cache_checker = Arc::new(ActionCacheChecker::new(
+        action_cache.clone(),
+        Arc::new(ArtifactFactoryResolver(
+            action_cache_options.artifact_factory.clone(),
+        )),
+        execution_filter,
+        Arc::new(NoProxies),
+        Some(
+            ActionCacheCheckerCacheConfig::builder()
+                .set_enabled(action_cache_options.use_action_cache)
+                .set_store_output_metadata(false)
+                .build(),
+        ),
+    ));
+
+    let show_subcommands = execution_options.show_subcommands;
     let bin_tools = Arc::new(
         BinTools::for_production(config.install_base.clone())
             .map_err(|e| format!("cannot read the install base: {e}"))?,
@@ -127,17 +295,27 @@ pub fn prepare_for_execution(
         output_base: config.output_base.clone(),
         client_env: config.client_env.clone(),
         bin_tools,
-        sandbox_options: Arc::new(Options::<SandboxOptions>::get_defaults()),
+        sandbox_options: Arc::new(
+            config
+                .sandbox_options
+                .clone()
+                .unwrap_or_else(Options::<SandboxOptions>::get_defaults),
+        ),
         execution_options: Arc::new(execution_options),
-        local_execution_options: Arc::new(Options::<LocalExecutionOptions>::get_defaults()),
+        local_execution_options: Arc::new(
+            config
+                .local_execution_options
+                .clone()
+                .unwrap_or_else(Options::<LocalExecutionOptions>::get_defaults),
+        ),
         remote_options: Arc::new(Options::get_defaults()),
         dynamic_execution_options: Arc::new(Options::get_defaults()),
         worker_options: Arc::new(Options::get_defaults()),
         resource_manager: ResourceManager::new(),
         reporter: reporter.clone() as Arc<dyn EventHandler>,
-        package_path_entries: vec![],
-        repo_contents_cache_path: None,
-        test_arguments: Vec::new(),
+        package_path_entries: config.package_path_entries.clone(),
+        repo_contents_cache_path: config.repo_contents_cache_path.clone(),
+        test_arguments: config.test_arguments.clone(),
     };
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:1010 ExecutionTool.configureResourceManager
     configure_resource_manager(&env.resource_manager, &env.execution_options);
@@ -150,7 +328,7 @@ pub fn prepare_for_execution(
     contexts.spawn_log_context = spawn_log_context.clone();
     contexts.spawn_cache = Some(blaze_exec::exec::action_execution_context::no_cache());
     register_contexts(&mut contexts, &env);
-    let executor = Arc::new(SkyframeActionExecutor::new(SkyframeActionExecutorConfig {
+    let mut executor = SkyframeActionExecutor::new(SkyframeActionExecutorConfig {
         exec_root: config.exec_root.clone(),
         action_out_dir,
         reporter,
@@ -158,13 +336,105 @@ pub fn prepare_for_execution(
         client_env: config.client_env.clone(),
         keep_going: config.keep_going,
         verbose_failures: config.verbose_failures,
-        output_permissions: OutputPermissions::READONLY,
-    }));
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:452 SkyframeActionExecutor.getOutputPermissions
+        output_permissions: if config.writable_outputs {
+            OutputPermissions::WRITABLE
+        } else {
+            OutputPermissions::READONLY
+        },
+    })
+    .with_action_cache(ActionCacheSetup {
+        action_cache_checker: action_cache_checker.clone(),
+        // ExecutorBuilder.getActionExecutionSalt(): no module sets a salt.
+        action_execution_salt: String::new(),
+        explain: action_cache_options.explain,
+        containing_package_root_lookup: action_cache_options.containing_package_root_lookup,
+    })
+    .with_show_subcommands(show_subcommands);
+    if let Some(output_filter) = &config.output_filter {
+        executor = executor.with_output_filter(output_filter.clone());
+    }
+    let executor = Arc::new(executor);
     Ok(PreparedExecution {
         executor,
         sandbox_module,
         spawn_log_context,
+        action_cache,
+        action_cache_checker,
     })
+}
+
+/// Creates the directory for the actions' stdout/stderr files, deleting an existing one.
+///
+/// PORT: no `BulkDeleter` (remote output service) is ported, so the tree is deleted directly. An
+/// `Err` is Java's `AbruptExitException` with `Execution.Code
+/// .TEMP_ACTION_OUTPUT_DIRECTORY_DELETION_FAILURE` / `..._CREATION_FAILURE`.
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:667 ExecutionTool.createActionLogDirectory
+fn create_action_log_directory(config: &ExecutionToolConfig) -> Result<Path, String> {
+    let directory = config.action_temps_directory.clone();
+    if directory.exists()
+        && let Err(e) = directory.delete_tree()
+    {
+        // PORT: logDeleteTreeFailure (logging) is not ported.
+        return Err(format!("Couldn't delete action output directory: {e}"));
+    }
+
+    if let Err(e) = directory.create_directory_and_parents() {
+        return Err(format!("Couldn't create action output directory: {e}"));
+    }
+    Ok(directory)
+}
+
+/// Determines an execution filter based on the --check_up_to_date and --check_tests_up_to_date
+/// options.
+// Java: com/google/devtools/build/lib/exec/CheckUpToDateFilter.java:32 CheckUpToDateFilter.fromOptions
+fn check_up_to_date_filter_from_options(
+    test_check_up_to_date: bool,
+    check_up_to_date: bool,
+) -> ExecutionFilter {
+    if !test_check_up_to_date && !check_up_to_date {
+        return Box::new(|_: &dyn CacheCheckAction| true);
+    }
+    // Java: com/google/devtools/build/lib/exec/CheckUpToDateFilter.java:46 CheckUpToDateFilter.<init>
+    // If we want to check whether test is up-to-date, we should disallow test execution.
+    let allow_test_action_execution = !test_check_up_to_date;
+    // Build action execution should be prohibited in two cases - if we are checking whether
+    // build is up-to-date or if we are checking that tests are up-to-date (and test execution is
+    // not allowed).
+    let allow_build_action_execution = allow_test_action_execution && !check_up_to_date;
+    // Java: com/google/devtools/build/lib/exec/CheckUpToDateFilter.java:64 CheckUpToDateFilter.apply
+    Box::new(move |action: &dyn CacheCheckAction| {
+        if action.is_test_runner_action() {
+            allow_test_action_execution
+        } else {
+            allow_build_action_execution
+        }
+    })
+}
+
+/// Get action cache if present or reload it from the on-disk cache
+/// (`BlazeWorkspace.getOrLoadPersistentActionCache`: `<output_base>/action_cache`, with
+/// `action_cache.bad` and `action_cache.tmp`).
+///
+/// PORT: Blaze runs one command per server process, so the cache is always loaded from disk.
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:896 ExecutionTool.getOrLoadActionCache
+// Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:387 BlazeWorkspace.getOrLoadPersistentActionCache
+fn get_or_load_action_cache(
+    output_base: &Path,
+    reporter: &dyn ExtendedEventHandler,
+) -> Result<Arc<dyn ActionCache>, String> {
+    match CompactPersistentActionCache::create(
+        &output_base.get_child("action_cache"),
+        &output_base.get_child("action_cache.bad"),
+        &output_base.get_child("action_cache.tmp"),
+        Arc::new(JavaClock),
+        reporter as &dyn EventHandler,
+    ) {
+        Ok(cache) => Ok(Arc::new(cache)),
+        Err(e) => Err(format!(
+            "Couldn't create action cache: {e}. If error persists, use 'bazel clean'."
+        )),
+    }
 }
 
 /// The outcome of the execution phase.
@@ -191,6 +461,13 @@ pub fn evaluate_build_driver_keys(
         keep_going: config.keep_going,
         parallelism: config.jobs,
         event_handler: reporter,
+        // PORT: Blaze only (see EvaluationContext::thread_stack_size). Spawns fork the process
+        // (blaze_shell's JavaProcess runs Java's child-side steps in a pre_exec hook), and with
+        // the kernel's heuristic overcommit a fork must account every writable private mapping
+        // of the parent, including the reserved evaluator thread stacks: hundreds of threads at
+        // the analysis default (256 MB) exceed RAM and the fork fails with ENOMEM. The execution
+        // phase evaluates no BUILD/.bzl code that needs deep native stacks.
+        thread_stack_size: 16 << 20,
         ..EvaluationContext::default()
     };
     let evaluation = evaluator.evaluate(&roots, &ctx)?;

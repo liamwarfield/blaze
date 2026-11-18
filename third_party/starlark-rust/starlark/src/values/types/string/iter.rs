@@ -56,6 +56,7 @@ struct StringIterableGen<'v, V: ValueLike<'v>> {
     produce_char: bool, // if not char, then int
 }
 
+#[allow(dead_code)] // BLAZE PATCH 0005: `elems` returns a list
 pub(crate) fn iterate_chars<'v>(
     string: StringValue<'v>,
     heap: Heap<'v>,

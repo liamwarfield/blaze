@@ -34,9 +34,28 @@ pub struct AnalysisResult {
     failure_detail: Option<FailureDetail>,
     walkable_graph: Arc<dyn WalkableGraph>,
     top_level_targets_with_configs: Vec<TargetAndConfiguration>,
+    /// The counters of the `AnalysisPhaseCompleteEvent`.
+    analysis_phase_complete_stats: AnalysisPhaseCompleteStats,
+    /// The `AnalysisGraphStatsEvent`'s metrics (`None`: conflicts were not checked, no event).
+    build_graph_metrics: Option<blaze_protos::build_event_stream::build_metrics::BuildGraphMetrics>,
 }
 
 impl AnalysisResult {
+    /// The analysis phase's counters (Java `AnalysisPhaseCompleteEvent`'s).
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:253 BuildView.update
+    pub fn get_analysis_phase_complete_stats(&self) -> &AnalysisPhaseCompleteStats {
+        &self.analysis_phase_complete_stats
+    }
+
+    /// The `BuildGraphMetrics` of the `AnalysisGraphStatsEvent` (`None` when the analysis did not
+    /// check for action conflicts, so no event was posted).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:454 SkyframeBuildView.configureTargets
+    pub fn get_build_graph_metrics(
+        &self,
+    ) -> Option<&blaze_protos::build_event_stream::build_metrics::BuildGraphMetrics> {
+        self.build_graph_metrics.as_ref()
+    }
+
     // Java: com/google/devtools/build/lib/analysis/AnalysisResult.java:92 AnalysisResult.getConfiguration
     pub fn get_configuration(&self) -> &Arc<BuildConfigurationValue> {
         &self.configuration
@@ -129,6 +148,9 @@ pub fn update(
     options: &BuildViewUpdateOptions,
     event_handler: Arc<dyn ExtendedEventHandler>,
 ) -> Result<AnalysisResult, BuildViewError> {
+    // AnalysisPhaseRunner.runAnalysisPhase: Stopwatch timer = Stopwatch.createStarted().
+    // PORT: the analysis timer runs over BuildView.update (Java starts it just before).
+    let timer = std::time::Instant::now();
     let label_to_target_map = construct_label_to_target_map(skyframe_executor, loading_result);
     // PORT: AnalysisPhaseStartedEvent is not posted (event bus).
 
@@ -206,16 +228,24 @@ pub fn update(
     // disables it and no incompatible top-level targets are skipped.
     let targets_to_skip: Vec<ConfiguredTarget> = Vec::new();
 
+    // The counters of AnalysisPhaseRunner's AnalysisPhaseCompleteEvent.
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:431 AnalysisPhaseRunner.runAnalysisPhase
+    let analysis_phase_complete_stats = skyframe_build_view::get_evaluated_counts(
+        skyframe_executor.get_evaluator(),
+        timer.elapsed().as_millis() as i64,
+    );
+
     Ok(create_result(
         loading_result,
         top_level_config,
         skyframe_analysis_result,
         targets_to_skip,
+        analysis_phase_complete_stats,
     ))
 }
 
 // Java: com/google/devtools/build/lib/analysis/BuildView.java:517 BuildView.constructLabelToTargetMap
-fn construct_label_to_target_map(
+pub fn construct_label_to_target_map(
     skyframe_executor: &SkyframeExecutor,
     loading_result: &TargetPatternPhaseValue,
 ) -> IndexMap<Label, Target> {
@@ -243,6 +273,7 @@ fn create_result(
     configuration: Arc<BuildConfigurationValue>,
     skyframe_analysis_result: SkyframeAnalysisResult,
     targets_to_skip: Vec<ConfiguredTarget>,
+    analysis_phase_complete_stats: AnalysisPhaseCompleteStats,
 ) -> AnalysisResult {
     let tests_to_run = loading_result.get_tests_to_run_labels();
     let configured_targets: Vec<ConfiguredTarget> =
@@ -264,6 +295,8 @@ fn create_result(
         top_level_targets_with_configs: skyframe_analysis_result
             .get_targets_with_configuration()
             .to_vec(),
+        analysis_phase_complete_stats,
+        build_graph_metrics: skyframe_analysis_result.get_build_graph_metrics().cloned(),
     }
 }
 
@@ -324,4 +357,17 @@ mod tests {
     #[test]
     #[ignore = "needs the BuildViewTestCase analysis harness (configured target functions)"]
     fn test_rule_configured_target() {}
+}
+
+/// The counters of `AnalysisPhaseCompleteEvent`.
+// Java: com/google/devtools/build/lib/analysis/AnalysisPhaseCompleteEvent.java:30 AnalysisPhaseCompleteEvent
+#[derive(Clone, Debug, Default)]
+pub struct AnalysisPhaseCompleteStats {
+    pub actions_constructed_total: i32,
+    pub actions_constructed_configured_targets_only: i32,
+    pub targets_configured_total: i32,
+    pub targets_configured_configured_targets_only: i32,
+    pub time_in_ms: i64,
+    pub packages_successfully_loaded: i32,
+    pub actions_constructed_by_mnemonic: Vec<(String, i32)>,
 }

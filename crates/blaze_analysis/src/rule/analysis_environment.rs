@@ -68,6 +68,8 @@ pub struct CachingAnalysisEnvironment {
     main_repo_mapping: Option<RepositoryMapping>,
     /// PORT: Java requests `WorkspaceStatusValue.BUILD_INFO_KEY` on demand; the caller passes it.
     workspace_status: Option<WorkspaceStatusArtifacts>,
+    /// Whether a rule read the workspace status (Java's BUILD_INFO_KEY dependency).
+    workspace_status_requested: std::sync::atomic::AtomicBool,
     /// PORT: Java's `getSkyframeEnv()` gives rule factories the Skyframe environment; the only
     /// use (`ConstraintSetting.validateDefaultConstraintValue`) reads the `PackageValue` of the
     /// current target's package, which is always already computed. The caller passes that
@@ -102,6 +104,7 @@ impl CachingAnalysisEnvironment {
             starlark_defined_builtins,
             main_repo_mapping,
             workspace_status,
+            workspace_status_requested: std::sync::atomic::AtomicBool::new(false),
             current_package,
             state: Mutex::new(State {
                 enabled: true,
@@ -400,8 +403,19 @@ impl CachingAnalysisEnvironment {
         Ok(self.get_workspace_status_value()?.volatile_artifact.clone())
     }
 
+    /// Whether the workspace status was read, so that the caller requests its node.
+    pub fn was_workspace_status_requested(&self) -> bool {
+        self.workspace_status_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     // Java: com/google/devtools/build/lib/analysis/CachingAnalysisEnvironment.java:359 CachingAnalysisEnvironment.getWorkspaceStatusValue
     fn get_workspace_status_value(&self) -> Result<&WorkspaceStatusArtifacts, MissingDepException> {
+        // PORT: Java requests WorkspaceStatusValue.BUILD_INFO_KEY here; the artifacts are
+        // precomputed and the configured target function registers the dependency afterwards
+        // (see `was_workspace_status_requested`).
+        self.workspace_status_requested
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.workspace_status
             .as_ref()
             .ok_or_else(|| MissingDepException("Restart due to missing build info".to_owned()))
