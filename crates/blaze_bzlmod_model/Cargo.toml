@@ -1,0 +1,19 @@
+[package]
+name = "blaze_bzlmod_model"
+description = "Starlark-independent core of Bazel's lib/bazel/bzlmod: Version, ModuleKey, InterimModule, Selection, Discovery, IndexRegistry, lockfile."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_util = { path = "../blaze_util" }
+blaze_cmdline = { path = "../blaze_cmdline" }
+blaze_vfs = { path = "../blaze_vfs" }
+blaze_events = { path = "../blaze_events" }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+regex = { workspace = true }
+hex = { workspace = true }
+num-bigint = { workspace = true }
