@@ -372,12 +372,12 @@ impl BlazeCommandDispatcher {
             return self.after_command(&mut env, result, &out_err);
         }
 
-        if command_annotation.build_phase.analyzes() {
-            blaze_util::unported!(
-                "BlazeCommandDispatcher.execExclusively",
-                "syncPackageLoading and main repo mapping for commands that analyze"
-            );
-        }
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java BlazeCommandDispatcher.execExclusively
+        // PORT: for commands that analyze, Java calls `env.syncPackageLoading(options)` and
+        // computes the main repo mapping here. Blaze builds the command's Skyframe executor
+        // inside the command (`blaze_sky_top::skyframe_executor`, through
+        // `crate::commands::query::create_skyframe_executor`), which performs the same sync and
+        // repo-mapping computation first; build/test reuse that path.
 
         // Parse starlark options.
         // PORT: BlazeOptionHandler.parseStarlarkOptions needs Starlark flag resolution (W4);

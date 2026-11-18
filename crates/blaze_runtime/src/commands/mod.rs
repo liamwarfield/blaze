@@ -6,3 +6,7 @@ pub mod help;
 pub mod info;
 pub mod shutdown;
 pub mod version;
+// W4 analysis lead: query/cquery/aquery.
+pub mod aquery;
+pub mod cquery;
+pub mod query;

@@ -825,13 +825,8 @@ unported_command!(
     PRINT_ACTION_COMMAND,
     "PrintActionCommand.exec"
 );
-unported_command!(
-    /// Command line wrapper for executing a query with blaze.
-    // Java: com/google/devtools/build/lib/runtime/commands/QueryCommand.java:73 QueryCommand
-    QueryCommand,
-    QUERY_COMMAND,
-    "QueryCommand.exec"
-);
+// W4 analysis lead: implemented in crate::commands::query.
+pub use crate::commands::query::QueryCommand;
 unported_command!(
     /// Builds and run a target with the given command line arguments.
     /// PORT: Java constructs it with a `TestPolicy`
@@ -848,20 +843,10 @@ unported_command!(
     TEST_COMMAND,
     "TestCommand.exec"
 );
-unported_command!(
-    /// Handles the 'aquery' command on the Blaze command line.
-    // Java: com/google/devtools/build/lib/runtime/commands/AqueryCommand.java:66 AqueryCommand
-    AqueryCommand,
-    AQUERY_COMMAND,
-    "AqueryCommand.exec"
-);
-unported_command!(
-    /// Handles the 'cquery' command on the Blaze command line.
-    // Java: com/google/devtools/build/lib/runtime/commands/CqueryCommand.java:77 CqueryCommand
-    CqueryCommand,
-    CQUERY_COMMAND,
-    "CqueryCommand.exec"
-);
+// W4 analysis lead: implemented in crate::commands::aquery.
+pub use crate::commands::aquery::AqueryCommand;
+// W4 analysis lead: implemented in crate::commands::cquery.
+pub use crate::commands::cquery::CqueryCommand;
 unported_command!(
     /// Handles the 'config' command on the Blaze command line.
     // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommand.java:84 ConfigCommand

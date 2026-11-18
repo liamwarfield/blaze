@@ -1,0 +1,666 @@
+//! Ports of `analysis/starlark/StarlarkTransition.java` (the static validation helpers),
+//! `analysis/config/StarlarkTransitionCache.java` and
+//! `skyframe/StarlarkBuildSettingsDetailsValue.java` (the value and key; the function is in
+//! `blaze_sky_analysis`).
+
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::{Arc, LazyLock};
+
+use blaze_build_config::build_options::{BuildOptions, StarlarkOptionValue};
+use blaze_cmdline::Label;
+use blaze_cmdline::label_constants::COMMAND_LINE_OPTION_PACKAGE_IDENTIFIER;
+use blaze_events::{Event, EventHandler, ExtendedEventHandler, StoredEventHandler};
+use blaze_optdefs::fragment::core_options::CoreOptions;
+use blaze_packages::types::{AttrValue, Type};
+use blaze_skyframe::{Key, SkyFunctionName};
+use blaze_starlark::StarlarkSemantics;
+use indexmap::{IndexMap, IndexSet};
+use parking_lot::Mutex;
+
+use crate::config::transitions::{ConfigurationTransition, StarlarkTransition, restrict};
+
+/// Exception class for exceptions thrown during application of a starlark-defined transition
+/// (Java `StarlarkTransition.TransitionException`).
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:103 StarlarkTransition.TransitionException
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct TransitionException(pub String);
+
+/// Java `StarlarkDefinedConfigTransition.Settings` (which settings of a transition to read).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settings {
+    Inputs,
+    Outputs,
+    InputsAndOutputs,
+}
+
+// -------------------------------------------------------------------------------------------
+// StarlarkBuildSettingsDetailsValue.
+
+/// `SkyFunctions.STARLARK_BUILD_SETTINGS_DETAILS`.
+pub const STARLARK_BUILD_SETTINGS_DETAILS: SkyFunctionName =
+    SkyFunctionName("STARLARK_BUILD_SETTINGS_DETAILS");
+
+/// A value class for storing details about Starlark build settings read by a transition: their
+/// defaults, types, whether they allow multiple values, and the aliases used to refer to them.
+// Java: com/google/devtools/build/lib/skyframe/StarlarkBuildSettingsDetailsValue.java:38 StarlarkBuildSettingsDetailsValue
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StarlarkBuildSettingsDetailsValue {
+    /// Java `ImmutableMap<Label, Object>`: the defaults in their `BuildOptions` form.
+    pub build_setting_to_default: IndexMap<Label, StarlarkOptionValue>,
+    pub build_setting_to_type: IndexMap<Label, Type>,
+    pub build_setting_is_allows_multiple: IndexSet<Label>,
+    pub alias_to_actual: IndexMap<Label, Label>,
+}
+
+impl StarlarkBuildSettingsDetailsValue {
+    // Java: com/google/devtools/build/lib/skyframe/StarlarkBuildSettingsDetailsValue.java:52 StarlarkBuildSettingsDetailsValue.EMPTY
+    pub fn empty() -> StarlarkBuildSettingsDetailsValue {
+        StarlarkBuildSettingsDetailsValue::default()
+    }
+}
+
+/// Java `StarlarkBuildSettingsDetailsValue.Key`.
+// Java: com/google/devtools/build/lib/skyframe/StarlarkBuildSettingsDetailsValue.java:75 StarlarkBuildSettingsDetailsValue.Key
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct StarlarkBuildSettingsDetailsKey {
+    /// Java `ImmutableSet<Label>` (insertion order, no duplicates).
+    build_settings: Vec<Label>,
+}
+
+impl StarlarkBuildSettingsDetailsKey {
+    // Java: com/google/devtools/build/lib/skyframe/StarlarkBuildSettingsDetailsValue.java:70 StarlarkBuildSettingsDetailsValue.key
+    pub fn key(build_settings: &IndexSet<Label>) -> StarlarkBuildSettingsDetailsKey {
+        StarlarkBuildSettingsDetailsKey {
+            build_settings: build_settings.iter().cloned().collect(),
+        }
+    }
+
+    pub fn build_settings(&self) -> &[Label] {
+        &self.build_settings
+    }
+}
+
+impl fmt::Debug for StarlarkBuildSettingsDetailsKey {
+    /// Java record `toString`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Key[buildSettings=[{}]]",
+            self.build_settings
+                .iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+impl Key for StarlarkBuildSettingsDetailsKey {
+    type Value = StarlarkBuildSettingsDetailsValue;
+    const FUNCTION: SkyFunctionName = STARLARK_BUILD_SETTINGS_DETAILS;
+}
+
+/// The `BuildOptions` form (Java object) of a build setting's attribute value.
+///
+/// PORT: Java stores the attribute value object itself in the Starlark options map; Blaze's
+/// `BuildOptions` holds [`StarlarkOptionValue`]s, so the value is converted here.
+pub fn attr_value_to_starlark_option(value: &AttrValue) -> StarlarkOptionValue {
+    match value {
+        AttrValue::Bool(b) => StarlarkOptionValue::Bool(*b),
+        AttrValue::Int(i) => StarlarkOptionValue::Int(i64::from(*i)),
+        AttrValue::String(s) => StarlarkOptionValue::Str(s.clone()),
+        AttrValue::Label(l) => StarlarkOptionValue::Label(l.clone()),
+        AttrValue::StringList(l) => {
+            StarlarkOptionValue::List(l.iter().cloned().map(StarlarkOptionValue::Str).collect())
+        }
+        AttrValue::StringSet(l) => {
+            StarlarkOptionValue::List(l.iter().cloned().map(StarlarkOptionValue::Str).collect())
+        }
+        AttrValue::LabelList(l) => {
+            StarlarkOptionValue::List(l.iter().cloned().map(StarlarkOptionValue::Label).collect())
+        }
+        other => blaze_util::unported!(
+            "StarlarkBuildSettingsDetailsFunction.compute",
+            "build setting default {:?}",
+            other
+        ),
+    }
+}
+
+/// Java `type.convert(value, what)` for a value read from `BuildOptions.getStarlarkOptions()`.
+// Java: com/google/devtools/build/lib/packages/Type.java:84 Type.convert
+fn convert_starlark_option(
+    type_: Type,
+    value: &StarlarkOptionValue,
+    what: &Label,
+) -> Result<StarlarkOptionValue, TransitionException> {
+    let type_error = |expected: &str| {
+        TransitionException(format!(
+            "expected value of type '{}' for {}, but got {} ({})",
+            expected,
+            what,
+            value.java_to_string(),
+            starlark_type_of(value)
+        ))
+    };
+    match (type_, value) {
+        (Type::Boolean, StarlarkOptionValue::Bool(_))
+        | (Type::Integer, StarlarkOptionValue::Int(_))
+        | (Type::String, StarlarkOptionValue::Str(_))
+        | (Type::Label | Type::NodepLabel, StarlarkOptionValue::Label(_)) => Ok(value.clone()),
+        (Type::Label | Type::NodepLabel, StarlarkOptionValue::Str(s)) => {
+            match Label::parse_canonical(s) {
+                Ok(l) => Ok(StarlarkOptionValue::Label(l)),
+                Err(e) => Err(TransitionException(e.to_string())),
+            }
+        }
+        (Type::StringList, StarlarkOptionValue::List(items)) => {
+            for item in items {
+                if !matches!(item, StarlarkOptionValue::Str(_)) {
+                    return Err(type_error("string"));
+                }
+            }
+            Ok(value.clone())
+        }
+        (Type::Boolean, _) => Err(type_error("bool")),
+        (Type::Integer, _) => Err(type_error("int")),
+        (Type::String, _) => Err(type_error("string")),
+        (Type::StringList, _) => Err(type_error("list(string)")),
+        (other, _) => blaze_util::unported!(
+            "StarlarkTransition.validateAndCheckIfAtDefault",
+            "build setting of type {}",
+            other
+        ),
+    }
+}
+
+fn starlark_type_of(value: &StarlarkOptionValue) -> &'static str {
+    match value {
+        StarlarkOptionValue::Bool(_) => "bool",
+        StarlarkOptionValue::Int(_) => "int",
+        StarlarkOptionValue::Str(_) => "string",
+        StarlarkOptionValue::Label(_) => "Label",
+        StarlarkOptionValue::List(_) => "list",
+    }
+}
+
+// -------------------------------------------------------------------------------------------
+// StarlarkTransition statics.
+
+/// Given a transition, figures out if it composes any Starlark transitions.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:367 StarlarkTransition.doesStarlarkTransition
+pub fn does_starlark_transition(root: &ConfigurationTransition) -> bool {
+    let mut does_starlark_transition = false;
+    root.visit_starlark(&mut |_| does_starlark_transition = true);
+    does_starlark_transition
+}
+
+/// The command-line flag aliases of the options (`--flag_alias`), as a map.
+pub fn command_line_flag_aliases(options: &BuildOptions) -> IndexMap<String, Label> {
+    options
+        .get::<CoreOptions>()
+        .expect("CoreOptions")
+        .get_command_line_flag_aliases()
+        .into_iter()
+        .collect()
+}
+
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:315 StarlarkTransition.getRelevantStarlarkSettingsFromTransition
+pub fn get_relevant_starlark_settings_from_transition(
+    transition: &StarlarkTransition,
+    flags_aliases: &IndexMap<String, Label>,
+    settings: Settings,
+) -> IndexSet<Label> {
+    let empty = IndexMap::new();
+    let flags_aliases = if transition.is_exec_transition() {
+        // Ignore flag aliases for exec transitions. Starlark flags will provide their exec
+        // transition semantics in the flag definition.
+        &empty
+    } else {
+        flags_aliases
+    };
+    let mut result = IndexSet::new();
+    match settings {
+        Settings::Inputs => {
+            add_label_if_relevant(&mut result, flags_aliases, &transition.get_inputs())
+        }
+        Settings::Outputs => {
+            add_label_if_relevant(&mut result, flags_aliases, &transition.get_outputs())
+        }
+        Settings::InputsAndOutputs => {
+            add_label_if_relevant(&mut result, flags_aliases, &transition.get_inputs());
+            add_label_if_relevant(&mut result, flags_aliases, &transition.get_outputs());
+        }
+    }
+    result
+}
+
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:335 StarlarkTransition.addLabelIfRelevant
+fn add_label_if_relevant(
+    builder: &mut IndexSet<Label>,
+    flags_aliases: &IndexMap<String, Label>,
+    entries: &[Label],
+) {
+    for entry in entries {
+        if *entry.get_package_identifier() != *COMMAND_LINE_OPTION_PACKAGE_IDENTIFIER {
+            builder.insert(entry.clone());
+        } else {
+            let flag_name = entry.get_name();
+            if let Some(alias_target) = flags_aliases.get(flag_name) {
+                builder.insert(alias_target.clone());
+            }
+        }
+    }
+}
+
+/// Method to be called after Starlark-transitions are applied. Checks outputs.
+///
+/// We only do validation on Starlark-defined build settings. Native options already have their
+/// output values checked in `FunctionTransitionUtil.applyTransition`.
+///
+/// Remove build settings in `to_options` that have been set to their default value. This is how
+/// we ensure that an unset build setting and a set-to-default build settings represent the same
+/// configuration.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:150 StarlarkTransition.validate
+pub fn validate(
+    root: &ConfigurationTransition,
+    details: &StarlarkBuildSettingsDetailsValue,
+    flags_aliases: &IndexMap<String, Label>,
+    to_options: IndexMap<String, BuildOptions>,
+) -> Result<IndexMap<String, BuildOptions>, TransitionException> {
+    // Collect settings that are inputs or outputs of the transition together with their types.
+    // Output setting values will be validated and removed if set to their default.
+    // Raw means these have not been unaliased.
+    let mut raw_input_and_output_settings: IndexSet<Label> = IndexSet::new();
+    // Collect settings that were only used as inputs to the transition and thus possibly had
+    // their default values added to the fromOptions. They will be removed if set to ther
+    // default, but should not be validated.
+    let mut input_only_settings: IndexSet<Label> = IndexSet::new();
+    root.visit_starlark(&mut |transition| {
+        let input_and_output_settings = get_relevant_starlark_settings_from_transition(
+            transition,
+            flags_aliases,
+            Settings::InputsAndOutputs,
+        );
+        let output_settings = get_relevant_starlark_settings_from_transition(
+            transition,
+            flags_aliases,
+            Settings::Outputs,
+        );
+        for setting in input_and_output_settings {
+            if !output_settings.contains(&setting) {
+                input_only_settings.insert(setting.clone());
+            }
+            raw_input_and_output_settings.insert(setting);
+        }
+    });
+
+    // Return early if the transition has neither inputs nor outputs (rare).
+    if raw_input_and_output_settings.is_empty() {
+        return Ok(to_options);
+    }
+
+    // Verify changed settings were changed to something reasonable for their type and filter
+    // out default values.
+    let mut cleaned_option_map: IndexMap<String, BuildOptions> = IndexMap::new();
+    for (key, value) in to_options {
+        // Lazily initialized to optimize for the common case where we don't modify anything.
+        let mut cleaned_options = None;
+        // Clean up aliased values.
+        let options = unalias(value, &details.alias_to_actual);
+        for maybe_alias_setting in &raw_input_and_output_settings {
+            // Note that if the build setting may be referenced in the transition via an alias
+            let setting = details
+                .alias_to_actual
+                .get(maybe_alias_setting)
+                .unwrap_or(maybe_alias_setting);
+            // Input-only settings may have had their literal default value added to the
+            // BuildOptions so that the transition can read them. We have to remove these
+            // explicitly set value here to preserve the invariant that Starlark settings at
+            // default values are not explicitly set in the BuildOptions.
+            let is_input_only_setting_at_default = input_only_settings
+                .contains(maybe_alias_setting)
+                && details.build_setting_to_default.get(setting)
+                    == options.get_starlark_options().get(setting);
+            // For output settings, the raw value returned by the transition first has to be
+            // validated and converted to the proper type before it can be compared to the
+            // default value.
+            if is_input_only_setting_at_default
+                || validate_and_check_if_at_default(
+                    details,
+                    &options,
+                    maybe_alias_setting,
+                    setting,
+                    &raw_input_and_output_settings,
+                )?
+            {
+                cleaned_options
+                    .get_or_insert_with(|| options.to_builder())
+                    .remove_starlark_option(setting);
+            }
+        }
+        // Keep the same instance if we didn't do anything to maintain reference equality later
+        // on.
+        let options = match cleaned_options {
+            Some(mut b) => b.build(),
+            None => options,
+        };
+        if cleaned_option_map.contains_key(&key) {
+            panic!("IllegalArgumentException: Multiple entries with same key: {key}");
+        }
+        cleaned_option_map.insert(key, options);
+    }
+    Ok(cleaned_option_map)
+}
+
+/// Validate the value of a particular build setting after a transition has been applied.
+/// Returns true if and only if the setting is set to its default value after the transition.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:238 StarlarkTransition.validateAndCheckIfAtDefault
+fn validate_and_check_if_at_default(
+    details: &StarlarkBuildSettingsDetailsValue,
+    options: &BuildOptions,
+    maybe_alias_setting: &Label,
+    setting: &Label,
+    input_and_output_settings: &IndexSet<Label>,
+) -> Result<bool, TransitionException> {
+    let new_value = options.get_starlark_options().get(setting);
+    // TODO(b/154132845): fix NPE occasionally observed here.
+    let Some(new_value) = new_value else {
+        panic!(
+            "IllegalStateException: Error while attempting to validate new values from starlark transition(s) with the inputs and outputs [{}]. Post-transition configuration should include '{}' but only includes starlark options: [{}]. If you run into this error please ping b/154132845 or email blaze-configurability@google.com.",
+            input_and_output_settings
+                .iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            setting,
+            options
+                .get_starlark_options()
+                .keys()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    };
+    let allows_multiple = details.build_setting_is_allows_multiple.contains(setting);
+    let type_ = *details
+        .build_setting_to_type
+        .get(setting)
+        .expect("type of a build setting");
+    let default = details.build_setting_to_default.get(setting);
+    if allows_multiple {
+        // if this setting allows multiple settings
+        let StarlarkOptionValue::List(raw_new_value_as_list) = new_value else {
+            return Err(TransitionException(format!(
+                "'{}' allows multiple values and must be set in transition using a starlark list instead of single value '{}'",
+                setting,
+                new_value.java_to_string()
+            )));
+        };
+        let mut converted_value = Vec::new();
+        for value in raw_new_value_as_list {
+            converted_value.push(convert_starlark_option(type_, value, maybe_alias_setting)?);
+        }
+        // Java: convertedValue.equals(ImmutableList.of(default)), where the details' default of
+        // an allow-multiple setting is already `ImmutableList.of(rawDefault)`.
+        let as_list = StarlarkOptionValue::List(converted_value);
+        Ok(default == Some(&as_list))
+    } else {
+        // if this setting does not allow multiple settings
+        let converted_value = convert_starlark_option(type_, new_value, maybe_alias_setting)?;
+        Ok(default == Some(&converted_value))
+    }
+}
+
+/// Resolve aliased build setting issues: collapse `alias -> new value` and `actual -> old value`
+/// entries to `actual -> new value`.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:285 StarlarkTransition.unalias
+fn unalias(options: BuildOptions, alias_to_actual: &IndexMap<Label, Label>) -> BuildOptions {
+    if alias_to_actual.is_empty() {
+        return options;
+    }
+    let mut to_return = options.to_builder();
+    for (setting, value) in options.get_starlark_options() {
+        if alias_to_actual.values().any(|a| a == setting) {
+            // if entry is keyed by an actual, don't care about its value it's stale
+            continue;
+        }
+        if let Some(actual) = alias_to_actual.get(setting) {
+            // if an entry is keyed by an alias, newly key (overwrite) its actual to its alias'
+            // value and remove the alias-keyed entry
+            to_return.add_starlark_option(actual.clone(), value.clone());
+            to_return.remove_starlark_option(setting);
+        } else {
+            // else - just copy over
+            to_return.add_starlark_option(setting.clone(), value.clone());
+        }
+    }
+    to_return.build()
+}
+
+// -------------------------------------------------------------------------------------------
+// StarlarkTransitionCache.
+
+/// Caches the results of Starlark transition application (Java `StarlarkTransitionCache`,
+/// owned by `SkyframeBuildView`).
+///
+/// PORT: one process-wide instance ([`StarlarkTransitionCache::get`]); Java's soft-valued
+/// Caffeine caches become plain maps (single build per process).
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:43 StarlarkTransitionCache
+#[derive(Default)]
+pub struct StarlarkTransitionCache {
+    cache: Mutex<HashMap<CacheKey, CacheValue>>,
+    /// Cache of the set of Starlark build settings referenced by a transition.
+    starlark_build_settings_cache: Mutex<HashMap<String, IndexSet<Label>>>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CacheKey {
+    transition: String,
+    from_options: String,
+    details: String,
+}
+
+#[derive(Clone)]
+struct CacheValue {
+    result: IndexMap<String, BuildOptions>,
+    /// Non-error events (`print()` output) of a successful transition.
+    non_error_events: Option<Vec<Event>>,
+}
+
+static INSTANCE: LazyLock<StarlarkTransitionCache> =
+    LazyLock::new(StarlarkTransitionCache::default);
+
+impl StarlarkTransitionCache {
+    /// The process-wide cache (Java `SkyframeBuildView.getStarlarkTransitionCache()`).
+    pub fn get() -> &'static StarlarkTransitionCache {
+        &INSTANCE
+    }
+
+    /// Given a transition, decompose (if possible) and find all referenced Starlark build
+    /// settings, exactly as referenced (aliases are not resolved). Flag aliases used in the
+    /// transition contribute the Starlark flag they map to.
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:72 StarlarkTransitionCache.getAllStarlarkBuildSettings
+    pub fn get_all_starlark_build_settings(
+        &self,
+        root: &ConfigurationTransition,
+        flags_aliases: &IndexMap<String, Label>,
+    ) -> IndexSet<Label> {
+        let cache_key = root.cache_key();
+        if let Some(cached_value) = self.starlark_build_settings_cache.lock().get(&cache_key) {
+            return cached_value.clone();
+        }
+
+        let mut key_builder: IndexSet<Label> = IndexSet::new();
+        root.visit_starlark(&mut |transition| {
+            key_builder.extend(get_relevant_starlark_settings_from_transition(
+                transition,
+                flags_aliases,
+                Settings::InputsAndOutputs,
+            ));
+        });
+
+        self.starlark_build_settings_cache
+            .lock()
+            .insert(cache_key, key_builder.clone());
+        key_builder
+    }
+
+    /// Adds the default values for a transition's input build settings to its input build
+    /// options.
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:98 StarlarkTransitionCache.addDefaultStarlarkOptions
+    fn add_default_starlark_options(
+        &self,
+        from_options: &BuildOptions,
+        flags_aliases: &IndexMap<String, Label>,
+        transition: &ConfigurationTransition,
+        details: &StarlarkBuildSettingsDetailsValue,
+    ) -> BuildOptions {
+        if details.build_setting_to_default.is_empty() {
+            // No need to traverse the transition to find its Starlark flag inputs. There are
+            // none.
+            return from_options.clone();
+        }
+
+        let mut options_with_defaults = None;
+        for maybe_alias_setting in self.get_all_starlark_build_settings(transition, flags_aliases) {
+            // details will only have the defaults of the actual setting so must unalias
+            let setting = details
+                .alias_to_actual
+                .get(&maybe_alias_setting)
+                .unwrap_or(&maybe_alias_setting)
+                .clone();
+            if !from_options
+                .get_starlark_options()
+                .contains_key(&maybe_alias_setting)
+            {
+                let default = details
+                    .build_setting_to_default
+                    .get(&setting)
+                    .expect("default of a build setting")
+                    .clone();
+                options_with_defaults
+                    .get_or_insert_with(|| from_options.to_builder())
+                    .add_starlark_option(maybe_alias_setting.clone(), default);
+            }
+        }
+        match options_with_defaults {
+            None => from_options.clone(),
+            Some(mut b) => b
+                .add_scope_type_map(from_options.get_scope_type_map().clone())
+                .build(),
+        }
+    }
+
+    /// Applies a Starlark transition, possibly returning a cached result.
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:134 StarlarkTransitionCache.computeIfAbsent
+    pub fn compute_if_absent(
+        &self,
+        from_options: &BuildOptions,
+        transition: &ConfigurationTransition,
+        details: &StarlarkBuildSettingsDetailsValue,
+        event_handler: &dyn ExtendedEventHandler,
+        semantics: &Arc<StarlarkSemantics>,
+    ) -> Result<IndexMap<String, BuildOptions>, TransitionException> {
+        let cache_key = CacheKey {
+            transition: transition.cache_key(),
+            from_options: from_options.checksum().to_owned(),
+            details: format!("{details:?}"),
+        };
+        let cached_result = self.cache.lock().get(&cache_key).cloned();
+        if let Some(cached_result) = cached_result {
+            if let Some(events) = &cached_result.non_error_events {
+                Event::replay_events_on(event_handler, events);
+            }
+            return Ok(cached_result.result);
+        }
+
+        let flags_aliases = command_line_flag_aliases(from_options);
+
+        // All code below here only executes on a cache miss and thus should rely only on values
+        // that are part of the above cache key or constants that exist throughout the lifetime
+        // of the Blaze server instance.
+        let adjusted_options =
+            self.add_default_starlark_options(from_options, &flags_aliases, transition, details);
+        let handler_with_error_status = StoredEventHandler::new();
+        let result = transition.apply(
+            &restrict(transition, &adjusted_options),
+            &handler_with_error_status,
+            semantics,
+        );
+
+        // We use a temporary StoredEventHandler instead of the caller's event handler because
+        // StarlarkTransition.validate assumes no errors occurred. We need a StoredEventHandler to
+        // be able to check that, and fail out early if there are errors.
+        handler_with_error_status.replay_on(event_handler);
+        if handler_with_error_status.has_errors() {
+            return Err(TransitionException(
+                "Errors encountered while applying Starlark transition".to_owned(),
+            ));
+        }
+        let result = validate(transition, details, &flags_aliases, result)?;
+        // If the transition errored (like bad Starlark code), this method already exited with an
+        // exception so the results won't go into the cache. We still want to collect non-error
+        // events like print() output.
+        let non_error_events = if !handler_with_error_status.is_empty() {
+            Some(handler_with_error_status.get_events())
+        } else {
+            None
+        };
+        self.cache.lock().insert(
+            cache_key,
+            CacheValue {
+                result: result.clone(),
+                non_error_events,
+            },
+        );
+        Ok(result)
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:185 StarlarkTransitionCache.clear
+    pub fn clear(&self) {
+        self.cache.lock().clear();
+        self.starlark_build_settings_cache.lock().clear();
+    }
+}
+
+/// `EventHandler` for `Event`s only, used where Java hands a handler that never receives posts.
+pub fn handle_all(handler: &dyn EventHandler, events: &[Event]) {
+    for e in events {
+        handler.handle(e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn details_key_to_string() {
+        let mut s = IndexSet::new();
+        s.insert(Label::parse_canonical_unchecked("//a:b"));
+        s.insert(Label::parse_canonical_unchecked("//c:d"));
+        assert_eq!(
+            format!("{:?}", StarlarkBuildSettingsDetailsKey::key(&s)),
+            "Key[buildSettings=[//a:b, //c:d]]"
+        );
+    }
+
+    #[test]
+    fn attr_value_defaults_convert() {
+        assert_eq!(
+            attr_value_to_starlark_option(&AttrValue::String("3.11".into())),
+            StarlarkOptionValue::Str("3.11".into())
+        );
+        assert_eq!(
+            attr_value_to_starlark_option(&AttrValue::Bool(true)),
+            StarlarkOptionValue::Bool(true)
+        );
+    }
+
+    #[test]
+    #[ignore = "needs a Starlark transition fixture (StarlarkRuleTransitionProviderTest)"]
+    fn test_aliased_build_setting_output_return_mismatch() {}
+}
