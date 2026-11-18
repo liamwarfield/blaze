@@ -77,3 +77,15 @@ Read them again after a context reset.
   `scripts/cargo-capped check --workspace --all-targets`).
 - A score is reported with the commit it was measured at, the binary used, and its denominator
   (including what was excluded or not ported).
+
+## Protected paths and accepted state
+
+- Protected paths are listed in `scripts/gate/protected-paths.txt` (referee, gate, hooks, corpus
+  and baselines, `docs/state`, review reports, the pin, this file, PORTING.md, the starlark-rust
+  patch list). Do not edit one unless your task names it.
+- Root installs the hooks once per clone: `scripts/git-hooks/install`. A commit that touches a
+  protected path needs `BLAZE_PROTECTED_OK="<batch>: <why>"`. Never `git commit --no-verify`.
+- A label is recorded once: `blaze-<commit>` from a clean checkout of that commit. `record
+  --force` only when root says so.
+- A number in README or STATUS cites its label (`corpus/scores/<label>.md`) or the baseline
+  commit (`scripts/gate/baseline show`). Acceptance steps and rules: `docs/state/README.md`.

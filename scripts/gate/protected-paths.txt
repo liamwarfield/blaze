@@ -34,3 +34,6 @@ UPSTREAM.json
 AGENTS.md
 PORTING.md
 third_party/starlark-rust/PATCHES.md
+
+# Review reports and verdicts (written by reviewers, committed by root).
+docs/reviews/

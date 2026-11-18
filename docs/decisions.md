@@ -84,3 +84,9 @@ Each entry: date, decision, why, who decided.
 - 2026-11-18. Reviewers and auditors run on Fable 5.2; rules in AGENTS.md "Reviewers". First
   review round covers the evaluator, execution, actions, loading, analysis, bzlmod/repos, and an
   integrity audit of the referee and tests. User (model choice); root (scope).
+- 2026-11-18. Referee tightened and gate adopted after the integrity audit (auditor PASS, round
+  2A): order items for cquery/aquery, missing/failed surfaces fail, allow-list caps, commit-bound
+  recordings, per-name test baseline (docs/state), protected-path hooks installed. Open follow-ups
+  from the auditor (next protected batch): `diff_paths(limit=200)` can hide a non-allowed diff
+  behind 200+ allowed ones (R2A-1); verify the recorded commit against the binary; refuse dirty
+  trees for `scoreboard --write`; item-name ratchet in compare-scores. Root.
