@@ -75,9 +75,11 @@ fn next_chunk_size(chunk_count_in_bump: usize) -> AlignedSize {
     // but not greater than 2G.
     // TODO(nga): we should stop doubling after 1M or so.
     let size = AlignedSize::new_bytes(
+        // BLAZE PATCH 0012: reused cached chunks can be small, so a long-lived thread can reach
+        // 32+ chunks; overflow maps to the 2 GiB cap below instead of panicking.
         512u32
-            .checked_shl(chunk_count_in_bump.try_into().unwrap())
-            .unwrap() as usize,
+            .checked_shl(chunk_count_in_bump.try_into().unwrap_or(u32::MAX))
+            .unwrap_or(0) as usize,
     );
     if size.bytes() == 0 {
         AlignedSize::new_bytes(1 << 31)

@@ -60,3 +60,12 @@ fn invalid_label() {
     let e = exec_err("x = Label('//a:b:c')").unwrap_err();
     assert!(e.starts_with("invalid label in Label(): "), "{e}");
 }
+
+/// starlark-rust patch 0011: `%s` and `"{}".format` use `str`, as Bazel does.
+#[test]
+fn patch_0011_percent_s_uses_str() {
+    assert_eq!(eval_expr("'%s' % Label('//a:b')"), Ok(r#""@@//a:b""#.into()));
+    assert_eq!(eval_expr("'x=%s' % Label('//a:b')"), Ok(r#""x=@@//a:b""#.into()));
+    assert_eq!(eval_expr("'{}'.format(Label('//a:b'))"), Ok(r#""@@//a:b""#.into()));
+    assert_eq!(eval_expr("'%r' % Label('//a:b')"), Ok(r#""Label(\"//a:b\")""#.into()));
+}

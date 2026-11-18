@@ -1603,3 +1603,45 @@ fn stress_parallel_and_cycles() {
     }
     assert_eq!(false_cycles.load(Ordering::SeqCst), 0);
 }
+
+/// `getValueOrThrow(key, A.class, B.class)`: one request that catches several exception types
+/// must not mark values missing when the second type matches.
+#[test]
+fn get_value_or_throw_with_catches_several_types() {
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct Multi;
+    impl Key for Multi {
+        type Value = String;
+        const FUNCTION: SkyFunctionName = SkyFunctionName("MULTI");
+    }
+    #[derive(Debug, Clone)]
+    struct OtherError;
+    impl std::fmt::Display for OtherError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("other")
+        }
+    }
+    impl std::error::Error for OtherError {}
+    let ev = EvaluatorBuilder::new()
+        .typed_function::<Num, _>(num_fn)
+        .typed_function::<Multi, _>(|_, env| {
+            let r = env.get_value_or_throw_with(Num(13), |e| {
+                if let Some(o) = e.downcast_ref::<OtherError>() {
+                    Some(format!("other: {o}"))
+                } else {
+                    e.downcast_ref::<BadNumber>().map(|b| format!("bad: {b}"))
+                }
+            })?;
+            assert!(
+                !env.values_missing(),
+                "a caught exception is not a missing value"
+            );
+            match r {
+                Ok(_) => Ok(Some("no error".into())),
+                Err(s) => Ok(Some(s)),
+            }
+        })
+        .build();
+    let r = eval(&ev, true, 2, &[SkyKey::new(Multi)]);
+    assert_eq!(*r.get(&Multi).unwrap(), "bad: bad number 13");
+}

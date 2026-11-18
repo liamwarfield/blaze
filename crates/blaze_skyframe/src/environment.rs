@@ -181,6 +181,21 @@ impl<'a> Environment<'a> {
         ))
     }
 
+    /// Java: Environment.getValueOrThrow(key, E1.class, E2.class, ...). `catch` inspects the
+    /// dependency's exception and returns `Some(t)` for the exception classes the caller asked for
+    /// (downcast to several types); only when it returns `None` is the dependency missing.
+    pub fn get_value_or_throw_with<K: Key, T>(
+        &mut self,
+        key: K,
+        catch: impl FnOnce(&SkyError) -> Option<T>,
+    ) -> Result<Result<Option<Arc<K::Value>>, T>, Interrupted> {
+        let entry = self.request(&SkyKey::new(key))?;
+        Ok(
+            unwrap_or_throw(&entry, self.run.ctx.keep_going, &self.values_missing, catch)
+                .map(|v| v.map(downcast_value::<K>)),
+        )
+    }
+
     /// Requests a batch of deps, computing unstarted ones in parallel. Read the results with
     /// [`SkyframeLookupResult::get`] / [`SkyframeLookupResult::get_or_throw`].
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:560 SkyFunctionEnvironment.getValuesAndExceptions
@@ -387,6 +402,18 @@ impl SkyframeLookupResult {
     {
         Ok(self
             .get_or_throw::<E>(&SkyKey::new(key.clone()))?
+            .map(downcast_value::<K>))
+    }
+
+    /// Java: SkyframeLookupResult.getOrThrow(key, E1.class, E2.class, ...) with a caller-supplied
+    /// `catch` (see [`Environment::get_value_or_throw_with`]).
+    pub fn get_or_throw_with<K: Key + Clone, T>(
+        &self,
+        key: &K,
+        catch: impl FnOnce(&SkyError) -> Option<T>,
+    ) -> Result<Option<Arc<K::Value>>, T> {
+        Ok(self
+            .get_or_throw_internal(&SkyKey::new(key.clone()), catch)?
             .map(downcast_value::<K>))
     }
 

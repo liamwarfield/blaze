@@ -89,3 +89,22 @@ the native stack; Blaze runs evaluation on threads with large stacks
 - Fix: `types/list/methods.rs` `pop` resolves negative indexes against the length
   (StarlarkList.pop, EvalUtils.getSequenceIndex).
 - Test: `patch_0006_list_pop_negative_index`.
+
+## 0011 — `%s` and `"{}".format` use `str`, not `repr`
+
+- Bug: `"%s" % x` and `"{}".format(x)` with a single non-string `x` called `collect_repr`, so a
+  value whose `str` differs from its `repr` printed wrongly (Label: `Label("@@x//:y")` where Bazel
+  prints `@@x//:y`; seen in re2's `//python:_re2.so` tags). The general multi-arg paths already
+  used `str`.
+- Fix: `values/types/string/dot_format.rs` `format_one` and `interpolation.rs` `PercentSFormat::Str`
+  use `collect_str` (net/starlark/java/eval/Starlark.java `str`, Printer formatting).
+- Test: `patch_0011_percent_s_uses_str` (blaze_starlark label test).
+
+## 0012 — per-thread heap chunk size overflow
+
+- Bug: `next_chunk_size` panicked (`checked_shl(..).unwrap()`) once a bump held 32+ chunks.
+  Reused cached chunks can be small, so a long-lived evaluator thread reaches that count without
+  growing large (seen compiling `@rules_license//licenses/spdx` during re2 `deps()`).
+- Fix: `values/layout/heap/allocator/alloc/per_thread.rs` maps the overflow to the existing
+  2 GiB cap.
+- Test: none practical (needs 32 chunk allocations on one thread); covered by re2 `deps()`.

@@ -1,6 +1,6 @@
-diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' starlark-0.14.2/src/eval/compiler/def.rs starlark/src/eval/compiler/def.rs
---- starlark-0.14.2/src/eval/compiler/def.rs
-+++ starlark/src/eval/compiler/def.rs
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs starlark/src/eval/compiler/def.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/compiler/def.rs	2026-11-17 22:47:59.729130013 -0700
 @@ -783,6 +783,25 @@
      where
          'v: 'a,
@@ -27,9 +27,9 @@ diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.car
          let bc = self.bc();
          alloca_frame(
              eval,
-diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' starlark-0.14.2/src/eval/runtime/cheap_call_stack.rs starlark/src/eval/runtime/cheap_call_stack.rs
---- starlark-0.14.2/src/eval/runtime/cheap_call_stack.rs
-+++ starlark/src/eval/runtime/cheap_call_stack.rs
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/cheap_call_stack.rs starlark/src/eval/runtime/cheap_call_stack.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/cheap_call_stack.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/runtime/cheap_call_stack.rs	2026-11-17 22:47:59.728978993 -0700
 @@ -224,6 +224,14 @@
          CallStack { frames }
      }
@@ -45,9 +45,9 @@ diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.car
      /// List the entries on the stack as values
      pub(crate) fn to_function_values(&self) -> Vec<Value<'v>> {
          self.stack[1..self.count].map(|x| x.function)
-diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' starlark-0.14.2/src/eval/runtime/evaluator.rs starlark/src/eval/runtime/evaluator.rs
---- starlark-0.14.2/src/eval/runtime/evaluator.rs
-+++ starlark/src/eval/runtime/evaluator.rs
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/evaluator.rs starlark/src/eval/runtime/evaluator.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/evaluator.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/runtime/evaluator.rs	2026-11-17 22:47:59.728730594 -0700
 @@ -185,6 +185,8 @@
      pub(crate) soft_error_handler: &'a (dyn SoftErrorHandler + 'a),
      /// Max size of starlark stack
@@ -79,9 +79,26 @@ diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.car
      /// Sets max call stack size.
      /// Stack allocation will happen on entry point of evaluation if not allocated yet.
      pub fn set_max_callstack_size(&mut self, stack_size: usize) -> anyhow::Result<()> {
-diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' starlark-0.14.2/src/values/layout/value.rs starlark/src/values/layout/value.rs
---- starlark-0.14.2/src/values/layout/value.rs
-+++ starlark/src/values/layout/value.rs
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/heap/allocator/alloc/per_thread.rs starlark/src/values/layout/heap/allocator/alloc/per_thread.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/heap/allocator/alloc/per_thread.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/layout/heap/allocator/alloc/per_thread.rs	2026-11-18 02:31:09.625208761 -0700
+@@ -75,9 +75,11 @@
+     // but not greater than 2G.
+     // TODO(nga): we should stop doubling after 1M or so.
+     let size = AlignedSize::new_bytes(
++        // BLAZE PATCH 0012: reused cached chunks can be small, so a long-lived thread can reach
++        // 32+ chunks; overflow maps to the 2 GiB cap below instead of panicking.
+         512u32
+-            .checked_shl(chunk_count_in_bump.try_into().unwrap())
+-            .unwrap() as usize,
++            .checked_shl(chunk_count_in_bump.try_into().unwrap_or(u32::MAX))
++            .unwrap_or(0) as usize,
+     );
+     if size.bytes() == 0 {
+         AlignedSize::new_bytes(1 << 31)
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/value.rs starlark/src/values/layout/value.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/value.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/layout/value.rs	2026-11-17 22:49:07.483938656 -0700
 @@ -1237,6 +1237,12 @@
      where
          S: Serializer,
@@ -95,9 +112,9 @@ diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.car
          match json_stack_push(*self) {
              Ok(_guard) => erased_serde::serialize(self.get_ref().as_serialize(), s),
              Err(..) => Err(serde::ser::Error::custom(ToJsonCycleError(self.get_type()))),
-diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' starlark-0.14.2/src/values/recursive_repr_or_json_guard.rs starlark/src/values/recursive_repr_or_json_guard.rs
---- starlark-0.14.2/src/values/recursive_repr_or_json_guard.rs
-+++ starlark/src/values/recursive_repr_or_json_guard.rs
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/recursive_repr_or_json_guard.rs starlark/src/values/recursive_repr_or_json_guard.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/recursive_repr_or_json_guard.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/recursive_repr_or_json_guard.rs	2026-11-17 22:49:07.483746157 -0700
 @@ -66,11 +66,27 @@
      static JSON_STACK: Cell<SmallSet<RawPointer>> = const { Cell::new(SmallSet::new()) };
  }
@@ -127,9 +144,9 @@ diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.car
              repr_stack.set(stack);
              Err(ReprCycle)
          } else {
-diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' starlark-0.14.2/src/values/types/int/inline_int.rs starlark/src/values/types/int/inline_int.rs
---- starlark-0.14.2/src/values/types/int/inline_int.rs
-+++ starlark/src/values/types/int/inline_int.rs
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/inline_int.rs starlark/src/values/types/int/inline_int.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/inline_int.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/int/inline_int.rs	2026-11-17 22:47:14.139673452 -0700
 @@ -172,9 +172,16 @@
  
      #[inline]
@@ -150,9 +167,9 @@ diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.car
      }
  
      pub(crate) fn to_bigint(self) -> BigInt {
-diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' starlark-0.14.2/src/values/types/int/int_or_big.rs starlark/src/values/types/int/int_or_big.rs
---- starlark-0.14.2/src/values/types/int/int_or_big.rs
-+++ starlark/src/values/types/int/int_or_big.rs
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/int_or_big.rs starlark/src/values/types/int/int_or_big.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/int_or_big.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/int/int_or_big.rs	2026-11-17 22:47:14.139842491 -0700
 @@ -59,6 +59,9 @@
      LeftShiftOverflow,
      #[error("Negative left shift")]
@@ -178,9 +195,9 @@ diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.car
          }
  
          match other {
-diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' starlark-0.14.2/src/values/types/list/methods.rs starlark/src/values/types/list/methods.rs
---- starlark-0.14.2/src/values/types/list/methods.rs
-+++ starlark/src/values/types/list/methods.rs
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list/methods.rs starlark/src/values/types/list/methods.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list/methods.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/list/methods.rs	2026-11-17 22:49:53.343478821 -0700
 @@ -109,8 +109,16 @@
          if this.ptr_eq(other.get()) {
              // If the types alias, we can't borrow the `other` for iteration.
@@ -218,9 +235,9 @@ diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.car
      }
  
      /// [list.remove](
-diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' starlark-0.14.2/src/values/types/list/value.rs starlark/src/values/types/list/value.rs
---- starlark-0.14.2/src/values/types/list/value.rs
-+++ starlark/src/values/types/list/value.rs
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list/value.rs starlark/src/values/types/list/value.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list/value.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/list/value.rs	2026-11-17 22:49:07.484194315 -0700
 @@ -525,8 +525,10 @@
      }
  
@@ -276,9 +293,33 @@ diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.car
 +    }
 +    Ok(())
 +}
-diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' starlark-0.14.2/src/values/types/string/str_type.rs starlark/src/values/types/string/str_type.rs
---- starlark-0.14.2/src/values/types/string/str_type.rs
-+++ starlark/src/values/types/string/str_type.rs
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/dot_format.rs starlark/src/values/types/string/dot_format.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/dot_format.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/string/dot_format.rs	2026-11-18 02:31:09.626428655 -0700
+@@ -71,7 +71,7 @@
+         None => {
+             let mut result = String::with_capacity(before.len() + after.len() + 10);
+             result.push_str(before);
+-            arg.collect_repr(&mut result);
++            arg.collect_str(&mut result); // BLAZE PATCH 0011
+             result.push_str(after);
+             heap.alloc_str(&result)
+         }
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/interpolation.rs starlark/src/values/types/string/interpolation.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/interpolation.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/string/interpolation.rs	2026-11-18 02:31:09.627450600 -0700
+@@ -220,7 +220,7 @@
+             Some(PercentSFormat::Str) => {
+                 let arg = next_value()?;
+                 match arg.unpack_str() {
+-                    None => arg.collect_repr(&mut res),
++                    None => arg.collect_str(&mut res), // BLAZE PATCH 0011
+                     Some(s) => res.push_str(s),
+                 }
+             }
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/str_type.rs starlark/src/values/types/string/str_type.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/str_type.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/string/str_type.rs	2026-11-17 22:49:07.484514763 -0700
 @@ -361,6 +361,15 @@
              Ok(None) => return None,
              Err(e) => return Some(Err(e)),
@@ -295,9 +336,9 @@ diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.car
          let mut result = String::with_capacity(self.len() * cmp::max(0, l) as usize);
          for _i in 0..l {
              result.push_str(self)
-diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' starlark-0.14.2/src/values/types/tuple/value.rs starlark/src/values/types/tuple/value.rs
---- starlark-0.14.2/src/values/types/tuple/value.rs
-+++ starlark/src/values/types/tuple/value.rs
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/tuple/value.rs starlark/src/values/types/tuple/value.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/tuple/value.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/tuple/value.rs	2026-11-17 22:49:07.484330214 -0700
 @@ -240,6 +240,11 @@
              Ok(None) => return None,
              Err(e) => return Some(Err(e)),
@@ -310,9 +351,9 @@ diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.car
          let mut result = Vec::new();
          for _i in 0..l {
              result.extend(self.content().iter().map(|e| e.to_value()));
-diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' starlark_syntax-0.14.2/src/lexer.rs starlark_syntax/src/lexer.rs
---- starlark_syntax-0.14.2/src/lexer.rs
-+++ starlark_syntax/src/lexer.rs
+diff -ru '--exclude=Cargo.lock' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer.rs starlark_syntax/src/lexer.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/lexer.rs	2026-11-17 22:47:27.756996601 -0700
 @@ -419,9 +419,10 @@
                      if raw {
                          match it.next() {

@@ -220,7 +220,7 @@ pub(crate) fn percent(format: &str, value: Value) -> crate::Result<String> {
             Some(PercentSFormat::Str) => {
                 let arg = next_value()?;
                 match arg.unpack_str() {
-                    None => arg.collect_repr(&mut res),
+                    None => arg.collect_str(&mut res), // BLAZE PATCH 0011
                     Some(s) => res.push_str(s),
                 }
             }
