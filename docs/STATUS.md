@@ -30,10 +30,13 @@ Updated 2026-11-17 (root).
   listed runfiles-manifest keys only). Lockfiles byte-identical (both projects).
 - Upstream integration tests: harness ready; oracle baseline 211/237 targets, 2,878 functions.
 
-## In flight
-- Integration lead: build/test commands end to end, real repos (no oracle seams), mod/fetch,
-  lockfile writing, full oracle scoreboard (label blaze-int).
-- BEP lead: blaze_bep (BuildEventStreamer, JSON transport) for the `bep` surface.
+## In flight (2026-11-18, after review round 1)
+- Integration lead: finishing build/test end to end (re2 test matched before its exec-review
+  fixes; re-recording), exec review S1s, loud failures for dropped Starlark flags.
+- Fix wave (implementers): skyframe findings; loading findings; bzlmod/repos/client findings;
+  referee and gate (order items, missing-surface failures, commit binding, baseline, hooks).
+- Waiting for the lead's handback: analysis findings (12 S1), actions findings, then the
+  byte-strings migration (also fixes the non-ASCII action-key S1), then reviewers re-check.
 
 ## Next
 Final integration: wire `build`/`test`/`fetch`/`mod`/`query` into the `blaze` binary with real
