@@ -29,3 +29,5 @@ pub use crate::values::types::list::alloc::AllocList;
 pub use crate::values::types::list::list_type::ListType;
 pub use crate::values::types::list::refs::ListRef;
 pub use crate::values::types::list::unpack::UnpackList;
+pub use crate::values::types::list::value::alloc_immutable_list; // BLAZE PATCH 0016
+pub use crate::values::types::list::value::list_is_immutable; // BLAZE PATCH 0016

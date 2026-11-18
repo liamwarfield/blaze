@@ -42,6 +42,8 @@ pub use runtime::profile::data::ProfileData;
 pub use runtime::profile::mode::ProfileMode;
 pub use soft_error::SoftErrorHandler;
 pub use starlark_syntax::call_stack::CallStack;
+
+pub use crate::eval::compiler::def::DefModule; // BLAZE PATCH 0017
 use starlark_syntax::slice_vec_ext::SliceExt;
 use starlark_syntax::syntax::module::AstModule;
 use starlark_syntax::syntax::module::AstModuleFields;

@@ -122,12 +122,15 @@ mod probe {
     use allocative::Allocative;
     use starlark::any::ProvidesStaticType;
     use starlark::environment::GlobalsBuilder;
+    use starlark::eval::DefModule;
+    use starlark::eval::Evaluator;
     use starlark::starlark_module;
     use starlark::starlark_simple_value;
     use starlark::values::Heap;
     use starlark::values::NoSerialize;
     use starlark::values::StarlarkValue;
     use starlark::values::Value;
+    use starlark::values::none::NoneOr;
     use starlark::values::starlark_value;
     use starlark::values::tuple::AllocTuple;
 
@@ -159,6 +162,48 @@ mod probe {
     pub fn globals(builder: &mut GlobalsBuilder) {
         fn probe() -> anyhow::Result<Probe> {
             Ok(Probe)
+        }
+
+        /// Patch 0016: Java `StarlarkList.immutableCopyOf(x)`.
+        fn immutable_list<'v>(x: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+            let elems: Vec<Value<'v>> = x.iterate(heap)?.collect();
+            Ok(starlark::values::list::alloc_immutable_list(heap, &elems))
+        }
+
+        /// Patch 0016: `StarlarkList.isImmutable`, None for non-lists.
+        fn list_is_immutable<'v>(x: Value<'v>) -> anyhow::Result<NoneOr<bool>> {
+            Ok(NoneOr::from_option(
+                starlark::values::list::list_is_immutable(x),
+            ))
+        }
+
+        /// Patch 0017: file name of the module `f` was defined in.
+        fn def_module_file<'v>(f: Value<'v>) -> anyhow::Result<NoneOr<String>> {
+            Ok(NoneOr::from_option(
+                DefModule::of_function(f).map(|m| m.file_name().to_owned()),
+            ))
+        }
+
+        /// Patch 0017: `(file, frozen)` of the `depth`-th innermost Starlark function's module.
+        fn innermost_module<'v>(
+            depth: i32,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> anyhow::Result<NoneOr<(String, bool)>> {
+            Ok(NoneOr::from_option(
+                eval.innermost_enclosing_def_module(depth as usize)
+                    .map(|m| (m.file_name().to_owned(), m.is_frozen())),
+            ))
+        }
+
+        /// Patch 0017: Java `fn.getModule().getGlobal(name)`.
+        fn module_global<'v>(
+            f: Value<'v>,
+            name: &str,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> anyhow::Result<NoneOr<Value<'v>>> {
+            Ok(NoneOr::from_option(
+                DefModule::of_function(f).and_then(|m| m.get_global(name, eval)),
+            ))
         }
     }
 }
@@ -266,4 +311,139 @@ fn patch_0015_alloc_set() {
         );
         assert!(SetRef::from_value(heap.alloc("x")).is_none());
     });
+}
+
+/// Java StarlarkList.immutableCopyOf (ImmutableStarlarkList): reads like a list, every mutation
+/// fails with Starlark.checkMutable's "trying to mutate a frozen list value", isImmutable is true
+/// without looking at the elements, and it stays unhashable ("Even a frozen list is unhashable").
+#[test]
+fn patch_0016_immutable_list() {
+    let base = "x = immutable_list([3, [1], 2])\n";
+    let ok = |body: &str, want: &str| {
+        let src: &'static str = Box::leak(format!("{base}{body}").into_boxed_str());
+        assert_eq!(eval_with_probe(src), Ok(want.to_owned()), "{body}");
+    };
+    let fails = |body: &str, want: &str| {
+        let src: &'static str = Box::leak(format!("{base}{body}").into_boxed_str());
+        assert_eq!(eval_with_probe(src), Err(want.to_owned()), "{body}");
+    };
+    ok(
+        "r = (type(x), repr(x), str(x), len(x), x[1], x[-1], x[1:], 2 in x, x == [3, [1], 2], [3, [1], 2] == x)",
+        r#"("list", "[3, [1], 2]", "[3, [1], 2]", 3, [1], 2, [[1], 2], True, True, True)"#,
+    );
+    ok("r = [e for e in x] + x", "[3, [1], 2, 3, [1], 2]");
+    ok(
+        "r = (sorted([3, 1, 2]), x * 2, list(x), list_is_immutable(x))",
+        "([1, 2, 3], [3, [1], 2, 3, [1], 2], [3, [1], 2], True)",
+    );
+    // Copies are ordinary mutable lists.
+    ok(
+        "y = x + []\ny.append(1)\nr = (y, list_is_immutable(y), list_is_immutable(x[:]))",
+        "([3, [1], 2, 1], False, False)",
+    );
+    // Elements keep their own mutability (Java copies references).
+    ok("x[1].append(5)\nr = x", "[3, [1, 5], 2]");
+    for m in [
+        "x.append(1)",
+        "x.extend([1])",
+        "x.insert(0, 1)",
+        "x.pop()",
+        "x.remove(2)",
+        "x.clear()",
+        "x[0] = 1",
+        "x += [1]",
+    ] {
+        fails(m, "trying to mutate a frozen list value");
+    }
+    fails("r = {x: 1}", "Value of type `list` is not hashable");
+    ok(
+        "r = (list_is_immutable([1]), list_is_immutable((1,)), list_is_immutable(immutable_list([])))",
+        "(False, None, True)",
+    );
+}
+
+/// Java StarlarkFunction.getModule / Module.ofInnermostEnclosingStarlarkFunction: a function's
+/// module is where its `def` ran (closures made by a loaded function belong to the loaded
+/// module); the toplevel of the executing module counts as a Starlark function. `f`, `g` and `g2`
+/// (`return` of a call) are inlined by starlark-rust's optimizer; `k` is not.
+#[test]
+fn patch_0017_def_module() {
+    use starlark::environment::FrozenModule;
+    use starlark::eval::ReturnFileLoader;
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| {
+            let (mut builder, _, _) = dialect::bazel_universe_builder();
+            probe::globals(&mut builder);
+            let globals = builder.build();
+            let run = |file: &str, src: &str, loads: &[(&str, &FrozenModule)]| {
+                let ast = AstModule::parse(file, src.to_owned(), &dialect::bzl_dialect())
+                    .map_err(|e| bare_message(&e))
+                    .unwrap();
+                Module::with_temp_heap(|module| {
+                    let loader = ReturnFileLoader { modules: &loads.iter().copied().collect() };
+                    let mut e = Evaluator::new(&module);
+                    e.set_loader(&loader);
+                    e.eval_module(ast, &globals).map_err(|e| bare_message(&e)).unwrap();
+                    drop(e);
+                    let r = module.get("r").map(|v| v.to_repr()).unwrap_or_default();
+                    anyhow::Ok((r, module.freeze()?))
+                })
+                .unwrap()
+            };
+            let (r, a) = run(
+                "a.bzl",
+                r#"
+def f():
+    return innermost_module(0)
+def make():
+    return lambda: innermost_module(0)
+def g():
+    return (innermost_module(0), innermost_module(1), innermost_module(2))
+def g2():
+    return g()
+def k():
+    x = innermost_module(0)
+    return (x, innermost_module(1))
+def _private():
+    pass
+r = (def_module_file(f), f(), innermost_module(0), module_global(f, "f") == f, module_global(f, "_private") == _private, module_global(f, "nope"))
+"#,
+                &[],
+            );
+            assert_eq!(
+                r,
+                r#"("a.bzl", ("a.bzl", False), ("a.bzl", False), True, True, None)"#
+            );
+            let (r, _) = run(
+                "b.bzl",
+                r#"
+load("a.bzl", "f", "g", "g2", "k", "make")
+def h():
+    return g()
+c = make()
+r = (def_module_file(f), def_module_file(c), def_module_file(h), def_module_file(len), def_module_file(1),
+     f(), c(), h(), innermost_module(0), innermost_module(1),
+     module_global(f, "f") == f, module_global(f, "make") == make, module_global(c, "f") == f,
+     module_global(h, "h") == h, module_global(f, "h"),
+     g2(), k())
+"#,
+                &[("a.bzl", &a)],
+            );
+            assert_eq!(
+                r,
+                concat!(
+                    r#"("a.bzl", "a.bzl", "b.bzl", None, None, "#,
+                    r#"("a.bzl", True), ("a.bzl", True), "#,
+                    r#"(("a.bzl", True), ("b.bzl", False), ("b.bzl", False)), "#,
+                    r#"("b.bzl", False), None, "#,
+                    r#"True, True, True, True, None, "#,
+                    r#"(("a.bzl", True), ("a.bzl", True), ("b.bzl", False)), "#,
+                    r#"(("a.bzl", True), ("b.bzl", False)))"#
+                )
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

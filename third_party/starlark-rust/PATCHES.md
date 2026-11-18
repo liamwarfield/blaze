@@ -26,6 +26,8 @@ by adding.
 | 0013 | applied | per-type unknown-attribute message (`StarlarkValue::get_attr_error_message`) |
 | 0014 | applied | reflected `\|` (`StarlarkValue::rbit_or`), so `dict \| select(...)` reaches the select |
 | 0015 | applied | public set allocation and heap-free iteration (`set::alloc_set`, `SetRef` accessors) |
+| 0016 | applied | immutable lists on a mutable heap (`list::alloc_immutable_list`, `list::list_is_immutable`) |
+| 0017 | applied | a function's defining module (`eval::DefModule`, `Evaluator::innermost_enclosing_def_module`) |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -156,3 +158,48 @@ the native stack; Blaze runs evaluation on threads with large stacks
   drops duplicates, keeps first-insertion order; fails on unhashable values), re-exported as
   `starlark::values::set::alloc_set`; `SetRef::from_value`, `len`, `is_empty`, `iter`.
 - Test: `patch_0015_alloc_set`.
+
+## 0016 — immutable lists
+
+- Gap: Java `StarlarkList.immutableCopyOf` (net/starlark/java/eval/StarlarkList.java:168, via
+  `copyOf(null, ..)` and `wrap`) makes an `ImmutableStarlarkList` on any thread: a `list` that
+  every mutator rejects (Starlark.checkMutable: "trying to mutate a frozen list value") and whose
+  `isImmutable()` is `true` without looking at the elements (ImmutableStarlarkList.java:25).
+  starlark-rust lists are mutable until their heap freezes, so `cc_internal.freeze(list)` results
+  failed depset's "depset elements must not be mutable values".
+- Fix: `types/list/value.rs`: `ListData.immutable` flag (Debug output unchanged when unset);
+  `check_can_mutate` fails with Java's text before the iteration check (Java's order), which
+  covers `append`/`extend`/`insert`/`pop`/`remove`/`clear`, `x[i] = v` and `x += y`.
+  `alloc_immutable_list(heap, elems)` (the empty list is the shared frozen empty list, Java
+  `StarlarkList.empty()`), `list_is_immutable(value) -> Option<bool>` (frozen or flagged:
+  `Some(true)`; other lists `Some(false)`; non-lists `None`); re-exported from
+  `starlark::values::list`. Freezing turns a flagged list into an ordinary frozen list. Lists
+  stay unhashable, as in Java ("Even a frozen list is unhashable").
+- Users: blaze_starlark `list::list_immutable_copy_of` (`cc_internal.freeze`), immutability
+  checks of depset elements.
+- Test: `patch_0016_immutable_list`.
+
+## 0017 — a function's defining module
+
+- Gap: Bazel reads the module a Starlark function was defined in (net/starlark/java/eval/
+  StarlarkFunction.java:195 `getModule`) and the module of the innermost Starlark function on
+  the stack (Module.java:121 `ofInnermostEnclosingStarlarkFunction`, StarlarkThread.java:530),
+  e.g. `BazelModuleContext.of(fn.getModule())`, `fn.getModule().getGlobal(fn.getName()) != fn`
+  (CcStarlarkInternal.checkToplevel, StarlarkActionFactory.validateIsTopLevelStarlarkFunction).
+  starlark-rust keeps a def's frozen module privately and exposes no frame functions.
+- Fix: `eval/compiler/def.rs` `DefModule` (re-exported as `starlark::eval::DefModule`):
+  `of_function(value)` for `def`/`lambda` values, `def_name(value)` (Java `getName`, "lambda"
+  for lambdas), `codemap()`, `file_name()` (the compiled file name; identity: Bazel executes each
+  compiled file once into one module), `is_frozen()`, `same_module(..)`, `get_global(name,
+  eval)` (Java `Module.getGlobal`: a frozen module is read directly, a module still executing
+  only through the evaluator executing its top level). `Evaluator::innermost_enclosing_def_module
+  (depth)` walks the call stack from the top counting `def`s/`lambda`s, functions the optimizer
+  inlined into a call site (from the frame span's inlined frames; `inlined_frame.rs`
+  `to_inlined_frames` made `pub(crate)`, `cheap_call_stack.rs` `top_nth_frame_opt`), and the
+  bottom frame while `eval_module` runs (Java's toplevel function); natives are skipped.
+- Deviation: starlark-rust keeps `load` bindings among a module's names, so `get_global` finds
+  loaded names (Java: file-local). For "is `fn` its own module's global `fn.getName()`" this
+  cannot change the answer, since a loaded value was defined elsewhere.
+- Users: blaze_starlark `defining_module` (module keys for blaze_packages
+  `BazelModuleContext::of_filename`).
+- Test: `patch_0017_def_module`.

@@ -2,8 +2,126 @@ Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2: .cargo_vcs_info.json
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs starlark/src/eval/compiler/def.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/def.rs	2026-11-17 22:47:59.729130013 -0700
-@@ -783,6 +783,25 @@
++++ starlark/src/eval/compiler/def.rs	2026-11-18 07:03:56.835192379 -0700
+@@ -610,6 +610,117 @@
+ pub(crate) type Def<'v> = DefGen<Value<'v>>;
+ pub(crate) type FrozenDef = DefGen<FrozenValue>;
+ 
++/// BLAZE PATCH 0017: the module a `def` or `lambda` was defined in (Java
++/// net/starlark/java/eval/StarlarkFunction.java:195 `StarlarkFunction.getModule`), or the module
++/// whose top level is executing.
++///
++/// Identity is the compiled file ([`CodeMap`]): Bazel executes each compiled file once, into one
++/// module, so the file stands for the module. [`DefModule::file_name`] is the name the file was
++/// compiled with, which is how Blaze finds the module's `BazelModuleContext`.
++#[derive(Clone)]
++pub struct DefModule<'v> {
++    codemap: CodeMap,
++    /// The frozen module, once the defining module is frozen (`None` while it still executes).
++    frozen: Option<FrozenAnyValue<FrozenModuleData>>,
++    _marker: std::marker::PhantomData<Value<'v>>,
++}
++
++impl<'v> DefModule<'v> {
++    /// The module `function` was defined in, if it is a `def` or `lambda` (Java
++    /// `fn.getModule()` for a `StarlarkFunction`); `None` for other values.
++    pub fn of_function(function: Value<'v>) -> Option<DefModule<'v>> {
++        let (def_info, module) = if let Some(f) = function.downcast_ref::<Def<'v>>() {
++            (f.def_info, f.module.load_relaxed())
++        } else if let Some(f) = function.downcast_ref::<FrozenDef>() {
++            (f.def_info, f.module.load_relaxed())
++        } else {
++            return None;
++        };
++        Some(DefModule {
++            codemap: def_info.codemap.as_ref().dupe(),
++            frozen: module,
++            _marker: std::marker::PhantomData,
++        })
++    }
++
++    /// The name of a `def` (`"lambda"` for a lambda), as Java `StarlarkFunction.getName`;
++    /// `None` for other values.
++    pub fn def_name(function: Value<'v>) -> Option<String> {
++        let def_info = if let Some(f) = function.downcast_ref::<Def<'v>>() {
++            f.def_info
++        } else if let Some(f) = function.downcast_ref::<FrozenDef>() {
++            f.def_info
++        } else {
++            return None;
++        };
++        Some(def_info.name.as_str().to_owned())
++    }
++
++    pub(crate) fn of_module_def_info(def_info: FrozenAnyValue<DefInfo>) -> DefModule<'v> {
++        DefModule {
++            codemap: def_info.codemap.as_ref().dupe(),
++            frozen: None,
++            _marker: std::marker::PhantomData,
++        }
++    }
++
++    /// The compiled file of the module.
++    pub fn codemap(&self) -> &CodeMap {
++        &self.codemap
++    }
++
++    /// The name the module's file was compiled with.
++    pub fn file_name(&self) -> &str {
++        self.codemap.filename()
++    }
++
++    /// Whether the defining module is frozen.
++    pub fn is_frozen(&self) -> bool {
++        self.frozen.is_some()
++    }
++
++    /// Whether `self` and `other` are the same module (same compiled file).
++    pub fn same_module(&self, other: &DefModule) -> bool {
++        self.codemap == other.codemap
++    }
++
++    /// Java `Module.getGlobal(name)`: the module's global `name`, `_private` names included. A
++    /// frozen module is read directly; a module that is still executing can only be read through
++    /// the evaluator executing it, so this returns `None` when `eval` is not executing this
++    /// module's top level.
++    ///
++    /// Deviation: starlark-rust keeps `load` bindings among the module's names, so a loaded name
++    /// is found too (Java: a file-local binding, not a global). For Bazel's use, "is `fn` the
++    /// global of its own module named `fn.getName()`", this cannot change the answer: a loaded
++    /// value was defined in another module.
++    pub fn get_global(&self, name: &str, eval: &Evaluator<'v, '_, '_>) -> Option<Value<'v>> {
++        match self.frozen {
++            Some(module) => {
++                let (slot, _) = module.names.get_name(name)?;
++                module.slots.get_slot(slot).map(|v| v.to_value())
++            }
++            None => {
++                let current = eval.module_def_info?;
++                if current.codemap.as_ref() != &self.codemap {
++                    return None;
++                }
++                eval.module_env
++                    .get_any_visibility(Hashed::new(name))
++                    .map(|(v, _)| v)
++            }
++        }
++    }
++}
++
++impl fmt::Debug for DefModule<'_> {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("DefModule")
++            .field("file_name", &self.file_name())
++            .field("frozen", &self.is_frozen())
++            .finish()
++    }
++}
++
+ starlark_complex_values!(Def);
+ 
+ impl<'v> Def<'v> {
+@@ -783,6 +894,25 @@
      where
          'v: 'a,
      {
@@ -70,8 +188,24 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/cheap_call_stack.rs starlark/src/eval/runtime/cheap_call_stack.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/cheap_call_stack.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/cheap_call_stack.rs	2026-11-17 22:47:59.728978993 -0700
-@@ -224,6 +224,14 @@
++++ starlark/src/eval/runtime/cheap_call_stack.rs	2026-11-18 07:02:46.445228006 -0700
+@@ -209,6 +209,15 @@
+             .ok_or_else(|| CallStackError::StackIsTooShallowForNthTopFrame(n, self.count).into())
+     }
+ 
++    /// BLAZE PATCH 0017: `n`-th frame from the top: its function and call-site span.
++    pub(crate) fn top_nth_frame_opt(
++        &self,
++        n: usize,
++    ) -> Option<(Value<'v>, Option<&'static FrameSpan>)> {
++        let index = self.count.checked_sub(1).and_then(|x| x.checked_sub(n))?;
++        Some((self.stack[index].function, self.stack[index].span))
++    }
++
+     pub(crate) fn top_nth_function_opt(&self, n: usize) -> Option<Value<'v>> {
+         let index = self.count.checked_sub(1).and_then(|x| x.checked_sub(n))?;
+         Some(self.stack[index].function)
+@@ -224,6 +233,14 @@
          CallStack { frames }
      }
  
@@ -88,8 +222,16 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          self.stack[1..self.count].map(|x| x.function)
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/evaluator.rs starlark/src/eval/runtime/evaluator.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/evaluator.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/evaluator.rs	2026-11-17 22:47:59.728730594 -0700
-@@ -185,6 +185,8 @@
++++ starlark/src/eval/runtime/evaluator.rs	2026-11-18 07:02:46.444796918 -0700
+@@ -47,6 +47,7 @@
+ use crate::eval::compiler::def::CopySlotFromParent;
+ use crate::eval::compiler::def::Def;
+ use crate::eval::compiler::def::DefInfo;
++use crate::eval::compiler::def::DefModule; // BLAZE PATCH 0017
+ use crate::eval::compiler::def::FrozenDef;
+ use crate::eval::runtime::before_stmt::BeforeStmt;
+ use crate::eval::runtime::before_stmt::BeforeStmtFunc;
+@@ -185,6 +186,8 @@
      pub(crate) soft_error_handler: &'a (dyn SoftErrorHandler + 'a),
      /// Max size of starlark stack
      pub(crate) max_callstack_size: Option<usize>,
@@ -98,7 +240,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Max size of heap memory in bytes
      pub(crate) max_heap_size: Option<usize>,
      /// Max number of ticks to execute
-@@ -294,6 +296,7 @@
+@@ -294,6 +297,7 @@
              verbose_gc: false,
              static_typechecking: false,
              max_callstack_size: None,
@@ -106,10 +248,52 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              max_heap_size: None,
              max_tick_count: None,
              frame_stack: Vec::with_capacity(DEFAULT_STACK_SIZE),
-@@ -955,6 +958,13 @@
+@@ -955,6 +959,55 @@
          }
      }
  
++    /// BLAZE PATCH 0017: the module of the `depth`-th innermost Starlark function on the call stack
++    /// (Java net/starlark/java/eval/Module.java:121 `Module.ofInnermostEnclosingStarlarkFunction`
++    /// and StarlarkThread.java:530 `getInnermostEnclosingStarlarkFunction`). Starlark functions are
++    /// `def`s and `lambda`s, including calls the optimizer inlined (they keep their function in
++    /// the call site's inlined frames), and the top level of the module this evaluator is
++    /// executing (Java's toplevel function); native functions are skipped. `None` when there are
++    /// not enough.
++    pub fn innermost_enclosing_def_module(&self, depth: usize) -> Option<DefModule<'v>> {
++        let mut depth = depth;
++        let mut visit = |m: Option<DefModule<'v>>| -> Option<DefModule<'v>> {
++            let m = m?;
++            if depth == 0 {
++                return Some(m);
++            }
++            depth -= 1;
++            None
++        };
++        let count = self.call_stack.count();
++        for n in 0..count {
++            let (function, span) = self.call_stack.top_nth_frame_opt(n)?;
++            let module = if function.is_none() && n + 1 == count {
++                // The bottom `None` frame is the module top level while `eval_module` runs
++                // (`module_def_info` set); `eval_function` pushes one too, outside it.
++                self.module_def_info.map(DefModule::of_module_def_info)
++            } else {
++                DefModule::of_function(function)
++            };
++            if let Some(m) = visit(module) {
++                return Some(m);
++            }
++            // Functions inlined between the caller and this frame, innermost first.
++            if let Some(span) = span {
++                for f in span.inlined_frames.to_inlined_frames().into_iter().rev() {
++                    if let Some(m) = visit(DefModule::of_function(f.fun.to_value())) {
++                        return Some(m);
++                    }
++                }
++            }
++        }
++        None
++    }
++
 +    /// BLAZE PATCH 0004: when set, calling a `def` or `lambda` that is already active on the call
 +    /// stack fails with "function 'f' called recursively"
 +    /// (net/starlark/java/eval/StarlarkFunction.java StarlarkFunction.call).
@@ -120,6 +304,31 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Sets max call stack size.
      /// Stack allocation will happen on entry point of evaluation if not allocated yet.
      pub fn set_max_callstack_size(&mut self, stack_size: usize) -> anyhow::Result<()> {
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/inlined_frame.rs starlark/src/eval/runtime/inlined_frame.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/inlined_frame.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/runtime/inlined_frame.rs	2026-11-18 07:02:46.445365955 -0700
+@@ -75,7 +75,8 @@
+         }
+     }
+ 
+-    fn to_inlined_frames(self) -> Vec<FrozenAnyValue<InlinedFrame>> {
++    // BLAZE PATCH 0017: pub(crate) (was private), for Evaluator::innermost_enclosing_def_module.
++    pub(crate) fn to_inlined_frames(self) -> Vec<FrozenAnyValue<InlinedFrame>> {
+         let mut r = Vec::new();
+         let mut frames_iter = self;
+         while let Some(frames) = frames_iter.frames {
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval.rs starlark/src/eval.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval.rs	2026-11-18 07:00:05.299175653 -0700
+@@ -42,6 +42,8 @@
+ pub use runtime::profile::mode::ProfileMode;
+ pub use soft_error::SoftErrorHandler;
+ pub use starlark_syntax::call_stack::CallStack;
++
++pub use crate::eval::compiler::def::DefModule; // BLAZE PATCH 0017
+ use starlark_syntax::slice_vec_ext::SliceExt;
+ use starlark_syntax::syntax::module::AstModule;
+ use starlark_syntax::syntax::module::AstModuleFields;
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/stdlib/funcs/other.rs starlark/src/stdlib/funcs/other.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/stdlib/funcs/other.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/stdlib/funcs/other.rs	2026-11-18 05:24:21.556122907 -0700
@@ -393,8 +602,56 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// [list.remove](
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list/value.rs starlark/src/values/types/list/value.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list/value.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/list/value.rs	2026-11-17 22:49:07.484194315 -0700
-@@ -525,8 +525,10 @@
++++ starlark/src/values/types/list/value.rs	2026-11-18 06:59:31.399442066 -0700
+@@ -68,11 +68,27 @@
+ pub(crate) struct ListGen<T>(pub(crate) T);
+ 
+ /// Define the mutable list type.
+-#[derive(Trace, Debug, ProvidesStaticType, Allocative)]
++#[derive(Trace, ProvidesStaticType, Allocative)] // BLAZE PATCH 0016: Debug written out below
+ pub(crate) struct ListData<'v> {
+     /// The data stored by the list.
+     #[allocative(skip)]
+     pub(crate) content: Cell<ValueTyped<'v, Array<'v>>>,
++    /// BLAZE PATCH 0016: an immutable list on a mutable heap (Java `ImmutableStarlarkList`, made by
++    /// `StarlarkList.immutableCopyOf`). Mutation fails; freezing makes it an ordinary frozen list.
++    #[allocative(skip)]
++    pub(crate) immutable: Cell<bool>,
++}
++
++// BLAZE PATCH 0016: same output as the derived `Debug` before the `immutable` field.
++impl<'v> Debug for ListData<'v> {
++    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
++        let mut d = f.debug_struct("ListData");
++        d.field("content", &self.content);
++        if self.immutable.get() {
++            d.field("immutable", &true);
++        }
++        d.finish()
++    }
+ }
+ 
+ /// Define the frozen list type.
+@@ -147,6 +163,10 @@
+ 
+     /// Return an error if there's at least one iterator over the list.
+     fn check_can_mutate(&self) -> anyhow::Result<()> {
++        // BLAZE PATCH 0016: Java Starlark.checkMutable checks frozenness first.
++        if unlikely(self.immutable.get()) {
++            return Err(anyhow::anyhow!("trying to mutate a frozen list value"));
++        }
+         if unlikely(self.content.get().as_ref().iter_count_is_non_zero()) {
+             return Err(ValueError::MutationDuringIteration.into());
+         }
+@@ -313,6 +333,7 @@
+     pub(crate) fn new(content: ValueTyped<'v, Array<'v>>) -> Self {
+         ListData {
+             content: Cell::new(content),
++            immutable: Cell::new(false), // BLAZE PATCH 0016
+         }
+     }
+ 
+@@ -525,8 +546,10 @@
      }
  
      fn add(&self, other: Value<'v>, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
@@ -407,7 +664,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      fn mul(&self, other: Value, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
-@@ -535,6 +537,9 @@
+@@ -535,6 +558,9 @@
              Ok(None) => return None,
              Err(e) => return Some(Err(e)),
          };
@@ -417,10 +674,43 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let mut result = Vec::with_capacity(self.0.content().len() * cmp::max(0, l) as usize);
          for _ in 0..l {
              result.extend(self.0.content().iter());
-@@ -653,3 +658,31 @@
+@@ -653,3 +679,64 @@
          assert::is_true("[1, 2] < [10]");
      }
  }
++
++/// BLAZE PATCH 0016: an immutable list with the given elements (Java
++/// net/starlark/java/eval/StarlarkList.java:168 `StarlarkList.immutableCopyOf`, via `copyOf(null, ..)`
++/// and `wrap`). The empty list is the shared frozen empty list (Java `StarlarkList.empty()`).
++/// Otherwise the list lives on `heap` and keeps its elements as they are (they may be mutable,
++/// as in Java); every mutation fails with "trying to mutate a frozen list value"
++/// (Starlark.checkMutable), and [`list_is_immutable`] reports it immutable.
++pub fn alloc_immutable_list<'v>(heap: Heap<'v>, elems: &[Value<'v>]) -> Value<'v> {
++    if elems.is_empty() {
++        return FrozenValue::new_empty_list().to_value();
++    }
++    let list = heap.alloc_list(elems);
++    list.downcast_ref::<ListGen<ListData<'v>>>()
++        .expect("just allocated a list")
++        .0
++        .immutable
++        .set(true);
++    list
++}
++
++/// BLAZE PATCH 0016: Java `StarlarkList.isImmutable` for a list value, `None` for other values.
++/// Frozen lists and lists made by [`alloc_immutable_list`] are immutable (Java
++/// ImmutableStarlarkList.isImmutable: no element check); other lists are not
++/// (MutableStarlarkList.isImmutable: its mutability is not frozen).
++pub fn list_is_immutable(x: Value) -> Option<bool> {
++    if let Some(list) = x.downcast_ref::<ListGen<ListData>>() {
++        Some(list.0.immutable.get())
++    } else if x.downcast_ref::<ListGen<FrozenListData>>().is_some() {
++        Some(true)
++    } else {
++        None
++    }
++}
 +
 +/// BLAZE PATCH 0002: Bazel's allocation limit for lists and tuples
 +/// (net/starlark/java/eval/StarlarkList.java:89 MAX_ALLOC).
@@ -449,6 +739,15 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    }
 +    Ok(())
 +}
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list.rs starlark/src/values/types/list.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/list.rs	2026-11-18 06:59:31.399695544 -0700
+@@ -29,3 +29,5 @@
+ pub use crate::values::types::list::list_type::ListType;
+ pub use crate::values::types::list::refs::ListRef;
+ pub use crate::values::types::list::unpack::UnpackList;
++pub use crate::values::types::list::value::alloc_immutable_list; // BLAZE PATCH 0016
++pub use crate::values::types::list::value::list_is_immutable; // BLAZE PATCH 0016
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/refs.rs starlark/src/values/types/set/refs.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/refs.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/set/refs.rs	2026-11-18 05:26:18.003938711 -0700

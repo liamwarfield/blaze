@@ -10,8 +10,11 @@
 //! - [`eval`]: compile, execute, call frozen functions, `frozen_into`, evaluation threads.
 //! - [`loader::LoadMap`]: resolved `load()`s.
 //! - [`error::EvalError`]: Bazel tracebacks; [`error::SyntaxError`].
-//! - Values: [`structs`] (`struct`, provider-instance base), [`depset`], [`label`], [`json`].
+//! - Values: [`structs`] (`struct`, provider-instance base), [`depset`], [`label`], [`json`],
+//!   [`list`] (immutable lists).
+//! - [`defining_module`]: the module a Starlark function was defined in.
 
+pub mod defining_module;
 pub mod depset;
 pub mod env;
 pub mod error;
@@ -19,6 +22,7 @@ pub mod eval;
 pub mod file_kind;
 pub mod json;
 pub mod label;
+pub mod list;
 pub mod loader;
 pub mod printer;
 pub mod semantics;

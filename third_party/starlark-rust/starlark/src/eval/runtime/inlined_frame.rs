@@ -75,7 +75,8 @@ impl InlinedFrames {
         }
     }
 
-    fn to_inlined_frames(self) -> Vec<FrozenAnyValue<InlinedFrame>> {
+    // BLAZE PATCH 0017: pub(crate) (was private), for Evaluator::innermost_enclosing_def_module.
+    pub(crate) fn to_inlined_frames(self) -> Vec<FrozenAnyValue<InlinedFrame>> {
         let mut r = Vec::new();
         let mut frames_iter = self;
         while let Some(frames) = frames_iter.frames {

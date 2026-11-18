@@ -209,6 +209,15 @@ impl<'v> CheapCallStack<'v> {
             .ok_or_else(|| CallStackError::StackIsTooShallowForNthTopFrame(n, self.count).into())
     }
 
+    /// BLAZE PATCH 0017: `n`-th frame from the top: its function and call-site span.
+    pub(crate) fn top_nth_frame_opt(
+        &self,
+        n: usize,
+    ) -> Option<(Value<'v>, Option<&'static FrameSpan>)> {
+        let index = self.count.checked_sub(1).and_then(|x| x.checked_sub(n))?;
+        Some((self.stack[index].function, self.stack[index].span))
+    }
+
     pub(crate) fn top_nth_function_opt(&self, n: usize) -> Option<Value<'v>> {
         let index = self.count.checked_sub(1).and_then(|x| x.checked_sub(n))?;
         Some(self.stack[index].function)

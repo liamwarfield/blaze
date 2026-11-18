@@ -610,6 +610,117 @@ impl<V> Display for DefGen<V> {
 pub(crate) type Def<'v> = DefGen<Value<'v>>;
 pub(crate) type FrozenDef = DefGen<FrozenValue>;
 
+/// BLAZE PATCH 0017: the module a `def` or `lambda` was defined in (Java
+/// net/starlark/java/eval/StarlarkFunction.java:195 `StarlarkFunction.getModule`), or the module
+/// whose top level is executing.
+///
+/// Identity is the compiled file ([`CodeMap`]): Bazel executes each compiled file once, into one
+/// module, so the file stands for the module. [`DefModule::file_name`] is the name the file was
+/// compiled with, which is how Blaze finds the module's `BazelModuleContext`.
+#[derive(Clone)]
+pub struct DefModule<'v> {
+    codemap: CodeMap,
+    /// The frozen module, once the defining module is frozen (`None` while it still executes).
+    frozen: Option<FrozenAnyValue<FrozenModuleData>>,
+    _marker: std::marker::PhantomData<Value<'v>>,
+}
+
+impl<'v> DefModule<'v> {
+    /// The module `function` was defined in, if it is a `def` or `lambda` (Java
+    /// `fn.getModule()` for a `StarlarkFunction`); `None` for other values.
+    pub fn of_function(function: Value<'v>) -> Option<DefModule<'v>> {
+        let (def_info, module) = if let Some(f) = function.downcast_ref::<Def<'v>>() {
+            (f.def_info, f.module.load_relaxed())
+        } else if let Some(f) = function.downcast_ref::<FrozenDef>() {
+            (f.def_info, f.module.load_relaxed())
+        } else {
+            return None;
+        };
+        Some(DefModule {
+            codemap: def_info.codemap.as_ref().dupe(),
+            frozen: module,
+            _marker: std::marker::PhantomData,
+        })
+    }
+
+    /// The name of a `def` (`"lambda"` for a lambda), as Java `StarlarkFunction.getName`;
+    /// `None` for other values.
+    pub fn def_name(function: Value<'v>) -> Option<String> {
+        let def_info = if let Some(f) = function.downcast_ref::<Def<'v>>() {
+            f.def_info
+        } else if let Some(f) = function.downcast_ref::<FrozenDef>() {
+            f.def_info
+        } else {
+            return None;
+        };
+        Some(def_info.name.as_str().to_owned())
+    }
+
+    pub(crate) fn of_module_def_info(def_info: FrozenAnyValue<DefInfo>) -> DefModule<'v> {
+        DefModule {
+            codemap: def_info.codemap.as_ref().dupe(),
+            frozen: None,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// The compiled file of the module.
+    pub fn codemap(&self) -> &CodeMap {
+        &self.codemap
+    }
+
+    /// The name the module's file was compiled with.
+    pub fn file_name(&self) -> &str {
+        self.codemap.filename()
+    }
+
+    /// Whether the defining module is frozen.
+    pub fn is_frozen(&self) -> bool {
+        self.frozen.is_some()
+    }
+
+    /// Whether `self` and `other` are the same module (same compiled file).
+    pub fn same_module(&self, other: &DefModule) -> bool {
+        self.codemap == other.codemap
+    }
+
+    /// Java `Module.getGlobal(name)`: the module's global `name`, `_private` names included. A
+    /// frozen module is read directly; a module that is still executing can only be read through
+    /// the evaluator executing it, so this returns `None` when `eval` is not executing this
+    /// module's top level.
+    ///
+    /// Deviation: starlark-rust keeps `load` bindings among the module's names, so a loaded name
+    /// is found too (Java: a file-local binding, not a global). For Bazel's use, "is `fn` the
+    /// global of its own module named `fn.getName()`", this cannot change the answer: a loaded
+    /// value was defined in another module.
+    pub fn get_global(&self, name: &str, eval: &Evaluator<'v, '_, '_>) -> Option<Value<'v>> {
+        match self.frozen {
+            Some(module) => {
+                let (slot, _) = module.names.get_name(name)?;
+                module.slots.get_slot(slot).map(|v| v.to_value())
+            }
+            None => {
+                let current = eval.module_def_info?;
+                if current.codemap.as_ref() != &self.codemap {
+                    return None;
+                }
+                eval.module_env
+                    .get_any_visibility(Hashed::new(name))
+                    .map(|(v, _)| v)
+            }
+        }
+    }
+}
+
+impl fmt::Debug for DefModule<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DefModule")
+            .field("file_name", &self.file_name())
+            .field("frozen", &self.is_frozen())
+            .finish()
+    }
+}
+
 starlark_complex_values!(Def);
 
 impl<'v> Def<'v> {

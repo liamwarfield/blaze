@@ -68,11 +68,27 @@ use crate::values::type_repr::StarlarkTypeRepr;
 pub(crate) struct ListGen<T>(pub(crate) T);
 
 /// Define the mutable list type.
-#[derive(Trace, Debug, ProvidesStaticType, Allocative)]
+#[derive(Trace, ProvidesStaticType, Allocative)] // BLAZE PATCH 0016: Debug written out below
 pub(crate) struct ListData<'v> {
     /// The data stored by the list.
     #[allocative(skip)]
     pub(crate) content: Cell<ValueTyped<'v, Array<'v>>>,
+    /// BLAZE PATCH 0016: an immutable list on a mutable heap (Java `ImmutableStarlarkList`, made by
+    /// `StarlarkList.immutableCopyOf`). Mutation fails; freezing makes it an ordinary frozen list.
+    #[allocative(skip)]
+    pub(crate) immutable: Cell<bool>,
+}
+
+// BLAZE PATCH 0016: same output as the derived `Debug` before the `immutable` field.
+impl<'v> Debug for ListData<'v> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_struct("ListData");
+        d.field("content", &self.content);
+        if self.immutable.get() {
+            d.field("immutable", &true);
+        }
+        d.finish()
+    }
 }
 
 /// Define the frozen list type.
@@ -147,6 +163,10 @@ impl<'v> ListData<'v> {
 
     /// Return an error if there's at least one iterator over the list.
     fn check_can_mutate(&self) -> anyhow::Result<()> {
+        // BLAZE PATCH 0016: Java Starlark.checkMutable checks frozenness first.
+        if unlikely(self.immutable.get()) {
+            return Err(anyhow::anyhow!("trying to mutate a frozen list value"));
+        }
         if unlikely(self.content.get().as_ref().iter_count_is_non_zero()) {
             return Err(ValueError::MutationDuringIteration.into());
         }
@@ -313,6 +333,7 @@ impl<'v> ListData<'v> {
     pub(crate) fn new(content: ValueTyped<'v, Array<'v>>) -> Self {
         ListData {
             content: Cell::new(content),
+            immutable: Cell::new(false), // BLAZE PATCH 0016
         }
     }
 
@@ -656,6 +677,39 @@ def list_result():
     fn test_compare() {
         // Lexicographic comparison.
         assert::is_true("[1, 2] < [10]");
+    }
+}
+
+/// BLAZE PATCH 0016: an immutable list with the given elements (Java
+/// net/starlark/java/eval/StarlarkList.java:168 `StarlarkList.immutableCopyOf`, via `copyOf(null, ..)`
+/// and `wrap`). The empty list is the shared frozen empty list (Java `StarlarkList.empty()`).
+/// Otherwise the list lives on `heap` and keeps its elements as they are (they may be mutable,
+/// as in Java); every mutation fails with "trying to mutate a frozen list value"
+/// (Starlark.checkMutable), and [`list_is_immutable`] reports it immutable.
+pub fn alloc_immutable_list<'v>(heap: Heap<'v>, elems: &[Value<'v>]) -> Value<'v> {
+    if elems.is_empty() {
+        return FrozenValue::new_empty_list().to_value();
+    }
+    let list = heap.alloc_list(elems);
+    list.downcast_ref::<ListGen<ListData<'v>>>()
+        .expect("just allocated a list")
+        .0
+        .immutable
+        .set(true);
+    list
+}
+
+/// BLAZE PATCH 0016: Java `StarlarkList.isImmutable` for a list value, `None` for other values.
+/// Frozen lists and lists made by [`alloc_immutable_list`] are immutable (Java
+/// ImmutableStarlarkList.isImmutable: no element check); other lists are not
+/// (MutableStarlarkList.isImmutable: its mutability is not frozen).
+pub fn list_is_immutable(x: Value) -> Option<bool> {
+    if let Some(list) = x.downcast_ref::<ListGen<ListData>>() {
+        Some(list.0.immutable.get())
+    } else if x.downcast_ref::<ListGen<FrozenListData>>().is_some() {
+        Some(true)
+    } else {
+        None
     }
 }
 

@@ -47,6 +47,7 @@ use crate::eval::bc::writer::BcStatementLocations;
 use crate::eval::compiler::def::CopySlotFromParent;
 use crate::eval::compiler::def::Def;
 use crate::eval::compiler::def::DefInfo;
+use crate::eval::compiler::def::DefModule; // BLAZE PATCH 0017
 use crate::eval::compiler::def::FrozenDef;
 use crate::eval::runtime::before_stmt::BeforeStmt;
 use crate::eval::runtime::before_stmt::BeforeStmtFunc;
@@ -956,6 +957,48 @@ impl<'v, 'a, 'e: 'a> Evaluator<'v, 'a, 'e> {
         } else {
             bc.run(self, &mut EvalCallbacksDisabled)
         }
+    }
+
+    /// BLAZE PATCH 0017: the module of the `depth`-th innermost Starlark function on the call stack
+    /// (Java net/starlark/java/eval/Module.java:121 `Module.ofInnermostEnclosingStarlarkFunction`
+    /// and StarlarkThread.java:530 `getInnermostEnclosingStarlarkFunction`). Starlark functions are
+    /// `def`s and `lambda`s, including calls the optimizer inlined (they keep their function in
+    /// the call site's inlined frames), and the top level of the module this evaluator is
+    /// executing (Java's toplevel function); native functions are skipped. `None` when there are
+    /// not enough.
+    pub fn innermost_enclosing_def_module(&self, depth: usize) -> Option<DefModule<'v>> {
+        let mut depth = depth;
+        let mut visit = |m: Option<DefModule<'v>>| -> Option<DefModule<'v>> {
+            let m = m?;
+            if depth == 0 {
+                return Some(m);
+            }
+            depth -= 1;
+            None
+        };
+        let count = self.call_stack.count();
+        for n in 0..count {
+            let (function, span) = self.call_stack.top_nth_frame_opt(n)?;
+            let module = if function.is_none() && n + 1 == count {
+                // The bottom `None` frame is the module top level while `eval_module` runs
+                // (`module_def_info` set); `eval_function` pushes one too, outside it.
+                self.module_def_info.map(DefModule::of_module_def_info)
+            } else {
+                DefModule::of_function(function)
+            };
+            if let Some(m) = visit(module) {
+                return Some(m);
+            }
+            // Functions inlined between the caller and this frame, innermost first.
+            if let Some(span) = span {
+                for f in span.inlined_frames.to_inlined_frames().into_iter().rev() {
+                    if let Some(m) = visit(DefModule::of_function(f.fun.to_value())) {
+                        return Some(m);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// BLAZE PATCH 0004: when set, calling a `def` or `lambda` that is already active on the call
