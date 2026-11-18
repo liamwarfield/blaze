@@ -117,3 +117,5 @@ Each entry: date, decision, why, who decided.
   build-without-the-bytes. Referee: Bazel's own remote worker as the server, the oracle's gRPC
   log as the reference, and cache interchange with real Bazel (hit rate) as the headline number.
   A Fable 5.2 review follows the port. User (priority); root (plan).
+- 2026-11-18. Models: Fable 5.2 for reviewers, auditors and leads; Opus 5.5 for all other agents
+  (implementers, fixers, leads' sub-workers). Passed explicitly at launch. User.

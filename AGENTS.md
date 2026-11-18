@@ -58,8 +58,10 @@ Read them again after a context reset.
 
 ## Reviewers
 
-- Independent reviewers and regression auditors run on Fable 5.2 (`model: "fable"`), by the user's
-  decision (2026-11-18). Implementers keep the session default.
+- Models, by the user's decision (2026-11-18): reviewers, regression auditors and leads (agents
+  that plan a wave, hand out files and integrate) run on Fable 5.2 (`model: "fable"`). Everything
+  else runs on Opus 5.5 (`model: "opus"`): implementers, fixers, and every sub-worker a lead
+  starts. Always pass the model explicitly when starting an agent; do not rely on inheritance.
 - A reviewer is read-only: it does not edit code, tests, expectations, scripts or baselines, and
   does not run Cargo. It reviews the Rust against the pinned Java and the oracle evidence, writes
   its findings to `docs/reviews/<date>-<area>.md`, and returns one verdict, PASS or STOP, bound to
