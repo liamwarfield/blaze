@@ -1,11 +1,11 @@
 //! The options of `rules/android/AndroidConfiguration.java` (`AndroidConfiguration.Options`, its
 //! converters and value enums). The fragment itself is not ported here.
 
+use blaze_cmdline::Label;
+use blaze_options::Foreign;
 use blaze_options::{CommaSeparatedOptionListConverter, Void, options};
 
-use super::converters::{
-    EmptyToNullLabelConverter, LabelConverter, LabelOrderedSetConverter, OptionLabel,
-};
+use super::converters::{EmptyToNullLabelConverter, LabelConverter, LabelOrderedSetConverter};
 use super::cpp_configuration::CppConfigurationDynamicMode;
 use super::cpp_options::DynamicModeConverter;
 use super::fragment_options::FragmentOptions;
@@ -38,7 +38,7 @@ blaze_options::enum_converter!(
     "android manifest merger order"
 );
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/rules/android/AndroidConfiguration.java:93 AndroidConfiguration.ConfigurationDistinguisher
     /// Value used to avoid multiple configurations from conflicting.
@@ -59,7 +59,7 @@ impl AndroidConfigurationConfigurationDistinguisher {
     }
 }
 
-fragment_enum! {
+blaze_options::option_enum! {
     // Java: com/google/devtools/build/lib/rules/android/AndroidConfiguration.java:116 AndroidConfiguration.ApkSigningMethod
     /// Which APK signing method to use with the debug key for rules that build APKs.
     ///
@@ -98,7 +98,7 @@ impl AndroidConfigurationApkSigningMethod {
     }
 }
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/rules/android/AndroidConfiguration.java:159 AndroidConfiguration.AndroidManifestMerger
     /// Types of android manifest mergers.
@@ -131,7 +131,7 @@ impl AndroidConfigurationAndroidManifestMerger {
     }
 }
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/rules/android/AndroidConfiguration.java:188 AndroidConfiguration.ManifestMergerOrder
     /// Orders for merging android manifests.
@@ -196,7 +196,7 @@ options! {
                 " each specified target platform.",
             ),
         )]
-        pub android_platforms: Vec<OptionLabel>,
+        pub android_platforms: Vec<Foreign<Label>>,
 
         #[option(
             name = "fat_apk_hwasan",
@@ -787,7 +787,7 @@ options! {
                 " dex when compiling legacy multidex.",
             ),
         )]
-        pub legacy_main_dex_list_generator: Option<OptionLabel>,
+        pub legacy_main_dex_list_generator: Option<Foreign<Label>>,
 
         #[option(
             name = "optimizing_dexer",
@@ -797,7 +797,7 @@ options! {
             effect_tags = [UNKNOWN],
             help = "Specifies a binary to use to do dexing without sharding.",
         )]
-        pub optimizing_dexer: Option<OptionLabel>,
+        pub optimizing_dexer: Option<Foreign<Label>>,
 
         #[option(
             name = "experimental_disable_instrumentation_manifest_merge",

@@ -8,6 +8,8 @@ use blaze_options::{
 };
 
 use super::converters::ConvResult;
+use std::sync::Arc;
+
 use super::resource_converter::{
     HOST_CPUS_KEYWORD, HOST_RAM_KEYWORD, ResourceConverterDoubleConverter, host_cpus_supplier,
     host_ram_supplier,
@@ -49,10 +51,10 @@ option_field_type!(
 pub struct TestResourcesConverter;
 
 fn resource_converter() -> ResourceConverterDoubleConverter {
-    ResourceConverterDoubleConverter::new(
+    ResourceConverterDoubleConverter::with_keywords(
         vec![
-            (HOST_CPUS_KEYWORD, host_cpus_supplier),
-            (HOST_RAM_KEYWORD, host_ram_supplier),
+            (HOST_CPUS_KEYWORD, Arc::new(|| host_cpus_supplier() as f64)),
+            (HOST_RAM_KEYWORD, Arc::new(|| host_ram_supplier() as f64)),
         ],
         /* minValue= */ 0.0,
         /* maxValue= */ f64::MAX,
@@ -67,7 +69,7 @@ impl TestResourcesConverter {
         let mut values = Vec::with_capacity(TestSize::VALUES.len());
         // Splitter.on(",").splitToList keeps empty strings.
         for s in assignment.1.split(',') {
-            values.push(resource_converter.convert(s)?);
+            values.push(resource_converter.convert_double(s)?);
         }
         if values.len() != 1 && values.len() != TestSize::VALUES.len() {
             return Err(OptionsParsingException::new(format!(

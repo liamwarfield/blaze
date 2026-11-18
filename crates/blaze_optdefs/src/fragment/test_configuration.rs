@@ -1,12 +1,14 @@
 //! The options of `analysis/test/TestConfiguration.java` (`TestConfiguration.TestOptions` and
 //! `TestConfiguration.RunsPerTestConverter`). The fragment itself is not ported here.
 
+use blaze_cmdline::Label;
+use blaze_options::Foreign;
 use blaze_options::{
     ConversionContext, Converter, EnvVar, EnvVarsConverter, OptionsParsingException, TriState,
     Value, converter::non_null, java_parse_int, options,
 };
 
-use super::converters::{ConvResult, LabelConverter, OptionLabel};
+use super::converters::{ConvResult, LabelConverter};
 use super::fragment_options::{FragmentOptions, normalize_env_vars};
 use super::per_label_options::{PerLabelOptions, PerLabelOptionsConverter};
 use super::regex_filter::RegexFilter;
@@ -252,7 +254,7 @@ options! {
                 "that collects code coverage. Defaults to `//tools/test:coverage_support`.\n",
             ),
         )]
-        pub coverage_support: OptionLabel,
+        pub coverage_support: Foreign<Label>,
 
         #[option(
             name = "experimental_fetch_all_coverage_outputs",
@@ -344,7 +346,7 @@ impl FragmentOptions for TestConfigurationTestOptions {
     }
 }
 
-fragment_enum! {
+blaze_options::option_enum! {
     // Java: com/google/devtools/build/lib/analysis/test/TestConfiguration.java:297 TestConfiguration.TestOptions.CancelConcurrentTests
     /// When to cancel concurrently running tests.
     pub enum TestConfigurationTestOptionsCancelConcurrentTests { NEVER, ON_FAILED, ON_PASSED }

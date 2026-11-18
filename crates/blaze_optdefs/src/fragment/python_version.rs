@@ -1,7 +1,7 @@
 //! The `PythonVersion` enum of `rules/python/PythonVersion.java` (only the constants; the
 //! attribute-parsing helpers are not ported here).
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/rules/python/PythonVersion.java:31 PythonVersion
     /// An enum representing Python major versions.

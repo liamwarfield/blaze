@@ -40,6 +40,21 @@ impl OptionsParsingException {
         }
     }
 
+    // Java: com/google/devtools/common/options/OptionsParsingException.java:38 OptionsParsingException.<init>
+    /// `new OptionsParsingException(message, argument, cause)`; the cause is kept as its
+    /// `getMessage()`.
+    pub fn with_argument_and_cause(
+        message: impl Into<String>,
+        argument: impl Into<String>,
+        cause_message: impl Into<String>,
+    ) -> Self {
+        OptionsParsingException {
+            message: message.into(),
+            invalid_argument: Some(argument.into()),
+            cause_message: Some(cause_message.into()),
+        }
+    }
+
     pub fn get_message(&self) -> &str {
         &self.message
     }

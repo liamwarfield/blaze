@@ -51,7 +51,11 @@ mod generated_tests {
 
 // ---- hand-written below this line (preserved by the generator) ----
 
-use super::resource_converter::{host_cpus_supplier, resource_integer_converter};
+use std::sync::Arc;
+
+use super::resource_converter::{
+    ResourceConverter, host_cpus_supplier, resource_integer_converter,
+};
 
 // Java: com/google/devtools/build/lib/util/TestType.java:48 TestType.isInTest
 /// Whether this process runs under a test (`TEST_TMPDIR` is set), read once.
@@ -65,13 +69,13 @@ resource_integer_converter!(
     // Java: com/google/devtools/build/lib/runtime/LoadingPhaseThreadsOption.java:47 LoadingPhaseThreadsOption.LoadingPhaseThreadCountConverter
     /// A converter for loading phase thread count. Takes FLAG_SYNTAX. Caps at 20 for tests.
     pub LoadingPhaseThreadCountConverter =>
-        ResourceIntegerConverter::new(host_cpus_supplier, 1, i32::MAX)
+        ResourceConverterIntegerConverter::new(Arc::new(host_cpus_supplier), 1, i32::MAX)
             .with_check_and_limit(|c, value| check_and_limit(c, value, is_in_test()))
 );
 
 // Java: com/google/devtools/build/lib/runtime/LoadingPhaseThreadsOption.java:59 LoadingPhaseThreadsOption.LoadingPhaseThreadCountConverter.checkAndLimit
 fn check_and_limit(
-    c: &ResourceIntegerConverter,
+    c: &ResourceConverter<i32>,
     mut value: i32,
     in_test: bool,
 ) -> Result<i32, OptionsParsingException> {
@@ -104,8 +108,8 @@ mod tests {
 
     /// The converter as Java's tests see it: running under a test (TEST_TMPDIR is set by
     /// `bazel test`).
-    fn converter_in_test() -> ResourceIntegerConverter {
-        ResourceIntegerConverter::new(host_cpus_supplier, 1, i32::MAX)
+    fn converter_in_test() -> ResourceConverterIntegerConverter {
+        ResourceConverterIntegerConverter::new(Arc::new(host_cpus_supplier), 1, i32::MAX)
             .with_check_and_limit(|c, value| check_and_limit(c, value, true))
     }
 

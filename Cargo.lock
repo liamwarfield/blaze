@@ -183,6 +183,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_bzlmod"
+version = "0.1.0"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "blaze_bzlmod_model",
+ "blaze_cmdline",
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_repo_fetch",
+ "blaze_skyframe",
+ "blaze_starlark",
+ "blaze_util",
+ "blaze_vfs",
+ "dupe",
+ "hex",
+ "indexmap",
+ "parking_lot",
+ "sha2",
+ "starlark",
+ "starlark_map",
+ "starlark_syntax",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "blaze_bzlmod_model"
 version = "0.1.0"
 dependencies = [
@@ -199,6 +227,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_cc_features"
+version = "0.1.0"
+dependencies = [
+ "blaze_collect",
+ "blaze_util",
+ "blaze_vfs",
+ "indexmap",
+ "regex",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "blaze_client"
 version = "0.1.0"
 dependencies = [
@@ -208,7 +249,9 @@ dependencies = [
  "hex",
  "libc",
  "md-5",
+ "tar",
  "tempfile",
+ "zstd",
 ]
 
 [[package]]
@@ -344,8 +387,10 @@ version = "0.1.0"
 dependencies = [
  "blaze_cmdline",
  "blaze_events",
+ "blaze_protos",
  "blaze_util",
  "indexmap",
+ "regex",
  "thiserror",
 ]
 
@@ -391,6 +436,7 @@ dependencies = [
  "libc",
  "parking_lot",
  "tempfile",
+ "uuid",
 ]
 
 [[package]]

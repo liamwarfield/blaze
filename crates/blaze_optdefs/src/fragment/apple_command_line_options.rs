@@ -1,5 +1,7 @@
 //! Port of `rules/apple/AppleCommandLineOptions.java`.
 
+use blaze_cmdline::Label;
+use blaze_options::Foreign;
 use blaze_options::{
     CommaSeparatedOptionListConverter, ConversionContext, Converter, Value, converter::non_null,
     options,
@@ -7,7 +9,7 @@ use blaze_options::{
 
 use super::apple_configuration::AppleConfigurationConfigurationDistinguisher;
 use super::apple_platform::apple_platform_platform_type as platform_type;
-use super::converters::{ConvResult, LabelConverter, LabelListConverter, OptionLabel};
+use super::converters::{ConvResult, LabelConverter, LabelListConverter};
 use super::dotted_version::{DottedVersion, DottedVersionConverter, DottedVersionOption};
 use super::fragment_options::FragmentOptions;
 
@@ -328,7 +330,7 @@ options! {
                 "in the build configuration.",
             ),
         )]
-        pub xcode_version_config: OptionLabel,
+        pub xcode_version_config: Foreign<Label>,
 
         #[option(
             name = "experimental_include_xcode_execution_requirements",
@@ -362,7 +364,7 @@ options! {
             effect_tags = [LOSES_INCREMENTAL_STATE, LOADING_AND_ANALYSIS],
             help = "Comma-separated list of platforms to use when building Apple binaries.",
         )]
-        pub apple_platforms: Vec<OptionLabel>,
+        pub apple_platforms: Vec<Foreign<Label>>,
 
         #[option(
             name = "use_platforms_in_apple_crosstool_transition",

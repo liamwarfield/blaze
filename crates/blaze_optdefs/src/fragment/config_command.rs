@@ -6,7 +6,7 @@
 
 use blaze_options::options;
 
-fragment_enum! {
+blaze_options::option_enum! {
     // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommand.java:86 ConfigCommand.OutputType
     pub enum ConfigCommandOutputType { TEXT, JSON }
 }

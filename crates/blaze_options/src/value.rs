@@ -27,7 +27,11 @@ pub trait OptionValue: Any + fmt::Debug + Send + Sync {
     /// Java `Object.equals`.
     fn dyn_eq(&self, other: &dyn OptionValue) -> bool;
     /// Java `Object.toString`.
-    fn java_to_string(&self) -> String;
+    ///
+    /// Named apart from [`OptionScalar::java_to_string`] (which every `OptionScalar` also gets
+    /// through the blanket impl below) so that `x.java_to_string()` is not ambiguous when both
+    /// traits are in scope.
+    fn dyn_java_to_string(&self) -> String;
     /// `Some` iff this value is a Java `List`.
     fn as_list(&self) -> Option<&[Value]> {
         None
@@ -41,7 +45,7 @@ impl<T: OptionScalar> OptionValue for T {
     fn dyn_eq(&self, other: &dyn OptionValue) -> bool {
         other.as_any().downcast_ref::<T>() == Some(self)
     }
-    fn java_to_string(&self) -> String {
+    fn dyn_java_to_string(&self) -> String {
         OptionScalar::java_to_string(self)
     }
 }
@@ -60,7 +64,7 @@ impl OptionValue for ListValue {
             None => false,
         }
     }
-    fn java_to_string(&self) -> String {
+    fn dyn_java_to_string(&self) -> String {
         java_list_to_string(self.0.iter().map(|v| v.java_to_string()))
     }
     fn as_list(&self) -> Option<&[Value]> {
@@ -104,7 +108,7 @@ impl Value {
         self.0.as_list()
     }
     pub fn java_to_string(&self) -> String {
-        self.0.java_to_string()
+        self.0.dyn_java_to_string()
     }
     /// Convenience: the value as a `T`, panicking if it has a different type.
     pub fn get<T: Any + Clone>(&self) -> T {

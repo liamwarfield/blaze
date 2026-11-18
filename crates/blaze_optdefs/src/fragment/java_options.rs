@@ -2,11 +2,13 @@
 
 use super::converters::{
     CoreOptionConvertersStrictDepsMode, EmptyToNullLabelConverter, LabelConverter,
-    LabelListConverter, LabelMap, LabelMapConverter, OptionLabel, StrictDepsConverter,
+    LabelListConverter, LabelMap, LabelMapConverter, StrictDepsConverter,
 };
 use super::java_configuration::{
     JavaConfigurationJavaClasspathMode, JavaConfigurationOneVersionEnforcementLevel,
 };
+use blaze_cmdline::Label;
+use blaze_options::Foreign;
 use blaze_options::Void;
 use blaze_options::options;
 
@@ -183,7 +185,7 @@ options! {
             effect_tags = [UNKNOWN],
             help = "The Java launcher used by tools that are executed during a build.",
         )]
-        pub host_java_launcher: Option<OptionLabel>,
+        pub host_java_launcher: Option<Foreign<Label>>,
 
         #[option(
             name = "java_launcher",
@@ -197,7 +199,7 @@ options! {
                 "The \"launcher\" attribute overrides this flag. ",
             ),
         )]
-        pub java_launcher: Option<OptionLabel>,
+        pub java_launcher: Option<Foreign<Label>>,
 
         #[option(
             name = "proguard_top",
@@ -210,7 +212,7 @@ options! {
                 "binary.",
             ),
         )]
-        pub proguard: Option<OptionLabel>,
+        pub proguard: Option<Foreign<Label>>,
 
         /// Comma-separated list of Mnemonic=label pairs of optimizers to run in the given order, treating
         /// {@code Proguard} specially by substituting in the relevant Proguard binary automatically. All
@@ -247,7 +249,7 @@ options! {
             effect_tags = [UNKNOWN],
             help = "Do not use.",
         )]
-        pub local_java_optimization_configuration: Option<OptionLabel>,
+        pub local_java_optimization_configuration: Option<Foreign<Label>>,
 
         /// If true, the OPTIMIZATION stage of the bytecode optimizer will be split across two actions.
         #[option(
@@ -343,7 +345,7 @@ options! {
             effect_tags = [UNKNOWN],
             help = "Plugins to use in the build. Currently works with java_plugin.",
         )]
-        pub plugin_list: Vec<OptionLabel>,
+        pub plugin_list: Vec<Foreign<Label>>,
 
         #[option(
             name = "experimental_turbine_annotation_processing",

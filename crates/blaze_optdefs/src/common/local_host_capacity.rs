@@ -69,3 +69,16 @@ fn total_physical_memory_bytes() -> u64 {
         _ => host,
     }
 }
+
+/// Runs `f` with the local host capacity set to `(memory_mb, cpu_usage)` (Java tests call
+/// `LocalHostCapacity.setLocalHostCapacity` before and `setLocalHostCapacity(null)` after).
+#[cfg(test)]
+pub(crate) fn with_local_host_capacity<R>(capacity: (f64, f64), f: impl FnOnce() -> R) -> R {
+    set_local_host_capacity(Some(LocalHostResources {
+        memory_mb: capacity.0,
+        cpu_usage: capacity.1,
+    }));
+    let r = f();
+    set_local_host_capacity(None);
+    r
+}

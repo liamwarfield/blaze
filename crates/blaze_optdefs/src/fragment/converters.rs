@@ -1,68 +1,12 @@
 //! Label-valued option types and the converters of `analysis/config/CoreOptionConverters.java`.
 
-use std::fmt;
-use std::ops::Deref;
-
 use blaze_cmdline::{Label, LabelPackageContext, LabelRepoContextImpl, RepositoryMapping};
 use blaze_options::{
-    ConversionContext, Converter, OptionScalar, OptionsParsingException, Value,
+    ConversionContext, Converter, Foreign, OptionScalar, OptionsParsingException, Value,
     converter::non_null, option_field_type, parser::STARLARK_SKIPPED_PREFIXES,
 };
 
 pub(crate) type ConvResult = Result<Option<Value>, OptionsParsingException>;
-
-/// A `Label` option value.
-///
-/// PORT: `blaze_options::FieldType`/`OptionScalar` and `blaze_cmdline::Label` are both foreign to
-/// this crate, so the orphan rule forbids implementing one for the other here. Option fields of
-/// Java type `Label` use this newtype instead; it dereferences to the `Label`.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct OptionLabel(pub Label);
-
-impl OptionLabel {
-    pub fn label(&self) -> &Label {
-        &self.0
-    }
-}
-
-impl Deref for OptionLabel {
-    type Target = Label;
-    fn deref(&self) -> &Label {
-        &self.0
-    }
-}
-
-impl From<Label> for OptionLabel {
-    fn from(l: Label) -> Self {
-        OptionLabel(l)
-    }
-}
-
-impl fmt::Debug for OptionLabel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.0, f)
-    }
-}
-
-impl fmt::Display for OptionLabel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl OptionScalar for OptionLabel {
-    // Java: com/google/devtools/build/lib/cmdline/Label.java:479 Label.toString
-    fn java_to_string(&self) -> String {
-        self.0.to_string()
-    }
-}
-
-option_field_type!(
-    OptionLabel,
-    "com.google.devtools.build.lib.cmdline.Label",
-    // Placeholder until the parser sets the field (Java holds null there).
-    raw = OptionLabel(Label::parse_canonical_unchecked("//:__unset__"))
-);
 
 /// `Map.Entry<Label, String>` (from `Maps.immutableEntry`), the value of
 /// [`LabelToStringEntryConverter`].
@@ -224,7 +168,7 @@ impl LabelConverter {
 impl Converter for LabelConverter {
     // Java: com/google/devtools/build/lib/analysis/config/CoreOptionConverters.java:132 CoreOptionConverters.LabelConverter.convert
     fn convert(&self, input: Option<&str>, ctx: Option<&ConversionContext>) -> ConvResult {
-        Ok(Some(Value::new(OptionLabel(
+        Ok(Some(Value::new(Foreign(
             self.convert_label(non_null(input), ctx)?,
         ))))
     }
@@ -263,7 +207,7 @@ impl Converter for LabelListConverter {
         Ok(Some(Value::list_of(
             self.convert_list(non_null(input), ctx)?
                 .into_iter()
-                .map(OptionLabel),
+                .map(Foreign),
         )))
     }
     fn get_type_description(&self) -> String {
@@ -284,7 +228,7 @@ impl Converter for LabelOrderedSetConverter {
         let mut result = Vec::new();
         for label in LabelListConverter.convert_list(non_null(input), ctx)? {
             if already_seen.insert(label.clone()) {
-                result.push(OptionLabel(label));
+                result.push(Foreign(label));
             }
         }
         Ok(Some(Value::list_of(result)))
@@ -307,7 +251,7 @@ impl Converter for EmptyToNullLabelConverter {
         if input.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Value::new(OptionLabel(convert_options_label(
+        Ok(Some(Value::new(Foreign(convert_options_label(
             input, ctx,
         )?))))
     }
@@ -492,7 +436,7 @@ impl Converter for CustomFlagConverter {
     }
 }
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/analysis/config/CoreOptionConverters.java:311 CoreOptionConverters.StrictDepsMode
     /// Values for the --strict_*_deps option

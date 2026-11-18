@@ -1,7 +1,7 @@
 //! The option value enums of `rules/java/JavaConfiguration.java` (the fragment itself is not
 //! ported here).
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/rules/java/JavaConfiguration.java:49 JavaConfiguration.JavaClasspathMode
     /// Values for the --experimental_java_classpath option
@@ -17,7 +17,7 @@ fragment_enum! {
     }
 }
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/rules/java/JavaConfiguration.java:61 JavaConfiguration.OneVersionEnforcementLevel
     /// Values for the --experimental_one_version_enforcement option

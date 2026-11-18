@@ -1,6 +1,8 @@
 //! The options of `analysis/test/CoverageConfiguration.java` (`CoverageConfiguration.CoverageOptions`). The fragment itself is not ported here.
 
-use super::converters::{LabelConverter, OptionLabel};
+use super::converters::LabelConverter;
+use blaze_cmdline::Label;
+use blaze_options::Foreign;
 use blaze_options::options;
 
 use super::fragment_options::FragmentOptions;
@@ -20,7 +22,7 @@ options! {
                 "be a binary target. Defaults to `@bazel_tools//tools/test:lcov_merger`.\n",
             ),
         )]
-        pub coverage_output_generator: OptionLabel,
+        pub coverage_output_generator: Foreign<Label>,
 
         #[option(
             name = "coverage_report_generator",
@@ -33,7 +35,7 @@ options! {
                 "be a binary target. Defaults to `@bazel_tools//tools/test:coverage_report_generator`.\n",
             ),
         )]
-        pub coverage_report_generator: OptionLabel,
+        pub coverage_report_generator: Foreign<Label>,
     }
 }
 

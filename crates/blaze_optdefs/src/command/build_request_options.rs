@@ -431,7 +431,11 @@ mod generated_tests {
 
 // ---- hand-written below this line (preserved by the generator) ----
 
-use super::resource_converter::{host_cpus_supplier, resource_integer_converter};
+use std::sync::Arc;
+
+use super::resource_converter::{
+    ResourceConverter, host_cpus_supplier, resource_integer_converter,
+};
 
 // Java: com/google/devtools/build/lib/buildtool/BuildRequestOptions.java:47 BuildRequestOptions.MAX_JOBS
 pub const MAX_JOBS: i32 = 5000;
@@ -439,19 +443,19 @@ pub const MAX_JOBS: i32 = 5000;
 resource_integer_converter!(
     // Java: com/google/devtools/build/lib/buildtool/BuildRequestOptions.java:435 BuildRequestOptions.ThreadConverter
     /// Converter for filesystem value checker threads.
-    pub ThreadConverter => ResourceIntegerConverter::new(host_cpus_supplier, 1, i32::MAX)
+    pub ThreadConverter => ResourceConverterIntegerConverter::new(Arc::new(host_cpus_supplier), 1, i32::MAX)
 );
 
 resource_integer_converter!(
     // Java: com/google/devtools/build/lib/buildtool/BuildRequestOptions.java:533 BuildRequestOptions.JobsConverter
     /// Converter for jobs: Takes keyword (FLAG_SYNTAX). Values must be between 1 and MAX_JOBS.
-    pub JobsConverter => ResourceIntegerConverter::new(host_cpus_supplier, 1, MAX_JOBS)
+    pub JobsConverter => ResourceConverterIntegerConverter::new(Arc::new(host_cpus_supplier), 1, MAX_JOBS)
         .with_check_and_limit(jobs_check_and_limit)
 );
 
 // Java: com/google/devtools/build/lib/buildtool/BuildRequestOptions.java:539 BuildRequestOptions.JobsConverter.checkAndLimit
 fn jobs_check_and_limit(
-    c: &ResourceIntegerConverter,
+    c: &ResourceConverter<i32>,
     value: i32,
 ) -> Result<i32, OptionsParsingException> {
     if (value as f64) < c.min_value as f64 {

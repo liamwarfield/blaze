@@ -18,6 +18,7 @@ pub mod converters;
 pub mod data;
 pub mod definition;
 pub mod exception;
+pub mod foreign;
 pub mod global_rc;
 pub mod options;
 pub mod parsed;
@@ -37,6 +38,7 @@ pub use definition::{
     FieldInfo, OptionAnnotation, OptionDefinition, OptionsBase, OptionsClass, OptionsClassInfo,
 };
 pub use exception::{ConstructionException, OptionsParsingException};
+pub use foreign::Foreign;
 pub use options::Options;
 pub use parsed::{OptionInstanceOrigin, ParsedOptionDescription};
 pub use parser::{ArgAndFallbackData, ArgsPreProcessor, OptionDescription, OptionsParser};

@@ -152,7 +152,9 @@ mod tests {
     #[test]
     fn run_options() {
         let o = parse::<RunCommandRunOptions>(&[
-            "--script_path=~/x.sh",
+            // PORT: `~/` expansion needs StandardSystemProperty.USER_HOME (unported; see
+            // common::options_utils single_path).
+            "--script_path=/home/u/x.sh",
             "--run_env=A=1",
             "--run_env=B",
         ]);

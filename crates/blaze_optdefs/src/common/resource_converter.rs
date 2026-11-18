@@ -1,20 +1,27 @@
-//! Port of `lib/util/ResourceConverter.java` and `lib/util/RamResourceConverter.java`.
+//! Port of `lib/util/ResourceConverter.java`, `lib/util/CpuResourceConverter.java` and
+//! `lib/util/RamResourceConverter.java`: converters for resource amounts given as a number or as a
+//! keyword (`auto`, `HOST_CPUS`, `HOST_RAM`) optionally followed by `[-|*]<float>`.
 
 use std::cmp::Ordering;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use blaze_options::{
     AssignmentConverter, ConversionContext, Converter, DoubleConverter, IntegerConverter,
     OptionsParsingException, Value, converter::non_null,
 };
 
+use super::local_host_capacity::get_local_host_capacity;
+
 type ConvResult = Result<Option<Value>, OptionsParsingException>;
 
 /// Java `Supplier<T>`.
 pub type Supplier<T> = Arc<dyn Fn() -> T + Send + Sync>;
 
+// Java: com/google/devtools/build/lib/util/ResourceConverter.java:47 ResourceConverter.AUTO_KEYWORD
 pub const AUTO_KEYWORD: &str = "auto";
+// Java: com/google/devtools/build/lib/util/ResourceConverter.java:48 ResourceConverter.HOST_CPUS_KEYWORD
 pub const HOST_CPUS_KEYWORD: &str = "HOST_CPUS";
+// Java: com/google/devtools/build/lib/util/ResourceConverter.java:49 ResourceConverter.HOST_RAM_KEYWORD
 pub const HOST_RAM_KEYWORD: &str = "HOST_RAM";
 
 // Java: com/google/devtools/build/lib/util/ResourceConverter.java:146 ResourceConverter.FLAG_SYNTAX
@@ -23,44 +30,16 @@ pub const FLAG_SYNTAX: &str = "an integer, or a keyword (\"auto\", \"HOST_CPUS\"
                                optionally followed by an operation ([-|*]<float>) eg. \"auto\", \
                                \"HOST_CPUS*.5\"";
 
-/// The part of `actions/LocalHostCapacity.java` the suppliers read: the host's
-/// `(memoryMb, cpuUsage)` (`ResourceSet.getMemoryMb()`, `ResourceSet.getCpuUsage()`).
-///
-/// PORT: `LocalHostResource.get()` (the JVM's container-aware total physical memory and
-/// `Runtime.availableProcessors()`) is not ported; until it is, only a capacity installed with
-/// [`set_local_host_capacity`] (Java's `@VisibleForTesting` setter) is available.
-static LOCAL_HOST_CAPACITY: RwLock<Option<(f64, f64)>> = RwLock::new(None);
-
-// Java: com/google/devtools/build/lib/actions/LocalHostCapacity.java:32 LocalHostCapacity.getLocalHostCapacity
-fn get_local_host_capacity() -> (f64, f64) {
-    match *LOCAL_HOST_CAPACITY
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-    {
-        Some(c) => c,
-        None => blaze_util::unported!("LocalHostResource.get"),
-    }
-}
-
-// Java: com/google/devtools/build/lib/actions/LocalHostCapacity.java:53 LocalHostCapacity.setLocalHostCapacity
-/// Sets the local host capacity to hardcoded `(memory_mb, cpu_usage)` values, or `None` to use the
-/// machine-specific values again.
-pub fn set_local_host_capacity(capacity: Option<(f64, f64)>) {
-    *LOCAL_HOST_CAPACITY
-        .write()
-        .unwrap_or_else(|e| e.into_inner()) = capacity;
-}
-
 // Java: com/google/devtools/build/lib/util/ResourceConverter.java:51 ResourceConverter.HOST_CPUS_SUPPLIER
 pub fn host_cpus_supplier() -> i32 {
     // (int) Math.ceil(LocalHostCapacity.getLocalHostCapacity().getCpuUsage())
-    get_local_host_capacity().1.ceil() as i32
+    get_local_host_capacity().cpu_usage.ceil() as i32
 }
 
 // Java: com/google/devtools/build/lib/util/ResourceConverter.java:53 ResourceConverter.HOST_RAM_SUPPLIER
 pub fn host_ram_supplier() -> i32 {
     // (int) Math.ceil(LocalHostCapacity.getLocalHostCapacity().getMemoryMb())
-    get_local_host_capacity().0.ceil() as i32
+    get_local_host_capacity().memory_mb.ceil() as i32
 }
 
 /// The numeric types a [`ResourceConverter`] produces (`T extends Number & Comparable<T>`).
@@ -105,9 +84,18 @@ pub struct ResourceConverter<T: ResourceNumber> {
     keywords: Vec<(&'static str, Supplier<T>)>,
     pub min_value: T,
     pub max_value: T,
-    /// Subclasses overriding `getTypeDescription()` (`RamResourceConverter`).
+    /// Subclasses overriding `getTypeDescription()` (`CpuResourceConverter`,
+    /// `RamResourceConverter`).
     type_description_override: Option<String>,
+    /// Subclasses overriding `checkAndLimit()` (`BuildRequestOptions.JobsConverter`,
+    /// `LoadingPhaseThreadsOption.LoadingPhaseThreadCountConverter`).
+    check_and_limit_override: Option<CheckAndLimit<T>>,
 }
+
+/// A Java subclass's `checkAndLimit` override; it may call
+/// [`ResourceConverter::default_check_and_limit`] for `super.checkAndLimit`.
+pub type CheckAndLimit<T> =
+    Arc<dyn Fn(&ResourceConverter<T>, T) -> Result<T, OptionsParsingException> + Send + Sync>;
 
 impl<T: ResourceNumber> ResourceConverter<T> {
     // Java: com/google/devtools/build/lib/util/ResourceConverter.java:172 ResourceConverter.<init>
@@ -117,6 +105,7 @@ impl<T: ResourceNumber> ResourceConverter<T> {
             min_value,
             max_value,
             type_description_override: None,
+            check_and_limit_override: None,
         }
     }
 
@@ -128,7 +117,7 @@ impl<T: ResourceNumber> ResourceConverter<T> {
                 if rest.is_empty() {
                     return Some((keyword, None));
                 }
-                if expression_matches(rest) {
+                if is_expression(rest) {
                     return Some((keyword, Some(rest)));
                 }
             }
@@ -184,9 +173,17 @@ impl<T: ResourceNumber> ResourceConverter<T> {
         )))
     }
 
+    /// `checkAndLimit`, dispatched to a subclass override if there is one.
+    pub fn check_and_limit(&self, value: T) -> Result<T, OptionsParsingException> {
+        match &self.check_and_limit_override {
+            Some(f) => f(self, value),
+            None => self.default_check_and_limit(value),
+        }
+    }
+
     // Java: com/google/devtools/build/lib/util/ResourceConverter.java:228 ResourceConverter.checkAndLimit
     /// Checks validity of a resource value against min/max constraints.
-    pub fn check_and_limit(&self, value: T) -> Result<T, OptionsParsingException> {
+    pub fn default_check_and_limit(&self, value: T) -> Result<T, OptionsParsingException> {
         if value.java_compare(self.min_value) == Ordering::Less {
             return Err(OptionsParsingException::new(format!(
                 "Value '({})' must be at least {}.",
@@ -221,8 +218,9 @@ impl<T: ResourceNumber> ResourceConverter<T> {
     }
 }
 
-/// `[-*][0-9]?(?:.[0-9]+)?` against the whole string.
-fn expression_matches(s: &str) -> bool {
+/// `[-*][0-9]?(?:.[0-9]+)?` against the whole string (Java's `validInputPattern` expression
+/// group, built from the `OPERATORS` keys `-` and `*`).
+fn is_expression(s: &str) -> bool {
     let Some(tail) = s.strip_prefix(['-', '*']) else {
         return false;
     };
@@ -439,6 +437,24 @@ impl ResourceConverterIntegerConverter {
         ResourceConverterIntegerConverter(ResourceConverter::new(keywords, min_value, max_value))
     }
 
+    /// Replaces `checkAndLimit` (a Java subclass override).
+    pub fn with_check_and_limit(
+        mut self,
+        f: impl Fn(&ResourceConverter<i32>, i32) -> Result<i32, OptionsParsingException>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.0.check_and_limit_override = Some(Arc::new(f));
+        self
+    }
+
+    /// Replaces `getTypeDescription` (a Java subclass override).
+    pub fn with_type_description(mut self, description: String) -> Self {
+        self.0.type_description_override = Some(description);
+        self
+    }
+
     // Java: com/google/devtools/build/lib/util/ResourceConverter.java:105 ResourceConverter.IntegerConverter.convert
     pub fn convert_int(&self, input: &str) -> Result<i32, OptionsParsingException> {
         if guava_ints_try_parse(input).is_some() {
@@ -557,13 +573,12 @@ pub struct RamResourceConverter;
 impl RamResourceConverter {
     // Java: com/google/devtools/build/lib/util/RamResourceConverter.java:23 RamResourceConverter.<init>
     pub fn inner() -> ResourceConverterIntegerConverter {
-        let mut c = ResourceConverterIntegerConverter::with_keywords(
+        ResourceConverterIntegerConverter::with_keywords(
             vec![(HOST_RAM_KEYWORD, Arc::new(host_ram_supplier))],
-            0,
-            i32::MAX,
-        );
-        c.0.type_description_override = Some(Self::type_description());
-        c
+            /* minValue= */ 0,
+            /* maxValue= */ i32::MAX,
+        )
+        .with_type_description(Self::type_description())
     }
 
     // Java: com/google/devtools/build/lib/util/RamResourceConverter.java:31 RamResourceConverter.getTypeDescription
@@ -583,6 +598,71 @@ impl Converter for RamResourceConverter {
         Self::type_description()
     }
 }
+
+// Java: com/google/devtools/build/lib/util/CpuResourceConverter.java:22 CpuResourceConverter
+/// Converter for --local_resources=cpu=, which takes an integer greater than or equal to 1, or
+/// "HOST_CPUS", optionally followed by [-|*]<float>.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CpuResourceConverter;
+
+impl CpuResourceConverter {
+    // Java: com/google/devtools/build/lib/util/CpuResourceConverter.java:22 CpuResourceConverter.<init>
+    pub fn inner() -> ResourceConverterIntegerConverter {
+        ResourceConverterIntegerConverter::with_keywords(
+            vec![(HOST_CPUS_KEYWORD, Arc::new(host_cpus_supplier))],
+            /* minValue= */ 0,
+            /* maxValue= */ i32::MAX,
+        )
+        .with_type_description(Self::type_description())
+    }
+
+    // Java: com/google/devtools/build/lib/util/CpuResourceConverter.java:30 CpuResourceConverter.getTypeDescription
+    fn type_description() -> String {
+        format!(
+            "an integer, or \"{}\", optionally followed by [-|*]<float>.",
+            HOST_CPUS_KEYWORD
+        )
+    }
+}
+
+impl Converter for CpuResourceConverter {
+    fn convert(&self, input: Option<&str>, c: Option<&ConversionContext>) -> ConvResult {
+        Self::inner().convert(input, c)
+    }
+    fn get_type_description(&self) -> String {
+        Self::type_description()
+    }
+}
+
+/// Declares a unit-struct converter that delegates to a [`ResourceConverterIntegerConverter`] (a
+/// Java `ResourceConverter.IntegerConverter` subclass).
+macro_rules! resource_integer_converter {
+    ($(#[$m:meta])* $vis:vis $name:ident => $make:expr) => {
+        $(#[$m])*
+        #[derive(Clone, Copy, Debug, Default)]
+        $vis struct $name;
+
+        impl $name {
+            pub fn inner() -> $crate::common::resource_converter::ResourceConverterIntegerConverter {
+                $make
+            }
+        }
+
+        impl blaze_options::Converter for $name {
+            fn convert(
+                &self,
+                input: Option<&str>,
+                c: Option<&blaze_options::ConversionContext>,
+            ) -> Result<Option<blaze_options::Value>, blaze_options::OptionsParsingException> {
+                Self::inner().convert(input, c)
+            }
+            fn get_type_description(&self) -> String {
+                Self::inner().get_type_description()
+            }
+        }
+    };
+}
+pub(crate) use resource_integer_converter;
 
 #[cfg(test)]
 mod tests {
@@ -690,7 +770,7 @@ mod tests {
 
     // Java tests: src/test/java/com/google/devtools/build/lib/util/ResourceConverterTest.java
 
-    use crate::misc::test_support::with_local_host_capacity;
+    use crate::common::local_host_capacity::with_local_host_capacity;
 
     fn null_supplier<T>() -> Supplier<T> {
         Arc::new(|| panic!("NullPointerException: supplier returned null"))
@@ -800,5 +880,100 @@ mod tests {
         with_local_host_capacity((0.0, 15.0), || {
             assert_eq!(c.convert_int("HOST_CPUS").unwrap(), 15);
         });
+    }
+
+    // Ported from src/test/java/com/google/devtools/build/lib/util/CpuResourceConverterTest.java.
+
+    #[test]
+    fn test_constructor_correct_min_and_max_values() {
+        let c = CpuResourceConverter::inner();
+        assert_eq!(c.0.min_value, 0);
+        assert_eq!(c.0.max_value, i32::MAX);
+    }
+
+    // Blaze-specific checks.
+
+    #[test]
+    fn keyword_operators_and_descriptions() {
+        let c = ResourceConverterIntegerConverter::new(Arc::new(|| 7), 1, 100);
+        assert_eq!(c.convert_int("auto*1.5").unwrap(), 11);
+        assert_eq!(
+            c.convert_int("0").unwrap_err().get_message(),
+            "Value '(0.000000)' must be at least 1.000000."
+        );
+        assert_eq!(c.get_type_description(), FLAG_SYNTAX);
+        assert_eq!(
+            c.convert_int("auto-").unwrap_err().get_message(),
+            "' is not a float"
+        );
+        assert!(host_cpus_supplier() >= 1);
+        assert!(host_ram_supplier() >= 1);
+    }
+
+    #[test]
+    fn assignment() {
+        let v = ResourceConverterAssignmentConverter
+            .convert(Some("cpu=4"), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(v.get::<(String, f64)>(), ("cpu".to_string(), 4.0));
+        assert_eq!(
+            CpuResourceConverter.get_type_description(),
+            "an integer, or \"HOST_CPUS\", optionally followed by [-|*]<float>."
+        );
+    }
+
+    /// `TestResourcesConverter`'s keyword set.
+    fn conv() -> ResourceConverterDoubleConverter {
+        ResourceConverterDoubleConverter::with_keywords(
+            vec![
+                (HOST_CPUS_KEYWORD, Arc::new(|| host_cpus_supplier() as f64)),
+                (HOST_RAM_KEYWORD, Arc::new(|| host_ram_supplier() as f64)),
+            ],
+            0.0,
+            f64::MAX,
+        )
+    }
+
+    #[test]
+    fn java_format_f_matches_java() {
+        assert_eq!(java_format_f(0.0), "0.000000");
+        assert_eq!(java_format_f(-1.0), "-1.000000");
+        assert_eq!(java_format_f(0.1234565), "0.123457");
+        assert_eq!(java_format_f(123.5), "123.500000");
+        assert_eq!(
+            java_format_f(f64::MAX),
+            format!("17976931348623157{}.000000", "0".repeat(292))
+        );
+    }
+
+    #[test]
+    fn convert_plain_numbers_and_bounds() {
+        assert_eq!(conv().convert_double("1.5").unwrap(), 1.5);
+        assert_eq!(
+            conv().convert_double("-1").unwrap_err().get_message(),
+            "Value '(-1.000000)' must be at least 0.000000."
+        );
+    }
+
+    #[test]
+    fn bad_syntax_reports_type_description() {
+        assert_eq!(
+            conv().convert_double("foo").unwrap_err().get_message(),
+            "Parameter 'foo' does not follow correct syntax. This flag takes an integer, or a \
+             keyword (\"HOST_CPUS\", \"HOST_RAM\"), optionally followed by an operation \
+             ([-|*]<float>) eg. \"HOST_CPUS\", \"HOST_CPUS*.5\"."
+        );
+        assert!(conv().convert_double("HOST_CPUS/2").is_err());
+    }
+
+    #[test]
+    fn expression_grammar() {
+        for ok in ["-", "*1", "*.5", "*1.5", "-1x5", "*x55", "*12"] {
+            assert!(is_expression(ok), "{}", ok);
+        }
+        for bad in ["", "+1", "*1.", "*.5.5"] {
+            assert!(!is_expression(bad), "{}", bad);
+        }
     }
 }

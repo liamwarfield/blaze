@@ -7,10 +7,10 @@
 pub mod build_event_context;
 pub mod extension_arg;
 pub mod module_arg;
-pub mod options_utils;
+pub use crate::common::options_utils;
 pub mod remote_build_event_upload_mode;
 pub mod remote_outputs_mode;
-pub mod resource_converter;
+pub use crate::common::resource_converter;
 
 // Options classes.
 pub mod auth_and_tls_options;
@@ -96,20 +96,7 @@ pub(crate) mod test_support {
         }
     }
 
-    /// Serializes tests that install a host capacity with
-    /// `resource_converter::set_local_host_capacity` (process-global state).
-    pub static LOCAL_HOST_CAPACITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Runs `f` with the local host capacity set to `(memory_mb, cpu_usage)`.
-    pub fn with_local_host_capacity<R>(capacity: (f64, f64), f: impl FnOnce() -> R) -> R {
-        let _guard = LOCAL_HOST_CAPACITY_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        super::resource_converter::set_local_host_capacity(Some(capacity));
-        let r = f();
-        super::resource_converter::set_local_host_capacity(None);
-        r
-    }
+    pub(crate) use crate::common::local_host_capacity::with_local_host_capacity;
 
     /// Parses `args` over `T` alone.
     pub fn parse<T: OptionsClass + OptionsBase>(

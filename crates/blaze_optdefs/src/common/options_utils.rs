@@ -1,43 +1,12 @@
-//! The path converters of `lib/util/OptionsUtils.java`, and the option field type that carries a
-//! `PathFragment`.
-
-use std::ops::Deref;
+//! The path converters of `lib/util/OptionsUtils.java`. Their values are
+//! `blaze_options::Foreign<PathFragment>` (Java `PathFragment`).
 
 use blaze_options::{
-    ConversionContext, Converter, OptionScalar, OptionsParsingException, Value,
-    converter::non_null, option_field_type,
+    ConversionContext, Converter, Foreign, OptionsParsingException, Value, converter::non_null,
 };
 use blaze_vfs::PathFragment;
 
 type ConvResult = Result<Option<Value>, OptionsParsingException>;
-
-/// A `PathFragment` option value.
-///
-/// PORT: `blaze_options::FieldType`/`OptionScalar` and `blaze_vfs::PathFragment` are both foreign
-/// to this crate, so the orphan rule forbids implementing one for the other here. Option fields of
-/// Java type `PathFragment` use this newtype instead; it dereferences to the `PathFragment`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct OptionPathFragment(pub PathFragment);
-
-impl Deref for OptionPathFragment {
-    type Target = PathFragment;
-    fn deref(&self) -> &PathFragment {
-        &self.0
-    }
-}
-
-impl OptionScalar for OptionPathFragment {
-    // Java: com/google/devtools/build/lib/vfs/PathFragment.java PathFragment.toString
-    fn java_to_string(&self) -> String {
-        self.0.get_path_string().to_string()
-    }
-}
-
-option_field_type!(
-    OptionPathFragment,
-    "com.google.devtools.build.lib.vfs.PathFragment",
-    raw = OptionPathFragment(PathFragment::create(""))
-);
 
 // Java: com/google/devtools/build/lib/util/OptionsUtils.java:98 OptionsUtils.PathFragmentConverter
 /// Converter from String to PathFragment.
@@ -55,9 +24,7 @@ impl Converter for PathFragmentConverter {
     fn convert(&self, input: Option<&str>, _: Option<&ConversionContext>) -> ConvResult {
         // checkNotNull(input)
         let input = non_null(input);
-        Ok(Some(Value::new(OptionPathFragment(
-            self.convert_path(input),
-        ))))
+        Ok(Some(Value::new(Foreign(self.convert_path(input)))))
     }
     // Java: com/google/devtools/build/lib/util/OptionsUtils.java:107 OptionsUtils.PathFragmentConverter.getTypeDescription
     fn get_type_description(&self) -> String {
@@ -77,9 +44,9 @@ impl Converter for EmptyToNullPathFragmentConverter {
         if input.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Value::new(OptionPathFragment(
-            convert_options_path_fragment(input),
-        ))))
+        Ok(Some(Value::new(Foreign(convert_options_path_fragment(
+            input,
+        )))))
     }
     // Java: com/google/devtools/build/lib/util/OptionsUtils.java:125 OptionsUtils.EmptyToNullPathFragmentConverter.getTypeDescription
     fn get_type_description(&self) -> String {
@@ -103,7 +70,7 @@ impl Converter for AbsolutePathFragmentConverter {
                 input
             )));
         }
-        Ok(Some(Value::new(OptionPathFragment(parsed))))
+        Ok(Some(Value::new(Foreign(parsed))))
     }
     // Java: com/google/devtools/build/lib/util/OptionsUtils.java:143 OptionsUtils.AbsolutePathFragmentConverter.getTypeDescription
     fn get_type_description(&self) -> String {
@@ -133,9 +100,7 @@ impl PathFragmentListConverter {
 impl Converter for PathFragmentListConverter {
     fn convert(&self, input: Option<&str>, _: Option<&ConversionContext>) -> ConvResult {
         Ok(Some(Value::list_of(
-            self.convert_list(non_null(input))
-                .into_iter()
-                .map(OptionPathFragment),
+            self.convert_list(non_null(input)).into_iter().map(Foreign),
         )))
     }
     // Java: com/google/devtools/build/lib/util/OptionsUtils.java:164 OptionsUtils.PathFragmentListConverter.getTypeDescription
@@ -195,6 +160,18 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(v.java_to_string(), "/abs");
+    }
+
+    #[test]
+    fn empty_to_null() {
+        assert!(
+            EmptyToNullPathFragmentConverter
+                .convert(Some(""), None)
+                .unwrap()
+                .is_none()
+        );
+        let v = PathFragmentConverter.convert(Some("a//b/"), None).unwrap();
+        assert_eq!(v.unwrap().java_to_string(), "a/b");
     }
 
     // Java tests: src/test/java/com/google/devtools/build/lib/util/OptionsUtilsTest.java
@@ -276,7 +253,10 @@ mod tests {
     fn absolute_path_fragment_converter_converts_absolute_path() {
         for path in ["/", "/dir/file"] {
             let v = conv(&AbsolutePathFragmentConverter, path).unwrap().unwrap();
-            assert_eq!(v.get::<OptionPathFragment>().0, PathFragment::create(path));
+            assert_eq!(
+                v.get::<Foreign<PathFragment>>().0,
+                PathFragment::create(path)
+            );
         }
     }
 

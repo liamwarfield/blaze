@@ -412,7 +412,7 @@ options! {
                 "graph can be trimmed.",
             ),
         )]
-        pub show_required_config_fragments: IncludeConfigFragmentsEnum,
+        pub show_required_config_fragments: CoreOptionsIncludeConfigFragmentsEnum,
 
         #[option(
             name = "proto:include_configurations",

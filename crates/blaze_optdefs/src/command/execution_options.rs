@@ -528,6 +528,8 @@ mod generated_tests {
 
 // ---- hand-written below this line (preserved by the generator) ----
 
+use std::sync::Arc;
+
 use super::resource_converter::resource_integer_converter;
 
 impl ExecutionOptions {
@@ -661,7 +663,7 @@ impl Converter for TestAttemptsConverter {
 resource_integer_converter!(
     // Java: com/google/devtools/build/lib/exec/ExecutionOptions.java:635 ExecutionOptions.LocalTestJobsConverter
     /// Converter for --local_test_jobs, which takes FLAG_SYNTAX
-    pub LocalTestJobsConverter => ResourceIntegerConverter::new(|| 0, 0, i32::MAX)
+    pub LocalTestJobsConverter => ResourceConverterIntegerConverter::new(Arc::new(|| 0), 0, i32::MAX)
 );
 
 // Java: com/google/devtools/build/lib/exec/ExecutionOptions.java:642 ExecutionOptions.ShowSubcommandsConverter

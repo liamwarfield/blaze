@@ -1,5 +1,6 @@
 //! Port of `Converters`, `EnumConverter` and `BoolOrEnumConverter`.
 
+use std::collections::BTreeSet;
 use std::marker::PhantomData;
 use std::time::Duration;
 
@@ -566,6 +567,20 @@ impl Converter for StringSetConverter {
 
 // Java: com/google/devtools/common/options/RegexPatternOption.java:34 RegexPatternOption
 /// A compiled regex option. Equality is based solely on the pattern string.
+///
+/// PORT: `java.util.regex.Pattern` is emulated with the `regex` crate. [`RegexPatternOption::compile`]
+/// takes the pattern and the `Pattern.compile` flags the Java caller passes (the converter passes
+/// `Pattern.DOTALL`, see [`RegexPatternConverter`]). Known differences from Java, none of which the
+/// options transcribed so far rely on:
+/// - Java-only syntax fails to compile: lookahead/lookbehind (`(?=`, `(?!`, `(?<=`, `(?<!`),
+///   backreferences (`\1`, `\k<name>`), atomic groups (`(?>`), possessive quantifiers (`*+`,
+///   `++`, `?+`), `\Q...\E` quoting.
+/// - `\w`, `\d`, `\s` and `\b` are Unicode-aware in the `regex` crate but ASCII-only in Java
+///   (without `UNICODE_CHARACTER_CLASS`).
+/// - Without `DOTALL`, Java's `.` excludes all line terminators (`\n`, `\r`, `\u0085`,
+///   `\u2028`, `\u2029`); the `regex` crate's `.` excludes only `\n`. Without `MULTILINE`, Java's
+///   `$` also matches before a final line terminator; the `regex` crate's `$` only at the end.
+/// - Syntax errors carry the `regex` crate's text, not `PatternSyntaxException.getMessage()`.
 #[derive(Clone, Debug)]
 pub struct RegexPatternOption {
     pattern: String,
@@ -574,10 +589,23 @@ pub struct RegexPatternOption {
 }
 
 impl RegexPatternOption {
+    /// `java.util.regex.Pattern.DOTALL`.
+    pub const DOTALL: i32 = 0x20;
+
     // Java: com/google/devtools/common/options/RegexPatternOption.java:35 RegexPatternOption.create
-    pub fn create(pattern: &str) -> Result<Self, regex::Error> {
-        let regex = Regex::new(&format!("(?s){}", pattern))?;
-        let full_match = Regex::new(&format!("(?s)^(?:{})$", pattern))?;
+    /// `RegexPatternOption.create(Pattern.compile(pattern, flags))`. Of the `Pattern` flags only
+    /// [`Self::DOTALL`] is ported; any other flag fails loudly.
+    pub fn compile(pattern: &str, flags: i32) -> Result<Self, regex::Error> {
+        if flags & !Self::DOTALL != 0 {
+            crate::unported!("Pattern.compile flags other than DOTALL");
+        }
+        let prefix = if flags & Self::DOTALL != 0 {
+            "(?s)"
+        } else {
+            ""
+        };
+        let regex = Regex::new(&format!("{}{}", prefix, pattern))?;
+        let full_match = Regex::new(&format!("{}^(?:{})$", prefix, pattern))?;
         Ok(RegexPatternOption {
             pattern: pattern.to_string(),
             regex,
@@ -590,7 +618,7 @@ impl RegexPatternOption {
         &self.pattern
     }
 
-    /// `regexPattern()`, compiled with `DOTALL`.
+    /// `regexPattern()`, compiled with the flags given to [`Self::compile`].
     pub fn regex_pattern(&self) -> &Regex {
         &self.regex
     }
@@ -616,7 +644,7 @@ impl OptionScalar for RegexPatternOption {
 crate::option_field_type!(
     RegexPatternOption,
     "com.google.devtools.common.options.RegexPatternOption",
-    raw = RegexPatternOption::create("").unwrap()
+    raw = RegexPatternOption::compile("", RegexPatternOption::DOTALL).unwrap()
 );
 
 // Java: com/google/devtools/common/options/Converters.java:415 Converters.RegexPatternConverter
@@ -627,7 +655,9 @@ impl Converter for RegexPatternConverter {
     // Java: com/google/devtools/common/options/Converters.java:418 Converters.RegexPatternConverter.convert
     fn convert(&self, input: Option<&str>, _: Option<&ConversionContext>) -> ConvResult {
         let input = non_null(input);
-        match RegexPatternOption::create(input) {
+        // Pattern.compile(StringEncoding.internalToUnicode(input), Pattern.DOTALL)
+        // PORT: StringEncoding identity
+        match RegexPatternOption::compile(input, RegexPatternOption::DOTALL) {
             Ok(r) => Ok(Some(Value::new(r))),
             // Java prints PatternSyntaxException.getMessage(); the regex crate's text differs.
             Err(e) => Err(OptionsParsingException::new(format!(
@@ -1029,6 +1059,75 @@ pub trait JavaEnum: OptionScalar + Copy {
     }
 }
 
+/// A Java `Set<E>` of enum constants (an `EnumSet`, e.g. the value of
+/// `EnumFilterConverter`): iterates, compares and prints in declaration order. Usable as an option
+/// field type (`java.util.Set`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EnumSet<E: Ord>(pub BTreeSet<E>);
+
+impl<E: Ord> Default for EnumSet<E> {
+    /// `EnumSet.noneOf`.
+    fn default() -> Self {
+        EnumSet(BTreeSet::new())
+    }
+}
+
+impl<E: JavaEnum + Ord> EnumSet<E> {
+    /// `EnumSet.noneOf`.
+    pub fn none_of() -> Self {
+        EnumSet(BTreeSet::new())
+    }
+    /// `EnumSet.allOf`.
+    pub fn all_of() -> Self {
+        EnumSet(E::values().iter().copied().collect())
+    }
+    /// `Set.contains`.
+    pub fn contains(&self, e: &E) -> bool {
+        self.0.contains(e)
+    }
+    /// `Set.isEmpty`.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// `Set.size`.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    /// The elements in declaration order.
+    pub fn iter(&self) -> impl Iterator<Item = &E> {
+        self.0.iter()
+    }
+}
+
+impl<E: Ord> FromIterator<E> for EnumSet<E> {
+    fn from_iter<I: IntoIterator<Item = E>>(iter: I) -> Self {
+        EnumSet(iter.into_iter().collect())
+    }
+}
+
+// Java: java/util/AbstractCollection.java toString (`[a, b]`, elements' toString)
+impl<E: JavaEnum + Ord + std::hash::Hash> OptionScalar for EnumSet<E> {
+    fn java_to_string(&self) -> String {
+        java_list_to_string(self.0.iter().map(|e| e.java_to_string()))
+    }
+}
+
+impl<E: JavaEnum + Ord + std::hash::Hash> crate::FieldType for EnumSet<E> {
+    const JAVA_TYPE_NAME: &'static str = "java.util.Set";
+    fn from_value(v: Option<&Value>) -> Result<Self, crate::value::FieldTypeMismatch> {
+        v.and_then(|v| v.downcast_ref::<EnumSet<E>>())
+            .cloned()
+            .ok_or(crate::value::FieldTypeMismatch)
+    }
+    fn to_value(&self) -> Option<Value> {
+        Some(Value::new(self.clone()))
+    }
+    fn raw_default() -> Self {
+        // Placeholder until the parser sets the field; Java would hold `null` here.
+        EnumSet(BTreeSet::new())
+    }
+}
+
 // Java: com/google/devtools/common/options/EnumConverter.java:31 EnumConverter
 /// Converts a string to an enum constant by comparing with each constant's `toString()`,
 /// ignoring case.
@@ -1136,24 +1235,37 @@ impl<T: JavaEnum> Converter for BoolOrEnumConverter<T> {
 }
 
 /// Declares a Java-style enum usable as an option type. Variants keep their Java names; a
-/// variant may override `toString()` with `= "text"`.
+/// variant may override `toString()` with `= "text"`, and may carry attributes (doc comments).
+/// A leading `#[starlark_value]` marks a Java enum that `implements StarlarkValue`
+/// ([`JavaEnum::is_starlark_value`], which makes its `EnumConverter` Starlark-convertible).
 ///
 /// ```ignore
 /// option_enum! {
+///     #[starlark_value]
 ///     /// doc
-///     pub enum CompilationMode { FASTBUILD = "fastbuild", DBG = "dbg", OPT = "opt" }
+///     pub enum CompilationMode {
+///         /// Fast build.
+///         FASTBUILD = "fastbuild",
+///         DBG = "dbg",
+///         OPT = "opt",
+///     }
 /// }
 /// ```
 #[macro_export]
 macro_rules! option_enum {
-    (
+    (#[starlark_value] $($rest:tt)*) => {
+        $crate::option_enum!(@decl true; $($rest)*);
+    };
+    (@decl $starlark:expr;
         $(#[$m:meta])*
-        $vis:vis enum $name:ident { $( $variant:ident $(= $to_string:literal)? ),* $(,)? }
+        $vis:vis enum $name:ident {
+            $( $(#[$vm:meta])* $variant:ident $(= $to_string:literal)? ),* $(,)?
+        }
     ) => {
         $(#[$m])*
         #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-        $vis enum $name { $( $variant ),* }
+        $vis enum $name { $( $(#[$vm])* $variant ),* }
 
         impl $crate::OptionScalar for $name {
             fn java_to_string(&self) -> ::std::string::String {
@@ -1173,6 +1285,9 @@ macro_rules! option_enum {
                     $( $name::$variant => ::core::stringify!($variant), )*
                 }
             }
+            fn is_starlark_value() -> bool {
+                $starlark
+            }
         }
 
         $crate::option_field_type!(
@@ -1183,6 +1298,9 @@ macro_rules! option_enum {
     };
     (@str $variant:ident) => { ::core::stringify!($variant) };
     (@str $variant:ident, $to_string:literal) => { $to_string };
+    ($($rest:tt)*) => {
+        $crate::option_enum!(@decl false; $($rest)*);
+    };
 }
 
 /// Declares a named `EnumConverter` subclass: `enum_converter!(pub FooConverter, Foo, "foo");`
@@ -1240,6 +1358,12 @@ macro_rules! bool_or_enum_converter {
             }
             fn get_type_description(&self) -> ::std::string::String {
                 Self::inner().get_type_description()
+            }
+            fn starlark_convertible(&self) -> bool {
+                Self::inner().starlark_convertible()
+            }
+            fn reverse_for_starlark(&self, v: &$crate::Value) -> ::std::string::String {
+                Self::inner().reverse_for_starlark(v)
             }
             fn is_bool_or_enum(&self) -> bool {
                 true

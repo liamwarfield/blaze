@@ -491,6 +491,11 @@ impl OptionsClassInfo {
     }
 
     /// All option definitions of this class, in alphabetic order of option name.
+    ///
+    /// This is the only order Java exposes: `IsolatedOptionsData.getAllOptionDefinitionsForClass`
+    /// sorts `Class.getFields()` by option name, and `getFields()` itself has no specified order.
+    /// The other readers of declared field order (`OptionsTester.getAllFields`, serialization
+    /// codecs, memory instrumentation) do not reach output, so declaration order is not kept.
     pub fn definitions(&'static self) -> impl Iterator<Item = OptionDefinitionRef> {
         self.definitions.iter()
     }

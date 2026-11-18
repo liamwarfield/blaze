@@ -1,5 +1,7 @@
 //! Port of `bazel/repository/RepositoryOptions.java` (the `OptionsBase` subclass and what it uses).
 
+use blaze_options::Foreign;
+use blaze_vfs::PathFragment;
 use std::time::Duration;
 
 use blaze_cmdline::RepositoryName;
@@ -10,7 +12,7 @@ use blaze_options::{
     enum_converter, option_enum, option_field_type, options,
 };
 
-use super::options_utils::{OptionPathFragment, PathFragmentConverter};
+use super::options_utils::PathFragmentConverter;
 
 // Java: com/google/devtools/build/lib/bazel/repository/RepositoryOptions.java:38 RepositoryOptions
 options! {
@@ -30,7 +32,7 @@ options! {
                 "otherwise the default of `{--output_user_root}/cache/repos/v1` is used.\n",
             ),
         )]
-        pub repository_cache: Option<OptionPathFragment>,
+        pub repository_cache: Option<Foreign<PathFragment>>,
 
         #[option(
             name = "repo_contents_cache",
@@ -48,7 +50,7 @@ options! {
                 "repo contents cache as well, unless `--repo_contents_cache={some_path}` is also set.\n",
             ),
         )]
-        pub repo_contents_cache: Option<OptionPathFragment>,
+        pub repo_contents_cache: Option<Foreign<PathFragment>>,
 
         #[option(
             name = "repo_contents_cache_gc_max_age",
@@ -185,7 +187,7 @@ options! {
                 "to download them.",
             ),
         )]
-        pub experimental_distdir: Vec<OptionPathFragment>,
+        pub experimental_distdir: Vec<Foreign<PathFragment>>,
 
         #[option(
             name = "override_repository",
@@ -280,7 +282,7 @@ options! {
                 "given, and in this case multiple URLs will be returned.",
             ),
         )]
-        pub downloader_config: Option<OptionPathFragment>,
+        pub downloader_config: Option<Foreign<PathFragment>>,
 
         #[option(
             name = "ignore_dev_dependency",
@@ -385,7 +387,7 @@ options! {
                 "workspace directory.",
             ),
         )]
-        pub vendor_directory: Option<OptionPathFragment>,
+        pub vendor_directory: Option<Foreign<PathFragment>>,
     }
 }
 

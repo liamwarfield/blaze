@@ -8,6 +8,10 @@ publish.workspace = true
 
 [dependencies]
 blaze_util = { path = "../blaze_util" }
+# Only for the `Foreign<T>` option field types (src/foreign.rs); neither crate depends on
+# blaze_options.
+blaze_cmdline = { path = "../blaze_cmdline" }
+blaze_vfs = { path = "../blaze_vfs" }
 indexmap.workspace = true
 regex.workspace = true
 

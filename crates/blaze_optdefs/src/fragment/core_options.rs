@@ -1,5 +1,6 @@
 //! Port of `analysis/config/CoreOptions.java`.
 
+use blaze_options::Foreign;
 use std::collections::{BTreeSet, HashMap};
 
 use blaze_cmdline::Label;
@@ -13,7 +14,7 @@ use super::auto_cpu_converter::AutoCpuConverter;
 use super::compilation_mode::{CompilationMode, CompilationModeConverter};
 use super::converters::{
     ConvResult, CustomFlagConverter, FlagAliasConverter, LabelListConverter, LabelToStringEntry,
-    LabelToStringEntryConverter, OptionLabel, StringToLabelEntry,
+    LabelToStringEntryConverter, StringToLabelEntry,
 };
 use super::execution_info_modifier::{ExecutionInfoModifier, ExecutionInfoModifierConverter};
 use super::fragment_options::{
@@ -208,7 +209,7 @@ options! {
                 " Otherwise, --experimental_platform_in_output_dir applies to all platforms.",
             ),
         )]
-        pub limit_output_dir_to_platforms: Vec<OptionLabel>,
+        pub limit_output_dir_to_platforms: Vec<Foreign<Label>>,
 
         #[option(
             name = "incompatible_target_cpu_from_platform",
@@ -684,7 +685,7 @@ options! {
                 "existing build actions.\n",
             ),
         )]
-        pub action_listeners: Vec<OptionLabel>,
+        pub action_listeners: Vec<Foreign<Label>>,
 
         #[option(
             name = "experimental_output_directory_naming_scheme",
@@ -798,7 +799,7 @@ options! {
                 "[`environment` rule]: https://github.com/bazelbuild/bazel/blob/master/src/main/java/com/google/devtools/build/lib/analysis/constraints/EnvironmentRule.java\n",
             ),
         )]
-        pub target_environments: Vec<OptionLabel>,
+        pub target_environments: Vec<Foreign<Label>>,
 
         #[option(
             name = "allow_unresolved_symlinks",
@@ -1046,7 +1047,7 @@ impl Converter for EmptyListConverter {
     }
 }
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/analysis/config/CoreOptions.java:470 CoreOptions.ExecConfigurationDistinguisherScheme
     /// Values for the --experimental_exec_configuration_distinguisher options
@@ -1069,7 +1070,7 @@ blaze_options::enum_converter!(
     "Exec transition configuration distinguisher scheme"
 );
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/analysis/config/CoreOptions.java:740 CoreOptions.OutputDirectoryNamingScheme
     /// Values for the --experimental_output_directory_naming_scheme options
@@ -1090,7 +1091,7 @@ blaze_options::enum_converter!(
     "Output directory naming scheme"
 );
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/analysis/config/CoreOptions.java:913 CoreOptions.OutputPathsMode
     /// Values for --experimental_output_paths.
@@ -1110,7 +1111,7 @@ blaze_options::enum_converter!(
     "output path mode"
 );
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/analysis/config/CoreOptions.java:1173 CoreOptions.IncludeConfigFragmentsEnum
     /// Ways configured targets may provide the `Fragment`s they require.
@@ -1164,7 +1165,7 @@ impl CoreOptions {
                 || self
                     .limit_output_dir_to_platforms
                     .iter()
-                    .any(|l| l.label() == platform);
+                    .any(|l| l.get() == platform);
         }
 
         false

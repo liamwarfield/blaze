@@ -6,8 +6,9 @@ use blaze_options::{
     converter::non_null, option_field_type, value::java_list_to_string,
 };
 
-use super::converters::ConvResult;
 use super::regex_filter::{RegexFilter, RegexFilterConverter, split_unescaped};
+
+type ConvResult = Result<Option<Value>, OptionsParsingException>;
 
 // Java: com/google/devtools/build/lib/analysis/config/PerLabelOptions.java:32 PerLabelOptions
 /// Models options that can be added to a command line when a label matches a given
@@ -200,5 +201,17 @@ mod tests {
         assert_eq!(a1, a2);
         assert_ne!(a1, b);
         assert_ne!(a2, b);
+    }
+
+    // Blaze-specific: toString and starlark reversal.
+    #[test]
+    fn to_string_and_reverse() {
+        let p = create_options("//foo@-g,-O\\,2, ,x@y");
+        assert_eq!(p.get_options(), &["-g", "-O,2", "x@y"]);
+        assert_eq!(p.to_string(), "(?:(?>//foo)) Options: [-g, -O,2, x@y]");
+        assert_eq!(
+            PerLabelOptionsConverter.reverse_for_starlark(&Value::new(p)),
+            "//foo@-g,-O,2,x@y"
+        );
     }
 }

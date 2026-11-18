@@ -16,24 +16,22 @@ pub mod auto_output_filter;
 pub mod caffeine_spec;
 pub mod command_line_event;
 pub mod digest_hash_function;
-pub mod enum_filter_converter;
+pub use crate::common::enum_filter_converter;
 pub mod event_kind;
-pub mod foreign;
 pub mod gc_thrashing_detector;
-pub mod include_config_fragments;
 pub mod info_item_handler;
-pub mod local_host_capacity;
+pub use crate::common::local_host_capacity;
 pub mod memory_profiler;
-pub mod options_utils;
-pub mod per_label_options;
+pub use crate::common::options_utils;
+pub use crate::common::per_label_options;
 pub mod profiler_task;
-pub mod regex_filter;
+pub use crate::common::regex_filter;
 pub mod regex_filter_assignment_converter;
-pub mod resource_converter;
+pub use crate::common::resource_converter;
 pub mod rule_visibility;
 pub mod skyframe_memory_dumper;
-pub mod test_size;
-pub mod test_timeout;
+pub use crate::common::test_size;
+pub use crate::common::test_timeout;
 
 // Options classes.
 pub mod analysis_options;
@@ -96,13 +94,8 @@ pub(crate) mod prelude {
     pub use super::command_line_event::{ToolCommandLineEvent, ToolCommandLineEventConverter};
     pub use super::common_query_options::AspectResolutionModeConverter;
     pub use super::digest_hash_function::DigestFunctionConverter;
-    pub use super::enum_filter_converter::EnumSet;
     pub use super::event_kind::EventKind;
-    pub use super::foreign::Foreign;
     pub use super::gc_thrashing_detector::GcThrashingDetectorLimit;
-    pub use super::include_config_fragments::{
-        IncludeConfigFragmentsEnum, IncludeConfigFragmentsEnumConverter,
-    };
     pub use super::info_item_handler::InfoItemOutputType;
     pub use super::memory_profiler::{
         MemoryProfileStableHeapParameters, MemoryProfileStableHeapParametersConverter,
@@ -115,11 +108,15 @@ pub(crate) mod prelude {
         RegexFilterAssignmentConverter, RegexFilterToStringList,
     };
     pub use super::resource_converter::{
-        CpuResourceConverter, ResourceConverterAssignmentConverter, ResourceIntegerConverter,
+        CpuResourceConverter, ResourceConverterAssignmentConverter,
+        ResourceConverterIntegerConverter,
     };
     pub use super::rule_visibility::RuleVisibility;
     pub use super::test_size::{TestSize, TestSizeFilterConverter};
     pub use super::test_timeout::{TestTimeout, TestTimeoutFilterConverter};
+    pub use crate::fragment::core_options::{
+        CoreOptionsIncludeConfigFragmentsEnum, IncludeConfigFragmentsEnumConverter,
+    };
 }
 
 #[cfg(test)]

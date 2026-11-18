@@ -1,7 +1,9 @@
 //! Port of `rules/objc/J2ObjcCommandLineOptions.java`.
 
-use super::converters::{LabelConverter, OptionLabel};
+use super::converters::LabelConverter;
+use blaze_cmdline::Label;
 use blaze_options::CommaSeparatedOptionListConverter;
+use blaze_options::Foreign;
 use blaze_options::options;
 
 use super::fragment_options::FragmentOptions;
@@ -33,7 +35,7 @@ options! {
                 "generate a dead code report as argument.",
             ),
         )]
-        pub dead_code_report: Option<OptionLabel>,
+        pub dead_code_report: Option<Foreign<Label>>,
     }
 }
 

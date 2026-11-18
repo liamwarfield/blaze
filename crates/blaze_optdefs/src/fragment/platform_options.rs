@@ -1,12 +1,13 @@
 //! Port of `analysis/PlatformOptions.java`.
 
 use blaze_cmdline::Label;
+use blaze_options::Foreign;
 use blaze_options::{
     CommaSeparatedOptionListConverter, ConversionContext, Converter, OptionsParsingException,
     Value, converter::non_null, options,
 };
 
-use super::converters::{ConvResult, LabelConverter, LabelListConverter, OptionLabel};
+use super::converters::{ConvResult, LabelConverter, LabelListConverter};
 use super::fragment_options::FragmentOptions;
 use super::platform_mapping_key::PlatformMappingKey;
 use super::regex_filter::{RegexFilter, RegexFilterConverter};
@@ -37,7 +38,7 @@ options! {
             effect_tags = [AFFECTS_OUTPUTS, CHANGES_INPUTS, LOADING_AND_ANALYSIS],
             help = "The label of a platform rule that describes the host system.",
         )]
-        pub host_platform: OptionLabel,
+        pub host_platform: Foreign<Label>,
 
         #[option(
             name = "extra_execution_platforms",
@@ -67,7 +68,7 @@ options! {
                 "command.",
             ),
         )]
-        pub platforms: Vec<OptionLabel>,
+        pub platforms: Vec<Foreign<Label>>,
 
         #[option(
             name = "extra_toolchains",
@@ -164,9 +165,9 @@ impl PlatformOptions {
     /// Returns the intended target platform value based on options defined in this fragment.
     pub fn compute_target_platform(&self) -> &Label {
         match self.platforms.first() {
-            Some(p) => p.label(),
+            Some(p) => p.get(),
             // Default to the host platform, whatever it is.
-            None => self.host_platform.label(),
+            None => self.host_platform.get(),
         }
     }
 }
@@ -399,7 +400,7 @@ mod tests {
         let options = c(HOST_PLATFORM_PREFIX, &[""]);
         assert_eq!(
             options.host_platform,
-            OptionLabel(Label::parse_canonical_unchecked(DEFAULT_HOST_PLATFORM))
+            Foreign(Label::parse_canonical_unchecked(DEFAULT_HOST_PLATFORM))
         );
     }
 }

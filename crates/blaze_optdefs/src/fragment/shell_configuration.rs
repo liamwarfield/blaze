@@ -1,7 +1,9 @@
 //! The options of `analysis/ShellConfiguration.java` (`ShellConfiguration.Options`). The fragment itself is not ported here.
 
-use crate::misc::options_utils::{OptionPathFragment, PathFragmentConverter};
+use crate::misc::options_utils::PathFragmentConverter;
+use blaze_options::Foreign;
 use blaze_options::options;
+use blaze_vfs::PathFragment;
 
 use super::fragment_options::FragmentOptions;
 
@@ -28,7 +30,7 @@ options! {
                 "to build failures or runtime failures of the generated binaries.\n",
             ),
         )]
-        pub shell_executable: Option<OptionPathFragment>,
+        pub shell_executable: Option<Foreign<PathFragment>>,
     }
 }
 

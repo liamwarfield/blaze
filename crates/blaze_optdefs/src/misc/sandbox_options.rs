@@ -1,5 +1,7 @@
 //! Port of `sandbox/SandboxOptions.java` (the `OptionsBase` subclass and what it uses).
 
+use blaze_options::Foreign;
+use blaze_vfs::PathFragment;
 use std::sync::Arc;
 
 use blaze_options::{
@@ -8,7 +10,7 @@ use blaze_options::{
 };
 use blaze_vfs::{FileSystemExt, FileSystemRef, Path};
 
-use super::options_utils::{AbsolutePathFragmentConverter, OptionPathFragment};
+use super::options_utils::AbsolutePathFragmentConverter;
 use super::resource_converter::{
     RamResourceConverter, ResourceConverterAssignmentConverter, ResourceConverterIntegerConverter,
     host_cpus_supplier,
@@ -171,7 +173,7 @@ options! {
                 " (if supported by the sandboxing implementation, ignored otherwise).",
             ),
         )]
-        pub sandbox_tmpfs_path: Vec<OptionPathFragment>,
+        pub sandbox_tmpfs_path: Vec<Foreign<PathFragment>>,
 
         #[option(
             name = "sandbox_writable_path",

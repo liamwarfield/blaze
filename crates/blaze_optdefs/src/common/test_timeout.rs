@@ -3,23 +3,28 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use blaze_options::converters::JavaEnum;
 use blaze_options::{
     ConversionContext, Converter, OptionScalar, OptionsParsingException, Value,
-    converter::non_null, java_parse_int, option_field_type, value::java_duration_to_string,
+    converter::non_null, java_parse_int, option_enum, option_field_type,
+    value::java_duration_to_string,
 };
 
-use super::converters::ConvResult;
+use super::enum_filter_converter::EnumFilterConverter;
+
+type ConvResult = Result<Option<Value>, OptionsParsingException>;
 
 // Java: com/google/devtools/build/lib/packages/TestTimeout.java:39 TestTimeout
-/// Symbolic labels of test timeout. Borrows heavily from `TestSize`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[allow(clippy::upper_case_acronyms)]
-pub enum TestTimeout {
-    // These symbolic labels are used in the build files.
-    SHORT,
-    MODERATE,
-    LONG,
-    ETERNAL,
+option_enum! {
+    /// Symbolic labels of test timeout. Borrows heavily from `TestSize`. `toString()` is the
+    /// lower-case name.
+    pub enum TestTimeout {
+        // These symbolic labels are used in the build files.
+        SHORT = "short",
+        MODERATE = "moderate",
+        LONG = "long",
+        ETERNAL = "eternal",
+    }
 }
 
 use TestTimeout::*;
@@ -94,16 +99,6 @@ impl TestTimeout {
         Self::VALUES
             .into_iter()
             .find(|t| t.name() == attr.to_uppercase())
-    }
-
-    /// `Enum.name()`.
-    pub fn name(self) -> &'static str {
-        match self {
-            SHORT => "SHORT",
-            MODERATE => "MODERATE",
-            LONG => "LONG",
-            ETERNAL => "ETERNAL",
-        }
     }
 
     // Java: com/google/devtools/build/lib/packages/TestTimeout.java:167 TestTimeout.prettyPrint
@@ -238,6 +233,20 @@ impl Converter for TestTimeoutConverter {
     }
     fn get_type_description(&self) -> String {
         "a single integer or comma-separated list of 4 integers".into()
+    }
+}
+
+// Java: com/google/devtools/build/lib/packages/TestTimeout.java:252 TestTimeout.TestTimeoutFilterConverter
+/// Converter for the --test_timeout_filters option.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TestTimeoutFilterConverter;
+
+impl Converter for TestTimeoutFilterConverter {
+    fn convert(&self, input: Option<&str>, c: Option<&ConversionContext>) -> ConvResult {
+        EnumFilterConverter::<TestTimeout>::new("test timeout").convert(input, c)
+    }
+    fn get_type_description(&self) -> String {
+        EnumFilterConverter::<TestTimeout>::new("test timeout").get_type_description()
     }
 }
 

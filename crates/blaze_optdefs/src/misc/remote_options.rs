@@ -1,5 +1,7 @@
 //! Port of `remote/options/RemoteOptions.java` (the `OptionsBase` subclass and what it uses).
 
+use blaze_options::Foreign;
+use blaze_vfs::PathFragment;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
@@ -11,9 +13,7 @@ use blaze_options::{
 };
 
 use super::common_remote_options::RemoteDurationConverter;
-use super::options_utils::{
-    EmptyToNullPathFragmentConverter, OptionPathFragment, PathFragmentConverter,
-};
+use super::options_utils::{EmptyToNullPathFragmentConverter, PathFragmentConverter};
 use super::remote_build_event_upload_mode::RemoteBuildEventUploadMode;
 use super::remote_outputs_mode::RemoteOutputsMode;
 
@@ -122,7 +122,7 @@ options! {
             converter = PathFragmentConverter,
             help = "A path to a directory where the corrupted outputs will be captured to.",
         )]
-        pub remote_capture_corrupted_outputs: Option<OptionPathFragment>,
+        pub remote_capture_corrupted_outputs: Option<Foreign<PathFragment>>,
 
         #[option(
             name = "remote_cache_async",
@@ -284,7 +284,7 @@ options! {
                 " config fields are rejected and may be supported in the future.",
             ),
         )]
-        pub remote_grpc_service_config: Option<OptionPathFragment>,
+        pub remote_grpc_service_config: Option<Foreign<PathFragment>>,
 
         #[option(
             name = "remote_grpc_download_idle_timeout",
@@ -444,7 +444,7 @@ options! {
                 "If the directory does not exist, it will be created.",
             ),
         )]
-        pub disk_cache: Option<OptionPathFragment>,
+        pub disk_cache: Option<Foreign<PathFragment>>,
 
         #[option(
             name = "experimental_disk_cache_gc_idle_delay",
@@ -528,7 +528,7 @@ options! {
                 "LogEntry.writeDelimitedTo(OutputStream).",
             ),
         )]
-        pub remote_grpc_log: Option<OptionPathFragment>,
+        pub remote_grpc_log: Option<Foreign<PathFragment>>,
 
         #[option(
             name = "remote_cache_compression",

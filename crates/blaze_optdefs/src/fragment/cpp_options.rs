@@ -1,12 +1,13 @@
 //! Port of `rules/cpp/CppOptions.java`.
 
 use blaze_cmdline::Label;
+use blaze_options::Foreign;
 use blaze_options::{
     ConversionContext, Converter, OptionsParsingException, Value, converter::non_null, options,
 };
 
 use super::compilation_mode::{CompilationMode, CompilationModeConverter};
-use super::converters::{ConvResult, EmptyToNullLabelConverter, LabelConverter, OptionLabel};
+use super::converters::{ConvResult, EmptyToNullLabelConverter, LabelConverter};
 use super::cpp_configuration::{CppConfigurationDynamicMode, CppConfigurationStripMode};
 use super::fragment_options::FragmentOptions;
 use super::per_label_options::{PerLabelOptions, PerLabelOptionsConverter};
@@ -87,7 +88,7 @@ impl Converter for LibcTopLabelConverter {
             return Err(OptionsParsingException::new("Not a label"));
         }
         let label = LabelConverter.convert_label(input, ctx)?;
-        Ok(Some(Value::new(OptionLabel(Label::create_unvalidated(
+        Ok(Some(Value::new(Foreign(Label::create_unvalidated(
             label.get_package_identifier().clone(),
             "everything",
         )))))
@@ -110,7 +111,7 @@ options! {
             effect_tags = [NO_OP],
             help = "No-op flag. Will be removed in a future release.",
         )]
-        pub crosstool_top: OptionLabel,
+        pub crosstool_top: Foreign<Label>,
 
         #[option(
             name = "compiler",
@@ -327,7 +328,7 @@ options! {
             ),
             converter = LabelConverter,
         )]
-        pub custom_malloc: Option<OptionLabel>,
+        pub custom_malloc: Option<Foreign<Label>>,
 
         #[option(
             name = "legacy_whole_archive",
@@ -431,7 +432,7 @@ options! {
                 "prevail as if xbinary_fdo is never specified. ",
             ),
         )]
-        pub xfdo_profile_label: Option<OptionLabel>,
+        pub xfdo_profile_label: Option<Foreign<Label>>,
 
         #[option(
             name = "fdo_prefetch_hints",
@@ -442,7 +443,7 @@ options! {
             effect_tags = [AFFECTS_OUTPUTS],
             help = "Use cache prefetch hints.",
         )]
-        pub fdo_prefetch_hints_label: Option<OptionLabel>,
+        pub fdo_prefetch_hints_label: Option<Foreign<Label>>,
 
         #[option(
             name = "fdo_profile",
@@ -453,7 +454,7 @@ options! {
             effect_tags = [AFFECTS_OUTPUTS],
             help = "The fdo_profile representing the profile to be used for optimization.",
         )]
-        pub fdo_profile_label: Option<OptionLabel>,
+        pub fdo_profile_label: Option<Foreign<Label>>,
 
         #[option(
             name = "cs_fdo_profile",
@@ -467,7 +468,7 @@ options! {
                 " optimization.",
             ),
         )]
-        pub cs_fdo_profile_label: Option<OptionLabel>,
+        pub cs_fdo_profile_label: Option<Foreign<Label>>,
 
         #[option(
             name = "enable_remaining_fdo_absolute_paths",
@@ -530,7 +531,7 @@ options! {
                 "--propeller_optimize=//a/b:propeller_profile",
             ),
         )]
-        pub propeller_optimize_label: Option<OptionLabel>,
+        pub propeller_optimize_label: Option<Foreign<Label>>,
 
         #[option(
             name = "memprof_profile",
@@ -541,7 +542,7 @@ options! {
             effect_tags = [AFFECTS_OUTPUTS],
             help = "Use memprof profile.",
         )]
-        pub memprof_profile_label: Option<OptionLabel>,
+        pub memprof_profile_label: Option<Foreign<Label>>,
 
         #[option(
             name = "proto_profile",
@@ -563,7 +564,7 @@ options! {
                 " --proto_profile is true (the default), infers the path from --fdo_optimize.",
             ),
         )]
-        pub proto_profile_path: Option<OptionLabel>,
+        pub proto_profile_path: Option<Foreign<Label>>,
 
         #[option(
             name = "save_temps",
@@ -710,7 +711,7 @@ options! {
                 "toolchain, and you almost never need to override it.",
             ),
         )]
-        pub libc_top_label: Option<OptionLabel>,
+        pub libc_top_label: Option<Foreign<Label>>,
 
         #[option(
             name = "host_grte_top",
@@ -723,7 +724,7 @@ options! {
                 "for the exec configuration.",
             ),
         )]
-        pub host_libc_top_label: Option<OptionLabel>,
+        pub host_libc_top_label: Option<Foreign<Label>>,
 
         #[option(
             name = "experimental_inmemory_dotd_files",
@@ -1084,22 +1085,18 @@ impl CppOptions {
     // Java: com/google/devtools/build/lib/rules/cpp/CppOptions.java:431 CppOptions.getFdoPrefetchHintsLabel
     /// Returns the --fdo_prefetch_hints value.
     pub fn get_fdo_prefetch_hints_label(&self) -> Option<&Label> {
-        self.fdo_prefetch_hints_label
-            .as_ref()
-            .map(OptionLabel::label)
+        self.fdo_prefetch_hints_label.as_ref().map(Foreign::get)
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppOptions.java:514 CppOptions.getPropellerOptimizeLabel
     pub fn get_propeller_optimize_label(&self) -> Option<&Label> {
-        self.propeller_optimize_label
-            .as_ref()
-            .map(OptionLabel::label)
+        self.propeller_optimize_label.as_ref().map(Foreign::get)
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppOptions.java:529 CppOptions.getMemProfProfileLabel
     /// Returns the --memprof_profile value.
     pub fn get_mem_prof_profile_label(&self) -> Option<&Label> {
-        self.memprof_profile_label.as_ref().map(OptionLabel::label)
+        self.memprof_profile_label.as_ref().map(Foreign::get)
     }
 }
 

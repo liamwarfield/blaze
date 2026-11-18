@@ -1,7 +1,9 @@
 //! Port of `rules/python/PythonOptions.java`.
 
-use super::converters::{LabelConverter, OptionLabel};
+use super::converters::LabelConverter;
 use super::python_version::PythonVersion;
+use blaze_cmdline::Label;
+use blaze_options::Foreign;
 use blaze_options::TriState;
 use blaze_options::options;
 
@@ -55,7 +57,7 @@ options! {
                 "--incompatible_python_disallow_native_rules.",
             ),
         )]
-        pub native_rules_allowlist: Option<OptionLabel>,
+        pub native_rules_allowlist: Option<Foreign<Label>>,
 
         #[option(
             name = "incompatible_python_disallow_native_rules",

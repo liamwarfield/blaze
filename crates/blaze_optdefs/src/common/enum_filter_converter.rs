@@ -1,12 +1,16 @@
-//! Port of `com/google/devtools/build/lib/packages/EnumFilterConverter.java` and the `Set<E>` value it produces, plus
-//! `StringUtil.joinEnglishList` (`com/google/devtools/build/lib/util/StringUtil.java`).
+//! Port of `com/google/devtools/build/lib/packages/EnumFilterConverter.java` (its `Set<E>` value is
+//! `blaze_options::EnumSet`), plus `StringUtil.joinEnglishList`
+//! (`com/google/devtools/build/lib/util/StringUtil.java`).
 
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
 
 use blaze_options::converters::JavaEnum;
+use blaze_options::{
+    ConversionContext, Converter, EnumSet, OptionsParsingException, Value, converter::non_null,
+};
 
-use super::prelude::*;
+type ConvResult = Result<Option<Value>, OptionsParsingException>;
 
 // Java: com/google/devtools/build/lib/util/StringUtil.java:35 StringUtil.joinEnglishList
 /// Creates a comma-separated list of words as in English, with an Oxford comma:
@@ -31,38 +35,6 @@ pub fn join_english_list(choices: &[String]) -> String {
         "nothing".to_string()
     } else {
         buf
-    }
-}
-
-/// A Java `Set<E>` of enum constants (an `EnumSet`): iterates and prints in declaration order.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct EnumSet<E: Ord>(pub BTreeSet<E>);
-
-impl<E: JavaEnum + Ord> EnumSet<E> {
-    pub fn contains(&self, e: &E) -> bool {
-        self.0.contains(e)
-    }
-}
-
-// Java: AbstractCollection.toString
-impl<E: JavaEnum + Ord + std::hash::Hash + Eq> OptionScalar for EnumSet<E> {
-    fn java_to_string(&self) -> String {
-        blaze_options::value::java_list_to_string(self.0.iter().map(|e| e.java_to_string()))
-    }
-}
-
-impl<E: JavaEnum + Ord + std::hash::Hash + Eq> FieldType for EnumSet<E> {
-    const JAVA_TYPE_NAME: &'static str = "java.util.Set";
-    fn from_value(v: Option<&Value>) -> Result<Self, blaze_options::value::FieldTypeMismatch> {
-        v.and_then(|v| v.downcast_ref::<EnumSet<E>>())
-            .cloned()
-            .ok_or(blaze_options::value::FieldTypeMismatch)
-    }
-    fn to_value(&self) -> Option<Value> {
-        Some(Value::new(self.clone()))
-    }
-    fn raw_default() -> Self {
-        EnumSet(BTreeSet::new())
     }
 }
 

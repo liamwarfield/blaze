@@ -211,6 +211,8 @@ mod generated_tests {
 
 // ---- hand-written below this line (preserved by the generator) ----
 
+use std::sync::Arc;
+
 use super::resource_converter::{host_cpus_supplier, resource_integer_converter};
 
 // Java: com/google/devtools/build/lib/pkgcache/PackageOptions.java:42 PackageOptions.DefaultVisibilityConverter
@@ -241,7 +243,7 @@ impl Converter for DefaultVisibilityConverter {
 resource_integer_converter!(
     // Java: com/google/devtools/build/lib/pkgcache/PackageOptions.java:61 PackageOptions.ParallelismConverter
     /// Converter for globbing threads.
-    pub ParallelismConverter => ResourceIntegerConverter::new(host_cpus_supplier, 1, i32::MAX)
+    pub ParallelismConverter => ResourceConverterIntegerConverter::new(Arc::new(host_cpus_supplier), 1, i32::MAX)
 );
 
 fn parse_package_identifier(

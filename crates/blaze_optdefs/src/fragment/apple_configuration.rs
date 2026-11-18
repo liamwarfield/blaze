@@ -1,7 +1,7 @@
 //! The option value enum of `rules/apple/AppleConfiguration.java` (the fragment itself is not
 //! ported here).
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/rules/apple/AppleConfiguration.java:370 AppleConfiguration.ConfigurationDistinguisher
     /// Value used to avoid multiple configurations from conflicting. No two instances of this

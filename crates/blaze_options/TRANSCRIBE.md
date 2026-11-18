@@ -83,6 +83,8 @@ resolve inside the macro.
 | `OptionalInt` | `OptionalInt` |
 | `RegexPatternOption` | `RegexPatternOption` |
 | `Converters.EnvVar` | `EnvVar` |
+| `Label`, `PackageIdentifier`, `PathFragment`, `DigestHashFunction` | `Foreign<Label>` etc. (`blaze_options::Foreign`, derefs to the inner value; converters return `Value::new(Foreign(x))`) |
+| `Set<E>` of a Java enum (an `EnumSet`, e.g. from `EnumFilterConverter`) | `EnumSet<E>` |
 | a Java enum | an `option_enum!` (see below) |
 | any other converter result type `X` | a Rust type implementing `OptionScalar`, then `option_field_type!(X, "java.class.Name")` |
 
@@ -112,7 +114,23 @@ option_enum! {
 
 Variants keep the Java constant names. If the Java enum overrides `toString()`, give each
 variant its string: `pub enum CompilationMode { FASTBUILD = "fastbuild", DBG = "dbg", OPT = "opt" }`.
-`EnumConverter` matches against `toString()`, case-insensitively, as in Java.
+`EnumConverter` matches against `toString()`, case-insensitively, as in Java. Javadoc on a
+constant becomes a `///` comment before the variant. A Java enum that `implements StarlarkValue`
+starts with `#[starlark_value]` (before any doc comment); this makes its `EnumConverter` and
+`BoolOrEnumConverter` Starlark-convertible:
+
+```rust
+option_enum! {
+    #[starlark_value]
+    /// Values for the --include_config_fragments_provider option.
+    pub enum CoreOptionsIncludeConfigFragmentsEnum {
+        /// Don't offer the provider at all.
+        OFF,
+        DIRECT,
+        TRANSITIVE,
+    }
+}
+```
 
 ## Worked example: `runtime/KeepGoingOption.java` and part of `runtime/UiOptions.java`
 

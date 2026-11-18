@@ -1,8 +1,10 @@
 //! Port of `bazel/debug/DebuggingOptions.java` (the `OptionsBase` subclass and what it uses).
 
+use blaze_options::Foreign;
 use blaze_options::options;
+use blaze_vfs::PathFragment;
 
-use super::options_utils::{OptionPathFragment, PathFragmentConverter};
+use super::options_utils::PathFragmentConverter;
 
 // Java: com/google/devtools/build/lib/bazel/debug/DebuggingOptions.java:25 DebuggingOptions
 options! {
@@ -17,7 +19,7 @@ options! {
             converter = PathFragmentConverter,
             help = "Log certain Workspace Rules events into this file as delimited WorkspaceEvent protos.",
         )]
-        pub workspace_rules_log_file: Option<OptionPathFragment>,
+        pub workspace_rules_log_file: Option<Foreign<PathFragment>>,
     }
 }
 

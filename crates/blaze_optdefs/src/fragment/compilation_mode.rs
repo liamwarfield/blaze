@@ -1,6 +1,6 @@
 //! Port of `analysis/config/CompilationMode.java`.
 
-fragment_enum! {
+blaze_options::option_enum! {
     #[starlark_value]
     // Java: com/google/devtools/build/lib/analysis/config/CompilationMode.java:24 CompilationMode
     /// This class represents the debug/optimization mode the binaries will be built for.

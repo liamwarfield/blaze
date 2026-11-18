@@ -1,11 +1,13 @@
 //! The options of `rules/proto/ProtoConfiguration.java` (`ProtoConfiguration.Options`). The fragment itself is not ported here.
 
 use super::converters::{
-    CoreOptionConvertersStrictDepsMode, EmptyToNullLabelConverter, LabelConverter, OptionLabel,
+    CoreOptionConvertersStrictDepsMode, EmptyToNullLabelConverter, LabelConverter,
     StrictDepsConverter,
 };
 use super::proto_constants;
+use blaze_cmdline::Label;
 use blaze_options::CommaSeparatedOptionSetConverter;
+use blaze_options::Foreign;
 use blaze_options::options;
 
 use super::fragment_options::FragmentOptions;
@@ -42,7 +44,7 @@ options! {
             effect_tags = [AFFECTS_OUTPUTS, LOADING_AND_ANALYSIS],
             help = "The label of the proto-compiler.",
         )]
-        pub proto_compiler: OptionLabel,
+        pub proto_compiler: Foreign<Label>,
 
         #[option(
             name = "proto_toolchain_for_javalite",
@@ -52,7 +54,7 @@ options! {
             effect_tags = [AFFECTS_OUTPUTS, LOADING_AND_ANALYSIS],
             help = "Label of proto_lang_toolchain() which describes how to compile JavaLite protos",
         )]
-        pub proto_toolchain_for_java_lite: OptionLabel,
+        pub proto_toolchain_for_java_lite: Foreign<Label>,
 
         #[option(
             name = "proto_toolchain_for_java",
@@ -62,7 +64,7 @@ options! {
             effect_tags = [AFFECTS_OUTPUTS, LOADING_AND_ANALYSIS],
             help = "Label of proto_lang_toolchain() which describes how to compile Java protos",
         )]
-        pub proto_toolchain_for_java: Option<OptionLabel>,
+        pub proto_toolchain_for_java: Option<Foreign<Label>>,
 
         #[option(
             name = "proto_toolchain_for_j2objc",
@@ -73,7 +75,7 @@ options! {
             effect_tags = [AFFECTS_OUTPUTS, LOADING_AND_ANALYSIS],
             help = "Label of proto_lang_toolchain() which describes how to compile j2objc protos",
         )]
-        pub proto_toolchain_for_j2objc: Option<OptionLabel>,
+        pub proto_toolchain_for_j2objc: Option<Foreign<Label>>,
 
         #[option(
             name = "proto_toolchain_for_cc",
@@ -83,7 +85,7 @@ options! {
             effect_tags = [AFFECTS_OUTPUTS, LOADING_AND_ANALYSIS],
             help = "Label of proto_lang_toolchain() which describes how to compile C++ protos",
         )]
-        pub proto_toolchain_for_cc: Option<OptionLabel>,
+        pub proto_toolchain_for_cc: Option<Foreign<Label>>,
 
         #[option(
             name = "strict_proto_deps",

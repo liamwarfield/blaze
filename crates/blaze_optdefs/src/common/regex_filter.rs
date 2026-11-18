@@ -7,18 +7,17 @@ use blaze_options::{
     converter::non_null, option_field_type,
 };
 
-use super::converters::ConvResult;
-use super::fragment_options::java_string_compare;
+use crate::fragment::fragment_options::java_string_compare;
+
+type ConvResult = Result<Option<Value>, OptionsParsingException>;
 
 /// A compiled `java.util.regex.Pattern` (no flags): the Java pattern string plus a compiled
 /// matcher.
 ///
 /// PORT: Java regex is emulated with the `regex` crate (through `blaze_options`'
-/// `RegexPatternOption`). The pattern is compiled inside `(?-s:...)` to undo the `DOTALL` that
-/// `RegexPatternOption` adds, and atomic groups `(?>...)` (unsupported by the `regex` crate) are
-/// compiled as non-capturing groups: for `find()`/`matches()` of a whole alternative they accept
-/// the same inputs. Java-only syntax (lookaround, backreferences, possessive quantifiers) fails to
-/// compile, and syntax error messages differ from `PatternSyntaxException.getMessage()`.
+/// `RegexPatternOption`, compiled without flags; its docs list the `regex` crate's limits). Atomic
+/// groups `(?>...)` (unsupported by the `regex` crate) are compiled as non-capturing groups: for
+/// `find()`/`matches()` of a whole alternative they accept the same inputs.
 #[derive(Clone, Debug)]
 pub struct JavaPattern {
     pattern: String,
@@ -29,11 +28,11 @@ impl JavaPattern {
     /// `Pattern.compile(pattern)`; the error is the syntax error's message.
     pub fn compile(pattern: &str) -> Result<JavaPattern, String> {
         let translated = pattern.replace("(?>", "(?:");
-        let compiled =
-            RegexPatternOption::create(&format!("(?-s:{})", translated)).map_err(|e| {
-                // The regex crate's message; Java prints PatternSyntaxException.getMessage().
-                e.to_string()
-            })?;
+        // Pattern.compile(pattern): no flags.
+        let compiled = RegexPatternOption::compile(&translated, 0).map_err(|e| {
+            // The regex crate's message; Java prints PatternSyntaxException.getMessage().
+            e.to_string()
+        })?;
         Ok(JavaPattern {
             pattern: pattern.to_string(),
             compiled,
@@ -79,6 +78,33 @@ pub(crate) fn split_unescaped(input: &str, sep: char) -> Vec<String> {
         return parts;
     }
     while parts.last().is_some_and(String::is_empty) {
+        parts.pop();
+    }
+    parts
+}
+
+/// Java `String.split(regex)` with limit 0 for a regex matching one single-byte separator (given
+/// as a predicate on the byte index of each candidate): trailing empty strings are removed, and
+/// an input without any separator is returned whole.
+pub(crate) fn java_split(
+    input: &str,
+    is_separator_at: impl Fn(&str, usize) -> bool,
+) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut found = false;
+    for (i, _) in input.char_indices() {
+        if is_separator_at(input, i) {
+            found = true;
+            parts.push(input[start..i].to_string());
+            start = i + 1;
+        }
+    }
+    if !found {
+        return vec![input.to_string()];
+    }
+    parts.push(input[start..].to_string());
+    while parts.last().is_some_and(|p| p.is_empty()) {
         parts.pop();
     }
     parts
@@ -365,7 +391,17 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "the regex crate's error text differs from java.util.regex.PatternSyntaxException"]
     fn invalid_expression() {
+        let e = create_filter("*a").unwrap_err();
+        assert!(e.get_message().contains(
+            "Failed to build valid regular expression: Dangling meta character '*' near index"
+        ));
+    }
+
+    // Blaze-specific: the part of invalid_expression the regex crate can reproduce.
+    #[test]
+    fn invalid_expression_prefix() {
         let e = create_filter("*a").unwrap_err();
         // PORT: Java's message continues "Dangling meta character '*' near index"; the regex
         // crate words syntax errors differently.
@@ -425,5 +461,19 @@ mod tests {
     fn initial_double_dash_escaped() {
         let filter = create_filter("\\-\\-compilation_mode").unwrap();
         assert_included(&filter, "--compilation_mode");
+    }
+
+    // Blaze-specific: Java String.split semantics used by the converter.
+    #[test]
+    fn java_split_semantics() {
+        assert_eq!(split_unescaped("", ','), vec![""]);
+        assert!(split_unescaped(",", ',').is_empty());
+        assert_eq!(split_unescaped(",a,,", ','), vec!["", "a"]);
+        assert_eq!(split_unescaped("a\\,b,c", ','), vec!["a\\,b", "c"]);
+        assert_eq!(
+            java_split("a:b::", |s, i| s.as_bytes()[i] == b':'),
+            vec!["a", "b"]
+        );
+        assert_eq!(java_split("ab", |s, i| s.as_bytes()[i] == b':'), vec!["ab"]);
     }
 }
