@@ -1,0 +1,53 @@
+{
+ "source": "~/.cache/blaze/oracle-records/oracle-9.3.2/brotli/items/aquery_actions.json",
+ "key": "bazel-out/k8-fastbuild/bin/_objs/brotlicommon/dictionary.pic.o",
+ "mnemonic": "CppCompile",
+ "target": "//:brotlicommon",
+ "argv": [
+  "/usr/bin/gcc",
+  "-U_FORTIFY_SOURCE",
+  "-fstack-protector",
+  "-Wall",
+  "-Wunused-but-set-parameter",
+  "-Wno-free-nonheap-object",
+  "-fno-omit-frame-pointer",
+  "-MD",
+  "-MF",
+  "bazel-out/k8-fastbuild/bin/_objs/brotlicommon/dictionary.pic.d",
+  "-frandom-seed=bazel-out/k8-fastbuild/bin/_objs/brotlicommon/dictionary.pic.o",
+  "-fPIC",
+  "-iquote",
+  ".",
+  "-iquote",
+  "bazel-out/k8-fastbuild/bin",
+  "-Ibazel-out/k8-fastbuild/bin/_virtual_includes/brotli_inc",
+  "--pedantic-errors",
+  "-Wall",
+  "-Wconversion",
+  "-Werror",
+  "-Wextra",
+  "-Wlong-long",
+  "-Wmissing-declarations",
+  "-Wmissing-prototypes",
+  "-Wno-strict-aliasing",
+  "-Wshadow",
+  "-Wsign-compare",
+  "-c",
+  "c/common/dictionary.c",
+  "-o",
+  "bazel-out/k8-fastbuild/bin/_objs/brotlicommon/dictionary.pic.o",
+  "-fno-canonical-system-headers",
+  "-Wno-builtin-macro-redefined",
+  "-D__DATE__=\"redacted\"",
+  "-D__TIMESTAMP__=\"redacted\"",
+  "-D__TIME__=\"redacted\""
+ ],
+ "env": {
+  "PATH": "/bin:/usr/bin:/usr/local/bin",
+  "PWD": "/proc/self/cwd"
+ },
+ "outputs": [
+  "bazel-out/k8-fastbuild/bin/_objs/brotlicommon/dictionary.pic.d",
+  "bazel-out/k8-fastbuild/bin/_objs/brotlicommon/dictionary.pic.o"
+ ]
+}

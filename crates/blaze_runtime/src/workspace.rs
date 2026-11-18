@@ -1,0 +1,145 @@
+//! `BlazeWorkspace`: the workspace-specific state of the server (directories, caches).
+//!
+//! PORT: W1 subset. The Skyframe executor, action cache, bin tools, syscall cache and package
+//! locator are added with the waves that need them.
+
+use blaze_vfs::Path;
+
+use crate::directories::BlazeDirectories;
+
+/// This class represents a workspace, and contains operations and data related to it.
+// Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:68 BlazeWorkspace
+pub struct BlazeWorkspace {
+    directories: BlazeDirectories,
+}
+
+impl BlazeWorkspace {
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:69 BlazeWorkspace.DO_NOT_BUILD_FILE_NAME
+    pub const DO_NOT_BUILD_FILE_NAME: &'static str = "DO_NOT_BUILD_HERE";
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:156 BlazeWorkspace.<init>
+    pub fn new(directories: BlazeDirectories) -> Self {
+        let ws = BlazeWorkspace { directories };
+        if ws.directories.in_workspace() {
+            ws.write_output_base_readme_file();
+            ws.write_do_not_build_here_files();
+        }
+        // PORT: outputBaseFilesystemTypeName (FileSystemUtils.getFileSystem) is only used for
+        // logging and BEP; not ported.
+        ws
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:200 BlazeWorkspace.getDirectories
+    pub fn get_directories(&self) -> &BlazeDirectories {
+        &self.directories
+    }
+
+    /// Returns the working directory of the server.
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:222 BlazeWorkspace.getWorkspace
+    pub fn get_workspace(&self) -> Option<&Path> {
+        self.directories.get_working_directory()
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:231 BlazeWorkspace.getOutputBase
+    pub fn get_output_base(&self) -> &Path {
+        self.directories.get_output_base()
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:244 BlazeWorkspace.getInstallBase
+    pub fn get_install_base(&self) -> &Path {
+        self.directories.get_install_base()
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:254 BlazeWorkspace.getActionCacheDirectory
+    fn get_action_cache_directory(&self) -> Path {
+        self.get_output_base().get_child("action_cache")
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:264 BlazeWorkspace.getCorruptedActionCacheDirectory
+    fn get_corrupted_action_cache_directory(&self) -> Path {
+        self.get_output_base().get_child("action_cache.bad")
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:274 BlazeWorkspace.getActionCacheTmpDirectory
+    fn get_action_cache_tmp_directory(&self) -> Path {
+        self.get_output_base().get_child("action_cache.tmp")
+    }
+
+    /// Reinitializes the Skyframe evaluator, dropping all previously computed values.
+    /// PORT: there is no Skyframe executor in the runtime yet and nothing is computed across
+    /// commands (one command per process), so there is nothing to drop.
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:366 BlazeWorkspace.resetEvaluator
+    pub fn reset_evaluator(&self) {}
+
+    /// Removes in-memory and on-disk action caches.
+    /// PORT: the in-memory action cache does not exist yet; the on-disk directories are deleted
+    /// as in Java.
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:371 BlazeWorkspace.clearCaches
+    pub fn clear_caches(&self) -> std::io::Result<()> {
+        self.get_action_cache_directory().delete_tree()?;
+        self.get_corrupted_action_cache_directory().delete_tree()?;
+        self.get_action_cache_tmp_directory().delete_tree()?;
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:184 BlazeWorkspace.writeOutputBaseReadmeFile
+    fn write_output_base_readme_file(&self) {
+        let workspace = self.get_workspace().expect("checkNotNull");
+        let output_base_readme_file = self.get_output_base().get_relative_str("README");
+        let lines = [
+            format!("WORKSPACE: {}", workspace.get_path_string()),
+            String::new(),
+            "The first line of this file is intentionally easy to parse for various".to_string(),
+            "interactive scripting and debugging purposes.  But please DO NOT write programs"
+                .to_string(),
+            "that exploit it, as they will be broken by design: it is not possible to".to_string(),
+            "reverse engineer the set of source trees or the --package_path from the output"
+                .to_string(),
+            "tree, and if you attempt it, you will fail, creating subtle and".to_string(),
+            "hard-to-diagnose bugs, that will no doubt get blamed on changes made by the"
+                .to_string(),
+            "Bazel team.".to_string(),
+            String::new(),
+            "This directory was generated by Bazel.".to_string(),
+            "Do not attempt to modify or delete any files in this directory.".to_string(),
+            "Among other issues, Bazel's file system caching assumes that".to_string(),
+            "only Bazel will modify this directory and the files in it,".to_string(),
+            "so if you change anything here you may mess up Bazel's cache.".to_string(),
+        ];
+        // FileSystemUtils.writeIsoLatin1 writes each line followed by '\n'.
+        let mut content = String::new();
+        for line in &lines {
+            content.push_str(line);
+            content.push('\n');
+        }
+        // Failures are only logged (logger.atWarning) in Java.
+        let _ = std::fs::write(output_base_readme_file.get_path_string(), content);
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:185 BlazeWorkspace.writeDoNotBuildHereFile
+    fn write_do_not_build_here_file(&self, file_path: &Path) {
+        let workspace = self.get_workspace().expect("checkNotNull");
+        if let Some(parent) = file_path.get_parent_directory()
+            && parent.create_directory_and_parents().is_err()
+        {
+            return;
+        }
+        // Failures are only logged (logger.atWarning) in Java.
+        let _ = std::fs::write(file_path.get_path_string(), workspace.get_path_string());
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:185 BlazeWorkspace.writeDoNotBuildHereFile
+    fn write_do_not_build_here_files(&self) {
+        self.write_do_not_build_here_file(
+            &self
+                .get_output_base()
+                .get_relative_str(Self::DO_NOT_BUILD_FILE_NAME),
+        );
+        self.write_do_not_build_here_file(
+            &self
+                .get_output_base()
+                .get_relative_str("execroot")
+                .get_relative_str(Self::DO_NOT_BUILD_FILE_NAME),
+        );
+    }
+}

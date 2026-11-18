@@ -1,0 +1,88 @@
+//! Port of `com.google.devtools.build.lib.rules.cpp.CompileBuildVariables`.
+
+/// Enum covering all build variables we create for all various `CppCompileAction`s.
+// Java: com/google/devtools/build/lib/rules/cpp/CompileBuildVariables.java:18 CompileBuildVariables
+#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CompileBuildVariables {
+    SOURCE_FILE,
+    USER_COMPILE_FLAGS,
+    OUTPUT_FILE,
+    DEPENDENCY_FILE,
+    SERIALIZED_DIAGNOSTICS_FILE,
+    MODULE_NAME,
+    INCLUDE_PATHS,
+    QUOTE_INCLUDE_PATHS,
+    SYSTEM_INCLUDE_PATHS,
+    EXTERNAL_INCLUDE_PATHS,
+    FRAMEWORK_PATHS,
+    CPP_MODULE_MODMAP_FILE,
+    CPP_MODULE_OUTPUT_FILE,
+    MODULE_MAP_FILE,
+    DEPENDENT_MODULE_MAP_FILES,
+    MODULE_FILES,
+    PREPROCESSOR_DEFINES,
+    GCOV_GCNO_FILE,
+    LTO_INDEXING_BITCODE_FILE,
+    THINLTO_INDEX,
+    THINLTO_INPUT_BITCODE_FILE,
+    THINLTO_OUTPUT_OBJECT_FILE,
+    IS_USING_FISSION,
+    PER_OBJECT_DEBUG_INFO_FILE,
+    PIC,
+    OUTPUT_PREPROCESS_FILE,
+    OUTPUT_ASSEMBLY_FILE,
+    FDO_INSTRUMENT_PATH,
+    FDO_PROFILE_PATH,
+    CS_FDO_INSTRUMENT_PATH,
+    FDO_PREFETCH_HINTS_PATH,
+    PROPELLER_OPTIMIZE_CC_PATH,
+    PROPELLER_OPTIMIZE_LD_PATH,
+    MEMPROF_PROFILE_PATH,
+    IS_USING_MEMPROF,
+    INCLUDES,
+}
+
+impl CompileBuildVariables {
+    // Java: com/google/devtools/build/lib/rules/cpp/CompileBuildVariables.java:129 CompileBuildVariables.getVariableName
+    pub fn get_variable_name(self) -> &'static str {
+        match self {
+            CompileBuildVariables::SOURCE_FILE => "source_file",
+            CompileBuildVariables::USER_COMPILE_FLAGS => "user_compile_flags",
+            CompileBuildVariables::OUTPUT_FILE => "output_file",
+            CompileBuildVariables::DEPENDENCY_FILE => "dependency_file",
+            CompileBuildVariables::SERIALIZED_DIAGNOSTICS_FILE => "serialized_diagnostics_file",
+            CompileBuildVariables::MODULE_NAME => "module_name",
+            CompileBuildVariables::INCLUDE_PATHS => "include_paths",
+            CompileBuildVariables::QUOTE_INCLUDE_PATHS => "quote_include_paths",
+            CompileBuildVariables::SYSTEM_INCLUDE_PATHS => "system_include_paths",
+            CompileBuildVariables::EXTERNAL_INCLUDE_PATHS => "external_include_paths",
+            CompileBuildVariables::FRAMEWORK_PATHS => "framework_include_paths",
+            CompileBuildVariables::CPP_MODULE_MODMAP_FILE => "cpp_module_modmap_file",
+            CompileBuildVariables::CPP_MODULE_OUTPUT_FILE => "cpp_module_output_file",
+            CompileBuildVariables::MODULE_MAP_FILE => "module_map_file",
+            CompileBuildVariables::DEPENDENT_MODULE_MAP_FILES => "dependent_module_map_files",
+            CompileBuildVariables::MODULE_FILES => "module_files",
+            CompileBuildVariables::PREPROCESSOR_DEFINES => "preprocessor_defines",
+            CompileBuildVariables::GCOV_GCNO_FILE => "gcov_gcno_file",
+            CompileBuildVariables::LTO_INDEXING_BITCODE_FILE => "lto_indexing_bitcode_file",
+            CompileBuildVariables::THINLTO_INDEX => "thinlto_index",
+            CompileBuildVariables::THINLTO_INPUT_BITCODE_FILE => "thinlto_input_bitcode_file",
+            CompileBuildVariables::THINLTO_OUTPUT_OBJECT_FILE => "thinlto_output_object_file",
+            CompileBuildVariables::IS_USING_FISSION => "is_using_fission",
+            CompileBuildVariables::PER_OBJECT_DEBUG_INFO_FILE => "per_object_debug_info_file",
+            CompileBuildVariables::PIC => "pic",
+            CompileBuildVariables::OUTPUT_PREPROCESS_FILE => "output_preprocess_file",
+            CompileBuildVariables::OUTPUT_ASSEMBLY_FILE => "output_assembly_file",
+            CompileBuildVariables::FDO_INSTRUMENT_PATH => "fdo_instrument_path",
+            CompileBuildVariables::FDO_PROFILE_PATH => "fdo_profile_path",
+            CompileBuildVariables::CS_FDO_INSTRUMENT_PATH => "cs_fdo_instrument_path",
+            CompileBuildVariables::FDO_PREFETCH_HINTS_PATH => "fdo_prefetch_hints_path",
+            CompileBuildVariables::PROPELLER_OPTIMIZE_CC_PATH => "propeller_optimize_cc_path",
+            CompileBuildVariables::PROPELLER_OPTIMIZE_LD_PATH => "propeller_optimize_ld_path",
+            CompileBuildVariables::MEMPROF_PROFILE_PATH => "memprof_profile_path",
+            CompileBuildVariables::IS_USING_MEMPROF => "is_using_memprof",
+            CompileBuildVariables::INCLUDES => "includes",
+        }
+    }
+}

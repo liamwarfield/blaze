@@ -175,6 +175,7 @@ name = "blaze"
 version = "0.1.0"
 dependencies = [
  "blaze_client",
+ "blaze_protos",
  "blaze_runtime",
  "hex",
  "md-5",
@@ -230,12 +231,16 @@ dependencies = [
 name = "blaze_cc_features"
 version = "0.1.0"
 dependencies = [
+ "blaze_cmdline",
  "blaze_collect",
  "blaze_util",
  "blaze_vfs",
  "indexmap",
+ "parking_lot",
  "regex",
  "serde_json",
+ "starlark",
+ "tempfile",
  "thiserror",
 ]
 
@@ -430,6 +435,7 @@ dependencies = [
  "blaze_optdefs",
  "blaze_options",
  "blaze_protos",
+ "blaze_shell",
  "blaze_util",
  "blaze_vfs",
  "indexmap",

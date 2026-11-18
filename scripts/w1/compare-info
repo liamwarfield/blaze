@@ -1,0 +1,868 @@
+#!/usr/bin/env python3
+"""W1 comparison: oracle (Bazel 9.3.2) vs Blaze on startup, version, info, clean, shutdown, help
+and rc/--config handling. See `compare-info help`."""
+
+import argparse
+import difflib
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True  # do not write __pycache__ into scripts/oracle/
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+ORACLE_SCRIPTS = os.path.join(REPO, "scripts", "oracle")
+sys.path.insert(0, ORACLE_SCRIPTS)
+
+import oracle_common as oc  # noqa: E402
+
+
+def _load_record():
+    """scripts/oracle/record has no .py suffix; load it by path for its workspace helpers."""
+    path = os.path.join(ORACLE_SCRIPTS, "record")
+    loader = importlib.machinery.SourceFileLoader("oracle_record", path)
+    spec = importlib.util.spec_from_loader("oracle_record", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+record = _load_record()
+
+USAGE = """\
+usage: scripts/w1/compare-info [--project brotli|re2|all] [--case REGEX]
+                               [--oracle-only | --blaze-only] [--blaze PATH] [--keep-roots]
+                               [--json PATH] [--diff-lines N]
+       scripts/w1/compare-info selftest
+       scripts/w1/compare-info help | --help
+
+Runs the oracle (real Bazel 9.3.2, ~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64) and Blaze
+(default <repo>/target/debug/blaze) on copies of the corpus workspaces and compares, case by
+case, the W1 commands: startup, version, info, clean, shutdown, help, canonicalize-flags and
+rc/--config handling.
+
+Per project (brotli, re2) and per side (oracle first, then blaze):
+  * the read-only checkout ~/.cache/blaze/corpus/<p> is copied to ~/.cache/blaze/work/w1/<p>
+    (rsync minus bazel-* and .git, then restored to the checkout's git HEAD: untracked files
+    such as a stray MODULE.bazel.lock are removed), fresh for each side;
+  * the side's output user root is wiped (oracle: ~/.cache/blaze/oracle-out/ur-w1, blaze:
+    ~/.cache/blaze/work/w1/blaze-ur; `shutdown` is sent first), so the first command of each
+    side prints "Extracting Bazel installation...";
+  * every case runs as
+      systemd-run --user --collect --wait --pipe -q -p MemoryMax=12G -p MemorySwapMax=0
+        --working-directory=<cwd> env -i HOME=$HOME PATH=/usr/bin:/bin USER=$USER
+        <binary> --output_user_root=<root> --nohome_rc --nosystem_rc [startup...] <command...>
+    (cwd = the workspace copy, or ~/.cache/blaze/work/w1/outside for outside-workspace cases).
+    The unit's cgroup dies with the client, so every invocation starts a fresh server.
+
+Outputs are normalised (table NORMALIZATION_RULES at the top of this script) and compared
+exactly: stdout, stderr, exit code and per-case facts (e.g. does the execroot exist after
+`clean`). Results: MATCH, MISMATCH (diff shown), BLAZE-UNPORTED (blaze hit unported!(...)),
+BLAZE-CRASH (other panic or signal), ORACLE-FAIL (oracle exit code not the expected one).
+With --oracle-only, cases are RECORDED or ORACLE-FAIL.
+
+Files: ~/.cache/blaze/work/w1/results/<project>/<side>/<case-slug>.{cmd,out,err,rc,facts.json}
+(raw) and <case-slug>.norm.{out,err} (normalised); <side>/_meta.json holds the side's root,
+install md5, binary and case order. The info key list comes from the oracle's
+`help info-keys` (results/info-keys.json), with a built-in fallback.
+
+Options:
+  --project P     brotli, re2 or all (default all)
+  --case REGEX    run only cases whose name matches (re.search)
+  --oracle-only   run and record the oracle only
+  --blaze-only    run blaze only; compare against the stored oracle results
+  --blaze PATH    blaze binary (default <repo>/target/debug/blaze)
+  --keep-roots    do not wipe the output user roots first (no "Extracting" line then)
+  --json PATH     write machine-readable results
+  --diff-lines N  lines of diff shown per mismatching case (default 60)
+  --list          print the case list and exit
+
+Exit status: 0 iff every selected case is MATCH (RECORDED with --oracle-only); 1 otherwise;
+2 on usage errors.
+"""
+
+HOME = oc.HOME
+USER = os.environ.get("USER") or os.path.basename(HOME)
+ORACLE_BIN = os.path.join(oc.CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+DEFAULT_BLAZE = os.path.join(REPO, "target", "debug", "blaze")
+W1 = os.path.join(oc.WORK, "w1")
+OUTSIDE = os.path.join(W1, "outside")
+RC_DIR = os.path.join(W1, "rc")
+RESULTS = os.path.join(W1, "results")
+ROOTS = {
+    "oracle": os.path.join(oc.OUTPUT_ROOTS, "ur-w1"),
+    "blaze": os.path.join(W1, "blaze-ur"),
+}
+PROBE_ROOT = os.path.join(oc.OUTPUT_ROOTS, "ur-w1-probe")
+PROJECTS = ["brotli", "re2"]
+MEMORY_MAX = "12G"
+COMMAND_TIMEOUT = 600
+
+# ------------------------------------------------------------------------------------------------
+# Normalisation. Applied identically to both sides, then the results are compared exactly.
+# kind "literal": replace the side's own value (from the side's _meta.json) by the placeholder.
+# kind "regex":   re.sub(pattern, repl) on the named streams.
+# kind "single":  for `info <key>` with exactly one volatile key, mask every non-empty stdout line.
+# Every rule says why erasing the difference is legitimate.
+# ------------------------------------------------------------------------------------------------
+VOLATILE_INFO_KEYS = [
+    "server_pid", "used-heap-size", "used-heap-size-after-gc", "committed-heap-size",
+    "max-heap-size", "gc-time", "gc-count", "peak-heap-size",
+]
+
+NORMALIZATION_RULES = [
+    {"name": "output_user_root", "kind": "literal", "ctx": "ur", "repl": "<UR>",
+     "streams": ("out", "err"),
+     "why": "Each side runs with its own --output_user_root (so they cannot share servers or "
+            "install bases); the root is an input of the run, not behaviour."},
+    {"name": "install_md5", "kind": "literal", "ctx": "install_md5", "repl": "<INSTALL_MD5>",
+     "streams": ("out", "err"),
+     "why": "The install md5 is a checksum of the binary's embedded files; Blaze's archive is a "
+            "different binary, so the value differs by design. Taken from each side's own "
+            "`info install_md5` (or its single install/ directory)."},
+    {"name": "jvm_warning", "kind": "regex",
+     "pattern": r"(?m)^OpenJDK 64-Bit Server VM warning: [^\n]*\n", "repl": "",
+     "streams": ("err",),
+     "why": "Printed by the JVM itself (batch mode inherits the JVM's stderr), not by Bazel "
+            "code; Blaze has no JVM."},
+    {"name": "info_volatile_lines", "kind": "regex",
+     "pattern": r"(?m)^(" + "|".join(re.escape(k) for k in VOLATILE_INFO_KEYS) + r"): .*$",
+     "repl": r"\1: <VOLATILE>", "streams": ("out",),
+     "why": "Process id, JVM heap and GC numbers change on every run (fresh server each time) "
+            "and have no Rust equivalent that could match byte for byte."},
+    {"name": "info_volatile_single", "kind": "single", "keys": VOLATILE_INFO_KEYS,
+     "repl": "<VOLATILE>", "streams": ("out",),
+     "why": "Same values as info_volatile_lines, printed without the `key: ` prefix when a "
+            "single key is requested."},
+    {"name": "server_log_name", "kind": "regex",
+     "pattern": r"java\.log\.([^./\s]+)\.([^./\s]+)\.log\.java\.\d{8}-\d{6}\.\d+",
+     "repl": r"java.log.\1.\2.log.java.<YYYYMMDD-HHMMSS>.<PID>", "streams": ("out", "err"),
+     "why": "The server log name embeds the server start time and pid; host and user stay."},
+    {"name": "client_log_time", "kind": "regex",
+     "pattern": r"\[(FATAL|ERROR|WARNING|INFO) \d\d:\d\d:\d\d\.\d{3}", "repl": r"[\1 <TIME>",
+     "streams": ("out", "err"),
+     "why": "The C++ client prefixes its log lines with the wall-clock time."},
+    {"name": "execroot_tmp", "kind": "regex",
+     "pattern": r"execroot_tmp_\d+_[0-9a-fA-F-]{36}", "repl": "execroot_tmp_<PID>_<UUID>",
+     "streams": ("out", "err"),
+     "why": "Temporary directory named after the server pid and a random UUID (clean)."},
+    {"name": "client_timings", "kind": "regex",
+     "pattern": r"--(startup_time|extract_data_time|command_wait_time|connect_timeout_secs)=\d+",
+     "repl": r"--\1=<N>", "streams": ("out", "err"),
+     "why": "Client-measured durations passed to the server (wall-clock)."},
+    {"name": "invocation_id", "kind": "regex",
+     "pattern": r"(Invocation ID: )[0-9a-fA-F-]{36}", "repl": r"\1<UUID>",
+     "streams": ("out", "err"),
+     "why": "A random UUID per command."},
+]
+
+
+def normalize(text, stream, ctx, info_keys=None):
+    """Normalise one stream ('out' or 'err') of one case. ctx: {'ur':..., 'install_md5':...}."""
+    for rule in NORMALIZATION_RULES:
+        if stream not in rule["streams"]:
+            continue
+        kind = rule["kind"]
+        if kind == "literal":
+            value = ctx.get(rule["ctx"])
+            if value:
+                text = text.replace(value, rule["repl"])
+        elif kind == "regex":
+            text = re.sub(rule["pattern"], rule["repl"], text)
+        elif kind == "single":
+            if info_keys and len(info_keys) == 1 and info_keys[0] in rule["keys"]:
+                text = re.sub(r"(?m)^.+$", rule["repl"], text)
+        else:
+            raise ValueError("unknown rule kind " + kind)
+    return text
+
+
+# ------------------------------------------------------------------------------------------------
+# Cases. Add a case by appending to the list built in build_cases(). Fields:
+#   name     unique, shown in reports, matched by --case
+#   argv     command and its arguments (after the startup options)
+#   startup  extra startup options (after --output_user_root --nohome_rc --nosystem_rc)
+#   cwd      "ws" (workspace copy) or "outside" (an empty directory outside any workspace)
+#   expect   expected oracle exit code: int, {project: int}, or None (any)
+#   facts    function(side_ctx) -> dict of extra observations, compared between sides
+#   info     "full" for the full `info` listing (per-key sub-table)
+# ------------------------------------------------------------------------------------------------
+FALLBACK_INFO_KEYS = [
+    "workspace", "install_base", "install_md5", "output_base", "execution_root", "output_path",
+    "client-env", "bazel-bin", "bazel-genfiles", "bazel-testlogs", "release", "server_pid",
+    "server_log", "package_path", "used-heap-size", "used-heap-size-after-gc",
+    "committed-heap-size", "max-heap-size", "gc-time", "gc-count", "java-runtime", "java-vm",
+    "java-home", "character-encoding", "defaults-package", "build-language",
+    "default-package-path", "starlark-semantics", "worker_metrics", "local_resources",
+    "command_log", "repository_cache", "peak-heap-size",
+]
+
+RC_FILE = os.path.join(RC_DIR, "w1.bazelrc")
+RC_CONTENT = """\
+# Written by scripts/w1/compare-info. Options that need no analysis.
+build:foo --cxxopt=-O2
+common:bar --config=foo
+info --config=bar
+common --announce_rc
+"""
+
+
+class Case:
+    def __init__(self, name, argv, startup=(), cwd="ws", expect=0, facts=None, info=None):
+        self.name = name
+        self.argv = list(argv)
+        self.startup = list(startup)
+        self.cwd = cwd
+        self.expect = expect
+        self.facts = facts
+        self.info = info
+
+    @property
+    def slug(self):
+        slug = re.sub(r"[^A-Za-z0-9_.=+-]+", "_", self.name).strip("_").lstrip("-")
+        return slug[:120]
+
+    def expected_rc(self, project):
+        if isinstance(self.expect, dict):
+            return self.expect.get(project)
+        return self.expect
+
+    def info_keys(self):
+        """The info keys requested (non-flag arguments after `info`)."""
+        if not self.argv or self.argv[0] != "info":
+            return None
+        return [a for a in self.argv[1:] if not a.startswith("-")]
+
+
+def output_base_of(side_ctx):
+    ws = os.path.realpath(side_ctx["ws"])
+    return os.path.join(side_ctx["root"], hashlib.md5(ws.encode()).hexdigest())
+
+
+def facts_after_clean(sc):
+    ob = output_base_of(sc)
+    return {"output_base_exists": os.path.isdir(ob),
+            "execroot_exists": os.path.lexists(os.path.join(ob, "execroot"))}
+
+
+def facts_after_expunge(sc):
+    return {"output_base_exists": os.path.lexists(output_base_of(sc))}
+
+
+def build_cases(info_keys):
+    linux_rc = {"re2": 0, "brotli": 2}  # brotli has no .bazelrc, so --config=linux is undefined
+    cases = [
+        Case("version", ["version"]),
+        Case("version --gnu_format", ["version", "--gnu_format"]),
+    ]
+    for key in info_keys:
+        cases.append(Case("info " + key, ["info", key]))
+    cases += [
+        Case("info", ["info"], info="full"),
+        Case("info --show_make_env", ["info", "--show_make_env"], info="full"),
+        Case("info release output_base", ["info", "release", "output_base"]),
+        # errors
+        Case("info nosuchkey", ["info", "nosuchkey"], expect=2),
+        Case("info --nosuchflag release", ["info", "--nosuchflag", "release"], expect=2),
+        Case("info --config=nonexistent release", ["info", "--config=nonexistent", "release"],
+             expect=2),
+        # rc handling
+        Case("info --announce_rc release", ["info", "--announce_rc", "release"]),
+        Case("version --announce_rc", ["version", "--announce_rc"]),
+        Case("info --announce_rc --config=linux release",
+             ["info", "--announce_rc", "--config=linux", "release"], expect=linux_rc),
+        Case("rc-file: info release", ["info", "release"],
+             startup=["--bazelrc=" + RC_FILE]),
+        Case("rc-file: info --config=foo release",
+             ["info", "--config=foo", "release"], startup=["--bazelrc=" + RC_FILE]),
+        # canonicalize-flags
+        Case("canonicalize-flags build --config=linux --cxxopt=-O2 -c opt",
+             ["canonicalize-flags", "--for_command=build", "--", "--config=linux",
+              "--cxxopt=-O2", "-c", "opt"]),  # configs are not expanded: rc 0 on brotli too
+        Case("canonicalize-flags test --test_output=errors",
+             ["canonicalize-flags", "--for_command=test", "--", "--test_output=errors"]),
+        # help
+        Case("help", ["help"]),
+        Case("help info-keys", ["help", "info-keys"]),
+        # outside any workspace
+        Case("outside: info release", ["info", "release"], cwd="outside", expect=2),
+        Case("outside: version", ["version"], cwd="outside"),
+        Case("outside: shutdown", ["shutdown"], cwd="outside"),
+        # startup option errors
+        Case("startup --nosuchstartup version", ["version"], startup=["--nosuchstartup"],
+             expect=2),
+        # destructive cases last
+        Case("clean", ["clean"], facts=facts_after_clean),
+        Case("clean --expunge", ["clean", "--expunge"], facts=facts_after_expunge),
+        Case("shutdown", ["shutdown"]),
+    ]
+    names = [c.name for c in cases]
+    assert len(names) == len(set(names)), "duplicate case names"
+    return cases
+
+
+def load_info_keys():
+    path = os.path.join(RESULTS, "info-keys.json")
+    try:
+        help_keys = oc.read_json(path)["keys"]
+        # Keep the familiar order of the full `info` listing for known keys, then any new ones.
+        keys = [k for k in FALLBACK_INFO_KEYS if k in help_keys]
+        keys += [k for k in help_keys if k not in keys]
+        if keys:
+            return keys, "oracle `help info-keys` (" + path + ")"
+    except (OSError, ValueError, KeyError):
+        pass
+    return list(FALLBACK_INFO_KEYS), "built-in fallback list"
+
+
+def parse_info_keys_help(text):
+    keys = []
+    for line in text.splitlines():
+        m = re.match(r"^([A-Za-z][A-Za-z0-9_-]*)\s{2,}\S|^([A-Za-z][A-Za-z0-9_-]*) \S", line)
+        if m:
+            keys.append(m.group(1) or m.group(2))
+    return keys
+
+
+# ------------------------------------------------------------------------------------------------
+# Running.
+# ------------------------------------------------------------------------------------------------
+def wrap(binary, root, cwd, startup, argv):
+    return [
+        "systemd-run", "--user", "--collect", "--wait", "--pipe", "-q",
+        "-p", "MemoryMax=" + MEMORY_MAX, "-p", "MemorySwapMax=0",
+        "--working-directory=" + cwd,
+        "env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin", "USER=" + USER,
+        binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc",
+    ] + list(startup) + list(argv)
+
+
+def invoke(cmd, timeout=COMMAND_TIMEOUT):
+    t0 = time.monotonic()
+    try:
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=timeout)
+        out, err, rc = p.stdout, p.stderr, p.returncode
+    except subprocess.TimeoutExpired as e:
+        out, err, rc = e.stdout or b"", (e.stderr or b"") + b"\n[compare-info] timed out\n", -9
+    return out, err, rc, time.monotonic() - t0
+
+
+def reset_root(side, binary, root, workspaces):
+    if not os.path.isdir(root):
+        return
+    if os.access(binary, os.X_OK):
+        for ws in workspaces:
+            if os.path.isdir(ws):
+                invoke(wrap(binary, root, ws, [], ["shutdown"]), timeout=120)
+    record.make_writable_and_remove(root)
+    if os.path.lexists(root):
+        oc.die("could not remove %s root %s" % (side, root))
+
+
+def probe_info_keys():
+    """Run the oracle's `help info-keys` with a throwaway root and store the key list."""
+    os.makedirs(OUTSIDE, exist_ok=True)
+    record.make_writable_and_remove(PROBE_ROOT)
+    out, err, rc, _ = invoke(wrap(ORACLE_BIN, PROBE_ROOT, OUTSIDE, [], ["help", "info-keys"]))
+    record.make_writable_and_remove(PROBE_ROOT)
+    keys = parse_info_keys_help(out.decode("utf-8", "replace")) if rc == 0 else []
+    if not keys:
+        print("[w1] warning: oracle `help info-keys` failed (rc %d); using fallback keys" % rc)
+        return
+    os.makedirs(RESULTS, exist_ok=True)
+    oc.write_json(os.path.join(RESULTS, "info-keys.json"), {"keys": keys})
+    missing = [k for k in FALLBACK_INFO_KEYS if k not in keys]
+    extra = [k for k in keys if k not in FALLBACK_INFO_KEYS]
+    if missing or extra:
+        print("[w1] note: help info-keys vs fallback: missing %s, extra %s" % (missing, extra))
+
+
+# Facts recorded for reading but not compared (see classify).
+UNCOMPARED_FACTS = {"MODULE.bazel.lock"}
+
+
+def lockfile_fact(ws):
+    p = os.path.join(ws, "MODULE.bazel.lock")
+    if not os.path.isfile(p):
+        return "absent"
+    return "sha256:" + oc.sha256_file(p)[:16]
+
+
+def side_dir(project, side):
+    return os.path.join(RESULTS, project, side)
+
+
+def find_install_md5(root, stdout_bytes):
+    v = (stdout_bytes or b"").decode("utf-8", "replace").strip()
+    if re.fullmatch(r"[0-9a-f]{32}", v):
+        return v
+    d = os.path.join(root, "install")
+    if os.path.isdir(d):
+        subs = sorted(x for x in os.listdir(d) if os.path.isdir(os.path.join(d, x)))
+        if len(subs) == 1:
+            return subs[0]
+    return None
+
+
+def run_side(project, side, binary, cases, args):
+    checkout = os.path.join(oc.CACHE, "corpus", project)
+    ws = os.path.join(W1, project)
+    root = ROOTS[side]
+    print("[w1] %s/%s: preparing workspace %s" % (project, side, ws), flush=True)
+    os.makedirs(OUTSIDE, exist_ok=True)
+    for name in os.listdir(OUTSIDE):
+        record.make_writable_and_remove(os.path.join(OUTSIDE, name))
+    fixed = record.prepare_workspace(checkout, ws)
+    for f in fixed:
+        print("[w1]   workspace fix: " + f)
+    ws = os.path.realpath(ws)
+    if not args.keep_roots:
+        print("[w1] %s/%s: wiping output user root %s" % (project, side, root), flush=True)
+        reset_root(side, binary, root, [os.path.join(W1, p) for p in PROJECTS] + [OUTSIDE])
+    sd = side_dir(project, side)
+    record.make_writable_and_remove(sd)
+    os.makedirs(sd)
+    sc = {"ws": ws, "root": root}
+    install_md5_out = None
+    order = []
+    prev_lock = lockfile_fact(ws)
+    for case in cases:
+        cwd = ws if case.cwd == "ws" else OUTSIDE
+        cmd = wrap(binary, root, cwd, case.startup, case.argv)
+        out, err, rc, dur = invoke(cmd)
+        lock = lockfile_fact(ws)
+        facts = {"MODULE.bazel.lock": lock, "lockfile_changed": lock != prev_lock}
+        prev_lock = lock
+        if case.facts:
+            facts.update(case.facts(sc))
+        base = os.path.join(sd, case.slug)
+        with open(base + ".out", "wb") as f:
+            f.write(out)
+        with open(base + ".err", "wb") as f:
+            f.write(err)
+        with open(base + ".rc", "w") as f:
+            f.write("%d\n" % rc)
+        with open(base + ".cmd", "w") as f:
+            f.write(json.dumps({"cwd": cwd, "argv": cmd}) + "\n")
+        oc.write_json(base + ".facts.json", facts)
+        order.append(case.name)
+        if case.argv == ["info", "install_md5"] and case.cwd == "ws" and rc == 0:
+            install_md5_out = out
+        print("[w1] %s/%s: %-55s rc=%-3d %5.1fs" % (project, side, case.name[:55], rc, dur),
+              flush=True)
+    meta = {
+        "project": project, "side": side, "binary": binary, "root": root, "workspace": ws,
+        "install_md5": find_install_md5(root, install_md5_out),
+        "case_order": order, "roots_wiped": not args.keep_roots,
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "workspace_fixups": fixed,
+    }
+    try:
+        meta["binary_sha256"] = oc.sha256_file(binary)
+    except OSError:
+        meta["binary_sha256"] = None
+    oc.write_json(os.path.join(sd, "_meta.json"), meta)
+    return meta
+
+
+# ------------------------------------------------------------------------------------------------
+# Loading, normalising and classifying.
+# ------------------------------------------------------------------------------------------------
+def load_result(project, side, case, meta):
+    base = os.path.join(side_dir(project, side), case.slug)
+    if not os.path.isfile(base + ".rc"):
+        return None
+    with open(base + ".out", "rb") as f:
+        out = f.read().decode("utf-8", "surrogateescape")
+    with open(base + ".err", "rb") as f:
+        err = f.read().decode("utf-8", "surrogateescape")
+    rc = int(open(base + ".rc").read().strip())
+    facts = oc.read_json(base + ".facts.json") if os.path.isfile(base + ".facts.json") else {}
+    ctx = {"ur": meta.get("root"), "install_md5": meta.get("install_md5")}
+    keys = case.info_keys()
+    nout = normalize(out, "out", ctx, keys)
+    nerr = normalize(err, "err", ctx, keys)
+    for ext, text in ((".norm.out", nout), (".norm.err", nerr)):
+        with open(base + ext, "wb") as f:
+            f.write(text.encode("utf-8", "surrogateescape"))
+    return {"out": nout, "err": nerr, "rc": rc, "facts": facts, "raw_err": err}
+
+
+def load_meta(project, side):
+    p = os.path.join(side_dir(project, side), "_meta.json")
+    return oc.read_json(p) if os.path.isfile(p) else None
+
+
+UNPORTED_RE = re.compile(r"blaze: not ported yet: ([^\n]*)")
+PANIC_RE = re.compile(r"panicked at [^\n]*(?:\n([^\n]*))?")
+
+
+def first_line(text):
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()[:110]
+    return ""
+
+
+def is_binary(text):
+    return "\x00" in text or sum(1 for ch in text[:4096] if ord(ch) < 9) > 4
+
+
+def stream_diff(label, a, b):
+    if a == b:
+        return []
+    if is_binary(a) or is_binary(b):
+        return ["--- %s: binary output differs (oracle %d chars sha %s, blaze %d chars sha %s)"
+                % (label, len(a), hashlib.sha256(a.encode("utf-8", "surrogateescape")).hexdigest()[:12],
+                   len(b), hashlib.sha256(b.encode("utf-8", "surrogateescape")).hexdigest()[:12])]
+    return list(difflib.unified_diff(a.splitlines(), b.splitlines(), "oracle/" + label,
+                                     "blaze/" + label, n=2, lineterm=""))
+
+
+def parse_info_listing(text):
+    """Ordered (key, value) pairs of a `key: value` listing; continuation lines join the value."""
+    pairs = []
+    for line in text.splitlines():
+        m = re.match(r"^([A-Za-z][A-Za-z0-9_.-]*): ?(.*)$", line)
+        if m:
+            pairs.append([m.group(1), m.group(2)])
+        elif pairs:
+            pairs[-1][1] += "\n" + line
+        else:
+            pairs.append(["<unkeyed>", line])
+    return [tuple(p) for p in pairs]
+
+
+def info_subtable(o_out, b_out):
+    o = parse_info_listing(o_out)
+    b = parse_info_listing(b_out)
+    od, bd = dict(o), dict(b)
+    rows = []
+    for k, v in o:
+        if k not in bd:
+            rows.append((k, "missing", "blaze lacks key"))
+        elif bd[k] == v:
+            rows.append((k, "match", ""))
+        else:
+            rows.append((k, "mismatch", "oracle %r / blaze %r" % (v[:60], bd[k][:60])))
+    for k, v in b:
+        if k not in od:
+            rows.append((k, "extra", "only blaze: %r" % v[:60]))
+    common_o = [k for k, _ in o if k in bd]
+    common_b = [k for k, _ in b if k in od]
+    order = "same" if common_o == common_b else "different"
+    return rows, order
+
+
+def classify(project, case, o, b, mode, diff_lines):
+    """Return a result dict for one case."""
+    res = {"case": case.name, "slug": case.slug, "argv": case.argv, "startup": case.startup,
+           "cwd": case.cwd, "result": None, "detail": "", "diff": []}
+    exp = case.expected_rc(project)
+    if o is not None:
+        res["oracle"] = {"rc": o["rc"], "facts": o["facts"]}
+    if b is not None:
+        res["blaze"] = {"rc": b["rc"], "facts": b["facts"]}
+    if o is None:
+        res["result"], res["detail"] = "ORACLE-FAIL", "no stored oracle result (run without --blaze-only)"
+        return res
+    if exp is not None and o["rc"] != exp:
+        res["result"] = "ORACLE-FAIL"
+        res["detail"] = "oracle rc %d, expected %d: %s" % (o["rc"], exp, first_line(o["err"]))
+        return res
+    if mode == "oracle":
+        res["result"] = "RECORDED"
+        notes = []
+        nwarn = len(re.findall(r"(?m)^WARNING: ", o["err"]))
+        if nwarn:
+            notes.append("%d WARNING" % nwarn)
+        if o["facts"].get("lockfile_changed"):
+            notes.append("wrote lockfile")
+        res["detail"] = "rc %d; %sout: %s" % (
+            o["rc"], "".join("[%s] " % n for n in notes),
+            first_line(o["out"]) if not is_binary(o["out"]) else "<binary %d chars>" % len(o["out"]))
+        return res
+    if b is None:
+        res["result"], res["detail"] = "BLAZE-CRASH", "no blaze result"
+        return res
+    m = UNPORTED_RE.search(b["raw_err"])
+    if m:
+        res["result"], res["detail"] = "BLAZE-UNPORTED", m.group(1).strip()[:110]
+        return res
+    pm = PANIC_RE.search(b["raw_err"])
+    if pm or b["rc"] < 0 or b["rc"] == 101 or b["rc"] >= 128:
+        res["result"] = "BLAZE-CRASH"
+        res["detail"] = "rc %d: %s" % (b["rc"], (pm.group(1) or pm.group(0)).strip()[:100]
+                                       if pm else first_line(b["err"]))
+        return res
+    diff = []
+    parts = []
+    if o["rc"] != b["rc"]:
+        parts.append("rc %d!=%d" % (o["rc"], b["rc"]))
+        diff.append("exit code: oracle %d, blaze %d" % (o["rc"], b["rc"]))
+    for label, key in (("stdout", "out"), ("stderr", "err")):
+        d = stream_diff(label, o[key], b[key])
+        if d:
+            parts.append(label)
+            diff += d
+    # The lockfile hash is cumulative state: once an unported case (module resolution) wrote it
+    # on the oracle side, every later case would differ. Compare only whether this case wrote it.
+    of = {k: v for k, v in o["facts"].items() if k not in UNCOMPARED_FACTS}
+    bf = {k: v for k, v in b["facts"].items() if k not in UNCOMPARED_FACTS}
+    if of != bf:
+        parts.append("facts")
+        for k in sorted(set(of) | set(bf)):
+            if o["facts"].get(k) != b["facts"].get(k):
+                diff.append("fact %s: oracle %r, blaze %r" % (k, o["facts"].get(k), b["facts"].get(k)))
+    if case.info == "full":
+        rows, order = info_subtable(o["out"], b["out"])
+        res["info_keys"] = [{"key": k, "status": s, "detail": d} for k, s, d in rows]
+        res["info_key_order"] = order
+        if order != "same":
+            parts.append("key order")
+    if not parts:
+        res["result"] = "MATCH"
+        return res
+    res["result"] = "MISMATCH"
+    res["detail"] = ", ".join(parts)
+    if len(diff) > diff_lines:
+        diff = diff[:diff_lines] + ["... (%d more diff lines)" % (len(diff) - diff_lines)]
+    res["diff"] = diff
+    return res
+
+
+# ------------------------------------------------------------------------------------------------
+# Reporting.
+# ------------------------------------------------------------------------------------------------
+def print_project(project, results):
+    print()
+    print("=" * 100)
+    print("project %s" % project)
+    print("=" * 100)
+    for r in results:
+        if r["diff"]:
+            print("\n--- %s: %s (%s)" % (r["case"], r["result"], r["detail"]))
+            for line in r["diff"]:
+                print("    " + line)
+        if r.get("info_keys"):
+            bad = [x for x in r["info_keys"] if x["status"] != "match"]
+            print("\n--- %s: per-key (%d keys, %d not matching, key order %s)"
+                  % (r["case"], len(r["info_keys"]), len(bad), r["info_key_order"]))
+            if bad or r["info_key_order"] != "same":
+                for x in r["info_keys"]:
+                    print("    %-28s %-9s %s" % (x["key"], x["status"], x["detail"]))
+    print()
+    w = max([len(r["case"]) for r in results] + [4])
+    w = min(w, 60)
+    print("%-*s | %-14s | %s" % (w, "case", "result", "detail"))
+    print("-" * w + "-+-" + "-" * 14 + "-+-" + "-" * 40)
+    for r in results:
+        print("%-*s | %-14s | %s" % (w, r["case"][:w], r["result"], r["detail"]))
+
+
+def totals(results):
+    t = {}
+    for r in results:
+        t[r["result"]] = t.get(r["result"], 0) + 1
+    return t
+
+
+# ------------------------------------------------------------------------------------------------
+# Self-test of the normaliser and parsers.
+# ------------------------------------------------------------------------------------------------
+def selftest():
+    ok = True
+
+    def check(name, got, want):
+        nonlocal ok
+        if got != want:
+            ok = False
+            print("FAIL %s\n  got:  %r\n  want: %r" % (name, got, want))
+        else:
+            print("ok   %s" % name)
+
+    ctx_o = {"ur": "/h/.cache/blaze/oracle-out/ur-w1", "install_md5": "58cf1ecbff441bac762b0050d6da21e9"}
+    ctx_b = {"ur": "/h/.cache/blaze/work/w1/blaze-ur", "install_md5": "0123456789abcdef0123456789abcdef"}
+    o = ("install_base: /h/.cache/blaze/oracle-out/ur-w1/install/58cf1ecbff441bac762b0050d6da21e9\n"
+         "server_pid: 2207636\nused-heap-size: 41MB\nused-heap-size-after-gc: 30MB\n"
+         "server_log: /h/.cache/blaze/oracle-out/ur-w1/8f50/java.log.fedora.liam.log.java.20261117-234100.2207636\n"
+         "release: release 9.3.2\n")
+    b = ("install_base: /h/.cache/blaze/work/w1/blaze-ur/install/0123456789abcdef0123456789abcdef\n"
+         "server_pid: 99\nused-heap-size: 0MB\nused-heap-size-after-gc: 1MB\n"
+         "server_log: /h/.cache/blaze/work/w1/blaze-ur/8f50/java.log.fedora.liam.log.java.20261118-000000.99\n"
+         "release: release 9.3.2\n")
+    no, nb = normalize(o, "out", ctx_o, []), normalize(b, "out", ctx_b, [])
+    check("full listing equal after normalisation", no, nb)
+    check("install base placeholder", no.splitlines()[0], "install_base: <UR>/install/<INSTALL_MD5>")
+    check("server_log mask", no.splitlines()[4],
+          "server_log: <UR>/8f50/java.log.fedora.liam.log.java.<YYYYMMDD-HHMMSS>.<PID>")
+    check("heap key prefix not confused", no.splitlines()[2:4],
+          ["used-heap-size: <VOLATILE>", "used-heap-size-after-gc: <VOLATILE>"])
+    check("single volatile key", normalize("2207636\n", "out", ctx_o, ["server_pid"]), "<VOLATILE>\n")
+    check("single non-volatile key untouched", normalize("9.3.2\n", "out", ctx_o, ["release"]), "9.3.2\n")
+    check("two keys not single-masked",
+          normalize("release: 9.3.2\nserver_pid: 5\n", "out", ctx_o, ["release", "server_pid"]),
+          "release: 9.3.2\nserver_pid: <VOLATILE>\n")
+    check("fatal timestamp",
+          normalize("[FATAL 23:41:00.123 src/main/cpp/x.cc:1] Unknown startup option\n", "err", ctx_o),
+          "[FATAL <TIME> src/main/cpp/x.cc:1] Unknown startup option\n")
+    check("jvm warning dropped",
+          normalize("OpenJDK 64-Bit Server VM warning: Options -Xverify:none deprecated.\nINFO: x\n",
+                    "err", ctx_o), "INFO: x\n")
+    check("jvm warning only on stderr",
+          normalize("OpenJDK 64-Bit Server VM warning: y\n", "out", ctx_o),
+          "OpenJDK 64-Bit Server VM warning: y\n")
+    check("execroot_tmp",
+          normalize("execroot_tmp_1234_0a1b2c3d-0000-1111-2222-333344445555/x", "err", ctx_o),
+          "execroot_tmp_<PID>_<UUID>/x")
+    check("startup_time", normalize("--startup_time=123 --client_cwd=/x", "err", ctx_o),
+          "--startup_time=<N> --client_cwd=/x")
+    check("workspace path kept",
+          normalize("workspace: /h/.cache/blaze/work/w1/re2\n", "out", ctx_o, ["workspace"]),
+          "workspace: /h/.cache/blaze/work/w1/re2\n")
+    check("parse help info-keys",
+          parse_info_keys_help("bazel-bin               Configuration dependent\n"
+                               "used-heap-size-after-gc The amount\nrelease                 x\n"),
+          ["bazel-bin", "used-heap-size-after-gc", "release"])
+    check("parse listing continuation",
+          parse_info_listing("a: 1\nb: x\n  y\nc: \n"), [("a", "1"), ("b", "x\n  y"), ("c", "")])
+    rows, order = info_subtable("a: 1\nb: 2\nc: 3\n", "b: 2\na: 9\nd: 4\n")
+    check("subtable rows", rows, [("a", "mismatch", "oracle '1' / blaze '9'"), ("b", "match", ""),
+                                  ("c", "missing", "blaze lacks key"), ("d", "extra", "only blaze: '4'")])
+    check("subtable order", order, "different")
+    c = Case("info --config=x release", ["info", "--config=x", "release"])
+    check("case info keys", c.info_keys(), ["release"])
+    check("case slug", Case("outside: info release", []).slug, "outside_info_release")
+    # classification
+    def res(out="x\n", err="Starting\n", rc=0, facts=None, raw_err=None):
+        return {"out": out, "err": err, "rc": rc, "facts": facts or {},
+                "raw_err": err if raw_err is None else raw_err}
+    c = Case("info release", ["info", "release"])
+    check("classify match", classify("re2", c, res(), res(), "compare", 60)["result"], "MATCH")
+    r = classify("re2", c, res(), res(err="Starting\nWARNING: z\n", rc=2), "compare", 60)
+    check("classify mismatch", (r["result"], r["detail"]), ("MISMATCH", "rc 0!=2, stderr"))
+    r = classify("re2", c, res(), res(rc=101, err="thread 'main' panicked at src/x.rs:1:2:\n"
+                                       "blaze: not ported yet: InfoCommand.exec\n"), "compare", 60)
+    check("classify unported", (r["result"], r["detail"]), ("BLAZE-UNPORTED", "InfoCommand.exec"))
+    r = classify("re2", c, res(), res(rc=101, err="thread 'main' panicked at src/x.rs:1:2:\n"
+                                       "index out of bounds\n"), "compare", 60)
+    check("classify crash", (r["result"], r["detail"]), ("BLAZE-CRASH", "rc 101: index out of bounds"))
+    check("classify signal", classify("re2", c, res(), res(rc=-11), "compare", 60)["result"],
+          "BLAZE-CRASH")
+    check("classify oracle fail", classify("re2", c, res(rc=1), res(), "compare", 60)["result"],
+          "ORACLE-FAIL")
+    r = classify("re2", Case("clean", ["clean"]), res(facts={"execroot_exists": True}),
+                 res(facts={"execroot_exists": False}), "compare", 60)
+    check("classify facts", (r["result"], r["detail"]), ("MISMATCH", "facts"))
+    for r in NORMALIZATION_RULES:
+        if not r.get("why"):
+            ok = False
+            print("FAIL rule %s has no justification" % r["name"])
+    print("selftest: %s" % ("PASS" if ok else "FAIL"))
+    return 0 if ok else 1
+
+
+# ------------------------------------------------------------------------------------------------
+def main():
+    argv = sys.argv[1:]
+    if argv and argv[0] in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    if argv and argv[0] == "selftest":
+        return selftest()
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--project", default="all")
+    ap.add_argument("--case")
+    ap.add_argument("--oracle-only", action="store_true")
+    ap.add_argument("--blaze-only", action="store_true")
+    ap.add_argument("--blaze", default=DEFAULT_BLAZE)
+    ap.add_argument("--keep-roots", action="store_true")
+    ap.add_argument("--json")
+    ap.add_argument("--diff-lines", type=int, default=60)
+    ap.add_argument("--list", action="store_true")
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit:
+        print(USAGE, file=sys.stderr)
+        return 2
+    if args.oracle_only and args.blaze_only:
+        oc.die("--oracle-only and --blaze-only exclude each other")
+    projects = PROJECTS if args.project == "all" else [args.project]
+    for p in projects:
+        if p not in PROJECTS:
+            oc.die("unknown project %r (have: %s)" % (p, ", ".join(PROJECTS)))
+    run_oracle = not args.blaze_only
+    run_blaze = not args.oracle_only
+    blaze = os.path.abspath(os.path.expanduser(args.blaze))
+    if run_oracle and not os.access(ORACLE_BIN, os.X_OK):
+        oc.die("oracle binary not executable: " + ORACLE_BIN)
+    if run_blaze and not os.access(blaze, os.X_OK) and not args.list:
+        oc.die("blaze binary not executable: %s (build it, pass --blaze, or use --oracle-only)" % blaze)
+    if shutil.which("systemd-run") is None:
+        oc.die("systemd-run not found")
+
+    os.makedirs(RC_DIR, exist_ok=True)
+    with open(RC_FILE, "w") as f:
+        f.write(RC_CONTENT)
+    if run_oracle and not args.list:
+        probe_info_keys()
+    keys, keys_src = load_info_keys()
+    cases = build_cases(keys)
+    if args.case:
+        rx = re.compile(args.case)
+        cases = [c for c in cases if rx.search(c.name)]
+    if args.list:
+        print("info keys from: " + keys_src)
+        for c in cases:
+            print("  %-60s cwd=%-7s expect=%s" % (c.name, c.cwd, c.expect))
+        return 0
+    if not cases:
+        oc.die("no case matches --case %r" % args.case)
+    print("[w1] %d cases; info keys from %s" % (len(cases), keys_src), flush=True)
+
+    mode = "oracle" if args.oracle_only else "compare"
+    report = {"mode": mode, "blaze": blaze if run_blaze else None, "oracle": ORACLE_BIN,
+              "projects": {}, "totals": {}}
+    all_results = []
+    for project in projects:
+        if run_oracle:
+            run_side(project, "oracle", ORACLE_BIN, cases, args)
+        if run_blaze:
+            run_side(project, "blaze", blaze, cases, args)
+        ometa = load_meta(project, "oracle")
+        bmeta = load_meta(project, "blaze") if run_blaze else None
+        if ometa and bmeta and args.blaze_only:
+            sel = [c.name for c in cases]
+            if ometa.get("case_order") != sel or ometa.get("roots_wiped") != bmeta.get("roots_wiped"):
+                print("[w1] warning: stored oracle run used a different case sequence or root "
+                      "policy; order-dependent output (Extracting..., lockfile) may differ")
+        results = []
+        for case in cases:
+            o = load_result(project, "oracle", case, ometa) if ometa else None
+            b = load_result(project, "blaze", case, bmeta) if bmeta else None
+            results.append(classify(project, case, o, b, mode, args.diff_lines))
+        print_project(project, results)
+        t = totals(results)
+        print("\n%s totals: %s" % (project, ", ".join("%s %d" % kv for kv in sorted(t.items()))))
+        report["projects"][project] = {"results": results, "totals": t,
+                                       "oracle_meta": ometa, "blaze_meta": bmeta}
+        all_results += results
+    t = totals(all_results)
+    report["totals"] = t
+    print("\nall totals: %s" % ", ".join("%s %d" % kv for kv in sorted(t.items())))
+    if args.json:
+        oc.write_json(os.path.abspath(args.json), report)
+    good = "RECORDED" if mode == "oracle" else "MATCH"
+    return 0 if all(r["result"] == good for r in all_results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

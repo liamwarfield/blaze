@@ -33,3 +33,10 @@ Each entry: date, decision, why, who decided.
   compare exit code 3 and the partial result. Do not seed the repo cache. Root.
 - 2026-11-17. Referee accepted: scripts/oracle records 13 surfaces per project; oracle vs oracle is
   100% MATCH (allow list: runfiles-manifest action keys, volatile BEP build-metric counters). Root.
+- 2026-11-18. Version impersonation: Blaze reports Bazel 9.3.2's build data verbatim (label,
+  target, timestamp), because rule sets (bazel_features) read the version. Root, on W1 lead's
+  proposal.
+- 2026-11-18. Install base: same file set as Bazel's minus A-server.jar, embedded zstd tar
+  (~17 MB) in the `blaze` binary; install key is Blaze's own md5 over the file list. In-process
+  server prints Bazel's "Starting local Bazel server" line per command. JVM-only `info` items
+  (heap sizes, gc, java-runtime/vm) stay `unported!` for now. Root.

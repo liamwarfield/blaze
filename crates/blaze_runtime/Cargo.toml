@@ -1,0 +1,23 @@
+[package]
+name = "blaze_runtime"
+description = "Port of lib/runtime: BlazeRuntime, BlazeCommandDispatcher, directories, commands and info items."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_util = { path = "../blaze_util" }
+blaze_options = { path = "../blaze_options" }
+blaze_optdefs = { path = "../blaze_optdefs" }
+blaze_events = { path = "../blaze_events" }
+blaze_vfs = { path = "../blaze_vfs" }
+blaze_protos = { path = "../blaze_protos" }
+blaze_shell = { path = "../blaze_shell" }
+indexmap.workspace = true
+parking_lot.workspace = true
+libc.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

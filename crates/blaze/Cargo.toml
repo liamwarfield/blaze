@@ -1,0 +1,22 @@
+[package]
+name = "blaze"
+description = "The blaze binary (Bazel.main and the client main)."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "blaze"
+path = "src/main.rs"
+
+[dependencies]
+blaze_client = { path = "../blaze_client" }
+blaze_runtime = { path = "../blaze_runtime" }
+blaze_protos = { path = "../blaze_protos" }
+
+[build-dependencies]
+tar.workspace = true
+zstd.workspace = true
+md-5.workspace = true
+hex.workspace = true

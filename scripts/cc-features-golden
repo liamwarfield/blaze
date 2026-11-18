@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Extracts the CcToolchainConfigInfo of the host C++ toolchain (rules_cc cc_autoconf, target
+# @local_config_cc//:local) from the pinned oracle as JSON, for the blaze_cc_features golden test.
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+usage: scripts/cc-features-golden [help] [OUT]
+
+Copies the brotli corpus checkout to ~/.cache/blaze/work/cc-features/brotli, runs the oracle
+(~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64) with its own output user root
+(~/.cache/blaze/oracle-out/ur-cc-features) and the shared repository cache, and writes
+json.encode() of the CcToolchainConfigInfo provider of
+@@rules_cc++cc_configure_extension+local_config_cc//:local to OUT
+(default: crates/blaze_cc_features/tests/data/local_config_cc_k8.json).
+Run it under systemd-run (see AGENTS.md); it stops its server when done.
+USAGE
+}
+
+if [[ "${1:-}" == "help" || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+out="${1:-$repo/crates/blaze_cc_features/tests/data/local_config_cc_k8.json}"
+cache="$HOME/.cache/blaze"
+binary="$cache/oracle/bazel-9.3.2-linux-x86_64"
+ws="$cache/work/cc-features/brotli"
+root="$cache/oracle-out/ur-cc-features"
+
+mkdir -p "$ws"
+rsync -a --delete --exclude 'bazel-*' --exclude .git --exclude MODULE.bazel.lock \
+  "$cache/corpus/brotli/" "$ws/"
+
+expr='json.encode(providers(target)["@@rules_cc+//cc/private/toolchain_config:cc_toolchain_config_info.bzl%CcToolchainConfigInfo"])'
+cd "$ws"
+env -i HOME="$HOME" PATH=/usr/bin:/bin "$binary" --output_user_root="$root" --nohome_rc --nosystem_rc \
+  cquery '@@rules_cc++cc_configure_extension+local_config_cc//:local' \
+  --repository_cache="$cache/repo-cache" --color=no --curses=no \
+  --output=starlark --starlark:expr="$expr" > "$out.tmp"
+env -i HOME="$HOME" PATH=/usr/bin:/bin "$binary" --output_user_root="$root" --nohome_rc --nosystem_rc shutdown
+mv "$out.tmp" "$out"
+echo "wrote $out"

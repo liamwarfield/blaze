@@ -1,0 +1,42 @@
+//! The `blaze` binary: the client (`src/main/cpp/main.cc`) with the server (`Bazel.main`) linked
+//! in-process (docs/crates.md: no gRPC server until wave W8).
+
+mod embedded;
+
+use blaze_client::server::{InProcessServer, ServerStartup};
+use blaze_protos::command_server::RunRequest;
+use blaze_runtime::runtime::BlazeRuntime;
+use blaze_runtime::version_info::{BlazeVersionInfo, try_get_build_info};
+
+/// `Bazel.main`: the Bazel modules and `BlazeRuntime.main`, called in-process by the client.
+// Java: com/google/devtools/build/lib/bazel/Bazel.java:0 Bazel.main
+struct BazelServer;
+
+impl BazelServer {
+    // Java: com/google/devtools/build/lib/bazel/Bazel.java:109 Bazel.main
+    fn init() {
+        BlazeVersionInfo::set_build_info(try_get_build_info());
+    }
+}
+
+impl InProcessServer for BazelServer {
+    fn batch_main(&self, _startup: &ServerStartup, args: Vec<String>) -> i32 {
+        Self::init();
+        BlazeRuntime::batch_main(blaze_runtime::bazel_modules::bazel_modules(), args)
+    }
+
+    fn run_command(&self, startup: &ServerStartup, request: RunRequest) -> i32 {
+        Self::init();
+        BlazeRuntime::server_main_single_command(
+            blaze_runtime::bazel_modules::bazel_modules(),
+            startup.startup_args().to_vec(),
+            request,
+        )
+    }
+}
+
+fn main() {
+    let argv: Vec<String> = std::env::args().collect();
+    let code = blaze_client::main(argv, &BazelServer, &embedded::archive());
+    std::process::exit(code);
+}
