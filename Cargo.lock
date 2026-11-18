@@ -171,6 +171,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze"
+version = "0.1.0"
+dependencies = [
+ "blaze_client",
+ "blaze_runtime",
+ "hex",
+ "md-5",
+ "tar",
+ "zstd",
+]
+
+[[package]]
 name = "blaze_bzlmod_model"
 version = "0.1.0"
 dependencies = [
@@ -184,6 +196,19 @@ dependencies = [
  "regex",
  "sha2",
  "thiserror",
+]
+
+[[package]]
+name = "blaze_client"
+version = "0.1.0"
+dependencies = [
+ "blaze_options",
+ "blaze_protos",
+ "blaze_util",
+ "hex",
+ "libc",
+ "md-5",
+ "tempfile",
 ]
 
 [[package]]
@@ -202,6 +227,20 @@ dependencies = [
  "blaze_util",
  "indexmap",
  "parking_lot",
+]
+
+[[package]]
+name = "blaze_config"
+version = "0.1.0"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "blaze_cmdline",
+ "blaze_starlark",
+ "blaze_util",
+ "indexmap",
+ "starlark",
+ "thiserror",
 ]
 
 [[package]]
@@ -228,9 +267,39 @@ dependencies = [
 name = "blaze_options"
 version = "0.1.0"
 dependencies = [
+ "blaze_cmdline",
  "blaze_util",
+ "blaze_vfs",
  "indexmap",
  "regex",
+]
+
+[[package]]
+name = "blaze_packages"
+version = "0.1.0"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "blaze_cmdline",
+ "blaze_collect",
+ "blaze_config",
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_starlark",
+ "blaze_util",
+ "blaze_vfs",
+ "dupe",
+ "hex",
+ "indexmap",
+ "num-bigint",
+ "once_cell",
+ "parking_lot",
+ "regex",
+ "sha2",
+ "starlark",
+ "starlark_map",
+ "starlark_syntax",
+ "thiserror",
 ]
 
 [[package]]
@@ -244,6 +313,40 @@ dependencies = [
  "prost-types",
  "protox",
  "serde_json",
+]
+
+[[package]]
+name = "blaze_query"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blaze_cmdline",
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_packages",
+ "blaze_protos",
+ "blaze_query_engine",
+ "blaze_sky_loading",
+ "blaze_skyframe",
+ "blaze_starlark",
+ "blaze_util",
+ "blaze_vfs",
+ "indexmap",
+ "parking_lot",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "blaze_query_engine"
+version = "0.1.0"
+dependencies = [
+ "blaze_cmdline",
+ "blaze_events",
+ "blaze_util",
+ "indexmap",
+ "thiserror",
 ]
 
 [[package]]
@@ -275,6 +378,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_runtime"
+version = "0.1.0"
+dependencies = [
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_protos",
+ "blaze_util",
+ "blaze_vfs",
+ "indexmap",
+ "libc",
+ "parking_lot",
+ "tempfile",
+]
+
+[[package]]
 name = "blaze_shell"
 version = "0.1.0"
 dependencies = [
@@ -284,6 +403,32 @@ dependencies = [
  "indexmap",
  "libc",
  "parking_lot",
+]
+
+[[package]]
+name = "blaze_sky_loading"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blaze_cmdline",
+ "blaze_config",
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_packages",
+ "blaze_query_engine",
+ "blaze_skyframe",
+ "blaze_starlark",
+ "blaze_util",
+ "blaze_vfs",
+ "hex",
+ "indexmap",
+ "once_cell",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "starlark",
+ "thiserror",
 ]
 
 [[package]]

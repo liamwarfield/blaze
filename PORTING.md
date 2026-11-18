@@ -79,11 +79,34 @@ same option names, defaults, converters, tags and help text.
 
 ## Starlark
 
-To be written after `docs/research/05-starlark-rust.md`.
+- Use `blaze_starlark` (docs/research/05-starlark-rust.md sections 6 and 8): `FileKind`,
+  `eval::compile` / `exec_module` / `call_frozen`, `ThreadContext` with a per-phase payload,
+  `NativeRegistry` to contribute natives per file kind, `EvalError` for Bazel tracebacks.
+- Each Java `@StarlarkMethod` group becomes one `#[starlark_module]` in the crate that ports the
+  Java class, with Bazel's exact method and parameter names, positional/named rules and defaults.
+- Error text: match Bazel's where Blaze raises the error; starlark-rust's own core-language error
+  text is accepted (decisions.md). Fixes to core types go in the vendored crate's patch queue
+  (`third_party/starlark-rust/PATCHES.md`), never as workarounds.
 
 ## Skyframe
 
-To be written after `docs/research/06-bazel-architecture-map.md`.
+- One Rust struct per Java `SkyKey` class, with `impl blaze_skyframe::Key` (`type Value`,
+  `const FUNCTION: SkyFunctionName("JAVA_NAME")`); its `Debug` output must match Java's `toString`.
+  Put it in the crate that owns the Java key class.
+- Register with `EvaluatorBuilder::typed_function::<K, _>(|k, env| -> Result<Option<K::Value>, ComputeError>)`.
+  Implement `SkyFunction` directly only when you need `extract_tag`.
+- Dependencies: `env.get_value(k)?`, `env.get_value_or_throw::<K, E>(k)?` (gives
+  `Result<Option<_>, E>`), and `env.get_values_and_exceptions(&keys)?` then `.get` / `.get_or_throw`.
+  Return `Ok(None)` where Java returns null, and keep `if env.values_missing() { return Ok(None) }`
+  exactly where Java has it. Throw with `Err(SkyFunctionException::new(cause, transience).into())`.
+- `?` propagates `Interrupted`. Long work that requests no dependencies polls `env.check_interrupted()?`.
+- Report events through `env.listener()`.
+- Never hold a lock (Mutex, RwLock, RefCell borrow) across a dependency request: the call can
+  compute other nodes on the same thread or block on other threads.
+- Only immutable `Send + Sync` values cross nodes; Starlark values must be frozen. Never keep a live
+  Starlark module or heap across a dependency request (starlark-rust cannot suspend evaluation):
+  request every dependency first, then evaluate.
+- `in_error_bubbling()` is always false: parents see child errors during normal compute.
 
 ## Tests
 
