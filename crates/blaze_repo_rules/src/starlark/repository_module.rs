@@ -142,6 +142,10 @@ struct RepoRuleData {
     remotable: bool,
     environ: IndexSet<String>,
     module_context: Option<Arc<BazelModuleContext>>,
+    /// Java `builder.recordedRepoMappingEntries(repoMappingRecorder.recordedEntries())`, taken
+    /// when `repository_rule()` is called; `None` when the thread had no recorder (the builder's
+    /// default, an empty table).
+    recorded_repo_mapping_entries: Option<Vec<(RepositoryName, String, RepositoryName)>>,
     /// Set on export (Java `builder.idBuilder().ruleName(exportedName)`).
     rule_name: OnceLock<String>,
     /// Populated on first use after export (Java `StarlarkRepoRule.repoRule`).
@@ -294,12 +298,6 @@ where
 }
 
 /// Builds the [`RepoRule`] of a frozen `repository_rule` value (Java `getRepoRule`), once.
-///
-/// PORT: Java records `recordedRepoMappingEntries` from the .bzl thread's repo mapping recorder
-/// when `repository_rule()` is called. Blaze's BZL_LOAD does not expose its recorder to natives;
-/// the entries are taken from the BZL_LOAD value of the defining .bzl (the entries recorded for
-/// its load statements and those of its loads), requested here. They differ from Java's only by
-/// `Label()` calls at the top level of the .bzl after the `repository_rule()` call.
 fn get_repo_rule(
     data: &Arc<RepoRuleData>,
     implementation: FrozenValue,
@@ -335,7 +333,10 @@ fn get_repo_rule(
     let repo_rule = Arc::new(RepoRule {
         id: RepoRuleId::new(data.bzl_file_label.clone(), rule_name),
         transitive_bzl_digest: data.transitive_bzl_digest.clone(),
-        recorded_repo_mapping_entries: defining_bzl.get_recorded_repo_mappings().to_vec(),
+        recorded_repo_mapping_entries: data
+            .recorded_repo_mapping_entries
+            .clone()
+            .unwrap_or_default(),
         impl_,
         doc: data.doc.clone(),
         attributes: data.builder.attributes.clone(),
@@ -528,6 +529,8 @@ pub fn register_repository_module(builder: &mut GlobalsBuilder) {
             (ctx.bzl_file.clone(), ctx.transitive_digest.clone())
         };
         let module_context = BazelModuleContext::of_filename_label(&bzl_file_label, eval);
+        let recorded_repo_mapping_entries =
+            BzlInitThreadContext::recorded_repo_mapping_entries(eval);
         let data = RepoRuleData {
             bzl_file_label,
             transitive_bzl_digest,
@@ -538,6 +541,7 @@ pub fn register_repository_module(builder: &mut GlobalsBuilder) {
             remotable,
             environ: environ.into_iter().collect(),
             module_context,
+            recorded_repo_mapping_entries,
             rule_name: OnceLock::new(),
             repo_rule: OnceLock::new(),
         };

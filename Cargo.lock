@@ -430,6 +430,7 @@ dependencies = [
  "indexmap",
  "once_cell",
  "parking_lot",
+ "regex",
  "serde_json",
  "starlark",
  "starlark_derive",
@@ -659,6 +660,7 @@ dependencies = [
  "blaze_packages",
  "blaze_protos",
  "blaze_shell",
+ "blaze_sky_loading",
  "blaze_skyframe",
  "blaze_starlark",
  "blaze_util",
@@ -681,11 +683,16 @@ name = "blaze_runtime"
 version = "0.1.0"
 dependencies = [
  "blaze_build_config",
+ "blaze_cquery",
  "blaze_events",
  "blaze_optdefs",
  "blaze_options",
  "blaze_protos",
+ "blaze_query",
+ "blaze_query_engine",
  "blaze_shell",
+ "blaze_sky_loading",
+ "blaze_sky_top",
  "blaze_util",
  "blaze_vfs",
  "indexmap",
@@ -815,6 +822,7 @@ dependencies = [
  "blaze_options",
  "blaze_packages",
  "blaze_protos",
+ "blaze_query_engine",
  "blaze_repo_fetch",
  "blaze_rules",
  "blaze_sky_analysis",
@@ -865,6 +873,7 @@ dependencies = [
 name = "blaze_util"
 version = "0.1.0"
 dependencies = [
+ "blaze_protos",
  "hex",
  "md-5",
  "sha2",

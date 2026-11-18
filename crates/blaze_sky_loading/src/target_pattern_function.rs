@@ -49,6 +49,29 @@ pub enum FilteringPolicy {
     FilterTests,
     RulesOnly,
     And(Box<FilteringPolicy>, Box<FilteringPolicy>),
+    /// A filtering policy defined elsewhere (Java: other `FilteringPolicy` implementations,
+    /// e.g. `PlatformLookupUtil.HAS_PLATFORM_INFO`, `RegisteredToolchainsFunction`'s
+    /// `ruleTypeExplicit("toolchain")`), by name and predicate.
+    // W4-analysis: used by toolchain and execution platform registration.
+    Custom(&'static str, FilterFn),
+}
+
+/// The predicate of [`FilteringPolicy::Custom`]; policies are identified by their name, so the
+/// function takes no part in equality and hashing.
+// W4-analysis: see FilteringPolicy::Custom.
+#[derive(Clone, Copy)]
+pub struct FilterFn(pub fn(&Target, bool) -> bool);
+
+impl PartialEq for FilterFn {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for FilterFn {}
+
+impl std::hash::Hash for FilterFn {
+    fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {}
 }
 
 impl FilteringPolicy {
@@ -78,6 +101,7 @@ impl FilteringPolicy {
             FilteringPolicy::And(x, y) => {
                 x.should_retain(target, explicit) && y.should_retain(target, explicit)
             }
+            FilteringPolicy::Custom(_, predicate) => (predicate.0)(target, explicit),
         }
     }
 }
@@ -92,6 +116,7 @@ impl fmt::Debug for FilteringPolicy {
             FilteringPolicy::FilterManual => f.write_str("FilterManual"),
             FilteringPolicy::FilterTests => f.write_str("FilterTests"),
             FilteringPolicy::RulesOnly => f.write_str("RulesOnly"),
+            FilteringPolicy::Custom(name, _) => f.write_str(name),
         }
     }
 }

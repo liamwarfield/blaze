@@ -216,10 +216,14 @@ impl StarlarkLateBoundDefault {
             ));
         };
         Ok(StarlarkLateBoundDefault {
-            late_bound: Arc::new(LateBoundDefault::label_from_target_configuration(
-                f.fragment_class,
-                Self::get_default_label(f, tools_repository),
-            )),
+            late_bound: Arc::new(
+                LateBoundDefault::label_from_target_configuration(
+                    f.fragment_class,
+                    Self::get_default_label(f, tools_repository),
+                )
+                // W4-analysis: names the field for the analysis resolver.
+                .with_resolver_name(&format!("configuration_field:{}:{}", f.fragment, f.name)),
+            ),
             fragment_name: f.fragment.to_owned(),
             fragment_field_name: f.name.to_owned(),
         })

@@ -56,6 +56,42 @@ impl<'v> Clone for SetRef<'v> {
 
 impl<'v> Dupe for SetRef<'v> {}
 
+impl<'v> SetRef<'v> { // BLAZE PATCH 0015
+    /// Downcast the value to a set (frozen or not), like `ListRef::from_value`.
+    pub fn from_value(x: Value<'v>) -> Option<SetRef<'v>> { // BLAZE PATCH 0015
+        Self::unpack_value_opt(x) // BLAZE PATCH 0015
+    } // BLAZE PATCH 0015
+
+    /// Number of elements.
+    pub fn len(&self) -> usize { // BLAZE PATCH 0015
+        self.aref.content.len() // BLAZE PATCH 0015
+    } // BLAZE PATCH 0015
+
+    /// Whether the set is empty.
+    pub fn is_empty(&self) -> bool { // BLAZE PATCH 0015
+        self.aref.content.is_empty() // BLAZE PATCH 0015
+    } // BLAZE PATCH 0015
+
+    /// The elements in insertion order (no heap needed, unlike `Value::iterate`).
+    pub fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = Value<'v>> + 'a { // BLAZE PATCH 0015
+        self.aref.iter() // BLAZE PATCH 0015
+    } // BLAZE PATCH 0015
+} // BLAZE PATCH 0015
+
+/// Allocates a new (mutable) set holding `values` in order, dropping duplicates (Bazel
+/// `StarlarkSet.copyOf` / `immutableCopyOf`; the heap freezes it with its module). Fails if a
+/// value is unhashable.
+pub fn alloc_set<'v>( // BLAZE PATCH 0015
+    heap: crate::values::Heap<'v>, // BLAZE PATCH 0015
+    values: impl IntoIterator<Item = Value<'v>>, // BLAZE PATCH 0015
+) -> crate::Result<Value<'v>> { // BLAZE PATCH 0015
+    let mut data = SetData::default(); // BLAZE PATCH 0015
+    for v in values { // BLAZE PATCH 0015
+        data.add_hashed(v.get_hashed()?); // BLAZE PATCH 0015
+    } // BLAZE PATCH 0015
+    Ok(heap.alloc(data)) // BLAZE PATCH 0015
+} // BLAZE PATCH 0015
+
 /// Mutably borrowed `Set`.
 pub struct SetMut<'v> {
     pub(crate) aref: RefMut<'v, SetData<'v>>,

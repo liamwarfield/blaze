@@ -221,6 +221,46 @@ impl<E> NestedSet<E> {
         children.iter().any(|c| matches!(c, Children::Array(_)))
     }
 
+    /// The identity of this set's node (Java: the identity of its `children` object): the
+    /// address of its children array, or of the set itself for an empty or singleton set.
+    // W4-analysis: needed to convert NestedSets to Starlark depsets with the same structure.
+    pub fn node_id(&self) -> usize {
+        match &self.inner.children {
+            Children::Array(array) => Arc::as_ptr(array) as *const () as usize,
+            _ => Arc::as_ptr(&self.inner) as *const () as usize,
+        }
+    }
+
+    /// A public view of this set's node (Java `NestedSet.getChildren` walked one level): its
+    /// direct leaves and sub-arrays in array order. A sub-array is returned as a set sharing the
+    /// array, so its [`NestedSet::node_id`] is the array's identity.
+    // W4-analysis: needed to convert NestedSets to Starlark depsets with the same structure.
+    pub fn children(&self) -> NestedSetChildren<E>
+    where
+        E: Clone,
+    {
+        let order = self.get_order();
+        let depth = self.get_approx_depth();
+        match &self.inner.children {
+            Children::Empty => NestedSetChildren::Empty,
+            Children::Leaf(e) => NestedSetChildren::Leaf(e.clone()),
+            Children::Array(array) => NestedSetChildren::Array(
+                array
+                    .iter()
+                    .map(|c| match c {
+                        Children::Leaf(e) => NestedSetChild::Leaf(e.clone()),
+                        Children::Array(a) => NestedSetChild::Set(Self::with_children(
+                            order,
+                            (depth - 1).max(1),
+                            Children::Array(a.clone()),
+                        )),
+                        Children::Empty => unreachable!("empty child in an array"),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
     /// Clears the cached list representation to free up memory when no other traversal of the
     /// NestedSet is expected.
     // Java: com/google/devtools/build/lib/collect/nestedset/NestedSet.java:288 NestedSet.clearCachedListRepresentation
@@ -748,4 +788,21 @@ impl<E> NestedSetNode<E> {
             _ => None,
         }
     }
+}
+
+/// One level of a [`NestedSet`]'s node, see [`NestedSet::children`].
+// W4-analysis: needed to convert NestedSets to Starlark depsets with the same structure.
+#[derive(Clone)]
+pub enum NestedSetChildren<E> {
+    Empty,
+    Leaf(E),
+    Array(Vec<NestedSetChild<E>>),
+}
+
+/// An entry of a node's array, see [`NestedSet::children`].
+// W4-analysis: needed to convert NestedSets to Starlark depsets with the same structure.
+#[derive(Clone)]
+pub enum NestedSetChild<E> {
+    Leaf(E),
+    Set(NestedSet<E>),
 }

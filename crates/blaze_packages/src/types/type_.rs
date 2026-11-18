@@ -18,6 +18,7 @@ use starlark::values::dict::AllocDict;
 use starlark::values::dict::DictRef;
 use starlark::values::list::AllocList;
 use starlark::values::list::ListRef;
+use starlark::values::set::SetRef;
 use starlark::values::tuple::TupleRef;
 
 use crate::attribute::Attribute;
@@ -354,11 +355,8 @@ impl Type {
             }
             // Java: com/google/devtools/build/lib/packages/Type.java:846 Type.SetType.copyAndLiftStarlarkValue
             Type::StringSet => {
-                let _converted = self.convert_with_heap(x, what, label_converter, heap)?;
-                blaze_util::unported!(
-                    "Type.SetType.copyAndLiftStarlarkValue: starlark-rust has no public set \
-                     allocation"
-                )
+                let converted = self.convert_with_heap(x, what, label_converter, heap)?;
+                Ok(native_to_starlark(&converted, heap))
             }
             // Java: com/google/devtools/build/lib/packages/Type.java:583 Type.DictType.copyAndLiftStarlarkValue
             Type::StringDict
@@ -876,8 +874,12 @@ fn iterable_elements<'v>(
             .map(Some)
             .map_err(|e| ConversionException::new(e.to_string()));
     }
+    // starlark-rust patch 0015: sets iterate without a heap.
+    if let Some(set) = SetRef::from_value(x) {
+        return Ok(Some(set.iter().collect()));
+    }
     match x.get_type() {
-        // range and set are Java Iterables; starlark-rust iterates them only with a heap.
+        // range is a Java Iterable; starlark-rust iterates it only with a heap.
         "range" | "set" => match heap {
             Some(heap) => iterate_with_heap(x, heap).map(Some),
             None => blaze_util::unported!(
@@ -928,17 +930,17 @@ fn convert_set<'v>(
     if x.get_type() != "set" {
         return Err(ConversionException::of_type(type_, x, what));
     }
-    let Some(heap) = heap else {
-        // PORT: starlark-rust iterates sets only with a heap.
-        blaze_util::unported!("Type.SetType.convert without a heap (use convert_with_heap)")
+    // starlark-rust patch 0015: sets iterate without a heap.
+    let set: Vec<Value<'v>> = match SetRef::from_value(x) {
+        Some(set) => set.iter().collect(),
+        None => return Err(ConversionException::of_type(type_, x, what)),
     };
-    let set = iterate_with_heap(x, heap)?;
     let elem_type = type_.get_list_element_type().unwrap();
     let mut result: IndexSet<String> = IndexSet::with_capacity(set.len());
     for (index, elem) in set.into_iter().enumerate() {
         let conversion_context = ConversionContext { what, index };
         let converted =
-            elem_type.convert_impl(elem, Some(&conversion_context), label_converter, Some(heap))?;
+            elem_type.convert_impl(elem, Some(&conversion_context), label_converter, heap)?;
         // Java logs (and skips) a null element; converted elements are never null here.
         result.insert(into_string(converted));
     }
@@ -1085,7 +1087,12 @@ pub(crate) fn native_to_starlark<'v>(value: &AttrValue, heap: Heap<'v>) -> Value
                 .map(|(k, v)| (string(k), list(v.iter().map(label).collect())))
                 .collect(),
         ),
-        AttrValue::StringSet(_) => blaze_util::unported!("StarlarkSet.immutableCopyOf"),
+        // Java StarlarkSet.immutableCopyOf. PORT: a mutable starlark-rust set (as for lists and
+        // dicts above); strings are always hashable.
+        AttrValue::StringSet(l) => {
+            let items: Vec<Value<'v>> = l.iter().map(|s| string(s)).collect();
+            starlark::values::set::alloc_set(heap, items).expect("strings are hashable")
+        }
         other => panic!("not a native attribute value: {other:?}"),
     }
 }

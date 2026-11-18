@@ -120,9 +120,11 @@ pub static PACKAGE_METADATA_DEFAULT: LazyLock<Arc<ComputedDefault>> = LazyLock::
 /// during analysis).
 // Java: com/google/devtools/build/lib/analysis/BaseRuleClasses.java:120 BaseRuleClasses.ACTION_LISTENER
 pub static ACTION_LISTENER: LazyLock<Arc<LateBoundDefault>> = LazyLock::new(|| {
-    Arc::new(LateBoundDefault::label_list(Some(
-        "BuildConfigurationValue",
-    )))
+    // W4-analysis: names the analysis resolver.
+    Arc::new(
+        LateBoundDefault::label_list(Some("BuildConfigurationValue"))
+            .with_resolver_name("BaseRuleClasses.ACTION_LISTENER"),
+    )
 });
 
 /// Java `BaseRuleClasses.DEFAULT_COVERAGE_SUPPORT_VALUE`.
@@ -132,10 +134,11 @@ pub const DEFAULT_COVERAGE_SUPPORT_VALUE: &str = "//tools/test:coverage_support"
 /// Java `BaseRuleClasses.coverageSupportAttribute(defaultValue)`.
 // Java: com/google/devtools/build/lib/analysis/BaseRuleClasses.java:131 BaseRuleClasses.coverageSupportAttribute
 pub fn coverage_support_attribute(default_value: Label) -> Arc<LateBoundDefault> {
-    Arc::new(LateBoundDefault::label_from_target_configuration(
-        "TestConfiguration",
-        Some(default_value),
-    ))
+    // W4-analysis: names the analysis resolver.
+    Arc::new(
+        LateBoundDefault::label_from_target_configuration("TestConfiguration", Some(default_value))
+            .with_resolver_name("BaseRuleClasses.coverageSupportAttribute"),
+    )
 }
 
 /// Java `BaseRuleClasses.DEFAULT_COVERAGE_REPORT_GENERATOR_VALUE`.
@@ -145,28 +148,34 @@ pub const DEFAULT_COVERAGE_REPORT_GENERATOR_VALUE: &str = "//tools/test:coverage
 /// Java `BaseRuleClasses.coverageReportGeneratorAttribute(defaultValue)`.
 // Java: com/google/devtools/build/lib/analysis/BaseRuleClasses.java:145 BaseRuleClasses.coverageReportGeneratorAttribute
 pub fn coverage_report_generator_attribute(default_value: Label) -> Arc<LateBoundDefault> {
-    Arc::new(LateBoundDefault::label_from_target_configuration(
-        "CoverageConfiguration",
-        Some(default_value),
-    ))
+    // W4-analysis: names the analysis resolver.
+    Arc::new(
+        LateBoundDefault::label_from_target_configuration(
+            "CoverageConfiguration",
+            Some(default_value),
+        )
+        .with_resolver_name("BaseRuleClasses.coverageReportGeneratorAttribute"),
+    )
 }
 
 /// Java `BaseRuleClasses.RUN_UNDER_EXEC_CONFIG` (null outside analysis).
 // Java: com/google/devtools/build/lib/analysis/BaseRuleClasses.java:162 BaseRuleClasses.RUN_UNDER_EXEC_CONFIG
 pub static RUN_UNDER_EXEC_CONFIG: LazyLock<Arc<LateBoundDefault>> = LazyLock::new(|| {
-    Arc::new(LateBoundDefault::label_from_target_configuration(
-        "BuildConfigurationValue",
-        None,
-    ))
+    // W4-analysis: names the analysis resolver.
+    Arc::new(
+        LateBoundDefault::label_from_target_configuration("BuildConfigurationValue", None)
+            .with_resolver_name("BaseRuleClasses.RUN_UNDER_EXEC_CONFIG"),
+    )
 });
 
 /// Java `BaseRuleClasses.RUN_UNDER_TARGET_CONFIG` (null outside analysis).
 // Java: com/google/devtools/build/lib/analysis/BaseRuleClasses.java:184 BaseRuleClasses.RUN_UNDER_TARGET_CONFIG
 pub static RUN_UNDER_TARGET_CONFIG: LazyLock<Arc<LateBoundDefault>> = LazyLock::new(|| {
-    Arc::new(LateBoundDefault::label_from_target_configuration(
-        "BuildConfigurationValue",
-        None,
-    ))
+    // W4-analysis: names the analysis resolver.
+    Arc::new(
+        LateBoundDefault::label_from_target_configuration("BuildConfigurationValue", None)
+            .with_resolver_name("BaseRuleClasses.RUN_UNDER_TARGET_CONFIG"),
+    )
 });
 
 // Java: com/google/devtools/build/lib/analysis/BaseRuleClasses.java:198 BaseRuleClasses.TOOLS_TEST_RUNTIME_TARGET_PATTERN

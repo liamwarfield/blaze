@@ -13,7 +13,9 @@ mod nested_set_fingerprint_cache;
 mod nested_set_visitor;
 mod order;
 
-pub use nested_set::{MAX_ELEMENTS_TO_STRING, NestedSet, NestedSetNode};
+pub use nested_set::{
+    MAX_ELEMENTS_TO_STRING, NestedSet, NestedSetChild, NestedSetChildren, NestedSetNode,
+};
 pub use nested_set_builder::NestedSetBuilder;
 pub use nested_set_fingerprint_cache::NestedSetFingerprintCache;
 pub use nested_set_visitor::{

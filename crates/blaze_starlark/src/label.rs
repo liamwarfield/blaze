@@ -216,8 +216,16 @@ pub fn register_label(builder: &mut GlobalsBuilder) {
             .as_deref()
             .and_then(|f| cx.package_context_for_file(f))
             .ok_or_else(|| eval_err("Label() can only be called from a .bzl file"))?;
-        let label = Label::parse_with_package_context(s, &pkg)
-            .map_err(|e| eval_err(format!("invalid label in Label(): {}", e.get_message())))?;
+        // Java: thread.getThreadLocal(Label.RepoMappingRecorder.class)
+        let mut recorder = cx.repo_mapping_recorder();
+        let label = Label::parse_with_package_context_recording(
+            s,
+            &pkg,
+            recorder
+                .as_mut()
+                .map(|r| r as &mut dyn blaze_cmdline::LabelRepoMappingRecorder),
+        )
+        .map_err(|e| eval_err(format!("invalid label in Label(): {}", e.get_message())))?;
         Ok(eval.heap().alloc(LabelValue(label)))
     }
 }

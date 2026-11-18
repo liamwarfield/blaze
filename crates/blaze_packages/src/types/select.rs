@@ -7,9 +7,8 @@
 //!
 //! The `select()` global itself is registered by the BUILD globals; it calls [`select_impl`].
 //!
-//! PORT: Java's `HasBinary` lets `{...} | select(...)` dispatch to the select; starlark-rust's
-//! dict `|` has no reflected form, so only `select | dict` works until a starlark-rust patch adds
-//! one (lists, strings and ints use `radd`).
+//! Java's `HasBinary` lets `{...} | select(...)` dispatch to the select: `radd` for `+`, and
+//! `rbit_or` (starlark-rust patch 0014) for `|`.
 
 use std::fmt;
 
@@ -180,6 +179,12 @@ where
             Some(r) => r,
             None => ValueError::unsupported_with(self, "|", rhs),
         }
+    }
+
+    // starlark-rust patch 0014: `{...} | select(...)` (Java HasBinary, thisLeft = false).
+    fn rbit_or(&self, lhs: Value<'v>, heap: Heap<'v>) -> Option<starlark::Result<Value<'v>>> {
+        let this = Operand::of_selector_value(self.to_heap(heap), &self.type_);
+        binary_op(this, "|", lhs, false, heap)
     }
 }
 
@@ -427,6 +432,11 @@ where
             Some(r) => r,
             None => ValueError::unsupported_with(self, "|", rhs),
         }
+    }
+
+    // starlark-rust patch 0014: `{...} | select(...)` (Java HasBinary, thisLeft = false).
+    fn rbit_or(&self, lhs: Value<'v>, heap: Heap<'v>) -> Option<starlark::Result<Value<'v>>> {
+        binary_op(Operand::of_selector_list(self), "|", lhs, false, heap)
     }
 }
 

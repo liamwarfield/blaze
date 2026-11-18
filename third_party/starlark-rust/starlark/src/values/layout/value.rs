@@ -644,7 +644,15 @@ impl<'v> Value<'v> {
 
     /// `x | other`.
     pub fn bit_or(self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
-        self.get_ref().bit_or(other, heap)
+        match self.get_ref().bit_or(other, heap) { // BLAZE PATCH 0014
+            Ok(v) => Ok(v), // BLAZE PATCH 0014
+            // The left operand does not support `|` with this right operand: try the right's
+            // reflected form (Java EvalUtils.binaryOp, Python __ror__).
+            Err(e) => match other.get_ref().rbit_or(self, heap) { // BLAZE PATCH 0014
+                Some(r) => r, // BLAZE PATCH 0014
+                None => Err(e), // BLAZE PATCH 0014
+            }, // BLAZE PATCH 0014
+        } // BLAZE PATCH 0014
     }
 
     /// `x ^ other`.
@@ -981,10 +989,21 @@ impl<'v> Value<'v> {
     /// Like `get_attr` but return an error if the attribute is not available.
     pub fn get_attr_error(self, attribute: &str, heap: Heap<'v>) -> crate::Result<Value<'v>> {
         match self.get_attr(attribute, heap)? {
-            None => ValueError::unsupported_owned(self.get_type(), &format!(".{attribute}"), None),
+            None => {
+                if let Some(message) = self.get_attr_error_message(attribute) { // BLAZE PATCH 0013
+                    return Err(crate::Error::new_other(anyhow::anyhow!("{message}"))); // BLAZE PATCH 0013
+                } // BLAZE PATCH 0013
+                ValueError::unsupported_owned(self.get_type(), &format!(".{attribute}"), None)
+            }
             Some(x) => Ok(x),
         }
     }
+
+    /// The value's own message for a missing attribute, if it has one
+    /// ([`StarlarkValue::get_attr_error_message`]).
+    pub fn get_attr_error_message(self, attribute: &str) -> Option<String> { // BLAZE PATCH 0013
+        self.get_ref().get_attr_error_message(attribute) // BLAZE PATCH 0013
+    } // BLAZE PATCH 0013
 
     /// Query whether an attribute exists on a type. Should be equivalent to whether
     /// [`get_attr`](Value::get_attr) succeeds, but potentially more efficient.

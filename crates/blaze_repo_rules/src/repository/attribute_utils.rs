@@ -25,25 +25,20 @@ use super::repo_rule::LEGACY_BUILTIN_ATTRIBUTES;
 use super::repo_rule::RepoRule;
 use crate::attr_values::attr_value_to_attribute_value;
 
-/// Java `ExternalDepsException.withCallStackAndMessage(code, callStack, format, args)`: the
-/// message is `EvalException.formatCallStack(callStack, message, ...)`.
-///
-/// PORT: move to blaze_bzlmod_model (`ExternalDepsException::with_call_stack_and_message`).
-// Java: com/google/devtools/build/lib/bazel/bzlmod/ExternalDepsException.java:51 ExternalDepsException.withCallStackAndMessage
-pub fn external_deps_exception_with_call_stack_and_message(
-    code: ExternalDepsCode,
-    call_stack: &[StackEntry],
-    message: String,
-) -> ExternalDepsException {
+/// A Starlark call stack for [`ExternalDepsException::with_call_stack_and_message`].
+pub struct StarlarkCallStack<'a>(pub &'a [StackEntry]);
+
+impl blaze_bzlmod_model::ExternalDepsCallStack for StarlarkCallStack<'_> {
     // Java: net/starlark/java/eval/EvalException.java:200 EvalException.formatCallStack
-    let formatted = EvalError {
-        kind: EvalErrorKind::Eval,
-        message,
-        callstack: call_stack.to_vec(),
-        include_stack: true,
+    fn format_call_stack(&self, message: &str) -> String {
+        EvalError {
+            kind: EvalErrorKind::Eval,
+            message: message.to_owned(),
+            callstack: self.0.to_vec(),
+            include_stack: true,
+        }
+        .message_with_stack()
     }
-    .message_with_stack();
-    ExternalDepsException::with_message(code, formatted)
 }
 
 /// The event location of a call stack entry (`Location.BUILTIN` for a builtin).
@@ -109,9 +104,9 @@ pub fn type_check_attr_values<'v>(
             continue;
         }
         let Some(&attr_index) = attr_indices.get(attr_name) else {
-            return Err(external_deps_exception_with_call_stack_and_message(
+            return Err(ExternalDepsException::with_call_stack_and_message(
                 error_code,
-                call_stack,
+                &StarlarkCallStack(call_stack),
                 format!(
                     "in {}, unknown attribute '{}' provided{}",
                     where_,
@@ -129,9 +124,9 @@ pub fn type_check_attr_values<'v>(
         ) {
             Ok(v) => v,
             Err(e) => {
-                return Err(external_deps_exception_with_call_stack_and_message(
+                return Err(ExternalDepsException::with_call_stack_and_message(
                     error_code,
-                    call_stack,
+                    &StarlarkCallStack(call_stack),
                     format!("in {}, {}", where_, e),
                 ));
             }
@@ -143,9 +138,9 @@ pub fn type_check_attr_values<'v>(
                 .get_allowed_values()
                 .expect("NullPointerException: allowed values");
             if !allowed_values.apply(&native_value) {
-                return Err(external_deps_exception_with_call_stack_and_message(
+                return Err(ExternalDepsException::with_call_stack_and_message(
                     error_code,
-                    call_stack,
+                    &StarlarkCallStack(call_stack),
                     format!(
                         "in {}, the value for attribute '{}' {}",
                         where_,
@@ -165,9 +160,9 @@ pub fn type_check_attr_values<'v>(
     for (i, attr_value) in attr_values.into_iter().enumerate() {
         let attr = &attrs[i];
         if attr.is_mandatory() && attr_value.is_none() {
-            return Err(external_deps_exception_with_call_stack_and_message(
+            return Err(ExternalDepsException::with_call_stack_and_message(
                 error_code,
-                call_stack,
+                &StarlarkCallStack(call_stack),
                 format!(
                     "in {}, mandatory attribute '{}' isn't being specified",
                     where_,
@@ -180,9 +175,9 @@ pub fn type_check_attr_values<'v>(
             None => attr_value_to_attribute_value(attr.get_default_value_unchecked()),
         };
         if let Some(first_non_visible_label) = non_visible_labels_in(&attr_value) {
-            return Err(external_deps_exception_with_call_stack_and_message(
+            return Err(ExternalDepsException::with_call_stack_and_message(
                 error_code,
-                call_stack,
+                &StarlarkCallStack(call_stack),
                 format!(
                     "in {}, no repository visible as '@{}' {}, but referenced by label \
                      '@{}//{}:{}' in attribute '{}'",

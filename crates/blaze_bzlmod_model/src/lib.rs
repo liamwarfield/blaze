@@ -37,7 +37,7 @@ pub use dep_graph::{BazelDepGraphFunction, BazelDepGraphValue, Table};
 pub use discovery::{
     Discovery, DiscoveryResult, ModuleFileLoader, NonRootModuleFileValue, RootModuleFileValue,
 };
-pub use external_deps_exception::{ExternalDepsCode, ExternalDepsException};
+pub use external_deps_exception::{ExternalDepsCallStack, ExternalDepsCode, ExternalDepsException};
 pub use facts::{FactValue, Facts};
 pub use index_registry::{
     DEFAULT_REGISTRIES, IndexRegistry, KnownFileHashesMode, RegistryFactory, RegistryFactoryImpl,

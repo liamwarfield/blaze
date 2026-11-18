@@ -45,9 +45,9 @@ fn io_exception_to_java_string(e: &IOException) -> String {
 ///
 /// `Display` is Java `getMessage()`: the message of the wrapped exception.
 ///
-/// PORT: move to blaze_sky_loading (as `AlreadyReportedException`, Java
-/// `skyframe/AlreadyReportedException`) so that `PackageLookupFunction` can catch it; until then
-/// package lookups see a REPOSITORY_DIRECTORY error of this type as uncaught.
+/// Thrown through Skyframe as its superclass, `blaze_sky_loading`'s
+/// [`AlreadyReportedException`](blaze_sky_loading::exceptions::AlreadyReportedException)
+/// (keeping this class name), so that `PackageLookupFunction` catches it.
 // Java: com/google/devtools/build/lib/bazel/repository/RepositoryFunctionException.java:51 RepositoryFunctionException.AlreadyReportedRepositoryAccessException
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AlreadyReportedRepositoryAccessException {
@@ -101,6 +101,18 @@ impl fmt::Display for AlreadyReportedRepositoryAccessException {
 }
 
 impl std::error::Error for AlreadyReportedRepositoryAccessException {}
+
+/// Java: `AlreadyReportedRepositoryAccessException extends AlreadyReportedException`.
+impl From<AlreadyReportedRepositoryAccessException>
+    for blaze_sky_loading::exceptions::AlreadyReportedException
+{
+    fn from(e: AlreadyReportedRepositoryAccessException) -> Self {
+        blaze_sky_loading::exceptions::AlreadyReportedException::of_subclass(
+            e.message,
+            "com.google.devtools.build.lib.bazel.repository.RepositoryFunctionException$AlreadyReportedRepositoryAccessException",
+        )
+    }
+}
 
 /// The cause of a [`RepositoryFunctionException`] (Java's three constructors).
 #[derive(Clone, Debug)]
@@ -206,9 +218,10 @@ impl RepositoryFunctionException {
             RepositoryFunctionExceptionCause::Eval(e) => {
                 SkyFunctionException::new(e, self.transience)
             }
-            RepositoryFunctionExceptionCause::AlreadyReported(e) => {
-                SkyFunctionException::new(e, self.transience)
-            }
+            RepositoryFunctionExceptionCause::AlreadyReported(e) => SkyFunctionException::new(
+                blaze_sky_loading::exceptions::AlreadyReportedException::from(e),
+                self.transience,
+            ),
         }
     }
 }

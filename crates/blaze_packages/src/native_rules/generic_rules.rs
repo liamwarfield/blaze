@@ -297,15 +297,19 @@ pub fn scope_type_allowed_attribute_values() -> Vec<AttrValue> {
 static LABEL_BUILD_SETTINGS_ACTUAL: LazyLock<Arc<LateBoundDefault>> = LazyLock::new(|| {
     // Java: LabelLateBoundDefault.fromTargetConfigurationWithRuleBasedDefault: the loading-phase
     // default is `RawAttributeMapper.of(rule).get("build_setting_default", NODEP_LABEL)`.
-    Arc::new(LateBoundDefault::new(
-        Some("BuildConfigurationValue".to_owned()),
-        Arc::new(|rule: Option<&dyn RuleOrMacroInstance>| {
-            let rule = rule?;
-            RawAttributeMapper::of(rule)
-                .get(STARLARK_BUILD_SETTING_DEFAULT_ATTR_NAME, Type::NodepLabel)
-        }),
-        LateBoundDefaultKind::Label,
-    ))
+    Arc::new(
+        LateBoundDefault::new(
+            Some("BuildConfigurationValue".to_owned()),
+            Arc::new(|rule: Option<&dyn RuleOrMacroInstance>| {
+                let rule = rule?;
+                RawAttributeMapper::of(rule)
+                    .get(STARLARK_BUILD_SETTING_DEFAULT_ATTR_NAME, Type::NodepLabel)
+            }),
+            LateBoundDefaultKind::Label,
+        )
+        // W4-analysis: names the analysis resolver.
+        .with_resolver_name("LabelBuildSettings.ACTUAL"),
+    )
 });
 
 // Java: com/google/devtools/build/lib/rules/LabelBuildSettings.java:86 LabelBuildSettings.buildRuleClass

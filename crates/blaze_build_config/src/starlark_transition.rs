@@ -903,6 +903,26 @@ fn transition_reference_create(
     }
 }
 
+/// The `attr` argument of a transition implementation (Java: the transition's `attrObject`, a
+/// struct of the target's attribute values), allocated on the evaluation's heap.
+// W4-analysis: built by blaze_analysis from the configured attributes.
+pub trait TransitionAttrObject: Send + Sync {
+    fn alloc<'v>(&self, heap: starlark::values::Heap<'v>) -> Value<'v>;
+}
+
+/// The empty `attr` struct (the exec transition and the baseline computation).
+// W4-analysis: see TransitionAttrObject.
+pub struct EmptyTransitionAttrs;
+
+impl TransitionAttrObject for EmptyTransitionAttrs {
+    fn alloc<'v>(&self, heap: starlark::values::Heap<'v>) -> Value<'v> {
+        heap.alloc(blaze_starlark::structs::StarlarkInfo::new(
+            heap.alloc(blaze_starlark::structs::StructProvider),
+            Vec::new(),
+        ))
+    }
+}
+
 // -------------------------------------------------------------------------------------------
 // StarlarkDefinedConfigTransition.
 
@@ -945,6 +965,22 @@ impl StarlarkDefinedConfigTransition {
             implementation,
             data,
         })
+    }
+
+    /// A transition from its parts, for Starlark transitions created by another `transition()`
+    /// implementation (the loading phase's `blaze_config` value): `object` is the frozen
+    /// transition value, `implementation` its frozen implementation function.
+    // W4-analysis: added for applying rule/attribute transitions (crates/blaze_analysis/DESIGN.md).
+    pub fn from_parts(
+        object: OwnedFrozenValue,
+        implementation: OwnedFrozenValue,
+        data: TransitionData,
+    ) -> Self {
+        StarlarkDefinedConfigTransition {
+            object,
+            implementation,
+            data: Arc::new(data),
+        }
     }
 
     pub fn object(&self) -> &OwnedFrozenValue {
@@ -1077,6 +1113,25 @@ impl StarlarkDefinedConfigTransition {
         semantics: &Arc<StarlarkSemantics>,
         handler: &dyn EventHandler,
     ) -> Option<IndexMap<String, IndexMap<Label, JavaObject>>> {
+        self.evaluate_with_attrs(
+            previous_settings,
+            option_info_map,
+            &EmptyTransitionAttrs,
+            semantics,
+            handler,
+        )
+    }
+
+    /// [`Self::evaluate`] with the `attr` object passed to the implementation.
+    // W4-analysis: rule and attribute transitions read the target's attributes.
+    pub fn evaluate_with_attrs(
+        &self,
+        previous_settings: &IndexMap<String, JavaObject>,
+        option_info_map: &IndexMap<String, OptionInfo>,
+        attr_object: &dyn TransitionAttrObject,
+        semantics: &Arc<StarlarkSemantics>,
+        handler: &dyn EventHandler,
+    ) -> Option<IndexMap<String, IndexMap<Label, JavaObject>>> {
         // createBuildSettingsDict: values Starlark#fromJava can't read are converted first.
         let mut settings: Vec<(String, JavaObject, bool)> = Vec::new();
         for (key, value) in previous_settings {
@@ -1126,10 +1181,7 @@ impl StarlarkDefinedConfigTransition {
                         .collect();
                     let dict = heap.alloc(AllocDict(entries));
                     // The attributes of the target (empty for the exec transition).
-                    let attr = heap.alloc(blaze_starlark::structs::StarlarkInfo::new(
-                        heap.alloc(blaze_starlark::structs::StructProvider),
-                        Vec::new(),
-                    ));
+                    let attr = attr_object.alloc(heap);
                     (vec![dict, attr], vec![])
                 },
                 |res, _module, _eval| Ok(Self::extract_result(res)),

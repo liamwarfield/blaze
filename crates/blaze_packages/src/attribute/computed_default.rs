@@ -456,6 +456,12 @@ pub struct LateBoundDefault {
     fragment_class: Option<String>,
     default_value_evaluator: LateBoundDefaultEvaluator,
     kind: LateBoundDefaultKind,
+    /// Which Java late-bound default this is, so analysis can resolve it: for
+    /// `configuration_field(fragment, name)` `"configuration_field:<fragment>:<name>"`, for
+    /// native ones the Java constant (e.g. `"BaseRuleClasses.ACTION_LISTENER"`).
+    // W4-analysis: Java resolves through the object's own `resolve` method; the resolver
+    // implementations live in blaze_analysis and are looked up by this name.
+    resolver_name: Option<String>,
 }
 
 impl fmt::Debug for LateBoundDefault {
@@ -463,6 +469,7 @@ impl fmt::Debug for LateBoundDefault {
         f.debug_struct("LateBoundDefault")
             .field("fragment_class", &self.fragment_class)
             .field("kind", &self.kind)
+            .field("resolver_name", &self.resolver_name)
             .finish_non_exhaustive()
     }
 }
@@ -478,7 +485,21 @@ impl LateBoundDefault {
             fragment_class,
             default_value_evaluator,
             kind,
+            resolver_name: None,
         }
+    }
+
+    /// Names the analysis resolver of this default (see `resolver_name`).
+    // W4-analysis: see the field.
+    pub fn with_resolver_name(mut self, name: &str) -> Self {
+        self.resolver_name = Some(name.to_owned());
+        self
+    }
+
+    /// The analysis resolver name (see `with_resolver_name`).
+    // W4-analysis: see the field.
+    pub fn get_resolver_name(&self) -> Option<&str> {
+        self.resolver_name.as_deref()
     }
 
     /// Java `LateBoundDefault.alwaysNull()`.

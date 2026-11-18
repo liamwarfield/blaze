@@ -351,6 +351,19 @@ impl TargetPatternTargetsInPackage {
             rules_only,
         }
     }
+
+    /// The target-name part of the pattern (`all`, `*`, `all-targets`, ...).
+    // PORT: Java reads the private field `suffix` (TargetPattern.java:433) from inside the class;
+    // a getter for crates that port those readers.
+    pub fn suffix(&self) -> &str {
+        &self.suffix
+    }
+
+    /// Whether the pattern was written absolute (`//foo:all`, not `foo:all`).
+    // PORT: Java reads the private field `wasOriginallyAbsolute` (TargetPattern.java:434).
+    pub fn was_originally_absolute(&self) -> bool {
+        self.was_originally_absolute
+    }
 }
 
 // Java: com/google/devtools/build/lib/cmdline/TargetPattern.java:517 TargetPattern.TargetsInPackage.toString

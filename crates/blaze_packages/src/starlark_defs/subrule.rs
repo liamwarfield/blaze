@@ -139,7 +139,11 @@ where
         _args: &Arguments<'v, '_>,
         _eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
-        blaze_util::unported!("StarlarkSubrule.call")
+        // W4-analysis: subrules are called during analysis; blaze_analysis installs the call.
+        match SUBRULE_CALL_HOOK.get() {
+            Some(hook) => hook(_me, _args, _eval),
+            None => blaze_util::unported!("StarlarkSubrule.call"),
+        }
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkSubrule.java:258 StarlarkSubrule.export
@@ -177,6 +181,78 @@ pub fn subrule_data(v: Value) -> Option<Arc<SubruleData>> {
     }
     v.downcast_ref::<FrozenStarlarkSubrule>()
         .map(|s| s.data.clone())
+}
+
+/// The analysis-time implementation of calling a subrule (Java `StarlarkSubrule.call`), installed
+/// by blaze_analysis with [`set_subrule_call_hook`].
+// W4-analysis: the call needs the rule context, which lives in blaze_analysis.
+pub type SubruleCallHook = for<'v> fn(
+    Value<'v>,
+    &Arguments<'v, '_>,
+    &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<Value<'v>>;
+
+static SUBRULE_CALL_HOOK: OnceLock<SubruleCallHook> = OnceLock::new();
+
+/// Installs the analysis implementation of `StarlarkSubrule.call` (first call wins).
+// W4-analysis: see SubruleCallHook.
+pub fn set_subrule_call_hook(hook: SubruleCallHook) {
+    let _ = SUBRULE_CALL_HOOK.set(hook);
+}
+
+/// Java `StarlarkSubrule`'s fields as analysis sees them.
+// W4-analysis: read by blaze_analysis::starlark::starlark_subrule.
+pub struct SubruleView<'v> {
+    /// Java `getName()`.
+    pub name: String,
+    /// `(extensionLabel, exportedName)` once exported.
+    pub exported: Option<(Label, String)>,
+    pub implementation: Value<'v>,
+    /// Java `SubruleAttribute`s: `(attrName, ruleAttrName)`; `ruleAttrName` is `None` while the
+    /// subrule is unexported.
+    pub attributes: Vec<(String, Option<String>)>,
+    pub toolchains: Vec<ToolchainTypeRequirement>,
+    pub fragments: IndexSet<String>,
+    /// Java `getDeclaredSubrules()`.
+    pub subrules: Vec<Value<'v>>,
+}
+
+/// The parts of `v` if it is a subrule.
+// W4-analysis: read by blaze_analysis::starlark::starlark_subrule.
+pub fn subrule_view<'v>(v: Value<'v>) -> Option<SubruleView<'v>> {
+    let (data, attrs, subrules) = subrule_parts(v)?;
+    let implementation = match StarlarkSubrule::from_value(v) {
+        Some(s) => s.implementation,
+        None => v
+            .downcast_ref::<FrozenStarlarkSubrule>()
+            .map(|s| s.implementation.to_value())?,
+    };
+    let exported = data.exported.get().cloned();
+    let attributes = attrs
+        .into_iter()
+        .map(|(attr_name, descriptor)| {
+            let rule_attr_name = match (&exported, as_descriptor(descriptor)) {
+                (Some((label, name)), Some(d)) => {
+                    get_rule_attr_name(label, name, &attr_name, d.get_value_source()).ok()
+                }
+                _ => None,
+            };
+            (attr_name, rule_attr_name)
+        })
+        .collect();
+    let name = match &exported {
+        Some((_, n)) => n.clone(),
+        None => "unexported subrule".to_owned(),
+    };
+    Some(SubruleView {
+        name,
+        exported,
+        implementation,
+        attributes,
+        toolchains: data.toolchains.iter().cloned().collect(),
+        fragments: data.fragments.clone(),
+        subrules,
+    })
 }
 
 /// Java `x instanceof StarlarkSubrule`.

@@ -65,3 +65,22 @@ fn fields_and_getattr() {
     assert!(exec_err("x = struct(a = 1).b").is_err());
     assert!(exec_err("x = struct(1)").is_err());
 }
+
+/// Java: StarlarkRuleClassFunctionsTest.testStructAccessingUnknownField (starlark-rust patch
+/// 0013 routes the message through StructImpl.getErrorMessageForUnknownField).
+#[test]
+fn struct_accessing_unknown_field() {
+    assert_eq!(
+        exec_err("x = struct(a = 1, b = 2)\ny = x.c"),
+        Err("'struct' value has no field or method 'c'\nAvailable attributes: a, b".into())
+    );
+}
+
+/// Java: StarlarkRuleClassFunctionsTest.testGetattrNoAttr
+#[test]
+fn getattr_no_attr() {
+    assert_eq!(
+        exec_err("s = struct(a='val')\ngetattr(s, 'b')"),
+        Err("'struct' value has no field or method 'b'\nAvailable attributes: a".into())
+    );
+}

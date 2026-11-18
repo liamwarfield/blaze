@@ -263,6 +263,12 @@ where
         self.field_names().map(str::to_owned).collect()
     }
 
+    // Java: com/google/devtools/build/lib/packages/StructImpl.java:86 StructImpl.getErrorMessageForUnknownField
+    // (raised by net/starlark/java/eval/Starlark.java:1006 Starlark.getattr; starlark-rust patch 0013)
+    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
+        Some(self.unknown_field_message(attribute))
+    }
+
     // Java: StructImpl.equals
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
         let Some(other) = StarlarkInfo::from_value(other) else {

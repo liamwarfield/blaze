@@ -76,7 +76,18 @@ pub fn call_implementation<R>(
     if let Some(mapping) = main_repo_mapping {
         thread = thread.with_main_repo_mapping(mapping);
     }
-    let thread = thread.with_payload(payload);
+    // Java: `storeRepoMappingRecorderInThread(thread)`: `Label()` records apparent repo name
+    // lookups as `RecordedRepoMapping` inputs of the context (see #20721).
+    let thread = thread
+        .with_repo_mapping_recorder_fn(|thread, from_repo, apparent_repo_name, canonical| {
+            let mut context = thread
+                .payload::<ExternalContext>()
+                .expect("the ExternalContext payload");
+            context
+                .base
+                .record_repo_mapping(from_repo, apparent_repo_name, canonical);
+        })
+        .with_payload(payload);
     let result = call_frozen(
         function,
         &thread,

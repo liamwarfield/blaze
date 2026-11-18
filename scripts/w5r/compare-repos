@@ -40,8 +40,10 @@ record = _load_record()
 W5R = os.path.join(oc.WORK, "repos")
 INSTALL_BASE = os.path.join(oc.OUTPUT_ROOTS, "ur", "install", "58cf1ecbff441bac762b0050d6da21e9")
 ORACLE_OUTPUT_BASES = {
-    "brotli": os.path.join(oc.OUTPUT_ROOTS, "ur", "583b18a54a0812f6ca106c9c2c1eb80c"),
-    "re2": os.path.join(oc.OUTPUT_ROOTS, "ur", "f5418354f8881fd01f338636721e5f81"),
+    # Clean-env oracle output bases (HOME + PATH only), as scripts/oracle records. The early
+    # `ur/` bases were fetched with USER set, which cc_autoconf hashes into its marker.
+    "brotli": os.path.join(oc.OUTPUT_ROOTS, "ur-clean", "50ffd8b1cb3f56033e478238e2e050b8"),
+    "re2": os.path.join(oc.OUTPUT_ROOTS, "rec-oracle-9.3.2", "d4c1ff46e292915bfbb425566b16402b"),
 }
 DEFAULT_BINARY = os.path.join(REPO, "target", "debug", "blaze-fetch-dev")
 MEMORY_MAX = "12G"

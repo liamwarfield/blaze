@@ -23,6 +23,7 @@ use indexmap::{IndexMap, IndexSet};
 use crate::build_options::{BuildOptions, BuildOptionsView, ScopeType, StarlarkOptionValue};
 use crate::fragment_options_class::{CORE_OPTIONS, PLATFORM_OPTIONS, TEST_OPTIONS};
 use crate::options_diff::{OptionInfo, OptionsDiff};
+pub use crate::starlark_transition::TransitionAttrObject;
 use crate::starlark_transition::{
     JavaObject, PATCH_TRANSITION_KEY, StarlarkDefinedConfigTransition, ValidationException,
 };
@@ -36,6 +37,29 @@ pub fn apply_and_validate(
     starlark_transition: &StarlarkDefinedConfigTransition,
     allow_non_configurable_flag_changes: bool,
     is_exec_transition: bool,
+    semantics: &Arc<StarlarkSemantics>,
+    handler: &dyn EventHandler,
+) -> Option<IndexMap<String, BuildOptions>> {
+    apply_and_validate_with_attrs(
+        from_options,
+        starlark_transition,
+        allow_non_configurable_flag_changes,
+        is_exec_transition,
+        &crate::starlark_transition::EmptyTransitionAttrs,
+        semantics,
+        handler,
+    )
+}
+
+/// [`apply_and_validate`] with the `attr` object the transition implementation receives (Java:
+/// the transition's `attrObject`, the target's attribute values).
+// W4-analysis: rule and attribute transitions read `attr`; the exec transition gets an empty one.
+pub fn apply_and_validate_with_attrs(
+    from_options: &BuildOptions,
+    starlark_transition: &StarlarkDefinedConfigTransition,
+    allow_non_configurable_flag_changes: bool,
+    is_exec_transition: bool,
+    attr: &dyn TransitionAttrObject,
     semantics: &Arc<StarlarkSemantics>,
     handler: &dyn EventHandler,
 ) -> Option<IndexMap<String, BuildOptions>> {
@@ -87,9 +111,13 @@ pub fn apply_and_validate(
             None => from_options,
         };
 
-        let Some(transitions) =
-            starlark_transition.evaluate(&settings, &option_info_map, semantics, handler)
-        else {
+        let Some(transitions) = starlark_transition.evaluate_with_attrs(
+            &settings,
+            &option_info_map,
+            attr,
+            semantics,
+            handler,
+        ) else {
             return Ok(None); // errors reported to handler
         };
         if transitions.is_empty() {

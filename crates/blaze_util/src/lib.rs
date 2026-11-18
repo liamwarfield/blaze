@@ -1,7 +1,10 @@
 //! Shared utilities for Blaze: porting macros and small ports of `lib/util`.
 
+pub mod exit_code;
 pub mod fingerprint;
 
+pub use exit_code::DetailedExitCode;
+pub use exit_code::ExitCode;
 pub use fingerprint::Fingerprint;
 
 /// Marks a point the port has not reached yet. Always fails loudly; never returns a guess.

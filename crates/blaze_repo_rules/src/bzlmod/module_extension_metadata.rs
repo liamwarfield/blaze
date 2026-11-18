@@ -298,42 +298,8 @@ pub fn lockfile_module_extension_metadata_of(
     })
 }
 
-/// Generated when incorrect use_repo calls are detected in the root module file and its
-/// includes according to `ModuleExtensionMetadata`, and contains the buildozer commands required
-/// to bring them into the expected state.
-///
-/// PORT: move to blaze_bzlmod/src/skyframe/keys.rs, replacing the `RootModuleFileFixup = ()`
-/// placeholder there, so that `SingleExtensionValue::fixup` can hold it (`SingleExtensionFunction`
-/// reports `warning`, `BazelModTidyFunction` applies the commands).
-// Java: com/google/devtools/build/lib/bazel/bzlmod/RootModuleFileFixup.java:33 RootModuleFileFixup
-#[derive(Debug, Clone)]
-pub struct RootModuleFileFixup {
-    /// The keys are the paths to the root MODULE.bazel file (or its includes); the values are
-    /// the buildozer commands required to bring the keyed file into the expected state (Java
-    /// `ImmutableListMultimap`: keys in first-insertion order).
-    pub module_file_path_to_buildozer_commands: IndexMap<PathFragment, Vec<String>>,
-    pub usage: ModuleExtensionUsage,
-    pub warning: Event,
-}
-
-impl RootModuleFileFixup {
-    /// A human-readable message describing the fixup after it has been applied.
-    // Java: com/google/devtools/build/lib/bazel/bzlmod/RootModuleFileFixup.java:39 RootModuleFileFixup.getSuccessMessage
-    pub fn get_success_message(&self) -> String {
-        let extension_id = format!(
-            "{}%{}",
-            self.usage.extension_bzl_file, self.usage.extension_name
-        );
-        match &self.usage.isolation_key {
-            Some(key) => format!(
-                "Updated use_repo calls for isolated usage '{}' of {}",
-                key.usage_exported_name(),
-                extension_id
-            ),
-            None => format!("Updated use_repo calls for {extension_id}"),
-        }
-    }
-}
+/// Java `RootModuleFileFixup` (moved to blaze_bzlmod, where `SingleExtensionValue` holds it).
+pub use blaze_bzlmod::skyframe::keys::RootModuleFileFixup;
 
 /// An `ImmutableSortedSet<String>` (natural `String` order).
 fn sorted_set<'a>(items: impl IntoIterator<Item = &'a String>) -> Vec<String> {

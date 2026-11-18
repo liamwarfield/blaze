@@ -644,6 +644,13 @@ pub trait StarlarkValue<'v>:
         Vec::new()
     }
 
+    /// The error message for a missing attribute `attribute`, replacing the generic
+    /// "Object of type ... has no attribute ..." (Bazel's
+    /// `Structure.getErrorMessageForUnknownField`). `None` keeps the generic message.
+    fn get_attr_error_message(&self, _attribute: &str) -> Option<String> { // BLAZE PATCH 0013
+        None // BLAZE PATCH 0013
+    } // BLAZE PATCH 0013
+
     /// Tell whether `other` is in the current value, if it is a container.
     ///
     /// # Examples
@@ -831,6 +838,13 @@ pub trait StarlarkValue<'v>:
     fn bit_or(&self, other: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
         ValueError::unsupported_with(self, "|", other)
     }
+
+    /// `lhs | self`, tried when `lhs.bit_or(self)` fails (Python `__ror__`; Bazel's
+    /// `HasBinary.binaryOp(op, x, /*thisLeft=*/ false)` in `EvalUtils.binaryOp`). `None` keeps
+    /// the left operand's error.
+    fn rbit_or(&self, _lhs: Value<'v>, _heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> { // BLAZE PATCH 0014
+        None // BLAZE PATCH 0014
+    } // BLAZE PATCH 0014
 
     /// Bitwise `^` operator.
     fn bit_xor(&self, other: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {

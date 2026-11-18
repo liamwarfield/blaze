@@ -85,6 +85,13 @@ pub struct DownloadManager {
 /// A download running on its own thread (`Future<Path>`).
 pub struct PendingDownload(JoinHandle<Result<Path, IoException>>);
 
+impl PendingDownload {
+    /// Whether the download has completed, successfully or not (Java `Future.isDone`).
+    pub fn is_finished(&self) -> bool {
+        self.0.is_finished()
+    }
+}
+
 impl DownloadManager {
     pub fn new(
         download_cache: DownloadCache,

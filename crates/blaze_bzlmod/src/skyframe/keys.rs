@@ -325,11 +325,39 @@ impl Key for YankedVersionsKey {
     const FUNCTION: SkyFunctionName = YANKED_VERSIONS;
 }
 
-/// Port of `RootModuleFileFixup` (the buildozer fixup for incorrect `use_repo` declarations).
-///
-/// PORT: not ported yet (it is produced by `ModuleExtensionMetadata.generateFixup`, which runs
-/// with the extension); `SingleExtensionValue::fixup` is always `None` until then.
-pub type RootModuleFileFixup = ();
+/// Generated when incorrect use_repo calls are detected in the root module file and its
+/// includes according to `ModuleExtensionMetadata`, and contains the buildozer commands required
+/// to bring them into the expected state (produced by blaze_repo_rules'
+/// `ModuleExtensionMetadata.generateFixup`).
+// Java: com/google/devtools/build/lib/bazel/bzlmod/RootModuleFileFixup.java:33 RootModuleFileFixup
+#[derive(Debug, Clone, PartialEq)]
+pub struct RootModuleFileFixup {
+    /// The keys are the paths to the root MODULE.bazel file (or its includes); the values are
+    /// the buildozer commands required to bring the keyed file into the expected state (Java
+    /// `ImmutableListMultimap`: keys in first-insertion order).
+    pub module_file_path_to_buildozer_commands: IndexMap<blaze_vfs::PathFragment, Vec<String>>,
+    pub usage: blaze_bzlmod_model::ModuleExtensionUsage,
+    pub warning: blaze_events::Event,
+}
+
+impl RootModuleFileFixup {
+    /// A human-readable message describing the fixup after it has been applied.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/RootModuleFileFixup.java:39 RootModuleFileFixup.getSuccessMessage
+    pub fn get_success_message(&self) -> String {
+        let extension_id = format!(
+            "{}%{}",
+            self.usage.extension_bzl_file, self.usage.extension_name
+        );
+        match &self.usage.isolation_key {
+            Some(key) => format!(
+                "Updated use_repo calls for isolated usage '{}' of {}",
+                key.usage_exported_name(),
+                extension_id
+            ),
+            None => format!("Updated use_repo calls for {extension_id}"),
+        }
+    }
+}
 
 /// The result of evaluating a single module extension.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionValue.java:48 SingleExtensionValue
@@ -343,7 +371,6 @@ pub struct SingleExtensionValue {
     /// lockfile mode is UPDATE (or REFRESH).
     pub lock_file_info: Option<LockFileModuleExtensionWithFactors>,
     /// The buildozer fixup for incorrect `use_repo` declarations by the root module (if any).
-    /// PORT: see [`RootModuleFileFixup`].
     pub fixup: Option<RootModuleFileFixup>,
     pub facts: Facts,
     pub facts_version: i32,

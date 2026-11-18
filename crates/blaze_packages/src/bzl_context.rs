@@ -201,4 +201,20 @@ impl BzlInitThreadContext {
             .ok()?
             .payload::<BzlInitThreadContext>()
     }
+
+    /// The repo mapping entries recorded so far by the .bzl thread's
+    /// `Label.SimpleRepoMappingRecorder` (load statements, transitively loaded .bzls and
+    /// `Label()` calls), or `None` when the thread has no such recorder.
+    ///
+    /// Java: `(Label.SimpleRepoMappingRecorder) thread.getThreadLocal(Label.RepoMappingRecorder
+    /// .class)` then `recordedEntries()` (StarlarkRepositoryModule.repositoryRule). The recorder
+    /// is a thread-local next to this context; it lives in [`ThreadContext`].
+    // Java: com/google/devtools/build/lib/cmdline/Label.java:275 Label.SimpleRepoMappingRecorder.recordedEntries
+    pub fn recorded_repo_mapping_entries(
+        eval: &Evaluator<'_, '_, '_>,
+    ) -> Option<Vec<(RepositoryName, String, RepositoryName)>> {
+        ThreadContext::get(eval)
+            .ok()?
+            .recorded_repo_mapping_entries()
+    }
 }

@@ -22,3 +22,4 @@ pub(crate) mod set;
 pub(crate) mod value;
 pub use crate::values::set::refs::SetMut;
 pub use crate::values::set::refs::SetRef;
+pub use crate::values::set::refs::alloc_set; // BLAZE PATCH 0015

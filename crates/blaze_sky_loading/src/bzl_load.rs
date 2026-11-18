@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use allocative::Allocative;
@@ -37,8 +36,7 @@ use blaze_util::Fingerprint;
 use blaze_vfs::{DigestHashFunction, PathFragment, Root};
 use parking_lot::Mutex;
 use starlark::any::ProvidesStaticType;
-use starlark::environment::{FrozenModule, Globals, Module};
-use starlark::eval::Evaluator;
+use starlark::environment::{FrozenModule, Globals};
 use starlark::starlark_simple_value;
 use starlark::values::{NoSerialize, StarlarkValue, starlark_value};
 
@@ -749,24 +747,8 @@ pub fn check_load_visibilities(
 /// values hold `FrozenValue` handles into them (DESIGN.md). PORT: keep-alive.
 static KEEP_ALIVE: Mutex<Vec<FrozenModule>> = Mutex::new(Vec::new());
 
-fn panic_error(p: Box<dyn std::any::Any + Send>) -> EvalError {
-    let what = p
-        .downcast_ref::<&str>()
-        .map(|s| s.to_string())
-        .or_else(|| p.downcast_ref::<String>().cloned())
-        .unwrap_or_default();
-    EvalError {
-        kind: EvalErrorKind::Panic,
-        message: format!("internal error: Starlark evaluation panicked: {what}"),
-        callstack: Vec::new(),
-        include_stack: true,
-    }
-}
-
 /// `blaze_starlark::eval::exec_module`, plus the module's extra value (its
 /// `BazelModuleContext`), which must be set before freezing.
-///
-/// PORT: move to blaze_starlark::eval (an `extra_value` parameter of exec_module).
 fn exec_module_with_context(
     compiled: CompiledFile,
     globals: &Globals,
@@ -775,33 +757,18 @@ fn exec_module_with_context(
     opts: &EvalOptions,
     module_context: Arc<BazelModuleContext>,
 ) -> Result<FrozenModule, EvalError> {
-    let ast = compiled.ast;
-    let run = AssertUnwindSafe(|| {
-        Module::with_temp_heap(|module| {
-            module.set_extra_value(
-                module
-                    .heap()
-                    .alloc(BazelModuleContextValue(module_context.clone())),
-            );
-            {
-                let mut eval = Evaluator::new(&module);
-                eval.extra = Some(ctx);
-                eval.set_loader(loads);
-                eval.set_forbid_recursion(!ctx.semantics.allow_recursion);
-                eval.set_max_callstack_size(opts.max_callstack_size.max(1))
-                    .expect("fresh evaluator");
-                eval.eval_module(ast, globals)
-                    .map_err(|e| EvalError::from_starlark(&e))?;
-            }
-            module.freeze().map_err(|e| EvalError {
-                kind: EvalErrorKind::Eval,
-                message: format!("{e:?}"),
-                callstack: Vec::new(),
-                include_stack: true,
-            })
-        })
-    });
-    std::panic::catch_unwind(run).unwrap_or_else(|p| Err(panic_error(p)))
+    blaze_starlark::eval::exec_module_with_extra_value(
+        compiled,
+        globals,
+        loads,
+        ctx,
+        opts,
+        move |module| {
+            module
+                .heap()
+                .alloc(BazelModuleContextValue(module_context.clone()))
+        },
+    )
 }
 
 /// What BZL_LOAD needs from the rule class provider and the server.
@@ -1251,7 +1218,7 @@ impl BzlLoadFunction {
         // executeBzlFile may post events to the Environment's handler, but events do not matter
         // when caching BzlLoadValues. Note that executing the code mutates the Module and
         // BzlInitThreadContext.
-        let (module, context) = match Self::execute_bzl_file(
+        let (module, context, repo_mapping_recorder) = match Self::execute_bzl_file(
             crate::bzl_compile::clone_compiled_file(prog),
             key,
             &globals,
@@ -1261,6 +1228,7 @@ impl BzlLoadFunction {
             semantics.clone(),
             &main_repo_mapping,
             env.listener(),
+            repo_mapping_recorder,
         ) {
             Ok(r) => r,
             Err(e) => return Ok(Err(e)),
@@ -1444,7 +1412,15 @@ impl BzlLoadFunction {
         starlark_semantics: Arc<StarlarkSemantics>,
         main_repo_mapping: &RepositoryMapping,
         skyframe_event_handler: &dyn ExtendedEventHandler,
-    ) -> Result<(FrozenModule, BzlInitThreadContext), BzlLoadFailedException> {
+        repo_mapping_recorder: LabelSimpleRepoMappingRecorder,
+    ) -> Result<
+        (
+            FrozenModule,
+            BzlInitThreadContext,
+            LabelSimpleRepoMappingRecorder,
+        ),
+        BzlLoadFailedException,
+    > {
         let label = key.get_label();
         // Registered before execution so natives can find the module of the innermost Starlark
         // function (BazelModuleContext.ofInnermostBzl).
@@ -1470,10 +1446,12 @@ impl BzlLoadFunction {
                 .insert(m.filename.clone(), m.package_context());
             true
         });
-        let thread_context = thread_context.with_payload(context);
+        // This is needed so that any calls to `Label()` will have its used repo mapping entries
+        // recorded. See #20721 for more details.
+        let thread_context = thread_context
+            .with_simple_repo_mapping_recorder(repo_mapping_recorder)
+            .with_payload(context);
 
-        // PORT: Java records repo mappings used by `Label()` through a thread-local
-        // RepoMappingRecorder; blaze_starlark's `Label()` does not record yet.
         let result = exec_module_with_context(
             prog,
             globals,
@@ -1506,6 +1484,9 @@ impl BzlLoadFunction {
         let context = thread_context
             .take_payload::<BzlInitThreadContext>()
             .expect("the .bzl thread context");
-        Ok((module, context))
+        let repo_mapping_recorder = thread_context
+            .take_simple_repo_mapping_recorder()
+            .expect("the .bzl thread's repo mapping recorder");
+        Ok((module, context, repo_mapping_recorder))
     }
 }

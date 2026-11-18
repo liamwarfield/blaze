@@ -640,7 +640,6 @@ impl PackageLookupFunction {
         let repository_key = RepositoryDirectoryKey::key(id.get_repository().clone());
         // Java: getValueOrThrow(repositoryKey, NoSuchPackageException.class, IOException.class,
         // EvalException.class, AlreadyReportedException.class).
-        // PORT: AlreadyReportedException has no Rust counterpart yet.
         let repository_value = match env.get_value_or_throw_with(repository_key, |e| {
             if let Some(e) = e.downcast_ref::<NoSuchPackageException>() {
                 Some(NoSuchPackageException::build_file_not_found(
@@ -652,10 +651,15 @@ impl PackageLookupFunction {
                     id.clone(),
                     e.get_message(),
                 ))
+            } else if let Some(e) = e.downcast_ref::<blaze_starlark::EvalError>() {
+                Some(NoSuchPackageException::repository_fetch(
+                    id.clone(),
+                    e.message.clone(),
+                ))
             } else {
-                e.downcast_ref::<blaze_starlark::EvalError>().map(|e| {
-                    NoSuchPackageException::repository_fetch(id.clone(), e.message.clone())
-                })
+                // catch (IOException | EvalException | AlreadyReportedException e)
+                e.downcast_ref::<crate::exceptions::AlreadyReportedException>()
+                    .map(|e| NoSuchPackageException::repository_fetch(id.clone(), e.get_message()))
             }
         })? {
             Err(e) => {

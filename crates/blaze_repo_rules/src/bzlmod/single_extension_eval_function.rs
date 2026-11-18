@@ -512,10 +512,7 @@ impl SingleExtensionEvalFunction {
             generated_repo_specs,
             canonical_repo_name_to_internal_names,
             lock_file_info,
-            // PORT: `SingleExtensionValue::fixup` is `Option<()>` until RootModuleFileFixup moves
-            // to blaze_bzlmod (see `super::module_extension_metadata::RootModuleFileFixup`); the
-            // fixup's warning and commands are dropped here.
-            fixup: fixup.map(|_| ()),
+            fixup,
             facts,
             facts_version,
         })

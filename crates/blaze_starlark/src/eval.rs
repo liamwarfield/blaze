@@ -190,6 +190,42 @@ pub fn exec_module(
     std::panic::catch_unwind(run).unwrap_or_else(|p| Err(panic_error(p)))
 }
 
+/// Like [`exec_module`], but first sets the module's extra value to `extra_value(module)`
+/// (starlark-rust `Module::set_extra_value`), so it is frozen with the module. Blaze stores the
+/// .bzl's `BazelModuleContext` there (Java `Module.setClientData`).
+pub fn exec_module_with_extra_value(
+    compiled: CompiledFile,
+    globals: &Globals,
+    loads: &LoadMap,
+    ctx: &ThreadContext,
+    opts: &EvalOptions,
+    extra_value: impl for<'v> FnOnce(&Module<'v>) -> Value<'v>,
+) -> Result<FrozenModule, EvalError> {
+    let ast = compiled.ast;
+    let run = AssertUnwindSafe(|| {
+        Module::with_temp_heap(|module| {
+            let extra = extra_value(&module);
+            module.set_extra_value(extra);
+            {
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(ctx);
+                eval.set_loader(loads);
+                eval.set_forbid_recursion(!ctx.semantics.allow_recursion);
+                eval.set_max_callstack_size(opts.max_callstack_size.max(1))
+                    .expect("fresh evaluator");
+                if let Some(c) = &opts.cancelled {
+                    let c = c.clone();
+                    eval.set_check_cancelled(Box::new(move || c.load(Ordering::Relaxed)));
+                }
+                eval.eval_module(ast, globals)
+                    .map_err(|e| EvalError::from_starlark(&e))?;
+            }
+            freeze(module)
+        })
+    });
+    std::panic::catch_unwind(run).unwrap_or_else(|p| Err(panic_error(p)))
+}
+
 /// Brings a value frozen elsewhere (a function from a loaded .bzl, a provider from a dependency's
 /// analysis) into `module`'s heap.
 ///

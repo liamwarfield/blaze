@@ -199,7 +199,12 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
             Some(v) => Ok(v),
             None => match default {
                 Some(x) => Ok(x),
-                None => ValueError::unsupported_owned(a.get_type(), &format!(".{attr}"), None),
+                None => {
+                    if let Some(message) = a.get_attr_error_message(attr) { // BLAZE PATCH 0013
+                        return Err(starlark::Error::new_other(anyhow::anyhow!("{message}"))); // BLAZE PATCH 0013
+                    } // BLAZE PATCH 0013
+                    ValueError::unsupported_owned(a.get_type(), &format!(".{attr}"), None)
+                }
             },
         }
     }

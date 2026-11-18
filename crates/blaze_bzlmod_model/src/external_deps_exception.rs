@@ -44,6 +44,13 @@ impl ExternalDepsCode {
     }
 }
 
+/// A Starlark call stack (Java `ImmutableList<StarlarkThread.CallStackEntry>`) as
+/// [`ExternalDepsException::with_call_stack_and_message`] needs it.
+pub trait ExternalDepsCallStack {
+    /// Java `EvalException.formatCallStack(callStack, message, EvalException.newSourceReader())`.
+    fn format_call_stack(&self, message: &str) -> String;
+}
+
 /// Exception indicating that something went wrong while processing external dependencies. Port of
 /// Java `ExternalDepsException` (its `DetailedExitCode` is the message plus the code).
 // Java: com/google/devtools/build/lib/bazel/bzlmod/ExternalDepsException.java:30 ExternalDepsException
@@ -59,6 +66,22 @@ impl ExternalDepsException {
     pub fn with_message(code: ExternalDepsCode, message: impl Into<String>) -> Self {
         ExternalDepsException {
             message: message.into(),
+            code,
+            cause: None,
+        }
+    }
+
+    /// `withCallStackAndMessage`: the message is `EvalException.formatCallStack(callStack,
+    /// message, ...)`. This crate is Starlark-free, so the Starlark layer supplies the call stack
+    /// and its formatting through [`ExternalDepsCallStack`].
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/ExternalDepsException.java:51 ExternalDepsException.withCallStackAndMessage
+    pub fn with_call_stack_and_message(
+        code: ExternalDepsCode,
+        call_stack: &dyn ExternalDepsCallStack,
+        message: impl Into<String>,
+    ) -> Self {
+        ExternalDepsException {
+            message: call_stack.format_call_stack(&message.into()),
             code,
             cause: None,
         }

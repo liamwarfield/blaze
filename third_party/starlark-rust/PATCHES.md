@@ -21,6 +21,11 @@ by adding.
 | 0008 | queued | float repr (shortest round-trip), `%` on floats, exact int/float comparison |
 | 0009 | queued | builtin `type()` / `repr` names (`builtin_function_or_method`, `<built-in function len>`, `<function f>`) |
 | 0010 | queued | error texts, only where a test or the oracle needs them |
+| 0011 | applied | `%s` and `"{}".format` use `str`, not `repr` |
+| 0012 | applied | per-thread heap chunk size overflow |
+| 0013 | applied | per-type unknown-attribute message (`StarlarkValue::get_attr_error_message`) |
+| 0014 | applied | reflected `\|` (`StarlarkValue::rbit_or`), so `dict \| select(...)` reaches the select |
+| 0015 | applied | public set allocation and heap-free iteration (`set::alloc_set`, `SetRef` accessors) |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -108,3 +113,46 @@ the native stack; Blaze runs evaluation on threads with large stacks
 - Fix: `values/layout/heap/allocator/alloc/per_thread.rs` maps the overflow to the existing
   2 GiB cap.
 - Test: none practical (needs 32 chunk allocations on one thread); covered by re2 `deps()`.
+
+## 0013 — per-type unknown-attribute message
+
+- Gap: `x.f` and `getattr(x, "f")` on a value without `f` always failed with starlark-rust's
+  "Object of type `T` has no attribute `f`". Bazel asks the value
+  (net/starlark/java/eval/Starlark.java:1006 `Starlark.getattr` →
+  `Structure.getErrorMessageForUnknownField`), e.g. a provider instance:
+  "'MyInfo' value has no field or method 'f'\nAvailable attributes: a, b"
+  (lib/packages/StructImpl.java:86).
+- Fix: `StarlarkValue::get_attr_error_message(&self, attribute) -> Option<String>` (default
+  `None`, so other types keep starlark-rust's text); `Value::get_attr_error_message`; used by
+  `eval/compiler/expr.rs` `get_attr_no_attr_error`, `Value::get_attr_error` and the `getattr`
+  builtin (`stdlib/funcs/other.rs`).
+- Users: blaze_starlark `StarlarkInfo` (struct and provider instances).
+- Test: `patch_0013_unknown_field_message`.
+
+## 0014 — reflected `|`
+
+- Gap: `bit_or` had no reflected form, so `{"a": 1} | select({...})` failed in the dict's `|`
+  (Bazel: net/starlark/java/eval/EvalUtils.java `binaryOp` tries the built-in cases, then
+  `x.binaryOp(op, y, true)`, then `y.binaryOp(op, x, false)`; packages/SelectorList.java
+  `binaryOp` handles `thisLeft = false`). `+` already has `radd`.
+- Fix: `StarlarkValue::rbit_or(&self, lhs, heap) -> Option<Result>` (default `None`).
+  `Value::bit_or` calls the right operand's `rbit_or` when the left operand's `bit_or` fails, and
+  keeps the left's error when there is no reflected form. `bit_or_assign`
+  (`eval/compiler/stmt.rs`): `dict |= y` with a non-dict `y` tries `y.rbit_or` first (Java
+  Eval.inplaceBinaryOp only merges `dict |= map`), and other left operands go through
+  `Value::bit_or`.
+- Caveat: the reflected form is tried after any failure of the left `bit_or`; built-in `bit_or`s
+  only fail on operand types, as in Java.
+- Users: blaze_packages `SelectorValue` / `SelectorList`.
+- Test: `patch_0014_reflected_bit_or`.
+
+## 0015 — set allocation and iteration
+
+- Gap: no public way to allocate a set (`SetData` is crate-private) or to read a set's elements
+  without a heap (`Value::iterate`). blaze_packages needs both for `attr.string_set`-style
+  values (lib/packages/Type.java:846 `SetType.copyAndLiftStarlarkValue` →
+  `StarlarkSet.immutableCopyOf`, and `SetType.convert` iterating a `Set`).
+- Fix: `values/types/set/refs.rs`: `alloc_set(heap, values) -> Result<Value>` (hashes each value,
+  drops duplicates, keeps first-insertion order; fails on unhashable values), re-exported as
+  `starlark::values::set::alloc_set`; `SetRef::from_value`, `len`, `is_empty`, `iter`.
+- Test: `patch_0015_alloc_set`.

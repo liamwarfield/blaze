@@ -120,9 +120,11 @@ impl ConfigSettingRule {
 /// maps `values` keys to, resolved during analysis).
 // Java: com/google/devtools/build/lib/rules/config/ConfigRuleClasses.java:172 ConfigRuleClasses.ConfigSettingRule.FLAG_ALIAS_REFERENCES
 pub static FLAG_ALIAS_REFERENCES: LazyLock<Arc<LateBoundDefault>> = LazyLock::new(|| {
-    Arc::new(LateBoundDefault::label_list(Some(
-        "BuildConfigurationValue",
-    )))
+    // W4-analysis: names the analysis resolver.
+    Arc::new(
+        LateBoundDefault::label_list(Some("BuildConfigurationValue"))
+            .with_resolver_name("ConfigSettingRule.FLAG_ALIAS_REFERENCES"),
+    )
 });
 
 impl RuleDefinition for ConfigSettingRule {

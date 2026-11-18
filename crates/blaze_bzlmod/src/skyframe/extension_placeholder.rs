@@ -155,7 +155,6 @@ fn compute_lockfile_only_extension_eval(
 ///
 /// PORT: Java reads the usages from SINGLE_EXTENSION_USAGES (`SingleExtensionUsagesFunction`, a
 /// change-pruning node over BAZEL_DEP_GRAPH); they are read from BAZEL_DEP_GRAPH directly here.
-/// The fixup warning is never present (see `RootModuleFileFixup`).
 // Java: com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionFunction.java:37 SingleExtensionFunction.compute
 pub fn compute_single_extension(
     key: &SingleExtensionKey,
@@ -170,6 +169,13 @@ pub fn compute_single_extension(
     else {
         return Ok(None);
     };
+
+    // SingleExtensionEvalFunction doesn't handle the fixup warning so that bazel mod tidy doesn't
+    // show it.
+    if let Some(fixup) = &eval_only_value.fixup {
+        env.listener().handle(&fixup.warning);
+    }
+
     let empty_usages = IndexMap::new();
     let extension_usages = dep_graph_value
         .extension_usages_table

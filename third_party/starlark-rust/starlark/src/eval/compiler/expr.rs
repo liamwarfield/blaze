@@ -1111,6 +1111,9 @@ impl<P: AstPayload> CompilerExprUtil<P> for ExprP<P> {
 #[cold]
 #[inline(never)]
 fn get_attr_no_attr_error<'v>(x: Value<'v>, attribute: &Symbol) -> crate::Error {
+    if let Some(message) = x.get_attr_error_message(attribute.as_str()) { // BLAZE PATCH 0013
+        return crate::Error::new_other(anyhow::anyhow!("{message}")); // BLAZE PATCH 0013
+    } // BLAZE PATCH 0013
     match did_you_mean(attribute.as_str(), x.dir_attr().iter().map(|s| s.as_str())) {
         None => ValueError::NoAttr(x.get_type().to_owned(), attribute.as_str().to_owned()).into(),
         Some(better) => ValueError::NoAttrDidYouMean(

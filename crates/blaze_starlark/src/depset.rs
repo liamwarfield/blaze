@@ -105,6 +105,25 @@ starlark_complex_value!(pub Depset);
 // SAFETY: `repr(C)`; FrozenValue and Value have the same layout, and the enums only hold `V`.
 unsafe impl<'v> Coerce<DepsetGen<Value<'v>>> for DepsetGen<FrozenValue> {}
 
+impl FrozenDepset {
+    /// A frozen depset node from its parts (for converting a `blaze_collect::NestedSet` into a
+    /// depset with the same structure). `children` must mirror NestedSet's node shape.
+    // W4-analysis: needed by blaze_analysis::rule::depsets (NestedSet -> depset).
+    pub fn new_frozen(
+        order: Order,
+        elem_type: Option<&'static str>,
+        depth: i32,
+        children: DepsetChildren<FrozenValue>,
+    ) -> FrozenDepset {
+        DepsetGen {
+            order,
+            elem_type,
+            depth,
+            children,
+        }
+    }
+}
+
 impl<'v> Freeze for Depset<'v> {
     type Frozen = FrozenDepset;
     fn freeze(self, freezer: &Freezer) -> FreezeResult<FrozenDepset> {

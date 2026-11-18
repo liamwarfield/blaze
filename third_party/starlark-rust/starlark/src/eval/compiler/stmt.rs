@@ -572,6 +572,13 @@ pub(crate) fn bit_or_assign<'v>(
     let lhs_ty = lhs_aref.vtable().static_type_of_value.get();
 
     if Dict::is_dict_type(lhs_ty) {
+        // Java Eval.inplaceBinaryOp: only `dict |= map` merges in place; anything else is a
+        // plain binary `|`, which may dispatch to the right operand.
+        if !lhs.ptr_eq(rhs) && DictRef::from_value(rhs).is_none() { // BLAZE PATCH 0014
+            if let Some(r) = rhs.get_ref().rbit_or(lhs, heap) { // BLAZE PATCH 0014
+                return r; // BLAZE PATCH 0014
+            } // BLAZE PATCH 0014
+        } // BLAZE PATCH 0014
         let mut dict = DictMut::from_value(lhs)?;
         if lhs.ptr_eq(rhs) {
             // Nothing to do as union is idempotent
@@ -592,7 +599,7 @@ pub(crate) fn bit_or_assign<'v>(
         }
         Ok(lhs)
     } else {
-        lhs_aref.bit_or(rhs, heap)
+        lhs.bit_or(rhs, heap) // BLAZE PATCH 0014
     }
 }
 

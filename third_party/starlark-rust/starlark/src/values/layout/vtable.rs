@@ -502,6 +502,10 @@ impl<'v> AValueDyn<'v> {
         (self.vtable.starlark_value.dir_attr)(self.value)
     }
 
+    pub(crate) fn get_attr_error_message(self, attribute: &str) -> Option<String> { // BLAZE PATCH 0013
+        (self.vtable.starlark_value.get_attr_error_message)(self.value, attribute) // BLAZE PATCH 0013
+    } // BLAZE PATCH 0013
+
     #[inline]
     pub(crate) fn bit_and(self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
         (self.vtable.starlark_value.bit_and)(self.value, other, heap)
@@ -511,6 +515,11 @@ impl<'v> AValueDyn<'v> {
     pub(crate) fn bit_or(self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
         (self.vtable.starlark_value.bit_or)(self.value, other, heap)
     }
+
+    #[inline] // BLAZE PATCH 0014
+    pub(crate) fn rbit_or(self, other: Value<'v>, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> { // BLAZE PATCH 0014
+        (self.vtable.starlark_value.rbit_or)(self.value, other, heap) // BLAZE PATCH 0014
+    } // BLAZE PATCH 0014
 
     #[inline]
     pub(crate) fn bit_xor(self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {

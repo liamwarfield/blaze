@@ -76,10 +76,11 @@ impl RuleDefinition for CcLibcTopAlias {
     ) -> RuleClass {
         // Java: CcLibcTopAlias.getSysrootAttribute (resolved from CppConfiguration during
         // analysis; no default).
-        let sysroot = Arc::new(LateBoundDefault::label_from_target_configuration(
-            "CppConfiguration",
-            None,
-        ));
+        // W4-analysis: names the analysis resolver.
+        let sysroot = Arc::new(
+            LateBoundDefault::label_from_target_configuration("CppConfiguration", None)
+                .with_resolver_name("CcLibcTopAlias.SYSROOT"),
+        );
         common_alias_rule_build(builder, sysroot, "CppConfiguration")
     }
 
