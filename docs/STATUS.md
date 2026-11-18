@@ -10,17 +10,21 @@ Updated 2026-11-17 (root).
   blaze_events (66), blaze_vfs + blaze_cmdline (163), starlark_conformance (ScriptTest 86.8% asserts).
 - blaze_options: framework + rc handling ported; OptionsParserTest still being ported.
 
-## In flight (2026-11-17, late)
-- Referee done: scripts/oracle (13 surfaces, oracle vs oracle 100%).
-- Committed since: blaze_options (405 tests), blaze_optdefs (all 1,121 options), blaze_starlark +
-  vendored starlark-rust (patches 1-4, 6), blaze_protos (byte-exact), blaze_shell,
-  blaze_bzlmod_model (lockfile byte-exact), blaze_repo_fetch (shared cache), skyframe fixes.
-- Leads running: W1 client/runtime/`blaze` bin (version/info/clean/shutdown); W2 blaze_bzlmod
-  (MODULE.bazel eval, registry, `mod graph`, lockfile); W3 packages + rule-definition builtins +
-  @_builtins + loading SkyFunctions + query (repos taken from the oracle's output base for now);
-  blaze_cc_features (C++ feature engine); optdefs helper cleanup.
+## Milestones reached against the oracle (2026-11-18)
+- `version`, `info` (39/39 comparable checks), `clean`, `shutdown`, rc/`--config`: match (W1).
+- `mod graph --output=json`: byte-identical for brotli and re2; lockfile resolution part matches (W2).
+- Every build configuration checksum (top-level, test-trimmed, exec, no-config) matches (W4 config).
+- CppCompile argv for brotli dictionary.c equals the oracle's (blaze_cc_features).
 
-## Next (wave plan from docs/research/06 §5.4)
-Repo rules + module extensions (needs W3's attr/rule machinery and W2's seam) → W4 configs/
-analysis/`cquery` → W5 actions/`aquery` → W6 brotli build → W7 re2 tests → W8 BEP/server.
-Also pending: runfiles shim to run Bazel's shell/Python integration tests against `blaze`.
+## In flight
+- W3 lead: packages, rule-definition builtins, @_builtins, loading SkyFunctions, `query`.
+- Repo-rules lead: repository_rule/repository_ctx, module extensions, REPOSITORY_DIRECTORY, lockfile
+  moduleExtensions.
+- W5 lead: blaze_actions (artifacts, actions, byte-exact action keys, runfiles, aquery dump).
+- W6 lead: blaze_exec (spawn runners, linux-sandbox, exec log, action cache) via spawn replay.
+- Upstream integration-test shim (Bazel's shell/py tests against any binary; oracle baseline).
+
+## Next
+Analysis lead (configured targets, toolchains/platforms, ctx API, providers, cc_internal/cc_common
+wrappers over blaze_cc_features, py_builtins, `cquery`) once W3 lands → wire aquery (W5) → build
+driver + execution (W6) → brotli build → re2 tests (W7) → BEP (W8).
