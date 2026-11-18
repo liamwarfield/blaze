@@ -2,16 +2,17 @@
 
 Updated 2026-11-18 (root).
 
-**Accepted evidence.** Score `corpus/scores/blaze-12ca29ee95e0.md` (clean checkout of 12ca29e):
-brotli and re2, 23 of 26 surfaces MATCH, 13,850 of 13,858 compared items; open: 4 BEP items per
-project, 1 extra re2 stderr line. Rust tests at 12ca29e (clean): 4,922 pass, 0 fail, 2,012
-ignored; 31 baseline names are absent and need a reviewed name map before the baseline moves.
+**Evidence.** Scores from clean checkouts: `corpus/scores/blaze-12ca29ee95e0.md` and
+`corpus/scores/blaze-ef66f55e904e.md` (the latter with remote execution integrated): brotli and
+re2, 23 of 26 surfaces MATCH, 13,850 of 13,858 compared items; open: 4 BEP items per project,
+1 extra re2 stderr line. Rust tests at ef66f55 (clean): 5,487 pass, 0 fail, 2,075 ignored; with
+the name map (35 renames) no baseline name is lost. Error/UI probe (35 scenarios, full
+transcripts): 94 of 694 steps identical to Bazel, 225 on message text.
 
-**Reviews** (docs/reviews/): referee/gate PASS, skyframe PASS, loading PASS, actions PASS,
-bzlmod/repos/client PASS (round 4). Analysis round 2: STOP at 12ca29e (22 closed; 2 blockers:
-nine cpp lists wrongly immutable, unread semantics flags). Execution round 2: STOP at 12ca29e
-(all 6 round-1 blockers closed; 2 new: `--notest_keep_going` exit code, `--spawn_strategy=bogus`
-message). Opus fixers are on both. Integrity audit: open outside the referee.
+**Reviews** (docs/reviews/, Fable 5.2): every code area has PASS in its last round: referee/gate
+(2A), skyframe (2), loading (3), actions (2), bzlmod/repos/client (4), analysis (3), execution
+(4, at ef66f55). In progress: remote review (2026-11-19-remote.md), integrity audit round 2B
+(incl. approval of the baseline move to ef66f55).
 
 ## Done (committed, tests green)
 - Oracle pinned (Bazel 9.3.2), corpus: brotli builds (53 actions), re2 tests 21/21 on the oracle.
@@ -38,11 +39,12 @@ message). Opus fixers are on both. Integrity audit: open outside the referee.
 - Upstream integration tests: harness ready; oracle baseline 211/237 targets, 2,878 functions.
 
 ## In flight
-- Fixers (Opus): analysis round 2; execution round 2 (+ no_proxy split found by the gate).
-- Remote lead (Fable; Opus workers): crates/blaze_remote; round 1 integrated behind feature
-  `wip`, round 2 (RemoteExecutionService, gRPC cache, ByteStream, logging) compiling. No oracle
-  evidence yet.
-- Gate: name map covers 30 of 31 absent names; the last is the no_proxy divergence (being fixed).
+- Remote lead (Fable; Opus workers): re2 through the real binary for remote cache/execution,
+  build without the bytes, the resource_set call. Lead-reported so far (brotli, real binary):
+  cache interchange with Bazel 43/43 both ways, gRPC log MATCH, 43 actions executed remotely.
+- Opus fixer: adopting interpreter patches 0026-0031 in analysis/loading, cquery/aquery strategy
+  validation, probe transcripts.
+- Reviewers: remote; auditor round 2B.
 
 ## Next
 Byte-strings migration (docs/research/07), then workerd end to end (aspects are its next
