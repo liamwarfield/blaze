@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# Vendored third-party crates are path dependencies, not members (no tests/lints run on them).
+exclude = ["third_party"]
 
 [workspace.package]
 edition = "2024"
@@ -12,6 +14,7 @@ publish = false
 starlark = "0.14.2"
 starlark_derive = "0.14.2"
 starlark_map = "0.14.2"
+starlark_syntax = "0.14.2"
 dupe = "0.9"
 num-bigint = "0.4"
 allocative = "0.3"
@@ -23,10 +26,35 @@ indexmap = "2"
 once_cell = "1"
 parking_lot = "0.12"
 rayon = "1"
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+flate2 = "1"
+tar = "0.4"
+xz2 = { version = "0.1", features = ["static"] }
+zstd = "0.13"
+bzip2 = "0.5"
+sevenz-rust2 = { version = "0.25", default-features = false }
+sha1 = "0.10"
 sha2 = "0.10"
 md-5 = "0.10"
 hex = "0.4"
 regex = "1"
+blake3 = "1"
+libc = "0.2"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+prost = "0.14"
+prost-types = "0.14"
+prost-build = "0.14"
+protox = "0.10"
+heck = "0.5"
+base64 = "0.22"
+
+# starlark-rust 0.14.2, vendored with Blaze's patch queue (third_party/starlark-rust/PATCHES.md).
+[patch.crates-io]
+starlark = { path = "third_party/starlark-rust/starlark" }
+starlark_syntax = { path = "third_party/starlark-rust/starlark_syntax" }
+starlark_derive = { path = "third_party/starlark-rust/starlark_derive" }
+starlark_map = { path = "third_party/starlark-rust/starlark_map" }
 
 [profile.dev]
 debug = "line-tables-only"
