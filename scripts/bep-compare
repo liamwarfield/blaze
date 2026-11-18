@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""bep-compare: score a --build_event_json_file against an oracle recording's `bep` surface.
+
+Usage:
+  scripts/bep-compare --project brotli --candidate FILE [--label oracle-9.3.2] [--verbose]
+  scripts/bep-compare help
+
+The candidate is normalised exactly as scripts/oracle/record normalises the recorded BEP
+(surfaces.normalise_bep, with the recording's path/user/host context from its manifest), then
+compared item by item (key = canonical event id) with <label>/<project>/items/bep.json, applying
+scripts/oracle/allow.json. Also compares the raw progress-event skeleton (ids, children,
+lastMessage; stdout/stderr and the names of announced named sets ignored), which the
+surface drops. Prints counts; exit 1 on any
+difference. Python 3 standard library only.
+"""
+import argparse
+import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "oracle"))
+
+import oracle_common as oc  # noqa: E402
+import oracle_compare as cmp  # noqa: E402
+import surfaces  # noqa: E402
+from normalise import Context  # noqa: E402
+
+
+def progress_skeleton(events):
+    out = []
+    for e in events:
+        if "progress" in e.get("id", {}):
+            # Which named set a progress event announces depends on thread scheduling in
+            # Bazel (two completions racing), so the set's name is not compared.
+            children = [{"namedSet": {}} if "namedSet" in c else c for c in e.get("children", [])]
+            out.append({"id": e["id"], "children": children,
+                        "last": bool(e.get("lastMessage"))})
+    return out
+
+
+def main(argv):
+    if len(argv) > 1 and argv[1] in ("help", "--help", "-h"):
+        print(__doc__)
+        return 0
+    ap = argparse.ArgumentParser(description="compare a BEP JSON file with an oracle recording")
+    ap.add_argument("--project", required=True)
+    ap.add_argument("--candidate", required=True)
+    ap.add_argument("--label", default="oracle-9.3.2")
+    ap.add_argument("--verbose", action="store_true")
+    a = ap.parse_args(argv[1:])
+
+    rd = oc.record_dir(a.label, a.project)
+    manifest = oc.read_json(os.path.join(rd, "manifest.json"))
+    ctx = Context.from_dict(manifest["context"])
+    with open(a.candidate, encoding="utf-8") as f:
+        cand_events = [json.loads(l) for l in f if l.strip()]
+    with open(os.path.join(rd, "raw", "bep.json"), encoding="utf-8") as f:
+        oracle_events = [json.loads(l) for l in f if l.strip()]
+
+    cand = surfaces.normalise_bep(ctx, cand_events)
+    ref = cmp.load_surface(a.label, a.project, "bep")["items"]
+    allow = cmp.AllowList()
+    counts = {"MATCH": 0, "ALLOWED": 0, "DIFF": 0, "MISSING": 0, "EXTRA": 0}
+    for key in sorted(set(ref) | set(cand)):
+        if key not in cand:
+            kind, paths = "MISSING", []
+        elif key not in ref:
+            kind, paths = "EXTRA", []
+        elif oc.canonical(ref[key]) == oc.canonical(cand[key]):
+            counts["MATCH"] += 1
+            continue
+        else:
+            kind, paths = "DIFF", cmp.diff_paths(ref[key], cand[key])
+        if allow.match(a.project, "bep", key, kind, paths):
+            counts["ALLOWED"] += 1
+            continue
+        counts[kind] += 1
+        print("%s %s" % (kind, key[:160]))
+        if kind == "DIFF":
+            for line in cmp.describe_diff(ref[key], cand[key], paths)[: (40 if a.verbose else 8)]:
+                print(line)
+
+    po, pc = progress_skeleton(oracle_events), progress_skeleton(cand_events)
+    progress_ok = oc.canonical(po) == oc.canonical(pc)
+    if not progress_ok:
+        print("PROGRESS skeleton differs: oracle %d events, candidate %d" % (len(po), len(pc)))
+        if a.verbose:
+            for x, y in zip(po, pc):
+                if x != y:
+                    print("  - %s\n  + %s" % (oc.canonical(x), oc.canonical(y)))
+    last = [e["id"] for e in cand_events if e.get("lastMessage")]
+    print("%s %s: %d items: %s; progress skeleton %s (%d); lastMessage on %s" % (
+        a.project, a.candidate, len(set(ref) | set(cand)),
+        ", ".join("%s %d" % kv for kv in counts.items()),
+        "MATCH" if progress_ok else "DIFF", len(pc), oc.canonical(last)))
+    bad = counts["DIFF"] + counts["MISSING"] + counts["EXTRA"]
+    return 1 if bad or not progress_ok else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
