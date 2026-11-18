@@ -119,3 +119,10 @@ Each entry: date, decision, why, who decided.
   A Fable 5.2 review follows the port. User (priority); root (plan).
 - 2026-11-18. Models: Fable 5.2 for reviewers, auditors and leads; Opus 5.5 for all other agents
   (implementers, fixers, leads' sub-workers). Passed explicitly at launch. User.
+- 2026-11-18. Analysis review round 3 PASS. Rulings it asked for: (1) `resource_set` on Starlark
+  actions is ported in blaze_actions/blaze_analysis; the call from blaze_exec is assigned to the
+  execution owner; until it lands the callback is not honoured and this is a documented gap, not
+  a loud failure (failing loudly would stop every cc link). (2) cquery request-round model
+  (S2-5/R2-3): accepted as an order-only deviation in one tie-break; the `graph-order` probe
+  scenario stays as a visible known difference. (3) Probe evidence: Blaze's probe transcripts
+  must be saved next to the oracle's so counts can be re-derived (R3-2). Root.
