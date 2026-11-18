@@ -12,6 +12,7 @@
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::Hash;
+use std::hash::Hasher;
 
 use allocative::Allocative;
 use starlark::any::ProvidesStaticType;
@@ -73,7 +74,11 @@ pub fn is_immutable(v: Value) -> bool {
     }
     match v.get_type() {
         "NoneType" | "bool" | "int" | "float" | "string" => return true,
-        "list" | "dict" | "set" | "function" => return false,
+        // Java: StarlarkList.isImmutable (ImmutableStarlarkList / frozen lists).
+        "list" => return crate::list::list_is_immutable(v) == Some(true),
+        // Java: Dict.isImmutable (Dict.immutableCopyOf / frozen dicts).
+        "dict" => return crate::dict::dict_is_immutable(v) == Some(true),
+        "set" | "function" => return false,
         _ => {}
     }
     if let Some(t) = TupleRef::from_value(v) {
@@ -294,7 +299,7 @@ where
         self.printable_provider_name().hash(hasher);
         for (k, v) in &self.fields {
             k.hash(hasher);
-            v.to_value().write_hash(hasher)?;
+            java_hash_code(v.to_value(), hasher)?;
         }
         Ok(())
     }
@@ -360,4 +365,41 @@ fn plus<'v, V: ValueLike<'v>>(
         provider: x.provider.to_value(),
         fields: z,
     }))
+}
+
+/// Java `Object.hashCode` of a struct field value, as `StarlarkInfo.hashCode` uses it: lists and
+/// tuples hash by their elements in order (`StarlarkList.hashCode`, `Tuple.hashCode`), dicts by
+/// the order-independent sum of their entries (`Map.hashCode`), where Starlark's own `hash`
+/// rejects lists and dicts.
+// Java: net/starlark/java/eval/StarlarkList.java:254 StarlarkList.hashCode
+// Java: net/starlark/java/eval/Dict.java Dict.hashCode
+// W4-analysis: lead-applied, root-approved.
+fn java_hash_code(v: Value, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+    if let Some(list) = starlark::values::list::ListRef::from_value(v) {
+        "list".hash(hasher);
+        for e in list.iter() {
+            java_hash_code(e, hasher)?;
+        }
+        return Ok(());
+    }
+    if let Some(t) = TupleRef::from_value(v) {
+        "tuple".hash(hasher);
+        for e in t.content() {
+            java_hash_code(*e, hasher)?;
+        }
+        return Ok(());
+    }
+    if let Some(d) = starlark::values::dict::DictRef::from_value(v) {
+        "dict".hash(hasher);
+        let mut sum: u64 = 0;
+        for (k, e) in d.iter() {
+            let mut entry = StarlarkHasher::new();
+            java_hash_code(k, &mut entry)?;
+            java_hash_code(e, &mut entry)?;
+            sum = sum.wrapping_add(entry.finish());
+        }
+        sum.hash(hasher);
+        return Ok(());
+    }
+    v.write_hash(hasher)
 }

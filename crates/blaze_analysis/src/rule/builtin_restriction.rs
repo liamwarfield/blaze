@@ -124,14 +124,29 @@ pub fn is_not_allowed(
     !allowlist.iter().any(|e| e.allows(label, repo_mapping))
 }
 
+/// `BazelModuleContext.ofInnermostBzlOrThrow(thread)`: the module context of the innermost
+/// Starlark function on the call stack; panics (Java `Preconditions.checkNotNull`) when there is
+/// none or its module has no `BazelModuleContext`.
+// Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:163 BazelModuleContext.ofInnermostBzlOrThrow
+// PORT: move to blaze_packages (BazelModuleContext).
+pub fn of_innermost_bzl_or_throw(eval: &Evaluator) -> std::sync::Arc<BazelModuleContext> {
+    // Java: net/starlark/java/eval/Module.java:136 Module.ofInnermostEnclosingStarlarkFunction
+    let module =
+        blaze_starlark::defining_module::module_file_of_innermost_enclosing_starlark_function(
+            eval, 0,
+        )
+        .expect("NullPointerException: no Starlark function on the call stack");
+    BazelModuleContext::of_filename(&module)
+        .expect("NullPointerException: no BazelModuleContext for the innermost Starlark function")
+}
+
 /// Throws if the innermost Starlark function's file is outside `allowlist` and builtins.
 // Java: com/google/devtools/build/lib/packages/BuiltinRestriction.java:169 BuiltinRestriction.failIfCalledOutsideAllowlist
 pub fn fail_if_called_outside_allowlist(
     eval: &Evaluator,
     allowlist: &[AllowlistEntry],
 ) -> starlark::Result<()> {
-    let module_context = BazelModuleContext::of_innermost_bzl(eval)
-        .expect("NullPointerException: no BazelModuleContext for the innermost .bzl");
+    let module_context = of_innermost_bzl_or_throw(eval);
     // Java: com/google/devtools/build/lib/packages/BuiltinRestriction.java:199 BuiltinRestriction.failIfLabelOutsideAllowlist
     if is_not_allowed(
         &module_context.label,

@@ -16,6 +16,7 @@
  */
 
 use std::any::TypeId;
+use std::cell::Cell; // BLAZE PATCH 0018
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::cell::RefMut;
@@ -117,7 +118,72 @@ pub(crate) struct FrozenDictData {
 /// Alias is used in `StarlarkDocs` derive.
 pub(crate) type FrozenDict = DictGen<FrozenDictData>;
 
-pub(crate) type MutableDict<'v> = DictGen<RefCell<Dict<'v>>>;
+pub(crate) type MutableDict<'v> = DictGen<MutableDictData<'v>>; // BLAZE PATCH 0018
+
+/// BLAZE PATCH 0018: the mutable dict's payload (was `RefCell<Dict>`), with a flag for an
+/// immutable dict on a mutable heap (Java `Dict.immutableCopyOf`). Mutation fails; freezing makes
+/// it an ordinary frozen dict.
+#[derive(Trace, ProvidesStaticType, Allocative)]
+pub(crate) struct MutableDictData<'v> {
+    pub(crate) cell: RefCell<Dict<'v>>,
+    #[allocative(skip)]
+    pub(crate) immutable: Cell<bool>,
+}
+
+// BLAZE PATCH 0018: same output as the `RefCell<Dict>` payload before.
+impl<'v> Debug for MutableDictData<'v> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.immutable.get() {
+            f.debug_struct("ImmutableDict")
+                .field("value", &self.cell)
+                .finish()
+        } else {
+            Debug::fmt(&self.cell, f)
+        }
+    }
+}
+
+impl<'v> MutableDictData<'v> {
+    // BLAZE PATCH 0018
+    pub(crate) fn new(dict: Dict<'v>) -> Self {
+        MutableDictData {
+            cell: RefCell::new(dict),
+            immutable: Cell::new(false),
+        }
+    }
+}
+
+/// BLAZE PATCH 0018: Java's error for mutating a frozen dict (Starlark.checkMutable).
+pub(crate) fn frozen_dict_error() -> anyhow::Error {
+    anyhow::anyhow!("trying to mutate a frozen dict value")
+}
+
+/// BLAZE PATCH 0018: an immutable dict with the given entries (Java
+/// net/starlark/java/eval/Dict.java:495 `Dict.immutableCopyOf`, via `copyOf(null, ..)`). The
+/// empty dict is the shared frozen empty dict (Java `Dict.empty()`). Otherwise the dict lives on
+/// `heap` and keeps its keys and values as they are; every mutation fails with "trying to mutate
+/// a frozen dict value", and [`dict_is_immutable`] reports it immutable.
+pub fn alloc_immutable_dict<'v>(heap: Heap<'v>, dict: Dict<'v>) -> Value<'v> {
+    if dict.content.is_empty() {
+        return VALUE_EMPTY_FROZEN_DICT.to_frozen_value().to_value();
+    }
+    let data = MutableDictData::new(dict);
+    data.immutable.set(true);
+    heap.alloc_complex(DictGen(data))
+}
+
+/// BLAZE PATCH 0018: Java `Dict.isImmutable` for a dict value (Dict.java:180: its mutability is
+/// frozen; keys and values are not looked at), `None` for other values. Frozen dicts and dicts
+/// made by [`alloc_immutable_dict`] are immutable; other dicts are not.
+pub fn dict_is_immutable(x: Value) -> Option<bool> {
+    if let Some(d) = x.downcast_ref::<MutableDict>() {
+        Some(d.0.immutable.get())
+    } else if x.downcast_ref::<DictGen<FrozenDictData>>().is_some() {
+        Some(true)
+    } else {
+        None
+    }
+}
 
 static_starlark_value!(
     pub(crate) VALUE_EMPTY_FROZEN_DICT: DictGen<FrozenDictData> = DictGen(FrozenDictData {
@@ -129,7 +195,7 @@ unsafe impl<'v> Coerce<Dict<'v>> for FrozenDictData {}
 
 impl<'v> AllocValue<'v> for Dict<'v> {
     fn alloc_value(self, heap: Heap<'v>) -> Value<'v> {
-        heap.alloc_complex(DictGen(RefCell::new(self)))
+        heap.alloc_complex(DictGen(MutableDictData::new(self))) // BLAZE PATCH 0018
     }
 }
 
@@ -154,13 +220,14 @@ impl AllocFrozenValue for FrozenDictData {
 impl<'v> Dict<'v> {
     pub(crate) fn is_dict_type(x: TypeId) -> bool {
         x == TypeId::of::<DictGen<FrozenDictData>>()
-            || x == TypeId::of::<DictGen<RefCell<Dict<'static>>>>()
+            || x == TypeId::of::<DictGen<MutableDictData<'static>>>() // BLAZE PATCH 0018
     }
 
     pub(crate) unsafe fn from_value_unchecked_mut(x: Value<'v>) -> RefMut<'v, Self> {
         unsafe {
-            let dict = &x.downcast_ref_unchecked::<DictGen<RefCell<Dict<'v>>>>().0;
-            dict.borrow_mut()
+            let dict = &x.downcast_ref_unchecked::<MutableDict<'v>>().0; // BLAZE PATCH 0018
+            debug_assert!(!dict.immutable.get()); // BLAZE PATCH 0018
+            dict.cell.borrow_mut() // BLAZE PATCH 0018
         }
     }
 }
@@ -316,10 +383,10 @@ impl FrozenDictData {
     }
 }
 
-impl<'v> Freeze for DictGen<RefCell<Dict<'v>>> {
+impl<'v> Freeze for MutableDict<'v> { // BLAZE PATCH 0018
     type Frozen = DictGen<FrozenDictData>;
     fn freeze(self, freezer: &Freezer) -> FreezeResult<Self::Frozen> {
-        let content = self.0.into_inner().content.freeze(freezer)?;
+        let content = self.0.cell.into_inner().content.freeze(freezer)?; // BLAZE PATCH 0018
         Ok(DictGen(FrozenDictData { content }))
     }
 }
@@ -338,7 +405,8 @@ trait DictLike<'v>: Debug + Allocative {
     fn set_at(&self, index: Hashed<Value<'v>>, value: Value<'v>) -> crate::Result<()>;
 }
 
-impl<'v> DictLike<'v> for RefCell<Dict<'v>> {
+// BLAZE PATCH 0018: implemented on `MutableDictData` (was `RefCell<Dict>`, now `self.cell`).
+impl<'v> DictLike<'v> for MutableDictData<'v> {
     type ContentRef<'a>
         = Ref<'a, SmallMap<Value<'v>, Value<'v>>>
     where
@@ -346,18 +414,18 @@ impl<'v> DictLike<'v> for RefCell<Dict<'v>> {
         'v: 'a;
 
     fn content<'a>(&'a self) -> Ref<'a, SmallMap<Value<'v>, Value<'v>>> {
-        Ref::map(self.borrow(), |x| &x.content)
+        Ref::map(self.cell.borrow(), |x| &x.content)
     }
 
     #[inline]
     unsafe fn iter_start(&self) {
-        mem::forget(self.borrow());
+        mem::forget(self.cell.borrow());
     }
 
     #[inline]
     unsafe fn iter_stop(&self) {
         unsafe {
-            unleak_borrow(self);
+            unleak_borrow(&self.cell);
         }
     }
 
@@ -365,12 +433,15 @@ impl<'v> DictLike<'v> for RefCell<Dict<'v>> {
     unsafe fn content_unchecked(&self) -> &SmallMap<Value<'v>, Value<'v>> {
         unsafe {
             // SAFETY: this function contract is, caller must ensure that the value is borrowed.
-            &self.try_borrow_unguarded().ok().unwrap_unchecked().content
+            &self.cell.try_borrow_unguarded().ok().unwrap_unchecked().content
         }
     }
 
     fn set_at(&self, index: Hashed<Value<'v>>, alloc_value: Value<'v>) -> crate::Result<()> {
-        match self.try_borrow_mut() {
+        if unlikely(self.immutable.get()) {
+            return Err(crate::Error::new_other(frozen_dict_error())); // BLAZE PATCH 0018
+        }
+        match self.cell.try_borrow_mut() {
             Ok(mut xs) => {
                 xs.content.insert_hashed(index, alloc_value);
                 Ok(())

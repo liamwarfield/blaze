@@ -84,3 +84,24 @@ fn getattr_no_attr() {
         Err("'struct' value has no field or method 'b'\nAvailable attributes: a".into())
     );
 }
+
+// Java hashes struct fields with `Object.hashCode`, under which lists, tuples and dicts are
+// hashable: a struct holding a list can be a depset element or a dict key (rules_cc
+// `depset([linker_input])`, where linker_input has list fields).
+#[test]
+fn struct_with_list_and_dict_fields_is_hashable() {
+    assert_eq!(
+        eval_expr("len(dict([(struct(a = [1, 2]), 1), (struct(a = [1, 2]), 2)]))"),
+        Ok("1".into())
+    );
+    assert_eq!(
+        eval_expr("len(dict([(struct(a = [1, 2]), 1), (struct(a = [2, 1]), 2)]))"),
+        Ok("2".into())
+    );
+    assert_eq!(
+        eval_expr(
+            "len(dict([(struct(d = {'x': 1, 'y': 2}), 1), (struct(d = {'y': 2, 'x': 1}), 2)]))"
+        ),
+        Ok("1".into())
+    );
+}

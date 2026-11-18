@@ -132,11 +132,58 @@ impl TransitionAttrObject for TransitionAttributes {
         let fields: Vec<(String, Value<'v>)> = self
             .entries
             .iter()
-            .map(|(k, v)| (k.clone(), Attribute::value_to_starlark(v.as_ref(), heap)))
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    transition_attr_value_to_starlark(v.as_ref(), heap),
+                )
+            })
             .collect();
         heap.alloc(StarlarkInfo::new(heap.alloc(StructProvider), fields))
     }
 }
+
+/// Java `Attribute.valueToStarlark` for the `attr` object of a Starlark transition.
+///
+/// PORT: Java's `ComputedDefault` and `LateBoundDefault` are `StarlarkValue`s, so
+/// `Starlark.fromJava` returns them unchanged and the transition sees an opaque object.
+/// `blaze_packages`' `Attribute::value_to_starlark` leaves these unported; until it gains them,
+/// they are wrapped here in [`OpaqueAttributeDefault`] and every other value goes through it.
+// Java: com/google/devtools/build/lib/packages/Attribute.java:2442 Attribute.valueToStarlark
+fn transition_attr_value_to_starlark<'v>(v: Option<&AttrValue>, heap: Heap<'v>) -> Value<'v> {
+    match v {
+        Some(AttrValue::ComputedDefault(_)) => heap.alloc(OpaqueAttributeDefault {
+            java_class: "com.google.devtools.build.lib.packages.Attribute$ComputedDefault",
+        }),
+        Some(AttrValue::LateBound(_)) => heap.alloc(OpaqueAttributeDefault {
+            java_class: "com.google.devtools.build.lib.packages.Attribute$LateBoundDefault",
+        }),
+        _ => Attribute::value_to_starlark(v, heap),
+    }
+}
+
+/// A Java `Attribute.ComputedDefault` / `Attribute.LateBoundDefault` seen as a Starlark value:
+/// neither declares any Starlark method or field.
+// Java: com/google/devtools/build/lib/packages/Attribute.java:1275 Attribute.ComputedDefault
+// Java: com/google/devtools/build/lib/packages/Attribute.java:1616 Attribute.LateBoundDefault
+#[derive(
+    Debug, starlark::any::ProvidesStaticType, starlark::values::NoSerialize, allocative::Allocative,
+)]
+struct OpaqueAttributeDefault {
+    java_class: &'static str,
+}
+
+starlark::starlark_simple_value!(OpaqueAttributeDefault);
+
+impl fmt::Display for OpaqueAttributeDefault {
+    // Java: net/starlark/java/eval/StarlarkValue.java:50 StarlarkValue.repr (default; Java prints the concrete class)
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<unknown object {}>", self.java_class)
+    }
+}
+
+#[starlark::values::starlark_value(type = "unknown")]
+impl<'v> starlark::values::StarlarkValue<'v> for OpaqueAttributeDefault {}
 
 /// A Starlark-defined transition bound to its `attr` object (Java
 /// `StarlarkAttributeTransitionProvider.FunctionSplitTransition` and

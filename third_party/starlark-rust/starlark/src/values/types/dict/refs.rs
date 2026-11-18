@@ -16,7 +16,7 @@
  */
 
 use std::cell::Ref;
-use std::cell::RefCell;
+// BLAZE PATCH 0018: `use std::cell::RefCell;` removed (the payload is MutableDictData now).
 use std::cell::RefMut;
 use std::convert::Infallible;
 use std::ops::Deref;
@@ -34,6 +34,9 @@ use crate::values::ValueLike;
 use crate::values::dict::Dict;
 use crate::values::dict::value::DictGen;
 use crate::values::dict::value::FrozenDictData;
+use crate::values::dict::value::MutableDict; // BLAZE PATCH 0018
+use crate::values::dict::value::frozen_dict_error; // BLAZE PATCH 0018
+use crate::hint::unlikely; // BLAZE PATCH 0018
 use crate::values::type_repr::StarlarkTypeRepr;
 use crate::values::types::dict::dict_type::DictType;
 
@@ -77,9 +80,9 @@ impl<'v> DictRef<'v> {
                     aref: Either::Right(coerce(&x.0)),
                 })
         } else {
-            let ptr = x.downcast_ref::<DictGen<RefCell<Dict<'v>>>>()?;
+            let ptr = x.downcast_ref::<MutableDict<'v>>()?; // BLAZE PATCH 0018
             Some(DictRef {
-                aref: Either::Left(ptr.0.borrow()),
+                aref: Either::Left(ptr.0.cell.borrow()), // BLAZE PATCH 0018
             })
         }
     }
@@ -103,10 +106,12 @@ impl<'v> DictMut<'v> {
             }
         }
 
-        let ptr = x.downcast_ref::<DictGen<RefCell<Dict<'v>>>>();
+        let ptr = x.downcast_ref::<MutableDict<'v>>(); // BLAZE PATCH 0018
         match ptr {
             None => Err(error(x)),
-            Some(ptr) => match ptr.0.try_borrow_mut() {
+            // BLAZE PATCH 0018: Java Starlark.checkMutable checks frozenness first.
+            Some(ptr) if unlikely(ptr.0.immutable.get()) => Err(frozen_dict_error()),
+            Some(ptr) => match ptr.0.cell.try_borrow_mut() { // BLAZE PATCH 0018
                 Ok(x) => Ok(DictMut { aref: x }),
                 Err(_) => Err(ValueError::MutationDuringIteration.into()),
             },

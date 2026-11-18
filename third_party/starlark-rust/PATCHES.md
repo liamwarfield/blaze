@@ -28,6 +28,7 @@ by adding.
 | 0015 | applied | public set allocation and heap-free iteration (`set::alloc_set`, `SetRef` accessors) |
 | 0016 | applied | immutable lists on a mutable heap (`list::alloc_immutable_list`, `list::list_is_immutable`) |
 | 0017 | applied | a function's defining module (`eval::DefModule`, `Evaluator::innermost_enclosing_def_module`) |
+| 0018 | applied | immutable dicts on a mutable heap (`dict::alloc_immutable_dict`, `dict::dict_is_immutable`) |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -203,3 +204,22 @@ the native stack; Blaze runs evaluation on threads with large stacks
 - Users: blaze_starlark `defining_module` (module keys for blaze_packages
   `BazelModuleContext::of_filename`).
 - Test: `patch_0017_def_module`.
+
+## 0018 — immutable dicts
+
+- Gap: Java `Dict.immutableCopyOf` (net/starlark/java/eval/Dict.java:495, via `copyOf(null, ..)`)
+  makes a dict with the frozen `Mutability.IMMUTABLE` on any thread: every mutator calls
+  Starlark.checkMutable first ("trying to mutate a frozen dict value"), and `isImmutable()` is
+  `mutability().isFrozen()` (Dict.java:180), so keys and values are not looked at. Used by
+  `cc_internal.freeze` for dicts.
+- Fix: `types/dict/value.rs`: the mutable dict's payload is `MutableDictData { cell:
+  RefCell<Dict>, immutable: Cell<bool> }` (was `RefCell<Dict>`; `Dict` itself is unchanged
+  because `FrozenDictData` coerces to it). `DictMut::from_value` (`update`, `pop`, `popitem`,
+  `setdefault`, `clear`, `|=`) and `set_at` (`d[k] = v`) fail with Java's text before the
+  iteration check. `alloc_immutable_dict(heap, Dict) -> Value` (the empty dict is the shared
+  frozen empty dict, Java `Dict.empty()`), `dict_is_immutable(value) -> Option<bool>` (frozen
+  or flagged: `Some(true)`; other dicts `Some(false)`; non-dicts `None`); re-exported from
+  `starlark::values::dict`. Freezing turns a flagged dict into an ordinary frozen dict; dicts
+  stay unhashable. `refs.rs` drops its now unused `RefCell` import.
+- Users: blaze_starlark `dict::dict_immutable_copy_of` (`cc_internal.freeze`).
+- Test: `patch_0018_immutable_dict`.

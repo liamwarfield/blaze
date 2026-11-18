@@ -7,16 +7,11 @@ use std::io::Write;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use blaze_build_config::bazel_rule_class_provider::BazelRuleClassProvider;
 use blaze_build_config::build_options::BuildOptions;
-use blaze_build_config::top_level::create_build_options;
 use blaze_events::{Event, EventHandler, ExtendedEventHandler, OutputStream as EventsOutputStream};
 use blaze_optdefs::command::keep_going_option::KeepGoingOption;
 use blaze_optdefs::command::loading_phase_threads_option::LoadingPhaseThreadsOption;
 use blaze_optdefs::command::query_options::QueryOptions;
-use blaze_optdefs::fragment::converters::{FlagAliasConverter, StringToLabelEntry};
-use blaze_optdefs::fragment::core_options::CoreOptions;
-use blaze_options::{Converter, PriorityCategory};
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
 use blaze_query::query::output::output_formatter::OutputStream;
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
@@ -134,140 +129,6 @@ pub(crate) fn create_skyframe_executor_with_options(
         };
         BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(failure_detail))
     })
-}
-
-/// The command's build options with the MODULE.bazel flag aliases injected (Java
-/// `BlazeCommandDispatcher.execExclusively`: after computing the main repository mapping it
-/// parses `--flag_alias=<name>=<label>` for every `SkyframeExecutor.getFlagAliases` entry at
-/// `RC_FILE` priority with source "module resolution"; `createBuildOptions` then reads them).
-///
-/// PORT: the Blaze dispatcher (blaze_runtime/src/dispatcher.rs) does not inject them yet, and
-/// the parsed options are shared and immutable, so the commands that analyze (cquery, aquery)
-/// compute the aliases on a loading-only executor and add the converted values to
-/// `CoreOptions.commandLineFlagAliases` where the parser would have put them (after the values
-/// of priority `RC_FILE` or lower, before the command line's). Remove once the dispatcher does
-/// it.
-// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:670 BlazeCommandDispatcher.execExclusively
-pub(crate) fn build_options_with_module_flag_aliases(
-    env: &CommandEnvironment,
-    options: &OptionsParsingResult,
-) -> Result<BuildOptions, BlazeCommandResult> {
-    // TODO: b/453809359 - Remove this Python logic when Bazel 9+ can read Python flag alias
-    // definitions straight from rules_python's MODULE.bazel.
-    let option_bool = |name: &str| -> bool {
-        match options.get_option_description(name) {
-            None => false,
-            Some(description) => match options.get_option_value_description(name) {
-                Some(cmd_line_value) => cmd_line_value
-                    .get_value()
-                    .and_then(|v| v.downcast_ref::<bool>().copied())
-                    .expect("boolean option"),
-                None => description
-                    .get_option_definition()
-                    .get_default_value(None)
-                    .and_then(|v| v.downcast_ref::<bool>().copied())
-                    .expect("boolean option default"),
-            },
-        }
-    };
-    let remove_py_fragment = option_bool("incompatible_remove_ctx_py_fragment");
-    let remove_bazel_py_fragment = option_bool("incompatible_remove_ctx_bazel_py_fragment");
-
-    let loading_executor = create_skyframe_executor(env, None)?;
-    let keep_going = options
-        .get_options::<KeepGoingOption>()
-        .map(|o| o.keep_going)
-        .unwrap_or(false);
-    let threads = options
-        .get_options::<LoadingPhaseThreadsOption>()
-        .map(|o| o.threads)
-        .unwrap_or(1);
-    let interrupted = || {
-        let message = "command interrupted while computing main repo mapping";
-        env.get_reporter().handle(&Event::error(message));
-        BlazeCommandResult::detailed_exit_code(DetailedExitCode::of_exit_code(
-            ExitCode::INTERRUPTED,
-            FailureDetail {
-                message: message.to_owned(),
-                category: Some(Category::Interrupted(failure_details::Interrupted {
-                    code: failure_details::interrupted::Code::Interrupted as i32,
-                })),
-            },
-        ))
-    };
-    // Compute the repo mapping of the main repo (its errors end the command).
-    match loading_executor.get_main_repo_mapping(keep_going, threads.max(1) as usize, reporter(env))
-    {
-        Ok(_) => {}
-        Err(RepositoryMappingResolutionOrInterrupted::Resolution(e)) => {
-            env.get_reporter().handle(&Event::error(e.to_string()));
-            return Err(BlazeCommandResult::detailed_exit_code(
-                to_runtime_detailed_exit_code(blaze_query::compat::failure_details::from_packages(
-                    &e.detailed_exit_code,
-                )),
-            ));
-        }
-        Err(RepositoryMappingResolutionOrInterrupted::Interrupted) => return Err(interrupted()),
-    }
-    let aliases = match loading_executor.get_flag_aliases(
-        reporter(env),
-        remove_py_fragment,
-        remove_bazel_py_fragment,
-    ) {
-        Ok(Some(aliases)) => aliases,
-        Ok(None) => panic!("NullPointerException: BazelDepGraphValue after the main repo mapping"),
-        Err(_) => return Err(interrupted()),
-    };
-
-    let mut build_options = create_build_options(&BazelRuleClassProvider::create(), options);
-    if aliases.is_empty() {
-        return Ok(build_options);
-    }
-    // optionsParser.parse(RC_FILE, "module resolution", ["--flag_alias=k=v", ...]): each value
-    // goes through FlagAliasConverter.
-    let mut injected: Vec<StringToLabelEntry> = Vec::new();
-    for arg in blaze_build_config::flag_aliases::flag_alias_args(&aliases) {
-        let value = arg.strip_prefix("--flag_alias=").expect("--flag_alias=");
-        let converted = FlagAliasConverter
-            .convert(
-                Some(value),
-                options.get_conversion_context().map(|c| c.as_ref()),
-            )
-            .unwrap_or_else(|e| panic!("{}", e.get_message()))
-            .expect("flag alias value");
-        injected.push(
-            converted
-                .downcast_ref::<StringToLabelEntry>()
-                .expect("StringToLabelEntry")
-                .clone(),
-        );
-    }
-    // The repeatable option's values are ordered by priority; the injected ones (RC_FILE, parsed
-    // last within it) follow every value of priority RC_FILE or lower.
-    let lower_or_equal = options
-        .get_option_value_description("flag_alias")
-        .and_then(|d| d.get_canonical_instances())
-        .map(|instances| {
-            instances
-                .iter()
-                .filter(|i| i.get_priority().get_priority_category() <= PriorityCategory::RC_FILE)
-                .count()
-        })
-        .unwrap_or(0);
-    let mut core_options = build_options
-        .get::<CoreOptions>()
-        .expect("CoreOptions")
-        .clone();
-    let rest = core_options
-        .command_line_flag_aliases
-        .split_off(lower_or_equal);
-    core_options.command_line_flag_aliases.extend(injected);
-    core_options.command_line_flag_aliases.extend(rest);
-    build_options = build_options
-        .to_builder()
-        .add_fragment_options(&core_options)
-        .build();
-    Ok(build_options)
 }
 
 /// A query-engine `DetailedExitCode` as the runtime's.

@@ -11,11 +11,12 @@
 //! - [`loader::LoadMap`]: resolved `load()`s.
 //! - [`error::EvalError`]: Bazel tracebacks; [`error::SyntaxError`].
 //! - Values: [`structs`] (`struct`, provider-instance base), [`depset`], [`label`], [`json`],
-//!   [`list`] (immutable lists).
+//!   [`list`] (immutable lists), [`dict`] (immutable dicts).
 //! - [`defining_module`]: the module a Starlark function was defined in.
 
 pub mod defining_module;
 pub mod depset;
+pub mod dict;
 pub mod env;
 pub mod error;
 pub mod eval;

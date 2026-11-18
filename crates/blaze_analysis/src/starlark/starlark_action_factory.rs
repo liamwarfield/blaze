@@ -931,8 +931,12 @@ fn register_starlark_action<'v>(
                     resource_set_unchecked.get_type()
                 )));
             }
-            // PORT: `validateIsTopLevelStarlarkFunction` needs the function's module globals,
-            // which starlark-rust does not expose; it only rejects nested defs.
+            // Java: `fn instanceof StarlarkFunction sfn` (a `def` or `lambda`).
+            if blaze_starlark::defining_module::module_file_of_function(resource_set_unchecked)
+                .is_some()
+            {
+                validate_is_top_level_starlark_function(resource_set_unchecked, eval)?;
+            }
             // PORT: Java sets a `StarlarkActionResourceSetBuilder` (the callback, called at
             // execution with the OS and the input count to estimate local resources). The Rust
             // SpawnAction builder (blaze_actions) only holds a fixed `ResourceSet`, so the action
@@ -950,6 +954,32 @@ fn register_starlark_action<'v>(
         },
         eval,
     )
+}
+
+/// Rejects a `def` that is not its module's global of the same name (a nested def or a
+/// lambda).
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:1077 StarlarkActionFactory.validateIsTopLevelStarlarkFunction
+fn validate_is_top_level_starlark_function<'v>(
+    function: Value<'v>,
+    eval: &Evaluator<'v, '_, '_>,
+) -> starlark::Result<()> {
+    // Reject non-global functions, because arbitrary closures may cause large
+    // analysis-phase data structures to remain live into the execution phase.
+    // We require that the function is "global" as opposed to "not a closure"
+    // because a global function may be closure if it refers to load bindings.
+    // This unfortunately disallows such trivially safe non-global
+    // functions as "lambda x: x".
+    // See https://github.com/bazelbuild/bazel/issues/12701.
+    if !blaze_starlark::defining_module::is_global_of_defining_module(function, eval) {
+        // Java: "to avoid unintended retention of analysis data structures, the function
+        // (declared at %s) must be declared by a top-level def statement", fn.getLocation().
+        // starlark-rust exposes no declaration location of a function value.
+        blaze_util::unported!(
+            "StarlarkFunction.getLocation",
+            "location of a non-top-level resource_set function"
+        );
+    }
+    Ok(())
 }
 
 /// `toolchain`'s `unbound` default: `None` when the parameter was not passed.
@@ -1674,8 +1704,9 @@ pub type BuildInfoFileWriteActionBuilder = Box<dyn FnOnce(OwnedFrozenValue) -> A
 /// Java `StarlarkActionFactory.transformBuildInfoFile` up to `registerAction`: declares the
 /// output artifact and describes the action (blaze_rules' `build_info`, which this crate cannot
 /// depend on). Arguments: rule context, `newFileRoot()`, `transform_func`, the module context
-/// of the innermost .bzl frame (see the PORT note in `transform_build_info_file`), `template`,
-/// `output_file_name`, `is_volatile`.
+/// of the module `transform_func` was defined in (Java
+/// `BazelModuleContext.of(translationFunc.getModule())`), `template`, `output_file_name`,
+/// `is_volatile`.
 pub type TransformBuildInfoFile = for<'v> fn(
     &RuleContext,
     &ArtifactRoot,
@@ -1710,19 +1741,19 @@ fn transform_build_info_file<'v>(
         );
     };
     let new_file_root = f.context.new_file_root();
-    // PORT: Java reads `BazelModuleContext.of(translationFunc.getModule())`; starlark-rust does
-    // not expose the module a `def` was defined in, so the module of the innermost .bzl frame
-    // (the caller of `transform_*_file`) stands in. It is the function's module whenever the
-    // callback is defined in the calling .bzl, as in Bazel's only user
-    // (`@bazel_tools//tools/build_defs/build_info:bazel_cc_build_info.bzl`).
-    let caller_module = BazelModuleContext::of_innermost_bzl(eval);
+    // Java: com/google/devtools/build/lib/analysis/actions/BuildInfoFileWriteAction.java:196 BuildInfoFileWriteAction.computeKey
+    // `BazelModuleContext.of(translationCallback.getModule())`, read here because the digest is
+    // stored on the action spec; `None` when `transform_func` is not a Starlark function (the
+    // hook's cast fails first).
+    let function_module = blaze_starlark::defining_module::module_file_of_function(transform_func)
+        .and_then(|module| BazelModuleContext::of_filename(&module));
     let (build_info_file, build) = {
         let rule_context = f.context.handle.borrow();
         hook(
             &rule_context,
             &new_file_root,
             transform_func,
-            caller_module,
+            function_module,
             template.artifact(),
             output_file_name,
             is_volatile,

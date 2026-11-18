@@ -137,8 +137,9 @@ fn check_private_api_impl<'v>(
 ) -> starlark::Result<()> {
     // This method may be called anywhere from builtins, but not outside (because it's not
     // exposed in cc_common.bzl
-    let Some(bazel_module_context) =
-        blaze_packages::builtins::stubs::module_of_innermost_enclosing_starlark_function(
+    // Java: net/starlark/java/eval/Module.java:121 Module.ofInnermostEnclosingStarlarkFunction
+    let Some(module) =
+        blaze_starlark::defining_module::module_file_of_innermost_enclosing_starlark_function(
             eval,
             depth.max(0) as usize,
         )
@@ -147,6 +148,11 @@ fn check_private_api_impl<'v>(
         // execution phase
         return Ok(());
     };
+    // Java: (BazelModuleContext) module.getClientData(), dereferenced by
+    // BuiltinRestriction.failIfModuleOutsideAllowlist.
+    let bazel_module_context =
+        blaze_packages::bzl_context::BazelModuleContext::of_filename(&module)
+            .expect("NullPointerException: no BazelModuleContext for the module");
     let mut entries: Vec<(String, String)> = Vec::new();
     for item in sequence_elements(allowlist, eval.heap())? {
         // TODO(bazel-team): Avoid unchecked indexing and casts on values obtained from
@@ -404,20 +410,9 @@ fn freeze_element(v: Value, frozen_heap: &FrozenHeap) -> Option<FrozenValue> {
 }
 
 /// Java `StarlarkList.immutableCopyOf(items)`.
-///
-/// PORT: starlark-rust has no immutable list on a mutable heap. When every element can be
-/// frozen (the common case: strings, `File`s, frozen values) the copy is a frozen list on the
-/// module's frozen heap, which is immutable (and so accepted as a depset element inside
-/// providers, as Java's immutable list is); otherwise a mutable copy, frozen with the module.
+// Java: net/starlark/java/eval/StarlarkList.java:168 StarlarkList.immutableCopyOf
 fn immutable_list_copy<'v>(items: Vec<Value<'v>>, eval: &Evaluator<'v, '_, '_>) -> Value<'v> {
-    let frozen: Option<Vec<FrozenValue>> = items
-        .iter()
-        .map(|v| freeze_element(*v, eval.frozen_heap()))
-        .collect();
-    match frozen {
-        Some(frozen) => eval.frozen_heap().alloc(AllocList(frozen)).to_value(),
-        None => eval.heap().alloc(AllocList(items)),
-    }
+    starlark::values::list::alloc_immutable_list(eval.heap(), &items)
 }
 
 #[starlark_module]
@@ -1173,27 +1168,36 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
         }
         // Java `Iterable`: StarlarkList, Tuple, RangeList, StarlarkSet ->
         // StarlarkList.immutableCopyOf(iterable).
-        let items: Vec<Value<'v>> = if let Some(l) = ListRef::from_value(value) {
-            l.content().to_vec()
-        } else if let Some(t) = TupleRef::from_value(value) {
-            t.content().to_vec()
-        } else if matches!(value.get_type(), "range" | "set") {
-            value.iterate(heap)?.collect()
-        } else {
-            return Ok(value);
-        };
-        Ok(immutable_list_copy(items, eval))
+        if ListRef::from_value(value).is_some()
+            || TupleRef::from_value(value).is_some()
+            || matches!(value.get_type(), "range" | "set")
+        {
+            return blaze_starlark::list::list_immutable_copy_of(heap, value);
+        }
+        Ok(value)
     }
 
     // PORT: Java's positional-only parameter is named `fn`, a Rust keyword.
+    // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:966 CcStarlarkInternal.checkToplevel
     fn check_toplevel<'v>(
         this: Value<'v>,
         #[starlark(require = pos)] func: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
-        let _ = (this, func);
-        // Needs `StarlarkFunction.getModule().getGlobal(fn.getName())` (starlark-rust exposes no
-        // module globals of a function value).
-        blaze_util::unported!("CcStarlarkInternal.checkToplevel")
+        let _ = this;
+        // Java: the parameter is typed `StarlarkFunction` (a `def` or `lambda`).
+        if blaze_starlark::defining_module::module_file_of_function(func).is_none() {
+            return Err(errorf(format!(
+                "in call to check_toplevel(), parameter 'fn' got value of type '{}', want \
+                 'function'",
+                func.get_type()
+            )));
+        }
+        // Java: fn.getModule().getGlobal(fn.getName()) != fn
+        if !blaze_starlark::defining_module::is_global_of_defining_module(func, eval) {
+            return Err(errorf("Passed function must be top-level functions."));
+        }
+        Ok(NoneType)
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:978 CcStarlarkInternal.perFileCopts

@@ -7,12 +7,13 @@ use blaze_events::ui::{UiEventHandler, UiEventHandlerOptions};
 use blaze_events::{Event, EventHandler, EventKind, EventKindSet, OutErr};
 use blaze_optdefs::command::common_command_options::CommonCommandOptions;
 use blaze_optdefs::command::ui_options::UiOptions;
-use blaze_options::OptionsParser;
 use blaze_options::rc::handler::{
     BAD_OPTION_TAG, BlazeOptionHandler, ERROR_SEPARATOR, EventKind as HandlerEventKind,
-    HandlerEvent, StoredEventHandler,
+    HandlerEvent, OptionsParseFailure, StoredEventHandler,
 };
+use blaze_options::{OptionsParser, PriorityCategory};
 use blaze_protos::failure_details::{self, FailureDetail};
+use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use parking_lot::Mutex;
 
 use crate::command::{BlazeCommand, BlazeCommandResult};
@@ -211,17 +212,7 @@ impl BlazeCommandDispatcher {
             if early_exit_code.as_ref().unwrap().is_success() {
                 let (result, _config_definitions) = option_handler
                     .parse_options_and_get_config_definitions(args, &mut stored_event_handler);
-                early_exit_code = Some(match result {
-                    Ok(()) => DetailedExitCode::success(),
-                    Err(failure) => DetailedExitCode::of(FailureDetail {
-                        message: failure.message,
-                        category: Some(failure_details::failure_detail::Category::Command(
-                            failure_details::Command {
-                                code: failure_details::command::Code::OptionsParseFailure as i32,
-                            },
-                        )),
-                    }),
-                });
+                early_exit_code = Some(options_parse_result_exit_code(result));
             }
             rcfile_notes = option_handler.get_rcfile_notes().to_vec();
         }
@@ -372,12 +363,126 @@ impl BlazeCommandDispatcher {
             return self.after_command(&mut env, result, &out_err);
         }
 
-        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java BlazeCommandDispatcher.execExclusively
-        // PORT: for commands that analyze, Java calls `env.syncPackageLoading(options)` and
-        // computes the main repo mapping here. Blaze builds the command's Skyframe executor
-        // inside the command (`blaze_sky_top::skyframe_executor`, through
-        // `crate::commands::query::create_skyframe_executor`), which performs the same sync and
-        // repo-mapping computation first; build/test reuse that path.
+        let mut options = options;
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:649 BlazeCommandDispatcher.execExclusively
+        if command_annotation.build_phase.analyzes() {
+            // env.syncPackageLoading(options)
+            // PORT: Blaze has no SkyframeExecutor that outlives a command; syncing package
+            // loading is creating the command's executor
+            // (`crate::commands::query::create_skyframe_executor`), which reports its own errors.
+            // The commands create their own executor again in `exec`.
+            let skyframe_executor =
+                match crate::commands::query::create_skyframe_executor(&env, None) {
+                    Ok(skyframe_executor) => skyframe_executor,
+                    Err(result) => {
+                        // PORT: NoBuildEvent (no event bus).
+                        return self.after_command(&mut env, result, &out_err);
+                    }
+                };
+
+            // TODO: b/453809359 - Remove this Python logic when Bazel 9+ can read Python flag
+            // alias definitions straight from rules_python's MODULE.bazel.
+            // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:672 BlazeCommandDispatcher.execExclusively
+            let remove_py_fragment =
+                boolean_option_value(&options, "incompatible_remove_ctx_py_fragment");
+            let remove_bazel_py_fragment =
+                boolean_option_value(&options, "incompatible_remove_ctx_bazel_py_fragment");
+            // Compute the repo mapping of the main repo and re-parse options so that we get correct
+            // values for label-typed options.
+            // PORT: MainRepoMappingComputationStartingEvent (no event bus) and the profiler task.
+            // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:701 BlazeCommandDispatcher.execExclusively
+            let event_handler = crate::commands::query::reporter(&env);
+            let interrupted = || {
+                let message = "command interrupted while computing main repo mapping";
+                reporter.handle(&Event::error(message));
+                interrupted_detailed_exit_code(message)
+            };
+            let mut early_exit_code = DetailedExitCode::success();
+            let mut options_parser: Option<OptionsParser> = None;
+            // getMainRepoMapping(eventHandler) is getMainRepoMapping(false, DEFAULT_THREAD_COUNT,
+            // eventHandler).
+            match skyframe_executor.get_main_repo_mapping(
+                false,
+                blaze_sky_top::skyframe_executor::DEFAULT_THREAD_COUNT,
+                event_handler.clone(),
+            ) {
+                Ok(main_repo_mapping) => {
+                    let mut parser = options
+                        .to_builder()
+                        .with_conversion_context(Arc::new(main_repo_mapping))
+                        .build()
+                        .unwrap_or_else(|e| e.throw());
+                    // Collect MODULE.bazel flag_alias(name = "foo", starlark_flag = "//bar")
+                    // entries, so when builds set "--foo=1", that maps to "--//bar=1". Inject this
+                    // as an implicit "--flag_alias=foo=//bar" flag. This is because select()s and
+                    // configuration transitions really on that flag
+                    // (CoreOptions.commandLineFlagAliases) to properly handle aliases.
+                    match skyframe_executor.get_flag_aliases(
+                        event_handler,
+                        remove_py_fragment,
+                        remove_bazel_py_fragment,
+                    ) {
+                        Ok(Some(flag_aliases)) => {
+                            // PORT: Java has no handler for OptionsParsingException here; it
+                            // reaches execExclusively's catch (Throwable), which crashes the
+                            // server. Blaze panics.
+                            parser
+                                .parse_with_priority(
+                                    PriorityCategory::RC_FILE,
+                                    Some("module resolution"),
+                                    blaze_build_config::flag_aliases::flag_alias_args(
+                                        &flag_aliases,
+                                    ),
+                                )
+                                .unwrap_or_else(|e| panic!("{}", e.get_message()));
+                            options_parser = Some(parser);
+                        }
+                        // evalResult.get(BazelDepGraphValue.KEY) is null after the main repo
+                        // mapping was computed.
+                        Ok(None) => panic!(
+                            "NullPointerException: BazelDepGraphValue after the main repo mapping"
+                        ),
+                        Err(_) => early_exit_code = interrupted(),
+                    }
+                }
+                Err(RepositoryMappingResolutionOrInterrupted::Interrupted) => {
+                    early_exit_code = interrupted();
+                }
+                Err(RepositoryMappingResolutionOrInterrupted::Resolution(e)) => {
+                    reporter.handle(&Event::error(e.to_string()));
+                    early_exit_code = crate::commands::query::to_runtime_detailed_exit_code(
+                        blaze_query::compat::failure_details::from_packages(&e.detailed_exit_code),
+                    );
+                }
+            }
+            drop(skyframe_executor);
+            if !early_exit_code.is_success() {
+                // PORT: NoBuildEvent (no event bus).
+                let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
+                return self.after_command(&mut env, result, &out_err);
+            }
+            let mut options_parser = options_parser.expect("the options parser was rebuilt");
+            // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:739 BlazeCommandDispatcher.execExclusively
+            // PORT: the profiler task and invocation policy flags are not ported.
+            let mut stored_second_pass_event_handler = StoredEventHandler::default();
+            let early_exit_code = self.parse_options(
+                command.as_ref(),
+                args,
+                &mut options_parser,
+                &mut stored_second_pass_event_handler,
+            );
+            if !early_exit_code.is_success() {
+                for event in stored_second_pass_event_handler.get_events() {
+                    reporter.handle(&to_event(event));
+                }
+                // PORT: NoBuildEvent (no event bus).
+                let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
+                return self.after_command(&mut env, result, &out_err);
+            }
+            // optionHandler.getOptionsResult(). Like Java, env.getOptions() keeps the first
+            // parse; the command gets this one.
+            options = Arc::new(options_parser);
+        }
 
         // Parse starlark options.
         // PORT: BlazeOptionHandler.parseStarlarkOptions needs Starlark flag resolution (W4);
@@ -501,6 +606,41 @@ impl BlazeCommandDispatcher {
         DetailedExitCode::success()
     }
 
+    /// `BlazeOptionHandler.parseOptions` (the second pass of commands that analyze), with the
+    /// steps of its `parseOptionsInternal` that Blaze runs in the runtime: `checkCwdInWorkspace`
+    /// and `command.editOptions`.
+    /// PORT: InvocationPolicyEnforcer.enforce (no invocation policy is ported).
+    // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:466 BlazeOptionHandler.parseOptions
+    fn parse_options(
+        &self,
+        command: &dyn BlazeCommand,
+        args: &[String],
+        options_parser: &mut OptionsParser,
+        event_handler: &mut StoredEventHandler,
+    ) -> DetailedExitCode {
+        // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:496 BlazeOptionHandler.parseOptionsInternal
+        let early_exit_code = self.check_cwd_in_workspace(command, event_handler);
+        if !early_exit_code.is_success() {
+            options_parser.set_error();
+            return early_exit_code;
+        }
+        let result = {
+            let mut option_handler = BlazeOptionHandler::new(
+                self.runtime.get_product_name(),
+                &command.annotation().rc,
+                self.runtime.get_command_map().keys().cloned(),
+                self.runtime.get_all_command_options_classes(),
+                options_parser,
+            );
+            option_handler.parse_options(args, event_handler)
+        };
+        if result.is_ok() {
+            // Allow the command to edit the options.
+            command.edit_options(options_parser);
+        }
+        options_parse_result_exit_code(result)
+    }
+
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:323 BlazeCommandDispatcher.setShutdownReason
     fn set_shutdown_reason(&self, shutdown_reason: String) {
         let mut reason = self.shutdown_reason.lock();
@@ -530,6 +670,55 @@ fn ui_event_handler_options(options: &UiOptions) -> UiEventHandlerOptions {
         filtered_event_kinds: filtered,
         max_stdout_err_bytes: options.max_stdout_err_bytes,
     }
+}
+
+/// The `DetailedExitCode` of a `BlazeOptionHandler` parse (Java:
+/// `processOptionsParsingException` with code `OPTIONS_PARSE_FAILURE`).
+fn options_parse_result_exit_code(result: Result<(), OptionsParseFailure>) -> DetailedExitCode {
+    match result {
+        Ok(()) => DetailedExitCode::success(),
+        Err(failure) => DetailedExitCode::of(FailureDetail {
+            message: failure.message,
+            category: Some(failure_details::failure_detail::Category::Command(
+                failure_details::Command {
+                    code: failure_details::command::Code::OptionsParseFailure as i32,
+                },
+            )),
+        }),
+    }
+}
+
+/// The value of a boolean option: the parsed value if it was set, else its default; `false` if
+/// the command has no such option.
+// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:672 BlazeCommandDispatcher.execExclusively
+fn boolean_option_value(options_parser: &OptionsParser, name: &str) -> bool {
+    let Some(option) = options_parser.get_option_description(name) else {
+        return false;
+    };
+    let option_name = option.get_option_definition().get_option_name();
+    match options_parser.get_option_value_description(option_name) {
+        Some(cmd_line_value) => cmd_line_value
+            .get_value()
+            .and_then(|v| v.downcast_ref::<bool>().copied())
+            .expect("ClassCastException: Boolean option"),
+        None => option
+            .get_option_definition()
+            .get_default_value(None)
+            .and_then(|v| v.downcast_ref::<bool>().copied())
+            .expect("ClassCastException: Boolean option default"),
+    }
+}
+
+// Java: com/google/devtools/build/lib/util/InterruptedFailureDetails.java:30 InterruptedFailureDetails.detailedExitCode
+fn interrupted_detailed_exit_code(message: &str) -> DetailedExitCode {
+    DetailedExitCode::of(FailureDetail {
+        message: message.to_string(),
+        category: Some(failure_details::failure_detail::Category::Interrupted(
+            failure_details::Interrupted {
+                code: failure_details::interrupted::Code::Interrupted as i32,
+            },
+        )),
+    })
 }
 
 /// Converts an event recorded by `blaze_options`' rc handler into a `blaze_events` event.

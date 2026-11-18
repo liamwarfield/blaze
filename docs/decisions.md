@@ -52,3 +52,22 @@ Each entry: date, decision, why, who decided.
   `starlark_defs` for now (marked PORT: move to blaze_analysis); frozen .bzl heaps live for the
   process; targets hold Arc<PackageMetadata>; `Type` is a closed enum. External repos come through
   `blaze_sky_loading::repos::ExternalRepos` (OracleRepos for dev, blaze_repo_rules for real). Root.
+- 2026-11-18. Analysis crates: `blaze_analysis` (lib/analysis core, ConfiguredTargetKey, toolchain
+  context types, platform providers, ctx/actions), `blaze_rules` (native rule factories, cc/py/
+  apple natives, fragments' Starlark values; depends on blaze_sky_loading for W3's environment
+  composition), `blaze_sky_analysis` (CONFIGURED_TARGET, producers, toolchain functions,
+  PlatformFunction, late-bound default resolution), `blaze_sky_top` (one evaluator per command:
+  loading + bzlmod + configuration + analysis; BuildView/AnalysisPhaseRunner), `blaze_cquery`
+  (query2 cquery/aquery; 06 puts these in blaze_query, which W3 owns). Design and ownership:
+  crates/blaze_analysis/DESIGN.md. Analysis lead.
+- 2026-11-18. Infos are frozen Starlark values (`OwnedFrozenValue`), native ones Rust Starlark
+  types with the loading-phase builtin provider identity; rule implementations run in a fresh
+  Module per configured target, actions recorded from Starlark are built after freezing in
+  registration order. Analysis natives replace W3's loading stand-ins by composing
+  `BazelStarlarkEnvironment` from outside (blaze_rules::bazel_environment). Analysis functions
+  capture `AnalysisServices` in closures (the evaluator's single client is the configuration
+  functions'). Analysis lead.
+- 2026-11-18. Until real fetching is wired, analysis commands use the OracleRepos seam from
+  `$BLAZE_ORACLE_REPOS` or `~/.cache/blaze/w3/<workspace basename>.repos.json`
+  (blaze_sky_top::external_repos). `LateBoundDefault` carries a resolver name; analysis
+  resolves it (blaze_sky_analysis::late_bound_defaults). Analysis lead, root-approved.

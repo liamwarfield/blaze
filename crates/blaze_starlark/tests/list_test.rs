@@ -171,7 +171,6 @@ fn depset_of_struct_with_immutable_list() {
 /// holding an immutable copy of mutable lists is a valid depset element; a mutable list is not
 /// immutable whatever it holds (MutableStarlarkList.isImmutable).
 #[test]
-#[ignore = "needs structs::is_immutable to use list_is_immutable for lists (analysis lead's file; its temporary element check decides by the elements)"]
 fn depset_immutability_of_lists_follows_the_list_flag() {
     assert_eq!(
         eval_r("r = depset([struct(a = immutable_copy_of([[1]]))]).to_list()"),

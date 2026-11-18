@@ -1,14 +1,15 @@
 //! `blaze aquery`: `runtime/commands/AqueryCommand.java` (the body is in
 //! `blaze_cquery::commands::aquery_command`).
 
+use blaze_build_config::bazel_rule_class_provider::BazelRuleClassProvider;
+use blaze_build_config::top_level::create_build_options;
 use blaze_cquery::commands::PostAnalysisCommandEnvironment;
 
 use crate::command::{BlazeCommand, BlazeCommandResult, CommandAnnotation};
 use crate::command_environment::CommandEnvironment;
 use crate::command_registry::AQUERY_COMMAND;
 use crate::commands::query::{
-    build_options_with_module_flag_aliases, create_skyframe_executor, query_output_stream,
-    reporter, to_runtime_detailed_exit_code,
+    create_skyframe_executor, query_output_stream, reporter, to_runtime_detailed_exit_code,
 };
 use crate::options_result::OptionsParsingResult;
 
@@ -35,10 +36,9 @@ impl BlazeCommand for AqueryCommand {
         // BuildTool.buildTargets: runtime.createBuildOptions(request).
         // PORT: the executor takes the build options as its baseline when it is created (see
         // blaze_sky_top::skyframe_executor).
-        let build_options = match build_options_with_module_flag_aliases(env, options) {
-            Ok(build_options) => build_options,
-            Err(result) => return result,
-        };
+        // The options carry the MODULE.bazel flag aliases the dispatcher injected
+        // (BlazeCommandDispatcher.execExclusively).
+        let build_options = create_build_options(&BazelRuleClassProvider::create(), options);
         let skyframe_executor = match create_skyframe_executor(env, Some(build_options)) {
             Ok(e) => e,
             Err(result) => return result,

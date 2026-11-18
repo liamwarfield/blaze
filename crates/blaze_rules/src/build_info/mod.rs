@@ -71,7 +71,9 @@ impl BuildInfoFileWriteActionSpec {
 /// that reads `stable-status.txt` / `volatile-status.txt`.
 ///
 /// `new_file_root` is the action factory's `newFileRoot()`. `transform_func` must be a Starlark
-/// `def` (Java casts it to `StarlarkFunction`), `template` is the `template` File.
+/// `def` (Java casts it to `StarlarkFunction`), `function_module` is
+/// `BazelModuleContext.of(translationFunc.getModule())` (the module context of the module
+/// `transform_func` was defined in), `template` is the `template` File.
 ///
 /// The caller (`transform_info_file` / `transform_version_file`, after
 /// `BuiltinRestriction.failIfCalledOutsideDefaultAllowlist`) registers
@@ -107,6 +109,7 @@ pub fn transform_build_info_file<'v>(
         );
     }
     // Java reads the digest in BuildInfoFileWriteAction.computeKey from the function's module.
+    // Java: com/google/devtools/build/lib/analysis/actions/BuildInfoFileWriteAction.java:196 BuildInfoFileWriteAction.computeKey
     let bzl_transitive_digest = function_module
         .expect("NullPointerException: no BazelModuleContext for the translation function's module")
         .bzl_transitive_digest

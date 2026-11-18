@@ -12,7 +12,6 @@ use blaze_actions::Artifact;
 use blaze_actions::analysis::starlark::starlark_file::artifact_from_value;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_collect::NestedSet;
-use blaze_packages::bzl_context::BazelModuleContext;
 use blaze_starlark::depset::Depset;
 use blaze_starlark::structs::StarlarkInfo;
 use indexmap::IndexMap;
@@ -350,10 +349,7 @@ pub fn check_private_starlarkification_allowlist(eval: &Evaluator) -> starlark::
 /// `CcModule.isCalledFromStarlarkCcCommon(thread)`.
 // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:202 CcModule.isCalledFromStarlarkCcCommon
 pub fn is_called_from_starlark_cc_common(eval: &Evaluator) -> starlark::Result<()> {
-    // Java: BazelModuleContext.ofInnermostBzlOrThrow(thread): Preconditions.checkNotNull.
-    let Some(module) = BazelModuleContext::of_innermost_bzl(eval) else {
-        panic!("NullPointerException: BazelModuleContext.ofInnermostBzlOrThrow");
-    };
+    let module = blaze_analysis::rule::builtin_restriction::of_innermost_bzl_or_throw(eval);
     blaze_cc_features::cc_module::is_called_from_starlark_cc_common(
         &module.label().get_canonical_form(),
     )

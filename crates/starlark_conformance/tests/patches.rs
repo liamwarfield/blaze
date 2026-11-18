@@ -177,6 +177,24 @@ mod probe {
             ))
         }
 
+        /// Patch 0018: Java `Dict.immutableCopyOf(x)`.
+        fn immutable_dict<'v>(x: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+            let d = starlark::values::dict::DictRef::from_value(x)
+                .ok_or_else(|| anyhow::anyhow!("not a dict"))?;
+            let content = d.iter_hashed().collect();
+            Ok(starlark::values::dict::alloc_immutable_dict(
+                heap,
+                starlark::values::dict::Dict::new(content),
+            ))
+        }
+
+        /// Patch 0018: `Dict.isImmutable`, None for non-dicts.
+        fn dict_is_immutable<'v>(x: Value<'v>) -> anyhow::Result<NoneOr<bool>> {
+            Ok(NoneOr::from_option(
+                starlark::values::dict::dict_is_immutable(x),
+            ))
+        }
+
         /// Patch 0017: file name of the module `f` was defined in.
         fn def_module_file<'v>(f: Value<'v>) -> anyhow::Result<NoneOr<String>> {
             Ok(NoneOr::from_option(
@@ -446,4 +464,62 @@ r = (def_module_file(f), def_module_file(c), def_module_file(h), def_module_file
         .unwrap()
         .join()
         .unwrap();
+}
+
+/// Java Dict.immutableCopyOf: reads like a dict; every mutation fails with Starlark.checkMutable's
+/// "trying to mutate a frozen dict value" (checked before the key lookup, as in Dict.pop);
+/// isImmutable is true without looking at keys or values (Dict.isImmutable: mutability frozen);
+/// still unhashable ("Even a frozen dict is unhashable").
+#[test]
+fn patch_0018_immutable_dict() {
+    let run = |body: &str| {
+        let src: &'static str = Box::leak(
+            format!("d = immutable_dict({{'a': [1], 2: 'b'}})\ndef f():\n    {body}\nf()\n")
+                .into_boxed_str(),
+        );
+        eval_with_probe(src)
+    };
+    let ok = |body: &str, want: &str| {
+        let src: &'static str =
+            Box::leak(format!("d = immutable_dict({{'a': [1], 2: 'b'}})\n{body}").into_boxed_str());
+        assert_eq!(eval_with_probe(src), Ok(want.to_owned()), "{body}");
+    };
+    ok(
+        "r = (type(d), repr(d), len(d), d['a'], d.get(2), d.get(3, 0), 'a' in d, 3 in d, d == {'a': [1], 2: 'b'}, {2: 'b', 'a': [1]} == d)",
+        r#"("dict", "{\"a\": [1], 2: \"b\"}", 2, [1], "b", 0, True, False, True, True)"#,
+    );
+    ok(
+        "r = (d.keys(), d.values(), d.items(), [k for k in d], dict(d), d | {3: 4}, dict_is_immutable(d))",
+        r#"(["a", 2], [[1], "b"], [("a", [1]), (2, "b")], ["a", 2], {"a": [1], 2: "b"}, {"a": [1], 2: "b", 3: 4}, True)"#,
+    );
+    // Copies are mutable; values keep their own mutability.
+    ok(
+        "e = dict(d)\ne[5] = 6\nd['a'].append(2)\nr = (d, e, dict_is_immutable(e), dict_is_immutable({}), dict_is_immutable(immutable_dict({})), dict_is_immutable([]))",
+        r#"({"a": [1, 2], 2: "b"}, {"a": [1, 2], 2: "b", 5: 6}, False, False, True, None)"#,
+    );
+    for m in [
+        "d['c'] = 1",
+        "d['a'] = 1",
+        "d.update({'c': 1})",
+        "d.update()",
+        "d.pop('a')",
+        "d.pop('zz', 0)",
+        "d.popitem()",
+        "d.setdefault('c', 1)",
+        "d.setdefault('a')",
+        "d.clear()",
+        "x = d\n    x |= {'c': 1}",
+        "x = d\n    x |= x",
+    ] {
+        assert_eq!(
+            run(m),
+            Err("trying to mutate a frozen dict value".to_owned()),
+            "{m}"
+        );
+    }
+    assert!(
+        eval_with_probe("r = {immutable_dict({1: 2}): 1}")
+            .unwrap_err()
+            .contains("not hashable")
+    );
 }

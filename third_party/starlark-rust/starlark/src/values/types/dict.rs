@@ -34,3 +34,5 @@ pub use crate::values::dict::refs::DictRef;
 pub use crate::values::dict::refs::FrozenDictRef;
 pub use crate::values::dict::unpack::UnpackDictEntries;
 pub use crate::values::dict::value::Dict;
+pub use crate::values::dict::value::alloc_immutable_dict; // BLAZE PATCH 0018
+pub use crate::values::dict::value::dict_is_immutable; // BLAZE PATCH 0018
