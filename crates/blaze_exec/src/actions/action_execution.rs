@@ -88,6 +88,8 @@ pub struct FailedActionInfo {
     pub mnemonic: String,
     pub location: String,
     pub pretty_print: String,
+    /// `action.describe()`.
+    pub describe: String,
 }
 
 impl FailedActionInfo {
@@ -100,6 +102,7 @@ impl FailedActionInfo {
             mnemonic: action.get_mnemonic(),
             location: owner.get_location().to_string(),
             pretty_print: action.pretty_print(),
+            describe: action.describe(),
         }
     }
 }
@@ -117,9 +120,22 @@ pub struct ActionExecutionException {
     root_causes: Vec<ActionFailed>,
     catastrophe: bool,
     failure_detail: Option<FailureDetail>,
+    /// This is an `AlreadyReportedActionExecutionException`: the error was already shown.
+    already_reported: bool,
 }
 
 impl ActionExecutionException {
+    /// `new AlreadyReportedActionExecutionException(cause)`: this wrapper exception is used
+    /// when the error message has already been reported; it gets translated into a
+    /// BuildFailedException without message.
+    // Java: com/google/devtools/build/lib/actions/AlreadyReportedActionExecutionException.java:31 AlreadyReportedActionExecutionException.<init>
+    pub fn already_reported(cause: ActionExecutionException) -> ActionExecutionException {
+        ActionExecutionException {
+            already_reported: true,
+            ..cause
+        }
+    }
+
     /// `new ActionExecutionException(message, action, catastrophe, detailedExitCode)`.
     // Java: com/google/devtools/build/lib/actions/ActionExecutionException.java:67 ActionExecutionException.<init>
     pub fn new(
@@ -137,6 +153,7 @@ impl ActionExecutionException {
             root_causes,
             catastrophe,
             failure_detail,
+            already_reported: false,
         }
     }
 
@@ -170,6 +187,7 @@ impl ActionExecutionException {
             root_causes,
             catastrophe,
             failure_detail,
+            already_reported: false,
         }
     }
 
@@ -249,9 +267,10 @@ impl ActionExecutionException {
 
     /// Returns true if the error should be shown.
     // Java: com/google/devtools/build/lib/actions/ActionExecutionException.java:202 ActionExecutionException.showError
+    // Java: com/google/devtools/build/lib/actions/AlreadyReportedActionExecutionException.java:42 AlreadyReportedActionExecutionException.showError
     pub fn show_error(&self) -> bool {
         // PORT: Java's getMessage() is null only for exceptions built from a null message.
-        true
+        !self.already_reported
     }
 }
 

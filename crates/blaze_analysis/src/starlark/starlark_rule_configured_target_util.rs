@@ -183,10 +183,11 @@ fn evaluate(
         let raw_providers;
         let is_default_executable_created;
         let required_config_fragments_provider;
+        // Java: a Depset created by the implementation wraps one NestedSet for as long as it
+        // lives, before and after its Mutability is frozen; see rule::depsets.
+        // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:207 Depset.getSet
+        let depset_scope = crate::rule::depsets::DepsetConversionScope::enter();
         {
-            // Java: a Depset created by the implementation wraps one NestedSet for as long as it
-            // lives; see rule::depsets.
-            let _depset_scope = crate::rule::depsets::DepsetConversionScope::enter();
             let mut eval = Evaluator::new(&module);
             eval.extra = Some(thread);
             eval.set_forbid_recursion(!thread.semantics.allow_recursion);
@@ -218,12 +219,33 @@ fn evaluate(
             ctx.close();
             raw_providers = raw.map(|v| keep.push(v));
         }
+        // PORT: freezing copies the depsets the implementation made; the keep-alive list gives
+        // the frozen copy of each one whose NestedSet an action already holds.
+        // SAFETY: the depsets converted in the scope are values of `module`'s heap, which is
+        // alive and is not garbage collected while a function call (the implementation) runs.
+        let converted_depsets: Vec<usize> = unsafe { depset_scope.converted_depsets() }
+            .into_iter()
+            .map(|depset| keep.push(depset))
+            .collect();
         let frozen = match module.freeze() {
             Ok(frozen) => {
                 // PORT: keep-alive. rule::depsets memoizes NestedSets by the address of frozen
                 // depsets, so a frozen heap must never be freed (and its addresses reused), not
                 // even when the target later fails analysis.
                 crate::rule::depsets::keep_frozen_heap_alive(frozen.frozen_heap().clone());
+                let keep_alive = frozen
+                    .owned_extra_value()
+                    .expect("the keep-alive list is the module's extra value");
+                let frozen_depsets: Vec<OwnedFrozenValue> = converted_depsets
+                    .iter()
+                    .map(|index| {
+                        super::thread_payload::FrozenAnalysisKeepAlive::get_owned(
+                            &keep_alive,
+                            *index,
+                        )
+                    })
+                    .collect();
+                depset_scope.adopt_frozen(&frozen_depsets);
                 Some(frozen)
             }
             Err(e) => {

@@ -9,3 +9,22 @@ run build //:x --extra_toolchains=//:x
 run build //:x --extra_toolchains=//:nosuch
 run build //:x --extra_execution_platforms=//:x
 run aquery //:x --platforms=//:x
+# Toolchain resolution of a rule with a toolchain type (wave 3).
+run build //:needs_tt
+run build //:needs_tt --extra_toolchains=//:tc
+run build //:needs_tt --extra_toolchains=//:x
+run build //:needs_tt --extra_toolchains=//:nosuch
+run build //:needs_tt --extra_toolchains=//nopkg:tc
+run build //:needs_tt --extra_toolchains=//:tc --extra_execution_platforms=//:nosuch
+run build //:needs_tt --extra_toolchains=//:tc --extra_execution_platforms=//:x
+run build //:needs_tt --extra_toolchains=//:tc --platforms=//:x
+run build //:needs_tt //:x --extra_toolchains=//:x --keep_going
+run cquery //:needs_tt --extra_toolchains=//:nosuch
+run build //:x --platforms=//:x --keep_going
+run build //:x --host_platform=//:nosuch
+# A transition to a bad target platform (wave 3).
+run build //:dep_on_p
+run build //:dep_on_not_a_platform
+run build //:dep_on_missing_platform
+run build //:dep_on_not_a_platform //:dep_on_missing_platform //:x --keep_going
+run cquery "deps(//:dep_on_not_a_platform)" --keep_going

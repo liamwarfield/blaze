@@ -43,7 +43,7 @@ use crate::test::test_provider::{TestProvider, TestTagsProvider};
 pub enum RuleConfiguredTargetBuildError {
     /// Java `ActionConflictException` (message).
     #[error("{0}")]
-    ActionConflict(String),
+    ActionConflict(crate::rule::action_conflict_exception::ActionConflictException),
     #[error("interrupted")]
     Interrupted,
 }

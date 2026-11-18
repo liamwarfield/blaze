@@ -570,7 +570,9 @@ fn reported_to_actual_sources_of(v: Value) -> starlark::Result<NestedSet<Reporte
             d.element_type()
         )));
     }
-    d.to_nested_set(&mut |x: Value| {
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:207 Depset.getSet
+    // (the depset's one NestedSet, see rule::depsets).
+    crate::rule::depsets::depset_to_nested_set_shared(v, d, &mut |x: Value| {
         let t = TupleRef::from_value(x).ok_or_else(|| {
             errorf(format!(
                 "for '{what}', got a depset of '{}', expected a depset of 'tuple'",

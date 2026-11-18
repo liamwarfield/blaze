@@ -185,9 +185,6 @@ impl IndividualErrorProcessingResult {
 enum AnalysisException<'a> {
     /// `ActionConflictException`.
     ActionConflict(&'a ActionConflictException),
-    /// `ActionConflictException` of a conflict inside one target, which the analysis functions
-    /// carry as its message only.
-    ActionConflictMessage(&'a str),
     /// `ConfiguredValueCreationException`.
     ConfiguredValueCreation(&'a ConfiguredValueCreationException),
     /// `NoSuchThingException` (`NoSuchPackageException`, `NoSuchTargetException`).
@@ -215,8 +212,9 @@ fn classify<'a>(exception: &'a (dyn std::error::Error + 'static)) -> AnalysisExc
             | ConfiguredTargetFunctionException::Unreported(c) => {
                 AnalysisException::ConfiguredValueCreation(c)
             }
-            ConfiguredTargetFunctionException::ActionConflict(message) => {
-                AnalysisException::ActionConflictMessage(message)
+            // `UnreportedException(ActionConflictException)`: a conflict inside one target.
+            ConfiguredTargetFunctionException::ActionConflict(e) => {
+                AnalysisException::ActionConflict(e)
             }
             ConfiguredTargetFunctionException::NoSuchThing(n) => {
                 AnalysisException::NoSuchThing(n.get_detailed_exit_code())
@@ -553,17 +551,6 @@ fn process_individual_error(
             action_conflicts.put(ace.get_attempted_action(), ace.clone());
             analysis_root_causes = Vec::new();
         }
-        AnalysisException::ActionConflictMessage(message) => {
-            // Java: `actionConflicts = ImmutableMap.of(ace.getAttemptedAction(), ace)`. The
-            // analysis functions carry only the message of a conflict inside one target
-            // (ConfiguredTargetFunctionException::ActionConflict), not its attempted action.
-            blaze_util::unported!(
-                "SkyframeErrorProcessor.processIndividualError",
-                "ActionConflictException of {} without its attempted action: {}",
-                top_level_label,
-                message
-            )
-        }
         AnalysisException::ConfiguredValueCreation(ct_cause) => {
             // Previously, the nested set was de-duplicating loading root cause labels. Now that
             // we track Cause instances including a message, we get one event per label and
@@ -800,12 +787,6 @@ pub(crate) fn detailed_exception_failure_detail_of(
     // then analyze with --nokeep_going.
     match classify(cause) {
         AnalysisException::ActionConflict(e) => Some(e.get_failure_detail()),
-        AnalysisException::ActionConflictMessage(message) => Some(FailureDetail {
-            message: message.to_owned(),
-            category: Some(Category::Analysis(failure_details::Analysis {
-                code: failure_details::analysis::Code::ActionConflict as i32,
-            })),
-        }),
         AnalysisException::ConfiguredValueCreation(e) => {
             Some(packages_failure_detail(e.get_detailed_exit_code()))
         }

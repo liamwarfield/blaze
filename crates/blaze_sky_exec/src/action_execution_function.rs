@@ -269,7 +269,17 @@ impl ActionExecutionFunction {
             Ok(result) => result,
             // In this case we do not report the error to the action reporter because we have
             // already done it in SkyframeActionExecutor.reportErrorIfNotAbortingMode() method.
-            Err(e) => return Err(to_compute_error(e)),
+            // That method prints the error in the top-level reporter and also dumps the recorded
+            // StdErr for the action. Label can be null in the case of, e.g., the
+            // SystemActionOwner (for build-info.txt).
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:365 ActionExecutionFunction.computeInternal
+            Err(ExecutionFailure::Exception(e)) => {
+                return Err(action_execution_function_exception(
+                    ActionExecutionException::already_reported(e),
+                )
+                .into());
+            }
+            Err(e @ ExecutionFailure::Interrupted) => return Err(to_compute_error(e)),
         };
 
         if env.values_missing() {
@@ -515,11 +525,14 @@ impl ActionExecutionFunction {
                             message.to_string(),
                             execution::Code::DiscoveredInputDoesNotExist,
                         );
-                        return Err(ActionExecutionException::new(
-                            message,
-                            Some(action_for_error),
-                            false,
-                            Some(code),
+                        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:503 ActionExecutionFunction.addDiscoveredInputs
+                        return Err(ActionExecutionException::already_reported(
+                            ActionExecutionException::new(
+                                message,
+                                Some(action_for_error),
+                                false,
+                                Some(code),
+                            ),
                         )
                         .into());
                     }

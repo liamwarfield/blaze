@@ -13,7 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use blaze_cmdline::Label;
-use blaze_skyframe::{ComputeError, Environment, Key, SkyFunctionName};
+use blaze_skyframe::{ComputeError, Environment, Key, SkyError, SkyFunctionName};
 
 /// `PlatformValue.key(platformLabel, flagAliasMappings)`.
 #[derive(Clone, PartialEq, Eq)]
@@ -77,6 +77,20 @@ pub trait PlatformValueProvider: Send + Sync {
         key: &PlatformValueKey,
         env: &mut Environment<'_>,
     ) -> Result<Option<PlatformValue>, ComputeError>;
+
+    /// The `InvalidPlatformException.class` of a lookup of a PLATFORM value
+    /// (`tasks.lookUp(PlatformValue.key(..), InvalidPlatformException.class, ..)` of
+    /// `PlatformProducer`, `env.getValueOrThrow(.., InvalidPlatformException.class)` of
+    /// `BaselineOptionsFunction`): returns the exception of a failed dependency if it is an
+    /// `InvalidPlatformException`, to be handled or rethrown by the caller.
+    ///
+    /// PORT: `InvalidPlatformException` is `blaze_analysis::toolchains::ToolchainException`
+    /// (kind `InvalidPlatform`), which this crate cannot name; the provider that throws it
+    /// recognizes it. A provider that never throws one keeps the default.
+    // Java: com/google/devtools/build/lib/analysis/producers/PlatformProducer.java:71 PlatformProducer.acceptValueOrException2
+    fn catch_invalid_platform_exception(&self, _exception: &SkyError) -> Option<SkyError> {
+        None
+    }
 }
 
 /// The default provider: the analysis phase is not ported.

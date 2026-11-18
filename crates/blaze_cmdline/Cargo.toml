@@ -8,5 +8,7 @@ publish.workspace = true
 
 [dependencies]
 blaze_vfs = { path = "../blaze_vfs" }
+blaze_util = { path = "../blaze_util" }
+blaze_protos = { path = "../blaze_protos" }
 indexmap = { workspace = true }
 thiserror = { workspace = true }

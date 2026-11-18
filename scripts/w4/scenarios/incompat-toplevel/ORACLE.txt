@@ -71,27 +71,24 @@ ERROR: Analysis of target '//pkg:select_vanilla' failed; build aborted: Target /
 ERROR: Build did NOT complete successfully
 Target //pkg:select_vanilla failed to build
 Use --verbose_failures to see the command lines of failed build steps.
-=== 14: run build //pkg:needs_vanilla //pkg:select_vanilla --platforms=//pkg:vanilla_platform
-exit 0
-INFO: Build completed successfully, 3 total actions
-=== 15: run build //pkg:select_opt
+=== 14: run build //pkg:select_opt
 exit 0
   bazel-bin/pkg/select_opt.out
 INFO: Build completed successfully, 1 total action
 Target //pkg:select_opt up-to-date:
-=== 16: run build //pkg:select_opt -c opt
+=== 15: run build //pkg:select_opt -c opt
 exit 1
 ERROR: Analysis of target '//pkg:select_opt' failed; build aborted: Target //pkg:select_opt is incompatible and cannot be built, but was explicitly requested.
 ERROR: Build did NOT complete successfully
 Target //pkg:select_opt failed to build
 Use --verbose_failures to see the command lines of failed build steps.
-=== 17: run build //pkg:bad_gen.out
+=== 16: run build //pkg:bad_gen.out
 exit 1
 ERROR: Analysis of target '//pkg:bad_gen.out' failed; build aborted: Target //pkg:bad_gen.out is incompatible and cannot be built, but was explicitly requested.
 ERROR: Build did NOT complete successfully
 Target //pkg:bad_gen.out failed to build
 Use --verbose_failures to see the command lines of failed build steps.
-=== 18: run cquery //pkg:all --output=label_kind
+=== 17: run cquery //pkg:all --output=label_kind
 exit 0
 filegroup rule //pkg:bad (a7a71fd)
 alias rule //pkg:bad_alias (e722a21)
@@ -113,10 +110,9 @@ simple rule //pkg:select_opt (a7a71fd)
 simple rule //pkg:select_vanilla (a7a71fd)
 simple_test rule //pkg:test_on_bad (e722a21)
 constraint_value rule //pkg:vanilla (3030ed4)
-platform rule //pkg:vanilla_platform (3030ed4)
 platform rule //pkg:vanilla_platform (a7a71fd)
 INFO: Build completed successfully, 0 total actions
-=== 19: run cquery "deps(//pkg:dep_on_bad)"
+=== 18: run cquery "deps(//pkg:dep_on_bad)"
 exit 0
 //pkg:dep_on_bad (a7a71fd)
 @bazel_tools//tools:host_platform (3030ed4)
@@ -129,10 +125,13 @@ exit 0
 @platforms//:incompatible_setting (3030ed4)
 @platforms//os:os (3030ed4)
 INFO: Build completed successfully, 0 total actions
-=== 20: run cquery //pkg:bad
+=== 19: run cquery //pkg:bad
 exit 0
 //pkg:bad (a7a71fd)
 INFO: Build completed successfully, 0 total actions
+=== 20: run build //pkg:needs_vanilla //pkg:select_vanilla --platforms=//pkg:vanilla_platform
+exit 0
+INFO: Build completed successfully, 3 total actions
 === 21: run cquery //pkg:all --output=label_kind --platforms=//pkg:vanilla_platform
 exit 0
 filegroup rule //pkg:bad (617a539)

@@ -79,7 +79,10 @@ impl DigestUtil {
     /// `compute(DeterministicWriter input)`: streams the input, as parameter files can be very
     /// large.
     // Java: com/google/devtools/build/lib/remote/util/DigestUtil.java:122 DigestUtil.compute
-    pub fn compute_virtual_action_input(&self, input: &dyn VirtualActionInput) -> io::Result<Digest> {
+    pub fn compute_virtual_action_input(
+        &self,
+        input: &dyn VirtualActionInput,
+    ) -> io::Result<Digest> {
         let mut digest_output_stream = self.new_digest_output_stream(io::sink());
         input.write_to(&mut digest_output_stream)?;
         Ok(digest_output_stream.digest())
@@ -114,7 +117,10 @@ impl DigestUtil {
 
     /// `asSpawnLogProto(actionKey)`.
     // Java: com/google/devtools/build/lib/remote/util/DigestUtil.java:162 DigestUtil.asSpawnLogProto
-    pub fn as_spawn_log_proto(&self, action_key: &ActionKey) -> blaze_protos::tools::protos::Digest {
+    pub fn as_spawn_log_proto(
+        &self,
+        action_key: &ActionKey,
+    ) -> blaze_protos::tools::protos::Digest {
         blaze_protos::tools::protos::Digest {
             hash: action_key.digest().hash.clone(),
             size_bytes: action_key.digest().size_bytes,
@@ -162,17 +168,21 @@ impl DigestUtil {
     pub fn from_string(digest: &str) -> Digest {
         let parts: Vec<&str> = digest.split('/').collect();
         blaze_util::check_argument!(parts.len() == 2, "Invalid digest format: {}", digest);
-        let size: i64 = parts[1]
-            .parse()
-            .unwrap_or_else(|_| panic!("NumberFormatException: For input string: \"{}\"", parts[1]));
+        let size: i64 = parts[1].parse().unwrap_or_else(|_| {
+            panic!("NumberFormatException: For input string: \"{}\"", parts[1])
+        });
         DigestUtil::build_digest(parts[0], size)
     }
 
     /// `toBinaryDigest(digest)`.
     // Java: com/google/devtools/build/lib/remote/util/DigestUtil.java:201 DigestUtil.toBinaryDigest
     pub fn to_binary_digest(digest: &Digest) -> Vec<u8> {
-        hex::decode(&digest.hash)
-            .unwrap_or_else(|_| panic!("IllegalArgumentException: Illegal hexadecimal character in {}", digest.hash))
+        hex::decode(&digest.hash).unwrap_or_else(|_| {
+            panic!(
+                "IllegalArgumentException: Illegal hexadecimal character in {}",
+                digest.hash
+            )
+        })
     }
 
     /// `isOldStyleDigestFunction(digestFunction)`.

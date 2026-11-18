@@ -47,6 +47,7 @@ const PROTOS: &[&str] = &[
     "google/rpc/error_details.proto",
     "src/main/protobuf/remote_execution_log.proto",
     "src/main/protobuf/cache_salt.proto",
+    "src/main/protobuf/remote_scrubbing.proto",
     // Well-known types JsonFormat prints specially; compiled so that `Any` can hold them.
     "google/protobuf/wrappers.proto",
     "google/protobuf/field_mask.proto",

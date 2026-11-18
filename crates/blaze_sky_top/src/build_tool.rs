@@ -547,6 +547,19 @@ fn build_configuration_exit_code(code: i32) -> i32 {
 pub fn invalid_configuration_detailed_exit_code(
     e: &InvalidConfigurationException,
 ) -> DetailedExitCode {
+    // An InvalidConfigurationException that wraps a ToolchainException keeps its Toolchain code
+    // (SkyframeExecutor.getConfiguration: `new InvalidConfigurationException(
+    // detailedException.getDetailedExitCode(), e)`).
+    if let Some(toolchain_code) = e.code.strip_prefix("Toolchain.") {
+        let code = failure_details::toolchain::Code::from_str_name(toolchain_code)
+            .unwrap_or_else(|| panic!("IllegalArgumentException: Toolchain.Code {toolchain_code}"));
+        return DetailedExitCode::of(FailureDetail {
+            message: e.get_message().to_owned(),
+            category: Some(Category::Toolchain(failure_details::Toolchain {
+                code: code as i32,
+            })),
+        });
+    }
     let code = failure_details::build_configuration::Code::from_str_name(e.code)
         .unwrap_or(failure_details::build_configuration::Code::BuildConfigurationUnknown);
     DetailedExitCode::of_exit_code(

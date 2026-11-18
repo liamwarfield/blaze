@@ -23,3 +23,10 @@ pub mod stubs {
     ));
     include!(concat!(env!("OUT_DIR"), "/google.bytestream.ByteStream.rs"));
 }
+
+pub mod channel;
+
+pub use channel::{
+    AttachHeadersInterceptor, CallCredentials, CallListener, CallOptions, ClientInterceptor,
+    Method, ReferenceCountedChannel, ResponseStream, methods,
+};

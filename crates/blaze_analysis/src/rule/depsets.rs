@@ -19,10 +19,17 @@
 //! PORT: memo scope. Frozen depsets (providers of other targets, .bzl globals, converted native
 //! sets) are memoized for the life of the process; their heaps live as long (single build per
 //! process). Depsets of the rule implementation being evaluated are not frozen yet and their
-//! addresses die with the module's heap, so they are memoized only inside a
-//! [`DepsetConversionScope`] (one per rule evaluation). Not covered: a depset converted both
-//! before and after its module is frozen (the frozen copy has another address); those get equal
-//! but distinct nodes.
+//! addresses die with the module's heap, so they are memoized inside a
+//! [`DepsetConversionScope`] (one per rule evaluation).
+//!
+//! PORT: freezing. Java's `Depset` is the same object before and after its `Mutability` is
+//! frozen, so the set an action got from it while the implementation ran is the set a dependent
+//! target gets from the provider later. starlark-rust freezes by copying: the frozen depset has
+//! another address. The scope therefore records, for every unfrozen depset it converts, the
+//! order in which the conversion visited the depset's nodes; once the module is frozen
+//! ([`DepsetConversionScope::adopt_frozen`]) the same walk over the frozen copy pairs every
+//! frozen node with the unfrozen node it was copied from, and the frozen node is memoized with
+//! that node's set.
 
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
@@ -45,18 +52,70 @@ struct MemoEntry {
     depset: OwnedFrozenValue,
 }
 
+/// A `NestedSet<E>` of any element type.
+type AnySet = Arc<dyn Any + Send + Sync>;
+
+/// The `NestedSet<E>` in `set`.
+fn downcast_set<E>(set: &AnySet) -> NestedSet<E>
+where
+    E: Clone + Eq + Hash + Send + Sync + 'static,
+{
+    (**set)
+        .downcast_ref::<NestedSet<E>>()
+        .expect("keyed by element type")
+        .clone()
+}
+
 /// Memo of converted nodes, keyed by (element type, node identity).
 static MEMO: LazyLock<Mutex<HashMap<(TypeId, usize), MemoEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Frozen depset identity -> the `NestedSet<E>` it stands for (boxed as `Any`).
-static FROZEN_TO_SET: LazyLock<Mutex<HashMap<(TypeId, usize), Box<dyn Any + Send + Sync>>>> =
+/// Frozen depset identity -> the `NestedSet<E>` it stands for.
+static FROZEN_TO_SET: LazyLock<Mutex<HashMap<(TypeId, usize), AnySet>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// One node visited by the conversion of an unfrozen depset, in the order of the memo lookups
+/// of `DepsetGen::to_nested_set_with_memo`.
+#[derive(Clone, Copy)]
+enum Visit {
+    /// A frozen node. Freezing keeps it, so the walk over the frozen copy finds the same node
+    /// here; nothing below it is recorded.
+    Frozen,
+    /// The unfrozen node at address `node`. `hit`: its set existed already, so the conversion
+    /// did not look below it.
+    Unfrozen { node: usize, hit: bool },
+}
+
+/// The visits of the conversion in progress.
+#[derive(Default)]
+struct Recording {
+    visits: Vec<Visit>,
+    /// Number of frozen nodes being converted (a frozen node only has frozen nodes below it).
+    frozen_depth: usize,
+}
+
+/// An unfrozen depset whose conversion made new sets.
+struct ConvertedRoot {
+    /// The depset value. PORT: its lifetime (the evaluated module's heap) is erased to store it
+    /// in the scope; [`DepsetConversionScope::converted_depsets`] gives it back.
+    value: Value<'static>,
+    /// The element type it was converted to.
+    element: TypeId,
+    visits: Vec<Visit>,
+}
+
+/// The state of one open [`DepsetConversionScope`].
+#[derive(Default)]
+struct ScopeState {
+    /// Unfrozen depset identity -> `NestedSet<E>`.
+    sets: HashMap<(TypeId, usize), AnySet>,
+    roots: Vec<ConvertedRoot>,
+    recording: Option<Recording>,
+}
+
 thread_local! {
-    /// Unfrozen depset identity -> `NestedSet<E>`, one map per open [`DepsetConversionScope`].
-    static UNFROZEN_TO_SET: RefCell<Vec<HashMap<(TypeId, usize), Box<dyn Any>>>> =
-        const { RefCell::new(Vec::new()) };
+    /// The open [`DepsetConversionScope`]s of this thread, innermost last.
+    static SCOPES: RefCell<Vec<ScopeState>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Frozen heaps whose depset addresses may be keys of [`FROZEN_TO_SET`].
@@ -70,22 +129,161 @@ pub fn keep_frozen_heap_alive(heap: starlark::values::FrozenHeapRef) {
 
 /// The lifetime of one Starlark module's unfrozen depsets (one rule implementation evaluation):
 /// while it is open, converting the same unfrozen depset value twice yields the same
-/// `NestedSet` node, as Java's `Depset.getSet` does.
+/// `NestedSet` node, as Java's `Depset.getSet` does. When the module is frozen,
+/// [`DepsetConversionScope::converted_depsets`] and [`DepsetConversionScope::adopt_frozen`]
+/// carry the sets over to the frozen depsets.
 pub struct DepsetConversionScope(());
 
 impl DepsetConversionScope {
     pub fn enter() -> DepsetConversionScope {
-        UNFROZEN_TO_SET.with(|s| s.borrow_mut().push(HashMap::new()));
+        SCOPES.with(|s| s.borrow_mut().push(ScopeState::default()));
         DepsetConversionScope(())
+    }
+
+    /// The unfrozen depsets whose conversion in this scope made new sets, in conversion order.
+    /// The caller keeps them reachable while the module is frozen and passes their frozen
+    /// copies to [`DepsetConversionScope::adopt_frozen`].
+    ///
+    /// # Safety
+    ///
+    /// `'v` must be the lifetime of the heap the depsets converted in this scope live on, and
+    /// that heap must not have been garbage collected since the scope was entered.
+    pub unsafe fn converted_depsets<'v>(&self) -> Vec<Value<'v>> {
+        SCOPES.with(|s| {
+            s.borrow()
+                .last()
+                .map(|scope| {
+                    scope
+                        .roots
+                        .iter()
+                        .map(|root| {
+                            // SAFETY: the caller's contract; the value was stored from a
+                            // `Value<'v>` of that heap.
+                            unsafe { std::mem::transmute::<Value<'static>, Value<'v>>(root.value) }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    /// Makes every frozen depset stand for the set its unfrozen original was converted to in
+    /// this scope. `frozen[i]` is the frozen copy of `converted_depsets()[i]`.
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:207 Depset.getSet
+    // (the Depset object and its NestedSet are the same before and after freezing).
+    pub fn adopt_frozen(&self, frozen: &[OwnedFrozenValue]) {
+        let adopted = SCOPES.with(|s| {
+            let s = s.borrow();
+            let mut adopted: Vec<((TypeId, usize), AnySet)> = Vec::new();
+            let Some(scope) = s.last() else {
+                return adopted;
+            };
+            assert_eq!(
+                frozen.len(),
+                scope.roots.len(),
+                "one frozen depset per converted depset"
+            );
+            for (root, frozen) in scope.roots.iter().zip(frozen) {
+                let depset = Depset::from_value(frozen.value()).expect("a frozen depset");
+                let mut replay = Replay {
+                    root,
+                    sets: &scope.sets,
+                    next: 0,
+                    adopted: &mut adopted,
+                };
+                // The walk of the conversion, over the frozen copy: it visits the frozen copy
+                // of each node where the conversion visited the node. The sets it builds (of
+                // placeholder elements) are dropped.
+                depset
+                    .to_nested_set_with_memo::<()>(true, &mut |_| Ok(()), &mut replay)
+                    .expect("the placeholder conversion does not fail");
+                assert_eq!(
+                    replay.next,
+                    root.visits.len(),
+                    "a frozen depset has the structure of its unfrozen original"
+                );
+            }
+            adopted
+        });
+        let mut memo = FROZEN_TO_SET.lock();
+        for (key, set) in adopted {
+            memo.entry(key).or_insert(set);
+        }
     }
 }
 
 impl Drop for DepsetConversionScope {
     fn drop(&mut self) {
-        UNFROZEN_TO_SET.with(|s| {
+        SCOPES.with(|s| {
             s.borrow_mut().pop();
         });
     }
+}
+
+/// The memo of [`DepsetConversionScope::adopt_frozen`]'s walk over the frozen copy of `root`:
+/// answers every lookup as the conversion of `root` was answered, and pairs the frozen node of
+/// the lookup with the unfrozen node of the conversion's lookup at the same position.
+struct Replay<'a> {
+    root: &'a ConvertedRoot,
+    sets: &'a HashMap<(TypeId, usize), AnySet>,
+    /// Index of the next visit.
+    next: usize,
+    /// (element type, frozen node) -> the set of the unfrozen node.
+    adopted: &'a mut Vec<((TypeId, usize), AnySet)>,
+}
+
+impl DepsetNodeMemo<()> for Replay<'_> {
+    fn get(&mut self, node: usize, _frozen: bool) -> Option<NestedSet<()>> {
+        let visit = self.root.visits.get(self.next).copied();
+        self.next += 1;
+        match visit {
+            Some(Visit::Unfrozen {
+                node: unfrozen,
+                hit,
+            }) => {
+                if let Some(set) = self.sets.get(&(self.root.element, unfrozen)) {
+                    self.adopted.push(((self.root.element, node), set.clone()));
+                }
+                if hit {
+                    // Not walked further, as in the conversion. (An empty set of the default
+                    // order can be added to a builder of any order.)
+                    Some(Order::STABLE_ORDER.empty_set())
+                } else {
+                    None
+                }
+            }
+            // A frozen node was not copied. Past the end the walks differ, which adopt_frozen
+            // reports; stop walking.
+            Some(Visit::Frozen) | None => Some(Order::STABLE_ORDER.empty_set()),
+        }
+    }
+
+    fn put(&mut self, _node: usize, _frozen: bool, set: NestedSet<()>) -> NestedSet<()> {
+        set
+    }
+}
+
+/// The recording of the innermost open scope, if a conversion is being recorded.
+fn with_recording(f: impl FnOnce(&mut Recording)) {
+    SCOPES.with(|s| {
+        if let Some(recording) = s
+            .borrow_mut()
+            .last_mut()
+            .and_then(|scope| scope.recording.as_mut())
+        {
+            f(recording);
+        }
+    });
+}
+
+/// Replaces the recording of the innermost open scope and returns the previous one; `None`
+/// when no scope is open.
+fn replace_recording(recording: Option<Recording>) -> Option<Option<Recording>> {
+    SCOPES.with(|s| {
+        s.borrow_mut()
+            .last_mut()
+            .map(|scope| std::mem::replace(&mut scope.recording, recording))
+    })
 }
 
 /// The process-wide and per-evaluation memos as `to_nested_set_with_memo`'s memo.
@@ -98,20 +296,30 @@ where
     fn get(&mut self, node: usize, frozen: bool) -> Option<NestedSet<E>> {
         let key = (TypeId::of::<E>(), node);
         if frozen {
-            return FROZEN_TO_SET.lock().get(&key).map(|set| {
-                set.downcast_ref::<NestedSet<E>>()
-                    .expect("keyed by element type")
-                    .clone()
+            let found = FROZEN_TO_SET.lock().get(&key).map(downcast_set::<E>);
+            let hit = found.is_some();
+            with_recording(|recording| {
+                if recording.frozen_depth == 0 {
+                    recording.visits.push(Visit::Frozen);
+                }
+                if !hit {
+                    // Converted now: `put` follows once the nodes below it are done.
+                    recording.frozen_depth += 1;
+                }
             });
+            return found;
         }
-        UNFROZEN_TO_SET.with(|s| {
-            s.borrow().last().and_then(|m| {
-                m.get(&key).map(|set| {
-                    set.downcast_ref::<NestedSet<E>>()
-                        .expect("keyed by element type")
-                        .clone()
-                })
-            })
+        SCOPES.with(|s| {
+            let mut s = s.borrow_mut();
+            let scope = s.last_mut()?;
+            let found = scope.sets.get(&key).map(downcast_set::<E>);
+            if let Some(recording) = scope.recording.as_mut() {
+                recording.visits.push(Visit::Unfrozen {
+                    node,
+                    hit: found.is_some(),
+                });
+            }
+            found
         })
     }
 
@@ -120,16 +328,19 @@ where
         if frozen {
             // A concurrent conversion of the same depset may have won: keep the first, as there
             // is one set per depset.
-            let mut memo = FROZEN_TO_SET.lock();
-            let entry = memo.entry(key).or_insert_with(|| Box::new(set));
-            return entry
-                .downcast_ref::<NestedSet<E>>()
-                .expect("keyed by element type")
-                .clone();
+            let kept = {
+                let mut memo = FROZEN_TO_SET.lock();
+                let entry = memo.entry(key).or_insert_with(|| Arc::new(set) as AnySet);
+                downcast_set::<E>(entry)
+            };
+            with_recording(|recording| {
+                recording.frozen_depth = recording.frozen_depth.saturating_sub(1);
+            });
+            return kept;
         }
-        UNFROZEN_TO_SET.with(|s| {
-            if let Some(m) = s.borrow_mut().last_mut() {
-                m.insert(key, Box::new(set.clone()));
+        SCOPES.with(|s| {
+            if let Some(scope) = s.borrow_mut().last_mut() {
+                scope.sets.insert(key, Arc::new(set.clone()) as AnySet);
             }
         });
         set
@@ -147,11 +358,48 @@ pub fn depset_to_nested_set_shared<'v, E>(
 where
     E: Clone + Eq + Hash + Send + Sync + 'static,
 {
-    d.to_nested_set_with_memo(
-        v.unpack_frozen().is_some(),
-        f,
-        &mut SharedMemo(std::marker::PhantomData),
-    )
+    let mut memo = SharedMemo::<E>(std::marker::PhantomData);
+    if v.unpack_frozen().is_some() {
+        return d.to_nested_set_with_memo(true, f, &mut memo);
+    }
+    // An unfrozen depset: record the walk, for DepsetConversionScope::adopt_frozen.
+    let Some(outer) = replace_recording(Some(Recording::default())) else {
+        // No scope is open: nothing is memoized for unfrozen depsets.
+        return d.to_nested_set_with_memo(false, f, &mut memo);
+    };
+    let result = d.to_nested_set_with_memo(
+        false,
+        &mut |x: Value<'v>| -> starlark::Result<E> {
+            // The element conversion is not part of the walk.
+            let recording = replace_recording(None).flatten();
+            let element = f(x);
+            replace_recording(recording);
+            element
+        },
+        &mut memo,
+    );
+    let recording = replace_recording(outer).flatten();
+    if let (Ok(_), Some(recording)) = (&result, recording) {
+        // A depset converted before has its set already: its walk visits nothing new.
+        if matches!(
+            recording.visits.first(),
+            Some(Visit::Unfrozen { hit: false, .. })
+        ) {
+            // SAFETY: only the lifetime changes; the value is given back with the lifetime of
+            // its heap by `converted_depsets` (see its contract) while the scope is open.
+            let value = unsafe { std::mem::transmute::<Value<'v>, Value<'static>>(v) };
+            SCOPES.with(|s| {
+                if let Some(scope) = s.borrow_mut().last_mut() {
+                    scope.roots.push(ConvertedRoot {
+                        value,
+                        element: TypeId::of::<E>(),
+                        visits: recording.visits,
+                    });
+                }
+            });
+        }
+    }
+    result
 }
 
 /// Converts `set` to a frozen Starlark depset with the same node structure, converting elements
@@ -216,7 +464,7 @@ where
     if let Some(frozen_depset) = Depset::from_value(value.to_value()) {
         FROZEN_TO_SET.lock().insert(
             (TypeId::of::<E>(), frozen_depset as *const Depset as usize),
-            Box::new(set.clone()),
+            Arc::new(set.clone()) as AnySet,
         );
     }
     memo.insert(
@@ -323,6 +571,139 @@ mod tests {
         assert_eq!(back.node_id(), set.node_id());
         let again = depset_to_strings(d.value(), "x").unwrap();
         assert_eq!(again.node_id(), set.node_id());
+    }
+
+    /// A frozen depset `["z", ["x", "y"]]` that no conversion has seen (like a provider field of
+    /// a dependency that made no action from it).
+    fn unconverted_frozen_depset() -> OwnedFrozenValue {
+        let heap = FrozenHeap::new();
+        let lower: FrozenValue = heap.alloc(FrozenDepset::new_frozen(
+            Order::STABLE_ORDER,
+            Some("string"),
+            2,
+            DepsetChildren::Array(vec![
+                DepsetChild::Leaf(heap.alloc("x")),
+                DepsetChild::Leaf(heap.alloc("y")),
+            ]),
+        ));
+        let upper: FrozenValue = heap.alloc(FrozenDepset::new_frozen(
+            Order::STABLE_ORDER,
+            Some("string"),
+            3,
+            DepsetChildren::Array(vec![
+                DepsetChild::Leaf(heap.alloc("z")),
+                DepsetChild::Array(lower),
+            ]),
+        ));
+        let heap_ref = heap.into_ref();
+        keep_frozen_heap_alive(heap_ref.clone());
+        // SAFETY: `upper` was allocated on `heap_ref`.
+        unsafe { OwnedFrozenValue::new(heap_ref, upper) }
+    }
+
+    #[test]
+    fn depset_converted_before_freezing_keeps_its_set_when_frozen() {
+        // Java: a Depset and the NestedSet it wraps are the same objects before and after the
+        // rule implementation's Mutability is frozen: Depset.getSet() of a provider's depset is
+        // the set the target's own actions got from it (the oracle's aquery gives both one
+        // depSetOfFiles id, e.g. brotli //:brotlicommon's headers).
+        let native =
+            NestedSetBuilder::create(Order::STABLE_ORDER, ["n1".to_owned(), "n2".to_owned()]);
+        let native_depset = strings_to_depset(&native);
+        let dep_depset = unconverted_frozen_depset();
+        starlark::environment::Module::with_temp_heap(|module| {
+            let scope = DepsetConversionScope::enter();
+            let heap = module.heap();
+            let (inner, outer) = {
+                let mut eval = starlark::eval::Evaluator::new(&module);
+                let inner = Depset::from_direct_and_transitive(
+                    Order::STABLE_ORDER,
+                    &[heap.alloc("a"), heap.alloc("b")],
+                    &[],
+                    true,
+                    &mut eval,
+                )
+                .unwrap();
+                let outer = Depset::from_direct_and_transitive(
+                    Order::STABLE_ORDER,
+                    &[heap.alloc("c")],
+                    &[
+                        depset_value(&dep_depset),
+                        inner,
+                        depset_value(&native_depset),
+                    ],
+                    true,
+                    &mut eval,
+                )
+                .unwrap();
+                (inner, outer)
+            };
+            module.set("inner", inner);
+            module.set("outer", outer);
+
+            let before = depset_to_strings(outer, "x").unwrap();
+            let before_inner = depset_to_strings(inner, "x").unwrap();
+            let before_dep = depset_to_strings(dep_depset.value(), "x").unwrap();
+            // The members keep their sets (arrays).
+            let NestedSetChildren::Array(children) = before.children() else {
+                panic!("outer has four children");
+            };
+            let member_ids: Vec<usize> = children
+                .iter()
+                .filter_map(|child| match child {
+                    NestedSetChild::Set(set) => Some(set.node_id()),
+                    NestedSetChild::Leaf(_) => None,
+                })
+                .collect();
+            assert_eq!(
+                member_ids,
+                [
+                    before_dep.node_id(),
+                    before_inner.node_id(),
+                    native.node_id()
+                ]
+            );
+
+            // Only `outer` made new sets; `inner` was converted as its member.
+            // SAFETY: the depsets live on `module`'s heap, which was not garbage collected.
+            let converted: Vec<Value> = unsafe { scope.converted_depsets() };
+            assert_eq!(converted.len(), 1);
+            assert!(converted[0].ptr_eq(outer));
+
+            let frozen = module.freeze().unwrap();
+            keep_frozen_heap_alive(frozen.frozen_heap().clone());
+            scope.adopt_frozen(&[frozen.get("outer").unwrap()]);
+            drop(scope);
+
+            let frozen_outer = frozen.get("outer").unwrap();
+            let frozen_inner = frozen.get("inner").unwrap();
+            assert!(!frozen_outer.value().ptr_eq(outer));
+            let after = depset_to_strings(frozen_outer.value(), "x").unwrap();
+            assert_eq!(after.node_id(), before.node_id());
+            let after_inner = depset_to_strings(frozen_inner.value(), "x").unwrap();
+            assert_eq!(after_inner.node_id(), before_inner.node_id());
+        });
+    }
+
+    #[test]
+    fn unfrozen_depset_converts_to_one_set_inside_a_scope() {
+        // Java: Depset.getSet returns the wrapped NestedSet every time.
+        starlark::environment::Module::with_temp_heap(|module| {
+            let _scope = DepsetConversionScope::enter();
+            let heap = module.heap();
+            let mut eval = starlark::eval::Evaluator::new(&module);
+            let depset = Depset::from_direct_and_transitive(
+                Order::STABLE_ORDER,
+                &[heap.alloc("a"), heap.alloc("b")],
+                &[],
+                true,
+                &mut eval,
+            )
+            .unwrap();
+            let first = depset_to_strings(depset, "x").unwrap();
+            let second = depset_to_strings(depset, "x").unwrap();
+            assert_eq!(first.node_id(), second.node_id());
+        });
     }
 
     #[test]

@@ -251,6 +251,16 @@ pub fn update(
     // compatibility of each top-level target in its `BuildDriverFunction` by now (module comment).
     let mut targets_to_skip: Vec<ConfiguredTarget> = Vec::new();
     if options.include_execution_phase {
+        // PORT: a target dropped for an action conflict was analyzed too: Java's
+        // BuildDriverFunction announces it before the conflict check of the merged phase.
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:415 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
+        for configured_target in
+            skyframe_analysis_result.get_configured_targets_with_action_conflicts()
+        {
+            event_handler.post(Arc::new(TopLevelTargetAnalyzedEvent::create(
+                configured_target.clone(),
+            )));
+        }
         let (result, skipped) = check_target_compatibility_of_build_driver_keys(
             skyframe_executor,
             skyframe_analysis_result,
@@ -263,16 +273,16 @@ pub fn update(
 
     let num_targets_to_analyze = label_to_target_map.len();
     let num_successful = skyframe_analysis_result.get_configured_targets().len();
-    if 0 < num_successful && num_successful < num_targets_to_analyze {
+    // PORT: with the execution phase the line is "Build succeeded for only ..." and counts the
+    // targets that were built (Java: SkyframeBuildView.analyzeAndExecuteTargets); the build
+    // command prints it after execution (blaze_runtime commands/build.rs).
+    if !options.include_execution_phase
+        && 0 < num_successful
+        && num_successful < num_targets_to_analyze
+    {
         let msg = format!(
-            "{} succeeded for only {} of {} top-level targets",
-            if options.include_execution_phase {
-                "Build"
-            } else {
-                "Analysis"
-            },
-            num_successful,
-            num_targets_to_analyze
+            "Analysis succeeded for only {} of {} top-level targets",
+            num_successful, num_targets_to_analyze
         );
         event_handler.handle(&Event::info(msg));
     }

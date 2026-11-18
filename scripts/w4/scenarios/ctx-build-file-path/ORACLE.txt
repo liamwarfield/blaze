@@ -1,0 +1,13 @@
+=== 1: run build //:top //sub/pkg:inner
+exit 0
+INFO: Build completed successfully, 3 total actions
+=== 2: cat bazel-bin/top.txt
+BUILD.bazel
+=== 3: cat bazel-bin/sub/pkg/inner.txt
+sub/pkg/BUILD
+=== 4: run build //:top --incompatible_stop_exporting_build_file_path
+exit 1
+ERROR: <WS>/BUILD.bazel:3:4: Analysis of target '//:top' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:3:4: in bfp rule //:top:
+ERROR: Analysis of target '//:top' failed; build aborted
+ERROR: Build did NOT complete successfully

@@ -1098,7 +1098,9 @@ fn symlink_entries(
             d.element_type()
         )));
     }
-    d.to_nested_set(&mut |v: Value| {
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:207 Depset.getSet
+    // (the depset's one NestedSet, see rule::depsets).
+    crate::rule::depsets::depset_to_nested_set_shared(x, d, &mut |v: Value| {
         symlink_entry_from_value(v).ok_or_else(|| errorf("depset element is not a SymlinkEntry"))
     })
 }
@@ -1651,7 +1653,15 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
                  check.",
             ));
         }
-        blaze_util::unported!("Root.relativize(Path)")
+        // Package pkg = ruleContext.getRule().getPackage();
+        // return pkg.getSourceRoot().get().relativize(pkg.getBuildFile().asPath()).getPathString();
+        let handle = ctx.context.handle.borrow();
+        let metadata = handle.get_rule().get_package_metadata();
+        Ok(metadata
+            .source_root
+            .relativize(&metadata.build_filename.as_path())
+            .get_path_string()
+            .to_owned())
     }
 
     /// Expands all `$(location ...)` templates in the given string.

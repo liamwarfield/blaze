@@ -44,6 +44,7 @@ use blaze_optdefs::misc::repository_options::RepositoryOptions;
 use blaze_options::{Options, OptionsParser};
 use blaze_packages::package::Package;
 use blaze_packages::target::Target;
+use blaze_sky_analysis::producers::errors::ConfiguredTargetFunctionException;
 use blaze_sky_loading::directories::LoadingDirectories;
 use blaze_sky_loading::package_function::{PackageKey, PackageValue, SkyframePackageLocator};
 use blaze_sky_loading::package_manager::{
@@ -425,10 +426,15 @@ impl SkyframeExecutor {
             },
         ));
         // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3092 SkyframeExecutor.createCyclesReporter
-        // PORT: of the seven reporters only TargetCycleReporter is ported; CyclesReporter fails
-        // loudly for a cycle it does not report (see cycles_reporter.rs).
-        let cycle_reporters: Vec<Box<dyn SingleCycleReporter>> =
-            vec![Box::new(TargetCycleReporter::new(package_manager.clone()))];
+        // PORT: of the seven reporters TargetCycleReporter, RegisteredToolchainsCycleReporter and
+        // RegisteredExecutionPlatformsCycleReporter are ported (ActionArtifact, TestExpansion,
+        // BzlLoad and BzlmodRepo are not); CyclesReporter fails loudly for a cycle none of them
+        // reports (see cycles_reporter.rs). The order is Java's.
+        let cycle_reporters: Vec<Box<dyn SingleCycleReporter>> = vec![
+            Box::new(TargetCycleReporter::new(package_manager.clone())),
+            Box::new(crate::toolchain_cycle_reporters::RegisteredToolchainsCycleReporter),
+            Box::new(crate::toolchain_cycle_reporters::RegisteredExecutionPlatformsCycleReporter),
+        ];
         let cycles_reporter = CyclesReporter::new(cycle_reporters);
         Ok(SkyframeExecutor {
             cycles_reporter,
@@ -931,6 +937,19 @@ impl SkyframeExecutor {
                 ),
             });
         }
+        // Java: case DetailedException detailedException ->
+        //     throw new InvalidConfigurationException(detailedException.getDetailedExitCode(), e);
+        // PORT: the DetailedExceptions that reach the configuration functions are
+        // ToolchainExceptions (a bad --host_platform / --platforms target); the wrapper carries
+        // the Toolchain code as `Toolchain.<CODE>` (see invalid_configuration_detailed_exit_code).
+        if !wrap_any_exception
+            && let Some(e) = error.exception_as::<blaze_analysis::toolchains::ToolchainException>()
+        {
+            return Err(InvalidConfigurationException::with_code(
+                e.get_message(),
+                toolchain_code_of_invalid_configuration(e.get_detailed_code()),
+            ));
+        }
         if wrap_any_exception && let Some(e) = error.get_exception() {
             // If we get here, e is non-null but not an InvalidConfigurationException, so wrap it
             // and throw (a toolchain or platform lookup error, a loading error of a platform's
@@ -1181,9 +1200,16 @@ impl TopLevelActionConflictReport {
             .result
             .get_error(&SkyKey::new(self.key(k)))
             .unwrap_or_else(|| panic!("NullPointerException: no error for {:?}", k));
+        // `e instanceof ActionConflictException`. A conflict inside one target reaches the
+        // top-level key as the cause of ConfiguredTargetFunction's UnreportedException.
         error_info
             .get_exception()
-            .and_then(|e| e.downcast_ref::<ActionConflictException>())
+            .and_then(|e| {
+                e.downcast_ref::<ActionConflictException>().or_else(|| {
+                    e.downcast_ref::<ConfiguredTargetFunctionException>()
+                        .and_then(|e| e.as_action_conflict())
+                })
+            })
             .cloned()
     }
 }
@@ -1231,16 +1257,32 @@ impl From<TargetPatternPhaseDetailedError> for TargetPatternPhaseError {
 pub fn target_parsing_detailed_exit_code(
     e: &TargetParsingException,
 ) -> blaze_query_engine::DetailedExitCode {
-    blaze_query_engine::DetailedExitCode::of(blaze_protos::failure_details::FailureDetail {
-        message: e.get_message().to_owned(),
-        category: Some(
-            blaze_protos::failure_details::failure_detail::Category::TargetPatterns(
-                blaze_protos::failure_details::TargetPatterns {
-                    code: e.get_code() as i32,
-                },
-            ),
+    // The exception's own DetailedExitCode: the cause's when it was built from one (a
+    // NoSuchPackageException's PackageLoading code), else the one of its TargetPatterns code.
+    blaze_query_engine::DetailedExitCode::of(
+        e.get_detailed_exit_code()
+            .get_failure_detail()
+            .cloned()
+            .expect("a TargetParsingException's DetailedExitCode has a FailureDetail"),
+    )
+}
+
+/// `Toolchain.<CODE>` for the `FailureDetails.Toolchain.Code` name `code`, as the `code` of an
+/// `InvalidConfigurationException` that wraps a `ToolchainException`.
+fn toolchain_code_of_invalid_configuration(code: &'static str) -> &'static str {
+    match code {
+        "INVALID_PLATFORM_VALUE" => "Toolchain.INVALID_PLATFORM_VALUE",
+        "INVALID_CONSTRAINT_VALUE" => "Toolchain.INVALID_CONSTRAINT_VALUE",
+        "INVALID_TOOLCHAIN_TYPE" => "Toolchain.INVALID_TOOLCHAIN_TYPE",
+        "INVALID_TOOLCHAIN" => "Toolchain.INVALID_TOOLCHAIN",
+        "NO_MATCHING_EXECUTION_PLATFORM" => "Toolchain.NO_MATCHING_EXECUTION_PLATFORM",
+        "NO_MATCHING_TOOLCHAIN" => "Toolchain.NO_MATCHING_TOOLCHAIN",
+        "MISSING_PROVIDER" => "Toolchain.MISSING_PROVIDER",
+        other => blaze_util::unported!(
+            "SkyframeExecutor.getConfiguration",
+            "ToolchainException with code {other}"
         ),
-    })
+    }
 }
 
 /// `SkyframeExecutor.EXCEPTION_TRAVERSAL_LIMIT`.

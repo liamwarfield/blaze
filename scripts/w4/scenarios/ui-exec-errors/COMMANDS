@@ -1,0 +1,27 @@
+# SkyframeErrorProcessor.processErrors / rethrow for execution errors (BuildTool.processRequest
+# reports the BuildFailedException unless its error was already shown) and the build result
+# lines around them (BuildView.update "succeeded for only", BuildResultPrinter).
+# An action whose input's generating action failed: one input, two inputs of the same action
+# (ActionExecutionFunctionExceptionHandler.maybeThrowException), a failed and a missing input.
+run build //:uses_one
+run build //:uses_two
+run build //:uses_failing_and_missing
+# --keep_going: execution failures only; with an analysis failure; nothing built.
+run build //:kg_fails //:kg_uses_missing //:ok --keep_going
+run build //:bad_analysis //:mixed_fails //:ok2 --keep_going --show_result=5
+run build //:bad_analysis //:ok2 --keep_going
+run build //:nb_fails --keep_going
+# Convenience symlinks (ExecutionTool.handleConvenienceSymlinks) and the result paths.
+run build //:ok --experimental_convenience_symlinks=ignore
+stat bazel-bin
+run build //:ok --experimental_convenience_symlinks=clean
+stat bazel-bin
+run build //:ok --experimental_convenience_symlinks=log_only
+stat bazel-bin
+run build //:ok
+stat bazel-bin
+# Tests: a test that fails to build beside one that passes, without the execution phase.
+run test //:unbuildable_test //:pass_test --keep_going --show_result=5
+run test //:pass_test --nobuild
+run build //:ok //:ok2 --nobuild --show_result=5
+run build //:ok --explain=explain.log --show_result=5

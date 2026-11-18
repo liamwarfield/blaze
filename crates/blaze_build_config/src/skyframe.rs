@@ -15,7 +15,7 @@ use blaze_optdefs::fragment::platform_mapping_key::PlatformMappingKey;
 use blaze_optdefs::fragment::platform_options::PlatformOptions;
 use blaze_options::{Foreign, OptionsParsingException};
 use blaze_skyframe::{
-    ComputeError, ComputeResult, Environment, EvaluationContext, EvaluatorBuilder, Key,
+    ComputeError, ComputeResult, Environment, EvaluationContext, EvaluatorBuilder, Key, SkyError,
     SkyFunctionException, SkyFunctionName, SkyKey, SkyValue, Transience,
 };
 use blaze_starlark::StarlarkSemantics;
@@ -316,21 +316,32 @@ fn compute_build_configuration_key(
                 .get_command_line_flag_aliases(),
         };
         // Java: com/google/devtools/build/lib/analysis/producers/PlatformProducer.java:61 PlatformProducer.step
-        // PORT: Java looks the platform up with InvalidPlatformException and
-        // OptionsParsingException (`tasks.lookUp(key, InvalidPlatformException.class,
-        // OptionsParsingException.class, this)`), hands them to the sink
-        // (acceptPlatformFlagsError / acceptOptionsParsingError) and
-        // BuildConfigurationKeyFunction rethrows them as its own
-        // BuildConfigurationKeyFunctionException. InvalidPlatformException is
-        // `blaze_analysis::toolchains::ToolchainException`, which this crate cannot name (the
-        // PLATFORM function is behind `PlatformValueProvider`), and PLATFORM cannot throw
-        // OptionsParsingException before platform flags are ported (`unported!` in
-        // PlatformFunction). So the dependency's error is not caught: this node returns null
-        // and gets the same exception through the child's ErrorInfo, but is not the node that
-        // threw it.
-        let Some(target_platform_value) = env.get_value(platform_key)? else {
+        // `tasks.lookUp(key, InvalidPlatformException.class, OptionsParsingException.class,
+        // this)`: an InvalidPlatformException goes to the sink (acceptPlatformFlagsError),
+        // `Sink.checkErrors` rethrows it and BuildConfigurationKeyFunction throws it as its own
+        // BuildConfigurationKeyFunctionException.
+        // PORT: InvalidPlatformException is `blaze_analysis::toolchains::ToolchainException`,
+        // which this crate cannot name; the PLATFORM provider recognizes it
+        // (`PlatformValueProvider::catch_invalid_platform_exception`) and the same exception is
+        // rethrown here. PLATFORM cannot throw OptionsParsingException before platform flags
+        // are ported (`unported!` in PlatformFunction).
+        let platforms = client(env).platforms.clone();
+        let target_platform_value = match env
+            .get_value_or_throw_with(platform_key, |e: &SkyError| {
+                platforms.catch_invalid_platform_exception(e)
+            })? {
+            Ok(Some(target_platform_value)) => target_platform_value,
             // Java: BuildConfigurationKeyProducer.checkTargetPlatformFlags, "Error.": DONE.
-            return Ok(None);
+            Ok(None) => return Ok(None),
+            // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:72 BuildConfigurationKeyFunction.compute
+            // `throw new BuildConfigurationKeyFunctionException(e)` (Transience.PERSISTENT).
+            Err(invalid_platform_exception) => {
+                return Err(SkyFunctionException::from_cause(
+                    invalid_platform_exception,
+                    Transience::Persistent,
+                )
+                .into());
+            }
         };
         // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:152 BuildConfigurationKeyProducer.checkTargetPlatformFlags
         if target_platform_value.has_parsed_flags {
@@ -661,22 +672,24 @@ fn map_build_options(
     let bckvk = BuildConfigurationKeyValueKey::create(raw_baseline_options);
     // Java: env.getValueOrThrow(bckvk, OptionsParsingException.class,
     // PlatformMappingException.class, InvalidPlatformException.class).
-    // PORT: InvalidPlatformException cannot be named in this crate (see
-    // compute_build_configuration_key); such an error makes the dependency missing here.
-    match env.get_value_or_throw_with(bckvk, |e| {
-        e.downcast_ref::<ConfigurationError>()
-            .filter(|c| {
-                matches!(
-                    c,
-                    ConfigurationError::OptionsParsing(_) | ConfigurationError::PlatformMapping(_)
-                )
-            })
-            .cloned()
+    // PORT: InvalidPlatformException is recognized by the PLATFORM provider (see
+    // compute_build_configuration_key).
+    let platforms = client(env).platforms.clone();
+    match env.get_value_or_throw_with(bckvk, |e: &SkyError| {
+        if e.downcast_ref::<ConfigurationError>().is_some_and(|c| {
+            matches!(
+                c,
+                ConfigurationError::OptionsParsing(_) | ConfigurationError::PlatformMapping(_)
+            )
+        }) {
+            return Some(e.clone());
+        }
+        platforms.catch_invalid_platform_exception(e)
     })? {
         Ok(Some(v)) => Ok(Some(v.get_options().clone())),
         Ok(None) => Ok(None),
         // Java: throw new BaselineOptionsFunctionException(e);
-        Err(e) => Err(persistent(e)),
+        Err(e) => Err(SkyFunctionException::from_cause(e, Transience::Persistent).into()),
     }
 }
 

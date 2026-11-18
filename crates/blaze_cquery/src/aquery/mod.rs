@@ -6,6 +6,7 @@
 
 pub mod action_graph_proto_output_formatter_callback;
 pub mod action_graph_query_environment;
+pub mod action_graph_text_output_formatter_callback;
 pub mod aquery_action_filter;
 
 use std::sync::Arc;
@@ -24,6 +25,7 @@ use blaze_query_engine::{
 use crate::post_analysis_query_environment::NamedThreadSafeOutputFormatterCallback;
 use action_graph_proto_output_formatter_callback::ActionGraphProtoOutputFormatterCallback;
 use action_graph_query_environment::{ActionGraphQueryEnvironment, KeyedConfiguredTargetValue};
+use action_graph_text_output_formatter_callback::ActionGraphTextOutputFormatterCallback;
 use aquery_action_filter::AqueryActionFilter;
 
 /// The output formatter callbacks of aquery, in Java's order.
@@ -47,19 +49,25 @@ pub fn get_default_output_formatters<'a>(
             action_filters,
         ))
     };
+    let text = |output_type: action_graph_text_output_formatter_callback::OutputType| -> Box<
+        dyn NamedThreadSafeOutputFormatterCallback<KeyedConfiguredTargetValue> + 'a,
+    > {
+        Box::new(ActionGraphTextOutputFormatterCallback::new(
+            event_handler.clone(),
+            aquery_options,
+            out.clone(),
+            env,
+            output_type,
+            action_filters,
+        ))
+    };
     vec![
         proto(OutputType::BINARY),
         proto(OutputType::DELIMITED_BINARY),
         proto(OutputType::TEXT),
         proto(OutputType::JSON),
-        Box::new(UnportedAqueryCallback::new(
-            "text",
-            "ActionGraphTextOutputFormatterCallback",
-        )),
-        Box::new(UnportedAqueryCallback::new(
-            "commands",
-            "ActionGraphTextOutputFormatterCallback",
-        )),
+        text(action_graph_text_output_formatter_callback::OutputType::TEXT),
+        text(action_graph_text_output_formatter_callback::OutputType::COMMANDS),
         Box::new(UnportedAqueryCallback::new(
             "summary",
             "ActionGraphSummaryOutputFormatterCallback",
@@ -68,7 +76,7 @@ pub fn get_default_output_formatters<'a>(
 }
 
 /// An aquery output formatter whose Java class is not ported
-/// (`ActionGraphTextOutputFormatterCallback`, `ActionGraphSummaryOutputFormatterCallback`).
+/// (`ActionGraphSummaryOutputFormatterCallback`).
 struct UnportedAqueryCallback {
     name: &'static str,
     java_class: &'static str,

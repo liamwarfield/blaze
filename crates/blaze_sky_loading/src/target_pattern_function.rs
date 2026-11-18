@@ -295,12 +295,39 @@ impl From<blaze_skyframe::Interrupted> for ProviderError {
     }
 }
 
-/// A [`TargetParsingException`] from a `NoSuchThingException`.
-///
-/// PORT: Java keeps the thing's DetailedExitCode (a PackageLoading code); the ported
-/// `TargetParsingException` holds only a TargetPatterns code.
-fn target_parsing_exception_of(message: String) -> TargetParsingException {
-    TargetParsingException::new(message, TargetPatternsCode::TargetPatternsUnknown)
+/// `new TargetParsingException(message, e, e.getDetailedExitCode())` for a
+/// `NoSuchThingException` `e`: the exception keeps the thing's `DetailedExitCode`.
+// W4-analysis: was TARGET_PATTERNS_UNKNOWN (exit code 37) for every such exception.
+// Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:140 RecursivePackageProviderBackedTargetPatternResolver.getTargetOrNull
+pub(crate) fn target_parsing_exception_of(
+    message: String,
+    detailed_exit_code: &blaze_packages::exceptions::DetailedExitCode,
+) -> TargetParsingException {
+    TargetParsingException::with_detailed_exit_code(
+        message,
+        util_detailed_exit_code(detailed_exit_code),
+    )
+}
+
+/// The lib/util `DetailedExitCode` of blaze_packages' reduction of it (message and code).
+fn util_detailed_exit_code(
+    detailed_exit_code: &blaze_packages::exceptions::DetailedExitCode,
+) -> blaze_util::DetailedExitCode {
+    use blaze_packages::exceptions::FailureCode;
+    use blaze_protos::failure_details::failure_detail::Category;
+    use blaze_protos::failure_details::{FailureDetail, PackageLoading};
+    match &detailed_exit_code.code {
+        FailureCode::PackageLoading(code) => blaze_util::DetailedExitCode::of(FailureDetail {
+            message: detailed_exit_code.message.clone(),
+            category: Some(Category::PackageLoading(PackageLoading {
+                code: *code as i32,
+            })),
+        }),
+        FailureCode::Other(name) => blaze_util::unported!(
+            "TargetParsingException with a non-PackageLoading DetailedExitCode",
+            "{name}"
+        ),
+    }
 }
 
 /// A [`RecursivePackageProvider`] over a Skyframe environment.
@@ -669,9 +696,9 @@ impl<'a> RecursivePackageProviderBackedTargetPatternResolver<'a> {
     fn provider_error(e: ProviderError) -> TargetPatternEvalError {
         match e {
             ProviderError::Eval(e) => e,
-            ProviderError::NoSuchThing(e) => {
-                TargetPatternEvalError::TargetParsing(target_parsing_exception_of(e.get_message()))
-            }
+            ProviderError::NoSuchThing(e) => TargetPatternEvalError::TargetParsing(
+                target_parsing_exception_of(e.get_message(), &e.get_detailed_exit_code()),
+            ),
         }
     }
 }
@@ -738,7 +765,7 @@ impl TargetPatternResolver<Target> for RecursivePackageProviderBackedTargetPatte
             Err(ProviderError::NoSuchThing(e)) => {
                 let message = get_parsing_error_message(&e.get_message(), Some(original_pattern));
                 Err(TargetPatternEvalError::TargetParsing(
-                    target_parsing_exception_of(message),
+                    target_parsing_exception_of(message, &e.get_detailed_exit_code()),
                 ))
             }
             Err(ProviderError::Eval(e)) => Err(e),
@@ -793,13 +820,13 @@ impl TargetPatternResolver<Target> for RecursivePackageProviderBackedTargetPatte
             Ok(()) => {}
             Err(ProviderError::NoSuchThing(e)) => {
                 // Can happen during a Skyframe no-keep-going evaluation.
-                return Err(TargetParsingException::new(
+                return Err(target_parsing_exception_of(
                     format!(
                         "error loading package under directory '{}': {}",
                         directory,
                         e.get_message()
                     ),
-                    TargetPatternsCode::TargetPatternsUnknown,
+                    &e.get_detailed_exit_code(),
                 )
                 .into());
             }

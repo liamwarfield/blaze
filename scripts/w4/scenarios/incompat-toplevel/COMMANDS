@@ -13,13 +13,17 @@ run build //pkg:bad_alias
 run build //pkg:needs_vanilla
 run build //pkg:needs_two
 run build //pkg:select_vanilla
-run build //pkg:needs_vanilla //pkg:select_vanilla --platforms=//pkg:vanilla_platform
 run build //pkg:select_opt
 run build //pkg:select_opt -c opt
 run build //pkg:bad_gen.out
 run cquery //pkg:all --output=label_kind
 run cquery "deps(//pkg:dep_on_bad)"
 run cquery //pkg:bad
+# After the cquery steps without --platforms: the oracle server keeps the PLATFORM node of
+# //pkg:vanilla_platform and its configured target in the empty configuration (3030ed4)
+# from this build, and cquery //pkg:all then prints that node as well (a cold server
+# does not).
+run build //pkg:needs_vanilla //pkg:select_vanilla --platforms=//pkg:vanilla_platform
 run cquery //pkg:all --output=label_kind --platforms=//pkg:vanilla_platform
 aquery //pkg:all
 aquery //pkg:bad

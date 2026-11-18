@@ -27,6 +27,26 @@ use crate::options_result::OptionsParsingResult;
 pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &OptionsParsingResult) {
     let command_name = command.name();
 
+    // SkyframeActionExecutor.archivedTreeArtifactsEnabledForMnemonic: the executor does not
+    // create archived tree artifacts, which is what the default filter (`-.*`) asks for.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:420 SkyframeActionExecutor.archivedTreeArtifactsEnabledForMnemonic
+    if command.build_phase.executes()
+        && let Some(core_options) =
+            options.get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
+    {
+        let defaults = blaze_options::Options::<
+            blaze_optdefs::fragment::core_options::CoreOptions,
+        >::get_defaults();
+        if core_options.archived_artifacts_mnemonics_filter
+            != defaults.archived_artifacts_mnemonics_filter
+        {
+            blaze_util::unported!(
+                "SkyframeActionExecutor.archivedTreeArtifactsEnabledForMnemonic",
+                "--archived_tree_artifact_mnemonics_filter"
+            );
+        }
+    }
+
     // RemoteModule.beforeCommand: the remote cache, remote execution, the disk cache and the
     // remote output service act on the actions a command executes; the remote downloader on the
     // repositories a command fetches.

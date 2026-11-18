@@ -1,4 +1,41 @@
 //! Port of `com.google.devtools.build.lib.remote` (see docs/remote.md).
 #![allow(clippy::too_many_arguments, clippy::new_without_default)]
 
+#[cfg(feature = "wip")]
+pub mod api_version;
+#[cfg(feature = "wip")]
+pub mod chunker;
+#[cfg(feature = "wip")]
+pub mod circuitbreaker;
+#[cfg(feature = "wip")]
+pub mod client_api_version;
+#[cfg(feature = "wip")]
+pub mod combined_cache;
+#[cfg(feature = "wip")]
+pub mod disk;
+#[cfg(feature = "wip")]
+pub mod execute_retrier;
+#[cfg(feature = "wip")]
+pub mod execution_status_exception;
+#[cfg(feature = "wip")]
+pub mod merkletree;
+#[cfg(feature = "wip")]
+pub mod platform_utils;
+#[cfg(feature = "wip")]
+pub mod remote_retrier;
+#[cfg(feature = "wip")]
+pub mod remote_retrier_utils;
+#[cfg(feature = "wip")]
+pub mod retrier;
+#[cfg(feature = "wip")]
+pub mod scrubber;
+#[cfg(feature = "wip")]
+pub mod upload_manifest;
+#[cfg(feature = "wip")]
+pub mod zstd;
+pub mod common;
 pub mod grpc;
+pub mod reapi;
+pub mod runtime;
+pub mod store;
+pub mod util;

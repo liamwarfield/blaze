@@ -18,7 +18,7 @@ pub enum CreateConfiguredTargetError {
     RuleError(#[from] RuleErrorException),
     /// Java `ActionConflictException` (message).
     #[error("{0}")]
-    ActionConflict(String),
+    ActionConflict(crate::rule::action_conflict_exception::ActionConflictException),
     #[error("interrupted")]
     Interrupted,
 }

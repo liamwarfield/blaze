@@ -282,9 +282,32 @@ pub fn produce_dependency_map(
         // (`lookup_rounds`), a round of 0 after the first group's producers. The configured
         // target keys are requested here in that order: one request per round, in
         // `dependencyLabels` order within the round; `compute_prerequisites` then reads them.
-        // (Java's order also depends on which keys are done when a round is requested: the
-        // continuation of a lookup that has to wait runs after the others of its round. That
-        // part depends on the evaluation's timing and is not reproduced.)
+        //
+        // PORT: not reproduced, the part of Java's order that depends on which values are done
+        // when they are looked up (scripts/w4/scenarios/graph-order, `//pkg:tool`). `Driver.drive`
+        // (skyframe/state/Driver.java:83) loops: run every ready task, then look up the keys
+        // they added in one request; a lookup whose value is done continues in the next
+        // iteration of the same pass, one whose value is missing moves to `pending` and
+        // continues only after the Skyframe restart, that is after every round the other
+        // producers can reach without a restart. `lookup_rounds` counts iterations as if every
+        // looked-up value were done. The lookups before a configured target lookup are
+        // STARLARK_BUILD_SETTINGS_DETAILS (TransitionApplier), PLATFORM (PlatformProducer, when
+        // `--platforms` has one value), PLATFORM_MAPPING and BUILD_OPTIONS_SCOPE
+        // (BuildConfigurationKeyProducer). For the target configuration PLATFORM (the node's own
+        // target platform) and PLATFORM_MAPPING are dependencies the node already has, so they
+        // are done. The PLATFORM node of the execution platform is not when this node is the
+        // first of the build to transition to that platform: in graph-order's DEPS.txt
+        // `//pkg:top` requests PLATFORM(@platforms//host:host) in group 9, restarts, and
+        // requests `//pkg:tool` and the allowlist (exec transition, 2 rounds) in group 12, after
+        // the no-transition dependencies (2 rounds as well) of group 10; a node that finds the
+        // PLATFORM value done requests both in the same group, in `dependencyLabels` order, as
+        // is done here for every node. The same holds for the first requester of a
+        // STARLARK_BUILD_SETTINGS_DETAILS or BUILD_OPTIONS_SCOPE key. Reproducing it needs to
+        // know, when a key is requested, whether its value is done (Java:
+        // `SkyframeLookupResult.queryDep` returning false); `blaze_skyframe::Environment` has no
+        // such query (a request blocks until the value is computed), and the evaluation order of
+        // the blocking evaluator differs from Java's, so "first requester" would not be the same
+        // node in general.
         pending.sort_by_key(|p| lookup_order_key(p.lookup_rounds, p.index));
         let mut next = 0;
         while next < pending.len() {

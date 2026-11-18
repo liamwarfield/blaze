@@ -18,7 +18,7 @@ use blaze_cmdline::Label;
 use blaze_packages::exceptions::{NoSuchPackageException, NoSuchThingException};
 use blaze_sky_loading::package_function::PackageKey;
 use blaze_sky_loading::repos::RepositoryMappingKey;
-use blaze_skyframe::{ComputeError, Environment, SkyFunctionException, Transience};
+use blaze_skyframe::{ComputeError, Environment, SkyError, SkyFunctionException, Transience};
 
 use crate::toolchains::lookup_error::catch_configured_value_creation_exception;
 use crate::toolchains::platform_keys::empty_options_configuration_key;
@@ -178,6 +178,18 @@ impl PlatformValueProvider for PlatformFunction {
             "platform flags of {}",
             platform_label
         )
+    }
+
+    /// `InvalidPlatformException` is a `ToolchainException` of kind `InvalidPlatform` (what
+    /// `compute` throws through `platform_function_exception`).
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/PlatformLookupUtil.java:176 PlatformLookupUtil.InvalidPlatformException
+    fn catch_invalid_platform_exception(&self, exception: &SkyError) -> Option<SkyError> {
+        exception
+            .downcast_ref::<blaze_analysis::toolchains::ToolchainException>()
+            .filter(|t| {
+                t.kind() == blaze_analysis::toolchains::ToolchainExceptionKind::InvalidPlatform
+            })
+            .map(|_| exception.clone())
     }
 }
 

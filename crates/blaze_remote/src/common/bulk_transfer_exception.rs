@@ -55,7 +55,9 @@ impl LostArtifacts {
     // Java: com/google/devtools/build/lib/actions/LostInputsExecException.java LostArtifacts.throwIfNotEmpty
     pub fn throw_if_not_empty(&self) {
         if !self.is_empty() {
-            blaze_util::unported!("LostInputsExecException (action rewinding for lost remote inputs)");
+            blaze_util::unported!(
+                "LostInputsExecException (action rewinding for lost remote inputs)"
+            );
         }
     }
 }

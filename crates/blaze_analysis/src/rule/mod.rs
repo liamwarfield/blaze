@@ -5,6 +5,7 @@
 //! conversions between `blaze_build_config` and `blaze_actions` types, and NestedSet <-> depset
 //! conversion.
 
+pub mod action_conflict_exception;
 pub mod action_environments;
 pub mod actions_util;
 pub mod analysis_environment;

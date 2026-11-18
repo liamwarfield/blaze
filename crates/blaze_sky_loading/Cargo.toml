@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 blaze_util = { path = "../blaze_util" }
+blaze_protos = { path = "../blaze_protos" }
 blaze_cmdline = { path = "../blaze_cmdline" }
 blaze_vfs = { path = "../blaze_vfs" }
 blaze_skyframe = { path = "../blaze_skyframe" }

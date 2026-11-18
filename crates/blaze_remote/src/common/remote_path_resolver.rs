@@ -70,7 +70,9 @@ impl RemotePathResolver for DefaultRemotePathResolver {
     }
 
     fn local_path_to_output_path(&self, path: &Path) -> String {
-        path.relative_to(&self.exec_root).get_path_string().to_string()
+        path.relative_to(&self.exec_root)
+            .get_path_string()
+            .to_string()
     }
 
     fn local_exec_path_to_output_path(&self, exec_path: &PathFragment) -> String {
@@ -124,7 +126,9 @@ impl RemotePathResolver for SiblingRepositoryLayoutResolver {
     }
 
     fn local_path_to_output_path(&self, path: &Path) -> String {
-        path.relative_to(self.get_base()).get_path_string().to_string()
+        path.relative_to(self.get_base())
+            .get_path_string()
+            .to_string()
     }
 
     fn local_exec_path_to_output_path(&self, exec_path: &PathFragment) -> String {

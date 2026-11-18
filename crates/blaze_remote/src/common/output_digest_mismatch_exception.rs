@@ -34,7 +34,10 @@ impl OutputDigestMismatchException {
 
     /// `new OutputDigestMismatchException(expected, receivedSizeBytes)`.
     // Java: com/google/devtools/build/lib/remote/common/OutputDigestMismatchException.java:37 OutputDigestMismatchException.<init>
-    pub fn with_received_size(expected: Digest, received_size_bytes: i64) -> OutputDigestMismatchException {
+    pub fn with_received_size(
+        expected: Digest,
+        received_size_bytes: i64,
+    ) -> OutputDigestMismatchException {
         OutputDigestMismatchException {
             expected,
             actual: None,

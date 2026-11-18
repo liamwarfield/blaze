@@ -152,3 +152,13 @@ pub fn is_interrupted(e: &io::Error) -> bool {
 pub fn io_exception(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
 }
+
+/// `e instanceof FileSymlinkLoopException`.
+///
+/// PORT: `blaze_vfs`' Unix file system reports `ELOOP` as an error of the kind std derives from
+/// it with the message as payload, which `FileSymlinkLoopException::is` does not recognise; the
+/// kind is compared too.
+pub fn is_file_symlink_loop(e: &io::Error) -> bool {
+    blaze_vfs::FileSymlinkLoopException::is(e)
+        || e.kind() == io::Error::from_raw_os_error(libc::ELOOP).kind()
+}

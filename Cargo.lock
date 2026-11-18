@@ -398,6 +398,8 @@ dependencies = [
 name = "blaze_cmdline"
 version = "0.1.0"
 dependencies = [
+ "blaze_protos",
+ "blaze_util",
  "blaze_vfs",
  "indexmap",
  "thiserror",
@@ -874,6 +876,7 @@ dependencies = [
  "blaze_optdefs",
  "blaze_options",
  "blaze_packages",
+ "blaze_protos",
  "blaze_query_engine",
  "blaze_skyframe",
  "blaze_starlark",

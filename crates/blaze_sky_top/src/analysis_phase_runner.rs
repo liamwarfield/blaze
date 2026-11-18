@@ -3,17 +3,24 @@
 
 use std::sync::Arc;
 
+use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_build_config::build_options::BuildOptions;
 use blaze_cmdline::Label;
 use blaze_events::{Event, ExtendedEventHandler};
 use blaze_protos::failure_details::FailureDetail;
+use blaze_sky_analysis::top_level_status_events::{
+    TopLevelTargetAnalyzedEvent, TopLevelTargetSkippedEvent,
+};
+use blaze_sky_exec::analysis_seam::ConfiguredTargetView;
+use blaze_sky_exec::events::TestAnalyzedEvent;
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use blaze_vfs::PathFragment;
 use indexmap::IndexSet;
 
 use crate::build_tool::{BuildRequest, BuildToolError};
 use crate::build_view::{self, AnalysisResult, BuildViewError, BuildViewUpdateOptions};
-use crate::skyframe_executor::SkyframeExecutor;
+use crate::execution_seam::SkyframeConfiguredTargetView;
+use crate::skyframe_executor::{SkyframeExecutor, get_configuration_from_graph};
 use crate::target_pattern_phase::TargetPatternPhaseValue;
 
 /// Performs target pattern eval, configuration creation, loading and analysis.
@@ -65,7 +72,9 @@ pub fn execute(
         }
 
         // PORT: postAbortedEventsForSkippedTargets (an AbortedEvent per skipped target for the
-        // build event stream) is the command's, from `AnalysisResult::get_targets_to_skip()`.
+        // build event stream) is the command's, from `AnalysisResult::get_targets_to_skip()`:
+        // blaze_runtime's execution phase fails loudly for a build event stream with skipped
+        // targets.
         analysis_result = Some(result);
     } else {
         reporter.handle(&Event::progress("Loading complete."));
@@ -142,10 +151,69 @@ fn run_analysis_phase(
         BuildViewError::Interrupted => BuildToolError::Interrupted,
     })?;
 
-    // PORT: AnalysisPhaseCompleteEvent, TestFilteringCompleteEvent and the TopLevelStatusEvents
-    // are built by the command from the returned `AnalysisResult` (its counters are
-    // `get_analysis_phase_complete_stats`).
+    // PORT: AnalysisPhaseCompleteEvent is built by the command from the returned
+    // `AnalysisResult` (its counters are `get_analysis_phase_complete_stats`).
+    // TestFilteringCompleteEvent has one subscriber besides the build event stream,
+    // AggregatingTestListener.populateTests, which does what populateTest does with the
+    // TestAnalyzedEvents posted below.
+    // PORT: Java's AnalysisPhaseRunner serves only requests without merged analysis and
+    // execution; for a merged request BuildDriverFunction posts these events, which
+    // `build_view::update` (analyzed, skipped) and the command (skipped tests) do here.
+    if !request.with_merged_analysis_and_execution_source_of_truth() {
+        post_top_level_status_events(skyframe_executor, reporter.as_ref(), &analysis_result);
+    }
+
     Ok(analysis_result)
+}
+
+/// Post the appropriate `TopLevelStatusEvents`.
+///
+/// PORT: the `AspectAnalyzedEvent`s are none (top-level aspects are not ported:
+/// `BuildView.createTopLevelAspectKeys` fails loudly).
+// Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:467 AnalysisPhaseRunner.postTopLevelStatusEvents
+fn post_top_level_status_events(
+    skyframe_executor: &SkyframeExecutor,
+    reporter: &dyn ExtendedEventHandler,
+    analysis_result: &AnalysisResult,
+) {
+    // Set membership of a configured target: one instance per lookup key in a graph.
+    fn contains(targets: &[ConfiguredTarget], target: &ConfiguredTarget) -> bool {
+        targets
+            .iter()
+            .any(|t| t.get_lookup_key() == target.get_lookup_key())
+    }
+    let graph = skyframe_executor.get_walkable_graph();
+    for configured_target in analysis_result.get_targets_to_build() {
+        reporter.post(Arc::new(TopLevelTargetAnalyzedEvent::create(
+            configured_target.clone(),
+        )));
+        let skipped = contains(analysis_result.get_targets_to_skip(), configured_target);
+        if skipped {
+            reporter.post(Arc::new(TopLevelTargetSkippedEvent::create(
+                configured_target.clone(),
+            )));
+        }
+
+        if analysis_result
+            .get_targets_to_test()
+            .is_some_and(|targets_to_test| contains(targets_to_test, configured_target))
+        {
+            // configurationMap.get(configuredTarget.getConfigurationKey())
+            let build_configuration_value = get_configuration_from_graph(
+                &*graph,
+                configured_target.get_configuration_key().as_ref(),
+            )
+            .expect("NullPointerException: buildConfigurationValue");
+            let view: Arc<dyn ConfiguredTargetView> =
+                Arc::new(SkyframeConfiguredTargetView::new(configured_target.clone()));
+            reporter.post(Arc::new(TestAnalyzedEvent {
+                configured_target: view,
+                configuration_checksum: build_configuration_value.checksum().to_owned(),
+                configuration_mnemonic: build_configuration_value.get_mnemonic().to_owned(),
+                is_skipped: skipped,
+            }));
+        }
+    }
 }
 
 /// Returns the set of labels of target patterns that represent single targets.

@@ -37,3 +37,4 @@ pub mod skyframe_build_view;
 pub mod skyframe_error_processor;
 pub mod skyframe_executor;
 pub mod target_pattern_phase;
+pub mod toolchain_cycle_reporters;

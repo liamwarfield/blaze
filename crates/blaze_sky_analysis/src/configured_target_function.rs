@@ -204,8 +204,8 @@ impl ConfiguredTargetFunction {
                 Err(throw(ConfiguredTargetFunctionException::Reported(cvce)))
             }
             // The reporting will be done when going through errors in the build.
-            Err(CaughtException::ActionConflict(m)) => {
-                Err(throw(ConfiguredTargetFunctionException::ActionConflict(m)))
+            Err(CaughtException::ActionConflict(e)) => {
+                Err(throw(ConfiguredTargetFunctionException::ActionConflict(e)))
             }
             Err(CaughtException::Compute(e)) => Err(e),
         }
@@ -376,7 +376,7 @@ enum ComputedTargetAndConfiguration {
 enum CaughtException {
     ConfiguredValueCreation(ConfiguredValueCreationException),
     Toolchain(blaze_analysis::toolchains::ToolchainException),
-    ActionConflict(String),
+    ActionConflict(blaze_analysis::rule::action_conflict_exception::ActionConflictException),
     Compute(ComputeError),
 }
 
@@ -527,9 +527,9 @@ fn create_configured_target(
             ));
         }
         Err(ConfiguredTargetFactoryError::Create(CreateConfiguredTargetError::ActionConflict(
-            message,
+            e,
         ))) => {
-            return Err(CaughtException::ActionConflict(message));
+            return Err(CaughtException::ActionConflict(e));
         }
         Err(ConfiguredTargetFactoryError::Create(CreateConfiguredTargetError::Interrupted)) => {
             return Err(CaughtException::Compute(blaze_skyframe::Interrupted.into()));

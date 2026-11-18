@@ -11,6 +11,7 @@ use blaze_analysis::config::starlark_transition::TransitionException;
 use blaze_analysis::config::transitions::TransitionCreationException;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::dependency_kind::DependencyKind;
+use blaze_analysis::rule::action_conflict_exception::ActionConflictException;
 use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_cmdline::Label;
@@ -306,8 +307,9 @@ pub enum ConfiguredTargetFunctionException {
     #[error("{0}")]
     Unreported(ConfiguredValueCreationException),
     /// `UnreportedException(ActionConflictException)`.
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetFunction.java:405 ConfiguredTargetFunction.compute
     #[error("{0}")]
-    ActionConflict(String),
+    ActionConflict(ActionConflictException),
     /// `DependencyException(NoSuchThingException)`.
     #[error("{0}")]
     NoSuchThing(NoSuchThingException),
@@ -325,6 +327,74 @@ impl ConfiguredTargetFunctionException {
             _ => None,
         }
     }
+
+    /// The `ActionConflictException` a parent or the error processor catches (Java
+    /// `errorInfo.getException() instanceof ActionConflictException`), if this is one.
+    pub fn as_action_conflict(&self) -> Option<&ActionConflictException> {
+        match self {
+            ConfiguredTargetFunctionException::ActionConflict(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// A `ConfiguredTargetFunctionException::ActionConflict` for the tests of the callers that catch
+/// it: an `ActionConflictException` carries the artifact and the attempted action, here a
+/// `FileWriteAction` of a dummy owner (`ActionsTestUtil.NULL_ACTION_OWNER`).
+#[cfg(test)]
+pub(crate) fn action_conflict_for_testing(message: &str) -> ConfiguredTargetFunctionException {
+    use blaze_actions::actions::platform_info::empty_platform_info;
+    use blaze_actions::analysis::actions::file_write_action::{Compression, FileWriteAction};
+    use blaze_actions::{
+        ActionLookupKeyRef, ActionOwner, ActionRef, Artifact, ArtifactRoot, RootType,
+    };
+    use blaze_vfs::{DigestHashFunction, Path, PathFragment, UnixFileSystem};
+
+    let label = Label::parse_canonical_unchecked("//null/action:owner");
+    let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+    let exec_root = Path::create(PathFragment::create("/execroot/_main"), &fs);
+    let bin_root = ArtifactRoot::as_derived_root(
+        &exec_root,
+        RootType::OUTPUT,
+        &["bazel-out", "k8-fastbuild", "bin"],
+    );
+    let artifact = Artifact::create_derived_artifact(
+        bin_root.clone(),
+        bin_root
+            .get_exec_path()
+            .get_relative(&PathFragment::create("null/action/out.txt")),
+        ActionLookupKeyRef::new(
+            ConfiguredTargetKey::builder()
+                .set_label(label.clone())
+                .set_configuration_key(None)
+                .build(),
+        ),
+    );
+    let owner = ActionOwner::create_dummy(
+        Some(label),
+        blaze_events::location::Location::new("dummy-file", 0, 0),
+        "dummy-kind",
+        "dummy-configuration-mnemonic",
+        "dummy-configuration",
+        None,
+        false,
+        Some(empty_platform_info()),
+        Vec::new(),
+        indexmap::IndexMap::new(),
+    );
+    let action: ActionRef = Arc::new(FileWriteAction::create(
+        owner,
+        artifact.clone(),
+        "",
+        false,
+        Compression::DISALLOW,
+    ));
+    ConfiguredTargetFunctionException::ActionConflict(ActionConflictException::create_with_message(
+        &artifact,
+        &action,
+        message.to_owned(),
+        /* is_prefix_conflict= */ false,
+    ))
 }
 
 /// What a lookup of a `CONFIGURED_TARGET` dependency produced (Java's

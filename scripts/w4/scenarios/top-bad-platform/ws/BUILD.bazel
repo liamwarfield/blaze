@@ -1,5 +1,38 @@
+load(":defs.bzl", "needs_tt", "tc_impl", "with_dep")
+
 filegroup(name = "x", srcs = ["a.txt"])
 
 platform(name = "p")
 
 toolchain_type(name = "tt")
+
+tc_impl(name = "tc_impl")
+
+toolchain(
+    name = "tc",
+    toolchain = ":tc_impl",
+    toolchain_type = ":tt",
+)
+
+# Toolchain resolution runs for this target (the filegroup above has no toolchain types).
+needs_tt(name = "needs_tt")
+
+# An attribute transition to a target platform (BuildConfigurationKeyProducer / PlatformProducer
+# in the dependency resolution of the parent).
+with_dep(
+    name = "dep_on_p",
+    dep = ":x",
+    platform = "//:p",
+)
+
+with_dep(
+    name = "dep_on_not_a_platform",
+    dep = ":x",
+    platform = "//:x",
+)
+
+with_dep(
+    name = "dep_on_missing_platform",
+    dep = ":x",
+    platform = "//:nosuch",
+)

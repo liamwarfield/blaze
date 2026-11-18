@@ -16,7 +16,9 @@ use std::sync::Arc;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::providers::file_provider::FileProvider;
 use blaze_analysis::providers::output_group_info::ValidationMode;
+use blaze_bep::events::buildtool_events::BuildInterruptedEvent;
 use blaze_build_config::bazel_rule_class_provider::BazelRuleClassProvider;
+use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_build_config::top_level::create_build_options;
 use blaze_buildtool::buildtool::build_result::{BuildResult, ConfiguredTargetRef};
 use blaze_buildtool::buildtool::build_result_printer::{
@@ -27,16 +29,17 @@ use blaze_buildtool::buildtool::execution_tool::{
     report_build_summary_stats,
 };
 use blaze_buildtool::buildtool::output_directory_links_utils::{
-    BlazeDirectoriesView, create_output_directory_links, get_symlink_prefix,
+    BlazeDirectoriesView, SymlinkCreationResult, create_output_directory_links, get_symlink_prefix,
 };
 use blaze_buildtool::buildtool::symlink_forest::SymlinkForest;
 use blaze_buildtool::runtime::test_command_support::{
     TestCommandSupport, get_exit_code, make_test_log_path_formatter,
 };
 use blaze_events::{Clock, Event, EventHandler, ExtendedEventHandler, JavaClock, OutErr};
+use blaze_exec::actions::action_execution::ActionExecutionException;
 use blaze_exec::exec::spawn_log_module::{SpawnLogModule, SpawnLogModuleEnv};
 use blaze_optdefs::command::build_language_options::BuildLanguageOptions;
-use blaze_optdefs::command::build_request_options::BuildRequestOptions;
+use blaze_optdefs::command::build_request_options::{BuildRequestOptions, ConvenienceSymlinksMode};
 use blaze_optdefs::command::execution_options::ExecutionOptions;
 use blaze_optdefs::command::test_summary_options::TestSummaryOptions;
 use blaze_optdefs::command::ui_options::UiOptions;
@@ -49,6 +52,9 @@ use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Categor
 use blaze_sky_analysis::top_level_status_events::{
     TopLevelTargetAnalyzedEvent, TopLevelTargetSkippedEvent,
 };
+use blaze_sky_exec::artifact_function::ArtifactNestedSetEvalException;
+use blaze_sky_exec::completion_function::InputFileErrorException;
+use blaze_sky_exec::events::TestAnalyzedEvent;
 use blaze_sky_exec::keys::{BuildDriverKey, TargetCompletionKey, TestType};
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use blaze_sky_top::build_tool::{
@@ -60,7 +66,7 @@ use blaze_sky_top::execution_seam::{
     BuildDriverKeyTestContext, build_driver_keys, configured_target_views,
     get_explicit_target_patterns, top_level_output_groups, validation_mode,
 };
-use blaze_sky_top::skyframe_executor::SkyframeExecutor;
+use blaze_sky_top::skyframe_executor::{SkyframeExecutor, get_configuration_from_graph};
 use blaze_sky_top::target_pattern_phase::TargetPatternPhaseValue;
 use blaze_vfs::{Path, PathFragment};
 
@@ -409,7 +415,9 @@ fn run_build_with_bep(
         };
     }
 
-    let mut request = BuildRequest::new(command_name, options, targets, true, false);
+    // BuildRequest.Builder: checkForActionConflicts = true, reportIncompatibleTargets = true.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:88 BuildRequest.Builder
+    let mut request = BuildRequest::new(command_name, options, targets, true, true);
     request.set_run_tests(run_tests);
     // SkymeldModule.beforeCommand: env.setMergedAnalysisAndExecution(...)
     let merged_analysis_and_execution = determine_if_merging_analysis_execution(
@@ -483,6 +491,22 @@ fn run_build_with_bep(
         );
     }
     let detailed_exit_code = to_runtime_detailed_exit_code(build_tool.process_request(&request));
+    // BuildTool.processRequest, `catch (InterruptedException e)`:
+    // `env.getEventBus().post(new BuildInterruptedEvent())`.
+    // PORT: blaze_sky_top's BuildTool cannot name the event (blaze_bep declares it); the exit
+    // code of an interrupted build is the only one it returns with the category Interrupted.
+    // AggregatingTestListener.buildInterrupted is called directly (blaze_buildtool does not see
+    // the event's type either).
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:957 BuildTool.processRequest
+    if detailed_exit_code
+        .get_failure_detail()
+        .is_some_and(|f| matches!(f.category, Some(Category::Interrupted(_))))
+    {
+        blaze_events::EventBus::post(&**env.get_event_bus(), Arc::new(BuildInterruptedEvent));
+        if let Some(test_support) = &test_support {
+            test_support.listener().build_interrupted();
+        }
+    }
 
     // BuildTool.stopRequest.
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1155 BuildTool.stopRequest
@@ -541,6 +565,14 @@ fn run_build_with_bep(
     build_result.set_stop_time(JavaClock.current_time_millis());
     // The BuildCompleteEvent subscribers: AggregatingTestListener, BuildSummaryStatsModule, the
     // UI.
+    // The TestSummary events that AggregatingTestListener.buildCompleteEvent posts (targets that
+    // failed to build or were skipped) are dispatched after every subscriber of the
+    // BuildCompleteEvent has run (the EventBus queues an event posted from a subscriber), so the
+    // UI's buildComplete does not count them: read its counter first.
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:481 UiStateTracker.buildComplete
+    let failed_tests = ui_test_summaries
+        .failed_tests
+        .load(std::sync::atomic::Ordering::SeqCst);
     if let Some(test_support) = &test_support {
         test_support.build_complete_event(&build_result);
     }
@@ -549,9 +581,6 @@ fn run_build_with_bep(
         &collector,
         build_result.get_elapsed_seconds(),
     );
-    let failed_tests = ui_test_summaries
-        .failed_tests
-        .load(std::sync::atomic::Ordering::SeqCst);
     reporter.handle(&build_complete_event(
         build_result.get_success(),
         failed_tests,
@@ -995,6 +1024,124 @@ struct RuntimeExecutionPhase {
 }
 
 impl RuntimeExecutionPhase {
+    /// Handles what action to perform on the convenience symlinks. If the mode is
+    /// `ConvenienceSymlinksMode::IGNORE`, then skip any creating or cleaning of convenience
+    /// symlinks. Otherwise, manage the convenience symlinks and then post a
+    /// `ConvenienceSymlinksIdentifiedEvent` build event.
+    ///
+    /// Returns the symlink creation result, whose `get_created_symlinks()` is the map of
+    /// convenience symlink name to target.
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:705 ExecutionTool.handleConvenienceSymlinks
+    fn handle_convenience_symlinks(
+        &self,
+        skyframe_executor: &SkyframeExecutor,
+        targets_to_build: &[ConfiguredTarget],
+        configuration: &Arc<BuildConfigurationValue>,
+    ) -> SymlinkCreationResult {
+        // OutputDirectoryLinksUtils.EMPTY_SYMLINK_CREATION_RESULT
+        let mut convenience_symlinks = SymlinkCreationResult::empty();
+        if self.build_request_options.experimental_convenience_symlinks
+            != ConvenienceSymlinksMode::IGNORE
+        {
+            convenience_symlinks = self.create_convenience_symlinks(
+                skyframe_executor,
+                targets_to_build,
+                configuration,
+            );
+        }
+        // request.getBuildOptions().experimentalConvenienceSymlinksBepEvent is read by the BEP
+        // support.
+        if let Some(bep) = &self.bep {
+            bep.convenience_symlinks_identified(&self.build_request_options, &convenience_symlinks);
+        }
+        convenience_symlinks
+    }
+
+    /// Creates convenience symlinks based on the target configurations.
+    ///
+    /// Top-level targets may have different configurations than the top-level configuration.
+    /// This is because targets may apply configuration transitions.
+    ///
+    /// If all top-level targets have the same configuration - even if that isn't the top-level
+    /// configuration - symlinks point to that configuration.
+    ///
+    /// If top-level targets have mixed configurations and at least one of them has the top-level
+    /// configuration, symliks point to the top-level configuration.
+    ///
+    /// If top-level targets have mixed configurations and none has the top-level configuration,
+    /// symlinks aren't created. Furthermore, lingering symlinks from the last build are deleted.
+    /// This is to prevent confusion by pointing to an outdated directory the current build never
+    /// used.
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:742 ExecutionTool.createConvenienceSymlinks
+    fn create_convenience_symlinks(
+        &self,
+        skyframe_executor: &SkyframeExecutor,
+        targets_to_build: &[ConfiguredTarget],
+        configuration: &Arc<BuildConfigurationValue>,
+    ) -> SymlinkCreationResult {
+        // Gather configurations to consider.
+        let target_configs: Vec<Arc<BuildConfigurationValue>> = if targets_to_build.is_empty() {
+            vec![configuration.clone()]
+        } else {
+            // Collect the configuration of each top-level requested target. These may be
+            // different than the build's top-level configuration because of self-transitions.
+            // PORT: `executor.getConfiguration(reporter, key)` evaluates the key; the
+            // configuration of an analyzed target is in the graph.
+            let graph = skyframe_executor.get_walkable_graph();
+            let mut requested_target_config_keys: Vec<
+                blaze_build_config::build_configuration_key::BuildConfigurationKey,
+            > = Vec::new();
+            for target in targets_to_build {
+                if let Some(key) = target.get_actual().get_configuration_key()
+                    && !requested_target_config_keys.contains(&key)
+                {
+                    requested_target_config_keys.push(key);
+                }
+            }
+            let requested_target_configs: Vec<Arc<BuildConfigurationValue>> =
+                requested_target_config_keys
+                    .iter()
+                    .map(|key| {
+                        get_configuration_from_graph(&*graph, Some(key))
+                            .expect("NullPointerException: the configuration of a top-level target")
+                    })
+                    .collect();
+            if requested_target_configs.len() == 1 {
+                // All top-level targets have the same configuration, so use that one.
+                requested_target_configs
+            } else if requested_target_configs
+                .iter()
+                .any(|c| c.get_output_directory_name() == configuration.get_output_directory_name())
+            {
+                // Mixed configs but at least one matches the top-level config's output path (this
+                // doesn't mean it's the same as the top-level config: --trim_test_configuration
+                // means non-test targets use the default output path but lack the top-level
+                // config's TestOptions). Set symlinks to the top-level config so at least
+                // non-transitioned targets resolve. See
+                // https://github.com/bazelbuild/bazel/issues/17081.
+                vec![configuration.clone()]
+            } else {
+                // Mixed configs, none of which include the top-level config. Delete the symlinks
+                // because they won't contain any relevant data. This is handled in the
+                // createOutputDirectorySymlinks call below.
+                requested_target_configs
+            }
+        };
+
+        // PORT: `runtime.getRuleClassProvider().getSymlinkDefinitions()` is empty for Bazel's
+        // rule class provider.
+        create_output_directory_links(
+            &[],
+            &self.build_request_options,
+            &self.workspace_name,
+            &self.workspace,
+            &self.directories,
+            self.reporter.as_ref(),
+            &target_configs,
+            &self.product_name,
+        )
+    }
+
     /// Installs an `ExplanationHandler` (if `--explain` is set) and returns it on success.
     /// Reports an error and returns `None` otherwise.
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:804 ExecutionTool.installExplanationHandler
@@ -1139,21 +1286,26 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             ));
         }
 
-        // The convenience symlinks (OutputDirectoryLinksUtils.createOutputDirectoryLinks).
-        let symlinks = create_output_directory_links(
-            &[],
-            &self.build_request_options,
-            &self.workspace_name,
-            &self.workspace,
-            &self.directories,
-            reporter.as_ref(),
-            std::slice::from_ref(analysis_result.get_configuration()),
-            &self.product_name,
-        );
-        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:705 ExecutionTool.handleConvenienceSymlinks
-        if let Some(bep) = &self.bep {
-            bep.convenience_symlinks_identified(&self.build_request_options, &symlinks);
-        }
+        // The convenience symlinks.
+        // PORT: Java's Skymeld path does this in the finally block of
+        // buildTargetsWithMergedAnalysisExecution with `buildResultListener.getAnalyzedTargets()`,
+        // the other path at the start of ExecutionTool.executeBuild with
+        // `analysisResult.getTargetsToBuild()`. Every top-level target is analyzed by now.
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:668 BuildTool.buildTargetsWithMergedAnalysisExecution
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:393 ExecutionTool.executeBuild
+        let symlinks = if request.with_merged_analysis_and_execution_source_of_truth() {
+            self.handle_convenience_symlinks(
+                skyframe_executor,
+                &self.build_result_listener.get_analyzed_targets(),
+                analysis_result.get_configuration(),
+            )
+        } else {
+            self.handle_convenience_symlinks(
+                skyframe_executor,
+                analysis_result.get_targets_to_build(),
+                analysis_result.get_configuration(),
+            )
+        };
 
         // The top-level BuildDriverKeys.
         let label_to_target_map = construct_label_to_target_map(skyframe_executor, loading_result);
@@ -1197,6 +1349,84 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             blaze_util::unported!("BuildTool.runExclusiveTests");
         }
 
+        // PORT: Blaze analyzed every top-level target before this point, and BuildView.update ran
+        // the compatibility check of BuildDriverFunction for the Skymeld path (see
+        // blaze_sky_top::build_view). What is left of a BuildDriverKey is the execution it
+        // requests, so the keys are split by how far Java's BuildDriverFunction.compute gets:
+        // - the target is not in `getTargetsToBuild()` (its analysis or its compatibility check
+        //   failed, with --keep_going): the function threw, the key has no value, nothing is
+        //   executed; BuildView.update reported the error;
+        // - the target is skipped: the function returns `BuildDriverValue(skipped = true)`
+        //   without requesting any execution;
+        // - otherwise the function requests the execution of the target.
+        // The non-Skymeld path (SkyframeBuilder.buildArtifacts) likewise builds
+        // `getTargetsToBuild()` without `getTargetsToSkip()`.
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:155 BuildDriverFunction.compute
+        let skipped_labels: indexmap::IndexSet<blaze_cmdline::Label> = analysis_result
+            .get_targets_to_skip()
+            .iter()
+            .map(|target| target.get_original_label())
+            .collect();
+        let analyzed_labels: indexmap::IndexSet<blaze_cmdline::Label> = analysis_result
+            .get_targets_to_build()
+            .iter()
+            .map(|target| target.get_original_label())
+            .collect();
+        let mut keys_to_execute: Vec<BuildDriverKey> = Vec::new();
+        let mut skipped_keys: Vec<BuildDriverKey> = Vec::new();
+        for key in &keys {
+            let label = key
+                .action_lookup_key
+                .get_label()
+                .expect("NullPointerException: the label of a top-level ConfiguredTargetKey");
+            if skipped_labels.contains(&label) {
+                skipped_keys.push(key.clone());
+            } else if analyzed_labels.contains(&label) {
+                keys_to_execute.push(key.clone());
+            }
+        }
+        if self.bep.is_some() && !skipped_keys.is_empty() {
+            // The AbortedEvent (AbortReason.SKIPPED) of each skipped target in the build event
+            // stream.
+            blaze_util::unported!(
+                "AnalysisPhaseRunner.postAbortedEventsForSkippedTargets",
+                "build event stream of a build with skipped (incompatible) top-level targets"
+            );
+        }
+        if request.with_merged_analysis_and_execution_source_of_truth() {
+            // We still record analyzed but skipped tests, as this information is needed for the
+            // result summary.
+            // PORT: the other path posts its TestAnalyzedEvents in
+            // AnalysisPhaseRunner.postTopLevelStatusEvents.
+            // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:274 BuildDriverFunction.compute
+            let graph = skyframe_executor.get_walkable_graph();
+            for key in &skipped_keys {
+                if !key.test_type.is_test() {
+                    continue;
+                }
+                let label = key.action_lookup_key.get_label();
+                let configured_target = analysis_result
+                    .get_targets_to_skip()
+                    .iter()
+                    .find(|target| Some(target.get_original_label()) == label)
+                    .expect("the skipped target of a skipped key");
+                let build_configuration_value = get_configuration_from_graph(
+                    &*graph,
+                    configured_target.get_configuration_key().as_ref(),
+                )
+                .expect("NullPointerException: buildConfigurationValue");
+                let view = configured_target_views(std::slice::from_ref(configured_target))
+                    .pop()
+                    .expect("one view per configured target");
+                reporter.post(Arc::new(TestAnalyzedEvent {
+                    configured_target: view,
+                    configuration_checksum: build_configuration_value.checksum().to_owned(),
+                    configuration_mnemonic: build_configuration_value.get_mnemonic().to_owned(),
+                    is_skipped: true,
+                }));
+            }
+        }
+
         // Conditionally record dependency-checker log (uninstalled and closed when dropped, where
         // ExecutionTool.nonCatastrophicFinalizations does it: after the results are shown).
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:421 ExecutionTool.executeBuild
@@ -1204,13 +1434,62 @@ impl ExecutionPhase for RuntimeExecutionPhase {
 
         let result = evaluate_build_driver_keys(
             skyframe_executor.get_evaluator(),
-            &keys,
+            &keys_to_execute,
             &state.seam.get_workspace_status_artifacts(),
             &state.config,
             reporter.clone(),
         )
         .map_err(|_| BuildToolError::Interrupted)?;
         state.prepared.save_action_cache(reporter.as_ref());
+
+        // SkyframeErrorProcessor.processErrors of the evaluation (the Skymeld path:
+        // SkyframeBuildView.analyzeAndExecuteTargets; the other path: SkyframeBuilder
+        // .buildArtifacts, which rethrows the same way). Without --keep_going it throws, and Java
+        // reaches the finally block below ("Show results") with the exception pending.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:853 SkyframeBuildView.analyzeAndExecuteTargets
+        let execution_error: Option<BuildToolError> =
+            match process_execution_errors(&result.evaluation, request.keep_going) {
+                Ok(None) => None,
+                // This is the --keep_going code path: Time to throw the delayed exceptions.
+                // Keeping legacy behavior: for execution errors, keep the message of the
+                // BuildFailedException empty.
+                // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:690 BuildTool.buildTargetsWithMergedAnalysisExecution
+                Ok(Some(execution_detailed_exit_code)) => Some(BuildToolError::BuildFailed {
+                    message: String::new(),
+                    failure_detail: execution_detailed_exit_code
+                        .get_failure_detail()
+                        .cloned()
+                        .expect("an execution exit code has a failure detail"),
+                }),
+                Err(e) => Some(e),
+            };
+
+        // BuildView.update, after analyzeAndExecuteTargets returned (it does not return when
+        // processErrors threw): the successful targets are the BuildDriverKeys with a value,
+        // skipped targets included.
+        // Java: com/google/devtools/build/lib/analysis/BuildView.java:440 BuildView.update
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1183 SkyframeBuildView.getSuccessfulConfiguredTargets
+        if request.with_merged_analysis_and_execution_source_of_truth()
+            && (request.keep_going || execution_error.is_none())
+        {
+            let num_targets_to_analyze = label_to_target_map.len();
+            let num_successful = skipped_keys.len()
+                + keys_to_execute
+                    .iter()
+                    .filter(|key| result.evaluation.get(*key).is_some())
+                    .count();
+            // PORT: this is the line of BuildView.update for `includeExecutionPhase`.
+            // blaze_sky_top's BuildView.update returns before the execution, so it must not print
+            // it for a merged request (it only knows the targets that were analyzed).
+            if 0 < num_successful && num_successful < num_targets_to_analyze {
+                // includeExecutionPhase ? "Build" : "Analysis"
+                let msg = format!(
+                    "Build succeeded for only {} of {} top-level targets",
+                    num_successful, num_targets_to_analyze
+                );
+                reporter.handle(&Event::info(msg));
+            }
+        }
 
         // The finally block of BuildTool.buildTargetsWithMergedAnalysisExecution: the build
         // result's targets, then ExecutionTool.nonCatastrophicFinalizations ("Show results").
@@ -1234,7 +1513,7 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         let mut successful_targets: Vec<ConfiguredTargetRef> = Vec::new();
         for (target, view) in analyzed_targets.iter().zip(views.iter()) {
             let top_level_label = target.get_original_label();
-            let built = keys.iter().any(|key| {
+            let built = keys_to_execute.iter().any(|key| {
                 key.action_lookup_key.get_label().as_ref() == Some(&top_level_label)
                     && top_level_target_built(
                         skyframe_executor.get_evaluator(),
@@ -1274,35 +1553,193 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         }
         let _ = &self.collector;
 
-        if result.evaluation.has_error() {
-            // The failing actions reported themselves (SkyframeActionExecutor); Java throws a
-            // BuildFailedException whose error was already shown.
-            let failure_detail = result
-                .evaluation
-                .get_first_error()
-                .and_then(|e| e.get_exception())
-                .and_then(|e| {
-                    if let Some(a) = e
-                        .downcast_ref::<blaze_exec::actions::action_execution::ActionExecutionException>()
-                    {
-                        return a.get_failure_detail().cloned();
-                    }
-                    // Java: a BuildFailedException whose error is already shown.
-                    e.downcast_ref::<blaze_sky_exec::completion_function::InputFileErrorException>()
-                        .and_then(|i| i.detailed_exit_code.get_failure_detail().cloned())
-                })
-                .unwrap_or_else(|| FailureDetail {
-                    message: "build failed".to_owned(),
-                    category: Some(Category::Execution(failure_details::Execution {
-                        code: failure_details::execution::Code::NonActionExecutionFailure as i32,
-                    })),
-                });
-            return Err(BuildToolError::BuildFailed {
-                message: String::new(),
-                failure_detail,
-            });
+        if let Some(execution_error) = execution_error {
+            return Err(execution_error);
         }
         Ok(())
+    }
+}
+
+/// `SkyframeErrorProcessor.isExecutionException(cause)`, with the cause's class.
+///
+/// PORT: `TestExecException` is not a class of its own in blaze_exec (the test strategy raises
+/// it as a `UserExecException`, and an `ActionExecutionException` keeps its cause as a message),
+/// so Java's `cause.getCause() instanceof TestExecException` branch of `rethrow` (the build then
+/// counts as successful and `TestCommand.doTest` computes the exit code) cannot be told apart
+/// from an action failure here. `TopLevelOutputException` (action rewinding, staging of
+/// top-level outputs) is not raised by the ported functions.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:873 SkyframeErrorProcessor.isExecutionException
+enum ExecutionExceptionCause<'a> {
+    ActionExecution(&'a ActionExecutionException),
+    InputFileError(&'a InputFileErrorException),
+    ArtifactNestedSetEval(&'a ArtifactNestedSetEvalException),
+}
+
+impl<'a> ExecutionExceptionCause<'a> {
+    fn of(cause: &'a blaze_skyframe::SkyError) -> Option<ExecutionExceptionCause<'a>> {
+        if let Some(e) = cause.downcast_ref::<ActionExecutionException>() {
+            return Some(ExecutionExceptionCause::ActionExecution(e));
+        }
+        if let Some(e) = cause.downcast_ref::<InputFileErrorException>() {
+            return Some(ExecutionExceptionCause::InputFileError(e));
+        }
+        if let Some(e) = cause.downcast_ref::<ArtifactNestedSetEvalException>() {
+            return Some(ExecutionExceptionCause::ArtifactNestedSetEval(e));
+        }
+        None
+    }
+
+    /// `DetailedException.getDetailedExitCode(cause)`, or the "unknown" code for a cause that is
+    /// not a `DetailedException`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:621 SkyframeErrorProcessor.getExecutionDetailedExitCodeFromCause
+    fn get_execution_detailed_exit_code(&self) -> blaze_util::DetailedExitCode {
+        match self {
+            ExecutionExceptionCause::ActionExecution(e) => match e.get_failure_detail() {
+                Some(failure_detail) => blaze_util::DetailedExitCode::of(failure_detail.clone()),
+                None => panic!(
+                    "NullPointerException: detailedExitCode of {}",
+                    e.get_message()
+                ),
+            },
+            ExecutionExceptionCause::InputFileError(e) => e.detailed_exit_code.clone(),
+            ExecutionExceptionCause::ArtifactNestedSetEval(e) => {
+                create_unknown_execution_detailed_exit_code(&e.to_string())
+            }
+        }
+    }
+}
+
+/// The exit code of an execution exception without a `DetailedExitCode`.
+///
+/// PORT: skipped, the non-fatal bug report Java sends first.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:631 SkyframeErrorProcessor.sendBugReportAndCreateUnknownExecutionDetailedExitCode
+fn create_unknown_execution_detailed_exit_code(
+    cause_message: &str,
+) -> blaze_util::DetailedExitCode {
+    let message =
+        format!("Unexpected exception, please file an issue with the Bazel team: {cause_message}");
+    blaze_util::DetailedExitCode::of(FailureDetail {
+        message,
+        category: Some(Category::Execution(failure_details::Execution {
+            code: failure_details::execution::Code::UnexpectedException as i32,
+        })),
+    })
+}
+
+/// The part of `SkyframeErrorProcessor.processErrors` (with `includeExecutionPhase`) that
+/// handles execution exceptions, for the evaluation of the build driver keys.
+///
+/// - `--keep_going`: returns the most important exit code of the execution errors (`None` when
+///   there was none); nothing is printed for them (`logOrPrintWarningsKeepGoing`).
+/// - `--nokeep_going`: throws for the first error (`throwOrReturnAspectAnalysisException` →
+///   `rethrow`).
+///
+/// PORT: Blaze analyzes before it executes (module comment), so the loading and analysis errors
+/// of the top-level keys were processed by blaze_sky_top's `SkyframeErrorProcessor` and the keys
+/// evaluated here are those of analyzed targets: an error that is not an execution exception or
+/// an execution cycle fails loudly. The failure events of execution errors
+/// (`maybePostFailureEventsForNonConflictError` posts an `AnalysisFailureEvent` only for
+/// analysis errors) are none.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:302 SkyframeErrorProcessor.processErrors
+fn process_execution_errors(
+    result: &blaze_skyframe::EvaluationResult,
+    keep_going: bool,
+) -> Result<Option<blaze_util::DetailedExitCode>, BuildToolError> {
+    let mut execution_detailed_exit_code: Option<blaze_util::DetailedExitCode> = None;
+    for (error_key, error_info) in result.error_map() {
+        let nullable_cause = error_info.get_exception();
+        blaze_util::check_state!(
+            nullable_cause.is_some() || !error_info.get_cycle_info().is_empty(),
+            "{:?}",
+            error_info
+        );
+        let Some(cause) = nullable_cause else {
+            // cyclesReporter.reportCycles and CYCLE_CODE ("cycle found during execution").
+            blaze_util::unported!(
+                "SkyframeErrorProcessor.processErrors",
+                "cycle found during execution at {:?}",
+                error_key
+            );
+        };
+        let Some(execution_exception) = ExecutionExceptionCause::of(cause) else {
+            blaze_util::unported!(
+                "SkyframeErrorProcessor.processErrors",
+                "exception at {:?} during execution that is not an execution exception: {}",
+                error_key,
+                cause
+            );
+        };
+        if keep_going {
+            // aggregateSingleResult; for execution exceptions, we don't print any extra warning.
+            execution_detailed_exit_code =
+                blaze_util::DetailedExitCode::choose_more_important_with_first_if_tie(
+                    execution_detailed_exit_code.take(),
+                    Some(execution_exception.get_execution_detailed_exit_code()),
+                );
+        } else {
+            // If the error is execution-related: straightaway rethrow. No further steps
+            // required.
+            return Err(rethrow(&execution_exception));
+        }
+    }
+    Ok(execution_detailed_exit_code)
+}
+
+/// Figure out why an action's analysis/execution failed and rethrow the right kind of exception.
+///
+/// PORT: returns the `BuildFailedException`; an empty message stands for
+/// `isErrorAlreadyShown()` (`BuildTool.processRequest` reports the others).
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:974 SkyframeErrorProcessor.rethrow
+fn rethrow(cause: &ExecutionExceptionCause<'_>) -> BuildToolError {
+    match cause {
+        ExecutionExceptionCause::ActionExecution(action_execution_cause) => {
+            let mut message = action_execution_cause.get_message().to_owned();
+            if let Some(action) = action_execution_cause.get_action() {
+                message = format!("{} failed: {}", action.describe, message);
+                // Sometimes ActionExecutionExceptions are caused by Actions with no owner.
+                // PORT: the snapshot always has the owner's location.
+                message = format!("{} {}", action.location, message);
+            }
+            let failure_detail = cause
+                .get_execution_detailed_exit_code()
+                .get_failure_detail()
+                .cloned()
+                .expect("NullPointerException: detailedExitCode");
+            BuildToolError::BuildFailed {
+                // errorAlreadyShown = !actionExecutionCause.showError()
+                message: if action_execution_cause.show_error() {
+                    message
+                } else {
+                    String::new()
+                },
+                failure_detail,
+            }
+        }
+        // throw inputFileErrorException: a BuildFailedException whose error is already shown.
+        ExecutionExceptionCause::InputFileError(input_file_error_exception) => {
+            BuildToolError::BuildFailed {
+                message: String::new(),
+                failure_detail: input_file_error_exception
+                    .detailed_exit_code
+                    .get_failure_detail()
+                    .cloned()
+                    .expect("NullPointerException: detailedExitCode"),
+            }
+        }
+        // We encountered an exception we don't think we should have encountered. This can
+        // indicate an exception-processing bug in our code, such as lower level exceptions not
+        // being properly handled, or in our expectations in this method.
+        ExecutionExceptionCause::ArtifactNestedSetEval(_) => {
+            let failure_detail = cause
+                .get_execution_detailed_exit_code()
+                .get_failure_detail()
+                .cloned()
+                .expect("NullPointerException: unknownExitCode.getFailureDetail()");
+            BuildToolError::BuildFailed {
+                message: failure_detail.message.clone(),
+                failure_detail,
+            }
+        }
     }
 }
 
@@ -1356,5 +1793,131 @@ fn output_filter(
         Some(AutoOutputFilter::PACKAGES) | Some(AutoOutputFilter::SUBPACKAGES) => {
             blaze_util::unported!("AutoOutputFilter.getFilter (packages, subpackages)")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use blaze_exec::actions::action_execution::FailedActionInfo;
+    use blaze_skyframe::{
+        ERROR_TRANSIENCE_KEY, ErrorInfo, EvaluationResult, SkyFunctionException, Transience,
+    };
+
+    use super::*;
+
+    // There is no JUnit test of SkyframeErrorProcessor.rethrow or of the execution half of
+    // processErrors at the pin; the expected values are the oracle's (Bazel 9.3.2) transcripts
+    // scripts/w4/scenarios/exec-source-errors/ORACLE.txt and ui-build-results/ORACLE.txt.
+
+    fn source_input_missing() -> FailureDetail {
+        FailureDetail {
+            message: "missing input file '//p:missing_input.txt'".to_owned(),
+            category: Some(Category::Execution(failure_details::Execution {
+                code: failure_details::execution::Code::SourceInputMissing as i32,
+            })),
+        }
+    }
+
+    /// The exception of `ActionExecutionFunction.throwSourceErrorException` for
+    /// `//p:uses_missing` (exec-source-errors step 4), with `<WS>` as the workspace.
+    fn missing_input_exception() -> ActionExecutionException {
+        ActionExecutionException::with_root_causes(
+            "1 input file(s) do not exist",
+            Some(FailedActionInfo {
+                owner_label: None,
+                configuration_checksum: None,
+                primary_output: PathFragment::create(
+                    "bazel-out/k8-fastbuild/bin/p/uses_missing.out",
+                ),
+                mnemonic: "Action".to_owned(),
+                location: "<WS>/p/BUILD.bazel:12:5".to_owned(),
+                pretty_print: "action 'Action p/uses_missing.out'".to_owned(),
+                describe: "Action p/uses_missing.out".to_owned(),
+            }),
+            Vec::new(),
+            false,
+            Some(source_input_missing()),
+        )
+    }
+
+    fn result_with_error(e: ActionExecutionException) -> EvaluationResult {
+        EvaluationResult {
+            values: Vec::new(),
+            errors: vec![(
+                ERROR_TRANSIENCE_KEY.clone(),
+                ErrorInfo::from_exception(
+                    &SkyFunctionException::new(e, Transience::Transient),
+                    false,
+                ),
+            )],
+            catastrophe: None,
+        }
+    }
+
+    /// exec-source-errors step 4 (`build //p:uses_missing`): Bazel prints
+    /// `ERROR: <WS>/p/BUILD.bazel:12:5 Action p/uses_missing.out failed: 1 input file(s) do not
+    /// exist` (the BuildFailedException of `rethrow`, reported by `BuildTool.processRequest`)
+    /// and exits with 1.
+    #[test]
+    fn rethrow_of_a_source_error_reports_location_and_action() {
+        let result = result_with_error(missing_input_exception());
+        let Err(BuildToolError::BuildFailed {
+            message,
+            failure_detail,
+        }) = process_execution_errors(&result, /* keep_going= */ false)
+        else {
+            panic!("expected a BuildFailedException");
+        };
+        assert_eq!(
+            message,
+            "<WS>/p/BUILD.bazel:12:5 Action p/uses_missing.out failed: 1 input file(s) do not exist"
+        );
+        assert_eq!(failure_detail, source_input_missing());
+        assert_eq!(
+            blaze_util::DetailedExitCode::of(failure_detail)
+                .get_exit_code()
+                .get_numeric_exit_code(),
+            1
+        );
+    }
+
+    /// ui-build-results step 20 (`build //:fails`): the error of an executed action is printed
+    /// once, by the action executor; the BuildFailedException of an
+    /// AlreadyReportedActionExecutionException has its error already shown.
+    #[test]
+    fn rethrow_of_an_already_reported_exception_shows_nothing() {
+        let result = result_with_error(ActionExecutionException::already_reported(
+            missing_input_exception(),
+        ));
+        let Err(BuildToolError::BuildFailed { message, .. }) =
+            process_execution_errors(&result, /* keep_going= */ false)
+        else {
+            panic!("expected a BuildFailedException");
+        };
+        assert_eq!(message, "");
+    }
+
+    /// exec-source-errors step 8 (`build --keep_going ...`): nothing more is printed for the
+    /// execution errors (no `ERROR: <loc> Action ... failed` line), and the build fails with the
+    /// execution exit code (1).
+    #[test]
+    fn keep_going_returns_the_execution_exit_code() {
+        let result = result_with_error(missing_input_exception());
+        let code = process_execution_errors(&result, /* keep_going= */ true)
+            .unwrap_or_else(|_| panic!("--keep_going does not throw"))
+            .expect("an execution exit code");
+        assert_eq!(code.get_failure_detail(), Some(&source_input_missing()));
+        assert_eq!(code.get_exit_code().get_numeric_exit_code(), 1);
+    }
+
+    #[test]
+    fn no_errors_no_exit_code() {
+        let result = EvaluationResult {
+            values: Vec::new(),
+            errors: Vec::new(),
+            catastrophe: None,
+        };
+        assert!(matches!(process_execution_errors(&result, true), Ok(None)));
+        assert!(matches!(process_execution_errors(&result, false), Ok(None)));
     }
 }

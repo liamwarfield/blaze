@@ -34,6 +34,8 @@ pub struct SkyframeAnalysisResult {
     has_analysis_error: bool,
     has_action_conflicts: bool,
     configured_targets: Vec<ConfiguredTarget>,
+    /// See [`SkyframeAnalysisResult::get_configured_targets_with_action_conflicts`].
+    configured_targets_with_action_conflicts: Vec<ConfiguredTarget>,
     walkable_graph: Arc<dyn WalkableGraph>,
     targets_with_configuration: Vec<TargetAndConfiguration>,
     /// The `AnalysisGraphStatsEvent` posted by the conflict check (`None` when not checked).
@@ -68,6 +70,20 @@ impl SkyframeAnalysisResult {
         &self.configured_targets
     }
 
+    /// The top-level targets of a `--keep_going` build that were analyzed but are not among
+    /// [`SkyframeAnalysisResult::get_configured_targets`] because an action in their transitive
+    /// closure is in conflict, in top-level order.
+    ///
+    /// PORT: not in Java's class. With Skymeld these are the targets whose `BuildDriverFunction`
+    /// announced them as analyzed (`TopLevelTargetAnalyzedEvent`: they count in
+    /// `BuildResultListener.getAnalyzedTargets()`, "Found N targets...") and then threw a
+    /// `TopLevelConflictException`. Blaze finds conflicts after the analysis of all top-level
+    /// targets, so the result carries them to the code that stands in for the build drivers.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:187 BuildDriverFunction.compute
+    pub fn get_configured_targets_with_action_conflicts(&self) -> &[ConfiguredTarget] {
+        &self.configured_targets_with_action_conflicts
+    }
+
     // Java: com/google/devtools/build/lib/skyframe/SkyframeAnalysisResult.java:83 SkyframeAnalysisResult.getWalkableGraph
     pub fn get_walkable_graph(&self) -> &Arc<dyn WalkableGraph> {
         &self.walkable_graph
@@ -100,6 +116,7 @@ impl SkyframeAnalysisResult {
             has_analysis_error: true,
             has_action_conflicts: self.has_action_conflicts,
             configured_targets,
+            configured_targets_with_action_conflicts: self.configured_targets_with_action_conflicts,
             walkable_graph: self.walkable_graph,
             targets_with_configuration: self.targets_with_configuration,
             build_graph_metrics: self.build_graph_metrics,
@@ -210,6 +227,7 @@ pub fn configure_targets(
             has_analysis_error: false,
             has_action_conflicts: false,
             configured_targets: cts,
+            configured_targets_with_action_conflicts: Vec::new(),
             walkable_graph: skyframe_executor.get_walkable_graph(),
             targets_with_configuration: result.targets_with_configuration,
             build_graph_metrics,
@@ -238,6 +256,7 @@ pub fn configure_targets(
         action_conflicts.put(action, exception.clone());
     }
     let found_action_conflict_in_latest_check = !action_conflicts.is_empty();
+    let mut cts_with_action_conflicts: Vec<ConfiguredTarget> = Vec::new();
     let mut no_keep_going_exception_due_to_conflict: Option<ViewCreationFailedException> = None;
     // Sometimes there are action conflicts, but the actions aren't actually required to run by
     // the build. In such cases, the conflict should still be reported to the user.
@@ -369,6 +388,29 @@ pub fn configure_targets(
                 cts.push(configured_target);
             }
         }
+
+        // PORT: the top-level targets that were analyzed but are not error-free. With Skymeld,
+        // Java's BuildDriverFunction announces such a target as analyzed and then throws a
+        // TopLevelConflictException for it (`checkActionConflicts`), before it requests any
+        // execution. Blaze's conflict check is this one, so the result carries the targets
+        // (`SkyframeAnalysisResult::get_configured_targets_with_action_conflicts`).
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:198 BuildDriverFunction.compute
+        for k in ct_keys
+            .iter()
+            .filter(|k| !top_level_action_conflict_report.is_error_free(k))
+        {
+            let Some(value) = evaluation_result.get(k) else {
+                // The analysis of the target failed (also for a conflict inside the target).
+                continue;
+            };
+            let configured_target = value.get_configured_target().clone();
+            if !cts_with_action_conflicts
+                .iter()
+                .any(|ct| same_configured_target(ct, &configured_target))
+            {
+                cts_with_action_conflicts.push(configured_target);
+            }
+        }
     }
 
     Ok(SkyframeAnalysisResult {
@@ -376,6 +418,7 @@ pub fn configure_targets(
         has_analysis_error: evaluation_result.has_error() || found_action_conflict_in_latest_check,
         has_action_conflicts: found_action_conflict_in_latest_check,
         configured_targets: cts,
+        configured_targets_with_action_conflicts: cts_with_action_conflicts,
         walkable_graph: skyframe_executor.get_walkable_graph(),
         targets_with_configuration: result.targets_with_configuration,
         build_graph_metrics,
@@ -674,5 +717,53 @@ pub fn get_evaluated_counts(evaluator: &Evaluator, time_in_ms: i64) -> AnalysisP
         time_in_ms,
         packages_successfully_loaded,
         actions_constructed_by_mnemonic: action_count_by_mnemonic.into_iter().collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Java: src/test/java/com/google/devtools/build/lib/buildtool/OutputArtifactConflictTest.java
+    // PORT: these are BuildIntegrationTestCase tests (they build scratch workspaces with a real
+    // BlazeRuntime); the harness is not ported. The cases are compared with the oracle end to end
+    // by the probe scenario scripts/w4/scenarios/top-conflicts.
+
+    #[test]
+    #[ignore = "needs BuildIntegrationTestCase; see scripts/w4/scenarios/top-conflicts (steps 14 to 20)"]
+    fn test_artifact_prefix() {
+        unimplemented!("not ported: OutputArtifactConflictTest.testArtifactPrefix")
+    }
+
+    #[test]
+    #[ignore = "needs BuildIntegrationTestCase; see scripts/w4/scenarios/top-conflicts (steps 3 and 29)"]
+    fn test_conflict_error_and_analysis_error() {
+        unimplemented!("not ported: OutputArtifactConflictTest.testConflictErrorAndAnalysisError")
+    }
+
+    #[test]
+    #[ignore = "needs BuildIntegrationTestCase; see scripts/w4/scenarios/top-conflicts (steps 1 to 7)"]
+    fn unused_actions_still_conflict() {
+        unimplemented!("not ported: OutputArtifactConflictTest.unusedActionsStillConflict")
+    }
+
+    #[test]
+    #[ignore = "needs BuildIntegrationTestCase; see scripts/w4/scenarios/top-conflicts (steps 1 to 7)"]
+    fn test_multiple_conflict_errors() {
+        unimplemented!("not ported: OutputArtifactConflictTest.testMultipleConflictErrors")
+    }
+
+    #[test]
+    #[ignore = "needs BuildIntegrationTestCase; see scripts/w4/scenarios/top-conflicts (step 16)"]
+    fn test_two_conflicting_targets_keep_going_behavior_differences() {
+        unimplemented!(
+            "not ported: OutputArtifactConflictTest.testTwoConflictingTargets_keepGoing_behaviorDifferences"
+        )
+    }
+
+    #[test]
+    #[ignore = "needs BuildIntegrationTestCase; see scripts/w4/scenarios/top-conflicts (steps 23 to 26)"]
+    fn dependency_has_conflict_keep_going_both_top_level_targets_fail() {
+        unimplemented!(
+            "not ported: OutputArtifactConflictTest.dependencyHasConflict_keepGoing_bothTopLevelTargetsFail"
+        )
     }
 }

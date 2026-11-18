@@ -69,9 +69,9 @@ fn configured_target_function_exceptions_are_caught_by_their_cause() {
         Some(ConfiguredTargetLookupError::NoSuchThing(_))
     ));
 
-    let action_conflict: SkyError = Arc::new(ConfiguredTargetFunctionException::ActionConflict(
-        "conflict".to_owned(),
-    ));
+    let action_conflict: SkyError = Arc::new(
+        crate::producers::errors::action_conflict_for_testing("conflict"),
+    );
     assert!(catch_configured_value_creation_exception(&action_conflict).is_none());
     assert!(matches!(
         catch_configured_target_error(&action_conflict),

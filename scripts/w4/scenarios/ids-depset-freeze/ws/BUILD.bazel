@@ -1,0 +1,18 @@
+load(":defs.bzl", "lib")
+
+lib(
+    name = "a",
+    hdrs = ["a1.h", "a2.h"],
+)
+
+lib(
+    name = "b",
+    hdrs = ["b1.h", "b2.h"],
+    deps = [":a"],
+)
+
+lib(
+    name = "c",
+    hdrs = ["c1.h", "c2.h"],
+    deps = [":a", ":b"],
+)

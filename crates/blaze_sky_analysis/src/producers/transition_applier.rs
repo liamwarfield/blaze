@@ -13,6 +13,7 @@ use blaze_analysis::config::starlark_transition::{
     TransitionException, command_line_flag_aliases, does_starlark_transition,
 };
 use blaze_analysis::config::transitions::{ConfigurationTransition, restrict};
+use blaze_analysis::toolchains::{ToolchainException, ToolchainExceptionKind};
 use blaze_build_config::build_configuration_key::{
     BuildConfigurationKey, BuildConfigurationKeyValueKey,
 };
@@ -50,6 +51,13 @@ impl TransitionApplierError {
             | TransitionApplierError::BuildOptionsScope(m) => m.clone(),
         }
     }
+}
+
+/// What `build_configuration_key_map` catches from a BUILD_CONFIGURATION_KEY dependency.
+enum CaughtBuildConfigurationKeyError {
+    Configuration(ConfigurationError),
+    /// An `InvalidPlatformException`: its message.
+    InvalidPlatform(String),
 }
 
 /// The outcome of a producer: `Ok(None)` when a dependency is missing (Skyframe restart).
@@ -227,7 +235,21 @@ pub fn build_configuration_key_map(
     let mut first_error: Option<TransitionApplierError> = None;
     let mut missing = false;
     for (transition_key, key) in &keys {
-        match lookup.get_or_throw_with(key, |e| e.downcast_ref::<ConfigurationError>().cloned()) {
+        // Java: the BuildConfigurationKeyProducer's sink accepts an OptionsParsingException, a
+        // PlatformMappingException, an InvalidPlatformException (of its PlatformProducer) or a
+        // BuildOptionsScopeFunctionException. BUILD_CONFIGURATION_KEY rethrows the first three
+        // (BuildConfigurationKeyFunction.compute); InvalidPlatformException is a
+        // ToolchainException of kind InvalidPlatform.
+        match lookup.get_or_throw_with(key, |e| {
+            if let Some(c) = e.downcast_ref::<ConfigurationError>() {
+                return Some(CaughtBuildConfigurationKeyError::Configuration(c.clone()));
+            }
+            e.downcast_ref::<ToolchainException>()
+                .filter(|t| t.kind() == ToolchainExceptionKind::InvalidPlatform)
+                .map(|t| {
+                    CaughtBuildConfigurationKeyError::InvalidPlatform(t.get_message().to_owned())
+                })
+        }) {
             Ok(Some(result_key)) => {
                 output.insert(transition_key.clone(), (*result_key).clone());
             }
@@ -235,14 +257,23 @@ pub fn build_configuration_key_map(
             Err(e) => {
                 if first_error.is_none() {
                     first_error = Some(match e {
-                        ConfigurationError::OptionsParsing(o) => {
-                            TransitionApplierError::OptionsParsing(o.get_message().to_owned())
+                        CaughtBuildConfigurationKeyError::Configuration(
+                            ConfigurationError::OptionsParsing(o),
+                        ) => TransitionApplierError::OptionsParsing(o.get_message().to_owned()),
+                        CaughtBuildConfigurationKeyError::Configuration(
+                            ConfigurationError::PlatformMapping(m),
+                        ) => TransitionApplierError::PlatformMapping(m),
+                        // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:254 BuildConfigurationKeyProducer.acceptPlatformInfoError
+                        CaughtBuildConfigurationKeyError::InvalidPlatform(m) => {
+                            TransitionApplierError::PlatformFlags(m)
                         }
-                        ConfigurationError::PlatformMapping(m) => {
-                            TransitionApplierError::PlatformMapping(m)
-                        }
-                        // PORT: InvalidPlatformException from the target platform lookup.
-                        other => TransitionApplierError::PlatformFlags(other.to_string()),
+                        // BuildConfigurationKeyFunction throws nothing else (a
+                        // BuildOptionsScopeFunctionException is not caught there: see
+                        // `find_build_options_scopes` in blaze_build_config).
+                        CaughtBuildConfigurationKeyError::Configuration(other) => panic!(
+                            "IllegalStateException: unexpected exception of \
+                             BUILD_CONFIGURATION_KEY: {other}"
+                        ),
                     });
                 }
             }

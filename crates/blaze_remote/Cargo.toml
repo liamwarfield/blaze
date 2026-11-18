@@ -48,3 +48,8 @@ tonic-build.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[features]
+# Modules and test files still being ported are behind this feature so that a half-made file
+# never breaks a workspace build (`scripts/cargo-capped check -p blaze_remote --features wip`).
+wip = []

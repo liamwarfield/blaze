@@ -10,6 +10,14 @@
 #   IncrementalArtifactConflictFinder registers a top-level target when its analysis ends);
 # - `build` (Skymeld) names the two paths of a prefix conflict in either order. aquery, like
 #   Blaze, goes through Actions.findArtifactPrefixConflicts, which sorts the artifacts first.
+# The same holds for aquery --keep_going: six oracle runs of the first aquery --keep_going step
+# named //same:a three times and //same:b three times (TransitiveActionLookupKeysCollector forks a
+# task per key, the Sharder deals the values round-robin to shards that a thread pool registers,
+# and the bad-action map is a ConcurrentHashMap over identity hashes).
+# With more than --show_result (1) analyzed targets, `Use --verbose_failures ...` after a
+# --keep_going build with a conflict is printed or not depending on the iteration order of
+# BuildResultListener.analyzedTargets (a ConcurrentHashMap key set over identity hashes):
+# BuildResultPrinter stops at the first target over the budget and reports the failures seen so far.
 
 # Different content: conflict.
 run build //same:a //same:b

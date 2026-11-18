@@ -467,10 +467,9 @@ fn wrap_exception(
     if key_is_package && let Some(e) = exception.downcast_ref::<NoSuchPackageException>() {
         // A "simple" target pattern (like "//pkg:t") doesn't have a TargetPatternKey, just a
         // Package key, so it results in NoSuchPackageException that we transform here.
-        // PORT: Java keeps the exception's DetailedExitCode.
-        return TargetParsingException::new(
+        return crate::target_pattern_function::target_parsing_exception_of(
             e.get_message(),
-            TargetPatternsCode::TargetPatternsUnknown,
+            &e.get_detailed_exit_code(),
         );
     }
     TargetParsingException::new(

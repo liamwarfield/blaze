@@ -29,7 +29,10 @@ impl CacheNotFoundException {
 
     /// `new CacheNotFoundException(missingDigest, execPath)`.
     // Java: com/google/devtools/build/lib/remote/common/CacheNotFoundException.java:35 CacheNotFoundException.<init>
-    pub fn with_exec_path(missing_digest: Digest, exec_path: PathFragment) -> CacheNotFoundException {
+    pub fn with_exec_path(
+        missing_digest: Digest,
+        exec_path: PathFragment,
+    ) -> CacheNotFoundException {
         CacheNotFoundException {
             missing_digest,
             exec_path: Some(exec_path),

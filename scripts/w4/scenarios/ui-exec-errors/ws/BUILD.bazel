@@ -1,0 +1,71 @@
+load(":defs.bzl", "analysis_error", "concat", "failing", "files", "script_test")
+
+# Every step builds targets no other step touches where the outcome depends on what was built
+# before: the oracle keeps its graph between the steps, Blaze starts each command cold.
+files(
+    name = "ok",
+    outs = ["ok.txt"],
+)
+
+files(
+    name = "ok2",
+    outs = ["ok2.txt"],
+)
+
+failing(name = "one_out")
+
+concat(
+    name = "uses_one",
+    srcs = [":one_out"],
+)
+
+failing(
+    name = "two_outs",
+    exts = [
+        "a",
+        "b",
+    ],
+)
+
+concat(
+    name = "uses_two",
+    srcs = [":two_outs"],
+)
+
+failing(name = "failing_dep")
+
+concat(
+    name = "uses_failing_and_missing",
+    srcs = [
+        "missing.txt",
+        ":failing_dep",
+    ],
+)
+
+failing(name = "kg_fails")
+
+concat(
+    name = "kg_uses_missing",
+    srcs = ["kg_missing.txt"],
+)
+
+analysis_error(name = "bad_analysis")
+
+failing(name = "mixed_fails")
+
+failing(name = "nb_fails")
+
+script_test(
+    name = "pass_test",
+    size = "small",
+    exit_code = 0,
+)
+
+failing(name = "test_dep_fails")
+
+script_test(
+    name = "unbuildable_test",
+    size = "small",
+    data = [":test_dep_fails"],
+    exit_code = 0,
+)

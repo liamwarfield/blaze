@@ -1,0 +1,250 @@
+//! Port of `lib/remote/common/RemoteCacheClient.java` and `MissingDigestsFinder.java`.
+
+use std::collections::HashSet;
+use std::io::{self, Read, Write};
+
+use async_trait::async_trait;
+use blaze_vfs::Path;
+use indexmap::IndexSet;
+
+use super::remote_action_execution_context::RemoteActionExecutionContext;
+use crate::reapi::{ActionResult, Digest, ServerCapabilities};
+use crate::util::async_task_cache::AsyncTaskCacheNoResult;
+
+/// A key in the remote action cache. The type wraps around a `Digest` of an `Action`. Action
+/// keys are special in that they aren't content-addressable but refer to action results.
+// Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:66 RemoteCacheClient.ActionKey
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ActionKey {
+    digest: Digest,
+}
+
+impl ActionKey {
+    /// `new ActionKey(digest)`.
+    pub fn new(digest: Digest) -> ActionKey {
+        ActionKey { digest }
+    }
+
+    /// `digest()`.
+    pub fn digest(&self) -> &Digest {
+        &self.digest
+    }
+}
+
+/// A supplier for the data comprising a BLOB.
+///
+/// As blobs can be large and may need to be kept in memory, consumers should call `get` as late
+/// as possible and close the blob as soon as they are done with it.
+// Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:125 RemoteCacheClient.Blob
+pub trait Blob: Send + Sync {
+    /// Get an input stream for the blob's data. Can be called multiple times.
+    fn get(&self) -> io::Result<Box<dyn Read + Send + '_>>;
+
+    /// A description of the blob for use in error messages.
+    fn description(&self) -> Option<String> {
+        None
+    }
+}
+
+/// The blob of a file (`uploadFile`'s anonymous `Blob` over a `LazyFileInputStream`).
+// Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:143 RemoteCacheClient.uploadFile
+#[derive(Debug, Clone)]
+pub struct FileBlob(pub Path);
+
+impl Blob for FileBlob {
+    fn get(&self) -> io::Result<Box<dyn Read + Send + '_>> {
+        self.0.get_input_stream()
+    }
+
+    fn description(&self) -> Option<String> {
+        Some(format!("file {}", self.0.get_path_string()))
+    }
+}
+
+/// The blob of a `ByteString` (`data::newInput`).
+#[derive(Debug, Clone)]
+pub struct BytesBlob(pub bytes::Bytes);
+
+impl Blob for BytesBlob {
+    fn get(&self) -> io::Result<Box<dyn Read + Send + '_>> {
+        Ok(Box::new(io::Cursor::new(self.0.clone())))
+    }
+}
+
+/// Supports querying a remote cache whether it contains a list of blobs.
+// Java: com/google/devtools/build/lib/remote/common/MissingDigestsFinder.java:22 MissingDigestsFinder
+#[async_trait]
+pub trait MissingDigestsFinder: Send + Sync {
+    /// Returns a set of digests that the remote cache does not know about. The returned set is
+    /// guaranteed to be a subset of `digests`.
+    async fn find_missing_digests(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digests: &[Digest],
+    ) -> io::Result<IndexSet<Digest>>;
+}
+
+/// An interface for a remote caching protocol.
+///
+/// Implementations must be thread-safe.
+///
+/// PORT: the Java abstract class owns `casUploadCache`; implementors hold one
+/// [`AsyncTaskCacheNoResult`] and return it from [`RemoteCacheClient::cas_upload_cache`], and the
+/// final methods of the Java class are the provided methods here.
+// Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:47 RemoteCacheClient
+#[async_trait]
+pub trait RemoteCacheClient: MissingDigestsFinder {
+    /// `casUploadCache`.
+    fn cas_upload_cache(&self) -> &AsyncTaskCacheNoResult<Digest>;
+
+    /// Returns the capabilities of the remote cache server.
+    fn get_server_capabilities(&self) -> io::Result<ServerCapabilities>;
+
+    /// `getAuthority()`.
+    async fn get_authority(&self) -> io::Result<String>;
+
+    /// Downloads an action result for the `actionKey`.
+    ///
+    /// Returns `None` if the action result is not found (Java: a future completing with null).
+    ///
+    /// * `inline_out_err`: a hint to the server to inline the stdout and stderr in the
+    ///   `ActionResult` message.
+    /// * `inline_output_files`: a hint to the server to inline the specified output files in the
+    ///   `ActionResult` message.
+    async fn download_action_result(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        action_key: &ActionKey,
+        inline_out_err: bool,
+        inline_output_files: &HashSet<String>,
+    ) -> io::Result<Option<ActionResult>>;
+
+    /// Uploads an action result for the `actionKey`.
+    async fn upload_action_result(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        action_key: &ActionKey,
+        action_result: &ActionResult,
+    ) -> io::Result<()>;
+
+    /// Downloads a BLOB for the given `digest` and writes it to `out`.
+    ///
+    /// It's the callers responsibility to close `out`.
+    ///
+    /// Fails with a `CacheNotFoundException` if the `digest` does not exist.
+    async fn download_blob(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        out: &mut (dyn Write + Send),
+    ) -> io::Result<()>;
+
+    /// Uploads a BLOB to the CAS, without deduplication (`@VisibleForTesting uploadBlobImpl`).
+    async fn upload_blob_impl(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        blob: &dyn Blob,
+    ) -> io::Result<()>;
+
+    /// Close resources associated with the remote cache.
+    fn close(&self);
+
+    /// Uploads a `file` BLOB to the CAS.
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:143 RemoteCacheClient.uploadFile
+    async fn upload_file(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        file: &Path,
+        force: bool,
+    ) -> io::Result<()> {
+        self.upload_blob(context, digest, &FileBlob(file.clone()), force)
+            .await
+    }
+
+    /// Uploads a BLOB to the CAS.
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:170 RemoteCacheClient.uploadBlob
+    async fn upload_blob(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        blob: &dyn Blob,
+        force: bool,
+    ) -> io::Result<()> {
+        self.cas_upload_cache()
+            .execute(
+                digest.clone(),
+                self.upload_blob_impl(context, digest, blob),
+                force,
+            )
+            .await
+    }
+
+    /// Uploads an in-memory BLOB to the CAS (`uploadBlob(context, digest, ByteString, force)`).
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:187 RemoteCacheClient.uploadBlob
+    async fn upload_bytes(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        data: bytes::Bytes,
+        force: bool,
+    ) -> io::Result<()> {
+        self.upload_blob(context, digest, &BytesBlob(data), force)
+            .await
+    }
+
+    /// Returns the digests of the uploads that are in progress.
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:232 RemoteCacheClient.getInProgressUploads
+    fn get_in_progress_uploads(&self) -> Vec<Digest> {
+        self.cas_upload_cache().get_in_progress_tasks()
+    }
+
+    /// Returns the digests of the uploads that have finished.
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:237 RemoteCacheClient.getFinishedUploads
+    fn get_finished_uploads(&self) -> Vec<Digest> {
+        self.cas_upload_cache().get_finished_tasks()
+    }
+
+    /// Returns the number of subscribers of the upload of `digest`.
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:242 RemoteCacheClient.getUploadSubscriberCount
+    fn get_upload_subscriber_count(&self, digest: &Digest) -> usize {
+        self.cas_upload_cache().get_subscriber_count(digest)
+    }
+
+    /// `shutdownUploads()`.
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:246 RemoteCacheClient.shutdownUploads
+    fn shutdown_uploads(&self) {
+        self.cas_upload_cache().shutdown();
+    }
+
+    /// `awaitUploadTermination()`.
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:251 RemoteCacheClient.awaitUploadTermination
+    async fn await_upload_termination(&self) {
+        self.cas_upload_cache().await_termination().await;
+    }
+
+    /// `shutdownUploadsNow()`.
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:256 RemoteCacheClient.shutdownUploadsNow
+    fn shutdown_uploads_now(&self) {
+        self.cas_upload_cache().shutdown_now();
+    }
+}
+
+/// `RemoteCacheClient.dedupUpload(digest, upload, force)`: runs `upload` through the client's
+/// upload deduplication (a free function because it is generic over the future).
+// Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:225 RemoteCacheClient.dedupUpload
+pub async fn dedup_upload<F>(
+    client: &dyn RemoteCacheClient,
+    digest: &Digest,
+    upload: F,
+    force: bool,
+) -> io::Result<()>
+where
+    F: std::future::Future<Output = io::Result<()>>,
+{
+    client
+        .cas_upload_cache()
+        .execute(digest.clone(), upload, force)
+        .await
+}

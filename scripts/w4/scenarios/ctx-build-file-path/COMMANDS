@@ -1,0 +1,6 @@
+# ctx.build_file_path (StarlarkRuleContext.getBuildFileRelativePath): the BUILD file relative to
+# the package's source root; found unported by the workerd stress project.
+run build //:top //sub/pkg:inner
+cat bazel-bin/top.txt
+cat bazel-bin/sub/pkg/inner.txt
+run build //:top --incompatible_stop_exporting_build_file_path

@@ -1,0 +1,6 @@
+# aquery ids (wave 3, D): a depset converted to a NestedSet while the rule implementation runs
+# (action inputs) and read again from the frozen provider by dependents is one NestedSet in Bazel
+# (Depset.getSet), so ActionGraphDump's KnownNestedSets gives it one depSetOfFiles id: a's hdrs
+# are the inputs of a's action and a transitive member of the inputs of b's and c's actions.
+run aquery //... --output=jsonproto
+run build //...
