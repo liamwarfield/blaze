@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Runs a Blaze command on a corpus project the way scripts/oracle/record does (same workspace
+# copy, clean env, memory cap), for the analysis lead's debug loop.
+# usage: scripts/w4a/run <brotli|re2> [--fresh] <blaze args...>
+#        scripts/w4a/run help
+# The workspace is ~/.cache/blaze/work/w4a/<project> (copied on first use or with --fresh from
+# the one scripts/oracle/record prepared for label blaze-w4); the output user root is
+# ~/.cache/blaze/oracle-out/w4a. Output goes to stdout/stderr; the exit code is Blaze's.
+# Environment: BLAZE (binary, default target/debug/blaze), RUST_BACKTRACE passes through.
+set -euo pipefail
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,9p' "$0"; exit 0; fi
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+project="$1"; shift
+fresh=0
+if [[ "${1:-}" == "--fresh" ]]; then fresh=1; shift; fi
+checkout="$HOME/.cache/blaze/corpus/$project"
+ws="$HOME/.cache/blaze/work/w4a/$project"
+ur="$HOME/.cache/blaze/oracle-out/w4a"
+if [[ $fresh == 1 || ! -d "$ws" ]]; then
+  # A workspace prepared by scripts/oracle/record (checkout restored to git HEAD).
+  src="$HOME/.cache/blaze/work/blaze-w4/$project"
+  [[ -d "$src" ]] || { echo "run scripts/oracle/record --label blaze-w4 --project $project first" >&2; exit 2; }
+  mkdir -p "$ws"
+  rsync -a --delete --exclude '/bazel-*' "$src/" "$ws/"
+fi
+bin="${BLAZE:-$root/target/debug/blaze}"
+cmd="$1"; shift
+cd "$ws"
+exec systemd-run --user --scope --collect --quiet -p MemoryMax=12G -p MemorySwapMax=0 \
+  env -i HOME="$HOME" PATH=/usr/bin:/bin RUST_BACKTRACE="${RUST_BACKTRACE:-}" \
+  "$bin" --output_user_root="$ur" --nohome_rc --nosystem_rc "$cmd" \
+  --repository_cache="$HOME/.cache/blaze/repo-cache" --color=no --curses=no "$@"
