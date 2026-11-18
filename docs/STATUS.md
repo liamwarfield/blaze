@@ -8,8 +8,10 @@ project, 1 extra re2 stderr line. Rust tests at 12ca29e (clean): 4,922 pass, 0 f
 ignored; 31 baseline names are absent and need a reviewed name map before the baseline moves.
 
 **Reviews** (docs/reviews/): referee/gate PASS, skyframe PASS, loading PASS, actions PASS,
-bzlmod/repos/client PASS; analysis and execution: fixed at 12ca29e, re-review running; integrity
-audit: open outside the referee.
+bzlmod/repos/client PASS (round 4). Analysis round 2: STOP at 12ca29e (22 closed; 2 blockers:
+nine cpp lists wrongly immutable, unread semantics flags). Execution round 2: STOP at 12ca29e
+(all 6 round-1 blockers closed; 2 new: `--notest_keep_going` exit code, `--spawn_strategy=bogus`
+message). Opus fixers are on both. Integrity audit: open outside the referee.
 
 ## Done (committed, tests green)
 - Oracle pinned (Bazel 9.3.2), corpus: brotli builds (53 actions), re2 tests 21/21 on the oracle.
@@ -36,10 +38,11 @@ audit: open outside the referee.
 - Upstream integration tests: harness ready; oracle baseline 211/237 targets, 2,878 functions.
 
 ## In flight
-- Re-reviews (Fable 5.2): analysis, execution.
-- Remote lead (Fable 5.2; Opus workers): crates/blaze_remote, disk cache → gRPC cache → remote
-  execution → build without the bytes (docs/remote.md).
-- Gate name map for the 31 absent test names.
+- Fixers (Opus): analysis round 2; execution round 2 (+ no_proxy split found by the gate).
+- Remote lead (Fable; Opus workers): crates/blaze_remote; round 1 integrated behind feature
+  `wip`, round 2 (RemoteExecutionService, gRPC cache, ByteStream, logging) compiling. No oracle
+  evidence yet.
+- Gate: name map covers 30 of 31 absent names; the last is the no_proxy divergence (being fixed).
 
 ## Next
 Byte-strings migration (docs/research/07), then workerd end to end (aspects are its next
