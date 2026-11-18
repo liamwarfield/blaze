@@ -1,17 +1,14 @@
-//! Conformance harness and integration spike for running Bazel's Starlark on starlark-rust.
+//! Conformance harness for Bazel's Starlark on starlark-rust (vendored, with Blaze's patches).
 //!
 //! - `script_test`: runs Bazel's `src/test/java/net/starlark/java/eval/testdata/*.star`.
-//! - `dialect`: Bazel-like `Dialect` and core globals.
+//! - `dialect`: the Bazel dialect and universe, as seen from stock starlark-rust.
 //! - `harness`: the ScriptTest predeclared builtins.
-//! - `build_check`: Bazel's BUILD-file syntax restrictions as an AST pass.
-//! - `traceback`: Bazel-format error rendering from a starlark-rust error.
-//! - `spike`: Bazel-like custom values (Label, depset, provider, ctx) used by the spike tests.
+//! - `traceback`: CLI evaluation with Bazel-format errors (rendering lives in blaze_starlark).
 //!
-//! Findings are written up in docs/research/05-starlark-rust.md.
+//! The integration spikes moved to crates/blaze_starlark/tests/integration_test.rs; the BUILD
+//! checker to blaze_starlark::syntax. Findings: docs/research/05-starlark-rust.md.
 
-pub mod build_check;
 pub mod dialect;
 pub mod harness;
 pub mod script_test;
-pub mod spike;
 pub mod traceback;

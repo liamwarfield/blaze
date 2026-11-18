@@ -12,8 +12,9 @@ commands:
                        per-file markdown table; -v also lists every failure with its category
   eval FILE            evaluate one Starlark file with the ScriptTest globals (print enabled) and
                        show the Bazel-style traceback of any error
-  parse PATH...         parse every .bzl / BUILD / BUILD.bazel / *.BUILD file under PATH with the
-                       Bazel dialect (+ the BUILD-file checks) and list failures
+  parse PATH...         compile every Starlark file under PATH (.bzl, .scl, BUILD, *.BUILD,
+                       MODULE.bazel, REPO.bazel) with Bazel's dialect and static checks
+                       (blaze_starlark::eval::compile) and list failures
   failures [--testdata DIR]
                        list every failure as `file:line: [category] detail`
 
@@ -21,6 +22,16 @@ DIR defaults to ~/.cache/blaze/src/bazel-9.3.2/src/test/java/net/starlark/java/e
 Categories: missing-builtin, error-text, semantic, dialect-syntax, harness.";
 
 fn main() -> anyhow::Result<()> {
+    // Starlark evaluation recurses on the native stack (calls, repr, json, GC tracing of deeply
+    // nested values). Run on a thread with a large stack, as Blaze's evaluation threads do.
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(real_main)?
+        .join()
+        .map_err(|_| anyhow::anyhow!("main thread panicked"))?
+}
+
+fn real_main() -> anyhow::Result<()> {
     // Panics inside starlark-rust are caught per chunk and reported; keep stderr quiet.
     std::panic::set_hook(Box::new(|_| {}));
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -37,9 +48,14 @@ fn main() -> anyhow::Result<()> {
         files.dedup();
         let mut bad = 0;
         for f in &files {
-            if let Err(e) = starlark_conformance::build_check::parse_file(f) {
+            let kind = blaze_starlark::FileKind::from_file_name(
+                &f.file_name().unwrap_or_default().to_string_lossy(),
+            )
+            .unwrap();
+            let src = std::fs::read_to_string(f)?;
+            if let Err(e) = blaze_starlark::eval::compile(kind, &f.to_string_lossy(), src) {
                 bad += 1;
-                println!("{}: {}", f.display(), e.replace('\n', " | "));
+                println!("{}", e.message_with_stack().replace('\n', " | "));
             }
         }
         println!("parsed {} files, {} failed", files.len(), bad);
@@ -116,7 +132,12 @@ fn walk(p: &std::path::Path, out: &mut Vec<PathBuf>) {
                 walk(&e.path(), out);
             }
         }
-    } else if starlark_conformance::build_check::file_kind(p).is_some() {
+    } else if p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(blaze_starlark::FileKind::from_file_name)
+        .is_some()
+    {
         out.push(p.to_owned());
     }
 }

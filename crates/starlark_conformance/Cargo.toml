@@ -1,12 +1,13 @@
 [package]
 name = "starlark_conformance"
-description = "Runs Bazel's Starlark script tests on starlark-rust and spikes the Blaze integration"
+description = "Runs Bazel's Starlark script tests on starlark-rust (with Blaze's patches and json) and pins dialect deviations"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
+blaze_starlark = { path = "../blaze_starlark" }
 starlark.workspace = true
 allocative.workspace = true
 anyhow.workspace = true

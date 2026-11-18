@@ -1,0 +1,21 @@
+[package]
+name = "blaze_starlark"
+description = "Blaze's Starlark layer on starlark-rust: semantics, file kinds, syntax checks, environments, thread context, evaluation, errors, json, struct, depset, Label"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_cmdline = { path = "../blaze_cmdline" }
+blaze_collect = { path = "../blaze_collect" }
+starlark.workspace = true
+starlark_map.workspace = true
+starlark_syntax.workspace = true
+allocative.workspace = true
+anyhow.workspace = true
+num-bigint.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rayon.workspace = true

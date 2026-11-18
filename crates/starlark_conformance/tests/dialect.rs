@@ -9,7 +9,6 @@ use starlark::environment::Globals;
 use starlark::environment::Module;
 use starlark::eval::Evaluator;
 use starlark::syntax::AstModule;
-use starlark_conformance::build_check::Checker;
 use starlark_conformance::dialect;
 use starlark_conformance::harness::bare_message;
 
@@ -23,6 +22,7 @@ fn eval(src: &str) -> Result<String, String> {
     let ast = parse(src)?;
     Module::with_temp_heap(|module| {
         let mut e = Evaluator::new(&module);
+        e.set_forbid_recursion(true);
         e.eval_module(ast, &globals).map_err(|e| bare_message(&e))?;
         Ok(module.get("r").map(|v| v.to_repr()).unwrap_or_default())
     })
@@ -71,68 +71,57 @@ fn bazel_lambda_and_nested_def_allowed_in_bzl() {
 
 #[test]
 fn bazel_build_file_restrictions() {
-    let src = "\
-load(\":a.bzl\", \"m\")
-def f():
-    pass
-x = lambda: 1
-for i in []:
-    pass
-if True:
-    m(*[1])
-m(**{\"a\": 1})
-m(**d)
-";
-    let ast = AstModule::parse("BUILD", src.to_owned(), &dialect::build_dialect()).unwrap();
-    let got: Vec<String> = Checker::build_files()
-        .check(&ast)
-        .into_iter()
-        .map(|e| format!("{}:{}: {}", e.line, e.column, e.message))
-        .collect();
-    assert_eq!(
-        got,
-        [
-            "2:1: functions may not be defined in BUILD files. You may move the function to a .bzl file and load it.",
-            "4:5: functions may not be defined in BUILD files. You may move the function to a .bzl file and load it.",
-            "5:1: `for` statements are not allowed in BUILD files. You may inline the loop, move it to a function definition (in a .bzl file), or as a last resort use a list comprehension.",
-            "7:1: `if` statements are not allowed in BUILD files. You may move conditional logic to a function definition (in a .bzl file), or use an `if` expression for simple cases.",
-            "8:7: *args arguments are not allowed in BUILD files. Pass the arguments in explicitly.",
-            "9:3: **kwargs arguments are not allowed in BUILD files. Pass the arguments in explicitly.",
-            "10:3: **kwargs arguments are not allowed in BUILD files. Pass the arguments in explicitly.",
-            "10:3: **kwargs arguments must be a literal dict in BUILD files.",
-        ]
+    // The checker is blaze_starlark::syntax (tested there); here: BUILD parses top-level if/for so
+    // that the checker, not the parser, reports them.
+    let e = blaze_starlark::eval::compile(
+        blaze_starlark::FileKind::Build,
+        "BUILD",
+        "for i in []:\n    pass\n".to_owned(),
+    )
+    .unwrap_err();
+    assert!(
+        e.message
+            .starts_with("`for` statements are not allowed in BUILD files."),
+        "{}",
+        e.message
     );
 }
 
 #[test]
-fn deviation_top_level_rebinding_allowed() {
-    // Bazel .bzl: "'x' redeclared at top level" (Resolver.toplevelRebinding). BUILD files allow
-    // it, so Blaze needs a .bzl-only AST check.
+fn bazel_top_level_rebinding_rejected_in_bzl() {
+    // starlark-rust itself allows it (see the eval below); blaze_starlark::syntax rejects it.
     assert_eq!(eval("x = 1\nx = 2\nr = x"), Ok("2".into()));
+    let e = blaze_starlark::eval::compile(
+        blaze_starlark::FileKind::Bzl,
+        "a.bzl",
+        "x = 1\nx = 2\n".to_owned(),
+    )
+    .unwrap_err();
+    assert_eq!(e.message, "'x' redeclared at top level (+ 1 more)");
 }
 
 #[test]
-fn deviation_recursion_allowed() {
-    // Bazel: "function 'f' called recursively".
+fn bazel_recursion_forbidden() {
+    // Fixed by Blaze patch 0004 (Evaluator::set_forbid_recursion).
     assert_eq!(
         eval("def f(n):\n    return f(n - 1) if n > 0 else 0\nr = f(5)"),
-        Ok("0".into())
+        Err("function 'f' called recursively".into())
     );
 }
 
 #[test]
-fn deviation_left_shift_overflows_i32() {
-    // Oracle (Bazel 9.3.2): 1 << 31 == 2147483648, 2 << 31 == 4294967296.
+fn bazel_left_shift_is_exact() {
+    // Oracle (Bazel 9.3.2): 1 << 31 == 2147483648, 2 << 31 == 4294967296. Blaze patch 0001.
     assert_eq!(
         eval("r = (1 << 31, 2 << 31)"),
-        Ok("(-2147483648, 0)".into())
+        Ok("(2147483648, 4294967296)".into())
     );
 }
 
 #[test]
-fn deviation_raw_string_backslash_quote() {
-    // Oracle: r"\"" is two characters, backslash and quote.
-    assert_eq!(eval("r = len(r\"\\\"\")"), Ok("1".into()));
+fn bazel_raw_string_backslash_quote() {
+    // Oracle: r"\"" is two characters, backslash and quote. Blaze patch 0003.
+    assert_eq!(eval("r = len(r\"\\\"\")"), Ok("2".into()));
 }
 
 #[test]
@@ -163,9 +152,12 @@ fn deviation_string_method_named_args() {
 }
 
 #[test]
-fn deviation_list_pop_negative_index() {
-    // Bazel: [1, 2, 3].pop(-2) == 2.
-    assert!(eval("x = [1, 2, 3]\nr = x.pop(-2)").is_err());
+fn bazel_list_pop_negative_index() {
+    // Bazel: [1, 2, 3].pop(-2) == 2. Blaze patch 0006.
+    assert_eq!(
+        eval("x = [1, 2, 3]\nr = (x.pop(-2), x)"),
+        Ok("(2, [1, 3])".into())
+    );
 }
 
 #[test]

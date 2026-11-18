@@ -500,3 +500,22 @@ message text stays starlark-rust's unless patched. Events print it as Bazel does
   upgrade fixes one, its test fails, and the test and this document get updated.
 - **Performance** of large real evaluations (rules_cc's ~29k loaded lines) is not measured yet.
   The spike shows ~4 µs per trivial package under rayon.
+
+## 8. Status update (implementation)
+
+- starlark 0.14.2 is vendored in `third_party/starlark-rust` (`[patch.crates-io]`, excluded from
+  the workspace). Patches 0001–0004 and 0006 of section 4.3 are applied; see
+  `third_party/starlark-rust/PATCHES.md` (one test each in
+  `crates/starlark_conformance/tests/patches.rs`). Conformance: 30/95 chunks, 2180 strict and
+  2443/2744 resilient assertions (from 28/95, 2060, 2356/2714), with nothing unsafe to run.
+- `crates/blaze_starlark` implements section 6: `semantics` (generated from
+  BuildLanguageOptions, 65 flags), `file_kind`, `syntax` (DotBazelFileSyntaxChecker with BUILD
+  glob/subpackages/generator-name extraction; Resolver rebinding, load-first and .scl rules),
+  `env` (universe, Bazel `print`/`fail`, `NativeRegistry`), `thread` (`ThreadContext` with an
+  opaque payload), `eval` (compile, exec_module, call_frozen, frozen_into, evaluation threads,
+  cancellation), `loader`, `error` (Bazel tracebacks incl. operator/`[`/`.`/`(` columns), `printer`,
+  `json` (Json.java port), `structs` (`struct`, StarlarkInfo base), `depset` (Depset.java + the
+  NestedSet structure rules, convertible to `blaze_collect::NestedSet`) and `label`.
+- Crate graph: blaze_starlark depends on blaze_cmdline (Label) and blaze_collect (Order,
+  NestedSet), i.e. it sits above them, not below as in section 5.2 of 06-bazel-architecture-map.md.
+  Neither needs Starlark itself.

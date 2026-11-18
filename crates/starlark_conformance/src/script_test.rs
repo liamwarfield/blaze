@@ -144,12 +144,14 @@ pub fn default_testdata_dir() -> PathBuf {
     home.join(".cache/blaze/src/bazel-9.3.2/src/test/java/net/starlark/java/eval/testdata")
 }
 
-/// Globals predeclared for a ScriptTest chunk: Bazel universe + harness builtins + json.
+/// Globals predeclared for a ScriptTest chunk: Bazel's universe (blaze_starlark: starlark-rust
+/// builtins restricted to Starlark.UNIVERSE, Bazel's `fail`), the harness builtins, Blaze's
+/// `json` port, and a `print` that discards its output.
 pub fn script_test_globals() -> Globals {
-    let (builder, _, _) = dialect::bazel_universe_builder();
-    builder
+    blaze_starlark::env::universe_builder(&blaze_starlark::StarlarkSemantics::default())
         .with(harness::script_test_builtins)
-        .with_namespace("json", harness::json_shim)
+        .with(blaze_starlark::json::register_json)
+        .with(harness::discard_print)
         .build()
 }
 
@@ -188,31 +190,11 @@ fn classify_error(msg: &str) -> Category {
     }
 }
 
-/// Assertions that cannot be run safely on starlark-rust 0.14.2: they allocate gigabytes (no
-/// "excessive repeat" / capacity guard) or panic. Each is blanked out and reported as a
-/// semantic failure. (file, 1-based line, reason)
-pub const HAZARDS: &[(&str, usize, &str)] = &[
-    (
-        "json.star",
-        66,
-        "json.encode of a 100000-deep list overflows the native stack in starlark-rust (Value::to_json has no depth limit; uncatchable abort); Bazel: nesting depth limit exceeded",
-    ),
-    (
-        "list.star",
-        66,
-        "[1, 2, 3] * (1 << 30) panics in starlark-rust (AlignedSize must not exceed u32::MAX); Bazel: excessive repeat",
-    ),
-    (
-        "list_mutation.star",
-        54,
-        "[].extend(range((1 << 31) - 1)) tries to allocate ~16 GiB; Bazel: excessive capacity requested",
-    ),
-    (
-        "string_misc.star",
-        180,
-        "\"abc\" * (1 << 30) allocates 3 GiB; Bazel: excessive repeat",
-    ),
-];
+/// Assertions that cannot be run safely on starlark-rust: each is blanked out and reported as a
+/// semantic failure. (file, 1-based line, reason). Empty since Blaze patch 0002 (allocation and
+/// nesting limits); before it, list.star:66 panicked, list_mutation.star:54 and
+/// string_misc.star:180 allocated gigabytes, and json.star:66 overflowed the native stack.
+pub const HAZARDS: &[(&str, usize, &str)] = &[];
 
 /// Turns assertion events into failures; returns (passed, run).
 fn record_events(reporter: &Reporter, failures: &mut Vec<Failure>) -> (usize, usize) {
@@ -346,6 +328,7 @@ pub fn run_chunk_resilient(
             let reporter = Reporter::default();
             let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut eval = Evaluator::new(&module);
+                eval.set_forbid_recursion(true);
                 eval.extra = Some(&reporter);
                 eval.set_print_handler(&DiscardPrint);
                 eval.eval_module(ast, globals).map(|_| ())
@@ -491,6 +474,7 @@ pub fn run_chunk(file_name: &str, chunk: &str, linenum: usize, globals: &Globals
             let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Module::with_temp_heap(|module| {
                     let mut eval = Evaluator::new(&module);
+                    eval.set_forbid_recursion(true);
                     eval.extra = Some(&reporter);
                     eval.set_print_handler(&DiscardPrint);
                     eval.eval_module(ast, globals).map(|_| ())
@@ -584,15 +568,24 @@ pub fn run_file(path: &Path, globals: &Globals) -> anyhow::Result<FileResult> {
     Ok(FileResult { name, chunks })
 }
 
-/// Runs every `*.star` file in `dir`, sorted by name.
+/// Runs every `*.star` file in `dir`, sorted by name, on a thread with a 1 GiB stack (Starlark
+/// evaluation, repr, json and GC tracing recurse on the native stack; json.star builds a
+/// 100000-deep list).
 pub fn run_dir(dir: &Path) -> anyhow::Result<Vec<FileResult>> {
-    let globals = script_test_globals();
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "star"))
-        .collect();
-    paths.sort();
-    paths.iter().map(|p| run_file(p, &globals)).collect()
+    let dir = dir.to_owned();
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(move || {
+            let globals = script_test_globals();
+            let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "star"))
+                .collect();
+            paths.sort();
+            paths.iter().map(|p| run_file(p, &globals)).collect()
+        })?
+        .join()
+        .map_err(|_| anyhow::anyhow!("conformance thread panicked"))?
 }
 
 /// Markdown summary table.

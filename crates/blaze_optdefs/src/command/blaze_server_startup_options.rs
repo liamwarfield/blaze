@@ -1,0 +1,711 @@
+//! Transcription of `com/google/devtools/build/lib/runtime/BlazeServerStartupOptions.java` (the `OptionsBase` subclasses it declares).
+
+// ---- transcribed mechanically from the Java @Option annotations; hand-written code follows the marker below ----
+#[allow(unused_imports)]
+use super::prelude::*;
+
+// Java: com/google/devtools/build/lib/runtime/BlazeServerStartupOptions.java:42 BlazeServerStartupOptions
+options! {
+    /// Options that will be evaluated by the blaze client startup code and passed to the blaze server
+    /// upon startup.
+    ///
+    /// <h4>IMPORTANT</h4>
+    ///
+    /// These options and their defaults must be kept in sync with those in the source of the launcher.
+    /// The latter define the actual default values, most startup options are passed every time,
+    /// regardless of whether a value was set explicitly or if the default was used. Some options are
+    /// omitted by default, though this should only be true for options where "omitted" is a distinct
+    /// value.
+    ///
+    /// <p>The same relationship holds between {@link HostJvmStartupOptions} and the launcher.
+    pub struct BlazeServerStartupOptions {
+        // NOTE: only for documentation, value is always passed by the client.
+        #[option(
+            name = "install_base",
+            default_value = "",
+            converter = PathFragmentConverter,
+            documentation_category = UNDOCUMENTED,
+            effect_tags = [CHANGES_INPUTS, LOSES_INCREMENTAL_STATE],
+            metadata_tags = [HIDDEN],
+            help = "This launcher option is intended for use only by tests.",
+        )]
+        pub install_base: Foreign<PathFragment>,
+
+        // NOTE: only for documentation, value is always passed by the client.
+        #[option(
+            name = "install_md5",
+            default_value = "",
+            documentation_category = UNDOCUMENTED,
+            effect_tags = [LOSES_INCREMENTAL_STATE, BAZEL_MONITORING],
+            metadata_tags = [HIDDEN],
+            help = "This launcher option is intended for use only by tests.",
+        )]
+        pub install_md5: String,
+
+        // NOTE: only for documentation, value is always passed by the client.
+        #[option(
+            name = "lock_install_base",
+            default_value = "false",
+            documentation_category = UNDOCUMENTED,
+            effect_tags = [BAZEL_INTERNAL_CONFIGURATION],
+            metadata_tags = [HIDDEN],
+            help = concat!(
+                "Whether the server should hold a lock on the install base while running, to prevent",
+                " another server from attempting to garbage collect it.",
+            ),
+        )]
+        pub lock_install_base: bool,
+
+        // NOTE: only for documentation, value is always passed by the client.
+        #[option(
+            name = "output_base",
+            default_value = "null",
+            converter = PathFragmentConverter,
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [AFFECTS_OUTPUTS, LOSES_INCREMENTAL_STATE],
+            value_help = "<path>",
+            help = concat!(
+                "If set, specifies the output location to which all build output will be written. ",
+                "Otherwise, the location will be ",
+                "${OUTPUT_ROOT}/_blaze_${USER}/${MD5_OF_WORKSPACE_ROOT}. Note: If you specify a ",
+                "different option from one to the next Bazel invocation for this value, you'll ",
+                "likely start up a new, additional Bazel server. Bazel starts exactly one server ",
+                "per specified output base. Typically there is one output base per workspace - ",
+                "however, with this option you may have multiple output bases per workspace and ",
+                "thereby run multiple builds for the same client on the same machine concurrently. ",
+                "See 'bazel help shutdown' on how to shutdown a Bazel server.",
+            ),
+        )]
+        pub output_base: Option<Foreign<PathFragment>>,
+
+        // NOTE: only for documentation, value is always passed by the client.
+        #[option(
+            name = "output_user_root",
+            default_value = "null",
+            converter = PathFragmentConverter,
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [AFFECTS_OUTPUTS, LOSES_INCREMENTAL_STATE],
+            value_help = "<path>",
+            help = concat!(
+                "The user-specific directory beneath which all build outputs are written; by default, ",
+                "this is a function of $USER, but by specifying a constant, build outputs can be ",
+                "shared between collaborating users.",
+            ),
+        )]
+        pub output_user_root: Option<Foreign<PathFragment>>,
+
+        /// Note: This option is only used by the C++ client, never by the Java server. It is included here
+        /// to make sure that the option is documented in the help output, which is auto-generated by Java
+        /// code.
+        #[option(
+            name = "server_jvm_out",
+            default_value = "null",
+            converter = PathFragmentConverter,
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [AFFECTS_OUTPUTS, LOSES_INCREMENTAL_STATE],
+            value_help = "<path>",
+            help = concat!(
+                "The location to write the server's JVM's output. If unset then defaults to a location ",
+                "in output_base.",
+            ),
+        )]
+        pub server_jvm_out: Option<Foreign<PathFragment>>,
+
+        // NOTE: only for documentation, value is always passed by the client.
+        #[option(
+            name = "failure_detail_out",
+            default_value = "null",
+            converter = PathFragmentConverter,
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [AFFECTS_OUTPUTS, LOSES_INCREMENTAL_STATE],
+            value_help = "<path>",
+            help = concat!(
+                "If set, specifies a location to write a failure_detail protobuf message if the server",
+                " experiences a failure and cannot report it via gRPC, as normal. Otherwise, the",
+                " location will be ${OUTPUT_BASE}/failure_detail.rawproto.",
+            ),
+        )]
+        pub failure_detail_out: Option<Foreign<PathFragment>>,
+
+        // NOTE: only for documentation, value is always passed by the client.
+        #[option(
+            name = "workspace_directory",
+            default_value = "",
+            converter = PathFragmentConverter,
+            documentation_category = UNDOCUMENTED,
+            effect_tags = [CHANGES_INPUTS, LOSES_INCREMENTAL_STATE],
+            metadata_tags = [HIDDEN],
+            help = concat!(
+                "The root of the workspace, that is, the directory that Bazel uses as the root of the ",
+                "build. This flag is only to be set by the bazel client.",
+            ),
+        )]
+        pub workspace_directory: Foreign<PathFragment>,
+
+        // NOTE: only for documentation, value is always passed by the client.
+        #[option(
+            name = "default_system_javabase",
+            default_value = "",
+            converter = PathFragmentConverter,
+            documentation_category = UNDOCUMENTED,
+            effect_tags = [CHANGES_INPUTS, LOSES_INCREMENTAL_STATE],
+            metadata_tags = [HIDDEN],
+            help = concat!(
+                "The root of the user's local JDK install, to be used as the default target javabase",
+                " and as a fall-back host_javabase. This is not the embedded JDK.",
+            ),
+        )]
+        pub default_system_javabase: Foreign<PathFragment>,
+
+        // NOTE: default value only used for documentation, value is always passed by the client when
+        // not in --batch mode.
+        #[option(
+            name = "max_idle_secs",
+            default_value = "10800" /* Java: "" + (3 * 3600) */,
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [EAGERNESS_TO_EXIT, LOSES_INCREMENTAL_STATE],
+            value_help = "<integer>",
+            help = concat!(
+                "The number of seconds the build server will wait idling before shutting down. Zero",
+                " means that the server will never shutdown. This is only read on server-startup,",
+                " changing this option will not cause the server to restart.",
+            ),
+        )]
+        pub max_idle_seconds: i32,
+
+        #[option(
+            name = "shutdown_on_low_sys_mem",
+            default_value = "false",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [EAGERNESS_TO_EXIT, LOSES_INCREMENTAL_STATE],
+            help = concat!(
+                "If max_idle_secs is set and the build server has been idle for a while, shut down the ",
+                "server when the system is low on free RAM. Linux and MacOS only.",
+            ),
+        )]
+        pub shutdown_on_low_sys_mem: bool,
+
+        #[option(
+            name = "batch",
+            default_value = "false",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [LOSES_INCREMENTAL_STATE, BAZEL_INTERNAL_CONFIGURATION],
+            metadata_tags = [DEPRECATED],
+            help = concat!(
+                "If set, Bazel will be run as just a client process without a server, instead of in ",
+                "the standard client/server mode. This is deprecated and will be removed, please ",
+                "prefer shutting down the server explicitly if you wish to avoid lingering ",
+                "servers.",
+            ),
+        )]
+        pub batch: bool,
+
+        // NOTE: only for documentation, value never passed to the server.
+        #[option(
+            name = "block_for_lock",
+            default_value = "true",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [EAGERNESS_TO_EXIT],
+            help = concat!(
+                "When --noblock_for_lock is passed, Bazel does not wait for a running command to ",
+                "complete, but instead exits immediately.",
+            ),
+        )]
+        pub block_for_lock: bool,
+
+        // NOTE: only for documentation, value never passed to the server.
+        #[option(
+            name = "io_nice_level",
+            default_value = "-1",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [HOST_MACHINE_RESOURCE_OPTIMIZATIONS],
+            value_help = "{-1,0,1,2,3,4,5,6,7}",
+            help = concat!(
+                "Only on Linux; set a level from 0-7 for best-effort IO scheduling using the ",
+                "sys_ioprio_set system call. 0 is highest priority, 7 is lowest. The anticipatory ",
+                "scheduler may only honor up to priority 4. If set to a negative value, then Bazel ",
+                "does not perform a system call.",
+            ),
+        )]
+        pub io_nice_level: i32,
+
+        // NOTE: only for documentation, value never passed to the server.
+        #[option(
+            name = "batch_cpu_scheduling",
+            default_value = "false",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [HOST_MACHINE_RESOURCE_OPTIMIZATIONS],
+            help = concat!(
+                "Only on Linux; use 'batch' CPU scheduling for Blaze. This policy is useful for ",
+                "workloads that are non-interactive, but do not want to lower their nice value. ",
+                "See 'man 2 sched_setscheduler'. If false, then Bazel does not perform a system ",
+                "call.",
+            ),
+        )]
+        pub batch_cpu_scheduling: bool,
+
+        // NOTE: purely decorative, rc files are read by the client.
+        #[option(
+            name = "ignore_all_rc_files",
+            default_value = "false",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [CHANGES_INPUTS],
+            help = concat!(
+                "Disables all rc files, regardless of the values of other rc-modifying flags, even if ",
+                "these flags come later in the list of startup options.",
+            ),
+        )]
+        pub ignore_all_rc_files: bool,
+
+        // NOTE: only for documentation, value is always passed by the client.
+        #[option(
+            name = "fatal_event_bus_exceptions",
+            default_value = "false",
+            documentation_category = UNDOCUMENTED,
+            effect_tags = [EAGERNESS_TO_EXIT, LOSES_INCREMENTAL_STATE],
+            deprecation_warning = "Will be enabled by default and removed soon",
+            help = concat!(
+                "Whether or not to exit if an exception is thrown by an internal EventBus handler. No-op",
+                " if --fatal_async_exceptions_exclusions is available; that flag's behavior is",
+                " preferentially used.",
+            ),
+        )]
+        pub fatal_event_bus_exceptions: bool,
+
+        #[option(
+            name = "option_sources",
+            default_value = "",
+            converter = OptionSourcesConverter,
+            documentation_category = UNDOCUMENTED,
+            effect_tags = [AFFECTS_OUTPUTS],
+            metadata_tags = [HIDDEN],
+            help = "",
+        )]
+        pub option_sources: StringMap,
+
+        #[option(
+            name = "invocation_policy",
+            default_value = "",
+            documentation_category = UNDOCUMENTED,
+            effect_tags = [CHANGES_INPUTS],
+            help = concat!(
+                "A base64-encoded-binary-serialized or text-formated ",
+                "invocation_policy.InvocationPolicy proto. Unlike other options, it is an error to ",
+                "specify --invocation_policy multiple times.",
+            ),
+        )]
+        pub invocation_policy: String,
+
+        #[option(
+            name = "command_port",
+            default_value = "0",
+            documentation_category = UNDOCUMENTED,
+            effect_tags = [LOSES_INCREMENTAL_STATE, BAZEL_INTERNAL_CONFIGURATION],
+            help = "Port to start up the gRPC command server on. If 0, let the kernel choose.",
+        )]
+        pub command_port: i32,
+
+        // NOTE: only for documentation, value is always passed by the client.
+        #[option(
+            name = "product_name",
+            default_value = "bazel",
+            documentation_category = UNDOCUMENTED,
+            effect_tags = [LOSES_INCREMENTAL_STATE, AFFECTS_OUTPUTS, BAZEL_MONITORING],
+            metadata_tags = [HIDDEN],
+            help = concat!(
+                "The name of the build system. It is used as part of the name of the generated ",
+                "directories (e.g. productName-bin for binaries) as well as for printing error ",
+                "messages and logging",
+            ),
+        )]
+        pub product_name: String,
+
+        // NOTE: only for documentation, value is always passed by the client.
+        #[option(
+            name = "write_command_log",
+            default_value = "true",
+            documentation_category = UNDOCUMENTED,
+            effect_tags = [AFFECTS_OUTPUTS, LOSES_INCREMENTAL_STATE],
+            help = concat!(
+                "WARNING: This option is deprecated and will be removed soon. Please use the command",
+                " option instead.",
+            ),
+        )]
+        pub write_command_log: bool,
+
+        // NOTE: only for documentation, value is set and used by the client.
+        #[option(
+            name = "client_debug",
+            default_value = "false",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [AFFECTS_OUTPUTS, BAZEL_MONITORING],
+            help = concat!(
+                "If true, log debug information from the client to stderr. Changing this option will not ",
+                "cause the server to restart.",
+            ),
+        )]
+        pub client_debug: bool,
+
+        // NOTE: only for documentation, actual flag is in UiOptions
+        #[option(
+            name = "quiet",
+            default_value = "false",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [AFFECTS_OUTPUTS, BAZEL_MONITORING],
+            help = concat!(
+                "If true, no informational messages are emitted on the console, only errors. Changing ",
+                "this option will not cause the server to restart.",
+            ),
+        )]
+        pub quiet: bool,
+
+        // NOTE: only for documentation, value is set and used by the client.
+        #[option(
+            name = "preemptible",
+            default_value = "false",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [EAGERNESS_TO_EXIT],
+            help = "If true, the command can be preempted if another command is started.",
+        )]
+        pub preemptible: bool,
+
+        // NOTE: only for documentation, value is set and used by the client.
+        #[option(
+            name = "connect_timeout_secs",
+            default_value = "30",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [BAZEL_INTERNAL_CONFIGURATION],
+            help = "The amount of time the client waits for each attempt to connect to the server",
+        )]
+        pub connect_timeout_secs: i32,
+
+        // NOTE: only for documentation, value is set and used by the client.
+        #[option(
+            name = "local_startup_timeout_secs",
+            default_value = "120",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [BAZEL_INTERNAL_CONFIGURATION],
+            help = "The maximum amount of time the client waits to connect to the server",
+        )]
+        pub local_startup_timeout_secs: i32,
+
+        #[option(
+            name = "digest_function",
+            default_value = "null",
+            converter = DigestFunctionConverter,
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [LOSES_INCREMENTAL_STATE, BAZEL_INTERNAL_CONFIGURATION],
+            help = "The hash function to use when computing file digests.",
+        )]
+        pub digest_hash_function: Option<Foreign<DigestHashFunction>>,
+
+        // NOTE: only for documentation, value is set and used by the client.
+        #[option(
+            name = "idle_server_tasks",
+            default_value = "true",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [LOSES_INCREMENTAL_STATE, HOST_MACHINE_RESOURCE_OPTIMIZATIONS],
+            help = "Run System.gc() when the server is idle",
+        )]
+        pub idle_server_tasks: bool,
+
+        // NOTE: purely decorative, rc files are read by the client.
+        #[option(
+            name = "unlimit_coredumps",
+            default_value = "false",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [BAZEL_INTERNAL_CONFIGURATION],
+            help = concat!(
+                "Raises the soft coredump limit to the hard limit to make coredumps of the server",
+                " (including the JVM) and the client possible under common conditions. Stick this",
+                " flag in your bazelrc once and forget about it so that you get coredumps when you",
+                " actually encounter a condition that triggers them.",
+            ),
+        )]
+        pub unlimit_coredumps: bool,
+
+        // Only for documentation; value is set and used by the client.
+        #[option(
+            name = "macos_qos_class",
+            default_value = "default",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [HOST_MACHINE_RESOURCE_OPTIMIZATIONS],
+            help = concat!(
+                "Sets the QoS service class of the %{product} server when running on macOS. This ",
+                "flag has no effect on all other platforms but is supported to ensure rc files ",
+                "can be shared among them without changes. Possible values are: user-interactive, ",
+                "user-initiated, default, utility, and background.",
+            ),
+        )]
+        pub macos_qos_class: String,
+
+        // Only for documentation; value is set by the client.
+        #[option(
+            name = "windows_enable_symlinks",
+            default_value = "false",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [BAZEL_INTERNAL_CONFIGURATION],
+            help = concat!(
+                "If true, real symbolic links will be created on Windows instead of file copying. ",
+                "Requires Windows developer mode to be enabled and Windows 10 version 1703 or ",
+                "greater.",
+            ),
+        )]
+        pub enable_windows_symlinks: bool,
+
+        #[option(
+            name = "unix_digest_hash_attribute_name",
+            default_value = "",
+            documentation_category = UNDOCUMENTED,
+            effect_tags = [CHANGES_INPUTS, LOSES_INCREMENTAL_STATE],
+            help = concat!(
+                "The name of an extended attribute that can be placed on files to store a precomputed ",
+                "copy of the file's hash, corresponding with --digest_function. This option ",
+                "can be used to reduce disk I/O and CPU load caused by hash computation. This ",
+                "extended attribute is checked on all source files and output files, meaning ",
+                "that it causes a significant number of invocations of the getxattr() system call.",
+            ),
+        )]
+        pub unix_digest_hash_attribute_name: String,
+
+        // NOTE: only for documentation, value never passed to the server.
+        #[option(
+            name = "autodetect_server_javabase",
+            default_value = "true",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [AFFECTS_OUTPUTS, LOSES_INCREMENTAL_STATE],
+            help = concat!(
+                "When --noautodetect_server_javabase is passed, Bazel does not fall back to the local ",
+                "JDK for running the bazel server and instead exits.",
+            ),
+        )]
+        pub autodetect_server_javabase: bool,
+
+        /// Note: This option is only used by the C++ client, never by the Java server. It is included here
+        /// to make sure that the option is documented in the help output, which is auto-generated by Java
+        /// code. This also helps ensure that the server is killed if the value of this option changes.
+        #[option(
+            name = "experimental_cgroup_parent",
+            default_value = "null",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [BAZEL_MONITORING, EXECUTION],
+            value_help = "<path>",
+            help = concat!(
+                "The cgroup where to start the bazel server as an absolute path. The server ",
+                "process will be started in the specified cgroup for each supported controller. ",
+                "For example, if the value of this flag is /build/bazel and the cpu and memory ",
+                "controllers are mounted respectively on /sys/fs/cgroup/cpu and ",
+                "/sys/fs/cgroup/memory, the server will be started in the cgroups ",
+                "/sys/fs/cgroup/cpu/build/bazel and /sys/fs/cgroup/memory/build/bazel.",
+                "It is not an error if the specified cgroup is not writable for one or more ",
+                "of the controllers. This options does not have any effect on ",
+                "platforms that do not support cgroups.",
+            ),
+        )]
+        pub cgroup_parent: Option<String>,
+
+        /// Note: This option is only used by the C++ client, never by the Java server. It is included here
+        /// to make sure that the option is documented in the help output, which is auto-generated by Java
+        /// code. This also helps ensure that the server is killed if the value of this option changes.
+        #[option(
+            name = "experimental_run_in_user_cgroup",
+            default_value = "false",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [BAZEL_MONITORING, EXECUTION],
+            help = concat!(
+                "If true, the Bazel server will be run with systemd-run, and the user will own the",
+                " cgroup. This flag only takes effect on Linux.",
+            ),
+        )]
+        pub run_in_user_cgroup: bool,
+
+        /// Note: This option is only used by the C++ client, never by the Java server. It is included here
+        /// to make sure that the option is documented in the help output, which is auto-generated by Java
+        /// code. This also helps ensure that the server is killed if the value of this option changes.
+        #[option(
+            name = "extra_classpath",
+            default_value = "",
+            documentation_category = BAZEL_CLIENT_OPTIONS,
+            effect_tags = [BAZEL_INTERNAL_CONFIGURATION],
+            help = concat!(
+                "A colon-separated list of classpath entries to be added to the classpath of the Bazel",
+                " server.",
+            ),
+        )]
+        pub extra_classpath: String,
+    }
+}
+
+#[cfg(test)]
+mod generated_tests {
+    use super::*;
+
+    /// Option names in Java declaration order (extracted from the Java source).
+    const BLAZE_SERVER_STARTUP_OPTIONS_OPTION_NAMES: &[&str] = &[
+        "install_base",
+        "install_md5",
+        "lock_install_base",
+        "output_base",
+        "output_user_root",
+        "server_jvm_out",
+        "failure_detail_out",
+        "workspace_directory",
+        "default_system_javabase",
+        "max_idle_secs",
+        "shutdown_on_low_sys_mem",
+        "batch",
+        "block_for_lock",
+        "io_nice_level",
+        "batch_cpu_scheduling",
+        "ignore_all_rc_files",
+        "fatal_event_bus_exceptions",
+        "option_sources",
+        "invocation_policy",
+        "command_port",
+        "product_name",
+        "write_command_log",
+        "client_debug",
+        "quiet",
+        "preemptible",
+        "connect_timeout_secs",
+        "local_startup_timeout_secs",
+        "digest_function",
+        "idle_server_tasks",
+        "unlimit_coredumps",
+        "macos_qos_class",
+        "windows_enable_symlinks",
+        "unix_digest_hash_attribute_name",
+        "autodetect_server_javabase",
+        "experimental_cgroup_parent",
+        "experimental_run_in_user_cgroup",
+        "extra_classpath",
+    ];
+
+    #[test]
+    fn blaze_server_startup_options_option_names() {
+        super::super::test_util::check_option_names(
+            BlazeServerStartupOptions::class(),
+            BLAZE_SERVER_STARTUP_OPTIONS_OPTION_NAMES,
+        );
+    }
+
+    #[test]
+    fn blaze_server_startup_options_defaults_round_trip() {
+        super::super::test_util::check_defaults_round_trip::<BlazeServerStartupOptions>(
+            SKIP_ROUND_TRIP,
+        );
+    }
+}
+
+// ---- hand-written below this line (preserved by the generator) ----
+
+/// A Java `Map<String, String>` built with `ImmutableMap.Builder` (insertion order).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct StringMap(pub Vec<(String, String)>);
+
+impl StringMap {
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+// Java AbstractMap.toString: {k1=v1, k2=v2}.
+impl OptionScalar for StringMap {
+    fn java_to_string(&self) -> String {
+        let entries: Vec<String> = self.0.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+        format!("{{{}}}", entries.join(", "))
+    }
+}
+option_field_type!(StringMap, "java.util.Map");
+
+// Java: com/google/devtools/build/lib/runtime/BlazeServerStartupOptions.java:48 BlazeServerStartupOptions.OptionSourcesConverter
+/// Converter for the `option_sources` option. Takes a string in the form of
+/// "option_name1:source1:option_name2:source2:.." and converts it into an option name to source
+/// map.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OptionSourcesConverter;
+
+impl OptionSourcesConverter {
+    fn unescape(input: &str) -> String {
+        input.replace("_C", ":").replace("_U", "_")
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeServerStartupOptions.java:54 BlazeServerStartupOptions.OptionSourcesConverter.convert
+    pub fn convert_map(&self, input: &str) -> StringMap {
+        let mut builder: Vec<(String, String)> = Vec::new();
+        if input.is_empty() {
+            return StringMap(builder);
+        }
+        let elements = super::regex_filter::java_split(input, |s, i| s.as_bytes()[i] == b':');
+        for i in 0..elements.len().div_ceil(2) {
+            let name = &elements[i * 2];
+            let mut value = "";
+            if elements.len() > i * 2 + 1 {
+                value = &elements[i * 2 + 1];
+            }
+            let (name, value) = (Self::unescape(name), Self::unescape(value));
+            // ImmutableMap.Builder.buildOrThrow rejects duplicate keys.
+            if let Some((_, old)) = builder.iter().find(|(k, _)| *k == name) {
+                panic!(
+                    "IllegalArgumentException: Multiple entries with same key: {}={} and {}={}",
+                    name, value, name, old
+                );
+            }
+            builder.push((name, value));
+        }
+        StringMap(builder)
+    }
+}
+
+impl Converter for OptionSourcesConverter {
+    fn convert(&self, input: Option<&str>, _: Option<&ConversionContext>) -> ConvResult {
+        Ok(Some(Value::new(self.convert_map(non_null(input)))))
+    }
+    fn get_type_description(&self) -> String {
+        "a list of option-source pairs".into()
+    }
+}
+
+/// Options whose default cannot be re-parsed in a test (none).
+#[cfg(test)]
+const SKIP_ROUND_TRIP: &[&str] = &[];
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_util::parse;
+    use super::*;
+
+    // Ported from src/test/java/com/google/devtools/build/lib/runtime/BlazeServerStartupOptionsTest.java.
+
+    // A regression test to make sure that the output_base option is correctly parsed if no
+    // explicit value is provided.
+    #[test]
+    fn test_output_base_is_null_by_default() {
+        let result = parse::<BlazeServerStartupOptions>(&[]);
+        assert!(result.output_base.is_none());
+    }
+
+    #[test]
+    fn option_sources() {
+        let o = parse::<BlazeServerStartupOptions>(&["--option_sources=a_Cb:c_Ud:e"]);
+        assert_eq!(
+            o.option_sources,
+            StringMap(vec![
+                ("a:b".to_string(), "c_d".to_string()),
+                ("e".to_string(), "".to_string())
+            ])
+        );
+        assert_eq!(
+            OptionScalar::java_to_string(&o.option_sources),
+            "{a:b=c_d, e=}"
+        );
+    }
+
+    #[test]
+    fn max_idle_secs_default() {
+        assert_eq!(BlazeServerStartupOptions::default().max_idle_seconds, 10800);
+    }
+}

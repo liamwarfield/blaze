@@ -7,43 +7,15 @@ use starlark::environment::Globals;
 use starlark::environment::GlobalsBuilder;
 use starlark::environment::LibraryExtension;
 use starlark::syntax::Dialect;
-use starlark::syntax::DialectTypes;
 
 /// Dialect for `.bzl` files (and the ScriptTest chunks, which use `FileOptions.DEFAULT`).
-///
-/// Java: net/starlark/java/syntax/FileOptions.java (DEFAULT) and
-/// com/google/devtools/build/lib/skyframe/BzlCompileFunction.java (bzl options).
 pub fn bzl_dialect() -> Dialect {
-    Dialect {
-        enable_def: true,
-        enable_lambda: true,
-        enable_load: true,
-        // Bazel accepts `def f(a, *, b)`.
-        enable_keyword_only_arguments: true,
-        // Bazel has no `/` parameter marker.
-        enable_positional_only_arguments: false,
-        // `--experimental_starlark_type_syntax` is off by default in 9.3.2.
-        enable_types: DialectTypes::Disable,
-        // Bazel: load() binds file-locally; loaded names are not re-exported.
-        enable_load_reexport: false,
-        // Bazel Resolver: "for loops / if statements are not allowed at the top level".
-        enable_top_level_stmt: false,
-        enable_f_strings: false,
-        ..Dialect::Standard
-    }
+    blaze_starlark::FileKind::Bzl.dialect()
 }
 
-/// Dialect for BUILD files. Parsing is more permissive than `.bzl`; Bazel's BUILD restrictions
-/// (no def/lambda/for/if, no `*args`/`**kwargs`) are an AST pass (`build_syntax_check`), which
-/// lets Blaze emit Bazel's exact messages. Top-level rebinding is allowed in BUILD files; that is
-/// starlark-rust's default behaviour (see the dialect diff in docs/research/05-starlark-rust.md).
+/// Dialect for BUILD files (BUILD restrictions are `blaze_starlark::syntax` checks).
 pub fn build_dialect() -> Dialect {
-    Dialect {
-        // Let `for`/`if` parse so build_check reports Bazel's BUILD-specific message (Java runs
-        // checkBuildSyntax before the resolver would reject them).
-        enable_top_level_stmt: true,
-        ..bzl_dialect()
-    }
+    blaze_starlark::FileKind::Build.dialect()
 }
 
 /// Names in Bazel's `Starlark.UNIVERSE` (MethodLibrary + True/False/None), with `set` enabled by

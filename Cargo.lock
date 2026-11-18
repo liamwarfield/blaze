@@ -2138,6 +2138,7 @@ version = "0.1.0"
 dependencies = [
  "allocative",
  "anyhow",
+ "blaze_starlark",
  "num-bigint",
  "rayon",
  "regex",

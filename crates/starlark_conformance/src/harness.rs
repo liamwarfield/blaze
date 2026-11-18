@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::fmt;
 
 use allocative::Allocative;
+use blaze_starlark::structs::StructureMarker;
 use num_bigint::BigInt;
 use starlark::any::ProvidesStaticType;
 use starlark::environment::GlobalsBuilder;
@@ -16,6 +17,7 @@ use starlark::eval::Arguments;
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::values::AllocValue;
+use starlark::values::Demand;
 use starlark::values::Freeze;
 use starlark::values::FreezeResult;
 use starlark::values::Freezer;
@@ -25,8 +27,6 @@ use starlark::values::NoSerialize;
 use starlark::values::StarlarkValue;
 use starlark::values::Trace;
 use starlark::values::Value;
-use starlark::values::dict::AllocDict;
-use starlark::values::list::AllocList;
 use starlark::values::none::NoneType;
 use starlark::values::starlark_value;
 use starlark::values::tuple::UnpackTuple;
@@ -234,60 +234,14 @@ pub fn script_test_builtins(builder: &mut GlobalsBuilder) {
     const _utf8_byte_strings: bool = false;
 }
 
-/// Blaze-side shim for Bazel's `json` module (net/starlark/java/lib/json/Json.java).
-/// starlark-rust has only `json(x)` / `Value::to_json`; this measures how far that gets.
+/// `print` for the harness: ScriptTest output is not checked.
 #[starlark_module]
-pub fn json_shim(builder: &mut GlobalsBuilder) {
-    fn encode<'v>(x: Value<'v>) -> anyhow::Result<String> {
-        x.to_json()
-    }
-
-    fn decode<'v>(
-        x: &str,
-        #[starlark(require = named)] default: Option<Value<'v>>,
-        heap: Heap<'v>,
-    ) -> anyhow::Result<Value<'v>> {
-        match serde_json::from_str::<serde_json::Value>(x) {
-            Ok(v) => Ok(json_to_value(&v, heap)),
-            Err(e) => match default {
-                Some(d) => Ok(d),
-                None => Err(anyhow::anyhow!("{e}")),
-            },
-        }
-    }
-
-    fn indent<'v>(#[starlark(args)] _args: UnpackTuple<Value<'v>>) -> anyhow::Result<NoneType> {
-        Err(anyhow::anyhow!("SHIM: json.indent not implemented"))
-    }
-
-    fn encode_indent<'v>(
+pub fn discard_print(builder: &mut GlobalsBuilder) {
+    fn print<'v>(
         #[starlark(args)] _args: UnpackTuple<Value<'v>>,
-    ) -> anyhow::Result<NoneType> {
-        Err(anyhow::anyhow!("SHIM: json.encode_indent not implemented"))
-    }
-}
-
-fn json_to_value<'v>(v: &serde_json::Value, heap: Heap<'v>) -> Value<'v> {
-    match v {
-        serde_json::Value::Null => Value::new_none(),
-        serde_json::Value::Bool(b) => Value::new_bool(*b),
-        serde_json::Value::Number(n) => {
-            let s = n.to_string();
-            if let Ok(i) = s.parse::<BigInt>() {
-                heap.alloc(i)
-            } else {
-                heap.alloc(s.parse::<f64>().unwrap_or(f64::NAN))
-            }
-        }
-        serde_json::Value::String(s) => heap.alloc(s.as_str()),
-        serde_json::Value::Array(a) => heap.alloc(AllocList(
-            a.iter().map(|x| json_to_value(x, heap)).collect::<Vec<_>>(),
-        )),
-        serde_json::Value::Object(o) => heap.alloc(AllocDict(
-            o.iter()
-                .map(|(k, x)| (heap.alloc(k.as_str()), json_to_value(x, heap)))
-                .collect::<Vec<_>>(),
-        )),
+        #[starlark(require = named, default = " ")] _sep: &str,
+    ) -> starlark::Result<NoneType> {
+        Ok(NoneType)
     }
 }
 
@@ -399,6 +353,11 @@ impl<'v> StarlarkValue<'v> for TestStruct<'v> {
         self.fields.iter().map(|(k, _)| k.clone()).collect()
     }
 
+    // Java: ScriptTest.Struct implements Structure (json.encode encodes it as an object).
+    fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
+        demand.provide_value(StructureMarker { native_info: false });
+    }
+
     fn set_attr(&self, _attribute: &str, _new_value: Value<'v>) -> starlark::Result<()> {
         Err(no_field_assignment())
     }
@@ -417,6 +376,11 @@ impl<'v> StarlarkValue<'v> for FrozenTestStruct {
 
     fn dir_attr(&self) -> Vec<String> {
         self.fields.iter().map(|(k, _)| k.clone()).collect()
+    }
+
+    // Java: ScriptTest.Struct implements Structure (json.encode encodes it as an object).
+    fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
+        demand.provide_value(StructureMarker { native_info: false });
     }
 
     fn set_attr(&self, _attribute: &str, _new_value: Value<'v>) -> starlark::Result<()> {
