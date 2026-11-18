@@ -3,6 +3,7 @@
 #![allow(clippy::too_many_arguments, clippy::new_without_default)]
 
 pub mod actions;
+pub mod analysis;
 pub mod exec;
 pub mod runtime;
 pub mod sandbox;

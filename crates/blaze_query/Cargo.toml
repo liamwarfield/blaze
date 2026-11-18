@@ -1,0 +1,26 @@
+[package]
+name = "blaze_query"
+description = "Port of com.google.devtools.build.lib.query2 (query, output formatters) and a temporary dev entry point"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_util = { path = "../blaze_util" }
+blaze_cmdline = { path = "../blaze_cmdline" }
+blaze_vfs = { path = "../blaze_vfs" }
+blaze_skyframe = { path = "../blaze_skyframe" }
+blaze_events = { path = "../blaze_events" }
+blaze_starlark = { path = "../blaze_starlark" }
+blaze_packages = { path = "../blaze_packages" }
+blaze_query_engine = { path = "../blaze_query_engine" }
+blaze_sky_loading = { path = "../blaze_sky_loading" }
+blaze_optdefs = { path = "../blaze_optdefs" }
+blaze_options = { path = "../blaze_options" }
+blaze_protos = { path = "../blaze_protos" }
+anyhow.workspace = true
+thiserror.workspace = true
+indexmap.workspace = true
+parking_lot.workspace = true
+serde_json.workspace = true

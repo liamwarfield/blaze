@@ -157,7 +157,7 @@ fn compute_lockfile_only_extension_eval(
 /// change-pruning node over BAZEL_DEP_GRAPH); they are read from BAZEL_DEP_GRAPH directly here.
 /// The fixup warning is never present (see `RootModuleFileFixup`).
 // Java: com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionFunction.java:37 SingleExtensionFunction.compute
-fn compute_single_extension(
+pub fn compute_single_extension(
     key: &SingleExtensionKey,
     env: &mut Environment<'_>,
 ) -> Result<Option<SingleExtensionValue>, ComputeError> {

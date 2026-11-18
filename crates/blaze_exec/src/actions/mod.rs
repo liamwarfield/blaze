@@ -32,7 +32,9 @@
 //! [`FileArtifactValue`] here is a seam copy of `lib/actions/FileArtifactValue.java`'s variants;
 //! convert from (or replace with) the `blaze_actions` port when wiring.
 
+pub mod action_adapters;
 pub mod action_cache_checker;
+pub mod action_execution;
 pub mod action_execution_metadata;
 pub mod action_input;
 pub mod cache;
@@ -52,6 +54,10 @@ pub mod spawns;
 pub mod virtual_action_input;
 
 pub use action_cache_checker::{ActionCacheChecker, CacheCheckAction, OutputChecker};
+pub use action_execution::{
+    ActionExecutionException, ActionResult, ExecutableAction, as_executable,
+    register_executable_action,
+};
 pub use action_execution_metadata::{
     ActionExecutionMetadata, ActionOwner, FakeOwner, PlatformInfo,
 };

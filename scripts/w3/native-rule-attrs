@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Dump native rule classes and their attributes from `info build-language` in a diffable form.
+
+usage: scripts/w3/native-rule-attrs dump <build-language.bin> [rule ...]
+       scripts/w3/native-rule-attrs oracle <out.bin>
+       scripts/w3/native-rule-attrs diff <expected.bin> <actual.bin> [rule ...]
+       scripts/w3/native-rule-attrs help
+
+`dump` decodes a binary `blaze_query.BuildLanguage` proto (the output of
+`bazel info build-language`) with protoc and prints one line per rule class and one line per
+attribute:
+  rule <name>
+    <attr> <TYPE> mandatory=<0|1> allow_empty=<0|1> single_file=<0|1> executable=<0|1>
+           configurable=<0|1> [nodep=<0|1> allowed=<ANY|r1,r2,...>] [default=<value>]
+(on one line). Optional rule names restrict the output.
+
+`oracle` runs the pinned oracle in the scratch workspace ~/.cache/blaze/work/w3-c (with
+--output_user_root=~/.cache/blaze/oracle-out/ur-w3 --nohome_rc --nosystem_rc, under
+systemd-run with MemoryMax=12G) and writes the binary proto to <out.bin>.
+
+`diff` prints a unified diff of the two dumps (exit 1 if they differ).
+
+Needs protoc on PATH and the Bazel source at ~/.cache/blaze/src/bazel-9.3.2 (build.proto).
+"""
+import difflib, os, subprocess, sys
+
+HOME = os.path.expanduser("~")
+SRC = os.path.join(HOME, ".cache/blaze/src/bazel-9.3.2")
+ORACLE = os.path.join(HOME, ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+WORK = os.path.join(HOME, ".cache/blaze/work/w3-c")
+UR = os.path.join(HOME, ".cache/blaze/oracle-out/ur-w3")
+
+
+def decode(path):
+    with open(path, "rb") as f:
+        data = f.read()
+    p = subprocess.run(
+        ["protoc", "--proto_path=" + SRC, "--decode=blaze_query.BuildLanguage",
+         "src/main/protobuf/build.proto"],
+        input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    return p.stdout.decode()
+
+
+def parse_text(text):
+    """Minimal parser of protobuf text format into nested dicts of lists."""
+    root = {}
+    stack = [root]
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.endswith("{"):
+            name = line[:-1].strip()
+            node = {}
+            stack[-1].setdefault(name, []).append(node)
+            stack.append(node)
+        elif line == "}":
+            stack.pop()
+        else:
+            k, v = line.split(":", 1)
+            stack[-1].setdefault(k.strip(), []).append(v.strip())
+    return root
+
+
+def one(d, k, default=""):
+    v = d.get(k)
+    return v[0] if v else default
+
+
+def fmt_value(v):
+    if "string" in v:
+        return one(v, "string")
+    if "int" in v:
+        return one(v, "int")
+    if "bool" in v:
+        return one(v, "bool")
+    if "list" in v:
+        return "[" + ",".join(fmt_value(x) for x in v["list"]) + "]"
+    if "dict" in v:
+        return "{" + ",".join(one(e, "key") + ":" + fmt_value(e["value"][0])
+                              for e in v["dict"]) + "}"
+    return "<empty>"
+
+
+def b(d, k):
+    return "1" if one(d, k) == "true" else "0"
+
+
+def dump_lines(path, rules):
+    msg = parse_text(decode(path))
+    out = []
+    for r in msg.get("rule", []):
+        name = one(r, "name").strip('"')
+        if rules and name not in rules:
+            continue
+        out.append("rule " + name)
+        for a in r.get("attribute", []):
+            parts = ["  " + one(a, "name").strip('"'), one(a, "type"),
+                     "mandatory=" + b(a, "mandatory"), "allow_empty=" + b(a, "allow_empty"),
+                     "single_file=" + b(a, "allow_single_file"),
+                     "executable=" + b(a, "executable"),
+                     "configurable=" + b(a, "configurable")]
+            if "nodep" in a:
+                parts.append("nodep=" + b(a, "nodep"))
+            if "allowed_rule_classes" in a:
+                arc = a["allowed_rule_classes"][0]
+                if one(arc, "policy") == "ANY":
+                    parts.append("allowed=ANY")
+                else:
+                    parts.append("allowed=" + ",".join(
+                        x.strip('"') for x in arc.get("allowed_rule_class", [])))
+            if "default" in a:
+                parts.append("default=" + fmt_value(a["default"][0]))
+            out.append(" ".join(parts))
+    return out
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("help", "--help", "-h"):
+        print(__doc__.strip())
+        return 0
+    cmd = argv[1]
+    if cmd == "dump" and len(argv) >= 3:
+        print("\n".join(dump_lines(argv[2], set(argv[3:]))))
+        return 0
+    if cmd == "oracle" and len(argv) == 3:
+        out = os.path.abspath(argv[2])
+        os.makedirs(WORK, exist_ok=True)
+        for f in ("MODULE.bazel", "BUILD.bazel"):
+            p = os.path.join(WORK, f)
+            if not os.path.exists(p):
+                open(p, "w").close()
+        shell = (f"'{ORACLE}' --output_user_root='{UR}' --nohome_rc --nosystem_rc "
+                 f"info build-language > '{out}'")
+        return subprocess.run(
+            ["systemd-run", "--user", "--collect", "--wait", "-q", "-p", "MemoryMax=12G",
+             "-p", "MemorySwapMax=0", "-p", "WorkingDirectory=" + WORK, "bash", "-c", shell]
+        ).returncode
+    if cmd == "diff" and len(argv) >= 4:
+        rules = set(argv[4:])
+        a = dump_lines(argv[2], rules)
+        c = dump_lines(argv[3], rules)
+        d = list(difflib.unified_diff(a, c, argv[2], argv[3], lineterm=""))
+        print("\n".join(d))
+        return 1 if d else 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

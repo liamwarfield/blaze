@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# W5R probe: compiles Probe.java (reflection only, so javac 11 suffices) and runs it with a Java 21+
+# runtime against the oracle's A-server.jar (pinned Bazel 9.3.2 classes), to print internal values
+# the port must reproduce. usage: scripts/w5r/java-probe/run help | semantics-fingerprint
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+jar="$HOME/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9/A-server.jar"
+java="${JAVA:-/usr/lib/jvm/java-25-openjdk/bin/java}"
+out="$HOME/.cache/blaze/work/w5r-java-probe"
+mkdir -p "$out"
+javac -nowarn -d "$out" "$here/Probe.java"
+exec "$java" --add-opens java.base/java.lang=ALL-UNNAMED -cp "$out:$jar" Probe "$@"

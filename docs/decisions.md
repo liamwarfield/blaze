@@ -48,3 +48,7 @@ Each entry: date, decision, why, who decided.
   targets and 2,878 functions passing in all 4 runs on this host; that pass list is the long-term
   hill for Blaze. The shim swaps //src:bazel for the binary under test and lets the oracle run
   the test targets. Root.
+- 2026-11-18. W3: rule-definition builtins (rule/attr/provider/aspect/...) live in blaze_packages
+  `starlark_defs` for now (marked PORT: move to blaze_analysis); frozen .bzl heaps live for the
+  process; targets hold Arc<PackageMetadata>; `Type` is a closed enum. External repos come through
+  `blaze_sky_loading::repos::ExternalRepos` (OracleRepos for dev, blaze_repo_rules for real). Root.

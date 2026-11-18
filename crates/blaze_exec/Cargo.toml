@@ -16,6 +16,8 @@ blaze_protos = { path = "../blaze_protos" }
 blaze_options = { path = "../blaze_options" }
 blaze_optdefs = { path = "../blaze_optdefs" }
 blaze_collect = { path = "../blaze_collect" }
+# Adapters of the execution traits for blaze_actions types (see src/actions/mod.rs).
+blaze_actions = { path = "../blaze_actions" }
 indexmap.workspace = true
 parking_lot.workspace = true
 sha2.workspace = true

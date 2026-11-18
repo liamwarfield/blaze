@@ -1,0 +1,1012 @@
+rule action_listener
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  extra_actions LABEL_LIST mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=extra_action
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  mnemonics STRING_LIST mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=1
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule alias
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  actual LABEL mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule cc_binary
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule cc_import
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule cc_libc_top_alias
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  :alias LABEL mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule cc_library
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule cc_shared_library
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule cc_static_library
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule cc_test
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  flaky BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  local BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  shard_count INTEGER mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  size STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default=true
+  timeout STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule cc_toolchain
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule cc_toolchain_alias
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule cc_toolchain_suite
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule config_feature_flag
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  $whitelist_config_feature_flag LABEL mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY default="@@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag"
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  allowed_values STRING_LIST mandatory=1 allow_empty=0 single_file=0 executable=0 configurable=0
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  default_value STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  scope STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default="universal"
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default=["manual"]
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule config_setting
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  :flag_alias_settings LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  constraint_values LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  define_values STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  flag_values LABEL_KEYED_STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default=["manual"]
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  values STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule constraint_setting
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  default_constraint_value STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  refines_constraint_value LABEL mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=constraint_value
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default=["manual"]
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule constraint_value
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  constraint_setting LABEL mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=constraint_setting
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default=["manual"]
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule environment
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  fulfills LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default=["manual"]
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule extra_action
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  cmd STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=1
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  data LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  out_templates STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  requires_action_output BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  toolchains LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  tools LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=1 configurable=1 nodep=0 allowed=ANY
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule fdo_prefetch_hints
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule fdo_profile
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule filegroup
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  data LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  output_group STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  output_licenses STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  srcs LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule genquery
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  compressed_output BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  data LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  deps LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  expression STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  opts STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  scope LABEL_LIST mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  strict BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 default=true
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule genrule
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  $genrule_setup LABEL mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY default="@@bazel_tools//tools/genrule:genrule-setup.sh"
+  $is_executable BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  cmd STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  cmd_bash STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  cmd_bat STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  cmd_ps STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  executable BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  heuristic_label_expansion BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  local BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  message STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  output_licenses STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  output_to_bindir BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  outs OUTPUT_LIST mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  srcs LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  stamp TRISTATE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 default=0
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  toolchains LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  tools LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule java_binary
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 default="@rules_java//java:java_binary.bzl"
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule java_import
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 default="@rules_java//java:java_import.bzl"
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule java_library
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 default="@rules_java//java:java_library.bzl"
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule java_package_configuration
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 default="@rules_java//java/toolchains:java_package_configuration.bzl"
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule java_plugin
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 default="@rules_java//java:java_plugin.bzl"
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule java_plugins_flag_alias
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  :java_plugins LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule java_runtime
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 default="@rules_java//java/toolchains:java_runtime.bzl"
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule java_test
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 default="@rules_java//java:java_test.bzl"
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  flaky BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  local BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  shard_count INTEGER mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  size STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default=true
+  timeout STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule java_toolchain
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 default="@rules_java//java/toolchains:java_toolchain.bzl"
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule label_flag
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :alias LABEL mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  build_setting_default STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  help STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  scope STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default="universal"
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule label_setting
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :alias LABEL mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  build_setting_default STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  help STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  scope STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default="universal"
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule memprof_profile
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule objc_import
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule objc_library
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule platform
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  allowed_toolchain_types STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=1 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  check_toolchain_types BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  constraint_values LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  flags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  missing_toolchain_error STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default="For more information on platforms or toolchains see https://bazel.build/concepts/platforms-intro."
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  parents LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  remote_execution_properties STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  required_settings LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=config_setting
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default=["manual"]
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule propeller_optimize
+  $bzl_load_label STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule starlark_doc_extract
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  allow_unused_doc_comments BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  data LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  deps LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_group_compatible_with LABEL_LIST_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  exec_properties STRING_DICT mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  render_main_repo_name BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  src LABEL mandatory=1 allow_empty=1 single_file=1 executable=0 configurable=1 nodep=0 allowed=ANY
+  symbol_names STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule test_suite
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  $implicit_tests LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  :action_listener LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default=true
+  tests LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule toolchain
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  distribs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  exec_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  licenses LICENSE mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 default=["manual"]
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  target_settings LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=config_setting
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  toolchain STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=1 allowed=ANY
+  toolchain_type LABEL mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=toolchain_type
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  use_target_platform_constraints BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+rule toolchain_type
+  $config_dependencies LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  aspect_hints LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  deprecation STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  features STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1
+  generator_function STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_location STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  generator_name STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  name STRING mandatory=1 allow_empty=1 single_file=0 executable=0 configurable=0
+  no_match_error STRING mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  package_metadata LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=ANY
+  restricted_to LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=0 allowed=environment
+  tags STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  target_compatible_with LABEL_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=1 nodep=0 allowed=ANY
+  testonly BOOLEAN mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0
+  transitive_configs STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY
+  visibility STRING_LIST mandatory=0 allow_empty=1 single_file=0 executable=0 configurable=0 nodep=1 allowed=ANY

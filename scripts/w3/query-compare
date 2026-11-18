@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Run Blaze's W3 dev query binary like scripts/oracle/record's query step and compare with the
+oracle recording, using scripts/oracle's own extractors, normaliser and comparer (read-only use).
+
+usage: scripts/w3/query-compare [--project brotli|re2|all] [--binary PATH] [--details N]
+                                [--surface query_label_kind|query_jsonproto] [--no-run]
+       scripts/w3/query-compare help
+
+For each project it runs (P = the project's patterns joined with " + "):
+  blaze-query-dev --workspace W --output_base O --repos R 'P' --output=label_kind --keep_going
+  ... 'deps(P)' --output=label_kind, 'P' / 'deps(P)' --output=streamed_jsonproto
+where W = ~/.cache/blaze/work/w3/<p>, R = ~/.cache/blaze/w3/<p>.repos.json (scripts/w3/oracle-repos),
+O = ~/.cache/blaze/w3/out/<p>. Raw outputs and items go to ~/.cache/blaze/w3/rec/<p>/ (same layout
+as an oracle recording); then each item is compared with oracle-9.3.2's items.
+--no-run re-extracts and compares the existing raw outputs.
+"""
+import json, os, subprocess, sys, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, os.path.join(ROOT, "scripts", "oracle"))
+import oracle_common as oc  # noqa: E402
+import surfaces  # noqa: E402
+from normalise import Context  # noqa: E402
+from oracle_compare import AllowList, compare_surface  # noqa: E402
+
+CACHE = os.path.expanduser("~/.cache/blaze")
+COMMANDS = [
+    ("query_label_kind", "{P}", "label_kind"),
+    ("query_deps_label_kind", "deps({P})", "label_kind"),
+    ("query_jsonproto", "{P}", "streamed_jsonproto"),
+    ("query_deps_jsonproto", "deps({P})", "streamed_jsonproto"),
+]
+SURFACES = {"query_label_kind": surfaces.s_query_label_kind, "query_jsonproto": surfaces.s_query_jsonproto}
+
+
+def main(argv):
+    if len(argv) > 1 and argv[1] in ("help", "--help", "-h"):
+        print(__doc__.strip()); return 0
+    args = {"--project": "all", "--binary": os.path.join(ROOT, "target/debug/blaze-query-dev"),
+            "--details": "5", "--surface": None}
+    flags = set(); i = 1
+    while i < len(argv):
+        if argv[i] in ("--no-run",):
+            flags.add(argv[i]); i += 1
+        else:
+            args[argv[i]] = argv[i + 1]; i += 2
+    projects = oc.load_projects()
+    names = list(projects) if args["--project"] == "all" else [args["--project"]]
+    allow = AllowList()
+    total_bad = 0
+    for p in names:
+        spec = projects[p]
+        pats = spec["commands"][0][1:]
+        P = " + ".join(pats)
+        ws = os.path.join(CACHE, "work/w3", p)
+        ob = os.path.join(CACHE, "w3/out", p)
+        repos = os.path.join(CACHE, "w3", p + ".repos.json")
+        rd = os.path.join(CACHE, "w3/rec", p)
+        os.makedirs(os.path.join(rd, "raw"), exist_ok=True)
+        os.makedirs(os.path.join(rd, "norm"), exist_ok=True)
+        mpath = os.path.join(rd, "manifest.json")
+        if "--no-run" in flags:
+            manifest = oc.read_json(mpath)
+        else:
+            manifest = {"commands": []}
+            for name, expr, fmt in COMMANDS:
+                argvv = [args["--binary"], "--workspace", ws, "--output_base", ob, "--repos", repos,
+                         expr.format(P=P), "--output=" + fmt, "--keep_going"]
+                t0 = time.time()
+                with open(os.path.join(rd, "raw", name + ".stdout"), "wb") as so, \
+                        open(os.path.join(rd, "raw", name + ".stderr"), "wb") as se:
+                    rc = subprocess.run(argvv, stdout=so, stderr=se).returncode
+                manifest["commands"].append({"name": name, "argv": argvv, "exit_code": rc,
+                                             "duration_s": round(time.time() - t0, 2)})
+            oc.write_json(mpath, manifest)
+        ctx = Context({"workspace": ws, "output_base": ob, "home": os.path.expanduser("~")})
+        oracle_dir = oc.record_dir("oracle-9.3.2", p)
+        omanifest = oc.read_json(os.path.join(oracle_dir, "manifest.json"))
+        print("== %s" % p)
+        for c in manifest["commands"]:
+            oc_ = next((x for x in omanifest["commands"] if x["name"] == c["name"]), None)
+            print("  exit %-24s blaze=%s oracle=%s %s" % (c["name"], c["exit_code"],
+                  oc_ and oc_["exit_code"], "" if oc_ and oc_["exit_code"] == c["exit_code"] else "DIFF"))
+            if not oc_ or oc_["exit_code"] != c["exit_code"]:
+                total_bad += 1
+        for s, fn in SURFACES.items():
+            if args["--surface"] and s != args["--surface"]:
+                continue
+            try:
+                items = {"status": "OK", "items": fn(rd, manifest, ctx)}
+            except surfaces.SurfaceFailed as e:
+                items = {"status": "FAILED", "error": str(e), "items": {}}
+            oc.write_json(os.path.join(rd, "items-" + s + ".json"), items)
+            ref = oc.read_json(os.path.join(oracle_dir, "items", s + ".json"))
+            res = compare_surface(p, s, ref, items, allow)
+            c = res["counts"]
+            print("  %-18s %-8s MATCH=%d DIFF=%d MISSING=%d EXTRA=%d (oracle items %d)" % (
+                s, res["status"], c["MATCH"], c["DIFF"], c["MISSING"], c["EXTRA"], res["total_a"]))
+            if items["status"] == "FAILED":
+                print("    FAILED: " + items["error"])
+            total_bad += c["DIFF"] + c["MISSING"] + c["EXTRA"]
+            for d in res["details"][: int(args["--details"])]:
+                print("    %s %s %s" % (d["kind"], d["key"], json.dumps(d["paths"][:4])[:300]))
+    return 0 if total_bad == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

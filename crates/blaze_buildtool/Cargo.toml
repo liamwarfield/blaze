@@ -1,0 +1,33 @@
+[package]
+name = "blaze_buildtool"
+description = "Port of Bazel's lib/buildtool (BuildTool, ExecutionTool, BuildResultPrinter, SymlinkForest, OutputDirectoryLinksUtils) and the test summary classes of lib/runtime."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_util = { path = "../blaze_util" }
+blaze_vfs = { path = "../blaze_vfs" }
+blaze_cmdline = { path = "../blaze_cmdline" }
+blaze_collect = { path = "../blaze_collect" }
+blaze_events = { path = "../blaze_events" }
+blaze_protos = { path = "../blaze_protos" }
+blaze_skyframe = { path = "../blaze_skyframe" }
+blaze_actions = { path = "../blaze_actions" }
+blaze_exec = { path = "../blaze_exec" }
+blaze_sky_exec = { path = "../blaze_sky_exec" }
+blaze_options = { path = "../blaze_options" }
+blaze_optdefs = { path = "../blaze_optdefs" }
+blaze_build_config = { path = "../blaze_build_config" }
+indexmap.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+# blaze-build-replay (harness) reads the oracle recordings.
+serde_json.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true
+regex.workspace = true

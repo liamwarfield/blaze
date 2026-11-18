@@ -18,6 +18,11 @@ pub mod spawn_strategy_policy;
 pub mod spawn_strategy_registry;
 pub mod spawn_strategy_resolver;
 pub mod stable_sort;
+pub mod standalone_test_strategy;
+pub mod symlink_tree_helper;
+pub mod symlink_tree_strategy;
+pub mod test_log_helper;
+pub mod test_policy;
 pub mod tree_deleter;
 
 pub use bin_tools::BinTools;

@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+"""W7: run re2's recorded TestRunner actions through Blaze's TestRunnerAction + StandaloneTestStrategy.
+
+See `replay-tests help`.
+"""
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+CACHE = os.path.expanduser("~/.cache/blaze")
+RECORDS = os.path.join(CACHE, "oracle-records", "oracle-9.3.2")
+INSTALL_BASE = os.path.join(CACHE, "oracle-out", "ur", "install", "58cf1ecbff441bac762b0050d6da21e9")
+WORK = os.path.join(CACHE, "work", "w7")
+BIN = os.path.join(ROOT, "target", "debug", "blaze-test-replay")
+SLOW = ("//:dfa_test", "//:random_test")
+
+sys.path.insert(0, os.path.join(ROOT, "scripts", "oracle"))
+from surfaces import parse_test_xml  # noqa: E402
+
+USAGE = """\
+usage: scripts/w7/replay-tests [--project re2] [--skip-slow] [--tests L1,L2,...] [--keep]
+                               [--no-run] [--verbose]
+       scripts/w7/replay-tests help
+
+Runs the oracle's recorded TestRunner actions of a project (re2: 21 tests) through Blaze:
+
+  1. reads the TestRunner actions from the oracle's aquery
+     (~/.cache/blaze/oracle-records/oracle-9.3.2/<p>/raw/aquery_deps_jsonproto.stdout), the test
+     rules' size/timeout/tags/flaky from the recorded cquery, and each test spawn's recorded
+     inputs from the raw exec log;
+  2. materialises a scratch execroot ~/.cache/blaze/work/w7/<p>/output_base/execroot/_main by
+     COPYING (not symlinking: the sandbox would then expose paths outside the execroot) every
+     recorded input from the oracle's execroot (read-only; the runfiles trees there are symlinks
+     to the oracle-built test binaries, libraries and data), after checking its sha256 against
+     the recorded digest; empty recorded runfiles become empty-file mapping entries;
+  3. runs target/debug/blaze-test-replay under systemd-run (MemoryMax=12G), which builds one
+     blaze_exec TestRunnerAction per test (checking its action key against the aquery's), and
+     executes it with `as_executable(action).execute(ctx)`: TestRunnerAction.execute ->
+     StandaloneTestStrategy (registered as the TestActionContext) -> linux-sandbox, writing the
+     testlogs (test.log, test.xml, test.cache_status, test.outputs/, ...) into the scratch
+     output base, and an expanded exec log (JSON, sorted);
+  4. compares per test with the oracle: action key; the spawn's argv and env and the whole
+     exec-log entry (metrics/walltime removed, timing-dependent testlogs digests removed, output
+     bases replaced); the `tests` surface (overall status, [runN/shardN/attemptN, status] of the
+     attempts, and the [suite, case, status] list of test.xml as scripts/oracle/surfaces.py
+     extracts it).
+
+--skip-slow skips //:dfa_test and //:random_test (about 5 minutes each on the oracle).
+--tests runs only the given labels. --no-run reuses the previous run's results (compare only).
+Prerequisite: scripts/cargo-capped build -p blaze_exec --bin blaze-test-replay.
+Exit code 0 iff everything compared matches.
+"""
+
+
+def read_json_stream(path):
+    dec = json.JSONDecoder()
+    s = open(path).read()
+    i, out = 0, []
+    while i < len(s):
+        while i < len(s) and s[i].isspace():
+            i += 1
+        if i >= len(s):
+            break
+        o, i = dec.raw_decode(s, i)
+        out.append(o)
+    return out
+
+
+def sha256_file(p):
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+class Aquery:
+    def __init__(self, path):
+        d = json.load(open(path))
+        self.pf = {p["id"]: p for p in d["pathFragments"]}
+        self.arts = {a["id"]: a for a in d["artifacts"]}
+        self.ds = {x["id"]: x for x in d["depSetOfFiles"]}
+        self.targets = {t["id"]: t for t in d["targets"]}
+        self.rule_classes = {c["id"]: c["name"] for c in d["ruleClasses"]}
+        self.configs = {c["id"]: c for c in d["configuration"]}
+        self.actions = d["actions"]
+
+    def path(self, i):
+        parts = []
+        while i:
+            p = self.pf[i]
+            parts.append(p["label"])
+            i = p.get("parentId")
+        return "/".join(reversed(parts))
+
+    def art_path(self, a):
+        return self.path(self.arts[a]["pathFragmentId"])
+
+    def flat(self, i, out):
+        x = self.ds[i]
+        for t in x.get("transitiveDepSetIds", []):
+            self.flat(t, out)
+        for y in x.get("directArtifactIds", []):
+            p = self.art_path(y)
+            if p not in out:
+                out.append(p)
+
+
+def cquery_attrs(project):
+    d = json.load(open(os.path.join(RECORDS, project, "raw", "cquery_jsonproto.stdout")))
+    out = {}
+    for r in d["results"]:
+        t = r["target"]
+        if t.get("type") != "RULE":
+            continue
+        rule = t["rule"]
+        attrs = {a["name"]: a for a in rule.get("attribute", [])}
+        out[rule["name"]] = {
+            "size": attrs["size"]["stringValue"],
+            "timeout": attrs["timeout"]["stringValue"],
+            "tags": attrs["tags"].get("stringListValue", []),
+            "flaky": attrs["flaky"].get("booleanValue", False),
+            "args": attrs.get("args", {}).get("stringListValue", []),
+            "env": attrs.get("env", {}).get("stringDictValue", []),
+            "shard_count": attrs.get("shard_count", {}).get("intValue", -1),
+        } if "size" in attrs else None
+    return out
+
+
+def build_spec(project, selected, execroot, oracle_execroot, log):
+    aq = Aquery(os.path.join(RECORDS, project, "raw", "aquery_deps_jsonproto.stdout"))
+    attrs = cquery_attrs(project)
+    entries = [e for e in read_json_stream(os.path.join(RECORDS, project, "raw", "execlog.json"))
+               if e.get("mnemonic") == "TestRunner"]
+    by_label = {e["targetLabel"]: e for e in entries}
+    tests = []
+    problems = []
+    for a in aq.actions:
+        if a["mnemonic"] != "TestRunner":
+            continue
+        t = aq.targets[a["targetId"]]
+        label = t["label"]
+        if selected is not None and label not in selected:
+            continue
+        cfg = aq.configs[a["configurationId"]]
+        at = attrs.get(label)
+        if at is None:
+            problems.append("%s: no cquery attributes" % label)
+            continue
+        if at["args"] or at["env"] or at["shard_count"] > 0:
+            problems.append("%s: args/env/shard_count not supported by the harness" % label)
+            continue
+        inputs = []
+        for i in a.get("inputDepSetIds", []):
+            aq.flat(i, inputs)
+        outputs = [[aq.art_path(o), bool(aq.arts[o].get("isTreeArtifact", False))]
+                   for o in a["outputIds"]]
+        e = by_label.get(label)
+        if e is None:
+            problems.append("%s: no recorded TestRunner spawn" % label)
+            continue
+        runfiles = []
+        problem = None
+        for f in e["inputs"]:
+            path = f["path"]
+            digest = f.get("digest", {}).get("hash")
+            if f.get("symlinkTargetPath"):
+                problem = "unresolved symlink input " + path
+                break
+            src = os.path.join(oracle_execroot, path)
+            dest = os.path.join(execroot, path)
+            if digest is not None:
+                if not os.path.isfile(src) or sha256_file(src) != digest:
+                    problem = "no source with digest %s for %s" % (digest, path)
+                    break
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                if os.path.lexists(dest):
+                    os.chmod(dest, 0o755)
+                    os.unlink(dest)
+                shutil.copy2(src, dest)
+            if ".runfiles/" in path:
+                rel = path.split(".runfiles/", 1)[1]
+                runfiles.append({"rel": rel, "path": path,
+                                 "kind": "file" if digest is not None else "empty_marker"})
+            elif digest is None:
+                problem = "empty input outside a runfiles tree: " + path
+                break
+        if problem:
+            problems.append("%s: %s" % (label, problem))
+            continue
+        tests.append({
+            "label": label,
+            "rule_class": aq.rule_classes.get(t.get("ruleClassId"), ""),
+            "config_mnemonic": cfg["mnemonic"],
+            "config_checksum": cfg["checksum"],
+            "action_key": a["actionKey"],
+            "fixed_env": [[kv["key"], kv.get("value", "")] for kv in a.get("environmentVariables", [])],
+            "inputs": inputs,
+            "outputs": outputs,
+            "size": at["size"],
+            "timeout": at["timeout"],
+            "tags": at["tags"],
+            "flaky": at["flaky"],
+            "runfiles": runfiles,
+        })
+    for p in problems:
+        log("  cannot replay " + p)
+    return tests, problems, entries
+
+
+STRIP = ("metrics", "walltime")
+
+
+def normalise(entry, output_base):
+    e = {k: v for k, v in entry.items() if k not in STRIP}
+    outs = []
+    for f in e.get("actualOutputs", []):
+        if "/testlogs/" in f.get("path", "") and "digest" in f:
+            f = dict(f, digest="<timing-dependent>")
+        outs.append(f)
+    if outs:
+        e["actualOutputs"] = outs
+    s = json.dumps(e, sort_keys=True)
+    if output_base:
+        s = s.replace(output_base, "<OUTPUT_BASE>")
+    return json.loads(s)
+
+
+def diff_paths(a, b, prefix=""):
+    if type(a) is not type(b):
+        return [prefix or "/"]
+    if isinstance(a, dict):
+        out = []
+        for k in sorted(set(a) | set(b)):
+            if k not in a or k not in b:
+                out.append(prefix + "/" + k)
+            else:
+                out.extend(diff_paths(a[k], b[k], prefix + "/" + k))
+        return out
+    if isinstance(a, list):
+        if len(a) != len(b):
+            return [prefix + "[len %d vs %d]" % (len(a), len(b))]
+        out = []
+        for i, (x, y) in enumerate(zip(a, b)):
+            out.extend(diff_paths(x, y, "%s[%d]" % (prefix, i)))
+        return out
+    return [] if a == b else [prefix]
+
+
+def key_of(e):
+    outs = e.get("listedOutputs") or []
+    return outs[0] if outs else e["mnemonic"] + " " + " ".join(e["commandArgs"])
+
+
+def testlog_dir(label):
+    pkg, _, name = label[2:].partition(":")
+    return "/".join(x for x in (pkg, name) if x)
+
+
+def run(project, selected, keep, do_run, verbose):
+    log = print
+    rec = os.path.join(RECORDS, project)
+    manifest = json.load(open(os.path.join(rec, "manifest.json")))
+    paths = manifest["context"]["paths"]
+    oracle_ob = paths["output_base"]
+    oracle_execroot = paths["execroot"]
+    work = os.path.join(WORK, project)
+    output_base = os.path.join(work, "output_base")
+    execroot = os.path.join(output_base, "execroot", "_main")
+    spec_path = os.path.join(work, "spec.json")
+    exec_log = os.path.join(work, "execlog.json")
+    results_path = os.path.join(work, "results.json")
+    if do_run:
+        if os.path.exists(work) and not keep:
+            subprocess.run(["chmod", "-R", "u+w", work], check=False)
+            shutil.rmtree(work)
+        os.makedirs(execroot, exist_ok=True)
+        tests, problems, entries = build_spec(project, selected, execroot, oracle_execroot, log)
+        spec = {"output_base": output_base, "exec_root": execroot, "install_base": INSTALL_BASE,
+                "workspace": paths["workspace"], "tests": tests}
+        json.dump(spec, open(spec_path, "w"), indent=1)
+        log("%s: replaying %d TestRunner actions" % (project, len(tests)))
+        cmd = ["systemd-run", "--user", "--collect", "--wait", "--quiet", "--pipe",
+               "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0",
+               "--setenv=PATH=/usr/bin:/bin", "--setenv=HOME=" + os.environ.get("HOME", "/"),
+               BIN, "--spec", spec_path, "--execution-log-json", exec_log,
+               "--results", results_path]
+        r = subprocess.run(cmd)
+        if r.returncode != 0:
+            log("  blaze-test-replay exited %d" % r.returncode)
+            return False
+    else:
+        spec = json.load(open(spec_path))
+        tests, problems = spec["tests"], []
+        entries = [e for e in read_json_stream(os.path.join(rec, "raw", "execlog.json"))
+                   if e.get("mnemonic") == "TestRunner"]
+    results = {x["label"]: x for x in json.load(open(results_path))}
+    oracle_tests = json.load(open(os.path.join(rec, "items", "tests.json")))["items"]
+    oracle_entries = {key_of(e): e for e in entries}
+    mine = {}
+    for e in read_json_stream(exec_log):
+        mine.setdefault(key_of(e), []).append(e)
+    names = ["key", "status", "attempts", "xml", "argv", "env", "entry"]
+    counts = {n: 0 for n in names}
+    ok = not problems
+    for t in tests:
+        label = t["label"]
+        res = results.get(label, {})
+        bad = []
+        if res.get("action_key_matches"):
+            counts["key"] += 1
+        else:
+            bad.append("key")
+        ot = oracle_tests.get(label, {})
+        status = (res.get("result") or {}).get("status")
+        if status == ot.get("overallStatus"):
+            counts["status"] += 1
+        else:
+            bad.append("status %s vs oracle %s%s" % (status, ot.get("overallStatus"),
+                                                     (" (" + res["error"] + ")") if res.get("error") else ""))
+        attempts = sorted(["run1/shard1/attempt%d" % a["attempt"], a["status"]]
+                          for a in res.get("attempts", []))
+        if attempts == ot.get("results"):
+            counts["attempts"] += 1
+        else:
+            bad.append("attempts %s vs oracle %s" % (attempts, ot.get("results")))
+        xml_path = os.path.join(execroot, "bazel-out", "k8-fastbuild", "testlogs",
+                                testlog_dir(label), "test.xml")
+        xml = parse_test_xml(open(xml_path, "rb").read()) if os.path.isfile(xml_path) else None
+        if xml == ot.get("xml"):
+            counts["xml"] += 1
+        else:
+            bad.append("xml %s vs oracle %s" % (
+                ("%d cases" % len(xml)) if isinstance(xml, list) else xml,
+                ("%d cases" % len(ot["xml"])) if isinstance(ot.get("xml"), list) else ot.get("xml")))
+        k = "bazel-out/k8-fastbuild/testlogs/%s/test.exited_prematurely" % testlog_dir(label)
+        o = oracle_entries.get(k)
+        ms = [m for m in mine.get(k, []) if m.get("mnemonic") == "TestRunner"]
+        if o is None or len(ms) != 1:
+            bad.append("exec log: oracle %s, blaze %d entries" % ("present" if o else "missing", len(ms)))
+        else:
+            a, b = normalise(o, oracle_ob), normalise(ms[0], output_base)
+            if a.get("commandArgs") == b.get("commandArgs"):
+                counts["argv"] += 1
+            else:
+                bad.append("argv %s vs oracle %s" % (b.get("commandArgs"), a.get("commandArgs")))
+            if a.get("environmentVariables") == b.get("environmentVariables"):
+                counts["env"] += 1
+            else:
+                bad.append("env: " + ", ".join(diff_paths(a.get("environmentVariables"),
+                                                         b.get("environmentVariables"))[:8]))
+            if a == b:
+                counts["entry"] += 1
+            else:
+                d = diff_paths(a, b)
+                bad.append("exec-log entry: %d differing fields%s" % (
+                    len(d), (": " + ", ".join(d[:12])) if verbose else ""))
+        others = [m for m in mine.get(k, []) if m.get("mnemonic") != "TestRunner"]
+        if others:
+            bad.append("%d extra spawns (xml generation?)" % len(others))
+        if bad:
+            ok = False
+            log("  %s: %s" % (label, "; ".join(bad)))
+            if verbose and res.get("stderr"):
+                log("    stderr: " + res["stderr"][-2000:])
+            if verbose and res.get("events"):
+                log("    events: " + " | ".join(res["events"][:10]))
+    n = len(tests)
+    log("%s: %d tests; " % (project, n) + "; ".join("%s %d/%d" % (x, counts[x], n) for x in names))
+    json.dump({"counts": counts, "tests": n}, open(os.path.join(work, "summary.json"), "w"), indent=1)
+    return ok
+
+
+def main(argv):
+    if argv and argv[0] in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    project, selected, keep, do_run, verbose, skip_slow = "re2", None, False, True, False, False
+    it = iter(argv)
+    for a in it:
+        if a == "--project":
+            project = next(it)
+        elif a == "--tests":
+            selected = set(next(it).split(","))
+        elif a == "--skip-slow":
+            skip_slow = True
+        elif a == "--keep":
+            keep = True
+        elif a == "--no-run":
+            do_run = False
+        elif a == "--verbose":
+            verbose = True
+        else:
+            print(USAGE, file=sys.stderr)
+            return 2
+    if skip_slow:
+        if selected is None:
+            items = json.load(open(os.path.join(RECORDS, project, "items", "tests.json")))["items"]
+            selected = set(items)
+        selected -= set(SLOW)
+    return 0 if run(project, selected, keep, do_run, verbose) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

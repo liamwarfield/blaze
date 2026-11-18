@@ -208,6 +208,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_analysis"
+version = "0.1.0"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "blaze_actions",
+ "blaze_build_config",
+ "blaze_cmdline",
+ "blaze_collect",
+ "blaze_config",
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_packages",
+ "blaze_protos",
+ "blaze_shell",
+ "blaze_skyframe",
+ "blaze_starlark",
+ "blaze_util",
+ "blaze_vfs",
+ "dupe",
+ "hex",
+ "indexmap",
+ "once_cell",
+ "parking_lot",
+ "starlark",
+ "starlark_derive",
+ "starlark_map",
+ "starlark_syntax",
+ "thiserror",
+]
+
+[[package]]
 name = "blaze_build_config"
 version = "0.1.0"
 dependencies = [
@@ -226,6 +259,31 @@ dependencies = [
  "parking_lot",
  "serde_json",
  "starlark",
+ "thiserror",
+]
+
+[[package]]
+name = "blaze_buildtool"
+version = "0.1.0"
+dependencies = [
+ "blaze_actions",
+ "blaze_build_config",
+ "blaze_cmdline",
+ "blaze_collect",
+ "blaze_events",
+ "blaze_exec",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_protos",
+ "blaze_sky_exec",
+ "blaze_skyframe",
+ "blaze_util",
+ "blaze_vfs",
+ "indexmap",
+ "parking_lot",
+ "regex",
+ "serde_json",
+ "tempfile",
  "thiserror",
 ]
 
@@ -341,6 +399,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_cquery"
+version = "0.1.0"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "blaze_actions",
+ "blaze_analysis",
+ "blaze_build_config",
+ "blaze_cmdline",
+ "blaze_collect",
+ "blaze_config",
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_packages",
+ "blaze_protos",
+ "blaze_query",
+ "blaze_query_engine",
+ "blaze_rules",
+ "blaze_sky_analysis",
+ "blaze_sky_loading",
+ "blaze_sky_top",
+ "blaze_skyframe",
+ "blaze_starlark",
+ "blaze_util",
+ "blaze_vfs",
+ "dupe",
+ "hex",
+ "indexmap",
+ "once_cell",
+ "parking_lot",
+ "serde_json",
+ "starlark",
+ "starlark_derive",
+ "starlark_map",
+ "starlark_syntax",
+ "thiserror",
+]
+
+[[package]]
 name = "blaze_events"
 version = "0.1.0"
 dependencies = [
@@ -354,6 +452,7 @@ dependencies = [
 name = "blaze_exec"
 version = "0.1.0"
 dependencies = [
+ "blaze_actions",
  "blaze_cmdline",
  "blaze_collect",
  "blaze_events",
@@ -542,6 +641,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_rules"
+version = "0.1.0"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "blaze_actions",
+ "blaze_analysis",
+ "blaze_build_config",
+ "blaze_cc_features",
+ "blaze_cmdline",
+ "blaze_collect",
+ "blaze_config",
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_packages",
+ "blaze_protos",
+ "blaze_shell",
+ "blaze_skyframe",
+ "blaze_starlark",
+ "blaze_util",
+ "blaze_vfs",
+ "dupe",
+ "hex",
+ "indexmap",
+ "once_cell",
+ "parking_lot",
+ "regex",
+ "starlark",
+ "starlark_derive",
+ "starlark_map",
+ "starlark_syntax",
+ "thiserror",
+]
+
+[[package]]
 name = "blaze_runtime"
 version = "0.1.0"
 dependencies = [
@@ -573,6 +708,68 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_sky_analysis"
+version = "0.1.0"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "blaze_actions",
+ "blaze_analysis",
+ "blaze_build_config",
+ "blaze_bzlmod",
+ "blaze_bzlmod_model",
+ "blaze_cmdline",
+ "blaze_collect",
+ "blaze_config",
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_packages",
+ "blaze_protos",
+ "blaze_rules",
+ "blaze_sky_loading",
+ "blaze_skyframe",
+ "blaze_starlark",
+ "blaze_util",
+ "blaze_vfs",
+ "dupe",
+ "hex",
+ "indexmap",
+ "once_cell",
+ "parking_lot",
+ "starlark",
+ "starlark_derive",
+ "starlark_map",
+ "starlark_syntax",
+ "thiserror",
+]
+
+[[package]]
+name = "blaze_sky_exec"
+version = "0.1.0"
+dependencies = [
+ "blaze_actions",
+ "blaze_cmdline",
+ "blaze_collect",
+ "blaze_events",
+ "blaze_exec",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_protos",
+ "blaze_skyframe",
+ "blaze_util",
+ "blaze_vfs",
+ "hex",
+ "indexmap",
+ "libc",
+ "parking_lot",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "blaze_sky_loading"
 version = "0.1.0"
 dependencies = [
@@ -596,6 +793,46 @@ dependencies = [
  "serde_json",
  "sha2",
  "starlark",
+ "thiserror",
+]
+
+[[package]]
+name = "blaze_sky_top"
+version = "0.1.0"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "blaze_actions",
+ "blaze_analysis",
+ "blaze_build_config",
+ "blaze_bzlmod",
+ "blaze_bzlmod_model",
+ "blaze_cmdline",
+ "blaze_collect",
+ "blaze_config",
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_packages",
+ "blaze_protos",
+ "blaze_repo_fetch",
+ "blaze_rules",
+ "blaze_sky_analysis",
+ "blaze_sky_loading",
+ "blaze_skyframe",
+ "blaze_starlark",
+ "blaze_util",
+ "blaze_vfs",
+ "dupe",
+ "hex",
+ "indexmap",
+ "once_cell",
+ "parking_lot",
+ "serde_json",
+ "starlark",
+ "starlark_derive",
+ "starlark_map",
+ "starlark_syntax",
  "thiserror",
 ]
 

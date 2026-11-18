@@ -41,6 +41,25 @@ pub trait ActionContextRegistry: Send + Sync {
     fn get_spawn_cache(&self) -> Option<Arc<dyn SpawnCache>> {
         None
     }
+    /// `getContext(Class)` for any other context type (`TestActionContext`, ...): the registered
+    /// context whose concrete type is `type_id`, or `None`. Use [`get_context`].
+    fn get_context_any(
+        &self,
+        _type_id: std::any::TypeId,
+    ) -> Option<crate::actions::action_execution::ActionContextRef> {
+        None
+    }
+}
+
+/// `getContext(T.class)` for a context registered through
+/// [`ActionContextRegistry::get_context_any`] under `TypeId::of::<T>()`. Register the context as
+/// `Arc<T>` (wrapped as `Arc<dyn Any>`), so trait-object contexts use `T = Arc<dyn Trait>`.
+pub fn get_context<T: Send + Sync + 'static>(
+    registry: &(impl ActionContextRegistry + ?Sized),
+) -> Option<Arc<T>> {
+    registry
+        .get_context_any(std::any::TypeId::of::<T>())
+        .and_then(|c| c.downcast::<T>().ok())
 }
 
 /// The parts of `ActionExecutionContext` that spawn strategies read.
@@ -98,9 +117,39 @@ pub trait ActionExecutionContext: ActionContextRegistry {
         false
     }
 
+    /// `getInputPath(ActionInput)`: the path of `input` for this action (the execroot path; no
+    /// action file system).
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:401 ActionExecutionContext.getInputPath
+    fn get_input_path(&self, input: &dyn crate::actions::ActionInput) -> Path {
+        self.get_exec_root().get_relative(input.get_exec_path())
+    }
+
+    /// `getVerboseFailures()` (`--verbose_failures`).
+    fn get_verbose_failures(&self) -> bool {
+        false
+    }
+
+    /// `setRichArtifactData(RichArtifactData)`: the runfiles tree value a `RunfilesTreeAction`
+    /// produces (stored in its `ActionExecutionValue`).
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:440 ActionExecutionContext.setRichArtifactData
+    fn set_rich_artifact_data(&self, _data: Arc<crate::actions::RunfilesArtifactValue>) {}
+
     /// `checkForLostInputs()`.
     fn check_for_lost_inputs(&self) -> Result<(), ExecException> {
         Ok(())
+    }
+
+    /// `getOutputMetadataStore().getOutputMetadata(output)` for a file output of this action
+    /// (read by `withOutputsAsInputs`, e.g. for the test log given to the test XML generation
+    /// spawn). The default constructs the value from the file system, as
+    /// `ActionOutputMetadataStore.constructFileArtifactValueFromFilesystem` does for a plain
+    /// file (stat + digest).
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:570 ActionExecutionContext.withOutputsAsInputs
+    fn get_output_metadata(
+        &self,
+        output: &dyn crate::actions::ActionInput,
+    ) -> io::Result<crate::actions::FileArtifactValue> {
+        crate::actions::FileArtifactValue::create_for_testing(&self.get_input_path(output))
     }
 }
 

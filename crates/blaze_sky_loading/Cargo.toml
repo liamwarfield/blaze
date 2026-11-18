@@ -1,0 +1,30 @@
+[package]
+name = "blaze_sky_loading"
+description = "Skyframe loading functions: FILE_STATE, FILE, DIRECTORY_LISTING, PACKAGE_LOOKUP, BZL_COMPILE, BZL_LOAD, STARLARK_BUILTINS, GLOB, PACKAGE, REPO_FILE, target patterns, TRANSITIVE_TRAVERSAL; the external repos provider seam"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_util = { path = "../blaze_util" }
+blaze_cmdline = { path = "../blaze_cmdline" }
+blaze_vfs = { path = "../blaze_vfs" }
+blaze_skyframe = { path = "../blaze_skyframe" }
+blaze_events = { path = "../blaze_events" }
+blaze_starlark = { path = "../blaze_starlark" }
+blaze_packages = { path = "../blaze_packages" }
+blaze_query_engine = { path = "../blaze_query_engine" }
+blaze_optdefs = { path = "../blaze_optdefs" }
+blaze_config = { path = "../blaze_config" }
+starlark.workspace = true
+allocative.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+indexmap.workspace = true
+parking_lot.workspace = true
+once_cell.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true

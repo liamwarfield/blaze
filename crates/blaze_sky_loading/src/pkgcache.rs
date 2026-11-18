@@ -1,0 +1,158 @@
+//! Port of `PathPackageLocator` (the parts Skyframe loading reads).
+//!
+//! Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java. Not ported yet:
+//! `create` (the `--package_path` flag with `%workspace%` substitution), `getWorkspaceFile`.
+
+use std::fmt;
+use std::hash::{Hash, Hasher};
+
+use blaze_cmdline::PackageIdentifier;
+use blaze_cmdline::label_constants::EXTERNAL_REPOSITORY_LOCATION;
+use blaze_vfs::{DirentType, Path, PathFragment, Root, Symlinks};
+
+use crate::build_file_name::BuildFileName;
+
+/// A mapping from the name of a package to the location of its BUILD file. The implementation
+/// composes the package path entries in order.
+// Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:50 PathPackageLocator
+#[derive(Clone)]
+pub struct PathPackageLocator {
+    path_entries: Vec<Root>,
+    // Java marks it `transient` (not serialized); equals and hashCode still include it.
+    output_base: Option<Path>,
+    build_files_by_priority: Vec<BuildFileName>,
+}
+
+impl PathPackageLocator {
+    // Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:62 PathPackageLocator.<init>
+    pub fn new(
+        output_base: Option<Path>,
+        path_entries: Vec<Root>,
+        build_files_by_priority: Vec<BuildFileName>,
+    ) -> PathPackageLocator {
+        PathPackageLocator {
+            path_entries,
+            output_base,
+            build_files_by_priority,
+        }
+    }
+
+    /// Returns an immutable ordered list of the directories on the package path.
+    // Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:127 PathPackageLocator.getPathEntries
+    pub fn get_path_entries(&self) -> &[Root] {
+        &self.path_entries
+    }
+
+    // Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:314 PathPackageLocator.getOutputBase
+    pub fn get_output_base(&self) -> Option<&Path> {
+        self.output_base.as_ref()
+    }
+
+    /// PORT: Java keeps this private.
+    pub fn build_files_by_priority(&self) -> &[BuildFileName] {
+        &self.build_files_by_priority
+    }
+
+    /// Returns the path to the build file for this package, or `None` if not found.
+    ///
+    /// If the same package exists beneath multiple package path entries, the first path that
+    /// matches always wins.
+    // PORT: the syscall cache is `SyscallCache.NO_CACHE` (a plain stat).
+    // Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:81 PathPackageLocator.getPackageBuildFileNullable
+    pub fn get_package_build_file_nullable(
+        &self,
+        package_identifier: &PackageIdentifier,
+    ) -> Option<Path> {
+        if package_identifier.get_repository().is_main() {
+            for build_file_name in &self.build_files_by_priority {
+                let build_file_path = self.get_file_path(
+                    &package_identifier
+                        .get_package_fragment()
+                        .get_relative(build_file_name.get_filename_fragment()),
+                );
+                if build_file_path.is_some() {
+                    return build_file_path;
+                }
+            }
+        } else {
+            let Some(output_base) = &self.output_base else {
+                panic!(
+                    "External package '{}' needs to be loaded but this PathPackageLocator instance \
+                     does not support external packages",
+                    package_identifier
+                );
+            };
+            // This works only to some degree, because it relies on the presence of the repository
+            // under $OUTPUT_BASE/external, which is created by the appropriate
+            // RepositoryDirectoryValue. This is true for the invocation in GlobCache, but not for
+            // the locator.getBuildFileForPackage() invocation in Parser#include().
+            for build_file_name in &self.build_files_by_priority {
+                let build_file = output_base
+                    .get_relative(&EXTERNAL_REPOSITORY_LOCATION)
+                    .get_relative_str(package_identifier.get_repository().get_name())
+                    .get_relative(package_identifier.get_source_root())
+                    .get_relative(build_file_name.get_filename_fragment());
+                match build_file.stat_if_found(Symlinks::Follow) {
+                    Ok(Some(stat)) if stat.is_file() => return Some(build_file),
+                    Ok(_) => {}
+                    Err(_) => return None,
+                }
+            }
+        }
+        None
+    }
+
+    // Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:275 PathPackageLocator.getFilePath
+    fn get_file_path(&self, suffix: &PathFragment) -> Option<Path> {
+        for path_entry in &self.path_entries {
+            let build_file = path_entry.get_relative(suffix);
+            // Java: SyscallCache.statusToDirentType (NO_CACHE skips getType).
+            let type_ = match build_file.stat_if_found(Symlinks::Follow) {
+                // Treat IOException as a missing file.
+                Ok(Some(stat)) => Some(stat.get_dirent_type()),
+                Ok(None) | Err(_) => None,
+            };
+            if type_ == Some(DirentType::File) || type_ == Some(DirentType::Unknown) {
+                return Some(build_file);
+            }
+        }
+        None
+    }
+}
+
+// Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:132 PathPackageLocator.toString
+impl fmt::Display for PathPackageLocator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PathPackageLocator[")?;
+        for (i, e) in self.path_entries.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{}", e)?;
+        }
+        f.write_str("]")
+    }
+}
+
+impl fmt::Debug for PathPackageLocator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+// Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:302 PathPackageLocator.equals
+impl PartialEq for PathPackageLocator {
+    fn eq(&self, other: &Self) -> bool {
+        self.path_entries == other.path_entries && self.output_base == other.output_base
+    }
+}
+
+impl Eq for PathPackageLocator {}
+
+// Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:297 PathPackageLocator.hashCode
+impl Hash for PathPackageLocator {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.path_entries.hash(state);
+        self.output_base.hash(state);
+    }
+}

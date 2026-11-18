@@ -1,0 +1,16 @@
+[package]
+name = "blaze_query_engine"
+description = "Port of com.google.devtools.build.lib.query2.engine: the query language, parser, functions and evaluation over an abstract target type"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+regex.workspace = true
+blaze_protos = { path = "../blaze_protos" }
+blaze_util = { path = "../blaze_util" }
+blaze_cmdline = { path = "../blaze_cmdline" }
+blaze_events = { path = "../blaze_events" }
+thiserror.workspace = true
+indexmap.workspace = true

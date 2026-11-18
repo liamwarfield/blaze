@@ -61,7 +61,9 @@ pub use config::{
     BAZEL_VERSION, BuiltinRepositoryDirectoryLookup, BzlmodConfig, BzlmodConfigError,
     RepositoryDirectoryLookup, builtin_modules,
 };
-pub use extension_placeholder::register_lockfile_only_extension_functions;
+pub use extension_placeholder::{
+    compute_single_extension, register_lockfile_only_extension_functions,
+};
 pub use keys::{
     BazelDepGraphKey, BazelLockFileKey, BazelModuleInspectorKey, BazelModuleResolutionKey,
     ModuleFileKey, ModuleFileValue, RegistryKey, RepoSpecKey, RepoSpecValue,

@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Build the W3 crates once and write rustc diagnostics per crate and per source file.
+
+usage: scripts/w3/build-errors <out_dir> [crate ...]
+       scripts/w3/build-errors help
+
+Runs `scripts/cargo-capped check --tests --message-format=json -p <crate>...` (default: the W3
+crates) and writes:
+  <out_dir>/SUMMARY.txt               time, exit status, error/warning counts per crate and file
+  <out_dir>/<crate>.txt               every rendered diagnostic of that crate, errors first
+  <out_dir>/files/<path_with__>.txt   rendered diagnostics whose primary span is in that file
+Crates that were not checked because a dependency failed are listed as BLOCKED in SUMMARY.txt.
+"""
+import collections, json, os, subprocess, sys, time
+
+W3 = ["blaze_config", "blaze_packages", "blaze_query_engine", "blaze_sky_loading", "blaze_query"]
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("help", "--help", "-h"):
+        print(__doc__.strip()); return 0
+    out = argv[1]; crates = argv[2:] or W3
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    cmd = [os.path.join(root, "scripts/cargo-capped"), "check", "--tests", "--message-format=json"]
+    for c in crates: cmd += ["-p", c]
+    t0 = time.time()
+    p = subprocess.run(cmd, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    per_crate = collections.defaultdict(list); per_file = collections.defaultdict(list)
+    counts = collections.Counter(); seen = set(); checked = set()
+    for line in p.stdout.splitlines():
+        try: m = json.loads(line)
+        except Exception: continue
+        if m.get("reason") == "compiler-artifact":
+            checked.add(m["target"]["name"].replace("-", "_"))
+        if m.get("reason") != "compiler-message": continue
+        crate = m["target"]["name"].replace("-", "_")
+        d = m["message"]; lvl = d.get("level")
+        if lvl not in ("error", "warning"): continue
+        r = d.get("rendered") or ""
+        if (crate, r) in seen: continue
+        seen.add((crate, r))
+        spans = [s for s in d.get("spans", []) if s.get("is_primary")]
+        f = spans[0]["file_name"] if spans else "<none>"
+        per_crate[crate].append((lvl, r)); per_file[f].append((lvl, r))
+        counts[(crate, lvl)] += 1; counts[(f, lvl)] += 1
+    os.makedirs(os.path.join(out, "files"), exist_ok=True)
+    for fn in os.listdir(os.path.join(out, "files")):
+        os.remove(os.path.join(out, "files", fn))
+    for c in crates:
+        items = sorted(per_crate.get(c, []), key=lambda x: x[0] != "error")
+        with open(os.path.join(out, c + ".txt"), "w") as fh:
+            fh.write("".join(r for _, r in items))
+    for f, items in per_file.items():
+        items = sorted(items, key=lambda x: x[0] != "error")
+        with open(os.path.join(out, "files", f.replace("/", "__") + ".txt"), "w") as fh:
+            fh.write("".join(r for _, r in items))
+    with open(os.path.join(out, "SUMMARY.txt"), "w") as fh:
+        fh.write(f"built {time.strftime('%Y-%m-%d %H:%M:%S')} in {time.time()-t0:.0f}s, cargo exit {p.returncode}\n")
+        for c in crates:
+            e = counts[(c, "error")]; w = counts[(c, "warning")]
+            st = "OK" if c in checked and e == 0 else ("ERRORS" if e else "BLOCKED (a dependency failed)")
+            fh.write(f"{c}: {st} errors={e} warnings={w}\n")
+        for f in sorted(per_file):
+            fh.write(f"  {f}: errors={counts[(f,'error')]} warnings={counts[(f,'warning')]}\n")
+        if p.returncode and not per_crate:
+            fh.write("cargo stderr tail:\n" + "\n".join(p.stderr.splitlines()[-30:]) + "\n")
+    print(open(os.path.join(out, "SUMMARY.txt")).read(), end="")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

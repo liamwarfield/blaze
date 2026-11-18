@@ -1,0 +1,387 @@
+#!/usr/bin/env -S python3 -I
+"""W5R: fetch every external repository the oracle fetched with Blaze's blaze-fetch-dev into a
+fresh output base, then compare each repo directory, marker file and the lockfile with the
+oracle's. See `compare-repos help`."""
+
+import argparse
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True  # do not write __pycache__ into scripts/oracle/
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+ORACLE_SCRIPTS = os.path.join(REPO, "scripts", "oracle")
+sys.path.insert(0, ORACLE_SCRIPTS)
+
+import oracle_common as oc  # noqa: E402
+
+
+def _load_record():
+    """scripts/oracle/record has no .py suffix; load it by path for prepare_workspace."""
+    path = os.path.join(ORACLE_SCRIPTS, "record")
+    loader = importlib.machinery.SourceFileLoader("oracle_record", path)
+    spec = importlib.util.spec_from_loader("oracle_record", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+record = _load_record()
+
+W5R = os.path.join(oc.WORK, "repos")
+INSTALL_BASE = os.path.join(oc.OUTPUT_ROOTS, "ur", "install", "58cf1ecbff441bac762b0050d6da21e9")
+ORACLE_OUTPUT_BASES = {
+    "brotli": os.path.join(oc.OUTPUT_ROOTS, "ur", "583b18a54a0812f6ca106c9c2c1eb80c"),
+    "re2": os.path.join(oc.OUTPUT_ROOTS, "ur", "f5418354f8881fd01f338636721e5f81"),
+}
+DEFAULT_BINARY = os.path.join(REPO, "target", "debug", "blaze-fetch-dev")
+MEMORY_MAX = "12G"
+
+USAGE = """\
+usage: scripts/w5r/compare-repos [--project brotli|re2|all] [--binary PATH] [--repo NAME]...
+                                 [--shared-contents-cache] [--no-run] [--keep-output-base]
+                                 [--diffs N] [--timeout SECONDS] [--no-scope]
+       scripts/w5r/compare-repos help | --help
+
+For each project (default: all):
+
+  1. copies the read-only checkout ~/.cache/blaze/corpus/<project> to
+     ~/.cache/blaze/work/repos/<project> (scripts/oracle/record's prepare_workspace: no
+     bazel-* links, no .git, untracked files removed; the project's own MODULE.bazel.lock is
+     then deleted so the lockfile is written from scratch);
+  2. lists the repositories in the oracle's output base (brotli: ur/583b18a5..., re2:
+     ur/f5418354...; read-only): every entry of <output_base>/external except _main and the
+     @*.marker files (or only the --repo names);
+  3. deletes ~/.cache/blaze/work/repos/<project>-ob and (unless --shared-contents-cache)
+     ~/.cache/blaze/work/repos/<project>-contents, then runs, with environment HOME and
+     PATH=/usr/bin:/bin only (as scripts/oracle/record does):
+
+       <binary> --workspace <copy> --output_base <ob> --install_base <oracle install base>
+         fetch --repository_cache=~/.cache/blaze/repo-cache
+               --repo_contents_cache=<project>-contents --repo=@@<name> ...
+
+     The repository cache's downloads (content_addressable/) are shared with the oracle, so
+     repos whose archives the oracle downloaded need no network. Repo contents are fetched
+     into a private contents cache so that every repo is really fetched (and the shared one is
+     never written by Blaze); --shared-contents-cache uses the shared one instead;
+  4. compares, per repo, the directory trees (after resolving the top-level symlink of both
+     sides): relative paths, entry types, symlink targets, file contents (SHA-256) and the
+     executable bit; and the marker: <output_base>/external/@<name>.marker when the oracle has
+     one, else the predeclared input hash (the oracle's contents-cache entry
+     contents/<hash>/<uuid>) against the first line of Blaze's marker / recorded inputs file;
+  5. compares the copy's MODULE.bazel.lock bytes with the oracle's recording
+     ~/.cache/blaze/oracle-records/oracle-9.3.2/<project>/raw/MODULE.bazel.lock (per top-level
+     key and per moduleExtensions entry), and the output base's hidden lockfile
+     <ob>/MODULE.bazel.lock (reproducible extensions) per moduleExtensions entry with the
+     oracle output base's. Every extension in either oracle lockfile is evaluated
+     (blaze-fetch-dev --dev_extension=<id>), since a whole build evaluates more extensions than
+     the fetched repos need.
+
+Writes ~/.cache/blaze/work/repos/<project>-report.json and prints per-project counts:
+repos MATCH / DIFF / MISSING (not fetched by Blaze) and the first N differences.
+Exits 0 iff every repo and both lockfiles match.
+
+Options:
+  --project NAME            brotli, re2 or all (default all)
+  --binary PATH             default <repo>/target/debug/blaze-fetch-dev
+  --repo NAME               only this canonical repo name (repeatable)
+  --shared-contents-cache   use ~/.cache/blaze/repo-cache/contents (cache hits are symlinks)
+  --no-run                  only compare an existing run's output base
+  --keep-output-base        do not delete <project>-ob first
+  --diffs N                 differences shown per repo (default 5)
+  --timeout SECONDS         per-project limit (default 3600)
+  --no-scope                do not wrap the run in systemd-run --user --scope -p MemoryMax=12G
+"""
+
+
+def maybe_reexec_in_scope(args):
+    if args.no_scope or os.environ.get("BLAZE_W5R_SCOPE") == "1":
+        return
+    if shutil.which("systemd-run") is None:
+        print("warning: systemd-run not found; running without memory limits", file=sys.stderr)
+        return
+    argv = [
+        "systemd-run", "--user", "--scope", "--collect", "--quiet",
+        "-p", "MemoryMax=" + MEMORY_MAX, "-p", "MemorySwapMax=0",
+        "--", "env", "BLAZE_W5R_SCOPE=1", sys.executable, "-I", os.path.abspath(__file__),
+    ] + sys.argv[1:]
+    os.execvp(argv[0], argv)
+
+
+def oracle_repos(oracle_ob):
+    ext = os.path.join(oracle_ob, "external")
+    names = []
+    for name in sorted(os.listdir(ext)):
+        if name.startswith("@") or name == "_main":
+            continue
+        names.append(name)
+    return names
+
+
+def oracle_extensions(project, oracle_ob):
+    """The extensions the oracle evaluated: those of the recorded workspace lockfile (the
+    non-reproducible ones) and of the output base's hidden lockfile (the reproducible ones)."""
+    ids = []
+    for p in (os.path.join(oc.record_dir(oc.REFERENCE_LABEL, project), "raw", "MODULE.bazel.lock"),
+              os.path.join(oracle_ob, "MODULE.bazel.lock")):
+        if os.path.isfile(p):
+            for e in json.load(open(p)).get("moduleExtensions", {}):
+                if e not in ids:
+                    ids.append(e)
+    return ids
+
+
+def tree(root):
+    """Maps relative path -> (kind, detail) for everything under root (root itself resolved)."""
+    out = {}
+    if not os.path.exists(root):
+        return None
+    root = os.path.realpath(root)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        rel_dir = os.path.relpath(dirpath, root)
+        for d in list(dirnames):
+            p = os.path.join(dirpath, d)
+            rel = os.path.normpath(os.path.join(rel_dir, d))
+            if os.path.islink(p):
+                out[rel] = ("symlink", os.readlink(p))
+                dirnames.remove(d)
+            else:
+                out[rel] = ("dir", "")
+        for f in filenames:
+            p = os.path.join(dirpath, f)
+            rel = os.path.normpath(os.path.join(rel_dir, f))
+            st = os.lstat(p)
+            if stat.S_ISLNK(st.st_mode):
+                out[rel] = ("symlink", os.readlink(p))
+            elif stat.S_ISREG(st.st_mode):
+                h = hashlib.sha256()
+                with open(p, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        h.update(chunk)
+                exe = "x" if st.st_mode & stat.S_IXUSR else "-"
+                out[rel] = ("file", exe + h.hexdigest())
+            else:
+                out[rel] = ("other", oct(st.st_mode))
+    return out
+
+
+def normalise_symlink(target, side_ob, side_ws, oracle_ob, oracle_ws):
+    """Absolute symlink targets into the output base or workspace differ between runs."""
+    for prefix, repl in ((side_ob, "<OB>"), (side_ws, "<WS>"), (oracle_ob, "<OB>"),
+                         (oracle_ws, "<WS>")):
+        if prefix and target.startswith(prefix):
+            return repl + target[len(prefix):]
+    return target
+
+
+def compare_trees(a, b, ctx, limit):
+    diffs = []
+    for rel in sorted(set(a) | set(b)):
+        ea, eb = a.get(rel), b.get(rel)
+        if ea and eb and ea[0] == "symlink" and eb[0] == "symlink":
+            ea = (ea[0], normalise_symlink(ea[1], *ctx))
+            eb = (eb[0], normalise_symlink(eb[1], *ctx))
+        if ea != eb:
+            diffs.append("%s: oracle=%s blaze=%s" % (rel, ea, eb))
+    return diffs[:limit], len(diffs)
+
+
+def marker_of(ob, name):
+    p = os.path.join(ob, "external", "@" + name + ".marker")
+    if os.path.isfile(p):
+        with open(p, "rb") as fh:
+            return fh.read()
+    return None
+
+
+def contents_hash(ob, name):
+    """The predeclared input hash of a repo living in a repo contents cache (symlink target
+    .../contents/<hash>/<uuid>), with the recorded inputs file next to it."""
+    p = os.path.join(ob, "external", name)
+    if not os.path.islink(p):
+        return None
+    target = os.readlink(p)
+    parts = target.rstrip("/").split("/")
+    rec = target.rstrip("/") + ".recorded_inputs"
+    if len(parts) >= 3 and os.path.isfile(rec):
+        return parts[-2], open(rec, "rb").read()
+    return None
+
+
+def compare_lockfile(oracle_path, blaze_path):
+    res = {"oracle": oracle_path, "blaze": blaze_path}
+    if not os.path.isfile(blaze_path):
+        res["status"] = "MISSING"
+        return res
+    a = open(oracle_path, "rb").read()
+    b = open(blaze_path, "rb").read()
+    res["bytes_equal"] = a == b
+    ja, jb = json.loads(a), json.loads(b)
+    keys = {}
+    for k in sorted(set(ja) | set(jb)):
+        if k == "moduleExtensions":
+            exts = {}
+            ea, eb = ja.get(k, {}), jb.get(k, {})
+            for e in sorted(set(ea) | set(eb)):
+                if e not in eb:
+                    exts[e] = "MISSING"
+                elif e not in ea:
+                    exts[e] = "EXTRA"
+                elif ea[e] == eb[e]:
+                    exts[e] = "MATCH"
+                else:
+                    fields = {}
+                    for f in sorted(set(ea[e].get("general", {})) | set(eb[e].get("general", {}))):
+                        va = ea[e].get("general", {}).get(f)
+                        vb = eb[e].get("general", {}).get(f)
+                        fields[f] = "MATCH" if va == vb else "DIFF"
+                    exts[e] = fields if ea[e].keys() == eb[e].keys() else "DIFF(factors)"
+            keys[k] = exts
+        else:
+            keys[k] = "MATCH" if ja.get(k) == jb.get(k) else (
+                "MISSING" if k not in jb else "EXTRA" if k not in ja else "DIFF")
+    res["keys"] = keys
+    res["status"] = "MATCH" if a == b else "DIFF"
+    return res
+
+
+def run_project(args, project, spec):
+    checkout = oc.expand(spec["checkout"])
+    ws = os.path.join(W5R, project)
+    ob = os.path.join(W5R, project + "-ob")
+    contents = (os.path.join(oc.REPO_CACHE, "contents") if args.shared_contents_cache
+                else os.path.join(W5R, project + "-contents"))
+    oracle_ob = ORACLE_OUTPUT_BASES[project]
+    repos = args.repo or oracle_repos(oracle_ob)
+    log = os.path.join(W5R, project + "-run.log")
+    run_info = {}
+    if not args.no_run:
+        os.makedirs(W5R, exist_ok=True)
+        print("[compare-repos] %s: preparing %s" % (project, ws), flush=True)
+        record.prepare_workspace(checkout, ws)
+        lock = os.path.join(ws, "MODULE.bazel.lock")
+        if os.path.exists(lock):
+            os.remove(lock)
+        if not args.keep_output_base:
+            record.make_writable_and_remove(ob)
+        if not args.shared_contents_cache:
+            record.make_writable_and_remove(contents)
+        argv = [os.path.abspath(oc.expand(args.binary)),
+                "--workspace", os.path.realpath(ws), "--output_base", ob,
+                "--install_base", INSTALL_BASE,
+                "fetch", "--repository_cache=" + oc.REPO_CACHE,
+                "--repo_contents_cache=" + contents]
+        argv += ["--repo=@@" + r for r in repos]
+        argv += ["--dev_extension=" + e for e in oracle_extensions(project, oracle_ob)]
+        print("[compare-repos] %s: fetching %d repos (log %s)" % (project, len(repos), log),
+              flush=True)
+        t0 = time.time()
+        with open(log, "wb") as out:
+            p = subprocess.run(argv, cwd=os.path.realpath(ws),
+                               env={"HOME": oc.HOME, "PATH": "/usr/bin:/bin"},
+                               stdout=out, stderr=subprocess.STDOUT, timeout=args.timeout)
+        run_info = {"argv": argv, "exit_code": p.returncode, "duration_s": round(time.time() - t0, 2)}
+        print("[compare-repos] %s: exit %d in %.1fs" % (project, p.returncode, run_info["duration_s"]),
+              flush=True)
+
+    results = {}
+    counts = {"MATCH": 0, "DIFF": 0, "MISSING": 0}
+    ctx = (ob, os.path.realpath(ws), oracle_ob, oc.expand(spec["checkout"]))
+    for name in repos:
+        r = {}
+        if name == "bazel_tools":
+            # Both are symlinks to the same install base.
+            pass
+        ta = tree(os.path.join(oracle_ob, "external", name))
+        tb = tree(os.path.join(ob, "external", name))
+        if tb is None:
+            r["status"] = "MISSING"
+        else:
+            diffs, n = compare_trees(ta or {}, tb, ctx, args.diffs)
+            r["tree_diffs"] = n
+            if diffs:
+                r["first_diffs"] = diffs
+            ma, mb = marker_of(oracle_ob, name), marker_of(ob, name)
+            if ma is not None:
+                r["marker"] = "MATCH" if ma == mb else "DIFF"
+                if ma != mb:
+                    r["marker_oracle"] = ma.decode("latin-1")
+                    r["marker_blaze"] = None if mb is None else mb.decode("latin-1")
+            else:
+                ca = contents_hash(oracle_ob, name)
+                if ca is not None:
+                    cb = contents_hash(ob, name)
+                    hb = cb[0] if cb else (mb.split(b"\n")[0].decode() if mb else None)
+                    r["predeclared_hash"] = "MATCH" if ca[0] == hb else "DIFF"
+                    if ca[0] != hb:
+                        r["hash_oracle"], r["hash_blaze"] = ca[0], hb
+            ok = n == 0 and r.get("marker", "MATCH") == "MATCH" and \
+                r.get("predeclared_hash", "MATCH") == "MATCH"
+            r["status"] = "MATCH" if ok else "DIFF"
+        counts[r["status"]] += 1
+        results[name] = r
+
+    oracle_lock = os.path.join(oc.record_dir(oc.REFERENCE_LABEL, project), "raw",
+                               "MODULE.bazel.lock")
+    lock = compare_lockfile(oracle_lock, os.path.join(ws, "MODULE.bazel.lock"))
+    hidden = compare_lockfile(os.path.join(oracle_ob, "MODULE.bazel.lock"),
+                              os.path.join(ob, "MODULE.bazel.lock"))
+    report = {"project": project, "run": run_info, "counts": counts, "repos": results,
+              "lockfile": lock, "hidden_lockfile": hidden}
+    oc.write_json(os.path.join(W5R, project + "-report.json"), report)
+
+    print("== %s: repos %d/%d MATCH (DIFF %d, MISSING %d); lockfile %s" % (
+        project, counts["MATCH"], len(repos), counts["DIFF"], counts["MISSING"],
+        lock.get("status")))
+    for name, r in results.items():
+        if r["status"] != "MATCH":
+            print("  %-70s %s %s" % (name, r["status"], json.dumps(
+                {k: v for k, v in r.items() if k not in ("status",)})[:600]))
+    if lock.get("keys"):
+        for k, v in lock["keys"].items():
+            if v != "MATCH":
+                print("  lockfile %s: %s" % (k, json.dumps(v)[:800]))
+    exts = (hidden.get("keys") or {}).get("moduleExtensions", {})
+    print("   hidden lockfile (output base) moduleExtensions: %d/%d MATCH" % (
+        sum(1 for v in exts.values() if v == "MATCH"), len(exts)))
+    for k, v in exts.items():
+        if v != "MATCH":
+            print("  hidden %s: %s" % (k, json.dumps(v)[:300]))
+    return counts["MATCH"] == len(repos) and lock.get("status") == "MATCH"
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--project", default="all")
+    ap.add_argument("--binary", default=DEFAULT_BINARY)
+    ap.add_argument("--repo", action="append")
+    ap.add_argument("--shared-contents-cache", action="store_true")
+    ap.add_argument("--no-run", action="store_true")
+    ap.add_argument("--keep-output-base", action="store_true")
+    ap.add_argument("--diffs", type=int, default=5)
+    ap.add_argument("--timeout", type=int, default=3600)
+    ap.add_argument("--no-scope", action="store_true")
+    args = ap.parse_args()
+    maybe_reexec_in_scope(args)
+    projects = oc.load_projects()
+    names = list(ORACLE_OUTPUT_BASES) if args.project == "all" else [args.project]
+    ok = True
+    for name in names:
+        ok = run_project(args, name, projects[name]) and ok
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""W6b: replay the oracle's recorded action graph through Blaze's execution phase. See `help`."""
+
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+CACHE = os.path.expanduser("~/.cache/blaze")
+RECORDS = os.path.join(CACHE, "oracle-records", "oracle-9.3.2")
+INSTALL_BASE = os.path.join(CACHE, "oracle-out", "ur", "install", "58cf1ecbff441bac762b0050d6da21e9")
+WORK = os.path.join(CACHE, "work", "w6b")
+BIN = os.path.join(ROOT, "target", "debug", "blaze-build-replay")
+# Output bases of earlier oracle builds (read-only): their fetched external repositories are
+# linked into the replay's output base.
+EXTERNAL_FROM = {
+    "brotli": os.path.join(CACHE, "oracle-out", "ur", "583b18a54a0812f6ca106c9c2c1eb80c"),
+    "re2": os.path.join(CACHE, "oracle-out", "rec-oracle-9.3.2", "d4c1ff46e292915bfbb425566b16402b"),
+}
+
+USAGE = """\
+usage: scripts/w6b/replay-build [--project brotli] [--jobs N] [--keep] [--verbose]
+       scripts/w6b/replay-build help
+
+1. copies the corpus checkout ~/.cache/blaze/corpus/<p> to ~/.cache/blaze/work/w6b/<p>/ws
+   (rsync, minus bazel-* and .git) and deletes ~/.cache/blaze/work/w6b/<p>/out;
+2. runs target/debug/blaze-build-replay (scripts/cargo-capped build -p blaze_buildtool
+   --bin blaze-build-replay first) under systemd-run (MemoryMax=12G): it plants the execroot
+   (workspace entries, external repos linked from an earlier oracle output base, read-only),
+   rebuilds the recorded actions, and builds the recorded top-level targets through Blaze's
+   BuildDriver / TargetCompletion / ACTION_EXECUTION and the linux-sandbox strategy;
+3. walks bazel-bin / bazel-testlogs with scripts/oracle's walk and normaliser and compares the
+   items with the oracle's `outputs` surface (~/.cache/blaze/oracle-records/oracle-9.3.2/<p>/
+   items/outputs.json), and the stderr summary lines with the `build_stderr` surface.
+
+Prints counts (MATCH / DIFF / MISSING / EXTRA); --verbose lists every difference.
+Exit code 0 iff all outputs match.
+"""
+
+
+def load_module(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_loader(name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def main(argv):
+    if argv and argv[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    project = "brotli"
+    jobs = "16"
+    keep = verbose = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--project":
+            project = argv[i + 1]; i += 1
+        elif a == "--jobs":
+            jobs = argv[i + 1]; i += 1
+        elif a == "--keep":
+            keep = True
+        elif a == "--verbose":
+            verbose = True
+        else:
+            print(USAGE, file=sys.stderr)
+            return 2
+        i += 1
+    sys.path.insert(0, os.path.join(ROOT, "scripts", "oracle"))
+    record = load_module("oracle_record", os.path.join(ROOT, "scripts", "oracle", "record"))
+    normalise = load_module("oracle_normalise", os.path.join(ROOT, "scripts", "oracle", "normalise.py"))
+    surfaces = load_module("oracle_surfaces", os.path.join(ROOT, "scripts", "oracle", "surfaces.py"))
+
+    base = os.path.join(WORK, project)
+    ws = os.path.join(base, "ws")
+    out = os.path.join(base, "out")
+    os.makedirs(ws, exist_ok=True)
+    subprocess.run(["rsync", "-a", "--delete", "--exclude", "bazel-*", "--exclude", ".git",
+                    os.path.join(CACHE, "corpus", project) + "/", ws + "/"], check=True)
+    if os.path.exists(out) and not keep:
+        subprocess.run(["chmod", "-R", "u+w", out], check=False)
+        shutil.rmtree(out)
+    stderr_path = os.path.join(base, "build.stderr")
+    cmd = ["systemd-run", "--user", "--collect", "--wait", "--quiet", "--pipe",
+           "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0",
+           "--setenv=HOME=" + os.environ["HOME"], "--setenv=PATH=/usr/bin:/bin",
+           BIN, "--records", RECORDS, "--project", project, "--workspace", ws,
+           "--output-base", out, "--external-from", EXTERNAL_FROM[project],
+           "--install-base", INSTALL_BASE, "--jobs", jobs]
+    with open(stderr_path, "wb") as err:
+        rc = subprocess.run(cmd, stderr=err, stdout=subprocess.DEVNULL).returncode
+    print(f"{project}: blaze-build-replay exit code {rc} (stderr: {stderr_path})")
+
+    ctx = normalise.Context({
+        "execroot": os.path.join(out, "execroot", "_main"),
+        "output_base": out,
+        "install_base": INSTALL_BASE,
+        "workspace": ws,
+        "home": os.environ["HOME"],
+    }, user=os.environ.get("USER"))
+    walk = record.walk_outputs(ctx, ws)
+    tmp = os.path.join(base, "rd")
+    os.makedirs(os.path.join(tmp, "raw"), exist_ok=True)
+    os.makedirs(os.path.join(tmp, "norm"), exist_ok=True)
+    with open(os.path.join(tmp, "raw", "outputs.walk.json"), "w") as f:
+        json.dump(walk, f)
+    manifest = {"commands": [{"name": "build", "exit_code": rc}]}
+    try:
+        items = surfaces.s_outputs(tmp, manifest, ctx)
+    except Exception as e:  # noqa: BLE001
+        print(f"outputs surface failed: {e}")
+        return 1
+    oracle = json.load(open(os.path.join(RECORDS, project, "items", "outputs.json")))["items"]
+    counts = {"MATCH": 0, "DIFF": 0, "MISSING": 0, "EXTRA": 0}
+    lines = []
+    for k in sorted(set(oracle) | set(items)):
+        if k not in items:
+            counts["MISSING"] += 1; lines.append(f"MISSING {k}")
+        elif k not in oracle:
+            counts["EXTRA"] += 1; lines.append(f"EXTRA   {k}")
+        elif items[k] != oracle[k]:
+            counts["DIFF"] += 1; lines.append(f"DIFF    {k}: {items[k]} != {oracle[k]}")
+        else:
+            counts["MATCH"] += 1
+    print(f"{project} outputs: {counts} of {len(oracle)} oracle items")
+    for line in lines if verbose else lines[:20]:
+        print("  " + line)
+
+    # Summary lines (the build_stderr surface keeps INFO/WARNING/ERROR lines, minus Elapsed).
+    stderr_text = open(stderr_path, encoding="latin-1").read()
+    want = json.load(open(os.path.join(RECORDS, project, "items", "build_stderr.json")))["items"]
+    got = {}
+    for line in stderr_text.splitlines():
+        if line.startswith(("INFO:", "WARNING:", "ERROR:")) and "Elapsed time" not in line \
+                and not line.startswith("INFO: From "):
+            got[line] = got.get(line, 0) + 1
+    for k in sorted(set(want) | set(got)):
+        mark = "ok  " if want.get(k) == got.get(k) else "DIFF"
+        print(f"  stderr {mark} oracle={want.get(k, 0)} blaze={got.get(k, 0)} {k}")
+    return 0 if counts["MATCH"] == len(oracle) and not (counts["EXTRA"]) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
