@@ -126,3 +126,11 @@ Each entry: date, decision, why, who decided.
   (S2-5/R2-3): accepted as an order-only deviation in one tie-break; the `graph-order` probe
   scenario stays as a visible known difference. (3) Probe evidence: Blaze's probe transcripts
   must be saved next to the oracle's so counts can be re-derived (R3-2). Root.
+- 2026-11-18. BLAKE3 digests: `blaze_vfs::DigestHashFunction` gains `Blake3` (Bazel's
+  `BazelHashFunctions.BLAKE3`, always registered: Linux x86-64 Bazel always has JNI). The file
+  system's digest function now comes from `--digest_function`, else the `bazel.DigestFunction`
+  system property (default SHA256), as in `BazelFileSystemModule.getFileSystem`. Blaze has no JVM,
+  so the property is read from the last `-Dbazel.DigestFunction=` in `--host_jvm_args`; an invalid
+  value is an abrupt exit with `DEFAULT_DIGEST_HASH_FUNCTION_INVALID_VALUE`. SHA-1 and GITSHA1 stay
+  `unported!`. Evidence: `--digest_function=BLAKE3` execution log of a genrule identical to the
+  oracle's (minus timings). User (request); root.

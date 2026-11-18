@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use blaze_vfs::{Path, PathFragment};
-use sha2::Digest;
 
 use super::action_input::{ActionInput, ActionInputRef};
 use super::file_artifact_value::FileArtifactValue;
@@ -85,14 +84,16 @@ pub fn virtual_write_to_path<V: VirtualActionInput + ?Sized>(
     input: &V,
     target: &Path,
 ) -> io::Result<Vec<u8>> {
+    let fs = target.get_file_system();
     let bytes = input.get_bytes()?;
     {
         let mut out = target.get_output_stream()?;
         out.write_all(&bytes)?;
         out.flush()?;
     }
+    let digest = fs.get_digest_function().hash_bytes(&bytes);
     target.set_executable(true)?;
-    Ok(sha2::Sha256::digest(&bytes).to_vec())
+    Ok(digest)
 }
 
 trait PathExt {

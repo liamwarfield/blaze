@@ -137,8 +137,11 @@ impl KeyType {
     }
 
     fn matches_file_system_digest(self, f: DigestHashFunction) -> bool {
+        // Java compares the HashFunction instances: Hashing.sha256() for SHA-256 and
+        // Blake3HashFunction.INSTANCE for BLAKE3.
         match f {
             DigestHashFunction::Sha256 => self == KeyType::SHA256,
+            DigestHashFunction::Blake3 => self == KeyType::BLAKE3,
         }
     }
 }

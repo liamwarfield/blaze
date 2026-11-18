@@ -299,6 +299,7 @@ pub fn hash_with(key_type: KeyType, content: &[u8]) -> Vec<u8> {
         KeyType::Sha384 => sha2::Sha384::digest(content).to_vec(),
         KeyType::Sha512 => sha2::Sha512::digest(content).to_vec(),
         KeyType::Sha1 => blaze_util::unported!("Hashing.sha1"),
-        KeyType::Blake3 => blaze_util::unported!("Blake3HashFunction"),
+        // Java: com/google/devtools/build/lib/bazel/repository/cache/DownloadCache.java:47 DownloadCache.KeyType.BLAKE3
+        KeyType::Blake3 => blaze_vfs::DigestHashFunction::Blake3.hash_bytes(content),
     }
 }

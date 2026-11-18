@@ -26,7 +26,7 @@ use blaze_optdefs::command::execution_options::ExecutionOptions;
 use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
 use blaze_optdefs::misc::remote_options::RemoteOptions;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail};
-use blaze_vfs::{DigestHashFunction, FileSystemRef, Path};
+use blaze_vfs::{FileSystemRef, Path};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 
@@ -255,7 +255,7 @@ impl RemoteModule {
         tracing_metadata_utils::set_tool_version(&tool_version);
 
         // Java: `env.getRuntime().getFileSystem().getDigestFunction()`.
-        let hash_fn = DigestHashFunction::Sha256;
+        let hash_fn = file_system.get_digest_function();
         let digest_util = DigestUtil::new(hash_fn);
 
         // If --remote_cache is empty but --remote_executor is not, reuse the latter for the

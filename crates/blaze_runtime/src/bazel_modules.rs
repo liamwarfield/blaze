@@ -256,8 +256,9 @@ impl BlazeModule for SystemSuspensionModule {
 
 /// Module to provide a `FileSystem` instance that uses `SHA256` as the default hash function, or
 /// else what's specified by `-Dbazel.DigestFunction`.
-/// PORT: getFileSystem is in `BlazeRuntime::new_runtime` (the Unix file system with SHA-256;
-/// `--unix_digest_hash_attribute_name` fails loudly there).
+/// PORT: getFileSystem is in `BlazeRuntime::new_runtime` (the Unix file system with the digest
+/// function of `--digest_function` or `-Dbazel.DigestFunction`; `--unix_digest_hash_attribute_name`
+/// fails loudly there).
 // Java: com/google/devtools/build/lib/bazel/BazelFileSystemModule.java:46 BazelFileSystemModule
 pub struct BazelFileSystemModule;
 

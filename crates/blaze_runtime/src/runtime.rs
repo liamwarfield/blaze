@@ -5,6 +5,8 @@ use std::sync::{Arc, OnceLock};
 
 use blaze_events::OutErr;
 use blaze_optdefs::command::blaze_server_startup_options::BlazeServerStartupOptions;
+use blaze_optdefs::command::digest_hash_function::DigestFunctionConverter;
+use blaze_optdefs::command::host_jvm_startup_options::HostJvmStartupOptions;
 use blaze_options::definition::{OptionDefinitionRef, OptionsClassRef};
 use blaze_options::{OptionsParser, OptionsParsingException, PriorityCategory};
 use blaze_protos::command_server::RunRequest;
@@ -477,17 +479,18 @@ impl BlazeRuntime {
         ));
 
         // PORT: BazelFileSystemModule.getFileSystem: on Linux the Unix file system with the
-        // digest function of --digest_function (its converter only accepts SHA-256, the only
-        // function ported) and --unix_digest_hash_attribute_name, which is not ported.
-        // Java: com/google/devtools/build/lib/bazel/BazelFileSystemModule.java:90 BazelFileSystemModule.getFileSystem
+        // digest function of --digest_function (or the `bazel.DigestFunction` system property,
+        // default SHA256) and --unix_digest_hash_attribute_name, which is not ported.
+        // Java: com/google/devtools/build/lib/bazel/BazelFileSystemModule.java:52 BazelFileSystemModule.getFileSystem
+        let digest_hash_function = bazel_file_system_digest_function(&options, &startup_options)
+            .map_err(NewRuntimeError::Abrupt)?;
         if !startup_options.unix_digest_hash_attribute_name.is_empty() {
             blaze_util::unported!(
                 "UnixFileSystem.getFastDigest",
                 "--unix_digest_hash_attribute_name"
             );
         }
-        let fs: FileSystemRef =
-            Arc::new(UnixFileSystem::new(blaze_vfs::DigestHashFunction::Sha256));
+        let fs: FileSystemRef = Arc::new(UnixFileSystem::new(digest_hash_function));
 
         // PORT: the shared install base lock (--lock_install_base,
         // FileSystemLock.tryGet(<install_base>.lock, SHARED)) is not taken again here: the client
@@ -590,6 +593,45 @@ impl std::hash::Hash for ClassKey {
     }
 }
 
+/// The digest function of `BazelFileSystemModule.getFileSystem`: `--digest_function`, else the
+/// `bazel.DigestFunction` system property (default `SHA256`) through the same converter.
+// Java: com/google/devtools/build/lib/bazel/BazelFileSystemModule.java:52 BazelFileSystemModule.getFileSystem
+fn bazel_file_system_digest_function(
+    options: &OptionsParsingResult,
+    startup_options: &BlazeServerStartupOptions,
+) -> Result<blaze_vfs::DigestHashFunction, AbruptExitException> {
+    if let Some(f) = &startup_options.digest_hash_function {
+        return Ok(f.0);
+    }
+    // PORT: System.getProperty("bazel.DigestFunction", "SHA256"). The server is not a JVM; a
+    // system property reaches Bazel's server only as `-D` in --host_jvm_args, where the last
+    // definition wins, so that is where it is read from.
+    let host_jvm_args: &[String] = &options
+        .get_options::<HostJvmStartupOptions>()
+        .expect("HostJvmStartupOptions")
+        .host_jvm_args;
+    let value = host_jvm_args
+        .iter()
+        .rev()
+        .find_map(|arg| arg.strip_prefix("-Dbazel.DigestFunction="))
+        .unwrap_or("SHA256");
+    DigestFunctionConverter::convert_name(value).map_err(|e| {
+        AbruptExitException::new(crate::exit_code::DetailedExitCode::of(
+            blaze_protos::failure_details::FailureDetail {
+                message: e.get_message().to_string(),
+                category: Some(
+                    blaze_protos::failure_details::failure_detail::Category::Filesystem(
+                        blaze_protos::failure_details::Filesystem {
+                            code: blaze_protos::failure_details::filesystem::Code::DefaultDigestHashFunctionInvalidValue
+                                as i32,
+                        },
+                    ),
+                ),
+            },
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,6 +654,64 @@ mod tests {
         );
         assert_eq!(startup, s(&["--install_base=/foo --host_jvm_args=-Xmx1B"]));
         assert_eq!(other, s(&["build", "//foo:bar", "--nobuild"]));
+    }
+
+    /// The digest function `BazelFileSystemModule.getFileSystem` picks for `startup_args`.
+    fn file_system_digest_function(
+        startup_args: &[&str],
+    ) -> Result<blaze_vfs::DigestHashFunction, AbruptExitException> {
+        let options = BlazeRuntime::parse_startup_options(&[], &s(startup_args)).unwrap();
+        let startup_options = options
+            .get_options::<BlazeServerStartupOptions>()
+            .expect("BlazeServerStartupOptions");
+        bazel_file_system_digest_function(&options, &startup_options)
+    }
+
+    #[test]
+    fn digest_function_defaults_to_sha256() {
+        assert_eq!(
+            file_system_digest_function(&[]).unwrap(),
+            blaze_vfs::DigestHashFunction::Sha256
+        );
+    }
+
+    #[test]
+    fn digest_function_startup_option_selects_blake3() {
+        assert_eq!(
+            file_system_digest_function(&["--digest_function=blake3"]).unwrap(),
+            blaze_vfs::DigestHashFunction::Blake3
+        );
+        // The startup option wins over the system property.
+        assert_eq!(
+            file_system_digest_function(&[
+                "--digest_function=SHA256",
+                "--host_jvm_args=-Dbazel.DigestFunction=BLAKE3",
+            ])
+            .unwrap(),
+            blaze_vfs::DigestHashFunction::Sha256
+        );
+    }
+
+    #[test]
+    fn digest_function_system_property_selects_blake3() {
+        assert_eq!(
+            file_system_digest_function(&["--host_jvm_args=-Dbazel.DigestFunction=BLAKE3"])
+                .unwrap(),
+            blaze_vfs::DigestHashFunction::Blake3
+        );
+    }
+
+    #[test]
+    fn digest_function_invalid_system_property_is_abrupt_exit() {
+        let e = file_system_digest_function(&["--host_jvm_args=-Dbazel.DigestFunction=bogus"])
+            .unwrap_err();
+        assert_eq!(
+            e.get_detailed_exit_code()
+                .get_failure_detail()
+                .unwrap()
+                .message,
+            "Not a valid hash function."
+        );
     }
 
     // A regression test to make sure that the 'no' prefix is handled correctly.

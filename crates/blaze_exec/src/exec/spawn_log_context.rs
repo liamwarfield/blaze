@@ -295,13 +295,13 @@ pub fn is_input_directory(
 
 /// A sink that hashes and counts what is written (`DigestOutputStream` over a null stream).
 struct HashingWriter {
-    hasher: sha2::Sha256,
+    hasher: blaze_vfs::DigestHasher,
     size: i64,
 }
 
 impl Write for HashingWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        sha2::Digest::update(&mut self.hasher, buf);
+        self.hasher.update(buf);
         self.size += buf.len() as i64;
         Ok(buf.len())
     }
@@ -317,17 +317,12 @@ pub(crate) fn compute_virtual_digest(
     input: &dyn VirtualActionInput,
     digest_hash_function: DigestHashFunction,
 ) -> io::Result<(String, i64)> {
-    match digest_hash_function {
-        DigestHashFunction::Sha256 => {
-            let mut writer = HashingWriter {
-                hasher: <sha2::Sha256 as sha2::Digest>::new(),
-                size: 0,
-            };
-            input.write_to(&mut writer)?;
-            let hash = sha2::Digest::finalize(writer.hasher);
-            Ok((hex::encode(hash), writer.size))
-        }
-    }
+    let mut writer = HashingWriter {
+        hasher: digest_hash_function.new_hasher(),
+        size: 0,
+    };
+    input.write_to(&mut writer)?;
+    Ok((hex::encode(writer.hasher.finish()), writer.size))
 }
 
 /// Computes the digest of an `ActionInput` or its path.
