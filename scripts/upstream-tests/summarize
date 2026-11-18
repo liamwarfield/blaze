@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Summarise two runs of the same binary into the committed baseline. See `summarize help`."""
+
+import json
+import os
+import re
+import sys
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ut_common as u  # noqa: E402
+from categories import CATEGORY_DOC, FLAKY_DOC, OVERRIDES, PATTERNS, VACUOUS  # noqa: E402
+
+USAGE = """\
+usage: scripts/upstream-tests/summarize <label-run1> <label-run2> [<label-run3> ...] [--out FILE]
+                                         [--mark-flaky]
+       scripts/upstream-tests/summarize help
+
+Reads ~/.cache/blaze/upstream-test-results/<label>/results.json of two or more full runs of one
+binary and writes a compact summary (default corpus/upstream-tests/<label-run1>.json):
+  counts by suite (targets and functions: in scope, excluded, run, pass, flaky, fail),
+  counts by failure category, the failing, excluded and vacuous (pass without running a test
+  function on Linux) targets with their reason, the flaky names, and "passing": targets and
+  functions that passed in every run (functions grouped per target; vacuous targets left out).
+  A name is flaky when it passed in some runs and not in others (or is missing from one).
+Categories come from scripts/upstream-tests/categories.py (per-target overrides first, then
+log patterns over the failing shards' test.log).
+--mark-flaky also writes the flaky names into every run's results.json, which `compare` honours.
+"""
+
+
+def load(label):
+    path = os.path.join(u.RESULTS, label, "results.json")
+    return json.load(open(path)), path
+
+
+def passed(st):
+    return st in ("pass", "flaky")
+
+
+def categorize(label, recs, dirs):
+    if label in OVERRIDES:
+        return OVERRIDES[label]
+    text = []
+    for t, d in zip(recs, dirs):
+        for sh in t.get("shards", []):
+            if sh["status"] != "pass" and sh.get("log"):
+                try:
+                    text.append(open(os.path.join(d, sh["log"]), errors="replace").read())
+                except OSError:
+                    pass
+    blob = "\n".join(text)
+    for cat, rx in PATTERNS:
+        if re.search(rx, blob, re.M):
+            return cat
+    if all(t["status"] == "timeout" for t in recs):
+        return "timeout"
+    return "uncategorized"
+
+
+def main(argv):
+    if len(argv) < 2 or argv[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    labels = []
+    out = None
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--out":
+            out = argv[i + 1]
+            i += 2
+            continue
+        if not argv[i].startswith("--"):
+            labels.append(argv[i])
+        i += 1
+    if len(labels) < 2:
+        sys.exit("need at least two run labels")
+    out = out or os.path.join(u.REPO, "corpus/upstream-tests", labels[0] + ".json")
+    loaded = [load(l) for l in labels]
+    R = [r for r, _ in loaded]
+    paths = [p for _, p in loaded]
+    dirs = [os.path.dirname(p) for p in paths]
+    if len({r["binary_sha256"] for r in R}) != 1:
+        sys.exit("the runs used different binaries")
+    manifest = u.load_manifest()
+    tests = {t["label"]: t for t in manifest["tests"]}
+
+    flaky_t, flaky_f = [], []
+    pass_t, pass_f = [], {}
+    fail_t = {}
+    vacuous = {}
+    ran_all = set()
+    for label in sorted(tests):
+        recs = [r["targets"].get(label) for r in R]
+        if not all(recs):
+            continue
+        ran_all.add(label)
+        ps = [passed(t["status"]) for t in recs]
+        if all(ps) and label in VACUOUS:
+            vacuous[label] = VACUOUS[label]
+        elif all(ps):
+            pass_t.append(label)
+        elif any(ps):
+            flaky_t.append(label)
+        else:
+            fail_t[label] = categorize(label, recs, dirs)
+    funcs = sorted(set().union(*(r["functions"] for r in R)))
+    for name in funcs:
+        label, fn = name.split("#", 1)
+        if label not in ran_all:
+            continue
+        ps = [(r["functions"].get(name) or {}).get("status") == "pass" for r in R]
+        if all(ps):
+            pass_f.setdefault(label, []).append(fn)
+        elif any(ps):
+            # Passed in some runs only; missing from a run's XML (the shard timed out or
+            # unittest.bash lost the report) counts as not passing there.
+            flaky_f.append(name)
+
+    def suite_counts(suite):
+        labels = [l for l, t in tests.items() if t["suite"] == suite]
+        excluded = [l for l in labels if u.excluded_reason(tests[l])]
+        fn = [n for n in funcs if n.split("#")[0] in labels and n.split("#")[0] in ran_all]
+        fpass = sum(len(v) for k, v in pass_f.items() if k in labels)
+        fflaky = sum(1 for n in flaky_f if n.split("#")[0] in labels)
+        return {
+            "targets": {"in_scope": len(labels), "excluded": len(excluded),
+                        "run": sum(1 for l in labels if l in ran_all),
+                        "pass": sum(1 for l in pass_t if l in labels),
+                        "vacuous": sum(1 for l in vacuous if l in labels),
+                        "flaky": sum(1 for l in flaky_t if l in labels),
+                        "fail": sum(1 for l in fail_t if l in labels)},
+            "functions": {"seen": len(fn), "pass": fpass, "flaky": fflaky,
+                          "not_pass": len(fn) - fpass - fflaky},
+        }
+
+    by_cat = {}
+    for label, cat in fail_t.items():
+        c = by_cat.setdefault(cat, {"targets": 0, "functions_not_passing": 0,
+                                    "doc": CATEGORY_DOC.get(cat, "")})
+        c["targets"] += 1
+        c["functions_not_passing"] += sum(
+            1 for n, f in R[0]["functions"].items() if n.split("#")[0] == label and f["status"] != "pass")
+    excluded = {l: u.excluded_reason(t) for l, t in tests.items() if u.excluded_reason(t)}
+    runs = []
+    for r in R:
+        runs.append({"label": r["label"], "wall_s": round(sum(x["wall_s"] for x in r["runs"]), 1),
+                     "oom_kills": sum(x.get("oom_kills") or 0 for x in r["runs"]),
+                     "test_jobs": sorted({x.get("test_jobs") for x in r["runs"] if x.get("test_jobs")}),
+                     "targets": {k: sum(1 for t in r["targets"].values() if t["status"] == k)
+                                 for k in sorted({t["status"] for t in r["targets"].values()})}})
+    summary = {
+        "pin": u.PIN_VERSION,
+        "binary_sha256": R[0]["binary_sha256"],
+        "scope": u.SCOPE,
+        "rule": "pass = passed in every run; flaky = passed in some runs; fail = passed in none",
+        "runs": runs,
+        "counts": {"shell": suite_counts("shell"), "py": suite_counts("py")},
+        "failure_categories": dict(sorted(by_cat.items(), key=lambda kv: -kv[1]["targets"])),
+        "failing": dict(sorted(fail_t.items())),
+        "excluded": dict(sorted(excluded.items())),
+        "vacuous": dict(sorted(vacuous.items())),
+        "flaky": {"targets": flaky_t, "functions": flaky_f,
+                  "why": {l: FLAKY_DOC.get(l, "") for l in flaky_t}},
+        "passing": {"targets": pass_t, "functions": {k: sorted(v) for k, v in sorted(pass_f.items())}},
+    }
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    json.dump(summary, open(out, "w"), indent=1, sort_keys=False)
+    open(out, "a").write("\n")
+    if "--mark-flaky" in argv:
+        for r, p in zip(R, paths):
+            r["flaky"] = sorted(flaky_t + flaky_f)
+            json.dump(r, open(p + ".tmp", "w"), indent=1)
+            os.rename(p + ".tmp", p)
+    print(json.dumps({"counts": summary["counts"], "runs": runs}, indent=1))
+    for cat, c in summary["failure_categories"].items():
+        print("%-28s %3d targets  %4d functions" % (cat, c["targets"], c["functions_not_passing"]))
+    print("wrote %s" % out)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

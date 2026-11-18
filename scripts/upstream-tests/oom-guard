@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Keeps the outer (harness) Bazel alive under the job's MemoryMax.
+# Usage: scripts/upstream-tests/oom-guard <outer output_user_root>  (run/prepare start it in the unit)
+# Every 2s it sets oom_score_adj=900 on every process in its own cgroup except the outer Bazel:
+# processes with the exact argument --output_user_root=<root>, and the servers in <root>/*/server/
+# server.pid.txt. If the job hits MemoryMax, the kernel
+# then kills a test's inner Bazel (that test fails and run records the oom_kill count) instead of
+# the outer server, which would lose the whole run. Unprivileged processes may raise the value.
+set -u
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || $# -lt 1 ]]; then sed -n "2,8p" "$0"; exit 0; fi
+root="$1"
+exec 2>/dev/null
+cg="/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)"
+while sleep 2; do
+  while read -r pid; do
+    [[ -r /proc/$pid/oom_score_adj ]] || continue
+    [[ "$(cat /proc/$pid/oom_score_adj 2>/dev/null)" == 900 ]] && continue
+    [[ $pid == $$ ]] && continue
+    if tr '\0' '\n' < /proc/$pid/cmdline 2>/dev/null | grep -qxF -- "--output_user_root=$root"; then continue; fi
+    if cat "$root"/*/server/server.pid.txt 2>/dev/null | grep -qx -- "$pid"; then continue; fi
+    echo 900 > /proc/$pid/oom_score_adj 2>/dev/null || true
+  done < <(find "$cg" -name cgroup.procs -exec cat {} + 2>/dev/null)
+done

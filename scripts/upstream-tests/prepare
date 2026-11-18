@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Prepare the upstream integration tests. See `prepare help`."""
+
+import json
+import os
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ut_common as u  # noqa: E402
+
+USAGE = """\
+usage: scripts/upstream-tests/prepare [--jobs N] [--skip-build] [--force-copy]
+       scripts/upstream-tests/prepare help
+
+One-time setup for scripts/upstream-tests/run. Uses the pinned oracle as the outer Bazel.
+
+  1. Copies the pinned source (UPSTREAM.json) to ~/.cache/blaze/work/upstream-src (once;
+     --force-copy recopies) and patches it so that //src:bazel is a copy of the binary named by
+     --repo_env=BLAZE_UNDER_TEST (repo rule @blaze_under_test, see ut_common.py). Nothing else
+     in the source changes, so the tests run unmodified.
+  2. Queries tests(//src/test/shell/... + //src/test/py/bazel/...) and writes the manifest
+     ~/.cache/blaze/upstream-tests/manifest.json (label, kind, size, tags, shard_count, srcs,
+     flaky, excluded reason).
+  3. Builds every test target and //src:test_repos (fills the tests' repository cache
+     ~/.cache/blaze/upstream-tests/repo-cache, as upstream CI does) with the oracle as the binary
+     under test. Runs under systemd-run with MemoryMax=14G. Log: ~/.cache/blaze/upstream-tests/
+     prepare-build.log.
+"""
+
+
+def outer(args, log, jobs, memory=u.MEMORY_MAX):
+    cmd = u.outer_job(args, log, memory_max=memory)
+    t = time.time()
+    rc = subprocess.call(cmd)
+    print("  %s: exit %d in %.0fs (log %s)" % (args[0], rc, time.time() - t, log))
+    return rc
+
+
+def write_manifest(jsonl):
+    tests = []
+    for line in open(jsonl):
+        t = json.loads(line)
+        r = t["rule"]
+        a = {x["name"]: x for x in r.get("attribute", [])}
+
+        def s(name):
+            return a.get(name, {}).get("stringValue")
+
+        def sl(name):
+            return a.get(name, {}).get("stringListValue", [])
+
+        tags = sl("tags")
+        label = r["name"]
+        excluded = u.excluded_reason({"label": label, "tags": tags})
+        srcs = sl("srcs") or [x for x in a.get("srcs", {}).get("stringListValue", [])]
+        tests.append({
+            "label": label,
+            "kind": r["ruleClass"],
+            "suite": "py" if label.startswith("//src/test/py/") else "shell",
+            "size": s("size") or "medium",
+            "tags": tags,
+            "shard_count": max(1, a.get("shard_count", {}).get("intValue", 0) or 1),
+            "flaky": bool(a.get("flaky", {}).get("booleanValue", False)),
+            "srcs": srcs,
+            "location": r.get("location", "").replace(u.SRC + "/", ""),
+            "excluded": excluded,
+        })
+    tests.sort(key=lambda x: x["label"])
+    m = {"pin": u.PIN_VERSION, "scope": u.SCOPE, "tests": tests}
+    json.dump(m, open(u.MANIFEST, "w"), indent=1)
+    print("  manifest: %d tests (%d excluded) -> %s" % (
+        len(tests), sum(1 for t in tests if t["excluded"]), u.MANIFEST))
+    return m
+
+
+def main(argv):
+    if argv and argv[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    jobs = u.DEFAULT_JOBS
+    if "--jobs" in argv:
+        jobs = int(argv[argv.index("--jobs") + 1])
+    u.ensure_dirs()
+    if "--force-copy" in argv and os.path.exists(u.SRC):
+        subprocess.run(["rm", "-rf", u.SRC], check=True)
+    print("source: %s (%s)" % (u.SRC, "copied" if u.copy_source() else "exists"))
+    u.apply_patch()
+    flags = u.common_flags(jobs) + ["--repo_env=BLAZE_UNDER_TEST=" + u.ORACLE]
+    jsonl = os.path.join(u.STATE, "query-tests.jsonl")
+    q = "tests(%s)" % " + ".join(u.SCOPE)
+    # query writes to stdout, so run it through bash redirection.
+    cmd = u.outer_job(["query", q, "--output=streamed_jsonproto", "--repository_cache=" + u.REPO_CACHE],
+                      jsonl + ".log", stdout_file=jsonl)
+    rc = subprocess.call(cmd)
+    if rc != 0:
+        sys.exit("query failed; see %s.log" % jsonl)
+    m = write_manifest(jsonl)
+    if "--skip-build" in argv:
+        return 0
+    targets = [t["label"] for t in m["tests"] if not t["excluded"]]
+    tfile = os.path.join(u.STATE, "build-targets.txt")
+    open(tfile, "w").write("\n".join(targets + ["//src:test_repos"]) + "\n")
+    rc = outer(["build", "--keep_going", "--target_pattern_file=" + tfile] + flags,
+               os.path.join(u.STATE, "prepare-build.log"), jobs)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

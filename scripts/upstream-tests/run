@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""Run Bazel's own shell and Python integration tests against a binary. See `run help`."""
+
+import argparse
+import datetime
+import fnmatch
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.parse
+import xml.etree.ElementTree as ET
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ut_common as u  # noqa: E402
+
+USAGE = """\
+usage: scripts/upstream-tests/run --binary <path> --label <name> [selection] [options]
+       scripts/upstream-tests/run list [selection]     print the selected test targets
+       scripts/upstream-tests/run reparse --label <name>   re-read copied test.xml files
+       scripts/upstream-tests/run help
+
+Runs upstream's sh_test/py_test targets under src/test/shell and src/test/py/bazel (pinned
+source, unmodified) against <binary>. Needs scripts/upstream-tests/prepare once.
+
+How: the outer Bazel is always the pinned oracle, working in the patched source copy
+~/.cache/blaze/work/upstream-src. There //src:bazel (runfiles path io_bazel/src/bazel, which
+src/test/shell/bin/bazel and test_base.py run) is a copy of <binary>, supplied through
+--repo_env=BLAZE_UNDER_TEST. Everything else in the test runfiles is upstream's own build. Tests
+run through `bazel test`, so test-setup.sh, TEST_TMPDIR, sharding, timeouts, XML_OUTPUT_FILE and
+the sandbox are Bazel's own. Test environment follows upstream CI (.bazelrc config ci-linux):
+TEST_INSTALL_BASE (shared, per binary sha256), REPOSITORY_CACHE (the downloads prepare
+fetched for //src:test_repos and the build; repo contents cache emptied at the start of each
+run), REMOTE_NETWORK_ADDRESS=bazel.build:80, --sandbox_default_allow_network=false
+(tests tagged requires-network keep network), plus PATH. --nocache_test_results and
+--flaky_test_attempts=1, so every run executes every test once.
+
+Selection (combined with AND; default: every non-excluded test in the manifest):
+  --suite shell|py           one suite
+  --file GLOB                test source file, matched against path and basename (repeatable)
+  --target LABEL_GLOB        test label glob, e.g. '//src/test/shell/bazel:bazel_query_*' (repeatable)
+  --targets-file PATH        labels, one per line
+  --tag TAG                  only tests with this tag (repeatable, any of)
+  --exclude-tag TAG          drop tests with this tag (repeatable)
+  --shard I/N                the I-th (1-based) of N round-robin slices of the sorted selection
+  --include-excluded         also run excluded tests (manual, binary-variant, source-artifact,
+                             self-build; see EXCLUDED in ut_common.py)
+  --test-filter F            pass --test_filter=F (run some functions only)
+
+Options:
+  --test-jobs N              tests run at once (default %d); --jobs N build jobs (default %d)
+  --memory-max SIZE          systemd MemoryMax for the whole job (default %s)
+  --fresh                    drop earlier results for this label (default: merge, per target)
+  --dry-run                  print the outer command and exit
+
+Output: ~/.cache/blaze/upstream-test-results/<label>/
+  results.json   {"targets": {label: {...}}, "functions": {label#fn: {...}},
+                  "results": {name: pass|fail|timeout|skip|...}}   (per test target and function)
+  logs/<package>/<target>[/shard_K_of_N]/test.log, test.xml       copied from bazel-testlogs
+  outer-<timestamp>.log, bep-<timestamp>.json                     outer Bazel output and BEP
+Function names are <label>#<function> (shell: unittest.bash function; py: Class.method).
+""" % (u.DEFAULT_TEST_JOBS, u.DEFAULT_JOBS, u.MEMORY_MAX)
+
+STATUS_MAP = {
+    "PASSED": "pass",
+    "FLAKY": "flaky",
+    "FAILED": "fail",
+    "TIMEOUT": "timeout",
+    "INCOMPLETE": "incomplete",
+    "REMOTE_FAILURE": "fail",
+    "FAILED_TO_BUILD": "build_fail",
+    "TOOL_HALTED_BEFORE_TESTING": "not_run",
+    "NO_STATUS": "not_run",
+}
+
+
+def select(manifest, a):
+    out = []
+    files = a.file or []
+    targets = list(a.target or [])
+    if a.targets_file:
+        targets += [l.strip() for l in open(a.targets_file) if l.strip() and not l.startswith("#")]
+    for t in manifest["tests"]:
+        t["excluded"] = u.excluded_reason(t)
+        if t["excluded"] and not a.include_excluded and not (
+                targets and any(fnmatch.fnmatchcase(t["label"], g) for g in targets)):
+            continue
+        if a.suite and t["suite"] != a.suite:
+            continue
+        if files:
+            paths = [s.split(":")[-1] for s in t["srcs"]]
+            paths = paths + [os.path.basename(p) for p in paths]
+            if not any(fnmatch.fnmatchcase(p, g) for p in paths for g in files):
+                continue
+        if targets and not any(fnmatch.fnmatchcase(t["label"], g) for g in targets):
+            continue
+        if a.tag and not any(tg in t["tags"] for tg in a.tag):
+            continue
+        if a.exclude_tag and any(tg in t["tags"] for tg in a.exclude_tag):
+            continue
+        out.append(t)
+    out.sort(key=lambda t: t["label"])
+    if a.shard:
+        i, n = (int(x) for x in a.shard.split("/"))
+        if not 1 <= i <= n:
+            sys.exit("--shard must be I/N with 1 <= I <= N")
+        out = [t for k, t in enumerate(out) if k % n == i - 1]
+    return out
+
+
+def stage_binary(path):
+    """Content-addressed copy of the binary, so later edits to `path` cannot change a run."""
+    sha = u.sha256_file(path)
+    d = os.path.join(u.STATE, "binaries", sha)
+    dst = os.path.join(d, "bazel")
+    if not os.path.exists(dst):
+        os.makedirs(d, exist_ok=True)
+        shutil.copy2(path, dst + ".tmp")
+        os.chmod(dst + ".tmp", 0o755)
+        os.rename(dst + ".tmp", dst)
+    # The client locks "<install_base>.lock" next to the install base, so the sandbox-writable
+    # directory is the parent.
+    parent = os.path.join(u.INSTALL_BASES, sha[:32])
+    os.makedirs(parent, exist_ok=True)
+    return sha, dst, os.path.join(parent, "install")
+
+
+def uri_path(uri):
+    if uri.startswith("file://"):
+        return urllib.parse.unquote(uri[len("file://"):])
+    return None
+
+
+def duration_s(tr):
+    if "testAttemptDurationMillis" in tr:
+        return int(tr["testAttemptDurationMillis"]) / 1000.0
+    d = tr.get("testAttemptDuration")
+    if isinstance(d, str) and d.endswith("s"):
+        return float(d[:-1])
+    return None
+
+
+def parse_xml(path):
+    """[(name, status, seconds, message)] from a JUnit XML written by unittest.bash or absltest."""
+    try:
+        root = ET.parse(path).getroot()
+    except (ET.ParseError, OSError):
+        return None
+    out = []
+    for tc in root.iter("testcase"):
+        name = tc.get("name", "")
+        cls = tc.get("classname") or ""
+        # absltest: classname is module.Class; keep Class.method. unittest.bash: classname "".
+        if cls:
+            name = cls.split(".")[-1] + "." + name
+        status = "pass"
+        msg = None
+        for child in tc:
+            if child.tag in ("failure", "error"):
+                status = "fail"
+                msg = (child.get("message") or "")[:300]
+            elif child.tag == "skipped":
+                status = "skip"
+                msg = (child.get("message") or "")[:300]
+        if tc.get("status") == "notrun" or tc.get("result") in ("suppressed", "skipped"):
+            status = "skip"
+        try:
+            secs = float(tc.get("time") or 0)
+        except ValueError:
+            secs = None
+        out.append((name, status, secs, msg))
+    return out
+
+
+def collect(bep_path, results_dir, label_set):
+    """Reads the BEP and copies logs. Returns (targets, functions)."""
+    attempts = {}
+    summaries = {}
+    aborted = {}
+    if os.path.exists(bep_path):
+        for line in open(bep_path, errors="replace"):
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            eid = ev.get("id", {})
+            if "testResult" in eid and "testResult" in ev:
+                i = eid["testResult"]
+                attempts.setdefault(i["label"], []).append((i, ev["testResult"]))
+            elif "testSummary" in eid and "testSummary" in ev:
+                summaries[eid["testSummary"]["label"]] = ev["testSummary"]
+            elif "targetCompleted" in eid and ev.get("aborted"):
+                aborted[eid["targetCompleted"]["label"]] = ev["aborted"].get("reason", "")
+            elif "targetCompleted" in eid and ev.get("completed", {}).get("success") is False:
+                aborted.setdefault(eid["targetCompleted"]["label"], "build failed")
+    targets, functions = {}, {}
+    logs_root = os.path.join(results_dir, "logs")
+    for label in sorted(label_set):
+        s = summaries.get(label)
+        status = STATUS_MAP.get(s["overallStatus"], "fail") if s else (
+            "build_fail" if label in aborted else "not_run")
+        rec = {"status": status, "bazel_status": s["overallStatus"] if s else None,
+               "duration_s": None, "shards": [], "functions": {"pass": 0, "fail": 0, "skip": 0}}
+        total = 0.0
+        pkg, name = label[2:].split(":")
+        for i, tr in sorted(attempts.get(label, []), key=lambda x: (x[0].get("shard", 0), x[0].get("run", 0))):
+            shard = i.get("shard", 1)
+            nshards = s.get("shardCount") if s else None
+            files = {o["name"]: uri_path(o.get("uri", "")) for o in tr.get("testActionOutput", [])}
+            sub = name if not nshards or nshards <= 1 else os.path.join(name, "shard_%d_of_%d" % (shard, nshards))
+            dest = os.path.join(logs_root, pkg, sub)
+            os.makedirs(dest, exist_ok=True)
+            copied = {}
+            for fname in ("test.log", "test.xml"):
+                src = files.get(fname)
+                if src and os.path.exists(src):
+                    shutil.copyfile(src, os.path.join(dest, fname))
+                    copied[fname] = os.path.relpath(os.path.join(dest, fname), results_dir)
+            d = duration_s(tr)
+            total += d or 0
+            rec["shards"].append({"shard": shard, "status": STATUS_MAP.get(tr.get("status"), "fail"),
+                                  "duration_s": d, "log": copied.get("test.log"),
+                                  "xml": copied.get("test.xml")})
+        rec["duration_s"] = round(total, 3) if rec["shards"] else None
+        if label in aborted:
+            rec["error"] = aborted[label]
+        targets[label] = rec
+    for label, rec in targets.items():
+        target_functions(label, rec, results_dir, functions)
+    return targets, functions
+
+
+def target_functions(label, rec, results_dir, functions):
+    """Adds the per-function results of one target (from its shards' copied test.xml)."""
+    mine = {}
+    for sh in rec["shards"]:
+        if not sh.get("xml"):
+            continue
+        for fn, st, secs, msg in parse_xml(os.path.join(results_dir, sh["xml"])) or []:
+            key = label + "#" + fn
+            if key in mine and mine[key]["status"] == "fail":
+                continue
+            mine[key] = {"status": st, "time_s": secs, "shard": sh["shard"], "log": sh.get("log")}
+            if msg:
+                mine[key]["message"] = msg
+    # When the test wrote no XML (e.g. it exited before unittest.bash/absltest ran anything, as
+    # the macOS-only files do on Linux), Bazel's generate-xml.sh writes one testcase named after
+    # the target. That is not a function.
+    generated = {label.split(":")[-1], label, label[2:].replace(":", "/")}
+    mine = {k: v for k, v in mine.items() if k.split("#", 1)[1] not in generated}
+    rec["functions"] = {"pass": 0, "fail": 0, "skip": 0}
+    for f in mine.values():
+        rec["functions"][f["status"] if f["status"] in ("pass", "fail", "skip") else "fail"] += 1
+    rec["functions_reported"] = bool(mine)
+    functions.update(mine)
+
+
+def flat_results(targets, functions):
+    res = {}
+    for label, t in targets.items():
+        res[label] = "pass" if t["status"] in ("pass", "flaky") else t["status"]
+    for key, f in functions.items():
+        res[key] = f["status"]
+    return res
+
+
+def reparse(argv):
+    """Re-reads the copied test.xml files of a label's results (after a parser change)."""
+    if len(argv) != 2 or argv[0] != "--label":
+        sys.exit("usage: run reparse --label <name>")
+    results_dir = os.path.join(u.RESULTS, argv[1])
+    path = os.path.join(results_dir, "results.json")
+    d = json.load(open(path))
+    functions = {}
+    for label, rec in d["targets"].items():
+        target_functions(label, rec, results_dir, functions)
+    d["functions"] = dict(sorted(functions.items()))
+    d["results"] = flat_results(d["targets"], d["functions"])
+    json.dump(d, open(path + ".tmp", "w"), indent=1)
+    os.rename(path + ".tmp", path)
+    print("reparsed %d targets, %d functions -> %s" % (len(d["targets"]), len(functions), path))
+    return 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    if argv[0] == "reparse":
+        return reparse(argv[1:])
+    list_only = argv[0] == "list"
+    if list_only:
+        argv = argv[1:]
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--binary")
+    p.add_argument("--label")
+    p.add_argument("--suite", choices=["shell", "py"])
+    p.add_argument("--file", action="append")
+    p.add_argument("--target", action="append")
+    p.add_argument("--targets-file")
+    p.add_argument("--tag", action="append")
+    p.add_argument("--exclude-tag", action="append")
+    p.add_argument("--shard")
+    p.add_argument("--include-excluded", action="store_true")
+    p.add_argument("--test-filter")
+    p.add_argument("--test-jobs", type=int, default=u.DEFAULT_TEST_JOBS)
+    p.add_argument("--jobs", type=int, default=u.DEFAULT_JOBS)
+    p.add_argument("--memory-max", default=u.MEMORY_MAX)
+    p.add_argument("--fresh", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    a = p.parse_args(argv)
+    manifest = u.load_manifest()
+    sel = select(manifest, a)
+    if list_only:
+        for t in sel:
+            print(t["label"])
+        sys.stdout.flush()
+        print("%d targets" % len(sel), file=sys.stderr)
+        return 0
+    if not a.binary or not a.label:
+        sys.exit("--binary and --label are required (see `run help`)")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", a.label):
+        sys.exit("--label must match [A-Za-z0-9._-]+")
+    if not sel:
+        sys.exit("selection is empty")
+    binary = os.path.abspath(a.binary)
+    if not os.access(binary, os.X_OK):
+        sys.exit("not an executable: " + binary)
+    u.ensure_dirs()
+    u.apply_patch()
+    sha, staged, install_base = stage_binary(binary)
+    results_dir = os.path.join(u.RESULTS, a.label)
+    if a.fresh and os.path.exists(results_dir):
+        shutil.rmtree(results_dir)
+    os.makedirs(results_dir, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+    bep = os.path.join(results_dir, "bep-%s.json" % stamp)
+    outer_log = os.path.join(results_dir, "outer-%s.log" % stamp)
+    tfile = os.path.join(results_dir, "targets-%s.txt" % stamp)
+    open(tfile, "w").write("\n".join(t["label"] for t in sel) + "\n")
+    flags = u.common_flags(a.jobs) + [
+        "--repo_env=BLAZE_UNDER_TEST=" + staged,
+        "--keep_going",
+        "--build_tests_only",
+        "--nocache_test_results",
+        "--flaky_test_attempts=1",
+        "--local_test_jobs=%d" % a.test_jobs,
+        "--test_env=TEST_INSTALL_BASE=" + install_base,
+        "--test_env=REPOSITORY_CACHE=" + u.TEST_REPO_CACHE,
+        "--test_env=REMOTE_NETWORK_ADDRESS=bazel.build:80",
+        "--sandbox_writable_path=" + os.path.dirname(install_base),
+        "--sandbox_writable_path=" + u.TEST_REPO_CACHE,
+        "--sandbox_default_allow_network=false",
+        "--test_summary=terse",
+        "--test_output=summary",
+        "--build_event_json_file=" + bep,
+        "--target_pattern_file=" + tfile,
+    ]
+    if a.test_filter:
+        flags.append("--test_filter=" + a.test_filter)
+    events = os.path.join(results_dir, "memory-events-%s.txt" % stamp)
+    cmd = u.outer_job(["test"] + flags, outer_log, memory_max=a.memory_max, events_file=events)
+    if a.dry_run:
+        print(" ".join(cmd))
+        return 0
+    u.reset_test_repo_cache()
+    print("running %d targets against %s (sha256 %s) as %s" % (len(sel), binary, sha[:16], a.label))
+    print("  outer log: %s" % outer_log)
+    t0 = time.time()
+    rc = subprocess.call(cmd)
+    wall = time.time() - t0
+    targets, functions = collect(bep, results_dir, [t["label"] for t in sel])
+    by_label = {t["label"]: t for t in manifest["tests"]}
+    for label, rec in targets.items():
+        m = by_label[label]
+        rec.update({"suite": m["suite"], "srcs": m["srcs"], "size": m["size"], "tags": m["tags"],
+                    "run": stamp})
+    path = os.path.join(results_dir, "results.json")
+    old = json.load(open(path)) if os.path.exists(path) else {}
+    runs = old.get("runs", [])
+    oom_kills = None
+    if os.path.exists(events):
+        for line in open(events):
+            k, _, v = line.partition(" ")
+            if k == "oom_kill":
+                oom_kills = int(v)
+    if oom_kills:
+        print("warning: %d processes were OOM-killed under MemoryMax=%s; affected tests fail" % (
+            oom_kills, a.memory_max))
+    runs.append({"stamp": stamp, "targets": len(sel), "wall_s": round(wall, 1), "outer_exit": rc,
+                 "oom_kills": oom_kills, "test_jobs": a.test_jobs, "memory_max": a.memory_max,
+                 "selection": argv, "binary": binary, "binary_sha256": sha})
+    all_targets = old.get("targets", {})
+    all_functions = {k: v for k, v in old.get("functions", {}).items() if k.split("#", 1)[0] not in targets}
+    all_targets.update(targets)
+    all_functions.update(functions)
+    if old.get("binary_sha256") not in (None, sha):
+        print("warning: earlier results for %s came from another binary (%s)" % (a.label, old["binary_sha256"][:16]))
+    out = {
+        "label": a.label,
+        "pin": u.PIN_VERSION,
+        "binary": binary,
+        "binary_sha256": sha,
+        "runs": runs,
+        "flaky": old.get("flaky", []),
+        "targets": dict(sorted(all_targets.items())),
+        "functions": dict(sorted(all_functions.items())),
+    }
+    out["results"] = flat_results(out["targets"], out["functions"])
+    tmp = path + ".tmp"
+    json.dump(out, open(tmp, "w"), indent=1)
+    os.rename(tmp, path)
+    c = {}
+    for t in targets.values():
+        c[t["status"]] = c.get(t["status"], 0) + 1
+    fc = {}
+    for f in functions.values():
+        fc[f["status"]] = fc.get(f["status"], 0) + 1
+    print("done in %.0fs (outer exit %d): targets %s; functions %s" % (wall, rc, c, fc))
+    print("  results: %s" % path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

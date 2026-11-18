@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Compare two upstream-test result sets per name. See `compare help`."""
+
+import json
+import os
+import sys
+
+RESULTS = os.path.expanduser("~/.cache/blaze/upstream-test-results")
+
+USAGE = """\
+usage: scripts/upstream-tests/compare <base> <new> [--only targets|functions] [--all]
+       scripts/upstream-tests/compare help
+
+<base> and <new> are labels under ~/.cache/blaze/upstream-test-results/ or paths to a
+results.json (also accepts corpus/upstream-tests/oracle-9.3.2.json, whose "passing" list is the
+base). Names are test targets (//pkg:name) and functions (//pkg:name#function).
+
+For every name that passes in <base>:
+  retained   passes in <new>
+  lost       ran in <new> and did not pass (fail, timeout, build_fail, ...)
+  absent     missing from <new>, or its target was not run (not_run)
+Names that do not pass in <base> but pass in <new> are `new`. Names on the base's flaky list
+are reported separately and never count as lost; a summary's vacuous and excluded targets are
+ignored. Exit 1 if anything is lost or absent.
+--all prints every lost/absent/new name (default: first 50 of each).
+"""
+
+
+def load(arg):
+    path = arg if os.path.exists(arg) else os.path.join(RESULTS, arg, "results.json")
+    d = json.load(open(path))
+    if "results" in d:
+        return d["results"], set(d.get("flaky", [])), set(), path
+    if "passing" in d:  # committed summary
+        fns = d["passing"]["functions"]
+        if isinstance(fns, dict):
+            fns = [label + "#" + fn for label, names in fns.items() for fn in names]
+        res = {n: "pass" for n in d["passing"]["targets"] + fns}
+        flaky = set(d.get("flaky", {}).get("targets", []) + d.get("flaky", {}).get("functions", []))
+        ignored = set(d.get("vacuous", {})) | set(d.get("excluded", {}))
+        return res, flaky, ignored, path
+    sys.exit("unrecognised results file: " + path)
+
+
+def main(argv):
+    if len(argv) < 2 or argv[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    base, flaky, ignored, bpath = load(argv[0])
+    new, _, _, npath = load(argv[1])
+    only = argv[argv.index("--only") + 1] if "--only" in argv else None
+    limit = None if "--all" in argv else 50
+
+    def keep(n):
+        if only == "targets":
+            return "#" not in n
+        if only == "functions":
+            return "#" in n
+        return True
+
+    retained, lost, absent, added, flaky_seen = [], [], [], [], []
+    for name, st in sorted(base.items()):
+        if not keep(name):
+            continue
+        cur = new.get(name)
+        if name in flaky:
+            continue
+        if st != "pass":
+            if cur == "pass":
+                added.append(name)
+            continue
+        if cur is None or cur == "not_run":
+            absent.append(name)
+        elif cur != "pass":
+            lost.append((name, cur))
+        else:
+            retained.append(name)
+    for name, st in sorted(new.items()):
+        if keep(name) and name not in base and name not in ignored and name not in flaky \
+                and st == "pass":
+            added.append(name)
+    flaky_seen = [(n, new.get(n)) for n in sorted(flaky) if keep(n)]
+    print("base %s\nnew  %s" % (bpath, npath))
+    for kind in ("targets", "functions"):
+        if only and only != kind:
+            continue
+        isf = kind == "functions"
+
+        def n(xs):
+            return sum(1 for x in xs if ("#" in (x[0] if isinstance(x, tuple) else x)) == isf)
+        print("%-9s retained %d  lost %d  absent %d  new %d  flaky-in-base %d" % (
+            kind, n(retained), n(lost), n(absent), n(added), n(flaky_seen)))
+    for name, st in lost[:limit]:
+        print("  LOST   %s -> %s" % (name, st))
+    for name in absent[:limit]:
+        print("  ABSENT %s" % name)
+    for name in added[:limit]:
+        print("  NEW    %s" % name)
+    return 1 if lost or absent else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
