@@ -67,7 +67,7 @@ impl ScopeType {
     }
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/Scope.java:69 Scope.ScopeDefinition
+// Java: com/google/devtools/build/lib/analysis/config/Scope.java:67 Scope.ScopeDefinition
 /// Definition of a scope. Users can define this in their PROJECT.scl file that is in the same
 /// directory as the BUILD file where the scoped flags are defined or in a parent directory. This
 /// is only relevant if the scope type is PROJECT.
@@ -81,7 +81,7 @@ impl ScopeDefinition {
         ScopeDefinition { owned_code_paths }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:76 Scope.ScopeDefinition.getOwnedCodePaths
+    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:74 Scope.ScopeDefinition.getOwnedCodePaths
     pub fn get_owned_code_paths(&self) -> &IndexSet<String> {
         &self.owned_code_paths
     }
@@ -96,7 +96,7 @@ pub struct Scope {
 }
 
 impl Scope {
-    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:89 Scope.Scope
+    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:87 Scope.Scope
     pub fn new(scope_type: ScopeType, scope_definition: Option<ScopeDefinition>) -> Self {
         Scope {
             scope_type,
@@ -104,12 +104,12 @@ impl Scope {
         }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:94 Scope.getScopeType
+    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:92 Scope.getScopeType
     pub fn get_scope_type(&self) -> ScopeType {
         self.scope_type
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:99 Scope.getScopeDefinition
+    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:97 Scope.getScopeDefinition
     pub fn get_scope_definition(&self) -> Option<&ScopeDefinition> {
         self.scope_definition.as_ref()
     }
@@ -739,7 +739,7 @@ impl BuildOptions {
 
 /// `OptionsBase.mapToCacheKey(starlarkOptionsMap)`: keys by their `toString()`, values by their
 /// Java class's `toString()`.
-// Java: com/google/devtools/common/options/OptionsBase.java:95 OptionsBase.mapToCacheKey
+// Java: com/google/devtools/common/options/OptionsBase.java:96 OptionsBase.mapToCacheKey
 fn starlark_map_to_cache_key(map: &IndexMap<Label, StarlarkOptionValue>) -> String {
     let mut result = String::new();
     for (key, value) in map {

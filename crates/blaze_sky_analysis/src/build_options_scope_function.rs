@@ -55,7 +55,7 @@ fn compute(
     }
 
     // get PROJECT.scl files for each scoped flag that is not universal
-    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeFunction.java:123 BuildOptionsScopeFunction.findProjectFiles
+    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeFunction.java:131 BuildOptionsScopeFunction.findProjectFiles
     for (starlark_option, scope) in &scopes {
         if scope.get_scope_type() == ScopeType::PROJECT {
             // PORT: ProjectFilesLookupValue / ProjectValue (PROJECT.scl) are not ported.
@@ -75,7 +75,7 @@ fn compute(
     )))
 }
 
-// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeFunction.java:148 BuildOptionsScopeFunction.getScopeType
+// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeFunction.java:164 BuildOptionsScopeFunction.getScopeType
 /// `None` where Java returns null (the package of the flag is not available yet).
 fn get_scope_type(
     env: &mut Environment<'_>,
@@ -122,7 +122,7 @@ fn get_scope_type(
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeFunction.java:186 BuildOptionsScopeFunction.SkyframeTargetLoader.loadBuildSetting
+// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeFunction.java:207 BuildOptionsScopeFunction.SkyframeTargetLoader.loadBuildSetting
 /// Same as `ParsedFlagsFunction.SkyframeTargetLoader`. `Ok(Ok(None))` where Java returns null.
 fn load_build_setting(
     env: &mut Environment<'_>,

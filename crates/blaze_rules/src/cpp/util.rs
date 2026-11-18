@@ -134,9 +134,13 @@ pub fn depset_get_set_artifacts(x: Value) -> Result<NestedSet<Artifact>, String>
             d.element_type()
         ));
     }
-    d.to_nested_set(&mut |v: Value| -> starlark::Result<Artifact> {
-        artifact_from_value(v).ok_or_else(|| errorf("depset element is not a File"))
-    })
+    blaze_analysis::rule::depsets::depset_to_nested_set_shared(
+        x,
+        d,
+        &mut |v: Value| -> starlark::Result<Artifact> {
+            artifact_from_value(v).ok_or_else(|| errorf("depset element is not a File"))
+        },
+    )
     .map_err(|e| e.to_string())
 }
 
@@ -150,11 +154,15 @@ pub fn depset_get_set_strings(x: Value) -> Result<NestedSet<String>, String> {
             d.element_type()
         ));
     }
-    d.to_nested_set(&mut |v: Value| -> starlark::Result<String> {
-        v.unpack_str()
-            .map(str::to_owned)
-            .ok_or_else(|| errorf("depset element is not a string"))
-    })
+    blaze_analysis::rule::depsets::depset_to_nested_set_shared(
+        x,
+        d,
+        &mut |v: Value| -> starlark::Result<String> {
+            v.unpack_str()
+                .map(str::to_owned)
+                .ok_or_else(|| errorf("depset element is not a string"))
+        },
+    )
     .map_err(|e| e.to_string())
 }
 

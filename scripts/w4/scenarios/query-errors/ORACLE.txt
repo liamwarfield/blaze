@@ -216,38 +216,48 @@ exit 2
 === 18: run aquery --query_file=q.txt --output=jsonproto --noinclude_artifacts
 exit 0
 {
-  "actions": [{
-    "targetId": 1,
-    "actionKey": "077fd921393782700ad382a0f90af3fb012092ea950506e2c388e4fd3e94e72f",
-    "mnemonic": "FileWrite",
-    "configurationId": 1,
-    "executionPlatform": "@@platforms//host:host"
-  }, {
-    "targetId": 2,
-    "actionKey": "077fd921393782700ad382a0f90af3fb012092ea950506e2c388e4fd3e94e72f",
-    "mnemonic": "FileWrite",
-    "configurationId": 1,
-    "executionPlatform": "@@platforms//host:host"
-  }],
-  "targets": [{
-    "id": 1,
-    "label": "//:x",
-    "ruleClassId": 1
-  }, {
-    "id": 2,
-    "label": "//:y",
-    "ruleClassId": 1
-  }],
-  "configuration": [{
-    "id": 1,
-    "mnemonic": "k8-fastbuild",
-    "platformName": "k8",
-    "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
-  }],
-  "ruleClasses": [{
-    "id": 1,
-    "name": "w"
-  }]
+  "actions": [
+    {
+      "targetId": 1,
+      "actionKey": "077fd921393782700ad382a0f90af3fb012092ea950506e2c388e4fd3e94e72f",
+      "mnemonic": "FileWrite",
+      "configurationId": 1,
+      "executionPlatform": "@@platforms//host:host"
+    },
+    {
+      "targetId": 2,
+      "actionKey": "077fd921393782700ad382a0f90af3fb012092ea950506e2c388e4fd3e94e72f",
+      "mnemonic": "FileWrite",
+      "configurationId": 1,
+      "executionPlatform": "@@platforms//host:host"
+    }
+  ],
+  "targets": [
+    {
+      "id": 1,
+      "label": "//:x",
+      "ruleClassId": 1
+    },
+    {
+      "id": 2,
+      "label": "//:y",
+      "ruleClassId": 1
+    }
+  ],
+  "configuration": [
+    {
+      "id": 1,
+      "mnemonic": "k8-fastbuild",
+      "platformName": "k8",
+      "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+    }
+  ],
+  "ruleClasses": [
+    {
+      "id": 1,
+      "name": "w"
+    }
+  ]
 }
 INFO: Build completed successfully, 0 total actions
 === 19: run cquery //:x --output=nosuchformat

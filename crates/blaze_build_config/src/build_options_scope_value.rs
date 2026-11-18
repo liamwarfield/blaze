@@ -13,7 +13,7 @@ use indexmap::IndexMap;
 
 use crate::build_options::{BuildOptions, Scope};
 
-// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:36 BuildOptionsScopeValue.Key
+// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:38 BuildOptionsScopeValue.Key
 /// Key for [`BuildOptionsScopeValue`].
 #[derive(Clone)]
 pub struct BuildOptionsScopeKey {
@@ -22,7 +22,7 @@ pub struct BuildOptionsScopeKey {
 }
 
 impl BuildOptionsScopeKey {
-    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:47 BuildOptionsScopeValue.Key.create
+    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:48 BuildOptionsScopeValue.Key.create
     pub fn create(
         build_options: Arc<BuildOptions>,
         flags_with_incomplete_scope_info: Vec<Label>,
@@ -33,12 +33,12 @@ impl BuildOptionsScopeKey {
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:51 BuildOptionsScopeValue.Key.getBuildOptions
+    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:52 BuildOptionsScopeValue.Key.getBuildOptions
     pub fn get_build_options(&self) -> &Arc<BuildOptions> {
         &self.build_options
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:59 BuildOptionsScopeValue.Key.getFlagsWithIncompleteScopeInfo
+    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:60 BuildOptionsScopeValue.Key.getFlagsWithIncompleteScopeInfo
     /// Returns the list of flags that are either project scoped or their scopes are not yet
     /// resolved.
     pub fn get_flags_with_incomplete_scope_info(&self) -> &[Label] {
@@ -46,7 +46,7 @@ impl BuildOptionsScopeKey {
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:74 BuildOptionsScopeValue.Key.equals
+// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:75 BuildOptionsScopeValue.Key.equals
 impl PartialEq for BuildOptionsScopeKey {
     fn eq(&self, other: &Self) -> bool {
         *self.build_options == *other.build_options
@@ -55,7 +55,7 @@ impl PartialEq for BuildOptionsScopeKey {
 }
 impl Eq for BuildOptionsScopeKey {}
 
-// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:87 BuildOptionsScopeValue.Key.hashCode
+// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:88 BuildOptionsScopeValue.Key.hashCode
 impl Hash for BuildOptionsScopeKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.build_options.hash(state);
@@ -85,7 +85,7 @@ impl Key for BuildOptionsScopeKey {
     const FUNCTION: SkyFunctionName = SkyFunctionName("BUILD_OPTIONS_SCOPE");
 }
 
-// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:28 BuildOptionsScopeValue
+// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:29 BuildOptionsScopeValue
 /// SkyValue returned by `BuildOptionsScopeFunction`.
 #[derive(Clone, Debug)]
 pub struct BuildOptionsScopeValue {
@@ -96,7 +96,7 @@ pub struct BuildOptionsScopeValue {
 }
 
 impl BuildOptionsScopeValue {
-    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:92 BuildOptionsScopeValue.create
+    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:93 BuildOptionsScopeValue.create
     pub fn create(
         input_build_options: Arc<BuildOptions>,
         scoped_flags: Vec<Label>,
@@ -109,7 +109,7 @@ impl BuildOptionsScopeValue {
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:113 BuildOptionsScopeValue.getResolvedBuildOptionsWithScopeTypes
+    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:114 BuildOptionsScopeValue.getResolvedBuildOptionsWithScopeTypes
     /// Returns the `BuildOptions` with the all starlark flags having their `Scope.ScopeType`
     /// resolved.
     pub fn get_resolved_build_options_with_scope_types(&self) -> &Arc<BuildOptions> {
@@ -121,7 +121,7 @@ impl BuildOptionsScopeValue {
         &self.scoped_flags
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:121 BuildOptionsScopeValue.getFullyResolvedScopes
+    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:122 BuildOptionsScopeValue.getFullyResolvedScopes
     /// Returns the map of `Label` of scoped flags to their `Scope` including both
     /// `Scope.ScopeType` and `Scope.ScopeDefinition`.
     pub fn get_fully_resolved_scopes(&self) -> &IndexMap<Label, Scope> {

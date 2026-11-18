@@ -168,7 +168,7 @@ fn conversion_exception(
     ))
 }
 
-// Java: com/google/devtools/build/lib/packages/Type.java:305 Type.ConversionException.<init>
+// Java: com/google/devtools/build/lib/packages/Type.java:315 Type.ConversionException.<init>
 fn type_conversion_exception(
     type_: Type,
     value: &StarlarkOptionValue,
@@ -187,7 +187,7 @@ fn convert_starlark_option(
     what: &str,
 ) -> Result<StarlarkOptionValue, TransitionException> {
     match type_ {
-        // Java: com/google/devtools/build/lib/packages/Type.java:356 Type.IntegerType.convert
+        // Java: com/google/devtools/build/lib/packages/Type.java:357 Type.IntegerType.convert
         Type::Integer => match value {
             StarlarkOptionValue::Int(i) => {
                 // i.toIntUnchecked(): assert signed 32-bit
@@ -201,7 +201,7 @@ fn convert_starlark_option(
             }
             _ => Err(type_conversion_exception(type_, value, what)),
         },
-        // Java: com/google/devtools/build/lib/packages/Type.java:410 Type.BooleanType.convert
+        // Java: com/google/devtools/build/lib/packages/Type.java:411 Type.BooleanType.convert
         // Conversion to boolean must also tolerate integers of 0 and 1 only.
         Type::Boolean => match value {
             StarlarkOptionValue::Bool(_) => Ok(value.clone()),

@@ -38,7 +38,9 @@ do not record and compare one scenario at the same time), uses the output user r
 ~/.cache/blaze/oracle-out/ur-probe-<scenario>-<oracle|blaze>, startup options --nohome_rc
 --nosystem_rc, command options --repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no,
 env HOME and PATH=/usr/bin:/bin, each command in a systemd-run scope (MemoryMax=8G), then
-`shutdown`. Kept stderr lines: ERROR:, WARNING:, DEBUG:, FAILED:, `Target ...`, `INFO: Build ...`,
+`shutdown`. Both the workspace copy and the output user root are deleted first, so every run
+starts cold. Action keys of SourceSymlinkManifest and SymlinkTree actions (they fingerprint
+absolute paths) are printed as <path-dependent>. Kept stderr lines: ERROR:, WARNING:, DEBUG:, FAILED:, `Target ...`, `INFO: Build ...`,
 test summary lines; first line of each message only. Paths are normalised (<WS>, <OUTPUT_BASE>,
 <HOME>), sandbox numbers and durations too. Environment: BLAZE (binary, default
 target/debug/blaze).
@@ -48,7 +50,7 @@ ORACLE = os.path.expanduser("~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
 KEEP = re.compile(r"^(ERROR: |WARNING: |DEBUG: |FAILED: |Target |INFO: Build |//\S+ +\S|Executed \d)")
 DROP = re.compile(r"discarding analysis cache|^WARNING: Running Bazel server needs to be killed")
 # Action keys of these mnemonics fingerprint absolute paths (see scripts/oracle/README.md).
-PATH_DEPENDENT_KEYS = {"SourceSymlinkManifest"}
+PATH_DEPENDENT_KEYS = {"SourceSymlinkManifest", "SymlinkTree"}
 
 
 def die(msg):
@@ -68,9 +70,15 @@ class Run:
         self.home = os.path.expanduser("~")
 
     def prepare(self):
-        if os.path.lexists(self.ws):
-            subprocess.run(["chmod", "-R", "u+w", self.ws], check=False)
-            shutil.rmtree(self.ws)
+        # A fresh workspace copy and a fresh output user root: action counts and cache hits in the
+        # transcript must not depend on earlier runs. (chmod -R does not follow the symlinks it
+        # meets while walking, so the convenience symlinks and the execroot are safe.)
+        if os.path.isdir(self.ur):
+            self.exec("shutdown", [], common=False)
+        for path in (self.ws, self.ur):
+            if os.path.lexists(path):
+                subprocess.run(["chmod", "-R", "u+w", path], check=False)
+                shutil.rmtree(path)
         shutil.copytree(os.path.join(self.dir, "ws"), self.ws, symlinks=True)
 
     def exec(self, command, args, common=True):
@@ -90,6 +98,22 @@ class Run:
         text = re.sub(r"\b\d+(\.\d+)?m?s\b", "<DUR>", text)
         return text
 
+    @staticmethod
+    def raw_aquery(stdout):
+        """A raw `aquery --output=jsonproto` document: blank the path-dependent action keys."""
+        if not stdout.startswith("{"):
+            return stdout
+        try:
+            doc = json.loads(stdout)
+        except ValueError:
+            return stdout
+        if not isinstance(doc.get("actions"), list):
+            return stdout
+        for a in doc["actions"]:
+            if a.get("mnemonic") in PATH_DEPENDENT_KEYS and "actionKey" in a:
+                a["actionKey"] = "<path-dependent>"
+        return json.dumps(doc, indent=2) + "\n"
+
     def stderr_lines(self, err):
         lines = [self.norm(l.rstrip()) for l in err.splitlines()]
         return sorted(l for l in lines if KEEP.match(l) and not DROP.search(l))
@@ -98,7 +122,7 @@ class Run:
         if kind == "run":
             code, stdout, stderr = self.exec(args[0], args[1:])
             out.append("exit %d" % code)
-            stdout = self.norm(stdout)
+            stdout = self.norm(self.raw_aquery(stdout))
             if stdout:
                 out.append(stdout.rstrip("\n"))
             out.extend(self.stderr_lines(stderr))

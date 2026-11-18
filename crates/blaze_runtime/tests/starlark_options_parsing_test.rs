@@ -98,45 +98,44 @@ fn error_loading_option_carries_the_loaders_message() {
     assert_eq!(e.get_invalid_argument(), Some("//:nonexistent"));
 }
 
+/// The tests that need `StarlarkOptionsTestCase` (a `BuildViewTestCase`: scratch packages with
+/// build settings loaded through a `SkyframeExecutor`). Each reason names the oracle-compared
+/// end-to-end case that covers the behaviour.
 macro_rules! needs_build_view_test_case {
-    ($($name:ident: $covered:literal;)*) => {
+    ($($name:ident: $reason:literal;)*) => {
         $(
             #[test]
-            #[ignore = concat!(
-                "needs StarlarkOptionsTestCase (BuildViewTestCase: scratch packages with build \
-                 settings loaded through a SkyframeExecutor); end to end: ",
-                $covered
-            )]
+            #[ignore = $reason]
             fn $name() {}
         )*
     };
 }
 
 needs_build_view_test_case! {
-    test_flag_equals_value_form: "scripts/w4/flags-probe case 6";
-    test_flag_name_with_external_repo: "scripts/w4/flags-probe case 31 (@//, @flags_probe//)";
-    test_bad_flag_keep_going: "needs --keep_going on the native parser; flags-probe case 35";
-    test_non_flag_parsing: "scripts/w4/flags-probe case 41";
-    test_boolean_flag: "scripts/w4/flags-probe cases 2, 4 and 5";
-    test_no_prefixed_boolean_flag: "scripts/w4/flags-probe case 3";
-    test_no_prefixed_boolean_flag_with_workspace: "scripts/w4/flags-probe case 3 (no WORKSPACE repositories in Bazel 9 corpus)";
-    test_no_prefixed_non_boolean_flag: "scripts/w4/flags-probe case 39";
-    test_flag_without_value: "scripts/w4/flags-probe cases 38 and 46";
-    test_repeat_flag_last_one_wins: "scripts/w4/flags-probe cases 23, 60, 61 and 63";
-    test_multiple_flags: "scripts/w4/flags-probe case 32";
-    test_non_build_setting: "scripts/w4/flags-probe case 42";
-    test_non_rule_configured_target: "scripts/w4/flags-probe case 45";
-    test_wrong_value_type_int: "scripts/w4/flags-probe case 37";
-    test_wrong_value_type_bool: "scripts/w4/flags-probe case 40";
-    test_dont_store_default_value: "scripts/w4/flags-probe cases 7, 12, 15, 17 and 19";
-    test_options_are_parsed_with_build_tests_only: "not covered (needs --build_tests_only)";
-    test_expected_build_event_output_as_flag: "not covered (needs the build event protocol stream)";
-    test_expected_build_event_output_as_target: "not covered (needs the build event protocol stream)";
-    test_allow_multiple_string_flag: "scripts/w4/flags-probe cases 14, 62 and 69";
-    test_repeated_string_list_flag: "scripts/w4/flags-probe cases 16 and 68";
-    flag_references_exactly_one_target: "scripts/w4/flags-probe case 49";
-    flag_is_alias: "scripts/w4/flags-probe cases 21 and 22";
-    flag_is_alias_cycle: "scripts/w4/flags-probe case 50";
-    flag_is_alias_uses_select: "scripts/w4/flags-probe cases 51 and 44 (an unconditional select is simplified at loading)";
-    flag_is_alias_resolves_to_non_build_setting_target: "scripts/w4/flags-probe case 43";
+    test_flag_equals_value_form: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 6";
+    test_flag_name_with_external_repo: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 31 (@//, @flags_probe//)";
+    test_bad_flag_keep_going: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: needs --keep_going on the native parser; flags-probe case 35";
+    test_non_flag_parsing: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 41";
+    test_boolean_flag: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe cases 2, 4 and 5";
+    test_no_prefixed_boolean_flag: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 3";
+    test_no_prefixed_boolean_flag_with_workspace: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 3 (no WORKSPACE repositories in Bazel 9 corpus)";
+    test_no_prefixed_non_boolean_flag: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 39";
+    test_flag_without_value: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe cases 38 and 46";
+    test_repeat_flag_last_one_wins: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe cases 23, 60, 61 and 63";
+    test_multiple_flags: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 32";
+    test_non_build_setting: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 42";
+    test_non_rule_configured_target: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 45";
+    test_wrong_value_type_int: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 37";
+    test_wrong_value_type_bool: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 40";
+    test_dont_store_default_value: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe cases 7, 12, 15, 17 and 19";
+    test_options_are_parsed_with_build_tests_only: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: not covered (needs --build_tests_only)";
+    test_expected_build_event_output_as_flag: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: not covered (needs the build event protocol stream)";
+    test_expected_build_event_output_as_target: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: not covered (needs the build event protocol stream)";
+    test_allow_multiple_string_flag: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe cases 14, 62 and 69";
+    test_repeated_string_list_flag: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe cases 16 and 68";
+    flag_references_exactly_one_target: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 49";
+    flag_is_alias: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe cases 21 and 22";
+    flag_is_alias_cycle: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 50";
+    flag_is_alias_uses_select: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe cases 51 and 44 (an unconditional select is simplified at loading)";
+    flag_is_alias_resolves_to_non_build_setting_target: "needs StarlarkOptionsTestCase (BuildViewTestCase); end to end: scripts/w4/flags-probe case 43";
 }

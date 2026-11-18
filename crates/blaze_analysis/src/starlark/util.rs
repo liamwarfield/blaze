@@ -181,9 +181,13 @@ pub(crate) fn depset_get_set_artifacts(x: Value) -> Result<NestedSet<Artifact>, 
             d.element_type()
         ));
     }
-    d.to_nested_set(&mut |v: Value| -> starlark::Result<Artifact> {
-        artifact_from_value(v).ok_or_else(|| errorf("depset element is not a File"))
-    })
+    crate::rule::depsets::depset_to_nested_set_shared(
+        x,
+        d,
+        &mut |v: Value| -> starlark::Result<Artifact> {
+            artifact_from_value(v).ok_or_else(|| errorf("depset element is not a File"))
+        },
+    )
     .map_err(|e| e.to_string())
 }
 

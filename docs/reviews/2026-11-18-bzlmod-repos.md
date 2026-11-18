@@ -347,3 +347,161 @@ Count: 8 items.
   Commons Compress sources are not in the pinned tree.
 - Whether the lockfile serializer sorts `selectedYankedVersions` (S2-12 assumes it does not).
 - The java-diff-utils fuzz port in `patch_util.rs` was not compared line by line.
+
+---
+
+# Round 2 (2026-11-18)
+
+Same reviewer role, same read-only rules. Re-check of
+`docs/reviews/2026-11-18-bzlmod-repos-response.md` against the code at the commit below and the
+pinned Java/C++. Nothing was executed and no Cargo was run; the test counts and oracle
+comparisons in the response are the implementer's and were not reproduced.
+
+## Verdict: PASS
+
+Bound to `f938830b1a93d2f7e22efd88cafdfdbb8aaab567`. The six crates of the area had no
+uncommitted changes when read. All six S1 findings are closed in the area. The PASS covers the
+six crates; it does not cover the one caller outside them:
+
+- `crates/blaze_sky_top/src/skyframe_executor.rs:186` still calls
+  `prepare_repository_functions_in`. Through that entry point the real binary gets the
+  `--downloader_config`, `.netrc`, `--distdir`, cache-location, lock and `%workspace%` fixes, but
+  not `--credential_helper` (silently ignored), the four `--http_*` flags (defaults used) or the
+  process-wrapper kill delay (none passed). `--output_base=X` without `--repository_cache`
+  fails with an error instead of misplacing the cache. These close when the caller moves to
+  `prepare_repository_functions_with`.
+
+## S1
+
+| Finding | Status | Evidence |
+| --- | --- | --- |
+| S1-1 concurrent commands | CLOSED | `R/blaze_client/src/blaze.rs` `communicate` no longer calls `release_locks`; `run_launcher` takes the locks before `extract_data`, in the order of `C/blaze.cc:1529-1537`. Nothing closes the descriptors before exit. |
+| S1-2 downloader config, distdir, netrc | CLOSED | `R/blaze_repo_rules/src/setup.rs` `prepare_repository_functions_with` sets netrc, rewriter and distdir in Java's order with Java's messages; `UrlRewriter::get_downloader_url_rewriter` and `new_credentials_from_netrc` match `UrlRewriter.java:87-120, 313-346`. The old entry points delegate to it. `--credential_helper` is `unported!` when the options reach it. |
+| S1-3 cache location | CLOSED | Default is `<output_user_root>/cache/repos/v1`; without an output user root it is derived only when the output base is `<root>/<md5(workspace)>`, else an error. `to_workspace_path` ports `toPath`. |
+| S1-4 `%workspace%` | CLOSED | `setup.rs` `get_absolute_path`, used for `--override_repository`. |
+| S1-5 `java.io.IOException: ` prefix | CLOSED | `repository_function_exception` over `JavaThrowable`; the download, file and read sites in `base_external_context.rs` go through it. The message chain was re-read against `MethodDescriptor.java:295`. |
+| S1-6 `--nofetch` text | CLOSED | `repository_fetch_function.rs:632` has "fetching repositories is disabled". |
+
+Answers to the points raised for S1-1:
+
+- **Held for the whole command:** yes, both locks, until the process exits.
+- **Lock acquisition against install-base extraction:** unchanged from the C++: shared install
+  base lock, then exclusive output base lock, then extraction into a sibling directory and an
+  atomic rename. No new race.
+- **Live real-Bazel server:** `find_live_foreign_server` reads `server/server.pid.txt` and
+  `server.starttime` only. It runs before the lock is taken and again with the lock held, so
+  nothing under the output base is written before the exit 36. A Bazel client starts its server
+  while holding the output base lock, so the second check sees it. While Blaze holds the lock a
+  Bazel client waits in `AcquireLock`. I accept the refusal. A pid file whose pid was reused and
+  whose `server.starttime` is missing gives a false refusal; the C++ would kill that process.
+
+## Unified download stack
+
+Removing `registry_fetcher/http.rs` and `registry_fetcher/download_cache.rs` lost no check.
+
+- Registry files go through `DownloadManager::download_and_read_one_url_for_bzlmod`
+  (`R/blaze_repo_fetch/src/downloader/download_manager.rs`). A cached entry is re-hashed before
+  use; a download with a checksum passes `HashInputStream` to end of stream before the bytes are
+  returned or cached; a download without one is cached under its own SHA-256.
+- `IndexRegistry.do_grab_file` (`registryFileHashes`, all four modes) is unchanged.
+- `R/blaze_bzlmod/tests/registry_fetcher_test.rs` has `download_and_read_checksum_mismatch`,
+  `checksum_mismatch_is_not_cached` and `poisoned_cache_entry_is_downloaded_again` over the new
+  seam.
+- The checksum conversion between the two crates' `Checksum` types goes by string form and
+  keeps the SRI flag.
+
+## S2
+
+| # | Finding | Status | Evidence |
+| --- | --- | --- | --- |
+| 1 | Shared output base, live Bazel server | CLOSED | Refusal as above; `kill_server_process` has no caller. Sharing the output base when no server is live is unchanged and is root's decision. |
+| 2 | HTTP downloader options | CLOSED in the crate | `http_downloader_from_options` ports `CommandEnvironment.java:302-325`. Needs the caller change above. |
+| 3 | Non-positive values | CLOSED | Retries set only when `>= 0`; Java's two warnings and 1.0. |
+| 4 | Repo contents cache lock and checks | CLOSED | Both `BAD_REPO_CONTENTS_CACHE` checks with Java's text; `acquire_shared_lock` is called. See N3. |
+| 5 | Truncated body with `Content-Length` | CLOSED | `streams.rs`: the transport's short-body error becomes end of stream below `CheckContentLengthInputStream`, and `RetryingInputStream` no longer resumes on it. |
+| 6 | Blank tar mode | CLOSED | `parse_tar_header_numbers` replaces the `tar` crate's accessors for `mode` and `mtime`. Commons Compress sources are not in the tree; the port follows the implementer's reading of the class file. |
+| 7 | Non-UTF-8 bytes | STILL OPEN | Left for the byte-strings migration (decisions.md) and marked `// PORT: byte-strings`. Tar entry names are still written with U+FFFD. |
+| 8 | Unpadded SRI | CLOSED | `java_base64_decode` follows `Base64.Decoder.decode0`. |
+| 9 | `print()` buffering | CLOSED | See "Print handler" below. |
+| 10 | Process-wrapper options | CLOSED in the crate | Needs the caller change above. |
+| 11 | `rctx.attr` repr | CLOSED | Default `StarlarkValue.repr` text and type `RepoDefinition`. |
+| 12 | `selectedYankedVersions` order | CLOSED | `java_hash_map_order` over `ModuleKey.java_hash_code`; `Version.hashCode` (`Version.java:204-205`) re-derived by hand and matches. |
+| 13 | Dense table order | CLOSED | `Table` reorders rows and columns when the dense condition holds. |
+| 14 | Tag kwargs | CLOSED | Values stay on the file's heap and are converted in `resolve_deferred_attribute_values` after execution. Mechanism read; tests not run. |
+| 15 | `package_lookup` | CLOSED | `setup.rs` installs `PackageLookupFunctionLookup` over PACKAGE_LOOKUP; the stand-in is `unported!` on a `.bazelignore`. |
+
+## Print handler (S2-9)
+
+`R/blaze_repo_rules/src/starlark/thread.rs`. The behaviour is right: DEBUG and WARNING events are
+not stored for replay (`J/events/Event.java:75-80`), so reporting them to the environment's
+listener at once matches Java.
+
+The thread-local stack is correct in use:
+
+- The guard pops on return and on unwind, so the handle does not outlive the call.
+- `SkyEnv` is not `Send` and the stack is per thread; the evaluation runs on the calling thread.
+- A nested implementation on the same thread pushes its own environment and pops it first.
+- No native in the crate emits a Starlark event while it holds a borrow of the environment, so
+  `report` never overlaps another `&mut Environment`.
+
+One defect remains, filed as N2: the second handle is made by reborrowing through the first
+(`SkyEnv::scope(payload.base.env.get(), |env| env)`), so every later `base.env.get()`
+invalidates it under Stacked Borrows. I do not expect a miscompile, but Miri would reject it.
+
+## TLS decision
+
+Accepted. The embedded JDK in the install base has its own `lib/security/cacerts` (a 128 KB
+regular file), so Bazel at the pin does not read the system store either. `webpki-roots` only is
+a defensible stand-in, and `--host_jvm_args=-Djavax.net.ssl.trustStore*` / `keyStore*` now fails
+with exit 2. Two limits, both S3:
+
+- The two root sets are not the same in either direction. Exact parity is reading the install
+  base's `cacerts` (deferred by the implementer).
+- `--server_javabase` pointing at a JDK with another trust store changes Bazel's trust and is
+  still accepted and ignored.
+
+## `rctx.os.environ`: withdrawn
+
+The implementer is right. `StarlarkOS.java:56` returns an `ImmutableMap`, and
+`MethodDescriptor.java:315` converts it with `Starlark.fromJava(result, mu)`, which is
+`Dict.copyOf(mutability, map)` (`Starlark.java:215-216`): a new mutable dict on each access.
+
+## NEW
+
+- **N1 (S2). A chunked response cut off inside a chunk is accepted as complete.**
+  - `ureq` 2.12.1 `src/chunked/decoder.rs`: inside a chunk, `self.source.read(buf)` returning 0
+    is passed on as `Ok(0)`. Java's chunked stream throws "Premature EOF".
+  - With a checksum the hash check catches it. Without one (`rctx.download` with no `sha256` or
+    `integrity`, or a registry file not yet in the lockfile) the truncated bytes are returned
+    and cached under their own SHA-256, and a registry file's hash goes into
+    `registryFileHashes`.
+  - Mitigation today: registry requests ask for gzip, and a truncated gzip stream fails in
+    `GzipInputStream`.
+  - The implementer noticed this and left it. It existed in round 1; I missed it.
+  - Fix direction: detect `Transfer-Encoding: chunked` and verify the terminating chunk, or
+    decode chunks in the transport wrapper.
+- **N2 (S4). The print handler's second `SkyEnv` handle** (above). Fix direction: an explicit
+  alias method on `SkyEnv` that copies the raw pointer under a stated contract, or a clonable
+  listener from `blaze_skyframe`.
+- **N3 (S4). The repo contents cache lock is a process-wide POSIX lock**
+  (`R/blaze_repo_fetch/src/file_system_lock.rs`). A second setup in the same process, then a
+  drop of the first, releases it for both. One setup per process today
+  (`blaze-fetch-dev` builds its evaluator in two separate code paths).
+- **N4 (S2). A tar header with a bad checksum** fails in the `tar` crate where Commons Compress
+  extracts. Round 1 "not established"; the implementer confirmed it and left it. The failure is
+  loud.
+
+## Still open from round 1, not blocking
+
+- S2-7 (byte strings).
+- S3: `--vendor_dir`, `--incompatible_require_repo_extension_metadata`, credential helpers,
+  floats in tag kwargs, cancellation of unawaited downloads, SIGINT, SOCKS proxies, non-UTF-8
+  `MODULE.bazel`.
+- S4: `build.rs` digest check, `MissingChecksumException` by message prefix, the dev binary's
+  hard-coded install base.
+- Setup failures return a message only, so the caller cannot map them to
+  `BAD_DOWNLOADER_CONFIG` or `BAD_REPO_CONTENTS_CACHE` exit codes.
+
+Closed S3/S4 items that I confirmed by reading: the `HTTPS_PROXY` panic and the duplicate HTTP
+stack (both files are gone). The other S3/S4 fixes listed in the response (rc tests, `access`,
+`lockFileVersion`, `EvalException` cause text, `OS_ARCH`) were not re-read.

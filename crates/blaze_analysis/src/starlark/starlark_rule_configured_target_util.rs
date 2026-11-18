@@ -189,6 +189,9 @@ fn evaluate(
         let is_default_executable_created;
         let required_config_fragments_provider;
         {
+            // Java: a Depset created by the implementation wraps one NestedSet for as long as it
+            // lives; see rule::depsets.
+            let _depset_scope = crate::rule::depsets::DepsetConversionScope::enter();
             let mut eval = Evaluator::new(&module);
             eval.extra = Some(thread);
             eval.set_forbid_recursion(!thread.semantics.allow_recursion);
@@ -221,7 +224,13 @@ fn evaluate(
             raw_providers = raw.map(|v| keep.push(v));
         }
         let frozen = match module.freeze() {
-            Ok(frozen) => Some(frozen),
+            Ok(frozen) => {
+                // PORT: keep-alive. rule::depsets memoizes NestedSets by the address of frozen
+                // depsets, so a frozen heap must never be freed (and its addresses reused), not
+                // even when the target later fails analysis.
+                crate::rule::depsets::keep_frozen_heap_alive(frozen.frozen_heap().clone());
+                Some(frozen)
+            }
             Err(e) => {
                 // PORT: Java's providers are frozen by closing the Mutability, which cannot fail;
                 // starlark-rust refuses values that cannot be frozen.

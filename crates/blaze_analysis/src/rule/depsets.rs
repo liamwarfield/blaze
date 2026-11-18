@@ -10,14 +10,28 @@
 //!   element converter, sub-arrays converted recursively). Nodes are memoized by node identity
 //!   for the life of the process, so converting a set twice yields the same depset value (Java:
 //!   the same Depset over the same NestedSet), and shared sub-DAGs stay shared.
-//! - Starlark -> Rust ([`depset_to_nested_set`]): `DepsetGen::to_nested_set` (same structure).
+//! - Starlark -> Rust ([`depset_to_nested_set_shared`]): `DepsetGen::to_nested_set` (same
+//!   structure), memoized by the identity of the depset value, because Java's `Depset.getSet`
+//!   returns the one wrapped `NestedSet` object every time and that identity reaches output
+//!   (`ActionGraphDump`'s `KnownNestedSets` numbers sets by node identity). A depset made by
+//!   [`nested_set_to_depset`] converts back to the very set it was made from.
+//!
+//! PORT: memo scope. Frozen depsets (providers of other targets, .bzl globals, converted native
+//! sets) are memoized for the life of the process; their heaps live as long (single build per
+//! process). Depsets of the rule implementation being evaluated are not frozen yet and their
+//! addresses die with the module's heap, so they are memoized only inside a
+//! [`DepsetConversionScope`] (one per rule evaluation). Not covered (requested from
+//! blaze_starlark: a public `to_nested_set` taking the memo): a sub-depset that is first
+//! converted as part of a larger depset and later on its own, and a depset converted both before
+//! and after its module is frozen; those get equal but distinct nodes.
 //!
 //! PORT: keep-alive. The memo holds every converted NestedSet and its frozen depset for the life
 //! of the process (single build per process), so values handed out by
 //! `OwnedFrozenValue::unchecked_frozen_value` stay valid even where the caller cannot register
 //! the frozen heap with its own heap (`StarlarkValue::get_attr` has no frozen heap).
 
-use std::any::TypeId;
+use std::any::{Any, TypeId};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, LazyLock};
@@ -40,6 +54,95 @@ struct MemoEntry {
 /// Memo of converted nodes, keyed by (element type, node identity).
 static MEMO: LazyLock<Mutex<HashMap<(TypeId, usize), MemoEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Frozen depset identity -> the `NestedSet<E>` it stands for (boxed as `Any`).
+static FROZEN_TO_SET: LazyLock<Mutex<HashMap<(TypeId, usize), Box<dyn Any + Send + Sync>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+thread_local! {
+    /// Unfrozen depset identity -> `NestedSet<E>`, one map per open [`DepsetConversionScope`].
+    static UNFROZEN_TO_SET: RefCell<Vec<HashMap<(TypeId, usize), Box<dyn Any>>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Frozen heaps whose depset addresses may be keys of [`FROZEN_TO_SET`].
+static KEPT_HEAPS: LazyLock<Mutex<Vec<starlark::values::FrozenHeapRef>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Keeps `heap` for the life of the process, so the addresses of its depsets stay unique.
+pub fn keep_frozen_heap_alive(heap: starlark::values::FrozenHeapRef) {
+    KEPT_HEAPS.lock().push(heap);
+}
+
+/// The lifetime of one Starlark module's unfrozen depsets (one rule implementation evaluation):
+/// while it is open, converting the same unfrozen depset value twice yields the same
+/// `NestedSet` node, as Java's `Depset.getSet` does.
+pub struct DepsetConversionScope(());
+
+impl DepsetConversionScope {
+    pub fn enter() -> DepsetConversionScope {
+        UNFROZEN_TO_SET.with(|s| s.borrow_mut().push(HashMap::new()));
+        DepsetConversionScope(())
+    }
+}
+
+impl Drop for DepsetConversionScope {
+    fn drop(&mut self) {
+        UNFROZEN_TO_SET.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+}
+
+/// `Depset.getSet`: the `NestedSet` of depset `v` (which must be the value `d` was unpacked
+/// from), converting elements with `f`. See the module comment for the identity it keeps.
+// Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:207 Depset.getSet
+pub fn depset_to_nested_set_shared<'v, E>(
+    v: Value<'v>,
+    d: &Depset<'v>,
+    f: &mut dyn FnMut(Value<'v>) -> starlark::Result<E>,
+) -> starlark::Result<NestedSet<E>>
+where
+    E: Clone + Eq + Hash + Send + Sync + 'static,
+{
+    let key = (TypeId::of::<E>(), d as *const Depset<'v> as usize);
+    if v.unpack_frozen().is_some() {
+        if let Some(set) = FROZEN_TO_SET.lock().get(&key) {
+            return Ok(set
+                .downcast_ref::<NestedSet<E>>()
+                .expect("keyed by element type")
+                .clone());
+        }
+        let set = d.to_nested_set(f)?;
+        // A concurrent conversion of the same depset may have won: keep the first, as there is
+        // one set per depset.
+        let mut memo = FROZEN_TO_SET.lock();
+        let entry = memo.entry(key).or_insert_with(|| Box::new(set));
+        return Ok(entry
+            .downcast_ref::<NestedSet<E>>()
+            .expect("keyed by element type")
+            .clone());
+    }
+    let cached = UNFROZEN_TO_SET.with(|s| {
+        s.borrow().last().and_then(|m| {
+            m.get(&key).map(|set| {
+                set.downcast_ref::<NestedSet<E>>()
+                    .expect("keyed by element type")
+                    .clone()
+            })
+        })
+    });
+    if let Some(set) = cached {
+        return Ok(set);
+    }
+    let set = d.to_nested_set(f)?;
+    UNFROZEN_TO_SET.with(|s| {
+        if let Some(m) = s.borrow_mut().last_mut() {
+            m.insert(key, Box::new(set.clone()));
+        }
+    });
+    Ok(set)
+}
 
 /// Converts `set` to a frozen Starlark depset with the same node structure, converting elements
 /// with `convert` (which allocates on the given frozen heap). `elem_type` is the Starlark type
@@ -99,6 +202,13 @@ where
     let heap_ref = heap.into_ref();
     // SAFETY: `value` was allocated on `heap_ref`.
     let owned = unsafe { OwnedFrozenValue::new(heap_ref, value) };
+    // Java: this depset wraps `set`; `getSet` gives `set` back.
+    if let Some(frozen_depset) = Depset::from_value(value.to_value()) {
+        FROZEN_TO_SET.lock().insert(
+            (TypeId::of::<E>(), frozen_depset as *const Depset as usize),
+            Box::new(set.clone()),
+        );
+    }
     memo.insert(
         key,
         MemoEntry {
@@ -149,7 +259,7 @@ pub fn depset_to_strings(v: Value, what: &str) -> starlark::Result<NestedSet<Str
 
 // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:262 Depset.cast
 // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:207 Depset.getSet
-fn depset_cast<'v, E: Clone + Eq + Hash>(
+fn depset_cast<'v, E: Clone + Eq + Hash + Send + Sync + 'static>(
     v: Value<'v>,
     what: &str,
     class_type: &str,
@@ -168,7 +278,7 @@ fn depset_cast<'v, E: Clone + Eq + Hash>(
             d.element_type()
         )));
     }
-    d.to_nested_set(&mut |x: Value<'v>| {
+    depset_to_nested_set_shared(v, d, &mut |x: Value<'v>| {
         convert(x).ok_or_else(|| {
             err(format!(
                 "for '{what}', got a depset of '{}', expected a depset of '{class_type}'",
@@ -192,6 +302,17 @@ mod tests {
         let d1 = strings_to_depset(&set);
         let d2 = strings_to_depset(&set.clone());
         assert!(d1.value().ptr_eq(d2.value()));
+    }
+
+    #[test]
+    fn converted_native_set_converts_back_to_itself() {
+        // Java: Depset.of(String.class, set).getSet(String.class) == set.
+        let set = NestedSetBuilder::create(Order::STABLE_ORDER, ["p".to_owned(), "q".to_owned()]);
+        let d = strings_to_depset(&set);
+        let back = depset_to_strings(d.value(), "x").unwrap();
+        assert_eq!(back.node_id(), set.node_id());
+        let again = depset_to_strings(d.value(), "x").unwrap();
+        assert_eq!(again.node_id(), set.node_id());
     }
 
     #[test]
