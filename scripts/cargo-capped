@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# The only way agents run Cargo. Caps parallelism and memory so several agents can share
+# this 16-core / 30 GB machine. Usage: scripts/cargo-capped <cargo args...>
+#   BLAZE_CARGO_JOBS (default 6), BLAZE_CARGO_MEM (default 12G).
+# Cargo's own target-dir lock serializes concurrent builds in one checkout.
+set -euo pipefail
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,6p' "$0"; exit 0; fi
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+jobs="${BLAZE_CARGO_JOBS:-6}"
+mem="${BLAZE_CARGO_MEM:-12G}"
+export CARGO_BUILD_JOBS="$jobs"
+exec systemd-run --user --collect --quiet --pipe --wait --same-dir \
+  -p MemoryMax="$mem" -p MemorySwapMax=0 \
+  --setenv=CARGO_BUILD_JOBS="$jobs" --setenv=PATH="$PATH" --setenv=HOME="$HOME" \
+  --setenv=RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-}" \
+  cargo "$@"

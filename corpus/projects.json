@@ -1,0 +1,22 @@
+{
+  "projects": {
+    "brotli": {
+      "tier": "simple",
+      "repo": "https://github.com/google/brotli",
+      "commit": "3dce8720b74194027c7b4cf42dee5bd159786df5",
+      "checkout": "~/.cache/blaze/corpus/brotli",
+      "commands": [["build", "//..."]],
+      "notes": "C library. Only direct dep is rules_cc, but bazel_tools pulls ~15 modules. No Bazel tests. Oracle: 53 actions, 12 s."
+    },
+    "re2": {
+      "tier": "complex",
+      "repo": "https://github.com/google/re2",
+      "commit": "2da0056814cf180480a19f5cf811e7e1c054bf6d",
+      "checkout": "~/.cache/blaze/corpus/re2",
+      "commands": [["test", "//:all", "//python:all"]],
+      "excluded": {"//app/...": "upstream package is broken on Bazel 9 (cc_binary without load); fails on the oracle too"},
+      "notes": "C++17 with abseil (select/config_setting heavy), pybind11 Python extension via rules_python (python toolchain download, transitions), googletest, google_benchmark, apple_support, .bazelrc with --enable_platform_specific_config and features. Oracle: 716 actions, 21/21 tests pass, ~6 min (dfa_test 347 s)."
+    }
+  },
+  "policy": "Only these two projects until the user asks for more."
+}

@@ -1,0 +1,12 @@
+{
+  "current": "9.3.2",
+  "pins": {
+    "9.3.2": {
+      "bazel_commit": "5951e93c05876016377063a150f8b56f38276461",
+      "source_checkout": "~/.cache/blaze/src/bazel-9.3.2",
+      "oracle_binary": "~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64",
+      "oracle_sha256": "2e14c55c298752d71e8a0bbd762665ffce5966c9ad00ec5d1a8b82a58e7bfa06",
+      "install_base_key": "58cf1ecbff441bac762b0050d6da21e9"
+    }
+  }
+}
