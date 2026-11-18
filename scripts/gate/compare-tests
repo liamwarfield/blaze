@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Compare two per-name test result files (from scripts/gate/run-tests).
+
+Usage: scripts/gate/compare-tests <base.json> <new.json> [--name-map map.tsv]
+
+Rule: every name that passed in base must pass in new. Lost (pass -> fail/ignored) and absent
+(pass -> missing) names are regressions; new passes never compensate. Exit 1 on any regression.
+--name-map: TSV of `old_name<TAB>new_name<TAB>reason` for renamed or moved tests.
+"""
+import json, sys
+
+def main(argv):
+    if len(argv) < 2 or argv[0] in ("help", "--help"):
+        print(__doc__); return 0
+    base = json.load(open(argv[0]))["results"]
+    new = json.load(open(argv[1]))["results"]
+    mapping = {}
+    if "--name-map" in argv:
+        for line in open(argv[argv.index("--name-map") + 1]):
+            if line.strip() and not line.startswith("#"):
+                old, newname, *_ = line.rstrip("\n").split("\t")
+                mapping[old] = newname
+    lost, absent, retained, recovered, added = [], [], 0, [], []
+    for name, st in base.items():
+        cur = new.get(mapping.get(name, name))
+        if st == "pass":
+            if cur is None: absent.append(name)
+            elif cur != "pass": lost.append((name, cur))
+            else: retained += 1
+        elif cur == "pass":
+            recovered.append(name)
+    mapped_new = set(mapping.get(n, n) for n in base)
+    added = [n for n, st in new.items() if n not in mapped_new and st == "pass"]
+    print(f"retained {retained}  recovered {len(recovered)}  new-pass {len(added)}  lost {len(lost)}  absent {len(absent)}")
+    for n, st in lost[:50]: print(f"  LOST   {n} -> {st}")
+    for n in absent[:50]: print(f"  ABSENT {n}")
+    return 1 if lost or absent else 0
+
+sys.exit(main(sys.argv[1:]))

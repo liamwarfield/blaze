@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Run the whole workspace test suite and write per-name results as JSON.
+# Usage: scripts/gate/run-tests <out.json> [extra cargo test args...]
+# Output: {"commit": ..., "tree_dirty": bool, "results": {"<crate>::<test path>": "pass|fail|ignored"}}
+# A crate that fails to build makes every one of its tests absent; the compare step reports that.
+set -euo pipefail
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || $# -lt 1 ]]; then sed -n '2,5p' "$0"; exit 0; fi
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+out="$(realpath -m "$1")"; shift
+log="$(mktemp -p "${root}/target" gate-tests.XXXXXX.log 2>/dev/null || { mkdir -p "$root/target"; mktemp -p "${root}/target" gate-tests.XXXXXX.log; })"
+cd "$root"
+set +e
+scripts/cargo-capped test --workspace --no-fail-fast "$@" 2>&1 | tee "$log" >/dev/null
+rc=${PIPESTATUS[0]}
+set -e
+python3 -I "$root/scripts/gate/parse_test_log.py" "$log" "$out" "$root"
+echo "cargo exit $rc; log $log; results $out"

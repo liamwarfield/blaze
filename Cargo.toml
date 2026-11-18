@@ -11,6 +11,9 @@ publish = false
 [workspace.dependencies]
 starlark = "0.14.2"
 starlark_derive = "0.14.2"
+starlark_map = "0.14.2"
+dupe = "0.9"
+num-bigint = "0.4"
 allocative = "0.3"
 anyhow = "1"
 thiserror = "2"

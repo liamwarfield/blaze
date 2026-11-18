@@ -29,6 +29,9 @@ Read them again after a context reset.
 - Port, do not redesign. Behaviour, ordering, output formats and error text follow the Java at the
   pin. Mark every ported item `// Java: <path relative to src/main/java>:<line> Class.method`.
 - Never guess a value. Anything not yet ported calls `unported!("Class.method")` (fails loudly).
+- A new crate is a workspace member as soon as its directory exists, and a half-made crate breaks
+  every other agent's build. Create it in one step: `Cargo.toml` and a compiling `src/lib.rs`
+  (empty is fine) before any other file.
 - Edit only the files or crates your task gives you. Do not edit another agent's crate.
 - All Cargo goes through `scripts/cargo-capped` (it caps jobs and memory). Never run bare `cargo`.
   Do not set `CARGO_TARGET_DIR`.
