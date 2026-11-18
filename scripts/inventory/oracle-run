@@ -1,0 +1,61 @@
+#!/bin/bash
+# Run the pinned oracle Bazel on a copy of a corpus project and record what it loaded.
+# Usage: oracle-run <brotli|re2> [step...]     oracle-run help
+# Steps (default: all): main, dump, query, cquery, kinds, mod, info, repos
+# Outputs: ~/.cache/blaze/work/inventory/out/<project>/
+set -euo pipefail
+if [[ "${1:-help}" == help || "${1:-}" == -h ]]; then
+  sed -n '2,5p' "$0"; exit 0
+fi
+P=$1; shift
+STEPS=${*:-main dump query cquery kinds mod info repos}
+W=$HOME/.cache/blaze/work/inventory/$P
+OUT=$HOME/.cache/blaze/work/inventory/out/$P
+mkdir -p "$OUT"
+B=$HOME/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64
+export PATH=/usr/bin:/bin
+SO=(--output_user_root=$HOME/.cache/blaze/oracle-out/ur-inventory --nohome_rc --nosystem_rc)
+RC=(--repository_cache=$HOME/.cache/blaze/repo-cache)
+case $P in
+  brotli) CMD=build; T=(//...); Q='//...' ;;
+  re2) CMD=test; T=(//:all //python:all); Q='//:all + //python:all' ;;
+  *) echo "unknown project $P"; exit 2 ;;
+esac
+cd "$W"
+bz() { "$B" "${SO[@]}" "$@"; }
+for s in $STEPS; do
+  echo "== step $s" >&2
+  case $s in
+    main) bz $CMD "${RC[@]}" "${T[@]}" 2>&1 | tee "$OUT/main.log" | tail -5 ;;
+    dump)
+      bz dump --skyframe=count > "$OUT/skyframe-count.txt" 2>&1 || true
+      bz dump --rules > "$OUT/dump-rules.txt" 2>&1 || true
+      bz dump --skyframe=deps --skykey_filter='^(BZL_LOAD|PACKAGE|REPOSITORY_DIRECTORY|SINGLE_EXTENSION|SINGLE_EXTENSION_EVAL|MODULE_FILE|BZL_COMPILE|STARLARK_BUILTINS)' > "$OUT/skyframe-deps.txt" 2>&1 || true
+      ;;
+    query) bz query "${RC[@]}" "buildfiles(deps($Q))" --output=label --keep_going > "$OUT/query-buildfiles.txt" 2>"$OUT/query.err" || true ;;
+    cquery)
+      bz cquery "${RC[@]}" "deps($Q)" --output=label > "$OUT/cquery-deps.txt" 2>"$OUT/cquery.err"
+      sed -E 's/ \([^)]*\)$//' "$OUT/cquery-deps.txt" | sort -u > "$OUT/cquery-labels.txt"
+      echo "buildfiles(set($(grep -v ' ' "$OUT/cquery-labels.txt" | tr '\n' ' ')))" > "$OUT/cquery-buildfiles.query"
+      bz query "${RC[@]}" --query_file="$OUT/cquery-buildfiles.query" --output=label --keep_going > "$OUT/cquery-buildfiles.txt" 2>"$OUT/cquery-buildfiles.err" || true
+      ;;
+    kinds)
+      cat "$OUT/query-buildfiles.txt" "$OUT/cquery-buildfiles.txt" | grep -E ':(BUILD|BUILD\.bazel)$' | sed -E 's/:BUILD(\.bazel)?$/:*/' | sort -u > "$OUT/packages.txt"
+      echo "set($(tr '\n' ' ' < "$OUT/packages.txt"))" > "$OUT/packages.query"
+      bz query "${RC[@]}" --query_file="$OUT/packages.query" --output=label_kind --keep_going > "$OUT/package-targets-kind.txt" 2>"$OUT/kinds.err" || true
+      bz cquery "${RC[@]}" "deps($Q)" --output=label_kind > "$OUT/cquery-kind.txt" 2>>"$OUT/kinds.err" || true
+      ;;
+    mod)
+      bz mod graph "${RC[@]}" > "$OUT/mod-graph.txt" 2>&1 || true
+      cp -f MODULE.bazel.lock "$OUT/" 2>/dev/null || true
+      OB=$(bz info output_base 2>/dev/null)
+      echo "$OB" > "$OUT/output_base.txt"
+      ls "$OB/external" > "$OUT/external-ls.txt"
+      ;;
+    info) bz info build-language > "$OUT/build-language.pb" 2>/dev/null || true ;;
+    repos)
+      # Repository rule of every repo the main command fetched (needs the dump step's output).
+      bz mod show_repo "${RC[@]}" $(grep '^REPOSITORY_DIRECTORY:' "$OUT/skyframe-deps.txt" | sed 's/REPOSITORY_DIRECTORY://' | grep -v '^@@bazel_tools$') > "$OUT/show-repo.txt" 2>"$OUT/show-repo.err" || true
+      ;;
+  esac
+done

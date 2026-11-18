@@ -1,0 +1,12 @@
+[package]
+name = "blaze_cmdline"
+description = "Port of Bazel's lib/cmdline: RepositoryName, PackageIdentifier, Label, TargetPattern."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_vfs = { path = "../blaze_vfs" }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
