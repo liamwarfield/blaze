@@ -16,7 +16,7 @@
  */
 
 use std::cell::Ref;
-use std::cell::RefCell;
+// BLAZE PATCH 0025: `use std::cell::RefCell;` removed (the payload is MutableSetData now).
 use std::cell::RefMut;
 use std::convert::Infallible;
 
@@ -24,7 +24,9 @@ use dupe::Dupe;
 use either::Either;
 
 use super::value::FrozenSetData;
+use super::value::MutableSet; // BLAZE PATCH 0025
 use super::value::SetData;
+use super::value::frozen_set_error; // BLAZE PATCH 0025
 use crate::coerce::coerce;
 use crate::typing::Ty;
 use crate::values::FrozenValue;
@@ -109,16 +111,19 @@ impl<'v> SetMut<'v> {
         #[inline(never)]
         fn error<'v>(x: Value<'v>) -> anyhow::Error {
             if x.downcast_ref::<SetGen<FrozenSetData>>().is_some() {
-                ValueError::CannotMutateImmutableValue.into()
+                // BLAZE PATCH 0025: Java's text (Starlark.checkMutable), as 0023 for list/dict.
+                frozen_set_error()
             } else {
                 NotSetError(x.get_type()).into()
             }
         }
 
-        let ptr = x.downcast_ref::<SetGen<RefCell<SetData<'v>>>>();
+        let ptr = x.downcast_ref::<MutableSet<'v>>(); // BLAZE PATCH 0025
         match ptr {
             None => Err(error(x)),
-            Some(ptr) => match ptr.0.try_borrow_mut() {
+            // BLAZE PATCH 0025: Java Starlark.checkMutable checks frozenness first.
+            Some(ptr) if ptr.0.immutable.get() => Err(frozen_set_error()),
+            Some(ptr) => match ptr.0.cell.try_borrow_mut() { // BLAZE PATCH 0025
                 Ok(x) => Ok(SetMut { aref: x }),
                 Err(_) => Err(ValueError::MutationDuringIteration.into()),
             },
@@ -146,9 +151,9 @@ impl<'v> UnpackValue<'v> for SetRef<'v> {
                 })
         } else {
             value
-                .downcast_ref::<SetGen<RefCell<SetData<'v>>>>()
+                .downcast_ref::<MutableSet<'v>>() // BLAZE PATCH 0025
                 .map(|ptr| SetRef {
-                    aref: Either::Left(ptr.0.borrow()),
+                    aref: Either::Left(ptr.0.cell.borrow()), // BLAZE PATCH 0025
                 })
         };
         Ok(result)

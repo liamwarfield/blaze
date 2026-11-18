@@ -714,7 +714,7 @@ load('s.star', 'S')
 
 S.update(S)
 "#,
-            "Immutable",
+            "trying to mutate a frozen set value", // BLAZE PATCH 0025 (was "Immutable")
         );
     }
 }

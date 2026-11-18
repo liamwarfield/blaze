@@ -11,13 +11,12 @@ use blaze_protos::failure_details::{
     ConfigurableQuery, FailureDetail, configurable_query, failure_detail::Category,
 };
 use blaze_query_engine::{DetailedExitCode, QueryExpression, QueryFunction, QueryParser};
-use blaze_sky_top::build_tool::{BuildRequest, BuildTool};
+use blaze_sky_top::build_tool::BuildRequest;
 use parking_lot::RwLock;
 
 use crate::buildtool::cquery_processor::CqueryProcessor;
 use crate::commands::{
-    PostAnalysisCommandEnvironment, main_repo_target_parser, read_query,
-    tracks_state_for_incrementality,
+    PostAnalysisCommandEnvironment, main_repo_target_parser, process_request, read_query,
 };
 use crate::cquery::config_function::ConfigFunctionSlot;
 use crate::cquery::configured_target_query_environment::{CqueryNode, functions};
@@ -96,6 +95,8 @@ pub fn function_map(
 /// Handles the 'cquery' command on the Blaze command line.
 // Java: com/google/devtools/build/lib/runtime/commands/CqueryCommand.java:118 CqueryCommand.exec
 pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
+    // SkyQueryEnvironment.DEFAULT_THREAD_COUNT (a static initializer in Java).
+    crate::post_analysis_query_environment::set_default_thread_count(env.available_processors);
     let main_repo_target_parser = match main_repo_target_parser(env) {
         Ok(p) => p,
         Err(detailed_exit_code) => return detailed_exit_code,
@@ -159,15 +160,9 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
         env.reporter.clone(),
         env.output.clone(),
         env.working_directory.clone(),
-        tracks_state_for_incrementality(env),
+        env.tracks_state_for_incrementality,
     );
-    BuildTool::new(
-        env.skyframe_executor,
-        env.reporter.clone(),
-        env.relative_working_directory.clone(),
-        &processor,
-    )
-    .process_request(&request)
+    process_request(env, &request, &processor)
 }
 
 // Java: com/google/devtools/build/lib/runtime/commands/CqueryCommand.java:205 CqueryCommand.createFailureResult

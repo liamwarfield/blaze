@@ -40,14 +40,16 @@ do not record and compare one scenario at the same time), uses the output user r
 env HOME and PATH=/usr/bin:/bin, each command in a systemd-run scope (MemoryMax=8G), then
 `shutdown`. Both the workspace copy and the output user root are deleted first, so every run
 starts cold. Action keys of SourceSymlinkManifest and SymlinkTree actions (they fingerprint
-absolute paths) are printed as <path-dependent>. Kept stderr lines: ERROR:, WARNING:, DEBUG:, FAILED:, `Target ...`, `INFO: Build ...`,
-test summary lines; first line of each message only. Paths are normalised (<WS>, <OUTPUT_BASE>,
+absolute paths) are printed as <path-dependent>. Kept stderr lines: ERROR:, WARNING:, DEBUG:,
+FAILED:, `Target ...`, `Aspect ...`, `INFO: Build ...`, `Use --verbose_failures ...`, test summary
+lines and two-space-indented single paths (the output lists of the build result); first line of
+each message only. Paths are normalised (<WS>, <OUTPUT_BASE>,
 <HOME>), sandbox numbers and durations too. Environment: BLAZE (binary, default
 target/debug/blaze).
 """
 
 ORACLE = os.path.expanduser("~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
-KEEP = re.compile(r"^(ERROR: |WARNING: |DEBUG: |FAILED: |Target |INFO: Build |//\S+ +\S|Executed \d)")
+KEEP = re.compile(r"^(ERROR: |WARNING: |DEBUG: |FAILED: |Target |Aspect |Use --verbose_failures |INFO: Build |//\S+ +\S|Executed \d|  \S+$)")
 DROP = re.compile(r"discarding analysis cache|^WARNING: Running Bazel server needs to be killed")
 # Action keys of these mnemonics fingerprint absolute paths (see scripts/oracle/README.md).
 PATH_DEPENDENT_KEYS = {"SourceSymlinkManifest", "SymlinkTree"}

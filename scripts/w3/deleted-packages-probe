@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Oracle evidence for --deleted_packages: see `deleted-packages-probe help`."""
+
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+SCENARIO = os.path.join(HERE, "deleted-packages")
+HOME = os.path.expanduser("~")
+ORACLE = os.path.join(HOME, ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+WORK = os.path.join(HOME, ".cache/blaze/work/w3-deleted-packages")
+OUT_ROOT = os.path.join(HOME, ".cache/blaze/oracle-out/ur-w3-deleted-packages")
+BLAZE_OUT = os.path.join(HOME, ".cache/blaze/w3/out/deleted-packages")
+
+USAGE = """\
+usage: scripts/w3/deleted-packages-probe oracle     transcript of the oracle (Bazel 9.3.2) on stdout
+       scripts/w3/deleted-packages-probe blaze      transcript of blaze-query-dev on stdout
+       scripts/w3/deleted-packages-probe record     oracle transcript -> deleted-packages/ORACLE.txt
+       scripts/w3/deleted-packages-probe compare    runs blaze-query-dev, diffs with ORACLE.txt
+       scripts/w3/deleted-packages-probe help
+
+The scenario is scripts/w3/deleted-packages/: ws/ (a/BUILD with glob(["**"]), a/b/BUILD), COMMANDS
+(one `query` argument list per line) and ORACLE.txt (the expected transcript, written by `record`).
+Each run copies ws/ to ~/.cache/blaze/work/w3-deleted-packages (deleted first) and runs every
+command with --output=label_kind. The transcript has, per command: the exit code, stdout, and the
+ERROR:/WARNING: lines of stderr (sorted), with the workspace path printed as <WS>.
+
+oracle: output user root ~/.cache/blaze/oracle-out/ur-w3-deleted-packages (deleted first),
+startup options --nohome_rc --nosystem_rc, options --repository_cache=~/.cache/blaze/repo-cache
+--color=no --curses=no --lockfile_mode=off, env HOME and PATH=/usr/bin:/bin, a fresh server per
+command (`shutdown` after each: the flag must not meet cached nodes), each in a systemd-run scope
+(MemoryMax=12G).
+blaze: W3's dev query binary, which applies PackageOptions (the `blaze` binary does not yet, see
+docs/reviews/2026-11-18-loading-response.md): $BLAZE_QUERY_DEV (default
+target/debug/blaze-query-dev) --workspace <copy> --output_base ~/.cache/blaze/w3/out/deleted-packages
+--repos $BLAZE_REPOS (default ~/.cache/blaze/w3/brotli.repos.json, from scripts/w3/oracle-repos;
+the scenario loads no external repository, the file supplies the main repository's mapping).
+"""
+
+KEEP = re.compile(r"^(ERROR: |WARNING: )")
+
+
+def commands():
+    out = []
+    with open(os.path.join(SCENARIO, "COMMANDS")) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                out.append(shlex.split(line))
+    return out
+
+
+def fresh_workspace():
+    shutil.rmtree(WORK, ignore_errors=True)
+    shutil.copytree(os.path.join(SCENARIO, "ws"), WORK)
+
+
+def scoped(argv, env):
+    return subprocess.run(
+        ["systemd-run", "--user", "--collect", "--wait", "--quiet", "--pipe",
+         "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "--working-directory=" + WORK,
+         "env", "-i"] + [k + "=" + v for k, v in env.items()] + argv,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def remove_tree(path):
+    if os.path.isdir(path):
+        subprocess.run(["chmod", "-R", "u+w", path])
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def run_oracle(args):
+    env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+    startup = [ORACLE, "--output_user_root=" + OUT_ROOT, "--nohome_rc", "--nosystem_rc"]
+    r = scoped(startup + ["query", "--repository_cache=" + REPO_CACHE, "--color=no",
+                          "--curses=no", "--lockfile_mode=off"] + args + ["--output=label_kind"],
+               env)
+    scoped(startup + ["shutdown"], env)
+    return r
+
+
+def run_blaze(args):
+    binary = os.environ.get("BLAZE_QUERY_DEV", os.path.join(ROOT, "target/debug/blaze-query-dev"))
+    repos = os.environ.get("BLAZE_REPOS", os.path.join(HOME, ".cache/blaze/w3/brotli.repos.json"))
+    for path in (binary, repos):
+        if not os.path.exists(path):
+            sys.exit("missing " + path + " (see `deleted-packages-probe help`)")
+    env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+    return scoped([binary, "--workspace", WORK, "--output_base", BLAZE_OUT, "--repos", repos]
+                  + args + ["--output=label_kind"], env)
+
+
+def transcript(which):
+    fresh_workspace()
+    if which == "oracle":
+        remove_tree(OUT_ROOT)
+    else:
+        remove_tree(BLAZE_OUT)
+        os.makedirs(BLAZE_OUT)
+    lines = []
+    for n, args in enumerate(commands(), 1):
+        r = run_oracle(args) if which == "oracle" else run_blaze(args)
+        lines.append("=== %d: query %s" % (n, " ".join(shlex.quote(a) for a in args)))
+        lines.append("exit %d" % r.returncode)
+        lines.extend(r.stdout.decode(errors="replace").replace(WORK, "<WS>").splitlines())
+        kept = [l.replace(WORK, "<WS>") for l in r.stderr.decode(errors="replace").splitlines()
+                if KEEP.match(l)]
+        lines.extend(sorted(kept))
+    if which == "oracle":
+        remove_tree(OUT_ROOT)
+    return "\n".join(lines) + "\n"
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) == 2 else "help"
+    oracle_txt = os.path.join(SCENARIO, "ORACLE.txt")
+    if cmd in ("oracle", "blaze"):
+        sys.stdout.write(transcript(cmd))
+    elif cmd == "record":
+        text = transcript("oracle")
+        with open(oracle_txt, "w") as f:
+            f.write(text)
+        print("wrote " + os.path.relpath(oracle_txt, ROOT))
+    elif cmd == "compare":
+        with open(oracle_txt) as f:
+            want = f.read()
+        got = transcript("blaze")
+        if got == want:
+            print("MATCH: %d commands" % len(commands()))
+            return
+        import difflib
+        sys.stdout.writelines(difflib.unified_diff(
+            want.splitlines(True), got.splitlines(True), "ORACLE.txt", "blaze-query-dev"))
+        sys.exit(1)
+    else:
+        print(USAGE, end="")
+        if cmd != "help":
+            sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

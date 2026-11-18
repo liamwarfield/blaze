@@ -216,6 +216,19 @@ mod probe {
             ))
         }
 
+        /// Patch 0025: Java `StarlarkSet.immutableCopyOf(x)`.
+        fn immutable_set<'v>(x: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+            let elems: Vec<Value<'v>> = x.iterate(heap)?.collect();
+            starlark::values::set::alloc_immutable_set(heap, elems)
+        }
+
+        /// Patch 0025: `StarlarkSet.isImmutable`, None for non-sets.
+        fn set_is_immutable<'v>(x: Value<'v>) -> anyhow::Result<NoneOr<bool>> {
+            Ok(NoneOr::from_option(
+                starlark::values::set::set_is_immutable(x),
+            ))
+        }
+
         /// Patch 0017: file name of the module `f` was defined in.
         fn def_module_file<'v>(f: Value<'v>) -> anyhow::Result<NoneOr<String>> {
             Ok(NoneOr::from_option(
@@ -795,6 +808,214 @@ fn patch_0023_frozen_mutation_text() {
                 let err = run(src).unwrap_err();
                 assert!(err.contains(want), "{src:?}: {err}");
             }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// Java StarlarkSet.immutableCopyOf (net/starlark/java/eval/StarlarkSet.java:374): reads like a
+/// set; every mutator calls Starlark.checkMutable first ("trying to mutate a frozen set value",
+/// before the element is looked at and before the for-loop check); isImmutable is true
+/// (StarlarkSet.java:187: mutability frozen); still unhashable (StarlarkSet.java:206 "Even a
+/// frozen set is unhashable"). A set frozen with its module fails with the same text (as 0023
+/// for lists and dicts).
+#[test]
+fn patch_0025_immutable_set() {
+    use starlark::eval::ReturnFileLoader;
+    use starlark::values::set::SetRef;
+    use starlark::values::set::alloc_immutable_set;
+    use starlark::values::set::alloc_set;
+    use starlark::values::set::set_is_immutable;
+    // The native functions (`alloc_immutable_set` takes what 0015's `alloc_set` takes).
+    Module::with_temp_heap(|module| {
+        let heap = module.heap();
+        let items = vec![heap.alloc("b"), heap.alloc("a"), heap.alloc("b")];
+        let set = alloc_immutable_set(heap, items).unwrap();
+        assert_eq!(set.get_type(), "set");
+        assert_eq!(set.to_repr(), r#"set(["b", "a"])"#);
+        assert_eq!(SetRef::from_value(set).unwrap().len(), 2);
+        assert_eq!(set_is_immutable(set), Some(true));
+        let empty = alloc_immutable_set(heap, Vec::<starlark::values::Value>::new()).unwrap();
+        assert!(SetRef::from_value(empty).unwrap().is_empty());
+        assert_eq!(set_is_immutable(empty), Some(true));
+        let mutable = alloc_set(heap, vec![heap.alloc("a")]).unwrap();
+        assert_eq!(set_is_immutable(mutable), Some(false));
+        assert_eq!(set_is_immutable(heap.alloc("x")), None);
+        assert!(
+            alloc_immutable_set(
+                heap,
+                vec![heap.alloc(starlark::values::list::AllocList([1]))]
+            )
+            .is_err()
+        );
+    });
+
+    let base = "x = immutable_set([3, \"a\", 3])\n";
+    let ok = |body: &str, want: &str| {
+        let src: &'static str = Box::leak(format!("{base}{body}").into_boxed_str());
+        assert_eq!(eval_with_probe(src), Ok(want.to_owned()), "{body}");
+    };
+    let run = |body: &str| {
+        let src: &'static str =
+            Box::leak(format!("{base}def f():\n    {body}\nf()\n").into_boxed_str());
+        eval_with_probe(src)
+    };
+    ok(
+        "r = (type(x), repr(x), str(x), len(x), 3 in x, 4 in x, x == set([3, \"a\"]), set([\"a\", 3]) == x, list(x))",
+        r#"("set", "set([3, \"a\"])", "set([3, \"a\"])", 2, True, False, True, True, [3, "a"])"#,
+    );
+    ok(
+        "r = (x.union([1]), x | set([1]), x.intersection([3]), x - set([3]), [e for e in x], bool(x), set_is_immutable(x))",
+        r#"(set([3, "a", 1]), set([3, "a", 1]), set([3]), set(["a"]), [3, "a"], True, True)"#,
+    );
+    // Copies are ordinary mutable sets.
+    ok(
+        "y = set(x)\ny.add(5)\nz = x | set()\nz.add(6)\nr = (x, y, z, set_is_immutable(y), set_is_immutable(z), set_is_immutable(set([1])), set_is_immutable(immutable_set([])), set_is_immutable([]))",
+        r#"(set([3, "a"]), set([3, "a", 5]), set([3, "a", 6]), False, False, False, True, None)"#,
+    );
+    for m in [
+        "x.add(1)",
+        "x.add(3)",
+        "x.update([1])",
+        "x.update(x)",
+        "x.remove(3)",
+        "x.remove(99)",
+        "x.discard(3)",
+        "x.discard(99)",
+        "x.pop()",
+        "x.clear()",
+        "for e in x:\n        x.add(1)",
+    ] {
+        assert_eq!(
+            run(m),
+            Err("trying to mutate a frozen set value".to_owned()),
+            "{m}"
+        );
+    }
+    assert!(
+        eval_with_probe("r = {immutable_set([1]): 1}")
+            .unwrap_err()
+            .contains("not hashable")
+    );
+
+    // Frozen with its module: a set on a frozen heap (was "Immutable"), and a flagged set that
+    // became an ordinary frozen set.
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| {
+            let (mut builder, _, _) = dialect::bazel_universe_builder();
+            probe::globals(&mut builder);
+            let globals = builder.build();
+            let a = {
+                let ast = AstModule::parse(
+                    "a.bzl",
+                    "S = set([1, 2])\nX = immutable_set([1, 2])\n".to_owned(),
+                    &dialect::bzl_dialect(),
+                )
+                .unwrap();
+                Module::with_temp_heap(|module| {
+                    let mut e = Evaluator::new(&module);
+                    e.eval_module(ast, &globals).unwrap();
+                    drop(e);
+                    module.freeze()
+                })
+                .unwrap()
+            };
+            let run = |src: &str| -> Result<String, String> {
+                let ast = AstModule::parse("b.bzl", src.to_owned(), &dialect::bzl_dialect())
+                    .map_err(|e| bare_message(&e))?;
+                Module::with_temp_heap(|module| {
+                    let modules = [("a.bzl", &a)].into_iter().collect();
+                    let loader = ReturnFileLoader { modules: &modules };
+                    let mut e = Evaluator::new(&module);
+                    e.set_loader(&loader);
+                    e.eval_module(ast, &globals).map_err(|e| bare_message(&e))?;
+                    Ok(module.get("r").map(|v| v.to_repr()).unwrap_or_default())
+                })
+            };
+            assert_eq!(
+                run(
+                    "load('a.bzl', 'S', 'X')\nr = (S, X, S == X, 1 in X, set_is_immutable(S), set_is_immutable(X), set_is_immutable(set(X)))\n"
+                ),
+                Ok("(set([1, 2]), set([1, 2]), True, True, True, True, False)".to_owned())
+            );
+            for src in [
+                "load('a.bzl', 'S')\nS.add(3)\n",
+                "load('a.bzl', 'S')\nS.update([3])\n",
+                "load('a.bzl', 'S')\nS.remove(1)\n",
+                "load('a.bzl', 'S')\nS.discard(1)\n",
+                "load('a.bzl', 'S')\nS.pop()\n",
+                "load('a.bzl', 'S')\nS.clear()\n",
+                "load('a.bzl', 'X')\nX.add(3)\n",
+                "load('a.bzl', 'X')\nX.clear()\n",
+            ] {
+                let err = run(src).unwrap_err();
+                assert!(
+                    err.contains("trying to mutate a frozen set value"),
+                    "{src:?}: {err}"
+                );
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// Java StarlarkFunction.getLocation (net/starlark/java/eval/StarlarkFunction.java:172): the name
+/// of a `def`, the `lambda` keyword of a lambda. The source is the map_each probe of
+/// blaze_actions, whose oracle recording (`tests/data/map_each_probe/expected.txt`) prints
+/// "declared at <file>:9:9" for the nested def `inner` and "<file>:21:11" for the top-level
+/// lambda.
+#[test]
+fn patch_0024_def_declaration_span() {
+    use starlark::eval::DefModule;
+    const CASES_BZL: &str =
+        include_str!("../../blaze_actions/tests/data/map_each_probe/workspace/cases.bzl");
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| {
+            let globals = dialect::bazel_universe();
+            // The first 21 lines: the functions under test. (The rest calls `depset`, which this
+            // crate's universe does not have.)
+            let mut source: String = CASES_BZL
+                .lines()
+                .take(21)
+                .map(|l| format!("{l}\n"))
+                .collect();
+            source.push_str("_not_a_def = len\nnested = _nested\nlam = _lambda\n");
+            let ast = AstModule::parse("/workspace/cases.bzl", source, &dialect::bzl_dialect())
+                .map_err(|e| bare_message(&e))
+                .unwrap();
+            // (file, 1-based line, 1-based column) of the start of the declaration span.
+            let position = |f: starlark::values::Value| {
+                DefModule::declaration_span(f).map(|span| {
+                    let begin = span.resolve_span().begin;
+                    (span.filename().to_owned(), begin.line + 1, begin.column + 1)
+                })
+            };
+            let at = |line, column| Some(("/workspace/cases.bzl".to_owned(), line, column));
+            let frozen = Module::with_temp_heap(|module| {
+                let mut e = Evaluator::new(&module);
+                e.eval_module(ast, &globals)
+                    .map_err(|e| bare_message(&e))
+                    .unwrap();
+                drop(e);
+                // While the module executes.
+                assert_eq!(position(module.get("nested").unwrap()), at(9, 9));
+                assert_eq!(position(module.get("lam").unwrap()), at(21, 11));
+                module.freeze()
+            })
+            .unwrap();
+            // Frozen: the nested def, a top-level def and its alias, the lambda.
+            let get = |name: &str| position(frozen.get_any_visibility(name).unwrap().0.value());
+            assert_eq!(get("_nested"), at(9, 9));
+            assert_eq!(get("_mk"), at(8, 5));
+            assert_eq!(get("_top"), at(16, 5));
+            assert_eq!(get("_alias"), at(16, 5));
+            assert_eq!(get("_lambda"), at(21, 11));
+            // Not a def or lambda.
+            assert_eq!(get("_not_a_def"), None);
         })
         .unwrap()
         .join()

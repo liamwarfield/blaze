@@ -1,22 +1,29 @@
 //! Port of the analysis-only part of `skyframe/SkyframeBuildView.java` (`configureTargets`) and
 //! `skyframe/SkyframeAnalysisResult.java`.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
+use blaze_actions::actions::action_lookup::ArtifactOwner;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::configured_target_value::ConfiguredTargetValue;
 use blaze_build_config::platform::PlatformValueKey;
 use blaze_cmdline::Label;
-use blaze_events::ExtendedEventHandler;
+use blaze_events::{Event, ExtendedEventHandler};
 use blaze_packages::target::Target;
 use blaze_protos::build_event_stream::build_metrics::BuildGraphMetrics;
 use blaze_sky_analysis::platform::platform_function::PlatformFunction;
+use blaze_sky_analysis::producers::errors::configuration_id_of_key;
 use blaze_sky_loading::package_function::{PackageKey, PackageValue};
 use blaze_skyframe::{EvaluationResult, Evaluator, Interrupted, Key, SkyKey, WalkableGraph};
 use indexmap::{IndexMap, IndexSet};
 
+use crate::action_conflict_exception::{ActionConflictException, ActionConflicts};
+use crate::analysis_failure_event::{AnalysisFailureEvent, AnalysisRootCause};
+use crate::artifact_conflict_finder;
 use crate::build_view::AnalysisPhaseCompleteStats;
+use crate::skyframe_error_processor::{self, ViewCreationFailedException};
 
 use crate::skyframe_executor::{SkyframeExecutor, TargetAndConfiguration};
 
@@ -70,6 +77,40 @@ impl SkyframeAnalysisResult {
     pub fn get_targets_with_configuration(&self) -> &[TargetAndConfiguration] {
         &self.targets_with_configuration
     }
+
+    /// Returns an equivalent `SkyframeAnalysisResult`, except with errored targets removed from
+    /// the configured target list.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeAnalysisResult.java:107 SkyframeAnalysisResult.withAdditionalErroredTargets
+    pub fn with_additional_errored_targets(
+        self,
+        errored_targets: &[ConfiguredTarget],
+    ) -> SkyframeAnalysisResult {
+        // Sets.difference(configuredTargets, erroredTargets)
+        let configured_targets = self
+            .configured_targets
+            .into_iter()
+            .filter(|ct| {
+                !errored_targets
+                    .iter()
+                    .any(|errored| same_configured_target(errored, ct))
+            })
+            .collect();
+        SkyframeAnalysisResult {
+            has_loading_error: self.has_loading_error,
+            has_analysis_error: true,
+            has_action_conflicts: self.has_action_conflicts,
+            configured_targets,
+            walkable_graph: self.walkable_graph,
+            targets_with_configuration: self.targets_with_configuration,
+            build_graph_metrics: self.build_graph_metrics,
+        }
+    }
+}
+
+/// `ConfiguredTarget.equals` as the sets of configured targets here need it: the same lookup
+/// key (one configured target per key in a build).
+fn same_configured_target(a: &ConfiguredTarget, b: &ConfiguredTarget) -> bool {
+    a.get_lookup_key().0.key_equals(&*b.get_lookup_key().0)
 }
 
 /// What `configureTargets` throws.
@@ -91,7 +132,25 @@ impl From<Interrupted> for ConfigureTargetsError {
     }
 }
 
+impl From<ViewCreationFailedException> for ConfigureTargetsError {
+    fn from(e: ViewCreationFailedException) -> Self {
+        ConfigureTargetsError::ViewCreationFailed {
+            message: e.get_message().to_owned(),
+            failure_detail: e.get_failure_detail().clone(),
+        }
+    }
+}
+
 /// Analyzes the specified targets using Skyframe as the driving framework.
+///
+/// Returns the configured targets that should be built along with a WalkableGraph of the
+/// analysis.
+///
+/// PORT: `topLevelArtifactContextForConflictPruning` is read from the executor
+/// (`SkyframeExecutor::get_top_level_artifact_context_for_conflict_pruning`, set by
+/// `AnalysisPhaseRunner` from the request) because `BuildView.update`'s options do not carry it
+/// yet. `eventBus` is the event handler (`post`); `bugReporter` and `executors` have no port.
+/// Top-level aspect keys are not ported (`BuildView.createTopLevelAspectKeys` fails loudly).
 // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:400 SkyframeBuildView.configureTargets
 pub fn configure_targets(
     skyframe_executor: &SkyframeExecutor,
@@ -101,38 +160,51 @@ pub fn configure_targets(
     keep_going: bool,
     check_for_action_conflicts: bool,
 ) -> Result<SkyframeAnalysisResult, ConfigureTargetsError> {
-    // PORT: enableAnalysis(true/false) guards incremental reuse; not needed for one evaluation.
+    // PORT: skipped, incremental: enableAnalysis(true/false) guards the reuse of analysis nodes
+    // between builds.
     let result = skyframe_executor.configure_targets(
-        event_handler,
+        event_handler.clone(),
         label_to_target_map,
         ct_keys,
         keep_going,
     )?;
 
-    let cts = result.configured_targets;
+    let mut cts = result.configured_targets;
     let evaluation_result: EvaluationResult = result.evaluation_result;
 
-    // PORT: the conflicts ArtifactConflictFinder finds are not reported (no inter-target
-    // conflict checking); its statistics (the AnalysisGraphStatsEvent) are computed.
+    let mut inter_target_conflicts = ActionConflicts::new();
     let mut build_graph_metrics = None;
+    // PORT: `newKeys` (the top-level keys of this build) only feeds the incremental conditions of
+    // shouldCheckForConflicts.
     if should_check_for_conflicts(
         check_for_action_conflicts,
         skyframe_executor.get_evaluator(),
     ) {
+        // This operation is somewhat expensive, so we only do it if the graph might have changed
+        // in some way -- either we analyzed a new target or we invalidated an old one or are
+        // building targets together that haven't been built before.
         let analysis_traversal_result = collect_action_lookup_values_in_build(
             skyframe_executor.get_walkable_graph().as_ref(),
             ct_keys,
         );
-        let output_artifact_count = find_artifact_conflicts_output_artifact_count(
+        let action_key_context = skyframe_executor
+            .get_action_key_context()
+            .expect("IllegalStateException: the command does not configure targets");
+        let conflicts_and_stats = artifact_conflict_finder::find_and_store_artifact_conflicts(
             &analysis_traversal_result.action_lookup_values,
-        );
+            analysis_traversal_result.action_count,
+            action_key_context,
+        )?;
         let mut metrics = analysis_traversal_result.get_metrics();
-        metrics.output_artifact_count = output_artifact_count;
+        metrics.output_artifact_count = conflicts_and_stats.output_artifact_count();
+        // PORT: Java posts `new AnalysisGraphStatsEvent(buildGraphMetrics)` on the event bus;
+        // the metrics travel in the result to their one subscriber (the metrics collector).
         build_graph_metrics = Some(metrics);
+        inter_target_conflicts = conflicts_and_stats.conflicts().clone();
     }
 
     // Intra-target conflict would mean an error in evaluationResult.
-    if !evaluation_result.has_error() {
+    if !evaluation_result.has_error() && inter_target_conflicts.is_empty() {
         return Ok(SkyframeAnalysisResult {
             has_loading_error: false,
             has_analysis_error: false,
@@ -144,15 +216,196 @@ pub fn configure_targets(
         });
     }
 
-    blaze_util::unported!(
-        "SkyframeErrorProcessor.processAnalysisErrors",
-        "analysis errors in {:?}",
-        evaluation_result
-            .error_map()
+    let error_processing_result = skyframe_error_processor::process_analysis_errors(
+        &evaluation_result,
+        skyframe_executor.get_cycles_reporter(),
+        &event_handler,
+        keep_going,
+    )?;
+
+    // ImmutableMap.builder().putAll(interTargetConflicts)
+    //     .putAll(errorProcessingResult.actionConflicts()) // Intra-target conflicts.
+    //     .buildOrThrow()
+    let mut action_conflicts = ActionConflicts::new();
+    action_conflicts.put_all(&inter_target_conflicts);
+    for (action, exception) in error_processing_result.action_conflicts().entries() {
+        if action_conflicts.contains_key(action) {
+            panic!(
+                "IllegalArgumentException: Multiple entries with same key: {}",
+                action.pretty_print()
+            );
+        }
+        action_conflicts.put(action, exception.clone());
+    }
+    let found_action_conflict_in_latest_check = !action_conflicts.is_empty();
+    let mut no_keep_going_exception_due_to_conflict: Option<ViewCreationFailedException> = None;
+    // Sometimes there are action conflicts, but the actions aren't actually required to run by
+    // the build. In such cases, the conflict should still be reported to the user.
+    // See OutputArtifactConflictTest#unusedActionsStillConflict.
+    let mut reported_action_conflict_exceptions: HashSet<String> = HashSet::new();
+    for (bad_action, ace) in action_conflicts.entries() {
+        let failure_detail = ace.get_failure_detail();
+        if reported_action_conflict_exceptions.insert(ace.get_message().to_owned()) {
+            ace.report_to(event_handler.as_ref());
+            if keep_going {
+                event_handler.handle(&Event::warn(format!(
+                    "errors encountered while analyzing target '{}': it will not be built",
+                    // String concatenation of a possibly null label.
+                    bad_action
+                        .get_owner()
+                        .get_label()
+                        .map(|l| l.to_string())
+                        .unwrap_or_else(|| "null".to_owned())
+                )));
+            }
+        }
+        if !keep_going {
+            no_keep_going_exception_due_to_conflict = Some(ViewCreationFailedException::of_cause(
+                failure_detail,
+                ace.get_message(),
+            ));
+        }
+    }
+
+    if found_action_conflict_in_latest_check {
+        // In order to determine the set of configured targets transitively error free from
+        // action conflict issues, we run a post-processing update() that uses the bad action map.
+        let top_level_artifact_context_for_conflict_pruning = skyframe_executor
+            .get_top_level_artifact_context_for_conflict_pruning()
+            .unwrap_or_else(|| {
+                panic!("NullPointerException: topLevelArtifactContextForConflictPruning")
+            });
+        let top_level_action_conflict_report = skyframe_executor
+            .filter_action_conflicts_for_configured_targets_and_aspects(
+                event_handler.clone(),
+                ct_keys,
+                &action_conflicts,
+                &top_level_artifact_context_for_conflict_pruning,
+            )?;
+        // Report an AnalysisFailureEvent to BEP for the top-level targets with discoverable
+        // action conflicts, then finally throw if evaluation is --nokeep_going.
+        for action_lookup_key in ct_keys {
+            if !top_level_action_conflict_report.is_error_free(action_lookup_key) {
+                let Some(conflict_exception) =
+                    top_level_action_conflict_report.get_conflict_exception(action_lookup_key)
+                else {
+                    continue;
+                };
+                let failed_cause =
+                    make_artifact_conflict_analysis_failed_cause(&conflict_exception);
+                let failed_cause_failure_detail = conflict_exception.get_failure_detail();
+                let mut target_configured = true;
+                let mut action_lookup_key = action_lookup_key.clone();
+                // Attempt to promote any ConfiguredTargetKey to the one embedded in the
+                // ConfiguredTarget to reflect any transitions or trimming.
+                match evaluation_result.get(&action_lookup_key) {
+                    None => target_configured = false,
+                    Some(value) => {
+                        // PORT: skipped, incremental: "It's possible that the ConfiguredTarget
+                        // has been cleared" (analysis objects are not discarded here).
+                        action_lookup_key = value
+                            .get_configured_target()
+                            .get_lookup_key()
+                            .as_any()
+                            .downcast_ref::<ConfiguredTargetKey>()
+                            .unwrap_or_else(|| {
+                                panic!("ClassCastException: lookup key of a configured target")
+                            })
+                            .clone();
+                    }
+                }
+                if !target_configured {
+                    event_handler.post(Arc::new(AnalysisFailureEvent::while_analyzing_target(
+                        action_lookup_key,
+                        vec![failed_cause],
+                    )));
+                } else {
+                    event_handler.post(Arc::new(AnalysisFailureEvent::action_conflict(
+                        action_lookup_key,
+                        vec![failed_cause],
+                    )));
+                }
+
+                if !keep_going {
+                    no_keep_going_exception_due_to_conflict =
+                        Some(ViewCreationFailedException::of_cause(
+                            failed_cause_failure_detail,
+                            conflict_exception.get_message(),
+                        ));
+                }
+            }
+        }
+
+        // If we're here and we're --nokeep_going, then there was a conflict due to actions not
+        // discoverable by TopLevelActionLookupConflictFindingFunction. This includes extra
+        // actions, coverage artifacts, and artifacts produced by aspects in output groups not
+        // present in --output_groups. Throw the exception produced by the ArtifactConflictFinder
+        // which cannot identify root-cause top-level keys but does catch all possible conflicts.
+        if !keep_going {
+            // PORT: skipped, incremental: resetActionConflictsStoredInSkyframe frees the
+            // conflict-finding nodes.
+            return Err(no_keep_going_exception_due_to_conflict
+                .unwrap_or_else(|| panic!("NullPointerException"))
+                .into());
+        }
+
+        // Filter cts and aspects to only error-free keys. Note that any analysis failure - not
+        // just action conflicts - will be observed here and lead to a key's exclusion.
+        // ImmutableSet: configured targets are deduplicated.
+        cts = Vec::new();
+        for k in ct_keys
             .iter()
-            .map(|(k, _)| format!("{:?}", k))
-            .collect::<Vec<_>>()
-    )
+            .filter(|k| top_level_action_conflict_report.is_error_free(k))
+        {
+            let configured_target = evaluation_result
+                .get(k)
+                .unwrap_or_else(|| panic!("NullPointerException: {:?}", k))
+                .get_configured_target()
+                .clone();
+            if !cts
+                .iter()
+                .any(|ct| same_configured_target(ct, &configured_target))
+            {
+                cts.push(configured_target);
+            }
+        }
+    }
+
+    Ok(SkyframeAnalysisResult {
+        has_loading_error: error_processing_result.has_loading_error(),
+        has_analysis_error: evaluation_result.has_error() || found_action_conflict_in_latest_check,
+        has_action_conflicts: found_action_conflict_in_latest_check,
+        configured_targets: cts,
+        walkable_graph: skyframe_executor.get_walkable_graph(),
+        targets_with_configuration: result.targets_with_configuration,
+        build_graph_metrics,
+    })
+}
+
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1241 SkyframeBuildView.makeArtifactConflictAnalysisFailedCause
+fn make_artifact_conflict_analysis_failed_cause(
+    ace: &ActionConflictException,
+) -> AnalysisRootCause {
+    let failure_detail = ace.get_failure_detail();
+    let artifact_owner = ace.get_artifact().get_artifact_owner();
+    let cause_label = artifact_owner.get_label().unwrap_or_else(|| {
+        panic!(
+            "NullPointerException: owner of {} has no label",
+            ace.get_artifact()
+        )
+    });
+    let mut cause_config_key = None;
+    if let ArtifactOwner::ActionLookupKey(key) = &artifact_owner
+        && let Some(ct_key) = key.as_any().downcast_ref::<ConfiguredTargetKey>()
+    {
+        cause_config_key = ct_key.get_configuration_key().cloned();
+    }
+    AnalysisRootCause::AnalysisFailed {
+        label: cause_label,
+        configuration: configuration_id_of_key(cause_config_key.as_ref())
+            .unwrap_or_else(|| "none".to_owned()),
+        failure_detail,
+    }
 }
 
 /// `shouldCheckForConflicts`: a build request checks unless it opted out (cquery); in a
@@ -252,8 +505,11 @@ impl ActionLookupValuesTraversal {
 /// `SkyframeExecutor.collectActionLookupValuesInBuild` with incrementality tracked: the
 /// top-down `TransitiveActionLookupKeysCollector` over the analysis graph.
 ///
-/// PORT: the traversal is sequential (Java forks one task per key); the counters do not depend
-/// on the visiting order.
+/// PORT: Java forks one task per key on a pool, so the order in which values are accumulated
+/// (and with it which of two conflicting actions `ArtifactConflictFinder` registers first)
+/// depends on thread timing. The port visits the keys one after the other: the roots in their
+/// order, each key before its dependencies, the dependencies of a key in their order (a key is
+/// marked seen when its parent finds it, as in Java). The counters do not depend on the order.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3683 SkyframeExecutor.collectActionLookupValuesInBuild
 // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4274 TransitiveActionLookupKeysCollector
 fn collect_action_lookup_values_in_build(
@@ -262,14 +518,21 @@ fn collect_action_lookup_values_in_build(
 ) -> ActionLookupValuesTraversal {
     let mut alv_traversal = ActionLookupValuesTraversal::default();
     let mut seen: IndexSet<SkyKey> = IndexSet::new();
-    let mut stack: Vec<SkyKey> = Vec::new();
+    // The pending subtasks of each key being visited (`invokeAll(subtasks)`), innermost last.
+    let mut stack: Vec<std::vec::IntoIter<SkyKey>> = Vec::new();
+    let mut roots: Vec<SkyKey> = Vec::new();
     for key in top_level_ct_keys {
         let key = SkyKey::new(key.clone());
         if seen.insert(key.clone()) {
-            stack.push(key);
+            roots.push(key);
         }
     }
-    while let Some(key) = stack.pop() {
+    stack.push(roots.into_iter());
+    while let Some(frame) = stack.last_mut() {
+        let Some(key) = frame.next() else {
+            stack.pop();
+            continue;
+        };
         // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4327 VisitActionLookupKey.compute
         let Some(value) = walkable_graph.get_value(&key) else {
             // The value failed to evaluate.
@@ -283,6 +546,7 @@ fn collect_action_lookup_values_in_build(
             .unwrap_or_else(|_| panic!("CONFIGURED_TARGET value of {:?}", key));
         alv_traversal.accumulate(ct_key, value);
 
+        let mut subtasks: Vec<SkyKey> = Vec::new();
         for dep in walkable_graph.get_direct_deps(&key) {
             // Besides PlatformFunction, the subgraph of dependencies of ActionLookupKeys never has
             // a non-ActionLookupKey depending on an ActionLookupKey. So we can skip any other
@@ -295,7 +559,7 @@ fn collect_action_lookup_values_in_build(
             };
             if dep.function_name() == <ConfiguredTargetKey as Key>::FUNCTION {
                 if seen.insert(dep.clone()) {
-                    stack.push(dep);
+                    subtasks.push(dep);
                 }
             } else if dep.function_name()
                 == <blaze_analysis::analysis_services::WorkspaceStatusKey as Key>::FUNCTION
@@ -317,69 +581,9 @@ fn collect_action_lookup_values_in_build(
                 );
             }
         }
+        stack.push(subtasks.into_iter());
     }
     alv_traversal
-}
-
-/// `ArtifactConflictFinder.findAndStoreArtifactConflicts`'s statistics: the size of the action
-/// graph (`MapBasedActionGraph.getSize()`, the number of distinct output artifacts) built from
-/// the actions of the build's `ActionLookupValue`s.
-///
-/// `registerAction` stops registering an action's outputs at its first output another action
-/// already generates when the two can be shared (`Actions.canBeShared`); otherwise the actions
-/// conflict (`ActionConflictException`). `OwnerlessArtifactWrapper` compares artifacts without
-/// their owner: by exec path (which includes the root).
-///
-/// PORT: reporting a conflict (`ActionConflictException` → the conflicting targets' analysis
-/// errors) and the output-prefix conflict check (`findArtifactPrefixConflicts`) are not ported;
-/// a conflict fails loudly.
-// Java: com/google/devtools/build/lib/skyframe/ArtifactConflictFinder.java:61 ArtifactConflictFinder.findAndStoreArtifactConflicts
-// Java: com/google/devtools/build/lib/actions/MapBasedActionGraph.java:46 MapBasedActionGraph.registerAction
-fn find_artifact_conflicts_output_artifact_count(
-    action_lookup_values: &[Vec<blaze_actions::ActionRef>],
-) -> i32 {
-    // Java: SkyframeExecutor.getActionKeyContext(); only a cache of key computations.
-    let action_key_context = blaze_actions::ActionKeyContext::new();
-    let mut generating_action_map: std::collections::HashMap<
-        blaze_vfs::PathFragment,
-        blaze_actions::actions::action::ActionRef,
-    > = std::collections::HashMap::new();
-    for value in action_lookup_values {
-        'actions: for action in value {
-            for artifact in action.get_outputs() {
-                match generating_action_map.entry(artifact.get_exec_path().clone()) {
-                    std::collections::hash_map::Entry::Vacant(e) => {
-                        e.insert(action.clone());
-                    }
-                    std::collections::hash_map::Entry::Occupied(e) => {
-                        let previous_action = e.get();
-                        if !Arc::ptr_eq(previous_action, action) {
-                            let shareable = blaze_analysis::rule::actions_util::can_be_shared(
-                                &action_key_context,
-                                action,
-                                previous_action,
-                            )
-                            .unwrap_or_else(|_| panic!("InterruptedException"));
-                            if shareable {
-                                // All outputs can be shared. No need to register the remaining
-                                // outputs.
-                                continue 'actions;
-                            }
-                            // Java: com/google/devtools/build/lib/actions/ActionConflictException.java:48 ActionConflictException.create
-                            blaze_util::unported!(
-                                "ArtifactConflictFinder (ActionConflictException reporting)",
-                                "file '{}' is generated by these conflicting actions: {} and {}",
-                                artifact.get_exec_path_string(),
-                                previous_action.pretty_print(),
-                                action.pretty_print()
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-    generating_action_map.len() as i32
 }
 
 /// The counters of the analysis phase's `AnalysisPhaseCompleteEvent`:

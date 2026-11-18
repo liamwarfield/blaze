@@ -129,6 +129,39 @@ pub fn guarded_symbol_syntax_error(
     Some(blaze_starlark::SyntaxError { location, message })
 }
 
+/// The syntax error Java reports for a use of an undefined name, if `ex` is starlark-rust's
+/// error for one.
+///
+/// Java resolves names when the file is compiled (`Program.compileFile` in BzlCompileFunction):
+/// an undefined name is a syntax error at the identifier and the load fails with "compilation
+/// of module ... failed". starlark-rust resolves names when the module starts executing and
+/// reports an evaluation error before any statement runs: its stack is the top level alone, at
+/// the identifier (see [`guarded_symbol_syntax_error`]).
+/// PORT: the message is starlark-rust's ("Variable `x` not found"; Java: "name 'x' is not
+/// defined"), core-language text (decisions.md 2026-11-17), and only the first undefined name is
+/// reported.
+// Java: net/starlark/java/syntax/Resolver.java:941 Resolver.use
+// Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:236 BzlCompileFunction.computeInline
+pub fn undefined_name_syntax_error(
+    ex: &blaze_starlark::EvalError,
+) -> Option<blaze_starlark::SyntaxError> {
+    if ex.kind != blaze_starlark::error::EvalErrorKind::Eval {
+        return None;
+    }
+    let [toplevel] = ex.callstack.as_slice() else {
+        return None;
+    };
+    if toplevel.name != "<toplevel>" {
+        return None;
+    }
+    let location = toplevel.location.clone()?;
+    blaze_packages::builtins::env::undefined_variable_name(&ex.message)?;
+    Some(blaze_starlark::SyntaxError {
+        location,
+        message: ex.message.clone(),
+    })
+}
+
 /// Replays the `print()` output and warnings a Starlark evaluation recorded, as Java's thread
 /// print handler (`Event.makeDebugPrintHandler`) would have reported them.
 // Java: com/google/devtools/build/lib/events/Event.java:425 Event.makeDebugPrintHandler

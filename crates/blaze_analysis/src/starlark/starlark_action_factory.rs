@@ -546,7 +546,7 @@ fn mangle_mnemonic(mnemonic: &str) -> String {
 /// `SpawnAction.Builder.setMnemonic`'s precondition, as the EvalException Java reports.
 // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:1258 SpawnAction.Builder.setMnemonic
 fn set_mnemonic(builder: &mut SpawnActionBuilder, mnemonic: &str) -> starlark::Result<()> {
-    if mnemonic.is_empty() || !mnemonic.chars().all(|c| c.is_alphanumeric()) {
+    if !blaze_actions::analysis::actions::spawn_action::is_valid_mnemonic(mnemonic) {
         return Err(errorf(format!(
             "mnemonic must only contain letters and/or digits, and have non-zero length, was: \
              \"{mnemonic}\""
@@ -1988,8 +1988,8 @@ fn transform_build_info_file<'v>(
     // `BazelModuleContext.of(translationCallback.getModule())`, read here because the digest is
     // stored on the action spec; `None` when `transform_func` is not a Starlark function (the
     // hook's cast fails first).
-    let function_module = blaze_starlark::defining_module::module_file_of_function(transform_func)
-        .and_then(|module| BazelModuleContext::of_filename(&module));
+    // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:142 BazelModuleContext.of
+    let function_module = BazelModuleContext::of_function(transform_func, eval);
     let (build_info_file, build) = {
         let rule_context = f.context.handle.borrow();
         hook(

@@ -1,0 +1,63 @@
+load(":defs.bzl", "fails", "needs_file", "w")
+
+# An innocent target.
+w(name = "good")
+
+# A dependency whose package fails to load.
+w(
+    name = "dep_bad_package",
+    deps = ["//badpkg:x"],
+)
+
+# A dependency on a missing target of an existing package.
+w(
+    name = "dep_missing_target",
+    deps = ["//ok:nosuchtarget"],
+)
+
+# A dependency on a missing package.
+w(
+    name = "dep_missing_package",
+    deps = ["//nosuchpkg:x"],
+)
+
+# A dependency that is not visible.
+w(
+    name = "dep_not_visible",
+    deps = ["//vis:private"],
+)
+
+# A dependency cycle through another package.
+w(
+    name = "dep_cycle",
+    deps = ["//cyc:a"],
+)
+
+# A self edge.
+w(
+    name = "self_cycle",
+    deps = [":self_cycle"],
+)
+
+# The rule implementation calls fail().
+fails(name = "impl_fails")
+
+# A dependency whose rule implementation calls fail().
+w(
+    name = "dep_impl_fails",
+    deps = [":impl_fails"],
+)
+
+# Two levels above the failing rule.
+w(
+    name = "dep_dep_impl_fails",
+    deps = [":dep_impl_fails"],
+)
+
+# An attribute error reported through the rule context (wrong file type).
+needs_file(
+    name = "attr_error",
+    src = "wrong.bin",
+)
+
+exports_files(["wrong.bin"])

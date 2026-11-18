@@ -1,0 +1,351 @@
+//! Ports of `skyframe/ActionLookupConflictFindingFunction.java`,
+//! `skyframe/ActionLookupConflictFindingValue.java` and
+//! `skyframe/TopLevelActionLookupConflictFindingFunction.java`: after action conflicts were
+//! found, which top-level keys are transitively free of them.
+
+use std::fmt;
+use std::sync::Arc;
+
+use blaze_actions::analysis::workspace_status_action::BUILD_INFO_FUNCTION_NAME;
+use blaze_actions::{ActionLookupKeyRef, ActionRef, Artifact};
+use blaze_analysis::analysis_services::WorkspaceStatusKey;
+use blaze_analysis::configured_target::ConfiguredTarget;
+use blaze_analysis::configured_target_key::{CONFIGURED_TARGET, ConfiguredTargetKey};
+use blaze_collect::{NestedSet, NestedSetBuilder};
+use blaze_skyframe::{
+    ComputeError, Environment, EvaluatorBuilder, Key, SkyFunction, SkyFunctionException,
+    SkyFunctionName, SkyKey, SkyValue, Transience,
+};
+use indexmap::IndexSet;
+
+use crate::action_conflict_exception::ActionConflicts;
+
+/// `SkyFunctions.ACTION_LOOKUP_CONFLICT_FINDING`.
+// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:97 SkyFunctions.ACTION_LOOKUP_CONFLICT_FINDING
+pub const ACTION_LOOKUP_CONFLICT_FINDING: SkyFunctionName =
+    SkyFunctionName("ACTION_LOOKUP_CONFLICT_DETECTION");
+/// `SkyFunctions.TOP_LEVEL_ACTION_LOOKUP_CONFLICT_FINDING`.
+// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:99 SkyFunctions.TOP_LEVEL_ACTION_LOOKUP_CONFLICT_FINDING
+pub const TOP_LEVEL_ACTION_LOOKUP_CONFLICT_FINDING: SkyFunctionName =
+    SkyFunctionName("TOP_LEVEL_ACTION_LOOKUP_CONFLICT_DETECTION");
+
+/// `ArtifactConflictFinder.ACTION_CONFLICTS`: the conflicts the conflict-finding functions read.
+///
+/// PORT: Java injects a precomputed value before each conflict-finding evaluation
+/// (`ACTION_CONFLICTS.set(injectable(), actionConflicts)`); the functions here read the cell the
+/// `SkyframeExecutor` sets at the same point.
+// Java: com/google/devtools/build/lib/skyframe/ArtifactConflictFinder.java:42 ArtifactConflictFinder.ACTION_CONFLICTS
+pub type ActionConflictsCell = Arc<parking_lot::RwLock<Arc<ActionConflicts>>>;
+
+/// A marker for an `ActionLookupValue` which is known to be transitively error-free from action
+/// conflict issues.
+// Java: com/google/devtools/build/lib/skyframe/ActionLookupConflictFindingValue.java:31 ActionLookupConflictFindingValue
+#[derive(Clone, Debug, Default)]
+pub struct ActionLookupConflictFindingValue;
+
+/// `ActionLookupConflictFindingValue.Key`.
+// Java: com/google/devtools/build/lib/skyframe/ActionLookupConflictFindingValue.java:50 ActionLookupConflictFindingValue.Key
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct ActionLookupConflictFindingKey(pub ActionLookupKeyRef);
+
+impl ActionLookupConflictFindingKey {
+    // Java: com/google/devtools/build/lib/skyframe/ActionLookupConflictFindingValue.java:37 ActionLookupConflictFindingValue.key
+    pub fn key(lookup_key: ActionLookupKeyRef) -> Self {
+        ActionLookupConflictFindingKey(lookup_key)
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/ActionLookupConflictFindingValue.java:41 ActionLookupConflictFindingValue.key
+    pub fn key_of_artifact(artifact: &Artifact) -> Self {
+        blaze_util::check_argument!(!artifact.is_source_artifact(), "{}", artifact);
+        Self::key(
+            artifact
+                .get_generating_action_key()
+                .get_action_lookup_key()
+                .clone(),
+        )
+    }
+
+    /// `argument()`.
+    pub fn argument(&self) -> &ActionLookupKeyRef {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ActionLookupConflictFindingKey {
+    // Java: com/google/devtools/build/skyframe/AbstractSkyKey.java:59 AbstractSkyKey.toString
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", ACTION_LOOKUP_CONFLICT_FINDING, self.0)
+    }
+}
+
+impl Key for ActionLookupConflictFindingKey {
+    type Value = ActionLookupConflictFindingValue;
+    const FUNCTION: SkyFunctionName = ACTION_LOOKUP_CONFLICT_FINDING;
+}
+
+/// `TopLevelActionLookupConflictFindingFunction.Key`: a top-level key and the output groups
+/// whose artifacts are checked.
+///
+/// PORT: of `TopLevelArtifactContext` only `outputGroups` is kept (see
+/// `execution_seam::top_level_output_groups`).
+// Java: com/google/devtools/build/lib/skyframe/TopLevelActionLookupConflictFindingFunction.java:70 TopLevelActionLookupConflictFindingFunction.Key
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct TopLevelActionLookupConflictFindingKey {
+    /// `actionLookupKey()`.
+    pub action_lookup_key: ActionLookupKeyRef,
+    /// `topLevelArtifactContext().outputGroups()`.
+    pub output_groups: Vec<String>,
+}
+
+impl TopLevelActionLookupConflictFindingKey {
+    // Java: com/google/devtools/build/lib/skyframe/TopLevelActionLookupConflictFindingFunction.java:72 TopLevelActionLookupConflictFindingFunction.Key.create
+    pub fn create(action_lookup_key: ActionLookupKeyRef, output_groups: &[String]) -> Self {
+        TopLevelActionLookupConflictFindingKey {
+            action_lookup_key,
+            output_groups: output_groups.to_vec(),
+        }
+    }
+}
+
+impl fmt::Debug for TopLevelActionLookupConflictFindingKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Key{{actionLookupKey={}, topLevelArtifactContext=TopLevelArtifactContext{{outputGroups={:?}}}}}",
+            self.action_lookup_key, self.output_groups
+        )
+    }
+}
+
+impl Key for TopLevelActionLookupConflictFindingKey {
+    type Value = ActionLookupConflictFindingValue;
+    const FUNCTION: SkyFunctionName = TOP_LEVEL_ACTION_LOOKUP_CONFLICT_FINDING;
+}
+
+/// `TopLevelActionLookupConflictFindingFunction.keys`.
+// Java: com/google/devtools/build/lib/skyframe/TopLevelActionLookupConflictFindingFunction.java:64 TopLevelActionLookupConflictFindingFunction.keys
+pub fn keys(
+    keys: &[ConfiguredTargetKey],
+    output_groups: &[String],
+) -> Vec<TopLevelActionLookupConflictFindingKey> {
+    keys.iter()
+        .map(|k| {
+            TopLevelActionLookupConflictFindingKey::create(
+                ActionLookupKeyRef::new(k.clone()),
+                output_groups,
+            )
+        })
+        .collect()
+}
+
+/// The actions of the `ActionLookupValue` of `lookup_key` (`env.getValue(lookupKey)`), `None`
+/// when the value is missing.
+///
+/// PORT: the `ActionLookupKey`s that are graph nodes are `ConfiguredTargetKey` and the workspace
+/// status key; the others (aspects, action templates, the coverage report) are not ported.
+fn get_action_lookup_value_actions(
+    lookup_key: &ActionLookupKeyRef,
+    env: &mut Environment<'_>,
+) -> Result<Option<Vec<ActionRef>>, ComputeError> {
+    match lookup_key.function_name() {
+        name if name == CONFIGURED_TARGET.0 => {
+            let ct_key = lookup_key
+                .as_any()
+                .downcast_ref::<ConfiguredTargetKey>()
+                .unwrap_or_else(|| {
+                    panic!("ClassCastException: {lookup_key} is not a ConfiguredTargetKey")
+                });
+            let Some(value) = env.get_value(ct_key.clone())? else {
+                return Ok(None);
+            };
+            Ok(Some(value.get_actions().to_vec()))
+        }
+        BUILD_INFO_FUNCTION_NAME => {
+            let Some(value) = env.get_value(WorkspaceStatusKey)? else {
+                return Ok(None);
+            };
+            Ok(Some(value.actions.clone()))
+        }
+        other => blaze_util::unported!(
+            "ActionLookupConflictFindingFunction.compute",
+            "ActionLookupValue of a {other} key ({lookup_key})"
+        ),
+    }
+}
+
+/// Check all transitive actions of an `ActionLookupValue` for action conflicts.
+// Java: com/google/devtools/build/lib/skyframe/ActionLookupConflictFindingFunction.java:38 ActionLookupConflictFindingFunction
+pub struct ActionLookupConflictFindingFunction {
+    action_conflicts: ActionConflictsCell,
+}
+
+impl SkyFunction for ActionLookupConflictFindingFunction {
+    // Java: com/google/devtools/build/lib/skyframe/ActionLookupConflictFindingFunction.java:43 ActionLookupConflictFindingFunction.compute
+    fn compute(
+        &self,
+        sky_key: &SkyKey,
+        env: &mut Environment<'_>,
+    ) -> blaze_skyframe::ComputeResult {
+        // ACTION_CONFLICTS.get(env)
+        let action_conflicts: Arc<ActionConflicts> = self.action_conflicts.read().clone();
+        let key = sky_key
+            .downcast::<ActionLookupConflictFindingKey>()
+            .expect("ACTION_LOOKUP_CONFLICT_DETECTION key");
+        let lookup_key = key.argument();
+        let al_value_actions = get_action_lookup_value_actions(lookup_key, env)?;
+        if env.values_missing() {
+            // PORT: skipped, BugReport.sendNonFatalBugReport ("Unexpected missing action lookup
+            // value during action conflict finding") (bug reports).
+            return Ok(None);
+        }
+        let al_value_actions = al_value_actions.expect("value is not missing");
+
+        // CompactHashSet: insertion order.
+        let mut dep_keys: IndexSet<SkyKey> = IndexSet::new();
+        for action in &al_value_actions {
+            if let Some(conflict) = action_conflicts.get(action) {
+                // ActionConflictFunctionException
+                return Err(
+                    SkyFunctionException::new(conflict.clone(), Transience::Persistent).into(),
+                );
+            }
+            for dep_key in convert_artifacts(&action.get_inputs()) {
+                dep_keys.insert(SkyKey::new(dep_key));
+            }
+        }
+        // Avoid silly cycles.
+        dep_keys.shift_remove(sky_key);
+
+        let dep_keys: Vec<SkyKey> = dep_keys.into_iter().collect();
+        let result = env.get_values_and_exceptions(&dep_keys)?;
+        if env.values_missing() {
+            return Ok(None);
+        }
+        for key in &dep_keys {
+            if result.get(key).is_none() {
+                return Ok(None);
+            }
+        }
+        Ok(Some(Arc::new(ActionLookupConflictFindingValue) as SkyValue))
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/ActionLookupConflictFindingFunction.java:86 ActionLookupConflictFindingFunction.extractTag
+    fn extract_tag(&self, sky_key: &SkyKey) -> Option<String> {
+        // Label.print(((ConfiguredTargetKey) skyKey.argument()).getLabel())
+        let key = sky_key.downcast::<ActionLookupConflictFindingKey>()?;
+        Some(match key.argument().get_label() {
+            Some(label) => label.to_string(),
+            None => "(unknown)".to_owned(),
+        })
+    }
+}
+
+// Java: com/google/devtools/build/lib/skyframe/ActionLookupConflictFindingFunction.java:78 ActionLookupConflictFindingFunction.convertArtifacts
+fn convert_artifacts(artifacts: &NestedSet<Artifact>) -> Vec<ActionLookupConflictFindingKey> {
+    artifacts
+        .to_list()
+        .iter()
+        .filter(|a| !a.is_source_artifact())
+        .map(ActionLookupConflictFindingKey::key_of_artifact)
+        .collect()
+}
+
+/// Checks to see if any artifacts to be built by this `ActionLookupKey` transitively depend on
+/// actions from an `ActionLookupValue` that has an action in conflict with another. If so, none
+/// of this key's artifacts will be built.
+// Java: com/google/devtools/build/lib/skyframe/TopLevelActionLookupConflictFindingFunction.java:39 TopLevelActionLookupConflictFindingFunction
+pub struct TopLevelActionLookupConflictFindingFunction;
+
+impl SkyFunction for TopLevelActionLookupConflictFindingFunction {
+    // Java: com/google/devtools/build/lib/skyframe/TopLevelActionLookupConflictFindingFunction.java:42 TopLevelActionLookupConflictFindingFunction.compute
+    fn compute(
+        &self,
+        sky_key: &SkyKey,
+        env: &mut Environment<'_>,
+    ) -> blaze_skyframe::ComputeResult {
+        let key = sky_key
+            .downcast::<TopLevelActionLookupConflictFindingKey>()
+            .expect("TOP_LEVEL_ACTION_LOOKUP_CONFLICT_DETECTION key");
+        // CompletionFunction.getValueAndArtifactsToBuild(key, env)
+        // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:364 CompletionFunction.getValueAndArtifactsToBuild
+        let configured_target = get_configured_object(&key.action_lookup_key, env)?;
+        if env.values_missing() {
+            return Ok(None);
+        }
+        let configured_target = configured_target.expect("value is not missing");
+        // TopLevelArtifactHelper.getAllArtifactsToBuild(value.getConfiguredObject(),
+        // topLevelContext).getAllArtifacts()
+        let all_output_groups =
+            crate::execution_seam::get_all_artifacts_to_build(&configured_target);
+        let mut all_artifacts = NestedSetBuilder::stable_order();
+        for output_group in &key.output_groups {
+            if let Some(artifacts) = all_output_groups.get(output_group) {
+                all_artifacts.add_transitive(artifacts);
+            }
+        }
+        let dep_keys: Vec<SkyKey> = convert_artifacts(&all_artifacts.build())
+            .into_iter()
+            .map(SkyKey::new)
+            .collect();
+        // GraphTraversingHelper.declareDependenciesAndCheckIfValuesMissingMaybeWithExceptions
+        // Java: com/google/devtools/build/skyframe/GraphTraversingHelper.java:110 GraphTraversingHelper.declareDependenciesAndCheckIfValuesMissingMaybeWithExceptions
+        let result = env.get_values_and_exceptions(&dep_keys)?;
+        if env.values_missing() {
+            return Ok(None);
+        }
+        for key in &dep_keys {
+            if result.get(key).is_none() {
+                return Ok(None);
+            }
+        }
+        Ok(Some(Arc::new(ActionLookupConflictFindingValue) as SkyValue))
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TopLevelActionLookupConflictFindingFunction.java:60 TopLevelActionLookupConflictFindingFunction.extractTag
+    fn extract_tag(&self, sky_key: &SkyKey) -> Option<String> {
+        let key = sky_key.downcast::<TopLevelActionLookupConflictFindingKey>()?;
+        Some(match key.action_lookup_key.get_label() {
+            Some(label) => label.to_string(),
+            None => "(unknown)".to_owned(),
+        })
+    }
+}
+
+/// `env.getValue(key.actionLookupKey())` and `value.getConfiguredObject()` of a top-level key.
+///
+/// PORT: top-level aspect keys are not ported; the key is a `ConfiguredTargetKey`.
+fn get_configured_object(
+    action_lookup_key: &ActionLookupKeyRef,
+    env: &mut Environment<'_>,
+) -> Result<Option<ConfiguredTarget>, ComputeError> {
+    let Some(ct_key) = action_lookup_key
+        .as_any()
+        .downcast_ref::<ConfiguredTargetKey>()
+    else {
+        blaze_util::unported!(
+            "TopLevelActionLookupConflictFindingFunction.compute",
+            "top-level key that is not a ConfiguredTargetKey: {action_lookup_key}"
+        );
+    };
+    let Some(value) = env.get_value(ct_key.clone())? else {
+        return Ok(None);
+    };
+    Ok(Some(value.get_configured_target().clone()))
+}
+
+/// Registers `ACTION_LOOKUP_CONFLICT_DETECTION` and `TOP_LEVEL_ACTION_LOOKUP_CONFLICT_DETECTION`.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:760 SkyframeExecutor.skyFunctions
+pub fn register(
+    builder: EvaluatorBuilder,
+    action_conflicts: ActionConflictsCell,
+) -> EvaluatorBuilder {
+    builder
+        .function(
+            ACTION_LOOKUP_CONFLICT_FINDING,
+            ActionLookupConflictFindingFunction { action_conflicts },
+        )
+        .function(
+            TOP_LEVEL_ACTION_LOOKUP_CONFLICT_FINDING,
+            TopLevelActionLookupConflictFindingFunction,
+        )
+}

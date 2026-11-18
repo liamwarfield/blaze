@@ -58,8 +58,9 @@ impl MetadataDigestUtils {
         exec_path: &str,
         md: Option<&FileArtifactValue>,
     ) -> Vec<u8> {
-        // PORT: StringEncoding internal form (exec paths are internal strings in Java).
-        fp.add_internal_string(exec_path);
+        // Exec paths are internal strings in Java; `Fingerprint::add_string` hashes the internal
+        // string a Rust string stands for (the `blaze_util::string_encoding` seam).
+        fp.add_string(exec_path);
         if let Some(md) = md {
             add_to(md, fp);
         }

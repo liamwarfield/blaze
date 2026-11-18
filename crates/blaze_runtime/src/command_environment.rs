@@ -50,6 +50,11 @@ pub struct CommandEnvironment {
     has_synced_package_loading: bool,
     ui_event_handler: Option<Arc<blaze_events::ui::UiEventHandler>>,
     shutdown_reason: Option<String>,
+    /// `SequencedSkyframeExecutor.trackIncrementalState`, set by
+    /// [`CommandEnvironment::decide_keep_incremental_state`].
+    track_incremental_state: bool,
+    /// Java `commandStartTime`, in milliseconds since the epoch.
+    command_start_time: i64,
 }
 
 impl CommandEnvironment {
@@ -71,6 +76,15 @@ impl CommandEnvironment {
         let command_options = options.get_options::<CommonCommandOptions>().expect(
             "CommandEnvironment needs its options provider to have CommonCommandOptions loaded.",
         );
+        // PORT: Java's dispatcher passes the time of the client's first contact with the server
+        // (`firstContactTimeMillis`, or `runtime.getClock().currentTimeMillis()` in
+        // `execExclusively`); in-process the dispatcher creates the environment right after the
+        // client calls it.
+        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:298 CommandEnvironment.<init>
+        let command_start_time = {
+            use blaze_events::Clock;
+            blaze_events::JavaClock.current_time_millis()
+        } - command_options.startup_time;
         let mut pending_exception = None;
         let working_directory =
             match Self::compute_working_directory(&directories, &command_options) {
@@ -211,7 +225,53 @@ impl CommandEnvironment {
             has_synced_package_loading: false,
             ui_event_handler: None,
             shutdown_reason: None,
+            // SequencedSkyframeExecutor.trackIncrementalState is true until
+            // decideKeepIncrementalState.
+            track_incremental_state: true,
+            command_start_time,
         }
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:886 CommandEnvironment.getCommandStartTime
+    pub fn get_command_start_time(&self) -> i64 {
+        self.command_start_time
+    }
+
+    /// Calls `SkyframeExecutor.decideKeepIncrementalState` with this command's options.
+    ///
+    /// Must be called prior to `BlazeModule.beforeCommand` so that modules can use the result of
+    /// [`CommandEnvironment::tracks_state_for_incrementality`].
+    ///
+    /// PORT: Blaze's `SkyframeExecutor` is created by the command (one per command), so the
+    /// decision and its warnings live here and the commands read the result from the environment.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:896 CommandEnvironment.decideKeepIncrementalState
+    pub fn decide_keep_incremental_state(&mut self) {
+        let common_options = self
+            .options
+            .get_options::<CommonCommandOptions>()
+            .expect("CommonCommandOptions");
+        let analysis_options =
+            self.options
+                .get_options::<blaze_optdefs::command::analysis_options::AnalysisOptions>();
+        let batch = self
+            .runtime
+            .get_startup_options_provider()
+            .get_options::<blaze_optdefs::command::blaze_server_startup_options::BlazeServerStartupOptions>()
+            .is_some_and(|o| o.batch);
+        self.track_incremental_state = decide_keep_incremental_state(
+            batch,
+            common_options.keep_state_after_build,
+            common_options.track_incremental_state,
+            common_options.heuristically_drop_nodes,
+            analysis_options.is_some_and(|o| o.discard_analysis_cache),
+            self.reporter.as_ref(),
+        );
+    }
+
+    /// `getSkyframeExecutor().tracksStateForIncrementality()`.
+    // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:459 SequencedSkyframeExecutor.tracksStateForIncrementality
+    pub fn tracks_state_for_incrementality(&self) -> bool {
+        self.track_incremental_state
     }
 
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:427 CommandEnvironment.computeWorkingDirectory
@@ -501,6 +561,61 @@ impl CommandEnvironment {
     }
 }
 
+/// Decides if graph edges should be stored during this evaluation and returns
+/// `trackIncrementalState`.
+///
+/// Necessary conditions to not store graph edges are either
+///
+/// 1. batch (since incremental builds are not possible) and discard_analysis_cache (since
+///    otherwise user isn't concerned about saving memory this way).
+/// 2. track_incremental_state set to false.
+///
+/// PORT: skipped, incremental: the rest of the method (`heuristicallyDropNodes`,
+/// `evaluatorNeedsReset`, `keepStateAfterBuild` bookkeeping) configures the evaluator that
+/// outlives the command; Blaze's evaluator lives for one command.
+// Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:399 SequencedSkyframeExecutor.decideKeepIncrementalState
+pub fn decide_keep_incremental_state(
+    batch: bool,
+    keep_state_after_build: bool,
+    should_track_incremental_state: bool,
+    heuristically_drop_nodes: bool,
+    discard_analysis_cache: bool,
+    event_handler: &dyn EventHandler,
+) -> bool {
+    // First check if the incrementality state should be kept around during the build.
+    let explicitly_requested_no_incremental_data = !should_track_incremental_state;
+    let implicitly_requested_no_incremental_data = batch && discard_analysis_cache;
+    let track_incremental_state =
+        !explicitly_requested_no_incremental_data && !implicitly_requested_no_incremental_data;
+    if explicitly_requested_no_incremental_data != implicitly_requested_no_incremental_data {
+        if !explicitly_requested_no_incremental_data {
+            event_handler.handle(&blaze_events::Event::warn(
+                "--batch and --discard_analysis_cache specified, but --notrack_incremental_state \
+                 not specified: incrementality data is implicitly discarded, but you may need \
+                 to specify --notrack_incremental_state in the future if you want to \
+                 maximize memory savings.",
+            ));
+        }
+        if !batch && keep_state_after_build {
+            event_handler.handle(&blaze_events::Event::warn(
+                "--notrack_incremental_state was specified, but without \
+                 --nokeep_state_after_build. Inmemory state from this build will not be \
+                 reusable, but it will not get fully wiped until the beginning of the next \
+                 build. Use --nokeep_state_after_build to clean up eagerly.",
+            ));
+        }
+    }
+
+    if track_incremental_state && heuristically_drop_nodes {
+        event_handler.handle(&blaze_events::Event::warn(
+            "--heuristically_drop_nodes was specified with track incremental state also being \
+             true. The flag is ignored and no node is heuristically dropped in the track \
+             incremental mode.",
+        ));
+    }
+    track_incremental_state
+}
+
 /// Converts a list of `(name, value)` entries to a map sorted by name, later entries winning
 /// (Java collects into a TreeMap).
 // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:598 CommandEnvironment.makeMapFromMapEntries
@@ -532,5 +647,110 @@ impl blaze_events::EventBus for CommandEventBus {
         for subscriber in subscribers {
             subscriber.post(event.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use blaze_events::{EventKind, StoredEventHandler};
+
+    use super::*;
+
+    fn decide(
+        batch: bool,
+        keep_state_after_build: bool,
+        should_track_incremental_state: bool,
+        heuristically_drop_nodes: bool,
+        discard_analysis_cache: bool,
+    ) -> (bool, Vec<String>) {
+        let handler = StoredEventHandler::new();
+        let track = decide_keep_incremental_state(
+            batch,
+            keep_state_after_build,
+            should_track_incremental_state,
+            heuristically_drop_nodes,
+            discard_analysis_cache,
+            &handler,
+        );
+        let warnings = handler
+            .get_events()
+            .iter()
+            .map(|e| {
+                assert_eq!(e.get_kind(), EventKind::Warning);
+                e.get_message().into_owned()
+            })
+            .collect();
+        (track, warnings)
+    }
+
+    // The defaults of every command: incremental state is tracked, nothing is reported.
+    #[test]
+    fn default_options_track_incremental_state() {
+        assert_eq!(decide(false, true, true, false, false), (true, vec![]));
+    }
+
+    // Oracle (scripts/w4/scenarios/query-errors step 23, ui-build-results step 45):
+    // `--notrack_incremental_state` without `--nokeep_state_after_build`.
+    #[test]
+    fn notrack_incremental_state_warns_about_keep_state_after_build() {
+        assert_eq!(
+            decide(false, true, false, false, false),
+            (
+                false,
+                vec![
+                    "--notrack_incremental_state was specified, but without \
+                     --nokeep_state_after_build. Inmemory state from this build will not be \
+                     reusable, but it will not get fully wiped until the beginning of the next \
+                     build. Use --nokeep_state_after_build to clean up eagerly."
+                        .to_owned()
+                ]
+            )
+        );
+    }
+
+    // Oracle (ui-build-results step 46): with `--nokeep_state_after_build` there is no warning.
+    #[test]
+    fn notrack_incremental_state_with_nokeep_state_after_build_is_silent() {
+        assert_eq!(decide(false, false, false, false, false), (false, vec![]));
+    }
+
+    // SequencedSkyframeExecutor.decideKeepIncrementalState: --batch with
+    // --discard_analysis_cache discards the state implicitly (message from the Java source).
+    #[test]
+    fn batch_with_discard_analysis_cache_discards_implicitly() {
+        assert_eq!(
+            decide(true, true, true, false, true),
+            (
+                false,
+                vec![
+                    "--batch and --discard_analysis_cache specified, but \
+                     --notrack_incremental_state not specified: incrementality data is \
+                     implicitly discarded, but you may need to specify \
+                     --notrack_incremental_state in the future if you want to maximize memory \
+                     savings."
+                        .to_owned()
+                ]
+            )
+        );
+        // Both the explicit and the implicit request: nothing to warn about.
+        assert_eq!(decide(true, true, false, false, true), (false, vec![]));
+    }
+
+    // Oracle (ui-build-results step 47): `--heuristically_drop_nodes` while tracking state.
+    #[test]
+    fn heuristically_drop_nodes_is_ignored_when_tracking() {
+        assert_eq!(
+            decide(false, true, true, true, false),
+            (
+                true,
+                vec![
+                    "--heuristically_drop_nodes was specified with track incremental state also \
+                     being true. The flag is ignored and no node is heuristically dropped in the \
+                     track incremental mode."
+                        .to_owned()
+                ]
+            )
+        );
+        assert_eq!(decide(false, false, false, true, false), (false, vec![]));
     }
 }

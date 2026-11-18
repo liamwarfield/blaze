@@ -4,8 +4,12 @@
 use std::sync::Arc;
 
 use blaze_build_config::build_options::BuildOptions;
+use blaze_cmdline::Label;
 use blaze_events::{Event, ExtendedEventHandler};
 use blaze_protos::failure_details::FailureDetail;
+use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
+use blaze_vfs::PathFragment;
+use indexmap::IndexSet;
 
 use crate::build_tool::{BuildRequest, BuildToolError};
 use crate::build_view::{self, AnalysisResult, BuildViewError, BuildViewUpdateOptions};
@@ -17,6 +21,7 @@ use crate::target_pattern_phase::TargetPatternPhaseValue;
 pub fn execute(
     skyframe_executor: &SkyframeExecutor,
     reporter: &Arc<dyn ExtendedEventHandler>,
+    relative_working_directory: &PathFragment,
     request: &BuildRequest,
     target_pattern_phase_value: &TargetPatternPhaseValue,
     build_options: &Arc<BuildOptions>,
@@ -26,13 +31,15 @@ pub fn execute(
         blaze_util::unported!("InstrumentationFilterSupport.computeInstrumentationFilter");
     }
 
-    // PORT: env.throwPendingException() is checked by the command dispatcher.
+    // PORT: env.throwPendingException() (an exit requested by a module while the command runs)
+    // is checked by the command dispatcher.
 
     let mut analysis_result = None;
     if request.perform_analysis_phase {
         let result = run_analysis_phase(
             skyframe_executor,
             reporter,
+            relative_working_directory,
             request,
             target_pattern_phase_value,
             build_options,
@@ -41,7 +48,8 @@ pub fn execute(
         // AnalysisPhaseCompleteEvent → UiEventHandler.analysisComplete.
         report_analysis_complete(reporter.as_ref(), target_pattern_phase_value);
 
-        // PORT: BlazeModule.afterAnalysis is not dispatched (no module hooks yet).
+        // PORT: BlazeModule.afterAnalysis has no ported implementer (the modules that override
+        // it are Google-internal or the remote module).
 
         if request.should_run_tests() {
             report_targets_with_tests(
@@ -56,11 +64,13 @@ pub fn execute(
             report_targets(reporter.as_ref(), result.get_targets_to_build().len());
         }
 
-        // PORT: postAbortedEventsForSkippedTargets posts BEP events (event bus).
+        // PORT: postAbortedEventsForSkippedTargets (an AbortedEvent per skipped target for the
+        // build event stream) is the command's, from `AnalysisResult::get_targets_to_skip()`.
         analysis_result = Some(result);
     } else {
         reporter.handle(&Event::progress("Loading complete."));
-        // PORT: NoAnalyzeEvent is not posted (event bus).
+        // PORT: NoAnalyzeEvent (the build event of --noanalyze) is the command's (blaze_bep
+        // bep_module.rs).
         let failure_detail: Option<FailureDetail> =
             build_view::create_analysis_failure_detail(target_pattern_phase_value, None);
         if let Some(failure_detail) = failure_detail {
@@ -79,14 +89,28 @@ pub fn execute(
 fn run_analysis_phase(
     skyframe_executor: &SkyframeExecutor,
     reporter: &Arc<dyn ExtendedEventHandler>,
+    relative_working_directory: &PathFragment,
     request: &BuildRequest,
     loading_result: &TargetPatternPhaseValue,
     target_options: &Arc<BuildOptions>,
 ) -> Result<AnalysisResult, BuildToolError> {
     reporter.handle(&Event::progress("Loading complete.  Analyzing..."));
 
-    // PORT: getExplicitTargetPatterns only feeds the incompatible-target checks
-    // (skipIncompatibleExplicitTargets / reportIncompatibleTargets), which are not ported.
+    let explicit_target_patterns = get_explicit_target_patterns(
+        skyframe_executor,
+        reporter,
+        relative_working_directory,
+        &request.targets,
+        request.keep_going,
+        request.loading_phase_threads,
+    )?;
+
+    // PORT: `request.getTopLevelArtifactContext()` reaches SkyframeBuildView.configureTargets
+    // (`topLevelArtifactContextForConflictPruning`) through the executor, see
+    // `skyframe_build_view::configure_targets`.
+    skyframe_executor.set_top_level_artifact_context_for_conflict_pruning(
+        request.get_top_level_artifact_context_output_groups(),
+    );
 
     let analysis_result = build_view::update(
         skyframe_executor,
@@ -96,6 +120,13 @@ fn run_analysis_phase(
             keep_going: request.keep_going,
             check_for_action_conflicts: request.check_for_action_conflicts,
             aspects: request.aspects.clone(),
+            explicit_target_patterns,
+            skip_incompatible_explicit_targets: request.skip_incompatible_explicit_targets,
+            report_incompatible_targets: request.report_incompatible_targets,
+            // PORT: Java's AnalysisPhaseRunner always passes false: a merged (Skymeld) request
+            // goes through AnalysisAndExecutionPhaseRunner, which passes true. Blaze has the one
+            // runner.
+            include_execution_phase: request.with_merged_analysis_and_execution_source_of_truth(),
         },
         reporter.clone(),
     )
@@ -112,8 +143,48 @@ fn run_analysis_phase(
     })?;
 
     // PORT: AnalysisPhaseCompleteEvent, TestFilteringCompleteEvent and the TopLevelStatusEvents
-    // are not posted (event bus).
+    // are built by the command from the returned `AnalysisResult` (its counters are
+    // `get_analysis_phase_complete_stats`).
     Ok(analysis_result)
+}
+
+/// Returns the set of labels of target patterns that represent single targets.
+// Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:541 AnalysisPhaseRunner.getExplicitTargetPatterns
+fn get_explicit_target_patterns(
+    skyframe_executor: &SkyframeExecutor,
+    reporter: &Arc<dyn ExtendedEventHandler>,
+    relative_working_directory: &PathFragment,
+    requested_target_patterns: &[String],
+    keep_going: bool,
+    loading_phase_threads: usize,
+) -> Result<IndexSet<Label>, BuildToolError> {
+    let main_repo_mapping = match skyframe_executor.get_main_repo_mapping(
+        keep_going,
+        loading_phase_threads,
+        reporter.clone(),
+    ) {
+        Ok(mapping) => mapping,
+        Err(RepositoryMappingResolutionOrInterrupted::Interrupted) => {
+            return Err(BuildToolError::Interrupted);
+        }
+        // BuildTool: `catch (RepositoryMappingResolutionException e) { detailedExitCode =
+        // e.getDetailedExitCode(); reportExceptionError(e); }`
+        Err(RepositoryMappingResolutionOrInterrupted::Resolution(e)) => {
+            return Err(BuildToolError::RepositoryMappingResolution {
+                message: e.to_string(),
+                detailed_exit_code: blaze_query_engine::DetailedExitCode::of(
+                    crate::skyframe_error_processor::packages_failure_detail(&e.detailed_exit_code),
+                ),
+            });
+        }
+    };
+    // PORT: the pattern loop is `execution_seam::get_explicit_target_patterns` (the same loop of
+    // AnalysisAndExecutionPhaseRunner); a pattern that fails to parse a second time fails there.
+    Ok(crate::execution_seam::get_explicit_target_patterns(
+        relative_working_directory,
+        &main_repo_mapping,
+        requested_target_patterns,
+    ))
 }
 
 // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:494 AnalysisPhaseRunner.reportTargetsWithTests

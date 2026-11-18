@@ -419,7 +419,7 @@ mod tests {
         Heap::temp(|heap| {
             let a = heap.alloc(CcToolchainVariablesValue(variables(&[("a", "1")])));
             let b = heap.alloc(CcToolchainVariablesValue(variables(&[("a", "1")])));
-            let error = a.get_hashed().err().expect("SingleVariables is unhashable");
+            let error = a.get_hashed().expect_err("SingleVariables is unhashable");
             assert!(
                 error.to_string().contains("unhashable type: 'Variables'"),
                 "{error}"

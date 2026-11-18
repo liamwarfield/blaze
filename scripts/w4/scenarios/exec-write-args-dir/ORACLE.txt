@@ -1,0 +1,38 @@
+=== 1: run build //:w
+exit 0
+  bazel-bin/w.params
+INFO: Build completed successfully, 3 total actions
+Target //:w up-to-date:
+=== 2: cat bazel-bin/w.params
+--first
+bazel-out/k8-fastbuild/bin/w.dir/a.txt
+bazel-out/k8-fastbuild/bin/w.dir/c.txt
+bazel-out/k8-fastbuild/bin/w.dir/sub/b.txt
+--prefixed
+'in=bazel-out/k8-fastbuild/bin/w.dir/a.txt'
+'in=bazel-out/k8-fastbuild/bin/w.dir/c.txt'
+'in=bazel-out/k8-fastbuild/bin/w.dir/sub/b.txt'
+--dir
+bazel-out/k8-fastbuild/bin/w.dir
+=== 3: stat bazel-bin/w.dir
+dir 555
+=== 4: stat bazel-bin/w.dir/sub
+dir 555
+=== 5: stat bazel-bin/w.dir/a.txt
+file 555
+=== 6: run build //:w
+exit 0
+  bazel-bin/w.params
+INFO: Build completed successfully, 1 total action
+Target //:w up-to-date:
+=== 7: cat bazel-bin/w.params
+--first
+bazel-out/k8-fastbuild/bin/w.dir/a.txt
+bazel-out/k8-fastbuild/bin/w.dir/c.txt
+bazel-out/k8-fastbuild/bin/w.dir/sub/b.txt
+--prefixed
+'in=bazel-out/k8-fastbuild/bin/w.dir/a.txt'
+'in=bazel-out/k8-fastbuild/bin/w.dir/c.txt'
+'in=bazel-out/k8-fastbuild/bin/w.dir/sub/b.txt'
+--dir
+bazel-out/k8-fastbuild/bin/w.dir

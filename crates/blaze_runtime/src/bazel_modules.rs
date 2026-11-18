@@ -1,8 +1,10 @@
 //! The modules of `Bazel.BAZEL_MODULES`, in that order, with their option suppliers and the
 //! commands and info items they register in `serverInit`.
 //!
-//! Each module keeps the trait defaults for the hooks Blaze has not ported; a `PORT:` line on
-//! each module lists the Java hooks it overrides that are not ported.
+//! Each module keeps the trait defaults for the Java hooks it overrides; a `PORT:` line on each
+//! module says for those hooks where their behaviour is ported (most of it runs with the command
+//! that needs it rather than through the module), which allowed skip covers them, or where a
+//! command that needs them fails loudly.
 
 use std::sync::Arc;
 
@@ -131,7 +133,7 @@ impl BlazeModule for BazelStartupOptionsModule {
 }
 
 /// Bazel module to record pprof-compatible profiles for single invocations.
-/// PORT: beforeCommand, afterCommand not ported.
+/// PORT: skipped, profiling (beforeCommand, afterCommand: `--experimental_command_profile`).
 // Java: com/google/devtools/build/lib/profiler/CommandProfilerModule.java:34 CommandProfilerModule
 pub struct CommandProfilerModule;
 
@@ -147,7 +149,8 @@ impl BlazeModule for CommandProfilerModule {
 }
 
 /// Module providing the "no spawn cache" action context.
-/// PORT: registerActionContexts not ported.
+/// PORT: registerActionContexts is ported where the executor is prepared: it registers
+/// `SpawnCache.NO_CACHE` (`blaze_buildtool::buildtool::execution_tool`).
 // Java: com/google/devtools/build/lib/runtime/NoSpawnCacheModule.java:23 NoSpawnCacheModule
 pub struct NoSpawnCacheModule;
 
@@ -158,7 +161,9 @@ impl BlazeModule for NoSpawnCacheModule {
 }
 
 /// A module to manage credentials.
-/// PORT: beforeCommand not ported.
+/// PORT: skipped, incremental (beforeCommand resets the credential cache the server keeps
+/// between commands). The credential helpers of a command are set up with its repository
+/// functions (`blaze_repo_rules::setup`).
 // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialModule.java:31 CredentialModule
 pub struct CredentialModule;
 
@@ -174,7 +179,9 @@ impl BlazeModule for CredentialModule {
 }
 
 /// This module logs complete stdout / stderr output of Blaze to a file.
-/// PORT: beforeCommand, getOutputListener, commandComplete not ported.
+/// PORT: getOutputListener is in the dispatcher (`BlazeCommandDispatcher::exec_exclusively`):
+/// the command log of a previous command is unlinked; writing one (`--write_command_log`,
+/// commandComplete) is not ported and fails loudly (`crate::unported_options`).
 // Java: com/google/devtools/build/lib/runtime/CommandLogModule.java:34 CommandLogModule
 pub struct CommandLogModule;
 
@@ -197,7 +204,7 @@ impl BlazeModule for CommandLogModule {
 }
 
 /// Module that tracks memory pressure.
-/// PORT: beforeCommand, afterCommand not ported.
+/// PORT: skipped, memory instrumentation (beforeCommand, afterCommand).
 // Java: com/google/devtools/build/lib/runtime/MemoryPressureModule.java:31 MemoryPressureModule
 pub struct MemoryPressureModule;
 
@@ -213,7 +220,8 @@ impl BlazeModule for MemoryPressureModule {
 }
 
 /// A module that dumps thread stacks.
-/// PORT: beforeCommand, afterCommand not ported.
+/// PORT: beforeCommand, afterCommand are not ported; `--experimental_enable_thread_dump`
+/// fails loudly (`crate::unported_options`).
 // Java: com/google/devtools/build/lib/runtime/ThreadDumpModule.java:56 ThreadDumpModule
 pub struct ThreadDumpModule;
 
@@ -224,7 +232,7 @@ impl BlazeModule for ThreadDumpModule {
 }
 
 /// Blaze module to prevent the system from sleeping while Blaze is running.
-/// PORT: beforeCommand, afterCommand not ported (they only act on macOS and Windows).
+/// PORT: skipped, macOS and Windows only (beforeCommand, afterCommand).
 // Java: com/google/devtools/build/lib/platform/SleepPreventionModule.java:23 SleepPreventionModule
 pub struct SleepPreventionModule;
 
@@ -235,7 +243,8 @@ impl BlazeModule for SleepPreventionModule {
 }
 
 /// Monitors system suspension events.
-/// PORT: beforeCommand, afterCommand not ported.
+/// PORT: skipped, macOS only (beforeCommand, afterCommand hold the reporter for the
+/// suspension callback; `portable_start_suspend_monitoring` is empty on Linux).
 // Java: com/google/devtools/build/lib/platform/SystemSuspensionModule.java:26 SystemSuspensionModule
 pub struct SystemSuspensionModule;
 
@@ -247,7 +256,8 @@ impl BlazeModule for SystemSuspensionModule {
 
 /// Module to provide a `FileSystem` instance that uses `SHA256` as the default hash function, or
 /// else what's specified by `-Dbazel.DigestFunction`.
-/// PORT: getFileSystem not ported (BlazeRuntime.newRuntime always uses the Unix file system).
+/// PORT: getFileSystem is in `BlazeRuntime::new_runtime` (the Unix file system with SHA-256;
+/// `--unix_digest_hash_attribute_name` fails loudly there).
 // Java: com/google/devtools/build/lib/bazel/BazelFileSystemModule.java:46 BazelFileSystemModule
 pub struct BazelFileSystemModule;
 
@@ -280,7 +290,9 @@ impl BlazeModule for MobileInstallModule {
 
 /// Provides information about the workspace (e.g. source control context, current machine,
 /// current user, etc).
-/// PORT: workspaceInit, registerActionContexts not ported.
+/// PORT: workspaceInit (the `WorkspaceStatusAction` factory) and registerActionContexts are
+/// ported with the analysis services and the command's execution setup
+/// (`blaze_analysis::analysis_services`, `blaze_sky_top::execution_phase`).
 // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:73 BazelWorkspaceStatusModule
 pub struct BazelWorkspaceStatusModule;
 
@@ -300,7 +312,7 @@ impl BlazeModule for BazelWorkspaceStatusModule {
 }
 
 /// Provides the `DiffAwareness` implementations available to Bazel.
-/// PORT: workspaceInit not ported.
+/// PORT: skipped, incremental (workspaceInit registers the `--watchfs` diff awareness).
 // Java: com/google/devtools/build/lib/bazel/BazelDiffAwarenessModule.java:28 BazelDiffAwarenessModule
 pub struct BazelDiffAwarenessModule;
 
@@ -316,12 +328,13 @@ impl BlazeModule for BazelDiffAwarenessModule {
 }
 
 /// RemoteModule provides distributed cache and remote execution for Bazel.
-/// PORT: serverInit (it registers the "remote" build event artifact uploader factory and the
-/// repository remote helpers factory, which `ServerBuilder` does not hold yet; it registers no
-/// commands or info items), globalInit, getFileSystemForBuildArtifacts, workspaceInit,
-/// beforeCommand, afterTopLevelTargetAnalysis, afterSingleAspectAnalysis,
-/// afterSingleTestAnalysis, coverageArtifactsKnown, afterAnalysis, afterCommand,
-/// registerSpawnStrategies, registerActionContexts, executorInit, getOutputService not ported.
+/// PORT: not ported (serverInit's "remote" build event artifact uploader factory and repository
+/// remote helpers factory; globalInit, getFileSystemForBuildArtifacts, workspaceInit,
+/// beforeCommand, the afterAnalysis hooks, afterCommand, registerSpawnStrategies,
+/// registerActionContexts, executorInit, getOutputService). The module only acts when a disk
+/// cache, remote cache, remote executor, remote output service or remote downloader is
+/// requested, and each of those fails loudly (`crate::unported_options` and
+/// `blaze_exec::exec::executor_setup`, which gets the command's `RemoteOptions`).
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:139 RemoteModule
 pub struct RemoteModule;
 
@@ -342,8 +355,10 @@ impl BlazeModule for RemoteModule {
 }
 
 /// Adds support for fetching external code.
-/// PORT: workspaceInit, initializeRuleClasses, beforeCommand, afterCommand,
-/// getPrecomputedValues not ported.
+/// PORT: workspaceInit, initializeRuleClasses, beforeCommand, afterCommand and
+/// getPrecomputedValues are ported with the command's executor
+/// (`blaze_repo_rules::setup::prepare_repository_functions_with`, called by
+/// `blaze_sky_top::skyframe_executor::SkyframeExecutor::create`).
 // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:127 BazelRepositoryModule
 pub struct BazelRepositoryModule;
 
@@ -379,7 +394,9 @@ impl BlazeModule for BazelRepositoryModule {
 }
 
 /// Module for the Starlark repository debugger.
-/// PORT: beforeCommand, afterCommand not ported.
+/// PORT: beforeCommand, afterCommand are not ported: the module prints a repository's
+/// definition when a `RequestRepositoryInformationEvent` asks for it, and no ported code posts
+/// that event.
 // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryDebugModule.java:31 StarlarkRepositoryDebugModule
 pub struct StarlarkRepositoryDebugModule;
 
@@ -390,7 +407,8 @@ impl BlazeModule for StarlarkRepositoryDebugModule {
 }
 
 /// A module for logging workspace rule events.
-/// PORT: beforeCommand, afterCommand not ported.
+/// PORT: beforeCommand, afterCommand are not ported;
+/// `--experimental_workspace_rules_log_file` fails loudly (`crate::unported_options`).
 // Java: com/google/devtools/build/lib/bazel/debug/WorkspaceRuleModule.java:35 WorkspaceRuleModule
 pub struct WorkspaceRuleModule;
 
@@ -406,7 +424,8 @@ impl BlazeModule for WorkspaceRuleModule {
 }
 
 /// Adds support for coverage report generation.
-/// PORT: getCoverageReportFactory not ported.
+/// PORT: getCoverageReportFactory is not ported; a `test` that collects coverage with a
+/// combined report fails loudly (`crate::commands::build`).
 // Java: com/google/devtools/build/lib/bazel/coverage/BazelCoverageReportModule.java:42 BazelCoverageReportModule
 pub struct BazelCoverageReportModule;
 
@@ -426,7 +445,8 @@ impl BlazeModule for BazelCoverageReportModule {
 }
 
 /// Blaze module for setting up Starlark debugging.
-/// PORT: beforeCommand, afterCommand, blazeShutdown, blazeShutdownOnCrash not ported.
+/// PORT: beforeCommand, afterCommand, blazeShutdown, blazeShutdownOnCrash are not ported;
+/// `--experimental_skylark_debug` fails loudly (`crate::unported_options`).
 // Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:34 StarlarkDebuggerModule
 pub struct StarlarkDebuggerModule;
 
@@ -446,7 +466,9 @@ impl BlazeModule for StarlarkDebuggerModule {
 }
 
 /// Module that reports cache hits.
-/// PORT: beforeCommand, afterCommand not ported.
+/// PORT: beforeCommand, afterCommand are not ported: on a `RepositoryFailedEvent` the module
+/// lists the download cache hits the repository used, and no ported code posts that event (the
+/// repository crates post `DownloadCacheHitEvent` only).
 // Java: com/google/devtools/build/lib/bazel/CacheHitReportingModule.java:31 CacheHitReportingModule
 pub struct CacheHitReportingModule;
 
@@ -457,7 +479,8 @@ impl BlazeModule for CacheHitReportingModule {
 }
 
 /// Module providing on-demand spawn logging.
-/// PORT: registerActionContexts, executorInit, afterCommand not ported.
+/// PORT: registerActionContexts, executorInit, afterCommand are ported with the build command
+/// (`crate::commands::build`, `blaze_exec::exec::spawn_log_module`).
 // Java: com/google/devtools/build/lib/bazel/SpawnLogModule.java:48 SpawnLogModule
 pub struct SpawnLogModule;
 
@@ -469,7 +492,9 @@ impl BlazeModule for SpawnLogModule {
 
 /// Module collecting Bazel module and module extensions resolution results and updating the
 /// lockfile.
-/// PORT: beforeCommand, afterCommand not ported.
+/// PORT: beforeCommand, afterCommand are ported with the command's executor
+/// (`blaze_sky_top::skyframe_executor::SkyframeExecutor::after_command`, run by
+/// `crate::commands::query::AfterCommand`).
 // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileModule.java:47 BazelLockFileModule
 pub struct BazelLockFileModule;
 
@@ -480,7 +505,8 @@ impl BlazeModule for BazelLockFileModule {
 }
 
 /// Blaze module implementing output filtering.
-/// PORT: beforeCommand, afterCommand not ported.
+/// PORT: beforeCommand, afterCommand (the reporter's output filter) are ported with the build
+/// command (`crate::commands::build::output_filter`).
 // Java: com/google/devtools/build/lib/outputfilter/OutputFilteringModule.java:34 OutputFilteringModule
 pub struct OutputFilteringModule;
 
@@ -500,7 +526,11 @@ impl BlazeModule for OutputFilteringModule {
 }
 
 /// A module that adds the WorkerActionContextProvider to the available action context providers.
-/// PORT: beforeCommand, registerSpawnStrategies, afterCommand not ported.
+/// PORT: registerSpawnStrategies is ported with the command's execution setup
+/// (`blaze_exec::exec::executor_setup` registers the `worker` strategy with the command's
+/// `WorkerOptions`; running a spawn with a persistent worker fails loudly there). PORT: skipped,
+/// incremental: beforeCommand, afterCommand manage the worker pool the server keeps between
+/// commands.
 // Java: com/google/devtools/build/lib/worker/WorkerModule.java:49 WorkerModule
 pub struct WorkerModule;
 
@@ -520,7 +550,8 @@ impl BlazeModule for WorkerModule {
 }
 
 /// Enables the caching of file digests in `DigestUtils`.
-/// PORT: executorInit, commandComplete not ported.
+/// PORT: skipped, incremental (executorInit, commandComplete size the digest cache the server
+/// keeps between commands and log its statistics).
 // Java: com/google/devtools/build/lib/runtime/CacheFileDigestsModule.java:26 CacheFileDigestsModule
 pub struct CacheFileDigestsModule;
 
@@ -531,7 +562,9 @@ impl BlazeModule for CacheFileDigestsModule {
 }
 
 /// StandaloneModule provides pluggable functionality for blaze.
-/// PORT: registerActionContexts, registerSpawnStrategies not ported.
+/// PORT: registerActionContexts, registerSpawnStrategies are ported with the command's
+/// execution setup (`blaze_buildtool::runtime::standalone_module`,
+/// `blaze_exec::exec::executor_setup`).
 // Java: com/google/devtools/build/lib/standalone/StandaloneModule.java:47 StandaloneModule
 pub struct StandaloneModule;
 
@@ -542,8 +575,12 @@ impl BlazeModule for StandaloneModule {
 }
 
 /// This module provides the Sandbox spawn strategy.
-/// PORT: beforeCommand, registerSpawnStrategies, afterCommand, blazeShutdown,
-/// blazeShutdownOnCrash not ported.
+/// PORT: beforeCommand, registerSpawnStrategies, afterCommand are ported with the command's
+/// execution setup (`blaze_exec::sandbox::sandbox_module`, run by
+/// `blaze_buildtool::buildtool::execution_tool` and
+/// `blaze_sky_top::execution_phase::ExecutionState::after_command`). PORT: skipped,
+/// incremental: blazeShutdown, blazeShutdownOnCrash clean up what a server keeps between
+/// commands.
 // Java: com/google/devtools/build/lib/sandbox/SandboxModule.java:58 SandboxModule
 pub struct SandboxModule;
 
@@ -563,7 +600,9 @@ impl BlazeModule for SandboxModule {
 }
 
 /// Blaze module for the build summary message that reports various stats to the user.
-/// PORT: beforeCommand, afterCommand, executorInit not ported.
+/// PORT: beforeCommand, afterCommand, executorInit and the subscribers are ported with the
+/// build command (`blaze_buildtool::buildtool::execution_tool::ExecutionEventCollector`,
+/// `report_build_summary_stats`). PORT: skipped, profiling: the critical path computer.
 // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:52 BuildSummaryStatsModule
 pub struct BuildSummaryStatsModule;
 
@@ -574,7 +613,9 @@ impl BlazeModule for BuildSummaryStatsModule {
 }
 
 /// `BlazeModule` providing support for dynamic spawn execution and scheduling.
-/// PORT: beforeCommand, registerSpawnStrategies, afterCommand not ported.
+/// PORT: registerSpawnStrategies is ported with the command's execution setup
+/// (`blaze_exec::exec::executor_setup`, with the command's `DynamicExecutionOptions`);
+/// beforeCommand, afterCommand manage the executor of the dynamic strategies.
 // Java: com/google/devtools/build/lib/dynamic/DynamicExecutionModule.java:54 DynamicExecutionModule
 pub struct DynamicExecutionModule;
 
@@ -595,7 +636,9 @@ impl BlazeModule for DynamicExecutionModule {
 
 /// Module implementing the rule set of Bazel.
 /// PORT: initializeRuleClasses (`BazelRuleClassProvider.setup`; its fragment options are in
-/// `crate::fragment_options`), registerActionContexts not ported.
+/// `crate::fragment_options`) and registerActionContexts are ported with the rule class
+/// provider and the command's execution setup (`blaze_build_config`,
+/// `blaze_sky_top::execution_phase`).
 // Java: com/google/devtools/build/lib/bazel/rules/BazelRulesModule.java:34 BazelRulesModule
 pub struct BazelRulesModule;
 
@@ -618,7 +661,8 @@ impl BlazeModule for BazelRulesModule {
 }
 
 /// Module which registers the strategy options for Bazel.
-/// PORT: registerActionContexts, registerSpawnStrategies not ported.
+/// PORT: registerActionContexts, registerSpawnStrategies are ported with the command's
+/// execution setup (`blaze_exec::exec::executor_setup`).
 // Java: com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java:40 BazelStrategyModule
 pub struct BazelStrategyModule;
 
@@ -638,7 +682,8 @@ impl BlazeModule for BazelStrategyModule {
 }
 
 /// A `ConnectivityStatusProvider` that always reports the network as available.
-/// PORT: getStatus (ConnectivityStatusProvider) not ported.
+/// PORT: getStatus (ConnectivityStatusProvider) always reports the network as available; its
+/// readers (the Build Event Service and remote modules) are not ported.
 // Java: com/google/devtools/build/lib/network/NoOpConnectivityModule.java:23 NoOpConnectivityModule
 pub struct NoOpConnectivityModule;
 
@@ -660,7 +705,10 @@ impl BlazeModule for AllocationTrackerModule {
 }
 
 /// Module providing metrics on package loading.
-/// PORT: getPackageLoadingListener, beforeCommand, afterCommand not ported.
+/// PORT: getPackageLoadingListener, beforeCommand, afterCommand are not ported: the package
+/// metrics only reach the server log and, with
+/// `--experimental_publish_package_metrics_in_bep`, the BEP, where they fail loudly
+/// (`crate::commands::bep`).
 // Java: com/google/devtools/build/lib/packages/metrics/PackageMetricsModule.java:31 PackageMetricsModule
 pub struct PackageMetricsModule;
 
@@ -676,7 +724,8 @@ impl BlazeModule for PackageMetricsModule {
 }
 
 /// Blaze module that writes a partial execution graph with performance data.
-/// PORT: beforeCommand, afterCommand not ported.
+/// PORT: beforeCommand, afterCommand are not ported;
+/// `--experimental_enable_execution_graph_log` fails loudly (`crate::unported_options`).
 // Java: com/google/devtools/build/lib/runtime/ExecutionGraphModule.java:99 ExecutionGraphModule
 pub struct ExecutionGraphModule;
 
@@ -740,8 +789,8 @@ impl BlazeModule for BazelBuiltinCommandModule {
 }
 
 /// Module that provides implementations of the include scanning action context.
-/// PORT: registerActionContexts, executorInit, beforeCommand, afterCommand, workspaceInit not
-/// ported.
+/// PORT: registerActionContexts, executorInit, beforeCommand, afterCommand, workspaceInit are
+/// not ported here: include scanning belongs to the C++ compile action (`blaze_rules::cpp`).
 // Java: com/google/devtools/build/lib/includescanning/IncludeScanningModule.java:81 IncludeScanningModule
 pub struct IncludeScanningModule;
 
@@ -761,7 +810,8 @@ impl BlazeModule for IncludeScanningModule {
 }
 
 /// Sets up Skymeld (merged analysis and execution).
-/// PORT: beforeCommand not ported.
+/// PORT: beforeCommand (whether the request merges analysis and execution) is ported with the
+/// build command (`crate::commands::build::determine_if_merging_analysis_execution`).
 // Java: com/google/devtools/build/lib/skyframe/SkymeldModule.java:25 SkymeldModule
 pub struct SkymeldModule;
 
@@ -783,7 +833,8 @@ impl BlazeModule for SerializationModule {
 }
 
 /// A module that waits for background tasks submitted with `submit` at the end of a command.
-/// PORT: beforeCommand, afterCommand not ported.
+/// PORT: beforeCommand, afterCommand are not ported: they run and await the background
+/// tasks other modules submit (the remote module's uploads), and no ported module submits any.
 // Java: com/google/devtools/build/lib/runtime/BlockWaitingModule.java:30 BlockWaitingModule
 pub struct BlockWaitingModule;
 
@@ -794,10 +845,13 @@ impl BlazeModule for BlockWaitingModule {
 }
 
 /// Bazel's BES module (`BuildEventServiceModule<BuildEventServiceOptions>`).
-/// PORT: workspaceInit, getBesKeywords, getBesClient, clearBesClient, allowedCommands,
-/// getInvocationIdPrefix, getBuildRequestIdPrefix and the inherited beforeCommand,
-/// getOutputListener, blazeShutdownOnCrash, blazeShutdown, afterCommand, commandComplete not
-/// ported.
+/// PORT: the inherited beforeCommand, afterCommand and commandComplete are ported for the BEP
+/// files of build and test (`crate::commands::bep`); a BEP file for another command and the
+/// upload to a Build Event Service (`--bes_backend`: workspaceInit, getBesKeywords,
+/// getBesClient, clearBesClient, allowedCommands, getInvocationIdPrefix,
+/// getBuildRequestIdPrefix) fail loudly (`crate::unported_options`). getOutputListener (the
+/// command's stdout and stderr in the BEP's progress events) is not ported: progress events
+/// carry no output. blazeShutdown, blazeShutdownOnCrash close a streamer the server left open.
 // Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModule.java:52 BazelBuildEventServiceModule
 pub struct BazelBuildEventServiceModule;
 
@@ -819,7 +873,7 @@ impl BlazeModule for BazelBuildEventServiceModule {
 }
 
 /// Module to support "blaze info peak-heap-size".
-/// PORT: beforeCommand (resets the recorder's peak heap) not ported.
+/// PORT: skipped, memory instrumentation (beforeCommand resets the recorder's peak heap).
 // Java: com/google/devtools/build/lib/metrics/PostGCMemoryUseRecorder.java:231 PostGCMemoryUseRecorder.PostGCMemoryUseRecorderModule
 pub struct PostGCMemoryUseRecorderPostGCMemoryUseRecorderModule;
 
@@ -859,7 +913,8 @@ impl BlazeModule for PostGCMemoryUseRecorderGcAfterBuildModule {
 
 /// A blaze module that installs metrics instrumentation and posts the `BuildMetricsEvent`
 /// (`postsBuildMetricsEvent` is true).
-/// PORT: beforeCommand not ported.
+/// PORT: beforeCommand (`MetricsCollector.installInEnv`) is ported with the BEP of build and
+/// test (`crate::commands::bep::BepCommandSupport::before_command`).
 // Java: com/google/devtools/build/lib/metrics/MetricsModule.java:29 MetricsModule
 pub struct MetricsModule;
 

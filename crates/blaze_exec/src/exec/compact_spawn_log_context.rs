@@ -7,39 +7,26 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use blaze_collect::{NestedSet, NestedSetBuilder, NestedSetNode, Order};
+use blaze_actions::actions::command_lines::ParamFileActionInput;
+use blaze_collect::{NestedSet, NestedSetNode};
 use blaze_events::{Event, EventHandler};
 use blaze_optdefs::misc::remote_options::RemoteOptions;
 use blaze_protos::tools::protos::{ExecLogEntry, exec_log_entry};
 use blaze_vfs::{DigestHashFunction, DirentType, FileSystemRef, Path, PathFragment, Symlinks};
 use parking_lot::ReentrantMutex;
 
-use super::bin_tools::PathActionInput;
 use super::io::{AsynchronousMessageOutputStream, ZstdOutputStream};
 use super::spawn_log_context::{
     SpawnLogAction, SpawnLogContext, compute_digest, get_environment_variables, get_platform,
-    get_spawn_metrics_proto, internal, is_input_directory, java_string_compare,
-    spawn_log_io_exception,
+    get_spawn_metrics_proto, internal, internal_to_unicode, is_input_directory,
+    java_string_compare, spawn_log_io_exception,
 };
 use crate::actions::{
     ActionInputRef, ExecException, InputMapping, InputMetadataProvider, RunfilesTree, Spawn,
     SpawnResult, Status, spawns,
 };
 
-/// A runfiles symlink: its runfiles path and target artifact.
-///
-/// PORT: seam gap. Java's `RunfilesTree.getSymlinksForLogging()` and
-/// `getRootSymlinksForLogging()` return a `NestedSet<SymlinkEntry>` whose node structure the
-/// compact log mirrors (one `SymlinkEntrySet` per node, deduplicated by node). The seam's
-/// `RunfilesTree` returns a flat list, which is logged here as a single-node set.
-// Java: com/google/devtools/build/lib/analysis/SymlinkEntry.java SymlinkEntry
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SymlinkEntry {
-    /// `getPathString()`.
-    pub path: String,
-    /// `getArtifact()`.
-    pub artifact: ActionInputRef,
-}
+pub use crate::actions::SymlinkEntry;
 
 /// A key identifying an entry: a `NestedSet.Node` or the String path of a file, directory,
 /// symlink or runfiles tree.
@@ -92,19 +79,13 @@ fn entry(t: exec_log_entry::Type) -> ExecLogEntry {
     }
 }
 
-/// Whether `input` is a `CommandLines.ParamFileActionInput`.
-///
-/// PORT: seam gap. `ParamFileActionInput` lives in `blaze_actions` and the seam's
-/// `VirtualActionInput` cannot name it. The virtual inputs reaching the execution log are
-/// `EmptyActionInput` (never logged as a file), `BinTools.PathActionInput` and
-/// `ParamFileActionInput`; every other virtual input is treated as a parameter file.
+/// `input instanceof ParamFileActionInput`.
+// Java: com/google/devtools/build/lib/actions/CommandLines.java:349 CommandLines.ParamFileActionInput
 fn is_param_file_action_input(input: &ActionInputRef) -> bool {
-    match input.as_virtual_action_input() {
-        None => false,
-        Some(v) => {
-            !v.is_empty_action_input() && input.as_any().downcast_ref::<PathActionInput>().is_none()
-        }
-    }
+    input
+        .as_any()
+        .downcast_ref::<ParamFileActionInput>()
+        .is_some()
 }
 
 impl CompactSpawnLogContext {
@@ -157,13 +138,12 @@ impl CompactSpawnLogContext {
     // Java: com/google/devtools/build/lib/exec/CompactSpawnLogContext.java:208 CompactSpawnLogContext.logInvocation
     fn log_invocation(&self) -> io::Result<()> {
         self.log_entry_without_id(&mut || {
-            // PORT: StringEncoding identity (internalToUnicode).
             Ok(entry(exec_log_entry::Type::Invocation(
                 exec_log_entry::Invocation {
-                    hash_function_name: self.digest_hash_function.to_string(),
-                    workspace_runfiles_directory: self.workspace_name.clone(),
+                    hash_function_name: internal_to_unicode(&self.digest_hash_function.to_string()),
+                    workspace_runfiles_directory: internal_to_unicode(&self.workspace_name),
                     sibling_repository_layout: self.sibling_repository_layout,
-                    id: self.invocation_id.clone(),
+                    id: internal_to_unicode(&self.invocation_id),
                 },
             )))
         })
@@ -182,9 +162,12 @@ impl CompactSpawnLogContext {
         timeout: Duration,
         result: &SpawnResult,
     ) -> Result<(), ExecException> {
-        // PORT: StringEncoding identity (internalToUnicode) for every string below.
         let mut builder = exec_log_entry::Spawn {
-            args: spawn.get_arguments().to_vec(),
+            args: spawn
+                .get_arguments()
+                .iter()
+                .map(|arg| internal_to_unicode(arg))
+                .collect(),
             env_vars: get_environment_variables(spawn),
             ..Default::default()
         };
@@ -201,9 +184,9 @@ impl CompactSpawnLogContext {
             .map_err(|e| spawn_log_io_exception(&e))? as u32;
 
         if let Some(target_label) = spawn.get_target_label() {
-            builder.target_label = target_label.get_canonical_form();
+            builder.target_label = internal_to_unicode(&target_label.get_canonical_form());
         }
-        builder.mnemonic = spawn.get_mnemonic();
+        builder.mnemonic = internal_to_unicode(&spawn.get_mnemonic());
 
         let mut warned = false;
         for output in spawn.get_output_files() {
@@ -224,9 +207,9 @@ impl CompactSpawnLogContext {
                             output, &path, /* input_metadata_provider= */ None,
                         )? as u32)
                     } else {
-                        exec_log_entry::output::Type::InvalidOutputPath(
-                            output.get_exec_path_string(),
-                        )
+                        exec_log_entry::output::Type::InvalidOutputPath(internal_to_unicode(
+                            &output.get_exec_path_string(),
+                        ))
                     },
                 )
             })();
@@ -236,10 +219,12 @@ impl CompactSpawnLogContext {
                     if !warned {
                         self.output_logging_failed.store(true, Ordering::SeqCst);
                         warned = true;
-                        // PORT: logging dropped ("Failed to log outputs of spawn with mnemonic
+                        // PORT: skipped, tracing (Java log) ("Failed to log outputs of spawn with mnemonic
                         // %s and primary output %s").
                     }
-                    exec_log_entry::output::Type::InvalidOutputPath(output.get_exec_path_string())
+                    exec_log_entry::output::Type::InvalidOutputPath(internal_to_unicode(
+                        &output.get_exec_path_string(),
+                    ))
                 }
             };
             builder.outputs.push(exec_log_entry::Output {
@@ -249,9 +234,9 @@ impl CompactSpawnLogContext {
 
         builder.exit_code = result.exit_code();
         if result.status() != Status::Success {
-            builder.status = result.status().name().to_string();
+            builder.status = internal_to_unicode(result.status().name());
         }
-        builder.runner = result.get_runner_name().to_string();
+        builder.runner = internal_to_unicode(result.get_runner_name());
         builder.cache_hit = result.is_cache_hit();
         builder.remotable = spawns::may_be_executed_remotely(spawn);
         builder.cacheable = spawns::may_be_cached(spawn);
@@ -282,17 +267,16 @@ impl CompactSpawnLogContext {
             // be treated just like source files.
             return Ok(());
         };
-        // PORT: StringEncoding identity (internalToUnicode).
         let mut builder = exec_log_entry::SymlinkAction {
-            input_path: input.get_exec_path_string(),
-            output_path: action.get_primary_output().get_exec_path_string(),
+            input_path: internal_to_unicode(&input.get_exec_path_string()),
+            output_path: internal_to_unicode(&action.get_primary_output().get_exec_path_string()),
             ..Default::default()
         };
 
         if let Some(label) = action.get_owner_label() {
-            builder.target_label = label.get_canonical_form();
+            builder.target_label = internal_to_unicode(&label.get_canonical_form());
         }
-        builder.mnemonic = action.get_mnemonic();
+        builder.mnemonic = internal_to_unicode(&action.get_mnemonic());
 
         let mut symlink_entry = Some(builder);
         self.log_entry_without_id(&mut || {
@@ -459,8 +443,7 @@ impl CompactSpawnLogContext {
                 }
 
                 for input in symlinks.get_leaves() {
-                    // PORT: StringEncoding identity (internalToUnicode).
-                    let key = input.path.clone();
+                    let key = internal_to_unicode(&input.path);
                     let value =
                         self.log_input(&input.artifact, input_metadata_provider, file_system)?
                             as u32;
@@ -535,9 +518,8 @@ impl CompactSpawnLogContext {
                     /* include_hash_function_name= */ false,
                 )?;
 
-                // PORT: StringEncoding identity (internalToUnicode).
                 Ok(entry(exec_log_entry::Type::File(exec_log_entry::File {
-                    path: input.get_exec_path_string(),
+                    path: internal_to_unicode(&input.get_exec_path_string()),
                     digest: Some(digest),
                 })))
             },
@@ -560,10 +542,9 @@ impl CompactSpawnLogContext {
         self.log_entry(
             Some(EntryKey::Path(input.get_exec_path_string())),
             &mut || {
-                // PORT: StringEncoding identity (internalToUnicode).
                 Ok(entry(exec_log_entry::Type::Directory(
                     exec_log_entry::Directory {
-                        path: input.get_exec_path_string(),
+                        path: internal_to_unicode(&input.get_exec_path_string()),
                         files: self.expand_directory(input, root, input_metadata_provider)?,
                     },
                 )))
@@ -600,9 +581,8 @@ impl CompactSpawnLogContext {
             &mut || {
                 blaze_util::check_state!(self.workspace_name == runfiles_tree.get_workspace_name());
 
-                // PORT: StringEncoding identity (internalToUnicode).
                 let mut builder = exec_log_entry::RunfilesTree {
-                    path: runfiles_tree.get_exec_path().get_path_string().to_string(),
+                    path: internal_to_unicode(runfiles_tree.get_exec_path().get_path_string()),
                     ..Default::default()
                 };
 
@@ -620,12 +600,12 @@ impl CompactSpawnLogContext {
                     false,
                 )? as u32;
                 builder.symlinks_id = self.log_symlink_entries(
-                    &symlink_entries(runfiles_tree.get_symlinks_for_logging()),
+                    &runfiles_tree.get_symlinks_for_logging(),
                     input_metadata_provider,
                     file_system,
                 )? as u32;
                 builder.root_symlinks_id = self.log_symlink_entries(
-                    &symlink_entries(runfiles_tree.get_root_symlinks_for_logging()),
+                    &runfiles_tree.get_root_symlinks_for_logging(),
                     input_metadata_provider,
                     file_system,
                 )? as u32;
@@ -704,9 +684,8 @@ impl CompactSpawnLogContext {
                 self.digest_hash_function,
                 /* include_hash_function_name= */ false,
             )?;
-            // PORT: StringEncoding identity (internalToUnicode).
             files.push(exec_log_entry::File {
-                path: parent_relative_path.get_path_string().to_string(),
+                path: internal_to_unicode(parent_relative_path.get_path_string()),
                 digest: Some(digest),
             });
         }
@@ -731,9 +710,8 @@ impl CompactSpawnLogContext {
                 /* include_hash_function_name= */ false,
             )?;
 
-            // PORT: StringEncoding identity (internalToUnicode).
             files.push(exec_log_entry::File {
-                path: child.relative_to(root).get_path_string().to_string(),
+                path: internal_to_unicode(child.relative_to(root).get_path_string()),
                 digest: Some(digest),
             });
             Ok(())
@@ -777,11 +755,10 @@ impl CompactSpawnLogContext {
                     None => path.read_symbolic_link()?.get_path_string().to_string(),
                 };
 
-                // PORT: StringEncoding identity (internalToUnicode).
                 Ok(entry(exec_log_entry::Type::UnresolvedSymlink(
                     exec_log_entry::UnresolvedSymlink {
-                        path: input.get_exec_path_string(),
-                        target_path,
+                        path: internal_to_unicode(&input.get_exec_path_string()),
+                        target_path: internal_to_unicode(&target_path),
                     },
                 )))
             },
@@ -853,16 +830,6 @@ impl CompactSpawnLogContext {
         self.output_stream.write(&entry);
         Ok(id)
     }
-}
-
-/// Converts the seam's flat symlink list into a single-node set (see [`SymlinkEntry`]).
-fn symlink_entries(entries: Vec<(String, ActionInputRef)>) -> NestedSet<SymlinkEntry> {
-    NestedSetBuilder::wrap(
-        Order::STABLE_ORDER,
-        entries
-            .into_iter()
-            .map(|(path, artifact)| SymlinkEntry { path, artifact }),
-    )
 }
 
 /// Visits a directory hierarchy.

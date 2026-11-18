@@ -1,14 +1,88 @@
 //! Ports of the `skyframe/toolchains` JUnit tests.
 
+use std::sync::Arc;
+
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::platform::{DeclaredToolchainInfo, ToolchainTypeInfo};
 use blaze_cmdline::Label;
+use blaze_packages::exceptions::NoSuchThingException;
+use blaze_skyframe::SkyError;
 use indexmap::IndexMap;
 
+use crate::producers::errors::{
+    ConfiguredTargetFunctionException, ConfiguredValueCreationException,
+    InconsistentNullConfigException,
+};
+use crate::toolchains::lookup_error::{
+    ConfiguredTargetLookupError, catch_configured_target_error,
+    catch_configured_value_creation_exception,
+};
 use crate::toolchains::{RegisteredToolchainsValue, SingleToolchainResolutionValue};
 
 fn label(s: &str) -> Label {
     Label::parse_canonical_unchecked(s)
+}
+
+// No JUnit test of its own. Java: ConfiguredTargetFunction throws ReportedException /
+// UnreportedException / DependencyException, whose causes are what a parent's
+// `getOrThrow(key, ConfiguredValueCreationException.class, NoSuchThingException.class,
+// ActionConflictException.class)` catches (PlatformLookupUtil.findPlatformInfo and the other
+// lookup helpers); an InconsistentNullConfigException is none of them, so the dep is missing.
+// Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetEvaluationExceptions.java:28 ConfiguredTargetEvaluationExceptions
+#[test]
+fn configured_target_function_exceptions_are_caught_by_their_cause() {
+    let cvce =
+        ConfiguredValueCreationException::new(None, "boom", &label("//a:b"), None, None, None);
+    for wrapped in [
+        ConfiguredTargetFunctionException::Reported(cvce.clone()),
+        ConfiguredTargetFunctionException::Unreported(cvce.clone()),
+    ] {
+        let error: SkyError = Arc::new(wrapped);
+        let caught = catch_configured_value_creation_exception(&error)
+            .expect("ConfiguredValueCreationException is caught");
+        // The cause handed on is the ConfiguredValueCreationException itself.
+        assert_eq!(
+            caught
+                .downcast_ref::<ConfiguredValueCreationException>()
+                .map(|c| c.get_message().to_owned()),
+            Some("boom".to_owned())
+        );
+        match catch_configured_target_error(&error) {
+            Some(ConfiguredTargetLookupError::ConfiguredValueCreation(cause)) => assert!(
+                cause
+                    .downcast_ref::<ConfiguredValueCreationException>()
+                    .is_some()
+            ),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    let no_such_thing: SkyError = Arc::new(ConfiguredTargetFunctionException::NoSuchThing(
+        NoSuchThingException::Other {
+            message: "no such thing".to_owned(),
+            detailed_exit_code: None,
+        },
+    ));
+    assert!(catch_configured_value_creation_exception(&no_such_thing).is_none());
+    assert!(matches!(
+        catch_configured_target_error(&no_such_thing),
+        Some(ConfiguredTargetLookupError::NoSuchThing(_))
+    ));
+
+    let action_conflict: SkyError = Arc::new(ConfiguredTargetFunctionException::ActionConflict(
+        "conflict".to_owned(),
+    ));
+    assert!(catch_configured_value_creation_exception(&action_conflict).is_none());
+    assert!(matches!(
+        catch_configured_target_error(&action_conflict),
+        Some(ConfiguredTargetLookupError::ActionConflict(_))
+    ));
+
+    let inconsistent_null_config: SkyError = Arc::new(
+        ConfiguredTargetFunctionException::InconsistentNullConfig(InconsistentNullConfigException),
+    );
+    assert!(catch_configured_value_creation_exception(&inconsistent_null_config).is_none());
+    assert!(catch_configured_target_error(&inconsistent_null_config).is_none());
 }
 
 // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsFunctionTest.java testRegisteredToolchainsValue_equalsAndHashCode

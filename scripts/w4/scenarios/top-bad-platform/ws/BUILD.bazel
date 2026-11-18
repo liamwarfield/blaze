@@ -1,0 +1,5 @@
+filegroup(name = "x", srcs = ["a.txt"])
+
+platform(name = "p")
+
+toolchain_type(name = "tt")

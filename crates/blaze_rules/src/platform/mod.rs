@@ -9,6 +9,8 @@ use blaze_analysis::configured_rule_class_provider::ConfiguredRuleClassProviderB
 mod common;
 pub mod constraint_setting;
 pub mod constraint_value;
+// Java package `rules/platform` holds class `Platform`.
+#[allow(clippy::module_inception)]
 pub mod platform;
 pub mod toolchain;
 pub mod toolchain_type;

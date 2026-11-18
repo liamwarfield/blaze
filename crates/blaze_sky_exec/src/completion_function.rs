@@ -15,6 +15,7 @@ use crate::analysis_seam::{AnalysisSeam, ConfiguredTargetView};
 use crate::artifact_function::{ArtifactValue, SourceArtifactException};
 use crate::events::{ArtifactsInOutputGroup, CompletionRootCause, TargetCompleteEvent};
 use crate::keys::{TargetCompletionKey, artifact_key};
+use crate::skyframe_action_executor::SkyframeActionExecutor;
 
 /// The (marker) value of a completed top-level target.
 // Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:33 TargetCompletionValue
@@ -62,15 +63,27 @@ impl std::error::Error for InputFileErrorException {}
 pub fn create_source_error_code_and_message(
     source_artifact_error_causes: &[CompletionRootCause],
 ) -> (blaze_util::DetailedExitCode, String) {
+    let failure_details: Vec<&blaze_protos::failure_details::FailureDetail> =
+        source_artifact_error_causes
+            .iter()
+            .map(|cause| match cause {
+                CompletionRootCause::ActionFailed { failure_detail, .. }
+                | CompletionRootCause::Label { failure_detail, .. } => failure_detail,
+            })
+            .collect();
+    create_source_error_code_and_message_of(&failure_details)
+}
+
+/// [`create_source_error_code_and_message`] over `Cause.getDetailedExitCode()` of each cause.
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1543 ActionExecutionFunction.createSourceErrorCodeAndMessage
+pub(crate) fn create_source_error_code_and_message_of(
+    source_artifact_error_causes: &[&blaze_protos::failure_details::FailureDetail],
+) -> (blaze_util::DetailedExitCode, String) {
     use blaze_protos::failure_details::{execution, failure_detail::Category};
     let mut saw_source_artifact_exception = false;
     let mut saw_missing_file = false;
     let mut prioritized_detailed_exit_code: Option<blaze_util::DetailedExitCode> = None;
-    for cause in source_artifact_error_causes {
-        let failure_detail = match cause {
-            CompletionRootCause::ActionFailed { failure_detail, .. }
-            | CompletionRootCause::Label { failure_detail, .. } => failure_detail,
-        };
+    for failure_detail in source_artifact_error_causes {
         match &failure_detail.category {
             Some(Category::Filesystem(_)) => saw_source_artifact_exception = true,
             Some(Category::Execution(e))
@@ -83,14 +96,14 @@ pub fn create_source_error_code_and_message(
             {
                 saw_missing_file = true
             }
-            // PORT: Java sends a non-fatal bug report ("Unexpected error code in ...").
+            // BugReport.sendNonFatalBugReport("Unexpected error code in ..."): logging only.
             _ => {}
         }
         // Stream.max(DetailedExitCodeComparator.INSTANCE): the first of equally important codes.
         prioritized_detailed_exit_code =
             blaze_util::DetailedExitCode::choose_more_important_with_first_if_tie(
                 prioritized_detailed_exit_code,
-                Some(blaze_util::DetailedExitCode::of(failure_detail.clone())),
+                Some(blaze_util::DetailedExitCode::of((*failure_detail).clone())),
             );
     }
     let parts: Vec<&str> = [
@@ -116,6 +129,7 @@ pub fn create_source_error_code_and_message(
 /// `TargetCompletor.getRootCauseError` (`<label>: <cause message>` at the target's location).
 // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:346 CompletionFunction.handleSourceFileError
 fn handle_source_file_error(
+    skyframe_action_executor: &SkyframeActionExecutor,
     input: &Artifact,
     failure_detail: &blaze_protos::failure_details::FailureDetail,
     root_causes_builder: &mut Vec<CompletionRootCause>,
@@ -135,8 +149,7 @@ fn handle_source_file_error(
         Some(location.clone()),
         format!("{}: {}", key_label, failure_detail.message),
     ));
-    // PORT: skyframeActionExecutor.recordExecutionError() is the action executor's (another
-    // module's) state; it is not reachable from the completion function's seam.
+    skyframe_action_executor.record_execution_error();
 }
 
 /// `OutputGroupInfo.HIDDEN_OUTPUT_GROUP_PREFIX`.
@@ -267,10 +280,33 @@ fn add_to_map(input_map: &mut ImportantInputMap, key: &Artifact, value: &InputVa
             if key.is_fileset() {
                 blaze_util::unported!("ActionInputMapHelper.addToMap (filesets)");
             } else if key.is_runfiles_tree() {
-                // PORT: Java puts every file and tree of the RunfilesArtifactValue into the map
-                // (and the runfiles metadata). Blaze's RunfilesArtifactValue carries the tree, not
-                // its files' metadata; the completion's only reader of the map, the BEP's
-                // CompletionContext.visitArtifacts, skips runfiles trees.
+                let runfiles_artifact_value = action_execution_value
+                    .get_rich_artifact_data()
+                    .unwrap_or_else(|| panic!("NullPointerException: rich artifact data of {key}"));
+                // Note: we don't expand the .runfiles/MANIFEST file into the inputs. The reason
+                // for that being that the MANIFEST file contains absolute paths that don't work
+                // with remote execution.
+                // Instead, the way the SpawnInputExpander expands runfiles is via the Runfiles
+                // class which contains all artifacts in the runfiles tree minus the MANIFEST file.
+                runfiles_artifact_value.for_each_file(|artifact, metadata| {
+                    let artifact = as_blaze_artifact(artifact).unwrap_or_else(|| {
+                        panic!("ClassCastException: {artifact} of {key} is not an Artifact")
+                    });
+                    input_map.put(artifact, metadata.clone());
+                });
+                runfiles_artifact_value.for_each_tree(|tree_artifact, metadata| {
+                    let tree_artifact = as_blaze_artifact(tree_artifact).unwrap_or_else(|| {
+                        panic!("ClassCastException: {tree_artifact} of {key} is not an Artifact")
+                    });
+                    expand_tree_artifact_and_populate_artifact_data(
+                        tree_artifact,
+                        metadata,
+                        input_map,
+                    );
+                });
+                // No filesets (see RunfilesArtifactValue). inputMap.putRunfilesMetadata(key,
+                // runfilesArtifactValue): the event's view of the map carries files and trees,
+                // which is all that CompletionContext reads.
             } else {
                 let metadata = action_execution_value
                     .get_existing_file_artifact_value(key)
@@ -402,6 +438,7 @@ impl<'a> SuccessfulArtifactFilter<'a> {
 /// `CompletionFunction.compute` for targets.
 // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:153 CompletionFunction.compute
 pub fn compute_target_completion(
+    skyframe_action_executor: &SkyframeActionExecutor,
     seam: &dyn AnalysisSeam,
     key: &TargetCompletionKey,
     env: &mut Environment<'_>,
@@ -444,9 +481,10 @@ pub fn compute_target_completion(
         .action_lookup_key
         .get_label()
         .unwrap_or_else(|| panic!("NullPointerException: label of {}", key.action_lookup_key));
-    // TargetCompletor.getLocationIdentifier: the target's location.
+    // TargetCompletor.getLocationIdentifier: the target's location, read where Java reads it
+    // (for an error or the source file warning).
     // Java: com/google/devtools/build/lib/skyframe/TargetCompletor.java:74 TargetCompletor.getLocationIdentifier
-    let location = value.get_location();
+    let get_location_identifier = || value.get_location();
     // NestedSetBuilder<Cause>.stableOrder(): the exceptions' causes (transitive) come before the
     // label causes (direct) when the set is flattened; equal causes are kept once.
     let mut action_causes: Vec<CompletionRootCause> = Vec::new();
@@ -478,12 +516,13 @@ pub fn compute_target_completion(
             Ok(Some(InputValue::Artifact(ArtifactValue::Missing(m)))) => {
                 root_causes.push(input.get_owner());
                 handle_source_file_error(
+                    skyframe_action_executor,
                     input,
                     m.get_failure_detail(),
                     &mut label_causes,
                     env,
                     &key_label,
-                    &location,
+                    &get_location_identifier(),
                 );
             }
             Ok(Some(input_value)) => {
@@ -526,18 +565,23 @@ pub fn compute_target_completion(
             Err(Ok(e)) => {
                 root_causes.push(input.get_owner());
                 handle_source_file_error(
+                    skyframe_action_executor,
                     input,
                     e.get_failure_detail(),
                     &mut label_causes,
                     env,
                     &key_label,
-                    &location,
+                    &get_location_identifier(),
                 );
             }
         }
     }
 
     if !root_causes.is_empty() || first_action_execution_exception.is_some() {
+        // In error bubbling, we may be interrupted by Skyframe. Java ensures that the interrupt
+        // doesn't prevent staging built artifacts (informImportantOutputHandler: remote outputs,
+        // not ported) and posting the failed event (CompletionFunction.java:248). Nothing below
+        // polls the interrupt (no `env.check_interrupted()?`), so the event is always posted.
         // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:329 CompletionFunction.postFailedEvent
         let built_outputs = SuccessfulArtifactFilter::new(&built_artifacts)
             .filter_artifacts_in_output_group(artifacts_by_output_group);
@@ -558,7 +602,14 @@ pub fn compute_target_completion(
             root_cause_details: root_cause_details.clone(),
         }));
         if let Some(e) = first_action_execution_exception {
-            return Err(SkyFunctionException::new(e, Transience::Persistent).into());
+            // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:467 CompletionFunctionException.<init>
+            // isCatastrophic(): actionException != null && actionException.isCatastrophe().
+            let catastrophic = e.is_catastrophe();
+            return Err(SkyFunctionException {
+                catastrophic,
+                ..SkyFunctionException::new(e, Transience::Persistent)
+            }
+            .into());
         }
         // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:282 CompletionFunction.compute
         // Without an ActionExecutionException every root cause is a source file's LabelCause.
@@ -567,9 +618,10 @@ pub fn compute_target_completion(
         // The location identifier of a target is its Location (`locationPrefix instanceof
         // Location`), so the message carries no prefix.
         env.listener().handle(&blaze_events::Event::error_at(
-            Some(location.clone()),
+            Some(get_location_identifier()),
             message.clone(),
         ));
+        // CompletionFunctionException(InputFileErrorException): isCatastrophic() is false.
         return Err(SkyFunctionException::new(
             InputFileErrorException {
                 message,
@@ -590,7 +642,7 @@ pub fn compute_target_completion(
     // input file's target kind).
     if !key.will_test && value.get_rule_class_or_kind() == "source file" {
         env.listener().handle(&blaze_events::Event::warn_at(
-            Some(location.clone()),
+            Some(get_location_identifier()),
             format!(
                 "{} is a source file, nothing will be built for it. If you want to build a target \
                  that consumes this file, try --compile_one_dependency",

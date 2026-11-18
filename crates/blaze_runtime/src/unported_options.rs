@@ -1,0 +1,236 @@
+//! Options whose implementation lives in a module hook that Blaze has not ported
+//! (`crate::bazel_modules` lists the hooks). Each is accepted by the options parser because its
+//! options class is registered; a command that sets one of them to a value that needs the
+//! missing behaviour fails loudly here, before it runs, instead of running without it.
+//!
+//! The checks follow the commands the Java hook acts on (the remote cache only matters to commands
+//! that execute actions, for example), so that an rc file's `common` options do not stop
+//! commands the missing behaviour would not change.
+//!
+//! Not checked here: options of hooks that PORTING.md allows to skip (profiling and tracing,
+//! memory instrumentation, incremental state kept between commands), and options that only
+//! select between ported behaviours.
+
+use blaze_optdefs::command::common_command_options::CommonCommandOptions;
+use blaze_optdefs::command::execution_graph_module::ExecutionGraphModuleExecutionGraphOptions;
+use blaze_optdefs::misc::build_event_service_options::BuildEventServiceOptions;
+use blaze_optdefs::misc::build_event_stream_options::BuildEventStreamOptions;
+use blaze_optdefs::misc::debugging_options::DebuggingOptions;
+use blaze_optdefs::misc::remote_options::RemoteOptions;
+use blaze_optdefs::misc::starlark_debugger_options::StarlarkDebuggerOptions;
+
+use crate::command::CommandAnnotation;
+use crate::options_result::OptionsParsingResult;
+
+/// Fails with `unported!` when `options` asks `command` for behaviour of a module hook that is
+/// not ported. With the default value of every option this returns without effect.
+pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &OptionsParsingResult) {
+    let command_name = command.name();
+
+    // RemoteModule.beforeCommand: the remote cache, remote execution, the disk cache and the
+    // remote output service act on the actions a command executes; the remote downloader on the
+    // repositories a command fetches.
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:403 RemoteModule.beforeCommand
+    if let Some(remote_options) = options.get_options::<RemoteOptions>() {
+        // Strings.isNullOrEmpty
+        let set = |value: &Option<String>| value.as_ref().is_some_and(|v| !v.is_empty());
+        if command.build_phase.executes() {
+            if set(&remote_options.remote_cache) {
+                blaze_util::unported!("RemoteModule.beforeCommand", "--remote_cache");
+            }
+            if set(&remote_options.remote_executor) {
+                blaze_util::unported!("RemoteModule.beforeCommand", "--remote_executor");
+            }
+            // CombinedCacheClientFactory.isDiskCache
+            if remote_options
+                .disk_cache
+                .as_ref()
+                .is_some_and(|path| !path.0.is_empty())
+            {
+                blaze_util::unported!("RemoteModule.beforeCommand", "--disk_cache");
+            }
+            if set(&remote_options.remote_output_service) {
+                blaze_util::unported!(
+                    "RemoteModule.beforeCommand",
+                    "--experimental_remote_output_service"
+                );
+            }
+        }
+        if command.build_phase.loads() && set(&remote_options.remote_downloader) {
+            blaze_util::unported!(
+                "RemoteModule.beforeCommand",
+                "--experimental_remote_downloader"
+            );
+        }
+    }
+
+    // BuildEventServiceModule: the upload to a Build Event Service.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:737 BuildEventServiceModule.createBesTransport
+    if options
+        .get_options::<BuildEventServiceOptions>()
+        .is_some_and(|o| !o.bes_backend.is_empty())
+    {
+        blaze_util::unported!(
+            "BuildEventServiceModule.createBesTransport",
+            "--bes_backend"
+        );
+    }
+
+    // BuildEventServiceModule.beforeCommand: the Build Event Protocol of the commands other than
+    // build and test (crate::commands::bep is wired into those two).
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
+    if command_name != "build"
+        && command_name != "test"
+        && let Some(o) = options.get_options::<BuildEventStreamOptions>()
+        && (!o.build_event_text_file.is_empty()
+            || !o.build_event_binary_file.is_empty()
+            || !o.build_event_json_file.is_empty())
+    {
+        blaze_util::unported!(
+            "BuildEventServiceModule.beforeCommand",
+            "--build_event_*_file for the {} command",
+            command_name
+        );
+    }
+
+    // ExecutionGraphModule.beforeCommand: the execution graph log.
+    // Java: com/google/devtools/build/lib/runtime/ExecutionGraphModule.java:222 ExecutionGraphModule.beforeCommand
+    if options
+        .get_options::<ExecutionGraphModuleExecutionGraphOptions>()
+        .is_some_and(|o| o.enable_execution_graph_log)
+    {
+        blaze_util::unported!(
+            "ExecutionGraphModule.beforeCommand",
+            "--experimental_enable_execution_graph_log"
+        );
+    }
+
+    // StarlarkDebuggerModule.beforeCommand: the Starlark debug server.
+    // Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:36 StarlarkDebuggerModule.beforeCommand
+    if options
+        .get_options::<StarlarkDebuggerOptions>()
+        .is_some_and(|o| o.debug_starlark)
+    {
+        blaze_util::unported!(
+            "StarlarkDebuggerModule.beforeCommand",
+            "--experimental_skylark_debug"
+        );
+    }
+
+    // WorkspaceRuleModule.beforeCommand: the log of workspace rule events.
+    // Java: com/google/devtools/build/lib/bazel/debug/WorkspaceRuleModule.java:40 WorkspaceRuleModule.beforeCommand
+    if options
+        .get_options::<DebuggingOptions>()
+        .is_some_and(|o| o.workspace_rules_log_file.is_some())
+    {
+        blaze_util::unported!(
+            "WorkspaceRuleModule.beforeCommand",
+            "--experimental_workspace_rules_log_file"
+        );
+    }
+
+    if let Some(common_options) = options.get_options::<CommonCommandOptions>() {
+        // ThreadDumpModule.beforeCommand: periodic thread dumps of the server.
+        // Java: com/google/devtools/build/lib/runtime/ThreadDumpModule.java:64 ThreadDumpModule.beforeCommand
+        if common_options.enable_thread_dump {
+            blaze_util::unported!(
+                "ThreadDumpModule.beforeCommand",
+                "--experimental_enable_thread_dump"
+            );
+        }
+        // CommandLogModule.getOutputListener: the copy of the command's output in
+        // <output_base>/command.log.
+        // Java: com/google/devtools/build/lib/runtime/CommandLogModule.java:52 CommandLogModule.getOutputListener
+        if common_options.write_command_log && command_name != "clean" {
+            blaze_util::unported!("CommandLogModule.getOutputListener", "--write_command_log");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use blaze_options::{OptionsClass, OptionsParser};
+
+    use super::*;
+    use crate::command_registry::{BUILD_COMMAND, QUERY_COMMAND};
+
+    fn parser(args: &[&str]) -> OptionsParser {
+        let mut parser = OptionsParser::builder()
+            .options_classes(&[
+                RemoteOptions::class(),
+                BuildEventServiceOptions::class(),
+                BuildEventStreamOptions::class(),
+                ExecutionGraphModuleExecutionGraphOptions::class(),
+                StarlarkDebuggerOptions::class(),
+                DebuggingOptions::class(),
+                CommonCommandOptions::class(),
+            ])
+            .build()
+            .unwrap_or_else(|e| e.throw());
+        parser
+            .parse(args)
+            .unwrap_or_else(|e| panic!("{}", e.get_message()));
+        parser
+    }
+
+    // The option defaults are Bazel's (transcribed options classes): a command without any of
+    // these flags must not fail.
+    #[test]
+    fn default_options_are_accepted() {
+        check_unported_options(&BUILD_COMMAND, &parser(&[]));
+        check_unported_options(&QUERY_COMMAND, &parser(&[]));
+    }
+
+    #[test]
+    fn build_event_files_are_accepted_for_build() {
+        check_unported_options(
+            &BUILD_COMMAND,
+            &parser(&["--build_event_json_file=bep.json"]),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "BuildEventServiceModule.beforeCommand")]
+    fn build_event_files_fail_for_other_commands() {
+        check_unported_options(
+            &QUERY_COMMAND,
+            &parser(&["--build_event_json_file=bep.json"]),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "RemoteModule.beforeCommand")]
+    fn disk_cache_fails() {
+        check_unported_options(&BUILD_COMMAND, &parser(&["--disk_cache=/tmp/cache"]));
+    }
+
+    // RemoteModule treats an empty --disk_cache as no disk cache.
+    #[test]
+    fn empty_disk_cache_is_accepted() {
+        check_unported_options(&BUILD_COMMAND, &parser(&["--disk_cache="]));
+    }
+
+    #[test]
+    #[should_panic(expected = "RemoteModule.beforeCommand")]
+    fn remote_cache_fails() {
+        check_unported_options(
+            &BUILD_COMMAND,
+            &parser(&["--remote_cache=grpc://localhost:1"]),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "BuildEventServiceModule.createBesTransport")]
+    fn bes_backend_fails() {
+        check_unported_options(
+            &BUILD_COMMAND,
+            &parser(&["--bes_backend=grpc://localhost:1"]),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "CommandLogModule.getOutputListener")]
+    fn write_command_log_fails() {
+        check_unported_options(&BUILD_COMMAND, &parser(&["--write_command_log"]));
+    }
+}

@@ -6,6 +6,7 @@ pub mod build_option_details;
 pub mod build_setting_provider;
 pub mod config_conditions;
 pub mod config_matching_provider;
+pub mod configuration_transition_event;
 pub mod configured_attribute_mapper;
 pub mod incompatible_platform_provider;
 pub mod ordered_set_multimap;

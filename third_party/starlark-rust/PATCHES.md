@@ -34,6 +34,8 @@ by adding.
 | 0021 | applied | `FrozenModule::names_any_visibility` (Java `Module.getGlobals`) |
 | 0022 | applied | a function's defining module's extra value (`DefModule::frozen_extra_value`) |
 | 0023 | applied | mutating a frozen list or dict fails with Java's text (part of 0010) |
+| 0024 | applied | a function's declaration position (`DefModule::declaration_span`, Java `StarlarkFunction.getLocation`) |
+| 0025 | applied | immutable sets on a mutable heap (`set::alloc_immutable_set`, `set::set_is_immutable`); mutating a frozen set fails with Java's text |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -320,3 +322,50 @@ the native stack; Blaze runs evaluation on threads with large stacks
 - Fix: `types/list/value.rs` (`ListData::from_value_mut`, `FrozenListData::set_at`),
   `types/dict/refs.rs` (`DictMut::from_value`), `types/dict/value.rs` (`FrozenDictData::set_at`).
 - Test: `patch_0023_frozen_mutation_text`.
+
+## 0024 — a function's declaration position
+
+- Gap: Bazel names where a function is declared in two errors (net/starlark/java/eval/
+  StarlarkFunction.java:172 `getLocation`): "to avoid unintended retention of analysis data
+  structures, the map_each function (declared at %s) must be declared by a top-level def
+  statement" (analysis/starlark/Args.java:380, TemplateDict.java:72) and the same for
+  `resource_set` (StarlarkActionFactory.java:1077). The position is the name of a `def` and the
+  `lambda` keyword of a lambda (oracle: `cases.bzl:9:9` for a nested `def inner`, `:21:11` for
+  `_lambda = lambda x: x`; crates/blaze_actions/tests/data/map_each_probe/expected.txt).
+  starlark-rust keeps only `DefInfo::signature_span`, which for a lambda is the span of its
+  parameters, and exposes neither.
+- Fix: `eval/compiler/def.rs`: `DefInfo::declaration_span` (the name span of a `def`, the
+  expression span of a `lambda`), passed to `Compiler::function` by `compiler/stmt.rs` and
+  `compiler/expr.rs`; `DefModule::declaration_span(function) -> Option<FileSpan>`.
+  `signature_span` is unchanged.
+- Users: blaze_actions `analysis/starlark/args.rs` (`map_each` of `Args` and `TemplateDict`).
+- Test: `patch_0024_def_declaration_span`.
+
+## 0025 — immutable sets
+
+- Gap: Java `StarlarkSet.immutableCopyOf` (net/starlark/java/eval/StarlarkSet.java:374, via
+  `copyOf(null, ..)`) makes a set with the frozen `Mutability.IMMUTABLE` on any thread: every
+  mutator calls Starlark.checkMutable first ("trying to mutate a frozen set value"), and
+  `isImmutable()` is `mutability().isFrozen()` (StarlarkSet.java:187), so elements are not looked
+  at. Used by `Type.SetType.copyAndLiftStarlarkValue` (lib/packages/Type.java:846). starlark-rust
+  sets are mutable until their heap freezes, and a set on a frozen heap said "Immutable"
+  (`ValueError::CannotMutateImmutableValue`) where Java says "trying to mutate a frozen set
+  value" (the same gap 0023 closed for lists and dicts).
+- Fix: `types/set/value.rs`: the mutable set's payload is `MutableSetData { cell:
+  RefCell<SetData>, immutable: Cell<bool> }` (was `RefCell<SetData>`; `SetData` itself is
+  unchanged because `FrozenSetData` coerces to it; Debug output unchanged when the flag is
+  unset). `types/set/refs.rs`: `SetMut::from_value`, the only way to a mutable set (`add`,
+  `clear`, `discard`, `pop`, `remove`, `update`; the operators `|`, `&`, `^`, `-` build new
+  sets, and the `*_update` methods and in-place operators are queued patch 0007), fails with
+  Java's text for a flagged set, before the iteration check (Java's order), and for a set on a
+  frozen heap (was "Immutable"). `alloc_immutable_set(heap, values) -> Result<Value>` (same
+  arguments as 0015's `alloc_set`: hashes each value, drops duplicates, keeps first-insertion
+  order, fails on unhashable values), `set_is_immutable(value) -> Option<bool>` (frozen or
+  flagged: `Some(true)`; other sets `Some(false)`; non-sets `None`); re-exported from
+  `starlark::values::set`. Freezing turns a flagged set into an ordinary frozen set; equality
+  and hashing are unchanged. `refs.rs` drops its now unused `RefCell` import. Not done: Java's
+  shared `StarlarkSet.empty()` (an empty immutable set is a flagged set on the heap; the
+  vendored crate has no static empty set, and identity is not observable from Starlark).
+- Users: blaze_starlark `set::set_is_immutable` (`structs::is_immutable`), blaze_packages
+  `types/type_.rs` (`string_set` values lifted by `Type::copy_and_lift_starlark_value`).
+- Test: `patch_0025_immutable_set`.

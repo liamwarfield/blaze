@@ -42,6 +42,7 @@ use starlark_syntax::syntax::def::DefParams;
 use crate as starlark;
 use crate::any::ProvidesStaticType;
 use crate::codemap::CodeMap;
+use crate::codemap::FileSpan; // BLAZE PATCH 0024
 use crate::codemap::Spanned;
 use crate::collections::Hashed;
 use crate::const_frozen_string;
@@ -344,6 +345,10 @@ pub(crate) struct DefInfo {
     pub(crate) name: FrozenStringValue,
     /// Span of function signature.
     pub(crate) signature_span: FrozenFileSpan,
+    /// BLAZE PATCH 0024: where the function is declared, as Java reports it
+    /// (net/starlark/java/eval/StarlarkFunction.java:172 `getLocation`): the name of a `def`,
+    /// the whole expression of a `lambda` (so it starts at the `lambda` keyword).
+    pub(crate) declaration_span: FrozenFileSpan,
     /// Indices of parameters, which are captured in nested defs.
     parameter_captures: FrozenAnyArray<LocalSlotId>,
     /// Type of this function, for the typechecker.
@@ -385,6 +390,7 @@ impl DefInfo {
         DefInfo {
             name: const_frozen_string!("<module>"),
             signature_span: FrozenFileSpan::default(),
+            declaration_span: FrozenFileSpan::default(), // BLAZE PATCH 0024
             parameter_captures: VALUE_EMPTY_PARAMETER_CAPTURES.unpack(),
             ty: Ty::any(),
             codemap,
@@ -448,6 +454,7 @@ impl Compiler<'_, '_, '_, '_> {
         &mut self,
         name: &str,
         signature_span: FrozenFileSpan,
+        declaration_span: FrozenFileSpan, // BLAZE PATCH 0024
         scope_id: ScopeId,
         params: &[CstParameter],
         return_type: Option<&CstTypeExpr>,
@@ -501,6 +508,7 @@ impl Compiler<'_, '_, '_, '_> {
         let info = self.eval.module_env.frozen_heap().alloc_any_value(DefInfo {
             name,
             signature_span,
+            declaration_span, // BLAZE PATCH 0024
             parameter_captures: self
                 .eval
                 .frozen_heap()
@@ -662,6 +670,21 @@ impl<'v> DefModule<'v> {
             frozen: None,
             _marker: std::marker::PhantomData,
         }
+    }
+
+    /// BLAZE PATCH 0024: where `function` (a `def` or `lambda`) is declared, Java
+    /// `StarlarkFunction.getLocation()` (net/starlark/java/eval/StarlarkFunction.java:172): the
+    /// span of the name of a `def`, or of the whole `lambda` expression. Its start is the
+    /// position Java prints. `None` for other values.
+    pub fn declaration_span(function: Value<'v>) -> Option<FileSpan> {
+        let def_info = if let Some(f) = function.downcast_ref::<Def<'v>>() {
+            f.def_info
+        } else if let Some(f) = function.downcast_ref::<FrozenDef>() {
+            f.def_info
+        } else {
+            return None;
+        };
+        Some(def_info.declaration_span.to_file_span())
     }
 
     /// The compiled file of the module.

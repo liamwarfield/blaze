@@ -786,6 +786,9 @@ pub(crate) struct Run<'e> {
     pub(crate) aborting: AtomicBool,
     saw_interrupt: AtomicBool,
     uncommitted: Mutex<Vec<SkyKey>>,
+    /// The deps that were not done when a node that asked for them committed (a function that
+    /// threw although a dep was missing). See [`Run::never_evaluated`].
+    undone_deps_of_committed: Mutex<Vec<SkyKey>>,
     crash: Mutex<Option<Box<dyn Any + Send>>>,
     /// The failure that stopped the evaluation: Java's first `SchedulerException.ofError`, which
     /// `waitForCompletion` rethrows. Lock order: this, then a node's `state`.
@@ -839,6 +842,7 @@ impl<'e> Run<'e> {
             aborting: AtomicBool::new(false),
             saw_interrupt: AtomicBool::new(false),
             uncommitted: Mutex::new(vec![]),
+            undone_deps_of_committed: Mutex::new(vec![]),
             crash: Mutex::new(None),
             failure: Mutex::new(None),
         }
@@ -1275,6 +1279,11 @@ impl<'e> Run<'e> {
             .filter(|(_, e)| e.is_undone_view())
             .map(|(k, _)| k.clone())
             .collect();
+        if !undone.is_empty() {
+            self.undone_deps_of_committed
+                .lock()
+                .extend(undone.iter().cloned());
+        }
         for dep in &undone {
             if let Some(dep_node) = self.ev.node(dep) {
                 dep_node.in_progress_rdeps.lock().retain(|(r, _)| r != key);
@@ -1659,6 +1668,7 @@ impl<'e> Run<'e> {
         let rdeps_to_bubble_up_to = &e.rdeps_to_bubble_up_to;
         // PORT: stateCache.invalidateAll() skipped, SkyKeyComputeState is not ported.
         let root_values: HashSet<&SkyKey> = roots.iter().collect();
+        let never_evaluated = self.never_evaluated(&root_values);
         let mut error: Arc<ErrorInfo> = leaf_failure.clone();
         let mut error_key = e.failed_value.clone();
         let mut bubble_error_info: BubbleErrorInfo = HashMap::new();
@@ -1671,7 +1681,7 @@ impl<'e> Run<'e> {
             let error_entry = error_node
                 .done_entry()
                 .unwrap_or_else(|| panic!("NullPointerException: {error_key:?}"));
-            let all_reverse_deps: Vec<SkyKey> = if error_entry.is_done() {
+            let mut all_reverse_deps: Vec<SkyKey> = if error_entry.is_done() {
                 check_state!(
                     first_iteration,
                     "Non-leaf done node reached: {:?} {:?} {:?} {:?} {:?}",
@@ -1695,6 +1705,8 @@ impl<'e> Run<'e> {
                 );
                 error_node.get_in_progress_reverse_deps()
             };
+            // PORT: nodes Java never evaluated registered nothing (`Run::never_evaluated`).
+            all_reverse_deps.retain(|parent| !never_evaluated.contains(parent));
             // PORT: Java registers a node as a reverse dep when its function has returned null
             // (`enqueueChild`); a request registers it here, before its function has ended. Only
             // the requesters whose function did return null count: one that then threw (not the
@@ -1820,6 +1832,56 @@ impl<'e> Run<'e> {
             bubble_error_info.insert(error_key.clone(), value_with_metadata);
         }
         Some(bubble_error_info)
+    }
+
+    /// The unfinished nodes that exist only because a function asked for them and then threw
+    /// although they were missing.
+    ///
+    /// PORT: Java commits the exception of such a function without ever evaluating the missing
+    /// deps (`AbstractParallelEvaluator.java:487-546`: the function threw in the run that
+    /// requested them, so `enqueueChild` never ran). Those deps, and what only they went on to
+    /// request, do not exist in Java, so they are not reverse deps of anything. Here the request
+    /// evaluated them before the function threw, and they registered with the nodes they asked
+    /// for, among them nodes above the thrower when there is a cycle. Error bubbling walks up
+    /// through reverse deps and must not walk down into them: they have no path to a top-level
+    /// node but the one through the thrower.
+    ///
+    /// A node is in the set if it is unfinished, reachable from such a missing dep through the
+    /// deps unfinished nodes declared, not a top-level key, and requested by nodes of the set
+    /// only (the thrower's own request was taken back when it committed, `Run::committed`).
+    fn never_evaluated(&self, root_values: &HashSet<&SkyKey>) -> HashSet<SkyKey> {
+        let mut to_visit: Vec<SkyKey> = std::mem::take(&mut *self.undone_deps_of_committed.lock());
+        let mut candidates: HashSet<SkyKey> = HashSet::new();
+        while let Some(key) = to_visit.pop() {
+            let Some(entry) = self.ev.done_entry(&key) else {
+                continue;
+            };
+            if entry.is_done() || !candidates.insert(key) {
+                continue;
+            }
+            to_visit.extend(entry.deps.get_all_elements_as_iterable().cloned());
+        }
+        // Take out what something else asked for, until nothing changes.
+        loop {
+            let evaluated: Vec<SkyKey> = candidates
+                .iter()
+                .filter(|key| {
+                    root_values.contains(key)
+                        || self.ev.node(key).is_some_and(|node| {
+                            node.get_in_progress_reverse_deps()
+                                .iter()
+                                .any(|requester| !candidates.contains(requester))
+                        })
+                })
+                .cloned()
+                .collect();
+            if evaluated.is_empty() {
+                return candidates;
+            }
+            for key in &evaluated {
+                candidates.remove(key);
+            }
+        }
     }
 
     /// Constructs an [`EvaluationResult`] from the graph. Looks for cycles if there are

@@ -1,0 +1,8 @@
+load(":defs.bzl", "fixed")
+
+# An innocent target.
+fixed(
+    name = "innocent",
+    out = "innocent.txt",
+    content = "innocent\n",
+)

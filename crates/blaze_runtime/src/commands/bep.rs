@@ -537,7 +537,7 @@ fn user_name() -> String {
 
 /// `OptionsUtils.asShellEscapedString(options)`.
 // Java: com/google/devtools/build/lib/util/OptionsUtils.java:54 OptionsUtils.asShellEscapedString
-fn as_shell_escaped_string(options: &OptionsParsingResult) -> String {
+pub(crate) fn as_shell_escaped_string(options: &OptionsParsingResult) -> String {
     let mut result = String::new();
     for option in options.as_complete_list_of_parsed_options() {
         if option.is_hidden() {
@@ -1130,9 +1130,10 @@ impl BepCommandSupport {
         build_result
             .get_build_tool_log_collection()
             .add_direct_value("elapsed time", format!("{elapsed_seconds:.6}").as_bytes());
-        // PORT: CriticalPathComputer is not ported, so the "critical path" value
-        // (AggregatedCriticalPath.toString()) is not added; the profiler is not ported, so the
-        // profile file ("command.profile.gz") is not published either.
+        // PORT: skipped, profiling: critical path profiling (CriticalPathComputer) is not ported,
+        // so the "critical path" value (AggregatedCriticalPath.toString()) is not added; the
+        // profiler does not run, so there is no profile file ("command.profile.gz",
+        // ProfilerStartedEvent.getProfile().publish) to list either.
         let spawn_summary_string =
             SpawnStats::convert_summary_to_string(&collector.spawn_stats.get_summary());
         build_result
@@ -1276,12 +1277,24 @@ impl BepCommandSupport {
             result.map_err(|e| transport_close_exception(&e))?;
         }
 
-        // PORT: the Build Event Service (--bes_backend) is not ported; only the local files.
+        // PORT: the Build Event Service upload is not ported (--bes_backend fails loudly before
+        // the command runs, crate::unported_options); only the local files are produced.
         self.reporter.handle(&Event::info(
             "Build Event Protocol files produced successfully.",
         ));
         Ok(())
     }
+}
+
+/// The target of `label` (an alias's actual target), or `original` when it is that target.
+fn actual_target(skyframe_executor: &SkyframeExecutor, label: &Label, original: &Target) -> Target {
+    if original.get_label() == label {
+        return original.clone();
+    }
+    skyframe_executor
+        .get_existing_package(label.get_package_identifier())
+        .and_then(|p| p.get_targets().get(label.get_name()).cloned())
+        .unwrap_or_else(|| panic!("NullPointerException: target {label}"))
 }
 
 #[cfg(test)]
@@ -1316,15 +1329,4 @@ mod tests {
         );
         assert_eq!(packages_test_size(None), None);
     }
-}
-
-/// The target of `label` (an alias's actual target), or `original` when it is that target.
-fn actual_target(skyframe_executor: &SkyframeExecutor, label: &Label, original: &Target) -> Target {
-    if original.get_label() == label {
-        return original.clone();
-    }
-    skyframe_executor
-        .get_existing_package(label.get_package_identifier())
-        .and_then(|p| p.get_targets().get(label.get_name()).cloned())
-        .unwrap_or_else(|| panic!("NullPointerException: target {label}"))
 }

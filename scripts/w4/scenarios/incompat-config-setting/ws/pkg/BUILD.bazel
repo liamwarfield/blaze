@@ -1,0 +1,94 @@
+constraint_setting(name = "flavor")
+
+constraint_value(
+    name = "vanilla",
+    constraint_setting = ":flavor",
+)
+
+constraint_value(
+    name = "chocolate",
+    constraint_setting = ":flavor",
+)
+
+config_setting(
+    name = "is_opt",
+    values = {"compilation_mode": "opt"},
+)
+
+config_setting(
+    name = "is_dbg",
+    values = {"compilation_mode": "dbg"},
+)
+
+config_setting(
+    name = "is_fastbuild",
+    values = {"compilation_mode": "fastbuild"},
+)
+
+# config_settings in target_compatible_with.
+filegroup(
+    name = "cs_one",
+    target_compatible_with = [":is_opt"],
+)
+
+filegroup(
+    name = "cs_two",
+    target_compatible_with = [
+        ":is_opt",
+        ":is_dbg",
+    ],
+)
+
+filegroup(
+    name = "cs_mixed",
+    target_compatible_with = [
+        ":is_opt",
+        ":vanilla",
+    ],
+)
+
+filegroup(
+    name = "cs_ok",
+    target_compatible_with = [":is_fastbuild"],
+)
+
+# Two values of one constraint setting: an error, not an incompatibility.
+filegroup(
+    name = "duplicate_setting",
+    target_compatible_with = [
+        ":vanilla",
+        ":chocolate",
+    ],
+)
+
+# A dependency in the exec configuration is incompatible there.
+genrule(
+    name = "tool",
+    outs = ["tool.sh"],
+    cmd = "echo exit 0 > $@",
+    executable = True,
+    target_compatible_with = [":vanilla"],
+)
+
+genrule(
+    name = "uses_tool",
+    outs = ["uses_tool.out"],
+    cmd = "$(location :tool) > $@",
+    tools = [":tool"],
+)
+
+# Source files and package groups are never incompatible.
+exports_files(["a.txt"])
+
+alias(
+    name = "alias_to_cs_one",
+    actual = ":cs_one",
+)
+
+
+genrule(
+    name = "t_gen",
+    outs = ["t.sh"],
+    cmd = "echo exit 0 > $@",
+    executable = True,
+)

@@ -11,3 +11,12 @@ template_dict_nested	Error in add_joined: to avoid unintended retention of analy
 template_dict_lambda	Error in add_joined: to avoid unintended retention of analysis data structures, the map_each function (declared at <WORKSPACE>/cases.bzl:54:66) must be declared by a top-level def statement
 template_dict_allow_closure	OK
 template_dict_top_level	OK
+mnemonic_ascii	OK
+mnemonic_e_acute	Error in run: mnemonic must only contain letters and/or digits, and have non-zero length, was: "Qé"
+mnemonic_e_circumflex	OK
+mnemonic_micro	OK
+mnemonic_superscript_two	Error in run: mnemonic must only contain letters and/or digits, and have non-zero length, was: "Q²"
+mnemonic_emoji	Error in run: mnemonic must only contain letters and/or digits, and have non-zero length, was: "Q🐷"
+mnemonic_dash	Error in run: mnemonic must only contain letters and/or digits, and have non-zero length, was: "Q-x"
+mnemonic_empty	Error in run: mnemonic must only contain letters and/or digits, and have non-zero length, was: ""
+mnemonic_raw_byte	OK

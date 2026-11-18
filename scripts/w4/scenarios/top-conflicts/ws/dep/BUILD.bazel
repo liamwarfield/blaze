@@ -1,0 +1,24 @@
+load("//:defs.bzl", "fixed", "user")
+
+# The conflicting targets are dependencies, not top-level targets.
+fixed(
+    name = "a",
+    out = "dep.txt",
+    content = "from a\n",
+)
+
+fixed(
+    name = "b",
+    out = "dep.txt",
+    content = "from b\n",
+)
+
+user(
+    name = "uses_a",
+    deps = [":a"],
+)
+
+user(
+    name = "uses_b",
+    deps = [":b"],
+)

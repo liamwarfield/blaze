@@ -21,7 +21,10 @@ blake3.workspace = true
 base64.workspace = true
 libc.workspace = true
 uuid.workspace = true
-ureq.workspace = true
+# The default HTTP transport (downloader/socket_transport.rs): TLS with the Mozilla roots. The
+# versions and features are the ones `ureq` 2 pulled in before the transport replaced it.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "0.26"
 flate2.workspace = true
 tar.workspace = true
 xz2.workspace = true

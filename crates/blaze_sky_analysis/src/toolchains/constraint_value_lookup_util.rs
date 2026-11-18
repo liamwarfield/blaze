@@ -68,6 +68,9 @@ fn find_constraint_value_info(
         Err(ConfiguredTargetLookupError::NoSuchThing(e)) => {
             Err(invalid_constraint_value_exception_no_such_thing(e))
         }
+        Err(ConfiguredTargetLookupError::ActionConflict(e)) => Err(
+            invalid_constraint_value_exception_with_cause(key.get_label(), e),
+        ),
     }
 }
 

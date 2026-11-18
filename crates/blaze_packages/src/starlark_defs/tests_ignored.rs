@@ -302,66 +302,6 @@ fn test_integer_concat_truncates() {}
 #[ignore = "inspects the RuleClass behind ev.lookup (getRuleClass); portable with the .bzl harness of starlark_defs/tests.rs (get_rule_class), not ported yet"]
 fn test_rule_inherits_base_rule_attributes() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSimpleTextMessages
-#[test]
-#[ignore = "struct.to_proto()/to_json() and json module encoding (checkTextMessage/checkJson); not ported yet"]
-fn test_simple_text_messages() {}
-
-// Java: StarlarkRuleClassFunctionsTest.testNoneStructValue
-#[test]
-#[ignore = "struct.to_proto()/to_json() and json module encoding (checkTextMessage/checkJson); not ported yet"]
-fn test_none_struct_value() {}
-
-// Java: StarlarkRuleClassFunctionsTest.testProtoFieldsOrder
-#[test]
-#[ignore = "struct.to_proto()/to_json() and json module encoding (checkTextMessage/checkJson); not ported yet"]
-fn test_proto_fields_order() {}
-
-// Java: StarlarkRuleClassFunctionsTest.testTextMessageEscapes
-#[test]
-#[ignore = "struct.to_proto()/to_json() and json module encoding (checkTextMessage/checkJson); not ported yet"]
-fn test_text_message_escapes() {}
-
-// Java: StarlarkRuleClassFunctionsTest.testTextMessageInvalidStructure
-#[test]
-#[ignore = "struct.to_proto()/to_json() and json module encoding (checkTextMessage/checkJson); not ported yet"]
-fn test_text_message_invalid_structure() {}
-
-// Java: StarlarkRuleClassFunctionsTest.testStarlarkJsonModule
-#[test]
-#[ignore = "struct.to_proto()/to_json() and json module encoding (checkTextMessage/checkJson); not ported yet"]
-fn test_starlark_json_module() {}
-
-// Java: StarlarkRuleClassFunctionsTest.testJsonBooleanFields
-#[test]
-#[ignore = "struct.to_proto()/to_json() and json module encoding (checkTextMessage/checkJson); not ported yet"]
-fn test_json_boolean_fields() {}
-
-// Java: StarlarkRuleClassFunctionsTest.testJsonDictFields
-#[test]
-#[ignore = "struct.to_proto()/to_json() and json module encoding (checkTextMessage/checkJson); not ported yet"]
-fn test_json_dict_fields() {}
-
-// Java: StarlarkRuleClassFunctionsTest.testJsonEncoding
-#[test]
-#[ignore = "struct.to_proto()/to_json() and json module encoding (checkTextMessage/checkJson); not ported yet"]
-fn test_json_encoding() {}
-
-// Java: StarlarkRuleClassFunctionsTest.testJsonEscapes
-#[test]
-#[ignore = "struct.to_proto()/to_json() and json module encoding (checkTextMessage/checkJson); not ported yet"]
-fn test_json_escapes() {}
-
-// Java: StarlarkRuleClassFunctionsTest.testJsonNestedListStructure
-#[test]
-#[ignore = "struct.to_proto()/to_json() and json module encoding (checkTextMessage/checkJson); not ported yet"]
-fn test_json_nested_list_structure() {}
-
-// Java: StarlarkRuleClassFunctionsTest.testJsonInvalidStructure
-#[test]
-#[ignore = "struct.to_proto()/to_json() and json module encoding (checkTextMessage/checkJson); not ported yet"]
-fn test_json_invalid_structure() {}
-
 // Java: StarlarkRuleClassFunctionsTest.testJsonFileEncoding
 #[test]
 #[ignore = "needs analysis (createRuleContext: the StarlarkRuleContext of a configured target)"]

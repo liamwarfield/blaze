@@ -12,6 +12,7 @@ blaze_query_engine = { path = "../blaze_query_engine" }
 blaze_query = { path = "../blaze_query" }
 blaze_cquery = { path = "../blaze_cquery" }
 blaze_sky_top = { path = "../blaze_sky_top" }
+blaze_sky_analysis = { path = "../blaze_sky_analysis" }
 blaze_util = { path = "../blaze_util" }
 blaze_options = { path = "../blaze_options" }
 blaze_optdefs = { path = "../blaze_optdefs" }

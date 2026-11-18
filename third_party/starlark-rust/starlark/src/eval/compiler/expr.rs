@@ -1250,7 +1250,15 @@ impl<'v, 'a, 'e> Compiler<'v, 'a, 'e, '_> {
                     // TODO(nga): unnecessary clone.
                     node: StmtP::Return(Some(*body.clone())),
                 };
-                self.function("lambda", signature_span, *scope_id, params, None, &suite)?
+                self.function(
+                    "lambda",
+                    signature_span,
+                    FrozenFileSpan::new(self.codemap, expr.span), // BLAZE PATCH 0024
+                    *scope_id,
+                    params,
+                    None,
+                    &suite,
+                )?
             }
             ExprP::Tuple(exprs) => {
                 let xs = self.exprs(exprs)?;

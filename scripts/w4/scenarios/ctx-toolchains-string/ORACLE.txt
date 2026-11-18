@@ -1,11 +1,13 @@
 === 1: run build //:remote_impl
 exit 0
+  bazel-bin/remote_impl.txt
 INFO: Build completed successfully, 2 total actions
 Target //:remote_impl up-to-date:
 === 2: cat bazel-bin/remote_impl.txt
 toolchain: None, in: True
 === 3: run build //:local_impl
 exit 0
+  bazel-bin/local_impl.txt
 INFO: Build completed successfully, 2 total actions
 Target //:local_impl up-to-date:
 === 4: cat bazel-bin/local_impl.txt
@@ -18,6 +20,7 @@ ERROR: Analysis of target '//:local_wrong' failed; build aborted
 ERROR: Build did NOT complete successfully
 === 6: run build //:helper
 exit 0
+  bazel-bin/helper.txt
 INFO: Build completed successfully, 2 total actions
 Target //:helper up-to-date:
 === 7: cat bazel-bin/helper.txt

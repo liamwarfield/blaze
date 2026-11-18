@@ -261,10 +261,7 @@ impl<'v> StarlarkValue<'v> for FragmentCollection {
     // only stop loudly (`has_attr` below); both need a fallible attribute hook in the vendored
     // crate (request in the wave report).
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
-        match self.get_value(attribute, heap) {
-            Ok(v) => v,
-            Err(_) => None,
-        }
+        self.get_value(attribute, heap).unwrap_or_default()
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:512 RuleContext.getStarlarkFragment

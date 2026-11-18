@@ -1,0 +1,57 @@
+# BuildResultPrinter.showBuildResult (ExecutionTool.nonCatastrophicFinalizations): targets with no,
+# one and several outputs, output groups, aliases, generated and source files, --show_result.
+run build //:none
+run build //:one
+run build //:several
+run build //:groups
+run build //:groups --output_groups=extra
+run build //:groups --output_groups=+extra
+run build //:one_alias
+run build //:gen
+run build //:gen_a.txt
+run build //:gen_a.txt //:gen
+run build //:source.txt
+run build //pkg:sub
+run build //:one //:several
+run build //:one //:several --show_result=2
+run build //:one //:none //:several --show_result=2
+run build //:one --show_result=0
+run build //:one --symlink_prefix=probe-
+run build //:one --symlink_prefix=/
+run build //:one --experimental_convenience_symlinks=ignore
+# Failing actions, with and without --keep_going; analysis errors.
+run build //:fails
+run build //:fails --verbose_failures
+run build //:fails //:one --show_result=5
+run build //:fails //:one --show_result=5 --keep_going
+run build //:fails //:fails2 --keep_going --show_result=5
+run build //:bad_analysis
+run build //:bad_analysis //:one --keep_going --show_result=5
+run build //:nosuchtarget
+run build //:one --nobuild
+# BuildCommand.exec: no targets; TargetPatternsHelper.readFrom.
+run build
+run build --target_pattern_file=patterns.txt --show_result=5
+run build //:one --target_pattern_file=patterns.txt
+run build --target_pattern_file=missing.txt
+# Tests: built only, run, failing, failing to build (AggregatingTestListener with and without
+# BuildResult.getStopOnFirstFailure), analysis failure and bad pattern (TestCommand.doTest).
+run build //:pass_test
+run test //:pass_test
+run test //:fail_test
+run test //:pass_test //:fail_test
+run test //:unbuildable_test
+run test //:unbuildable_test //:pass_test
+run test //:unbuildable_test //:pass_test --keep_going
+run test //:bad_analysis_test
+run test //:bad_analysis_test //:pass_test --keep_going
+run test //:nosuchtarget
+run test //:one
+run test
+# SequencedSkyframeExecutor.decideKeepIncrementalState: its warnings.
+run build //:one --notrack_incremental_state
+run build //:one --notrack_incremental_state --nokeep_state_after_build
+run build //:one --heuristically_drop_nodes
+# ExecutionTool.installExplanationHandler (--explain).
+run build //pkg:sub --explain=explain.log
+cat explain.log

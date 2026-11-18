@@ -7,6 +7,7 @@ pub mod compressed_tar;
 pub mod patch_util;
 pub mod sevenz;
 pub mod strip_prefixed_path;
+mod tar_checksum;
 pub mod zip;
 
 pub use strip_prefixed_path::StripPrefixedPath;

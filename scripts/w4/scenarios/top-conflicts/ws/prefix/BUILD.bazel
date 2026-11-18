@@ -1,0 +1,14 @@
+load("//:defs.bzl", "fixed")
+
+# One target declares x, the other x/y: an artifact prefix conflict.
+fixed(
+    name = "file",
+    out = "x",
+    content = "x\n",
+)
+
+fixed(
+    name = "below",
+    out = "x/y",
+    content = "y\n",
+)

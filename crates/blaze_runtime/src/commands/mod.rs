@@ -14,3 +14,4 @@ pub mod query;
 pub mod bep;
 pub mod build;
 pub mod mod_command;
+pub mod target_patterns_helper;

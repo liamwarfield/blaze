@@ -666,12 +666,14 @@ impl ActionCacheEntryBuilder {
         use_archived_tree_artifacts: bool,
     ) -> Vec<u8> {
         let mut fp = Fingerprint::new();
-        // PORT: StringEncoding internal form (Java strings here are in Bazel's internal encoding).
-        fp.add_internal_string(action_key);
+        // The strings here are internal strings in Java; `Fingerprint::add_string` hashes the
+        // internal string a Rust string stands for (the `blaze_util::string_encoding` seam,
+        // decisions.md 2026-11-18 "Strings").
+        fp.add_string(action_key);
         fp.add_boolean(discovers_inputs);
         fp.add_bytes(&MetadataDigestUtils::from_metadata(metadata_map));
         fp.add_bytes(&ActionCacheEntryBuilder::compute_map_digest(client_env));
-        fp.add_internal_string(action_execution_salt);
+        fp.add_string(action_execution_salt);
         fp.add_int(output_permissions.get_permissions_mode());
         fp.add_boolean(use_archived_tree_artifacts);
         fp.digest_and_reset()
@@ -682,8 +684,8 @@ impl ActionCacheEntryBuilder {
         let mut result = Vec::new();
         let mut fp = Fingerprint::new();
         for (key, value) in map {
-            fp.add_internal_string(key);
-            fp.add_internal_string(value);
+            fp.add_string(key);
+            fp.add_string(value);
             result = DigestUtils::combine_unordered(result, fp.digest_and_reset());
         }
         result

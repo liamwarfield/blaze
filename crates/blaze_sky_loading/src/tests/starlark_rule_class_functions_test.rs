@@ -1845,3 +1845,494 @@ fn test_label_list_computed_default_checks_element_types() {
     let (_result, events) = t.evaluate_package("p");
     assert_contains_error(&events, "expected 'label', but got 'string'");
 }
+
+// ---- proto.encode_text
+
+/// Java `checkTextMessage(from, lines...)`: `ev.eval(from)` is the lines, each ended by a
+/// newline.
+fn check_text_message(ev: &Ev, from: &str, lines: &[&str]) {
+    let result = ev.eval_str(from);
+    let mut expect = String::new();
+    if !lines.is_empty() {
+        expect = lines.join("\n") + "\n";
+    }
+    assert_eq!(result, expect, "{from}");
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSimpleTextMessages
+#[test]
+fn test_simple_text_messages() {
+    let ev = Ev::new();
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(name='value'))",
+        &["name: \"value\""],
+    );
+    check_text_message(&ev, "proto.encode_text(struct(name=[]))", &[]); // empty lines
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(name=['a', 'b']))",
+        &["name: \"a\"", "name: \"b\""],
+    );
+    check_text_message(&ev, "proto.encode_text(struct(name=123))", &["name: 123"]);
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(a=1.2e34, b=float('nan'), c=float('-inf'), d=float('+inf')))",
+        &[
+            "a: 1.2e+34",
+            "b: nan",
+            "c: -inf",
+            // Caution! textproto requires +inf be encoded as "inf" rather than "+inf"
+            "d: inf",
+        ],
+    );
+    check_text_message(&ev, "proto.encode_text(struct(name=123))", &["name: 123"]);
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(name=[1, 2, 3]))",
+        &["name: 1", "name: 2", "name: 3"],
+    );
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(a=struct(b='b')))",
+        &["a {", "  b: \"b\"", "}"],
+    );
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(a=[struct(b='x'), struct(b='y')]))",
+        &["a {", "  b: \"x\"", "}", "a {", "  b: \"y\"", "}"],
+    );
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(a=struct(b=struct(c='c'))))",
+        &["a {", "  b {", "    c: \"c\"", "  }", "}"],
+    );
+    // dict to_proto tests
+    check_text_message(&ev, "proto.encode_text(struct(name={}))", &[]); // empty lines
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(name={'a': 'b'}))",
+        &["name {", "  key: \"a\"", "  value: \"b\"", "}"],
+    );
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(name={'c': 'd', 'a': 'b'}))",
+        &[
+            "name {",
+            "  key: \"c\"",
+            "  value: \"d\"",
+            "}",
+            "name {",
+            "  key: \"a\"",
+            "  value: \"b\"",
+            "}",
+        ],
+    );
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(x=struct(y={'a': 1})))",
+        &["x {", "  y {", "    key: \"a\"", "    value: 1", "  }", "}"],
+    );
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(name={'a': struct(b=1, c=2)}))",
+        &[
+            "name {",
+            "  key: \"a\"",
+            "  value {",
+            "    b: 1",
+            "    c: 2",
+            "  }",
+            "}",
+        ],
+    );
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(name={'a': struct(b={4: 'z', 3: 'y'}, c=2)}))",
+        &[
+            "name {",
+            "  key: \"a\"",
+            "  value {",
+            "    b {",
+            "      key: 4",
+            "      value: \"z\"",
+            "    }",
+            "    b {",
+            "      key: 3",
+            "      value: \"y\"",
+            "    }",
+            "    c: 2",
+            "  }",
+            "}",
+        ],
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testNoneStructValue
+#[test]
+fn test_none_struct_value() {
+    let ev = Ev::new();
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(a=1, b=None, nested=struct(c=2, d=None)))",
+        &["a: 1", "nested {", "  c: 2", "}"],
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testProtoFieldsOrder
+#[test]
+fn test_proto_fields_order() {
+    let ev = Ev::new();
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(d=4, b=2, c=3, a=1))",
+        &["a: 1", "b: 2", "c: 3", "d: 4"],
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testTextMessageEscapes
+#[test]
+fn test_text_message_escapes() {
+    let ev = Ev::new();
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(name='a\"b'))",
+        &["name: \"a\\\"b\""],
+    );
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(name='a\\'b'))",
+        &["name: \"a'b\""],
+    );
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(name='a\\nb'))",
+        &["name: \"a\\nb\""],
+    );
+
+    // struct(name="a\\\"b") -> name: "a\\\"b"
+    check_text_message(
+        &ev,
+        "proto.encode_text(struct(name='a\\\\\\\"b'))",
+        &["name: \"a\\\\\\\"b\""],
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testTextMessageInvalidStructure
+#[test]
+fn test_text_message_invalid_structure() {
+    let ev = Ev::new();
+    // list in list
+    ev.check_eval_error_contains(
+        "in struct field .a: at list index 0: got list, want string, int, float, bool, or struct",
+        &["proto.encode_text(struct(a=[['b']]))"],
+    );
+
+    // dict in list
+    ev.check_eval_error_contains(
+        "in struct field .a: at list index 0: got dict, want string, int, float, bool, or struct",
+        &["proto.encode_text(struct(a=[{'b': 1}]))"],
+    );
+
+    // tuple as dict key
+    ev.check_eval_error_contains(
+        "in struct field .a: invalid dict key: got tuple, want int or string",
+        &["proto.encode_text(struct(a={(1, 2): 3}))"],
+    );
+
+    // dict in dict
+    ev.check_eval_error_contains(
+        "in struct field .name: in value for dict key \"a\": got dict, want string, int, float, \
+         bool, or struct",
+        &["proto.encode_text(struct(name={'a': {'b': [1, 2]}}))"],
+    );
+
+    // callable in field
+    ev.check_eval_error_contains(
+        "in struct field .a: got builtin_function_or_method, want string, int, float, bool, or \
+         struct",
+        &["proto.encode_text(struct(a=rule))"],
+    );
+}
+
+// The tests of `proto.encode_text` below are not Java tests. Their expected values were printed
+// by the oracle (Bazel 9.3.2, `query` on a scratch workspace holding the same expressions).
+
+// Review finding S1-6 (docs/reviews/2026-11-18-loading.md): Java binds `proto` in .bzl files
+// (StarlarkGlobalsImpl.addCommonUtilToplevels), so a file that only mentions it loads.
+#[test]
+fn proto_mentioned_in_bzl_function_loads() {
+    let ev = Ev::new();
+    ev.exec(&["def textproto(x):", "    return proto.encode_text(x)"]);
+    assert_eq!(ev.eval_str("textproto(struct(a = 1))"), "a: 1\n");
+}
+
+// Review finding S1-6: Java binds `proto` in BUILD files too (the same
+// addCommonUtilToplevels). `struct` is not a BUILD symbol, so the struct comes from a .bzl file.
+#[test]
+fn proto_encode_text_in_build_file() {
+    let t = PackageLoadingTestCase::new();
+    t.scratch_file(
+        "p/defs.bzl",
+        &[
+            "def textproto(x):",
+            "    return proto.encode_text(x)",
+            "S = struct(a = 1)",
+        ],
+    );
+    t.scratch_file(
+        "p/BUILD",
+        &[
+            "load(\":defs.bzl\", \"S\")",
+            "filegroup(name = \"from_build\", tags = [proto.encode_text(S)])",
+        ],
+    );
+    let (result, events) = t.evaluate_package("p");
+    assert!(
+        !result.has_error(),
+        "{:?}\nevents: {:#?}",
+        result,
+        all_messages(&events)
+    );
+    let loaded = t.get_package("p");
+    assert!(
+        !loaded.package.contains_errors(),
+        "package 'p' contains errors: {:#?}",
+        all_messages(&loaded.events)
+    );
+    let rule = loaded
+        .package
+        .get_rule("from_build")
+        .expect("the rule //p:from_build");
+    match blaze_packages::target::RuleOrMacroInstance::get_attr(&**rule, "tags") {
+        Some(AttrValue::StringList(tags)) => assert_eq!(tags, vec!["a: 1\n".to_owned()]),
+        other => panic!("tags of //p:from_build: {other:?}"),
+    }
+}
+
+// Java: Proto.encodeText `@Param(name = "x", allowedTypes = {Structure, NativeInfo})`; the text
+// is BuiltinFunction.checkParamValue's with ParamDescriptor.getTypeErrorMessage.
+#[test]
+fn proto_encode_text_parameter_type() {
+    let ev = Ev::new();
+    ev.check_eval_error_contains(
+        "in call to encode_text(), parameter 'x' got value of type 'int', want 'structure or \
+         NativeInfo'",
+        &["proto.encode_text(1)"],
+    );
+    ev.check_eval_error_contains(
+        "in call to encode_text(), parameter 'x' got value of type 'string', want 'structure or \
+         NativeInfo'",
+        &["proto.encode_text(\"x\")"],
+    );
+    ev.check_eval_error_contains(
+        "in call to encode_text(), parameter 'x' got value of type 'builtin_function_or_method', \
+         want 'structure or NativeInfo'",
+        &["proto.encode_text(len)"],
+    );
+}
+
+// Java: Proto.TextEncoder.fieldElement with StarlarkFloat.toString (`%.17g` cleaned up; the
+// shortest decimal has at least two digits, hence 4.9e-324 for 5e-324).
+#[test]
+fn proto_encode_text_floats() {
+    let ev = Ev::new();
+    assert_eq!(
+        ev.eval_str(
+            "proto.encode_text(struct(a=0.1, b=1e16, c=1e17, d=1e-4, e=1e-5, f=0.0, g=-0.0, \
+             h=5e-324, i=1e-323, j=123456789.125, k=1e15, l=0.30000000000000004, m=1.0, \
+             n=5e-323, o=2e23))"
+        ),
+        "a: 0.1\nb: 10000000000000000.0\nc: 1e+17\nd: 0.0001\ne: 1e-05\nf: 0.0\ng: -0.0\n\
+         h: 4.9e-324\ni: 9.9e-324\nj: 123456789.125\nk: 1000000000000000.0\n\
+         l: 0.30000000000000004\nm: 1.0\nn: 4.9e-323\no: 2e+23\n"
+    );
+}
+
+// Java: Proto.TextEncoder.field (a range is a Sequence; None and empty repeated fields emit
+// nothing) and fieldElement (big ints, bools, the three string escapes).
+#[test]
+fn proto_encode_text_sequences_and_scalars() {
+    let ev = Ev::new();
+    assert_eq!(
+        ev.eval_strs(&[
+            "proto.encode_text(struct(a=range(3), b=(1, 2), c=True, d=False, e=None, f=[], \
+             g=(), h={}))",
+            "proto.encode_text(struct(a=1<<70, b=-5, c=-(1<<70)))",
+            "proto.encode_text(struct(a='tab\\there\\rcr\\\\ \"q\" \\n nl'))",
+            "proto.encode_text(struct())",
+        ]),
+        vec![
+            "a: 0\na: 1\na: 2\nb: 1\nb: 2\nc: true\nd: false\n",
+            "a: 1180591620717411303424\nb: -5\nc: -1180591620717411303424\n",
+            "a: \"tab\there\rcr\\\\ \\\"q\\\" \\n nl\"\n",
+            "",
+        ]
+    );
+}
+
+// Java: Proto.TextEncoder.field / fieldElement / message error wrapping.
+#[test]
+fn proto_encode_text_invalid_elements() {
+    let ev = Ev::new();
+    // None is skipped only as the value of a non-repeated field.
+    ev.check_eval_error_contains(
+        "in struct field .a: at list index 0: got NoneType, want string, int, float, bool, or \
+         struct",
+        &["proto.encode_text(struct(a=[None]))"],
+    );
+    ev.check_eval_error_contains(
+        "in struct field .a: in value for dict key 1: got NoneType, want string, int, float, \
+         bool, or struct",
+        &["proto.encode_text(struct(a={1: None}))"],
+    );
+    // sequence in sequence
+    ev.check_eval_error_contains(
+        "in struct field .a: at list index 0: got range, want string, int, float, bool, or struct",
+        &["proto.encode_text(struct(a=[range(1)]))"],
+    );
+    // nested messages
+    ev.check_eval_error_contains(
+        "in struct field .a: in struct field .b: at list index 0: in struct field .c: in value \
+         for dict key \"k\": got list, want string, int, float, bool, or struct",
+        &["proto.encode_text(struct(a=struct(b=[struct(c={\"k\": [1]})])))"],
+    );
+}
+
+// ---- json.encode of structs
+
+/// Java `checkJson(from, expected)`.
+fn check_json(ev: &Ev, from: &str, expected: &str) {
+    let result = ev.eval_str(from);
+    assert_eq!(result, expected, "{from}");
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testStarlarkJsonModule
+#[test]
+fn test_starlark_json_module() {
+    let ev = Ev::new();
+    check_json(&ev, "json.encode(struct(name=True))", "{\"name\":true}");
+    check_json(&ev, "json.encode([1, 2])", "[1,2]"); // works for non-structs too
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testJsonBooleanFields
+#[test]
+fn test_json_boolean_fields() {
+    let ev = Ev::new();
+    check_json(&ev, "json.encode(struct(name=True))", "{\"name\":true}");
+    check_json(&ev, "json.encode(struct(name=False))", "{\"name\":false}");
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testJsonDictFields
+#[test]
+fn test_json_dict_fields() {
+    let ev = Ev::new();
+    check_json(&ev, "json.encode(struct(config={}))", "{\"config\":{}}");
+    check_json(
+        &ev,
+        "json.encode(struct(config={'key': 'value'}))",
+        "{\"config\":{\"key\":\"value\"}}",
+    );
+    ev.check_eval_error_contains(
+        "in struct field .config: dict has int key, want string",
+        &["json.encode(struct(config={1:2}))"],
+    );
+    ev.check_eval_error_contains(
+        "in struct field .config: in dict key \"foo\": dict has int key, want string",
+        &["json.encode(struct(config={'foo':{1:2}}))"],
+    );
+    ev.check_eval_error_contains(
+        "in struct field .config: dict has bool key, want string",
+        &["json.encode(struct(config={True: False}))"],
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testJsonEncoding
+#[test]
+fn test_json_encoding() {
+    let ev = Ev::new();
+    check_json(
+        &ev,
+        "json.encode(struct(name='value'))",
+        "{\"name\":\"value\"}",
+    );
+    check_json(
+        &ev,
+        "json.encode(struct(name=['a', 'b']))",
+        "{\"name\":[\"a\",\"b\"]}",
+    );
+    check_json(&ev, "json.encode(struct(name=123))", "{\"name\":123}");
+    check_json(
+        &ev,
+        "json.encode(struct(name=[1, 2, 3]))",
+        "{\"name\":[1,2,3]}",
+    );
+    check_json(
+        &ev,
+        "json.encode(struct(a=struct(b='b')))",
+        "{\"a\":{\"b\":\"b\"}}",
+    );
+    check_json(
+        &ev,
+        "json.encode(struct(a=[struct(b='x'), struct(b='y')]))",
+        "{\"a\":[{\"b\":\"x\"},{\"b\":\"y\"}]}",
+    );
+    check_json(
+        &ev,
+        "json.encode(struct(a=struct(b=struct(c='c'))))",
+        "{\"a\":{\"b\":{\"c\":\"c\"}}}",
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testJsonEscapes
+#[test]
+fn test_json_escapes() {
+    let ev = Ev::new();
+    check_json(
+        &ev,
+        "json.encode(struct(name='a\"b'))",
+        "{\"name\":\"a\\\"b\"}",
+    );
+    check_json(
+        &ev,
+        "json.encode(struct(name='a\\'b'))",
+        "{\"name\":\"a'b\"}",
+    );
+    check_json(
+        &ev,
+        "json.encode(struct(name='a\\\\b'))",
+        "{\"name\":\"a\\\\b\"}",
+    );
+    check_json(
+        &ev,
+        "json.encode(struct(name='a\\nb'))",
+        "{\"name\":\"a\\nb\"}",
+    );
+    check_json(
+        &ev,
+        "json.encode(struct(name='a\\rb'))",
+        "{\"name\":\"a\\rb\"}",
+    );
+    check_json(
+        &ev,
+        "json.encode(struct(name='a\\tb'))",
+        "{\"name\":\"a\\tb\"}",
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testJsonNestedListStructure
+#[test]
+fn test_json_nested_list_structure() {
+    let ev = Ev::new();
+    check_json(&ev, "json.encode(struct(a=[['b']]))", "{\"a\":[[\"b\"]]}");
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testJsonInvalidStructure
+#[test]
+fn test_json_invalid_structure() {
+    let ev = Ev::new();
+    ev.check_eval_error_contains(
+        "in struct field .a: cannot encode builtin_function_or_method as JSON",
+        &["json.encode(struct(a=rule))"],
+    );
+}

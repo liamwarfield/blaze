@@ -1,5 +1,6 @@
 === 1: run build //:read_only
 exit 0
+  bazel-bin/read_only.txt
 INFO: Build completed successfully, 2 total actions
 Target //:read_only up-to-date:
 === 2: run build //:files_append
@@ -64,10 +65,12 @@ ERROR: Analysis of target '//:tokenize_append' failed; build aborted
 ERROR: Build did NOT complete successfully
 === 12: run build //:features_append
 exit 0
+  bazel-bin/features_append.txt
 INFO: Build completed successfully, 2 total actions
 Target //:features_append up-to-date:
 === 13: run build //:disabled_features_append
 exit 0
+  bazel-bin/disabled_features_append.txt
 INFO: Build completed successfully, 2 total actions
 Target //:disabled_features_append up-to-date:
 === 14: run build //:toolchain_types_append

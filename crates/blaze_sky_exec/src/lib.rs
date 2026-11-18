@@ -8,7 +8,20 @@
 
 #![allow(clippy::too_many_arguments, clippy::new_without_default)]
 // Ported signatures win: `ActionExecutionException` is Java's exception carried by value.
-#![allow(clippy::result_large_err, clippy::large_enum_variant)]
+
+// Ported signatures and Java's control flow win (PORTING.md "Style"): maps keyed by `Artifact`
+// (Java `Map<Artifact, ...>`), exceptions carried by value, Java method names (`from_*`), Java's
+// branch structure.
+#![allow(
+    clippy::mutable_key_type,
+    clippy::result_large_err,
+    clippy::large_enum_variant,
+    clippy::type_complexity,
+    clippy::wrong_self_convention,
+    clippy::collapsible_if,
+    clippy::collapsible_match,
+    clippy::if_same_then_else
+)]
 
 pub mod action_execution_function;
 pub mod action_execution_value;
@@ -43,19 +56,20 @@ pub fn register_execution_functions(
     seam: Arc<dyn AnalysisSeam>,
     unrunnable_test_reporter: Option<Arc<UnrunnableTestReporter>>,
 ) -> EvaluatorBuilder {
+    let completion_executor = executor.clone();
     let action_execution = Arc::new(ActionExecutionFunction {
         skyframe_action_executor: executor,
         seam: seam.clone(),
     });
     let seam_tc = seam.clone();
     let seam_test = seam.clone();
-    let seam_driver = seam;
+    let build_driver = Arc::new(build_driver_function::BuildDriverFunction::new(seam));
     builder
         .typed_function::<ActionExecutionKey, _>(move |k, env| action_execution.compute(k, env))
         .typed_function::<ArtifactKey, _>(artifact_function::compute_artifact)
         .typed_function::<ArtifactNestedSetKey, _>(artifact_function::compute_artifact_nested_set)
         .typed_function::<TargetCompletionKey, _>(move |k, env| {
-            completion_function::compute_target_completion(&*seam_tc, k, env)
+            completion_function::compute_target_completion(&completion_executor, &*seam_tc, k, env)
         })
         .typed_function::<TestCompletionKey, _>(move |k, env| {
             test_completion_function::compute_test_completion(
@@ -65,7 +79,5 @@ pub fn register_execution_functions(
                 env,
             )
         })
-        .typed_function::<BuildDriverKey, _>(move |k, env| {
-            build_driver_function::compute_build_driver(&*seam_driver, k, env)
-        })
+        .typed_function::<BuildDriverKey, _>(move |k, env| build_driver.compute(k, env))
 }

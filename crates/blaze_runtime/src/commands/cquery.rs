@@ -4,7 +4,6 @@
 use blaze_build_config::bazel_rule_class_provider::BazelRuleClassProvider;
 use blaze_build_config::top_level::create_build_options;
 use blaze_cquery::commands::PostAnalysisCommandEnvironment;
-use blaze_optdefs::command::blaze_server_startup_options::BlazeServerStartupOptions;
 
 use crate::command::{BlazeCommand, BlazeCommandResult, CommandAnnotation};
 use crate::command_environment::CommandEnvironment;
@@ -53,11 +52,11 @@ impl BlazeCommand for CqueryCommand {
             relative_working_directory: env.get_relative_working_directory().clone(),
             working_directory: env.get_working_directory().clone(),
             product_name: env.get_runtime().get_product_name().to_owned(),
-            batch: env
-                .get_runtime()
-                .get_startup_options_provider()
-                .get_options::<BlazeServerStartupOptions>()
-                .is_some_and(|o| o.batch),
+            tracks_state_for_incrementality: env.tracks_state_for_incrementality(),
+            available_processors: crate::local_resources::available_processors(),
+            stop_request: &|detailed_exit_code| {
+                crate::commands::build::stop_request_without_execution(env, detailed_exit_code)
+            },
             options,
         };
         let detailed_exit_code = blaze_cquery::commands::cquery_command::exec(&command_env);

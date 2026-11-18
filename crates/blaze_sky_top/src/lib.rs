@@ -7,13 +7,33 @@
 //! Design and ownership: `crates/blaze_analysis/DESIGN.md`.
 
 #![allow(clippy::too_many_arguments, clippy::new_without_default)]
-#![allow(clippy::collapsible_if, clippy::type_complexity)]
+// Ported signatures and Java's control flow win (PORTING.md "Style"): maps keyed by `Artifact`
+// (Java `Map<Artifact, ...>`), exceptions carried by value, Java method names (`from_*`), Java's
+// branch structure.
+#![allow(
+    clippy::mutable_key_type,
+    clippy::result_large_err,
+    clippy::large_enum_variant,
+    clippy::type_complexity,
+    clippy::wrong_self_convention,
+    clippy::collapsible_if,
+    clippy::collapsible_match,
+    clippy::if_same_then_else
+)]
 
+pub mod action_conflict_exception;
+pub mod action_lookup_conflict_finding_function;
+pub mod analysis_failure_event;
 pub mod analysis_phase_runner;
+pub mod artifact_conflict_finder;
 pub mod build_tool;
 pub mod build_view;
+pub mod cycles_reporter;
 pub mod execution_phase;
 pub mod execution_seam;
+pub mod pattern_expanding_error;
+pub mod project;
 pub mod skyframe_build_view;
+pub mod skyframe_error_processor;
 pub mod skyframe_executor;
 pub mod target_pattern_phase;

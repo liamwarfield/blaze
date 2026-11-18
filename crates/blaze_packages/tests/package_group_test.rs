@@ -1,8 +1,10 @@
-//! Port of `src/test/java/com/google/devtools/build/lib/packages/PackageGroupTest.java` and
-//! `PackageGroupStaticInitializationTest.java`.
+//! Port of `src/test/java/com/google/devtools/build/lib/packages/PackageGroupTest.java`: the
+//! test that loads no BUILD file (`testStringification`), and checks of the
+//! `PackageSpecification` / `PackageGroupContents` part of the others.
 //!
-//! Tests that evaluate a BUILD file (Java `PackageLoadingTestCase`: `scratch.file` +
-//! `getTarget`) are ignored until BUILD loading works; their bodies summarize the Java test.
+//! The tests that evaluate a BUILD file (Java `PackageLoadingTestCase`: `scratch.file` +
+//! `getTarget`), and `PackageGroupStaticInitializationTest`, are ported in
+//! `crates/blaze_sky_loading/src/tests/package_group_test.rs` (this crate cannot load packages).
 
 use blaze_cmdline::PackageIdentifier;
 use blaze_cmdline::RepositoryName;
@@ -62,169 +64,7 @@ fn assert_contains_exactly(actual: Vec<String>, expected: &[&str]) {
     assert_eq!(actual, expected);
 }
 
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_does_not_fail_horribly() {
-    // fruits/BUILD: package_group(name = "apple", packages = ["//random"]);
-    // getPackageGroup("fruits", "apple") succeeds.
-    unimplemented!("needs BUILD loading")
-}
-
-// Regression test for: "Package group with empty name causes Blaze exception"
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_empty_package_group_name_does_not_throw() {
-    // strawberry/BUILD: package_group(name = "", packages = []);
-    // getTarget("//strawberry:BUILD"); assertContainsEvent("package group has invalid name").
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_absolute_packages_work() {
-    // fruits/BUILD: package_group(name = "apple", packages = ["//vegetables"]);
-    // grp.contains(pkgId("vegetables")) is true; grp.contains(pkgId("fruits/vegetables")) false.
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_packages_without_double_slash_do_not_work() {
-    // packages = ["vegetables"] -> event "invalid package name 'vegetables'".
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_packages_with_repository_works() {
-    // packages = ["@@veggies//cucumber"] -> grp.contains(pkgId("veggies", "cucumber")).
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_all_packages_in_main_repository_works() {
-    // packages = ["@//..."] -> grp.contains(pkgId("anything")).
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_target_name_as_package_does_not_work1() {
-    // packages = ["//vegetables:carrot"] -> event "invalid package name '//vegetables:carrot'".
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_target_name_as_package_does_not_work2() {
-    // packages = [":carrot"] -> event "invalid package name ':carrot'".
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_all_beneath_specification_works() {
-    // packages = ["//tropics/..."] loads.
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_negative() {
-    // packages = ["-//four", "-//three", "//one", "//two"]: contains one, two; not three, four.
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_negative_no_subpackages() {
-    // packages = ["-//pkg/one", "//pkg/..."]: pkg yes, pkg/one no, pkg/one/two yes.
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_negative_subpackages() {
-    // packages = ["-//pkg/one/...", "//pkg/..."]: pkg yes, pkg/one no, pkg/one/two no.
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_everything_specification_works() {
-    // --incompatible_package_group_has_public_syntax=true; packages = ["public"]:
-    // getContainedPackages(true) == ["public"]; contains pkgId("pkg") and ("somerepo", "pkg").
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_nothing_specification_works() {
-    // packages = ["private"]: getContainedPackages(true) == ["private"]; contains nothing.
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_public_private_are_not_accessible_without_flag() {
-    // public syntax and reporoot fix both off; packages = ["public"] / ["private"] -> events
-    // "Use of \"public\" package specification requires enabling
-    // --incompatible_package_group_has_public_syntax" (and the same for "private").
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_repo_root_subpackages_is_public_without_flag() {
-    // --incompatible_fix_package_group_reporoot_syntax=false; packages = ["//..."]:
-    // getContainedPackages(true) == ["public"]; contains ("pkg") and ("somerepo", "pkg").
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_repo_root_subpackages_is_not_public_with_flag() {
-    // both flags on; packages = ["//..."]: getContainedPackages(true) == ["//..."];
-    // contains ("pkg") but not ("somerepo", "pkg").
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_cannot_use_new_repo_root_syntax_without_public_syntax() {
-    // public syntax off, reporoot fix on -> event
-    // "Cannot use new \"//...\" meaning without allowing new \"public\" syntax."
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_negative_repo_root_subpackages() {
-    // packages = ["-//...", "//pkg/one"]: pkg, pkg/one, pkg/one/two all excluded.
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_negative_public() {
-    // packages = ["-public"] -> event "Cannot negate \"public\" package specification".
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_negative_private() {
-    // packages = ["-private"] -> event "Cannot negate \"private\" package specification".
-    unimplemented!("needs BUILD loading")
-}
-
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_duplicate_package() {
-    // packages = ["//one/two"]: grp.contains(pkgId("one/two")).
-    unimplemented!("needs BUILD loading")
-}
+// PackageGroupTest's BUILD-loading tests: crates/blaze_sky_loading/src/tests/package_group_test.rs
 
 #[test]
 fn test_stringification() {
@@ -297,26 +137,9 @@ fn test_stringification() {
     );
 }
 
-#[test]
-#[ignore = "needs BUILD loading (and serialization is not ported)"]
-fn test_reduce_for_serialization() {
-    // getPackageGroup(...) hasSamePropertiesAs grp.reduceForSerialization().
-    unimplemented!("needs BUILD loading")
-}
-
-// Java: PackageGroupStaticInitializationTest
-#[test]
-#[ignore = "needs BUILD loading"]
-fn test_no_deadlock_on_package_group_creation() {
-    // One thread loads fruits/BUILD (package_group(name = 'mango', packages = ['//...'])) while
-    // another calls PackageSpecification.fromString(EMPTY, main, "//fruits/...", true, true);
-    // both must finish.
-    unimplemented!("needs BUILD loading")
-}
-
-// The following check the PackageSpecification / PackageGroupContents part of the ignored
-// BUILD-loading tests above, with the Java tests' packages and expectations (the defaults of
-// --incompatible_package_group_has_public_syntax and
+// The following check the PackageSpecification / PackageGroupContents part of the BUILD-loading
+// tests (ported in blaze_sky_loading, see above), with the Java tests' packages and expectations
+// (the defaults of --incompatible_package_group_has_public_syntax and
 // --incompatible_fix_package_group_reporoot_syntax are true).
 
 #[test]

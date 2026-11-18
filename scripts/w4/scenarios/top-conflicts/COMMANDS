@@ -1,0 +1,58 @@
+# Action conflicts between targets (analysis review S2-1, exec review S2-2): ArtifactConflictFinder,
+# Actions.findArtifactPrefixConflicts, and how SkyframeBuildView reports them.
+# Only the first line of each message is compared.
+#
+# Two lines of this transcript depend on thread timing in Bazel itself, so a difference confined
+# to them is not a defect of the port:
+# - the label in "WARNING: errors encountered while analyzing target '<label>': it will not be
+#   built" is the owner of whichever of the two conflicting actions was registered second
+#   (ArtifactConflictFinder.actionRegistration runs the shards on a thread pool; Skymeld's
+#   IncrementalArtifactConflictFinder registers a top-level target when its analysis ends);
+# - `build` (Skymeld) names the two paths of a prefix conflict in either order. aquery, like
+#   Blaze, goes through Actions.findArtifactPrefixConflicts, which sorts the artifacts first.
+
+# Different content: conflict.
+run build //same:a //same:b
+run build //same:a //same:b //:innocent
+run build //same:a //same:b //:innocent --keep_going
+run cquery "//same:a + //same:b + //:innocent"
+run cquery "//same:a + //same:b + //:innocent" --keep_going
+run aquery "//same:a + //same:b + //:innocent" --output=jsonproto --noinclude_artifacts --noinclude_commandline
+run aquery "//same:a + //same:b + //:innocent" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+# One of the two alone is fine.
+run build //same:a
+cat bazel-bin/same/same.txt
+
+# Equal content: shareable actions, no conflict.
+run build //equal:a //equal:b //:innocent
+cat bazel-bin/equal/equal.txt
+run cquery "//equal:a + //equal:b + //:innocent"
+run aquery "//equal:a + //equal:b + //:innocent" --output=jsonproto --noinclude_artifacts --noinclude_commandline
+
+# Outputs x and x/y: prefix conflict.
+run build //prefix:file //prefix:below
+run build //prefix:file //prefix:below //:innocent
+run build //prefix:file //prefix:below //:innocent --keep_going
+run cquery "//prefix:file + //prefix:below + //:innocent"
+run cquery "//prefix:file + //prefix:below + //:innocent" --keep_going
+run aquery "//prefix:file + //prefix:below + //:innocent" --output=jsonproto --noinclude_artifacts --noinclude_commandline
+run aquery "//prefix:file + //prefix:below + //:innocent" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+run build //prefix:below
+cat bazel-bin/prefix/x/y
+
+# The conflict is between dependencies of the top-level targets.
+run build //dep:uses_a //dep:uses_b //:innocent
+run build //dep:uses_a //dep:uses_b //:innocent --keep_going
+run cquery "//dep:uses_a + //dep:uses_b + //:innocent" --keep_going
+run aquery "//dep:uses_a + //dep:uses_b + //:innocent" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+run build //dep:uses_a
+
+# A conflict inside one target.
+run build //one:intra
+run build //one:intra //:innocent --keep_going
+run cquery //one:intra
+run cquery "//one:intra + //:innocent" --keep_going
+
+# The innocent target alone.
+run build //:innocent
+cat bazel-bin/innocent.txt

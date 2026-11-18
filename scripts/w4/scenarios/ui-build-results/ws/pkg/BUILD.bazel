@@ -1,0 +1,6 @@
+load("//:defs.bzl", "files")
+
+files(
+    name = "sub",
+    outs = ["sub.txt"],
+)

@@ -26,8 +26,11 @@ use blaze_exec::exec::spawn_log_context::SpawnLogContext;
 use blaze_exec::runtime::spawn_stats::SpawnStats;
 use blaze_exec::sandbox::sandbox_module::SandboxModule;
 use blaze_optdefs::command::execution_options::ExecutionOptions;
+use blaze_optdefs::misc::dynamic_execution_options::DynamicExecutionOptions;
 use blaze_optdefs::misc::local_execution_options::LocalExecutionOptions;
+use blaze_optdefs::misc::remote_options::RemoteOptions;
 use blaze_optdefs::misc::sandbox_options::SandboxOptions;
+use blaze_optdefs::misc::worker_options::WorkerOptions;
 use blaze_options::Options;
 use blaze_sky_exec::events::{
     ActionCompletionEvent, ActionResultReceivedEvent, TargetCompleteEvent, downcast_event,
@@ -60,6 +63,12 @@ pub struct ExecutionToolConfig {
     pub execution_options: Option<ExecutionOptions>,
     pub sandbox_options: Option<SandboxOptions>,
     pub local_execution_options: Option<LocalExecutionOptions>,
+    /// The command's `RemoteOptions`, `DynamicExecutionOptions` and `WorkerOptions` (`None`: the
+    /// defaults), which the modules' `registerSpawnStrategies` read
+    /// (`blaze_exec::exec::executor_setup`).
+    pub remote_options: Option<RemoteOptions>,
+    pub dynamic_execution_options: Option<DynamicExecutionOptions>,
+    pub worker_options: Option<WorkerOptions>,
     /// `pkgLocator.getPathEntries()` (the sandbox mounts those under /tmp).
     pub package_path_entries: Vec<Path>,
     /// `--repo_contents_cache` (the sandbox mounts it when under /tmp).
@@ -308,9 +317,24 @@ pub fn prepare_for_execution_with_action_cache(
                 .clone()
                 .unwrap_or_else(Options::<LocalExecutionOptions>::get_defaults),
         ),
-        remote_options: Arc::new(Options::get_defaults()),
-        dynamic_execution_options: Arc::new(Options::get_defaults()),
-        worker_options: Arc::new(Options::get_defaults()),
+        remote_options: Arc::new(
+            config
+                .remote_options
+                .clone()
+                .unwrap_or_else(Options::<RemoteOptions>::get_defaults),
+        ),
+        dynamic_execution_options: Arc::new(
+            config
+                .dynamic_execution_options
+                .clone()
+                .unwrap_or_else(Options::<DynamicExecutionOptions>::get_defaults),
+        ),
+        worker_options: Arc::new(
+            config
+                .worker_options
+                .clone()
+                .unwrap_or_else(Options::<WorkerOptions>::get_defaults),
+        ),
         resource_manager: ResourceManager::new(),
         reporter: reporter.clone() as Arc<dyn EventHandler>,
         package_path_entries: config.package_path_entries.clone(),
@@ -478,20 +502,22 @@ pub fn evaluate_build_driver_keys(
     })
 }
 
-/// The `BuildSummaryStatsModule.buildComplete` lines: `Elapsed time: ..., Critical Path: ...` and
-/// the process summary.
+/// The `BuildSummaryStatsModule.buildComplete` lines: `Elapsed time: ...` and the process
+/// summary. `elapsed_seconds` is `event.getResult().getElapsedSeconds()`.
+///
+/// PORT: skipped, profiling: critical path profiling (`CriticalPathComputer`,
+/// `--experimental_enable_critical_path_profiling`) is not ported, so the summary is the one Java
+/// prints without a `criticalPathComputer`: no `, Critical Path: ...` item, no `CriticalPathEvent`
+/// and no "critical path" build tool log. The `--experimental_stats_summary` form of the summary
+/// is not ported either; the build command fails loudly when the flag is set.
 // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:154 BuildSummaryStatsModule.buildComplete
 pub fn report_build_summary_stats(
     reporter: &dyn EventHandler,
     collector: &ExecutionEventCollector,
     elapsed_seconds: f64,
-    critical_path_seconds: f64,
 ) {
-    let mut items = vec![format!("Elapsed time: {elapsed_seconds:.3}s")];
-    // Java: com/google/devtools/build/lib/runtime/AggregatedCriticalPath.java:113 AggregatedCriticalPath.toStringSummaryNoRemote
-    // PORT: CriticalPathComputer is not ported; the caller passes the longest action chain it
-    // measured. The line is time-dependent and not compared by the oracle.
-    items.push(format!("Critical Path: {critical_path_seconds:.2}s"));
+    // We might want to make this conditional on a flag; it can sometimes be a bit of a nuisance.
+    let items = [format!("Elapsed time: {elapsed_seconds:.3}s")];
     let spawn_summary = collector.spawn_stats.get_summary();
     let spawn_summary_string = SpawnStats::convert_summary_to_string(&spawn_summary);
     reporter.handle(&Event::info(items.join(", ")));

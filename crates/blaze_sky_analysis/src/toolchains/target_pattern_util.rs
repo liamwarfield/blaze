@@ -38,7 +38,9 @@ pub fn expand_target_patterns(
     let resolved_patterns = env.get_values_and_exceptions(&sky_keys)?;
     let values_missing = env.values_missing();
 
+    // Use an ArrayList so that we can add and remove results based on negative patterns.
     let mut labels: Vec<Label> = Vec::new();
+
     for pattern in &target_pattern_keys {
         match resolved_patterns
             .get_or_throw_typed::<TargetPatternKey, TargetParsingException>(pattern)
@@ -54,9 +56,11 @@ pub fn expand_target_patterns(
                     continue;
                 };
                 if pattern.is_negative() {
+                    // Remove from the results.
                     // Java: ArrayList.removeAll.
                     labels.retain(|l| !value.get_targets().contains(l));
                 } else {
+                    // Add to results.
                     labels.extend(value.get_targets().iter().cloned());
                 }
             }
@@ -64,7 +68,9 @@ pub fn expand_target_patterns(
     }
 
     if env.values_missing() {
-        // PORT: BugReport.logUnexpected when the two disagree.
+        // PORT: skipped, Google-internal: `if (valuesMissing != env.valuesMissing())
+        // BugReport.logUnexpected("Some value from '%s' was missing, this should never happen",
+        // targetPatternKeys)` only writes a log line; Java returns null here in both cases.
         return Ok(Ok(None));
     }
 

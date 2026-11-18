@@ -1,0 +1,81 @@
+# Oracle (Bazel 9.3.2): `bazel cquery "deps(//pkg:top)"` on scripts/w4/scenarios/graph-order/ws in a
+# fresh output base, then `bazel dump --skyframe=deps`; the entries of //pkg:top and //pkg:gen, with
+# blank lines dropped, the flag alias map of PLATFORM keys elided and the identity hash of the
+# BUILD_OPTIONS_SCOPE key replaced. One "Group" is one Skyframe request of the node (in order).
+CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:top, config=BuildConfigurationKey[e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a]}
+  Group 1:
+    PACKAGE:pkg
+  Group 2:
+    PLATFORM:Key[label=@@bazel_tools//tools:host_platform, flagAliasMappings={...}]
+  Group 3:
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:is_opt, config=BuildConfigurationKey[e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a]}
+  Group 4:
+    BUILD_CONFIGURATION:BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]
+  Group 5:
+    PLATFORM_MAPPING:PlatformMappingKey{path=platform_mappings, wasExplicitlySetByUser=false}
+  Group 6:
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:top, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}
+CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:gen, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}
+  Group 1:
+    PACKAGE:pkg
+  Group 2:
+    PLATFORM:Key[label=@@bazel_tools//tools:host_platform, flagAliasMappings={...}]
+  Group 3:
+    PLATFORM_MAPPING:PlatformMappingKey{path=platform_mappings, wasExplicitlySetByUser=false}
+  Group 4:
+    BUILD_CONFIGURATION:BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]
+  Group 5:
+    TOOLCHAIN_RESOLUTION:ToolchainContextKey{configurationKey=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18], toolchainTypes=[], execConstraintLabels=[], forceExecutionPlatform=Optional.empty, debugTarget=false}
+  Group 6:
+    BZL_LOAD:KeyForBuiltins{label=@@_builtins//:common/builtin_exec_platforms.bzl, isBuildPrelude=false}
+  Group 7:
+    PLATFORM:Key[label=@@platforms//host:host, flagAliasMappings={...}]
+  Group 8:
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=@@bazel_tools//tools/genrule:genrule-setup.sh, config=BuildConfigurationKey[04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067]}
+  Group 9:
+    STARLARK_BUILTINS:Starlark @_builtins
+CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:top, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}
+  Group 1:
+    PACKAGE:pkg
+  Group 2:
+    PLATFORM:Key[label=@@bazel_tools//tools:host_platform, flagAliasMappings={...}]
+  Group 3:
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:is_opt, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}
+  Group 4:
+    BUILD_CONFIGURATION:BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]
+  Group 5:
+    PLATFORM_MAPPING:PlatformMappingKey{path=platform_mappings, wasExplicitlySetByUser=false}
+  Group 6:
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=@@platforms//os:linux, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}
+  Group 7:
+    TOOLCHAIN_RESOLUTION:ToolchainContextKey{configurationKey=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18], toolchainTypes=[ToolchainTypeRequirement[toolchainType=//pkg:tt, mandatory=true, ignoreIfInvalid=false]], execConstraintLabels=[], forceExecutionPlatform=Optional.empty, debugTarget=false}
+  Group 8:
+    BZL_LOAD:KeyForBuiltins{label=@@_builtins//:common/builtin_exec_platforms.bzl, isBuildPrelude=false}
+  Group 9:
+    STARLARK_BUILD_SETTINGS_DETAILS:Key[buildSettings=[//pkg:flag]]
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:friends, config=null}
+    CONFIGURED_TARGET:ToolchainDependencyConfiguredTargetKey{label=//pkg:tc_impl, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18], executionPlatformLabel=@@platforms//host:host}
+    PLATFORM:Key[label=@@platforms//host:host, flagAliasMappings={...}]
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:c, config=BuildConfigurationKey[3030ed4c810cf3435d066294fa495e650fe75173e4b4ef410ea56cb683458569]}
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:f, config=BuildConfigurationKey[3030ed4c810cf3435d066294fa495e650fe75173e4b4ef410ea56cb683458569]}
+  Group 10:
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:a, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:b, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:x.txt, config=null}
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:gen, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:y.txt, config=null}
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:e, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}
+  Group 11:
+    BUILD_CONFIGURATION:BuildConfigurationKey[3030ed4c810cf3435d066294fa495e650fe75173e4b4ef410ea56cb683458569]
+  Group 12:
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:tool, config=BuildConfigurationKey[04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067]}
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist, config=BuildConfigurationKey[04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067]}
+  Group 13:
+    BUILD_OPTIONS_SCOPE:com.google.devtools.build.lib.skyframe.BuildOptionsScopeValue$Key@<hash>
+  Group 14:
+    BUILD_CONFIGURATION:BuildConfigurationKey[04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067]
+    CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:d, config=BuildConfigurationKey[9c995fc88458bcd14092ea67e76e188bf00bc83b237d53a0f6b738dd9b798214]}
+  Group 15:
+    BUILD_CONFIGURATION:BuildConfigurationKey[9c995fc88458bcd14092ea67e76e188bf00bc83b237d53a0f6b738dd9b798214]
+  Group 16:
+    STARLARK_BUILTINS:Starlark @_builtins

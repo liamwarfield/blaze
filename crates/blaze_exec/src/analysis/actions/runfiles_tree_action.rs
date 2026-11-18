@@ -1,18 +1,22 @@
 //! Execution of `lib/actions/RunfilesTreeAction.java`, and the adapter of
 //! `blaze_actions::RunfilesTree` to the execution layer's `RunfilesTree`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use blaze_actions::actions::runfiles_tree::RunfilesTreeRef;
 use blaze_actions::actions::runfiles_tree_action::RunfilesTreeAction;
-use blaze_collect::NestedSet;
+use blaze_actions::analysis::symlink_entry::SymlinkEntry as BlazeSymlinkEntry;
+use blaze_collect::{NestedSet, NestedSetBuilder, NestedSetNode};
 use blaze_vfs::PathFragment;
 
 use super::to_action_input_set;
 use crate::actions::action_adapters::artifact_input;
+use blaze_actions::actions::action::Action;
+
 use crate::actions::{
-    ActionExecutionException, ActionInputRef, ActionResult, ExecutableAction,
-    RunfilesArtifactValue, RunfilesTree,
+    ActionExecutionException, ActionInputRef, ActionResult, ExecutableAction, FileArtifactValue,
+    InputMetadataProvider, RunfilesArtifactValue, RunfilesTree, SymlinkEntry, TreeArtifactValue,
 };
 use crate::exec::action_execution_context::ActionExecutionContext;
 
@@ -54,33 +58,13 @@ impl RunfilesTree for RunfilesTreeAdapter {
     }
 
     // Java: com/google/devtools/build/lib/actions/RunfilesTree.java:68 RunfilesTree.getSymlinksForLogging
-    fn get_symlinks_for_logging(&self) -> Vec<(String, ActionInputRef)> {
-        self.0
-            .get_symlinks_for_logging()
-            .to_list()
-            .iter()
-            .map(|e| {
-                (
-                    e.get_path_string().to_string(),
-                    artifact_input(e.get_artifact()),
-                )
-            })
-            .collect()
+    fn get_symlinks_for_logging(&self) -> NestedSet<SymlinkEntry> {
+        to_symlink_entry_set(&self.0.get_symlinks_for_logging())
     }
 
     // Java: com/google/devtools/build/lib/actions/RunfilesTree.java:71 RunfilesTree.getRootSymlinksForLogging
-    fn get_root_symlinks_for_logging(&self) -> Vec<(String, ActionInputRef)> {
-        self.0
-            .get_root_symlinks_for_logging()
-            .to_list()
-            .iter()
-            .map(|e| {
-                (
-                    e.get_path_string().to_string(),
-                    artifact_input(e.get_artifact()),
-                )
-            })
-            .collect()
+    fn get_root_symlinks_for_logging(&self) -> NestedSet<SymlinkEntry> {
+        to_symlink_entry_set(&self.0.get_root_symlinks_for_logging())
     }
 
     // Java: com/google/devtools/build/lib/actions/RunfilesTree.java:65 RunfilesTree.getEmptyFilenamesForLogging
@@ -97,16 +81,101 @@ impl RunfilesTree for RunfilesTreeAdapter {
     }
 }
 
-/// `createRunfilesArtifactValue(inputMetadataProvider)`.
+/// Converts a `NestedSet<SymlinkEntry>` of `blaze_actions` into the execution layer's, keeping the
+/// node structure (and sharing of sub-sets within the set) so that the compact execution log
+/// writes one `SymlinkEntrySet` per node, as Java does (Java passes the same object).
 ///
-/// PORT: Java also collects the metadata of every input (files, trees and filesets, sorted by
-/// exec path) into the value; the execution layer's `RunfilesArtifactValue` seam holds only the
-/// runfiles tree, and the executor that stores the value owns the input metadata.
-// Java: com/google/devtools/build/lib/actions/RunfilesTreeAction.java:62 RunfilesTreeAction.createRunfilesArtifactValue
-pub fn create_runfiles_artifact_value(action: &RunfilesTreeAction) -> RunfilesArtifactValue {
-    RunfilesArtifactValue {
-        runfiles_tree: Arc::new(RunfilesTreeAdapter(action.get_runfiles_tree().clone())),
+/// PORT: the nodes of two conversions differ, so a sub-set shared by two runfiles trees is logged
+/// once per tree (Java: once), as for [`to_action_input_set`].
+// `NestedSetNode` hashes and compares by node identity (Java `Node.equals`).
+#[allow(clippy::mutable_key_type)]
+fn to_symlink_entry_set(set: &NestedSet<BlazeSymlinkEntry>) -> NestedSet<SymlinkEntry> {
+    let mut memo: HashMap<NestedSetNode<BlazeSymlinkEntry>, NestedSet<SymlinkEntry>> =
+        HashMap::new();
+    convert_symlink_entry_set(set, &mut memo)
+}
+
+#[allow(clippy::mutable_key_type)]
+fn convert_symlink_entry_set(
+    set: &NestedSet<BlazeSymlinkEntry>,
+    memo: &mut HashMap<NestedSetNode<BlazeSymlinkEntry>, NestedSet<SymlinkEntry>>,
+) -> NestedSet<SymlinkEntry> {
+    let convert = |e: &BlazeSymlinkEntry| SymlinkEntry {
+        path: e.get_path_string().to_string(),
+        artifact: artifact_input(e.get_artifact()),
+    };
+    let node = set.to_node();
+    if let Some(s) = memo.get(&node) {
+        return s.clone();
     }
+    let order = set.get_order();
+    let converted = if set.is_empty() {
+        NestedSetBuilder::empty_set(order)
+    } else if set.is_singleton() {
+        NestedSetBuilder::create(order, [convert(set.get_singleton())])
+    } else {
+        // See `convert_set` in `analysis/actions/mod.rs` for the layout of a rebuilt node.
+        let mut b = NestedSetBuilder::new_builder(order);
+        for child in set.get_non_leaves() {
+            let c = convert_symlink_entry_set(&child, memo);
+            b.add_transitive(&c);
+        }
+        for leaf in set.get_leaves() {
+            b.add(convert(&leaf));
+        }
+        b.build()
+    };
+    memo.insert(node, converted.clone());
+    converted
+}
+
+/// `createRunfilesArtifactValue(inputMetadataProvider)`: the runfiles tree with the metadata of
+/// every input of the action (files and trees, sorted by exec path).
+// Java: com/google/devtools/build/lib/actions/RunfilesTreeAction.java:62 RunfilesTreeAction.createRunfilesArtifactValue
+pub fn create_runfiles_artifact_value(
+    action: &RunfilesTreeAction,
+    input_metadata_provider: &dyn InputMetadataProvider,
+) -> std::io::Result<RunfilesArtifactValue> {
+    let inputs = action.get_inputs().to_list();
+    let mut files: Vec<ActionInputRef> = Vec::new();
+    let mut file_values: Vec<FileArtifactValue> = Vec::new();
+    let mut trees: Vec<ActionInputRef> = Vec::new();
+    let mut tree_values: Vec<Arc<TreeArtifactValue>> = Vec::new();
+
+    // Sort for better equality in RunfilesArtifactValue.
+    let mut sorted_inputs: Vec<blaze_actions::Artifact> = inputs.to_vec();
+    sorted_inputs.sort_by(blaze_actions::Artifact::exec_path_comparator);
+    for input in &sorted_inputs {
+        let input_ref = artifact_input(input);
+        if input.is_fileset() {
+            blaze_util::unported!(
+                "RunfilesTreeAction.createRunfilesArtifactValue",
+                "fileset {} in a runfiles tree (FilesetOutputTree)",
+                input
+            );
+        } else if input.is_tree_artifact() {
+            // ImmutableList.Builder.add: a null element is a NullPointerException.
+            let tree_value = input_metadata_provider
+                .get_tree_metadata(&input_ref)
+                .unwrap_or_else(|| panic!("NullPointerException: tree metadata of {input}"));
+            trees.push(input_ref);
+            tree_values.push(tree_value);
+        } else {
+            let file_value = input_metadata_provider
+                .get_input_metadata(&input_ref)?
+                .unwrap_or_else(|| panic!("NullPointerException: metadata of {input}"));
+            files.push(input_ref);
+            file_values.push(file_value);
+        }
+    }
+
+    Ok(RunfilesArtifactValue::new(
+        Arc::new(RunfilesTreeAdapter(action.get_runfiles_tree().clone())),
+        files,
+        file_values,
+        trees,
+        tree_values,
+    ))
 }
 
 impl ExecutableAction for RunfilesTreeAction {
@@ -124,8 +193,12 @@ impl ExecutableAction for RunfilesTreeAction {
         &self,
         ctx: &dyn ActionExecutionContext,
     ) -> Result<ActionResult, ActionExecutionException> {
-        let runfiles_artifact_value = create_runfiles_artifact_value(self);
-        ctx.set_rich_artifact_data(Arc::new(runfiles_artifact_value));
+        match create_runfiles_artifact_value(self, ctx.get_input_metadata_provider()) {
+            Ok(runfiles_artifact_value) => {
+                ctx.set_rich_artifact_data(Arc::new(runfiles_artifact_value));
+            }
+            Err(e) => panic!("IllegalStateException: {e}"),
+        }
         Ok(ActionResult::empty())
     }
 }

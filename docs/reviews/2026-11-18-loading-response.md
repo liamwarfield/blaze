@@ -33,7 +33,7 @@ Java paths are relative to `src/main/java/com/google/devtools/build/lib` unless 
 | S2-11 Java hash order | fixed; identity-hashed value types fail loudly | `aggregating_attribute_mapper.rs`, `computed_default.rs`, `java_concurrent_hash_map.rs` | 20 unit tests, 3 loading tests |
 | S2-12 stubs answer every name | fixed, also for `cc_internal` and `java_common` | `builtins/stubs.rs`, `cc_internal.rs`, `java_common.rs` | `stubs.rs::tests`, `android_common_*` |
 | S2-13 struct with a mutable field is hashable | fixed | `blaze_starlark/src/structs.rs` | `structs_in_dicts` (port of testStructsInDicts) |
-| S3-7 empty ignored stubs | 294 Java tests ported for real; every remaining stub has a current reason | below | below |
+| S3-7 empty ignored stubs | 294 Java tests ported for real; the stubs of the files touched got current reasons. Corrected in round 2: three files were not touched (`bzl_load_function_test.rs`, `package_group_test.rs`, `environment_group_test.rs`) and still had stale empty stubs; see "Round 2 response" | below | below |
 
 ## S1
 
@@ -247,3 +247,97 @@ either file during those two minutes would have been overwritten and should be c
 - `RuleClassTest`, `RuleFactoryTest`, `PackageTest` and `RawAttributeMapperTest` stubs are
   blocked only on the writing (a `Package.Builder` fixture exists in
   `blaze_packages/tests/package_builder_test.rs`).
+
+# Round 2 response
+
+Date 2026-11-18. Answers round 2 of `2026-11-18-loading.md` (verdict STOP on S1-6).
+
+Tree: HEAD `03409d9` plus uncommitted changes in the owned crates, `third_party/starlark-rust`,
+`scripts/w3/deleted-packages-probe`, `scripts/w3/deleted-packages/` and this file. Nothing is
+committed. Other agents have uncommitted work in the same tree.
+
+| item | state | where | test |
+|---|---|---|---|
+| S1-6 `proto` not bound | fixed (full port) | `blaze_packages/src/proto.rs`, `blaze_sky_loading/src/environment.rs` | 5 Java proto tests, 6 oracle-backed tests, 2 unit tests |
+| S2-6 `string_set` | immutable set added (patch 0025) and used; the finding's example is disputed | `type_.rs`, `set/value.rs`, `set/refs.rs` | `patch_0025_immutable_set`, `copy_and_lift_starlark_set_is_immutable` |
+| stale stubs in three files | 68 ported (67 run); 4 stay empty stubs with accurate reasons | below | below |
+| `--deleted_packages` evidence | reproducible | `scripts/w3/deleted-packages-probe`, `scripts/w3/deleted-packages/ORACLE.txt` | `deleted-packages-probe compare`: MATCH, 5 commands |
+
+**S1-6.** `proto.encode_text` is a literal port of packages/Proto.java:111-232 (`encodeText`,
+`TextEncoder.message`, `field`, `fieldElement`, `emitLine`) and is bound with `depset` and `json`
+in `bazel_starlark_globals_fns`, which `blaze_rules` builds on, so the `blaze` binary gets it too.
+Floats go through a port of `StarlarkFloat.toString` (net/starlark/java/eval/StarlarkFloat.java:51,
+120). The parameter error says "want 'structure or NativeInfo'", which is what Java and the oracle
+print (`Starlark.classType(Structure.class)`), not "struct". At the pin `NativeInfo` is not a
+`Structure`: it is accepted as the argument and rejected when nested, and the port follows that.
+Two `unported!` spots: nesting deeper than 1000 (Java overflows its stack) and a `range` whose
+iteration fails (unreachable). The five Java tests (`testSimpleTextMessages`, `testNoneStructValue`,
+`testProtoFieldsOrder`, `testTextMessageEscapes`, `testTextMessageInvalidStructure`) are ported;
+the seven `json.encode` tests that shared their stubs are ported too. Small differences left:
+`type(proto)` and `repr(proto)` are starlark-rust's namespace values, as for `json`.
+
+**S2-6 `string_set`.** Patch 0025 adds immutable sets to the vendored crate, mirroring 0016 and
+0018, and gives Java's text for mutating a frozen set; `Type::StringSet` lifting uses it
+(packages/Type.java:846) and `is_immutable` answers for sets. The review's example cannot be run
+on either side: Bazel 9.3.2 has no `attr.string_set` (lib/starlarkbuildapi/StarlarkAttrModuleApi.java
+has no such method; `AttributeInfoExtractor.java:127` says "STRING_SET is not exposed to Starlark
+attr API"). The only `STRING_SET` attribute is `build_setting_default` of `config.string_set`
+(packages/RuleClass.java:907), which is not Starlark-defined, and every caller of
+`copyAndLiftStarlarkValue` requires a public Starlark-defined attribute
+(analysis/starlark/StarlarkRuleClassFunctions.java:1810, 1858-1868; packages/MacroClass.java:274,
+295). So the lifted set never reaches an initializer and the fix has a unit test, not a loading
+test. Not done: `x |= y` on an immutable set rebinds in starlark-rust where Java mutates and
+fails (queued patch 0007). The patch number is 0025 because another agent took 0024.
+
+**Stale stubs.** The round-1 response was wrong to say every remaining stub had a current reason;
+these three files were not touched then. Now:
+
+| Java class | ported now | ignored | file |
+|---|---|---|---|
+| BzlLoadFunctionTest | 40 | 6 | `bzl_load_function_test.rs` (61 tests in all) |
+| PackageGroupTest | 23 | 1 | new `package_group_test.rs` in blaze_sky_loading |
+| EnvironmentGroupTest | 5 | 1 | new `environment_group_test.rs` in blaze_sky_loading |
+
+The ignored ones: two need a file system that fails one stat or blocks (empty stubs, Java body
+summarised); two `reduceForSerialization` tests; one holds a raw 0xFF byte (non-UTF-8 Starlark
+files are `unported!`, review S3 item 2); two hold interpreter wording only (split out as
+`_interpreter_text`). None of the old "needs agent B's visibility()" stubs needed anything
+missing. Also done from the round's smaller items: the two `select_test` tests are split so the
+ten "Cannot combine incompatible types" assertions run; the `existing_rule(s)` views fail an
+assignment with Java's text (net/starlark/java/eval/EvalUtils.java:522) and their two tests run.
+
+One more fix found by the new tests: an undefined name in a .bzl or .scl file now fails as
+"compilation of module ... failed" with the error at the identifier, as Java's compile step does,
+instead of "initialization of module ... failed" (`starlark_util::undefined_name_syntax_error`).
+The message itself stays starlark-rust's.
+
+**`--deleted_packages` evidence.** `scripts/w3/deleted-packages-probe record` writes the oracle's
+transcript of five queries on `scripts/w3/deleted-packages/ws` to `ORACLE.txt` (a fresh server
+per command); `compare` runs `blaze-query-dev` and diffs. Result: MATCH, 5 commands. It uses
+`blaze-query-dev` because the `blaze` binary still lacks the two `blaze_sky_top` calls.
+
+## Verification (round 2)
+
+- Tests, the same six crates, full run: 1131 passed, 0 failed, 562 ignored (round 1: 1036 / 0 /
+  641).
+- `scripts/w3/query-compare`: brotli 162/162, re2 1091/1091, workerd 46371/46371.
+- `cargo check --workspace --all-targets --keep-going` fails in `blaze_sky_exec` only
+  (`action_execution_function.rs:223, 575, 785`, against another agent's uncommitted
+  `skyframe_action_executor.rs`). Crates that depend on it (`blaze_sky_top`, `blaze_runtime`,
+  `blaze`) could not be checked in this tree. Round 2 changed no existing public signature.
+- rustfmt clean; clippy clean in the owned files (the same three findings in
+  `file_state.rs` and `target_pattern_function.rs`).
+- `patches/blaze.diff` regenerated (covers 0020 to 0025).
+
+## Still open after round 2
+
+- For the integration lead: the two `blaze_sky_top` calls (S1-3), and the file-name-table
+  readers (S2-2); round 2 lists two more than the round-1 response did
+  (`blaze_repo_rules/src/starlark/repository_module.rs:531, 603`).
+- Round-2 S3/S4 items not addressed: `StarlarkTypesTest` is not ported and the `.scl` type
+  annotation explanation has no test; 17 `NativeExistingRulesTest` stubs remain (they need a
+  test-only `test.save` toplevel or `@rules_cc`); the three S4 cases Blaze accepts under type
+  syntax; `print(Label(..))` in an initializer; `ThreadContext::package_context_for_file` is dead
+  code.
+- A shared `StarlarkFloat` formatter: `blaze_bzlmod_model/src/facts.rs:195` has a second port
+  without Java's two-digit minimum (prints `5e-324` where Java prints `4.9e-324`).

@@ -19,10 +19,10 @@ use blaze_cmdline::Label;
 use blaze_collect::{NestedSet, NestedSetBuilder};
 use blaze_events::StoredEventHandler;
 use blaze_exec::actions::{
-    ActionInput, ActionInputRef, Artifact, BasicVirtualActionInput, FakeOwner, FileArtifactValue,
-    FilesetOutputTree, HierarchicalPath, InputMapping, InputMetadataProvider, PathMapper,
-    ResourceSet, RunfilesArtifactValue, SimpleSpawn, Spawn, SpawnMetrics, SpawnResult,
-    SpawnResultBuilder, Status, TreeArtifactValue,
+    ActionInput, ActionInputRef, Artifact, FakeOwner, FileArtifactValue, FilesetOutputTree,
+    HierarchicalPath, InputMapping, InputMetadataProvider, PathMapper, ResourceSet,
+    RunfilesArtifactValue, SimpleSpawn, Spawn, SpawnMetrics, SpawnResult, SpawnResultBuilder,
+    Status, TreeArtifactValue,
 };
 use blaze_exec::exec::spawn_log_context::{SpawnLogContext, millis_to_proto};
 use blaze_protos::failure_details::{Crash, FailureDetail, failure_detail};
@@ -411,18 +411,14 @@ pub fn create_tree_file_artifact(
 
 /// `new ParamFileActionInput(PathFragment.create(path), args, ParameterFileType.UNQUOTED)`.
 ///
-/// PORT: `ParamFileActionInput` lives in `blaze_actions`; an UNQUOTED parameter file's contents
-/// are its arguments, each followed by a newline.
 pub fn create_param_file_action_input(path: &str, args: &[&str]) -> ActionInputRef {
-    let mut contents = Vec::new();
-    for arg in args {
-        contents.extend_from_slice(arg.as_bytes());
-        contents.push(b'\n');
-    }
-    ActionInputRef::new(BasicVirtualActionInput::new(
-        PathFragment::create(path),
-        contents,
-    ))
+    ActionInputRef::new(
+        blaze_actions::actions::command_lines::ParamFileActionInput::new(
+            PathFragment::create(path),
+            args.iter().map(|arg| arg.to_string()).collect(),
+            blaze_actions::actions::parameter_file::ParameterFileType::UNQUOTED,
+        ),
+    )
 }
 
 /// `FakeActionInputFileCache`.

@@ -16,7 +16,7 @@ use blaze_events::handler::EventHandler;
 
 use super::download_progress_event::format_grouped;
 use super::http_utils;
-use super::proxy_helper::{ProxyHelper, ProxyInfo, ProxyType};
+use super::proxy_helper::{ProxyHelper, ProxyInfo};
 use super::streams::{InputStream, ReadInputStream};
 use crate::authandtls::Headers;
 use crate::errors::{IoException, IoExceptionKind};
@@ -124,112 +124,140 @@ impl Sleeper for JavaSleeper {
     }
 }
 
-/// The default transport, built on `ureq` 2 (rustls, webpki roots).
-pub struct UreqTransport;
+/// `java.lang.IllegalArgumentException` with its message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IllegalArgumentException(pub String);
 
-fn map_transport_error(url: &JavaUri, t: &ureq::Transport) -> IoException {
-    let message = t.to_string();
-    let io_kind = std::error::Error::source(t)
-        .and_then(|s| s.downcast_ref::<std::io::Error>())
-        .map(|e| e.kind());
-    match t.kind() {
-        ureq::ErrorKind::Dns => IoException::of(
-            IoExceptionKind::UnknownHostException,
-            url.get_host().unwrap_or("").to_string(),
-        ),
-        ureq::ErrorKind::InvalidUrl | ureq::ErrorKind::UnknownScheme => {
-            IoException::of(IoExceptionKind::UnrecoverableHttpException, message)
-        }
-        _ => match io_kind {
-            Some(std::io::ErrorKind::ConnectionRefused) => {
-                IoException::of(IoExceptionKind::ConnectException, "Connection refused")
-            }
-            Some(std::io::ErrorKind::TimedOut) | Some(std::io::ErrorKind::WouldBlock) => {
-                IoException::of(
-                    IoExceptionKind::SocketTimeoutException,
-                    if t.kind() == ureq::ErrorKind::ConnectionFailed {
-                        "Connect timed out"
-                    } else {
-                        "Read timed out"
-                    },
-                )
-            }
-            Some(std::io::ErrorKind::ConnectionReset) => {
-                IoException::of(IoExceptionKind::SocketException, "Connection reset")
-            }
-            _ if message.contains("tls") || message.contains("certificate") => {
-                IoException::of(IoExceptionKind::SSLException, message)
-            }
-            _ => IoException::new(message),
-        },
+/// The names `HttpURLConnection` does not let a caller set (`restrictedHeaders`), lower-cased.
+///
+/// Bazel does not set `sun.net.http.allowRestrictedHeaders` (nothing in the client's JVM
+/// arguments or the server names it), so `allowRestrictedHeaders` is false and the list applies.
+// Java: sun/net/www/protocol/http/HttpURLConnection.java HttpURLConnection.restrictedHeaders (JDK 25.0.2, the embedded JDK; read from the class file)
+const RESTRICTED_HEADERS: [&str; 12] = [
+    "access-control-request-headers",
+    "access-control-request-method",
+    "connection", // close is allowed
+    "content-length",
+    "content-transfer-encoding",
+    "host",
+    "keep-alive",
+    "origin",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "via",
+];
+
+/// Checks the validity of an http message header: a name with a line feed or a colon, or a value
+/// with a line feed that does not start a continuation line (space or tab), is illegal.
+// Java: sun/net/www/protocol/http/HttpURLConnection.java HttpURLConnection.checkMessageHeader (JDK 25.0.2)
+pub fn check_message_header(key: &str, value: &str) -> Result<(), IllegalArgumentException> {
+    if key.contains('\n') || key.contains(':') {
+        return Err(IllegalArgumentException(format!(
+            "Illegal character(s) in message header field: {key}"
+        )));
     }
+    let bytes = value.as_bytes();
+    let mut index = value.find('\n');
+    while let Some(lf) = index {
+        let next = lf + 1;
+        if next < bytes.len() && (bytes[next] == b' ' || bytes[next] == b'\t') {
+            // ok, check the next occurrence
+            index = value[next..].find('\n').map(|i| i + next);
+            continue;
+        }
+        return Err(IllegalArgumentException(format!(
+            "Illegal character(s) in message header value: {value}"
+        )));
+    }
+    Ok(())
 }
 
-impl HttpTransport for UreqTransport {
-    fn open(
-        &self,
-        url: &JavaUri,
-        proxy: &ProxyInfo,
-        headers: &[(String, String)],
-        connect_timeout_ms: i32,
-        read_timeout_ms: i32,
-    ) -> Result<UrlConnection, IoException> {
-        let mut builder = ureq::AgentBuilder::new()
-            .redirects(0)
-            .timeout_connect(Duration::from_millis(connect_timeout_ms.max(1) as u64))
-            .timeout_read(Duration::from_millis(read_timeout_ms.max(1) as u64));
-        if proxy.proxy_type != ProxyType::DIRECT {
-            let scheme = match proxy.proxy_type {
-                ProxyType::SOCKS => "socks5",
-                _ => "http",
-            };
-            let creds = match (proxy.username(), proxy.password()) {
-                (Some(u), Some(p)) => format!("{}:{}@", u, p),
-                _ => String::new(),
-            };
-            let spec = format!("{}://{}{}", scheme, creds, proxy.address().unwrap());
-            let p = ureq::Proxy::new(&spec).map_err(|e| IoException::new(e.to_string()))?;
-            builder = builder.proxy(p);
+/// Whether `HttpURLConnection` silently ignores a caller's attempt to set this header.
+// Java: sun/net/www/protocol/http/HttpURLConnection.java HttpURLConnection.isRestrictedHeader (JDK 25.0.2)
+pub fn is_restricted_header(key: &str, value: &str) -> bool {
+    // key.toLowerCase(Locale.ROOT)
+    let key = key.to_lowercase();
+    if RESTRICTED_HEADERS.contains(&key.as_str()) {
+        // Exceptions to restricted headers: allow "Connection: close".
+        if key == "connection" && value.eq_ignore_ascii_case("close") {
+            return false;
         }
-        let agent = builder.build();
-        let mut request = agent.request("GET", url.as_str());
-        // PORT: HttpURLConnection sends repeated request properties as separate header lines;
-        // ureq keeps one line per name, so repeated values are joined with ", " (equivalent per
-        // RFC 9110 §5.3).
-        let mut merged: Vec<(String, String)> = Vec::new();
-        for (k, v) in headers {
-            match merged.iter_mut().find(|(mk, _)| mk.eq_ignore_ascii_case(k)) {
-                Some((_, mv)) => {
-                    mv.push_str(", ");
-                    mv.push_str(v);
-                }
-                None => merged.push((k.clone(), v.clone())),
+        return true;
+    } else if key.starts_with("sec-") {
+        return true;
+    }
+    false
+}
+
+/// The request properties of an `HttpURLConnection` (`requests`, a `MessageHeader`), with the
+/// checks `setRequestProperty` and `addRequestProperty` apply to what a caller sets.
+// Java: sun/net/www/protocol/http/HttpURLConnection.java HttpURLConnection.addRequestProperty (JDK 25.0.2)
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RequestProperties {
+    headers: Vec<(String, String)>,
+}
+
+impl RequestProperties {
+    /// Checks the validity of the header and whether it is restricted: `Err` if invalid,
+    /// `Ok(false)` if the header must be ignored.
+    // Java: sun/net/www/protocol/http/HttpURLConnection.java HttpURLConnection.isExternalMessageHeaderAllowed
+    fn is_external_message_header_allowed(
+        key: &str,
+        value: &str,
+    ) -> Result<bool, IllegalArgumentException> {
+        check_message_header(key, value)?;
+        Ok(!is_restricted_header(key, value))
+    }
+
+    /// Sets the property, replacing the first one of that name (`MessageHeader.set`).
+    // Java: sun/net/www/protocol/http/HttpURLConnection.java HttpURLConnection.setRequestProperty
+    pub fn set_request_property(
+        &mut self,
+        key: &str,
+        value: &str,
+    ) -> Result<(), IllegalArgumentException> {
+        if Self::is_external_message_header_allowed(key, value)? {
+            match self
+                .headers
+                .iter_mut()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            {
+                Some((_, v)) => *v = value.to_string(),
+                None => self.headers.push((key.to_string(), value.to_string())),
             }
         }
-        for (k, v) in &merged {
-            request = request.set(k, v);
+        Ok(())
+    }
+
+    /// Adds the property (`MessageHeader.add`).
+    // Java: sun/net/www/protocol/http/HttpURLConnection.java HttpURLConnection.addRequestProperty
+    pub fn add_request_property(
+        &mut self,
+        key: &str,
+        value: &str,
+    ) -> Result<(), IllegalArgumentException> {
+        if Self::is_external_message_header_allowed(key, value)? {
+            self.headers.push((key.to_string(), value.to_string()));
         }
-        let response = match request.call() {
-            Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r,
-            Err(ureq::Error::Transport(t)) => return Err(map_transport_error(url, &t)),
-        };
-        let code = response.status() as i32;
-        let message = response.status_text().to_string();
-        let mut resp_headers = Vec::new();
-        for name in response.headers_names() {
-            for v in response.all(&name) {
-                resp_headers.push((name.clone(), v.to_string()));
-            }
-        }
-        let reader = response.into_reader();
-        Ok(UrlConnection::new(
-            url.clone(),
-            code,
-            Some(message),
-            resp_headers,
-            Ok(Box::new(ReadInputStream::new(reader))),
-        ))
+        Ok(())
+    }
+
+    /// The last value set for `key` (`MessageHeader.findValue`).
+    // PORT: `getRequestProperty` hides `Proxy-Authorization` and `Authorization`
+    // (EXCLUDE_HEADERS); HttpConnector only asks for `User-Agent`.
+    // Java: sun/net/www/protocol/http/HttpURLConnection.java HttpURLConnection.getRequestProperty
+    pub fn get_request_property(&self, key: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .rev()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The properties in the order they will be written.
+    pub fn into_header_lines(self) -> Vec<(String, String)> {
+        self.headers
     }
 }
 
@@ -353,14 +381,22 @@ impl HttpConnector {
         loop {
             let attempt: Result<Option<UrlConnection>, IoException> = (|| {
                 let proxy_info = self.proxy_helper.create_proxy_if_needed(&url)?;
-                let mut header_lines: Vec<(String, String)> = Vec::new();
+                // Java: `catch (IllegalArgumentException e) { throw new
+                // UnrecoverableHttpException(e.getMessage()); }` around the whole attempt; the
+                // request properties are what throws it (`checkMessageHeader`).
+                let illegal_argument = |e: IllegalArgumentException| {
+                    IoException::of(IoExceptionKind::UnrecoverableHttpException, e.0)
+                };
+                let mut request_properties = RequestProperties::default();
                 // For HTTP connections through authenticated proxies, set the
                 // Proxy-Authorization header.
                 if proxy_info.has_credentials() && http_utils::is_protocol(&url, "http") {
-                    header_lines.push((
-                        "Proxy-Authorization".to_string(),
-                        proxy_info.get_proxy_authorization_header().unwrap(),
-                    ));
+                    request_properties
+                        .set_request_property(
+                            "Proxy-Authorization",
+                            &proxy_info.get_proxy_authorization_header().unwrap(),
+                        )
+                        .map_err(illegal_argument)?;
                 }
                 let url_path = url.get_path().unwrap_or_default();
                 let original_path = original_url.get_path().unwrap_or_default();
@@ -375,15 +411,20 @@ impl HttpConnector {
                         continue;
                     }
                     for value in values {
-                        header_lines.push((key.clone(), value));
+                        request_properties
+                            .add_request_property(&key, &value)
+                            .map_err(illegal_argument)?;
                     }
                 }
-                if !header_lines
-                    .iter()
-                    .any(|(k, _)| k.eq_ignore_ascii_case("User-Agent"))
+                if request_properties
+                    .get_request_property("User-Agent")
+                    .is_none()
                 {
-                    header_lines.push(("User-Agent".to_string(), user_agent_value()));
+                    request_properties
+                        .set_request_property("User-Agent", &user_agent_value())
+                        .map_err(illegal_argument)?;
                 }
+                let header_lines = request_properties.into_header_lines();
                 // The read timeout is always large because it stays in effect after this
                 // method.
                 let mut connection = match self.transport.open(
@@ -537,5 +578,5 @@ fn read_all_bytes_and_close(connection: &mut UrlConnection) {
 
 /// Default transport handle.
 pub fn default_transport() -> Arc<dyn HttpTransport> {
-    Arc::new(UreqTransport)
+    Arc::new(super::socket_transport::SocketTransport)
 }

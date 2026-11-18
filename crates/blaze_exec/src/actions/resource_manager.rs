@@ -224,7 +224,7 @@ impl ResourceHandle {
             (Some(manager), Some(request)) => manager.release_resources(&request),
             _ => Ok(()),
         }
-        // PORT: profiling dropped.
+        // PORT: skipped, profiling.
     }
 
     /// `getWorker()` / `invalidateAndClose(e)`: persistent workers are not ported.
@@ -370,7 +370,7 @@ impl ResourceManager {
         let mut st = self.state.lock();
         ResourceManager::reset_resource_usage_locked(&mut st);
         st.available_resources = Some(resources);
-        // PORT: logging dropped.
+        // PORT: skipped, tracing (Java log).
     }
 
     /// `availableResources` (`@VisibleForTesting public`).
@@ -413,7 +413,7 @@ impl ResourceManager {
             id: REQUEST_ID_GENERATOR.fetch_add(1, Ordering::SeqCst),
         };
 
-        // PORT: profiling dropped.
+        // PORT: skipped, profiling.
         let resource_latch = self.acquire(&request)?;
         if let Some(latch) = &resource_latch.latch
             && latch.await_interruptibly().is_err()

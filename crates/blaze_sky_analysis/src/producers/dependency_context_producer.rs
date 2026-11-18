@@ -100,7 +100,7 @@ pub fn produce_dependency_context_with_compatibility_check(
         Some(Ok(info)) => info,
         // Java: DependencyContextProducerWithCompatibilityCheck.acceptPlatformInfoError
         Some(Err(PlatformProducerError::InvalidPlatform(e))) => {
-            return Ok(Some(Err(DependencyContextError::Toolchain(e.into()))));
+            return Ok(Some(Err(DependencyContextError::Toolchain(e))));
         }
         // Java: DependencyContextProducerWithCompatibilityCheck.acceptOptionsParsingError
         Some(Err(PlatformProducerError::OptionsParsing(message))) => {

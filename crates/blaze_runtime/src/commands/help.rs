@@ -140,8 +140,9 @@ impl BlazeCommand for HelpCommand {
         env: &mut CommandEnvironment,
         options: &OptionsParsingResult,
     ) -> BlazeCommandResult {
-        // PORT: `env.getEventBus().post(new NoBuildEvent())` is skipped: Blaze has no event bus
-        // yet.
+        // PORT: `env.getEventBus().post(new NoBuildEvent())` only reaches the Build Event
+        // Protocol, which is ported for build and test; a BEP file requested for this command
+        // fails loudly before it runs (crate::unported_options).
         let runtime = env.get_runtime().clone();
         let out_err = env.get_reporter().get_out_err().clone();
         let _help_options = options

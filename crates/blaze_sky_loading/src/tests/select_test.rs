@@ -41,8 +41,10 @@ fn eval_string(expr: &str) -> String {
 }
 
 // Java: SelectTest.testPlusIncompatibleType
+// Holds the Java test without its last two assertions (SelectTest.java:111-114, the
+// interpreter's "unsupported binary operation" text), which are in
+// `test_plus_incompatible_type_interpreter_text`.
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'unsupported binary operation: select + dict'"]
 fn test_plus_incompatible_type() {
     assert_fails(
         "select({'foo': ['FOO'], 'bar': ['BAR']}) + 1",
@@ -69,6 +71,13 @@ fn test_plus_incompatible_type() {
         "select({'bar': {'a': 'a'}}) + ['FOO']",
         "Cannot combine incompatible types (select of dict, list)",
     );
+}
+
+// Java: SelectTest.testPlusIncompatibleType (its last two assertions, SelectTest.java:111-114:
+// `select + dict` and `dict + select` fail with EvalUtils.java:417's text).
+#[test]
+#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'unsupported binary operation: select + dict'"]
+fn test_plus_incompatible_type_interpreter_text() {
     assert_fails(
         "select({'foo': ['FOO']}) + {'a': 'a'}",
         "unsupported binary operation: select + dict",
@@ -80,8 +89,10 @@ fn test_plus_incompatible_type() {
 }
 
 // Java: SelectTest.testUnionIncompatibleType
+// Holds the Java test without its third and fourth assertions (SelectTest.java:125-128, the
+// interpreter's "unsupported binary operation" text), which are in
+// `test_union_incompatible_type_interpreter_text`.
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'unsupported binary operation: list | select'"]
 fn test_union_incompatible_type() {
     assert_fails(
         "select({'foo': ['FOO']}) | select({'bar': {'a': 'a'}})",
@@ -92,20 +103,28 @@ fn test_union_incompatible_type() {
         "Cannot combine incompatible types (select of dict, select of list)",
     );
     assert_fails(
-        "['FOO'] | select({'bar': {'a': 'a'}})",
-        "unsupported binary operation: list | select",
-    );
-    assert_fails(
-        "select({'bar': {'a': 'a'}}) | ['FOO']",
-        "unsupported binary operation: select | list",
-    );
-    assert_fails(
         "select({'foo': ['FOO']}) | {'a': 'a'}",
         "Cannot combine incompatible types (select of list, dict)",
     );
     assert_fails(
         "{'a': 'a'} | select({'foo': ['FOO']})",
         "Cannot combine incompatible types (dict, select of list)",
+    );
+}
+
+// Java: SelectTest.testUnionIncompatibleType (its third and fourth assertions,
+// SelectTest.java:125-128: `list | select` and `select | list` fail with EvalUtils.java:417's
+// text).
+#[test]
+#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'unsupported binary operation: list | select'"]
+fn test_union_incompatible_type_interpreter_text() {
+    assert_fails(
+        "['FOO'] | select({'bar': {'a': 'a'}})",
+        "unsupported binary operation: list | select",
+    );
+    assert_fails(
+        "select({'bar': {'a': 'a'}}) | ['FOO']",
+        "unsupported binary operation: select | list",
     );
 }
 

@@ -1,0 +1,35 @@
+# Incompatible targets (analysis review S1-4): target_compatible_with at the top level
+# (TopLevelConstraintSemantics) and through dependencies (IncompatibleTargetChecker).
+run build //pkg:bad
+run build //pkg:all
+run build //pkg/...
+run build //pkg:ok //pkg:bad
+run build //pkg:ok //pkg:bad --keep_going
+run build //pkg:ok //pkg:bad --skip_incompatible_explicit_targets
+run build //pkg:dep_on_bad
+run build //pkg:dep_on_dep_on_bad
+run build //pkg:gen_on_bad
+run build //pkg:bad_alias
+run build //pkg:needs_vanilla
+run build //pkg:needs_two
+run build //pkg:select_vanilla
+run build //pkg:needs_vanilla //pkg:select_vanilla --platforms=//pkg:vanilla_platform
+run build //pkg:select_opt
+run build //pkg:select_opt -c opt
+run build //pkg:bad_gen.out
+run cquery //pkg:all --output=label_kind
+run cquery "deps(//pkg:dep_on_bad)"
+run cquery //pkg:bad
+run cquery //pkg:all --output=label_kind --platforms=//pkg:vanilla_platform
+aquery //pkg:all
+aquery //pkg:bad
+aquery //pkg:dep_on_dep_on_bad
+run aquery //pkg:bad_test
+run test //pkg:all
+run test //pkg:bad_test
+run test //pkg:test_on_bad
+run test //pkg:ok_test //pkg:bad_test --keep_going
+run test //pkg:ok_test //pkg:bad_test --skip_incompatible_explicit_targets
+run build //pkg:ok //pkg:bad --noexperimental_merged_skyframe_analysis_execution
+run build //pkg:ok //pkg:bad --keep_going --noexperimental_merged_skyframe_analysis_execution
+run build //pkg:all --noexperimental_merged_skyframe_analysis_execution

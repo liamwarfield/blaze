@@ -1,0 +1,35 @@
+load(":defs.bzl", "bad_tree", "consume", "sandboxed_consume", "tree")
+
+exports_files(["marker.txt"])
+
+tree(name = "tree")
+
+consume(
+    name = "consume",
+    tree = ":tree",
+)
+
+sandboxed_consume(
+    name = "sandboxed_consume",
+    tree = ":tree",
+)
+
+bad_tree(
+    name = "dangling",
+    cmd = 'mkdir -p "$1/sub" && echo x > "$1/sub/x" && ln -s nowhere "$1/sub/dangling"',
+)
+
+bad_tree(
+    name = "fifo",
+    cmd = 'mkdir -p "$1" && mkfifo "$1/pipe"',
+)
+
+bad_tree(
+    name = "removed",
+    cmd = 'rmdir "$1"',
+)
+
+bad_tree(
+    name = "empty",
+    cmd = "true",
+)

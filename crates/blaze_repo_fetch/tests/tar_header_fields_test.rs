@@ -200,3 +200,125 @@ fn mtime_field_with_a_byte_that_is_not_an_octal_digit_is_a_corrupted_archive() {
         b"hello",
     )]);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Header checksums (review 2026-11-18 round 2, N4)
+// ---------------------------------------------------------------------------------------------
+
+/// `entry` with its checksum field replaced by `field`.
+fn with_checksum_field(mut entry: Vec<u8>, field: &[u8; 8]) -> Vec<u8> {
+    entry[148..156].copy_from_slice(field);
+    entry
+}
+
+fn entry_named(name: &str) -> Vec<u8> {
+    tar_entry(
+        name,
+        field(b"0000644\0"),
+        field(b"00000000000\0"),
+        name.as_bytes(),
+    )
+}
+
+/// Commons Compress does not verify the header checksum (`TarArchiveEntry.isCheckSumOK()` is
+/// only stored), so an entry with a wrong or blank checksum is extracted, and so is the entry
+/// after it.
+///
+/// The expected results are those of commons-compress-1.26.1.jar (the version Bazel 9.3.2 pins)
+/// run on archives with these checksum fields: `TarArchiveInputStream` returned the entry with
+/// `isCheckSumOK() == false` and its content, then `good.txt`.
+#[test]
+fn entry_with_wrong_header_checksum_is_extracted() {
+    for (name, checksum) in [
+        ("wrong.txt", b"0000000\0"),
+        ("blank.txt", &[0u8; 8]),
+        ("spaces.txt", b"        "),
+        // parseOctal: a field that starts with NUL is 0, whatever follows.
+        ("nulfirst.txt", b"\0zzzzzzz"),
+        // parseOctal trims all trailing NULs and spaces.
+        ("trail.txt", b"123 \0 \0 "),
+    ] {
+        let (tmp, result) = extract(&[
+            with_checksum_field(entry_named(name), checksum),
+            entry_named("good.txt"),
+        ]);
+        result.unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let out = tmp.path().join("out");
+        assert_eq!(
+            std::fs::read(out.join(name)).unwrap(),
+            name.as_bytes(),
+            "{name}"
+        );
+        assert_eq!(std::fs::read(out.join("good.txt")).unwrap(), b"good.txt");
+    }
+}
+
+/// `TarUtils.verifyCheckSum` reads the stored checksum with `parseOctal`, so a checksum field
+/// that is not an octal number fails the archive with `IOException("Corrupted TAR archive.")`,
+/// like any other corrupt numeric field. Results of the real jar, as above.
+#[test]
+fn checksum_field_that_is_not_octal_is_corrupted() {
+    for checksum in [b"zzzzzzzz", b"12345678", b"12 34\0  "] {
+        corrupted(&[
+            with_checksum_field(entry_named("bad.txt"), checksum),
+            entry_named("good.txt"),
+        ]);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The other numeric fields of every header (review 2026-11-18 round 3)
+// ---------------------------------------------------------------------------------------------
+
+fn with_field(mut entry: Vec<u8>, range: std::ops::Range<usize>, bytes: &[u8]) -> Vec<u8> {
+    entry[range].copy_from_slice(bytes);
+    // Keep the checksum valid, so that only the field under test differs.
+    entry[148..156].copy_from_slice(b"        ");
+    let sum: u32 = entry[..512].iter().map(|b| *b as u32).sum();
+    entry[148..156].copy_from_slice(format!("{:06o}\0 ", sum).as_bytes());
+    entry
+}
+
+/// A header of an empty file (no data blocks).
+fn empty_entry(name: &str) -> Vec<u8> {
+    tar_entry(name, field(b"0000644\0"), field(b"00000000000\0"), b"")
+}
+
+/// `TarUtils.parseOctalOrBinary`: a blank `size`, `uid` or `gid` is 0. Results of
+/// commons-compress-1.26.1.jar on archives with these fields: the entry (empty) and then
+/// `good.txt` were returned.
+#[test]
+fn blank_size_uid_and_gid_fields_are_zero() {
+    for (name, range, bytes) in [
+        ("size_nul.txt", 124..136, &[0u8; 12][..]),
+        ("size_spaces.txt", 124..136, &[b' '; 12][..]),
+        ("size_no_terminator.txt", 124..136, &b"000000000000"[..]),
+        ("uid_nul.txt", 108..116, &[0u8; 8][..]),
+        ("gid_spaces.txt", 116..124, &[b' '; 8][..]),
+    ] {
+        let (tmp, result) = extract(&[
+            with_field(empty_entry(name), range, bytes),
+            entry_named("good.txt"),
+        ]);
+        result.unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let out = tmp.path().join("out");
+        assert_eq!(std::fs::read(out.join(name)).unwrap(), b"", "{name}");
+        assert_eq!(std::fs::read(out.join("good.txt")).unwrap(), b"good.txt");
+    }
+}
+
+/// A `size`, `uid` or `gid` that is not a number fails the archive with
+/// `IOException("Corrupted TAR archive.")`. Results of the real jar, as above.
+#[test]
+fn size_uid_and_gid_fields_that_are_not_numbers_are_corrupted() {
+    for (range, bytes) in [
+        (124..136, &b"zzzzzzzzzzz\0"[..]),
+        (108..116, &b"zzzzzzz\0"[..]),
+        (116..124, &b"zzzzzzz\0"[..]),
+    ] {
+        corrupted(&[
+            with_field(empty_entry("bad.txt"), range, bytes),
+            entry_named("good.txt"),
+        ]);
+    }
+}

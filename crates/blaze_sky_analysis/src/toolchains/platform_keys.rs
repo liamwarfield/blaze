@@ -137,7 +137,9 @@ impl<'e, 'a> Builder<'e, 'a> {
     fn find_execution_platform_keys(&mut self) -> Result<Option<()>, ToolchainLookupError> {
         // Find the registered execution platforms.
         let registered_execution_platforms = match self.environment.get_value_or_throw_with(
-            // PORT: the debug printer is not ported; debugEnabled() is false here.
+            // PORT: debugPrinter.debugEnabled() is false here: with debugging
+            // ToolchainResolutionFunction.compute stops at
+            // `unported!("ToolchainResolutionDebugPrinter.create")` before PlatformKeys.load.
             RegisteredExecutionPlatformsKey::key(self.configuration_key.clone(), false),
             catch_toolchain_exception(&[
                 ToolchainExceptionKind::InvalidPlatform,
@@ -150,7 +152,8 @@ impl<'e, 'a> Builder<'e, 'a> {
         };
 
         // If debugging, describe rejected execution platforms.
-        // PORT: rejectedPlatforms is only read by the debug printer.
+        // (debugPrinter.reportRejectedExecutionPlatforms: `rejected_platforms` is null unless
+        // debugging, which is unported, see above.)
 
         // A given execution platform may be registered multiple times, but only the earliest
         // registration is meaningful in practice. To avoid unnecessary reprocessing a
@@ -259,7 +262,8 @@ fn filter_platform(
     constraints: &[blaze_analysis::platform::ConstraintValueInfo],
 ) -> bool {
     let missing_constraints = platform_info.constraints().find_missing(constraints);
-    // PORT: debugPrinter.reportRemovedExecutionPlatform is a no-op without debugging.
+    // (debugPrinter.reportRemovedExecutionPlatform is a no-op without debugging; debugging is
+    // unported, see findExecutionPlatformKeys.)
     missing_constraints.is_empty()
 }
 

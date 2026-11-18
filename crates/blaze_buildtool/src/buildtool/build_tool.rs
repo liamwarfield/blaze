@@ -40,8 +40,8 @@ pub fn execute_top_level_targets(
     )
 }
 
-/// The `BuildCompleteEvent` subscribers' lines: elapsed time and critical path, process
-/// counts, and `Build completed successfully, N total actions`.
+/// The `BuildCompleteEvent` subscribers' lines: elapsed time, process counts, and
+/// `Build completed successfully, N total actions`.
 pub fn report_build_complete(
     reporter: &dyn EventHandler,
     collector: &ExecutionEventCollector,
@@ -49,8 +49,7 @@ pub fn report_build_complete(
     elapsed_seconds: f64,
     failed_tests: i32,
 ) {
-    let critical_path = (result.stop - result.start).as_secs_f64();
-    report_build_summary_stats(reporter, collector, elapsed_seconds, critical_path);
+    report_build_summary_stats(reporter, collector, elapsed_seconds);
     reporter.handle(&build_complete_event(
         !result.evaluation.has_error(),
         failed_tests,

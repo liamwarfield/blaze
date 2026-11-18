@@ -86,7 +86,8 @@ impl StringChunk {
 ///
 /// To get a literal percent character, "%%" can be used in the string.
 // Java: com/google/devtools/build/lib/rules/cpp/CcToolchainVariables.java:140 CcToolchainVariables.StringValueParser
-// PORT: positions are byte offsets; Java uses UTF-16 offsets. They agree for ASCII flags.
+// PORT: the parser works on byte offsets; a position that is printed is converted to Java's
+// index in the internal string (`java_position`).
 pub struct StringValueParser {
     value: String,
     /// The current position in `value` during parsing.
@@ -183,8 +184,8 @@ impl StringValueParser {
             // PORT: Java's substring(current, -1) throws here.
             None => panic!(
                 "StringIndexOutOfBoundsException: begin {}, end -1, length {}",
-                self.current,
-                self.value.len()
+                self.java_position(self.current),
+                self.java_position(self.value.len())
             ),
         };
         let name = self.value[self.current..end].to_string();
@@ -208,13 +209,21 @@ impl StringValueParser {
         Ok(())
     }
 
+    /// Java's index (in chars of the internal string) of the byte offset `at`. The parser only
+    /// stops at ASCII delimiters or the end, so `at` is a char boundary.
+    fn java_position(&self, at: usize) -> usize {
+        blaze_util::string_encoding::internal_length(&self.value[..at])
+    }
+
     /// Returns an error with the given text, adding information about the current position in
     /// the string.
     // Java: com/google/devtools/build/lib/rules/cpp/CcToolchainVariables.java:248 CcToolchainVariables.StringValueParser.abort
     fn abort(&self, error: &str) -> EvalException {
         EvalException::new(format!(
             "Invalid toolchain configuration: {} at position {} while parsing a flag containing '{}'",
-            error, self.current, self.value
+            error,
+            self.java_position(self.current),
+            self.value
         ))
     }
 }

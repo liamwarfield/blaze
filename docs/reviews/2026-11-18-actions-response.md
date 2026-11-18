@@ -299,3 +299,162 @@ signature `(Value, Heap) -> Value` is what was meant.
   `tests/dependency_set_test.rs`.
 - `scripts/actions-probe/run`, `scripts/string-encoding/{run,Utf8DecodeVectors.java}` (new).
 - `Cargo.lock`: `blaze_util` gains `sha1`, `blaze_cc_features` gains `blaze_actions`.
+
+---
+
+# Round 2 response
+
+Date 2026-11-18. Answers "Round 2" of `2026-11-18-actions.md` (PASS, bound to `f938830`): N1, N2,
+N3 and S3-1.
+
+Tree: HEAD `03409d9` plus uncommitted changes in `blaze_util`, `blaze_actions`,
+`blaze_cc_features`, `third_party/starlark-rust` (patch 0024, authorized by root for S3-1),
+`crates/starlark_conformance/tests/patches.rs` (its test), `scripts/actions-probe/run` and this
+file. Nothing is committed.
+
+Verification on that tree:
+
+- Full suites of `blaze_util`, `blaze_collect`, `blaze_actions`, `blaze_cc_features`: 453 passed,
+  0 failed, 67 ignored. `oracle_action_keys`: 238 of 238. `non_ascii_action_keys`: 78 of 78 after
+  the switch, 74 of 74 before. clippy `-D warnings` and rustfmt clean on the four crates.
+- `starlark_conformance` and `blaze_starlark` full suites (starlark-rust changed): 141 passed, 0
+  failed. `cargo check --workspace`: clean.
+- Through the binary (`target/debug/blaze` built from this tree, the 22 cases of the map_each
+  probe, `build --nobuild` per case, compared with the oracle's `expected.txt`): 19 identical,
+  among them all 13 `map_each` cases with the six error messages. The 3 that differ are the
+  mnemonic cases explained under N2.
+
+| finding | state | where | test |
+|---|---|---|---|
+| N1 aquery JSON off the seam | fixed | `aquery_output_handler.rs` `close` | `oracle_aquery_dump.rs`, 2 new |
+| N2 non-ASCII mnemonic accepted | fixed in `blaze_actions`; one line left for `blaze_analysis` | `spawn_action.rs` `is_valid_mnemonic` | `spawn_action_mnemonic_test.rs`, 9 oracle cases |
+| N3 constant not tied to the decoding | shared decoder function and a guard test; the decoders' own edit is two lines for their owners | `string_encoding::parser_input_from_latin1`, `tests/string_seam_guard_test.rs` | mutation-checked |
+| S3-1 rejected `map_each` panics | fixed | starlark-rust patch 0024, `args.rs` | `map_each_not_global_error_text`, un-ignored |
+| byte offset in `StringValueParser`'s error | fixed | `cc_toolchain_variables.rs` `java_position` | none new (ASCII tests unchanged) |
+
+## N1. aquery JSON
+
+`MonolithicOutputHandler::close` writes `internal_string_bytes(&json)`: Java's `PrintStream` in
+ISO-8859-1, one byte per char of the internal strings. Today that is `as_bytes()`; after the
+switch it is the Latin-1 encoding, so nothing is encoded twice.
+
+`oracle_aquery_dump.rs` now replays the non-ASCII probe through `ActionGraphDump` and the handler
+and compares all bytes with the recording:
+
+- after the switch (recording read as Latin-1, internal strings): the oracle's file, byte for
+  byte, 47882 bytes, including the `ff` of the raw-byte probes;
+- before the switch (recording read as UTF-8): the oracle's file, byte for byte, except the stray
+  bytes of the four probes that are not UTF-8 text, which have no string today.
+
+The brotli and re2 replays still match.
+
+## N2. Mnemonic
+
+`is_valid_mnemonic` ports `!mnemonic.isEmpty() &&
+CharMatcher.javaLetterOrDigit().matchesAllOf(mnemonic)` on the chars of the internal string
+(`to_internal`), with Java's `Character.isLetterOrDigit` for Latin-1 written out (the letters of
+categories Lu, Ll, Lo and ASCII digits; `²` is not a digit for Java).
+`SpawnActionBuilder::set_mnemonic` uses it.
+
+The result depends on the bytes, and the oracle confirms it. Nine cases were added to the probe
+(`MNEMONIC_CASES` in `tests/data/map_each_probe/workspace/cases.bzl`, recorded in `expected.txt`):
+`Qé` (c3 a9) rejected, `Qê` (c3 aa: `Ã`, `ª`) accepted, `Qµ` accepted, `Q²` rejected, `Q🐷`
+rejected, `Q-x` and the empty string rejected, `Q1` accepted, `"Q\351"` (the byte e9) accepted.
+`spawn_action_mnemonic_test.rs` checks all nine after the switch and eight before it (the last is
+not UTF-8 text), including the message of the `IllegalArgumentException`.
+
+**For the analysis lead, `blaze_analysis/src/starlark/starlark_action_factory.rs:549`**, replace
+the condition line with:
+
+```rust
+    if !blaze_actions::analysis::actions::spawn_action::is_valid_mnemonic(mnemonic) {
+```
+
+Until that is in, the binary is wrong for `Qé` and `Q²` in a new way: the analysis copy accepts
+them (`char::is_alphanumeric`), and the builder's precondition then fails as a crash (exit 101)
+instead of `Error in run: mnemonic must only contain ...`. Before this round they were accepted
+silently. With the line above the three remaining differences of the binary run reduce to
+`mnemonic_raw_byte`, which needs the switch.
+
+## N3. One switch
+
+`string_encoding::parser_input_from_latin1(bytes)` is Java's `ParserInput.fromLatin1` on the
+seam: UTF-8 text while `STRINGS_ARE_INTERNAL` is `false`, one char per byte when it is `true`. A
+decoder that calls it reads the same constant as `Fingerprint::add_string`, so the two cannot be
+switched separately.
+
+The two decoders are not mine, so until they call it `blaze_util/tests/string_seam_guard_test.rs`
+holds the line. It reads their source and fails when:
+
+- the constant is `true` and a decoder does not call `parser_input_from_latin1`
+  (checked: flipping the constant alone makes the test fail; the constant is back to `false`);
+- the constant is `false` and a decoder neither calls it nor is the UTF-8 decoder any more
+  (someone switched the decoding by hand);
+- a `fn create_parser_input` exists in a file the guard does not list.
+
+It is a source scan, so it is a tripwire, not a proof: the end-to-end probe of step 4 below stays
+the real check. Requests 8 and 9 make the tie structural.
+
+### Checklist for the switch
+
+Also in the module comment of `blaze_util/src/string_encoding.rs`.
+
+1. Before the switch, with no change of behaviour (each step is the identity while the constant
+   is `false`):
+   - `blaze_sky_loading/src/starlark_util.rs` and
+     `blaze_bzlmod/src/module_file/compiled_module_file.rs`: `create_parser_input` gets its text
+     from `string_encoding::parser_input_from_latin1(&bytes)`; `Err` keeps today's handling.
+   - Every place where a string leaves or enters as bytes calls `internal_string_bytes` /
+     `internal_string_from_bytes` instead of `as_bytes()` / `String::from_utf8*`: process argv,
+     environment, working directory; file system paths and directory entries; console and event
+     output; repository rule `read`, `execute`, `file`, `template`; command-line and rc intake;
+     query, cquery and aquery writers. In my four crates this is done.
+   - Every Java `String.length()` or index on an internal string calls `internal_length`.
+   - Text that is really Unicode (protos, JSON, lockfile, registry) goes through
+     `unicode_to_internal` / `internal_to_unicode` where Java calls `StringEncoding`.
+2. The interpreter's part: starlark-rust escapes, case mapping, `strip`, `repr`, Blaze's
+   `json.decode` (docs/research/07-byte-strings.md, section 4, option A).
+3. Set `STRINGS_ARE_INTERNAL` to `true` in `blaze_util/src/string_encoding.rs`. Nothing else is
+   part of the switch itself.
+4. Check, in this order:
+   - `scripts/cargo-capped test -p blaze_util -p blaze_actions` (the guard; the key and aquery
+     tests run both sides);
+   - `scripts/actions-probe/run --binary <blaze> --out <file>`, then `cmp <file>
+     crates/blaze_actions/tests/data/non_ascii_probe/aquery.jsonproto`: all 78 actions byte for
+     byte, the four `"\377"` probes included;
+   - `scripts/bytes/run --binary <blaze>` against `~/.cache/blaze/work/bytes-out`;
+   - the gate: brotli and re2 byte-identical.
+5. Later: replace each seam function by the plain one its documentation names, delete
+   `Fingerprint::add_internal_string` and the before-the-switch halves of the tests.
+
+## S3-1. Bazel's error for a rejected `map_each`
+
+starlark-rust patch **0024** (`third_party/starlark-rust/PATCHES.md`; the other agent's
+immutable-set patch took 0025 after it): `DefInfo::declaration_span` and
+`DefModule::declaration_span(function) -> Option<FileSpan>`, Java
+`StarlarkFunction.getLocation`: the name of a `def`, the expression of a `lambda` (so the
+`lambda` keyword). `signature_span` could not serve: for a lambda it is the span of the
+parameters. Lines carry `BLAZE PATCH 0024`; `patches/blaze.diff` is regenerated (it now also
+holds 0025 as it stood when I ran it); test `patch_0024_def_declaration_span` uses the probe's
+`cases.bzl` and the oracle's positions (`9:9`, `21:11`).
+
+`args.rs` builds the message from it. `map_each_not_global_error_text` is un-ignored and passes:
+the six oracle lines, with `Error in add_all:` / `Error in add_joined:` and the position, for
+`Args` and `TemplateDict`. No `unported!` is left on this path.
+
+`blaze_analysis` `validate_is_top_level_starlark_function` (`resource_set`) can now do the same
+with `DefModule::declaration_span` (request 10).
+
+## Not changed in this round
+
+R1 (the `"\377"` probes) needs the switch. S3-2 needs `blaze_exec` to call the writer (request
+2). S3-3, 4, 5, 7, S4-1, S4-4 and the stand-ins of S4-3 stand as in round 1.
+
+## Requests added in round 2
+
+8. **blaze_sky_loading (loading owner):** in `starlark_util.rs` `create_parser_input`, take the
+   text from `blaze_util::string_encoding::parser_input_from_latin1(&bytes)` (today: the same
+   result as `String::from_utf8`).
+9. **blaze_bzlmod:** the same in `module_file/compiled_module_file.rs`.
+10. **blaze_analysis (analysis lead):** the mnemonic line above; and `resource_set`'s error with
+    `DefModule::declaration_span`.

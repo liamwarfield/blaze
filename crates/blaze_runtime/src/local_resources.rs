@@ -118,7 +118,7 @@ fn get_total_physical_memory_size() -> i64 {
 /// `Runtime.availableProcessors()` on Linux (HotSpot `os::active_processor_count` with container
 /// support): the number of CPUs in this process's affinity mask, lowered to
 /// `ceil(quota / period)` of the lowest cgroup v2 `cpu.max` in the hierarchy.
-fn available_processors() -> i32 {
+pub fn available_processors() -> i32 {
     // SAFETY: cpu_set_t is plain data; sched_getaffinity writes at most size_of::<cpu_set_t>().
     let host_cpus = unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();

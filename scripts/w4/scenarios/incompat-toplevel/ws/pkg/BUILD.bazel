@@ -1,0 +1,120 @@
+load(":defs.bzl", "simple", "simple_test")
+
+constraint_setting(name = "flavor")
+
+constraint_value(
+    name = "vanilla",
+    constraint_setting = ":flavor",
+)
+
+constraint_value(
+    name = "chocolate",
+    constraint_setting = ":flavor",
+)
+
+platform(
+    name = "vanilla_platform",
+    constraint_values = [":vanilla"],
+    parents = ["@platforms//host"],
+)
+
+config_setting(
+    name = "is_vanilla",
+    constraint_values = [":vanilla"],
+)
+
+config_setting(
+    name = "is_opt",
+    values = {"compilation_mode": "opt"},
+)
+
+filegroup(
+    name = "ok",
+    srcs = ["a.txt"],
+)
+
+filegroup(
+    name = "bad",
+    srcs = ["a.txt"],
+    target_compatible_with = ["@platforms//:incompatible"],
+)
+
+genrule(
+    name = "bad_gen",
+    outs = ["bad_gen.out"],
+    cmd = "echo bad > $@",
+    target_compatible_with = ["@platforms//:incompatible"],
+)
+
+simple(
+    name = "bad_starlark",
+    target_compatible_with = ["@platforms//:incompatible"],
+)
+
+simple_test(
+    name = "bad_test",
+    target_compatible_with = ["@platforms//:incompatible"],
+)
+
+simple_test(
+    name = "ok_test",
+)
+
+# Incompatible through a dependency.
+simple(
+    name = "dep_on_bad",
+    deps = [":bad_starlark"],
+)
+
+simple(
+    name = "dep_on_dep_on_bad",
+    deps = [":dep_on_bad"],
+)
+
+genrule(
+    name = "gen_on_bad",
+    srcs = [":bad"],
+    outs = ["gen_on_bad.out"],
+    cmd = "cat $(SRCS) > $@",
+)
+
+simple_test(
+    name = "test_on_bad",
+    deps = [":bad_gen"],
+)
+
+# select()-based compatibility.
+simple(
+    name = "needs_vanilla",
+    target_compatible_with = [":vanilla"],
+)
+
+simple(
+    name = "needs_two",
+    target_compatible_with = [
+        ":vanilla",
+        "@platforms//os:linux",
+        "@platforms//:incompatible",
+    ],
+)
+
+simple(
+    name = "select_vanilla",
+    target_compatible_with = select({
+        ":is_vanilla": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+)
+
+simple(
+    name = "select_opt",
+    target_compatible_with = select({
+        ":is_opt": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+)
+
+alias(
+    name = "bad_alias",
+    actual = ":bad",
+)

@@ -200,10 +200,10 @@ impl RunfilesTree for TestRunfilesTree {
     fn get_artifacts_at_canonical_locations_for_logging(&self) -> NestedSet<ActionInputRef> {
         unimplemented!()
     }
-    fn get_symlinks_for_logging(&self) -> Vec<(String, ActionInputRef)> {
+    fn get_symlinks_for_logging(&self) -> NestedSet<blaze_exec::actions::SymlinkEntry> {
         unimplemented!()
     }
-    fn get_root_symlinks_for_logging(&self) -> Vec<(String, ActionInputRef)> {
+    fn get_root_symlinks_for_logging(&self) -> NestedSet<blaze_exec::actions::SymlinkEntry> {
         unimplemented!()
     }
     fn get_empty_filenames_for_logging(&self) -> Vec<PathFragment> {

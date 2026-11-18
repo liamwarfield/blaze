@@ -87,18 +87,21 @@ fn validate_platform_keys(
         }
     }
     if env.values_missing() {
-        // PORT: BugReport.sendBugReport when the two disagree.
+        // PORT: skipped, Google-internal: `if (valuesMissing != env.valuesMissing())
+        // BugReport.sendBugReport(new IllegalStateException("Some value from " + packageKeys +
+        // " was missing, this should never happen"))` only logs the report in a released
+        // binary; Java returns here in both cases.
         return Ok(());
     }
 
-    // Now check the actual targets.
+    // Now check each platform.
     for platform_key in platform_keys {
         let platform_label = platform_key.get_label();
         let pkg = &packages[platform_label.get_package_identifier()];
         match pkg.get_target(platform_label.get_name()) {
             Ok(target) => {
                 if !has_platform_info(target) {
-                    // validatePlatformKeys can't resolve aliases, so it fails here.
+                    // validation failure
                     return Err(invalid_platform_exception(platform_label).into());
                 }
             }
@@ -136,6 +139,9 @@ fn find_platform_info(
         }
         Err(ConfiguredTargetLookupError::NoSuchThing(e)) => {
             Err(invalid_platform_exception_no_such_thing(e))
+        }
+        Err(ConfiguredTargetLookupError::ActionConflict(e)) => {
+            Err(invalid_platform_exception_with_cause(key.get_label(), e))
         }
     }
 }

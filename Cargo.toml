@@ -26,7 +26,6 @@ indexmap = "2"
 once_cell = "1"
 parking_lot = "0.12"
 rayon = "1"
-ureq = { version = "2.12", default-features = false, features = ["tls"] }
 flate2 = "1"
 tar = "0.4"
 xz2 = { version = "0.1", features = ["static"] }

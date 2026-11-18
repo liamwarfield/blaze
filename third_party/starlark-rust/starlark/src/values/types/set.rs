@@ -23,3 +23,5 @@ pub(crate) mod value;
 pub use crate::values::set::refs::SetMut;
 pub use crate::values::set::refs::SetRef;
 pub use crate::values::set::refs::alloc_set; // BLAZE PATCH 0015
+pub use crate::values::set::value::alloc_immutable_set; // BLAZE PATCH 0025
+pub use crate::values::set::value::set_is_immutable; // BLAZE PATCH 0025

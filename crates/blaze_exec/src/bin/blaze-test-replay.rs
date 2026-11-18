@@ -162,10 +162,10 @@ impl RunfilesTree for ReplayRunfilesTree {
     fn get_artifacts_at_canonical_locations_for_logging(&self) -> NestedSet<ActionInputRef> {
         blaze_util::unported!("ReplayRunfilesTree (compact log)")
     }
-    fn get_symlinks_for_logging(&self) -> Vec<(String, ActionInputRef)> {
+    fn get_symlinks_for_logging(&self) -> NestedSet<blaze_exec::actions::SymlinkEntry> {
         blaze_util::unported!("ReplayRunfilesTree (compact log)")
     }
-    fn get_root_symlinks_for_logging(&self) -> Vec<(String, ActionInputRef)> {
+    fn get_root_symlinks_for_logging(&self) -> NestedSet<blaze_exec::actions::SymlinkEntry> {
         blaze_util::unported!("ReplayRunfilesTree (compact log)")
     }
     fn get_empty_filenames_for_logging(&self) -> Vec<PathFragment> {
@@ -673,12 +673,17 @@ fn main() -> ExitCode {
         }
         metadata.runfiles.lock().unwrap().insert(
             runfiles_exec_path.get_path_string().to_string(),
-            Arc::new(RunfilesArtifactValue {
-                runfiles_tree: Arc::new(ReplayRunfilesTree {
+            // The recorded test has no metadata for the members of the tree.
+            Arc::new(RunfilesArtifactValue::new(
+                Arc::new(ReplayRunfilesTree {
                     exec_path: runfiles_exec_path.clone(),
                     mapping,
                 }),
-            }),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )),
         );
 
         // Java: SkyframeActionExecutor.prepareScheduleExecuteAndCompleteAction: action.prepare,

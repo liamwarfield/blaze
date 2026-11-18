@@ -742,3 +742,41 @@ fn checksum_mismatch_is_not_cached() {
     );
     assert!(!cache_file(cache.path(), &checksum.to_string()).exists());
 }
+
+// ---------------------------------------------------------------------------------------------
+// Truncated chunked responses (review 2026-11-18 round 2, N1)
+// ---------------------------------------------------------------------------------------------
+
+/// A registry file whose chunked response is cut inside a chunk, requested without a checksum
+/// (not in the lockfile yet): Java's `ChunkedInputStream` throws `IOException("Premature EOF")`,
+/// so the truncated bytes are neither returned nor put into the repository cache. The cases
+/// (where the cut is, `Accept-Ranges`, retries) are in
+/// `crates/blaze_repo_fetch/tests/truncated_chunked_response_test.rs`.
+#[test]
+fn chunked_response_cut_inside_a_chunk_is_an_error_and_is_not_cached() {
+    let cache = tempfile::tempdir().unwrap();
+    // The second chunk announces 0x14 bytes; 5 arrive before the connection closes.
+    let mut server = Server::start(vec![lines(&[
+        "HTTP/1.1 200 OK",
+        "Content-Type: text/plain",
+        "Transfer-Encoding: chunked",
+        "",
+        "6",
+        "first ",
+        "14",
+        "hello",
+    ])]);
+    let (f, _) = fetcher(Some(cache.path().to_path_buf()), 0);
+
+    let e = f
+        .download_and_read_one_url_for_bzlmod(
+            &server.url("/modules/a/1.0/source.json"),
+            &no_env(),
+            None,
+        )
+        .unwrap_err();
+
+    assert_eq!(e, RegistryException::Io("Premature EOF".to_string()));
+    assert_eq!(server.requests().len(), 1);
+    assert!(!cache.path().join(CAS_DIR).join("sha256").exists());
+}

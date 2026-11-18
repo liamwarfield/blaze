@@ -1,0 +1,4 @@
+load("//:defs.bzl", "two")
+
+# A conflict between two actions of one target.
+two(name = "intra")

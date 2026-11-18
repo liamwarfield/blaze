@@ -17,6 +17,7 @@ pub mod exceptions;
 pub mod macros;
 pub mod native_rules;
 pub mod package;
+pub mod proto;
 pub mod repo_file;
 pub mod rule_class;
 pub mod starlark_defs;

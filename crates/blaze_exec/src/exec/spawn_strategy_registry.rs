@@ -98,7 +98,7 @@ impl SpawnStrategyRegistry {
         mnemonic_to_local_dynamic_strategies: IndexMap<String, Vec<Arc<dyn SpawnStrategy>>>,
         remote_local_fallback_strategy: Option<Arc<dyn SpawnStrategy>>,
     ) -> SpawnStrategyRegistry {
-        // PORT: logging dropped.
+        // PORT: skipped, tracing (Java log).
         SpawnStrategyRegistry {
             mnemonic_to_strategies,
             strategy_regex_filter,
@@ -235,7 +235,7 @@ impl SpawnStrategyRegistry {
         }
     }
 
-    // PORT: logSpawnStrategies only logs; logging dropped.
+    // PORT: skipped, tracing (logSpawnStrategies only writes the Java log).
 
     /// Returns a new builder suitable for creating instances of SpawnStrategyRegistry.
     // Java: com/google/devtools/build/lib/exec/SpawnStrategyRegistry.java:265 SpawnStrategyRegistry.builder

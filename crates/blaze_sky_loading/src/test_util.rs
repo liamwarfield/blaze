@@ -147,6 +147,7 @@ pub fn minimal_starlark_environment() -> Arc<BazelStarlarkEnvironment> {
         util_toplevels: vec![
             blaze_starlark::depset::register_depset,
             blaze_starlark::json::register_json,
+            blaze_packages::proto::register_proto,
         ],
         bzl_globals: vec![
             blaze_starlark::structs::register_struct,

@@ -27,12 +27,13 @@ use blaze_analysis::rule::analysis_environment::CachingAnalysisEnvironment;
 use blaze_analysis::rule::configured_target_factory::{
     ConfiguredTargetFactory, ConfiguredTargetFactoryError,
 };
+use blaze_analysis::rule::rule_error_consumer::AnalysisRootCauseEvent;
 use blaze_analysis::toolchains::{
     ResolvedToolchainContext, ToolchainCollection, UnloadedToolchainContextsInputs,
 };
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
-use blaze_events::{Event, EventHandler, EventKind, StoredEventHandler};
+use blaze_events::{Event, EventHandler, EventKind, ExtendedEventHandler, StoredEventHandler};
 use blaze_optdefs::fragment::core_options::CoreOptions;
 use blaze_optdefs::fragment::core_options::CoreOptionsIncludeConfigFragmentsEnum;
 use blaze_optdefs::fragment::run_under::RunUnder;
@@ -321,7 +322,20 @@ impl ConfiguredTargetFunction {
                     if !e.get_message().is_empty() {
                         // Reports the error to the user on storedEvents to preserve ordering.
                         // These will be immediately replayed below.
-                        // PORT: AnalysisRootCauseEvent (BEP) is not posted.
+                        // PORT: Blaze's AnalysisRootCauseEvent has no "unavailable
+                        // configuration" form (Java's null `configuration`); it carries the
+                        // id of `configurationIdMessage(configuredTargetKey.getConfigurationKey())`.
+                        stored_events.post(Arc::new(AnalysisRootCauseEvent {
+                            // Even without an error here, the configuration key might not be
+                            // turned into a configuration value by the build because it does
+                            // not include the rule transition. It's therefore marked
+                            // unavailable.
+                            configuration_checksum: configured_target_key
+                                .get_configuration_key()
+                                .map(|k| k.get_options_checksum().to_owned()),
+                            label: configured_target_key.get_label().clone(),
+                            error_message: e.get_message().to_owned(),
+                        }));
                         stored_events.handle(&Event::error_at(
                             event_location(e.get_location()),
                             e.get_message(),

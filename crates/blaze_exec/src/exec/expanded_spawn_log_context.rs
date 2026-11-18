@@ -234,7 +234,7 @@ impl ExpandedSpawnLogContext {
             }
             Ok(())
         })();
-        // PORT: logging dropped ("Error computing spawn input properties").
+        // PORT: skipped, tracing (Java log) ("Error computing spawn input properties").
         let _ = inputs_result;
 
         let mut output_paths: Vec<String> = spawn
@@ -278,7 +278,7 @@ impl ExpandedSpawnLogContext {
             }
             Ok(())
         })();
-        // PORT: logging dropped ("Error computing spawn output properties").
+        // PORT: skipped, tracing (Java log) ("Error computing spawn output properties").
         let _ = outputs_result;
         builder.remotable = spawns::may_be_executed_remotely(spawn);
 

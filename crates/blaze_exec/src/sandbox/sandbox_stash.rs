@@ -441,7 +441,7 @@ impl SandboxStash {
     // Java: com/google/devtools/build/lib/sandbox/SandboxStash.java:351 SandboxStash.turnOffReuse
     fn turn_off_reuse(&self, _message: String) {
         REUSE_SANDBOX_DIRECTORIES.store(false, Ordering::SeqCst);
-        // PORT: logging dropped (once: "Turning off sandbox reuse: " + message).
+        // PORT: skipped, tracing (Java log) (once: "Turning off sandbox reuse: " + message).
         let _first_warning = self
             .warned_about_turning_off_reuse
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -554,7 +554,7 @@ impl SandboxStash {
             Some(d) => d.delete_tree(&stash_trash_dir),
             None => stash_trash_dir.delete_tree(),
         };
-        // PORT: logging dropped (on error: "Failed to clean sandbox stash %s").
+        // PORT: skipped, tracing (Java log) (on error: "Failed to clean sandbox stash %s").
         let _ = deleted;
 
         if let Some(instance) = instance() {

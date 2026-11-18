@@ -2,19 +2,24 @@
 //! `buildTargets`, `buildTargetsWithoutMergedAnalysisExecution`, `evaluateTargetPatterns`) and
 //! the parts of `buildtool/BuildRequest.java` it reads.
 //!
-//! PORT: execution (`ExecutionTool`), Skymeld, PROJECT.scl evaluation and remote analysis caching
-//! are not ported here; a request that needs the execution phase fails loudly. The UI's
-//! `stopRequest` summary lines are not printed.
+//! PORT: `buildTargetsWithoutMergedAnalysisExecution` is the one path (Skymeld's
+//! `buildTargetsWithMergedAnalysisExecution` is not ported); the execution phase is the
+//! command's (`ExecutionPhase`). A build whose targets have a PROJECT.scl and remote analysis
+//! caching fail loudly (`project.rs`). `stopRequest` (the build-completion lines) belongs to the
+//! command.
 
 use std::sync::Arc;
 
 use blaze_build_config::fragment::InvalidConfigurationException;
 use blaze_cmdline::TargetParsingException;
 use blaze_events::{Event, ExtendedEventHandler};
+use blaze_optdefs::command::analysis_options::AnalysisOptions;
 use blaze_optdefs::command::build_request_options::BuildRequestOptions;
+use blaze_optdefs::command::execution_options::ExecutionOptions;
 use blaze_optdefs::command::keep_going_option::KeepGoingOption;
 use blaze_optdefs::command::loading_options::LoadingOptions;
 use blaze_optdefs::command::loading_phase_threads_option::LoadingPhaseThreadsOption;
+use blaze_optdefs::command::remote_analysis_caching_options::RemoteAnalysisCachingOptions;
 use blaze_options::{Options, OptionsParser};
 use blaze_protos::failure_details::{
     self, FailureDetail, Interrupted, failure_detail::Category, interrupted,
@@ -24,7 +29,7 @@ use blaze_vfs::PathFragment;
 
 use crate::analysis_phase_runner;
 use crate::build_view::AnalysisResult;
-use crate::skyframe_executor::{SkyframeExecutor, TargetPatternPhaseError};
+use crate::skyframe_executor::{SkyframeExecutor, TargetPatternPhaseDetailedError};
 
 /// `ExitCode.PARSING_FAILURE`.
 const PARSING_FAILURE: i32 = 1;
@@ -55,9 +60,24 @@ pub struct BuildRequest {
     pub check_for_action_conflicts: bool,
     /// `reportIncompatibleTargets()`.
     pub report_incompatible_targets: bool,
+    /// `getViewOptions().skipIncompatibleExplicitTargets`.
+    pub skip_incompatible_explicit_targets: bool,
+    /// `getOptions(RemoteAnalysisCachingOptions.class)` (`None`: the command has no such
+    /// options).
+    remote_analysis_caching_options: Option<RemoteAnalysisCachingOptions>,
+    /// `getBuildOptions()`.
+    build_request_options: BuildRequestOptions,
+    /// `getExecutionOptions().localTestJobs` (`None`: the command has no `ExecutionOptions`).
+    local_test_jobs: Option<i32>,
     run_tests: bool,
     needs_instrumentation_filter: bool,
+    /// `CommandEnvironment.withMergedAnalysisAndExecutionSourceOfTruth()` for this request.
+    merged_analysis_and_execution: bool,
 }
+
+/// `AspectCollection.VALIDATION_ASPECT_NAME`.
+// Java: com/google/devtools/build/lib/analysis/AspectCollection.java:153 AspectCollection.VALIDATION_ASPECT_NAME
+const VALIDATION_ASPECT_NAME: &str = "ValidateTarget";
 
 impl BuildRequest {
     /// `BuildRequest.builder().setCommandName(...).setOptions(options).setTargets(targets)
@@ -91,12 +111,102 @@ impl BuildRequest {
                 .unwrap_or_else(Options::<LoadingOptions>::get_defaults),
             perform_analysis_phase: build_options.perform_analysis_phase,
             perform_execution_phase: build_options.perform_execution_phase,
-            aspects: build_options.aspects.clone(),
+            aspects: Self::get_aspects(&build_options),
             check_for_action_conflicts,
             report_incompatible_targets,
+            // Java: getViewOptions() is getOptions(AnalysisOptions.class).
+            skip_incompatible_explicit_targets: options
+                .get_options::<AnalysisOptions>()
+                .unwrap_or_else(Options::<AnalysisOptions>::get_defaults)
+                .skip_incompatible_explicit_targets,
+            remote_analysis_caching_options: options.get_options::<RemoteAnalysisCachingOptions>(),
+            build_request_options: build_options,
+            local_test_jobs: options
+                .get_options::<ExecutionOptions>()
+                .map(|o| o.local_test_jobs),
             run_tests: false,
             needs_instrumentation_filter: false,
+            merged_analysis_and_execution: false,
         }
+    }
+
+    /// The aspects of the request: `--aspects`, and the validation aspect when
+    /// `--experimental_use_validation_aspect` asks for it.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:420 BuildRequest.getAspects
+    fn get_aspects(build_options: &BuildRequestOptions) -> Vec<String> {
+        let aspects = &build_options.aspects;
+        let mut result: Vec<String> = aspects.clone();
+        if !aspects.iter().any(|a| a == VALIDATION_ASPECT_NAME)
+            && Self::use_validation_aspect(build_options)
+        {
+            result.push(VALIDATION_ASPECT_NAME.to_owned());
+        }
+        result
+    }
+
+    /// Whether `ValidateTarget` is in use.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:447 BuildRequest.useValidationAspect
+    fn use_validation_aspect(build_options: &BuildRequestOptions) -> bool {
+        // validationMode() == OutputGroupInfo.ValidationMode.ASPECT
+        // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:452 BuildRequest.validationMode
+        build_options.run_validation_actions && build_options.use_validation_aspect
+    }
+
+    /// Validates the options for this BuildRequest.
+    ///
+    /// Issues warnings for the use of deprecated options, and warnings or errors for any option
+    /// settings that conflict.
+    ///
+    /// PORT: a command without `ExecutionOptions` (Java reads them unconditionally; every command
+    /// that builds a request has them) has no warnings.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:393 BuildRequest.validateOptions
+    pub fn validate_options(&self) -> Vec<String> {
+        let mut warnings: Vec<String> = Vec::new();
+
+        if let Some(local_test_jobs) = self.local_test_jobs {
+            let jobs = self.build_request_options.jobs;
+            if local_test_jobs > jobs {
+                warnings.push(format!(
+                    "High value for --local_test_jobs: {}. This exceeds the value for --jobs: \
+                     {}. Only up to {} local tests will run concurrently.",
+                    local_test_jobs, jobs, jobs
+                ));
+            }
+        }
+
+        warnings
+    }
+
+    /// `getTopLevelArtifactContext().outputGroups()`: the requested output groups.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:410 BuildRequest.getTopLevelArtifactContext
+    pub fn get_top_level_artifact_context_output_groups(&self) -> Vec<String> {
+        crate::execution_seam::top_level_output_groups(
+            &self.build_request_options,
+            self.should_run_tests(),
+        )
+    }
+
+    /// `getOptions(RemoteAnalysisCachingOptions.class)`.
+    pub fn get_remote_analysis_caching_options(&self) -> Option<&RemoteAnalysisCachingOptions> {
+        self.remote_analysis_caching_options.as_ref()
+    }
+
+    /// `getBuildOptions()`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:330 BuildRequest.getBuildOptions
+    pub fn get_build_options(&self) -> &BuildRequestOptions {
+        &self.build_request_options
+    }
+
+    /// Records `CommandEnvironment.setMergedAnalysisAndExecution(value)` for this request
+    /// (`SkymeldModule.determineIfMergingAnalysisExecution`, decided by the command).
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:580 CommandEnvironment.setMergedAnalysisAndExecution
+    pub fn set_merged_analysis_and_execution(&mut self, value: bool) {
+        self.merged_analysis_and_execution = value;
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:576 CommandEnvironment.withMergedAnalysisAndExecutionSourceOfTruth
+    pub fn with_merged_analysis_and_execution_source_of_truth(&self) -> bool {
+        self.merged_analysis_and_execution
     }
 
     /// `BuildRequest.Builder.setRunTests(true)` (the `test` command).
@@ -126,9 +236,21 @@ pub enum BuildToolError {
         message: String,
         failure_detail: FailureDetail,
     },
-    /// `TargetParsingException`.
-    #[error("{}", .0.get_message())]
-    TargetParsing(TargetParsingException),
+    /// `TargetParsingException`, with its `getDetailedExitCode()`.
+    #[error("{}", .exception.get_message())]
+    TargetParsing {
+        exception: TargetParsingException,
+        detailed_exit_code: DetailedExitCode,
+    },
+    /// `LoadingFailedException`.
+    #[error("{0}")]
+    LoadingFailed(crate::project::LoadingFailedException),
+    /// `RepositoryMappingResolutionException` (its message and `getDetailedExitCode()`).
+    #[error("{message}")]
+    RepositoryMappingResolution {
+        message: String,
+        detailed_exit_code: DetailedExitCode,
+    },
     /// `ViewCreationFailedException`.
     #[error("{message}")]
     ViewCreationFailed {
@@ -225,7 +347,10 @@ impl<'a> BuildTool<'a> {
             Err(BuildToolError::Interrupted) => {
                 let message = "build interrupted";
                 self.reporter.handle(&Event::error(message));
-                // PORT: BuildInterruptedEvent is not posted (event bus).
+                // Java: env.getEventBus().post(new BuildInterruptedEvent()).
+                // PORT: not posted here: the event's class lives in blaze_bep, which this crate
+                // does not depend on. The command has to post it when it gets this exit code
+                // back (the test summary and the build event stream subscribe to it).
                 DetailedExitCode::of_exit_code(
                     INTERRUPTED_EXIT_CODE,
                     FailureDetail {
@@ -236,17 +361,25 @@ impl<'a> BuildTool<'a> {
                     },
                 )
             }
-            Err(BuildToolError::TargetParsing(e)) => {
-                self.report_exception_error(e.get_message());
-                DetailedExitCode::of_exit_code(
-                    e.get_code().exit_code(),
-                    FailureDetail {
-                        message: e.get_message().to_owned(),
-                        category: Some(Category::TargetPatterns(failure_details::TargetPatterns {
-                            code: e.get_code() as i32,
-                        })),
-                    },
-                )
+            // catch (TargetParsingException | LoadingFailedException e)
+            Err(BuildToolError::TargetParsing {
+                exception,
+                detailed_exit_code,
+            }) => {
+                self.report_exception_error(exception.get_message());
+                detailed_exit_code
+            }
+            Err(BuildToolError::LoadingFailed(e)) => {
+                self.report_exception_error(&e.message);
+                DetailedExitCode::of_exit_code(e.exit_code, e.failure_detail)
+            }
+            // catch (RepositoryMappingResolutionException e)
+            Err(BuildToolError::RepositoryMappingResolution {
+                message,
+                detailed_exit_code,
+            }) => {
+                self.report_exception_error(&message);
+                detailed_exit_code
             }
             Err(BuildToolError::ViewCreationFailed {
                 message,
@@ -276,7 +409,10 @@ impl<'a> BuildTool<'a> {
     /// The crux of the build system. Builds the targets specified in the request.
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:257 BuildTool.buildTargets
     fn build_targets(&self, request: &BuildRequest) -> Result<(), BuildToolError> {
-        // PORT: validateOptions only issues warnings for execution options.
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1211 BuildTool.validateOptions
+        for issue in request.validate_options() {
+            self.reporter.handle(&Event::warn(issue));
+        }
         // buildOptions = runtime.createBuildOptions(request): the executor was created with
         // the request's build options as its baseline (see skyframe_executor.rs).
         let build_options = self
@@ -289,17 +425,30 @@ impl<'a> BuildTool<'a> {
         // them when the build's loading starts (SkyframeExecutor / SkyframeBuildView).
         blaze_sky_loading::package_progress_receiver::PACKAGE_PROGRESS.reset();
         blaze_sky_analysis::analysis_progress_receiver::ANALYSIS_PROGRESS.reset();
-        // PORT: BuildStartingEvent is not posted (event bus); initializeOutputFilter belongs to
-        // the UI.
+        // PORT: BuildStartingEvent and ExecRootEvent are posted by the command, which builds
+        // the build event stream (blaze_runtime commands/bep.rs); initializeOutputFilter belongs
+        // to the UI.
         let target_pattern_phase_value = self.evaluate_target_patterns(request)?;
-        // PORT: ExecRootEvent is not posted; PROJECT.scl evaluation (evaluateProjectFile) is not
-        // ported (no project files in the corpus).
+
+        // PORT: `targetsForProjectResolution` is null for every ported command, so the project
+        // files are those of the build's own target patterns.
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:343 BuildTool.buildTargets
+        crate::project::evaluate_project_file(
+            request.get_remote_analysis_caching_options(),
+            request.get_build_options(),
+            &build_options,
+            target_pattern_phase_value.get_non_expanded_labels(),
+            self.skyframe_executor,
+            self.reporter.clone(),
+        )
+        .map_err(BuildToolError::LoadingFailed)?;
 
         // buildTargetsWithoutMergedAnalysisExecution
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:496 BuildTool.buildTargetsWithoutMergedAnalysisExecution
         let analysis_result = analysis_phase_runner::execute(
             self.skyframe_executor,
             &self.reporter,
+            &self.relative_working_directory,
             request,
             &target_pattern_phase_value,
             &build_options,
@@ -324,7 +473,8 @@ impl<'a> BuildTool<'a> {
                     None => blaze_util::unported!("ExecutionTool.executeBuild"),
                 }
             }
-            // PORT: NoExecutionEvent is not posted (event bus).
+            // PORT: NoExecutionEvent (the build event of a build without execution) is the
+            // command's (blaze_bep bep_module.rs).
             if let Some(delayed_failure_detail) = analysis_result.get_failure_detail() {
                 return Err(BuildToolError::BuildFailed {
                     message: delayed_failure_detail.message.clone(),
@@ -341,7 +491,7 @@ impl<'a> BuildTool<'a> {
         request: &BuildRequest,
     ) -> Result<crate::target_pattern_phase::TargetPatternPhaseValue, BuildToolError> {
         self.skyframe_executor
-            .load_target_patterns_with_filters(
+            .load_target_patterns_with_filters_detailed(
                 self.reporter.clone(),
                 &request.targets,
                 &self.relative_working_directory,
@@ -351,8 +501,14 @@ impl<'a> BuildTool<'a> {
                 request.should_run_tests(),
             )
             .map_err(|e| match e {
-                TargetPatternPhaseError::TargetParsing(e) => BuildToolError::TargetParsing(e),
-                TargetPatternPhaseError::Interrupted => BuildToolError::Interrupted,
+                TargetPatternPhaseDetailedError::TargetParsing {
+                    exception,
+                    detailed_exit_code,
+                } => BuildToolError::TargetParsing {
+                    exception,
+                    detailed_exit_code,
+                },
+                TargetPatternPhaseDetailedError::Interrupted => BuildToolError::Interrupted,
             })
         // PORT: no TargetValidator is passed by cquery/aquery.
     }
@@ -362,18 +518,10 @@ impl<'a> BuildTool<'a> {
 /// numeric exit code from the code's `(metadata) = { exit_code: N }` in failure_details.proto.
 pub fn exit_code_of(failure_detail: &FailureDetail) -> i32 {
     match &failure_detail.category {
-        Some(Category::Analysis(a)) => match a.code() {
-            // All Analysis codes the analysis phase reports have exit code 1.
-            failure_details::analysis::Code::GenericLoadingPhaseFailure
-            | failure_details::analysis::Code::NotAllTargetsAnalyzed
-            | failure_details::analysis::Code::UnexpectedAnalysisException
-            | failure_details::analysis::Code::ConfiguredValueCreationFailed => 1,
-            other => blaze_util::unported!(
-                "DetailedExitCode.getNumericExitCode",
-                "exit code of Analysis.{:?}",
-                other
-            ),
-        },
+        // The generated FailureDetails metadata (failure_details.proto `exit_code`).
+        Some(Category::Analysis(_)) => {
+            blaze_util::DetailedExitCode::get_numeric_exit_code(failure_detail)
+        }
         Some(Category::TargetPatterns(t)) => {
             blaze_query_engine::detailed_exit_code::target_patterns_code_exit_code(t.code)
         }

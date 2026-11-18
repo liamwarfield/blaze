@@ -9,8 +9,6 @@ pub mod query_adapters;
 use std::sync::Arc;
 
 use blaze_events::{Event, ExtendedEventHandler};
-use blaze_optdefs::command::analysis_options::AnalysisOptions;
-use blaze_optdefs::command::common_command_options::CommonCommandOptions;
 use blaze_optdefs::command::keep_going_option::KeepGoingOption;
 use blaze_optdefs::command::loading_phase_threads_option::LoadingPhaseThreadsOption;
 use blaze_options::OptionsParser;
@@ -43,33 +41,42 @@ pub struct PostAnalysisCommandEnvironment<'a> {
     pub working_directory: Path,
     /// `env.getRuntime().getProductName()`.
     pub product_name: String,
-    /// `runtime.getStartupOptionsProvider().getOptions(BlazeServerStartupOptions.class).batch`.
-    pub batch: bool,
+    /// `env.getSkyframeExecutor().tracksStateForIncrementality()`: the `trackIncrementalState`
+    /// that `SequencedSkyframeExecutor.decideKeepIncrementalState` set for the command (the
+    /// dispatcher calls it, with its warnings, before the command runs).
+    pub tracks_state_for_incrementality: bool,
+    /// `Runtime.getRuntime().availableProcessors()` (`SkyQueryEnvironment.DEFAULT_THREAD_COUNT`).
+    pub available_processors: i32,
+    /// `BuildTool.stopRequest(result, crash, detailedExitCode)`, called with the exit code of
+    /// `BuildTool.processRequest` where Java's `processRequest` calls it (its `finally` block):
+    /// the `BuildCompleteEvent` subscribers print the build summary (`BuildSummaryStatsModule`,
+    /// the UI's `Build completed successfully` / `Build did NOT complete successfully`).
+    ///
+    /// PORT: blaze_sky_top's `BuildTool.process_request` ends before `stopRequest`; the
+    /// subscribers live in the command's crate (blaze_runtime), above this one.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1155 BuildTool.stopRequest
+    pub stop_request: &'a dyn Fn(&DetailedExitCode),
     /// The command's options.
     pub options: &'a OptionsParser,
 }
 
-/// `env.getSkyframeExecutor().tracksStateForIncrementality()`: the `trackIncrementalState`
-/// `SequencedSkyframeExecutor.decideKeepIncrementalState` sets for the command.
-///
-/// PORT: blaze_sky_top's `SkyframeExecutor` does not keep this state (`decideKeepIncrementalState`
-/// and its warnings belong to the dispatcher); the value is computed from the same options here.
-// Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:399 SequencedSkyframeExecutor.decideKeepIncrementalState
-pub(crate) fn tracks_state_for_incrementality(env: &PostAnalysisCommandEnvironment<'_>) -> bool {
-    let should_track_incremental_state = env
-        .options
-        .get_options::<CommonCommandOptions>()
-        .expect("CommonCommandOptions")
-        .track_incremental_state;
-    let discard_analysis_cache = env
-        .options
-        .get_options::<AnalysisOptions>()
-        .expect("AnalysisOptions")
-        .discard_analysis_cache;
-    // First check if the incrementality state should be kept around during the build.
-    let explicitly_requested_no_incremental_data = !should_track_incremental_state;
-    let implicitly_requested_no_incremental_data = env.batch && discard_analysis_cache;
-    !explicitly_requested_no_incremental_data && !implicitly_requested_no_incremental_data
+/// `new BuildTool(env, processor).processRequest(request, null, options).getDetailedExitCode()`:
+/// `BuildTool.processRequest` with the `stopRequest` of its `finally` block.
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:892 BuildTool.processRequest
+pub(crate) fn process_request(
+    env: &PostAnalysisCommandEnvironment<'_>,
+    request: &blaze_sky_top::build_tool::BuildRequest,
+    post_processor: &dyn blaze_sky_top::build_tool::AnalysisPostProcessor,
+) -> DetailedExitCode {
+    let detailed_exit_code = blaze_sky_top::build_tool::BuildTool::new(
+        env.skyframe_executor,
+        env.reporter.clone(),
+        env.relative_working_directory.clone(),
+        post_processor,
+    )
+    .process_request(request);
+    (env.stop_request)(&detailed_exit_code);
+    detailed_exit_code
 }
 
 /// The main repository mapping as the post-analysis commands compute it, or the command's

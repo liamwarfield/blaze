@@ -3,6 +3,7 @@
 mod bzl_compile_function_test;
 mod bzl_load_function_test;
 mod containing_package_lookup_function_test;
+mod environment_group_test;
 mod exports_files_test;
 mod file_function_test;
 mod ignored_subdirectories_test;
@@ -14,6 +15,7 @@ mod oracle_repos_test;
 mod output_file_test;
 mod package_factory_test;
 mod package_function_test;
+mod package_group_test;
 mod package_loading_test_case;
 mod package_lookup_function_test;
 mod repo_file_function_test;

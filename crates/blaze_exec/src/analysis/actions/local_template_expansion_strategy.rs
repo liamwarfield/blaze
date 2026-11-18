@@ -96,9 +96,12 @@ impl TemplateExpansionContext for LocalTemplateExpansionStrategy {
                 .into());
             }
         };
-        // PORT: StringEncoding identity (`expandedTemplate.getBytes(ISO_8859_1)` of the internal
-        // string is its UTF-8 bytes).
-        let deterministic_writer = BytesWriter(expanded_template.into_bytes());
+        // `expandedTemplate.getBytes(ISO_8859_1)`: the bytes of the internal string.
+        // Seam (decisions.md 2026-11-18 "Strings"): `internal_string_bytes` gives them whether
+        // or not Blaze's strings are internal yet (`STRINGS_ARE_INTERNAL`).
+        let deterministic_writer = BytesWriter(
+            blaze_util::string_encoding::internal_string_bytes(&expanded_template).into_owned(),
+        );
         let context = super::get_required_context::<dyn FileWriteActionContext>(
             ctx,
             "FileWriteActionContext",

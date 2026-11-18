@@ -281,8 +281,9 @@ impl InfoCommand {
             }
         }
 
-        // PORT: `env.getEventBus().post(new NoBuildEvent())` is skipped: Blaze has no event bus
-        // yet.
+        // PORT: `env.getEventBus().post(new NoBuildEvent())` only reaches the Build Event
+        // Protocol, which is ported for build and test; a BEP file requested for this command
+        // fails loudly before it runs (crate::unported_options).
         if !residue.is_empty() {
             let mut unknown_keys: IndexSet<String> = IndexSet::new();
             for key in residue {

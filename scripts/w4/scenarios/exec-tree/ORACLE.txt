@@ -1,0 +1,86 @@
+=== 1: run build //:consume
+exit 0
+  bazel-bin/consume.txt
+INFO: Build completed successfully, 3 total actions
+Target //:consume up-to-date:
+=== 2: cat bazel-bin/consume.txt
+bazel-out/k8-fastbuild/bin/tree.dir/link_to_file: top
+bazel-out/k8-fastbuild/bin/tree.dir/link_to_sub/deep/d.txt: deep
+bazel-out/k8-fastbuild/bin/tree.dir/link_to_sub/n.txt: nested
+bazel-out/k8-fastbuild/bin/tree.dir/sub/deep/d.txt: deep
+bazel-out/k8-fastbuild/bin/tree.dir/sub/n.txt: nested
+bazel-out/k8-fastbuild/bin/tree.dir/top.txt: top
+=== 3: stat bazel-bin/tree.dir
+dir 555
+=== 4: stat bazel-bin/tree.dir/sub
+dir 555
+=== 5: stat bazel-bin/tree.dir/sub/deep
+dir 555
+=== 6: stat bazel-bin/tree.dir/empty
+dir 555
+=== 7: stat bazel-bin/tree.dir/top.txt
+file 555
+=== 8: stat bazel-bin/tree.dir/sub/n.txt
+file 555
+=== 9: stat bazel-bin/tree.dir/sub/deep/d.txt
+file 555
+=== 10: cat producer.log
+run
+=== 11: cat consumer.log
+run
+=== 12: run build //:consume
+exit 0
+  bazel-bin/consume.txt
+INFO: Build completed successfully, 1 total action
+Target //:consume up-to-date:
+=== 13: cat producer.log
+run
+=== 14: cat consumer.log
+run
+=== 15: run build //:sandboxed_consume
+exit 0
+  bazel-bin/sandboxed_consume.txt
+INFO: Build completed successfully, 2 total actions
+Target //:sandboxed_consume up-to-date:
+=== 16: cat bazel-bin/sandboxed_consume.txt
+.
+./link_to_file
+./link_to_sub
+./link_to_sub/deep
+./link_to_sub/deep/d.txt
+./link_to_sub/n.txt
+./sub
+./sub/deep
+./sub/deep/d.txt
+./sub/n.txt
+./top.txt
+=== 17: cat producer.log
+run
+=== 18: run build //:dangling
+exit 1
+ERROR: <WS>/BUILD.bazel:17:9: Action dangling.dir failed: not all outputs were created or valid
+ERROR: <WS>/BUILD.bazel:17:9: error while validating output tree artifact dangling.dir: child sub/dangling is a dangling symbolic link
+ERROR: Build did NOT complete successfully
+Target //:dangling failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+=== 19: run build //:fifo
+exit 1
+ERROR: <WS>/BUILD.bazel:22:9: Action fifo.dir failed: not all outputs were created or valid
+ERROR: <WS>/BUILD.bazel:22:9: error while validating output tree artifact fifo.dir: child pipe has an unsupported type
+ERROR: Build did NOT complete successfully
+Target //:fifo failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+=== 20: run build //:removed
+exit 1
+ERROR: <WS>/BUILD.bazel:27:9: Action removed.dir failed: not all outputs were created or valid
+ERROR: <WS>/BUILD.bazel:27:9: output tree artifact removed.dir was not created
+ERROR: Build did NOT complete successfully
+Target //:removed failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+=== 21: run build //:empty
+exit 0
+  bazel-bin/empty.dir
+INFO: Build completed successfully, 2 total actions
+Target //:empty up-to-date:
+=== 22: stat bazel-bin/empty.dir
+dir 555

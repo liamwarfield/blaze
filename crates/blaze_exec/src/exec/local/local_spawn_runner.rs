@@ -109,7 +109,7 @@ impl SpawnRunner for LocalSpawnRunner {
         }
         spawn_metrics.setup_time_in_ms += to_ms(setup_time_stopwatch.elapsed());
 
-        // PORT: profiling dropped.
+        // PORT: skipped, profiling.
         let owner = spawn.get_resource_owner();
         context.report(ProgressStatus::Scheduling(self.get_name()));
 
@@ -181,7 +181,7 @@ fn to_ms(duration: Duration) -> i32 {
 }
 
 // Java: com/google/devtools/build/lib/exec/local/LocalSpawnRunner.java:184 LocalSpawnRunner.SubprocessHandler
-// PORT: the per-state timing (setState/stateTimes) and stepLog only feed logging; logging dropped.
+// PORT: the per-state timing (setState/stateTimes) and stepLog only feed the Java log: skipped, tracing.
 struct SubprocessHandler<'a> {
     runner: &'a LocalSpawnRunner,
     spawn: &'a dyn Spawn,
@@ -233,7 +233,7 @@ impl<'a> SubprocessHandler<'a> {
                 {
                     return Ok(result);
                 }
-                // PORT: logging dropped ("Retrying crashed subprocess due to exit code ...").
+                // PORT: skipped, tracing (Java log) ("Retrying crashed subprocess due to exit code ...").
                 std::thread::sleep(Duration::from_millis(attempts as u64 * 1000));
                 *self
                     .spawn_metrics
@@ -274,16 +274,19 @@ impl<'a> SubprocessHandler<'a> {
         if let Some(allowed_local_action) = &runner.local_execution_options.allowed_local_action
             && !allowed_local_action.matches(&action_type)
         {
-            // PORT: StringEncoding identity (unicodeToInternal).
+            // Java writes `(... + actionType + ... + unicodeToInternal(pattern) + "\n")
+            // .getBytes(UTF_8)`: the UTF-8 encoding of an internal string.
+            // Seam (decisions.md 2026-11-18 "Strings"): `to_internal` is the internal string the
+            // message stands for while `STRINGS_ARE_INTERNAL` is false. After the switch the
+            // mnemonic is internal already and the pattern (a Unicode string in Java) is whatever
+            // the option's converter keeps; revisit with the option intake.
+            let message = format!(
+                "Action type {} is not allowed to run locally due to regex filter: {}\n",
+                action_type,
+                allowed_local_action.pattern()
+            );
             out_err
-                .write_err(
-                    format!(
-                        "Action type {} is not allowed to run locally due to regex filter: {}\n",
-                        action_type,
-                        allowed_local_action.pattern()
-                    )
-                    .as_bytes(),
-                )
+                .write_err(blaze_util::string_encoding::to_internal(&message).as_bytes())
                 .map_err(|e| exec_io_exception(&e))?;
             self.spawn_metrics.total_time_in_ms = to_ms(self.total_time_stopwatch.elapsed());
             return Ok(spawn_result_builder
@@ -319,7 +322,7 @@ impl<'a> SubprocessHandler<'a> {
             }
         }
 
-        // PORT: profiling dropped.
+        // PORT: skipped, profiling.
         runner.update_runfiles(&runfiles_trees);
 
         let tmp_dir = runner
@@ -336,7 +339,7 @@ impl<'a> SubprocessHandler<'a> {
         if tmp_dir.delete_tree().is_err() {
             // We can't handle this exception in any meaningful way, nor should we, but let's log
             // it.
-            // PORT: logging dropped ("failed to delete temp directory ...").
+            // PORT: skipped, tracing (Java log) ("failed to delete temp directory ...").
         }
         result
     }
@@ -408,7 +411,7 @@ impl<'a> SubprocessHandler<'a> {
 
         spawn_result_builder.set_start_time(SystemTime::now());
         let execution_stopwatch = Instant::now();
-        // PORT: profiling dropped.
+        // PORT: skipped, profiling.
         self.need_cleanup = true;
         let termination_status = match subprocess_builder.start() {
             Ok(subprocess) => {
@@ -421,7 +424,7 @@ impl<'a> SubprocessHandler<'a> {
                 let termination_status =
                     TerminationStatus::new(subprocess.exit_value(), subprocess.timedout());
                 if blaze_shell::thread_interrupt::interrupted() {
-                    // PORT: logging dropped ("Interrupted but didn't throw; status ...").
+                    // PORT: skipped, tracing (Java log) ("Interrupted but didn't throw; status ...").
                     return Err(ExecException::Interrupted);
                 }
                 termination_status
@@ -519,13 +522,13 @@ impl<'a> SubprocessHandler<'a> {
             // file systems: an output's path is the exec root joined with its exec path.
             let path = self.runner.exec_root.get_relative(output.get_exec_path());
             if path.exists() {
-                // PORT: logging dropped ("Clearing output ... after interrupt").
+                // PORT: skipped, tracing (Java log) ("Clearing output ... after interrupt").
                 let _ = if output.as_artifact().is_some_and(|a| a.is_tree_artifact()) {
                     path.delete_trees_below()
                 } else {
                     path.delete_tree()
                 };
-                // PORT: logging dropped ("Cannot delete local output ... after interrupt").
+                // PORT: skipped, tracing (Java log) ("Cannot delete local output ... after interrupt").
             }
         }
     }

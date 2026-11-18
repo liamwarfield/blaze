@@ -27,6 +27,7 @@ pub mod list;
 pub mod loader;
 pub mod printer;
 pub mod semantics;
+pub mod set;
 pub mod structs;
 pub mod syntax;
 pub mod thread;

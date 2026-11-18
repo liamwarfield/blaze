@@ -54,8 +54,9 @@ impl BlazeCommand for VersionCommand {
         env: &mut CommandEnvironment,
         options: &OptionsParsingResult,
     ) -> BlazeCommandResult {
-        // PORT: `env.getEventBus().post(new NoBuildEvent())` is skipped: Blaze has no event bus
-        // yet.
+        // PORT: `env.getEventBus().post(new NoBuildEvent())` only reaches the Build Event
+        // Protocol, which is ported for build and test; a BEP file requested for this command
+        // fails loudly before it runs (crate::unported_options).
         let info = Self::get_info(
             env.get_runtime().get_product_name(),
             &BlazeVersionInfo::instance(),

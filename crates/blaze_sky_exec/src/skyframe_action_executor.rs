@@ -35,8 +35,9 @@ use blaze_exec::actions::cache::{IoOrInterruptedException, OutputMetadataStore};
 use blaze_exec::actions::exec_exception::{EnvironmentalExecException, ExecException};
 use blaze_exec::actions::{
     ActionExecutionException, ActionExecutionMetadata, ActionInput, ActionInputRef, ActionResult,
-    CacheCheckAction, FileArtifactValue, FilesetOutputTree, InputMetadataProvider, OutputChecker,
-    RunfilesArtifactValue, Spawn, TreeArtifactValue, as_executable,
+    CacheCheckAction, FileArtifactValue, FileContentsProxy, FilesetOutputTree,
+    InputMetadataProvider, OutputChecker, RunfilesArtifactValue, Spawn, TreeArtifactValue,
+    as_executable,
 };
 use blaze_exec::analysis::actions::runfiles_tree_action::create_runfiles_artifact_value;
 use blaze_exec::analysis::actions::to_action_input_set;
@@ -45,6 +46,7 @@ use blaze_exec::analysis::test::test_runner_action::TestRunnerAction;
 use blaze_exec::exec::action_execution_context::{
     ActionContextRegistry, ActionExecutionContext, SpawnCache,
 };
+use blaze_exec::exec::single_build_file_cache::SingleBuildFileCache;
 use blaze_exec::exec::spawn_log_context::SpawnLogContext;
 use blaze_exec::exec::spawn_runner::ProgressStatus;
 use blaze_exec::exec::spawn_strategy_registry::SpawnStrategyRegistry;
@@ -52,8 +54,8 @@ use blaze_exec::util::FileOutErr;
 use blaze_optdefs::command::action_execution_context::ShowSubcommands;
 use blaze_protos::failure_details::{FailureDetail, execution};
 use blaze_skyframe::Environment;
-use blaze_util::{Fingerprint, check_state};
-use blaze_vfs::{Path, PathFragment, Root, Symlinks};
+use blaze_util::check_state;
+use blaze_vfs::{DirentType, Path, PathFragment, Root, Symlinks};
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::{Mutex, RwLock};
 
@@ -207,6 +209,69 @@ pub type ActionPostprocessing<'a> = dyn FnMut(
 /// post-processing step (Java `ActionPostprocessingStep` returns itself to run again).
 type SharedResult = Result<Option<ActionExecutionValue>, ExecutionFailure>;
 
+/// The (shared) execution of the action that generates one primary output: the
+/// `ActionLookupData` of the Skyframe node that runs it, that action, and its result.
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:60 ActionExecutionState
+#[derive(Clone)]
+struct ActionExecutionState {
+    action_lookup_data: ActionLookupData,
+    /// The action of `action_lookup_data` (Java reaches it through the state's `ActionRunner`).
+    action: ActionRef,
+    result: Arc<OnceLock<SharedResult>>,
+}
+
+/// Returns true iff the two actions can be shared: an equivalence relationship across actions,
+/// based on the action class, the key, and the list of inputs and outputs.
+///
+/// PORT: `Actions` belongs to `blaze_actions` (which has no port of this method yet).
+// Java: com/google/devtools/build/lib/actions/Actions.java:85 Actions.canBeShared
+fn can_be_shared(
+    action_key_context: &ActionKeyContext,
+    a: &dyn Action,
+    b: &dyn Action,
+) -> Result<bool, ExecutionFailure> {
+    let key_a = a
+        .get_key(action_key_context, None)
+        .map_err(|_| ExecutionFailure::Interrupted)?;
+    let key_b = b
+        .get_key(action_key_context, None)
+        .map_err(|_| ExecutionFailure::Interrupted)?;
+    if !(a.get_mnemonic() == b.get_mnemonic() && key_a == key_b) {
+        return Ok(false);
+    }
+    // Uses a standard comparison technique for shareable actions.
+    if a.is_shareable() && b.is_shareable() {
+        return Ok(artifacts_equal_without_owner(
+            &a.get_mandatory_inputs().to_list(),
+            &b.get_mandatory_inputs().to_list(),
+        ) && artifacts_equal_without_owner(&a.get_outputs(), &b.get_outputs()));
+    }
+
+    // If this is reached, at least one action is not shareable. If the actions differ on this,
+    // they cannot be shared.
+    if a.is_shareable() || b.is_shareable() {
+        return Ok(false);
+    }
+
+    // If the artifacts are in fact equal (with owners), these are aliases of the same action and
+    // not in conflict with each other.
+    Ok(
+        *a.get_mandatory_inputs().to_list() == *b.get_mandatory_inputs().to_list()
+            && a.get_outputs() == b.get_outputs(),
+    )
+}
+
+// Java: com/google/devtools/build/lib/actions/Actions.java:145 Actions.artifactsEqualWithoutOwner
+fn artifacts_equal_without_owner(collection1: &[Artifact], collection2: &[Artifact]) -> bool {
+    if collection1.len() != collection2.len() {
+        return false;
+    }
+    collection1
+        .iter()
+        .zip(collection2)
+        .all(|(artifact1, artifact2)| artifact1.equals_without_owner(artifact2))
+}
+
 /// An action was not executed because of an action cache hit.
 ///
 /// PORT: Java also carries the action's `InputMetadataProvider` (for the critical path and the
@@ -249,11 +314,15 @@ pub struct SkyframeActionExecutor {
     output_filter: Option<Arc<dyn OutputFilter>>,
     /// `ExecutionOptions.showSubcommands` (`--subcommands`; `executor.reportsSubcommands()`).
     show_subcommands: ShowSubcommands,
+    /// Java: `perBuildFileCache` (`getPerBuildFileCache()`), set by
+    /// [`SkyframeActionExecutor::configure_file_cache`]. It also carries
+    /// `directories.getRelativeOutputPath()`, which `ActionExecutionFunction` hands the
+    /// `SkyframeInputMetadataProvider` of each action.
+    per_build_file_cache: OnceLock<Arc<SingleBuildFileCache>>,
     /// Java: `buildActionMap`. Shared actions (same primary output) execute once; the entry
     /// records the `ActionLookupData` of the action that runs (`ActionExecutionState
     /// .actionLookupData`).
-    build_action_map:
-        Mutex<HashMap<OwnerlessArtifactWrapper, (ActionLookupData, Arc<OnceLock<SharedResult>>)>>,
+    build_action_map: Mutex<HashMap<OwnerlessArtifactWrapper, ActionExecutionState>>,
     had_execution_error: AtomicBool,
     /// Java: `ActionLogBufferPathGenerator.actionUniquifier`.
     action_uniquifier: AtomicU64,
@@ -282,6 +351,7 @@ impl SkyframeActionExecutor {
             output_directory_helper: ActionOutputDirectoryHelper::new(),
             output_filter: None,
             show_subcommands: ShowSubcommands::FALSE,
+            per_build_file_cache: OnceLock::new(),
             build_action_map: Mutex::new(HashMap::new()),
             had_execution_error: AtomicBool::new(false),
             action_uniquifier: AtomicU64::new(0),
@@ -317,6 +387,19 @@ impl SkyframeActionExecutor {
     ) -> SkyframeActionExecutor {
         self.show_subcommands = show_subcommands;
         self
+    }
+
+    /// The `fileCache` argument of Java's `configure`: the per-build file cache
+    /// (`CommandEnvironment.getFileCache`: `new SingleBuildFileCache(execRoot,
+    /// PathFragment.create(directories.getRelativeOutputPath()), fs, syscallCache)`), which
+    /// `ExecutionTool` hands the executor once per build.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1044 CommandEnvironment.getFileCache
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1035 SkyframeActionExecutor.configure
+    pub fn configure_file_cache(&self, file_cache: Arc<SingleBuildFileCache>) {
+        if self.per_build_file_cache.set(file_cache).is_err() {
+            // One build per executor: Java replaces the cache of the previous build.
+            panic!("IllegalStateException: the per-build file cache is already configured");
+        }
     }
 
     /// `reporter.showOutput(tag)`.
@@ -447,10 +530,18 @@ impl SkyframeActionExecutor {
         }
 
         // Use computeIfAbsent to handle concurrent attempts to execute the same shared action.
-        let (owner, cell) = {
+        let ActionExecutionState {
+            action_lookup_data: owner,
+            action: owning_action,
+            result: cell,
+        } = {
             let mut map = self.build_action_map.lock();
             map.entry(OwnerlessArtifactWrapper(action.get_primary_output()))
-                .or_insert_with(|| (action_lookup_data.clone(), Arc::new(OnceLock::new())))
+                .or_insert_with(|| ActionExecutionState {
+                    action_lookup_data: action_lookup_data.clone(),
+                    action: action.clone(),
+                    result: Arc::new(OnceLock::new()),
+                })
                 .clone()
         };
         // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:87 ActionExecutionState.getResultOrDependOnFuture
@@ -473,6 +564,26 @@ impl SkyframeActionExecutor {
         }
 
         // This is a shared action, and the primary action is owned by another Skyframe node.
+        // PORT: Java relies on the analysis-time ArtifactConflictFinder ("file '<x>' is generated
+        // by these conflicting actions") for the two actions of one primary output to be
+        // shareable, and would hand the second one the first one's outputs. Until that guarantee
+        // is established before execution, a second action that cannot be shared with the one
+        // that runs is an illegal state here.
+        if !can_be_shared(
+            &self.action_key_context,
+            owning_action.as_ref(),
+            action.as_ref(),
+        )? {
+            panic!(
+                "IllegalStateException: Cannot share {} and {}: file '{}' is generated by these \
+                 conflicting actions: {} and {}",
+                owner,
+                action_lookup_data,
+                action.get_primary_output().pretty_print(),
+                owning_action.pretty_print(),
+                action.pretty_print()
+            );
+        }
         // PORT: Java registers a dependency on the primary action's completion future and
         // restarts; Blaze's evaluator does not restart, so this thread waits for the result.
         // SharedActionCallback (progress) and SharedActionEvent (ExecutionGraphModule) are not
@@ -554,8 +665,8 @@ impl SkyframeActionExecutor {
         postprocessing(
             env,
             action,
-            &*input_metadata,
-            &*output_metadata_store,
+            &input_metadata,
+            &output_metadata_store,
             &self.client_env,
         )?;
         if env.values_missing() {
@@ -679,33 +790,23 @@ impl SkyframeActionExecutor {
             ErrorTiming::NO_ERROR,
         );
         let rich_artifact_data = context.rich_artifact_data.lock().clone();
-        Ok(self.create_action_execution_value(
-            action.as_ref(),
-            output_metadata_store,
-            rich_artifact_data,
-            &context.input_metadata,
-        ))
+        Ok(self.create_action_execution_value(output_metadata_store, rich_artifact_data))
     }
 
-    /// `ActionExecutionValue.create(outputMetadataStore, richArtifactData, action)`; the
-    /// `RunfilesArtifactValue` metadata (`getMetadata()`) is computed here from the action's
-    /// input metadata, as Java's `RunfilesArtifactValue` constructor does.
+    /// `ActionExecutionValue.create(outputMetadataStore, richArtifactData, action)`.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:145 ActionExecutionValue.create
     fn create_action_execution_value(
         &self,
-        action: &dyn Action,
         output_metadata_store: &ActionOutputMetadataStore,
         rich_artifact_data: Option<Arc<RunfilesArtifactValue>>,
-        input_metadata: &ActionInputMetadata,
     ) -> ActionExecutionValue {
-        let rich = rich_artifact_data.map(|r| {
-            let metadata = compute_runfiles_metadata(action, &r, input_metadata);
-            (r, metadata)
-        });
         ActionExecutionValue::create_with_rich_metadata(
             output_metadata_store.get_all_artifact_data(),
             output_metadata_store.get_all_tree_artifact_data(),
-            rich,
+            rich_artifact_data.map(|r| {
+                let metadata = r.get_metadata().clone();
+                (r, metadata)
+            }),
         )
     }
 
@@ -981,12 +1082,16 @@ impl SkyframeActionExecutor {
     ) -> Option<(Arc<RunfilesArtifactValue>, FileArtifactValue)> {
         if let Some(runfiles_tree_action) = action.as_any().downcast_ref::<RunfilesTreeAction>() {
             // Java: com/google/devtools/build/lib/actions/RunfilesTreeAction.java:97 RunfilesTreeAction.reconstructRichDataOnActionCacheHit
-            let value = Arc::new(create_runfiles_artifact_value(runfiles_tree_action));
-            let metadata = compute_runfiles_metadata(
-                action,
-                &value,
+            // Java passes state.actionInputMetadataProvider: the input map alone.
+            let value = match create_runfiles_artifact_value(
+                runfiles_tree_action,
                 &input_metadata_provider.action_input_map_only(),
-            );
+            ) {
+                Ok(value) => Arc::new(value),
+                // On action cache hits, all input metadata should already be in RAM
+                Err(e) => panic!("IllegalStateException: {e}"),
+            };
+            let metadata = value.get_metadata().clone();
             return Some((value, metadata));
         }
         if let Some(symlink_tree_action) = action.as_any().downcast_ref::<SymlinkTreeAction>() {
@@ -1310,76 +1415,6 @@ fn has_tree_artifact_outputs(action: &dyn Action) -> bool {
     action.get_outputs().iter().any(|o| o.is_tree_artifact())
 }
 
-/// The `RunfilesArtifactValue` metadata: `FileArtifactValue.createRunfilesProxy(computeDigest())`
-/// over the runfiles tree's mapping and the metadata of the producing action's inputs, sorted by
-/// exec path (`RunfilesTreeAction.createRunfilesArtifactValue`).
-// Java: com/google/devtools/build/lib/actions/RunfilesArtifactValue.java:87 RunfilesArtifactValue.computeDigest
-// Java: com/google/devtools/build/lib/actions/RunfilesTreeAction.java:62 RunfilesTreeAction.createRunfilesArtifactValue
-fn compute_runfiles_metadata(
-    action: &dyn Action,
-    value: &RunfilesArtifactValue,
-    input_metadata_provider: &dyn InputMetadataProvider,
-) -> FileArtifactValue {
-    let mut inputs: Vec<Artifact> = action.get_inputs().to_list().to_vec();
-    // Sort for better equality in RunfilesArtifactValue.
-    inputs.sort_by(Artifact::exec_path_comparator);
-    let mut files: Vec<(Artifact, Option<FileArtifactValue>)> = Vec::new();
-    let mut tree_values: Vec<Arc<TreeArtifactValue>> = Vec::new();
-    for input in inputs {
-        if input.is_fileset() {
-            blaze_util::unported!("RunfilesArtifactValue.computeDigest (FilesetOutputTree.addTo)");
-        } else if input.is_tree_artifact() {
-            tree_values.push(
-                input_metadata_provider
-                    .get_tree_metadata(&artifact_input(&input))
-                    .unwrap_or_else(|| panic!("NullPointerException: tree metadata of {input}")),
-            );
-        } else {
-            let metadata = match input_metadata_provider.get_input_metadata(&artifact_input(&input))
-            {
-                Ok(m) => m,
-                // On action cache hits, all input metadata should already be in RAM.
-                Err(e) => panic!("IllegalStateException: {e}"),
-            };
-            files.push((input, metadata));
-        }
-    }
-
-    let mut result = Fingerprint::new();
-    let mapping = value.get_runfiles_tree().get_mapping();
-    result.add_int(mapping.len() as i32);
-    for (path, artifact) in &mapping {
-        result.add_string(path.get_path_string());
-        result.add_boolean(artifact.is_some());
-        if let Some(artifact) = artifact {
-            result.add_string(artifact.get_exec_path().get_path_string());
-        }
-    }
-    result.add_int(files.len() as i32);
-    for (file, metadata) in &files {
-        let value = if file.is_constant_metadata() {
-            FileArtifactValue::ConstantMetadata
-        } else {
-            metadata
-                .clone()
-                .unwrap_or_else(|| panic!("NullPointerException: metadata of {file}"))
-        };
-        blaze_exec::actions::cache::metadata_digest_utils::add_to(&value, &mut result);
-    }
-    result.add_int(tree_values.len() as i32);
-    for tree_value in &tree_values {
-        result.add_bytes(
-            tree_value
-                .get_digest()
-                .unwrap_or_else(|| panic!("NullPointerException: TreeArtifactValue.getDigest()")),
-        );
-    }
-    // No filesets (unported above).
-    FileArtifactValue::RunfilesProxy {
-        digest: result.digest_and_reset(),
-    }
-}
-
 // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1823 SkyframeActionExecutor.createDetailedExitCode
 fn create_detailed_exit_code(message: &str, detailed_code: execution::Code) -> FailureDetail {
     execution_failure(message.to_string(), detailed_code)
@@ -1403,7 +1438,7 @@ fn report_missing_output_file(
         },
         output.pretty_print()
     );
-    // PORT: logger.atWarning() ("Error creating ...") is not ported.
+    // PORT: skipped, tracing (logger.atWarning: "Error creating ..." goes to the Java log).
     let _ = exception;
     if is_symlink {
         let msg = format!("{prefix}is a dangling symbolic link");
@@ -1473,36 +1508,6 @@ fn get_event_for_unsound_directory(
         Some(label) => event.with_tag(Some(&label.to_string())),
         None => event,
     }
-}
-
-fn set_tree_read_only_and_executable(dir: &Path, mode: u32) -> std::io::Result<()> {
-    for child in dir.get_directory_entries()? {
-        let st = child.stat_with(Symlinks::Nofollow)?;
-        if st.is_directory() {
-            set_tree_read_only_and_executable(&child, mode)?;
-        } else if st.is_file() {
-            child.chmod(mode)?;
-        }
-    }
-    dir.chmod(0o755)
-}
-
-fn visit_tree(
-    dir: &Path,
-    rel: &PathFragment,
-    f: &mut dyn FnMut(&PathFragment, &Path) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    let mut entries = dir.get_directory_entries()?;
-    entries.sort_by(|a, b| a.get_base_name().cmp(b.get_base_name()));
-    for child in entries {
-        let child_rel = rel.get_child(child.get_base_name());
-        if child.is_directory_with(Symlinks::Nofollow) {
-            visit_tree(&child, &child_rel, f)?;
-        } else {
-            f(&child_rel, &child)?;
-        }
-    }
-    Ok(())
 }
 
 /// The stdout/stderr of an action attached to its `From ...:` event.
@@ -1680,63 +1685,75 @@ impl ActionOutputMetadataStore {
     ) -> std::io::Result<Option<Arc<TreeArtifactValue>>> {
         let tree_dir = parent.get_path();
         let chmod = self.execution_mode.load(Ordering::SeqCst);
+
         let stat = tree_dir.stat_if_found(Symlinks::Follow)?;
-        let is_dir = stat.as_ref().is_some_and(|s| s.is_directory());
-        if !is_dir {
+
+        // Make sure the tree artifact root exists and is a regular directory. Note that this is
+        // how the action is initialized, so this should hold unless the action itself has deleted
+        // the root.
+        if !stat.as_ref().is_some_and(|s| s.is_directory()) {
             if chmod {
                 self.set_path_permissions_if_file(&tree_dir)?;
             }
             return Ok(None);
         }
-        if chmod {
-            // PORT: Java chmods each visited entry (not through symlinks) during the visit.
-            set_tree_read_only_and_executable(
-                &tree_dir,
-                self.output_permissions.get_permissions_mode(),
-            )?;
-        }
-        let mut children = Vec::new();
-        visit_tree(
+
+        // TreeArtifactValue.newBuilder(parent)
+        let mut tree: Vec<(ActionInputRef, FileArtifactValue)> = Vec::new();
+
+        TreeArtifactValue::visit_tree(
             &tree_dir,
-            &PathFragment::empty_fragment(),
-            &mut |rel, child| {
-                let value = FileArtifactValue::create_for_testing(child)?;
-                let child_artifact = Artifact::create_tree_output(parent, rel.clone());
-                children.push((artifact_input(&child_artifact), value));
+            &mut |parent_relative_path, type_, traversed_symlink| {
+                check_state!(type_ == DirentType::File || type_ == DirentType::Directory);
+                // Set the output permissions when the execution mode requires it, unless at least
+                // one symlink was traversed on the way to this entry, as it might have led
+                // outside of the root directory.
+                if chmod && !traversed_symlink {
+                    self.set_path_permissions(&tree_dir.get_relative(parent_relative_path))?;
+                }
+                if type_ == DirentType::Directory {
+                    return Ok(()); // The final TreeArtifactValue does not contain child directories.
+                }
+                let child = Artifact::create_tree_output(parent, parent_relative_path.clone());
+                let metadata = self.construct_file_artifact_value_from_filesystem(&child)?;
+                tree.push((artifact_input(&child), metadata));
                 Ok(())
             },
         )?;
+
         if self.archived_tree_artifacts_enabled {
             blaze_util::unported!("ArchivedTreeArtifact.createForTree");
         }
-        if tree_dir.is_symbolic_link() {
-            blaze_util::unported!("TreeArtifactValue.Builder.setResolvedPath");
-        }
-        Ok(Some(Arc::new(TreeArtifactValue::build(
-            children, None, None,
-        ))))
+
+        // If the artifact was materialized in the filesystem as as symlink to another artifact,
+        // Java records the real path in the metadata (`tree.setResolvedPath`) when `stat` is a
+        // `FileStatusWithMetadata`. Only an action file system or a remote output service hands
+        // out such a stat; the local file system never does.
+
+        Ok(Some(Arc::new(TreeArtifactValue::build(tree, None, None))))
     }
 
     /// Sets the output permissions of a freshly created output file.
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:509 ActionOutputMetadataStore.setPathPermissionsIfFile
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:590 ActionOutputMetadataStore.setPathPermissionsIfFile
     fn set_path_permissions_if_file(&self, path: &Path) -> std::io::Result<()> {
-        let Some(stat) = path.stat_if_found(Symlinks::Nofollow)? else {
-            return Ok(());
-        };
-        let mode = self.output_permissions.get_permissions_mode();
-        if stat.is_file() && (stat.get_permissions() & 0o7777) != mode {
-            path.chmod(mode)?;
+        let stat = path.stat_if_found(Symlinks::Nofollow)?;
+        if let Some(stat) = stat
+            && stat.is_file()
+            && stat.get_permissions() != self.output_permissions.get_permissions_mode()
+        {
+            self.set_path_permissions(path)?;
         }
         Ok(())
     }
 
-    /// `constructFileArtifactValueFromFilesystem`.
-    ///
-    /// PORT: the value of a regular file is its stat (following symlinks) and digest
-    /// (`FileArtifactValue.createFromStat`); a directory is `createForDirectoryWithMtime`. Output
-    /// symlinks (`artifact.isSymlink()`) are `FileArtifactValue.createForUnresolvedSymlink`,
-    /// not ported.
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:404 ActionOutputMetadataStore.constructFileArtifactValueFromFilesystem
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:599 ActionOutputMetadataStore.setPathPermissions
+    fn set_path_permissions(&self, path: &Path) -> std::io::Result<()> {
+        path.chmod(self.output_permissions.get_permissions_mode())
+    }
+
+    /// Constructs a new `FileArtifactValue` by reading from the file system.
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:381 ActionOutputMetadataStore.constructFileArtifactValueFromFilesystem
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:387 ActionOutputMetadataStore.constructFileArtifactValue
     fn construct_file_artifact_value_from_filesystem(
         &self,
         artifact: &Artifact,
@@ -1746,21 +1763,81 @@ impl ActionOutputMetadataStore {
             "{} is a tree artifact",
             artifact
         );
-        let path = artifact.get_path();
-        let stat_no_follow = match path.stat_if_found(Symlinks::Nofollow)? {
-            Some(s) => s,
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("{} does not exist", artifact.pretty_print()),
-                ));
-            }
-        };
-        if artifact.is_symlink() {
-            let _ = stat_no_follow;
-            blaze_util::unported!("FileArtifactValue.createForUnresolvedSymlink");
+
+        let stat_and_value = file_artifact_value_from_artifact(artifact)?;
+        let value = stat_and_value.file_artifact_value;
+
+        let type_ = value.get_type();
+
+        if !type_.exists() {
+            // Nonexistent files should only occur before executing an action.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{} does not exist", artifact.pretty_print()),
+            ));
         }
-        FileArtifactValue::create_for_testing(&path)
+
+        if type_.is_symlink() {
+            // We always create a FileArtifactValue for an unresolved symlink with a digest
+            // (calling readlink() is easy, unlike checksumming a potentially huge file).
+            if value.get_digest().is_none() {
+                panic!("NullPointerException: {value} missing digest");
+            }
+            return Ok(value);
+        }
+
+        if type_.is_file() && value.get_digest().is_some() {
+            // The digest is in the file value and that is all that is needed for this file's
+            // metadata.
+            return Ok(value);
+        }
+
+        if type_.is_directory() {
+            // This branch is taken when the output of an action is a directory:
+            //   - A Fileset (in this case, Blaze is correct)
+            //   - A directory someone created in a local action (in this case, changes under the
+            //     directory may not be detected since we use the mtime of the directory for
+            //     up-to-dateness checks)
+            //   - A symlink to a source directory due to Filesets
+            return Ok(FileArtifactValue::create_for_directory_with_mtime(
+                artifact.get_path().get_last_modified_time()?,
+            ));
+        }
+
+        if type_.is_special_file() {
+            // FileArtifactValue.createFromInjectedDigest(value, /* digest= */ null)
+            return Ok(FileArtifactValue::create_for_normal_file(
+                None,
+                value.get_contents_proxy(),
+                value.get_size(),
+            ));
+        }
+
+        check_state!(type_.is_file(), "{:?}", type_);
+        // We don't have an injected digest and there is no digest in the file value (which
+        // attempts a fast digest). Manually compute the digest instead.
+        let mut path = stat_and_value.path_no_follow;
+        // The file exists and is not an unresolved symlink, so it must have been stat'ed.
+        if stat_and_value
+            .stat_no_follow
+            .unwrap_or_else(|| panic!("NullPointerException: statNoFollow of {artifact}"))
+            .is_symbolic_link()
+        {
+            // If the file is a symlink, we compute the digest using the target path so that it's
+            // possible to hit the digest cache - we probably already computed the digest for the
+            // target during previous action execution.
+            // The case of an unresolved symlink has been handled above, so realPath() is never
+            // null.
+            path = stat_and_value
+                .real_path
+                .unwrap_or_else(|| panic!("NullPointerException: realPath of {artifact}"));
+        }
+        // FileArtifactValue.createFromInjectedDigest(value, DigestUtils.manuallyComputeDigest(path))
+        Ok(FileArtifactValue::create_for_normal_file(
+            Some(path.get_digest()?),
+            value.get_contents_proxy(),
+            value.get_size(),
+        ))
     }
 
     /// `prepareForActionExecution()`: enters execution mode and discards cached metadata.
@@ -1773,6 +1850,119 @@ impl ActionOutputMetadataStore {
         self.artifact_data.lock().clear();
         self.tree_artifact_data.lock().clear();
     }
+}
+
+// Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:548 ActionOutputMetadataStore.FileArtifactStatAndValue
+struct FileArtifactStatAndValue {
+    path_no_follow: Path,
+    real_path: Option<Path>,
+    stat_no_follow: Option<blaze_vfs::FileStatus>,
+    file_artifact_value: FileArtifactValue,
+}
+
+/// Constructs a `FileArtifactValue` for a regular (non-tree, non-runfiles tree) artifact.
+// Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:478 ActionOutputMetadataStore.fileArtifactValueFromArtifact
+fn file_artifact_value_from_artifact(
+    artifact: &Artifact,
+) -> std::io::Result<FileArtifactStatAndValue> {
+    check_state!(
+        !artifact.is_tree_artifact() && !artifact.is_runfiles_tree(),
+        "{}",
+        artifact
+    );
+
+    let path_no_follow = artifact.get_path();
+    // If we expect a symlink, we can readlink it directly and handle errors appropriately - there
+    // is no need for the stat below.
+    if artifact.is_symlink() {
+        blaze_util::unported!("FileArtifactValue.createForUnresolvedSymlink");
+    }
+
+    // Stat the file. All output artifacts of an action are deleted before execution, so if a file
+    // exists, it was most likely created by the current action. There is a race condition here if
+    // an external process creates (or modifies) the file between the deletion and this stat,
+    // which we cannot solve.
+    let stat_no_follow = path_no_follow.stat_if_found(Symlinks::Nofollow)?;
+
+    if !stat_no_follow
+        .as_ref()
+        .is_some_and(|s| s.is_symbolic_link())
+    {
+        let file_artifact_value =
+            file_artifact_value_from_stat(&path_no_follow, stat_no_follow.as_ref())?;
+        return Ok(FileArtifactStatAndValue {
+            path_no_follow,
+            real_path: None,
+            stat_no_follow,
+            file_artifact_value,
+        });
+    }
+
+    // We use FileStatus#isSymbolicLink over Path#isSymbolicLink to avoid the unnecessary stat
+    // done by the latter.  We need to protect against symlink cycles since
+    // ArtifactFileMetadata#value assumes it's dealing with a file that's not in a symlink cycle.
+    let real_path = path_no_follow.resolve_symbolic_links()?;
+    if real_path == path_no_follow {
+        return Err(std::io::Error::other("symlink cycle"));
+    }
+
+    // TODO(bazel-team): consider avoiding a 'stat' here when the symlink target hasn't changed
+    // and is a source file (since changes to those are checked separately).
+    let real_stat = real_path.stat_if_found(Symlinks::Nofollow)?;
+    let file_artifact_value = file_artifact_value_from_stat(&real_path, real_stat.as_ref())?;
+
+    // Java records the real path in the metadata (createFromExistingWithResolvedPath) when
+    // `realStat` is a `FileStatusWithMetadata`; the local file system never hands one out.
+
+    Ok(FileArtifactStatAndValue {
+        path_no_follow,
+        real_path: Some(real_path),
+        stat_no_follow,
+        file_artifact_value,
+    })
+}
+
+// Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:566 ActionOutputMetadataStore.fileArtifactValueFromStat
+fn file_artifact_value_from_stat(
+    path: &Path,
+    stat: Option<&blaze_vfs::FileStatus>,
+) -> std::io::Result<FileArtifactValue> {
+    let Some(stat) = stat else {
+        return Ok(FileArtifactValue::MissingFileMarker);
+    };
+
+    if stat.is_directory() {
+        return Ok(FileArtifactValue::create_for_directory_with_mtime(
+            stat.get_last_modified_time(),
+        ));
+    }
+
+    // FileStateValue.createWithStatNoFollow(rootedPath, stat, xattrProvider, tsgm), then
+    // FileArtifactValue.createForNormalFile(fileStateValue.getDigest(),
+    // fileStateValue.getContentsProxy(), stat.getSize()).
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:86 FileStateValue.createWithStatNoFollow
+    if stat.is_file() {
+        // A special file (SpecialFileStateValue.fromStat) and a regular file without a fast
+        // digest (RegularFileStateValueWithContentsProxy: the stat carries no digest, and
+        // `xattrProvider.getFastDigest` is null for a file system without digest xattrs) both
+        // have no digest and the contents proxy of the stat.
+        // PORT: skipped, incremental (TimestampGranularityMonitor.notifyDependenceOnFileTime).
+        return Ok(FileArtifactValue::create_for_normal_file(
+            None,
+            Some(FileContentsProxy::create(stat)),
+            stat.get_size(),
+        ));
+    }
+    if stat.is_symbolic_link() {
+        // SymlinkFileStateValue: getDigest() and getContentsProxy() throw.
+        panic!(
+            "IllegalStateException: {path} is a symlink (FileStateValue of a symlink has no digest)"
+        );
+    }
+    // InconsistentFilesystemException
+    Err(std::io::Error::other(format!(
+        "according to stat, existing path {path} is neither a file nor directory nor symlink."
+    )))
 }
 
 impl OutputMetadataStore for ActionOutputMetadataStore {
@@ -2155,147 +2345,414 @@ impl blaze_actions::actions::artifact_factory::PackageRootResolver
     }
 }
 
-/// `ActionInputMap` + `ActionInputMetadataProvider`: the metadata of an action's inputs, from
-/// their Skyframe values. Inputs discovered by the action are added to the same map.
+/// One value of an `ActionInputMap` (`values[index]`).
+enum ActionInputMapValue {
+    File(FileArtifactValue),
+    Tree(Arc<TreeArtifactValue>),
+    Runfiles(Arc<RunfilesArtifactValue>),
+}
+
+/// The metadata of an action's inputs: Java's `ActionInputMap` (filled from the inputs' Skyframe
+/// values; inputs discovered by the action are added to the same map) and the providers
+/// `ActionExecutionFunction` builds over it: `ActionInputMetadataProvider` (the map alone, see
+/// [`ActionInputMetadata::action_input_map_only`]) and the
+/// `DelegatingPairInputMetadataProvider` of it and a `SkyframeInputMetadataProvider` (this type's
+/// own `InputMetadataProvider` implementation, used while the action discovers inputs and
+/// executes).
+///
+/// PORT: Java's `ActionInputMap` is an open-addressed table plus a trie of the tree artifacts'
+/// exec paths; here it is one hash map from exec path to key and value, and the trie lookups walk
+/// the ancestors of the path.
 // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:53 ActionInputMap
 // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:45 ActionInputMetadataProvider
-#[allow(clippy::type_complexity)]
+// Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:52 SkyframeInputMetadataProvider
+// Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:27 DelegatingPairInputMetadataProvider
 pub struct ActionInputMetadata {
-    exec_root: Path,
-    files: RwLock<HashMap<PathFragment, (ActionInputRef, FileArtifactValue)>>,
-    trees: RwLock<HashMap<PathFragment, Arc<TreeArtifactValue>>>,
-    /// A runfiles tree's `RunfilesArtifactValue` and its `getMetadata()` (`None` for values built
-    /// without the producing action's input metadata).
-    runfiles:
-        RwLock<HashMap<PathFragment, (Arc<RunfilesArtifactValue>, Option<FileArtifactValue>)>>,
-    /// PORT: metadata of files the map does not hold (runfiles members, files written by an
-    /// earlier spawn of the same action), stat'ed on first use; see `get_input_metadata`.
-    stat_cache: Mutex<HashMap<PathFragment, Option<FileArtifactValue>>>,
+    /// `ActionInputMap`: `paths[index]` to `(keys[index], values[index])`.
+    map: RwLock<HashMap<PathFragment, (ActionInputRef, ActionInputMapValue)>>,
+    /// `SkyframeInputMetadataProvider.perBuild` (`skyframeActionExecutor.getPerBuildFileCache()`),
+    /// which also holds `relativeOutputPath`; `None` when the executor was not configured with
+    /// one ([`SkyframeActionExecutor::configure_file_cache`]).
+    per_build: Option<Arc<SingleBuildFileCache>>,
+    /// `SkyframeInputMetadataProvider.allowSkyframe`.
+    allow_skyframe: AtomicBool,
+    /// `SkyframeInputMetadataProvider.seen`.
+    seen: Mutex<HashMap<PathFragment, ActionInputRef>>,
 }
 
 impl ActionInputMetadata {
-    pub fn new(exec_root: Path) -> ActionInputMetadata {
+    /// An empty `ActionInputMap` with the providers of an action executed by `executor`.
+    pub fn new(executor: &SkyframeActionExecutor) -> ActionInputMetadata {
+        ActionInputMetadata::with_providers(executor.per_build_file_cache.get().cloned())
+    }
+
+    fn with_providers(per_build: Option<Arc<SingleBuildFileCache>>) -> ActionInputMetadata {
         ActionInputMetadata {
-            exec_root,
-            files: RwLock::new(HashMap::new()),
-            trees: RwLock::new(HashMap::new()),
-            runfiles: RwLock::new(HashMap::new()),
-            stat_cache: Mutex::new(HashMap::new()),
+            map: RwLock::new(HashMap::new()),
+            per_build,
+            allow_skyframe: AtomicBool::new(false),
+            seen: Mutex::new(HashMap::new()),
         }
     }
 
-    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:236 ActionInputMap.put
-    pub fn put(&self, input: &Artifact, value: FileArtifactValue) {
-        // putIfAbsent: the first metadata for an exec path wins.
-        self.files
-            .write()
-            .entry(input.get_exec_path().clone())
-            .or_insert_with(|| (artifact_input(input), value));
-    }
-
-    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:264 ActionInputMap.putTreeArtifact
-    pub fn put_tree_artifact(&self, tree: &Artifact, value: Arc<TreeArtifactValue>) {
-        self.trees
-            .write()
-            .entry(tree.get_exec_path().clone())
-            .or_insert(value);
-    }
-
-    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:285 ActionInputMap.putRunfilesMetadata
-    pub fn put_runfiles_metadata(
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:424 ActionInputMap.putIfAbsent
+    fn put_if_absent(
         &self,
-        input: &Artifact,
-        value: Arc<RunfilesArtifactValue>,
-        metadata: Option<FileArtifactValue>,
-    ) {
-        self.runfiles
-            .write()
-            .entry(input.get_exec_path().clone())
-            .or_insert((value, metadata));
+        input: ActionInputRef,
+        value: ActionInputMapValue,
+    ) -> Option<ActionInputRef> {
+        let mut map = self.map.write();
+        match map.get(input.get_exec_path()) {
+            Some((old_key, _)) => Some(old_key.clone()),
+            None => {
+                map.insert(input.get_exec_path().clone(), (input, value));
+                None
+            }
+        }
     }
 
-    /// `ActionInputMap.getInputMetadata(input) != null`: whether the map (not the file system
-    /// fallback) knows `input`.
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:371 ActionInputMap.put
+    pub fn put(&self, input: &Artifact, metadata: FileArtifactValue) {
+        self.put_input(artifact_input(input), metadata);
+    }
+
+    /// [`ActionInputMetadata::put`] for an input the execution layer holds.
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:371 ActionInputMap.put
+    pub fn put_input(&self, input: ActionInputRef, metadata: FileArtifactValue) {
+        blaze_util::check_argument!(
+            !is_tree_artifact_input(&input),
+            "Can't add tree artifact: {} using put -- please use putTreeArtifact for that",
+            input
+        );
+        blaze_util::check_argument!(
+            !is_runfiles_tree_input(&input),
+            "Can't add runfiles tree: {} using put -- please use putRunfilesMetadata for that",
+            input
+        );
+
+        let display = input.clone();
+        let old_key = self.put_if_absent(input, ActionInputMapValue::File(metadata));
+        blaze_util::check_argument!(
+            old_key.as_ref().is_none_or(|k| !is_tree_artifact_input(k)),
+            "Tried to overwrite tree artifact with a file: '{}' with the same exec path",
+            display
+        );
+    }
+
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:393 ActionInputMap.putRunfilesMetadata
+    pub fn put_runfiles_metadata(&self, input: &Artifact, metadata: Arc<RunfilesArtifactValue>) {
+        blaze_util::check_argument!(input.is_runfiles_tree(), "{}", input);
+
+        let old_key = self.put_if_absent(
+            artifact_input(input),
+            ActionInputMapValue::Runfiles(metadata),
+        );
+        check_state!(old_key.is_none());
+        // runfilesTrees.add(metadata.getRunfilesTree()): getRunfilesTrees() is not part of the
+        // ported InputMetadataProvider.
+    }
+
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:402 ActionInputMap.putTreeArtifact
+    pub fn put_tree_artifact(&self, tree: &Artifact, tree_artifact_value: Arc<TreeArtifactValue>) {
+        self.put_tree_artifact_input(artifact_input(tree), tree_artifact_value);
+    }
+
+    /// [`ActionInputMetadata::put_tree_artifact`] for an input the execution layer holds.
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:402 ActionInputMap.putTreeArtifact
+    pub fn put_tree_artifact_input(
+        &self,
+        tree: ActionInputRef,
+        tree_artifact_value: Arc<TreeArtifactValue>,
+    ) {
+        blaze_util::check_argument!(is_tree_artifact_input(&tree), "{}", tree);
+        let display = tree.clone();
+        let old_key = self.put_if_absent(tree, ActionInputMapValue::Tree(tree_artifact_value));
+        if let Some(old_key) = old_key {
+            blaze_util::check_argument!(
+                is_tree_artifact_input(&old_key),
+                "Tried to overwrite file with a tree artifact: '{}' with the same exec path",
+                display
+            );
+        }
+    }
+
+    /// `ActionInputMap.getInputMetadata(input) != null`: whether the map (not the Skyframe
+    /// provider) knows `input`.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1256 InputDiscoveryState.getKnownDiscoveredInputMetadata
     pub fn is_known(&self, input: &Artifact) -> bool {
-        let exec_path = input.get_exec_path();
-        self.files.read().contains_key(exec_path)
-            || self.trees.read().contains_key(exec_path)
-            || self.runfiles.read().contains_key(exec_path)
+        self.action_input_map_get_input_metadata_checked(&artifact_input(input))
+            .is_some()
     }
-}
 
-impl ActionInputMetadata {
-    /// The `ActionInputMetadataProvider` over the map alone, without the file-system fallback
-    /// that stands in for Java's `SkyframeInputMetadataProvider` (Java's
-    /// `state.actionInputMetadataProvider`, used for the action cache check).
+    /// The tree artifact of the map whose exec path is a prefix of `exec_path`
+    /// (`treeArtifactsRoot.findTreeArtifactNodeAtPrefix(execPath)`).
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:118 TrieArtifact.findTreeArtifactNodeAtPrefix
+    fn find_tree_artifact_node_at_prefix(
+        &self,
+        exec_path: &PathFragment,
+    ) -> Option<Arc<TreeArtifactValue>> {
+        // The trie is walked from the root: the shortest prefix that is a tree artifact wins.
+        let mut prefixes = Vec::new();
+        let mut prefix = Some(exec_path.clone());
+        while let Some(p) = prefix {
+            prefix = p.get_parent_directory();
+            prefixes.push(p);
+        }
+        let map = self.map.read();
+        for p in prefixes.iter().rev() {
+            if let Some((_, ActionInputMapValue::Tree(tree))) = map.get(p) {
+                return Some(tree.clone());
+            }
+        }
+        None
+    }
+
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:212 ActionInputMap.getInputMetadataChecked
+    fn action_input_map_get_input_metadata_checked(
+        &self,
+        input: &ActionInputRef,
+    ) -> Option<FileArtifactValue> {
+        if is_runfiles_tree_input(input) {
+            return self
+                .action_input_map_get_runfiles_metadata(input)
+                .map(|runfiles_metadata| runfiles_metadata.get_metadata().clone());
+        }
+
+        let artifact = input.as_artifact();
+        if let Some(tree_file_artifact) = artifact.filter(|a| a.is_child_of_declared_directory()) {
+            let parent = tree_file_artifact.get_parent().unwrap_or_else(|| {
+                panic!("NullPointerException: parent of tree file artifact {input}")
+            });
+            if let Some((_, value)) = self.map.read().get(parent.get_exec_path()) {
+                let ActionInputMapValue::Tree(tree) = value else {
+                    panic!(
+                        "IllegalArgumentException: Requested tree file artifact under \
+                         non-tree/omitted tree artifact: {input}"
+                    );
+                };
+                return find_child_entry_by_exec_path(tree, input.get_exec_path())
+                    .map(|(_, child_value)| child_value.clone());
+            }
+        }
+        if let Some((_, value)) = self.map.read().get(input.get_exec_path()) {
+            return match value {
+                ActionInputMapValue::Tree(tree_value) => {
+                    Some(tree_value.metadata.clone().unwrap_or_else(|| {
+                        panic!("NullPointerException: TreeArtifactValue.getMetadata() of {input}")
+                    }))
+                }
+                ActionInputMapValue::File(value) => Some(value.clone()),
+                ActionInputMapValue::Runfiles(_) => {
+                    panic!(
+                        "ClassCastException: RunfilesArtifactValue cannot be cast to FileArtifactValue: {input}"
+                    )
+                }
+            };
+        }
+        if artifact.is_some() {
+            // Non tree artifacts cannot overlap with tree files, therefore we can skip searching
+            // the parents.
+            return None;
+        }
+
+        // Check the trees in case input is a non-Artifact ActionInput pointing to a tree artifact
+        // file. This can happen if both a TreeArtifact and a Fileset containing the TreeArtifact
+        // are inputs to the same action.
+        self.get_metadata_from_tree_artifacts(input.get_exec_path())
+    }
+
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:307 ActionInputMap.getMetadataFromTreeArtifacts
+    fn get_metadata_from_tree_artifacts(
+        &self,
+        exec_path: &PathFragment,
+    ) -> Option<FileArtifactValue> {
+        let tree = self.find_tree_artifact_node_at_prefix(exec_path)?;
+        find_child_entry_by_exec_path(&tree, exec_path).map(|(_, value)| value.clone())
+    }
+
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:258 ActionInputMap.getRunfilesMetadata
+    fn action_input_map_get_runfiles_metadata(
+        &self,
+        input: &ActionInputRef,
+    ) -> Option<Arc<RunfilesArtifactValue>> {
+        blaze_util::check_argument!(is_runfiles_tree_input(input), "{}", input);
+
+        match self.map.read().get(input.get_exec_path()) {
+            None => None,
+            Some((_, ActionInputMapValue::Runfiles(value))) => Some(value.clone()),
+            Some(_) => {
+                panic!("ClassCastException: the value of {input} is not a RunfilesArtifactValue")
+            }
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:320 ActionInputMap.getTreeMetadata
+    fn action_input_map_get_tree_metadata(
+        &self,
+        input: &ActionInputRef,
+    ) -> Option<Arc<TreeArtifactValue>> {
+        blaze_util::check_argument!(is_tree_artifact_input(input), "{}", input);
+        match self.map.read().get(input.get_exec_path()) {
+            Some((_, ActionInputMapValue::Tree(tree_value))) => Some(tree_value.clone()),
+            _ => None,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:342 ActionInputMap.getInput
+    fn action_input_map_get_input(&self, exec_path: &PathFragment) -> Option<ActionInputRef> {
+        if let Some((key, _)) = self.map.read().get(exec_path) {
+            return Some(key.clone());
+        }
+
+        // Search ancestor paths since execPathString may point to a TreeFileArtifact within one of
+        // the tree artifacts.
+        let tree = self.find_tree_artifact_node_at_prefix(exec_path)?;
+
+        // We must return an entry from the map since a duplicate would not have the generating
+        // action key set.
+        find_child_entry_by_exec_path(&tree, exec_path).map(|(key, _)| key.clone())
+    }
+
+    /// The `ActionInputMetadataProvider` over the map alone (Java's
+    /// `state.actionInputMetadataProvider`, used for the action cache check and to reconstruct
+    /// rich data on an action cache hit).
     // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:45 ActionInputMetadataProvider
     pub fn action_input_map_only(&self) -> ActionInputMapOnly<'_> {
         ActionInputMapOnly(self)
     }
 
-    fn get_input_metadata_impl(
+    // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:76 ActionInputMetadataProvider.getInputMetadataChecked
+    fn action_input_metadata_provider_get_input_metadata_checked(
         &self,
-        input: &ActionInputRef,
-        file_system_fallback: bool,
+        action_input: &ActionInputRef,
     ) -> std::io::Result<Option<FileArtifactValue>> {
-        if let Some(v) = input.as_virtual_action_input() {
-            if v.is_empty_action_input() {
-                return Ok(None);
-            }
-            if let Some(m) = v.get_metadata()? {
-                return Ok(Some(m));
-            }
-            let bytes = v.get_bytes()?;
-            use sha2::Digest as _;
-            return Ok(Some(FileArtifactValue::create_for_virtual_action_input(
-                sha2::Sha256::digest(&bytes).to_vec(),
-                bytes.len() as i64,
-            )));
-        }
-        let exec_path = input.get_exec_path();
-        // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:212 ActionInputMap.getInputMetadataChecked
-        if input.as_artifact().is_some_and(|a| a.is_runfiles_tree()) {
-            if let Some((_, metadata)) = self.runfiles.read().get(exec_path) {
-                return match metadata {
-                    Some(m) => Ok(Some(m.clone())),
-                    None => blaze_util::unported!(
-                        "RunfilesArtifactValue.getMetadata (value built without its action's input metadata)"
-                    ),
-                };
-            }
-        }
-        // A tree artifact's metadata is its TreeArtifactValue.getMetadata().
-        if input.as_artifact().is_some_and(|a| a.is_tree_artifact())
-            && let Some(tree) = self.trees.read().get(exec_path).cloned()
-        {
-            return Ok(Some(tree.metadata.clone().unwrap_or_else(|| {
-                panic!("NullPointerException: TreeArtifactValue.getMetadata() of {exec_path}")
-            })));
-        }
-        if let Some((_, v)) = self.files.read().get(exec_path) {
-            return Ok(Some(v.clone()));
-        }
-        if !file_system_fallback {
+        if action_input.as_artifact().is_none() {
             return Ok(None);
         }
-        // PORT: Java consults ActionInputMap, then the per-build file cache
-        // (SkyframeInputMetadataProvider) for runfiles members and outputs of earlier spawns.
-        // In a single non-incremental build those values equal a stat of the file, done here.
-        if let Some(cached) = self.stat_cache.lock().get(exec_path) {
-            return Ok(cached.clone());
+        let value = self.action_input_map_get_input_metadata_checked(action_input);
+        if let Some(value) = value {
+            // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:150 ActionInputMetadataProvider.checkExists
+            if value == FileArtifactValue::MissingFileMarker {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("{action_input} does not exist"),
+                ));
+            }
+            return Ok(Some(value));
         }
-        let path = self.exec_root.get_relative(exec_path);
-        let value = if path.exists() {
-            Some(FileArtifactValue::create_for_testing(&path)?)
-        } else {
-            None
-        };
-        self.stat_cache
-            .lock()
-            .insert(exec_path.clone(), value.clone());
-        Ok(value)
+        // filesetMapping: no fileset is ever put in the map (ActionInputMapHelper.addToMap fails
+        // with unported! for a fileset input).
+        Ok(None)
     }
+
+    /// Allow Skyframe access while the returned guard is alive.
+    ///
+    /// This should only happen during input discovery, so we disallow it everywhere else.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:153 SkyframeInputMetadataProvider.withSkyframeAllowed
+    pub fn with_skyframe_allowed(&self) -> SkyframeAllowed<'_> {
+        self.allow_skyframe.store(true, Ordering::SeqCst);
+        SkyframeAllowed(self)
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:167 SkyframeInputMetadataProvider.getInputMetadataChecked
+    fn skyframe_input_metadata_provider_get_input_metadata_checked(
+        &self,
+        input: &ActionInputRef,
+    ) -> std::io::Result<Option<FileArtifactValue>> {
+        let Some(artifact) = input.as_artifact() else {
+            let per_build = self.per_build();
+            if !input
+                .get_exec_path()
+                .starts_with(per_build.get_relative_output_path())
+            {
+                return per_build.get_input_metadata(input);
+            } else {
+                return Ok(None);
+            }
+        };
+
+        if artifact.is_source_artifact() {
+            return self.per_build().get_input_metadata(input);
+        }
+
+        if !self.allow_skyframe.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+
+        // artifact instanceof SpecialArtifact
+        let blaze_artifact = as_blaze_artifact(input)
+            .unwrap_or_else(|| panic!("ClassCastException: {input} is not an Artifact"));
+        if blaze_artifact.get_special_artifact_type().is_some() {
+            return Ok(None);
+        }
+
+        // PORT: Java reads the ActionExecutionValue of the input's generating action from the
+        // graph (`evaluator.getExistingValue(Artifact.key(artifact))`; these are transitive
+        // dependencies of the action) and returns `getExistingFileArtifactValue(artifact)`. The
+        // engine gives no handle to read a done node from an InputMetadataProvider (the
+        // Environment is not shared with the action), so the metadata is rebuilt from the output
+        // file, which is what that value was built from
+        // (ActionOutputMetadataStore.constructFileArtifactValueFromFilesystem). A file that does
+        // not exist means the generating action is not done: Java requests it
+        // (`env.getValue(key)`) and throws MissingDepExecException.
+        let path = blaze_artifact.get_path();
+        let Some(stat) = path.stat_if_found(Symlinks::Follow)? else {
+            blaze_util::unported!(
+                "SkyframeInputMetadataProvider.SkyframeLookup.tryLookup",
+                "the generating action of {} is not done (MissingDepExecException)",
+                input
+            );
+        };
+        let value = FileArtifactValue::create_from_stat(&path, &stat)?;
+        self.seen
+            .lock()
+            .insert(input.get_exec_path().clone(), input.clone());
+        Ok(Some(value))
+    }
+
+    /// `SkyframeInputMetadataProvider.perBuild`.
+    fn per_build(&self) -> &SingleBuildFileCache {
+        match &self.per_build {
+            Some(per_build) => per_build.as_ref(),
+            None => blaze_util::unported!(
+                "SkyframeActionExecutor.getPerBuildFileCache",
+                "the executor was not given the per-build file cache \
+                 (SkyframeActionExecutor::configure_file_cache)"
+            ),
+        }
+    }
+}
+
+/// See [`ActionInputMetadata::with_skyframe_allowed`].
+pub struct SkyframeAllowed<'a>(&'a ActionInputMetadata);
+
+impl Drop for SkyframeAllowed<'_> {
+    fn drop(&mut self) {
+        self.0.allow_skyframe.store(false, Ordering::SeqCst);
+    }
+}
+
+// Java: com/google/devtools/build/lib/actions/ActionInputMap.java:480 ActionInputMap.isTreeArtifact
+fn is_tree_artifact_input(input: &ActionInputRef) -> bool {
+    input.as_artifact().is_some_and(|a| a.is_tree_artifact())
+}
+
+// Java: com/google/devtools/build/lib/actions/ActionInputMap.java:488 ActionInputMap.isRunfilesTree
+fn is_runfiles_tree_input(input: &ActionInputRef) -> bool {
+    input.as_artifact().is_some_and(|a| a.is_runfiles_tree())
+}
+
+/// The child of `tree` at `exec_path`, with its metadata.
+// Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:372 TreeArtifactValue.findChildEntryByExecPath
+fn find_child_entry_by_exec_path<'a>(
+    tree: &'a TreeArtifactValue,
+    exec_path: &PathFragment,
+) -> Option<&'a (ActionInputRef, FileArtifactValue)> {
+    // The children are sorted by exec path (TreeArtifactValue::build).
+    tree.child_values
+        .binary_search_by(|(child, _)| child.get_exec_path().cmp(exec_path))
+        .ok()
+        .map(|index| &tree.child_values[index])
 }
 
 /// See [`ActionInputMetadata::action_input_map_only`].
@@ -2307,51 +2764,76 @@ impl InputMetadataProvider for ActionInputMapOnly<'_> {
         &self,
         input: &ActionInputRef,
     ) -> std::io::Result<Option<FileArtifactValue>> {
-        self.0.get_input_metadata_impl(input, false)
+        self.0
+            .action_input_metadata_provider_get_input_metadata_checked(input)
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:93 ActionInputMetadataProvider.getTreeMetadata
     fn get_tree_metadata(&self, input: &ActionInputRef) -> Option<Arc<TreeArtifactValue>> {
-        self.0.get_tree_metadata(input)
+        self.0.action_input_map_get_tree_metadata(input)
     }
 
-    fn get_fileset(&self, input: &ActionInputRef) -> Option<Arc<FilesetOutputTree>> {
-        self.0.get_fileset(input)
+    // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:105 ActionInputMetadataProvider.getFileset
+    fn get_fileset(&self, _input: &ActionInputRef) -> Option<Arc<FilesetOutputTree>> {
+        // No fileset is ever put in the map (see ActionInputMapHelper.addToMap).
+        None
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:117 ActionInputMetadataProvider.getRunfilesMetadata
     fn get_runfiles_metadata(&self, input: &ActionInputRef) -> Option<Arc<RunfilesArtifactValue>> {
-        self.0.get_runfiles_metadata(input)
+        self.0.action_input_map_get_runfiles_metadata(input)
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:128 ActionInputMetadataProvider.getInput
     fn get_input(&self, exec_path: &PathFragment) -> Option<ActionInputRef> {
-        self.0.get_input(exec_path)
+        self.0.action_input_map_get_input(exec_path)
     }
 }
 
+/// `DelegatingPairInputMetadataProvider(actionInputMetadataProvider,
+/// skyframeInputMetadataProvider)`: `state.compositeInputMetadataProvider`.
 impl InputMetadataProvider for ActionInputMetadata {
+    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:38 DelegatingPairInputMetadataProvider.getInputMetadataChecked
     fn get_input_metadata(
         &self,
         input: &ActionInputRef,
     ) -> std::io::Result<Option<FileArtifactValue>> {
-        self.get_input_metadata_impl(input, true)
+        let metadata = self.action_input_metadata_provider_get_input_metadata_checked(input)?;
+        match metadata {
+            Some(metadata) if metadata != FileArtifactValue::MissingFileMarker => {
+                Ok(Some(metadata))
+            }
+            _ => self.skyframe_input_metadata_provider_get_input_metadata_checked(input),
+        }
     }
 
+    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:48 DelegatingPairInputMetadataProvider.getTreeMetadata
     fn get_tree_metadata(&self, input: &ActionInputRef) -> Option<Arc<TreeArtifactValue>> {
-        self.trees.read().get(input.get_exec_path()).cloned()
+        // SkyframeInputMetadataProvider.getTreeMetadata returns null.
+        self.action_input_map_get_tree_metadata(input)
     }
 
+    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:62 DelegatingPairInputMetadataProvider.getFileset
     fn get_fileset(&self, _input: &ActionInputRef) -> Option<Arc<FilesetOutputTree>> {
         None
     }
 
+    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:88 DelegatingPairInputMetadataProvider.getRunfilesMetadata
     fn get_runfiles_metadata(&self, input: &ActionInputRef) -> Option<Arc<RunfilesArtifactValue>> {
-        self.runfiles
-            .read()
-            .get(input.get_exec_path())
-            .map(|(v, _)| v.clone())
+        // SkyframeInputMetadataProvider.getRunfilesMetadata returns null.
+        self.action_input_map_get_runfiles_metadata(input)
     }
 
+    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:103 DelegatingPairInputMetadataProvider.getInput
     fn get_input(&self, exec_path: &PathFragment) -> Option<ActionInputRef> {
-        self.files.read().get(exec_path).map(|(i, _)| i.clone())
+        if let Some(input) = self.action_input_map_get_input(exec_path) {
+            return Some(input);
+        }
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:236 SkyframeInputMetadataProvider.getInput
+        if let Some(result) = self.seen.lock().get(exec_path) {
+            return Some(result.clone());
+        }
+        self.per_build.as_ref().and_then(|p| p.get_input(exec_path))
     }
 }
 
@@ -2633,5 +3115,693 @@ mod output_error_text_tests {
             "output 'p/out' of //p:t is a directory but was not declared as such"
         );
         assert_eq!(event.get_tag(), Some("//p:t"));
+    }
+}
+
+/// Port of the tree artifact tests of `ActionOutputMetadataStoreTest`.
+///
+/// PORT: Java uses an `InMemoryFileSystem` that records `chmod` calls; these tests use the real
+/// file system under a fresh temporary directory and read the resulting modes.
+#[cfg(test)]
+mod action_output_metadata_store_tests {
+    use std::any::Any;
+    use std::fmt;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::os::unix::fs::PermissionsExt;
+
+    use blaze_actions::actions::action_lookup::ActionLookupKey;
+    use blaze_actions::actions::artifact::SpecialArtifactType;
+    use blaze_actions::{ActionLookupData, ActionLookupKeyRef, Artifact, ArtifactRoot, RootType};
+    use blaze_cmdline::Label;
+    use blaze_exec::actions::action_adapters::artifact_input;
+    use blaze_exec::actions::cache::{IoOrInterruptedException, OutputMetadataStore};
+    use blaze_vfs::{DigestHashFunction, FileSystemExt, UnixFileSystem};
+
+    use super::{ActionOutputMetadataStore, OutputPermissions};
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct Key(String);
+
+    impl fmt::Display for Key {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "ConfiguredTargetKey{{label={}}}", self.0)
+        }
+    }
+
+    impl ActionLookupKey for Key {
+        fn get_label(&self) -> Option<Label> {
+            Some(Label::parse_canonical(&self.0).unwrap())
+        }
+        fn get_configuration_checksum(&self) -> Option<String> {
+            Some("abc".to_string())
+        }
+        fn function_name(&self) -> &'static str {
+            "CONFIGURED_TARGET"
+        }
+        fn key_equals(&self, other: &dyn ActionLookupKey) -> bool {
+            other.as_any().downcast_ref::<Key>() == Some(self)
+        }
+        fn key_hash(&self) -> u64 {
+            let mut h = DefaultHasher::new();
+            self.hash(&mut h);
+            h.finish()
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    /// `ActionsTestUtil.createTreeArtifactWithGeneratingAction(outputRoot, rootRelativePath)`
+    /// for the output root `out` of the execroot `exec_root`.
+    pub(super) fn create_tree_artifact(exec_root: &str, root_relative_path: &str) -> Artifact {
+        let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+        let exec_root = fs.get_path(exec_root);
+        let output_root = ArtifactRoot::as_derived_root(&exec_root, RootType::OUTPUT, &["out"]);
+        let exec_path = output_root
+            .get_exec_path()
+            .get_relative_str(root_relative_path);
+        let owner = ActionLookupKeyRef::new(Key("//foo:bar".to_string()));
+        let tree_artifact = Artifact::create_special_artifact(
+            output_root,
+            exec_path,
+            owner.clone(),
+            SpecialArtifactType::TREE,
+        );
+        tree_artifact.set_generating_action_key(ActionLookupData::create(owner, 0));
+        tree_artifact
+    }
+
+    /// `ActionsTestUtil.createTreeArtifactWithGeneratingAction(outputRoot, "foo/bar")` under a
+    /// fresh execroot.
+    fn create_tree_artifact_with_generating_action() -> (tempfile::TempDir, Artifact) {
+        let dir = tempfile::tempdir().unwrap();
+        let tree_artifact = create_tree_artifact(dir.path().to_str().unwrap(), "foo/bar");
+        (dir, tree_artifact)
+    }
+
+    /// `scratch.file(child.getPath().getPathString(), contents)`.
+    fn scratch_file(child: &Artifact, contents: &str) -> String {
+        let path = child.get_path().get_path_string().to_string();
+        std::fs::create_dir_all(std::path::Path::new(&path).parent().unwrap()).unwrap();
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    fn create_store(tree_artifact: &Artifact) -> ActionOutputMetadataStore {
+        ActionOutputMetadataStore::create(
+            /* archived_tree_artifacts_enabled= */ false,
+            OutputPermissions::READONLY,
+            vec![tree_artifact.clone()],
+        )
+    }
+
+    fn mode(path: &str) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    fn chmod(path: &str, mode: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    fn get_output_metadata(
+        store: &ActionOutputMetadataStore,
+        artifact: &Artifact,
+    ) -> Result<blaze_exec::actions::FileArtifactValue, std::io::Error> {
+        match store.get_output_metadata(&artifact_input(artifact)) {
+            Ok(value) => Ok(value.expect("a known output")),
+            Err(IoOrInterruptedException::Io(e)) => Err(e),
+            Err(IoOrInterruptedException::Interrupted(_)) => panic!("interrupted"),
+        }
+    }
+
+    #[test]
+    fn creates_tree_artifact_value_from_filesystem() {
+        let (_dir, tree_artifact) = create_tree_artifact_with_generating_action();
+        let child1 = Artifact::create_tree_output_str(&tree_artifact, "child1");
+        let child2 = Artifact::create_tree_output_str(&tree_artifact, "child2");
+        let child1_path = scratch_file(&child1, "child1");
+        let child2_path = scratch_file(&child2, "child2");
+        chmod(&child1_path, 0o644);
+        chmod(&child2_path, 0o644);
+
+        let store = create_store(&tree_artifact);
+
+        let tree_metadata = get_output_metadata(&store, &tree_artifact).unwrap();
+        let child1_metadata = get_output_metadata(&store, &child1).unwrap();
+        let child2_metadata = get_output_metadata(&store, &child2).unwrap();
+        let all_tree_artifact_data = store.get_all_tree_artifact_data();
+        let tree = all_tree_artifact_data.get(&tree_artifact).unwrap();
+
+        assert_eq!(tree.metadata.as_ref(), Some(&tree_metadata));
+        assert_eq!(
+            tree.child_values,
+            vec![
+                (artifact_input(&child1), child1_metadata),
+                (artifact_input(&child2), child2_metadata),
+            ]
+        );
+        assert!(store.get_all_artifact_data().is_empty());
+        // assertThat(chmodCalls).isEmpty()
+        assert_eq!(mode(&child1_path), 0o644);
+        assert_eq!(mode(&child2_path), 0o644);
+    }
+
+    #[test]
+    fn with_dangling_symlink_in_tree_artifact_fails_with_exception() {
+        let (_dir, tree_artifact) = create_tree_artifact_with_generating_action();
+        let child = Artifact::create_tree_output_str(&tree_artifact, "child");
+        tree_artifact
+            .get_path()
+            .create_directory_and_parents()
+            .unwrap();
+        std::os::unix::fs::symlink("/does_not_exist", child.get_path().get_path_string()).unwrap();
+
+        let store = create_store(&tree_artifact);
+
+        let e = get_output_metadata(&store, &tree_artifact).unwrap_err();
+        assert!(e.to_string().contains("dangling symbolic link"), "{e}");
+        // The message SkyframeActionExecutor.reportOutputTreeArtifactErrors prints.
+        assert_eq!(e.to_string(), "child child is a dangling symbolic link");
+    }
+
+    #[test]
+    fn output_tree_artifact_not_previously_injected_in_execution_mode() {
+        let (_dir, tree_artifact) = create_tree_artifact_with_generating_action();
+        let child1 = Artifact::create_tree_output_str(&tree_artifact, "child1");
+        let child2 = Artifact::create_tree_output_str(&tree_artifact, "subdir/child2");
+        let child1_path = scratch_file(&child1, "contents1");
+        let child2_path = scratch_file(&child2, "contents2");
+        let tree_path = tree_artifact.get_path().get_path_string().to_string();
+        let subdir_path = std::path::Path::new(&child2_path)
+            .parent()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let store = create_store(&tree_artifact);
+        store.prepare_for_action_execution();
+
+        let tree_metadata = get_output_metadata(&store, &tree_artifact).unwrap();
+        let child1_metadata = get_output_metadata(&store, &child1).unwrap();
+        let child2_metadata = get_output_metadata(&store, &child2).unwrap();
+        let all_tree_artifact_data = store.get_all_tree_artifact_data();
+        let tree = all_tree_artifact_data.get(&tree_artifact).unwrap();
+
+        assert_eq!(tree.metadata.as_ref(), Some(&tree_metadata));
+        assert_eq!(
+            tree.child_values,
+            vec![
+                (artifact_input(&child1), child1_metadata),
+                (artifact_input(&child2), child2_metadata),
+            ]
+        );
+        assert!(store.get_all_artifact_data().is_empty());
+        // assertThat(chmodCalls).containsExactly(treeArtifact.getPath(), 0555, child1Path, 0555,
+        // child2Path, 0555, child2Path.getParentDirectory(), 0555)
+        assert_eq!(mode(&tree_path), 0o555);
+        assert_eq!(mode(&child1_path), 0o555);
+        assert_eq!(mode(&child2_path), 0o555);
+        assert_eq!(mode(&subdir_path), 0o555);
+
+        // Let the temporary directory be deleted.
+        chmod(&tree_path, 0o755);
+        chmod(&subdir_path, 0o755);
+    }
+
+    /// Symlinks inside the tree are followed (`TreeArtifactValue.visitTree`): the files below a
+    /// symlink to a directory are children, and entries reached through a symlink are not
+    /// chmod'ed. Expected children: the oracle's `exec-tree` probe scenario.
+    #[test]
+    fn tree_artifact_value_follows_symlinks_inside_the_tree() {
+        let (_dir, tree_artifact) = create_tree_artifact_with_generating_action();
+        let top = Artifact::create_tree_output_str(&tree_artifact, "top.txt");
+        let nested = Artifact::create_tree_output_str(&tree_artifact, "sub/n.txt");
+        scratch_file(&top, "top");
+        scratch_file(&nested, "nested");
+        let tree_path = tree_artifact.get_path().get_path_string().to_string();
+        std::os::unix::fs::symlink("sub", format!("{tree_path}/link_to_sub")).unwrap();
+        std::os::unix::fs::symlink("top.txt", format!("{tree_path}/link_to_file")).unwrap();
+        let store = create_store(&tree_artifact);
+        store.prepare_for_action_execution();
+
+        get_output_metadata(&store, &tree_artifact).unwrap();
+        let all_tree_artifact_data = store.get_all_tree_artifact_data();
+        let tree = all_tree_artifact_data.get(&tree_artifact).unwrap();
+
+        let children: Vec<String> = tree
+            .child_values
+            .iter()
+            .map(|(child, _)| {
+                child
+                    .get_exec_path()
+                    .relative_to(tree_artifact.get_exec_path())
+                    .get_path_string()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            children,
+            vec!["link_to_file", "link_to_sub/n.txt", "sub/n.txt", "top.txt"]
+        );
+        // The file a symlink points to has the metadata of the file itself.
+        assert_eq!(
+            tree.child_values[0].1.get_digest(),
+            tree.child_values[3].1.get_digest()
+        );
+        assert_eq!(mode(&format!("{tree_path}/sub")), 0o555);
+
+        // Let the temporary directory be deleted.
+        chmod(&tree_path, 0o755);
+        chmod(&format!("{tree_path}/sub"), 0o755);
+    }
+}
+
+/// Port of `ActionInputMapTest`, for the `ActionInputMap` inside [`ActionInputMetadata`].
+///
+/// PORT: Java's `TestMetadata.create(id)` is a regular file value whose digest and size are `id`;
+/// `isSameInstanceAs` assertions compare values that differ between the candidates.
+#[cfg(test)]
+mod action_input_map_tests {
+    use std::sync::Arc;
+
+    use blaze_actions::Artifact;
+    use blaze_exec::actions::action_adapters::artifact_input;
+    use blaze_exec::actions::{
+        ActionInputRef, BasicActionInput, FileArtifactValue, TreeArtifactValue,
+    };
+    use blaze_vfs::PathFragment;
+
+    use super::ActionInputMetadata;
+    use super::action_output_metadata_store_tests::create_tree_artifact;
+
+    fn new_map() -> ActionInputMetadata {
+        ActionInputMetadata::with_providers(None)
+    }
+
+    /// `TestMetadata.create(id)`.
+    fn test_metadata(id: u8) -> FileArtifactValue {
+        FileArtifactValue::create_for_normal_file(Some(vec![id]), None, id as i64)
+    }
+
+    /// `new TestInput(path)` / `ActionInputHelper.fromPath(path)`.
+    fn from_path(path: &str) -> ActionInputRef {
+        ActionInputRef::new(BasicActionInput::from_path(path))
+    }
+
+    fn from_path_fragment(path: &PathFragment) -> ActionInputRef {
+        ActionInputRef::new(BasicActionInput::from_path_fragment(path.clone()))
+    }
+
+    /// `createTreeArtifact(rootRelativePath)`.
+    fn tree_artifact(root_relative_path: &str) -> Artifact {
+        create_tree_artifact("/execroot", root_relative_path)
+    }
+
+    /// `TreeArtifactValue.newBuilder(tree).putChild(child, metadata)...build()`.
+    fn tree_value(children: &[(&Artifact, FileArtifactValue)]) -> Arc<TreeArtifactValue> {
+        Arc::new(TreeArtifactValue::build(
+            children
+                .iter()
+                .map(|(child, metadata)| (artifact_input(child), metadata.clone()))
+                .collect(),
+            None,
+            None,
+        ))
+    }
+
+    // assertContains / assertContainsFile
+    fn assert_contains_file(map: &ActionInputMetadata, input: &ActionInputRef, id: u8) {
+        assert_eq!(
+            map.action_input_map_get_input_metadata_checked(input),
+            Some(test_metadata(id))
+        );
+        assert_eq!(
+            map.action_input_map_get_input(input.get_exec_path()),
+            Some(input.clone())
+        );
+    }
+
+    // assertContainsTree
+    fn assert_contains_tree(
+        map: &ActionInputMetadata,
+        tree: &Artifact,
+        value: &Arc<TreeArtifactValue>,
+    ) {
+        let tree_input = artifact_input(tree);
+        let got = map.action_input_map_get_tree_metadata(&tree_input).unwrap();
+        assert!(Arc::ptr_eq(&got, value));
+        assert_eq!(
+            map.action_input_map_get_input_metadata_checked(&tree_input),
+            value.metadata.clone()
+        );
+        assert_eq!(
+            map.action_input_map_get_input(tree.get_exec_path()),
+            Some(tree_input)
+        );
+    }
+
+    // assertDoesNotContain
+    fn assert_does_not_contain(map: &ActionInputMetadata, input: &ActionInputRef) {
+        assert_eq!(map.action_input_map_get_input_metadata_checked(input), None);
+        assert_eq!(map.action_input_map_get_input(input.get_exec_path()), None);
+    }
+
+    #[test]
+    fn basic_put_and_lookup() {
+        let map = new_map();
+        let input = from_path("/abc/def");
+        map.put_input(input.clone(), test_metadata(5));
+        assert_contains_file(&map, &input, 5);
+        assert_eq!(
+            map.get_metadata_from_tree_artifacts(&PathFragment::create("blah")),
+            None
+        );
+        assert_eq!(
+            map.action_input_map_get_input(&PathFragment::create("blah")),
+            None
+        );
+    }
+
+    #[test]
+    fn put_ignores_subsequent_puts() {
+        let map = new_map();
+        let abc = from_path("/abc/def");
+        let ghi = from_path("/ghi/jkl");
+        map.put_input(abc.clone(), test_metadata(5));
+        map.put_input(abc.clone(), test_metadata(6));
+        map.put_input(ghi.clone(), test_metadata(7));
+        map.put_input(ghi.clone(), test_metadata(8));
+        assert_eq!(map.map.read().len(), 2);
+        assert_contains_file(&map, &abc, 5);
+        assert_contains_file(&map, &ghi, 7);
+    }
+
+    #[test]
+    #[ignore = "ActionInputMap.clear is not ported (Java calls it from tests only)"]
+    fn clear_removes_all_elements() {
+        unimplemented!("not ported: ActionInputMapTest.clear_removesAllElements")
+    }
+
+    #[test]
+    fn put_tree_artifact_adds_empty_tree_artifact() {
+        let map = new_map();
+        let tree = tree_artifact("tree");
+        let empty = tree_value(&[]);
+
+        map.put_tree_artifact(&tree, empty.clone());
+
+        assert_eq!(map.map.read().len(), 1);
+        assert_contains_tree(&map, &tree, &empty);
+    }
+
+    #[test]
+    fn put_tree_artifact_adds_tree_artifact_and_all_children() {
+        let map = new_map();
+        let tree = tree_artifact("tree");
+        let child1 = Artifact::create_tree_output_str(&tree, "child1");
+        let child2 = Artifact::create_tree_output_str(&tree, "child2");
+        let value = tree_value(&[(&child1, test_metadata(1)), (&child2, test_metadata(2))]);
+
+        map.put_tree_artifact(&tree, value.clone());
+
+        assert_eq!(map.map.read().len(), 1);
+        assert_contains_tree(&map, &tree, &value);
+        assert_contains_file(&map, &artifact_input(&child1), 1);
+        assert_contains_file(&map, &artifact_input(&child2), 2);
+    }
+
+    #[test]
+    fn put_tree_artifact_multiple_trees_adds_all_trees_and_children() {
+        let map = new_map();
+        let tree1 = tree_artifact("tree1");
+        let tree1_file = Artifact::create_tree_output_str(&tree1, "file");
+        let tree1_value = tree_value(&[(&tree1_file, test_metadata(1))]);
+        let tree2 = tree_artifact("tree2");
+        let tree2_file = Artifact::create_tree_output_str(&tree2, "file");
+        let tree2_value = tree_value(&[(&tree2_file, test_metadata(2))]);
+
+        map.put_tree_artifact(&tree1, tree1_value.clone());
+        map.put_tree_artifact(&tree2, tree2_value.clone());
+
+        assert_eq!(map.map.read().len(), 2);
+        assert_contains_tree(&map, &tree1, &tree1_value);
+        assert_contains_file(&map, &artifact_input(&tree1_file), 1);
+        assert_contains_tree(&map, &tree2, &tree2_value);
+        assert_contains_file(&map, &artifact_input(&tree2_file), 2);
+    }
+
+    #[test]
+    fn put_tree_artifact_after_put_tree_artifact_with_same_exec_path_does_nothing() {
+        let map = new_map();
+        let tree1 = tree_artifact("tree");
+        let tree2 = tree_artifact("tree");
+        let tree2_file = Artifact::create_tree_output_str(&tree2, "file");
+        let tree1_value = tree_value(&[]);
+        let tree2_value = tree_value(&[(&tree2_file, test_metadata(1))]);
+        map.put_tree_artifact(&tree1, tree1_value.clone());
+
+        map.put_tree_artifact(&tree2, tree2_value);
+
+        assert_contains_tree(&map, &tree1, &tree1_value);
+        assert_does_not_contain(&map, &artifact_input(&tree2_file));
+    }
+
+    #[test]
+    #[should_panic(expected = "IllegalArgumentException")]
+    fn put_tree_artifact_same_exec_path_as_a_regular_file_fails() {
+        let map = new_map();
+        let tree = tree_artifact("tree");
+        let file = from_path_fragment(tree.get_exec_path());
+        map.put_input(file, test_metadata(1));
+
+        map.put_tree_artifact(&tree, tree_value(&[]));
+    }
+
+    // Java: @TestParameter PutOrder (DECLARED, REVERSE).
+    fn put_tree_artifact_nested_file_returns_nested_file_from_exec_path(reverse: bool) {
+        let map = new_map();
+        let tree = tree_artifact("tree");
+        let tree_file = Artifact::create_tree_output_str(&tree, "file");
+        let file = from_path_fragment(tree_file.get_exec_path());
+        let value = tree_value(&[(&tree_file, test_metadata(1))]);
+
+        if reverse {
+            map.put_tree_artifact(&tree, value);
+            map.put_input(file.clone(), test_metadata(2));
+        } else {
+            map.put_input(file.clone(), test_metadata(2));
+            map.put_tree_artifact(&tree, value);
+        }
+
+        assert_eq!(
+            map.action_input_map_get_input_metadata_checked(&file),
+            Some(test_metadata(2))
+        );
+        assert_eq!(
+            map.action_input_map_get_input_metadata_checked(&artifact_input(&tree_file)),
+            Some(test_metadata(1))
+        );
+        let input = map
+            .action_input_map_get_input(tree_file.get_exec_path())
+            .unwrap();
+        // isSameInstanceAs(file): the plain input, not the tree file artifact.
+        assert!(input.as_artifact().is_none());
+    }
+
+    #[test]
+    fn put_tree_artifact_nested_file_returns_nested_file_from_exec_path_declared() {
+        put_tree_artifact_nested_file_returns_nested_file_from_exec_path(false);
+    }
+
+    #[test]
+    fn put_tree_artifact_nested_file_returns_nested_file_from_exec_path_reverse() {
+        put_tree_artifact_nested_file_returns_nested_file_from_exec_path(true);
+    }
+
+    #[test]
+    fn put_tree_file_artifact_adds_entry() {
+        let map = new_map();
+        let tree_file = Artifact::create_tree_output_str(&tree_artifact("tree"), "file");
+
+        map.put(&tree_file, test_metadata(1));
+
+        // PORT: Java's assertContainsFile also looks the tree file up as an input
+        // (getInputMetadata), which finds it by its own exec path because its parent is not in
+        // the map.
+        assert_contains_file(&map, &artifact_input(&tree_file), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "IllegalArgumentException")]
+    fn put_same_exec_path_as_a_tree_fails() {
+        let map = new_map();
+        let tree = tree_artifact("tree");
+        let file = from_path_fragment(tree.get_exec_path());
+        map.put_tree_artifact(&tree, tree_value(&[]));
+
+        map.put_input(file, test_metadata(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "IllegalArgumentException")]
+    fn put_tree_artifact_fails() {
+        let map = new_map();
+        let tree = tree_artifact("tree");
+
+        map.put(&tree, test_metadata(1));
+    }
+
+    #[test]
+    fn get_metadata_action_input_with_tree_exec_path_returns_tree_artifact_entries() {
+        let map = new_map();
+        let tree = tree_artifact("tree");
+        let empty = tree_value(&[]);
+        map.put_tree_artifact(&tree, empty.clone());
+        let input = from_path_fragment(tree.get_exec_path());
+
+        assert_eq!(
+            map.action_input_map_get_input_metadata_checked(&input),
+            empty.metadata.clone()
+        );
+    }
+
+    #[test]
+    fn get_metadata_action_input_with_tree_file_exec_path_returns_tree_artifact_entries() {
+        let map = new_map();
+        let tree = tree_artifact("tree");
+        let tree_file = Artifact::create_tree_output_str(&tree, "file");
+        map.put_tree_artifact(&tree, tree_value(&[(&tree_file, test_metadata(1))]));
+        let input = from_path_fragment(tree_file.get_exec_path());
+
+        assert_eq!(
+            map.action_input_map_get_input_metadata_checked(&input),
+            Some(test_metadata(1))
+        );
+    }
+
+    #[test]
+    #[ignore = "needs ActionsTestUtil.createArtifactWithExecPath (a derived artifact at a tree file's exec path)"]
+    fn get_metadata_artifact_with_tree_file_exec_path_returns_null() {
+        unimplemented!(
+            "not ported: ActionInputMapTest.getMetadata_artifactWithTreeFileExecPath_returnsNull"
+        )
+    }
+
+    #[test]
+    fn get_metadata_missing_file_within_tree_returns_null() {
+        let map = new_map();
+        let tree = tree_artifact("tree");
+        let file = Artifact::create_tree_output_str(&tree, "file");
+        map.put_tree_artifact(&tree, tree_value(&[(&file, test_metadata(1))]));
+        let nonexistent_tree_file = Artifact::create_tree_output_str(&tree, "nonexistent");
+
+        assert_does_not_contain(&map, &artifact_input(&nonexistent_tree_file));
+    }
+
+    #[test]
+    #[should_panic(expected = "IllegalArgumentException")]
+    fn get_input_metadata_tree_file_under_file_fails() {
+        let map = new_map();
+        let tree = tree_artifact("tree");
+        let child = Artifact::create_tree_output_str(&tree, "file");
+        let file = from_path_fragment(tree.get_exec_path());
+        map.put_input(file, test_metadata(1));
+
+        map.action_input_map_get_input_metadata_checked(&artifact_input(&child));
+    }
+
+    #[test]
+    fn get_tree_metadata_for_prefix_non_tree() {
+        let map = new_map();
+        let file = from_path("some/file");
+        map.put_input(file.clone(), test_metadata(1));
+
+        let path = file.get_exec_path();
+        assert!(map.find_tree_artifact_node_at_prefix(path).is_none());
+        assert!(
+            map.find_tree_artifact_node_at_prefix(&path.get_parent_directory().unwrap())
+                .is_none()
+        );
+        assert!(
+            map.find_tree_artifact_node_at_prefix(&path.get_child("under"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn get_tree_metadata_for_prefix_empty_tree() {
+        let map = new_map();
+        let tree = tree_artifact("a/tree");
+        let value = tree_value(&[]);
+        map.put_tree_artifact(&tree, value.clone());
+
+        let path = tree.get_exec_path();
+        assert!(
+            map.find_tree_artifact_node_at_prefix(&path.get_parent_directory().unwrap())
+                .is_none()
+        );
+        assert!(Arc::ptr_eq(
+            &map.find_tree_artifact_node_at_prefix(path).unwrap(),
+            &value
+        ));
+        assert!(Arc::ptr_eq(
+            &map.find_tree_artifact_node_at_prefix(&path.get_child("under"))
+                .unwrap(),
+            &value
+        ));
+    }
+
+    #[test]
+    fn get_tree_metadata_for_prefix_non_empty_tree() {
+        let map = new_map();
+        let tree = tree_artifact("a/tree");
+        let child = Artifact::create_tree_output_str(&tree, "some/child");
+        let value = tree_value(&[(&child, test_metadata(1))]);
+        map.put_tree_artifact(&tree, value.clone());
+
+        let tree_path = tree.get_exec_path();
+        let child_path = child.get_exec_path();
+        assert!(
+            map.find_tree_artifact_node_at_prefix(&tree_path.get_parent_directory().unwrap())
+                .is_none()
+        );
+        for path in [
+            tree_path.clone(),
+            child_path.clone(),
+            child_path.get_parent_directory().unwrap(),
+            child_path.get_child("under"),
+        ] {
+            assert!(Arc::ptr_eq(
+                &map.find_tree_artifact_node_at_prefix(&path).unwrap(),
+                &value
+            ));
+        }
+    }
+
+    #[test]
+    fn getters_missing_tree_return_null() {
+        let map = new_map();
+        map.put_tree_artifact(&tree_artifact("tree"), tree_value(&[]));
+        let other_tree = tree_artifact("other");
+
+        let other_tree_input = artifact_input(&other_tree);
+        assert_eq!(
+            map.action_input_map_get_input_metadata_checked(&other_tree_input),
+            None
+        );
+        assert!(
+            map.action_input_map_get_tree_metadata(&other_tree_input)
+                .is_none()
+        );
+        assert_does_not_contain(
+            &map,
+            &artifact_input(&Artifact::create_tree_output_str(&other_tree, "child")),
+        );
+    }
+
+    #[test]
+    #[ignore = "randomized stress test of the open-addressed table, which the port replaces by a HashMap"]
+    fn stress() {
+        unimplemented!("not ported: ActionInputMapTest.stress")
     }
 }

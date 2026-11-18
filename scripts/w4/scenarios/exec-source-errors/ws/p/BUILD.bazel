@@ -1,0 +1,62 @@
+load(":defs.bzl", "copy")
+
+# Every step builds targets and files no other step touches: the oracle keeps its graph between
+# the steps, Blaze starts each command cold.
+exports_files([
+    "missing.txt",
+    "existing.txt",
+    "missing_kg.txt",
+    "existing_kg.txt",
+])
+
+copy(
+    name = "uses_missing",
+    srcs = ["missing_input.txt"],
+)
+
+copy(
+    name = "uses_two_missing",
+    srcs = [
+        "missing_a.txt",
+        "existing.txt",
+        "missing_b.txt",
+    ],
+)
+
+copy(
+    name = "below",
+    srcs = ["missing_below.txt"],
+)
+
+copy(
+    name = "above",
+    srcs = [":below"],
+)
+
+filegroup(
+    name = "fg",
+    srcs = [
+        "missing_c.txt",
+        "missing_d.txt",
+    ],
+)
+
+genrule(
+    name = "gen",
+    srcs = ["missing_gen.txt"],
+    outs = ["gen.out"],
+    cmd = "cat $< > $@",
+)
+
+copy(
+    name = "uses_missing_kg",
+    srcs = ["missing_input_kg.txt"],
+)
+
+filegroup(
+    name = "fg_kg",
+    srcs = [
+        "missing_e.txt",
+        "missing_f.txt",
+    ],
+)

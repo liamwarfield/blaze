@@ -149,7 +149,9 @@ pub trait ActionExecutionContext: ActionContextRegistry {
         &self,
         output: &dyn crate::actions::ActionInput,
     ) -> io::Result<crate::actions::FileArtifactValue> {
-        crate::actions::FileArtifactValue::create_for_testing(&self.get_input_path(output))
+        let path = self.get_input_path(output);
+        let stat = path.stat_with(blaze_vfs::Symlinks::Follow)?;
+        crate::actions::FileArtifactValue::create_from_stat(&path, &stat)
     }
 }
 

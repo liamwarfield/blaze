@@ -24,10 +24,12 @@ ERROR: Analysis of target '//:frag_unknown' failed; build aborted
 ERROR: Build did NOT complete successfully
 === 5: run build //:frag_unknown_getattr_default
 exit 0
+  bazel-bin/frag_unknown_getattr_default.txt
 INFO: Build completed successfully, 2 total actions
 Target //:frag_unknown_getattr_default up-to-date:
 === 6: run build //:frag_declared
 exit 0
+  bazel-bin/frag_declared.txt
 INFO: Build completed successfully, 2 total actions
 Target //:frag_declared up-to-date:
 === 7: run build //:outputs_unknown
@@ -38,6 +40,7 @@ ERROR: Analysis of target '//:outputs_unknown' failed; build aborted
 ERROR: Build did NOT complete successfully
 === 8: run build //:outputs_unknown_getattr_default
 exit 0
+  bazel-bin/outputs_unknown_getattr_default.txt
 INFO: Build completed successfully, 2 total actions
 Target //:outputs_unknown_getattr_default up-to-date:
 === 9: run build //:attr_unknown
@@ -48,6 +51,7 @@ ERROR: Analysis of target '//:attr_unknown' failed; build aborted
 ERROR: Build did NOT complete successfully
 === 10: run build //:attr_unknown_getattr_default
 exit 0
+  bazel-bin/attr_unknown_getattr_default.txt
 INFO: Build completed successfully, 2 total actions
 Target //:attr_unknown_getattr_default up-to-date:
 === 11: run build //:runfiles_symlinks_list
@@ -76,6 +80,7 @@ ERROR: Analysis of target '//:runfiles_collect_default_none' failed; build abort
 ERROR: Build did NOT complete successfully
 === 15: run build //:runfiles_ok
 exit 0
+  bazel-bin/runfiles_ok.txt
 INFO: Build completed successfully, 2 total actions
 Target //:runfiles_ok up-to-date:
 === 16: run build //:run_use_default_shell_env_int
@@ -146,6 +151,7 @@ ERROR: Analysis of target '//:run_outputs_strings' failed; build aborted
 ERROR: Build did NOT complete successfully
 === 27: run build //:run_ok
 exit 0
+  bazel-bin/run_ok.txt
 INFO: Build completed successfully, 2 total actions
 Target //:run_ok up-to-date:
 === 28: cat bazel-bin/frag_unknown_getattr_default.txt

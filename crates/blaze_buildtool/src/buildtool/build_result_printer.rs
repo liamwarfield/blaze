@@ -12,7 +12,6 @@ use blaze_collect::nestedset::NestedSetBuilder;
 use blaze_events::{Event, EventHandler, OutErr};
 use blaze_optdefs::command::build_request_options::BuildRequestOptions;
 use blaze_optdefs::command::execution_options::ExecutionOptions;
-use blaze_util::unported;
 use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
 
@@ -59,6 +58,26 @@ pub trait ConfiguredAspectView: Send + Sync {
     /// The aspect's `OutputGroupInfo`, in insertion order.
     fn get_output_groups(&self) -> IndexMap<String, NestedSet<Artifact>>;
 }
+
+/// What `BuildResultPrinter.filterTargetsToPrint` reads from an `OutputFileConfiguredTarget` and
+/// its generating rule.
+///
+/// PORT: the [`ConfiguredTargetRef`] view does not reach `OutputFileConfiguredTarget
+/// .getGeneratingRule()` or the `FileProvider`s; the command, which holds the analysis result's
+/// configured targets, answers for a `generated file` target (see [`GeneratingRuleLookup`]).
+// Java: com/google/devtools/build/lib/analysis/configuredtargets/OutputFileConfiguredTarget.java:69 OutputFileConfiguredTarget.getGeneratingRule
+pub struct OutputFileGeneratingRule {
+    /// `ConfiguredTargetKey.fromConfiguredTarget(getGeneratingRule())`: stands for the generating
+    /// rule in `configuredTargets.contains(generatingRule)`.
+    pub generating_rule_key: ActionLookupKeyRef,
+    /// `generatingRule.getProvider(FileProvider.class).getFilesToBuild()`.
+    pub generating_rule_files_to_build: NestedSet<Artifact>,
+    /// `configuredTarget.getProvider(FileProvider.class).getFilesToBuild()`.
+    pub files_to_build: NestedSet<Artifact>,
+}
+
+/// Answers [`OutputFileGeneratingRule`] for a target whose kind is `generated file`.
+pub type GeneratingRuleLookup<'a> = &'a dyn Fn(&ConfiguredTargetRef) -> OutputFileGeneratingRule;
 
 /// What `BuildResultPrinter` reads from the `BuildRequest`.
 ///
@@ -226,6 +245,7 @@ impl BuildResultPrinter {
         configured_targets: &[ConfiguredTargetRef],
         configured_targets_to_skip: &[ConfiguredTargetRef],
         aspects: &IndexMap<ActionLookupKeyRef, Arc<dyn ConfiguredAspectView>>,
+        generating_rule_lookup: GeneratingRuleLookup<'_>,
     ) {
         // NOTE: be careful what you print!  We don't want to create a consistency
         // problem where the summary message and the exit code disagree.  The logic
@@ -236,6 +256,7 @@ impl BuildResultPrinter {
             configured_targets,
             configured_targets_to_skip,
             aspects,
+            generating_rule_lookup,
         );
         if !ok && !request.get_execution_options().verbose_failures {
             request.get_out_err().print_err(
@@ -259,6 +280,7 @@ impl BuildResultPrinter {
         configured_targets: &[ConfiguredTargetRef],
         configured_targets_to_skip: &[ConfiguredTargetRef],
         aspects: &IndexMap<ActionLookupKeyRef, Arc<dyn ConfiguredAspectView>>,
+        generating_rule_lookup: GeneratingRuleLookup<'_>,
     ) -> bool {
         let product_name = &self.product_name;
         let pretty_printer = PathPrettyPrinter::new(
@@ -284,7 +306,7 @@ impl BuildResultPrinter {
             aspects,
         );
 
-        let targets_to_print = filter_targets_to_print(configured_targets);
+        let targets_to_print = filter_targets_to_print(configured_targets, generating_rule_lookup);
         let context = request.get_top_level_artifact_context();
 
         // `essentialBudget` tracks the number of non-empty results that can be printed.
@@ -582,19 +604,35 @@ fn format_artifact_for_show_results(
 ///
 /// Hidden rules and other inserted targets are ignored.
 // Java: com/google/devtools/build/lib/buildtool/BuildResultPrinter.java:353 BuildResultPrinter.filterTargetsToPrint
-fn filter_targets_to_print(configured_targets: &[ConfiguredTargetRef]) -> Vec<ConfiguredTargetRef> {
+fn filter_targets_to_print(
+    configured_targets: &[ConfiguredTargetRef],
+    generating_rule_lookup: GeneratingRuleLookup<'_>,
+) -> Vec<ConfiguredTargetRef> {
     let mut result = Vec::new();
     for configured_target in configured_targets {
         if !should_consider_for_display(configured_target) {
             continue;
         }
+        // configuredTarget instanceof OutputFileConfiguredTarget
         if configured_target.get_rule_class_or_kind() == "generated file" {
             // Suppress display of generated files (because they appear underneath
             // their generating rule), EXCEPT those ones which are not part of the
             // filesToBuild of their generating rule (e.g. .par, _deploy.jar
             // files), OR when a user explicitly requests an output file but not
             // its rule.
-            unported!("OutputFileConfiguredTarget.getGeneratingRule");
+            let generating_rule = generating_rule_lookup(configured_target);
+            let generating_rule_files = generating_rule.generating_rule_files_to_build.to_set();
+            if generating_rule
+                .files_to_build
+                .to_list()
+                .iter()
+                .all(|artifact| generating_rule_files.contains(artifact))
+                && configured_targets
+                    .iter()
+                    .any(|t| t.get_lookup_key() == generating_rule.generating_rule_key)
+            {
+                continue;
+            }
         }
 
         result.push(configured_target.clone());

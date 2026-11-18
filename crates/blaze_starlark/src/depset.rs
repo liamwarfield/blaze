@@ -298,6 +298,74 @@ impl<'v, V: ValueLike<'v>> DepsetGen<V> {
         memo.insert(key, s.clone());
         Ok(s)
     }
+
+    /// [`DepsetGen::to_nested_set`] with a memo the caller keeps across calls, so that one
+    /// depset node always converts to the same `NestedSet` node (Java: a `Depset` wraps one
+    /// `NestedSet` object and `getSet` returns it; sub-depsets share their `Object[]`). A node
+    /// whose children are another depset's array ([`DepsetChildren::Shared`]) is rebuilt around
+    /// that depset's set, as the Java constructor dereferences a lone nested array.
+    /// `self_is_frozen`: whether the value holding `self` is frozen (its address is then stable
+    /// for the life of its frozen heap).
+    // W4-analysis: needed by blaze_analysis::rule::depsets (Depset.getSet identity reaches
+    // aquery through ActionGraphDump's KnownNestedSets).
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:207 Depset.getSet
+    pub fn to_nested_set_with_memo<E: Clone + Eq + std::hash::Hash>(
+        &self,
+        self_is_frozen: bool,
+        f: &mut dyn FnMut(Value<'v>) -> starlark::Result<E>,
+        memo: &mut dyn DepsetNodeMemo<E>,
+    ) -> starlark::Result<NestedSet<E>> {
+        let key = self as *const Self as usize;
+        if let Some(s) = memo.get(key, self_is_frozen) {
+            return Ok(s);
+        }
+        let mut b = NestedSetBuilder::new_builder(self.order);
+        match &self.children {
+            DepsetChildren::Empty => {}
+            DepsetChildren::Leaf(v) => {
+                b.add(f(v.to_value())?);
+            }
+            DepsetChildren::Shared(owner) => {
+                let owner = owner.to_value();
+                let owner_set = Depset::from_value(owner).unwrap().to_nested_set_with_memo(
+                    owner.unpack_frozen().is_some(),
+                    f,
+                    memo,
+                )?;
+                b.add_transitive(&owner_set);
+            }
+            DepsetChildren::Array(_) => {
+                // As in to_nested_set_memo.
+                let (_, array) = self.array().unwrap();
+                let mut parts = Vec::with_capacity(array.len());
+                for c in array {
+                    parts.push(match c {
+                        ChildRef::Leaf(e) => NestedSetBuilder::create(self.order, [f(e)?]),
+                        ChildRef::Array(d) => Depset::from_value(d)
+                            .unwrap()
+                            .to_nested_set_with_memo(d.unpack_frozen().is_some(), f, memo)?,
+                    });
+                }
+                if self.order == Order::LINK_ORDER {
+                    parts.reverse();
+                }
+                for p in &parts {
+                    b.add_transitive(p);
+                }
+            }
+        }
+        Ok(memo.put(key, self_is_frozen, b.build()))
+    }
+}
+
+/// The memo of [`DepsetGen::to_nested_set_with_memo`]: depset node address to its `NestedSet`.
+// W4-analysis: see to_nested_set_with_memo.
+pub trait DepsetNodeMemo<E> {
+    /// The set already made for the depset node at address `node`, if any. `frozen`: the node's
+    /// value is frozen (an unfrozen address is only meaningful while its heap lives).
+    fn get(&mut self, node: usize, frozen: bool) -> Option<NestedSet<E>>;
+    /// Records `set` for `node` and returns the set to use for it (the recorded one).
+    fn put(&mut self, node: usize, frozen: bool, set: NestedSet<E>) -> NestedSet<E>;
 }
 
 impl<'v, V: ValueLike<'v>> fmt::Display for DepsetGen<V> {

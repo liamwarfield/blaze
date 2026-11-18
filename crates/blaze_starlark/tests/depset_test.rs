@@ -434,3 +434,81 @@ fn depset_survives_freezing_and_converts_to_nested_set() {
         assert_eq!(*ns.to_list(), starlark, "{name}");
     }
 }
+
+// W4-analysis: to_nested_set_with_memo keeps Java's NestedSet identity across calls.
+// Java: Depset.getSet returns the wrapped NestedSet; NestedSetBuilder.build returns a lone
+// transitive set of the same order (NestedSetBuilder.java build), and sub-sets share their array.
+#[test]
+fn to_nested_set_with_memo_keeps_node_identity_across_calls() {
+    use blaze_collect::NestedSet;
+    use blaze_starlark::depset::DepsetNodeMemo;
+    use std::collections::HashMap;
+
+    struct Memo(HashMap<(usize, bool), NestedSet<String>>);
+    impl DepsetNodeMemo<String> for Memo {
+        fn get(&mut self, node: usize, frozen: bool) -> Option<NestedSet<String>> {
+            self.0.get(&(node, frozen)).cloned()
+        }
+        fn put(&mut self, node: usize, frozen: bool, set: NestedSet<String>) -> NestedSet<String> {
+            self.0.entry((node, frozen)).or_insert(set).clone()
+        }
+    }
+
+    let m = exec(
+        "\
+a = depset(['x', 'y'])
+b = depset(['z'], transitive = [a])
+c = depset(['w'], transitive = [a])
+d = depset(transitive = [a])
+",
+    )
+    .unwrap();
+    let mut memo = Memo(HashMap::new());
+    let convert = |name: &str, memo: &mut Memo| -> NestedSet<String> {
+        let v = m.get(name).unwrap();
+        let value = v.value();
+        Depset::from_value(value)
+            .unwrap()
+            .to_nested_set_with_memo(
+                value.unpack_frozen().is_some(),
+                &mut |e| Ok(e.unpack_str().unwrap().to_owned()),
+                memo,
+            )
+            .unwrap()
+    };
+    let b1 = convert("b", &mut memo);
+    let b2 = convert("b", &mut memo);
+    assert_eq!(b1.node_id(), b2.node_id());
+    let a = convert("a", &mut memo);
+    let c = convert("c", &mut memo);
+    let d = convert("d", &mut memo);
+    // The same order and elements as the plain conversion.
+    let plain = |name: &str| -> Vec<String> {
+        let v = m.get(name).unwrap();
+        Depset::from_value(v.value())
+            .unwrap()
+            .to_nested_set(&mut |e| Ok(e.unpack_str().unwrap().to_owned()))
+            .unwrap()
+            .to_list()
+            .to_vec()
+    };
+    assert_eq!(b1.to_list().to_vec(), plain("b"));
+    assert_eq!(c.to_list().to_vec(), plain("c"));
+    assert_eq!(d.to_list().to_vec(), plain("d"));
+    // `a`'s node is the one inside `b` and `c` (one sub-array, shared), and `d` is `a`'s set.
+    let sub = |s: &NestedSet<String>| -> Vec<usize> {
+        match s.children() {
+            blaze_collect::nestedset::NestedSetChildren::Array(entries) => entries
+                .into_iter()
+                .filter_map(|e| match e {
+                    blaze_collect::nestedset::NestedSetChild::Set(x) => Some(x.node_id()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    assert_eq!(sub(&b1), vec![a.node_id()]);
+    assert_eq!(sub(&c), vec![a.node_id()]);
+    assert_eq!(d.node_id(), a.node_id());
+}

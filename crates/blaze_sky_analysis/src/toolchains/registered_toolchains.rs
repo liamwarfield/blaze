@@ -136,6 +136,7 @@ pub fn registered_toolchains_function(
     let mut target_patterns: Vec<SignedTargetPattern> = Vec::new();
 
     // Get the toolchains from the configuration.
+    // Reverse the list so the last one defined takes precedences.
     let platform_configuration = configuration
         .get_fragment::<PlatformConfiguration>()
         .expect("NullPointerException: PlatformConfiguration");
@@ -150,7 +151,7 @@ pub fn registered_toolchains_function(
         }
     }
 
-    // Get the registered toolchains from bzlmod.
+    // Get registered toolchains from the external dep graph.
     let Some(bzlmod_toolchains) = get_bzlmod_toolchains(env)? else {
         return Ok(None);
     };
@@ -189,7 +190,8 @@ pub fn registered_toolchains_function(
         return Ok(None);
     }
 
-    // Check for valid toolchains, i.e. those whose target settings all match.
+    // Check which toolchains are valid according to their configuration.
+    // Some toolchains end up with repeated reasons, so use a HashBasedTable to handle duplicates.
     let mut valid_toolchains: Vec<DeclaredToolchainInfo> = Vec::new();
     let mut rejected_toolchains: Option<IndexMap<Label, IndexMap<Label, String>>> = if key.debug() {
         Some(IndexMap::new())

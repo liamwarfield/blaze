@@ -58,12 +58,12 @@ pub fn resolve_toolchain_types(
         let toolchain_type_info =
             find_toolchain_type_info(toolchain_type_requirement, key, &values)?;
         let Some(toolchain_type_info) = toolchain_type_info else {
-            // Null means skyframe restart.
+            // Continue processing to find errors, but note that we didn't succeed.
             values_missing = true;
             continue;
         };
         if !values_missing && let Some(info) = toolchain_type_info {
-            // Save the response by both the original label and the type label.
+            // These are only different if the toolchain type was aliased.
             results.insert(original_label.clone(), info.clone());
             results.insert(info.type_label().clone(), info);
         }
@@ -110,6 +110,9 @@ fn find_toolchain_type_info(
         Err(ConfiguredTargetLookupError::NoSuchThing(e)) => {
             Err(invalid_toolchain_type_exception_no_such_thing(e))
         }
+        Err(ConfiguredTargetLookupError::ActionConflict(e)) => Err(
+            invalid_toolchain_type_exception_from_action_conflict(key.get_label(), e),
+        ),
     }
 }
 
@@ -145,6 +148,18 @@ pub fn invalid_toolchain_type_exception_no_such_thing(
         ToolchainExceptionKind::InvalidToolchainType,
         class,
         Arc::new(e),
+    )
+}
+
+// Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainTypeLookupUtil.java:161 ToolchainTypeLookupUtil.InvalidToolchainTypeException.<init>
+fn invalid_toolchain_type_exception_from_action_conflict(
+    label: &Label,
+    cause: SkyError,
+) -> ToolchainException {
+    ToolchainException::with_cause(
+        ToolchainExceptionKind::InvalidToolchainType,
+        format_error(label, INVALID_TOOLCHAIN_TYPE_DEFAULT_ERROR),
+        cause,
     )
 }
 

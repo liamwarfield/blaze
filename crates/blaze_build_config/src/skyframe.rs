@@ -9,14 +9,14 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use blaze_cmdline::Label;
-use blaze_events::{Event, EventHandler, ExtendedEventHandler};
+use blaze_events::{Event, EventHandler, ExtendedEventHandler, Postable};
 use blaze_optdefs::fragment::core_options::{CoreOptions, CoreOptionsOutputDirectoryNamingScheme};
 use blaze_optdefs::fragment::platform_mapping_key::PlatformMappingKey;
 use blaze_optdefs::fragment::platform_options::PlatformOptions;
 use blaze_options::{Foreign, OptionsParsingException};
 use blaze_skyframe::{
-    ComputeError, Environment, EvaluationContext, EvaluatorBuilder, Key, SkyFunctionException,
-    SkyFunctionName, SkyKey, Transience,
+    ComputeError, ComputeResult, Environment, EvaluationContext, EvaluatorBuilder, Key,
+    SkyFunctionException, SkyFunctionName, SkyKey, SkyValue, Transience,
 };
 use blaze_starlark::StarlarkSemantics;
 use blaze_vfs::Path;
@@ -89,8 +89,10 @@ impl Key for PlatformMappingSkyKey {
 /// Stores contents of a platforms/flags mapping file for transforming one `BuildOptions` into
 /// another.
 ///
-/// PORT: only the empty mapping (no `platform_mappings` file) is ported; parsed mappings need
-/// PARSED_FLAGS (`ParsedFlagsValue.mergeWith`, `BuildOptions.matches`).
+/// PORT: only the empty mapping (no `platform_mappings` file, or one without entries) is
+/// ported; parsed mappings need PARSED_FLAGS (`ParsedFlagsValue.mergeWith`,
+/// `BuildOptions.matches`). A mappings file with entries stops at
+/// `unported!("PlatformMappingFunction.parse")`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlatformMappingValue {
     /// The number of `platforms:` and `flags:` entries (only empty mappings are ported).
@@ -153,7 +155,9 @@ pub enum ConfigurationError {
     InvalidConfiguration(#[from] InvalidConfigurationException),
     #[error("{}", .0.get_message())]
     OptionsParsing(OptionsParsingException),
-    /// `PlatformMappingException` / `MissingInputFileException`.
+    /// `PlatformMappingException`: its message, which is the `toString()` of its cause (Java
+    /// `super(cause)`), for example
+    /// `com.google.devtools.build.lib.actions.MissingInputFileException: <message>`.
     #[error("{0}")]
     PlatformMapping(String),
     #[error("{0}")]
@@ -187,34 +191,80 @@ fn persistent(e: impl Into<ConfigurationError>) -> ComputeError {
     SkyFunctionException::new(e.into(), Transience::Persistent).into()
 }
 
+/// `new PlatformMappingFunctionException(new MissingInputFileException(createFailureDetail(
+/// message, code), Location.BUILTIN))`.
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:353 PlatformMappingFunction.PlatformMappingFunctionException.<init>
+fn platform_mapping_function_exception_missing_input_file(message: String) -> ComputeError {
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingException.java:22 PlatformMappingException.<init>
+    // `super(cause)`: the message is the cause's toString().
+    persistent(ConfigurationError::PlatformMapping(format!(
+        "com.google.devtools.build.lib.actions.MissingInputFileException: {message}"
+    )))
+}
+
 // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:70 PlatformMappingFunction.compute
 fn compute_platform_mapping(
     key: &PlatformMappingSkyKey,
     env: &mut Environment<'_>,
 ) -> Result<Option<PlatformMappingValue>, ComputeError> {
     let workspace_relative_mapping_path = key.0.get_workspace_relative_mapping_path().clone();
-    // PORT: the main repository mapping is only needed to parse a mappings file.
+    // PORT: Java first requests RepositoryMappingValue.key(RepositoryName.MAIN) and returns null
+    // when it is missing. The key lives in blaze_sky_loading, which this crate cannot name; the
+    // value is read only by `parse`, which is `unported!` below.
     let path_entries = client(env).package_path_roots.clone();
     for root in &path_entries {
-        // PORT: Java requests FileValue.key(rootedMappingPath) (FILE in blaze_sky_loading); this
-        // reads the file system directly until the configuration functions run in the shared
-        // evaluator.
+        // PORT: skipped, incremental: Java requests FileValue.key(rootedMappingPath) (FILE, in
+        // blaze_sky_loading, which this crate cannot name) and reads `exists()` and
+        // `isDirectory()` from it. Here the path is stat'ed directly, following symbolic links as
+        // FileValue does. An I/O error, which FILE would fail with, is `unported!`.
         let path = root.get_relative(&workspace_relative_mapping_path);
         let std_path = std::path::Path::new(path.get_path_string());
-        let Ok(metadata) = std::fs::metadata(std_path) else {
-            continue;
+        let metadata = match std::fs::metadata(std_path) {
+            Ok(metadata) => metadata,
+            // if (!fileValue.exists()) continue;
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                continue;
+            }
+            Err(e) => blaze_util::unported!(
+                "FileFunction.compute",
+                "stat of the platform mappings file {}: {}",
+                path,
+                e
+            ),
         };
         if metadata.is_dir() {
-            return Err(persistent(ConfigurationError::PlatformMapping(format!(
-                "--platform_mappings was set to '{}' relative to the top-level workspace '{}' but that path refers to a directory, not a file",
-                workspace_relative_mapping_path, root
-            ))));
+            return Err(platform_mapping_function_exception_missing_input_file(
+                format!(
+                    "--platform_mappings was set to '{}' relative to the top-level workspace '{}' but that path refers to a directory, not a file",
+                    workspace_relative_mapping_path, root
+                ),
+            ));
         }
-        let text = std::fs::read_to_string(std_path)
-            .map_err(|e| persistent(ConfigurationError::PlatformMapping(e.to_string())))?;
+
+        // Java: FileSystemUtils.readLines(path, UTF_8); malformed input is replaced.
+        let bytes = match std::fs::read(std_path) {
+            Ok(bytes) => bytes,
+            // Java: catch (IOException e) { throw new PlatformMappingFunctionException(e); }
+            // (Transience.TRANSIENT). The message is the toString() of the Java IOException,
+            // which has no counterpart here.
+            Err(e) => blaze_util::unported!(
+                "PlatformMappingFunction.PlatformMappingFunctionException.<init>",
+                "IOException reading the platform mappings file {}: {}",
+                path,
+                e
+            ),
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:158 PlatformMappingFunction.parse
+        // `String::trim` removes the characters up to U+0020.
         let has_entries = text
             .lines()
-            .map(str::trim)
+            .map(|line| line.trim_matches(|c: char| c <= ' '))
             .any(|line| !line.is_empty() && !line.starts_with('#'));
         if !has_entries {
             return Ok(Some(PlatformMappingValue::empty()));
@@ -227,15 +277,17 @@ fn compute_platform_mapping(
         // the mapping file was empty rather than an error.
         return Ok(Some(PlatformMappingValue::empty()));
     }
-    Err(persistent(ConfigurationError::PlatformMapping(format!(
-        "--platform_mappings was set to '{}' but no such file exists relative to the package path roots, '[{}]'",
-        workspace_relative_mapping_path,
-        path_entries
-            .iter()
-            .map(|p| p.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    ))))
+    Err(platform_mapping_function_exception_missing_input_file(
+        format!(
+            "--platform_mappings was set to '{}' but no such file exists relative to the package path roots, '[{}]'",
+            workspace_relative_mapping_path,
+            path_entries
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    ))
 }
 
 // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:42 BuildConfigurationKeyFunction.compute
@@ -263,10 +315,24 @@ fn compute_build_configuration_key(
                 .expect("CoreOptions")
                 .get_command_line_flag_aliases(),
         };
+        // Java: com/google/devtools/build/lib/analysis/producers/PlatformProducer.java:61 PlatformProducer.step
+        // PORT: Java looks the platform up with InvalidPlatformException and
+        // OptionsParsingException (`tasks.lookUp(key, InvalidPlatformException.class,
+        // OptionsParsingException.class, this)`), hands them to the sink
+        // (acceptPlatformFlagsError / acceptOptionsParsingError) and
+        // BuildConfigurationKeyFunction rethrows them as its own
+        // BuildConfigurationKeyFunctionException. InvalidPlatformException is
+        // `blaze_analysis::toolchains::ToolchainException`, which this crate cannot name (the
+        // PLATFORM function is behind `PlatformValueProvider`), and PLATFORM cannot throw
+        // OptionsParsingException before platform flags are ported (`unported!` in
+        // PlatformFunction). So the dependency's error is not caught: this node returns null
+        // and gets the same exception through the child's ErrorInfo, but is not the node that
+        // threw it.
         let Some(target_platform_value) = env.get_value(platform_key)? else {
+            // Java: BuildConfigurationKeyProducer.checkTargetPlatformFlags, "Error.": DONE.
             return Ok(None);
         };
-        // Java: BuildConfigurationKeyProducer.checkTargetPlatformFlags
+        // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:152 BuildConfigurationKeyProducer.checkTargetPlatformFlags
         if target_platform_value.has_parsed_flags {
             blaze_util::unported!(
                 "ParsedFlagsValue.mergeWith",
@@ -293,12 +359,19 @@ fn merge_from_platform_mapping(
             .platform_mapping_key
             .clone(),
     );
-    let platform_mapping_value =
-        match env.get_value_or_throw::<_, ConfigurationError>(mapping_key)? {
-            Ok(Some(v)) => v,
-            Ok(None) => return Ok(None),
-            Err(e) => return Err(persistent(e)),
-        };
+    // Java: tasks.lookUp(platformMappingKey, PlatformMappingException.class, this).
+    let platform_mapping_value = match env.get_value_or_throw_with(mapping_key, |e| {
+        e.downcast_ref::<ConfigurationError>()
+            .filter(|c| matches!(c, ConfigurationError::PlatformMapping(_)))
+            .cloned()
+    })? {
+        Ok(Some(v)) => v,
+        // Java: BuildConfigurationKeyProducer.applyPlatformMapping, "Error.": DONE.
+        Ok(None) => return Ok(None),
+        // Java: sink.acceptPlatformMappingError(exception); Sink.checkErrors rethrows it as a
+        // BuildConfigurationKeyFunctionException.
+        Err(e) => return Err(persistent(e)),
+    };
     // Java: BuildConfigurationKeyProducer.applyPlatformMapping
     match platform_mapping_value.map(options) {
         Ok(key) => find_build_options_scopes(key.get_options().clone(), env),
@@ -580,24 +653,75 @@ fn compute_baseline_options(
     Ok(Some(remapped_adjusted_baseline_options))
 }
 
-// Java: com/google/devtools/build/lib/skyframe/config/BaselineOptionsFunction.java:66 BaselineOptionsFunction.mapBuildOptions
+// Java: com/google/devtools/build/lib/skyframe/config/BaselineOptionsFunction.java:98 BaselineOptionsFunction.mapBuildOptions
 fn map_build_options(
     env: &mut Environment<'_>,
     raw_baseline_options: Arc<BuildOptions>,
 ) -> Result<Option<Arc<BuildOptions>>, ComputeError> {
     let bckvk = BuildConfigurationKeyValueKey::create(raw_baseline_options);
-    match env.get_value_or_throw::<_, ConfigurationError>(bckvk)? {
+    // Java: env.getValueOrThrow(bckvk, OptionsParsingException.class,
+    // PlatformMappingException.class, InvalidPlatformException.class).
+    // PORT: InvalidPlatformException cannot be named in this crate (see
+    // compute_build_configuration_key); such an error makes the dependency missing here.
+    match env.get_value_or_throw_with(bckvk, |e| {
+        e.downcast_ref::<ConfigurationError>()
+            .filter(|c| {
+                matches!(
+                    c,
+                    ConfigurationError::OptionsParsing(_) | ConfigurationError::PlatformMapping(_)
+                )
+            })
+            .cloned()
+    })? {
         Ok(Some(v)) => Ok(Some(v.get_options().clone())),
         Ok(None) => Ok(None),
+        // Java: throw new BaselineOptionsFunctionException(e);
         Err(e) => Err(persistent(e)),
     }
+}
+
+// Java: com/google/devtools/build/lib/analysis/config/ConfigurationValueEvent.java:21 ConfigurationValueEvent
+/// Posted when a `BuildConfigurationValue` is created.
+///
+/// PORT: Java keeps the class in `analysis/config`; it is here, next to its one poster. Nothing
+/// in Bazel subscribes to it (the build event protocol gets its `BuildConfigurationEvent`s from
+/// `BuildEvent.getConfigurations()` of the target events).
+#[derive(Clone, Debug)]
+pub struct ConfigurationValueEvent {
+    configuration: Arc<BuildConfigurationValue>,
+}
+
+impl ConfigurationValueEvent {
+    // Java: com/google/devtools/build/lib/analysis/config/ConfigurationValueEvent.java:26 ConfigurationValueEvent.create
+    pub fn create(configuration: Arc<BuildConfigurationValue>) -> Self {
+        ConfigurationValueEvent { configuration }
+    }
+
+    pub fn configuration(&self) -> &Arc<BuildConfigurationValue> {
+        &self.configuration
+    }
+}
+
+// Java: `storeForReplay()` is not overridden: the event is not stored in the node.
+impl Postable for ConfigurationValueEvent {}
+
+/// The BUILD_CONFIGURATION SkyFunction.
+///
+/// PORT: not a `typed_function`: the value is shared between the node and the
+/// `ConfigurationValueEvent` the function posts, as in Java.
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationFunction.java:57 BuildConfigurationFunction.compute
+fn build_configuration_function(key: &SkyKey, env: &mut Environment<'_>) -> ComputeResult {
+    let key = key
+        .downcast::<BuildConfigurationKey>()
+        .expect("key type matches function name");
+    Ok(compute_build_configuration(key, env)?.map(|v| v as SkyValue))
 }
 
 // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationFunction.java:57 BuildConfigurationFunction.compute
 fn compute_build_configuration(
     key: &BuildConfigurationKey,
     env: &mut Environment<'_>,
-) -> Result<Option<BuildConfigurationValue>, ComputeError> {
+) -> Result<Option<Arc<BuildConfigurationValue>>, ComputeError> {
     let starlark_semantics = client(env).starlark_semantics.clone();
     let target_options = key.get_options().clone();
     let Some(baseline_options) = get_baseline_options(env, &target_options)? else {
@@ -619,14 +743,19 @@ fn compute_build_configuration(
         cx.rule_class_provider.as_ref(),
         &FragmentFactory,
     ) {
-        // PORT: `env.getListener().post(ConfigurationValueEvent.create(value))` is skipped: the
-        // event feeds BEP (wave W8).
-        Ok(v) => Ok(Some(v)),
+        Ok(v) => {
+            let configuration_value = Arc::new(v);
+            env.listener()
+                .post(Arc::new(ConfigurationValueEvent::create(
+                    configuration_value.clone(),
+                )));
+            Ok(Some(configuration_value))
+        }
         Err(e) => Err(persistent(e)),
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationFunction.java:71 BuildConfigurationFunction.getPlatformCpu
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationFunction.java:96 BuildConfigurationFunction.getPlatformCpu
 fn get_platform_cpu(
     env: &mut Environment<'_>,
     target_options: &BuildOptions,
@@ -662,7 +791,7 @@ fn get_platform_cpu(
     ))
 }
 
-// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationFunction.java:66 BuildConfigurationFunction.getBaselineOptions
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationFunction.java:133 BuildConfigurationFunction.getBaselineOptions
 /// Determine the baseline options to use for tracking changes. Returns `None` if a Skyframe
 /// restart is needed, or `Some` with either the baseline options to use, or none if there is no
 /// valid baseline.
@@ -693,16 +822,24 @@ fn get_baseline_options(
         new_platform = Some(platform_options.compute_target_platform().clone());
     }
 
-    match env.get_value_or_throw::<_, ConfigurationError>(BaselineOptionsKey {
-        after_exec_transition: apply_exec_transition_to_baseline,
-        new_platform,
-    })? {
+    // Java: env.getValueOrThrow(BaselineOptionsValue.key(applyExecTransitionToBaseline,
+    // newPlatform), StarlarkExecTransitionLoadingException.class): any other error of the
+    // dependency makes it missing.
+    match env.get_value_or_throw_with(
+        BaselineOptionsKey {
+            after_exec_transition: apply_exec_transition_to_baseline,
+            new_platform,
+        },
+        |e| match e.downcast_ref::<ConfigurationError>() {
+            Some(ConfigurationError::StarlarkExecTransitionLoading(e)) => Some(e.clone()),
+            _ => None,
+        },
+    )? {
         Ok(Some(v)) => Ok(Some(Some(v.as_ref().clone()))),
         Ok(None) => Ok(None),
-        Err(ConfigurationError::StarlarkExecTransitionLoading(e)) => {
-            Err(persistent(InvalidConfigurationException::new(e.0.clone())))
-        }
-        Err(e) => Err(persistent(e)),
+        // Java: throw new BuildConfigurationFunctionException(new
+        // InvalidConfigurationException(e));
+        Err(e) => Err(persistent(InvalidConfigurationException::new(e.0.clone()))),
     }
 }
 
@@ -710,7 +847,10 @@ fn get_baseline_options(
 /// [`ConfigurationEnvironment`].
 pub fn register_configuration_functions(builder: EvaluatorBuilder) -> EvaluatorBuilder {
     builder
-        .typed_function::<BuildConfigurationKey, _>(compute_build_configuration)
+        .function(
+            <BuildConfigurationKey as Key>::FUNCTION,
+            build_configuration_function,
+        )
         .typed_function::<BuildConfigurationKeyValueKey, _>(compute_build_configuration_key)
         .typed_function::<BaselineOptionsKey, _>(compute_baseline_options)
         .typed_function::<PlatformMappingSkyKey, _>(compute_platform_mapping)
@@ -734,9 +874,12 @@ pub struct ConfigurationRequest {
 
 /// The configuration-related state of `SkyframeExecutor` for one command.
 ///
-/// PORT: Blaze has no shared `SkyframeExecutor` yet; configurations are computed in an evaluator
-/// of their own, created once the baseline configuration is known (Java injects the baseline as
-/// precomputed values into the shared graph). Move into the SkyframeExecutor port.
+/// PORT: superseded by the `SkyframeExecutor` port in `blaze_sky_top`
+/// (`skyframe_executor.rs`), which registers [`register_configuration_functions`] in the shared
+/// evaluator. This one computes configurations in an evaluator of its own, created once the
+/// baseline configuration is known (Java injects the baseline as precomputed values into the
+/// shared graph); its only user left is the `blaze-config-dev` binary
+/// (`top_level::create_top_level_configuration`).
 pub struct ConfigurationSkyframe {
     evaluator: blaze_skyframe::Evaluator,
     client: Arc<ConfigurationEnvironment>,
@@ -777,7 +920,7 @@ impl ConfigurationSkyframe {
         })
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1541 SkyframeExecutor.adjustForExec
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1544 SkyframeExecutor.adjustForExec
     fn adjust_for_exec(
         build_options: &BuildOptions,
         semantics: &Arc<StarlarkSemantics>,
@@ -856,7 +999,7 @@ impl ConfigurationSkyframe {
         );
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2113 SkyframeExecutor.createBuildConfigurationKey
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2204 SkyframeExecutor.createBuildConfigurationKey
     pub fn create_build_configuration_key(
         &self,
         build_options: Arc<BuildOptions>,
@@ -867,7 +1010,7 @@ impl ConfigurationSkyframe {
             .clone())
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1903 SkyframeExecutor.getConfiguration
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2108 SkyframeExecutor.getConfiguration
     /// Returns the configuration corresponding to the given set of build options.
     pub fn get_configuration(
         &self,

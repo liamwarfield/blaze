@@ -392,6 +392,15 @@ impl fmt::Display for ExistingRuleView {
 // Java `Starlark.type`: a `Map` without a `@StarlarkBuiltin` is a "dict".
 #[starlark_value(type = "dict")]
 impl<'v> StarlarkValue<'v> for ExistingRuleView {
+    // PORT: Java's views are not `Dict`s, so `view[k] = v` is not a dict mutation but
+    // EvalUtils.setIndex's last branch, with `Starlark.type(view)` ("dict" for a java.util.Map).
+    // Java: net/starlark/java/eval/EvalUtils.java:522 EvalUtils.setIndex
+    fn set_at(&self, _index: Value<'v>, _new_value: Value<'v>) -> starlark::Result<()> {
+        Err(starlark::Error::new_other(anyhow::anyhow!(
+            "can only assign an element in a dictionary or a list, not in a 'dict'"
+        )))
+    }
+
     fn get_methods() -> Option<&'static Methods> {
         static RES: MethodsStatic = MethodsStatic::new("ExistingRuleView", dict_like_view_methods);
         Some(RES.methods())
@@ -511,6 +520,15 @@ impl fmt::Display for ExistingRulesView {
 // Java `Starlark.type`: a `Map` without a `@StarlarkBuiltin` is a "dict".
 #[starlark_value(type = "dict")]
 impl<'v> StarlarkValue<'v> for ExistingRulesView {
+    // PORT: Java's views are not `Dict`s, so `view[k] = v` is not a dict mutation but
+    // EvalUtils.setIndex's last branch, with `Starlark.type(view)` ("dict" for a java.util.Map).
+    // Java: net/starlark/java/eval/EvalUtils.java:522 EvalUtils.setIndex
+    fn set_at(&self, _index: Value<'v>, _new_value: Value<'v>) -> starlark::Result<()> {
+        Err(starlark::Error::new_other(anyhow::anyhow!(
+            "can only assign an element in a dictionary or a list, not in a 'dict'"
+        )))
+    }
+
     fn get_methods() -> Option<&'static Methods> {
         static RES: MethodsStatic = MethodsStatic::new("ExistingRulesView", dict_like_view_methods);
         Some(RES.methods())

@@ -1,0 +1,8 @@
+# Order of the Skyframe dependencies of a CONFIGURED_TARGET node (it decides ties in the cquery
+# and aquery output order): toolchain and visibility dependencies are looked up before
+# attribute dependencies; attribute dependencies whose transition needs no lookup first.
+# DEPS.txt is the oracle's `dump --skyframe=deps` for the nodes of //pkg:top and //pkg:plain.
+run cquery "deps(//pkg:top)"
+run cquery "deps(//pkg:top, 1)" --output=label_kind
+run cquery "deps(//pkg:plain) + deps(//pkg:top, 1)"
+run cquery "kind(leaf, deps(//pkg:top))"

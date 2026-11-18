@@ -1,5 +1,6 @@
 === 1: run build //:probe
 exit 0
+  bazel-bin/probe.txt
 INFO: Build completed successfully, 2 total actions
 Target //:probe up-to-date:
 === 2: cat bazel-bin/probe.txt

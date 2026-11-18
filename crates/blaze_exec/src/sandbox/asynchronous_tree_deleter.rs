@@ -70,7 +70,7 @@ impl TreeDeleter for AsynchronousTreeDeleter {
             .trash_base
             .get_relative_str(&self.trash_count.fetch_add(1, Ordering::SeqCst).to_string());
         if path.rename_to(&trash_path).is_err() {
-            // PORT: logging dropped ("Failed to rename %s -> %s for asynchronous removal.
+            // PORT: skipped, tracing (Java log) ("Failed to rename %s -> %s for asynchronous removal.
             // Removing synchronously.").
             return path.delete_tree();
         }
@@ -78,7 +78,7 @@ impl TreeDeleter for AsynchronousTreeDeleter {
             !self.shut_down.load(Ordering::SeqCst),
             "Cannot call deleteTree after shutdown"
         );
-        // PORT: logging dropped (on error: "Failed to delete tree %s asynchronously").
+        // PORT: skipped, tracing (Java log) (on error: "Failed to delete tree %s asynchronously").
         let _ = trash_path.delete_tree();
         Ok(())
     }

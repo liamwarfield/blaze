@@ -1,0 +1,9 @@
+# actions S3-2 / exec item 2: the parameter file lists the tree's children.
+run build //:w
+cat bazel-bin/w.params
+stat bazel-bin/w.dir
+stat bazel-bin/w.dir/sub
+stat bazel-bin/w.dir/a.txt
+# A second build: every action is an action cache hit (tree output, tree input).
+run build //:w
+cat bazel-bin/w.params

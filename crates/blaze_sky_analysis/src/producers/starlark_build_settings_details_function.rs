@@ -8,9 +8,10 @@ use blaze_analysis::config::starlark_transition::{
     StarlarkBuildSettingsDetailsKey, StarlarkBuildSettingsDetailsValue, TransitionException,
     attr_value_to_starlark_option,
 };
+use blaze_analysis::toolchains::toolchain_exception::no_such_thing_java_class_name;
 use blaze_build_config::build_options::StarlarkOptionValue;
 use blaze_cmdline::{Label, PackageIdentifier};
-use blaze_packages::exceptions::NoSuchPackageException;
+use blaze_packages::exceptions::{NoSuchPackageException, NoSuchThingException};
 use blaze_packages::package::Package;
 use blaze_packages::rule_class::rule_class::STARLARK_BUILD_SETTING_DEFAULT_ATTR_NAME;
 use blaze_packages::target::{Rule, RuleOrMacroInstance, Target};
@@ -174,11 +175,15 @@ fn get_build_setting_packages(
                     build_setting_packages.insert(package_key.clone(), v.get_package().clone());
                 }
                 Ok(None) => return Ok(Ok(None)),
-                // Java: new TransitionException(e): the cause's toString as the message.
+                // Java: new TransitionException(e): the cause's toString as the message, that
+                // is the class name of the NoSuchPackageException (or of its subclass), ": " and
+                // its message.
                 Err(e) => {
+                    let message = e.get_message();
                     return Ok(Err(TransitionException(format!(
-                        "com.google.devtools.build.lib.packages.NoSuchPackageException: {}",
-                        e.get_message()
+                        "{}: {}",
+                        no_such_thing_java_class_name(&NoSuchThingException::Package(e)),
+                        message
                     ))));
                 }
             }

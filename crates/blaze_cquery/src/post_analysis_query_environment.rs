@@ -98,22 +98,34 @@ use blaze_skyframe::{SkyKey, WalkableGraph};
 use blaze_vfs::{PathFragment, Root, RootedPath};
 use indexmap::{IndexMap, IndexSet};
 
+static DEFAULT_THREAD_COUNT: OnceLock<i32> = OnceLock::new();
+
+/// Sets `SkyQueryEnvironment.DEFAULT_THREAD_COUNT` to `Runtime.getRuntime().availableProcessors()`
+/// (Java: a static initializer). The value belongs to the process: the first call stands.
+///
+/// PORT: the exact port of `Runtime.availableProcessors()` (HotSpot's
+/// `os::active_processor_count`: the CPUs of the affinity mask, lowered to the cgroup CPU quota
+/// rounded up) is `blaze_runtime::local_resources::available_processors`, in a crate above this
+/// one; the cquery and aquery commands pass it in (`PostAnalysisCommandEnvironment
+/// .available_processors`). `std::thread::available_parallelism` rounds a fractional quota down,
+/// so it is not used.
+// Java: com/google/devtools/build/lib/query2/SkyQueryEnvironment.java:154 SkyQueryEnvironment.DEFAULT_THREAD_COUNT
+pub fn set_default_thread_count(available_processors: i32) {
+    let _ = DEFAULT_THREAD_COUNT.set(available_processors);
+}
+
 /// `SkyQueryEnvironment.DEFAULT_THREAD_COUNT`: `Runtime.getRuntime().availableProcessors()`.
 ///
 /// It sizes the `ConcurrentHashMap`s behind every post-analysis query set, so it decides the
 /// order of cquery and aquery output (see the module documentation).
-///
-/// PORT: `std::thread::available_parallelism` counts the CPUs of the affinity mask and applies
-/// the cgroup CPU quota like HotSpot's `os::active_processor_count`, except that it rounds a
-/// fractional quota down where HotSpot rounds it up. `blaze_runtime::local_resources` has the
-/// exact port (`available_processors`, private, in a crate above this one).
 // Java: com/google/devtools/build/lib/query2/SkyQueryEnvironment.java:154 SkyQueryEnvironment.DEFAULT_THREAD_COUNT
 pub fn default_thread_count() -> i32 {
-    static DEFAULT_THREAD_COUNT: OnceLock<i32> = OnceLock::new();
-    *DEFAULT_THREAD_COUNT.get_or_init(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get() as i32)
-            .unwrap_or(1)
+    *DEFAULT_THREAD_COUNT.get().unwrap_or_else(|| {
+        panic!(
+            "IllegalStateException: SkyQueryEnvironment.DEFAULT_THREAD_COUNT is not set \
+             (set_default_thread_count(Runtime.availableProcessors()) runs at the start of the \
+             cquery and aquery commands)"
+        )
     })
 }
 

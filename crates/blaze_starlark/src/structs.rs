@@ -78,7 +78,9 @@ pub fn is_immutable(v: Value) -> bool {
         "list" => return crate::list::list_is_immutable(v) == Some(true),
         // Java: Dict.isImmutable (Dict.immutableCopyOf / frozen dicts).
         "dict" => return crate::dict::dict_is_immutable(v) == Some(true),
-        "set" | "function" => return false,
+        // Java: StarlarkSet.isImmutable (StarlarkSet.immutableCopyOf / frozen sets).
+        "set" => return crate::set::set_is_immutable(v) == Some(true),
+        "function" => return false,
         _ => {}
     }
     if let Some(t) = TupleRef::from_value(v) {

@@ -80,6 +80,9 @@ fn compute(
     };
     let debug = key.debug_target()
         || platform_configuration.debug_toolchain_resolution(&toolchain_type_labels);
+    // PORT: ToolchainResolutionDebugPrinter is not ported. Without debugging every call on it
+    // is a no-op, so with `--toolchain_resolution_debug` matching this target or one of its
+    // toolchain types the function stops here, and the debugPrinter calls below are left out.
     if debug {
         blaze_util::unported!("ToolchainResolutionDebugPrinter.create");
     }
@@ -129,7 +132,7 @@ fn compute(
     }
 
     let unloaded_toolchain_context = builder.build();
-    // PORT: debugPrinter.reportSelectedToolchains is a no-op without debugging.
+    // (debugPrinter.reportSelectedToolchains is a no-op without debugging.)
     Ok(Some(unloaded_toolchain_context))
 }
 

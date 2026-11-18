@@ -54,6 +54,8 @@ impl GenRuleAction {
     pub const MNEMONIC: &'static str = "Genrule";
 
     // Java: com/google/devtools/build/lib/rules/genrule/GenRuleAction.java:36 GenRuleAction.<init>
+    // PORT: GenRuleAction is a SpawnAction with its own mnemonic; the constructor returns that.
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(
         owner: ActionOwner,
         tools: NestedSet<Artifact>,

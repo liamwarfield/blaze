@@ -15,7 +15,7 @@ use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_cmdline::Label;
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
-use blaze_events::{Event, EventHandler};
+use blaze_events::{Event, ExtendedEventHandler};
 use blaze_packages::exceptions::{
     DetailedExitCode, FailureCode, NoSuchPackageKind, NoSuchThingException,
 };
@@ -598,7 +598,7 @@ impl MissingEdgeError {
         &self,
         from_node: &TargetAndConfiguration,
         transitive_state: &mut TransitiveDependencyState,
-        listener: &dyn EventHandler,
+        listener: &dyn ExtendedEventHandler,
     ) {
         let from = from_node.get_target();
         let label = &self.label;
@@ -632,8 +632,15 @@ impl MissingEdgeError {
         match cause {
             NoSuchThingException::Package(_) => {
                 // Blames the rule for specifying an unavailable package.
-                // PORT: AnalysisRootCauseEvent (BEP) is not posted.
                 let configuration = from_node.get_configuration();
+                // AnalysisRootCauseEvent.withConfigurationValue(configuration, label, message)
+                listener.post(Arc::new(
+                    blaze_analysis::rule::rule_error_consumer::AnalysisRootCauseEvent {
+                        configuration_checksum: configuration.map(|c| c.checksum().to_owned()),
+                        label: label.clone(),
+                        error_message: cause.get_message().to_owned(),
+                    },
+                ));
                 transitive_state.add_transitive_cause(Cause::AnalysisFailed {
                     label: label.clone(),
                     configuration: configuration_id_message(configuration.map(|c| c.checksum())),

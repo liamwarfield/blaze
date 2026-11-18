@@ -22,10 +22,11 @@ pub const BAZEL_VERSION: &str = "9.3.2";
 pub fn bazel_starlark_globals_fns() -> StarlarkGlobalsFns {
     StarlarkGlobalsFns {
         // Java addCommonUtilToplevels (depset, json, proto) + SelectLibrary.
-        // PORT: the `proto` module (Java Proto.INSTANCE) is not ported.
+        // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkGlobalsImpl.java:49 StarlarkGlobalsImpl.addCommonUtilToplevels
         util_toplevels: vec![
             blaze_starlark::depset::register_depset,
             blaze_starlark::json::register_json,
+            blaze_packages::proto::register_proto,
             blaze_packages::build::register_select,
         ],
         build_file_toplevels_shared_with_native: vec![

@@ -86,7 +86,7 @@ fn report(event: blaze_events::Event) {
         let env = envs
             .last()
             .expect("a Starlark event outside of a repository rule or module extension call");
-        env.get().listener().handle(&event);
+        env.listener().handle(&event);
     })
 }
 
@@ -133,11 +133,11 @@ pub fn call_implementation<R>(
     make_ctx: impl for<'v> FnOnce(Heap<'v>) -> Value<'v>,
     extract: impl for<'v> FnOnce(Value<'v>, &mut Evaluator<'v, '_, '_>) -> Result<R, EvalError>,
 ) -> ImplementationOutcome<R> {
-    // A second handle to the payload's environment, for the print handler. The handle leaves the
-    // closure of `SkyEnv::scope`, which is sound here only because it aliases `payload.base.env`:
-    // that handle is valid for this whole call (the caller's `SkyEnv::scope` is still running),
-    // and the guard drops this one before the call returns.
-    let listener_env = SkyEnv::scope(payload.base.env.get(), |env| env);
+    // A second handle to the payload's environment, for the print handler: a copy of the
+    // handle's pointer (`SkyEnv::alias`), not a reborrow through `payload.base.env.get()`, so
+    // later uses of `payload.base.env` do not invalidate it. The caller's `SkyEnv::scope` is
+    // still running for this whole call, and the guard drops the alias before the call returns.
+    let listener_env = payload.base.env.alias();
     let _listener_env_guard = ListenerEnvGuard::push(listener_env);
 
     // Java: thread.setPrintHandler(Event.makeDebugPrintHandler(env.getListener()))

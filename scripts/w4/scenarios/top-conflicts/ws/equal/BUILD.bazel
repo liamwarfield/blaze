@@ -1,0 +1,14 @@
+load("//:defs.bzl", "fixed")
+
+# Two targets declare equal.txt with equal content: the actions are shareable.
+fixed(
+    name = "a",
+    out = "equal.txt",
+    content = "equal\n",
+)
+
+fixed(
+    name = "b",
+    out = "equal.txt",
+    content = "equal\n",
+)

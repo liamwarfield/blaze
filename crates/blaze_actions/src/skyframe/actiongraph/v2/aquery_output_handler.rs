@@ -108,7 +108,11 @@ impl<W: std::io::Write> AqueryOutputHandler for MonolithicOutputHandler<W> {
             .print(&self.action_graph_container)
             .map_err(|e| std::io::Error::other(e.get_message().to_string()))?;
         // printStream.println() after jsonPrinter.appendTo.
-        self.print_stream.write_all(json.as_bytes())?;
+        // Java: the `PrintStream` of `AqueryThreadsafeCallback` (`new PrintStream(out)`) encodes
+        // with the default charset, ISO-8859-1 (`blaze.cc:431` `-Dfile.encoding`), so the
+        // internal strings of the messages come out as their bytes, one per char.
+        self.print_stream
+            .write_all(&blaze_util::string_encoding::internal_string_bytes(&json))?;
         self.print_stream.write_all(b"\n")?;
         self.print_stream.flush()
     }

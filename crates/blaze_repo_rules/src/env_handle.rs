@@ -35,6 +35,33 @@ impl SkyEnv {
         })
     }
 
+    /// A second handle to the same environment, for code that cannot reach the first one (the
+    /// print handler of the Starlark thread, which finds its environment through a thread-local).
+    ///
+    /// Contract, as for the handle [`SkyEnv::scope`] hands out:
+    /// - the alias must be dropped, or no longer used, before that `scope` call returns;
+    /// - a reference obtained from one handle ([`SkyEnv::get`], [`SkyEnv::listener`]) must not
+    ///   be held across a use of the other handle, exactly as for two uses of one handle.
+    ///
+    /// The raw pointer is copied, not re-derived through a reference (no `get()` reborrow), so
+    /// both handles carry the provenance `scope` gave the pointer and neither is invalidated by
+    /// a use of the other (review 2026-11-18 round 2, N2).
+    pub(crate) fn alias(&self) -> SkyEnv {
+        SkyEnv {
+            ptr: self.ptr,
+            _not_send: PhantomData,
+        }
+    }
+
+    /// `Environment::listener()` through a shared borrow: reporting an event needs no exclusive
+    /// access to the environment. The same rule as for [`SkyEnv::get`] applies to the returned
+    /// reference.
+    pub fn listener(&self) -> &dyn blaze_events::ExtendedEventHandler {
+        // SAFETY: see `scope`; the pointer is valid while the handle is, and the shared
+        // reference lives only for the caller's one use.
+        unsafe { &*self.ptr }.listener()
+    }
+
     /// The environment. Callers must not hold the returned reference across another call that
     /// can reach the same handle (natives re-borrow it per use).
     #[allow(clippy::mut_from_ref)]

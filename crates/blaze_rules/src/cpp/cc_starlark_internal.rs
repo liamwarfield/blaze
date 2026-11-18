@@ -133,21 +133,23 @@ fn check_private_api_impl<'v>(
     // This method may be called anywhere from builtins, but not outside (because it's not
     // exposed in cc_common.bzl
     // Java: net/starlark/java/eval/Module.java:121 Module.ofInnermostEnclosingStarlarkFunction
-    let Some(module) =
-        blaze_starlark::defining_module::module_file_of_innermost_enclosing_starlark_function(
-            eval,
-            depth.max(0) as usize,
-        )
-    else {
+    let depth = depth.max(0) as usize;
+    if eval.innermost_enclosing_def_module(depth).is_none() {
         // The module is null when the call is coming from one of the callbacks passed to
         // execution phase
         return Ok(());
-    };
-    // Java: (BazelModuleContext) module.getClientData(), dereferenced by
-    // BuiltinRestriction.failIfModuleOutsideAllowlist.
+    }
+    // Java: (BazelModuleContext) module.getClientData(): the client data of the function's own
+    // module (not a lookup by file name); a null one is dereferenced by
+    // BuiltinRestriction.failIfModuleOutsideAllowlist, after the allowlist is cast.
     let bazel_module_context =
-        blaze_packages::bzl_context::BazelModuleContext::of_filename(&module)
-            .expect("NullPointerException: no BazelModuleContext for the module");
+        blaze_starlark::defining_module::module_extra_value_of_innermost_enclosing_starlark_function(
+            eval, depth,
+        )
+        .map(|client_data| {
+            blaze_packages::bzl_context::BazelModuleContext::of_module_extra_value(client_data)
+                .expect("ClassCastException: the module's client data is not a BazelModuleContext")
+        });
     let mut entries: Vec<(String, String)> = Vec::new();
     for item in sequence_elements(allowlist, eval.heap())? {
         // TODO(bazel-team): Avoid unchecked indexing and casts on values obtained from
@@ -169,6 +171,9 @@ fn check_private_api_impl<'v>(
         entries.push((get(0)?, get(1)?));
     }
     // Java: BuiltinRestriction.failIfModuleOutsideAllowlist -> failIfLabelOutsideAllowlist.
+    // Java: com/google/devtools/build/lib/packages/BuiltinRestriction.java:190 BuiltinRestriction.failIfModuleOutsideAllowlist
+    let bazel_module_context =
+        bazel_module_context.expect("NullPointerException: no BazelModuleContext for the module");
     let label = &bazel_module_context.label;
     if label.get_repository() == &*blaze_cmdline::repository_name::BUILTINS {
         return Ok(());

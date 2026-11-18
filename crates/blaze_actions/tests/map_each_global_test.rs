@@ -76,6 +76,8 @@ fn run_case(name: &str) -> Result<(), blaze_starlark::EvalError> {
 fn expected() -> Vec<(&'static str, Option<String>)> {
     let cases: Vec<_> = EXPECTED
         .lines()
+        // The `mnemonic_*` cases of the same probe belong to spawn_action_mnemonic_test.rs.
+        .filter(|line| !line.starts_with("mnemonic_"))
         .map(|line| {
             let (case, result) = line.split_once('\t').unwrap();
             let error = (result != "OK").then(|| result.replace("<WORKSPACE>", WORKSPACE));
@@ -101,11 +103,9 @@ fn map_each_is_accepted_exactly_when_the_oracle_accepts_it() {
     }
 }
 
-/// The rejected cases fail with Bazel's error text, which names where the function is declared.
+/// The rejected cases fail with Bazel's error text, which names where the function is declared
+/// (starlark-rust BLAZE PATCH 0024).
 #[test]
-#[ignore = "needs StarlarkFunction.getLocation: starlark-rust has no accessor for the position \
-            of a def or lambda (DefInfo::signature_span); until then a rejected map_each is \
-            unported! instead of this error (docs/reviews/2026-11-18-actions-response.md)"]
 fn map_each_not_global_error_text() {
     for (case, error) in expected() {
         let Some(error) = error else { continue };

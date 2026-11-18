@@ -616,7 +616,7 @@ fn compute_is_supported(cmd_env: &ExecCommandEnvironment, linux_sandbox: &Path) 
                 // unsupported.
                 thread_interrupt::interrupt_current();
             }
-            // PORT: logging dropped ("Checking for linux sandbox support failed: %s").
+            // PORT: skipped, tracing (Java log) ("Checking for linux sandbox support failed: %s").
             false
         }
     }

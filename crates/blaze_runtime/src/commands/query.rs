@@ -132,7 +132,15 @@ pub(crate) fn create_skyframe_executor_reporting_to(
         keep_going,
         top_level_build_options,
     };
-    SkyframeExecutor::create(inputs).map_err(|e| {
+    let created = SkyframeExecutor::create(inputs);
+    if let Ok(skyframe_executor) = &created {
+        // The command thread's interrupt reaches the evaluations of this executor (Java: the
+        // thread that calls `evaluate` is interrupted).
+        crate::interrupt::register_interrupt_flag(
+            &skyframe_executor.get_evaluator().interrupt_flag(),
+        );
+    }
+    created.map_err(|e| {
         env.get_reporter().handle(&Event::error(e.to_string()));
         let failure_detail = match &e {
             SkyframeExecutorCreationError::Bzlmod { message, code } => FailureDetail {
@@ -164,10 +172,23 @@ pub(crate) fn create_skyframe_executor_reporting_to(
                         })),
                     }
                 } else {
+                    // ExecutionTool.createExitException(messagePrefix, detailedCode, e): the
+                    // prefixes of ExecutionTool.<init> and createActionLogDirectory.
+                    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:1015 ExecutionTool.createExitException
+                    use failure_details::execution::Code;
+                    let code = if message.starts_with("Execroot creation failed: ") {
+                        Code::ExecrootCreationFailure
+                    } else if message.starts_with("Couldn't delete action output directory: ") {
+                        Code::TempActionOutputDirectoryDeletionFailure
+                    } else if message.starts_with("Couldn't create action output directory: ") {
+                        Code::TempActionOutputDirectoryCreationFailure
+                    } else {
+                        Code::ExecutionUnknown
+                    };
                     FailureDetail {
                         message: message.clone(),
                         category: Some(Category::Execution(failure_details::Execution {
-                            code: failure_details::execution::Code::ExecutionUnknown as i32,
+                            code: code as i32,
                         })),
                     }
                 }

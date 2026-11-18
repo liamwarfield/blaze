@@ -1,0 +1,14 @@
+load("//:defs.bzl", "fixed")
+
+# Two targets declare same.txt with different content: an action conflict.
+fixed(
+    name = "a",
+    out = "same.txt",
+    content = "from a\n",
+)
+
+fixed(
+    name = "b",
+    out = "same.txt",
+    content = "from b\n",
+)

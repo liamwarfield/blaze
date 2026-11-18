@@ -502,7 +502,7 @@ impl CompactPersistentActionCache {
 
             let e = io::Error::other(format!("{}: {}", message, java_message(&e)));
 
-            // PORT: logging dropped.
+            // PORT: skipped, tracing (Java log).
 
             reporter_for_initialization_errors.handle(&Event::warn(format!(
                 "Error during action cache initialization: {}. Data may be incomplete, \
@@ -581,7 +581,7 @@ impl CompactPersistentActionCache {
         let content = match self.encode(entry) {
             Ok(content) => content,
             Err(_) => {
-                // PORT: logging dropped ("Failed to save cache entry %s with key %s").
+                // PORT: skipped, tracing (Java log) ("Failed to save cache entry %s with key %s").
                 return;
             }
         };
@@ -1166,7 +1166,7 @@ impl ActionCache for CompactPersistentActionCache {
     // Java: com/google/devtools/build/lib/actions/cache/CompactPersistentActionCache.java:652 CompactPersistentActionCache.save
     fn save(&self) -> io::Result<i64> {
         // TODO(b/314086729): Remove after we understand the bug.
-        // PORT: logging dropped ("Integrity check failed on the inmemory objects right before
+        // PORT: skipped, tracing (Java log) ("Integrity check failed on the inmemory objects right before
         // save"); the check has no other effect.
         let _ = CompactPersistentActionCache::validate_integrity(
             self.indexer.size(),

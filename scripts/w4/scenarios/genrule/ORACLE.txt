@@ -58,17 +58,20 @@ ERROR: <WS>/BUILD.bazel:81:8: Executing genrule //:missing_out failed: not all o
 ERROR: <WS>/BUILD.bazel:81:8: declared output 'never.out' was not created by genrule. This is probably because the genrule actually didn't create this output, or because the output was a directory and the genrule was run remotely (note that only the contents of declared file outputs are copied from genrules run remotely)
 ERROR: Build did NOT complete successfully
 Target //:missing_out failed to build
+Use --verbose_failures to see the command lines of failed build steps.
 === 14: run build //:dir_out
 exit 1
 ERROR: <WS>/BUILD.bazel:87:8: Executing genrule //:dir_out failed: not all outputs were created or valid
 ERROR: <WS>/BUILD.bazel:87:8: output 'd' of //:dir_out is a directory but was not declared as such
 ERROR: Build did NOT complete successfully
 Target //:dir_out failed to build
+Use --verbose_failures to see the command lines of failed build steps.
 === 15: run build //:fails
 exit 1
 ERROR: <WS>/BUILD.bazel:93:8: Executing genrule //:fails failed: (Exit 3): bash failed: error executing Genrule command (from genrule rule target //:fails) /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo oops >&2; exit 3'
 ERROR: Build did NOT complete successfully
 Target //:fails failed to build
+Use --verbose_failures to see the command lines of failed build steps.
 === 16: run build //:bad_var
 exit 1
 ERROR: <WS>/BUILD.bazel:99:8: Analysis of target '//:bad_var' (config: a7a71fd) failed

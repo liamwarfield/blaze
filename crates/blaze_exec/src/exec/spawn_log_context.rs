@@ -102,11 +102,25 @@ pub fn spawn_log_io_exception(e: &io::Error) -> ExecException {
 /// protos store strings that Bazel sets without `StringEncoding.internalToUnicode`. Their UTF-8
 /// encoding on the wire is therefore "double encoded" for non-ASCII text.
 // Java: com/google/devtools/build/lib/util/StringEncoding.java StringEncoding.unicodeToInternal
+///
+/// Seam (decisions.md 2026-11-18 "Strings"): `to_internal` gives the internal string that `s`
+/// stands for, whether or not Blaze's strings are internal yet
+/// (`blaze_util::string_encoding::STRINGS_ARE_INTERNAL`).
 pub(crate) fn internal(s: &str) -> String {
-    if s.is_ascii() {
-        s.to_string()
+    blaze_util::string_encoding::to_internal(s).into_owned()
+}
+
+/// `StringEncoding.internalToUnicode(s)` of the internal string that `s` stands for.
+///
+/// Seam (decisions.md 2026-11-18 "Strings"): while
+/// `blaze_util::string_encoding::STRINGS_ARE_INTERNAL` is false Blaze's strings are Unicode
+/// already and this is the identity; once it is true it is `internal_to_unicode`.
+// Java: com/google/devtools/build/lib/util/StringEncoding.java:126 StringEncoding.internalToUnicode
+pub(crate) fn internal_to_unicode(s: &str) -> String {
+    if blaze_util::string_encoding::strings_are_internal() {
+        blaze_util::string_encoding::internal_to_unicode(s).into_owned()
     } else {
-        blaze_protos::java::unicode_to_internal(s)
+        s.to_string()
     }
 }
 
@@ -146,9 +160,8 @@ pub fn get_environment_variables(spawn: &dyn Spawn) -> Vec<EnvironmentVariable> 
     entries
         .into_iter()
         .map(|(name, value)| EnvironmentVariable {
-            // PORT: StringEncoding identity (internalToUnicode).
-            name: name.clone(),
-            value: value.clone(),
+            name: internal_to_unicode(name),
+            value: internal_to_unicode(value),
         })
         .collect()
 }
@@ -222,8 +235,11 @@ fn get_platform_proto(
 
     // `additionalProperties` is empty for this overload.
 
-    // PORT: StringEncoding identity (internalToUnicode).
-    let mut sorted: Vec<(String, String)> = properties.into_iter().collect();
+    // setName(internalToUnicode(entry.getKey())).setValue(internalToUnicode(entry.getValue()))
+    let mut sorted: Vec<(String, String)> = properties
+        .into_iter()
+        .map(|(name, value)| (internal_to_unicode(&name), internal_to_unicode(&value)))
+        .collect();
     // Java: com/google/devtools/build/lib/analysis/platform/PlatformUtils.java:43 PlatformUtils.sortPlatformProperties
     sorted.sort_by(|a, b| java_string_compare(&a.0, &b.0));
     Ok(Some(sorted))

@@ -82,7 +82,7 @@ impl HardlinkedSandboxedSpawn {
 
         if stat.is_file() {
             if source.create_hard_link(target).is_err() {
-                // PORT: logging dropped (when `sandbox_debug`: "File %s could not be hardlinked,
+                // PORT: skipped, tracing (Java log) (when `sandbox_debug`: "File %s could not be hardlinked,
                 // file will be copied instead.").
                 let _ = self.sandbox_debug;
                 fs_utils::copy_file(&source, target)?;

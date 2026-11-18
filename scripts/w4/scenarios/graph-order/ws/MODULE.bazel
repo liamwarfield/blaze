@@ -1,0 +1,5 @@
+module(name = "graph_order")
+
+bazel_dep(name = "platforms", version = "1.0.0")
+
+register_toolchains("//pkg:tc")

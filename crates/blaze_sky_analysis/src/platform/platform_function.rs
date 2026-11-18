@@ -45,7 +45,8 @@ impl PlatformFunction {
     /// Returns the [`ConfiguredTargetKey`] requested when evaluating the given platform.
     // Java: com/google/devtools/build/lib/analysis/platform/PlatformFunction.java:46 PlatformFunction.configuredTargetDep
     pub fn configured_target_dep(platform_label: &Label) -> ConfiguredTargetKey {
-        // Use the empty configuration, since platforms are not configurable.
+        // Platforms do not rely on the configuration. Use a dummy blank configuration to reduce
+        // the number of skyframe nodes created.
         ConfiguredTargetKey::builder()
             .set_label(platform_label.clone())
             .set_configuration_key(Some(empty_options_configuration_key()))
@@ -62,8 +63,9 @@ impl PlatformFunction {
         let pkg_id = platform_label.get_package_identifier();
 
         // Load the Package first to verify the Target. The ConfiguredTarget should not be loaded
-        // until after verification. See https://github.com/bazelbuild/bazel/issues/18215.
-
+        // until after verification. See https://github.com/bazelbuild/bazel/pull/10307.
+        //
+        // In distributed analysis, these packages will be duplicated across shards.
         let pkg_value = match env
             .get_value_or_throw::<PackageKey, NoSuchPackageException>(PackageKey(pkg_id.clone()))?
         {
@@ -118,9 +120,13 @@ impl PlatformFunction {
 
 /// The PLATFORM value the configuration code reads (see `blaze_build_config::platform`).
 fn platform_value_of(platform_info: &PlatformInfo, has_parsed_flags: bool) -> PlatformValue {
-    // PORT: the seam's PlatformValue keeps `constraints().get(setting)` for every setting the
-    // platform (or a parent) sets; defaults of settings the platform does not set are not
-    // representable there.
+    // PORT: the seam's PlatformValue (blaze_build_config cannot name PlatformInfo) keeps
+    // `constraints().get(setting)` for every setting the platform (or a parent) sets. Java's
+    // `ConstraintCollection.get` also answers with a setting's default_constraint_value for a
+    // setting the platform does not set; the one reader of the seam,
+    // BuildConfigurationFunction.getPlatformCpu, asks for
+    // ConstraintConstants.CPU_CONSTRAINT_SETTING, which is created without a default, so the
+    // answer is the same.
     let mut constraints = BTreeMap::new();
     for setting in platform_info.constraints().all_constraint_settings() {
         if let Some(value) = platform_info.constraints().get(&setting) {

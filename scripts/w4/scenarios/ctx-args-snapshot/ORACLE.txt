@@ -15,6 +15,12 @@ exit 0
 INFO: Build completed successfully, 0 total actions
 === 2: run build //:snap
 exit 0
+  bazel-bin/snap.f1
+  bazel-bin/snap.f2
+  bazel-bin/snap.t1
+  bazel-bin/snap.t2
+  bazel-bin/snap.w1
+  bazel-bin/snap.w2
 INFO: Build completed successfully, 7 total actions
 Target //:snap up-to-date:
 === 3: cat bazel-bin/snap.w1

@@ -1,0 +1,12 @@
+# exec S1-5: a top-level input file target that does not exist, and one that does.
+run build //p:missing.txt
+run build //p:existing.txt
+# A top-level target whose files are missing sources (filegroup).
+run build //p:fg
+# An action with missing source inputs; an action above one.
+run build //p:uses_missing
+run build //p:uses_two_missing
+run build //p:above
+run build //p:gen
+# keep_going: every error is reported.
+run build --keep_going //p:missing_kg.txt //p:uses_missing_kg //p:existing_kg.txt //p:fg_kg

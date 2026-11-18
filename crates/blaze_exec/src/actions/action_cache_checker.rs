@@ -789,7 +789,7 @@ impl ActionCacheChecker {
                         Err(IoOrInterruptedException::Io(_)) => {
                             // Ignore the cached metadata if we encountered an error when loading
                             // its counterpart from the filesystem.
-                            // PORT: logging dropped ("Failed to load metadata for %s").
+                            // PORT: skipped, tracing (Java log) ("Failed to load metadata for %s").
                             continue;
                         }
                     };
@@ -835,7 +835,7 @@ impl ActionCacheChecker {
                     Err(IoOrInterruptedException::Io(_)) => {
                         // Ignore the cached metadata if we encountered an error when loading its
                         // counterpart from the filesystem.
-                        // PORT: logging dropped ("Failed to load metadata for %s").
+                        // PORT: skipped, tracing (Java log) ("Failed to load metadata for %s").
                         continue;
                     }
                 };

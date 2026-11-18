@@ -1472,9 +1472,12 @@ impl BzlLoadFunction {
                     compile_env,
                     &compile_semantics,
                     Some(label),
-                ) {
-                    // A use of a predeclared symbol that is disabled by a flag, restricted to
-                    // other repositories or removed. Java finds it while resolving names in
+                )
+                .or_else(|| starlark_util::undefined_name_syntax_error(&ex))
+                {
+                    // A use of an undefined name, or of a predeclared symbol that is disabled by
+                    // a flag, restricted to other repositories or removed (then with the guard's
+                    // message). Java finds it while resolving names in
                     // BzlCompileFunction (Module.resolve throws Undefined with the guard's
                     // message): the syntax error is replayed on the listener and the load fails
                     // with the compile error, not with executionFailed.

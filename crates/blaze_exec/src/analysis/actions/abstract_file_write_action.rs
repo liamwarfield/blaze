@@ -5,7 +5,6 @@
 
 use std::io::{self, Write};
 
-use blaze_actions::actions::action::Action;
 use blaze_actions::analysis::actions::abstract_file_write_action::{
     AbstractFileWriteAction, DeterministicWriter, NewDeterministicWriterError,
 };
@@ -125,44 +124,38 @@ impl ExecutableAction for ParameterFileWriteAction {
         &self,
         ctx: &dyn ActionExecutionContext,
     ) -> Result<ActionResult, ActionExecutionException> {
-        execute_file_write(self, ctx, || parameter_file_writer(self))
+        execute_file_write(self, ctx, || parameter_file_writer(self, ctx))
     }
 }
 
-/// `ParameterFileWriteAction.newDeterministicWriter(ctx)`.
-///
-/// PORT: Java expands the command line with `ctx.getInputMetadataProvider()` (tree artifacts) and
-/// the path mapper of `getOutputPathsMode()`. `blaze_actions` exposes neither the output paths
-/// mode nor an expansion with a metadata provider, so an action with inputs (whose command line
-/// may reference tree artifacts) is `unported!`; without inputs the provider is never read and
-/// `blaze_actions`' writer performs the same expansion.
+/// `ParameterFileWriteAction.newDeterministicWriter(ctx)`: the command line is expanded with
+/// `ctx.getInputMetadataProvider()` (tree artifacts become their children) and the path mapper of
+/// `getOutputPathsMode()` (`blaze_actions` creates it).
 // Java: com/google/devtools/build/lib/analysis/actions/ParameterFileWriteAction.java:196 ParameterFileWriteAction.newDeterministicWriter
-fn parameter_file_writer(
-    action: &ParameterFileWriteAction,
-) -> Result<Box<dyn DeterministicWriter + '_>, ExecException> {
-    if !action.get_inputs().is_empty() {
-        blaze_util::unported!(
-            "ParameterFileWriteAction.newDeterministicWriter",
-            "blaze_actions does not expose getOutputPathsMode / expansion with an InputMetadataProvider"
-        );
-    }
-    action.new_deterministic_writer().map_err(|e| match e {
-        NewDeterministicWriterError::Interrupted => ExecException::Interrupted,
-        NewDeterministicWriterError::Exec(message) => {
-            // new UserExecException(e, FailureDetail(message, Spawn.COMMAND_LINE_EXPANSION_FAILURE))
-            UserExecException::with_cause(
-                &message,
-                failure_detail(
+fn parameter_file_writer<'a>(
+    action: &'a ParameterFileWriteAction,
+    ctx: &dyn ActionExecutionContext,
+) -> Result<Box<dyn DeterministicWriter + 'a>, ExecException> {
+    let input_metadata_provider = super::KeyMetadataAdapter(ctx.get_input_metadata_provider());
+    action
+        .new_deterministic_writer_with_input_metadata_provider(&input_metadata_provider)
+        .map_err(|e| match e {
+            NewDeterministicWriterError::Interrupted => ExecException::Interrupted,
+            NewDeterministicWriterError::Exec(message) => {
+                // new UserExecException(e, FailureDetail(message, Spawn.COMMAND_LINE_EXPANSION_FAILURE))
+                UserExecException::with_cause(
                     &message,
-                    Category::Spawn(failure_details::Spawn {
-                        code: failure_details::spawn::Code::CommandLineExpansionFailure as i32,
-                        ..Default::default()
-                    }),
-                ),
-            )
-            .into()
-        }
-    })
+                    failure_detail(
+                        &message,
+                        Category::Spawn(failure_details::Spawn {
+                            code: failure_details::spawn::Code::CommandLineExpansionFailure as i32,
+                            ..Default::default()
+                        }),
+                    ),
+                )
+                .into()
+            }
+        })
 }
 
 impl ExecutableAction for SourceManifestAction {

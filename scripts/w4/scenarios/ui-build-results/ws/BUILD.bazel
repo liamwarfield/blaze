@@ -1,0 +1,69 @@
+load(":defs.bzl", "analysis_error", "analysis_error_test", "failing", "files", "script_test")
+
+exports_files(["source.txt"])
+
+files(name = "none")
+
+files(
+    name = "one",
+    outs = ["one.txt"],
+)
+
+files(
+    name = "several",
+    outs = [
+        "several_b.txt",
+        "several_a.txt",
+        "dir/several_c.txt",
+    ],
+)
+
+files(
+    name = "groups",
+    outs = ["groups.txt"],
+    extra = ["groups_extra.txt"],
+)
+
+alias(
+    name = "one_alias",
+    actual = ":one",
+)
+
+genrule(
+    name = "gen",
+    outs = [
+        "gen_a.txt",
+        "gen_b.txt",
+    ],
+    cmd = "echo a > $(location gen_a.txt); echo b > $(location gen_b.txt)",
+)
+
+failing(name = "fails")
+
+failing(name = "fails2")
+
+analysis_error(name = "bad_analysis")
+
+script_test(
+    name = "pass_test",
+    size = "small",
+    exit_code = 0,
+)
+
+script_test(
+    name = "fail_test",
+    size = "small",
+    exit_code = 1,
+)
+
+script_test(
+    name = "unbuildable_test",
+    size = "small",
+    data = [":fails"],
+    exit_code = 0,
+)
+
+analysis_error_test(
+    name = "bad_analysis_test",
+    size = "small",
+)

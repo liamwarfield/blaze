@@ -18,7 +18,6 @@ use blaze_actions::analysis::starlark::starlark_file::artifact_from_value;
 use blaze_collect::{NestedSet, NestedSetBuilder};
 use blaze_packages::attribute::AttributeMap;
 use blaze_packages::build::package_factory::DebugPrintHandler;
-use blaze_packages::bzl_context::BazelModuleContext;
 use blaze_packages::rule_class::rule_class::RuleClass;
 use blaze_packages::rule_class::{AdvertisedProviderSet, ProviderKey};
 use blaze_packages::starlark_defs::builtin_providers::{
@@ -157,18 +156,14 @@ fn analysis_thread_context(rule_context: &RuleContext) -> ThreadContext {
     let semantics = env.get_starlark_semantics().clone();
     let handler: Arc<dyn blaze_events::EventHandler> = env.get_event_handler().clone();
     let events = Arc::new(DebugPrintHandler::new(handler));
-    let mut thread = ThreadContext::new(Phase::Analysis, semantics, events).with_main_repo_mapping(
+    // Java registers no .bzl module on the thread: `Label()` reads the module of the innermost
+    // Starlark function from the function itself.
+    // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:174 BazelModuleContext.ofInnermostBzlOrFail
+    ThreadContext::new(Phase::Analysis, semantics, events).with_main_repo_mapping(
         env.get_main_repo_mapping()
             .expect("MissingDepException: main repository mapping")
             .clone(),
-    );
-    // `Label()` called from functions of loaded modules resolves against their packages.
-    // PORT: Java finds the module of the innermost Starlark function from the function itself;
-    // every registered .bzl is made available, as for computed defaults.
-    for (file, package_context) in BazelModuleContext::all_package_contexts() {
-        thread.file_package_contexts.insert(file, package_context);
-    }
-    thread
+    )
 }
 
 /// Runs the implementation in a fresh module and freezes it.

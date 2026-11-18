@@ -35,7 +35,11 @@ use blaze_cmdline::{
     Label, PackageIdentifier, RepositoryMapping, TargetParsingException, TargetPatternsCode,
 };
 use blaze_events::{Event, EventHandler, ExtendedEventHandler};
+use blaze_optdefs::command::common_command_options::CommonCommandOptions;
 use blaze_optdefs::command::loading_options::LoadingOptions;
+use blaze_optdefs::command::package_options::PackageOptions;
+use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
+use blaze_optdefs::misc::local_execution_options::LocalExecutionOptions;
 use blaze_optdefs::misc::repository_options::RepositoryOptions;
 use blaze_options::{Options, OptionsParser};
 use blaze_packages::package::Package;
@@ -47,7 +51,8 @@ use blaze_sky_loading::package_manager::{
 };
 use blaze_sky_loading::pkgcache::PathPackageLocator;
 use blaze_sky_loading::skyframe_executor::{
-    LoadingFunctionsConfig, inject_loading_precomputed, register_loading_functions,
+    LoadingFunctionsConfig, inject_loading_precomputed_with_package_options,
+    register_loading_functions,
 };
 use blaze_skyframe::{
     EvaluationContext, EvaluationResult, Evaluator, EvaluatorBuilder, Interrupted, Key, SkyKey,
@@ -57,12 +62,18 @@ use blaze_starlark::StarlarkSemantics;
 use blaze_vfs::{DigestHashFunction, Path, PathFragment};
 use indexmap::IndexMap;
 
+use crate::action_conflict_exception::{ActionConflictException, ActionConflicts};
+use crate::action_lookup_conflict_finding_function::{
+    self, ActionConflictsCell, TopLevelActionLookupConflictFindingKey,
+};
+use crate::cycles_reporter::{CyclesReporter, SingleCycleReporter, TargetCycleReporter};
+use crate::pattern_expanding_error::PatternExpandingError;
 use crate::target_pattern_phase::{
     TargetPatternPhaseKey, TargetPatternPhaseValue, TestFilter,
     register_target_pattern_phase_functions,
 };
 use blaze_repo_rules::external_repos::BzlmodExternalRepos;
-use blaze_repo_rules::setup::FetchSetup;
+use blaze_repo_rules::setup::{CommandInputs, FetchSetup};
 
 /// `SkyframeExecutor.DEFAULT_THREAD_COUNT`.
 pub const DEFAULT_THREAD_COUNT: usize = 200;
@@ -143,6 +154,14 @@ pub struct SkyframeExecutor {
     output_base: PathBuf,
     lockfile_mode: blaze_bzlmod_model::LockfileMode,
     execution: Option<crate::execution_phase::ExecutionState>,
+    /// `cyclesReporter` (`createCyclesReporter()`).
+    cycles_reporter: CyclesReporter,
+    /// `ArtifactConflictFinder.ACTION_CONFLICTS`: the conflicts the conflict-finding functions
+    /// read (see `ActionConflictsCell`).
+    action_conflicts: ActionConflictsCell,
+    /// `topLevelArtifactContextForConflictPruning` of the request being analyzed: the requested
+    /// output groups (see `skyframe_build_view::configure_targets`).
+    top_level_artifact_context_for_conflict_pruning: parking_lot::Mutex<Option<Vec<String>>>,
 }
 
 fn to_std_path(p: &Path) -> PathBuf {
@@ -161,6 +180,22 @@ impl SkyframeExecutor {
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:760 SkyframeExecutor.skyFunctions
     pub fn create(
         inputs: SkyframeExecutorInputs,
+    ) -> Result<SkyframeExecutor, SkyframeExecutorCreationError> {
+        Self::create_with_output_user_root(inputs, None)
+    }
+
+    /// [`SkyframeExecutor::create`] with `ServerDirectories.getOutputUserRoot()`
+    /// (`--output_user_root`), under which the default repository cache lives.
+    ///
+    /// PORT: a separate entry point because `SkyframeExecutorInputs` is built field by field by
+    /// its callers. `None` is `CommandInputs::output_user_root == None` of
+    /// `blaze_repo_rules::setup`: the default cache location is derived only for the client's
+    /// default output base, and the setup fails for any other output base without
+    /// `--repository_cache`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:760 SkyframeExecutor.skyFunctions
+    pub fn create_with_output_user_root(
+        inputs: SkyframeExecutorInputs,
+        output_user_root: Option<&Path>,
     ) -> Result<SkyframeExecutor, SkyframeExecutorCreationError> {
         let options = &inputs.options;
         // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1722 SkyframeExecutor.sync
@@ -183,7 +218,13 @@ impl SkyframeExecutor {
         let working_directory_std = to_std_path(&inputs.working_directory);
         let output_base_std = to_std_path(&inputs.output_base);
         let install_base_std = to_std_path(&inputs.install_base);
-        let repository_functions = blaze_repo_rules::setup::prepare_repository_functions_in(
+        // Java: BazelRepositoryModule.beforeCommand reads these from the command environment.
+        let output_user_root_std = output_user_root.map(to_std_path);
+        let common_command_options = options.get_options::<CommonCommandOptions>();
+        let auth_and_tls_options = options.get_options::<AuthAndTLSOptions>();
+        // Null for a command without these options (ProcessWrapper.fromCommandEnvironment).
+        let local_execution_options = options.get_options::<LocalExecutionOptions>();
+        let repository_functions = blaze_repo_rules::setup::prepare_repository_functions_with(
             &FetchSetup {
                 workspace: &workspace_std,
                 working_directory: &working_directory_std,
@@ -196,6 +237,12 @@ impl SkyframeExecutor {
                 nonstrict_repo_env: inputs.nonstrict_repo_env.clone(),
                 precomputed: inputs.repo_precomputed.clone(),
                 reporter: inputs.reporter.clone(),
+            },
+            &CommandInputs {
+                output_user_root: output_user_root_std.as_deref(),
+                common_command_options: common_command_options.as_ref(),
+                auth_and_tls_options: auth_and_tls_options.as_ref(),
+                local_execution_options: local_execution_options.as_ref(),
             },
             inputs.output_base.get_file_system().clone(),
         )
@@ -225,6 +272,14 @@ impl SkyframeExecutor {
         );
         let repo_contents_cache_path = repository_functions.repo_contents_cache_path.clone();
         loading_config.repo_contents_cache_path = repo_contents_cache_path.clone();
+        // Java: syncPackageLoading(packageOptions, ...): the package path, the deleted packages
+        // and --show_loading_progress, then (below) the precomputed values of
+        // preparePackageLoading.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3035 SkyframeExecutor.syncPackageLoading
+        let package_options: PackageOptions = options
+            .get_options::<PackageOptions>()
+            .unwrap_or_else(Options::<PackageOptions>::get_defaults);
+        loading_config.sync_package_loading(&package_options);
         let pkg_locator = loading_config.pkg_locator.read().clone();
 
         let mut builder = register_bzlmod_functions(
@@ -232,11 +287,13 @@ impl SkyframeExecutor {
             Arc::new(repository_functions.bzlmod_config),
         );
         builder = register_loading_functions(builder, &loading_config);
-        builder = inject_loading_precomputed(
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1693 SkyframeExecutor.preparePackageLoading
+        builder = inject_loading_precomputed_with_package_options(
             builder,
             &loading_config,
             starlark_semantics.clone(),
             repository_functions.repository_overrides,
+            &package_options,
         );
         builder = blaze_repo_rules::registration::register_repo_rules_functions(
             builder,
@@ -247,10 +304,14 @@ impl SkyframeExecutor {
             &inputs.repo_precomputed,
         );
         builder = register_target_pattern_phase_functions(builder);
+        // Java: ProjectFilesLookupFunction (SkyFunctions.PROJECT_FILES_LOOKUP).
+        builder = crate::project::register(builder);
 
         let mut analysis_services = None;
         let mut configuration = None;
         let mut execution = None;
+        let action_conflicts: ActionConflictsCell =
+            Arc::new(parking_lot::RwLock::new(Arc::new(ActionConflicts::new())));
         if let Some(build_options) = inputs.top_level_build_options {
             // Java: done by the rule class provider's construction (subrule calls, fragment
             // Starlark values, build info files).
@@ -320,6 +381,12 @@ impl SkyframeExecutor {
             );
             builder =
                 blaze_sky_analysis::configured_target_function::register(builder, services.clone());
+            // Java: ActionLookupConflictFindingFunction and
+            // TopLevelActionLookupConflictFindingFunction.
+            builder = action_lookup_conflict_finding_function::register(
+                builder,
+                action_conflicts.clone(),
+            );
             // Java: WorkspaceStatusFunction (SkyFunctions.BUILD_INFO).
             let status_services = services.clone();
             builder = builder
@@ -357,7 +424,16 @@ impl SkyframeExecutor {
                 deleted_packages: loading_config.deleted_packages.clone(),
             },
         ));
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3092 SkyframeExecutor.createCyclesReporter
+        // PORT: of the seven reporters only TargetCycleReporter is ported; CyclesReporter fails
+        // loudly for a cycle it does not report (see cycles_reporter.rs).
+        let cycle_reporters: Vec<Box<dyn SingleCycleReporter>> =
+            vec![Box::new(TargetCycleReporter::new(package_manager.clone()))];
+        let cycles_reporter = CyclesReporter::new(cycle_reporters);
         Ok(SkyframeExecutor {
+            cycles_reporter,
+            action_conflicts,
+            top_level_artifact_context_for_conflict_pruning: parking_lot::Mutex::new(None),
             evaluator,
             package_manager,
             pkg_locator,
@@ -507,6 +583,68 @@ impl SkyframeExecutor {
             .map(|s| &s.action_key_context)
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3105 SkyframeExecutor.getCyclesReporter
+    pub fn get_cycles_reporter(&self) -> &CyclesReporter {
+        &self.cycles_reporter
+    }
+
+    /// Sets the `TopLevelArtifactContext` (its output groups) of the request about to be
+    /// analyzed, which `SkyframeBuildView.configureTargets` prunes action conflicts with.
+    ///
+    /// PORT: Java passes `request.getTopLevelArtifactContext()` down through `BuildView.update`
+    /// (`topLevelOptions`); see `skyframe_build_view::configure_targets`.
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:216 BuildView.update
+    pub fn set_top_level_artifact_context_for_conflict_pruning(&self, output_groups: Vec<String>) {
+        *self.top_level_artifact_context_for_conflict_pruning.lock() = Some(output_groups);
+    }
+
+    /// The output groups set by
+    /// [`SkyframeExecutor::set_top_level_artifact_context_for_conflict_pruning`].
+    pub fn get_top_level_artifact_context_for_conflict_pruning(&self) -> Option<Vec<String>> {
+        self.top_level_artifact_context_for_conflict_pruning
+            .lock()
+            .clone()
+    }
+
+    /// Checks the given action lookup values for action conflicts. Values satisfying the returned
+    /// predicate are known to be transitively error-free from action conflicts or other analysis
+    /// failures.
+    ///
+    /// PORT: skipped, incremental: Java deletes the conflict-finding nodes afterwards
+    /// (`memoizingEvaluator.delete`, `resetActionConflictsStoredInSkyframe`) to free memory and
+    /// so that a later build recomputes them. A command analyzes once, so they are never read
+    /// with other conflicts.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2541 SkyframeExecutor.filterActionConflictsForConfiguredTargetsAndAspects
+    pub fn filter_action_conflicts_for_configured_targets_and_aspects(
+        &self,
+        event_handler: Arc<dyn ExtendedEventHandler>,
+        keys: &[ConfiguredTargetKey],
+        action_conflicts: &ActionConflicts,
+        top_level_artifact_context: &[String],
+    ) -> Result<TopLevelActionConflictReport, Interrupted> {
+        // ACTION_CONFLICTS.set(injectable(), actionConflicts)
+        *self.action_conflicts.write() = Arc::new(action_conflicts.clone());
+        let top_level_keys: Vec<SkyKey> =
+            action_lookup_conflict_finding_function::keys(keys, top_level_artifact_context)
+                .into_iter()
+                .map(SkyKey::new)
+                .collect();
+        // This work is CPU-bound, so use the number of available processors.
+        let result = self.evaluate(
+            &top_level_keys,
+            /* keep_going= */ true,
+            /* num_threads= */
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
+            event_handler,
+        )?;
+        Ok(TopLevelActionConflictReport {
+            result,
+            top_level_artifact_context: top_level_artifact_context.to_vec(),
+        })
+    }
+
     /// Evaluates `roots` (Java `SkyframeExecutor.evaluate(roots, keepGoing, numThreads,
     /// eventHandler)`).
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2228 SkyframeExecutor.evaluate
@@ -584,7 +722,7 @@ impl SkyframeExecutor {
     }
 
     /// Evaluates the target patterns of a build (Java `loadTargetPatternsWithFilters`).
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3020 SkyframeExecutor.loadTargetPatternsWithFilters
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3179 SkyframeExecutor.loadTargetPatternsWithFilters
     pub fn load_target_patterns_with_filters(
         &self,
         event_handler: Arc<dyn ExtendedEventHandler>,
@@ -595,6 +733,31 @@ impl SkyframeExecutor {
         keep_going: bool,
         determine_tests: bool,
     ) -> Result<TargetPatternPhaseValue, TargetPatternPhaseError> {
+        self.load_target_patterns_with_filters_detailed(
+            event_handler,
+            target_patterns,
+            relative_working_directory,
+            options,
+            thread_count,
+            keep_going,
+            determine_tests,
+        )
+        .map_err(TargetPatternPhaseError::from)
+    }
+
+    /// [`SkyframeExecutor::load_target_patterns_with_filters`] whose error keeps
+    /// `TargetParsingException.getDetailedExitCode()`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3179 SkyframeExecutor.loadTargetPatternsWithFilters
+    pub fn load_target_patterns_with_filters_detailed(
+        &self,
+        event_handler: Arc<dyn ExtendedEventHandler>,
+        target_patterns: &[String],
+        relative_working_directory: &PathFragment,
+        options: &LoadingOptions,
+        thread_count: usize,
+        keep_going: bool,
+        determine_tests: bool,
+    ) -> Result<TargetPatternPhaseValue, TargetPatternPhaseDetailedError> {
         let key = TargetPatternPhaseKey::key(
             target_patterns.to_vec(),
             relative_working_directory.clone(),
@@ -606,7 +769,13 @@ impl SkyframeExecutor {
             options.expand_test_suites,
             Some(TestFilter::for_options(options)),
         );
-        self.get_target_pattern_phase_value(event_handler, thread_count, keep_going, key)
+        self.get_target_pattern_phase_value(
+            event_handler,
+            target_patterns,
+            thread_count,
+            keep_going,
+            key,
+        )
     }
 
     /// Loads the given target patterns without applying any filters (such as removing non-test
@@ -632,29 +801,43 @@ impl SkyframeExecutor {
             false,
             None,
         );
-        self.get_target_pattern_phase_value(event_handler, thread_count, keep_going, key)
+        self.get_target_pattern_phase_value(
+            event_handler,
+            target_patterns,
+            thread_count,
+            keep_going,
+            key,
+        )
+        .map_err(TargetPatternPhaseError::from)
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3060 SkyframeExecutor.getTargetPatternPhaseValue
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3201 SkyframeExecutor.getTargetPatternPhaseValue
     fn get_target_pattern_phase_value(
         &self,
         event_handler: Arc<dyn ExtendedEventHandler>,
+        target_patterns: &[String],
         thread_count: usize,
         keep_going: bool,
         key: TargetPatternPhaseKey,
-    ) -> Result<TargetPatternPhaseValue, TargetPatternPhaseError> {
-        // PORT: LoadingPhaseStartedEvent and TargetParsingPhaseTimeEvent are not posted (event
-        // bus not ported).
+    ) -> Result<TargetPatternPhaseValue, TargetPatternPhaseDetailedError> {
+        // PORT: LoadingPhaseStartedEvent(packageProgress) and TargetParsingPhaseTimeEvent feed the
+        // UI's loading progress and the build metrics; the command reads the process-wide
+        // PACKAGE_PROGRESS and measures the phase itself (blaze_runtime).
         let sky_key = SkyKey::new(key.clone());
         let eval_result = self
             .evaluate(
                 std::slice::from_ref(&sky_key),
                 keep_going,
                 thread_count,
-                event_handler,
+                event_handler.clone(),
             )
-            .map_err(|_| TargetPatternPhaseError::Interrupted)?;
-        Self::try_throw_target_parsing_exception(&sky_key, &eval_result)?;
+            .map_err(|_| TargetPatternPhaseDetailedError::Interrupted)?;
+        self.try_throw_target_parsing_exception(
+            &event_handler,
+            target_patterns,
+            &sky_key,
+            &eval_result,
+        )?;
         Ok(eval_result
             .get(&key)
             .expect("TARGET_PATTERN_PHASE value without error")
@@ -662,38 +845,44 @@ impl SkyframeExecutor {
             .clone())
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3078 SkyframeExecutor.tryThrowTargetParsingException
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3217 SkyframeExecutor.tryThrowTargetParsingException
     fn try_throw_target_parsing_exception(
+        &self,
+        event_handler: &Arc<dyn ExtendedEventHandler>,
+        target_patterns: &[String],
         key: &SkyKey,
         eval_result: &EvaluationResult,
-    ) -> Result<(), TargetPatternPhaseError> {
+    ) -> Result<(), TargetPatternPhaseDetailedError> {
         if eval_result.has_error() {
             let error_info = eval_result
                 .get_error(key)
-                .or_else(|| eval_result.get_first_error())
-                .expect("an error");
+                .unwrap_or_else(|| panic!("NullPointerException: no error for {:?}", key));
             let exc = if !error_info.get_cycle_info().is_empty() {
-                // PORT: the cycles reporter and PatternExpandingError are not ported.
-                TargetParsingException::new(
+                let exc = TargetParsingException::new(
                     "cycles detected during target parsing",
                     TargetPatternsCode::Cycle,
-                )
-            } else {
-                // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3102 SkyframeExecutor.constructNoCycleTargetParsingException
-                let e = error_info
-                    .get_exception()
-                    .expect("NullPointerException: no exception");
-                match e.downcast_ref::<TargetParsingException>() {
-                    Some(tpe) => tpe.clone(),
-                    // PORT: traverseExceptionChain keeps the cause's DetailedExitCode; the ported
-                    // TargetParsingException carries only a TargetPatterns code.
-                    None => TargetParsingException::new(
-                        e.to_string(),
-                        TargetPatternsCode::TargetPatternParseFailure,
-                    ),
+                );
+                self.cycles_reporter
+                    .report_cycles(error_info.get_cycle_info(), key, event_handler);
+                // Fallback: we don't know which patterns failed, specifically, so we report the
+                // entire set as being in error.
+                event_handler.post(Arc::new(PatternExpandingError::failed(
+                    target_patterns.to_vec(),
+                    exc.get_message(),
+                )));
+                let detailed_exit_code = target_parsing_detailed_exit_code(&exc);
+                TargetPatternPhaseDetailedError::TargetParsing {
+                    exception: exc,
+                    detailed_exit_code,
                 }
+            } else {
+                construct_no_cycle_target_parsing_exception(
+                    event_handler.as_ref(),
+                    target_patterns,
+                    error_info,
+                )
             };
-            return Err(TargetPatternPhaseError::TargetParsing(exc));
+            return Err(exc);
         }
         Ok(())
     }
@@ -707,10 +896,17 @@ impl SkyframeExecutor {
             .expect("IllegalStateException: the command does not configure targets")
     }
 
+    /// The shared body of `createBuildConfigurationKey` and `getConfiguration`.
+    /// `wrap_any_exception`: `createBuildConfigurationKey` wraps every exception that is not an
+    /// `InvalidConfigurationException` ("so wrap it and throw"); `getConfiguration` treats one
+    /// as an unknown error.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2204 SkyframeExecutor.createBuildConfigurationKey
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2107 SkyframeExecutor.getConfiguration
     fn evaluate_configuration<K: Key + Clone>(
         &self,
         key: K,
         keep_going: bool,
+        wrap_any_exception: bool,
         event_handler: Arc<dyn ExtendedEventHandler>,
     ) -> Result<Arc<K::Value>, InvalidConfigurationException> {
         let sky_key = SkyKey::new(key.clone());
@@ -719,13 +915,13 @@ impl SkyframeExecutor {
                 std::slice::from_ref(&sky_key),
                 keep_going,
                 DEFAULT_THREAD_COUNT,
-                event_handler,
+                event_handler.clone(),
             )
             .map_err(|_| InvalidConfigurationException::new("interrupted"))?;
         if let Some(v) = result.get(&key) {
             return Ok(v);
         }
-        let (_, error) = &result.error_map()[0];
+        let (first_error_key, error) = &result.error_map()[0];
         if let Some(e) = error.exception_as::<ConfigurationError>() {
             return Err(match e {
                 ConfigurationError::InvalidConfiguration(e) => e.clone(),
@@ -735,8 +931,24 @@ impl SkyframeExecutor {
                 ),
             });
         }
-        if !error.get_cycle_info().is_empty() {
-            // PORT: Java reports the cycle with its CyclesReporter (not ported).
+        if wrap_any_exception && let Some(e) = error.get_exception() {
+            // If we get here, e is non-null but not an InvalidConfigurationException, so wrap it
+            // and throw (a toolchain or platform lookup error, a loading error of a platform's
+            // package, ...).
+            // PORT: Java gives a NoSuchThingException's own detailed exit code to the wrapper;
+            // the wrapper here always carries PLATFORM_MAPPING_EVALUATION_FAILURE (the exit
+            // code of both is 2).
+            return Err(InvalidConfigurationException::with_code(
+                e.to_string(),
+                "PLATFORM_MAPPING_EVALUATION_FAILURE",
+            ));
+        }
+        if error.get_exception().is_none() && !error.get_cycle_info().is_empty() {
+            self.cycles_reporter.report_cycles(
+                error.get_cycle_info(),
+                first_error_key,
+                &event_handler,
+            );
             return Err(InvalidConfigurationException::with_code(
                 "cannot load build configuration because of this cycle",
                 "CYCLE",
@@ -758,6 +970,7 @@ impl SkyframeExecutor {
             .evaluate_configuration(
                 BuildConfigurationKeyValueKey::create(build_options),
                 false,
+                true,
                 event_handler,
             )?
             .as_ref()
@@ -777,7 +990,7 @@ impl SkyframeExecutor {
         let build_configuration_key =
             self.create_build_configuration_key(event_handler.clone(), build_options)?;
         // Skyframe-evaluate the configurations and throw errors if any.
-        self.evaluate_configuration(build_configuration_key, keep_going, event_handler)
+        self.evaluate_configuration(build_configuration_key, keep_going, false, event_handler)
     }
 
     /// Returns the configuration of an already mapped key (Java `getConfiguration(eventHandler,
@@ -794,7 +1007,7 @@ impl SkyframeExecutor {
                     .unwrap_or_else(|_| panic!("BUILD_CONFIGURATION value")),
             );
         }
-        self.evaluate_configuration(key.clone(), true, event_handler)
+        self.evaluate_configuration(key.clone(), true, false, event_handler)
             .ok()
     }
 
@@ -860,8 +1073,11 @@ impl SkyframeExecutor {
         configured_target_keys: &[ConfiguredTargetKey],
         keep_going: bool,
     ) -> Result<ConfigureTargetsResult, Interrupted> {
-        // PORT: ConfigurationPhaseStartedEvent is not posted (event bus); top-level aspects
-        // (--aspects) are not ported (BuildView.createTopLevelAspectKeys).
+        // PORT: ConfigurationPhaseStartedEvent(configuredTargetProgress) hands the UI the
+        // progress receiver, which is process-wide here
+        // (blaze_sky_analysis::analysis_progress_receiver::ANALYSIS_PROGRESS). Top-level aspect
+        // keys do not exist: BuildView.createTopLevelAspectKeys fails loudly for a request that
+        // has aspects.
         let keys: Vec<SkyKey> = configured_target_keys
             .iter()
             .cloned()
@@ -894,7 +1110,8 @@ impl SkyframeExecutor {
                 &*graph,
                 configured_target.get_configuration_key().as_ref(),
             );
-            // PORT: TargetConfiguredEvent is not posted (event bus).
+            // PORT: TargetConfiguredEvent is built by the command for the build event stream
+            // from `targets_with_configuration` (blaze_runtime commands/bep.rs).
             targets_with_configuration.push(TargetAndConfiguration::new(target, configuration));
         }
 
@@ -930,6 +1147,47 @@ pub fn get_configured_target_value(
     })
 }
 
+/// Encapsulation of the result of `filterActionConflictsForConfiguredTargetsAndAspects()`
+/// allowing callers to determine which top-level keys did not have analysis errors and retrieve
+/// the ActionConflictException for those that keys that specifically have conflicts.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2570 SkyframeExecutor.TopLevelActionConflictReport
+pub struct TopLevelActionConflictReport {
+    result: EvaluationResult,
+    /// `topLevelArtifactContext.outputGroups()`.
+    top_level_artifact_context: Vec<String>,
+}
+
+impl TopLevelActionConflictReport {
+    fn key(&self, k: &ConfiguredTargetKey) -> TopLevelActionLookupConflictFindingKey {
+        TopLevelActionLookupConflictFindingKey::create(
+            blaze_actions::ActionLookupKeyRef::new(k.clone()),
+            &self.top_level_artifact_context,
+        )
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2582 SkyframeExecutor.TopLevelActionConflictReport.isErrorFree
+    pub fn is_error_free(&self, k: &ConfiguredTargetKey) -> bool {
+        self.result.get(&self.key(k)).is_some()
+    }
+
+    /// Get the ActionConflictException produced for the given ActionLookupKey. Will throw if the
+    /// given key is error-free.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2592 SkyframeExecutor.TopLevelActionConflictReport.getConflictException
+    pub fn get_conflict_exception(
+        &self,
+        k: &ConfiguredTargetKey,
+    ) -> Option<ActionConflictException> {
+        let error_info = self
+            .result
+            .get_error(&SkyKey::new(self.key(k)))
+            .unwrap_or_else(|| panic!("NullPointerException: no error for {:?}", k));
+        error_info
+            .get_exception()
+            .and_then(|e| e.downcast_ref::<ActionConflictException>())
+            .cloned()
+    }
+}
+
 /// What target pattern evaluation throws.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum TargetPatternPhaseError {
@@ -937,6 +1195,134 @@ pub enum TargetPatternPhaseError {
     TargetParsing(TargetParsingException),
     #[error("interrupted")]
     Interrupted,
+}
+
+/// What target pattern evaluation throws, with `TargetParsingException.getDetailedExitCode()`.
+///
+/// PORT: the ported `TargetParsingException` (blaze_cmdline) holds a `TargetPatterns` code only;
+/// Java's holds the `DetailedExitCode` of its cause when it has one (a `PackageLoading` code for
+/// a missing package, for example). The exit code travels next to the exception here.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum TargetPatternPhaseDetailedError {
+    #[error("{}", .exception.get_message())]
+    TargetParsing {
+        exception: TargetParsingException,
+        /// `exception.getDetailedExitCode()`.
+        detailed_exit_code: blaze_query_engine::DetailedExitCode,
+    },
+    #[error("interrupted")]
+    Interrupted,
+}
+
+impl From<TargetPatternPhaseDetailedError> for TargetPatternPhaseError {
+    fn from(e: TargetPatternPhaseDetailedError) -> Self {
+        match e {
+            TargetPatternPhaseDetailedError::TargetParsing { exception, .. } => {
+                TargetPatternPhaseError::TargetParsing(exception)
+            }
+            TargetPatternPhaseDetailedError::Interrupted => TargetPatternPhaseError::Interrupted,
+        }
+    }
+}
+
+/// `TargetParsingException.getDetailedExitCode()` of an exception created from a
+/// `TargetPatterns.Code` (`DetailedExitCode.of(FailureDetail{message, TargetPatterns{code}})`).
+// Java: com/google/devtools/build/lib/cmdline/TargetParsingException.java:76 TargetParsingException.getDetailedExitCode
+pub fn target_parsing_detailed_exit_code(
+    e: &TargetParsingException,
+) -> blaze_query_engine::DetailedExitCode {
+    blaze_query_engine::DetailedExitCode::of(blaze_protos::failure_details::FailureDetail {
+        message: e.get_message().to_owned(),
+        category: Some(
+            blaze_protos::failure_details::failure_detail::Category::TargetPatterns(
+                blaze_protos::failure_details::TargetPatterns {
+                    code: e.get_code() as i32,
+                },
+            ),
+        ),
+    })
+}
+
+/// `SkyframeExecutor.EXCEPTION_TRAVERSAL_LIMIT`.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:389 SkyframeExecutor.EXCEPTION_TRAVERSAL_LIMIT
+const EXCEPTION_TRAVERSAL_LIMIT: usize = 10;
+
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3240 SkyframeExecutor.constructNoCycleTargetParsingException
+fn construct_no_cycle_target_parsing_exception(
+    event_handler: &dyn ExtendedEventHandler,
+    target_patterns: &[String],
+    error_info: &blaze_skyframe::ErrorInfo,
+) -> TargetPatternPhaseDetailedError {
+    let e = error_info
+        .get_exception()
+        .unwrap_or_else(|| panic!("NullPointerException"));
+    let detailed_exit_code = traverse_exception_chain(e);
+    let target_parsing_exception = e.downcast_ref::<TargetParsingException>();
+    if target_parsing_exception.is_none() {
+        // If it's a TargetParsingException, then the TargetPatternPhaseFunction has already
+        // reported the error, so we don't need to report it again.
+        event_handler.post(Arc::new(PatternExpandingError::failed(
+            target_patterns.to_vec(),
+            e.to_string(),
+        )));
+    }
+
+    // Following SkyframeTargetPatternEvaluator, we create with a new TargetParsingException
+    // either with an existing DetailedExitCode, or with a FailureDetail Code.
+    let exception = match target_parsing_exception {
+        Some(tpe) => tpe.clone(),
+        None => TargetParsingException::new(
+            e.to_string(),
+            TargetPatternsCode::TargetPatternParseFailure,
+        ),
+    };
+    let detailed_exit_code =
+        detailed_exit_code.unwrap_or_else(|| target_parsing_detailed_exit_code(&exception));
+    TargetPatternPhaseDetailedError::TargetParsing {
+        exception,
+        detailed_exit_code,
+    }
+}
+
+/// `DetailedException.getDetailedExitCode(exception)` of the first exception of the cause chain
+/// that has one.
+///
+/// PORT: `DetailedException` is a Java interface; the exception classes recognised are those of
+/// `skyframe_error_processor::detailed_exception_failure_detail` and `TargetParsingException`.
+/// The ported `TargetParsingException` does not hold its cause's exit code (see
+/// `TargetPatternPhaseDetailedError`): its own `TargetPatterns` code is returned.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3260 SkyframeExecutor.traverseExceptionChain
+fn traverse_exception_chain(
+    top_level_exception: &blaze_skyframe::SkyError,
+) -> Option<blaze_query_engine::DetailedExitCode> {
+    if let Some(tpe) = top_level_exception.downcast_ref::<TargetParsingException>() {
+        return Some(target_parsing_detailed_exit_code(tpe));
+    }
+    if let Some(failure_detail) =
+        crate::skyframe_error_processor::detailed_exception_failure_detail(top_level_exception)
+    {
+        return Some(blaze_query_engine::DetailedExitCode::of(failure_detail));
+    }
+    let mut traverse_exception: &(dyn std::error::Error + 'static) = &**top_level_exception;
+    let mut traverse_level = 1;
+    while traverse_level < EXCEPTION_TRAVERSAL_LIMIT {
+        traverse_level += 1;
+        let Some(cause) = traverse_exception.source() else {
+            break;
+        };
+        traverse_exception = cause;
+        if let Some(tpe) = traverse_exception.downcast_ref::<TargetParsingException>() {
+            return Some(target_parsing_detailed_exit_code(tpe));
+        }
+        if let Some(failure_detail) =
+            crate::skyframe_error_processor::detailed_exception_failure_detail_of(
+                traverse_exception,
+            )
+        {
+            return Some(blaze_query_engine::DetailedExitCode::of(failure_detail));
+        }
+    }
+    None
 }
 
 /// A target and the configuration of its configured target.
@@ -978,7 +1364,7 @@ pub struct ConfigureTargetsResult {
     pub configured_targets: Vec<ConfiguredTarget>,
     pub targets_with_configuration: Vec<TargetAndConfiguration>,
     // PORT: package roots (collectPackageRoots) only matter to execution (the symlink forest);
-    // the build-driver lead collects them.
+    // see `SkyframeExecutor::get_package_roots`.
 }
 
 struct ErrorSensing<'a> {

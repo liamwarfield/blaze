@@ -4,11 +4,16 @@ use std::fmt;
 use std::sync::Arc;
 
 use blaze_actions::Artifact;
-use blaze_exec::actions::{FileArtifactValue, TreeArtifactValue};
+use blaze_collect::{NestedSet, NestedSetBuilder};
+use blaze_exec::actions::{ActionExecutionException, FileArtifactValue, TreeArtifactValue};
 use blaze_protos::failure_details::{self, FailureDetail, execution, failure_detail};
-use blaze_skyframe::{ComputeError, Environment, SkyFunctionException, SkyKey, Transience};
+use blaze_skyframe::{
+    ComputeError, Environment, SkyError, SkyFunctionException, SkyKey, SkyframeLookupResult,
+    Transience,
+};
 use blaze_vfs::Symlinks;
 
+use crate::action_execution_value::ActionExecutionValue;
 use crate::keys::{ActionExecutionKey, ArtifactKey, ArtifactNestedSetKey, ArtifactNestedSetValue};
 
 /// The value of an [`ArtifactKey`]: a `FileArtifactValue` (source files), `MissingArtifactValue`
@@ -118,7 +123,7 @@ pub fn construct_error_message(artifact: &Artifact, error: &str) -> String {
             }
         }
     }
-    // PORT: BugReport.sendBugReport is not ported (logging only).
+    // PORT: skipped, tracing (BugReport.sendBugReport writes the Java log).
     format!(
         "{} '{}', owner: '{}'",
         error,
@@ -185,7 +190,7 @@ fn create_source_value(
         ))));
     };
     if stat.is_directory() {
-        // PORT: SourceDirectoryEvent is posted for BEP/metrics only; not ported.
+        // PORT: skipped, Google-internal (SourceDirectoryEvent has no subscriber in Bazel).
     }
     // TrackSourceDirectoriesFlag.trackSourceDirectories() is false by default: directories get a
     // plain directory value.
@@ -200,24 +205,255 @@ fn create_source_value(
     }
 }
 
-/// `ArtifactNestedSetFunction.compute`: requests the direct leaves and non-leaf children of the
-/// nested set; their values are read by the consuming action from their own keys.
-// Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetFunction.java:94 ArtifactNestedSetFunction.compute
+/// One `Pair<SkyKey, Exception>` of [`ArtifactNestedSetEvalException::get_nested_exceptions`]: a
+/// dependency key and the `SourceArtifactException` or `ActionExecutionException` it failed with.
+///
+/// Equality is Java's `Pair.equals` over a key and an exception: exceptions compare by identity,
+/// here the identity of the error object Skyframe holds for the dependency.
+#[derive(Clone, Debug)]
+pub struct SkyKeyAndException {
+    key: SkyKey,
+    exception: SkyError,
+}
+
+impl SkyKeyAndException {
+    /// `getFirst()`.
+    pub fn get_first(&self) -> &SkyKey {
+        &self.key
+    }
+
+    /// `getSecond()` when it is a `SourceArtifactException`.
+    pub fn get_source_artifact_exception(&self) -> Option<&SourceArtifactException> {
+        self.exception.downcast_ref::<SourceArtifactException>()
+    }
+
+    /// `getSecond()` when it is an `ActionExecutionException`.
+    pub fn get_action_execution_exception(&self) -> Option<&ActionExecutionException> {
+        self.exception.downcast_ref::<ActionExecutionException>()
+    }
+
+    /// `Throwable.toString()` of `getSecond()`: the class name and the message.
+    ///
+    /// PORT: an `ActionExecutionException` that was already reported is Java's subclass
+    /// `AlreadyReportedActionExecutionException`; the port keeps one type, so the base class name
+    /// is printed.
+    fn exception_to_string(&self) -> String {
+        if let Some(e) = self.get_source_artifact_exception() {
+            return format!(
+                "com.google.devtools.build.lib.skyframe.ArtifactFunction$SourceArtifactException: {e}"
+            );
+        }
+        if let Some(e) = self.get_action_execution_exception() {
+            return format!(
+                "com.google.devtools.build.lib.actions.ActionExecutionException: {}",
+                e.get_message()
+            );
+        }
+        panic!(
+            "IllegalStateException: Unexpected exception type: {}, key: {:?}",
+            self.exception, self.key
+        )
+    }
+
+    fn exception_identity(&self) -> *const () {
+        Arc::as_ptr(&self.exception) as *const ()
+    }
+}
+
+impl PartialEq for SkyKeyAndException {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.exception_identity() == other.exception_identity()
+    }
+}
+
+impl Eq for SkyKeyAndException {}
+
+impl std::hash::Hash for SkyKeyAndException {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+        self.exception_identity().hash(state);
+    }
+}
+
+/// Bundles the exceptions from the evaluation of the children keys together.
+// Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetFunction.java:145 ArtifactNestedSetFunction.ArtifactNestedSetEvalException
+#[derive(Clone, Debug)]
+pub struct ArtifactNestedSetEvalException {
+    message: String,
+    nested_exceptions: NestedSet<SkyKeyAndException>,
+    catastrophic: bool,
+}
+
+impl ArtifactNestedSetEvalException {
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetFunction.java:150 ArtifactNestedSetEvalException.<init>
+    fn new(
+        message: String,
+        nested_exceptions: NestedSet<SkyKeyAndException>,
+        catastrophic: bool,
+    ) -> ArtifactNestedSetEvalException {
+        ArtifactNestedSetEvalException {
+            message,
+            nested_exceptions,
+            catastrophic,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetFunction.java:157 ArtifactNestedSetEvalException.getNestedExceptions
+    pub fn get_nested_exceptions(&self) -> &NestedSet<SkyKeyAndException> {
+        &self.nested_exceptions
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetFunction.java:161 ArtifactNestedSetEvalException.isCatastrophic
+    pub fn is_catastrophic(&self) -> bool {
+        self.catastrophic
+    }
+}
+
+impl fmt::Display for ArtifactNestedSetEvalException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ArtifactNestedSetEvalException {}
+
+/// What `getOrThrow(key, SourceArtifactException.class, ActionExecutionException.class,
+/// ArtifactNestedSetEvalException.class)` throws for the key of an action input.
+pub(crate) enum InputDepException {
+    Source(SourceArtifactException, SkyError),
+    Action(ActionExecutionException, SkyError),
+    NestedSetEval(ArtifactNestedSetEvalException),
+}
+
+fn catch_input_dep_exception(e: &SkyError) -> Option<InputDepException> {
+    if let Some(x) = e.downcast_ref::<SourceArtifactException>() {
+        return Some(InputDepException::Source(x.clone(), e.clone()));
+    }
+    if let Some(x) = e.downcast_ref::<ActionExecutionException>() {
+        return Some(InputDepException::Action(x.clone(), e.clone()));
+    }
+    e.downcast_ref::<ArtifactNestedSetEvalException>()
+        .map(|x| InputDepException::NestedSetEval(x.clone()))
+}
+
+/// The value of the key of an action input.
+pub(crate) enum InputDepValue {
+    /// The value of an `ARTIFACT` key.
+    Artifact(Arc<ArtifactValue>),
+    /// The value of an `ACTION_EXECUTION` key (callers that need it read it from their own
+    /// lookup result; here only its presence matters).
+    #[allow(dead_code)]
+    Action(Arc<ActionExecutionValue>),
+    /// The value of an `ARTIFACT_NESTED_SET` key.
+    NestedSet(ArtifactNestedSetValue),
+}
+
+/// `result.getOrThrow(key, SourceArtifactException.class, ActionExecutionException.class,
+/// ArtifactNestedSetEvalException.class)` for the key of an action input (`Artifact.key(input)`
+/// or an `ArtifactNestedSetKey`).
+pub(crate) fn get_input_dep_or_throw(
+    result: &SkyframeLookupResult,
+    key: &SkyKey,
+) -> Result<Option<InputDepValue>, InputDepException> {
+    if let Some(k) = key.downcast::<ArtifactKey>() {
+        return result
+            .get_or_throw_with(k, catch_input_dep_exception)
+            .map(|v| v.map(InputDepValue::Artifact));
+    }
+    if let Some(k) = key.downcast::<ActionExecutionKey>() {
+        return result
+            .get_or_throw_with(k, catch_input_dep_exception)
+            .map(|v| v.map(InputDepValue::Action));
+    }
+    let k = key
+        .downcast::<ArtifactNestedSetKey>()
+        .unwrap_or_else(|| panic!("ClassCastException: {key:?} is not the key of an action input"));
+    result
+        .get_or_throw_with(k, catch_input_dep_exception)
+        .map(|v| v.map(|v| InputDepValue::NestedSet(*v)))
+}
+
+/// `ArtifactNestedSetFunction.compute`: evaluates the direct elements of the nested set as
+/// artifacts and the transitive ones as `ArtifactNestedSetKey`s.
+// Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetFunction.java:54 ArtifactNestedSetFunction.compute
 pub fn compute_artifact_nested_set(
     key: &ArtifactNestedSetKey,
     env: &mut Environment<'_>,
 ) -> Result<Option<ArtifactNestedSetValue>, ComputeError> {
+    // consumedArtifactsTrackerSupplier.get() is null unless a remote output checker initializes
+    // it (SkyframeExecutor.initializeConsumedArtifactsTracker); none is ported.
     let dep_keys: Vec<SkyKey> = key.get_direct_dep_keys();
-    let result = env.get_values_and_exceptions(&dep_keys)?;
-    // PORT: Java's ArtifactNestedSetFunction propagates the first ActionExecutionException /
-    // SourceArtifactException of a child (getOrThrow) and returns null when values are missing.
-    // Here a failed child makes the value missing, and its error reaches the parent through the
-    // evaluator's error propagation (in_error_bubbling() is always false).
-    for k in &dep_keys {
-        let _ = result.get(k);
+    let deps_eval_result = env.get_values_and_exceptions(&dep_keys)?;
+
+    let mut transitive_exceptions_builder: NestedSetBuilder<SkyKeyAndException> =
+        NestedSetBuilder::stable_order();
+    let mut catastrophic = false;
+    let mut result = ArtifactNestedSetValue::ALL_PRESENT;
+
+    // Throw a SkyFunctionException when a dep evaluation results in an exception.
+    for key in &dep_keys {
+        // Trigger the exception, if any.
+        match get_input_dep_or_throw(&deps_eval_result, key) {
+            Ok(None) => continue,
+            Ok(Some(InputDepValue::NestedSet(value))) => {
+                if value == ArtifactNestedSetValue::SOME_MISSING {
+                    result = ArtifactNestedSetValue::SOME_MISSING;
+                }
+                continue;
+            }
+            Ok(Some(InputDepValue::Artifact(value))) => {
+                if matches!(*value, ArtifactValue::Missing(_)) {
+                    result = ArtifactNestedSetValue::SOME_MISSING;
+                }
+            }
+            Ok(Some(InputDepValue::Action(_))) => {}
+            Err(InputDepException::Source(_, e)) => {
+                // SourceArtifactException is never catastrophic.
+                transitive_exceptions_builder.add(SkyKeyAndException {
+                    key: key.clone(),
+                    exception: e,
+                });
+            }
+            Err(InputDepException::Action(action_exception, e)) => {
+                transitive_exceptions_builder.add(SkyKeyAndException {
+                    key: key.clone(),
+                    exception: e,
+                });
+                catastrophic |= action_exception.is_catastrophe();
+            }
+            Err(InputDepException::NestedSetEval(e)) => {
+                catastrophic |= e.is_catastrophic();
+                transitive_exceptions_builder.add_transitive(e.get_nested_exceptions());
+            }
+        }
     }
+
+    if !transitive_exceptions_builder.is_empty() {
+        let transitive_exceptions = transitive_exceptions_builder.build();
+        // The NestedSet of exceptions is usually small, hence flattening won't be too costly.
+        let first_sky_key_and_exception = transitive_exceptions.to_list()[0].clone();
+        // Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetFunction.java:131 ArtifactNestedSetFunctionException
+        return Err(SkyFunctionException {
+            catastrophic,
+            ..SkyFunctionException::new(
+                ArtifactNestedSetEvalException::new(
+                    format!(
+                        "Error evaluating artifact nested set. First exception: {}, SkyKey: {:?}",
+                        first_sky_key_and_exception.exception_to_string(),
+                        first_sky_key_and_exception.get_first()
+                    ),
+                    transitive_exceptions,
+                    catastrophic,
+                ),
+                Transience::Persistent,
+            )
+        }
+        .into());
+    }
+
+    // This should only happen when all error handling is done.
     if env.values_missing() {
         return Ok(None);
     }
-    Ok(Some(ArtifactNestedSetValue))
+    Ok(Some(result))
 }

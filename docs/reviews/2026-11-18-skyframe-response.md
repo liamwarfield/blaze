@@ -377,3 +377,88 @@ Call sites that need a change, with the Java they should follow:
 
 Tests of those crates were not run against this engine in the working tree (two of their
 dependencies do not compile there); see "Verification" for the run on HEAD's versions.
+
+---
+
+# Round 2 response (2026-11-18)
+
+Answers the round 2 section of `2026-11-18-skyframe.md` (verdict PASS; NEW-1 and one S4 open).
+
+Tree: HEAD `03409d9a843bac8e19e19af31c65e3e3b2b08392` plus uncommitted changes of mine in
+`crates/blaze_skyframe/src/evaluator.rs`, `crates/blaze_skyframe/src/tests/engine_test.rs` and
+this file. Nothing is committed.
+
+| finding | state |
+|---|---|
+| NEW-1 (S2) the walk goes below the failed node through a cycle and dead-ends | fixed |
+| S4 interrupt after all work finished discards the result | disputed: Java does the same |
+
+## NEW-1 fixed
+
+- How: the reviewer's second direction. When a node commits although deps it asked for were not
+  done (a function that threw with a dep missing), those deps are recorded
+  (`Run::undone_deps_of_committed`, in `Run::committed`). Before the walk, `Run::never_evaluated`
+  builds the set of nodes Java never evaluated: unfinished, reachable from such a dep through the
+  deps unfinished nodes declared, not a top-level key, and requested only by nodes of the set (a
+  greatest fixed point: a node something else asked for is taken out, then what that exposes).
+  `bubble_error_up` drops those nodes from the reverse deps of every node on the walk.
+- Why not the first direction (a top-level key with only cycle-closing registrations ends the
+  walk): the round-1 S2-1 scenario is exactly that shape. Root `A`'s only registration is the
+  cycle-closing one of `B`, and Java follows it (`err -> B -> A -> B`, null, cycle detector). What
+  separates the two is not the registration but whether the requester exists in Java: `B` returned
+  null on the path; NEW-1's `X` is below a function that threw before `X` could be evaluated.
+- Where: `evaluator.rs` `Run::never_evaluated`, `Run::committed`, `Run::bubble_error_up`.
+- Tests, in `tests/engine_test.rs`:
+  - `no_keep_going_walk_does_not_go_below_the_thrower_through_a_cycle`: the reviewer's three
+    nodes, parallelism 1 and 4, both reverse-dep orders: `{K: Y's error}`, no cycle, `K` run
+    twice, `X` once, only `Y` left in the graph.
+  - `no_keep_going_walk_reaches_a_top_level_key_below_the_thrower`: `X` is also a top-level key.
+    Java evaluates it for that reason and it registers with `K`: both keys report Y's error.
+  - `no_keep_going_walk_skips_everything_only_the_throwers_missing_dep_requested`: `X -> Z`, and
+    `Z` asks for two nodes above the thrower.
+  - With the one filtering line taken out, the first and third fail with the panic of the
+    finding ("Current key X has to be a top-level key"). Checked, then restored.
+- The earlier rule for the same state (a node that commits leaves out cycle-closing requesters,
+  round 1 point 3(a)) is kept; the new set covers it and more.
+
+## S4 disputed
+
+The review says Java returns the result and leaves the interrupt bit set. It does so only for an
+interrupt that arrives after the visitor has finished waiting. `waitForCompletion` is
+`AbstractQueueVisitor.awaitTermination`, which ends with
+(`lib/concurrent/AbstractQueueVisitor.java:576-590`):
+
+```java
+if (isInterrupted()) { Thread.currentThread().interrupt(); }
+Throwables.propagateIfPossible(unhandled);
+if (Thread.interrupted()) { throw new InterruptedException(); }
+```
+
+So an interrupt that is set by the time all work has finished throws, whether or not any function
+saw it, and the result is discarded. `evaluate` checks the flag at the same point (after
+`evaluate_roots` has joined every thread and crashes are rethrown, before error bubbling), and an
+interrupt that arrives later, during bubbling or result construction, does not discard the result
+(round 2, "what I checked", item 5). No change.
+
+One difference remains and is documented on `Evaluator::interrupt`: Java's
+`Thread.interrupted()` clears the bit when it throws; the flag here stays set until
+`clear_interrupt`.
+
+## blaze_sky_loading
+
+I made no edit to any file of `blaze_sky_loading` in either round, so nothing of mine can have
+been overwritten. The code the engine relies on is in the working tree: the `in_error_bubbling()`
+guards at `target_pattern_function.rs:968-975`, the catastrophic exceptions at `file_state.rs:260`
+and `target_pattern_function.rs:850`, the non-catastrophic rethrow at `package_lookup.rs:482-484`.
+The three clippy findings there (`file_state.rs:151`, `target_pattern_function.rs:440`, `:925`)
+are not in code I wrote; I did not touch them.
+
+## Verification
+
+- `scripts/cargo-capped test -p blaze_skyframe`: 200 passed, 0 failed, 124 ignored.
+- That test binary 300 times in a loop: 0 failures.
+- `clippy -p blaze_skyframe --all-targets -- -D warnings` clean; `rustfmt --edition 2024 --check`
+  clean.
+- `scripts/w3/query-compare`, `target/debug/blaze-query-dev` rebuilt after the change:
+  brotli 162/162 and 162/162; re2 1091/1091 and 1091/1091, exit codes equal to the oracle's.
+- Not rerun this round: `blaze_sky_loading` and the consumer crates' tests.

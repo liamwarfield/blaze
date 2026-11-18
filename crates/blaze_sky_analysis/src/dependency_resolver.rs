@@ -19,6 +19,7 @@ use blaze_analysis::config::transitions::StarlarkAttributeTransitionProvider;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::configured_target_value::ConfiguredTargetValue;
 use blaze_analysis::platform::platform_info::PlatformInfo;
+use blaze_analysis::rule::rule_error_consumer::AnalysisRootCauseEvent;
 use blaze_analysis::toolchains::{
     ToolchainCollection, ToolchainException, UnloadedToolchainContext,
     UnloadedToolchainContextsInputs,
@@ -31,7 +32,7 @@ use blaze_build_config::starlark_transition::{
 use blaze_build_config::transitions::EMPTY_OPTIONS;
 use blaze_cmdline::Label;
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
-use blaze_events::{Event, StoredEventHandler};
+use blaze_events::{Event, ExtendedEventHandler, StoredEventHandler};
 use blaze_optdefs::fragment::core_options::CoreOptions;
 use blaze_packages::exceptions::DetailedExitCode;
 use blaze_packages::target::Target;
@@ -448,8 +449,19 @@ pub fn toolchain_exception_as_configured_value_creation_exception(
     e: &ToolchainException,
     target_and_configuration: &TargetAndConfiguration,
 ) -> ConfiguredValueCreationException {
-    // PORT: Java first searches the cause chain for a ConfiguredValueCreationException; P's
-    // ToolchainException carries no such cause.
+    // Attempt to find a ConfiguredValueCreationException in the ToolchainException's causes.
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = e.get_cause().map(|c| {
+        let c: &(dyn std::error::Error + 'static) = &**c;
+        c
+    });
+    while let Some(c) = cause {
+        if let Some(configured_value_creation_exception) =
+            c.downcast_ref::<ConfiguredValueCreationException>()
+        {
+            return configured_value_creation_exception.clone();
+        }
+        cause = c.source();
+    }
     let configuration = target_and_configuration.get_configuration();
     let cause = Cause::AnalysisFailed {
         label: target_and_configuration.get_label().clone(),
@@ -555,6 +567,7 @@ fn get_dependency_context(
                     &target_and_configuration,
                     Some(target_and_configuration.get_target().get_location()),
                     &validation_exception.0,
+                    env.listener(),
                 ))
             }
         }),
@@ -651,7 +664,12 @@ fn compute_dependencies_internal(
         Ok(l) => l,
         Err(e) => {
             return Err(CaughtException::DependencyEvaluation(
-                handle_dependency_root_cause_error(&ctg_value, e.location, &e.message),
+                handle_dependency_root_cause_error(
+                    &ctg_value,
+                    e.location,
+                    &e.message,
+                    env.listener(),
+                ),
             ));
         }
     };
@@ -696,6 +714,7 @@ fn compute_dependencies_internal(
                     &ctg_value,
                     Some(target.get_location()),
                     &format!("Label '{}' does not refer to a package group.", label),
+                    env.listener(),
                 ))
             }
             DependencyError::AspectEvaluation(e) => CaughtException::DependencyEvaluation(e),
@@ -749,15 +768,21 @@ pub fn get_unloaded_toolchain_contexts_inputs(
     .map_err(|e| e.to_string())
 }
 
-// Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:838 DependencyResolver.handleDependencyRootCauseError
+// Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:870 DependencyResolver.handleDependencyRootCauseError
 fn handle_dependency_root_cause_error(
     target_and_configuration: &TargetAndConfiguration,
     location: Option<Location>,
     message: &str,
+    listener: &dyn ExtendedEventHandler,
 ) -> DependencyEvaluationException {
     let configuration = target_and_configuration.get_configuration();
     let label = target_and_configuration.get_label();
-    // PORT: AnalysisRootCauseEvent (BEP) is not posted.
+    // AnalysisRootCauseEvent.withConfigurationValue(configuration, label, message)
+    listener.post(Arc::new(AnalysisRootCauseEvent {
+        configuration_checksum: configuration.map(|c| c.checksum().to_owned()),
+        label: label.clone(),
+        error_message: message.to_owned(),
+    }));
     let cause = Cause::AnalysisFailed {
         label: label.clone(),
         configuration: configuration_id_message(configuration.map(|c| c.checksum())),

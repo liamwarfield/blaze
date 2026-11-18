@@ -420,6 +420,31 @@ fn repo_contents_cache_shared_lock_is_held_for_the_command() {
     assert!(other_process_can_lock(NAME, &lock_path, "exclusive"));
 }
 
+/// Two command setups in one process share the lock file (review 2026-11-18 round 2, N3): the
+/// lock is a per-process record lock, so the file must stay locked until the last of them is
+/// done, not until the first is.
+#[test]
+fn repo_contents_cache_shared_lock_outlives_the_first_of_two_setups() {
+    run_lock_probe_if_requested();
+    const NAME: &str = "repo_contents_cache_shared_lock_outlives_the_first_of_two_setups";
+    let s = Scratch::new();
+    let root = root_of(&s);
+    let command = Command::new(&s);
+    let args = ["--repository_cache=", "--repo_contents_cache=../cc2"];
+    let first = command.prepare(&args).unwrap();
+    let second = command.prepare(&args).unwrap();
+    let lock_path = Path::create(
+        PathFragment::create(&format!("{}/cc2/gc_lock", root.display())),
+        &fs(),
+    );
+    assert!(!other_process_can_lock(NAME, &lock_path, "exclusive"));
+    drop(first);
+    assert!(!other_process_can_lock(NAME, &lock_path, "exclusive"));
+    assert!(other_process_can_lock(NAME, &lock_path, "shared"));
+    drop(second);
+    assert!(other_process_can_lock(NAME, &lock_path, "exclusive"));
+}
+
 // ---------------------------------------------------------------------------------------------
 // S1-4: --override_repository
 // ---------------------------------------------------------------------------------------------
@@ -475,6 +500,17 @@ fn rule_download(
     checksum: Option<&blaze_repo_fetch::downloader::Checksum>,
     output: &StdPath,
 ) -> Result<Path, blaze_repo_fetch::errors::IoException> {
+    rule_download_with_headers(functions, url, &IndexMap::new(), checksum, output)
+}
+
+/// [`rule_download`] with `rctx.download(headers = ...)`.
+fn rule_download_with_headers(
+    functions: &RepositoryFunctions,
+    url: &str,
+    headers: &IndexMap<String, Vec<String>>,
+    checksum: Option<&blaze_repo_fetch::downloader::Checksum>,
+    output: &StdPath,
+) -> Result<Path, blaze_repo_fetch::errors::IoException> {
     functions
         .services
         .download_manager
@@ -482,7 +518,7 @@ fn rule_download(
         .unwrap()
         .download(
             &[rf_uri(url)],
-            &IndexMap::new(),
+            headers,
             &HashMap::new(),
             checksum,
             "",
@@ -571,6 +607,43 @@ fn downloader_config_is_applied_to_repository_and_registry_downloads() {
         "{requests:?}"
     );
     assert!(requests[1].starts_with("GET /archive.txt "), "{requests:?}");
+}
+
+/// `--downloader_config` filters by the URL's host. A `Host` request header cannot point an
+/// allowed URL at a blocked virtual host: `HttpURLConnection` drops a caller's `Host`
+/// (`isRestrictedHeader`), so the request carries the URL's (review 2026-11-18 round 3, R3-1).
+#[test]
+fn downloader_config_host_filter_cannot_be_bypassed_with_a_host_header() {
+    let s = Scratch::new();
+    let server = Server::start("allowed");
+    s.file("allow.cfg", "block *\nallow 127.0.0.1\n");
+    let command = Command::new(&s);
+    let functions = command
+        .prepare(&["--repository_cache=", "--downloader_config=allow.cfg"])
+        .unwrap();
+    let out = root_of(&s).join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let headers: IndexMap<String, Vec<String>> =
+        [("Host".to_string(), vec!["blocked.example".to_string()])]
+            .into_iter()
+            .collect();
+    let path = rule_download_with_headers(
+        &functions,
+        &format!("http://127.0.0.1:{}/x.txt", server.port),
+        &headers,
+        None,
+        &out.join("x.txt"),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(path.get_path_string()).unwrap(), b"allowed");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let hosts: Vec<&str> = requests[0]
+        .split("\r\n")
+        .filter(|l| l.to_ascii_lowercase().starts_with("host:"))
+        .collect();
+    assert_eq!(hosts, vec![format!("Host: 127.0.0.1:{}", server.port)]);
+    assert!(!requests[0].contains("blocked.example"), "{requests:?}");
 }
 
 // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:436 BazelRepositoryModule.beforeCommand

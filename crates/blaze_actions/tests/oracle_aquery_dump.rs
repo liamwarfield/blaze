@@ -231,17 +231,8 @@ fn recorded_action(rec: &Recording, a: &Value) -> RecordedAction {
     }
 }
 
-fn replay(project: &str) {
-    let Some(rec) = Recording::load(project) else {
-        eprintln!("no oracle recording for {project}; skipped");
-        return;
-    };
-    let expected = std::fs::read_to_string(
-        oracle_common::records_dir()
-            .join(project)
-            .join("raw/aquery_deps_jsonproto.stdout"),
-    )
-    .unwrap();
+/// Dumps every recorded action through `ActionGraphDump` and the jsonproto handler.
+fn dump_jsonproto(rec: &Recording) -> Vec<u8> {
     let mut handler = MonolithicOutputHandler::new(Vec::<u8>::new());
     {
         let mut dump = ActionGraphDump::new(true, true, false, None, true, true, &mut handler);
@@ -251,25 +242,42 @@ fn replay(project: &str) {
                 label: rec.target_label(target_id),
                 rule_class_string: rec.rule_class(target_id),
             };
-            let action: Arc<dyn Action> = Arc::new(recorded_action(&rec, a));
+            let action: Arc<dyn Action> = Arc::new(recorded_action(rec, a));
             dump.dump_configured_target(&target, &[action]).unwrap();
         }
     }
     handler.close().unwrap();
-    let actual = String::from_utf8(handler.into_inner()).unwrap();
+    handler.into_inner()
+}
+
+fn assert_same_bytes(what: &str, actual: &[u8], expected: &[u8]) {
     if actual != expected {
-        let a: Vec<&str> = actual.lines().collect();
-        let e: Vec<&str> = expected.lines().collect();
+        let a: Vec<&[u8]> = actual.split(|b| *b == b'\n').collect();
+        let e: Vec<&[u8]> = expected.split(|b| *b == b'\n').collect();
         let first = a.iter().zip(e.iter()).position(|(x, y)| x != y);
         panic!(
-            "{project}: aquery jsonproto differs ({} vs {} lines); first difference at line {:?}:\n  actual:   {:?}\n  expected: {:?}",
+            "{what}: aquery jsonproto differs ({} vs {} lines); first difference at line {:?}:\n  actual:   {:?}\n  expected: {:?}",
             a.len(),
             e.len(),
             first.map(|i| i + 1),
-            first.map(|i| a[i]),
-            first.map(|i| e[i]),
+            first.map(|i| a[i].escape_ascii().to_string()),
+            first.map(|i| e[i].escape_ascii().to_string()),
         );
     }
+}
+
+fn replay(project: &str) {
+    let Some(rec) = Recording::load(project) else {
+        eprintln!("no oracle recording for {project}; skipped");
+        return;
+    };
+    let expected = std::fs::read(
+        oracle_common::records_dir()
+            .join(project)
+            .join("raw/aquery_deps_jsonproto.stdout"),
+    )
+    .unwrap();
+    assert_same_bytes(project, &dump_jsonproto(&rec), &expected);
 }
 
 #[test]
@@ -280,4 +288,64 @@ fn brotli_aquery_jsonproto_bytes_match_oracle() {
 #[test]
 fn re2_aquery_jsonproto_bytes_match_oracle() {
     replay("re2");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Non-ASCII strings (review 2026-11-18-actions round 2, N1).
+//
+// `data/non_ascii_probe/aquery.jsonproto` is the oracle's output for the probe workspace (see
+// `non_ascii_action_keys.rs`). Bazel prints its internal strings through a Latin-1 stream, so the
+// file holds each string's bytes: UTF-8 text reads as UTF-8, and `"\377"` is the byte ff.
+
+const NON_ASCII_AQUERY: &[u8] = include_bytes!("data/non_ascii_probe/aquery.jsonproto");
+
+fn non_ascii_recording(json: Value) -> Recording {
+    Recording::from_json(
+        "non_ascii_probe",
+        json,
+        "/probe/output_base",
+        "/probe/output_base/execroot/_main",
+        "/probe/workspace",
+    )
+}
+
+/// After the decoding switch Blaze holds Bazel's strings (the file read as Latin-1), and the
+/// dump is the oracle's file, byte for byte.
+#[test]
+fn non_ascii_aquery_jsonproto_bytes_match_oracle_after_the_decoding_switch() {
+    use blaze_util::string_encoding::{latin1_decode, with_strings_are_internal_for_testing};
+    with_strings_are_internal_for_testing(true, || {
+        let json: Value = serde_json::from_str(&latin1_decode(NON_ASCII_AQUERY)).unwrap();
+        let rec = non_ascii_recording(json);
+        assert_same_bytes("after the switch", &dump_jsonproto(&rec), NON_ASCII_AQUERY);
+    });
+}
+
+/// Before the switch (today) Blaze holds the Unicode strings (the file read as UTF-8). The dump
+/// is again the oracle's file, except for the strings of the four probes that are not UTF-8
+/// text, which Blaze cannot hold: there the reading replaces the stray byte by U+FFFD. Everything
+/// that is UTF-8 text is byte for byte the oracle's.
+#[test]
+fn non_ascii_aquery_jsonproto_bytes_match_oracle_before_the_decoding_switch() {
+    use blaze_util::string_encoding::{
+        java_new_string_utf8, with_strings_are_internal_for_testing,
+    };
+    with_strings_are_internal_for_testing(false, || {
+        let as_unicode = java_new_string_utf8(NON_ASCII_AQUERY);
+        // The stray bytes are the `"\\377"` and `"\\351"` of the raw-byte probes; nothing else is lost.
+        let replaced = as_unicode.matches('\u{fffd}').count();
+        assert!(replaced > 0);
+        assert_eq!(
+            as_unicode.len(),
+            NON_ASCII_AQUERY.len() + 2 * replaced,
+            "only single stray bytes are replaced"
+        );
+        let json: Value = serde_json::from_str(&as_unicode).unwrap();
+        let rec = non_ascii_recording(json);
+        assert_same_bytes(
+            "before the switch",
+            &dump_jsonproto(&rec),
+            as_unicode.as_bytes(),
+        );
+    });
 }

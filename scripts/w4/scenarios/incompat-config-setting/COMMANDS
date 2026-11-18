@@ -1,0 +1,19 @@
+# Incompatible targets: config_settings in target_compatible_with, validation errors of the
+# attribute, incompatible exec-configuration dependencies, file targets.
+run build //pkg:cs_one
+run build //pkg:cs_two
+run build //pkg:cs_mixed
+run build //pkg:cs_ok
+run build //pkg:cs_one -c opt
+run build //pkg:alias_to_cs_one
+run build //pkg:duplicate_setting
+run build //pkg:uses_tool
+run build //pkg:a.txt //pkg:cs_ok
+run build //pkg:all
+run cquery //pkg:all --output=label_kind
+run cquery "deps(//pkg:uses_tool, 1)"
+run aquery //pkg:cs_two
+run aquery //pkg:all
+run build //pkg:cs_one //pkg:cs_two --keep_going
+run aquery "//pkg:cs_one + //pkg:cs_two + //pkg:cs_ok" --keep_going
+run cquery "//pkg:cs_one + //pkg:cs_two + //pkg:cs_ok" --keep_going

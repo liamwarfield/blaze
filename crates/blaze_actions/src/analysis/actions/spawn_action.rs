@@ -39,6 +39,41 @@ const GUID: &str = "ebd6fce3-093e-45ee-adb6-bf513b602f0d";
 
 /// The resources an action declares (`ResourceSetOrBuilder`).
 ///
+/// The precondition of `SpawnAction.Builder.setMnemonic`:
+/// `!mnemonic.isEmpty() && CharMatcher.javaLetterOrDigit().matchesAllOf(mnemonic)`.
+///
+/// Java tests the chars of the string as Bazel holds it, the internal string: one Latin-1 char
+/// per byte. So `"Qé"` (bytes c3 a9: `Ã`, a letter, then `©`, not one) is rejected, while `"Qê"`
+/// (c3 aa: `Ã` then `ª`, a letter) is accepted; the oracle does both
+/// (`tests/data/map_each_probe/expected.txt`).
+// Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:1258 SpawnAction.Builder.setMnemonic
+pub fn is_valid_mnemonic(mnemonic: &str) -> bool {
+    !mnemonic.is_empty()
+        && blaze_util::string_encoding::to_internal(mnemonic)
+            .chars()
+            .all(java_is_letter_or_digit_latin1)
+}
+
+/// Java `Character.isLetterOrDigit(char)` for a char of an internal string (`<= U+00FF`): the
+/// letters of Latin-1 (general categories Lu, Ll, Lo) and the ASCII digits. The other Latin-1
+/// characters with a numeric value (`²`, `³`, `¹`, `¼`, `½`, `¾`) are category No, which is not
+/// a digit for Java.
+// Java (JDK): java.base/java/lang/Character.java Character.isLetterOrDigit
+fn java_is_letter_or_digit_latin1(c: char) -> bool {
+    match c {
+        '0'..='9' | 'A'..='Z' | 'a'..='z' => true,
+        '\u{aa}' | '\u{b5}' | '\u{ba}' => true,
+        '\u{c0}'..='\u{d6}' | '\u{d8}'..='\u{f6}' | '\u{f8}'..='\u{ff}' => true,
+        '\u{0}'..='\u{ff}' => false,
+        // Not a char of an internal string (`string_encoding::to_internal` never gives one).
+        _ => blaze_util::unported!(
+            "Character.isLetterOrDigit",
+            "char U+{:04X} is not a char of an internal string",
+            c as u32
+        ),
+    }
+}
+
 /// PORT: `ResourceSet`/`ResourceSetOrBuilder` belong to the execution layer (wave W6); they are
 /// not part of the action key. Kept as plain data.
 #[derive(Clone, Debug, PartialEq)]
@@ -1113,7 +1148,7 @@ impl SpawnActionBuilder {
     pub fn set_mnemonic(&mut self, mnemonic: impl Into<String>) -> &mut Self {
         let mnemonic = mnemonic.into();
         check_argument!(
-            !mnemonic.is_empty() && mnemonic.chars().all(|c| c.is_alphanumeric()),
+            is_valid_mnemonic(&mnemonic),
             "mnemonic must only contain letters and/or digits, and have non-zero length, was: \
              \"{}\"",
             mnemonic

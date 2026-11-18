@@ -38,8 +38,51 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          for frozen_def in freezer.frozen_defs.borrow().as_slice() {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs starlark/src/eval/compiler/def.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/def.rs	2026-11-18 09:56:00.922422074 -0700
-@@ -610,6 +610,126 @@
++++ starlark/src/eval/compiler/def.rs	2026-11-18 11:18:46.299108798 -0700
+@@ -42,6 +42,7 @@
+ use crate as starlark;
+ use crate::any::ProvidesStaticType;
+ use crate::codemap::CodeMap;
++use crate::codemap::FileSpan; // BLAZE PATCH 0024
+ use crate::codemap::Spanned;
+ use crate::collections::Hashed;
+ use crate::const_frozen_string;
+@@ -344,6 +345,10 @@
+     pub(crate) name: FrozenStringValue,
+     /// Span of function signature.
+     pub(crate) signature_span: FrozenFileSpan,
++    /// BLAZE PATCH 0024: where the function is declared, as Java reports it
++    /// (net/starlark/java/eval/StarlarkFunction.java:172 `getLocation`): the name of a `def`,
++    /// the whole expression of a `lambda` (so it starts at the `lambda` keyword).
++    pub(crate) declaration_span: FrozenFileSpan,
+     /// Indices of parameters, which are captured in nested defs.
+     parameter_captures: FrozenAnyArray<LocalSlotId>,
+     /// Type of this function, for the typechecker.
+@@ -385,6 +390,7 @@
+         DefInfo {
+             name: const_frozen_string!("<module>"),
+             signature_span: FrozenFileSpan::default(),
++            declaration_span: FrozenFileSpan::default(), // BLAZE PATCH 0024
+             parameter_captures: VALUE_EMPTY_PARAMETER_CAPTURES.unpack(),
+             ty: Ty::any(),
+             codemap,
+@@ -448,6 +454,7 @@
+         &mut self,
+         name: &str,
+         signature_span: FrozenFileSpan,
++        declaration_span: FrozenFileSpan, // BLAZE PATCH 0024
+         scope_id: ScopeId,
+         params: &[CstParameter],
+         return_type: Option<&CstTypeExpr>,
+@@ -501,6 +508,7 @@
+         let info = self.eval.module_env.frozen_heap().alloc_any_value(DefInfo {
+             name,
+             signature_span,
++            declaration_span, // BLAZE PATCH 0024
+             parameter_captures: self
+                 .eval
+                 .frozen_heap()
+@@ -610,6 +618,141 @@
  pub(crate) type Def<'v> = DefGen<Value<'v>>;
  pub(crate) type FrozenDef = DefGen<FrozenValue>;
  
@@ -95,6 +138,21 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +            frozen: None,
 +            _marker: std::marker::PhantomData,
 +        }
++    }
++
++    /// BLAZE PATCH 0024: where `function` (a `def` or `lambda`) is declared, Java
++    /// `StarlarkFunction.getLocation()` (net/starlark/java/eval/StarlarkFunction.java:172): the
++    /// span of the name of a `def`, or of the whole `lambda` expression. Its start is the
++    /// position Java prints. `None` for other values.
++    pub fn declaration_span(function: Value<'v>) -> Option<FileSpan> {
++        let def_info = if let Some(f) = function.downcast_ref::<Def<'v>>() {
++            f.def_info
++        } else if let Some(f) = function.downcast_ref::<FrozenDef>() {
++            f.def_info
++        } else {
++            return None;
++        };
++        Some(def_info.declaration_span.to_file_span())
 +    }
 +
 +    /// The compiled file of the module.
@@ -166,7 +224,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  starlark_complex_values!(Def);
  
  impl<'v> Def<'v> {
-@@ -783,6 +903,25 @@
+@@ -783,6 +926,25 @@
      where
          'v: 'a,
      {
@@ -194,7 +252,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              eval,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/expr.rs starlark/src/eval/compiler/expr.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/expr.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/expr.rs	2026-11-18 05:24:21.555873658 -0700
++++ starlark/src/eval/compiler/expr.rs	2026-11-18 11:18:41.095968319 -0700
 @@ -1111,6 +1111,9 @@
  #[cold]
  #[inline(never)]
@@ -205,6 +263,23 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      match did_you_mean(attribute.as_str(), x.dir_attr().iter().map(|s| s.as_str())) {
          None => ValueError::NoAttr(x.get_type().to_owned(), attribute.as_str().to_owned()).into(),
          Some(better) => ValueError::NoAttrDidYouMean(
+@@ -1247,7 +1250,15 @@
+                     // TODO(nga): unnecessary clone.
+                     node: StmtP::Return(Some(*body.clone())),
+                 };
+-                self.function("lambda", signature_span, *scope_id, params, None, &suite)?
++                self.function(
++                    "lambda",
++                    signature_span,
++                    FrozenFileSpan::new(self.codemap, expr.span), // BLAZE PATCH 0024
++                    *scope_id,
++                    params,
++                    None,
++                    &suite,
++                )?
+             }
+             ExprP::Tuple(exprs) => {
+                 let xs = self.exprs(exprs)?;
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/module.rs starlark/src/eval/compiler/module.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/module.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/eval/compiler/module.rs	2026-11-18 10:00:27.727146091 -0700
@@ -256,7 +331,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              &mut expr.node.expr,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/stmt.rs starlark/src/eval/compiler/stmt.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/stmt.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/stmt.rs	2026-11-18 05:24:38.313386238 -0700
++++ starlark/src/eval/compiler/stmt.rs	2026-11-18 11:18:41.095646240 -0700
 @@ -572,6 +572,13 @@
      let lhs_ty = lhs_aref.vtable().static_type_of_value.get();
  
@@ -280,6 +355,14 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  }
  
+@@ -747,6 +754,7 @@
+                     node: self.function(
+                         &name.ident,
+                         signature_span,
++                        FrozenFileSpan::new(self.codemap, name.span), // BLAZE PATCH 0024
+                         *scope_id,
+                         params,
+                         return_type.as_deref(),
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/cheap_call_stack.rs starlark/src/eval/runtime/cheap_call_stack.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/cheap_call_stack.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/eval/runtime/cheap_call_stack.rs	2026-11-18 07:02:46.445228006 -0700
@@ -1142,10 +1225,41 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  pub use crate::values::types::list::unpack::UnpackList;
 +pub use crate::values::types::list::value::alloc_immutable_list; // BLAZE PATCH 0016
 +pub use crate::values::types::list::value::list_is_immutable; // BLAZE PATCH 0016
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/methods.rs starlark/src/values/types/set/methods.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/methods.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/set/methods.rs	2026-11-18 11:27:07.144332007 -0700
+@@ -714,7 +714,7 @@
+ 
+ S.update(S)
+ "#,
+-            "Immutable",
++            "trying to mutate a frozen set value", // BLAZE PATCH 0025 (was "Immutable")
+         );
+     }
+ }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/refs.rs starlark/src/values/types/set/refs.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/refs.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/set/refs.rs	2026-11-18 05:26:18.003938711 -0700
-@@ -56,6 +56,42 @@
++++ starlark/src/values/types/set/refs.rs	2026-11-18 11:22:15.594861882 -0700
+@@ -16,7 +16,7 @@
+  */
+ 
+ use std::cell::Ref;
+-use std::cell::RefCell;
++// BLAZE PATCH 0025: `use std::cell::RefCell;` removed (the payload is MutableSetData now).
+ use std::cell::RefMut;
+ use std::convert::Infallible;
+ 
+@@ -24,7 +24,9 @@
+ use either::Either;
+ 
+ use super::value::FrozenSetData;
++use super::value::MutableSet; // BLAZE PATCH 0025
+ use super::value::SetData;
++use super::value::frozen_set_error; // BLAZE PATCH 0025
+ use crate::coerce::coerce;
+ use crate::typing::Ty;
+ use crate::values::FrozenValue;
+@@ -56,6 +58,42 @@
  
  impl<'v> Dupe for SetRef<'v> {}
  
@@ -1188,14 +1302,205 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  /// Mutably borrowed `Set`.
  pub struct SetMut<'v> {
      pub(crate) aref: RefMut<'v, SetData<'v>>,
+@@ -73,16 +111,19 @@
+         #[inline(never)]
+         fn error<'v>(x: Value<'v>) -> anyhow::Error {
+             if x.downcast_ref::<SetGen<FrozenSetData>>().is_some() {
+-                ValueError::CannotMutateImmutableValue.into()
++                // BLAZE PATCH 0025: Java's text (Starlark.checkMutable), as 0023 for list/dict.
++                frozen_set_error()
+             } else {
+                 NotSetError(x.get_type()).into()
+             }
+         }
+ 
+-        let ptr = x.downcast_ref::<SetGen<RefCell<SetData<'v>>>>();
++        let ptr = x.downcast_ref::<MutableSet<'v>>(); // BLAZE PATCH 0025
+         match ptr {
+             None => Err(error(x)),
+-            Some(ptr) => match ptr.0.try_borrow_mut() {
++            // BLAZE PATCH 0025: Java Starlark.checkMutable checks frozenness first.
++            Some(ptr) if ptr.0.immutable.get() => Err(frozen_set_error()),
++            Some(ptr) => match ptr.0.cell.try_borrow_mut() { // BLAZE PATCH 0025
+                 Ok(x) => Ok(SetMut { aref: x }),
+                 Err(_) => Err(ValueError::MutationDuringIteration.into()),
+             },
+@@ -110,9 +151,9 @@
+                 })
+         } else {
+             value
+-                .downcast_ref::<SetGen<RefCell<SetData<'v>>>>()
++                .downcast_ref::<MutableSet<'v>>() // BLAZE PATCH 0025
+                 .map(|ptr| SetRef {
+-                    aref: Either::Left(ptr.0.borrow()),
++                    aref: Either::Left(ptr.0.cell.borrow()), // BLAZE PATCH 0025
+                 })
+         };
+         Ok(result)
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/value.rs starlark/src/values/types/set/value.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/value.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/set/value.rs	2026-11-18 11:26:47.816940932 -0700
+@@ -15,6 +15,7 @@
+  * limitations under the License.
+  */
+ 
++use std::cell::Cell; // BLAZE PATCH 0025
+ use std::cell::Ref;
+ use std::cell::RefCell;
+ use std::fmt;
+@@ -50,6 +51,7 @@
+ use crate::values::UnpackValue;
+ use crate::values::Value;
+ use crate::values::ValueError;
++use crate::values::ValueLike; // BLAZE PATCH 0025
+ use crate::values::comparison::equals_small_set;
+ use crate::values::set::methods;
+ use crate::values::starlark_value;
+@@ -136,13 +138,83 @@
+     }
+ }
+ 
+-pub(crate) type MutableSet<'v> = SetGen<RefCell<SetData<'v>>>;
++pub(crate) type MutableSet<'v> = SetGen<MutableSetData<'v>>; // BLAZE PATCH 0025
++
++/// BLAZE PATCH 0025: the mutable set's payload (was `RefCell<SetData>`), with a flag for an
++/// immutable set on a mutable heap (Java `StarlarkSet.immutableCopyOf`). Mutation fails; freezing
++/// makes it an ordinary frozen set.
++#[derive(Trace, ProvidesStaticType, Allocative)]
++pub(crate) struct MutableSetData<'v> {
++    pub(crate) cell: RefCell<SetData<'v>>,
++    #[allocative(skip)]
++    pub(crate) immutable: Cell<bool>,
++}
++
++// BLAZE PATCH 0025: same output as the `RefCell<SetData>` payload before.
++impl<'v> Debug for MutableSetData<'v> {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        if self.immutable.get() {
++            f.debug_struct("ImmutableSet")
++                .field("value", &self.cell)
++                .finish()
++        } else {
++            Debug::fmt(&self.cell, f)
++        }
++    }
++}
++
++impl<'v> MutableSetData<'v> {
++    // BLAZE PATCH 0025
++    pub(crate) fn new(set: SetData<'v>) -> Self {
++        MutableSetData {
++            cell: RefCell::new(set),
++            immutable: Cell::new(false),
++        }
++    }
++}
++
++/// BLAZE PATCH 0025: Java's error for mutating a frozen set (Starlark.checkMutable).
++pub(crate) fn frozen_set_error() -> anyhow::Error {
++    anyhow::anyhow!("trying to mutate a frozen set value")
++}
++
++/// BLAZE PATCH 0025: an immutable set holding `values` in order, dropping duplicates (Java
++/// net/starlark/java/eval/StarlarkSet.java:374 `StarlarkSet.immutableCopyOf`, via
++/// `copyOf(null, ..)`). The set lives on `heap` and keeps its elements as they are; every
++/// mutation fails with "trying to mutate a frozen set value" (Starlark.checkMutable), and
++/// [`set_is_immutable`] reports it immutable. Fails if a value is unhashable (Java
++/// `StarlarkSet.checkedCopyOf`; `immutableCopyOf` assumes hashable elements).
++pub fn alloc_immutable_set<'v>(
++    heap: Heap<'v>,
++    values: impl IntoIterator<Item = Value<'v>>,
++) -> crate::Result<Value<'v>> {
++    let mut set = SetData::default();
++    for v in values {
++        set.add_hashed(v.get_hashed()?);
++    }
++    let data = MutableSetData::new(set);
++    data.immutable.set(true);
++    Ok(heap.alloc_complex(SetGen(data)))
++}
++
++/// BLAZE PATCH 0025: Java `StarlarkSet.isImmutable` for a set value (StarlarkSet.java:187: its
++/// mutability is frozen; elements are not looked at), `None` for other values. Frozen sets and
++/// sets made by [`alloc_immutable_set`] are immutable; other sets are not.
++pub fn set_is_immutable(x: Value) -> Option<bool> {
++    if let Some(s) = x.downcast_ref::<MutableSet>() {
++        Some(s.0.immutable.get())
++    } else if x.downcast_ref::<SetGen<FrozenSetData>>().is_some() {
++        Some(true)
++    } else {
++        None
++    }
++}
+ 
+ pub(crate) type FrozenSet = SetGen<FrozenSetData>;
+ 
+ impl<'v> AllocValue<'v> for SetData<'v> {
+     fn alloc_value(self, heap: Heap<'v>) -> Value<'v> {
+-        heap.alloc_complex(SetGen(RefCell::new(self)))
++        heap.alloc_complex(SetGen(MutableSetData::new(self))) // BLAZE PATCH 0025
+     }
+ }
+ 
+@@ -160,7 +232,7 @@
+ impl<'v> Freeze for MutableSet<'v> {
+     type Frozen = SetGen<FrozenSetData>;
+     fn freeze(self, freezer: &Freezer) -> FreezeResult<Self::Frozen> {
+-        let content = self.0.into_inner().content.freeze(freezer)?;
++        let content = self.0.cell.into_inner().content.freeze(freezer)?; // BLAZE PATCH 0025
+         Ok(SetGen(FrozenSetData { content }))
+     }
+ }
+@@ -180,7 +252,8 @@
+     // fn set_at(&self, index: Hashed<Value<'v>>, value: Value<'v>) -> crate::Result<()>;
+ }
+ 
+-impl<'v> SetLike<'v> for RefCell<SetData<'v>> {
++// BLAZE PATCH 0025: implemented on `MutableSetData` (was `RefCell<SetData>`, now `self.cell`).
++impl<'v> SetLike<'v> for MutableSetData<'v> {
+     type ContentRef<'a>
+         = Ref<'a, SmallSet<Value<'v>>>
+     where
+@@ -188,24 +261,25 @@
+         'v: 'a;
+ 
+     fn content<'a>(&'a self) -> Ref<'a, SmallSet<Value<'v>>> {
+-        Ref::map(self.borrow(), |x| &x.content)
++        Ref::map(self.cell.borrow(), |x| &x.content) // BLAZE PATCH 0025
+     }
+ 
+     #[inline]
+     unsafe fn iter_start(&self) {
+-        mem::forget(self.borrow());
++        mem::forget(self.cell.borrow()); // BLAZE PATCH 0025
+     }
+ 
+     #[inline]
+     unsafe fn iter_stop(&self) {
+         unsafe {
+-            unleak_borrow(self);
++            unleak_borrow(&self.cell); // BLAZE PATCH 0025
+         }
+     }
+ 
+     #[inline]
+     unsafe fn content_unchecked(&self) -> &SmallSet<Value<'v>> {
+-        unsafe { &self.try_borrow_unguarded().ok().unwrap_unchecked().content }
++        // BLAZE PATCH 0025
++        unsafe { &self.cell.try_borrow_unguarded().ok().unwrap_unchecked().content }
+     }
+ }
+ 
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set.rs starlark/src/values/types/set.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/set.rs	2026-11-18 05:24:53.364138857 -0700
-@@ -22,3 +22,4 @@
++++ starlark/src/values/types/set.rs	2026-11-18 11:22:15.595208930 -0700
+@@ -22,3 +22,6 @@
  pub(crate) mod value;
  pub use crate::values::set::refs::SetMut;
  pub use crate::values::set::refs::SetRef;
 +pub use crate::values::set::refs::alloc_set; // BLAZE PATCH 0015
++pub use crate::values::set::value::alloc_immutable_set; // BLAZE PATCH 0025
++pub use crate::values::set::value::set_is_immutable; // BLAZE PATCH 0025
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/dot_format.rs starlark/src/values/types/string/dot_format.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/dot_format.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/string/dot_format.rs	2026-11-18 02:31:09.626428655 -0700

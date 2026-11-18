@@ -39,6 +39,8 @@ use blaze_skyframe::{
 use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
 
+use crate::pattern_expanding_error::{ParsingFailedEvent, PatternExpandingError};
+
 /// `SkyFunctions.TARGET_PATTERN_PHASE`.
 pub const TARGET_PATTERN_PHASE: SkyFunctionName = SkyFunctionName("TARGET_PATTERN_PHASE");
 /// `SkyFunctions.TEST_SUITE_EXPANSION` (the function of `TestsForTargetPatternValue` keys).
@@ -837,7 +839,8 @@ fn target_pattern_phase_function(
             // side effect that any test_suite target requested to be built is replaced by the set
             // of *_test targets it represents; for example, this affects the status and the
             // summary reports.
-            // PORT: the filtered targets only feed TargetParsingCompleteEvent (event bus).
+            // PORT: the filtered targets only feed TargetParsingCompleteEvent, which the command
+            // builds for the build event stream (blaze_runtime commands/bep.rs).
             let has_error = targets.has_error;
             targets = MergedTargets {
                 targets: test_targets.targets.clone(),
@@ -903,7 +906,7 @@ fn target_pattern_phase_function(
                 .downcast::<TestsForTargetPatternValue>()
                 .unwrap_or_else(|_| panic!("TEST_SUITE_EXPANSION value"));
             expanded_labels_builder.merge(value.get_labels());
-            // PORT: testSuiteExpansions only feed TargetParsingCompleteEvent (event bus).
+            // PORT: testSuiteExpansions only feed TargetParsingCompleteEvent (see above).
         } else {
             expanded_labels_builder.add(label);
         }
@@ -917,8 +920,10 @@ fn target_pattern_phase_function(
     };
     let tests_to_run_labels: Option<IndexSet<Label>> =
         tests_to_run.map(|t| t.keys().cloned().collect());
-    // PORT: TargetParsingCompleteEvent and LoadingPhaseCompleteEvent are not posted (event bus
-    // not ported); the removed (test suite) labels only feed the latter.
+    // PORT: TargetParsingCompleteEvent is built by the command for the build event stream
+    // (blaze_runtime commands/bep.rs) and LoadingPhaseCompleteEvent's labels are read from the
+    // value by `analysis_phase_runner::report_analysis_complete`; the removed (test suite) labels
+    // only feed the latter event's filtered set, which no ported subscriber reads.
     let result = TargetPatternPhaseValue {
         target_labels: target_labels.get_targets().clone(),
         tests_to_run_labels,
@@ -1002,11 +1007,19 @@ fn get_targets_to_build(
                 failed_patterns.push(pattern.clone());
                 // We post a PatternExpandingError here - the pattern could not be parsed, so we
                 // don't even get to run TargetPatternFunction.
-                // PORT: PatternExpandingError and ParsingFailedEvent are not posted (event bus).
+                env.listener()
+                    .post(Arc::new(PatternExpandingError::failed_term(
+                        pattern.clone(),
+                        e.get_message(),
+                    )));
                 // We generally skip patterns that don't parse. We report a parsing failed
                 // exception to the event bus here, but not in determineTests below, which goes
                 // through the same list. Note that the TargetPatternFunction otherwise reports
                 // these events (but only if the target pattern could be parsed successfully).
+                env.listener().post(Arc::new(ParsingFailedEvent::new(
+                    pattern.clone(),
+                    e.get_message(),
+                )));
                 let _ = env.get_value_or_throw::<TargetPatternErrorKey, TargetParsingException>(
                     TargetPatternErrorKey::key(&e),
                 )?;
@@ -1033,7 +1046,11 @@ fn get_targets_to_build(
                 let raw_pattern = pattern.get_pattern().to_owned();
                 let error_message = e.get_message().to_owned();
                 failed_patterns.push(raw_pattern.clone());
-                // PORT: PatternExpandingError is not posted (event bus).
+                env.listener()
+                    .post(Arc::new(PatternExpandingError::failed_term(
+                        raw_pattern.clone(),
+                        error_message.clone(),
+                    )));
                 env.listener().handle(&Event::error(format!(
                     "Skipping '{}': {}",
                     raw_pattern, error_message

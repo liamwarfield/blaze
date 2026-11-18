@@ -1,0 +1,7 @@
+# One query per line (shell-quoted arguments of `query`); `--output=label_kind` is added.
+# Review 2026-11-18-loading.md S1-3: `--deleted_packages` (SkyframeExecutor.setDeletedPackages).
+'//...'
+--deleted_packages=a/b '//...'
+--deleted_packages=a/b 'deps(//a:x)'
+--deleted_packages=a/b '//a/b:all'
+--deleted_packages=a/b,a '//a:all'

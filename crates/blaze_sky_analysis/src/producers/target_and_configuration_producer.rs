@@ -20,7 +20,7 @@ use blaze_build_config::fragment::InvalidConfigurationException;
 use blaze_build_config::fragments::platform_configuration::PlatformConfiguration;
 use blaze_cmdline::Label;
 use blaze_collect::{NestedSetBuilder, Order};
-use blaze_events::{Event, EventHandler, StoredEventHandler};
+use blaze_events::{Event, EventHandler, ExtendedEventHandler, StoredEventHandler};
 use blaze_optdefs::fragment::core_options::CoreOptions;
 use blaze_optdefs::fragment::platform_options::PlatformOptions;
 use blaze_packages::exceptions::{
@@ -253,9 +253,11 @@ fn look_up_configuration_value(
                 &target,
                 error.get_message(),
                 location,
-                // PORT: InvalidConfigurationException.getDetailedExitCode carries the
-                // BuildConfiguration code; Blaze keeps only the message.
-                None,
+                // Java: com/google/devtools/build/lib/analysis/config/InvalidConfigurationException.java:68 InvalidConfigurationException.getDetailedExitCode
+                Some(DetailedExitCode {
+                    message: error.get_message().to_owned(),
+                    code: FailureCode::Other(format!("BuildConfiguration.{}", error.code)),
+                }),
             ))))
         }
     }
@@ -495,7 +497,12 @@ fn apply_rule_transition(
             IdempotencyState::Identity,
         ))));
     }
-    // PORT: ConfigurationTransitionEvent (BEP) is not posted.
+    event_handler.post(Arc::new(
+        blaze_analysis::config::configuration_transition_event::ConfigurationTransitionEvent::create(
+            parent_configuration.get_options_checksum(),
+            configuration_key_after.get_options_checksum(),
+        ),
+    ));
 
     // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:349 RuleTransitionApplier.IdempotencyChecker
     let configuration_key2 = match apply_and_take_patch(

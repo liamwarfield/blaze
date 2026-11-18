@@ -112,7 +112,9 @@ impl BlazeRuntime {
     }
 
     /// Hook method called by the BlazeCommandDispatcher prior to the dispatch of each command.
-    /// PORT: profiler, memory and Skyframe bookkeeping are not ported.
+    /// PORT: skipped, memory instrumentation: the memory profiler (`--memory_profile`).
+    /// PORT: skipped, incremental: the idle tasks of the server between commands (GC and interner
+    /// shrinking, install base and action cache garbage collection).
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:636 BlazeRuntime.beforeCommand
     pub(crate) fn before_command(&self) {}
 
@@ -210,7 +212,8 @@ impl BlazeRuntime {
     /// desired exit status of the program.
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1085 BlazeRuntime.batchMain
     pub fn batch_main(modules: Vec<Arc<dyn BlazeModule>>, args: Vec<String>) -> i32 {
-        // PORT: SIGINT handling (captureSigint) is not ported.
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1087 BlazeRuntime.batchMain
+        let _signal_handler = crate::interrupt::capture_sigint();
         let (startup_args, other_args) = Self::split_startup_options(&modules, &args);
 
         let runtime = match Self::new_runtime(modules, &startup_args) {
@@ -406,7 +409,9 @@ impl BlazeRuntime {
                     .unwrap_or_else(|| "null".to_string())
             ),
         }
-        // PORT: CustomFailureDetailPublisher.setFailureDetailFilePath is not ported.
+        // PORT: CustomFailureDetailPublisher.setFailureDetailFilePath: the failure detail file
+        // carries the detail of an abrupt server exit to a client whose gRPC connection died;
+        // the in-process server hands its exit code to the client directly.
 
         for module in &blaze_modules {
             module
@@ -471,15 +476,29 @@ impl BlazeRuntime {
                 as FileSystemRef),
         ));
 
-        // PORT: BazelFileSystemModule.getFileSystem picks the native file system and digest
-        // function; Blaze always uses the Unix file system.
+        // PORT: BazelFileSystemModule.getFileSystem: on Linux the Unix file system with the
+        // digest function of --digest_function (its converter only accepts SHA-256, the only
+        // function ported) and --unix_digest_hash_attribute_name, which is not ported.
+        // Java: com/google/devtools/build/lib/bazel/BazelFileSystemModule.java:90 BazelFileSystemModule.getFileSystem
+        if !startup_options.unix_digest_hash_attribute_name.is_empty() {
+            blaze_util::unported!(
+                "UnixFileSystem.getFastDigest",
+                "--unix_digest_hash_attribute_name"
+            );
+        }
         let fs: FileSystemRef =
             Arc::new(UnixFileSystem::new(blaze_vfs::DigestHashFunction::Sha256));
 
         // PORT: the shared install base lock (--lock_install_base,
-        // FileSystemLock.tryGet(<install_base>.lock, SHARED)) is held by the client for the whole
-        // in-process run, so it is not taken again here.
-        // PORT: event bus exception handlers and the Starlark source-line hook are not ported.
+        // FileSystemLock.tryGet(<install_base>.lock, SHARED)) is not taken again here: the client
+        // holds both file locks, the shared install base lock and the exclusive output base lock,
+        // from `AcquireLock` until the process exits (blaze_client `BlazeServer::communicate`
+        // runs the command in-process without releasing them), and those client locks are what
+        // excludes a second Blaze process.
+        // PORT: the event bus exception handlers (--fatal_event_bus_exceptions) serve Guava's
+        // EventBus, whose subscribers' exceptions are caught; a panicking subscriber of Blaze's
+        // event bus ends the command. The Starlark source-line hook belongs to the Java
+        // interpreter's tracebacks.
 
         let workspace_directory_path = if workspace_directory.is_empty() {
             None
@@ -522,7 +541,8 @@ impl BlazeRuntime {
             runtime.add_command(command.clone());
         }
 
-        // PORT: CustomExitCodePublisher (abrupt exit status file) is not ported.
+        // PORT: CustomExitCodePublisher (the abrupt exit status file) tells a client whose gRPC
+        // connection died which exit code to use; the in-process server returns it directly.
 
         let directories = BlazeDirectories::new(
             server_directories,

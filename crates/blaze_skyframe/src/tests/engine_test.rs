@@ -631,3 +631,99 @@ fn requester_of_a_dep_that_finishes_after_the_failure_does_not_commit() {
         assert_eq!(ev.computed_count(), computed + 1);
     }
 }
+
+// Review round 2, NEW-1. Root "K" requests "Y"; "Y" requests "X" and throws its own exception
+// when "X" is missing; "X" requests "K". Java (AbstractParallelEvaluator.java:487-546): "Y"
+// throws in the run that requested "X", so its error is committed and "X" is never evaluated;
+// bubbleErrorUp goes Y -> K, "K" has no reverse dep and is top-level:
+// {K: fromChildErrors(K, {Y's error})}. Here the request evaluated "X", which registered with
+// "K"; the walk must not go down into it.
+#[test]
+fn no_keep_going_walk_does_not_go_below_the_thrower_through_a_cycle() {
+    for deterministic in [false, true] {
+        for p in [1, 4] {
+            let tester = new_tester();
+            let k_runs = Arc::new(AtomicUsize::new(0));
+            let x_runs = Arc::new(AtomicUsize::new(0));
+            let (kn, xn) = (k_runs.clone(), x_runs.clone());
+            tester
+                .set_builder("K", move |_, env| {
+                    kn.fetch_add(1, Ordering::SeqCst);
+                    Ok(env.get_value(T("Y"))?.map(|v| (*v).clone()))
+                })
+                .set_builder("Y", |_, env| {
+                    let v = env.get_value(T("X"))?;
+                    assert!(v.is_none() && env.values_missing());
+                    Err(persistent("Y's own"))
+                })
+                .set_builder("X", move |_, env| {
+                    xn.fetch_add(1, Ordering::SeqCst);
+                    Ok(env.get_value(T("K"))?.map(|v| (*v).clone()))
+                });
+            let ev = tester_evaluator(tester);
+            ev.deterministic_for_testing
+                .store(deterministic, Ordering::SeqCst);
+            let r = eval(&ev, false, p, &[k("K")]);
+            let error = singleton_error(&r, &k("K"));
+            assert_eq!(exception_message(error), "Y's own");
+            assert!(error.get_cycle_info().is_empty());
+            // "K": the normal run and the error-bubbling run. "X" is not on the path.
+            assert_eq!(k_runs.load(Ordering::SeqCst), 2);
+            assert_eq!(x_runs.load(Ordering::SeqCst), 1);
+            assert_eq!(graph_keys(&ev), HashSet::from([k("Y")]));
+        }
+    }
+}
+
+// NEW-1 with a second top-level key on the cycle. Java evaluates "X" as a top-level key: it
+// requests "K" and registers with it, so bubbling goes Y -> K -> X, and "X", which has no
+// reverse dep ("Y" threw, it never registered), is top-level: both report Y's error.
+#[test]
+fn no_keep_going_walk_reaches_a_top_level_key_below_the_thrower() {
+    for _ in 0..20 {
+        let tester = new_tester();
+        tester
+            .add_dependency("K", "Y")
+            .set_builder("Y", |_, env| {
+                let v = env.get_value(T("X"))?;
+                assert!(v.is_none() && env.values_missing());
+                Err(persistent("Y's own"))
+            })
+            .add_dependency("X", "K");
+        let ev = tester_evaluator(tester);
+        // One worker: "K" is evaluated first, "X" under "Y".
+        let r = eval(&ev, false, 1, &[k("K"), k("X")]);
+        assert_eq!(r.error_map().len(), 2, "{r:?}");
+        for key in ["K", "X"] {
+            let error = r.get_error(&k(key)).unwrap();
+            assert_eq!(exception_message(error), "Y's own");
+            assert!(error.get_cycle_info().is_empty());
+        }
+    }
+}
+
+// NEW-1: what the thrower's missing dep went on to request is below the thrower as well.
+#[test]
+fn no_keep_going_walk_skips_everything_only_the_throwers_missing_dep_requested() {
+    for p in [1, 4] {
+        let tester = new_tester();
+        tester
+            .add_dependency("top", "K")
+            .add_dependency("K", "Y")
+            .set_builder("Y", |_, env| {
+                let v = env.get_value(T("X"))?;
+                assert!(v.is_none() && env.values_missing());
+                Err(persistent("Y's own"))
+            })
+            // X -> Z -> {K, top}: both registrations are from below "Y".
+            .add_dependency("X", "Z")
+            .add_dependency("Z", "K")
+            .add_dependency("Z", "top");
+        let ev = tester_evaluator(tester);
+        ev.deterministic_for_testing.store(true, Ordering::SeqCst);
+        let r = eval(&ev, false, p, &[k("top")]);
+        let error = singleton_error(&r, &k("top"));
+        assert_eq!(exception_message(error), "Y's own");
+        assert!(error.get_cycle_info().is_empty());
+    }
+}

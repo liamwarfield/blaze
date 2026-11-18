@@ -7,13 +7,12 @@ use blaze_analysis::config::config_matching_provider::{AccumulateResults, Config
 use blaze_analysis::config::configured_attribute_mapper::{
     ConfiguredAttributeMapper, ValidationException,
 };
-use blaze_analysis::config::incompatible_platform_provider::{
-    INCOMPATIBLE_PLATFORM_PROVIDER, IncompatiblePlatformProvider,
-};
+use blaze_analysis::config::incompatible_platform_provider::IncompatiblePlatformProvider;
 use blaze_analysis::config::ordered_set_multimap::{PrerequisiteMap, prerequisite_values};
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::configured_target_value::ConfiguredTargetValue;
+use blaze_analysis::constraints::rule_context_constraint_semantics::RuleContextConstraintSemantics;
 use blaze_analysis::info::{downcast_info, freeze_native_info};
 use blaze_analysis::platform::constraint_collection::ConstraintCollection;
 use blaze_analysis::platform::constraint_value_info::ConstraintValueInfo;
@@ -177,13 +176,7 @@ const NO_COMPATIBILITY_CHECK_RULES: &[&str] = &["toolchain", "config_setting", "
 /// Java `RuleContextConstraintSemantics.checkForIncompatibility(target).isIncompatible()`.
 // Java: com/google/devtools/build/lib/analysis/constraints/RuleContextConstraintSemantics.java:853 RuleContextConstraintSemantics.checkForIncompatibility
 pub fn is_incompatible(target: &ConfiguredTarget) -> bool {
-    let target = match target {
-        // For generated files, we want to query the generating rule for providers. genrule() for
-        // example doesn't attach providers like IncompatiblePlatformProvider to its outputs.
-        ConfiguredTarget::OutputFile(o) => ConfiguredTarget::Rule(o.get_generating_rule().clone()),
-        other => other.clone(),
-    };
-    target.get(&INCOMPATIBLE_PLATFORM_PROVIDER.key()).is_some()
+    RuleContextConstraintSemantics::check_for_incompatibility(target).is_incompatible()
 }
 
 /// Creates an incompatible target if it is "indirectly incompatible": one of its dependencies
@@ -266,11 +259,10 @@ fn create_incompatible_rule_configured_target(
     {
         // Create a dummy TestProvider instance so that other parts of the code base stay happy.
         // Even though this test will never execute, some code still expects the provider.
-        blaze_util::unported!(
-            "TestActionBuilder.createEmptyTestParams",
-            "incompatible test target {}",
-            configured_target_key.get_label()
-        );
+        let test_params = blaze_analysis::test::test_provider::create_empty_test_params();
+        provider_builder.add_native(blaze_analysis::test::test_provider::TestProvider::new(
+            test_params,
+        ));
     }
 
     let configured_target =

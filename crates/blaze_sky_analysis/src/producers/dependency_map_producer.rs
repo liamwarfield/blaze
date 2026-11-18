@@ -4,14 +4,18 @@
 //! `analysis/producers/AttributeConfiguration.java`.
 //!
 //! PORT: the state machines become straight-line functions over the blocking evaluator. Java
-//! runs the `DependencyProducer`s of one map concurrently and stores each result at its index;
-//! here they run one after another in index order, which yields the same map. Materializers
-//! (dormant dependencies) and aspects are not ported.
+//! runs the `DependencyProducer`s of one map concurrently and stores each result at its index.
+//! Here the part of each producer before its `PrerequisitesProducer` runs first, in index order
+//! (`plan_dependency`); the configured targets are then requested in the order of Java's
+//! lookup rounds (see `produce_dependency_map`, "request order") and each result is stored at
+//! its index, which yields the same map. Materializers (dormant dependencies) and aspects are
+//! not ported.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use blaze_analysis::analysis_services::AnalysisServices;
+use blaze_analysis::config::configuration_transition_event::ConfigurationTransitionEvent;
 use blaze_analysis::config::configured_attribute_mapper::ConfiguredAttributeMapper;
 use blaze_analysis::config::ordered_set_multimap::{
     DependencyLabels, PrerequisiteMap, labels_size,
@@ -25,11 +29,12 @@ use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_and_data::ConfiguredTargetAndData;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::dependency_kind::DependencyKind;
+use blaze_analysis::rule::rule_error_consumer::AnalysisRootCauseEvent;
 use blaze_analysis::toolchains::toolchain_context::ToolchainContext;
 use blaze_analysis::toolchains::{ToolchainCollection, UnloadedToolchainContext};
 use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_cmdline::Label;
-use blaze_events::{Event, EventHandler, StoredEventHandler};
+use blaze_events::{Event, EventHandler, ExtendedEventHandler, StoredEventHandler};
 use blaze_packages::exceptions::{NoSuchTargetException, NoSuchThingException};
 use blaze_packages::target::Target;
 use blaze_packages::target::target_utils::{
@@ -50,7 +55,9 @@ use crate::producers::errors::{
     DependencyEvaluationException, MissingEdgeError, TargetAndConfiguration,
     TransitiveDependencyState, configuration_id_of_key, event_location,
 };
-use crate::producers::transition_applier::{Produced, TransitionApplierError, apply_transition};
+use crate::producers::transition_applier::{
+    Produced, TransitionApplierError, apply_transition_with_lookup_rounds,
+};
 
 // -------------------------------------------------------------------------------------------
 // PrerequisiteParameters.
@@ -202,6 +209,7 @@ pub fn produce_dependency_map(
     // attributeResolutionStep(tasks, forMaterializers=false, ...).
     for for_materializers in [true, false] {
         // Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:285 DependencyMapProducer.attributeResolutionStep
+        let mut pending: Vec<PendingPrerequisites<'_>> = Vec::new();
         let mut index = 0;
         for (kind, labels) in dependency_labels {
             let for_dependency_resolution = is_for_dependency_resolution(kind);
@@ -235,7 +243,6 @@ pub fn produce_dependency_map(
                     }
                 }
             }
-            let aspects: Vec<Aspect> = Vec::new();
             for label in labels {
                 let current_index = index;
                 index += 1;
@@ -245,12 +252,76 @@ pub fn produce_dependency_map(
                 let Some(label) = label else {
                     continue;
                 };
-                match produce_dependency(env, parameters, kind, label, &aspects, &mut errors)? {
-                    None => missing = true,
-                    Some(None) => {}
-                    Some(Some(values)) => results[current_index] = Some(values),
+                // `tasks.enqueue(new DependencyProducer(...))`: the part of the producer that
+                // runs before its PrerequisitesProducer.
+                match plan_dependency(env, parameters, kind, label, &mut errors)? {
+                    PlannedDependency::Missing => missing = true,
+                    PlannedDependency::Error => {}
+                    PlannedDependency::Skipped => results[current_index] = Some(Vec::new()),
+                    PlannedDependency::Prerequisites {
+                        configuration,
+                        execution_platform_label,
+                        lookup_rounds,
+                    } => pending.push(PendingPrerequisites {
+                        index: current_index,
+                        kind,
+                        label,
+                        configuration,
+                        execution_platform_label,
+                        lookup_rounds,
+                    }),
                 }
             }
+        }
+
+        // PORT: request order. Java runs the DependencyProducers of one step concurrently, and
+        // the `Driver` puts every `tasks.lookUp` of one round into one Skyframe request (one dep
+        // group, in the order the tasks ran). A producer without a TransitionApplier
+        // (visibility, toolchain, output file rule) looks its configured target up in the first
+        // round; an attribute dependency does so after the lookup rounds of its transition
+        // (`lookup_rounds`), a round of 0 after the first group's producers. The configured
+        // target keys are requested here in that order: one request per round, in
+        // `dependencyLabels` order within the round; `compute_prerequisites` then reads them.
+        // (Java's order also depends on which keys are done when a round is requested: the
+        // continuation of a lookup that has to wait runs after the others of its round. That
+        // part depends on the evaluation's timing and is not reproduced.)
+        pending.sort_by_key(|p| lookup_order_key(p.lookup_rounds, p.index));
+        let mut next = 0;
+        while next < pending.len() {
+            let round = pending[next].lookup_rounds.unwrap_or(0);
+            let mut end = next;
+            let mut round_keys: Vec<blaze_skyframe::SkyKey> = Vec::new();
+            while end < pending.len() && pending[end].lookup_rounds.unwrap_or(0) == round {
+                let p = &pending[end];
+                for request in prerequisite_requests(
+                    p.label,
+                    p.execution_platform_label.as_ref(),
+                    &p.configuration,
+                ) {
+                    round_keys.push(blaze_skyframe::SkyKey::new(request.key));
+                }
+                end += 1;
+            }
+            // The values are read by `compute_prerequisites` below (a missing or failed
+            // dependency is handled there, as each ConfiguredTargetAndDataProducer does).
+            let _ = env.get_values_and_exceptions(&round_keys)?;
+            for p in &pending[next..end] {
+                match compute_prerequisites(
+                    env,
+                    parameters,
+                    p.kind,
+                    p.label,
+                    p.configuration.clone(),
+                    p.execution_platform_label.clone(),
+                    &[],
+                    &mut errors,
+                )? {
+                    None => missing = true,
+                    Some(None) => {}
+                    Some(Some(values)) => results[p.index] = Some(values),
+                }
+            }
+            next = end;
         }
     }
 
@@ -299,46 +370,74 @@ pub fn produce_dependency_map(
 // -------------------------------------------------------------------------------------------
 // DependencyProducer.
 
-/// Computes the values of one dependency edge (Java `DependencyProducer`). `Ok(Some(None))`:
-/// an error was accepted; `Ok(Some(Some(values)))`: one value per configuration (empty for a
-/// skipped dependency).
+/// Where the configured target lookups of a dependency are in the order of a target's Skyframe
+/// requests: the round after `lookup_rounds` rounds of transition lookups; in the first round,
+/// the producers without a TransitionApplier (`None`) before the others; `dependencyLabels`
+/// order (`index`) within a round. See the comment in [`produce_dependency_map`].
+fn lookup_order_key(lookup_rounds: Option<usize>, index: usize) -> (usize, bool, usize) {
+    (lookup_rounds.unwrap_or(0), lookup_rounds.is_some(), index)
+}
+
+/// A dependency whose `PrerequisitesProducer` has not run yet.
+struct PendingPrerequisites<'a> {
+    /// The index of the entry of `dependencyLabels`.
+    index: usize,
+    kind: &'a DependencyKind,
+    label: &'a Label,
+    configuration: AttributeConfiguration,
+    execution_platform_label: Option<Label>,
+    lookup_rounds: Option<usize>,
+}
+
+/// What a `DependencyProducer` decides before its `PrerequisitesProducer` runs.
+enum PlannedDependency {
+    /// A dependency is missing (Skyframe restart).
+    Missing,
+    /// An error was accepted.
+    Error,
+    /// `sink.acceptDependencyValues(index, EMPTY_OUTPUT)`: the dependency is skipped (see
+    /// `DependencyResolutionHelpers.getExecutionPlatformLabel`).
+    Skipped,
+    /// `computePrerequisites(configuration, executionPlatformLabel)`.
+    Prerequisites {
+        configuration: AttributeConfiguration,
+        execution_platform_label: Option<Label>,
+        /// `None`: the producer goes straight to its PrerequisitesProducer. `Some(n)`: it first
+        /// runs a TransitionApplier, whose state machines need `n` rounds of Skyframe lookups
+        /// (see `apply_transition_with_lookup_rounds`).
+        lookup_rounds: Option<usize>,
+    },
+}
+
+/// The part of `DependencyProducer` before `computePrerequisites` (Java `DependencyProducer.step`,
+/// `TransitionApplier` and `processTransitionResult`): the configuration(s) of one dependency
+/// edge.
 // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:132 DependencyProducer.step
-fn produce_dependency(
+fn plan_dependency(
     env: &mut Environment<'_>,
     parameters: &mut PrerequisiteParameters<'_>,
     kind: &DependencyKind,
     to_label: &Label,
-    propagating_aspects: &[Aspect],
     errors: &mut ErrorState,
-) -> Produced<Option<Vec<ConfiguredTargetAndData>>> {
+) -> Result<PlannedDependency, blaze_skyframe::Interrupted> {
     let attribute = kind.get_attribute();
 
     if *kind == DependencyKind::VISIBILITY_DEPENDENCY
         || attribute.is_some_and(|a| a.get_name() == "visibility")
     {
         // This is always a null transition because visibility targets are not configurable.
-        return compute_prerequisites(
-            env,
-            parameters,
-            kind,
-            to_label,
-            AttributeConfiguration::Visibility,
-            None,
-            propagating_aspects,
-            errors,
-        );
+        return Ok(PlannedDependency::Prerequisites {
+            configuration: AttributeConfiguration::Visibility,
+            execution_platform_label: None,
+            lookup_rounds: None,
+        });
     }
     if *kind == DependencyKind::TRANSITIVE_VISIBILITY_DEPENDENCY {
-        return compute_prerequisites(
-            env,
-            parameters,
-            kind,
-            to_label,
-            AttributeConfiguration::Visibility,
-            None,
-            propagating_aspects,
-            errors,
-        );
+        return Ok(PlannedDependency::Prerequisites {
+            configuration: AttributeConfiguration::Visibility,
+            execution_platform_label: None,
+            lookup_rounds: None,
+        });
     }
 
     // The logic of `DependencyResolutionHelpers.computeDependencyLabels` implies that
@@ -359,30 +458,20 @@ fn produce_dependency(
             kind.get_exec_group_name().expect("toolchain kind"),
             kind.is_base_target_toolchain(),
         );
-        return compute_prerequisites(
-            env,
-            parameters,
-            kind,
-            to_label,
-            AttributeConfiguration::Unary(configuration_key),
+        return Ok(PlannedDependency::Prerequisites {
+            configuration: AttributeConfiguration::Unary(configuration_key),
             execution_platform_label,
-            propagating_aspects,
-            errors,
-        );
+            lookup_rounds: None,
+        });
     }
 
     if *kind == DependencyKind::OUTPUT_FILE_RULE_DEPENDENCY {
         // There's no attribute so no attribute transition.
-        return compute_prerequisites(
-            env,
-            parameters,
-            kind,
-            to_label,
-            AttributeConfiguration::Unary(configuration_key),
-            None,
-            propagating_aspects,
-            errors,
-        );
+        return Ok(PlannedDependency::Prerequisites {
+            configuration: AttributeConfiguration::Unary(configuration_key),
+            execution_platform_label: None,
+            lookup_rounds: None,
+        });
     }
 
     let attribute = attribute.expect("attribute dependency kind");
@@ -399,15 +488,22 @@ fn produce_dependency(
     ) {
         ExecutionPlatformResult::Label(l) => transition_data.execution_platform = Some(l),
         ExecutionPlatformResult::NullLabel => transition_data.execution_platform = None,
-        ExecutionPlatformResult::Skip => return Ok(Some(Some(Vec::new()))),
+        ExecutionPlatformResult::Skip => return Ok(PlannedDependency::Skipped),
         ExecutionPlatformResult::Error(message) => {
             // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:617 ExecGroupErrorEmitter
             // The configuration value should already exist as a dependency so this lookup is
             // safe enough for error handling.
-            if env.get_value(configuration_key)?.is_none() {
-                return Ok(None);
-            }
-            // PORT: AnalysisRootCauseEvent (BEP) is not posted.
+            let Some(configuration) = env.get_value(configuration_key)? else {
+                return Ok(PlannedDependency::Missing);
+            };
+            // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:637 ExecGroupErrorEmitter.postEvent
+            parameters
+                .event_handler
+                .post(Arc::new(AnalysisRootCauseEvent {
+                    configuration_checksum: Some(configuration.checksum().to_owned()),
+                    label: to_label.clone(),
+                    error_message: message.clone(),
+                }));
             errors.accept_dependency_error(DependencyError::AspectEvaluation(
                 DependencyEvaluationException::of_creation(
                     ConfiguredValueCreationException::new(
@@ -424,7 +520,7 @@ fn produce_dependency(
                     false,
                 ),
             ));
-            return Ok(Some(None));
+            return Ok(PlannedDependency::Error);
         }
     }
     let attribute_transition =
@@ -432,11 +528,11 @@ fn produce_dependency(
             Ok(t) => t,
             Err(e) => {
                 errors.accept_dependency_error(DependencyError::TransitionCreation(e));
-                return Ok(Some(None));
+                return Ok(PlannedDependency::Error);
             }
         };
     // PORT: `sink.acceptTransition` feeds cquery's TransitionCollector (not ported).
-    let transitioned_configurations = match apply_transition(
+    let (transitioned_configurations, lookup_rounds) = match apply_transition_with_lookup_rounds(
         env,
         parameters.services,
         to_label,
@@ -444,7 +540,7 @@ fn produce_dependency(
         &attribute_transition,
         parameters.event_handler,
     )? {
-        None => return Ok(None),
+        None => return Ok(PlannedDependency::Missing),
         Some(Ok(t)) => t,
         Some(Err(e)) => {
             let error = match e {
@@ -467,14 +563,14 @@ fn produce_dependency(
                 TransitionApplierError::PlatformFlags(m) => DependencyError::InvalidPlatform(m),
             };
             errors.accept_dependency_error(error);
-            return Ok(Some(None));
+            return Ok(PlannedDependency::Error);
         }
     };
 
     // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:306 DependencyProducer.processTransitionResult
     let mut is_nonconfigurable_target_in_same_package = false;
     match get_target_in_same_package_without_skyframe(env, parameters.target(), to_label)? {
-        SamePackageTarget::Missing => return Ok(None),
+        SamePackageTarget::Missing => return Ok(PlannedDependency::Missing),
         SamePackageTarget::Found(to_target) => {
             is_nonconfigurable_target_in_same_package = !to_target.is_configurable();
         }
@@ -512,46 +608,46 @@ fn produce_dependency(
         } else {
             transitioned_configurations.keys().cloned().collect()
         };
-        return compute_prerequisites(
-            env,
-            parameters,
-            kind,
-            to_label,
-            AttributeConfiguration::NullTransitionKeys(transition_keys),
-            None,
-            propagating_aspects,
-            errors,
-        );
+        return Ok(PlannedDependency::Prerequisites {
+            configuration: AttributeConfiguration::NullTransitionKeys(transition_keys),
+            execution_platform_label: None,
+            lookup_rounds: Some(lookup_rounds),
+        });
     }
 
-    // PORT: ConfigurationTransitionEvent (BEP) is not posted.
+    let parent_checksum = parameters
+        .configuration_key()
+        .expect("NullPointerException: configuration key")
+        .get_options_checksum()
+        .to_owned();
+    for configuration in transitioned_configurations.values() {
+        let child_checksum = configuration.get_options_checksum();
+        if parent_checksum != child_checksum {
+            parameters
+                .event_handler
+                .post(Arc::new(ConfigurationTransitionEvent::create(
+                    &parent_checksum,
+                    child_checksum,
+                )));
+        }
+    }
 
     if transitioned_configurations.len() == 1 {
         if let Some(patched_configuration) = transitioned_configurations.get(PATCH_TRANSITION_KEY) {
             // It was a patch transition or no-op split transition.
-            return compute_prerequisites(
-                env,
-                parameters,
-                kind,
-                to_label,
-                AttributeConfiguration::Unary(patched_configuration.clone()),
-                None,
-                propagating_aspects,
-                errors,
-            );
+            return Ok(PlannedDependency::Prerequisites {
+                configuration: AttributeConfiguration::Unary(patched_configuration.clone()),
+                execution_platform_label: None,
+                lookup_rounds: Some(lookup_rounds),
+            });
         }
     }
 
-    compute_prerequisites(
-        env,
-        parameters,
-        kind,
-        to_label,
-        AttributeConfiguration::Split(transitioned_configurations),
-        None,
-        propagating_aspects,
-        errors,
-    )
+    Ok(PlannedDependency::Prerequisites {
+        configuration: AttributeConfiguration::Split(transitioned_configurations),
+        execution_platform_label: None,
+        lookup_rounds: Some(lookup_rounds),
+    })
 }
 
 // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:294 DependencyProducer.getMessageWithEdgeTransitionInfo
@@ -707,24 +803,23 @@ enum PrerequisitesError {
     Creation(ConfiguredValueCreationException),
 }
 
-/// Computes the configured targets of one dependency edge (Java `PrerequisitesProducer`).
+/// The configured target lookups of one dependency edge (Java `PrerequisitesProducer.step` and
+/// `getPrerequisiteKey`), in the order the ConfiguredTargetAndDataProducers are enqueued.
 // Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:131 PrerequisitesProducer.step
-fn produce_prerequisites(
-    env: &mut Environment<'_>,
-    parameters: &mut PrerequisiteParameters<'_>,
+fn prerequisite_requests(
     label: &Label,
-    execution_platform_label: Option<Label>,
-    configuration: AttributeConfiguration,
-    propagating_aspects: &[Aspect],
-) -> Produced<Result<Vec<ConfiguredTargetAndData>, Vec<PrerequisitesError>>> {
+    execution_platform_label: Option<&Label>,
+    configuration: &AttributeConfiguration,
+) -> Vec<ConfiguredTargetAndDataRequest> {
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:350 PrerequisitesProducer.getPrerequisiteKey
     let get_prerequisite_key = |configuration_key: Option<BuildConfigurationKey>| {
         ConfiguredTargetKey::builder()
             .set_label(label.clone())
             .set_configuration_key(configuration_key)
-            .set_execution_platform_label(execution_platform_label.clone())
+            .set_execution_platform_label(execution_platform_label.cloned())
             .build()
     };
-    let requests: Vec<ConfiguredTargetAndDataRequest> = match &configuration {
+    match configuration {
         AttributeConfiguration::Visibility => vec![ConfiguredTargetAndDataRequest {
             key: get_prerequisite_key(None),
             transition_keys: Vec::new(),
@@ -744,7 +839,21 @@ fn produce_prerequisites(
                 transition_keys: vec![transition_key.clone()],
             })
             .collect(),
-    };
+    }
+}
+
+/// Computes the configured targets of one dependency edge (Java `PrerequisitesProducer`).
+// Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:131 PrerequisitesProducer.step
+fn produce_prerequisites(
+    env: &mut Environment<'_>,
+    parameters: &mut PrerequisiteParameters<'_>,
+    label: &Label,
+    execution_platform_label: Option<Label>,
+    configuration: AttributeConfiguration,
+    propagating_aspects: &[Aspect],
+) -> Produced<Result<Vec<ConfiguredTargetAndData>, Vec<PrerequisitesError>>> {
+    let requests: Vec<ConfiguredTargetAndDataRequest> =
+        prerequisite_requests(label, execution_platform_label.as_ref(), &configuration);
     let outcomes =
         produce_configured_targets_and_data(env, &requests, parameters.transitive_state)?;
 
@@ -876,4 +985,141 @@ fn cleanup_values(
             .then_with(|| first.checksum().cmp(second.checksum()))
     });
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lookup_order_key;
+
+    /// The labels of the CONFIGURED_TARGET keys of each request ("Group") of `node` in the
+    /// oracle's `dump --skyframe=deps` excerpt of the graph-order scenario.
+    fn oracle_configured_target_groups(node: &str) -> Vec<Vec<String>> {
+        let dump = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/w4/scenarios/graph-order/DEPS.txt"
+        ))
+        .expect("scripts/w4/scenarios/graph-order/DEPS.txt");
+        let mut groups: Vec<Vec<String>> = Vec::new();
+        let mut in_node = false;
+        for line in dump.lines() {
+            if line.starts_with('#') {
+                continue;
+            }
+            if !line.starts_with(' ') {
+                in_node = line.starts_with(node);
+                continue;
+            }
+            if !in_node {
+                continue;
+            }
+            if line.starts_with("  Group ") {
+                groups.push(Vec::new());
+                continue;
+            }
+            let key = line.trim_start();
+            if key.starts_with("CONFIGURED_TARGET:") {
+                let start = key.find("label=").expect("label") + "label=".len();
+                let end = key.find(", config=").expect("config");
+                groups
+                    .last_mut()
+                    .expect("group")
+                    .push(key[start..end].to_owned());
+            }
+        }
+        groups.retain(|g| !g.is_empty());
+        groups
+    }
+
+    /// Oracle: scripts/w4/scenarios/graph-order (//pkg:top). The node's `dependencyLabels` are
+    /// its attributes' labels in attribute order, then the toolchain dependencies
+    /// (`DependencyResolutionHelpers.visitRule`).
+    #[test]
+    fn configured_target_lookups_follow_the_rounds_of_the_oracle_dump() {
+        let function_transition_allowlist = "@@bazel_tools//tools/allowlists/\
+            function_transition_allowlist:function_transition_allowlist";
+        let dependency_labels: Vec<(&str, Option<usize>)> = vec![
+            // visibility: no TransitionApplier.
+            ("//pkg:friends", None),
+            // exec_dep (cfg = "exec"): PLATFORM, PLATFORM_MAPPING.
+            ("//pkg:tool", Some(2)),
+            // target_deps: PLATFORM, PLATFORM_MAPPING.
+            ("//pkg:a", Some(2)),
+            ("//pkg:b", Some(2)),
+            // none_dep (cfg = config.none()): options without PlatformOptions, no lookup.
+            ("//pkg:c", Some(0)),
+            // srcs.
+            ("//pkg:x.txt", Some(2)),
+            ("//pkg:gen", Some(2)),
+            ("//pkg:y.txt", Some(2)),
+            // starlark_dep: STARLARK_BUILD_SETTINGS_DETAILS, PLATFORM, PLATFORM_MAPPING,
+            // BUILD_OPTIONS_SCOPE.
+            ("//pkg:d", Some(4)),
+            // last_dep.
+            ("//pkg:e", Some(2)),
+            // none_last.
+            ("//pkg:f", Some(0)),
+            // _allowlist_function_transition (exec).
+            (function_transition_allowlist, Some(2)),
+            // The toolchain of //pkg:tt: no TransitionApplier.
+            ("//pkg:tc_impl", None),
+        ];
+        let mut order: Vec<usize> = (0..dependency_labels.len()).collect();
+        order.sort_by_key(|&i| lookup_order_key(dependency_labels[i].1, i));
+        let got: Vec<&str> = order.iter().map(|&i| dependency_labels[i].0).collect();
+
+        let groups = oracle_configured_target_groups(
+            "CONFIGURED_TARGET:ConfiguredTargetKey{label=//pkg:top, \
+             config=BuildConfigurationKey[a7a71fd",
+        );
+        // Groups 3 and 6 are the select() key and the target_compatible_with constraint; the
+        // dependency map's requests follow.
+        assert_eq!(groups[0], ["//pkg:is_opt"]);
+        assert_eq!(groups[1], ["@@platforms//os:linux"]);
+        let first_round = &groups[2];
+        let same_configuration = &groups[3];
+        let exec_configuration = &groups[4];
+        let starlark_transition = &groups[5];
+        assert_eq!(groups.len(), 6);
+
+        // The first request: visibility and toolchain dependencies, then the attribute
+        // dependencies whose transition needs no lookup.
+        assert_eq!(&got[..first_round.len()], &first_round[..]);
+        // The dependency whose transition needs the most rounds is last.
+        assert_eq!(starlark_transition.len(), 1);
+        assert_eq!(got[got.len() - 1], starlark_transition[0]);
+        // In between, the dependencies whose transitions take two rounds. In this recording
+        // //pkg:top is the first node to request the PLATFORM node of the execution platform:
+        // the lookup had to wait, so the oracle looked the exec dependencies up one request
+        // after the others (the part of the order that depends on the evaluation's timing).
+        // Each of the two requests is in `dependencyLabels` order.
+        let two_rounds = &got[first_round.len()..got.len() - 1];
+        assert_eq!(
+            two_rounds.len(),
+            same_configuration.len() + exec_configuration.len()
+        );
+        let got_same: Vec<&str> = two_rounds
+            .iter()
+            .copied()
+            .filter(|l| same_configuration.iter().any(|s| s == l))
+            .collect();
+        assert_eq!(
+            got_same,
+            same_configuration
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
+        let got_exec: Vec<&str> = two_rounds
+            .iter()
+            .copied()
+            .filter(|l| exec_configuration.iter().any(|s| s == l))
+            .collect();
+        assert_eq!(
+            got_exec,
+            exec_configuration
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
+    }
 }

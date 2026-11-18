@@ -20,15 +20,9 @@
 //! sets) are memoized for the life of the process; their heaps live as long (single build per
 //! process). Depsets of the rule implementation being evaluated are not frozen yet and their
 //! addresses die with the module's heap, so they are memoized only inside a
-//! [`DepsetConversionScope`] (one per rule evaluation). Not covered (requested from
-//! blaze_starlark: a public `to_nested_set` taking the memo): a sub-depset that is first
-//! converted as part of a larger depset and later on its own, and a depset converted both before
-//! and after its module is frozen; those get equal but distinct nodes.
-//!
-//! PORT: keep-alive. The memo holds every converted NestedSet and its frozen depset for the life
-//! of the process (single build per process), so values handed out by
-//! `OwnedFrozenValue::unchecked_frozen_value` stay valid even where the caller cannot register
-//! the frozen heap with its own heap (`StarlarkValue::get_attr` has no frozen heap).
+//! [`DepsetConversionScope`] (one per rule evaluation). Not covered: a depset converted both
+//! before and after its module is frozen (the frozen copy has another address); those get equal
+//! but distinct nodes.
 
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
@@ -40,7 +34,7 @@ use blaze_actions::Artifact;
 use blaze_actions::analysis::starlark::starlark_file::{StarlarkFile, artifact_from_value};
 use blaze_collect::nestedset::{NestedSetChild, NestedSetChildren};
 use blaze_collect::{NestedSet, Order};
-use blaze_starlark::depset::{Depset, DepsetChild, DepsetChildren, FrozenDepset};
+use blaze_starlark::depset::{Depset, DepsetChild, DepsetChildren, DepsetNodeMemo, FrozenDepset};
 use parking_lot::Mutex;
 use starlark::values::{FrozenHeap, FrozenValue, OwnedFrozenValue, Value};
 
@@ -94,6 +88,54 @@ impl Drop for DepsetConversionScope {
     }
 }
 
+/// The process-wide and per-evaluation memos as `to_nested_set_with_memo`'s memo.
+struct SharedMemo<E>(std::marker::PhantomData<E>);
+
+impl<E> DepsetNodeMemo<E> for SharedMemo<E>
+where
+    E: Clone + Eq + Hash + Send + Sync + 'static,
+{
+    fn get(&mut self, node: usize, frozen: bool) -> Option<NestedSet<E>> {
+        let key = (TypeId::of::<E>(), node);
+        if frozen {
+            return FROZEN_TO_SET.lock().get(&key).map(|set| {
+                set.downcast_ref::<NestedSet<E>>()
+                    .expect("keyed by element type")
+                    .clone()
+            });
+        }
+        UNFROZEN_TO_SET.with(|s| {
+            s.borrow().last().and_then(|m| {
+                m.get(&key).map(|set| {
+                    set.downcast_ref::<NestedSet<E>>()
+                        .expect("keyed by element type")
+                        .clone()
+                })
+            })
+        })
+    }
+
+    fn put(&mut self, node: usize, frozen: bool, set: NestedSet<E>) -> NestedSet<E> {
+        let key = (TypeId::of::<E>(), node);
+        if frozen {
+            // A concurrent conversion of the same depset may have won: keep the first, as there
+            // is one set per depset.
+            let mut memo = FROZEN_TO_SET.lock();
+            let entry = memo.entry(key).or_insert_with(|| Box::new(set));
+            return entry
+                .downcast_ref::<NestedSet<E>>()
+                .expect("keyed by element type")
+                .clone();
+        }
+        UNFROZEN_TO_SET.with(|s| {
+            if let Some(m) = s.borrow_mut().last_mut() {
+                m.insert(key, Box::new(set.clone()));
+            }
+        });
+        set
+    }
+}
+
 /// `Depset.getSet`: the `NestedSet` of depset `v` (which must be the value `d` was unpacked
 /// from), converting elements with `f`. See the module comment for the identity it keeps.
 // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:207 Depset.getSet
@@ -105,43 +147,11 @@ pub fn depset_to_nested_set_shared<'v, E>(
 where
     E: Clone + Eq + Hash + Send + Sync + 'static,
 {
-    let key = (TypeId::of::<E>(), d as *const Depset<'v> as usize);
-    if v.unpack_frozen().is_some() {
-        if let Some(set) = FROZEN_TO_SET.lock().get(&key) {
-            return Ok(set
-                .downcast_ref::<NestedSet<E>>()
-                .expect("keyed by element type")
-                .clone());
-        }
-        let set = d.to_nested_set(f)?;
-        // A concurrent conversion of the same depset may have won: keep the first, as there is
-        // one set per depset.
-        let mut memo = FROZEN_TO_SET.lock();
-        let entry = memo.entry(key).or_insert_with(|| Box::new(set));
-        return Ok(entry
-            .downcast_ref::<NestedSet<E>>()
-            .expect("keyed by element type")
-            .clone());
-    }
-    let cached = UNFROZEN_TO_SET.with(|s| {
-        s.borrow().last().and_then(|m| {
-            m.get(&key).map(|set| {
-                set.downcast_ref::<NestedSet<E>>()
-                    .expect("keyed by element type")
-                    .clone()
-            })
-        })
-    });
-    if let Some(set) = cached {
-        return Ok(set);
-    }
-    let set = d.to_nested_set(f)?;
-    UNFROZEN_TO_SET.with(|s| {
-        if let Some(m) = s.borrow_mut().last_mut() {
-            m.insert(key, Box::new(set.clone()));
-        }
-    });
-    Ok(set)
+    d.to_nested_set_with_memo(
+        v.unpack_frozen().is_some(),
+        f,
+        &mut SharedMemo(std::marker::PhantomData),
+    )
 }
 
 /// Converts `set` to a frozen Starlark depset with the same node structure, converting elements

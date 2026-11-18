@@ -1,0 +1,11 @@
+# Errors while creating the top-level configuration key or resolving toolchains
+# (SkyframeExecutor.createBuildConfigurationKey / getConfiguration, ToolchainException paths).
+run build //:x --platforms=//:p
+run build //:x --platforms=//:x
+run build //:x --platforms=//:nosuch
+run cquery //:x --platforms=//nopkg:p
+run build //:x --host_platform=//:x
+run build //:x --extra_toolchains=//:x
+run build //:x --extra_toolchains=//:nosuch
+run build //:x --extra_execution_platforms=//:x
+run aquery //:x --platforms=//:x

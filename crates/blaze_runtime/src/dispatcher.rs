@@ -74,8 +74,12 @@ impl BlazeCommandDispatcher {
 
     /// Executes a single command.
     ///
-    /// PORT: invocation policy, idle tasks, command extensions and the terminal size monitor are
-    /// not ported; `firstContactTimeMillis` is not used yet.
+    /// PORT: a non-empty invocation policy fails loudly where the runtime receives it
+    /// (`BlazeRuntime::batch_main`, `server_main_single_command`). PORT: skipped, incremental:
+    /// the idle tasks run between the commands of a server. Command extensions belong to the
+    /// gRPC request, which the in-process server does not have. The terminal size monitor only
+    /// serves the cursor-control UI. `firstContactTimeMillis` is the time the environment is
+    /// created (see `CommandEnvironment::get_command_start_time`).
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:192 BlazeCommandDispatcher.exec
     pub fn exec(
         &self,
@@ -112,8 +116,13 @@ impl BlazeCommandDispatcher {
             );
         };
 
-        // Take the exclusive server lock. In-process there is one command per server, so the lock
-        // is always free; the busy-wait of Java is kept for the WAIT/ERROR_OUT messages.
+        // Take the exclusive server lock.
+        // PORT: Blaze runs one command per (in-process) server, so this lock is always free here.
+        // What excludes a second Blaze process on the same output base is the client: it holds
+        // the exclusive output base lock (and the shared install base lock) for the whole
+        // in-process command (blaze_client `BlazeServer::communicate`), so a second client waits
+        // or exits in `AcquireLock` with Bazel's `--batch` messages, never with the server's
+        // "Another command (...) is running" below.
         {
             let current = self.current_client_description.lock();
             if let Some(current) = current.as_ref() {
@@ -240,7 +249,8 @@ impl BlazeCommandDispatcher {
         let common_options = options
             .get_options::<CommonCommandOptions>()
             .expect("CommonCommandOptions");
-        // PORT: profiler and Starlark CPU profiler setup are not ported.
+        // PORT: skipped, profiling: the profiler (--profile, --generate_json_trace_profile) and
+        // the Starlark CPU profiler (--starlark_cpu_profile) are not started.
 
         let reporter = env.get_reporter().clone();
         // Both the call to env.decideKeepIncrementalState() and module.beforeCommand() may emit
@@ -248,6 +258,8 @@ impl BlazeCommandDispatcher {
         // events.
         let module_events = Arc::new(blaze_events::StoredEventHandler::new());
         reporter.add_handler(module_events.clone());
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:490 BlazeCommandDispatcher.execExclusively
+        env.decide_keep_incremental_state();
         if let Some(e) = env.take_pending_exception() {
             // BlazeModuleEnvironment.exit before beforeCommand: Java reports it from
             // CommandEnvironment.beforeCommand (throwPendingException).
@@ -267,6 +279,25 @@ impl BlazeCommandDispatcher {
         let module_events_handler: Arc<dyn EventHandler> = module_events.clone();
         reporter.remove_handler(&module_events_handler);
 
+        // Setup stdout / stderr: outErr = tee(outErr, env.getOutputListeners()).
+        // PORT: the only output listener of Bazel's modules that is ported here is
+        // CommandLogModule's, and of it the part that runs with the default options: unlinking
+        // the command log of a previous build. Writing the log (--write_command_log) fails
+        // loudly in crate::unported_options; BuildEventServiceModule's listener (stdout/stderr
+        // in the BEP's progress events) is with the BEP (crate::commands::bep).
+        // Java: com/google/devtools/build/lib/runtime/CommandLogModule.java:52 CommandLogModule.getOutputListener
+        if !common_options.redirect_local_instrumentation_output_writes {
+            // When instrumentation output are locally written, we need to unlink old local
+            // command log from previous build, if present.
+            let command_log = env.get_output_base().get_relative_str("command.log");
+            if let Err(io_exception) = command_log.delete() {
+                env.get_reporter().handle(&Event::warn(format!(
+                    "Unable to delete command log: {}",
+                    io_exception
+                )));
+            }
+        }
+
         let early_exit_code = early_exit_code.unwrap();
         // Early exit. We need to guarantee that the ErrOut and Reporter setup below never error
         // out, so any invariants they need must be checked before this point.
@@ -277,6 +308,7 @@ impl BlazeCommandDispatcher {
                 &stored_event_handler,
                 &module_events,
             );
+            post_no_build_event(&env);
             let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
             return self.after_command(&mut env, result, &out_err);
         }
@@ -293,7 +325,8 @@ impl BlazeCommandDispatcher {
             }
         }
         // PORT: bufferOut/bufferErr (BufferedOutputStream) only change write granularity.
-        // PORT: DebugLoggerConfigurator.setupLogging(verbosity) is not ported.
+        // PORT: DebugLoggerConfigurator.setupLogging(verbosity) sets the level of the server's
+        // java.util.logging loggers; this crate writes no such log lines.
         let handler = Arc::new(UiEventHandler::new(
             out_err.clone(),
             &ui_event_handler_options(&event_handler_options),
@@ -307,8 +340,9 @@ impl BlazeCommandDispatcher {
         ));
         reporter.add_handler(handler.clone());
         env.set_ui_event_handler(handler.clone());
-        // PORT: the ANSI-allowing handler for --color=no (registerAnsiAllowingHandler) is not
-        // ported; no W1 command switches to it.
+        // PORT: the ANSI-allowing handler for --color=no (registerAnsiAllowingHandler) is only
+        // switched to by the `run` command (Reporter.switchToAnsiAllowingHandler), whose `exec`
+        // is not ported and fails loudly.
 
         // PORT: warnIfUsingUnusupportedEncoding: the in-process server's sun.jnu.encoding is the
         // ISO-8859-1 the client forces (see InfoItem character-encoding), which is supported.
@@ -390,7 +424,7 @@ impl BlazeCommandDispatcher {
                 ) {
                     Ok(skyframe_executor) => skyframe_executor,
                     Err(result) => {
-                        // PORT: NoBuildEvent (no event bus).
+                        post_no_build_event(&env);
                         return self.after_command(&mut env, result, &out_err);
                     }
                 };
@@ -404,7 +438,8 @@ impl BlazeCommandDispatcher {
                 boolean_option_value(&options, "incompatible_remove_ctx_bazel_py_fragment");
             // Compute the repo mapping of the main repo and re-parse options so that we get correct
             // values for label-typed options.
-            // PORT: MainRepoMappingComputationStartingEvent (no event bus) and the profiler task.
+            // PORT: MainRepoMappingComputationStartingEvent only feeds the UI's progress bar
+            // (cursor-control UI). PORT: skipped, profiling: the profiler task.
             // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:701 BlazeCommandDispatcher.execExclusively
             let event_handler: Arc<dyn blaze_events::ExtendedEventHandler> = stored_events.clone();
             let interrupted = || {
@@ -473,13 +508,14 @@ impl BlazeCommandDispatcher {
                 }
             }
             if !early_exit_code.is_success() {
-                // PORT: NoBuildEvent (no event bus).
+                post_no_build_event(&env);
                 let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
                 return self.after_command(&mut env, result, &out_err);
             }
             let mut options_parser = options_parser.expect("the options parser was rebuilt");
             // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:739 BlazeCommandDispatcher.execExclusively
-            // PORT: the profiler task and invocation policy flags are not ported.
+            // PORT: skipped, profiling: the profiler task. A non-empty invocation policy fails
+            // loudly where the runtime receives it, so there are no policy flags to re-apply.
             let mut stored_second_pass_event_handler = StoredEventHandler::default();
             let early_exit_code = self.parse_options(
                 command.as_ref(),
@@ -491,7 +527,7 @@ impl BlazeCommandDispatcher {
                 for event in stored_second_pass_event_handler.get_events() {
                     reporter.handle(&to_event(event));
                 }
-                // PORT: NoBuildEvent (no event bus).
+                post_no_build_event(&env);
                 let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
                 return self.after_command(&mut env, result, &out_err);
             }
@@ -514,7 +550,7 @@ impl BlazeCommandDispatcher {
             );
             drop(skyframe_executor);
             if !early_exit_code.is_success() {
-                // PORT: NoBuildEvent (no event bus).
+                post_no_build_event(&env);
                 let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
                 return self.after_command(&mut env, result, &out_err);
             }
@@ -523,18 +559,33 @@ impl BlazeCommandDispatcher {
             options = Arc::new(options_parser);
         }
 
-        // PORT: the command-line BEP events (OriginalCommandLineEvent, ...) are not posted (no
-        // event bus yet).
+        // PORT: the command-line BEP events (OriginalUnstructuredCommandLineEvent,
+        // OriginalCommandLineEvent, CanonicalCommandLineEvent, the tool command line) are posted
+        // by the commands that produce a Build Event Protocol (build and test:
+        // crate::commands::bep::BepCommandSupport::before_command); for the other commands a
+        // requested BEP fails loudly in crate::unported_options.
+
+        // PORT: the options of module hooks that are not ported fail loudly here, where the
+        // options are final (see crate::unported_options).
+        crate::unported_options::check_unported_options(command_annotation, &options);
 
         // Run the command.
         let result = command.exec(&mut env, &options);
-        // PORT: env.precompleteCommand (module exit codes) is not ported.
+        // PORT: env.precompleteCommand posts the CommandPrecompleteEvent, whose only subscriber
+        // with an effect in Bazel is the MetricsCollector (the BuildMetricsEvent); build and test
+        // run it with their BEP (crate::commands::build::run_build). No module returns an exit
+        // code from it.
         self.after_command(&mut env, result, &out_err)
     }
 
     /// `CommandEnvironment.beforeCommand`.
-    /// PORT: W1 subset: throws the pending module exception and runs the runtime hook; timestamp
-    /// granularity, output service, client environment and Skyframe sync are not ported.
+    /// PORT: throws the pending module exception and runs the runtime hook. BuildMetadataEvent
+    /// and GotOptionsEvent are posted with the BEP of build and test
+    /// (crate::commands::bep::BepCommandSupport::before_command). No Bazel module provides an
+    /// output service besides the remote module's (the remote output service fails loudly in
+    /// crate::unported_options). PORT: skipped, incremental: the timestamp granularity monitor,
+    /// the client environment and package path synced into the server's SkyframeExecutor
+    /// (Blaze's commands create their executor from the same options).
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:919 CommandEnvironment.beforeCommand
     fn env_before_command(
         &self,
@@ -843,6 +894,27 @@ fn process_options_parsing_exception(
 }
 
 // Java: com/google/devtools/build/lib/util/InterruptedFailureDetails.java:30 InterruptedFailureDetails.detailedExitCode
+/// `env.getEventBus().post(new NoBuildEvent(...))` of a command that stops before it runs: the
+/// Build Event Protocol of such a command consists of the events posted so far and this one.
+///
+/// PORT: Blaze's BEP support starts inside `build` and `test` (crate::commands::bep), after the
+/// dispatcher's early exits, so a command that requested BEP files and stops here would leave
+/// none; that fails loudly. Without BEP files the event has no subscriber.
+// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:516 BlazeCommandDispatcher.execExclusively
+fn post_no_build_event(env: &CommandEnvironment) {
+    use blaze_optdefs::misc::build_event_stream_options::BuildEventStreamOptions;
+    if let Some(o) = env.get_options().get_options::<BuildEventStreamOptions>()
+        && (!o.build_event_text_file.is_empty()
+            || !o.build_event_binary_file.is_empty()
+            || !o.build_event_json_file.is_empty())
+    {
+        blaze_util::unported!(
+            "NoBuildEvent",
+            "the Build Event Protocol (--build_event_*_file) of a command that stops before it runs"
+        );
+    }
+}
+
 fn interrupted_detailed_exit_code(message: &str) -> DetailedExitCode {
     DetailedExitCode::of(FailureDetail {
         message: message.to_string(),

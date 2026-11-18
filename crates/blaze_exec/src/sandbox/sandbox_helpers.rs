@@ -152,7 +152,7 @@ pub fn move_outputs(
         if source.rename_to(&target).is_err() {
             // Assume that the rename failed because it was cross-device.
             // TODO(tjgq): Distinguish a cross-device rename from other errors.
-            // PORT: logging dropped (on the first copy: "Moving files out of the sandbox (e.g.
+            // PORT: skipped, tracing (Java log) (on the first copy: "Moving files out of the sandbox (e.g.
             // from %s to %s) had to be done with a file copy, which is detrimental to
             // performance; are the two trees in different file systems?").
             let _first_copy = WARNED_ABOUT_MOVES_BEING_COPIES

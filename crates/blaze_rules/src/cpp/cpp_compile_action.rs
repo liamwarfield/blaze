@@ -1382,9 +1382,9 @@ impl CppCompileAction {
         let mut i = 0;
         while i < copts.len() {
             let opt = &copts[i];
-            if opt.starts_with("-iquote") {
+            if let Some(rest) = opt.strip_prefix("-iquote") {
                 if opt.len() > 7 {
-                    result.push(PathFragment::create(java_trim(&opt[7..])));
+                    result.push(PathFragment::create(java_trim(rest)));
                 } else if i + 1 < copts.len() {
                     i += 1;
                     result.push(PathFragment::create(&copts[i]));
@@ -1530,9 +1530,9 @@ impl CppCompileAction {
             // 2. For relative paths, one starting ../ is okay for getting to a sibling
             //    repository.
             let prefix: &PathFragment = if sibling_repository_layout {
-                &*EXPERIMENTAL_EXTERNAL_PATH_PREFIX
+                &EXPERIMENTAL_EXTERNAL_PATH_PREFIX
             } else {
-                &*EXTERNAL_PATH_PREFIX
+                &EXTERNAL_PATH_PREFIX
             };
             if include_path.starts_with(prefix) {
                 include_path = include_path.relative_to(prefix);
@@ -1720,19 +1720,16 @@ impl CppCompileAction {
         }
 
         let outputs = self.get_outputs();
-        let mandatory_outputs: Option<HashSet<ActionInputRef>> = match &self.gcno_file {
-            // All outputs must be created.
-            None => None,
-            // In coverage mode, the .gcno file is not produced for an empty translation unit, but
-            // the spawn should still succeed.
-            Some(gcno_file) => Some(
+        // Without a .gcno file all outputs must be created. In coverage mode, the .gcno file is
+        // not produced for an empty translation unit, but the spawn should still succeed.
+        let mandatory_outputs: Option<HashSet<ActionInputRef>> =
+            self.gcno_file.as_ref().map(|gcno_file| {
                 outputs
                     .iter()
                     .filter(|output| *output != gcno_file)
                     .map(artifact_input)
-                    .collect(),
-            ),
-        };
+                    .collect()
+            });
 
         let arguments = self
             .get_arguments_with(path_mapper)

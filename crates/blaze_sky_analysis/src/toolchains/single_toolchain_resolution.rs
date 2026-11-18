@@ -151,7 +151,7 @@ pub fn single_toolchain_resolution_function(
     }
     let configuration = configuration.unwrap();
 
-    // Check if debug output should be generated.
+    // Check if we are debugging the target or the toolchain type.
     let debug = key.debug_target()
         || configuration
             .get_fragment::<PlatformConfiguration>()
@@ -169,7 +169,6 @@ pub fn single_toolchain_resolution_function(
         Err(e) => return Err(SkyFunctionException::new(e, Transience::Persistent).into()),
     };
 
-    // Find the right one.
     let Some(platforms) = get_platforms(
         env,
         key.target_platform_key(),
@@ -179,14 +178,19 @@ pub fn single_toolchain_resolution_function(
         return Ok(None);
     };
 
+    // PORT: SingleToolchainResolutionDebugPrinter is not ported. Without debugging every call on
+    // it is a no-op, so with `--toolchain_resolution_debug` matching this target or toolchain
+    // type the function stops here, and the debugPrinter calls below are left out.
     if debug {
         blaze_util::unported!("SingleToolchainResolutionDebugPrinter.create");
     }
     let target_platform = platforms[key.target_platform_key()].clone();
 
     // Describe rejected toolchains if any are present.
-    // PORT: only the debug printer reads `toolchains.rejected_toolchains`.
+    // (debugPrinter.describeRejectedToolchains: `toolchains.rejected_toolchains` is null unless
+    // debugging.)
 
+    // Find the right one.
     let toolchain_resolution = resolve_constraints(
         key.toolchain_type(),
         key.toolchain_type_info(),
@@ -244,18 +248,17 @@ fn resolve_constraints(
         .collect();
 
     for toolchain in filtered_toolchains {
-        // Make sure the target setting matches but watch out for resolution errors.
-
-        // Make sure the target platform matches.
+        // Make sure the target platform matches. A toolchain with use_target_platform_constraints
+        // matches any target platform.
         if !toolchain.has_target_to_exec_constraints()
             && !check_constraints(toolchain.target_constraints(), target_platform)
         {
             continue;
         }
 
-        // Find the matching execution platforms.
         let mut done = true;
 
+        // Find the matching execution platforms.
         for execution_platform_key in available_execution_platform_keys {
             // Only check the toolchains if this is a new platform.
             if platform_keys_seen.contains(execution_platform_key) {
@@ -319,11 +322,12 @@ fn check_constraints(
 
     // If a constraint_setting has a default_constraint_value, and the platform
     // sets a non-default constraint value for the same constraint_setting, then
-    // even if the toolchain doesn't set a constraint value for this
-    // constraint_setting, it should still be considered a mismatch.
+    // even toolchains with no reference to that constraint_setting will detect
+    // a mismatch here. This manifests as a toolchain resolution failure (#8778).
     //
-    // The only exception is if the toolchain sets a value for the constraint_setting, and that
-    // value is the default.
+    // To allow combining rulesets with their own toolchains in a single top-level
+    // workspace, toolchains that do not reference a constraint_setting should not
+    // be forced to match with it.
     let mismatch_settings_with_default: Vec<_> = mismatch_settings
         .into_iter()
         .filter(|s| toolchain_constraints.has_without_default(s))

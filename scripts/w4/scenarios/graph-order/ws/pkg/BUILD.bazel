@@ -1,0 +1,75 @@
+load(":defs.bzl", "flag", "leaf", "node", "tc_impl")
+
+package_group(
+    name = "friends",
+    packages = ["//..."],
+)
+
+flag(
+    name = "flag",
+    build_setting_default = "default",
+)
+
+toolchain_type(name = "tt")
+
+tc_impl(name = "tc_impl")
+
+toolchain(
+    name = "tc",
+    toolchain = ":tc_impl",
+    toolchain_type = ":tt",
+)
+
+config_setting(
+    name = "is_opt",
+    values = {"compilation_mode": "opt"},
+)
+
+leaf(name = "a")
+
+leaf(name = "b")
+
+leaf(name = "c")
+
+leaf(name = "d")
+
+leaf(name = "e")
+
+leaf(name = "f")
+
+leaf(name = "g")
+
+leaf(name = "tool")
+
+node(
+    name = "top",
+    srcs = [
+        "x.txt",
+        ":gen",
+    ] + select({
+        ":is_opt": [],
+        "//conditions:default": ["y.txt"],
+    }),
+    exec_dep = ":tool",
+    last_dep = ":e",
+    none_dep = ":c",
+    none_last = ":f",
+    starlark_dep = ":d",
+    target_compatible_with = ["@platforms//os:linux"],
+    target_deps = [
+        ":a",
+        ":b",
+    ],
+    visibility = [":friends"],
+)
+
+genrule(
+    name = "gen",
+    outs = ["gen.out"],
+    cmd = "echo gen > $@",
+)
+
+node(
+    name = "plain",
+    target_deps = [":g"],
+)

@@ -9,6 +9,7 @@ pub mod http_downloader;
 pub mod http_stream;
 pub mod http_utils;
 pub mod proxy_helper;
+pub mod socket_transport;
 pub mod streams;
 pub mod url_rewriter;
 

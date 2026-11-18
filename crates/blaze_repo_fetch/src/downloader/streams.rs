@@ -310,8 +310,9 @@ impl InputStream for CheckContentLengthInputStream {
             // HttpURLConnection (`sun.net.www.MeteredStream.read` hands on the socket's -1), so
             // Java reaches `checkContentLength()` here and throws
             // ContentLengthMismatchException with the bytes read so far, which
-            // `DownloadManager.shouldRetryDownload` retries. The Rust transport (ureq) reports
-            // the same condition as an `UnexpectedEof` error instead; it is the end of stream.
+            // `DownloadManager.shouldRetryDownload` retries. The default transport
+            // (`socket_transport`) ends the stream the same way; a transport that reports the
+            // condition as an `UnexpectedEof` error instead is treated as the end of stream.
             Err(e) if is_short_body(&e) => 0,
             Err(e) => return Err(e),
         };

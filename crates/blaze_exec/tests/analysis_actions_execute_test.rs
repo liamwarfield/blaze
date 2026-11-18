@@ -530,9 +530,31 @@ mod other_symlink_actions {
             vec![tree_artifact.clone()],
         );
         let ctx = dirs.context();
+        // createRunfilesArtifactValue reads the metadata of every input of the action.
+        let file_metadata = blaze_exec::actions::FileArtifactValue::create_for_normal_file(
+            Some(vec![1, 2, 3]),
+            None,
+            3,
+        );
+        ctx.metadata.metadata.lock().insert(
+            file.get_exec_path_string().to_string(),
+            file_metadata.clone(),
+        );
         let result = execute(&ctx, &action).unwrap();
         assert!(result.is_empty());
         let data = ctx.rich_artifact_data.lock().clone().unwrap();
+        // RunfilesArtifactValue.forEachFile: the action's inputs with their metadata.
+        let mut files = Vec::new();
+        data.for_each_file(|artifact, metadata| {
+            files.push((artifact.get_exec_path().clone(), metadata.clone()));
+        });
+        assert_eq!(files, vec![(file.get_exec_path().clone(), file_metadata)]);
+        // RunfilesArtifactValue.getMetadata: a runfiles proxy with the digest of the layout and
+        // of the inputs.
+        assert!(matches!(
+            data.get_metadata(),
+            blaze_exec::actions::FileArtifactValue::RunfilesProxy { .. }
+        ));
         let t = data.get_runfiles_tree();
         assert_eq!(&t.get_exec_path(), tree_artifact.get_exec_path());
         assert_eq!(t.get_workspace_name(), "_main");

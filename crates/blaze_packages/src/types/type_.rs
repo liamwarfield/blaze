@@ -330,11 +330,10 @@ impl Type {
     }
 
     /// Copies a Starlark value to an immutable one, converting label strings to Labels and type
-    /// checking it (Java `Type.copyAndLiftStarlarkValue`). Lists and dicts are immutable
-    /// (`StarlarkList.immutableCopyOf`, `Dict.immutableCopyOf`: starlark-rust patches 0016 and
-    /// 0018); mutating one fails with "trying to mutate a frozen list value".
-    // PORT: a `string_set` value is still a mutable starlark-rust set (Java
-    // `StarlarkSet.immutableCopyOf`): the vendored crate has no immutable set yet.
+    /// checking it (Java `Type.copyAndLiftStarlarkValue`). Lists, dicts and sets are immutable
+    /// (`StarlarkList.immutableCopyOf`, `Dict.immutableCopyOf`, `StarlarkSet.immutableCopyOf`:
+    /// starlark-rust patches 0016, 0018 and 0025); mutating one fails with "trying to mutate a
+    /// frozen list value".
     // Java: com/google/devtools/build/lib/packages/Type.java:126 Type.copyAndLiftStarlarkValue
     pub fn copy_and_lift_starlark_value<'v>(
         self,
@@ -1084,8 +1083,17 @@ pub(crate) fn alloc_immutable_dict<'v>(
     starlark::values::dict::alloc_immutable_dict(heap, Dict::new(content))
 }
 
+/// Java `StarlarkSet.immutableCopyOf(elems)`: an immutable set of `elems` in order, without
+/// duplicates. Mutating it fails with "trying to mutate a frozen set value". Elements must be
+/// hashable (Java assumes it without checking; they are strings here).
+// Java: net/starlark/java/eval/StarlarkSet.java:374 StarlarkSet.immutableCopyOf
+pub(crate) fn alloc_immutable_set<'v>(heap: Heap<'v>, elems: Vec<Value<'v>>) -> Value<'v> {
+    starlark::values::set::alloc_immutable_set(heap, elems).expect("set elements are hashable")
+}
+
 /// A native value as an immutable Starlark value (Java: the converted object wrapped by
-/// `StarlarkList.immutableCopyOf` / `Dict.immutableCopyOf` in `copyAndLiftStarlarkValue`).
+/// `StarlarkList.immutableCopyOf` / `Dict.immutableCopyOf` / `StarlarkSet.immutableCopyOf` in
+/// `copyAndLiftStarlarkValue`).
 // Java: com/google/devtools/build/lib/packages/Type.java:770 Type.ListType.copyAndLiftStarlarkValue
 pub(crate) fn native_to_starlark<'v>(value: &AttrValue, heap: Heap<'v>) -> Value<'v> {
     // Elements are allocated before their container (no allocation while a container is being
@@ -1121,12 +1129,8 @@ pub(crate) fn native_to_starlark<'v>(value: &AttrValue, heap: Heap<'v>) -> Value
                 .map(|(k, v)| (string(k), list(v.iter().map(label).collect())))
                 .collect(),
         ),
-        // Java StarlarkSet.immutableCopyOf. PORT: a mutable starlark-rust set (the vendored crate
-        // has no immutable set, unlike lists and dicts above); strings are always hashable.
-        AttrValue::StringSet(l) => {
-            let items: Vec<Value<'v>> = l.iter().map(|s| string(s)).collect();
-            starlark::values::set::alloc_set(heap, items).expect("strings are hashable")
-        }
+        // Java: com/google/devtools/build/lib/packages/Type.java:846 Type.SetType.copyAndLiftStarlarkValue
+        AttrValue::StringSet(l) => alloc_immutable_set(heap, l.iter().map(|s| string(s)).collect()),
         other => panic!("not a native attribute value: {other:?}"),
     }
 }
@@ -1197,5 +1201,35 @@ impl fmt::Display for Type {
                 t.get_value_type().unwrap()
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod string_set_lift_tests {
+    use starlark::values::set::alloc_set;
+    use starlark::values::set::set_is_immutable;
+
+    use super::Type;
+    use crate::types::test_util::with_eval;
+
+    // Java: Type.java:846 SetType.copyAndLiftStarlarkValue returns
+    // `StarlarkSet.immutableCopyOf(convert(x, ..))`: a copy whose `isImmutable()` is true
+    // (StarlarkSet.java:187, mutability frozen), whatever the mutability of `x`. (Not a JUnit
+    // port: TypeTest has no test of set lifting.)
+    #[test]
+    fn copy_and_lift_starlark_set_is_immutable() {
+        with_eval(|eval| {
+            let heap = eval.heap();
+            let input = alloc_set(heap, vec![heap.alloc("b"), heap.alloc("a")]).unwrap();
+            assert_eq!(set_is_immutable(input), Some(false));
+            let converted = Type::StringSet
+                .copy_and_lift_starlark_value(input, None, None, heap)
+                .unwrap();
+            assert_eq!(converted.get_type(), "set");
+            assert_eq!(converted.to_repr(), "set([\"b\", \"a\"])");
+            assert!(!converted.ptr_eq(input));
+            assert_eq!(set_is_immutable(converted), Some(true));
+            assert_eq!(set_is_immutable(input), Some(false));
+        });
     }
 }

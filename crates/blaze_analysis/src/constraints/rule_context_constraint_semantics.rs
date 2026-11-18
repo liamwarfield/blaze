@@ -852,6 +852,66 @@ impl RuleContextConstraintSemantics {
     }
 }
 
+/// Provides information about a target's incompatibility.
+///
+/// After calling `check_for_incompatibility()`, the `is_incompatible` getter tells you whether
+/// the target is incompatible. If the target is incompatible, then `underlying_target` tells you
+/// which underlying target provided the incompatibility. For the vast majority of targets this is
+/// the same one passed to `check_for_incompatibility()`. In some instances like
+/// `OutputFileConfiguredTarget`, however, the `underlying_target` is the rule that generated the
+/// file.
+// Java: com/google/devtools/build/lib/analysis/constraints/RuleContextConstraintSemantics.java:835 RuleContextConstraintSemantics.IncompatibleCheckResult
+#[derive(Clone, Debug)]
+pub struct IncompatibleCheckResult {
+    is_incompatible: bool,
+    underlying_target: ConfiguredTarget,
+}
+
+impl IncompatibleCheckResult {
+    // Java: com/google/devtools/build/lib/analysis/constraints/RuleContextConstraintSemantics.java:840 RuleContextConstraintSemantics.IncompatibleCheckResult.create
+    fn create(is_incompatible: bool, underlying_target: ConfiguredTarget) -> Self {
+        IncompatibleCheckResult {
+            is_incompatible,
+            underlying_target,
+        }
+    }
+
+    pub fn is_incompatible(&self) -> bool {
+        self.is_incompatible
+    }
+
+    pub fn underlying_target(&self) -> &ConfiguredTarget {
+        &self.underlying_target
+    }
+}
+
+impl RuleContextConstraintSemantics {
+    /// Checks whether the target is incompatible.
+    ///
+    /// See the documentation for [`IncompatibleCheckResult`] for more information.
+    // Java: com/google/devtools/build/lib/analysis/constraints/RuleContextConstraintSemantics.java:853 RuleContextConstraintSemantics.checkForIncompatibility
+    pub fn check_for_incompatibility(target: &ConfiguredTarget) -> IncompatibleCheckResult {
+        let target = match target {
+            // For generated files, we want to query the generating rule for providers. genrule()
+            // for example doesn't attach providers like IncompatiblePlatformProvider to its
+            // outputs.
+            ConfiguredTarget::OutputFile(o) => {
+                ConfiguredTarget::Rule(o.get_generating_rule().clone())
+            }
+            other => other.clone(),
+        };
+        IncompatibleCheckResult::create(
+            target
+                .get(
+                    &crate::config::incompatible_platform_provider::INCOMPATIBLE_PLATFORM_PROVIDER
+                        .key(),
+                )
+                .is_some(),
+            target,
+        )
+    }
+}
+
 /// `EnvironmentWithGroup` as a set element (Java record equality and hashing).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnvironmentWithGroupKey(EnvironmentWithGroup);

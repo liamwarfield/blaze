@@ -505,3 +505,253 @@ The implementer is right. `StarlarkOS.java:56` returns an `ImmutableMap`, and
 Closed S3/S4 items that I confirmed by reading: the `HTTPS_PROXY` panic and the duplicate HTTP
 stack (both files are gone). The other S3/S4 fixes listed in the response (rc tests, `access`,
 `lockFileVersion`, `EvalException` cause text, `OS_ARCH`) were not re-read.
+
+---
+
+# Round 3 (2026-11-18)
+
+Narrow scope, same read-only rules: the hand-written HTTP transport that replaced `ureq`, and
+the fixes for N2, N3 and N4. No Cargo was run and Blaze was not run. I disassembled classes with
+`javap` to check two claims about libraries whose sources are not in the pinned tree:
+`commons-compress-1.26.1.jar` (from the upstream-tests cache) and the JDK's
+`sun.net.www.protocol.http.HttpURLConnection` (system JDK 11, not the embedded 25).
+
+## Verdict: STOP (for these changes)
+
+One blocking finding, R3-1, in the new transport's request construction. Everything else in
+scope passes: TLS setup, response framing, redirects, proxy scoping, checksum-before-cache, the
+tar checksum leniency, `SkyEnv::alias` and the lock table.
+
+## Tree
+
+- `git rev-parse HEAD` = `03409d9a843bac8e19e19af31c65e3e3b2b08392`, with uncommitted changes.
+  The verdict is bound to the working tree as read, not to a commit.
+- Files read in full: `R/blaze_repo_fetch/src/downloader/socket_transport.rs` (untracked),
+  `R/blaze_repo_fetch/src/decompressor/tar_checksum.rs` (untracked),
+  `R/blaze_repo_fetch/src/file_system_lock.rs`, `R/blaze_repo_rules/src/env_handle.rs`.
+- Diffs read: `downloader/{http_connector, streams, mod}.rs`, `decompressor/{compressed_tar,
+  mod}.rs`, `R/blaze_repo_rules/src/starlark/thread.rs`, `R/blaze_repo_fetch/Cargo.toml`.
+- Not read: the changed and new tests beyond their names.
+- `download_manager.rs`, `http_downloader.rs`, `http_stream.rs` and `http_utils.rs` are
+  unchanged since round 2.
+
+## R3-1 (blocking). Request headers are written without the JDK's checks
+
+- Rust: `socket_transport.rs:616-618` writes every caller header as `{k}: {v}\r\n`.
+  `HttpConnector::connect` (`http_connector.rs`) passes on the `headers` argument of
+  `rctx.download` / `download_and_extract`, the `auth` patterns and the credentials unchanged.
+  Nothing between Starlark and the socket validates a name or a value.
+- JDK: `HttpURLConnection.addRequestProperty`, which `J/bazel/repository/downloader/
+  HttpConnector.java:149` calls, does two things first (confirmed in the bytecode):
+  - `checkMessageHeader`: a name containing LF or `:`, or a value containing LF not followed by
+    a space or tab, throws `IllegalArgumentException` ("Illegal character(s) in message header
+    field: ..." / "... value: ..."). `HttpConnector.java:245-246` turns that into
+    `UnrecoverableHttpException`.
+  - `isRestrictedHeader`: `Host`, `Connection` (other than `close`), `Content-Length`,
+    `Transfer-Encoding`, `Upgrade`, `Via`, `Keep-Alive`, `Origin`, `Trailer`,
+    `Content-Transfer-Encoding` and the two `Access-Control-Request-*` names are dropped
+    silently.
+- Scenario 1 (valid input, different request): `rctx.download(url, headers = {"Host":
+  "other.example"})`. Bazel sends `Host` from the URL. Blaze sends `Host: other.example`
+  (`socket_transport.rs:604` suppresses its own `Host` when the caller has one), so the server
+  answers for another virtual host. With `--downloader_config`, which filters by URL host, this
+  reaches a blocked name through an allowed front. `Transfer-Encoding: chunked` or
+  `Content-Length: 5` on the GET likewise go out.
+- Scenario 2 (regression): a token read from a file with its trailing newline,
+  `headers = {"Authorization": "Bearer " + rctx.read(f)}`. Bazel fails with "Illegal
+  character(s) in message header value". Blaze sends `Authorization: Bearer tok\n\r\n`, which
+  ends the header block early; the remaining header lines reach the server as the start of a
+  second request. The `ureq` transport rejected such a header (`Header::validate`), so this
+  part is new with this change.
+- Fix direction: port `checkMessageHeader` and `isRestrictedHeader` to the point where
+  `HttpConnector` adds request properties, with the JDK's messages, and have the transport
+  refuse CR or LF in anything it writes as a last line of defence.
+- Reach: the URL parts are safe. `JavaUri` rejects control characters and whitespace
+  (`R/blaze_repo_fetch/src/uri.rs:89`), so the request target, `Host` and the `CONNECT` line
+  cannot carry CR or LF, including after a redirect.
+
+## Transport: what was checked and holds
+
+- **TLS.** `https` is decided by the URL scheme alone; there is no path from a TLS failure to a
+  plain connection. rustls with the default verifier checks the chain against `webpki-roots`
+  and the certificate against `ServerName` built from the URL host; SNI is on by default. TLS
+  1.2 and 1.3. No ALPN is offered, so the peer speaks HTTP/1.1. Through a proxy, TLS runs
+  inside the `CONNECT` tunnel against the origin's name. Certificate errors carry
+  "certificate" in rustls's text, so `HttpConnector` makes them unrecoverable as Java does.
+- **Close without `close_notify`** is treated as end of stream (`read_raw`). The JDK does the
+  same by default, and the framing or the checksum then decides. A close-delimited HTTPS body
+  with no checksum can be truncated undetected on both.
+- **Framing.** Chunked takes precedence over `Content-Length`; `Transfer-Encoding` must equal
+  `chunked`; the last header of a name wins. All three match the JDK. A chunked body ending
+  anywhere before the empty line after the trailer is "Premature EOF". A short fixed-length
+  body ends normally and `CheckContentLengthInputStream` reports it. 1xx, 204 and 304 have no
+  body. Only GET is sent.
+- **Limits.** Header lines are capped at 100 KB and 1000 fields; chunk-size lines at 100 KB.
+  Bodies are streamed. Every read and write has the read timeout; the JDK has no overall
+  deadline either.
+- **Redirects and credentials.** Still in `HttpConnector` (40 hops, `mergeUrls`, `http`/`https`
+  only, per-URL credential lookup at each hop). `Proxy-Authorization` goes to the proxy only:
+  in the `CONNECT` request for https, on the absolute-form request for http, never inside the
+  tunnel.
+- **Connections** are not reused, so a mis-framed response cannot desynchronise a later one.
+- **Proxies.** HTTP proxies by absolute form or `CONNECT`; SOCKS is `unported!`.
+- **gzip** is still handled in `HttpStreamFactory`, as Java does; the transport does not decode.
+- **Checksum before cache.** The transport only replaces the byte source under the unchanged
+  `Retrying` / `CheckContentLength` / `Gzip` / `Hash` stack, and the cache writes in
+  `DownloadManager` still follow a complete read.
+
+## Transport: smaller deviations (not blocking)
+
+- **R3-2 (S3). TLS and proxy paths have no test.** The implementer says so; TLS was tried by
+  hand and the proxy code was never run. For new code that carries credentials and verifies
+  peers, that is the main residual risk.
+- **R3-3 (S4). Response header folding.** A continuation line (leading space or tab) is parsed
+  as a header of its own if it contains a colon; the JDK appends it to the previous value. A
+  line without a colon is dropped.
+- **R3-4 (S4). Stricter chunk syntax than the JDK.** A chunk-size line must end in CR LF and be
+  all hex before `;`; the JDK reads the leading hex digits and does not require the CR there.
+  A lenient server fails with "missing CR" or "Bogus chunk size".
+- **R3-5 (S4). `Transfer-Encoding: chunked` on an `HTTP/1.0` response** is ignored
+  (`socket_transport.rs:638`). I believe the JDK decodes it regardless of version; not
+  verified.
+- **R3-6 (S4). `Proxy-Authorization` is written twice** for http through an authenticated
+  proxy: once by `HttpConnector` and once by the transport (`:613`).
+- **R3-7 (S4). Unbounded loops under a hostile server:** interim 1xx responses and trailer
+  lines have no count limit. Each is bounded per read by the timeout, as in the JDK.
+- **R3-8 (S4). Every resolved address is tried** with the full connect timeout; the JDK tries
+  one. Slower failure, more successes.
+- **R3-9 (S4). `Accept: */*` and no `Authorization` from URL user info.** Neither matches
+  `ureq`; the second matches the JDK, which does not send user info either.
+
+## N4. Tar checksum leniency: CLOSED
+
+- Confirmed from the 1.26.1 bytecode: `TarUtils.verifyCheckSum` starts with
+  `parseOctal(header, 148, 8)`; `TarArchiveEntry.parseTarHeaderUnwrapped` stores its result in
+  `checkSumOK`; `TarArchiveInputStream` never reads `isCheckSumOK`; and
+  `parseTarHeader` wraps `IllegalArgumentException` as `IOException("Corrupted TAR archive.")`.
+- `tar_checksum.rs` does exactly that for the checksum field: `parse_octal` on bytes 148-156,
+  then the field is rewritten to the sum the `tar` crate computes (`tar` 0.4.46
+  `next_entry_raw`). Header positions follow the crate: size field, PAX `size` only for
+  non-extension headers, PAX state dropped after any entry that does not describe the next one,
+  stop at a zero or short block. I compared each rule with the crate's source.
+- Two limits, both stated in the code: headers after a GNU sparse entry keep the crate's check,
+  and the other header fields are not made lenient here (a blank `size` still fails in the
+  crate; `uid`/`gid` are not parsed at all, where Commons Compress fails on a non-octal one).
+  So the checksum rule equals Commons Compress; whole-header parity does not.
+
+## N2. `SkyEnv::alias`: CLOSED
+
+- `alias` copies the raw pointer, so both handles have the provenance `scope` created and a use
+  of one no longer invalidates the other. `report` now takes a shared reference through
+  `SkyEnv::listener` and holds it for one `handle` call.
+- Sound under the stated contract, which the code keeps: the guard drops the alias before
+  `call_implementation` returns, the handle is not `Send`, and no native emits a Starlark event
+  while it holds a reference from the first handle. Not run under Miri, by the implementer or
+  by me.
+
+## N3. Lock table: CLOSED
+
+- `file_system_lock.rs` keeps one descriptor per locked file (keyed by device and inode) and
+  counts shared holders, so the first of two setups no longer releases the lock for the second.
+  A conflicting second lock in one process panics as the JVM throws.
+- The table mutex is held while waiting for another process's lock (documented). An in-process
+  GC run while the shared lock is held would panic; nothing schedules one.
+
+## N1. Chunked truncation: CLOSED by the new transport
+
+Closed in substance; the transport that closes it is the subject of R3-1.
+
+## Re-check needed
+
+R3-1 only. The same reviewer role should read the header check where it is added and confirm
+the JDK's two messages and the restricted list.
+
+---
+
+# Round 4 (2026-11-18)
+
+Narrow scope, same read-only rules: the answer to R3-1, the test CA, and regressions from the
+round-3 response. No Cargo and no Blaze run. I used `javap` on the embedded JDK 25.0.2
+(`--system <install base>/embedded_tools/jdk`) and on `commons-compress-1.26.1.jar`, and
+`openssl` to inspect the three files under `testdata/`.
+
+## Verdict: PASS (for these changes)
+
+Bound to the uncommitted working tree on `03409d9a843bac8e19e19af31c65e3e3b2b08392` as read. A
+commit of this tree should be named to me if the verdict is to be tied to a hash.
+
+Read in full: `R/blaze_repo_fetch/src/downloader/socket_transport.rs` (non-test part, lines
+1-800, and the test CA section), `decompressor/tar_checksum.rs` (non-test part), the diff of
+`downloader/http_connector.rs`, `Cargo.toml` and `R/blaze_repo_fetch/Cargo.toml`. Tests were
+read by name only, except the TLS helpers.
+
+## R3-1. Request header checks: CLOSED
+
+Compared with the bytecode of `sun.net.www.protocol.http.HttpURLConnection` in the embedded JDK:
+
+| Point | JDK 25.0.2 | Port (`http_connector.rs`) |
+| --- | --- | --- |
+| Name check | LF or `:` in the name throws "Illegal character(s) in message header field: " + name | same test, same text |
+| Value check | an LF not followed by space or tab throws "Illegal character(s) in message header value: " + value | same loop, same text |
+| Folding | LF followed by space or tab is allowed | allowed |
+| Restricted set | twelve names in `static {}`: `Access-Control-Request-Headers`, `Access-Control-Request-Method`, `Connection`, `Content-Length`, `Content-Transfer-Encoding`, `Host`, `Keep-Alive`, `Origin`, `Trailer`, `Transfer-Encoding`, `Upgrade`, `Via` | the same twelve |
+| `sec-` prefix | `startsWith("sec-")` after lower-casing | same |
+| Case | `toLowerCase(Locale.ROOT)` then set lookup | lower-cased, then lookup |
+| `Connection: close` | allowed (`equalsIgnoreCase`) | allowed |
+| Restricted header | dropped silently | dropped silently |
+
+- The checks sit where Java calls `addRequestProperty` / `setRequestProperty`
+  (`HttpConnector.java:149`), and the error becomes `UnrecoverableHttpException` with the JDK's
+  message, as `HttpConnector.java:245-246` does. It is not retried and nothing is sent.
+- The transport re-checks every header it writes, refuses a caller `Host`, and always writes
+  `Host` from the URL (`socket_transport.rs` `check_request_header`, `request_head`). The head
+  is built before the socket is opened.
+- Stricter than the JDK, and marked: CR in a name and a bare CR in a value are refused.
+- Same as the JDK, and therefore left: other control bytes in values, and names with spaces. A
+  header named `Host ` (trailing space) is not restricted in either and goes out as its own
+  line beside the real `Host`.
+
+## Test CA and key: no production path
+
+- `include_bytes!("testdata/...")` appears three times, all inside `#[cfg(test)] mod tests` of
+  `socket_transport.rs` (lines 801 onward). No other file in the three crates names `testdata`,
+  and there is no build script.
+- The only way to pass a TLS configuration is the private `open_connection(..., tls)`;
+  `SocketTransport::open` passes `None`, which is the `webpki-roots` configuration.
+- `test_ca.der`: self-signed, `CA:TRUE`. `test_server.der`: `CN=localhost`, SAN `localhost`,
+  `CA:FALSE`, issued by the test CA. `test_server_key.pk8` matches the server certificate's
+  public key and not the CA's. The CA's key is not in the tree, so the checked-in key cannot
+  issue certificates.
+
+## Other round-3 items
+
+- R3-2 (tests): added; names read, not run by me.
+- R3-3 folding, R3-4 chunk syntax, R3-5 chunked on HTTP/1.0, R3-6 single `Proxy-Authorization`,
+  R3-8 one address, R3-9 request head order: read in the code and consistent with the
+  response. Chunk truncation is still "Premature EOF" at every point.
+- R3-7: unchanged, as the JDK.
+- `ureq` is gone from `Cargo.toml` and `Cargo.lock`.
+
+## Tar header parity
+
+- `uid`, `gid` and `size` now follow `parseOctalOrBinary`. Confirmed in the bytecode: the three
+  8-byte fields go through the non-lenient instance method, `size` through the static one, and
+  a negative size is `IOException("broken archive, entry with negative size")`.
+- The size field is rewritten only when the crate would read a different value, and the
+  reader's own data count uses the rewritten header, so header positions stay in step.
+- Extended sparse headers are passed through by the `isextended` flags at offsets 482 and 504,
+  as the crate reads them.
+
+## New, not blocking
+
+- **R4-1 (S4).** A trailer line has no length cap (`read_chunk_line(reader, None)`); round 3's
+  transport capped it at 100 KB. The JDK has no cap either. A hostile server can grow memory.
+- **R4-2 (S4).** Sparse entry contents, `devmajor`/`devminor` and the GNU time fields were not
+  compared with Commons Compress (stated by the implementer).
+
+## Still open from earlier rounds, not blocking
+
+- `blaze_sky_top` must call `prepare_repository_functions_with` (round 2).
+- S2-7 byte strings; the S3 list of round 1; the false refusal for a reused pid;
+  `--server_javabase` and TLS trust.
+- No end-to-end test of a proxy configured through the environment; SOCKS is `unported!`.

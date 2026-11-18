@@ -110,6 +110,8 @@ impl<'a> ActionGraphProtoOutputFormatterCallback<'a> {
         action_graph_dump.dump_configured_target(&dumped_target, &actions)?;
         if self.options.use_aspects {
             // Java: actionGraphDump.dumpAspect(aspectValue, configuredTargetValue) for each.
+            #[allow(clippy::never_loop)]
+            // the aspect value type is uninhabited until aspects are ported
             for aspect_value in self.accessor.get_aspect_values(configured_target_value) {
                 match aspect_value {}
             }

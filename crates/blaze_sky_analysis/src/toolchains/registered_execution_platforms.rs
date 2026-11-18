@@ -140,7 +140,7 @@ pub fn registered_execution_platforms_function(
         }
     }
 
-    // Get the registered execution platforms from bzlmod.
+    // Get registered execution platforms from the external dep graph.
     let Some(bzlmod_execution_platforms) = get_bzlmod_execution_platforms(env)? else {
         return Ok(None);
     };
@@ -177,7 +177,7 @@ pub fn registered_execution_platforms_function(
         return Ok(None);
     }
 
-    // Verify that the target platform's required settings are met.
+    // Check which platforms are valid according to their configuration.
     let mut platform_keys: Vec<ConfiguredTargetKey> = Vec::new();
     let mut rejected_platforms: Option<IndexMap<Label, String>> = if key.debug() {
         Some(IndexMap::new())
@@ -268,7 +268,8 @@ fn configure_registered_execution_platforms(
 
     let sky_keys: Vec<SkyKey> = keys.iter().cloned().map(SkyKey::new).collect();
     let values = env.get_values_and_exceptions(&sky_keys)?;
-    let mut platforms: IndexMap<ConfiguredTargetKey, Arc<PlatformInfo>> = IndexMap::new();
+    // Java: ImmutableMap.Builder (duplicate keys are found by buildOrThrow, below).
+    let mut platforms: Vec<(ConfiguredTargetKey, Arc<PlatformInfo>)> = Vec::new();
     let mut values_missing = false;
     for platform_key in &keys {
         let platform_label = platform_key.get_label();
@@ -283,7 +284,7 @@ fn configure_registered_execution_platforms(
                     return Err(persistent(invalid_platform_exception(platform_label)));
                 };
 
-                // Replace the label with the actual platform label.
+                // Update the key so that any aliases are resolved.
                 let platform_label = target.get_label();
                 let platform_key = ConfiguredTargetKey::builder()
                     .set_label(platform_label)
@@ -292,13 +293,7 @@ fn configure_registered_execution_platforms(
                     ))))
                     .build();
 
-                if platforms.contains_key(&platform_key) {
-                    // Java: ImmutableMap.Builder.buildOrThrow on a duplicate key.
-                    panic!(
-                        "IllegalArgumentException: Multiple entries with same key: {platform_key}"
-                    );
-                }
-                platforms.insert(platform_key, Arc::new(platform_info));
+                platforms.push((platform_key, Arc::new(platform_info)));
             }
             Err(e) => {
                 return Err(persistent(invalid_platform_exception_with_cause(
@@ -312,7 +307,15 @@ fn configure_registered_execution_platforms(
     if values_missing {
         return Ok(None);
     }
-    Ok(Some(platforms))
+    // Java: platforms.buildOrThrow().
+    let mut built: IndexMap<ConfiguredTargetKey, Arc<PlatformInfo>> = IndexMap::new();
+    for (platform_key, platform_info) in platforms {
+        if built.contains_key(&platform_key) {
+            panic!("IllegalArgumentException: Multiple entries with same key: {platform_key}");
+        }
+        built.insert(platform_key, platform_info);
+    }
+    Ok(Some(built))
 }
 
 /// Java `InvalidExecutionPlatformLabelException(TargetPatternUtil.InvalidTargetPatternException)`.

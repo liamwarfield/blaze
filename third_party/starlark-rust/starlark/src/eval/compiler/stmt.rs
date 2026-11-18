@@ -754,6 +754,7 @@ impl Compiler<'_, '_, '_, '_> {
                     node: self.function(
                         &name.ident,
                         signature_span,
+                        FrozenFileSpan::new(self.codemap, name.span), // BLAZE PATCH 0024
                         *scope_id,
                         params,
                         return_type.as_deref(),

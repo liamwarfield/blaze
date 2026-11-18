@@ -8,7 +8,7 @@ use std::io;
 use std::sync::Arc;
 
 use blaze_collect::NestedSet;
-use blaze_vfs::PathFragment;
+use blaze_vfs::{DirentType, Path, PathFragment, Symlinks};
 
 use blaze_util::Fingerprint;
 
@@ -188,12 +188,110 @@ impl TreeArtifactValue {
         }
     }
 
+    /// Recursively visits all descendants under a directory.
+    ///
+    /// `visitor` is invoked for each directory, file, and symlink under the given `parent_dir`,
+    /// including `parent_dir` itself, with the path relative to the tree directory root (the
+    /// apparent path, without resolving any intervening symlinks), the type, and whether at
+    /// least one symlink was traversed on the way to the entry.
+    ///
+    /// Regular files and directories are reported as [`DirentType::File`] or
+    /// [`DirentType::Directory`], respectively. Directories are traversed recursively. Symlinks
+    /// that resolve to an existing file or directory are followed and reported as the regular
+    /// files or directories they point to, recursively for directories. Symlinks that fail to
+    /// resolve to an existing path, special files and files whose type could not be determined
+    /// cause an error without invoking the visitor. If the visitor fails, traversal is
+    /// immediately halted and the error is propagated.
+    ///
+    /// PORT: Java visits on a thread pool, in a nondeterministic order, and fails fast with the
+    /// first exception of any thread; here the walk is a sequential depth-first traversal in
+    /// `readdir` order.
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:612 TreeArtifactValue.visitTree
+    pub fn visit_tree(
+        parent_dir: &Path,
+        tree_artifact_visitor: &mut dyn FnMut(&PathFragment, DirentType, bool) -> io::Result<()>,
+    ) -> io::Result<()> {
+        // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:535 Visitor.run
+        TreeArtifactValue::visit(
+            parent_dir,
+            &PathFragment::empty_fragment(),
+            DirentType::Directory,
+            /* traversed_symlink= */ false,
+            tree_artifact_visitor,
+        )
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:549 Visitor.visit
+    fn visit(
+        parent_dir: &Path,
+        parent_relative_path: &PathFragment,
+        mut type_: DirentType,
+        mut traversed_symlink: bool,
+        visitor: &mut dyn FnMut(&PathFragment, DirentType, bool) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let path = parent_dir.get_relative(parent_relative_path);
+
+        if type_ == DirentType::Symlink {
+            traversed_symlink = true;
+
+            let stat_follow = path.stat_if_found(Symlinks::Follow)?;
+
+            let Some(stat_follow) = stat_follow else {
+                return Err(io::Error::other(format!(
+                    "child {parent_relative_path} is a dangling symbolic link"
+                )));
+            };
+
+            if stat_follow.is_file() && !stat_follow.is_special_file() {
+                type_ = DirentType::File;
+            } else if stat_follow.is_directory() {
+                type_ = DirentType::Directory;
+            } else {
+                type_ = DirentType::Unknown;
+            }
+        }
+
+        if type_ == DirentType::Unknown {
+            return Err(io::Error::other(format!(
+                "child {parent_relative_path} has an unsupported type"
+            )));
+        }
+
+        visitor(parent_relative_path, type_, traversed_symlink)?;
+
+        if type_ == DirentType::Directory {
+            for dirent in path.readdir(Symlinks::Nofollow)? {
+                let child_path = parent_relative_path.get_child(dirent.get_name());
+                let child_type = dirent.get_type();
+                TreeArtifactValue::visit(
+                    parent_dir,
+                    &child_path,
+                    child_type,
+                    traversed_symlink,
+                    visitor,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// `getDigest()`: the digest of [`TreeArtifactValue::build`] (`None` for values not built
     /// through it).
     // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:335 TreeArtifactValue.getDigest
     pub fn get_digest(&self) -> Option<&[u8]> {
         self.metadata.as_ref().and_then(|m| m.get_digest())
     }
+}
+
+/// A runfiles symlink: its runfiles path and target artifact (the execution layer's view of
+/// `SymlinkEntry`, whose artifact is an [`ActionInputRef`]).
+// Java: com/google/devtools/build/lib/analysis/SymlinkEntry.java:35 SymlinkEntry
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SymlinkEntry {
+    /// `getPathString()`.
+    pub path: String,
+    /// `getArtifact()`.
+    pub artifact: ActionInputRef,
 }
 
 /// Port of `RunfilesTree`: a runfiles tree as an input.
@@ -211,27 +309,159 @@ pub trait RunfilesTree: Send + Sync + fmt::Debug {
     }
     /// `getArtifactsAtCanonicalLocationsForLogging()`.
     fn get_artifacts_at_canonical_locations_for_logging(&self) -> NestedSet<ActionInputRef>;
-    /// `getSymlinksForLogging()`: (runfiles path, artifact).
-    fn get_symlinks_for_logging(&self) -> Vec<(String, ActionInputRef)>;
-    /// `getRootSymlinksForLogging()`: (runfiles path, artifact).
-    fn get_root_symlinks_for_logging(&self) -> Vec<(String, ActionInputRef)>;
+    /// `getSymlinksForLogging()`: the set of custom symlink entries.
+    // Java: com/google/devtools/build/lib/actions/RunfilesTree.java:68 RunfilesTree.getSymlinksForLogging
+    fn get_symlinks_for_logging(&self) -> NestedSet<SymlinkEntry>;
+    /// `getRootSymlinksForLogging()`: the set of root symlinks.
+    // Java: com/google/devtools/build/lib/actions/RunfilesTree.java:71 RunfilesTree.getRootSymlinksForLogging
+    fn get_root_symlinks_for_logging(&self) -> NestedSet<SymlinkEntry>;
     /// `getEmptyFilenamesForLogging()`.
     fn get_empty_filenames_for_logging(&self) -> Vec<PathFragment>;
     /// `getRepoMappingManifestForLogging()`.
     fn get_repo_mapping_manifest_for_logging(&self) -> Option<ActionInputRef>;
 }
 
-/// Port of `RunfilesArtifactValue`.
-// Java: com/google/devtools/build/lib/actions/RunfilesArtifactValue.java RunfilesArtifactValue
+/// Port of `RunfilesArtifactValue`: the artifacts behind a runfiles tree artifact.
+///
+/// PORT: the parallel lists of filesets and their `FilesetOutputTree`s are absent
+/// (`FilesetOutputTree.addTo` is not ported); the code that builds the value fails with
+/// `unported!` for a fileset in a runfiles tree.
+// Java: com/google/devtools/build/lib/actions/RunfilesArtifactValue.java:37 RunfilesArtifactValue
 #[derive(Debug, Clone)]
 pub struct RunfilesArtifactValue {
     pub runfiles_tree: Arc<dyn RunfilesTree>,
+    metadata: FileArtifactValue,
+    // Parallel lists.
+    files: Vec<ActionInputRef>,
+    file_values: Vec<FileArtifactValue>,
+    // Parallel lists.
+    trees: Vec<ActionInputRef>,
+    tree_values: Vec<Arc<TreeArtifactValue>>,
 }
 
 impl RunfilesArtifactValue {
+    // Java: com/google/devtools/build/lib/actions/RunfilesArtifactValue.java:60 RunfilesArtifactValue.<init>
+    pub fn new(
+        runfiles_tree: Arc<dyn RunfilesTree>,
+        files: Vec<ActionInputRef>,
+        file_values: Vec<FileArtifactValue>,
+        trees: Vec<ActionInputRef>,
+        tree_values: Vec<Arc<TreeArtifactValue>>,
+    ) -> RunfilesArtifactValue {
+        blaze_util::check_argument!(
+            files.len() == file_values.len() && trees.len() == tree_values.len(),
+            "Size mismatch: files={:?}, trees={:?}",
+            files,
+            trees
+        );
+        // Compute the digest of this runfiles tree by combining its layout and the digests of
+        // every artifact it references.
+        let metadata = FileArtifactValue::RunfilesProxy {
+            digest: RunfilesArtifactValue::compute_digest(
+                &*runfiles_tree,
+                &files,
+                &file_values,
+                &tree_values,
+            ),
+        };
+        RunfilesArtifactValue {
+            runfiles_tree,
+            metadata,
+            files,
+            file_values,
+            trees,
+            tree_values,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/actions/RunfilesArtifactValue.java:87 RunfilesArtifactValue.computeDigest
+    fn compute_digest(
+        runfiles_tree: &dyn RunfilesTree,
+        files: &[ActionInputRef],
+        file_values: &[FileArtifactValue],
+        tree_values: &[Arc<TreeArtifactValue>],
+    ) -> Vec<u8> {
+        let mut result = Fingerprint::new();
+
+        let mapping = runfiles_tree.get_mapping();
+        result.add_int(mapping.len() as i32);
+        for (path, artifact) in &mapping {
+            result.add_string(path.get_path_string());
+            result.add_boolean(artifact.is_some());
+            if let Some(artifact) = artifact {
+                result.add_string(artifact.get_exec_path().get_path_string());
+            }
+        }
+
+        result.add_int(files.len() as i32);
+        for (file, file_value) in files.iter().zip(file_values) {
+            let is_constant_metadata = file.as_artifact().is_some_and(|a| a.is_constant_metadata());
+            if is_constant_metadata {
+                add_to(&FileArtifactValue::ConstantMetadata, &mut result);
+            } else {
+                add_to(file_value, &mut result);
+            }
+        }
+
+        result.add_int(tree_values.len() as i32);
+        for tree_value in tree_values {
+            result.add_bytes(
+                tree_value.get_digest().unwrap_or_else(|| {
+                    panic!("NullPointerException: TreeArtifactValue.getDigest()")
+                }),
+            );
+        }
+
+        // No filesets (see the type's comment).
+        result.digest_and_reset()
+    }
+
+    /// `withOverriddenRunfilesTree(overrideTree)`.
+    // Java: com/google/devtools/build/lib/actions/RunfilesArtifactValue.java:119 RunfilesArtifactValue.withOverriddenRunfilesTree
+    pub fn with_overridden_runfiles_tree(
+        &self,
+        override_tree: Arc<dyn RunfilesTree>,
+    ) -> RunfilesArtifactValue {
+        RunfilesArtifactValue::new(
+            override_tree,
+            self.files.clone(),
+            self.file_values.clone(),
+            self.trees.clone(),
+            self.tree_values.clone(),
+        )
+    }
+
+    /// Returns the data of the artifact for this value, as computed by the action cache checker.
+    // Java: com/google/devtools/build/lib/actions/RunfilesArtifactValue.java:125 RunfilesArtifactValue.getMetadata
+    pub fn get_metadata(&self) -> &FileArtifactValue {
+        &self.metadata
+    }
+
     /// `getRunfilesTree()`.
+    // Java: com/google/devtools/build/lib/actions/RunfilesArtifactValue.java:130 RunfilesArtifactValue.getRunfilesTree
     pub fn get_runfiles_tree(&self) -> &Arc<dyn RunfilesTree> {
         &self.runfiles_tree
+    }
+
+    /// Visits the file artifacts that this runfiles artifact expands to, together with their
+    /// data.
+    // Java: com/google/devtools/build/lib/actions/RunfilesArtifactValue.java:146 RunfilesArtifactValue.forEachFile
+    pub fn for_each_file(&self, mut consumer: impl FnMut(&ActionInputRef, &FileArtifactValue)) {
+        for (file, file_value) in self.files.iter().zip(&self.file_values) {
+            consumer(file, file_value);
+        }
+    }
+
+    /// Visits the tree artifacts that this runfiles artifact expands to, together with their
+    /// data.
+    // Java: com/google/devtools/build/lib/actions/RunfilesArtifactValue.java:153 RunfilesArtifactValue.forEachTree
+    pub fn for_each_tree(
+        &self,
+        mut consumer: impl FnMut(&ActionInputRef, &Arc<TreeArtifactValue>),
+    ) {
+        for (tree, tree_value) in self.trees.iter().zip(&self.tree_values) {
+            consumer(tree, tree_value);
+        }
     }
 }
 
@@ -401,5 +631,234 @@ mod tree_artifact_value_test {
         let a = TreeArtifactValue::build(vec![(child1.clone(), metadata_with_id(1))], None, None);
         let b = TreeArtifactValue::build(vec![(child1, metadata_with_id(2))], None, None);
         assert_ne!(a.get_digest(), b.get_digest());
+    }
+}
+
+/// Port of the `visitTree_*` tests of `TreeArtifactValueTest`.
+///
+/// PORT: Java uses an `InMemoryFileSystem` (`Scratch`); these tests use the real file system
+/// under a fresh temporary directory. Java's visitor is called in a nondeterministic order
+/// (`containsExactly`), so both sides are compared sorted.
+#[cfg(test)]
+mod visit_tree_test {
+    use std::ffi::CString;
+    use std::io;
+    use std::os::unix::fs::symlink;
+
+    use blaze_vfs::{DigestHashFunction, DirentType, FileSystemExt, UnixFileSystem};
+
+    use super::TreeArtifactValue;
+
+    /// `scratch.dir("tree")` in a fresh directory.
+    fn scratch() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let tree_dir = dir.path().join("tree");
+        std::fs::create_dir(&tree_dir).unwrap();
+        (dir, tree_dir)
+    }
+
+    /// `scratch.file(path)`.
+    fn file(path: std::path::PathBuf) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"").unwrap();
+    }
+
+    fn mkfifo(path: &std::path::Path) {
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: `c_path` is a valid NUL-terminated string.
+        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) };
+        assert_eq!(rc, 0, "mkfifo {}", path.display());
+    }
+
+    /// `VisitTreeArgs`: what the visitor was called with, sorted.
+    fn visit_tree(tree_dir: &std::path::Path) -> io::Result<Vec<(String, DirentType, bool)>> {
+        let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+        let tree_dir = fs.get_path(tree_dir.to_str().unwrap());
+        let mut children = Vec::new();
+        TreeArtifactValue::visit_tree(&tree_dir, &mut |child, type_, traversed_symlink| {
+            children.push((
+                child.get_path_string().to_string(),
+                type_,
+                traversed_symlink,
+            ));
+            Ok(())
+        })?;
+        children.sort();
+        Ok(children)
+    }
+
+    fn sorted(mut args: Vec<(&str, DirentType, bool)>) -> Vec<(String, DirentType, bool)> {
+        args.sort();
+        args.into_iter()
+            .map(|(child, type_, traversed_symlink)| (child.to_string(), type_, traversed_symlink))
+            .collect()
+    }
+
+    #[test]
+    fn visit_tree_visits_each_child() {
+        let (_dir, tree) = scratch();
+        file(tree.join("file1"));
+        file(tree.join("a/file2"));
+        file(tree.join("a/b/file3"));
+        symlink("file1", tree.join("file_link")).unwrap();
+        symlink("b", tree.join("a/dir_link")).unwrap();
+
+        assert_eq!(
+            visit_tree(&tree).unwrap(),
+            sorted(vec![
+                ("", DirentType::Directory, false),
+                ("a", DirentType::Directory, false),
+                ("a/b", DirentType::Directory, false),
+                ("file1", DirentType::File, false),
+                ("a/file2", DirentType::File, false),
+                ("a/b/file3", DirentType::File, false),
+                ("file_link", DirentType::File, true),
+                ("a/dir_link", DirentType::Directory, true),
+                ("a/dir_link/file3", DirentType::File, true),
+            ])
+        );
+    }
+
+    #[test]
+    fn visit_tree_throws_on_dangling_symlink() {
+        let (_dir, tree) = scratch();
+        symlink("/does_not_exist", tree.join("symlink")).unwrap();
+
+        let e = visit_tree(&tree).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("child symlink is a dangling symbolic link"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn visit_tree_throws_on_symlink_loop() {
+        let (_dir, tree) = scratch();
+        symlink(&tree, tree.join("symlink")).unwrap();
+
+        let e = visit_tree(&tree).unwrap_err();
+        assert!(e.to_string().contains("tree/symlink"), "{e}");
+        assert!(
+            e.to_string().contains("Too many levels of symbolic links"),
+            "{e}"
+        );
+    }
+
+    // PORT: Java overrides `readdir` of the file system to return a dirent of type UNKNOWN; here
+    // the entry is a FIFO, which `readdir` reports as UNKNOWN.
+    #[test]
+    fn visit_tree_throws_on_unknown_dirent_type() {
+        let (_dir, tree) = scratch();
+        mkfifo(&tree.join("unknown"));
+
+        let e = visit_tree(&tree).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("child unknown has an unsupported type"),
+            "{e}"
+        );
+    }
+
+    // PORT: Java overrides `statIfFound` of the file system to return a special file for the
+    // symlink; here the symlink points to a FIFO.
+    #[test]
+    fn visit_tree_throws_on_symlink_to_special_file() {
+        let (dir, tree) = scratch();
+        let special = dir.path().join("special");
+        mkfifo(&special);
+        symlink(&special, tree.join("sym")).unwrap();
+
+        let e = visit_tree(&tree).unwrap_err();
+        assert!(
+            e.to_string().contains("child sym has an unsupported type"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn visit_tree_propagates_io_exception_from_visitor() {
+        let (_dir, tree) = scratch();
+        let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+        let tree_dir = fs.get_path(tree.to_str().unwrap());
+
+        let thrown = TreeArtifactValue::visit_tree(&tree_dir, &mut |_, _, _| {
+            Err(io::Error::other("From visitor"))
+        })
+        .unwrap_err();
+        assert_eq!(thrown.to_string(), "From visitor");
+    }
+
+    #[test]
+    fn visit_tree_permits_up_level_symlink_inside_tree() {
+        let (_dir, tree) = scratch();
+        file(tree.join("file"));
+        std::fs::create_dir(tree.join("a")).unwrap();
+        symlink("../file", tree.join("a/up_link")).unwrap();
+
+        assert_eq!(
+            visit_tree(&tree).unwrap(),
+            sorted(vec![
+                ("", DirentType::Directory, false),
+                ("file", DirentType::File, false),
+                ("a", DirentType::Directory, false),
+                ("a/up_link", DirentType::File, true),
+            ])
+        );
+    }
+
+    #[test]
+    fn visit_tree_permits_up_level_symlink_outside_tree() {
+        let (dir, tree) = scratch();
+        file(tree.join("file"));
+        std::fs::create_dir(tree.join("a")).unwrap();
+        file(dir.path().join("other_tree/file"));
+        symlink("../../other_tree/file", tree.join("a/uplink")).unwrap();
+
+        assert_eq!(
+            visit_tree(&tree).unwrap(),
+            sorted(vec![
+                ("", DirentType::Directory, false),
+                ("file", DirentType::File, false),
+                ("a", DirentType::Directory, false),
+                ("a/uplink", DirentType::File, true),
+            ])
+        );
+    }
+
+    #[test]
+    fn visit_tree_permits_absolute_symlink() {
+        let (dir, tree) = scratch();
+        let target_file = dir.path().join("target_file");
+        file(target_file.clone());
+        let target_dir = dir.path().join("target_dir");
+        std::fs::create_dir(&target_dir).unwrap();
+        symlink(&target_file, tree.join("absolute_file_link")).unwrap();
+        symlink(&target_dir, tree.join("absolute_dir_link")).unwrap();
+
+        assert_eq!(
+            visit_tree(&tree).unwrap(),
+            sorted(vec![
+                ("", DirentType::Directory, false),
+                ("absolute_file_link", DirentType::File, true),
+                ("absolute_dir_link", DirentType::Directory, true),
+            ])
+        );
+    }
+
+    #[test]
+    fn visit_tree_permits_uplevel_symlink_traversing_outside_then_back_inside_tree() {
+        let (_dir, tree) = scratch();
+        file(tree.join("file"));
+        symlink("../tree/file", tree.join("link")).unwrap();
+
+        assert_eq!(
+            visit_tree(&tree).unwrap(),
+            sorted(vec![
+                ("", DirentType::Directory, false),
+                ("file", DirentType::File, false),
+                ("link", DirentType::File, true),
+            ])
+        );
     }
 }

@@ -278,7 +278,10 @@ pub(crate) fn decompress(
     let input = descriptor.archive_path.get_input_stream()?;
     let compressed = BufReader::with_capacity(BUFFER_SIZE, input);
     let decompressor_stream = decompressor_stream(which, compressed)?;
-    let mut tar_stream = tar::Archive::new(decompressor_stream);
+    // Commons Compress does not verify header checksums (see `tar_checksum`).
+    let mut tar_stream = tar::Archive::new(super::tar_checksum::LenientChecksumReader::new(
+        decompressor_stream,
+    ));
     for entry in tar_stream.entries()? {
         let mut entry = entry?;
         // Commons Compress parses the numeric header fields when getNextTarEntry reads the

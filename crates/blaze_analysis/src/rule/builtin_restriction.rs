@@ -130,13 +130,15 @@ pub fn is_not_allowed(
 // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:163 BazelModuleContext.ofInnermostBzlOrThrow
 // PORT: move to blaze_packages (BazelModuleContext).
 pub fn of_innermost_bzl_or_throw(eval: &Evaluator) -> std::sync::Arc<BazelModuleContext> {
+    // Java: Module m = Preconditions.checkNotNull(Module.ofInnermostEnclosingStarlarkFunction(thread));
     // Java: net/starlark/java/eval/Module.java:136 Module.ofInnermostEnclosingStarlarkFunction
-    let module =
-        blaze_starlark::defining_module::module_file_of_innermost_enclosing_starlark_function(
-            eval, 0,
-        )
-        .expect("NullPointerException: no Starlark function on the call stack");
-    BazelModuleContext::of_filename(&module)
+    if eval.innermost_enclosing_def_module(0).is_none() {
+        panic!("NullPointerException: no Starlark function on the call stack");
+    }
+    // Java: return Preconditions.checkNotNull(of(m)); the context is the client data of the
+    // function's own module (not a lookup by file name).
+    // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:142 BazelModuleContext.of
+    BazelModuleContext::of_innermost_enclosing_starlark_function(eval, 0)
         .expect("NullPointerException: no BazelModuleContext for the innermost Starlark function")
 }
 

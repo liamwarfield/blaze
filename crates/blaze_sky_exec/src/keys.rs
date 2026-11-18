@@ -109,11 +109,17 @@ impl fmt::Debug for ArtifactNestedSetKey {
     }
 }
 
-/// The (empty) value of an `ArtifactNestedSetKey`: the artifacts' values are read from their own
-/// keys.
-// Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetValue.java:22 ArtifactNestedSetValue
-#[derive(Clone, Debug, Default)]
-pub struct ArtifactNestedSetValue;
+/// Represent a "promise" that the Artifacts under a NestedSet are evaluated by Skyframe (the
+/// artifacts' values are read from their own keys).
+// Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetValue.java:27 ArtifactNestedSetValue
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum ArtifactNestedSetValue {
+    /// All artifacts in this nested set are present.
+    ALL_PRESENT,
+    /// Some artifacts in this nested set are missing.
+    SOME_MISSING,
+}
 
 impl Key for ArtifactNestedSetKey {
     type Value = ArtifactNestedSetValue;

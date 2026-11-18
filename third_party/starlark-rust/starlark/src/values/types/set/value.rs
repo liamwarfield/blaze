@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+use std::cell::Cell; // BLAZE PATCH 0025
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::fmt;
@@ -50,6 +51,7 @@ use crate::values::Trace;
 use crate::values::UnpackValue;
 use crate::values::Value;
 use crate::values::ValueError;
+use crate::values::ValueLike; // BLAZE PATCH 0025
 use crate::values::comparison::equals_small_set;
 use crate::values::set::methods;
 use crate::values::starlark_value;
@@ -136,13 +138,83 @@ impl FrozenSetData {
     }
 }
 
-pub(crate) type MutableSet<'v> = SetGen<RefCell<SetData<'v>>>;
+pub(crate) type MutableSet<'v> = SetGen<MutableSetData<'v>>; // BLAZE PATCH 0025
+
+/// BLAZE PATCH 0025: the mutable set's payload (was `RefCell<SetData>`), with a flag for an
+/// immutable set on a mutable heap (Java `StarlarkSet.immutableCopyOf`). Mutation fails; freezing
+/// makes it an ordinary frozen set.
+#[derive(Trace, ProvidesStaticType, Allocative)]
+pub(crate) struct MutableSetData<'v> {
+    pub(crate) cell: RefCell<SetData<'v>>,
+    #[allocative(skip)]
+    pub(crate) immutable: Cell<bool>,
+}
+
+// BLAZE PATCH 0025: same output as the `RefCell<SetData>` payload before.
+impl<'v> Debug for MutableSetData<'v> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.immutable.get() {
+            f.debug_struct("ImmutableSet")
+                .field("value", &self.cell)
+                .finish()
+        } else {
+            Debug::fmt(&self.cell, f)
+        }
+    }
+}
+
+impl<'v> MutableSetData<'v> {
+    // BLAZE PATCH 0025
+    pub(crate) fn new(set: SetData<'v>) -> Self {
+        MutableSetData {
+            cell: RefCell::new(set),
+            immutable: Cell::new(false),
+        }
+    }
+}
+
+/// BLAZE PATCH 0025: Java's error for mutating a frozen set (Starlark.checkMutable).
+pub(crate) fn frozen_set_error() -> anyhow::Error {
+    anyhow::anyhow!("trying to mutate a frozen set value")
+}
+
+/// BLAZE PATCH 0025: an immutable set holding `values` in order, dropping duplicates (Java
+/// net/starlark/java/eval/StarlarkSet.java:374 `StarlarkSet.immutableCopyOf`, via
+/// `copyOf(null, ..)`). The set lives on `heap` and keeps its elements as they are; every
+/// mutation fails with "trying to mutate a frozen set value" (Starlark.checkMutable), and
+/// [`set_is_immutable`] reports it immutable. Fails if a value is unhashable (Java
+/// `StarlarkSet.checkedCopyOf`; `immutableCopyOf` assumes hashable elements).
+pub fn alloc_immutable_set<'v>(
+    heap: Heap<'v>,
+    values: impl IntoIterator<Item = Value<'v>>,
+) -> crate::Result<Value<'v>> {
+    let mut set = SetData::default();
+    for v in values {
+        set.add_hashed(v.get_hashed()?);
+    }
+    let data = MutableSetData::new(set);
+    data.immutable.set(true);
+    Ok(heap.alloc_complex(SetGen(data)))
+}
+
+/// BLAZE PATCH 0025: Java `StarlarkSet.isImmutable` for a set value (StarlarkSet.java:187: its
+/// mutability is frozen; elements are not looked at), `None` for other values. Frozen sets and
+/// sets made by [`alloc_immutable_set`] are immutable; other sets are not.
+pub fn set_is_immutable(x: Value) -> Option<bool> {
+    if let Some(s) = x.downcast_ref::<MutableSet>() {
+        Some(s.0.immutable.get())
+    } else if x.downcast_ref::<SetGen<FrozenSetData>>().is_some() {
+        Some(true)
+    } else {
+        None
+    }
+}
 
 pub(crate) type FrozenSet = SetGen<FrozenSetData>;
 
 impl<'v> AllocValue<'v> for SetData<'v> {
     fn alloc_value(self, heap: Heap<'v>) -> Value<'v> {
-        heap.alloc_complex(SetGen(RefCell::new(self)))
+        heap.alloc_complex(SetGen(MutableSetData::new(self))) // BLAZE PATCH 0025
     }
 }
 
@@ -160,7 +232,7 @@ unsafe impl<'v> Coerce<SetData<'v>> for FrozenSetData {}
 impl<'v> Freeze for MutableSet<'v> {
     type Frozen = SetGen<FrozenSetData>;
     fn freeze(self, freezer: &Freezer) -> FreezeResult<Self::Frozen> {
-        let content = self.0.into_inner().content.freeze(freezer)?;
+        let content = self.0.cell.into_inner().content.freeze(freezer)?; // BLAZE PATCH 0025
         Ok(SetGen(FrozenSetData { content }))
     }
 }
@@ -180,7 +252,8 @@ trait SetLike<'v>: Debug + Allocative {
     // fn set_at(&self, index: Hashed<Value<'v>>, value: Value<'v>) -> crate::Result<()>;
 }
 
-impl<'v> SetLike<'v> for RefCell<SetData<'v>> {
+// BLAZE PATCH 0025: implemented on `MutableSetData` (was `RefCell<SetData>`, now `self.cell`).
+impl<'v> SetLike<'v> for MutableSetData<'v> {
     type ContentRef<'a>
         = Ref<'a, SmallSet<Value<'v>>>
     where
@@ -188,24 +261,25 @@ impl<'v> SetLike<'v> for RefCell<SetData<'v>> {
         'v: 'a;
 
     fn content<'a>(&'a self) -> Ref<'a, SmallSet<Value<'v>>> {
-        Ref::map(self.borrow(), |x| &x.content)
+        Ref::map(self.cell.borrow(), |x| &x.content) // BLAZE PATCH 0025
     }
 
     #[inline]
     unsafe fn iter_start(&self) {
-        mem::forget(self.borrow());
+        mem::forget(self.cell.borrow()); // BLAZE PATCH 0025
     }
 
     #[inline]
     unsafe fn iter_stop(&self) {
         unsafe {
-            unleak_borrow(self);
+            unleak_borrow(&self.cell); // BLAZE PATCH 0025
         }
     }
 
     #[inline]
     unsafe fn content_unchecked(&self) -> &SmallSet<Value<'v>> {
-        unsafe { &self.try_borrow_unguarded().ok().unwrap_unchecked().content }
+        // BLAZE PATCH 0025
+        unsafe { &self.cell.try_borrow_unguarded().ok().unwrap_unchecked().content }
     }
 }
 

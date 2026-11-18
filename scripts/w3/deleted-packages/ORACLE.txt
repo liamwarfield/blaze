@@ -1,0 +1,20 @@
+=== 1: query //...
+exit 0
+filegroup rule //a:x
+filegroup rule //a/b:y
+=== 2: query --deleted_packages=a/b //...
+exit 0
+filegroup rule //a:x
+=== 3: query --deleted_packages=a/b 'deps(//a:x)'
+exit 0
+source file //a:BUILD
+source file //a:b/BUILD
+source file //a:b/f.txt
+source file //a:top.txt
+filegroup rule //a:x
+=== 4: query --deleted_packages=a/b //a/b:all
+exit 7
+ERROR: no such package 'a/b': Package is considered deleted due to --deleted_packages
+=== 5: query --deleted_packages=a/b,a //a:all
+exit 7
+ERROR: no such package 'a': Package is considered deleted due to --deleted_packages

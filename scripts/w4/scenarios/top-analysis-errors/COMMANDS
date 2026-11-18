@@ -1,0 +1,82 @@
+# Analysis errors (analysis review S3 "SkyframeErrorProcessor.processAnalysisErrors"; workerd #17):
+# the wrapper lines and exit codes of build, cquery and aquery, with and without --keep_going.
+# Only the first line of each message is compared.
+
+# An error while loading a dependency's package.
+run build //:dep_bad_package
+run build //:dep_bad_package //:good --keep_going
+run cquery //:dep_bad_package
+run cquery "//:dep_bad_package + //:good" --keep_going
+run aquery //:dep_bad_package --output=jsonproto
+run aquery "//:dep_bad_package + //:good" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+
+# A dependency on a missing target.
+run build //:dep_missing_target
+run build //:dep_missing_target //:good --keep_going
+run cquery //:dep_missing_target
+run cquery "//:dep_missing_target + //:good" --keep_going
+run aquery //:dep_missing_target --output=jsonproto
+run aquery "//:dep_missing_target + //:good" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+
+# A dependency on a missing package.
+run build //:dep_missing_package
+run build //:dep_missing_package //:good --keep_going
+run cquery //:dep_missing_package
+run cquery "//:dep_missing_package + //:good" --keep_going
+run aquery //:dep_missing_package --output=jsonproto
+run aquery "//:dep_missing_package + //:good" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+
+# A visibility error.
+run build //:dep_not_visible
+run build //:dep_not_visible //:good --keep_going
+run cquery //:dep_not_visible
+run cquery "//:dep_not_visible + //:good" --keep_going
+run aquery //:dep_not_visible --output=jsonproto
+run aquery "//:dep_not_visible + //:good" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+
+# A dependency cycle.
+run build //:dep_cycle
+run build //:dep_cycle //:good --keep_going
+run cquery //:dep_cycle
+run cquery "//:dep_cycle + //:good" --keep_going
+run aquery //:dep_cycle --output=jsonproto
+run aquery "//:dep_cycle + //:good" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+run build //:self_cycle
+run build //:self_cycle //:good --keep_going
+run cquery //:self_cycle
+run build //cyc:a
+run build //cyc:a //:good --keep_going
+
+# A rule implementation calling fail(): the target itself, one and two levels up.
+run build //:impl_fails
+run build //:impl_fails //:good --keep_going
+run cquery //:impl_fails
+run cquery "//:impl_fails + //:good" --keep_going
+run aquery //:impl_fails --output=jsonproto
+run aquery "//:impl_fails + //:good" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+run build //:dep_impl_fails
+run build //:dep_impl_fails //:good --keep_going
+run cquery //:dep_impl_fails
+run build //:dep_dep_impl_fails
+run build //:dep_dep_impl_fails //:good --keep_going
+run cquery "//:dep_dep_impl_fails + //:good" --keep_going
+
+# An attribute error reported through the rule context.
+run build //:attr_error
+run build //:attr_error //:good --keep_going
+run cquery //:attr_error
+run cquery "//:attr_error + //:good" --keep_going
+run aquery //:attr_error --output=jsonproto
+
+# Several failing targets in one build.
+run build //:impl_fails //:dep_not_visible //:dep_missing_target
+run build //:impl_fails //:dep_not_visible //:dep_missing_target //:dep_cycle //:good --keep_going
+run cquery "//:impl_fails + //:dep_not_visible + //:dep_missing_target + //:dep_cycle + //:good" --keep_going
+
+# Everything, as a wildcard.
+run build //:all --keep_going
+run cquery //:all --keep_going
+
+# The innocent target alone, and what it built.
+run build //:good
+cat bazel-bin/good.txt

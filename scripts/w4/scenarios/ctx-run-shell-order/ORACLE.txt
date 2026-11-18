@@ -8,6 +8,10 @@ exit 0
 INFO: Build completed successfully, 0 total actions
 === 2: run build //:order
 exit 0
+  bazel-bin/order.a
+  bazel-bin/order.b
+  bazel-bin/order.long
+  bazel-bin/order.short
 INFO: Build completed successfully, 6 total actions
 Target //:order up-to-date:
 === 3: cat bazel-bin/order.long

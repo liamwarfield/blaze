@@ -19,7 +19,7 @@ use blaze_actions::analysis::runfiles::{ConflictPolicy, Runfiles, RunfilesBuilde
 use blaze_actions::analysis::starlark::starlark_file::{
     StarlarkFile, StarlarkFileRoot, artifact_from_value,
 };
-use blaze_build_config::build_options::StarlarkOptionValue;
+use blaze_build_config::build_options::{JavaCollectionClass, StarlarkOptionValue};
 use blaze_cmdline::{Label, LabelPackageContext};
 use blaze_collect::Order;
 use blaze_packages::attribute::AttributeMap;
@@ -1078,7 +1078,7 @@ fn add_runfiles(
 
 /// `isNonEmptyDict(o)`.
 fn is_non_empty_dict(o: Value) -> bool {
-    DictRef::from_value(o).is_some_and(|d| d.len() > 0)
+    DictRef::from_value(o).is_some_and(|d| !d.is_empty())
 }
 
 /// `isNonEmptyDepset(o)`.
@@ -1159,16 +1159,32 @@ pub fn make_label_map(
     Ok(targets_map)
 }
 
-/// Converts a Starlark `build_setting_value` (Java `Object`) to a Starlark value.
+/// Converts a Starlark `build_setting_value` (Java `Object`) to a Starlark value, as the
+/// interpreter converts a `@StarlarkMethod` result (`Starlark.fromJava`): a `java.util.List`
+/// becomes a new mutable list, a `java.util.Set` a new mutable set; a `StarlarkList` or `Tuple`
+/// stored by a transition is returned as it is (frozen with the transition's thread).
+// Java: net/starlark/java/eval/Starlark.java:214 Starlark.fromJava
 fn starlark_option_to_value<'v>(v: &StarlarkOptionValue, heap: Heap<'v>) -> Value<'v> {
     match v {
         StarlarkOptionValue::Bool(b) => Value::new_bool(*b),
         StarlarkOptionValue::Int(i) => heap.alloc(*i),
         StarlarkOptionValue::Str(s) => heap.alloc_str(s).to_value(),
         StarlarkOptionValue::Label(l) => heap.alloc(LabelValue(l.clone())),
-        StarlarkOptionValue::List(items) => heap.alloc(AllocList(
-            items.iter().map(|i| starlark_option_to_value(i, heap)),
-        )),
+        StarlarkOptionValue::List(items) => {
+            let elems: Vec<Value<'v>> = items
+                .iter()
+                .map(|i| starlark_option_to_value(i, heap))
+                .collect();
+            match items.class() {
+                JavaCollectionClass::List => heap.alloc(AllocList(elems)),
+                JavaCollectionClass::StarlarkList => super::util::alloc_immutable_list(heap, elems),
+                JavaCollectionClass::Tuple => {
+                    heap.alloc(starlark::values::tuple::AllocTuple(elems))
+                }
+                JavaCollectionClass::Set => starlark::values::set::alloc_set(heap, elems)
+                    .expect("build setting values are hashable"),
+            }
+        }
     }
 }
 

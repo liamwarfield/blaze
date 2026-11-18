@@ -525,7 +525,7 @@ fn check_sandbox_base_top_only_contains_persistent_dirs(sandbox_base: &Path) {
         }
         Ok(())
     })();
-    // PORT: logging dropped (on error: "Failed to clean up sandbox base %s").
+    // PORT: skipped, tracing (Java log) (on error: "Failed to clean up sandbox base %s").
     let _ = checked;
 }
 
@@ -568,7 +568,7 @@ fn windows_sandbox_is_available(
     let process = match builder.start() {
         Ok(p) => p,
         Err(_e) => {
-            // PORT: logging dropped ("Windows sandbox binary at %s seems to be missing").
+            // PORT: skipped, tracing (Java log) ("Windows sandbox binary at %s seems to be missing").
             return false;
         }
     };
@@ -582,7 +582,7 @@ fn windows_sandbox_is_available(
 
     process.wait_for_uninterruptibly();
     let exit_code = process.exit_value();
-    // PORT: logging dropped (on non-zero exit: "Windows sandbox binary at %s returned non-zero
+    // PORT: skipped, tracing (Java log) (on non-zero exit: "Windows sandbox binary at %s returned non-zero
     // exit code %d and output %s").
     exit_code == 0
 }

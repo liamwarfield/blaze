@@ -1,0 +1,5 @@
+load("//:defs.bzl", "w")
+
+w(name = "x")
+
+fail("badpkg does not load")

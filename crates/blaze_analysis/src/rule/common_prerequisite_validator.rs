@@ -160,10 +160,7 @@ impl BazelPrerequisiteValidator {
             // Implicit dependency of a rule: the owning rule is the topmost Starlark ancestor
             // rule class that declares the attribute.
             let mut owning_rule = rule.get_rule_class_object().clone();
-            loop {
-                let Some(parent) = owning_rule.get_starlark_parent() else {
-                    break;
-                };
+            while let Some(parent) = owning_rule.get_starlark_parent() {
                 if parent
                     .get_attribute_provider()
                     .get_attribute_by_name_maybe(attr_name)

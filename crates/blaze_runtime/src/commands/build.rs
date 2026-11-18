@@ -9,13 +9,19 @@
 //! `BuildDriverKey`s, whose `CONFIGURED_TARGET` dependencies are already done; the evaluation of
 //! every node is the same, only the interleaving of the two phases differs.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::io::Write as _;
 use std::sync::Arc;
-use std::time::Instant;
 
+use blaze_analysis::configured_target::ConfiguredTarget;
+use blaze_analysis::providers::file_provider::FileProvider;
+use blaze_analysis::providers::output_group_info::ValidationMode;
 use blaze_build_config::bazel_rule_class_provider::BazelRuleClassProvider;
 use blaze_build_config::top_level::create_build_options;
 use blaze_buildtool::buildtool::build_result::{BuildResult, ConfiguredTargetRef};
+use blaze_buildtool::buildtool::build_result_printer::{
+    BuildRequestView, BuildResultPrinter, OutputFileGeneratingRule, TopLevelArtifactContext,
+};
 use blaze_buildtool::buildtool::execution_tool::{
     ExecutionEventCollector, ExecutionToolConfig, build_complete_event, evaluate_build_driver_keys,
     report_build_summary_stats,
@@ -27,7 +33,7 @@ use blaze_buildtool::buildtool::symlink_forest::SymlinkForest;
 use blaze_buildtool::runtime::test_command_support::{
     TestCommandSupport, get_exit_code, make_test_log_path_formatter,
 };
-use blaze_events::{Event, EventHandler, ExtendedEventHandler};
+use blaze_events::{Clock, Event, EventHandler, ExtendedEventHandler, JavaClock, OutErr};
 use blaze_exec::exec::spawn_log_module::{SpawnLogModule, SpawnLogModuleEnv};
 use blaze_optdefs::command::build_language_options::BuildLanguageOptions;
 use blaze_optdefs::command::build_request_options::BuildRequestOptions;
@@ -40,7 +46,11 @@ use blaze_optdefs::misc::local_execution_options::LocalExecutionOptions;
 use blaze_optdefs::misc::sandbox_options::SandboxOptions;
 use blaze_options::Options;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
-use blaze_sky_exec::keys::TestType;
+use blaze_sky_analysis::top_level_status_events::{
+    TopLevelTargetAnalyzedEvent, TopLevelTargetSkippedEvent,
+};
+use blaze_sky_exec::keys::{BuildDriverKey, TargetCompletionKey, TestType};
+use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use blaze_sky_top::build_tool::{
     AnalysisPostProcessor, BuildRequest, BuildTool, BuildToolError, ExecutionPhase,
 };
@@ -48,7 +58,7 @@ use blaze_sky_top::build_view::{AnalysisResult, construct_label_to_target_map};
 use blaze_sky_top::execution_phase::ExecutionSetup;
 use blaze_sky_top::execution_seam::{
     BuildDriverKeyTestContext, build_driver_keys, configured_target_views,
-    get_explicit_target_patterns, top_level_output_groups,
+    get_explicit_target_patterns, top_level_output_groups, validation_mode,
 };
 use blaze_sky_top::skyframe_executor::SkyframeExecutor;
 use blaze_sky_top::target_pattern_phase::TargetPatternPhaseValue;
@@ -61,6 +71,7 @@ use crate::commands::bep::BepCommandSupport;
 use crate::commands::query::{
     AfterCommand, create_skyframe_executor_with_execution, reporter, to_runtime_detailed_exit_code,
 };
+use crate::commands::target_patterns_helper;
 use crate::directories::BlazeDirectories;
 use crate::exit_code::{DetailedExitCode, ExitCode};
 use crate::options_result::OptionsParsingResult;
@@ -151,15 +162,10 @@ fn run_build_with_bep(
     run_tests: bool,
     bep: Option<&Arc<BepCommandSupport>>,
 ) -> BlazeCommandResult {
-    let start = Instant::now();
-    let start_time_millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    // BuildRequest.Builder.setStartTimeMillis(env.getCommandStartTime())
+    let start_time_millis = env.get_command_start_time();
     let reporter = reporter(env);
     let command_name = env.get_command_name();
-    // PORT: TargetPatternsHelper.readFrom: --target_pattern_file is not ported.
-    let targets: Vec<String> = options.get_residue();
 
     let build_request_options: BuildRequestOptions = options_or_default(options);
     let execution_options: ExecutionOptions = options_or_default(options);
@@ -168,12 +174,67 @@ fn run_build_with_bep(
     let ui_options: UiOptions = options_or_default(options);
     let test_options: TestConfigurationTestOptions = options_or_default(options);
     let status_options: WorkspaceStatusActionOptions = options_or_default(options);
+    let keep_going = options
+        .get_options::<blaze_optdefs::command::keep_going_option::KeepGoingOption>()
+        .map(|o| o.keep_going)
+        .unwrap_or(false);
+
+    // Flags whose implementation is not ported: fail before anything runs.
+    if execution_options.stats_summary {
+        // The other summary of BuildSummaryStatsModule.buildComplete (total action wall time,
+        // preparation and execution times).
+        blaze_util::unported!(
+            "BuildSummaryStatsModule.buildComplete",
+            "--experimental_stats_summary"
+        );
+    }
+    if build_request_options
+        .aquery_dump_after_build_format
+        .is_some()
+        || build_request_options
+            .aquery_dump_after_build_output_file
+            .is_some()
+    {
+        blaze_util::unported!(
+            "BuildTool.dumpSkyframeStateAfterBuild",
+            "--experimental_aquery_dump_after_build_format / _output_file"
+        );
+    }
+    // Java: com/google/devtools/build/lib/runtime/commands/TestCommand.java:162 TestCommand.doTest
+    if run_tests
+        && options
+            .get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
+            .is_some_and(|o| o.collect_code_coverage)
+        && !options.contains_explicit_option("instrumentation_filter")
+    {
+        // builder.setNeedsInstrumentationFilter(true)
+        blaze_util::unported!("InstrumentationFilterSupport.computeInstrumentationFilter");
+    }
+    // Java: com/google/devtools/build/lib/bazel/coverage/BazelCoverageReportModule.java:78 BazelCoverageReportModule.getCoverageReportFactory
+    if run_tests
+        && options
+            .get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
+            .is_some_and(|o| o.collect_code_coverage)
+        && options
+            .get_options::<blaze_optdefs::misc::bazel_coverage_report_module::BazelCoverageReportModuleOptions>()
+            .is_some_and(|o| {
+                o.combined_report != blaze_optdefs::misc::bazel_coverage_report_module::ReportType::NONE
+            })
+    {
+        blaze_util::unported!(
+            "BazelCoverageReportModule.getCoverageReportFactory",
+            "--collect_code_coverage with --combined_report (the coverage report action)"
+        );
+    }
 
     // The modules subscribed to the command's event bus.
     let collector = Arc::new(ExecutionEventCollector::new());
     env.get_event_bus().register(collector.clone());
     let ui_test_summaries = Arc::new(UiTestSummaryCounter::default());
     env.get_event_bus().register(ui_test_summaries.clone());
+    // CommandEnvironment.<init>: eventBus.register(buildResultListener)
+    let build_result_listener = Arc::new(BuildResultListener::default());
+    env.get_event_bus().register(build_result_listener.clone());
     let test_support = run_tests.then(|| {
         TestCommandSupport::new(
             Arc::new(execution_options.clone()),
@@ -184,6 +245,25 @@ fn run_build_with_bep(
     });
     if let Some(test_support) = &test_support {
         env.get_event_bus().register(test_support.subscriber());
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/commands/BuildCommand.java:74 BuildCommand.exec
+    // Java: com/google/devtools/build/lib/runtime/commands/TestCommand.java:131 TestCommand.doTest
+    let targets: Vec<String> = match target_patterns_helper::read_from(env, options) {
+        Ok(targets) => targets,
+        Err(e) => {
+            reporter.handle(&Event::error(e.get_message()));
+            return BlazeCommandResult::failure_detail(e.get_failure_detail());
+        }
+    };
+    if !run_tests && targets.is_empty() {
+        let product_name = env.get_runtime().get_product_name();
+        reporter.handle(&Event::warn(format!(
+            "Usage: {product_name} build <options> <targets>.\
+             \nInvoke `{product_name} help build` for full description of usage and options.\
+             \nYour request is correct, but requested an empty set of targets. \
+             Nothing will be built."
+        )));
     }
 
     let directories = env.get_directories().clone();
@@ -226,10 +306,6 @@ fn run_build_with_bep(
             .map(|n| n.get())
             .unwrap_or(1)
     };
-    let keep_going = options
-        .get_options::<blaze_optdefs::command::keep_going_option::KeepGoingOption>()
-        .map(|o| o.keep_going)
-        .unwrap_or(false);
     let config = ExecutionToolConfig {
         file_system: file_system.clone(),
         output_base: env.get_output_base().clone(),
@@ -242,6 +318,13 @@ fn run_build_with_bep(
         execution_options: Some(execution_options.clone()),
         sandbox_options: Some(options_or_default::<SandboxOptions>(options)),
         local_execution_options: Some(options_or_default::<LocalExecutionOptions>(options)),
+        remote_options: options
+            .get_options::<blaze_optdefs::misc::remote_options::RemoteOptions>(),
+        dynamic_execution_options: options.get_options::<
+            blaze_optdefs::misc::dynamic_execution_options::DynamicExecutionOptions,
+        >(),
+        worker_options: options
+            .get_options::<blaze_optdefs::misc::worker_options::WorkerOptions>(),
         // Filled by the executor from its package locator and repository setup.
         package_path_entries: Vec::new(),
         repo_contents_cache_path: None,
@@ -289,26 +372,55 @@ fn run_build_with_bep(
     };
     let _after_command = AfterCommand(&skyframe_executor);
     // PORT: Java's dispatcher computed the main repository mapping on the server's executor
-    // (BlazeCommandDispatcher.execExclusively); this command's executor computes it again (the
-    // dispatcher already reported any error).
-    if skyframe_executor
-        .get_main_repo_mapping(
-            keep_going,
-            blaze_sky_top::skyframe_executor::DEFAULT_THREAD_COUNT,
-            reporter.clone(),
-        )
-        .is_err()
-    {
-        return BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(FailureDetail {
-            message: "main repository mapping computation failed".to_owned(),
-            category: Some(Category::ExternalDeps(failure_details::ExternalDeps {
-                code: failure_details::external_deps::Code::ExternalDepsUnknown as i32,
-            })),
-        }));
+    // (BlazeCommandDispatcher.execExclusively) and reported any error; this command's executor
+    // computes it again. `test` also asks for it in TestCommand.doTest, whose error handling
+    // this is.
+    // Java: com/google/devtools/build/lib/runtime/commands/TestCommand.java:139 TestCommand.doTest
+    if let Err(e) = skyframe_executor.get_main_repo_mapping(
+        keep_going,
+        blaze_sky_top::skyframe_executor::DEFAULT_THREAD_COUNT,
+        reporter.clone(),
+    ) {
+        return match e {
+            RepositoryMappingResolutionOrInterrupted::Interrupted => {
+                // BuildTool.processRequest reports an interrupted `build` as "build interrupted".
+                let message = if run_tests {
+                    "test command interrupted"
+                } else {
+                    "build interrupted"
+                };
+                reporter.handle(&Event::error(message));
+                BlazeCommandResult::detailed_exit_code(DetailedExitCode::of_exit_code(
+                    ExitCode::INTERRUPTED,
+                    FailureDetail {
+                        message: message.to_owned(),
+                        category: Some(Category::Interrupted(failure_details::Interrupted {
+                            code: failure_details::interrupted::Code::Interrupted as i32,
+                        })),
+                    },
+                ))
+            }
+            RepositoryMappingResolutionOrInterrupted::Resolution(e) => {
+                reporter.handle(&Event::error(e.to_string()));
+                BlazeCommandResult::detailed_exit_code(to_runtime_detailed_exit_code(
+                    blaze_query::compat::failure_details::from_packages(&e.detailed_exit_code),
+                ))
+            }
+        };
     }
 
     let mut request = BuildRequest::new(command_name, options, targets, true, false);
     request.set_run_tests(run_tests);
+    // SkymeldModule.beforeCommand: env.setMergedAnalysisAndExecution(...)
+    let merged_analysis_and_execution = determine_if_merging_analysis_execution(
+        options,
+        &build_request_options,
+        skyframe_executor
+            .get_package_path()
+            .get_path_entries()
+            .len(),
+    );
+    request.set_merged_analysis_and_execution(merged_analysis_and_execution);
 
     let execution_phase = RuntimeExecutionPhase {
         reporter: reporter.clone(),
@@ -324,7 +436,31 @@ fn run_build_with_bep(
             .map(|o| o.extra_action_top_level_only)
             .unwrap_or(false),
         collector: collector.clone(),
-        outcome: RefCell::new(None),
+        event_reporter: env.get_reporter().clone(),
+        explanation: build_request_options
+            .explanation_path
+            .as_ref()
+            // BuildRequest.<init>: OptionsUtils.asShellEscapedString(options)
+            .map(|path| {
+                (
+                    path.0.clone(),
+                    crate::commands::bep::as_shell_escaped_string(options),
+                )
+            }),
+        build_result: RefCell::new(new_build_result(
+            start_time_millis,
+            keep_going,
+            &execution_options,
+        )),
+        results_shown: Cell::new(false),
+        build_result_listener: build_result_listener.clone(),
+        request_view: RuntimeBuildRequestView {
+            build_options: build_request_options.clone(),
+            execution_options: execution_options.clone(),
+            should_run_tests: run_tests,
+            // BuildRequest.Builder.setOutErr(env.getReporter().getOutErr())
+            out_err: env.get_reporter_out_err().clone(),
+        },
         bep: bep.cloned(),
     };
     let post_processor = NoPostProcessor;
@@ -348,34 +484,76 @@ fn run_build_with_bep(
     }
     let detailed_exit_code = to_runtime_detailed_exit_code(build_tool.process_request(&request));
 
-    // BuildTool.stopRequest: the BuildCompleteEvent subscribers.
-    let outcome = execution_phase.outcome.borrow_mut().take();
-    let mut build_result = BuildResult::new(start_time_millis);
-    build_result.set_detailed_exit_code(Arc::new(to_util_detailed_exit_code(&detailed_exit_code)));
-    if let Some(outcome) = &outcome {
-        build_result.set_convenience_symlinks(outcome.convenience_symlinks.clone());
-        build_result.set_actual_targets(Some(outcome.actual_targets.clone()));
-        build_result.set_test_targets(Some(outcome.test_targets.clone()));
-        build_result.set_successful_targets(Some(outcome.successful_targets.clone()));
-        build_result.set_skipped_targets(Some(Vec::new()));
+    // BuildTool.stopRequest.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1155 BuildTool.stopRequest
+    let mut build_result = execution_phase.build_result.replace(new_build_result(
+        start_time_millis,
+        keep_going,
+        &execution_options,
+    ));
+    if !execution_phase.results_shown.get()
+        && merged_analysis_and_execution
+        && target_patterns_were_evaluated(
+            &skyframe_executor,
+            &request,
+            env.get_relative_working_directory(),
+        )
+    {
+        // The finally block of BuildTool.buildTargetsWithMergedAnalysisExecution also runs when
+        // the analysis (or the preparation of the execution) throws: the targets analyzed so far
+        // are the build result's targets, none of them was built, and
+        // ExecutionTool.nonCatastrophicFinalizations shows them as failed. The sets are empty,
+        // not null, when nothing was analyzed, which is how TestCommand.doTest tells this from a
+        // build that never started.
+        // PORT: Java also creates the convenience symlinks there when the top-level
+        // configuration exists (result.getBuildConfiguration() != null); blaze_sky_top's
+        // BuildTool does not hand the configuration of a failed analysis to the command.
+        // PORT: a failure of the PROJECT.scl evaluation, which Java raises before this method,
+        // is not told apart (blaze_sky_top::project fails loudly for project files).
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:664 BuildTool.buildTargetsWithMergedAnalysisExecution
+        let analyzed_targets = build_result_listener.get_analyzed_targets();
+        let views = configured_target_views(&analyzed_targets);
+        let skipped_targets = configured_target_views(&build_result_listener.get_skipped_targets());
+        build_result.set_actual_targets(Some(views.clone()));
+        // getAnalyzedTests(): the TestAnalyzedEvents are posted when the execution starts.
+        build_result.set_test_targets(Some(Vec::new()));
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:552 ExecutionTool.nonCatastrophicFinalizations
+        build_result.set_successful_targets(Some(Vec::new()));
+        build_result.set_successful_aspects(Some(indexmap::IndexSet::new()));
+        build_result.set_skipped_targets(Some(skipped_targets.clone()));
+        let generating_rule_lookup =
+            |target: &ConfiguredTargetRef| output_file_generating_rule(&analyzed_targets, target);
+        BuildResultPrinter::new(
+            env.get_runtime().get_product_name(),
+            env.get_relative_working_directory().clone(),
+        )
+        .show_build_result(
+            &execution_phase.request_view,
+            &build_result,
+            &views,
+            &skipped_targets,
+            &indexmap::IndexMap::new(),
+            &generating_rule_lookup,
+        );
     }
-    build_result.set_stop_time(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0),
-    );
+    build_result.set_detailed_exit_code(Arc::new(to_util_detailed_exit_code(&detailed_exit_code)));
+    // The stop time has to be captured before we send the BuildCompleteEvent.
+    build_result.set_stop_time(JavaClock.current_time_millis());
+    // The BuildCompleteEvent subscribers: AggregatingTestListener, BuildSummaryStatsModule, the
+    // UI.
     if let Some(test_support) = &test_support {
         test_support.build_complete_event(&build_result);
     }
-    let elapsed = start.elapsed().as_secs_f64();
-    let critical_path = outcome.as_ref().map(|o| o.critical_path).unwrap_or(0.0);
-    report_build_summary_stats(reporter.as_ref(), &collector, elapsed, critical_path);
+    report_build_summary_stats(
+        reporter.as_ref(),
+        &collector,
+        build_result.get_elapsed_seconds(),
+    );
     let failed_tests = ui_test_summaries
         .failed_tests
         .load(std::sync::atomic::Ordering::SeqCst);
     reporter.handle(&build_complete_event(
-        detailed_exit_code.is_success(),
+        build_result.get_success(),
         failed_tests,
         &collector,
     ));
@@ -436,6 +614,39 @@ fn run_build_with_bep(
     BlazeCommandResult::detailed_exit_code(detailed)
 }
 
+/// `BuildTool.stopRequest` of a request without an execution phase (`cquery`, `aquery`: their
+/// `editOptions` adds `--nobuild`): stops the clock and lets the `BuildCompleteEvent`
+/// subscribers print the build summary. `detailed_exit_code` is the result of
+/// `BuildTool.processRequest`.
+///
+/// `BuildSummaryStatsModule.buildComplete` prints `Elapsed time: ...` alone (no `ExecutionTool`
+/// was created, so `executorInit` set up no critical path computer) and `0 processes.`; the UI
+/// prints `Build completed successfully, 0 total actions` or
+/// `Build did NOT complete successfully`.
+///
+/// PORT: the Build Event Protocol of these commands is not ported (the dispatcher fails loudly
+/// when a `--build_event_*_file` is given to a command other than `build` and `test`), so the
+/// `BuildCompleteEvent` and the `BuildToolLogs` event have no other subscriber.
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1155 BuildTool.stopRequest
+pub(crate) fn stop_request_without_execution(
+    env: &CommandEnvironment,
+    detailed_exit_code: &blaze_query_engine::DetailedExitCode,
+) {
+    let reporter = reporter(env);
+    let mut result = BuildResult::new(env.get_command_start_time());
+    // The stop time has to be captured before we send the BuildCompleteEvent.
+    result.set_stop_time(JavaClock.current_time_millis());
+    // No action ran: the counters of BuildSummaryStatsModule and of the UI are zero.
+    let collector = ExecutionEventCollector::new();
+    report_build_summary_stats(reporter.as_ref(), &collector, result.get_elapsed_seconds());
+    // BuildResult.getSuccess()
+    reporter.handle(&build_complete_event(
+        detailed_exit_code.is_success(),
+        0,
+        &collector,
+    ));
+}
+
 /// The runtime's `DetailedExitCode` as `blaze_util`'s (what `BuildResult` holds).
 fn to_util_detailed_exit_code(code: &DetailedExitCode) -> blaze_util::DetailedExitCode {
     match code.get_failure_detail() {
@@ -462,13 +673,277 @@ impl AnalysisPostProcessor for NoPostProcessor {
     }
 }
 
-/// What the execution phase hands back to `stopRequest`.
-struct ExecutionOutcome {
-    convenience_symlinks: indexmap::IndexMap<PathFragment, PathFragment>,
-    actual_targets: Vec<ConfiguredTargetRef>,
-    test_targets: Vec<ConfiguredTargetRef>,
-    successful_targets: Vec<ConfiguredTargetRef>,
-    critical_path: f64,
+/// `new BuildResult(request.getStartTime())` and `BuildTool.maybeSetStopOnFirstFailure`.
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:898 BuildTool.processRequest
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1121 BuildTool.maybeSetStopOnFirstFailure
+fn new_build_result(
+    start_time_millis: i64,
+    keep_going: bool,
+    execution_options: &ExecutionOptions,
+) -> BuildResult {
+    let mut result = BuildResult::new(start_time_millis);
+    // BuildTool.shouldStopOnFailure
+    if !(keep_going && execution_options.test_keep_going) {
+        result.set_stop_on_first_failure(true);
+    }
+    result
+}
+
+/// Whether Java runs the request with merged analysis and execution (Skymeld), which decides
+/// what `BuildTool.buildTargets` leaves in the `BuildResult` when the analysis fails.
+///
+/// PORT: the `logger.atInfo()` lines that say why the flag is ignored are not written (no server
+/// logger). Blaze's own order of work (analysis of all top-level targets, then execution) does
+/// not depend on this value.
+// Java: com/google/devtools/build/lib/skyframe/SkymeldModule.java:35 SkymeldModule.determineIfMergingAnalysisExecution
+fn determine_if_merging_analysis_execution(
+    options: &OptionsParsingResult,
+    build_request_options: &BuildRequestOptions,
+    package_path_entries: usize,
+) -> bool {
+    // SkymeldModule.getPlainValueFromFlag
+    let mut effective_value =
+        build_request_options.merged_skyframe_analysis_execution_do_not_use_directly;
+
+    // --nobuild means no execution will be carried out, hence it doesn't make sense to interleave
+    // analysis and execution in that case and --experimental_merged_skyframe_analysis_execution
+    // should be ignored.
+    if effective_value && !build_request_options.perform_execution_phase {
+        effective_value = false;
+    }
+    // TODO(b/245922903): Make --explain compatible with Skymeld.
+    if effective_value && build_request_options.explanation_path.is_some() {
+        effective_value = false;
+    }
+
+    let having_multi_package_path = package_path_entries > 1;
+    // TODO(b/246324830): Skymeld and multi-package_path are incompatible.
+    if effective_value && having_multi_package_path {
+        effective_value = false;
+    }
+
+    if effective_value
+        && options
+            .get_options::<blaze_optdefs::command::analysis_options::AnalysisOptions>()
+            .is_some_and(|o| o.cpu_heavy_sky_keys_thread_pool_size <= 0)
+    {
+        effective_value = false;
+    }
+
+    if effective_value
+        && (build_request_options
+            .aquery_dump_after_build_format
+            .is_some()
+            || build_request_options
+                .aquery_dump_after_build_output_file
+                .is_some())
+    {
+        effective_value = false;
+    }
+
+    // TODO(b/245873370) --check_licenses is going away.
+    if effective_value
+        && options
+            .get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
+            .is_some_and(|o| o.check_licenses)
+    {
+        effective_value = false;
+    }
+
+    effective_value
+}
+
+/// Whether `BuildTool.buildTargets` got past `evaluateTargetPatterns`, that is, entered
+/// `buildTargetsWithMergedAnalysisExecution`.
+///
+/// PORT: Java knows by control flow (the `finally` block of that method). blaze_sky_top's
+/// `BuildTool.process_request` returns only the exit code, so this asks the graph for the
+/// `TARGET_PATTERN_PHASE` node the build tool evaluated (the key of
+/// `SkyframeExecutor.loadTargetPatternsWithFilters` for the request): it is done without an
+/// error exactly when the evaluation of the target patterns did not throw.
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:468 BuildTool.evaluateTargetPatterns
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3179 SkyframeExecutor.loadTargetPatternsWithFilters
+fn target_patterns_were_evaluated(
+    skyframe_executor: &SkyframeExecutor,
+    request: &BuildRequest,
+    relative_working_directory: &PathFragment,
+) -> bool {
+    use blaze_sky_top::target_pattern_phase::{TargetPatternPhaseKey, TestFilter};
+    let options = &request.loading_options;
+    let key = blaze_skyframe::SkyKey::new(TargetPatternPhaseKey::key(
+        request.targets.clone(),
+        relative_working_directory.clone(),
+        options.compile_one_dependency,
+        options.build_tests_only,
+        request.should_run_tests(),
+        options.build_tag_filter_list.clone(),
+        options.build_manual_tests,
+        options.expand_test_suites,
+        Some(TestFilter::for_options(options)),
+    ));
+    let evaluator = skyframe_executor.get_evaluator();
+    evaluator.get_existing_value(&key).is_some()
+        && evaluator.get_existing_error_for_testing(&key).is_none()
+}
+
+/// A listener for the results of a build: the top-level targets that were analyzed and the
+/// ones that were skipped.
+///
+/// PORT: the analyzed tests are the analysis result's tests (Blaze analyzes every top-level
+/// target before it executes), the built targets are read from the graph
+/// ([`top_level_target_built`]), and there are no top-level aspects.
+// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:42 BuildResultListener
+#[derive(Default)]
+struct BuildResultListener {
+    // Also includes test targets.
+    analyzed_targets: parking_lot::Mutex<Vec<ConfiguredTarget>>,
+    // Also includes test targets.
+    skipped_targets: parking_lot::Mutex<Vec<ConfiguredTarget>>,
+}
+
+impl BuildResultListener {
+    /// `Set.add`: a configured target is one instance per lookup key.
+    ///
+    /// PORT: java-hash-order. Java's sets are `ConcurrentHashMap.newKeySet()` over identity hash
+    /// codes, so the order of the result lines of several targets changes from run to run; here
+    /// it is the order of the events.
+    fn add(set: &parking_lot::Mutex<Vec<ConfiguredTarget>>, target: &ConfiguredTarget) {
+        let mut set = set.lock();
+        if !set
+            .iter()
+            .any(|t| t.get_lookup_key() == target.get_lookup_key())
+        {
+            set.push(target.clone());
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:89 BuildResultListener.getAnalyzedTargets
+    fn get_analyzed_targets(&self) -> Vec<ConfiguredTarget> {
+        self.analyzed_targets.lock().clone()
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:101 BuildResultListener.getSkippedTargets
+    fn get_skipped_targets(&self) -> Vec<ConfiguredTarget> {
+        self.skipped_targets.lock().clone()
+    }
+}
+
+impl blaze_events::EventBus for BuildResultListener {
+    fn post(&self, event: Arc<dyn blaze_events::Postable>) {
+        if let Some(event) =
+            blaze_sky_exec::events::downcast_event::<TopLevelTargetAnalyzedEvent>(&event)
+        {
+            // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:55 BuildResultListener.addAnalyzedTarget
+            Self::add(&self.analyzed_targets, &event.configured_target);
+        } else if let Some(event) =
+            blaze_sky_exec::events::downcast_event::<TopLevelTargetSkippedEvent>(&event)
+        {
+            // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:73 BuildResultListener.addSkippedTarget
+            Self::add(&self.skipped_targets, &event.configured_target);
+        }
+    }
+}
+
+/// What `BuildResultPrinter` reads from Java's `BuildRequest`.
+// Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:59 BuildRequest
+struct RuntimeBuildRequestView {
+    build_options: BuildRequestOptions,
+    execution_options: ExecutionOptions,
+    should_run_tests: bool,
+    out_err: OutErr,
+}
+
+impl BuildRequestView for RuntimeBuildRequestView {
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:331 BuildRequest.getBuildOptions
+    fn get_build_options(&self) -> &BuildRequestOptions {
+        &self.build_options
+    }
+
+    fn get_execution_options(&self) -> &ExecutionOptions {
+        &self.execution_options
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:448 BuildRequest.useValidationAspect
+    fn use_validation_aspect(&self) -> bool {
+        validation_mode(&self.build_options) == ValidationMode::Aspect
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:410 BuildRequest.getTopLevelArtifactContext
+    fn get_top_level_artifact_context(&self) -> TopLevelArtifactContext {
+        TopLevelArtifactContext {
+            output_groups: top_level_output_groups(&self.build_options, self.should_run_tests)
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:323 BuildRequest.getOutErr
+    fn get_out_err(&self) -> &OutErr {
+        &self.out_err
+    }
+}
+
+/// Whether a top-level target was built, as `BuildResultListener.getBuiltTargets()` records it
+/// from the `TopLevelTargetBuiltEvent`s of `ExecutionProgressReceiver.evaluated`: its
+/// `TARGET_COMPLETION` node succeeded, or its `BUILD_DRIVER` node succeeded with a value that is
+/// not skipped.
+///
+/// PORT: the evaluator has no `EvaluationProgressReceiver`; the same facts are read from the
+/// graph after the evaluation.
+// Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:95 ExecutionProgressReceiver.evaluated
+fn top_level_target_built(
+    evaluator: &blaze_skyframe::Evaluator,
+    evaluation: &blaze_skyframe::EvaluationResult,
+    key: &BuildDriverKey,
+) -> bool {
+    // BuildDriverFunction requests the target's completion with `willTest` set for a test.
+    let target_completion_key = blaze_skyframe::SkyKey::new(TargetCompletionKey {
+        action_lookup_key: key.action_lookup_key.clone(),
+        output_groups: key.output_groups.clone(),
+        will_test: key.test_type != TestType::NOT_TEST,
+    });
+    if evaluator
+        .get_existing_value(&target_completion_key)
+        .is_some()
+    {
+        return true;
+    }
+    evaluation.get(key).is_some_and(|value| !value.skipped)
+}
+
+/// What `BuildResultPrinter.filterTargetsToPrint` reads from the `OutputFileConfiguredTarget`
+/// behind `target` (a `generated file` among the analyzed targets) and from its generating rule.
+// Java: com/google/devtools/build/lib/buildtool/BuildResultPrinter.java:353 BuildResultPrinter.filterTargetsToPrint
+fn output_file_generating_rule(
+    analyzed_targets: &[ConfiguredTarget],
+    target: &ConfiguredTargetRef,
+) -> OutputFileGeneratingRule {
+    let lookup_key = target.get_lookup_key();
+    for configured_target in analyzed_targets {
+        let unmerged = configured_target.unwrap_if_merged();
+        if let ConfiguredTarget::OutputFile(output_file) = &unmerged
+            && *unmerged.get_lookup_key() == lookup_key
+        {
+            let generating_rule = ConfiguredTarget::Rule(output_file.get_generating_rule().clone());
+            return OutputFileGeneratingRule {
+                generating_rule_key: generating_rule.get_lookup_key().clone(),
+                generating_rule_files_to_build: generating_rule
+                    .get_provider::<FileProvider>()
+                    .unwrap_or_else(|| panic!("NullPointerException: FileProvider"))
+                    .get_files_to_build()
+                    .clone(),
+                files_to_build: unmerged
+                    .get_provider::<FileProvider>()
+                    .unwrap_or_else(|| panic!("NullPointerException: FileProvider"))
+                    .get_files_to_build()
+                    .clone(),
+            };
+        }
+    }
+    panic!(
+        "ClassCastException: {} is not an OutputFileConfiguredTarget of the analysis result",
+        target.get_label()
+    )
 }
 
 impl BlazeDirectoriesView for BlazeDirectories {
@@ -501,9 +976,118 @@ struct RuntimeExecutionPhase {
     /// `--experimental_extra_action_top_level_only` (`AnalysisOptions`).
     extra_action_top_level_only: bool,
     collector: Arc<ExecutionEventCollector>,
-    outcome: RefCell<Option<ExecutionOutcome>>,
+    /// `env.getReporter()`, for `Reporter.addHandler`.
+    event_reporter: Arc<blaze_events::Reporter>,
+    /// `--explain`: `request.getBuildOptions().explanationPath` and
+    /// `request.getOptionsDescription()`.
+    explanation: Option<(PathFragment, String)>,
+    /// Java's `BuildResult result` of `BuildTool.processRequest`, which `buildTargets` fills.
+    build_result: RefCell<BuildResult>,
+    /// Whether `execute_build` reached `ExecutionTool.nonCatastrophicFinalizations` ("Show
+    /// results").
+    results_shown: Cell<bool>,
+    /// `env.getBuildResultListener()`.
+    build_result_listener: Arc<BuildResultListener>,
+    /// The `BuildRequest` as `BuildResultPrinter` reads it.
+    request_view: RuntimeBuildRequestView,
     /// The command's Build Event Protocol support (`None` without `--build_event_*_file`).
     bep: Option<Arc<BepCommandSupport>>,
+}
+
+impl RuntimeExecutionPhase {
+    /// Installs an `ExplanationHandler` (if `--explain` is set) and returns it on success.
+    /// Reports an error and returns `None` otherwise.
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:804 ExecutionTool.installExplanationHandler
+    fn install_explanation_handler(&self) -> Option<InstalledExplanationHandler> {
+        let (explanation_path, all_options) = self.explanation.as_ref()?;
+        // InstrumentationOutputFactory.createInstrumentationOutput("explain", explanationPath,
+        // DestinationRelativeTo.WORKSPACE_OR_HOME, ...).createOutputStream()
+        let handler = match self
+            .workspace
+            .get_relative(explanation_path)
+            .get_output_stream()
+        {
+            Ok(log) => Arc::new(ExplanationHandler::new(log, all_options)),
+            Err(e) => {
+                self.reporter.handle(&Event::warn(format!(
+                    "Cannot write explanation of rebuilds to file '{}': {}",
+                    explanation_path, e
+                )));
+                return None;
+            }
+        };
+        self.reporter.handle(&Event::info(format!(
+            "Writing explanation of rebuilds to '{}'",
+            explanation_path
+        )));
+        let registered: Arc<dyn EventHandler> = handler.clone();
+        self.event_reporter.add_handler(registered.clone());
+        Some(InstalledExplanationHandler {
+            reporter: self.event_reporter.clone(),
+            handler,
+            registered,
+        })
+    }
+}
+
+/// Records the dependency checker's explanations of rebuilds (`--explain`).
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:850 ExecutionTool.ExplanationHandler
+struct ExplanationHandler {
+    log: parking_lot::Mutex<Option<Box<dyn std::io::Write + Send>>>,
+}
+
+impl ExplanationHandler {
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:853 ExplanationHandler.<init>
+    fn new(log: Box<dyn std::io::Write + Send>, options_description: &str) -> ExplanationHandler {
+        let handler = ExplanationHandler {
+            log: parking_lot::Mutex::new(Some(log)),
+        };
+        handler.println(format!("Build options: {options_description}").as_bytes());
+        handler
+    }
+
+    /// `log.println(s)` of a `PrintWriter` over `OutputStreamWriter(log, UTF_8)`: Bazel's strings
+    /// are in the internal form (one character per byte), so the writer encodes every byte of
+    /// the string as its own character. `PrintWriter` swallows `IOException`s.
+    fn println(&self, internal: &[u8]) {
+        if let Some(log) = self.log.lock().as_mut() {
+            let line: String = internal.iter().map(|&b| b as char).collect();
+            let _ = log.write_all(line.as_bytes());
+            let _ = log.write_all(b"\n");
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:859 ExplanationHandler.close
+    fn close(&self) {
+        if let Some(mut log) = self.log.lock().take() {
+            let _ = log.flush();
+        }
+    }
+}
+
+impl EventHandler for ExplanationHandler {
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:864 ExplanationHandler.handle
+    fn handle(&self, event: &Event) {
+        if event.get_kind() == blaze_events::EventKind::Depchecker {
+            self.println(event.get_message_bytes());
+        }
+    }
+}
+
+/// An installed [`ExplanationHandler`]; dropping it uninstalls the handler and closes the log
+/// file.
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:839 ExecutionTool.uninstallExplanationHandler
+struct InstalledExplanationHandler {
+    reporter: Arc<blaze_events::Reporter>,
+    handler: Arc<ExplanationHandler>,
+    registered: Arc<dyn EventHandler>,
+}
+
+impl Drop for InstalledExplanationHandler {
+    fn drop(&mut self) {
+        self.reporter.remove_handler(&self.registered);
+        self.handler.close();
+    }
 }
 
 impl ExecutionPhase for RuntimeExecutionPhase {
@@ -591,10 +1175,14 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             loading_result.get_tests_to_run_labels(),
             &explicit_target_patterns,
             &output_groups,
-            false,
+            // request.getViewOptions().skipIncompatibleExplicitTargets
+            request.skip_incompatible_explicit_targets,
             self.extra_action_top_level_only,
             &BuildDriverKeyTestContext {
                 test_strategy: self.execution_options.test_strategy.clone(),
+                // executionTool.getTestActionContext(): StandaloneTestStrategy keeps the
+                // TestActionContext defaults (false); only the remote test strategies force
+                // exclusive tests to run in parallel.
                 force_exclusive_tests_in_parallel: false,
                 force_exclusive_if_local_tests_in_parallel: false,
             },
@@ -609,6 +1197,11 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             blaze_util::unported!("BuildTool.runExclusiveTests");
         }
 
+        // Conditionally record dependency-checker log (uninstalled and closed when dropped, where
+        // ExecutionTool.nonCatastrophicFinalizations does it: after the results are shown).
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:421 ExecutionTool.executeBuild
+        let _explanation_handler = self.install_explanation_handler();
+
         let result = evaluate_build_driver_keys(
             skyframe_executor.get_evaluator(),
             &keys,
@@ -619,26 +1212,66 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         .map_err(|_| BuildToolError::Interrupted)?;
         state.prepared.save_action_cache(reporter.as_ref());
 
-        let views = configured_target_views(analysis_result.get_targets_to_build());
+        // The finally block of BuildTool.buildTargetsWithMergedAnalysisExecution: the build
+        // result's targets, then ExecutionTool.nonCatastrophicFinalizations ("Show results").
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:664 BuildTool.buildTargetsWithMergedAnalysisExecution
+        self.results_shown.set(true);
+        // buildResultListener.getAnalyzedTargets(): also the targets whose compatibility check
+        // failed after they were analyzed, which the analysis result leaves out.
+        let analyzed_targets = self.build_result_listener.get_analyzed_targets();
+        let views = configured_target_views(&analyzed_targets);
         let test_targets =
             configured_target_views(analysis_result.get_targets_to_test().unwrap_or(&[]));
-        let mut successful_targets = Vec::new();
-        for (key, view) in keys.iter().zip(views.iter()) {
-            if result
-                .evaluation
-                .get_error(&blaze_skyframe::SkyKey::new(key.clone()))
-                .is_none()
-            {
+        let skipped_targets =
+            configured_target_views(&self.build_result_listener.get_skipped_targets());
+        // Maintain the ordering by copying builtTargets in the same iteration order as
+        // configuredTargets.
+        // PORT: Java's builtTargets holds ConfiguredTargetKeys; a top-level target's
+        // BuildDriverKey is found by the label it was requested under, as
+        // `execution_seam::build_driver_keys` pairs them (there is a key for every top-level
+        // label, also for the ones whose analysis failed with --keep_going).
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:877 ExecutionTool.determineSuccessfulTargets
+        let mut successful_targets: Vec<ConfiguredTargetRef> = Vec::new();
+        for (target, view) in analyzed_targets.iter().zip(views.iter()) {
+            let top_level_label = target.get_original_label();
+            let built = keys.iter().any(|key| {
+                key.action_lookup_key.get_label().as_ref() == Some(&top_level_label)
+                    && top_level_target_built(
+                        skyframe_executor.get_evaluator(),
+                        &result.evaluation,
+                        key,
+                    )
+            });
+            if built {
                 successful_targets.push(view.clone());
             }
         }
-        *self.outcome.borrow_mut() = Some(ExecutionOutcome {
-            convenience_symlinks: symlinks.get_created_symlinks().clone(),
-            actual_targets: views.clone(),
-            test_targets,
-            successful_targets,
-            critical_path: (result.stop - result.start).as_secs_f64(),
-        });
+        {
+            let mut build_result = self.build_result.borrow_mut();
+            // result::setBuildConfiguration, result.setConvenienceSymlinks
+            build_result.set_build_configuration(analysis_result.get_configuration().clone());
+            build_result.set_convenience_symlinks(symlinks.get_created_symlinks().clone());
+            build_result.set_actual_targets(Some(views.clone()));
+            build_result.set_test_targets(Some(test_targets));
+            // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:552 ExecutionTool.nonCatastrophicFinalizations
+            build_result.set_successful_targets(Some(successful_targets));
+            // PORT: top-level aspects are not ported (BuildView.createTopLevelAspectKeys fails
+            // loudly for --aspects), so there are no analyzed or built aspects.
+            build_result.set_successful_aspects(Some(indexmap::IndexSet::new()));
+            build_result.set_skipped_targets(Some(skipped_targets.clone()));
+            let generating_rule_lookup = |target: &ConfiguredTargetRef| {
+                output_file_generating_rule(&analyzed_targets, target)
+            };
+            BuildResultPrinter::new(&self.product_name, self.relative_working_directory.clone())
+                .show_build_result(
+                    &self.request_view,
+                    &build_result,
+                    &views,
+                    &skipped_targets,
+                    &indexmap::IndexMap::new(),
+                    &generating_rule_lookup,
+                );
+        }
         let _ = &self.collector;
 
         if result.evaluation.has_error() {

@@ -20,6 +20,7 @@ use blaze_buildtool::buildtool::execution_tool::{
 };
 use blaze_events::ExtendedEventHandler;
 use blaze_exec::exec::exec_command_environment::ExecCommandEnvironment;
+use blaze_exec::exec::single_build_file_cache::SingleBuildFileCache;
 use blaze_exec::exec::spawn_log_context::SpawnLogContext;
 use blaze_sky_exec::skyframe_action_executor::ActionContexts;
 use blaze_skyframe::EvaluatorBuilder;
@@ -158,6 +159,17 @@ pub fn prepare_execution(
     if let Some(e) = registration_error.into_inner() {
         return Err(e);
     }
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1044 CommandEnvironment.getFileCache
+    // (`new SingleBuildFileCache(execRoot, PathFragment.create(directories
+    // .getRelativeOutputPath()), fs, syscallCache)`), which ExecutionTool hands to
+    // SkyframeActionExecutor.configure.
+    prepared
+        .executor
+        .configure_file_cache(Arc::new(SingleBuildFileCache::new(
+            setup.config.exec_root.clone(),
+            // Java: com/google/devtools/build/lib/analysis/BlazeDirectories.java:257 BlazeDirectories.getRelativeOutputPath
+            blaze_vfs::PathFragment::create(&format!("{}-out", services.directories.product_name)),
+        )));
     let seam = Arc::new(SkyframeAnalysisSeam::new(services.clone()));
     let builder = blaze_sky_exec::register_execution_functions(
         builder,

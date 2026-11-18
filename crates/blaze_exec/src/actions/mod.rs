@@ -71,7 +71,7 @@ pub use exec_exception::{
 pub use file_artifact_value::{FileArtifactValue, FileContentsProxy, FileStateType};
 pub use input_metadata_provider::{
     FilesetOutputSymlink, FilesetOutputTree, InputMetadataProvider, RunfilesArtifactValue,
-    RunfilesTree, TreeArtifactValue, expand_artifacts,
+    RunfilesTree, SymlinkEntry, TreeArtifactValue, expand_artifacts,
 };
 pub use path_mapper::PathMapper;
 pub use resource_set::{ResourceSet, ResourceSetOrBuilder};

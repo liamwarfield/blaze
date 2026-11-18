@@ -13,15 +13,14 @@ use blaze_protos::failure_details::{
 use blaze_query_engine::{
     DetailedExitCode, QueryException, QueryExpression, QueryFunction, QueryParser,
 };
-use blaze_sky_top::build_tool::{BuildRequest, BuildTool};
+use blaze_sky_top::build_tool::BuildRequest;
 
 use crate::aquery::action_graph_query_environment::{
     KeyedConfiguredTargetValue, aquery_functions, functions,
 };
 use crate::buildtool::aquery_processor::AqueryProcessor;
 use crate::commands::{
-    PostAnalysisCommandEnvironment, main_repo_target_parser, read_query,
-    tracks_state_for_incrementality,
+    PostAnalysisCommandEnvironment, main_repo_target_parser, process_request, read_query,
 };
 
 /// Allows the command to provide command-specific option defaults and/or requirements.
@@ -97,6 +96,8 @@ fn get_top_level_targets(
 // Java: com/google/devtools/build/lib/runtime/commands/AqueryCommand.java:81 AqueryCommand.exec
 pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
     // TODO(twerth): Reduce overlap with CqueryCommand.
+    // SkyQueryEnvironment.DEFAULT_THREAD_COUNT (a static initializer in Java).
+    crate::post_analysis_query_environment::set_default_thread_count(env.available_processors);
     let aquery_options: AqueryOptions = env
         .options
         .get_options::<AqueryOptions>()
@@ -170,7 +171,7 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
         env.reporter.clone(),
         env.output.clone(),
         env.working_directory.clone(),
-        tracks_state_for_incrementality(env),
+        env.tracks_state_for_incrementality,
     ) {
         Ok(p) => p,
         Err(e) => {
@@ -185,13 +186,7 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
     }
     // PORT: StackOverflowError ("Aquery output was too large to handle") cannot be caught in
     // Rust.
-    BuildTool::new(
-        env.skyframe_executor,
-        env.reporter.clone(),
-        env.relative_working_directory.clone(),
-        &aquery_build_tool,
-    )
-    .process_request(&request)
+    process_request(env, &request, &aquery_build_tool)
 }
 
 // Java: com/google/devtools/build/lib/runtime/commands/AqueryCommand.java:175 AqueryCommand.createFailureResult

@@ -1,21 +1,25 @@
 //! `ActionExecutionFunction`: the `ACTION_EXECUTION` SkyFunction.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
 use blaze_actions::actions::action::{Action, ActionRef};
 use blaze_actions::{ActionLookupData, Artifact};
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
-use blaze_exec::actions::ActionExecutionException;
+use blaze_exec::actions::action_adapters::artifact_input;
 use blaze_exec::actions::action_cache_checker::{
     PackageRootExceptionOrInterrupted, PackageRootResolver, Token,
 };
 use blaze_exec::actions::action_execution::{ActionFailed, FailedActionInfo};
-use blaze_protos::failure_details::execution;
+use blaze_exec::actions::{
+    ActionExecutionException, ActionInputRef, FileArtifactValue, TreeArtifactValue,
+};
+use blaze_protos::failure_details::{FailureDetail, execution};
 use blaze_skyframe::{
-    ComputeError, Environment, Interrupted, SkyFunctionException, SkyKey, SkyValue, Transience,
+    ComputeError, Environment, Interrupted, SkyFunctionException, SkyKey, SkyValue,
+    SkyframeLookupResult, Transience,
 };
 use blaze_util::check_state;
 use blaze_vfs::{PathFragment, Root};
@@ -24,9 +28,13 @@ use indexmap::IndexSet;
 use crate::action_execution_value::ActionExecutionValue;
 use crate::analysis_seam::AnalysisSeam;
 use crate::artifact_function::{
-    ArtifactValue, MissingArtifactValue, SourceArtifactException, execution_failure,
+    ArtifactValue, InputDepException, InputDepValue, MissingArtifactValue, SourceArtifactException,
+    execution_failure, get_input_dep_or_throw,
 };
-use crate::keys::{ActionExecutionKey, ArtifactKey, ArtifactNestedSetKey, artifact_key};
+use crate::completion_function::create_source_error_code_and_message_of;
+use crate::keys::{
+    ActionExecutionKey, ArtifactKey, ArtifactNestedSetKey, ArtifactNestedSetValue, artifact_key,
+};
 use crate::skyframe_action_executor::{
     ActionInputMetadata, ContainingPackageRootLookup, ExecutionFailure, SkyframeActionExecutor,
 };
@@ -55,14 +63,27 @@ pub fn get_action_for_lookup_data(
     ))
 }
 
-/// An `ExecutionFailure` as the SkyFunction's error: an `ActionExecutionFunctionException`
-/// (persistent) or an interrupt.
+/// An `ExecutionFailure` as the SkyFunction's error: an `ActionExecutionFunctionException` or an
+/// interrupt.
 fn to_compute_error(e: ExecutionFailure) -> ComputeError {
     match e {
-        ExecutionFailure::Exception(e) => {
-            SkyFunctionException::new(e, Transience::Persistent).into()
-        }
+        ExecutionFailure::Exception(e) => action_execution_function_exception(e).into(),
         ExecutionFailure::Interrupted => ComputeError::Interrupted(Interrupted),
+    }
+}
+
+/// `new ActionExecutionFunctionException(e)`: used to declare all the exception types that can be
+/// wrapped in the exception thrown by `ActionExecutionFunction.compute`.
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1314 ActionExecutionFunction.ActionExecutionFunctionException
+fn action_execution_function_exception(e: ActionExecutionException) -> SkyFunctionException {
+    // We conservatively assume that the error is transient. We don't have enough information to
+    // distinguish non-transient errors (e.g. compilation error from a deterministic compiler)
+    // from transient ones (e.g. IO error).
+    // isCatastrophic(): actionException.isCatastrophe().
+    let catastrophic = e.is_catastrophe();
+    SkyFunctionException {
+        catastrophic,
+        ..SkyFunctionException::new(e, Transience::Transient)
     }
 }
 
@@ -140,7 +161,7 @@ impl PackageRootResolver for PackageRootResolverWithEnvironment<'_, '_> {
             );
         };
         let mut env = self.env.borrow_mut();
-        lookup.find_package_roots_for_files(exec_paths, &mut **env)
+        lookup.find_package_roots_for_files(exec_paths, &mut env)
     }
 }
 
@@ -152,7 +173,8 @@ impl ActionExecutionFunction {
         env: &mut Environment<'_>,
     ) -> Result<Option<ActionExecutionValue>, ComputeError> {
         let action_lookup_data = &key.0;
-        // PORT: remote analysis caching (retrieveRemoteSkyValue) is not ported.
+        // PORT: skipped, incremental (remote analysis caching, retrieveRemoteSkyValue: retrieval
+        // is enabled only with a remote analysis cache service, which is Google-internal).
         let Some(action) = get_action_for_lookup_data(&*self.seam, env, action_lookup_data)? else {
             return Ok(None);
         };
@@ -172,10 +194,11 @@ impl ActionExecutionFunction {
         action: &ActionRef,
         env: &mut Environment<'_>,
     ) -> Result<Option<ActionExecutionValue>, ComputeError> {
-        // PORT: Actions.dependsOnBuildId (BUILD_ID precomputed) and the CLIENT_ENVIRONMENT_VARIABLE
-        // dependencies of action.getClientEnvironmentVariables() are not requested: the executor
-        // holds the client environment of this single build, and the action cache checker reads
-        // the action's variables from it (computeEffectiveEnvironment).
+        // PORT: skipped, incremental (the dependencies on BUILD_ID for Actions.dependsOnBuildId
+        // and on the CLIENT_ENVIRONMENT_VARIABLE of each of
+        // action.getClientEnvironmentVariables() only invalidate the node in a later build). The
+        // executor holds the client environment of this single build, and the action cache
+        // checker reads the action's variables from it (computeEffectiveEnvironment).
 
         // If two actions are shared and the first one executes, when the second one goes to
         // execute, we should detect that and short-circuit.
@@ -191,12 +214,13 @@ impl ActionExecutionFunction {
         };
         let all_input_set = all_inputs.get_all_inputs();
 
-        // PORT: ActionInputCollectedEvent (BEP/metrics only) is not posted.
+        // PORT: skipped, Google-internal (ActionInputCollectedEvent has no subscriber in Bazel).
         let input_dep_keys =
             get_input_dep_keys(&all_input_set, &action.get_scheduling_dependencies());
-        let input_deps_result = env.get_values_and_exceptions(&input_dep_keys)?;
+        let input_dep_keys_list: Vec<SkyKey> = input_dep_keys.iter().cloned().collect();
 
-        let mut input_map = None;
+        let input_deps_result = env.get_values_and_exceptions(&input_dep_keys_list)?;
+        let mut checked_inputs = None;
         if !previous_execution {
             // Do we actually need to find our metadata?
             match self.check_inputs(
@@ -206,22 +230,27 @@ impl ActionExecutionFunction {
                 &all_input_set,
                 &input_dep_keys,
             )? {
-                Ok(m) => input_map = m,
-                Err(e) => {
-                    return Err(SkyFunctionException::new(e, Transience::Persistent).into());
-                }
+                Ok(m) => checked_inputs = m,
+                Err(e) => return Err(action_execution_function_exception(e).into()),
             }
         }
         if env.values_missing() {
             // There was missing artifact metadata in the graph. Wait for it to be present.
+            // We must check this and return here before attempting to establish any Skyframe
+            // dependencies of the action; see establishSkyframeDependencies why.
             return Ok(None);
         }
 
         let mut state = InputDiscoveryState {
             all_inputs,
-            input_artifact_data: Arc::new(input_map.unwrap_or_else(|| {
-                ActionInputMetadata::new(self.skyframe_action_executor.get_exec_root().clone())
-            })),
+            // state.inputArtifactData = checkedInputs.actionInputMap, with the
+            // ActionInputMetadataProvider, SkyframeInputMetadataProvider and the
+            // DelegatingPairInputMetadataProvider of both over it (ActionInputMetadata). For a
+            // shared action that another node executes there is no input metadata.
+            input_artifact_data: Arc::new(
+                checked_inputs
+                    .unwrap_or_else(|| ActionInputMetadata::new(&self.skyframe_action_executor)),
+            ),
             token: None,
             discovered_inputs: None,
         };
@@ -360,11 +389,14 @@ impl ActionExecutionFunction {
                 // PORT: action.prepareInputDiscovery() is not part of the ported Action protocol;
                 // its only override (CppCompileAction) clears additional inputs left over from an
                 // earlier build, and actions are created fresh for each build here.
-                let discovered_inputs = executor.discover_inputs(
-                    env.listener(),
-                    action,
-                    state.input_artifact_data.clone(),
-                )?;
+                let discovered_inputs = {
+                    let _skyframe_allowed = state.input_artifact_data.with_skyframe_allowed();
+                    executor.discover_inputs(
+                        env.listener(),
+                        action,
+                        state.input_artifact_data.clone(),
+                    )?
+                };
                 if env.values_missing() {
                     check_state!(
                         discovered_inputs.is_none(),
@@ -387,7 +419,8 @@ impl ActionExecutionFunction {
                 return Ok(None);
             }
 
-            // PORT: DiscoveredInputsEvent (spawn metrics of input discovery) is not posted.
+            // PORT: skipped, profiling (DiscoveredInputsEvent: the input discovery time of the
+            // CriticalPathComputer and the execution graph log).
         }
 
         let input_artifact_data = state.input_artifact_data.clone();
@@ -502,14 +535,15 @@ impl ActionExecutionFunction {
             };
             match retrieved_metadata {
                 DiscoveredInputValue::Artifact(ArtifactValue::Tree(tree_value)) => {
-                    if let Some((archived, archived_value)) = &tree_value.archived_representation {
-                        let archived =
-                            blaze_exec::actions::action_adapters::as_blaze_artifact(archived)
-                                .expect("archived tree artifact")
-                                .clone();
-                        input_data.put(&archived, archived_value.clone());
+                    input_data.put_tree_artifact(input, tree_value.clone());
+                    if let Some((archived_tree_file_artifact, archived_file_value)) =
+                        &tree_value.archived_representation
+                    {
+                        input_data.put_input(
+                            archived_tree_file_artifact.clone(),
+                            archived_file_value.clone(),
+                        );
                     }
-                    input_data.put_tree_artifact(input, tree_value);
                 }
                 DiscoveredInputValue::Action(action_execution_value) => {
                     let value = action_execution_value
@@ -532,71 +566,144 @@ impl ActionExecutionFunction {
         Ok(())
     }
 
-    /// Checks the input values: accumulates errors of failed inputs and missing mandatory source
-    /// files, and builds the `ActionInputMap`.
+    /// Declares a dependency on all known inputs of the action. Throws an exception if any are
+    /// known to be missing.
+    ///
+    /// Returns `Ok(Ok(None))` if `env.values_missing()` is true and no inputs result in
+    /// `ActionExecutionException`s; `Ok(Err(e))` is Java's thrown `ActionExecutionException`.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:968 ActionExecutionFunction.checkInputs
     fn check_inputs(
         &self,
         env: &mut Environment<'_>,
         action: &dyn Action,
-        input_deps_result: &blaze_skyframe::SkyframeLookupResult,
+        input_deps_result: &SkyframeLookupResult,
         all_inputs: &NestedSet<Artifact>,
-        input_dep_keys: &[SkyKey],
+        input_dep_keys: &IndexSet<SkyKey>,
     ) -> Result<Result<Option<ActionInputMetadata>, ActionExecutionException>, ComputeError> {
-        let is_mandatory = make_mandatory_input_predicate(action);
+        let is_mandatory_input = make_mandatory_input_predicate(action);
 
-        let mut handler = ExceptionHandler::new(action, &self.skyframe_action_executor);
-        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1387 ActionExecutionFunctionExceptionHandler.accumulateAndMaybeThrowExceptions
-        let mut some_inputs_missing = false;
-        for key in input_dep_keys {
-            match get_input_dep(input_deps_result, key) {
-                Err(InputDepError::Action(e)) => handler.handle_action_execution_exception(e),
-                Err(InputDepError::Source(e)) => {
-                    let input = &key.downcast::<ArtifactKey>().expect("source key").0;
-                    handler.handle_source_artifact_exception(input, is_mandatory(input), e);
-                }
-                Ok(Some(v)) => {
-                    if let Some(ArtifactValue::Missing(_)) = v.downcast_ref::<ArtifactValue>() {
-                        some_inputs_missing = true;
-                    }
-                }
-                Ok(None) => {}
-            }
-        }
-        if let Err(e) = handler.maybe_throw_exception() {
-            return Ok(Err(e));
-        }
-        let _ = some_inputs_missing;
+        let mut action_execution_function_exception_handler =
+            ActionExecutionFunctionExceptionHandler::new(
+                all_inputs,
+                input_deps_result,
+                action,
+                &is_mandatory_input,
+                input_dep_keys,
+                &self.skyframe_action_executor,
+            );
+        let has_missing_inputs = match action_execution_function_exception_handler
+            .accumulate_and_maybe_throw_exceptions()
+        {
+            Ok(has_missing_inputs) => has_missing_inputs,
+            Err(e) => return Ok(Err(e)),
+        };
+
         if env.values_missing() {
             return Ok(Ok(None));
         }
 
-        let input_map =
-            ActionInputMetadata::new(self.skyframe_action_executor.get_exec_root().clone());
-        for input in all_inputs.to_list().iter() {
-            let Some(value) = lookup_input(input, input_dep_keys, input_deps_result, env)? else {
-                continue;
-            };
-            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1084 ActionExecutionFunction.getAndCheckInputSkyValue
-            if let InputValue::Artifact(ArtifactValue::Missing(m)) = &value {
-                if !is_mandatory(input) {
-                    input_map.put(
-                        input,
-                        blaze_exec::actions::FileArtifactValue::MissingFileMarker,
-                    );
-                    continue;
-                }
-                handler.accumulate_missing_file_artifact_value(input, m);
-                continue;
+        let all_inputs_list = all_inputs.to_list();
+
+        // When there are no missing values or there was an error, we can start checking
+        // individual files. We don't bother to optimize the error-ful case since it's rare.
+        let input_artifact_data = ActionInputMetadata::new(&self.skyframe_action_executor);
+
+        for input in all_inputs_list.iter() {
+            let value = self.get_and_check_input_sky_value(
+                env,
+                input,
+                input_dep_keys,
+                input_deps_result,
+                &is_mandatory_input,
+                &mut action_execution_function_exception_handler,
+            )?;
+
+            if let Some(value) = value {
+                add_to_map(&input_artifact_data, input, &value);
             }
-            add_to_map(&input_map, input, &value);
+            // PORT: skipped, action rewinding (`undoneInputs` / UndoneInputsException): a derived
+            // input without a value whose generating action was rewound. Without rewinding
+            // getAndCheckInputSkyValue has already failed for an undone mandatory input.
         }
+
+        // If there were no errors, we don't go through the scheduling dependencies because the
+        // only reason to do so is to find and report missing input source files.
+        if has_missing_inputs {
+            // We unwrap the nested set like in getInputDepKeys(); apparently, if we don't do
+            // this, it's a significant memory use hit due to the memoized graph traversal in
+            // NestedSet.
+            let mut seen: HashSet<Artifact> = HashSet::new();
+            let scheduling_dependencies = action.get_scheduling_dependencies();
+            for input in scheduling_dependencies.get_leaves() {
+                if !seen.insert(input.clone()) {
+                    panic!("VerifyException");
+                }
+                self.get_and_check_input_sky_value(
+                    env,
+                    &input,
+                    input_dep_keys,
+                    input_deps_result,
+                    &is_mandatory_input,
+                    &mut action_execution_function_exception_handler,
+                )?;
+            }
+
+            for non_leaf in scheduling_dependencies.get_non_leaves() {
+                for input in non_leaf.to_list().iter() {
+                    if seen.insert(input.clone()) {
+                        self.get_and_check_input_sky_value(
+                            env,
+                            input,
+                            input_dep_keys,
+                            input_deps_result,
+                            &is_mandatory_input,
+                            &mut action_execution_function_exception_handler,
+                        )?;
+                    }
+                }
+            }
+        }
+
         // After accumulating the inputs, we might find some mandatory artifact with
         // SourceFileInErrorArtifactValue.
-        if let Err(e) = handler.maybe_throw_exception() {
+        if let Err(e) = action_execution_function_exception_handler.maybe_throw_exception() {
             return Ok(Err(e));
         }
-        Ok(Ok(Some(input_map)))
+
+        Ok(Ok(Some(input_artifact_data)))
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1084 ActionExecutionFunction.getAndCheckInputSkyValue
+    fn get_and_check_input_sky_value(
+        &self,
+        env: &mut Environment<'_>,
+        input: &Artifact,
+        input_dep_keys: &IndexSet<SkyKey>,
+        input_deps_result: &SkyframeLookupResult,
+        is_mandatory_input: &dyn Fn(&Artifact) -> bool,
+        action_execution_function_exception_handler: &mut ActionExecutionFunctionExceptionHandler<
+            '_,
+        >,
+    ) -> Result<Option<InputValue>, ComputeError> {
+        let Some(value) = lookup_input(input, input_dep_keys, input_deps_result, env)? else {
+            // Undone mandatory inputs are only expected for generated artifacts when rewinding is
+            // enabled (it is not ported: `skyframeActionExecutor.rewindingEnabled()` is false).
+            check_state!(
+                !is_mandatory_input(input),
+                "Unexpected undone mandatory input: {}",
+                input
+            );
+            return Ok(None);
+        };
+        if let InputValue::Artifact(ArtifactValue::Missing(missing)) = &value {
+            if !is_mandatory_input(input) {
+                return Ok(Some(InputValue::File(FileArtifactValue::MissingFileMarker)));
+            }
+            action_execution_function_exception_handler
+                .accumulate_missing_file_artifact_value(input, missing);
+            return Ok(None);
+        }
+        Ok(Some(value))
     }
 }
 
@@ -650,7 +757,7 @@ enum DiscoveredInputValue {
 
 /// `getOrThrow(Artifact.key(input), SourceArtifactException.class)`.
 fn get_discovered_input_value(
-    result: &blaze_skyframe::SkyframeLookupResult,
+    result: &SkyframeLookupResult,
     key: &SkyKey,
 ) -> Result<Option<DiscoveredInputValue>, SourceArtifactException> {
     let catch = |e: &blaze_skyframe::SkyError| e.downcast_ref::<SourceArtifactException>().cloned();
@@ -667,11 +774,16 @@ fn get_discovered_input_value(
         .map(|v| v.map(DiscoveredInputValue::Action))
 }
 
+/// Evaluate the supplied input deps. Declare deps on known inputs to action. We do this
+/// unconditionally to maintain our invariant of asking for the same deps each build.
+///
+/// PORT: the `consumedArtifactsTracker` (remote output bookkeeping) is null and
+/// `state.topLevelFileArtifacts` belongs to it.
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:403 ActionExecutionFunction.getInputDepKeys
 fn get_input_dep_keys(
     all_inputs: &NestedSet<Artifact>,
     scheduling_dependencies: &NestedSet<Artifact>,
-) -> Vec<SkyKey> {
+) -> IndexSet<SkyKey> {
     let mut result: IndexSet<SkyKey> = IndexSet::new();
     // We "unwrap" the NestedSet and evaluate the first layer of direct Artifacts here in order to
     // save memory.
@@ -688,74 +800,44 @@ fn get_input_dep_keys(
     for non_leaf in all_inputs.get_non_leaves() {
         result.insert(SkyKey::new(ArtifactNestedSetKey::create(non_leaf)));
     }
-    result.into_iter().collect()
-}
-
-/// The exceptions `getOrThrow(key, SourceArtifactException.class,
-/// ActionExecutionException.class, ...)` catches for an input dependency.
-enum InputDepError {
-    Action(ActionExecutionException),
-    Source(SourceArtifactException),
-}
-
-fn catch_input_dep_error(e: &blaze_skyframe::SkyError) -> Option<InputDepError> {
-    if let Some(x) = e.downcast_ref::<ActionExecutionException>() {
-        return Some(InputDepError::Action(x.clone()));
-    }
-    e.downcast_ref::<SourceArtifactException>()
-        .map(|x| InputDepError::Source(x.clone()))
-}
-
-fn get_input_dep(
-    result: &blaze_skyframe::SkyframeLookupResult,
-    key: &SkyKey,
-) -> Result<Option<SkyValue>, InputDepError> {
-    if let Some(k) = key.downcast::<ArtifactKey>() {
-        return result
-            .get_or_throw_with(k, catch_input_dep_error)
-            .map(|v| v.map(|v| v as SkyValue));
-    }
-    if let Some(k) = key.downcast::<ActionExecutionKey>() {
-        return result
-            .get_or_throw_with(k, catch_input_dep_error)
-            .map(|v| v.map(|v| v as SkyValue));
-    }
-    let k = key
-        .downcast::<ArtifactNestedSetKey>()
-        .expect("input dep key");
     result
-        .get_or_throw_with(k, catch_input_dep_error)
-        .map(|v| v.map(|v| v as SkyValue))
 }
 
+/// The `SkyValue` of an input: the value of `Artifact.key(input)`, or the
+/// `FileArtifactValue.MISSING_FILE_MARKER` that stands for a missing non-mandatory input.
 enum InputValue {
     Artifact(ArtifactValue),
     Action(Arc<ActionExecutionValue>),
+    File(FileArtifactValue),
 }
 
-/// Looks up the value for an input without adding additional Skyframe dependencies (if the
-/// input's key is a direct dependency) or from the graph (inputs below an
-/// `ArtifactNestedSetKey`).
+/// Looks up the value for an input without adding additional Skyframe dependencies.
+///
+/// If the input's `Artifact.key` is already a direct dependency, looks up its value in the
+/// `Environment`. Otherwise, the input is assumed to be beneath an already-requested
+/// `ArtifactNestedSetKey`.
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1128 ActionExecutionFunction.lookupInput
 fn lookup_input(
     input: &Artifact,
-    input_dep_keys: &[SkyKey],
-    input_deps_result: &blaze_skyframe::SkyframeLookupResult,
+    input_dep_keys: &IndexSet<SkyKey>,
+    input_deps_result: &SkyframeLookupResult,
     env: &mut Environment<'_>,
 ) -> Result<Option<InputValue>, ComputeError> {
     let key = artifact_key(input);
     let value: Option<SkyValue> = if input_dep_keys.contains(&key) {
+        // env.getLookupHandleForPreviouslyRequestedDeps().get(key)
         input_deps_result.get(&key)
     } else {
-        // PORT: MemoizingEvaluator.getExistingEntryAtCurrentlyEvaluatingVersion; requesting the
-        // already-done key adds a dependency edge, which a non-incremental build does not use.
+        // PORT: Java reads the done node without a dependency
+        // (MemoizingEvaluator.getExistingEntryAtCurrentlyEvaluatingVersion; the node is beneath a
+        // requested ArtifactNestedSetKey). The engine has no such read, so the key is requested:
+        // it is done, and the extra edge is only used by incremental builds.
         env.get_value_dyn(&key)?
     };
     let Some(value) = value else {
         return Ok(None);
     };
-    if let Some(k) = key.downcast::<ArtifactKey>() {
-        let _ = k;
+    if key.downcast::<ArtifactKey>().is_some() {
         let v = value.downcast::<ArtifactValue>().expect("ARTIFACT value");
         return Ok(Some(InputValue::Artifact((*v).clone())));
     }
@@ -765,111 +847,349 @@ fn lookup_input(
     Ok(Some(InputValue::Action(v)))
 }
 
-/// `ActionInputMapHelper.addToMap`.
-// Java: com/google/devtools/build/lib/skyframe/ActionInputMapHelper.java:46 ActionInputMapHelper.addToMap
+/// Adds a value obtained by an Artifact SkyValue lookup to the action input map.
+// Java: com/google/devtools/build/lib/skyframe/ActionInputMapHelper.java:31 ActionInputMapHelper.addToMap
 fn add_to_map(input_map: &ActionInputMetadata, key: &Artifact, value: &InputValue) {
     match value {
-        InputValue::Artifact(ArtifactValue::File(f)) => input_map.put(key, f.clone()),
-        InputValue::Artifact(ArtifactValue::Tree(t)) => {
-            input_map.put_tree_artifact(key, t.clone());
-            for (child, v) in &t.child_values {
-                if let Some(a) = blaze_exec::actions::action_adapters::as_blaze_artifact(child) {
-                    input_map.put(a, v.clone());
-                }
+        InputValue::Artifact(ArtifactValue::Tree(tree_artifact_value)) => {
+            expand_tree_artifact_and_populate_artifact_data(
+                artifact_input(key),
+                tree_artifact_value,
+                input_map,
+            );
+        }
+        InputValue::Action(action_execution_value) => {
+            // Actions resulting from the expansion of an ActionTemplate consume only one of the
+            // files in a tree artifact. However, the input prefetcher and the Linux sandbox
+            // require access to the tree metadata to determine the prefetch location of a tree
+            // artifact materialized as a symlink to another (cf.
+            // TreeArtifactValue#getResolvedPath()).
+            if key.is_child_of_declared_directory() {
+                let tree_artifact = key
+                    .get_parent()
+                    .unwrap_or_else(|| panic!("NullPointerException: parent of {key}"));
+                let tree_artifact_value = action_execution_value
+                    .get_tree_artifact_value(tree_artifact)
+                    .unwrap_or_else(|| panic!("NullPointerException: {tree_artifact}"));
+                expand_tree_artifact_and_populate_artifact_data(
+                    artifact_input(tree_artifact),
+                    tree_artifact_value,
+                    input_map,
+                );
+            }
+            if key.is_fileset() {
+                blaze_util::unported!("ActionInputMapHelper.addToMap", "fileset input {}", key);
+            } else if key.is_runfiles_tree() {
+                let runfiles_artifact_value = action_execution_value
+                    .get_rich_artifact_data()
+                    .unwrap_or_else(|| panic!("NullPointerException: rich artifact data of {key}"))
+                    .clone();
+                // Note: we don't expand the .runfiles/MANIFEST file into the inputs. The reason
+                // for that being that the MANIFEST file contains absolute paths that don't work
+                // with remote execution.
+                // Instead, the way the SpawnInputExpander expands runfiles is via the Runfiles
+                // class which contains all artifacts in the runfiles tree minus the MANIFEST file.
+                runfiles_artifact_value.for_each_file(|artifact, metadata| {
+                    input_map.put_input(artifact.clone(), metadata.clone());
+                });
+                runfiles_artifact_value.for_each_tree(|tree_artifact, metadata| {
+                    expand_tree_artifact_and_populate_artifact_data(
+                        tree_artifact.clone(),
+                        metadata,
+                        input_map,
+                    );
+                });
+                // forEachFileset: a RunfilesArtifactValue holds no filesets (they are unported
+                // where the value is built).
+
+                // This is used for two purposes:
+                // - To collect the RunfilesTree objects which the execution strategies need to
+                //   expand the runfiles trees
+                // - The action cache checker may want the digest of the aggregated runfiles tree
+                input_map.put_runfiles_metadata(key, runfiles_artifact_value);
+            } else {
+                // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:164 ActionExecutionValue.getExistingFileArtifactValue
+                let metadata = action_execution_value
+                    .get_existing_file_artifact_value(key)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "NullPointerException: Missing artifact {} (generating action key {:?}) in {:?}",
+                            key,
+                            key.get_generating_action_key(),
+                            action_execution_value
+                        )
+                    });
+                input_map.put(key, metadata.clone());
             }
         }
-        InputValue::Artifact(ArtifactValue::Missing(_)) => {}
-        InputValue::Action(action_value) => {
-            if key.is_runfiles_tree() {
-                if let Some(r) = action_value.get_rich_artifact_data() {
-                    input_map.put_runfiles_metadata(
-                        key,
-                        r.clone(),
-                        action_value.get_rich_artifact_metadata().cloned(),
-                    );
-                }
-                return;
-            }
-            if key.is_tree_artifact() {
-                if let Some(t) = action_value.get_tree_artifact_value(key) {
-                    input_map.put_tree_artifact(key, t.clone());
-                }
-                return;
-            }
-            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:164 ActionExecutionValue.getExistingFileArtifactValue
-            let f = action_value
-                .get_existing_file_artifact_value(key)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "NullPointerException: Missing artifact {} (generating action key {:?}) in {:?}",
-                        key,
-                        key.get_generating_action_key(),
-                        action_value
-                    )
-                });
-            input_map.put(key, f.clone());
+        InputValue::Artifact(ArtifactValue::File(file_artifact_value)) => {
+            input_map.put(key, file_artifact_value.clone());
+        }
+        InputValue::File(file_artifact_value) => {
+            input_map.put(key, file_artifact_value.clone());
+        }
+        InputValue::Artifact(ArtifactValue::Missing(_)) => {
+            panic!("IllegalStateException: Unexpected value MissingArtifactValue for {key}")
         }
     }
 }
 
-/// A `LabelCause`: a missing or unreadable source input.
-// Java: com/google/devtools/build/lib/causes/LabelCause.java:23 LabelCause
-#[allow(dead_code)] // `label` is the BEP root-cause id (not ported).
-struct LabelCause {
-    label: Option<blaze_cmdline::Label>,
-    failure_detail: blaze_protos::failure_details::FailureDetail,
+// Java: com/google/devtools/build/lib/skyframe/ActionInputMapHelper.java:107 ActionInputMapHelper.expandTreeArtifactAndPopulateArtifactData
+fn expand_tree_artifact_and_populate_artifact_data(
+    tree_artifact: ActionInputRef,
+    value: &Arc<TreeArtifactValue>,
+    input_map: &ActionInputMetadata,
+) {
+    input_map.put_tree_artifact_input(tree_artifact, value.clone());
+    let Some((archived_tree_file_artifact, archived_file_value)) = &value.archived_representation
+    else {
+        return;
+    };
+
+    input_map.put_input(
+        archived_tree_file_artifact.clone(),
+        archived_file_value.clone(),
+    );
 }
 
-/// Accumulates the errors of an action's inputs.
+/// A `LabelCause`: a missing or unreadable source input.
+// Java: com/google/devtools/build/lib/causes/LabelCause.java:23 LabelCause
+struct LabelCause {
+    /// The BEP root-cause id. PORT: `ActionExecutionException` root causes are `ActionFailed`
+    /// only in `blaze_exec`, so the label does not reach the exception (see
+    /// `maybe_throw_exception`).
+    #[allow(dead_code)]
+    label: blaze_cmdline::Label,
+    failure_detail: FailureDetail,
+}
+
+impl LabelCause {
+    /// `getMessage()`: the message of the detailed exit code's failure detail.
+    // Java: com/google/devtools/build/lib/causes/LabelCause.java:42 LabelCause.getMessage
+    fn get_message(&self) -> &str {
+        &self.failure_detail.message
+    }
+}
+
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1160 ActionExecutionFunction.createLabelCauseNullOwnerOk
+fn create_label_cause_null_owner_ok(
+    input: &Artifact,
+    failure_detail: &FailureDetail,
+    action_label: Option<&blaze_cmdline::Label>,
+) -> LabelCause {
+    // bugReporter.logUnexpected("Unexpected exit code %s for generated artifact %s (%s)") for a
+    // derived input: logging only.
+    LabelCause {
+        // MoreObjects.firstNonNull(input.getOwner(), actionLabel)
+        label: input
+            .get_owner()
+            .or_else(|| action_label.cloned())
+            .unwrap_or_else(|| panic!("NullPointerException: owner of {input} and action label")),
+        failure_detail: failure_detail.clone(),
+    }
+}
+
+/// Helper for the error-handling logic for `check_inputs`.
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1354 ActionExecutionFunction.ActionExecutionFunctionExceptionHandler
-struct ExceptionHandler<'a> {
+struct ActionExecutionFunctionExceptionHandler<'a> {
+    /// The inputs of the memoized `skyKeyToDerivedArtifactSetForExceptions` supplier.
+    all_inputs: &'a NestedSet<Artifact>,
+    sky_key_to_derived_artifact_set_for_exceptions:
+        std::cell::OnceCell<HashMap<SkyKey, IndexSet<Artifact>>>,
+    input_deps_result: &'a SkyframeLookupResult,
     action: &'a dyn Action,
-    executor: &'a SkyframeActionExecutor,
+    is_mandatory_input: &'a dyn Fn(&Artifact) -> bool,
+    input_dep_keys: &'a IndexSet<SkyKey>,
+    skyframe_action_executor: &'a SkyframeActionExecutor,
     missing_artifact_causes: Vec<LabelCause>,
+    /// `List<NestedSet<Cause>>`: the root causes of each failed input.
     transitive_causes: Vec<Vec<ActionFailed>>,
     first_action_execution_exception: Option<ActionExecutionException>,
 }
 
-impl<'a> ExceptionHandler<'a> {
-    fn new(action: &'a dyn Action, executor: &'a SkyframeActionExecutor) -> ExceptionHandler<'a> {
-        ExceptionHandler {
+impl<'a> ActionExecutionFunctionExceptionHandler<'a> {
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1364 ActionExecutionFunctionExceptionHandler.<init>
+    fn new(
+        all_inputs: &'a NestedSet<Artifact>,
+        input_deps_result: &'a SkyframeLookupResult,
+        action: &'a dyn Action,
+        is_mandatory_input: &'a dyn Fn(&Artifact) -> bool,
+        input_dep_keys: &'a IndexSet<SkyKey>,
+        skyframe_action_executor: &'a SkyframeActionExecutor,
+    ) -> ActionExecutionFunctionExceptionHandler<'a> {
+        ActionExecutionFunctionExceptionHandler {
+            all_inputs,
+            sky_key_to_derived_artifact_set_for_exceptions: std::cell::OnceCell::new(),
+            input_deps_result,
             action,
-            executor,
+            is_mandatory_input,
+            input_dep_keys,
+            skyframe_action_executor,
             missing_artifact_causes: Vec::new(),
             transitive_causes: Vec::new(),
             first_action_execution_exception: None,
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1523 ActionExecutionFunctionExceptionHandler.handleActionExecutionExceptionPerArtifact
-    // PORT: Java maps the failed key back to the mandatory inputs it stands for; every derived
-    // input is mandatory, so the per-artifact check reduces to recording the exception once.
-    fn handle_action_execution_exception(&mut self, e: ActionExecutionException) {
-        // Prefer a catastrophic exception as the one we propagate.
-        let replace = match &self.first_action_execution_exception {
-            None => true,
-            Some(first) => !first.is_catastrophe() && e.is_catastrophe(),
-        };
-        self.transitive_causes.push(e.get_root_causes().to_vec());
-        if replace {
-            self.first_action_execution_exception = Some(e);
+    /// The inputs (and scheduling dependencies) of the action by the key of their generating
+    /// action. Source and tree artifacts are their own keys and are left out.
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:977 ActionExecutionFunction.checkInputs (the memoized supplier)
+    fn associated_inputs(&self, key: &SkyKey) -> IndexSet<Artifact> {
+        self.sky_key_to_derived_artifact_set_for_exceptions
+            .get_or_init(|| {
+                let mut all_inputs_set: IndexSet<Artifact> = IndexSet::new();
+                all_inputs_set.extend(self.all_inputs.to_list().iter().cloned());
+                all_inputs_set.extend(
+                    self.action
+                        .get_scheduling_dependencies()
+                        .to_list()
+                        .iter()
+                        .cloned(),
+                );
+                let mut sky_key_to_artifact_set: HashMap<SkyKey, IndexSet<Artifact>> =
+                    HashMap::new();
+                for input in all_inputs_set {
+                    let key = artifact_key(&input);
+                    // `key != input`: the key of the generating action.
+                    if key.downcast::<ArtifactKey>().is_none() {
+                        sky_key_to_artifact_set
+                            .entry(key)
+                            .or_default()
+                            .insert(input);
+                    }
+                }
+                sky_key_to_artifact_set
+            })
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Goes through the list of evaluated SkyKeys and handles any exception that arises, taking
+    /// into account whether the corresponding artifact(s) is a mandatory input.
+    ///
+    /// `Err` if the eval of any mandatory artifact threw an exception; otherwise true if there is
+    /// at least one input artifact that is missing.
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1387 ActionExecutionFunctionExceptionHandler.accumulateAndMaybeThrowExceptions
+    fn accumulate_and_maybe_throw_exceptions(&mut self) -> Result<bool, ActionExecutionException> {
+        let mut some_inputs_missing = false;
+        for key in self.input_dep_keys {
+            match get_input_dep_or_throw(self.input_deps_result, key) {
+                Ok(None) => continue,
+                Ok(Some(InputDepValue::NestedSet(value))) => {
+                    if value == ArtifactNestedSetValue::SOME_MISSING {
+                        some_inputs_missing = true;
+                    }
+                    continue;
+                }
+                Ok(Some(InputDepValue::Artifact(value))) => {
+                    if matches!(*value, ArtifactValue::Missing(_)) {
+                        some_inputs_missing = true;
+                    }
+                }
+                Ok(Some(InputDepValue::Action(_))) => {}
+                Err(InputDepException::Source(e, _)) => {
+                    self.handle_source_artifact_exception_from_skykey(key, &e);
+                }
+                Err(InputDepException::Action(e, _)) => {
+                    self.handle_action_execution_exception_from_skykey(key, &e);
+                }
+                Err(InputDepException::NestedSetEval(e)) => {
+                    for sky_key_and_exception in e.get_nested_exceptions().to_list().iter() {
+                        let sky_key = sky_key_and_exception.get_first();
+                        if let Some(input_exception) =
+                            sky_key_and_exception.get_source_artifact_exception()
+                        {
+                            self.handle_source_artifact_exception_from_skykey(
+                                sky_key,
+                                input_exception,
+                            );
+                            continue;
+                        }
+                        let Some(input_exception) =
+                            sky_key_and_exception.get_action_execution_exception()
+                        else {
+                            panic!(
+                                "IllegalStateException: Unexpected exception type, key: {sky_key:?}"
+                            );
+                        };
+                        self.handle_action_execution_exception_from_skykey(
+                            sky_key,
+                            input_exception,
+                        );
+                    }
+                }
+            }
+        }
+        self.maybe_throw_exception()?;
+        Ok(some_inputs_missing)
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1437 ActionExecutionFunctionExceptionHandler.handleActionExecutionExceptionFromSkykey
+    fn handle_action_execution_exception_from_skykey(
+        &mut self,
+        key: &SkyKey,
+        e: &ActionExecutionException,
+    ) {
+        if let Some(ArtifactKey(artifact)) = key.downcast::<ArtifactKey>() {
+            self.handle_action_execution_exception_per_artifact(artifact, e);
+            return;
+        }
+        let associated_inputs = self.associated_inputs(key);
+        if associated_inputs.is_empty() {
+            // This can happen if an action prunes its inputs, e.g. the way StarlarkAction
+            // implements unused_inputs_list. An input may no longer be present in getInputs(),
+            // but its generating action could still be a Skyframe dependency because Skyframe
+            // eagerly adds a dep group to a dirty node if all prior dep groups are clean. If the
+            // pruned input is in error, it propagates during error bubbling, and we reach this
+            // point.
+            if self.first_action_execution_exception.is_none() {
+                self.first_action_execution_exception = Some(e.clone());
+                self.transitive_causes.push(e.get_root_causes().to_vec());
+            }
+        } else {
+            for input in &associated_inputs {
+                self.handle_action_execution_exception_per_artifact(input, e);
+            }
         }
     }
 
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1466 ActionExecutionFunctionExceptionHandler.handleSourceArtifactExceptionFromSkykey
-    fn handle_source_artifact_exception(
+    fn handle_source_artifact_exception_from_skykey(
         &mut self,
-        input: &Artifact,
-        is_mandatory: bool,
-        e: SourceArtifactException,
+        key: &SkyKey,
+        e: &SourceArtifactException,
     ) {
-        if is_mandatory {
+        let source_artifact = key
+            .downcast::<ArtifactKey>()
+            .map(|k| &k.0)
+            .filter(|artifact| artifact.is_source_artifact());
+        let Some(artifact) = source_artifact else {
+            // bugReporter.logUnexpected("Unexpected SourceArtifactException for key: %s, %s").
             self.missing_artifact_causes.push(LabelCause {
-                label: input
+                label: self
+                    .action
                     .get_owner()
-                    .or_else(|| self.action.get_owner().get_label().cloned()),
+                    .get_label()
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "NullPointerException: label of the owner of {}",
+                            self.action.pretty_print()
+                        )
+                    }),
                 failure_detail: e.get_failure_detail().clone(),
             });
+            return;
+        };
+
+        if (self.is_mandatory_input)(artifact) {
+            self.missing_artifact_causes
+                .push(create_label_cause_null_owner_ok(
+                    artifact,
+                    e.get_failure_detail(),
+                    self.action.get_owner().get_label(),
+                ));
         }
     }
 
@@ -877,88 +1197,106 @@ impl<'a> ExceptionHandler<'a> {
     fn accumulate_missing_file_artifact_value(
         &mut self,
         input: &Artifact,
-        missing: &MissingArtifactValue,
+        value: &MissingArtifactValue,
     ) {
-        self.missing_artifact_causes.push(LabelCause {
-            label: input
-                .get_owner()
-                .or_else(|| self.action.get_owner().get_label().cloned()),
-            failure_detail: missing.get_failure_detail().clone(),
-        });
+        // createLabelCause: a bug report if the input has no owner, then
+        // createLabelCauseNullOwnerOk.
+        self.missing_artifact_causes
+            .push(create_label_cause_null_owner_ok(
+                input,
+                value.get_failure_detail(),
+                self.action.get_owner().get_label(),
+            ));
     }
 
-    /// Throws the accumulated exception, if any.
+    /// `Err` if there is any accumulated exception from the inputs.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1493 ActionExecutionFunctionExceptionHandler.maybeThrowException
     fn maybe_throw_exception(&mut self) -> Result<(), ActionExecutionException> {
         for missing_input in &self.missing_artifact_causes {
-            self.executor
-                .print_error(&missing_input.failure_detail.message, self.action, None);
+            self.skyframe_action_executor.print_error(
+                missing_input.get_message(),
+                self.action,
+                None,
+            );
         }
         // We need to rethrow the first exception because it can contain a useful error message.
-        if let Some(first) = self.first_action_execution_exception.take() {
+        if let Some(first_action_execution_exception) = &self.first_action_execution_exception {
             if self.missing_artifact_causes.is_empty() && self.transitive_causes.len() == 1 {
-                // In the case a single action failed, just propagate the exception upward.
-                return Err(first);
+                // In the case a single action failed, just propagate the exception upward. This
+                // avoids having to copy the root causes to the upwards transitive closure.
+                return Err(first_action_execution_exception.clone());
             }
-            // PORT: LabelCause root causes of missing inputs are not ActionFailed causes; only
-            // the transitive action failures are kept.
-            let all_causes: Vec<ActionFailed> =
-                self.transitive_causes.iter().flatten().cloned().collect();
+            // NestedSetBuilder.<Cause>stableOrder().addAll(missingArtifactCauses), then
+            // addTransitive of each transitive cause set.
+            // PORT: the root causes of blaze_exec's ActionExecutionException are ActionFailed
+            // only (see LabelCause), so the missing inputs' LabelCauses are not among them; a
+            // cause in several sets is kept once, as a NestedSet does.
+            let mut all_causes: Vec<ActionFailed> = Vec::new();
+            for cause in self.transitive_causes.iter().flatten() {
+                if !all_causes.contains(cause) {
+                    all_causes.push(cause.clone());
+                }
+            }
+            // PORT: firstActionExecutionException.getCause() is kept as its message only by
+            // blaze_exec's ActionExecutionException; with_root_causes does not take one.
             return Err(ActionExecutionException::with_root_causes(
-                first.get_message().to_string(),
+                first_action_execution_exception.get_message().to_string(),
                 Some(FailedActionInfo::of(self.action)),
                 all_causes,
-                first.is_catastrophe(),
-                first.get_failure_detail().cloned(),
+                first_action_execution_exception.is_catastrophe(),
+                first_action_execution_exception
+                    .get_failure_detail()
+                    .cloned(),
             ));
         }
+
         if !self.missing_artifact_causes.is_empty() {
             return Err(self.throw_source_error_exception());
         }
         Ok(())
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1523 ActionExecutionFunctionExceptionHandler.handleActionExecutionExceptionPerArtifact
+    fn handle_action_execution_exception_per_artifact(
+        &mut self,
+        input: &Artifact,
+        e: &ActionExecutionException,
+    ) {
+        if (self.is_mandatory_input)(input) {
+            // Prefer a catastrophic exception as the one we propagate.
+            let replace = match &self.first_action_execution_exception {
+                None => true,
+                Some(first) => !first.is_catastrophe() && e.is_catastrophe(),
+            };
+            if replace {
+                self.first_action_execution_exception = Some(e.clone());
+            }
+            self.transitive_causes.push(e.get_root_causes().to_vec());
+        }
+    }
+
+    /// Called when there are no action execution errors (whose reporting hides missing sources),
+    /// but there was at least one missing/io exception-triggering source artifact.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1584 ActionExecutionFunction.throwSourceErrorException
     fn throw_source_error_exception(&self) -> ActionExecutionException {
-        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1543 ActionExecutionFunction.createSourceErrorCodeAndMessage
-        let mut saw_source_artifact_exception = false;
-        let mut saw_missing_file = false;
-        for cause in &self.missing_artifact_causes {
-            if let Some(blaze_protos::failure_details::failure_detail::Category::Execution(e)) =
-                &cause.failure_detail.category
-            {
-                if e.code == execution::Code::SourceInputIoException as i32 {
-                    saw_source_artifact_exception = true;
-                } else if e.code == execution::Code::SourceInputMissing as i32 {
-                    saw_missing_file = true;
-                }
-            } else {
-                saw_source_artifact_exception = true;
-            }
-        }
-        // PORT: DetailedExitCodeComparator picks the highest-priority code; all causes here carry
-        // Execution codes of equal exit-code rank, so the first one is used.
-        let code = self.missing_artifact_causes[0].failure_detail.clone();
-        let parts: Vec<&str> = [
-            saw_source_artifact_exception.then_some("are in error"),
-            saw_missing_file.then_some("do not exist"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        let error_message = format!(
-            "{} input file(s) {}",
-            self.missing_artifact_causes.len(),
-            parts.join(" or ")
-        );
+        let source_artifact_error_causes: Vec<&FailureDetail> = self
+            .missing_artifact_causes
+            .iter()
+            .map(|cause| &cause.failure_detail)
+            .collect();
+        let (code, message) =
+            create_source_error_code_and_message_of(&source_artifact_error_causes);
+        // PORT: Java's root causes are the LabelCauses (NestedSetBuilder.wrap(STABLE_ORDER,
+        // sourceArtifactErrorCauses)); blaze_exec's ActionExecutionException holds ActionFailed
+        // causes only, so the exception has none.
         let ex = ActionExecutionException::with_root_causes(
-            error_message,
+            message,
             Some(FailedActionInfo::of(self.action)),
             Vec::new(),
-            false,
-            Some(code),
+            /* catastrophe= */ false,
+            code.get_failure_detail().cloned(),
         );
-        self.executor
+        self.skyframe_action_executor
             .print_error(ex.get_message(), self.action, None);
         ex
     }

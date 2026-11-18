@@ -14,7 +14,6 @@ use crate::tests::package_loading_test_case::{PackageLoadingTestCase, assert_con
 
 // Java: NativeExistingRulesTest.existingRule_returnsImmutableObject
 #[test]
-#[ignore = "existing_rule() returns an immutable dict where Java returns a non-dict view (ExistingRuleView): the assignment fails with 'trying to mutate a frozen dict value', Java 'can only assign an element in a dictionary or a list'"]
 fn existing_rule_returns_immutable_object() {
     let t = PackageLoadingTestCase::new();
     t.scratch_file("test/BUILD", &["load(\"inc.bzl\", \"f\")", "", "f()"]);
@@ -37,7 +36,6 @@ fn existing_rule_returns_immutable_object() {
 
 // Java: NativeExistingRulesTest.existingRules_returnsImmutableObject
 #[test]
-#[ignore = "existing_rules() returns an immutable dict where Java returns a non-dict view (ExistingRulesView): the assignment fails with 'trying to mutate a frozen dict value', Java 'can only assign an element in a dictionary or a list'"]
 fn existing_rules_returns_immutable_object() {
     let t = PackageLoadingTestCase::new();
     t.scratch_file("test/BUILD", &["load(\"inc.bzl\", \"f\")", "", "f()"]);

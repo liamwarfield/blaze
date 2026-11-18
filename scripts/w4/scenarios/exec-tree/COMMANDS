@@ -1,0 +1,26 @@
+# A tree with nested directories, an empty directory and symlinks to a directory and a file.
+run build //:consume
+cat bazel-bin/consume.txt
+stat bazel-bin/tree.dir
+stat bazel-bin/tree.dir/sub
+stat bazel-bin/tree.dir/sub/deep
+stat bazel-bin/tree.dir/empty
+stat bazel-bin/tree.dir/top.txt
+stat bazel-bin/tree.dir/sub/n.txt
+stat bazel-bin/tree.dir/sub/deep/d.txt
+cat producer.log
+cat consumer.log
+# Second build: action cache hits for the producer (tree output) and the consumer (tree input).
+run build //:consume
+cat producer.log
+cat consumer.log
+# The tree as a sandboxed spawn's input.
+run build //:sandboxed_consume
+cat bazel-bin/sandboxed_consume.txt
+cat producer.log
+# Invalid trees.
+run build //:dangling
+run build //:fifo
+run build //:removed
+run build //:empty
+stat bazel-bin/empty.dir

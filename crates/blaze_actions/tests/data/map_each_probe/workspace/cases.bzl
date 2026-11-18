@@ -74,3 +74,17 @@ CASES = {
     "template_dict_allow_closure": _template_dict_allow_closure,
     "template_dict_top_level": _template_dict_top_level,
 }
+
+# `ctx.actions.run(mnemonic = ...)`: Java tests each char of the string as Bazel holds it (one
+# Latin-1 char per byte) with `Character.isLetterOrDigit` (SpawnAction.Builder.setMnemonic).
+MNEMONIC_CASES = {
+    "mnemonic_ascii": "Q1",
+    "mnemonic_e_acute": "Qé",
+    "mnemonic_e_circumflex": "Qê",
+    "mnemonic_micro": "Qµ",
+    "mnemonic_superscript_two": "Q²",
+    "mnemonic_emoji": "Q🐷",
+    "mnemonic_dash": "Q-x",
+    "mnemonic_empty": "",
+    "mnemonic_raw_byte": "Q\351",
+}

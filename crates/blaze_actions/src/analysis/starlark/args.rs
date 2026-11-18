@@ -24,7 +24,6 @@ use blaze_starlark::depset::Depset;
 use blaze_starlark::env::caller_location;
 use blaze_starlark::label::LabelValue;
 use blaze_starlark::{Location, StarlarkSemantics};
-use blaze_util::unported;
 use indexmap::IndexSet;
 use starlark::any::ProvidesStaticType;
 use starlark::environment::{Methods, MethodsBuilder, MethodsStatic};
@@ -922,29 +921,23 @@ pub(crate) fn is_starlark_function(f: Value) -> bool {
 }
 
 /// Java `StarlarkFunction.getLocation()` as `Location.toString()` (`file:line:column` of the
-/// function's name, or of the `lambda` keyword).
+/// function's name, or of the `lambda` keyword). `None` for a value that is not a `def` or
+/// `lambda`.
 // Java: net/starlark/java/eval/StarlarkFunction.java:172 StarlarkFunction.getLocation
-// PORT: starlark-rust records this position (`DefInfo::signature_span`) but has no accessor for
-// it, and neither `starlark::eval::DefModule` (BLAZE PATCH 0017) nor
-// `blaze_starlark::defining_module` gives one. Until one exists this is `None`
-// (docs/reviews/2026-11-18-actions-response.md asks for it).
-fn starlark_function_location(_f: Value) -> Option<String> {
-    None
+fn starlark_function_location(f: Value) -> Option<String> {
+    // starlark-rust BLAZE PATCH 0024.
+    let span = blaze_starlark::defining_module::DefModule::declaration_span(f)?;
+    Some(blaze_starlark::error::Location::of_span_start(&span).to_string())
 }
 
 /// The error of a `map_each` function that is neither global nor allowed as a closure.
 // Java: com/google/devtools/build/lib/analysis/starlark/Args.java:380 MutableArgs.validateMapEach
 // Java: com/google/devtools/build/lib/analysis/starlark/TemplateDict.java:72 TemplateDict.addJoined
 pub(crate) fn map_each_not_global_error(f: Value) -> starlark::Error {
-    match starlark_function_location(f) {
-        Some(location) => err(map_each_not_global_message(&location)),
-        None => unported!(
-            "StarlarkFunction.getLocation",
-            "map_each function '{}' is not global; Bazel's error names the location of its \
-             declaration",
-            f.function_name().unwrap_or("?")
-        ),
-    }
+    // The callers only pass a `def` or `lambda` (Java: `fn instanceof StarlarkFunction sfn`).
+    let location = starlark_function_location(f)
+        .expect("IllegalStateException: map_each is a StarlarkFunction");
+    err(map_each_not_global_message(&location))
 }
 
 fn map_each_not_global_message(location: &str) -> String {
