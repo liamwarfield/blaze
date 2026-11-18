@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""Record a Bazel-compatible binary's outputs on the corpus projects. See `record help`."""
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import oracle_common as oc  # noqa: E402
+from normalise import Context  # noqa: E402
+
+USAGE = """\
+usage: scripts/oracle/record --binary <path> --label <name> --project <name|all>
+                             [--surfaces mod,build,query,cquery,aquery]
+                             [--renormalise] [--no-scope] [--summary|--no-summary]
+       scripts/oracle/record help
+
+Runs <binary> (real Bazel or Blaze) on corpus projects (corpus/projects.json) and records
+structured outputs, normalised, under ~/.cache/blaze/oracle-records/<label>/<project>/:
+
+  manifest.json        sha256 of every file, binary sha256, command lines, exit codes, durations
+  raw/                 unnormalised outputs exactly as the binary wrote them
+  norm/                normalised outputs (what humans read and diff)
+  items/<surface>.json the comparable items of each surface (what `compare` reads)
+
+Each run copies the read-only checkout into ~/.cache/blaze/work/<label>/<project> (rsync, minus
+bazel-* and .git, then restored to the checkout's git HEAD), wipes the per-label output user root
+~/.cache/blaze/oracle-out/rec-<label>, and runs, in this order:
+
+  mod     mod graph --output=json; snapshot of MODULE.bazel.lock
+  build   the project's command with --execution_log_json_file, --execution_log_sort and
+          --build_event_json_file; then a hash manifest of bazel-bin and bazel-testlogs
+  query   query <patterns> and deps(<patterns>), --output=label_kind and streamed_jsonproto,
+          with --keep_going (exit 3 with a partial result counts as recorded; see README)
+  cquery  cquery deps(<patterns>) --output=label_kind; cquery <patterns> --output=jsonproto
+  aquery  aquery deps(<patterns>) --output=jsonproto --include_param_files
+          --include_file_write_contents
+  then `info` (paths for the normaliser) and `shutdown`.
+
+A command that fails does not stop the run: its surfaces are recorded as FAILED with the stderr
+tail, and the exit code is itself compared (surface exit_codes).
+
+Options:
+  --binary PATH     the bazel-compatible client binary
+  --label NAME      record label, e.g. oracle-9.3.2 (the reference) or blaze-<rev>
+  --project NAME    a project from corpus/projects.json, or `all`
+  --surfaces LIST   comma-separated steps (default: all five)
+  --renormalise     do not run anything; rebuild norm/ and items/ from raw/ (after a normaliser
+                    change)
+  --no-scope        do not wrap the run in `systemd-run --user --scope -p MemoryMax=12G
+                    -p MemorySwapMax=0` (the default wraps it; Bazel servers live in that scope)
+  --summary         write corpus/oracle/<project>.json (default only for label oracle-9.3.2)
+  --no-summary      do not write it
+"""
+
+MEMORY_MAX = "12G"
+COMMAND_TIMEOUT = 3 * 3600
+
+
+def clean_env():
+    return {"HOME": oc.HOME, "PATH": "/usr/bin:/bin"}
+
+
+def maybe_reexec_in_scope(args):
+    if args.no_scope or os.environ.get("BLAZE_ORACLE_SCOPE") == "1":
+        return
+    if shutil.which("systemd-run") is None:
+        print("warning: systemd-run not found; running without memory limits", file=sys.stderr)
+        return
+    argv = [
+        "systemd-run", "--user", "--scope", "--collect", "--quiet",
+        "-p", "MemoryMax=" + MEMORY_MAX, "-p", "MemorySwapMax=0",
+        "--", "env", "BLAZE_ORACLE_SCOPE=1", sys.executable, "-I", os.path.abspath(__file__),
+    ] + sys.argv[1:]
+    os.execvp(argv[0], argv)
+
+
+def run(cmd, cwd, stdout_path, stderr_path, timeout=COMMAND_TIMEOUT):
+    t0 = time.monotonic()
+    with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
+        try:
+            p = subprocess.run(cmd, cwd=cwd, env=clean_env(), stdout=out, stderr=err,
+                               stdin=subprocess.DEVNULL, timeout=timeout)
+            rc = p.returncode
+        except subprocess.TimeoutExpired:
+            rc = -9
+            err.write(b"\n[record] command timed out\n")
+        except OSError as e:
+            rc = -1
+            err.write(("\n[record] could not run: %s\n" % e).encode())
+    return rc, round(time.monotonic() - t0, 2)
+
+
+def make_writable_and_remove(path):
+    if not os.path.lexists(path):
+        return
+    subprocess.run(["chmod", "-R", "u+w", path], stderr=subprocess.DEVNULL)
+    shutil.rmtree(path, ignore_errors=True)
+    if os.path.lexists(path):
+        subprocess.run(["rm", "-rf", path])
+
+
+def kill_servers(root):
+    if not os.path.isdir(root):
+        return
+    for name in os.listdir(root):
+        pidfile = os.path.join(root, name, "server", "server.pid.txt")
+        try:
+            pid = int(open(pidfile).read().strip())
+        except (OSError, ValueError):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def prepare_workspace(checkout, ws):
+    """Copy the checkout to ws and restore it to the checkout's git HEAD."""
+    os.makedirs(ws, exist_ok=True)
+    subprocess.run(
+        ["rsync", "-a", "--delete", "--delete-excluded", "--exclude=/bazel-*", "--exclude=/.git",
+         checkout.rstrip("/") + "/", ws + "/"],
+        check=True,
+    )
+    if not os.path.isdir(os.path.join(checkout, ".git")):
+        return []
+    st = subprocess.run(
+        ["git", "--no-optional-locks", "-C", checkout, "status", "--porcelain=v1", "-z",
+         "--ignored", "--untracked-files=all"],
+        check=True, stdout=subprocess.PIPE,
+    ).stdout.decode()
+    fixed = []
+    for entry in st.split("\0"):
+        if len(entry) < 4:
+            continue
+        code, path = entry[:2], entry[3:]
+        if path.startswith("bazel-") and "/" not in path.rstrip("/"):
+            continue
+        dest = os.path.join(ws, path)
+        if code in ("??", "!!"):
+            if os.path.isdir(dest) and not os.path.islink(dest):
+                shutil.rmtree(dest)
+            elif os.path.lexists(dest):
+                os.remove(dest)
+            fixed.append("removed " + path)
+        else:
+            blob = subprocess.run(["git", "-C", checkout, "show", "HEAD:" + path],
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            if blob.returncode == 0:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as f:
+                    f.write(blob.stdout)
+                fixed.append("restored " + path)
+    return fixed
+
+
+def walk_outputs(ctx, ws):
+    """Hash every entry under bazel-bin and bazel-testlogs (contents path-normalised)."""
+    entries, roots = [], []
+    for root_name, link in (("bin", "bazel-bin"), ("testlogs", "bazel-testlogs")):
+        top = os.path.join(ws, link)
+        if not os.path.exists(top):
+            continue
+        roots.append(root_name)
+        top = os.path.realpath(top)
+        for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+            for name in sorted(dirnames + filenames):
+                full = os.path.join(dirpath, name)
+                rel = root_name + "/" + os.path.relpath(full, top)
+                if os.path.islink(full):
+                    entries.append({"path": rel, "type": "symlink", "target": ctx.text(os.readlink(full))})
+                elif os.path.isfile(full):
+                    with open(full, "rb") as f:
+                        data = f.read()
+                    norm, changed = ctx.bytes(data)
+                    entries.append({
+                        "path": rel, "type": "file", "size": len(data),
+                        "sha256": hashlib.sha256(norm).hexdigest(),
+                        "raw_sha256": hashlib.sha256(data).hexdigest() if changed else None,
+                        "path_normalised": changed,
+                        "executable": os.access(full, os.X_OK),
+                    })
+                elif os.path.isdir(full):
+                    if not os.listdir(full):
+                        entries.append({"path": rel, "type": "empty_dir"})
+    entries.sort(key=lambda e: e["path"])
+    return {"roots": roots, "entries": entries}
+
+
+def copy_test_xml(ws, dest):
+    top = os.path.join(ws, "bazel-testlogs")
+    if not os.path.isdir(top):
+        return
+    top = os.path.realpath(top)
+    for dirpath, _, filenames in os.walk(top):
+        if "test.xml" in filenames:
+            out = os.path.join(dest, os.path.relpath(dirpath, top))
+            os.makedirs(out, exist_ok=True)
+            shutil.copyfile(os.path.join(dirpath, "test.xml"), os.path.join(out, "test.xml"))
+
+
+def find_install_base(root):
+    d = os.path.join(root, "install")
+    if os.path.isdir(d):
+        subs = sorted(x for x in os.listdir(d) if os.path.isdir(os.path.join(d, x)))
+        if len(subs) == 1:
+            return os.path.join(d, subs[0])
+    return None
+
+
+def parse_info(text):
+    out = {}
+    for line in text.splitlines():
+        if ": " in line:
+            k, v = line.split(": ", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def record_project(args, project, spec, steps):
+    label = args.label
+    rd = oc.record_dir(label, project)
+    raw = os.path.join(rd, "raw")
+    binary = os.path.abspath(oc.expand(args.binary))
+    checkout = oc.expand(spec["checkout"])
+    ws = os.path.join(oc.WORK, label, project)
+    root = os.path.join(oc.OUTPUT_ROOTS, "rec-" + label)
+    command = spec["commands"][0]
+    verb, patterns = command[0], command[1:]
+    expr = " + ".join(patterns)
+
+    print("[record] %s/%s: preparing" % (label, project), flush=True)
+    make_writable_and_remove(rd)
+    os.makedirs(raw)
+    kill_servers(root)
+    make_writable_and_remove(root)
+    os.makedirs(root)
+    fixed = prepare_workspace(checkout, ws)
+    ws = os.path.realpath(ws)
+    output_base = os.path.join(root, hashlib.md5(ws.encode()).hexdigest())
+
+    paths = {
+        "execroot": os.path.join(output_base, "execroot", "_main"),
+        "output_base": output_base,
+        "install_base": None,
+        "output_user_root": root,
+        "workspace": ws,
+        "record_dir": rd,
+        "binary": binary,
+        "binary_dir": os.path.dirname(binary),
+        "home": oc.HOME,
+    }
+    user = os.environ.get("USER") or os.path.basename(oc.HOME)
+    host = socket.gethostname().split(".")[0]
+
+    startup = [binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc"]
+    common = ["--repository_cache=" + oc.REPO_CACHE, "--color=no", "--curses=no"]
+    cmds = []
+    if "mod" in steps:
+        cmds.append(("mod_graph", ["mod", "graph", "--output=json"]))
+    if "build" in steps:
+        cmds.append(("build", [verb] + patterns + [
+            "--execution_log_json_file=" + os.path.join(raw, "execlog.json"),
+            "--execution_log_sort",
+            "--build_event_json_file=" + os.path.join(raw, "bep.json"),
+        ]))
+    if "query" in steps:
+        cmds += [
+            ("query_label_kind", ["query", expr, "--output=label_kind", "--keep_going"]),
+            ("query_deps_label_kind", ["query", "deps(%s)" % expr, "--output=label_kind", "--keep_going"]),
+            ("query_jsonproto", ["query", expr, "--output=streamed_jsonproto", "--keep_going"]),
+            ("query_deps_jsonproto", ["query", "deps(%s)" % expr, "--output=streamed_jsonproto", "--keep_going"]),
+        ]
+    if "cquery" in steps:
+        cmds += [
+            ("cquery_deps_label_kind", ["cquery", "deps(%s)" % expr, "--output=label_kind"]),
+            ("cquery_jsonproto", ["cquery", expr, "--output=jsonproto"]),
+        ]
+    if "aquery" in steps:
+        cmds.append(("aquery_deps_jsonproto", [
+            "aquery", "deps(%s)" % expr, "--output=jsonproto", "--include_param_files",
+            "--include_file_write_contents"]))
+    cmds.append(("info", ["info", "output_base", "execution_root", "install_base"]))
+
+    commands = []
+    t_start = time.monotonic()
+    for name, argv in cmds:
+        verb_i = argv[0]
+        full = startup + [verb_i] + common + argv[1:]
+        print("[record] %s/%s: %s" % (label, project, name), flush=True)
+        rc, dur = run(full, ws, os.path.join(raw, name + ".stdout"), os.path.join(raw, name + ".stderr"))
+        print("[record]   exit %d in %.1fs" % (rc, dur), flush=True)
+        commands.append({"name": name, "argv": full, "exit_code": rc, "duration_s": dur})
+        if name == "mod_graph":
+            lock = os.path.join(ws, "MODULE.bazel.lock")
+            if os.path.isfile(lock):
+                shutil.copyfile(lock, os.path.join(raw, "MODULE.bazel.lock"))
+        if paths["install_base"] is None:
+            paths["install_base"] = find_install_base(root)
+        if name == "build":
+            ctx = Context(paths, user, host)
+            t0 = time.monotonic()
+            oc.write_json(os.path.join(raw, "outputs.walk.json"), walk_outputs(ctx, ws), indent=0)
+            copy_test_xml(ws, os.path.join(raw, "testxml"))
+            commands[-1]["outputs_walk_s"] = round(time.monotonic() - t0, 2)
+        if name == "info" and rc == 0:
+            info = parse_info(open(os.path.join(raw, "info.stdout")).read())
+            for key, pkey in (("output_base", "output_base"), ("execution_root", "execroot"),
+                              ("install_base", "install_base")):
+                if info.get(key) and info[key] != paths[pkey]:
+                    print("[record]   note: info %s=%s (computed %s)" % (key, info[key], paths[pkey]))
+                    paths[pkey] = info[key]
+    rc, _ = run(startup + ["shutdown"], ws, os.devnull, os.devnull, timeout=120)
+    total = round(time.monotonic() - t_start, 2)
+
+    if os.path.isfile(os.path.join(ws, "MODULE.bazel.lock")):
+        shutil.copyfile(os.path.join(ws, "MODULE.bazel.lock"), os.path.join(raw, "MODULE.bazel.lock.final"))
+
+    manifest = {
+        "label": label,
+        "project": project,
+        "created": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "binary": binary,
+        "binary_sha256": oc.sha256_file(binary),
+        "checkout": checkout,
+        "checkout_commit": spec.get("commit"),
+        "workspace_fixups": fixed,
+        "project_command": command,
+        "steps": [s for s in oc.STEP_ORDER if s in steps],
+        "context": Context(paths, user, host).to_dict(),
+        "commands": commands,
+        "total_duration_s": total,
+    }
+    oc.write_json(os.path.join(rd, "manifest.json"), manifest)
+    finish(rd)
+
+
+def finish(rd):
+    """(Re)build norm/ and items/ from raw/ and refresh the manifest's file hashes."""
+    import surfaces
+
+    manifest = oc.read_json(os.path.join(rd, "manifest.json"))
+    ctx = Context.from_dict(manifest["context"])
+    for sub in ("norm", "items"):
+        make_writable_and_remove(os.path.join(rd, sub))
+        os.makedirs(os.path.join(rd, sub))
+    results = surfaces.extract_all(rd, manifest, ctx)
+    manifest["surfaces"] = {
+        s: {"status": r["status"], "items": len(r.get("items", {}))} for s, r in results.items()
+    }
+    files = {}
+    for sub in ("raw", "norm", "items"):
+        base = os.path.join(rd, sub)
+        for dirpath, _, filenames in os.walk(base):
+            for fn in filenames:
+                full = os.path.join(dirpath, fn)
+                files[os.path.relpath(full, rd)] = oc.sha256_file(full)
+    manifest["files"] = dict(sorted(files.items()))
+    oc.write_json(os.path.join(rd, "manifest.json"), manifest)
+    for s, r in results.items():
+        extra = ""
+        if r["status"] != "OK":
+            extra = " (%s)" % (r.get("error") or "").splitlines()[0][:100] if r.get("error") else ""
+        print("[record]   %-18s %-7s %6d items%s" % (s, r["status"], len(r.get("items", {})), extra))
+    return manifest
+
+
+def write_summary(label, project):
+    rd = oc.record_dir(label, project)
+    m = oc.read_json(os.path.join(rd, "manifest.json"))
+    summary = {
+        "label": label,
+        "project": project,
+        "created": m["created"],
+        "binary_sha256": m["binary_sha256"],
+        "checkout_commit": m.get("checkout_commit"),
+        "project_command": m["project_command"],
+        "surfaces": m.get("surfaces", {}),
+        "timings_s": {c["name"]: c["duration_s"] for c in m["commands"]},
+        "exit_codes": {c["name"]: c["exit_code"] for c in m["commands"]},
+        "total_duration_s": m.get("total_duration_s"),
+        "files_sha256": {k: v for k, v in m["files"].items() if not k.startswith("raw/")},
+    }
+    os.makedirs(oc.CORPUS_SUMMARIES, exist_ok=True)
+    oc.write_json(os.path.join(oc.CORPUS_SUMMARIES, project + ".json"), summary)
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--binary")
+    ap.add_argument("--label", required=True)
+    ap.add_argument("--project", required=True)
+    ap.add_argument("--surfaces", default=",".join(oc.STEP_ORDER))
+    ap.add_argument("--renormalise", action="store_true")
+    ap.add_argument("--no-scope", action="store_true")
+    ap.add_argument("--summary", dest="summary", action="store_true", default=None)
+    ap.add_argument("--no-summary", dest="summary", action="store_false")
+    args = ap.parse_args()
+
+    projects = oc.load_projects()
+    names = sorted(projects) if args.project == "all" else [args.project]
+    for n in names:
+        if n not in projects:
+            oc.die("unknown project %r (have: %s)" % (n, ", ".join(sorted(projects))))
+    steps = [s.strip() for s in args.surfaces.split(",") if s.strip()]
+    for s in steps:
+        if s not in oc.STEPS:
+            oc.die("unknown step %r (have: %s)" % (s, ", ".join(oc.STEP_ORDER)))
+    summary = args.summary if args.summary is not None else args.label == oc.REFERENCE_LABEL
+
+    if args.renormalise:
+        for n in names:
+            rd = oc.record_dir(args.label, n)
+            if not os.path.isfile(os.path.join(rd, "manifest.json")):
+                oc.die("no record at " + rd)
+            print("[record] %s/%s: renormalising" % (args.label, n))
+            finish(rd)
+            if summary:
+                write_summary(args.label, n)
+        return 0
+
+    if not args.binary:
+        oc.die("--binary is required")
+    if not os.access(oc.expand(args.binary), os.X_OK):
+        oc.die("binary not executable: " + args.binary)
+    maybe_reexec_in_scope(args)
+    for n in names:
+        record_project(args, n, projects[n], steps)
+        if summary:
+            write_summary(args.label, n)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

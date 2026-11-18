@@ -1,0 +1,121 @@
+{
+ "binary_sha256": "2e14c55c298752d71e8a0bbd762665ffce5966c9ad00ec5d1a8b82a58e7bfa06",
+ "checkout_commit": "2da0056814cf180480a19f5cf811e7e1c054bf6d",
+ "created": "2026-11-18T02:06:36+00:00",
+ "exit_codes": {
+  "aquery_deps_jsonproto": 0,
+  "build": 0,
+  "cquery_deps_label_kind": 0,
+  "cquery_jsonproto": 0,
+  "info": 0,
+  "mod_graph": 0,
+  "query_deps_jsonproto": 3,
+  "query_deps_label_kind": 3,
+  "query_jsonproto": 0,
+  "query_label_kind": 0
+ },
+ "files_sha256": {
+  "items/aquery_actions.json": "625403fcfaec4ac62f86e1011b99881994915fad07266a25b35f9630a0a3849e",
+  "items/bep.json": "9f4e55ea4155bbacd537fd92a93698b600b2326a4e6e40303edb946990786e68",
+  "items/build_stderr.json": "22f5656ba5e3c745ebc7711a66aa77038195a7cfee93bf47fdd0a9f8fb41ef6c",
+  "items/cquery_jsonproto.json": "e0054dc4d737ed621ab910b248f66b30687af39b6096efed6cbc9e325105547f",
+  "items/cquery_label_kind.json": "573123c4414b2373c4b9cc60d085c86ace7d71c682a149a32b1feb12ddd06a35",
+  "items/execlog.json": "ef532ce77a6c5ab68c046a75dffa3da16ab792c852511211b9883b0c9b286a05",
+  "items/exit_codes.json": "284790ef6ec1d751ecdd59c71d1daca83065910cbedae0b864152345bb4074a0",
+  "items/lockfile.json": "1ff3bccab084bd0c3a24f684708a2f32190f7b12cfd346011b1f0e63700c5fa4",
+  "items/mod_graph.json": "45bc2132a1c39d63b646ee863825b132efdfc9e5db5cb8d1bb83c3f3b27925f0",
+  "items/outputs.json": "7de6ab8b31712fbe50ace21a9bd88421718c9301eeb81eca59b87508b5a9a061",
+  "items/query_jsonproto.json": "801196fb63172aec75928afa64a5125b1a545f5a9fe3a5ef49702b70e82a50a0",
+  "items/query_label_kind.json": "3429f210da7a72304109965d3e0a4bad19ed5abe5818f5ea6b340295667c5d3d",
+  "items/tests.json": "8cc936f5abf9d9d7ce1e086bd7b9b67f78811cd1830ba0ddce7d394ef01555d5",
+  "norm/MODULE.bazel.lock": "63e5a329faa54bacf17bd4b55e512a30fc1d5ce7c3b8df625dad3841a20a8dd0",
+  "norm/aquery_actions.json": "a0b7187b17d313ea4a9e25a80d7b6e948b26b4e6e2c8611c03ce470d8c2c1626",
+  "norm/aquery_deps_jsonproto.json": "1fdd5de5c7aa99cb7655e16f404d7d7271d37a2d40198876c65d49de21fdf7f7",
+  "norm/bep.json": "dcb4abca87fb9e3a0877aee4f655f45c3c86fc53f1d240a02e8f386328936fe2",
+  "norm/build.stderr.txt": "b1d6188cdd3378db16a14c82c3b08b98ea6d5d768d5121abcd4373828da095cb",
+  "norm/cquery_deps_label_kind.txt": "df592cdbca930c99b198520b0617a6820ca3dac6c75b2f57d9e37271634ec98d",
+  "norm/cquery_jsonproto.json": "76bcfc9526ceb56382b159b9b419e0bcaa69f242baeefe6713fbc45b07822030",
+  "norm/execlog.json": "b6d03d591110c44e69129c96eee3c190188f593fc82e1ebe34fabea0aa26f6c4",
+  "norm/mod_graph.json": "1f1b9985c59f3ed5ea6311a4ce1e5a6471ce15b95721a355a84c26080bab6958",
+  "norm/outputs.json": "269d81638ec72805fc67bef6ab8801534024f64c6d7955426f7775664180b7df",
+  "norm/query_deps_jsonproto.jsonl": "8a9af01e669c7cf0dbf850359937bf56561685794274dd3466c2df7e103ebcdb",
+  "norm/query_deps_label_kind.txt": "9002feb0e0aed687d2b71f6fef962f71093184d19734d9201ad99c6b35a0c8c1",
+  "norm/query_jsonproto.jsonl": "9d69b9bff7d6a4f0707896e6cbca5e2d6b80179c31f3a4010383785f7c727553",
+  "norm/query_label_kind.txt": "0c698ead5ac13fccbbb7c23605690b67130674ae69f730b73b63003a2b45dba6",
+  "norm/tests.json": "47bf35d8ae4c463382825a73b21cc5e82523bdd37aa8ccfe5053d34208307a48"
+ },
+ "label": "oracle-9.3.2",
+ "project": "re2",
+ "project_command": [
+  "test",
+  "//:all",
+  "//python:all"
+ ],
+ "surfaces": {
+  "aquery_actions": {
+   "items": 1420,
+   "status": "OK"
+  },
+  "bep": {
+   "items": 114,
+   "status": "OK"
+  },
+  "build_stderr": {
+   "items": 7,
+   "status": "OK"
+  },
+  "cquery_jsonproto": {
+   "items": 37,
+   "status": "OK"
+  },
+  "cquery_label_kind": {
+   "items": 3295,
+   "status": "OK"
+  },
+  "execlog": {
+   "items": 552,
+   "status": "OK"
+  },
+  "exit_codes": {
+   "items": 10,
+   "status": "OK"
+  },
+  "lockfile": {
+   "items": 191,
+   "status": "OK"
+  },
+  "mod_graph": {
+   "items": 29,
+   "status": "OK"
+  },
+  "outputs": {
+   "items": 5043,
+   "status": "OK"
+  },
+  "query_jsonproto": {
+   "items": 1091,
+   "status": "OK"
+  },
+  "query_label_kind": {
+   "items": 1091,
+   "status": "OK"
+  },
+  "tests": {
+   "items": 21,
+   "status": "OK"
+  }
+ },
+ "timings_s": {
+  "aquery_deps_jsonproto": 0.56,
+  "build": 352.65,
+  "cquery_deps_label_kind": 0.11,
+  "cquery_jsonproto": 0.11,
+  "info": 0.03,
+  "mod_graph": 7.58,
+  "query_deps_jsonproto": 0.21,
+  "query_deps_label_kind": 0.16,
+  "query_jsonproto": 0.11,
+  "query_label_kind": 0.11
+ },
+ "total_duration_s": 362.4
+}

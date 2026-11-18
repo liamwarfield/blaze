@@ -1,0 +1,35 @@
+{
+ "about": "Residual differences between two recordings of real Bazel 9.3.2 that normalisation cannot remove. Format and semantics: scripts/oracle/README.md and AllowList in oracle_compare.py. Every entry's condition is checked on every compare run.",
+ "entries": [
+  {
+   "id": "runfiles-manifest-action-key",
+   "projects": "*",
+   "surface": "aquery_actions",
+   "item": "\\.runfiles(_manifest|/MANIFEST)$",
+   "kinds": [
+    "DIFF"
+   ],
+   "only_fields": [
+    "actionKey"
+   ],
+   "condition": "The item is a runfiles manifest action (primary output *.runfiles_manifest or *.runfiles/MANIFEST) and actionKey is the only field that differs.",
+   "reason": "SourceManifestAction's action key fingerprints the manifest content, which names absolute execroot paths. Every recording has its own workspace copy and output base, so the hash differs; the normalised manifest bytes (outputs surface), argv, inputs and outputs still match."
+  },
+  {
+   "id": "build-metrics-volatile-counters",
+   "projects": "*",
+   "surface": "bep",
+   "item": "^\\{\"buildMetrics\":\\{\\}\\}$",
+   "kinds": [
+    "DIFF"
+   ],
+   "only_fields": [
+    "buildMetrics\\.buildGraphMetrics\\.(evaluatedValues|builtValues|changedValues|cleanedValues|dirtiedValues)(\\[\\d+\\](\\.count|\\.skyfunctionName)?)?",
+    "buildMetrics\\.buildGraphMetrics\\.postInvocationSkyframeNodeCount",
+    "buildMetrics\\.actionSummary\\.actionCacheStatistics\\.sizeInBytes"
+   ],
+   "condition": "The item is the buildMetrics event and the only differing fields are the per-SkyFunction evaluated/built/changed/cleaned/dirtied counts (and their list order), the post-invocation Skyframe node count, or the action cache's sizeInBytes.",
+   "reason": "Skyframe evaluates in parallel, so how many nodes of each SkyFunction are evaluated or dirtied in one invocation varies between identical runs (re2: a few per cent). The serialized action cache size also varies by a few hundred bytes on re2 (161890 vs 161688) with identical actions and outputs. Action, artifact, target, package and per-mnemonic action counts in the same event are still compared."
+  }
+ ]
+}

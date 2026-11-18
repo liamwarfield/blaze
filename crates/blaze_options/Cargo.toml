@@ -1,0 +1,16 @@
+[package]
+name = "blaze_options"
+description = "Port of com.google.devtools.common.options, the client rc-file reader and BlazeOptionHandler's rc/--config handling."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_util = { path = "../blaze_util" }
+indexmap.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+regex.workspace = true
+indexmap.workspace = true

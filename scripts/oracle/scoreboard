@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Score a recording against the oracle reference. See `scoreboard help`."""
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import oracle_common as oc  # noqa: E402
+import oracle_compare as ocmp  # noqa: E402
+
+USAGE = """\
+usage: scripts/oracle/scoreboard <label> [--reference LABEL] [--project P]... [--json PATH]
+       scripts/oracle/scoreboard help
+
+Scores recording <label> against the reference recording (default %s), per project and surface:
+
+  total     items in the reference
+  compared  total minus excluded
+  matching  reference items the candidate reproduces exactly (after normalisation)
+  excluded  reference items excused by an allow-list entry (scripts/oracle/allow.json); the
+            entries used are listed under the table
+  extra     items only the candidate has (not excused)
+  status    MATCH, DIFF, FAILED (the candidate could not produce the surface; stderr tail in
+            `compare`), NOT_COMPARED (surface not recorded on one side)
+
+Exit status 0 always (it is a report); use `compare` for a pass/fail verdict.
+""" % oc.REFERENCE_LABEL
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("label")
+    ap.add_argument("--reference", default=oc.REFERENCE_LABEL)
+    ap.add_argument("--project", action="append")
+    ap.add_argument("--json")
+    args = ap.parse_args()
+    for label in (args.reference, args.label):
+        if not oc.projects_in(label):
+            oc.die("no recordings for label %r (have: %s)" % (label, ", ".join(oc.labels_available()) or "none"))
+    results = ocmp.compare_labels(args.reference, args.label, args.project)
+    rows = []
+    reasons = {}
+    for r in results:
+        ia = r.get("_a", {})
+        excluded = sum(1 for d in r["details"] if "allowed_by" in d and d["key"] in ia)
+        matching = r["counts"]["MATCH"]
+        extra = sum(1 for d in r["details"] if d["kind"] == "EXTRA" and "allowed_by" not in d)
+        total = r["total_a"]
+        rows.append({"project": r["project"], "surface": r["surface"], "status": r["status"],
+                     "total": total, "compared": total - excluded, "matching": matching,
+                     "excluded": excluded, "extra": extra})
+        for d in r["details"]:
+            if "allowed_by" in d:
+                reasons[d["allowed_by"]] = reasons.get(d["allowed_by"], 0) + 1
+    print("scoreboard: %s vs reference %s\n" % (args.label, args.reference))
+    for project in sorted({r["project"] for r in rows}):
+        print("project %s" % project)
+        hdr = "  %-18s %-12s %7s %8s %8s %8s %6s %7s" % (
+            "surface", "status", "total", "compared", "matching", "excluded", "extra", "match%")
+        print(hdr)
+        print("  " + "-" * (len(hdr) - 2))
+        t = {"total": 0, "compared": 0, "matching": 0, "excluded": 0, "extra": 0}
+        for row in rows:
+            if row["project"] != project:
+                continue
+            pct = "%.1f" % (100.0 * row["matching"] / row["compared"]) if row["compared"] else "-"
+            print("  %-18s %-12s %7d %8d %8d %8d %6d %7s" % (
+                row["surface"], row["status"], row["total"], row["compared"], row["matching"],
+                row["excluded"], row["extra"], pct))
+            for k in t:
+                t[k] += row[k]
+        pct = "%.1f" % (100.0 * t["matching"] / t["compared"]) if t["compared"] else "-"
+        print("  %-18s %-12s %7d %8d %8d %8d %6d %7s\n" % (
+            "TOTAL", "", t["total"], t["compared"], t["matching"], t["excluded"], t["extra"], pct))
+    if reasons:
+        allow = ocmp.AllowList()
+        print("excluded by allow list:")
+        for eid, n in sorted(reasons.items()):
+            e = next((x for x in allow.entries if x["id"] == eid), {})
+            print("  %-28s %5d  %s" % (eid, n, e.get("reason", "")))
+    if args.json:
+        oc.write_json(args.json, {"label": args.label, "reference": args.reference, "rows": rows,
+                                  "excluded_by": reasons})
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

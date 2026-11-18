@@ -1,0 +1,120 @@
+{
+ "binary_sha256": "2e14c55c298752d71e8a0bbd762665ffce5966c9ad00ec5d1a8b82a58e7bfa06",
+ "checkout_commit": "3dce8720b74194027c7b4cf42dee5bd159786df5",
+ "created": "2026-11-18T02:00:34+00:00",
+ "exit_codes": {
+  "aquery_deps_jsonproto": 0,
+  "build": 0,
+  "cquery_deps_label_kind": 0,
+  "cquery_jsonproto": 0,
+  "info": 0,
+  "mod_graph": 0,
+  "query_deps_jsonproto": 0,
+  "query_deps_label_kind": 0,
+  "query_jsonproto": 0,
+  "query_label_kind": 0
+ },
+ "files_sha256": {
+  "items/aquery_actions.json": "c00f51d5b35b3d2538b67f7b8004e4b560ef82060c481f34236348b0f81fa3ea",
+  "items/bep.json": "505907fe93eff72a9f8e6e6a3bdd7f46357ee1f0726b7a74f42153f5190f2dba",
+  "items/build_stderr.json": "8641ff1443c2d4063616986205f1bb354fd2300fb67b1da603d09c0d22ba91fd",
+  "items/cquery_jsonproto.json": "93c11a26470c6635013c66bcfbd80ac689b296f3bf69ffe20b490f543ac3533d",
+  "items/cquery_label_kind.json": "9796027f33bed7a77e3f4adb0aed9991951ef54ac7bf607048029c281229ab4a",
+  "items/execlog.json": "76253dda11047c246e3171ae441ab24fdb94ff248201c0519b878dcd5a6d0d12",
+  "items/exit_codes.json": "14286d669189728dade2fffda7af6a1328a933455b1e1504e6acdf3eea450b1f",
+  "items/lockfile.json": "efa1e33c123d3f1fdf4ed985cd51a2876152d2bea7ebcda183daa9da86e284a9",
+  "items/mod_graph.json": "a91fb1e81a4734bc89c794b227a5ff85c1a6d1802a3e3f5729de29c9e8703399",
+  "items/outputs.json": "1cddd234c93e88f543ed99ef120572d46216b8041beee353971b568511dcd987",
+  "items/query_jsonproto.json": "4132dcd9b4a21705bb396e2193094229600329ba4660c87310bc65be0c828f55",
+  "items/query_label_kind.json": "7d2e520e62eee294463ae5470b489f4912806903e441881b15eb40738be21bab",
+  "items/tests.json": "84ae0987e13dab92afe97717bba8a6825560703cddb10aea6923efb8fad95971",
+  "norm/MODULE.bazel.lock": "b740de99469ec391a88b4893c923fa754e0967281e46628f071f50fa69442297",
+  "norm/aquery_actions.json": "ecff3eb896b41d71ffa0e05b71e6570e12c953f52f08816e0b54ca84224fca95",
+  "norm/aquery_deps_jsonproto.json": "f4091b32718ac104e042c69915a89bf3c701facaa85e111d57699daaa052b209",
+  "norm/bep.json": "ee5f0a1f8d196bb215498c600a2607ed5d753166790a327760a2d9c2a5316057",
+  "norm/build.stderr.txt": "b010d8567855c5e8ffe96dee72544ad39ba1c08040ffc8de6a55fbfa1e72ff8f",
+  "norm/cquery_deps_label_kind.txt": "b2a9f0a709d4d10ed77c1065c75ace685590b26b31fd878d92a94c5978ae85cc",
+  "norm/cquery_jsonproto.json": "2ef47773b53a9a03304c10bfee913074c53b0eff2c0400f8db62d1d43c3743e8",
+  "norm/execlog.json": "faeb4a3daa6580a4fadfaac071e3e46635dcf5ea7a7b4b8f5558cfbacac7772c",
+  "norm/mod_graph.json": "fbf031ca99b711305633b4f264654b987037e325a897b51e4d5887407f66a07a",
+  "norm/outputs.json": "af32b6f896bcc1fc6d71b46d236e1657b662a156b224d473c014b78c06c4afce",
+  "norm/query_deps_jsonproto.jsonl": "5a2dc7a7a4d33f24b583c26221aa40807d9cdbb40d786d094314defd2030d8ed",
+  "norm/query_deps_label_kind.txt": "301ab770b91a1ba90d632ba33b4e52d20da9ec13b0b93aab771e4bc95fdacd5e",
+  "norm/query_jsonproto.jsonl": "0962caffe52709b61a47365c4bfa614ecd1ea50a0a9496e8eec7ada5d2d4106a",
+  "norm/query_label_kind.txt": "db64bfe8d56a1dfdfff4e09cad95ceec4e8454cebac8958f387f66d63d561bde",
+  "norm/tests.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+ },
+ "label": "oracle-9.3.2",
+ "project": "brotli",
+ "project_command": [
+  "build",
+  "//..."
+ ],
+ "surfaces": {
+  "aquery_actions": {
+   "items": 60,
+   "status": "OK"
+  },
+  "bep": {
+   "items": 42,
+   "status": "OK"
+  },
+  "build_stderr": {
+   "items": 5,
+   "status": "OK"
+  },
+  "cquery_jsonproto": {
+   "items": 16,
+   "status": "OK"
+  },
+  "cquery_label_kind": {
+   "items": 176,
+   "status": "OK"
+  },
+  "execlog": {
+   "items": 44,
+   "status": "OK"
+  },
+  "exit_codes": {
+   "items": 10,
+   "status": "OK"
+  },
+  "lockfile": {
+   "items": 193,
+   "status": "OK"
+  },
+  "mod_graph": {
+   "items": 27,
+   "status": "OK"
+  },
+  "outputs": {
+   "items": 96,
+   "status": "OK"
+  },
+  "query_jsonproto": {
+   "items": 162,
+   "status": "OK"
+  },
+  "query_label_kind": {
+   "items": 162,
+   "status": "OK"
+  },
+  "tests": {
+   "items": 0,
+   "status": "OK"
+  }
+ },
+ "timings_s": {
+  "aquery_deps_jsonproto": 0.11,
+  "build": 2.17,
+  "cquery_deps_label_kind": 0.11,
+  "cquery_jsonproto": 0.06,
+  "info": 0.03,
+  "mod_graph": 7.18,
+  "query_deps_jsonproto": 0.06,
+  "query_deps_label_kind": 0.06,
+  "query_jsonproto": 0.06,
+  "query_label_kind": 0.06
+ },
+ "total_duration_s": 10.4
+}

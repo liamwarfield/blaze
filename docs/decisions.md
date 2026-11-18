@@ -28,3 +28,8 @@ Each entry: date, decision, why, who decided.
 - 2026-11-17. String length/indexing/order: starlark-rust's code-point semantics for now. Bazel
   9.3.2 uses UTF-8 byte strings internally; both corpus projects are ASCII, so outputs agree.
   Revisit when a non-ASCII case shows up. Root.
+- 2026-11-17. re2 `query deps(...)` fails on the oracle (an unreachable `@libpfm` download in an
+  unselected `select()` branch). Keep it as recorded oracle behaviour: run with `--keep_going`,
+  compare exit code 3 and the partial result. Do not seed the repo cache. Root.
+- 2026-11-17. Referee accepted: scripts/oracle records 13 surfaces per project; oracle vs oracle is
+  100% MATCH (allow list: runfiles-manifest action keys, volatile BEP build-metric counters). Root.

@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Compare two recordings item by item. See `compare help`."""
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import oracle_common as oc  # noqa: E402
+import oracle_compare as ocmp  # noqa: E402
+
+USAGE = """\
+usage: scripts/oracle/compare <labelA> <labelB> [--project P]... [--surface S]...
+                              [--show N] [--report PATH] [--no-allow]
+       scripts/oracle/compare help
+
+Compares the items/ files of two recordings (scripts/oracle/record) per project and surface.
+Each item is MATCH (equal after normalisation), DIFF (both have it, values differ), MISSING (only
+in A), EXTRA (only in B) or ALLOWED (a difference excused by scripts/oracle/allow.json, whose
+condition was checked on this run). A surface that FAILED on either side is reported FAILED.
+
+Prints one table row per project/surface and the first N non-allowed differences with context
+(differing JSON paths, '-' value in A, '+' value in B). Writes a JSON report, by default to
+~/.cache/blaze/oracle-records/compare/<A>__vs__<B>.json.
+
+Exit status: 0 when every compared surface matches (allowed differences included), 1 when any
+item is DIFF/MISSING/EXTRA, a surface FAILED, or an allow-list entry exceeded its max_items;
+2 on usage errors.
+
+Options:
+  --project P   restrict to project P (repeatable; default: every project in either label)
+  --surface S   restrict to surface S (repeatable; default: all). Surfaces:
+                %s
+  --show N      print the first N differences (default 20)
+  --report PATH write the JSON report here
+  --no-allow    ignore the allow list
+""" % ", ".join(oc.SURFACES)
+
+
+def print_table(results):
+    hdr = "%-8s %-18s %-12s %7s %7s %6s %7s %6s %7s" % (
+        "project", "surface", "status", "total", "MATCH", "DIFF", "MISSING", "EXTRA", "ALLOWED")
+    print(hdr)
+    print("-" * len(hdr))
+    for r in results:
+        c = r["counts"]
+        total = len(set(r.get("_a", {})) | set(r.get("_b", {}))) if "_a" in r else max(r["total_a"], r["total_b"])
+        print("%-8s %-18s %-12s %7d %7d %6d %7d %6d %7d" % (
+            r["project"], r["surface"], r["status"], total, c["MATCH"], c["DIFF"], c["MISSING"],
+            c["EXTRA"], c["ALLOWED"]))
+
+
+def print_diffs(results, show):
+    shown = 0
+    for r in results:
+        if r["status"] == "FAILED":
+            print("\n== %s/%s FAILED" % (r["project"], r["surface"]))
+            for side in ("a", "b"):
+                f = r["failure"][side]
+                if f:
+                    print("  %s: %s" % (side.upper(), f.get("error")))
+                    for name, tail in (f.get("stderr_tail") or {}).items():
+                        for line in tail[-8:]:
+                            print("    [%s] %s" % (name, line))
+        for v in r["allow_violations"]:
+            print("\n== %s/%s allow-list violation: %s" % (r["project"], r["surface"], v))
+        for d in r["details"]:
+            if "allowed_by" in d:
+                continue
+            if shown >= show:
+                continue
+            shown += 1
+            print("\n== %s/%s %s %s" % (r["project"], r["surface"], d["kind"], d["key"][:200]))
+            if d["kind"] == "DIFF":
+                for line in ocmp.describe_diff(r["_a"][d["key"]], r["_b"][d["key"]], d["paths"]):
+                    print(line)
+            else:
+                side = r["_a"] if d["kind"] == "MISSING" else r["_b"]
+                print("  %s" % ocmp._short(side.get(d["key"]), 300))
+    total_bad = sum(1 for r in results for d in r["details"] if "allowed_by" not in d)
+    if total_bad > shown:
+        print("\n... %d more differences (see the JSON report)" % (total_bad - shown))
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("a")
+    ap.add_argument("b")
+    ap.add_argument("--project", action="append")
+    ap.add_argument("--surface", action="append")
+    ap.add_argument("--show", type=int, default=20)
+    ap.add_argument("--report")
+    ap.add_argument("--no-allow", action="store_true")
+    args = ap.parse_args()
+    for label in (args.a, args.b):
+        if not oc.projects_in(label):
+            oc.die("no recordings for label %r under %s (have: %s)" % (
+                label, oc.RECORDS, ", ".join(oc.labels_available()) or "none"))
+    for s in args.surface or []:
+        if s not in oc.SURFACES:
+            oc.die("unknown surface %r" % s)
+    allow = ocmp.AllowList(None if args.no_allow else oc.ALLOW_FILE)
+    results = ocmp.compare_labels(args.a, args.b, args.project, args.surface, allow)
+    print("compare %s (A) vs %s (B)\n" % (args.a, args.b))
+    print_table(results)
+    print_diffs(results, args.show)
+    report = args.report or os.path.join(oc.RECORDS, "compare", "%s__vs__%s.json" % (args.a, args.b))
+    os.makedirs(os.path.dirname(report), exist_ok=True)
+    oc.write_json(report, ocmp.report_json(args.a, args.b, results))
+    clean = all(ocmp.is_clean(r) for r in results)
+    used = {}
+    for r in results:
+        for eid, n in r["allow_used"].items():
+            used[eid] = used.get(eid, 0) + n
+    if used:
+        print("\nallow-list entries used: " + ", ".join("%s (%d)" % kv for kv in sorted(used.items())))
+    print("\nreport: %s\nresult: %s" % (report, "100% MATCH" if clean else "DIFFERENCES"))
+    return 0 if clean else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
