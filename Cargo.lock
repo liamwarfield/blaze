@@ -184,6 +184,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_actions"
+version = "0.1.0"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "blaze_cmdline",
+ "blaze_collect",
+ "blaze_events",
+ "blaze_protos",
+ "blaze_shell",
+ "blaze_starlark",
+ "blaze_util",
+ "blaze_vfs",
+ "dupe",
+ "hex",
+ "indexmap",
+ "parking_lot",
+ "serde_json",
+ "starlark",
+ "starlark_derive",
+ "thiserror",
+]
+
+[[package]]
 name = "blaze_build_config"
 version = "0.1.0"
 dependencies = [
@@ -324,6 +348,33 @@ dependencies = [
  "libc",
  "parking_lot",
  "regex",
+]
+
+[[package]]
+name = "blaze_exec"
+version = "0.1.0"
+dependencies = [
+ "blaze_cmdline",
+ "blaze_collect",
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_protos",
+ "blaze_shell",
+ "blaze_util",
+ "blaze_vfs",
+ "hex",
+ "indexmap",
+ "libc",
+ "parking_lot",
+ "prost",
+ "prost-types",
+ "regex",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "zstd",
 ]
 
 [[package]]

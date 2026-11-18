@@ -1,0 +1,369 @@
+//! Port of `lib/bazel/BazelWorkspaceStatusModule.java`: `BazelWorkspaceStatusAction` (the
+//! contents of `stable-status.txt` and `volatile-status.txt`) and `BazelStatusActionFactory`.
+
+use std::any::Any;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use blaze_collect::{NestedSetBuilder, Order};
+use blaze_util::Fingerprint;
+use indexmap::IndexMap;
+
+use crate::actions::action::{AbstractAction, Action, ComputeKeyError, InputMetadataProvider};
+use crate::actions::action_key_context::ActionKeyContext;
+use crate::actions::artifact::Artifact;
+use crate::analysis::workspace_status_action::{
+    WorkspaceStatusAction, WorkspaceStatusActionEnvironment, WorkspaceStatusActionFactory,
+    new_workspace_status_action, system_action_owner,
+};
+
+// Java: com/google/devtools/build/lib/analysis/BuildInfo.java:25 BuildInfo.BUILD_EMBED_LABEL
+pub const BUILD_EMBED_LABEL: &str = "BUILD_EMBED_LABEL";
+// Java: com/google/devtools/build/lib/analysis/BuildInfo.java:30 BuildInfo.BUILD_USER
+pub const BUILD_USER: &str = "BUILD_USER";
+// Java: com/google/devtools/build/lib/analysis/BuildInfo.java:35 BuildInfo.BUILD_HOST
+pub const BUILD_HOST: &str = "BUILD_HOST";
+// Java: com/google/devtools/build/lib/analysis/BuildInfo.java:40 BuildInfo.BUILD_TIMESTAMP
+pub const BUILD_TIMESTAMP: &str = "BUILD_TIMESTAMP";
+
+// Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:132 BazelWorkspaceStatusAction.SPECIAL_STABLE_KEYS
+const SPECIAL_STABLE_KEYS: [&str; 3] = [BUILD_EMBED_LABEL, BUILD_HOST, BUILD_USER];
+
+/// The inputs of `BazelWorkspaceStatusAction.execute` that come from the environment.
+///
+/// PORT: Java reads these from the action context (`WorkspaceStatusAction.Context`) and the
+/// system clock; they are parameters here so that the file contents can be computed (and tested)
+/// without the execution layer.
+#[derive(Clone, Debug, Default)]
+pub struct WorkspaceStatusInputs {
+    /// `--embed_label`.
+    pub embed_label: String,
+    /// The client environment (`Context.getClientEnv()`), read for `SOURCE_DATE_EPOCH`.
+    pub client_env: IndexMap<String, String>,
+    /// `System.currentTimeMillis()`.
+    pub current_time_millis: i64,
+    /// The standard output of `--workspace_status_command` (decoded as UTF-8), or `""` when no
+    /// command is set.
+    pub workspace_status_command_output: String,
+}
+
+/// The workspace status action of Bazel.
+// Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:74 BazelWorkspaceStatusModule.BazelWorkspaceStatusAction
+#[derive(Debug)]
+pub struct BazelWorkspaceStatusAction {
+    base: AbstractAction,
+    stable_status: Artifact,
+    volatile_status: Artifact,
+    username: String,
+    hostname: String,
+}
+
+impl BazelWorkspaceStatusAction {
+    // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:87 BazelWorkspaceStatusAction.<init>
+    pub fn new(
+        stable_status: Artifact,
+        volatile_status: Artifact,
+        username: impl Into<String>,
+        hostname: impl Into<String>,
+    ) -> BazelWorkspaceStatusAction {
+        BazelWorkspaceStatusAction {
+            base: new_workspace_status_action(
+                system_action_owner(),
+                NestedSetBuilder::empty_set(Order::STABLE_ORDER),
+                vec![stable_status.clone(), volatile_status.clone()],
+            ),
+            stable_status,
+            volatile_status,
+            username: username.into(),
+            hostname: hostname.into(),
+        }
+    }
+
+    /// The parts of `execute` that compute the two files: returns the contents of
+    /// `stable-status.txt` and `volatile-status.txt`, and the overall map posted as the
+    /// `BuildInfoEvent`.
+    ///
+    /// PORT: running `--workspace_status_command` (`getAdditionalWorkspaceStatus`), posting the
+    /// event and writing the files are execution (wave W6); the command's output comes in
+    /// through `inputs`.
+    // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:174 BazelWorkspaceStatusAction.execute
+    pub fn compute_status_files(&self, inputs: &WorkspaceStatusInputs) -> WorkspaceStatusFiles {
+        let mut volatile_map: BTreeMap<String, String> = BTreeMap::new();
+        let mut stable_map: BTreeMap<String, String> = BTreeMap::new();
+
+        stable_map.insert(BUILD_EMBED_LABEL.to_string(), inputs.embed_label.clone());
+        stable_map.insert(BUILD_HOST.to_string(), self.hostname.clone());
+        stable_map.insert(BUILD_USER.to_string(), self.username.clone());
+        let current_time_millis =
+            get_current_time_millis(&inputs.client_env, inputs.current_time_millis);
+        volatile_map.insert(
+            BUILD_TIMESTAMP.to_string(),
+            (current_time_millis / 1000).to_string(),
+        );
+        volatile_map.insert(
+            "FORMATTED_DATE".to_string(),
+            format(current_time_millis / 1000 * 1000),
+        );
+        let status_map = parse_workspace_status(&inputs.workspace_status_command_output);
+        for (key, value) in status_map {
+            if is_stable_key(&key) {
+                stable_map.insert(key, value);
+            } else {
+                volatile_map.insert(key, value);
+            }
+        }
+
+        let mut overall_map = BTreeMap::new();
+        overall_map.extend(volatile_map.clone());
+        overall_map.extend(stable_map.clone());
+
+        WorkspaceStatusFiles {
+            stable_status: print_status_map(&stable_map),
+            volatile_status: print_status_map(&volatile_map),
+            overall_map,
+        }
+    }
+
+    /// Runs `--workspace_status_command` and writes the files.
+    // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:174 BazelWorkspaceStatusAction.execute
+    pub fn execute(&self) -> ! {
+        blaze_util::unported!("BazelWorkspaceStatusAction.execute (execution, wave W6)")
+    }
+}
+
+/// What `BazelWorkspaceStatusAction.execute` writes and posts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceStatusFiles {
+    /// The bytes of `stable-status.txt`.
+    pub stable_status: Vec<u8>,
+    /// The bytes of `volatile-status.txt`.
+    pub volatile_status: Vec<u8>,
+    /// The `BuildInfoEvent` map (volatile entries overridden by stable ones).
+    pub overall_map: BTreeMap<String, String>,
+}
+
+/// `DateTimeFormatter.ofPattern("yyyy MMM dd HH mm ss EEE")` applied to the UTC time.
+// Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:83 BazelWorkspaceStatusAction.format
+// PORT: Java formats with the JVM's default locale; the Bazel server runs with an English locale
+// (month and weekday abbreviations below).
+pub fn format(timestamp: i64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    // 1970-01-01 was a Thursday.
+    const WEEKDAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    let secs = timestamp.div_euclid(1000);
+    let days = secs.div_euclid(86400);
+    let sod = secs.rem_euclid(86400);
+    let (year, month, day) = civil_from_days(days);
+    let weekday = WEEKDAYS[days.rem_euclid(7) as usize];
+    format!(
+        "{:04} {} {:02} {:02} {:02} {:02} {}",
+        year,
+        MONTHS[(month - 1) as usize],
+        day,
+        sod / 3600,
+        (sod % 3600) / 60,
+        sod % 60,
+        weekday
+    )
+}
+
+/// Days since 1970-01-01 to (year, month, day) in the proleptic Gregorian calendar.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+// Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:135 BazelWorkspaceStatusAction.isStableKey
+fn is_stable_key(key: &str) -> bool {
+    key.starts_with("STABLE_") || SPECIAL_STABLE_KEYS.contains(&key)
+}
+
+/// Java `String.trim()`: strips leading and trailing chars `<= ' '`.
+fn java_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| c <= ' ')
+}
+
+/// Parses the output of `--workspace_status_command`.
+// Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:139 BazelWorkspaceStatusAction.parseWorkspaceStatus
+// PORT: Java's TreeMap orders by UTF-16 code units; BTreeMap<String> orders by UTF-8 bytes, which
+// agrees except between supplementary characters and U+E000..U+FFFF.
+pub fn parse_workspace_status(input: &str) -> BTreeMap<String, String> {
+    let mut result = BTreeMap::new();
+    // `input.trim().split("\n")`: Java's split drops trailing empty strings, which have fewer
+    // than two parts and are skipped below anyway.
+    for line in java_trim(input).split('\n') {
+        // `line.split(" ", 2)`
+        let split_line: Vec<&str> = line.splitn(2, ' ').collect();
+        if split_line.len() >= 2 {
+            result.insert(
+                split_line[0].to_string(),
+                java_trim(split_line[1]).to_string(),
+            );
+        }
+    }
+    result
+}
+
+// Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:151 BazelWorkspaceStatusAction.printStatusMap
+fn print_status_map(map: &BTreeMap<String, String>) -> Vec<u8> {
+    let mut s = map
+        .iter()
+        .map(|(k, v)| format!("{} {}", k, v))
+        .collect::<Vec<_>>()
+        .join("\n");
+    s.push('\n');
+    s.into_bytes()
+}
+
+/// This method returns the current time for stamping, using SOURCE_DATE_EPOCH
+/// (https://reproducible-builds.org/specs/source-date-epoch/) if provided.
+// Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:231 BazelWorkspaceStatusAction.getCurrentTimeMillis
+// PORT: `System.currentTimeMillis()` is the `current_time_millis` parameter.
+pub fn get_current_time_millis(
+    client_env: &IndexMap<String, String>,
+    current_time_millis: i64,
+) -> i64 {
+    if let Some(value) = client_env.get("SOURCE_DATE_EPOCH") {
+        let value = java_trim(value);
+        if !value.is_empty() {
+            // `Long.parseLong`: an optional sign and decimal digits.
+            if let Some(v) = parse_java_long(value) {
+                return v.wrapping_mul(1000);
+            }
+            // Fall-back to use the current time if SOURCE_DATE_EPOCH is not a long.
+        }
+    }
+    current_time_millis
+}
+
+/// `Long.parseLong(s)`, `None` for `NumberFormatException`.
+fn parse_java_long(s: &str) -> Option<i64> {
+    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse::<i64>().ok()
+}
+
+impl Action for BazelWorkspaceStatusAction {
+    fn abstract_action(&self) -> &AbstractAction {
+        &self.base
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:246 BazelWorkspaceStatusAction.getMnemonic
+    fn get_mnemonic(&self) -> String {
+        "BazelWorkspaceStatusAction".to_string()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/WorkspaceStatusAction.java:197 WorkspaceStatusAction.computeKey
+    fn compute_key(
+        &self,
+        _action_key_context: &ActionKeyContext,
+        _input_metadata_provider: Option<&dyn InputMetadataProvider>,
+        _fp: &mut Fingerprint,
+    ) -> Result<(), ComputeKeyError> {
+        // Since executeUnconditionally() is true (and this action is special-cased anyway),
+        // there is no point in calculating a fingerprint.
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/WorkspaceStatusAction.java:187 WorkspaceStatusAction.executeUnconditionally
+    fn execute_unconditionally(&self) -> bool {
+        true
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/WorkspaceStatusAction.java:192 WorkspaceStatusAction.isVolatile
+    fn is_volatile(&self) -> bool {
+        true
+    }
+}
+
+impl WorkspaceStatusAction for BazelWorkspaceStatusAction {
+    // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:251 BazelWorkspaceStatusAction.getVolatileStatus
+    fn get_volatile_status(&self) -> Artifact {
+        self.volatile_status.clone()
+    }
+
+    // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:256 BazelWorkspaceStatusAction.getStableStatus
+    fn get_stable_status(&self) -> Artifact {
+        self.stable_status.clone()
+    }
+
+    fn get_workspace_status_description(&self) -> &str {
+        "workspace status"
+    }
+}
+
+/// Bazel's `WorkspaceStatusAction.Factory`.
+// Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:269 BazelWorkspaceStatusModule.BazelStatusActionFactory
+#[derive(Clone, Debug)]
+pub struct BazelStatusActionFactory {
+    /// `StandardSystemProperty.USER_NAME.value()`.
+    pub username: String,
+    /// `NetUtil.getCachedShortHostName()`.
+    pub hostname: String,
+}
+
+impl WorkspaceStatusActionFactory for BazelStatusActionFactory {
+    // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:278 BazelStatusActionFactory.createWorkspaceStatusAction
+    fn create_workspace_status_action(
+        &self,
+        env: &dyn WorkspaceStatusActionEnvironment,
+    ) -> Arc<dyn WorkspaceStatusAction> {
+        let stable_artifact = env.create_stable_artifact("stable-status.txt");
+        let volatile_artifact = env.create_volatile_artifact("volatile-status.txt");
+        Arc::new(BazelWorkspaceStatusAction::new(
+            stable_artifact,
+            volatile_artifact,
+            self.username.clone(),
+            self.hostname.clone(),
+        ))
+    }
+
+    // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:272 BazelStatusActionFactory.createDummyWorkspaceStatus
+    fn create_dummy_workspace_status(&self) -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_matches_java_pattern() {
+        // 2024-02-29T13:05:09Z was a Thursday.
+        assert_eq!(format(1_709_211_909_000), "2024 Feb 29 13 05 09 Thu");
+        assert_eq!(format(0), "1970 Jan 01 00 00 00 Thu");
+    }
+
+    #[test]
+    fn parse_workspace_status_trims_and_sorts() {
+        let m = parse_workspace_status("  STABLE_B  two words \nA 1\nnospace\n\n");
+        let v: Vec<(&str, &str)> = m.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        assert_eq!(v, vec![("A", "1"), ("STABLE_B", "two words")]);
+    }
+
+    #[test]
+    fn source_date_epoch() {
+        let mut env = IndexMap::new();
+        env.insert("SOURCE_DATE_EPOCH".to_string(), " 1700000000 ".to_string());
+        assert_eq!(get_current_time_millis(&env, 5), 1_700_000_000_000);
+        env.insert("SOURCE_DATE_EPOCH".to_string(), "abc".to_string());
+        assert_eq!(get_current_time_millis(&env, 5), 5);
+    }
+}
