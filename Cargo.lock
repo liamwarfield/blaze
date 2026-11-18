@@ -187,12 +187,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_optdefs"
+version = "0.1.0"
+dependencies = [
+ "blaze_cmdline",
+ "blaze_options",
+ "blaze_util",
+ "blaze_vfs",
+]
+
+[[package]]
 name = "blaze_options"
 version = "0.1.0"
 dependencies = [
  "blaze_util",
  "indexmap",
  "regex",
+]
+
+[[package]]
+name = "blaze_shell"
+version = "0.1.0"
+dependencies = [
+ "blaze_util",
+ "libc",
+ "parking_lot",
+ "thiserror",
 ]
 
 [[package]]
@@ -1446,14 +1466,11 @@ version = "0.1.0"
 dependencies = [
  "allocative",
  "anyhow",
- "dupe",
  "num-bigint",
  "rayon",
  "regex",
- "serde",
  "serde_json",
  "starlark",
- "starlark_derive",
  "starlark_map",
 ]
 
