@@ -57,8 +57,8 @@ it exists under `~/.cache/blaze/oracle-out/ur/install/`).
 scripts/cargo-capped build -p blaze      # -> target/debug/blaze
 ```
 
-Note: commits between `0388d76` and the next "building checkpoint" commit do not build (a
-partial commit); use the checkpoint or later.
+Note: commits `0388d76` through `078b27a` do not build (a partial commit). `0e68a79` and later
+do; it was verified with `cargo check --workspace --all-targets` from a clean checkout.
 
 ## Demo
 

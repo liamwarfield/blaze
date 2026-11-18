@@ -69,3 +69,11 @@ Read them again after a context reset.
 - Findings are ranked: S1 wrong output or wrong behaviour on valid input; S2 a deviation that is
   masked today (corpus-specific shortcut, guessed value, weakened check, expectation taken from
   Blaze); S3 missing port marked honestly (`unported!`, `#[ignore]`); S4 style.
+
+## Commits (root)
+
+- Never commit part of a tree that other uncommitted files depend on. Before pushing, check the
+  commit builds from a clean checkout (`git worktree add`, then
+  `scripts/cargo-capped check --workspace --all-targets`).
+- A score is reported with the commit it was measured at, the binary used, and its denominator
+  (including what was excluded or not ported).
