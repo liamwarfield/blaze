@@ -106,3 +106,14 @@ Each entry: date, decision, why, who decided.
   not this process (a real Bazel server sharing the default output base) makes Blaze exit 36
   before it changes anything; Bazel's own client would connect to it or kill it. bzlmod/repos
   implementer, review 2026-11-18 follow-up.
+- 2026-11-18. HTTP transport: `ureq` is replaced by `blaze_repo_fetch`'s own HTTP/1.1 GET over
+  `TcpStream`/rustls (`downloader/socket_transport.rs`), because `ureq` 2 accepts a chunked body
+  cut inside a chunk as complete and gives no way to detect it. Body framing follows the JDK's
+  `HttpURLConnection` ("Premature EOF" for a truncated chunked body; a short `Content-Length`
+  body ends normally). Trust roots unchanged (`webpki-roots`). SOCKS proxies are `unported!`.
+  bzlmod/repos implementer, review round 2 (N1).
+- 2026-11-18. Remote caching and execution are now a priority (they were excluded from the first
+  target). New crate `blaze_remote`; order: disk cache, remote cache (gRPC), remote execution,
+  build-without-the-bytes. Referee: Bazel's own remote worker as the server, the oracle's gRPC
+  log as the reference, and cache interchange with real Bazel (hit rate) as the headline number.
+  A Fable 5.2 review follows the port. User (priority); root (plan).
