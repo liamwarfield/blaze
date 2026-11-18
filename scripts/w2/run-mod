@@ -1,0 +1,201 @@
+#!/usr/bin/env -S python3 -I
+"""W2: run Blaze's `mod graph --output=json` on fresh copies of the corpus projects, the way
+scripts/oracle/record runs the oracle's mod step. See `run-mod help`."""
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True  # do not write __pycache__ into scripts/oracle/
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+ORACLE_SCRIPTS = os.path.join(REPO, "scripts", "oracle")
+sys.path.insert(0, ORACLE_SCRIPTS)
+
+import oracle_common as oc  # noqa: E402
+from normalise import Context  # noqa: E402
+
+
+def _load_record():
+    """scripts/oracle/record has no .py suffix; load it by path for prepare_workspace."""
+    path = os.path.join(ORACLE_SCRIPTS, "record")
+    loader = importlib.machinery.SourceFileLoader("oracle_record", path)
+    spec = importlib.util.spec_from_loader("oracle_record", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+record = _load_record()
+
+W2 = os.path.join(oc.WORK, "w2")
+INSTALL_BASE = os.path.join(oc.OUTPUT_ROOTS, "ur", "install", "58cf1ecbff441bac762b0050d6da21e9")
+DEFAULT_BINARY = os.path.join(REPO, "target", "debug", "blaze-mod-dev")
+MEMORY_MAX = "12G"
+
+USAGE = """\
+usage: scripts/w2/run-mod [--project brotli|re2|all] [--seed-lockfile] [--binary PATH]
+                          [--install-base DIR] [--timeout SECONDS] [--keep-output-base]
+                          [--no-scope]
+       scripts/w2/run-mod help | --help
+
+For each project of corpus/projects.json (default: all), like step 1 and the `mod` step of
+scripts/oracle/record:
+
+  1. copies the read-only checkout ~/.cache/blaze/corpus/<project> to
+     ~/.cache/blaze/work/w2/<project> (rsync -a --delete minus bazel-* and .git, then every
+     modified, untracked or ignored path restored to the checkout's git HEAD: a MODULE.bazel.lock
+     left by earlier runs is removed unless the project tracks it, then it is reset to HEAD);
+  2. with --seed-lockfile, copies the oracle's lockfile
+     ~/.cache/blaze/oracle-records/oracle-9.3.2/<project>/raw/MODULE.bazel.lock into the copy;
+  3. deletes the output base ~/.cache/blaze/work/w2/<project>-ob (unless --keep-output-base) and
+     runs, in the copy, with environment HOME and PATH=/usr/bin:/bin only:
+
+       <binary> --workspace <copy> --output_base <ob> --install_base <install base>
+                mod --repository_cache=~/.cache/blaze/repo-cache graph --output=json
+
+  4. writes ~/.cache/blaze/work/w2/<project>-out/: mod_graph.stdout, mod_graph.stderr,
+     exit_code, MODULE.bazel.lock (the copy's lockfile after the run, if any) and run.json
+     (argv, exit code, duration, seeded or not, and the normaliser context for compare-mod).
+
+Then compare with scripts/w2/compare-mod.
+
+Options:
+  --project NAME      brotli, re2 or all (default all)
+  --seed-lockfile     start from the oracle's recorded MODULE.bazel.lock
+  --binary PATH       the dev binary (default <repo>/target/debug/blaze-mod-dev)
+  --install-base DIR  default the oracle's install base
+                      ~/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9
+  --timeout SECONDS   per-project limit (default 3600)
+  --keep-output-base  do not delete <project>-ob first
+  --no-scope          do not wrap the run in `systemd-run --user --scope -p MemoryMax=12G
+                      -p MemorySwapMax=0` (the default re-executes this script in such a scope)
+"""
+
+
+def maybe_reexec_in_scope(args):
+    if args.no_scope or os.environ.get("BLAZE_W2_SCOPE") == "1":
+        return
+    if shutil.which("systemd-run") is None:
+        print("warning: systemd-run not found; running without memory limits", file=sys.stderr)
+        return
+    argv = [
+        "systemd-run", "--user", "--scope", "--collect", "--quiet",
+        "-p", "MemoryMax=" + MEMORY_MAX, "-p", "MemorySwapMax=0",
+        "--", "env", "BLAZE_W2_SCOPE=1", sys.executable, "-I", os.path.abspath(__file__),
+    ] + sys.argv[1:]
+    os.execvp(argv[0], argv)
+
+
+def out_dir(project):
+    return os.path.join(W2, project + "-out")
+
+
+def run_project(args, project, spec):
+    checkout = oc.expand(spec["checkout"])
+    ws = os.path.join(W2, project)
+    ob = os.path.join(W2, project + "-ob")
+    out = out_dir(project)
+    binary = os.path.abspath(oc.expand(args.binary))
+    install_base = os.path.abspath(oc.expand(args.install_base))
+
+    print("[run-mod] %s: preparing %s" % (project, ws), flush=True)
+    fixed = record.prepare_workspace(checkout, ws)
+    ws = os.path.realpath(ws)
+    seeded = None
+    if args.seed_lockfile:
+        seed = os.path.join(oc.record_dir(oc.REFERENCE_LABEL, project), "raw", "MODULE.bazel.lock")
+        if not os.path.isfile(seed):
+            oc.die("no oracle lockfile to seed from: " + seed)
+        shutil.copyfile(seed, os.path.join(ws, "MODULE.bazel.lock"))
+        seeded = seed
+    if not args.keep_output_base:
+        record.make_writable_and_remove(ob)
+    os.makedirs(ob, exist_ok=True)
+    record.make_writable_and_remove(out)
+    os.makedirs(out)
+
+    argv = [
+        binary, "--workspace", ws, "--output_base", ob, "--install_base", install_base,
+        "mod", "--repository_cache=" + oc.REPO_CACHE, "graph", "--output=json",
+    ]
+    print("[run-mod] %s: %s" % (project, " ".join(argv)), flush=True)
+    rc, dur = record.run(argv, ws, os.path.join(out, "mod_graph.stdout"),
+                         os.path.join(out, "mod_graph.stderr"), timeout=args.timeout)
+    print("[run-mod] %s: exit %d in %.1fs" % (project, rc, dur), flush=True)
+    with open(os.path.join(out, "exit_code"), "w") as f:
+        f.write("%d\n" % rc)
+    lock = os.path.join(ws, "MODULE.bazel.lock")
+    if os.path.isfile(lock):
+        shutil.copyfile(lock, os.path.join(out, "MODULE.bazel.lock"))
+
+    paths = {
+        "execroot": os.path.join(ob, "execroot", "_main"),
+        "output_base": ob,
+        "install_base": install_base,
+        "output_user_root": None,
+        "workspace": ws,
+        "record_dir": out,
+        "binary": binary,
+        "binary_dir": os.path.dirname(binary),
+        "home": oc.HOME,
+    }
+    user = os.environ.get("USER") or os.path.basename(oc.HOME)
+    host = socket.gethostname().split(".")[0]
+    oc.write_json(os.path.join(out, "run.json"), {
+        "project": project,
+        "argv": argv,
+        "exit_code": rc,
+        "duration_s": dur,
+        "workspace_fixups": fixed,
+        "seeded_lockfile": seeded,
+        "lockfile_written": os.path.isfile(lock),
+        "context": Context(paths, user, host).to_dict(),
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    })
+    return rc
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    ap = argparse.ArgumentParser(add_help=False, usage=USAGE)
+    ap.add_argument("--project", default="all")
+    ap.add_argument("--seed-lockfile", action="store_true")
+    ap.add_argument("--binary", default=DEFAULT_BINARY)
+    ap.add_argument("--install-base", default=INSTALL_BASE)
+    ap.add_argument("--timeout", type=int, default=3600)
+    ap.add_argument("--keep-output-base", action="store_true")
+    ap.add_argument("--no-scope", action="store_true")
+    args = ap.parse_args()
+
+    projects = oc.load_projects()
+    names = sorted(projects) if args.project == "all" else [args.project]
+    for n in names:
+        if n not in projects:
+            oc.die("unknown project %s (have: %s)" % (n, ", ".join(sorted(projects))))
+    if not os.access(oc.expand(args.binary), os.X_OK):
+        oc.die("binary not executable: %s (build it, or pass --binary)" % args.binary)
+    if not os.path.isdir(oc.expand(args.install_base)):
+        oc.die("install base not found: " + args.install_base)
+    maybe_reexec_in_scope(args)
+
+    worst = 0
+    for n in names:
+        rc = run_project(args, n, projects[n])
+        worst = worst or rc
+    print("[run-mod] outputs in %s/<project>-out; compare with scripts/w2/compare-mod" % W2)
+    return 0 if worst == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

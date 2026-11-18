@@ -1,0 +1,258 @@
+#!/usr/bin/env -S python3 -I
+"""W2: compare `mod graph --output=json` and MODULE.bazel.lock against the oracle recording,
+with the referee's extractors (surfaces.s_mod_graph, surfaces.s_lockfile), comparer and allow
+list. See `compare-mod help`."""
+
+import argparse
+import os
+import shutil
+import sys
+
+sys.dont_write_bytecode = True  # do not write __pycache__ into scripts/oracle/
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+ORACLE_SCRIPTS = os.path.join(REPO, "scripts", "oracle")
+sys.path.insert(0, ORACLE_SCRIPTS)
+
+import oracle_common as oc  # noqa: E402
+import oracle_compare as cmp  # noqa: E402
+import surfaces  # noqa: E402
+from normalise import Context, stderr_tail  # noqa: E402
+
+W2 = os.path.join(oc.WORK, "w2")
+SURFACES = ["mod_graph", "lockfile"]
+LOCK_TOP_KEYS = ["lockFileVersion", "registryFileHashes", "selectedYankedVersions",
+                 "moduleExtensions", "facts", "factsVersions", "__bytes_sha256__"]
+
+USAGE = """\
+usage: scripts/w2/compare-mod [--project brotli|re2|all] [--against LABEL] [--from-record LABEL] [--ignore-exit-code]
+                              [--diffs N] [--work DIR]
+       scripts/w2/compare-mod help | --help
+
+Builds the items of the referee surfaces `mod_graph` and `lockfile` (scripts/oracle/surfaces.py
+s_mod_graph and s_lockfile, normalised with the run's paths) from the outputs of
+scripts/w2/run-mod (~/.cache/blaze/work/w2/<project>-out/: mod_graph.stdout, exit_code,
+MODULE.bazel.lock, run.json), and compares them with the oracle's recorded items
+(~/.cache/blaze/oracle-records/<against>/<project>/items/{mod_graph,lockfile}.json) using
+oracle_compare.compare_surface and scripts/oracle/allow.json.
+
+Prints, per project and surface, the status and the MATCH / DIFF / MISSING / EXTRA / ALLOWED
+counts, the first N non-matching items (with the differing fields of a DIFF), and for the
+lockfile the counts per top-level key (registryFileHashes, selectedYankedVersions,
+moduleExtensions, facts, factsVersions, lockFileVersion, __bytes_sha256__).
+Exits 0 iff every surface of every project matches.
+
+Options:
+  --project NAME       brotli, re2 or all (default all)
+  --against LABEL      the reference recording (default oracle-9.3.2)
+  --from-record LABEL  take the compared side from a recording instead of run-mod: its
+                       raw/mod_graph.stdout, raw/MODULE.bazel.lock, exit code and normaliser
+                       context (to check this tool: oracle-9.3.2 against itself or against
+                       oracle-9.3.2-rerun must print a full MATCH)
+  --diffs N            non-matching items shown per surface (default 10)
+  --work DIR           scratch record directory (default ~/.cache/blaze/work/w2/compare)
+"""
+
+
+class Side:
+    """The compared outputs of one project: mod graph stdout, lockfile, exit code, context."""
+
+    def __init__(self, name, stdout, stderr, lockfile, exit_code, context):
+        self.name = name
+        self.stdout = stdout
+        self.stderr = stderr
+        self.lockfile = lockfile
+        self.exit_code = exit_code
+        self.context = context
+
+
+def side_from_run(project):
+    out = os.path.join(W2, project + "-out")
+    if not os.path.isdir(out):
+        return None, "no run-mod output at %s (run scripts/w2/run-mod first)" % out
+    exit_code = None
+    p = os.path.join(out, "exit_code")
+    if os.path.isfile(p):
+        exit_code = int(open(p).read().strip())
+    context = None
+    run_json = os.path.join(out, "run.json")
+    if os.path.isfile(run_json):
+        run = oc.read_json(run_json)
+        context = run.get("context")
+        if exit_code is None:
+            exit_code = run.get("exit_code")
+    if context is None:
+        # Reconstruct the paths run-mod uses.
+        ob = os.path.join(W2, project + "-ob")
+        context = {"paths": {
+            "execroot": os.path.join(ob, "execroot", "_main"), "output_base": ob,
+            "workspace": os.path.realpath(os.path.join(W2, project)), "record_dir": out,
+            "home": oc.HOME}, "user": os.environ.get("USER"), "host": None}
+    return Side("run-mod " + out,
+                os.path.join(out, "mod_graph.stdout"), os.path.join(out, "mod_graph.stderr"),
+                os.path.join(out, "MODULE.bazel.lock"),
+                -1 if exit_code is None else exit_code, context), None
+
+
+def side_from_record(label, project):
+    rd = oc.record_dir(label, project)
+    mf = os.path.join(rd, "manifest.json")
+    if not os.path.isfile(mf):
+        return None, "no recording at " + rd
+    manifest = oc.read_json(mf)
+    cmd = next((c for c in manifest.get("commands", []) if c["name"] == "mod_graph"), None)
+    if cmd is None:
+        return None, "recording %s has no mod_graph command" % rd
+    raw = os.path.join(rd, "raw")
+    return Side("record " + label,
+                os.path.join(raw, "mod_graph.stdout"), os.path.join(raw, "mod_graph.stderr"),
+                os.path.join(raw, "MODULE.bazel.lock"), cmd["exit_code"],
+                manifest["context"]), None
+
+
+def build_items(side, scratch):
+    """Lay the side out as a record directory and run the referee's extractors on it."""
+    shutil.rmtree(scratch, ignore_errors=True)
+    raw = os.path.join(scratch, "raw")
+    os.makedirs(raw)
+    os.makedirs(os.path.join(scratch, "norm"))
+    for src, name in ((side.stdout, "mod_graph.stdout"), (side.stderr, "mod_graph.stderr"),
+                      (side.lockfile, "MODULE.bazel.lock")):
+        if os.path.isfile(src):
+            shutil.copyfile(src, os.path.join(raw, name))
+    manifest = {"commands": [{"name": "mod_graph",
+                              "exit_code": 0 if IGNORE_EXIT_CODE else side.exit_code}],
+                "steps": ["mod"]}
+    ctx = Context.from_dict(side.context)
+    results = {}
+    for surface in SURFACES:
+        _, fn = surfaces.EXTRACTORS[surface]
+        try:
+            results[surface] = {"surface": surface, "status": "OK",
+                                "items": fn(scratch, manifest, ctx)}
+        except Exception as ex:  # a failed surface is reported, as in surfaces.extract_all
+            tail = []
+            if os.path.isfile(side.stderr):
+                tail = [ctx.text(l) for l in stderr_tail(open(side.stderr, errors="replace").read())]
+            results[surface] = {"surface": surface, "status": "FAILED", "items": {},
+                                "error": "%s: %s" % (type(ex).__name__, ex),
+                                "stderr_tail": {"mod_graph": tail}}
+    return results
+
+
+def top_key(item_key):
+    return item_key.split("[", 1)[0]
+
+
+def print_result(r, n_diffs):
+    c = r["counts"]
+    print("  %-9s %-12s MATCH %d  DIFF %d  MISSING %d  EXTRA %d  ALLOWED %d  (oracle %d items, "
+          "compared %d)" % (r["surface"], r["status"], c["MATCH"], c["DIFF"], c["MISSING"],
+                            c["EXTRA"], c["ALLOWED"], r["total_a"], r["total_b"]))
+    if r.get("failure"):
+        for side, f in (("oracle", r["failure"]["a"]), ("compared", r["failure"]["b"])):
+            if f:
+                print("    %s FAILED: %s" % (side, f.get("error")))
+                for name, lines in (f.get("stderr_tail") or {}).items():
+                    for line in lines[-12:]:
+                        print("      | " + line)
+    for v in r["allow_violations"]:
+        print("    allow-list violation: " + v)
+    shown = 0
+    for d in r["details"]:
+        if "allowed_by" in d:
+            continue
+        if shown >= n_diffs:
+            rest = sum(1 for x in r["details"] if "allowed_by" not in x) - shown
+            print("    ... %d more" % rest)
+            break
+        shown += 1
+        print("    %s %s" % (d["kind"], d["key"]))
+        if d["kind"] == "DIFF":
+            a, b = r["_a"][d["key"]], r["_b"][d["key"]]
+            for line in cmp.describe_diff(a, b, d["paths"]):
+                print("    " + line)
+        elif d["kind"] == "MISSING":
+            print("      oracle: " + cmp._short(r["_a"][d["key"]]))
+        else:
+            print("      compared: " + cmp._short(r["_b"][d["key"]]))
+
+
+def print_lockfile_by_top_key(r):
+    ia, ib = r.get("_a", {}), r.get("_b", {})
+    kinds = {d["key"]: ("ALLOWED" if "allowed_by" in d else d["kind"]) for d in r["details"]}
+    per = {}
+    for key in set(ia) | set(ib):
+        k = kinds.get(key, "MATCH")
+        per.setdefault(top_key(key), {}).setdefault(k, 0)
+        per[top_key(key)][k] += 1
+    print("  lockfile items by top key:")
+    order = LOCK_TOP_KEYS + sorted(k for k in per if k not in LOCK_TOP_KEYS)
+    for tk in order:
+        counts = per.get(tk)
+        if counts is None:
+            print("    %-24s (absent on both sides)" % tk)
+            continue
+        print("    %-24s %s" % (tk, "  ".join("%s %d" % (k, counts.get(k, 0)) for k in
+                                              ("MATCH", "DIFF", "MISSING", "EXTRA", "ALLOWED")
+                                              if counts.get(k))))
+
+
+IGNORE_EXIT_CODE = False
+
+
+def main():
+    global IGNORE_EXIT_CODE
+    if len(sys.argv) > 1 and sys.argv[1] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    ap = argparse.ArgumentParser(add_help=False, usage=USAGE)
+    ap.add_argument("--project", default="all")
+    ap.add_argument("--against", default=oc.REFERENCE_LABEL)
+    ap.add_argument("--from-record")
+    ap.add_argument("--diffs", type=int, default=10)
+    ap.add_argument("--ignore-exit-code", action="store_true")
+    ap.add_argument("--work", default=os.path.join(W2, "compare"))
+    args = ap.parse_args()
+    IGNORE_EXIT_CODE = args.ignore_exit_code
+
+    projects = oc.load_projects()
+    names = sorted(projects) if args.project == "all" else [args.project]
+    for n in names:
+        if n not in projects:
+            oc.die("unknown project %s (have: %s)" % (n, ", ".join(sorted(projects))))
+    allow = cmp.AllowList()
+
+    clean = True
+    for project in names:
+        if args.from_record:
+            side, err = side_from_record(args.from_record, project)
+        else:
+            side, err = side_from_run(project)
+        print("%s: %s vs %s" % (project, args.against, side.name if side else "?"))
+        if side is None:
+            print("  ERROR " + err)
+            clean = False
+            continue
+        print("  exit code: %d" % side.exit_code)
+        ours = build_items(side, os.path.join(oc.expand(args.work), project))
+        for surface in SURFACES:
+            ref = cmp.load_surface(args.against, project, surface)
+            r = cmp.compare_surface(project, surface, ref, ours[surface], allow)
+            if ref.get("status") == "ABSENT":
+                print("  %-9s oracle items missing: %s" % (
+                    surface, os.path.join(oc.record_dir(args.against, project), "items",
+                                          surface + ".json")))
+                clean = False
+                continue
+            print_result(r, args.diffs)
+            if surface == "lockfile":
+                print_lockfile_by_top_key(r)
+            clean = clean and cmp.is_clean(r) and r["status"] == "MATCH"
+    print("RESULT: %s" % ("MATCH" if clean else "DIFF"))
+    return 0 if clean else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

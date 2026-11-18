@@ -184,6 +184,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_build_config"
+version = "0.1.0"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "blaze_cmdline",
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_skyframe",
+ "blaze_starlark",
+ "blaze_util",
+ "blaze_vfs",
+ "indexmap",
+ "parking_lot",
+ "starlark",
+ "thiserror",
+]
+
+[[package]]
 name = "blaze_bzlmod"
 version = "0.1.0"
 dependencies = [
@@ -200,6 +220,7 @@ dependencies = [
  "blaze_util",
  "blaze_vfs",
  "dupe",
+ "flate2",
  "hex",
  "indexmap",
  "parking_lot",
@@ -209,6 +230,8 @@ dependencies = [
  "starlark_syntax",
  "tempfile",
  "thiserror",
+ "ureq",
+ "uuid",
 ]
 
 [[package]]

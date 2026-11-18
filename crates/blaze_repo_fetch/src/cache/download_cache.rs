@@ -53,7 +53,7 @@ impl KeyHasher {
             KeyHasher::Sha256(h) => h.finalize().to_vec(),
             KeyHasher::Sha384(h) => h.finalize().to_vec(),
             KeyHasher::Sha512(h) => h.finalize().to_vec(),
-            KeyHasher::Blake3(h) => h.finalize().as_bytes().to_vec(),
+            KeyHasher::Blake3(h) => blake3::Hasher::finalize(&h).as_bytes().to_vec(),
         }
     }
 }

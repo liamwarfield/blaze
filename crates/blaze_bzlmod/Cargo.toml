@@ -1,0 +1,43 @@
+[package]
+name = "blaze_bzlmod"
+description = "Bazel's lib/bazel/bzlmod SkyFunctions (MODULE_FILE, resolution, dep graph, lockfile, registry), MODULE.bazel evaluation (ModuleFileGlobals) and the mod command logic (modcommand)."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_util = { path = "../blaze_util" }
+blaze_cmdline = { path = "../blaze_cmdline" }
+blaze_vfs = { path = "../blaze_vfs" }
+blaze_events = { path = "../blaze_events" }
+blaze_starlark = { path = "../blaze_starlark" }
+blaze_skyframe = { path = "../blaze_skyframe" }
+blaze_bzlmod_model = { path = "../blaze_bzlmod_model" }
+# Optional until blaze_repo_fetch builds next to starlark (blake3 `traits-preview` feature
+# unification breaks src/cache/download_cache.rs:56); see src/registry_fetcher.rs.
+blaze_repo_fetch = { path = "../blaze_repo_fetch", optional = true }
+blaze_options = { path = "../blaze_options" }
+blaze_optdefs = { path = "../blaze_optdefs" }
+starlark.workspace = true
+starlark_syntax.workspace = true
+starlark_map.workspace = true
+allocative.workspace = true
+dupe.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+indexmap.workspace = true
+parking_lot.workspace = true
+sha2.workspace = true
+hex.workspace = true
+ureq.workspace = true
+flate2.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+default = []
+# Use blaze_repo_fetch's DownloadManager for registry files instead of the local stand-in.
+repo-fetch = ["dep:blaze_repo_fetch"]
