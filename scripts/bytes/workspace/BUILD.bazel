@@ -1,0 +1,29 @@
+load(":cases.bzl", "report")
+load(":rules.bzl", "write_rule", "shell_rule")
+
+report()
+
+print("RAWPRINT é🐷|\377|end")
+
+genrule(
+    name = "gen",
+    outs = ["gen.txt"],
+    cmd = "printf '%s' 'é🐷' > $@",
+)
+
+write_rule(
+    name = "write",
+    content = "é🐷\377\n",
+    tags = ["tagé"],
+)
+
+shell_rule(
+    name = "shell",
+    arg = "é\377",
+)
+
+filegroup(
+    name = "fg_é",
+    srcs = [],
+)
+exports_files(["readme_head.txt"])

@@ -74,3 +74,10 @@ Each entry: date, decision, why, who decided.
 - 2026-11-18. The user asked to try workerd (cloudflare/workerd @6ee5f171) with Blaze. Added to
   corpus/projects.json as a stress project; target `build //src/workerd/server:workerd`. It pins
   Bazel 9.3.1; the oracle stays 9.3.2. User (request); root (target choice).
+- 2026-11-18. Strings: supersedes the 2026-11-17 code-point ruling. Blaze mirrors Bazel's
+  internal string form (option A of docs/research/07-byte-strings.md): Starlark sources and
+  repository/module reads are decoded as Latin-1 so each Starlark string holds one char per UTF-8
+  byte, Rust `String`s carry that form, and conversion happens only at OS boundaries and at the
+  places Java calls StringEncoding. Migration per 07 section 5 after the build/test integration
+  lands (it touches many crates); brotli/re2 must stay byte-identical at every step. Trigger:
+  workerd's aspect_tools_telemetry sha1.bzl. Root.

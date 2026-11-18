@@ -1,0 +1,3 @@
+load(":labels.bzl", "report")
+
+report()

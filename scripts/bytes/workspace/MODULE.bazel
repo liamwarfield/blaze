@@ -1,0 +1,8 @@
+module(name = "bytes")
+
+bytes_repo = use_repo_rule("//:repo.bzl", "bytes_repo")
+
+bytes_repo(
+    name = "bytes_repo",
+    src = "//:readme_head.txt",
+)
