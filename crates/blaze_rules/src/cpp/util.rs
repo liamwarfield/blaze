@@ -5,7 +5,6 @@
 //! PORT: `blaze_analysis::starlark::util` has crate-private copies of some of these; the C++
 //! natives live in another crate, so they are ported here again from the same Java.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use blaze_actions::Artifact;
@@ -402,33 +401,98 @@ pub fn java_string_hash_code(s: &str) -> i32 {
     h
 }
 
-/// The iteration order of a `java.util.HashMap<String, V>` (default capacity 16, load factor
-/// 0.75) after inserting `keys` in order: buckets ascending, insertion order within a bucket
-/// (resizes keep the relative order of entries that stay in one bucket).
-// PORT: java-hash-order. Java: java/util/HashMap.java HashMap.hash, HashMap.resize
+/// The iteration order of a `java.util.HashMap<String, V>` created with `new HashMap<>()`
+/// after `put`ting `keys` in order: a simulation of `HashMap.putVal` and `HashMap.resize` (table
+/// of 16 buckets allocated on the first put, load factor 0.75, bucket index
+/// `(n - 1) & (h ^ (h >>> 16))`, new entries appended to their bucket's chain, a put of a present
+/// key changing nothing, a resize splitting each chain into its "lo" and "hi" halves in order,
+/// and the resize `treeifyBin` does instead of treeifying while the table is smaller than 64).
+/// Iteration walks the buckets in ascending order and each chain in order.
+///
+/// A chain of more than 8 entries in a table of 64 or more buckets becomes a red-black tree
+/// (`TreeNode`), whose iteration order is not ported: `unported!`.
+// PORT: java-hash-order.
+// Java: java/util/HashMap.java HashMap.hash, HashMap.putVal, HashMap.resize, HashMap.treeifyBin
 pub fn java_hash_map_order<K: AsRef<str> + Clone>(keys: &[K]) -> Vec<K> {
-    let mut distinct: Vec<K> = Vec::new();
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    for k in keys {
-        if seen.insert(k.as_ref().to_owned()) {
-            distinct.push(k.clone());
-        }
-    }
-    let mut capacity: usize = 16;
-    while distinct.len() as f64 > capacity as f64 * 0.75 {
-        capacity *= 2;
-    }
-    let spread = |s: &str| -> u32 {
+    // Java: java/util/HashMap.java HashMap.TREEIFY_THRESHOLD
+    const TREEIFY_THRESHOLD: usize = 8;
+    // Java: java/util/HashMap.java HashMap.MIN_TREEIFY_CAPACITY
+    const MIN_TREEIFY_CAPACITY: usize = 64;
+    // Java: java/util/HashMap.java HashMap.DEFAULT_INITIAL_CAPACITY
+    const DEFAULT_INITIAL_CAPACITY: usize = 16;
+
+    // Java: java/util/HashMap.java HashMap.hash
+    fn hash(s: &str) -> u32 {
         let h = java_string_hash_code(s) as u32;
         h ^ (h >> 16)
-    };
-    let mut indexed: Vec<(usize, usize, K)> = distinct
+    }
+
+    // Java: java/util/HashMap.java HashMap.resize
+    fn resize<K>(table: &mut Vec<Vec<(u32, K)>>, threshold: &mut usize) {
+        let old_cap = table.len();
+        if old_cap == 0 {
+            // zero initial threshold signifies using defaults
+            *threshold = DEFAULT_INITIAL_CAPACITY * 3 / 4;
+            table.resize_with(DEFAULT_INITIAL_CAPACITY, Vec::new);
+            return;
+        }
+        let new_cap = old_cap << 1;
+        // double threshold
+        *threshold <<= 1;
+        let old_tab = std::mem::take(table);
+        table.resize_with(new_cap, Vec::new);
+        for (j, bin) in old_tab.into_iter().enumerate() {
+            // preserve order
+            for (h, k) in bin {
+                if (h as usize) & old_cap == 0 {
+                    table[j].push((h, k));
+                } else {
+                    table[j + old_cap].push((h, k));
+                }
+            }
+        }
+    }
+
+    let mut table: Vec<Vec<(u32, K)>> = Vec::new();
+    let mut threshold: usize = 0;
+    let mut size: usize = 0;
+    for key in keys {
+        let h = hash(key.as_ref());
+        if table.is_empty() {
+            resize(&mut table, &mut threshold);
+        }
+        let n = table.len();
+        let i = (n - 1) & (h as usize);
+        if table[i]
+            .iter()
+            .any(|(eh, ek)| *eh == h && ek.as_ref() == key.as_ref())
+        {
+            // existing mapping for key: only the value is replaced
+            continue;
+        }
+        table[i].push((h, key.clone()));
+        // Java: `if (binCount >= TREEIFY_THRESHOLD - 1) treeifyBin(tab, hash);` when the new node
+        // is appended behind 8 or more others.
+        if table[i].len() > TREEIFY_THRESHOLD {
+            if n < MIN_TREEIFY_CAPACITY {
+                resize(&mut table, &mut threshold);
+            } else {
+                blaze_util::unported!(
+                    "HashMap.treeifyBin (iteration order of a treeified bucket)",
+                    "{}",
+                    key.as_ref()
+                );
+            }
+        }
+        size += 1;
+        if size > threshold {
+            resize(&mut table, &mut threshold);
+        }
+    }
+    table
         .into_iter()
-        .enumerate()
-        .map(|(i, k)| ((spread(k.as_ref()) as usize) & (capacity - 1), i, k))
-        .collect();
-    indexed.sort_by_key(|(bucket, i, _)| (*bucket, *i));
-    indexed.into_iter().map(|(_, _, k)| k).collect()
+        .flat_map(|bin| bin.into_iter().map(|(_, k)| k))
+        .collect()
 }
 
 #[cfg(test)]
@@ -447,5 +511,106 @@ mod tests {
     #[test]
     fn java_hash_map_order_single_key() {
         assert_eq!(java_hash_map_order(&["local"]), vec!["local"]);
+    }
+
+    // The expected orders below are `new HashMap<String, String>()` key sets printed by the JDK
+    // (OpenJDK, a `java` single-file program) after `put`ting the keys in the given order.
+
+    /// Keys of one bucket keep their insertion order.
+    #[test]
+    fn java_hash_map_order_same_bucket_keeps_insertion_order() {
+        assert_eq!(
+            java_hash_map_order(&["no-remote-exec", "no-remote"]),
+            vec!["no-remote-exec", "no-remote"]
+        );
+        assert_eq!(
+            java_hash_map_order(&["no-remote", "no-remote-exec"]),
+            vec!["no-remote", "no-remote-exec"]
+        );
+        assert_eq!(
+            java_hash_map_order(&["no-sandbox", "no-asan"]),
+            vec!["no-sandbox", "no-asan"]
+        );
+    }
+
+    #[test]
+    fn java_hash_map_order_different_buckets() {
+        assert_eq!(
+            java_hash_map_order(&["no-sandbox", "requires-network"]),
+            vec!["requires-network", "no-sandbox"]
+        );
+    }
+
+    #[test]
+    fn java_hash_map_order_duplicate_keys() {
+        assert_eq!(
+            java_hash_map_order(&["no-remote-exec", "no-remote", "no-remote-exec"]),
+            vec!["no-remote-exec", "no-remote"]
+        );
+    }
+
+    /// More than 12 keys: the table is resized to 32 buckets.
+    #[test]
+    fn java_hash_map_order_after_resize() {
+        assert_eq!(
+            java_hash_map_order(&[
+                "no-a", "no-b", "no-c", "no-d", "no-e", "no-f", "no-g", "no-h", "no-i", "no-j",
+                "no-k", "no-l", "no-m", "no-n", "no-o", "no-p", "no-q",
+            ]),
+            vec![
+                "no-c", "no-b", "no-a", "no-g", "no-f", "no-e", "no-d", "no-k", "no-j", "no-i",
+                "no-h", "no-o", "no-n", "no-m", "no-l", "no-q", "no-p",
+            ]
+        );
+        assert_eq!(
+            java_hash_map_order(&[
+                "requires-x",
+                "no-cache",
+                "supports-workers",
+                "block-network",
+                "no-remote",
+                "local",
+                "cpu:4",
+                "no-sandbox",
+                "disable-foo",
+                "no-remote-exec",
+                "requires-gpu",
+                "no-remote-cache",
+                "resources:x:1",
+                "no-a",
+            ]),
+            vec![
+                "requires-gpu",
+                "no-sandbox",
+                "supports-workers",
+                "cpu:4",
+                "no-a",
+                "no-cache",
+                "requires-x",
+                "no-remote-cache",
+                "local",
+                "no-remote-exec",
+                "block-network",
+                "disable-foo",
+                "resources:x:1",
+                "no-remote",
+            ]
+        );
+    }
+
+    /// Nine keys of one bucket of the 16-bucket table: `treeifyBin` resizes instead of
+    /// treeifying.
+    #[test]
+    fn java_hash_map_order_treeify_bin_resizes_small_table() {
+        assert_eq!(
+            java_hash_map_order(&[
+                "no-17", "no-28", "no-39", "no-100", "no-111", "no-122", "no-133", "no-144",
+                "no-155",
+            ]),
+            vec![
+                "no-100", "no-111", "no-122", "no-133", "no-144", "no-155", "no-17", "no-28",
+                "no-39",
+            ]
+        );
     }
 }

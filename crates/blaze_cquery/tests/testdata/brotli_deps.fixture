@@ -1,0 +1,369 @@
+# Oracle fixture (Bazel 9.3.2, 16 available processors): corpus project brotli, `cquery "deps(//...)" --output=label_kind`.
+# Extracted from the oracle's `dump --skyframe=deps` (keys, direct deps in Skyframe order) and its cquery
+# output (the E line). Fields are tab-separated.
+# C <index> <configuration checksum>
+# N <id> <configuration index or -> <shouldApplyRuleTransition 0|1> <executionPlatformLabel or -> <label>
+# D <id> <ids of the configured targets PostAnalysisQueryEnvironment.targetifyValues yields for the
+#        node's direct deps, in order: delegating keys resolved to the key of their value,
+#        TOOLCHAIN_RESOLUTION deps expanded>
+# S <ids of the query argument's result, in order>
+# E <ids in the order the oracle printed the result>
+# E8 <the same for a Bazel server restricted to 8 processors (taskset -c 0-7)>
+C	0	a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+C	1	3030ed4c810cf3435d066294fa495e650fe75173e4b4ef410ea56cb683458569
+C	2	04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067
+N	0	0	1	-	//:brotli
+N	1	0	1	-	//:brotli_inc
+N	2	0	1	-	//:brotlicommon
+N	3	0	1	-	//:brotlidec
+N	4	0	1	-	//:brotlienc
+N	5	-	1	-	//:c/common/constants.c
+N	6	-	1	-	//:c/common/constants.h
+N	7	-	1	-	//:c/common/context.c
+N	8	-	1	-	//:c/common/context.h
+N	9	-	1	-	//:c/common/dictionary.bin
+N	10	-	1	-	//:c/common/dictionary.c
+N	11	-	1	-	//:c/common/dictionary.h
+N	12	-	1	-	//:c/common/dictionary_inc.h
+N	13	-	1	-	//:c/common/platform.c
+N	14	-	1	-	//:c/common/platform.h
+N	15	-	1	-	//:c/common/shared_dictionary.c
+N	16	-	1	-	//:c/common/shared_dictionary_internal.h
+N	17	-	1	-	//:c/common/static_init.h
+N	18	-	1	-	//:c/common/transform.c
+N	19	-	1	-	//:c/common/transform.h
+N	20	-	1	-	//:c/common/version.h
+N	21	-	1	-	//:c/dec/bit_reader.c
+N	22	-	1	-	//:c/dec/bit_reader.h
+N	23	-	1	-	//:c/dec/dec_static_init.c
+N	24	-	1	-	//:c/dec/dec_static_init.h
+N	25	-	1	-	//:c/dec/decode.c
+N	26	-	1	-	//:c/dec/huffman.c
+N	27	-	1	-	//:c/dec/huffman.h
+N	28	-	1	-	//:c/dec/prefix.c
+N	29	-	1	-	//:c/dec/prefix.h
+N	30	-	1	-	//:c/dec/prefix_inc.h
+N	31	-	1	-	//:c/dec/state.c
+N	32	-	1	-	//:c/dec/state.h
+N	33	-	1	-	//:c/enc/backward_references.c
+N	34	-	1	-	//:c/enc/backward_references.h
+N	35	-	1	-	//:c/enc/backward_references_hq.c
+N	36	-	1	-	//:c/enc/backward_references_hq.h
+N	37	-	1	-	//:c/enc/backward_references_inc.h
+N	38	-	1	-	//:c/enc/backward_references_opt_inc.h
+N	39	-	1	-	//:c/enc/bit_cost.c
+N	40	-	1	-	//:c/enc/bit_cost.h
+N	41	-	1	-	//:c/enc/bit_cost_inc.h
+N	42	-	1	-	//:c/enc/block_encoder_inc.h
+N	43	-	1	-	//:c/enc/block_splitter.c
+N	44	-	1	-	//:c/enc/block_splitter.h
+N	45	-	1	-	//:c/enc/block_splitter_inc.h
+N	46	-	1	-	//:c/enc/brotli_bit_stream.c
+N	47	-	1	-	//:c/enc/brotli_bit_stream.h
+N	48	-	1	-	//:c/enc/cluster.c
+N	49	-	1	-	//:c/enc/cluster.h
+N	50	-	1	-	//:c/enc/cluster_inc.h
+N	51	-	1	-	//:c/enc/command.c
+N	52	-	1	-	//:c/enc/command.h
+N	53	-	1	-	//:c/enc/compound_dictionary.c
+N	54	-	1	-	//:c/enc/compound_dictionary.h
+N	55	-	1	-	//:c/enc/compress_fragment.c
+N	56	-	1	-	//:c/enc/compress_fragment.h
+N	57	-	1	-	//:c/enc/compress_fragment_two_pass.c
+N	58	-	1	-	//:c/enc/compress_fragment_two_pass.h
+N	59	-	1	-	//:c/enc/dictionary_hash.c
+N	60	-	1	-	//:c/enc/dictionary_hash.h
+N	61	-	1	-	//:c/enc/dictionary_hash_inc.h
+N	62	-	1	-	//:c/enc/enc_state.h
+N	63	-	1	-	//:c/enc/enc_static_init.c
+N	64	-	1	-	//:c/enc/enc_static_init.h
+N	65	-	1	-	//:c/enc/encode.c
+N	66	-	1	-	//:c/enc/encoder_dict.c
+N	67	-	1	-	//:c/enc/encoder_dict.h
+N	68	-	1	-	//:c/enc/entropy_encode.c
+N	69	-	1	-	//:c/enc/entropy_encode.h
+N	70	-	1	-	//:c/enc/entropy_encode_static.h
+N	71	-	1	-	//:c/enc/fast_log.c
+N	72	-	1	-	//:c/enc/fast_log.h
+N	73	-	1	-	//:c/enc/find_match_length.h
+N	74	-	1	-	//:c/enc/hash.h
+N	75	-	1	-	//:c/enc/hash_base.h
+N	76	-	1	-	//:c/enc/hash_composite_inc.h
+N	77	-	1	-	//:c/enc/hash_forgetful_chain_inc.h
+N	78	-	1	-	//:c/enc/hash_longest_match64_inc.h
+N	79	-	1	-	//:c/enc/hash_longest_match64_simd_inc.h
+N	80	-	1	-	//:c/enc/hash_longest_match_inc.h
+N	81	-	1	-	//:c/enc/hash_longest_match_quickly_inc.h
+N	82	-	1	-	//:c/enc/hash_longest_match_simd_inc.h
+N	83	-	1	-	//:c/enc/hash_longest_match_simd_opt_inc.h
+N	84	-	1	-	//:c/enc/hash_rolling_inc.h
+N	85	-	1	-	//:c/enc/hash_to_binary_tree_inc.h
+N	86	-	1	-	//:c/enc/histogram.c
+N	87	-	1	-	//:c/enc/histogram.h
+N	88	-	1	-	//:c/enc/histogram_inc.h
+N	89	-	1	-	//:c/enc/literal_cost.c
+N	90	-	1	-	//:c/enc/literal_cost.h
+N	91	-	1	-	//:c/enc/matching_tag_mask.h
+N	92	-	1	-	//:c/enc/memory.c
+N	93	-	1	-	//:c/enc/memory.h
+N	94	-	1	-	//:c/enc/metablock.c
+N	95	-	1	-	//:c/enc/metablock.h
+N	96	-	1	-	//:c/enc/metablock_inc.h
+N	97	-	1	-	//:c/enc/params.h
+N	98	-	1	-	//:c/enc/quality.h
+N	99	-	1	-	//:c/enc/ringbuffer.h
+N	100	-	1	-	//:c/enc/static_dict.c
+N	101	-	1	-	//:c/enc/static_dict.h
+N	102	-	1	-	//:c/enc/static_dict_lut.c
+N	103	-	1	-	//:c/enc/static_dict_lut.h
+N	104	-	1	-	//:c/enc/static_dict_lut_inc.h
+N	105	-	1	-	//:c/enc/utf8_util.c
+N	106	-	1	-	//:c/enc/utf8_util.h
+N	107	-	1	-	//:c/enc/write_bits.h
+N	108	-	1	-	//:c/include/brotli/decode.h
+N	109	-	1	-	//:c/include/brotli/encode.h
+N	110	-	1	-	//:c/include/brotli/port.h
+N	111	-	1	-	//:c/include/brotli/shared_dictionary.h
+N	112	-	1	-	//:c/include/brotli/types.h
+N	113	-	1	-	//:c/tools/brotli.c
+N	114	0	1	-	//:clang-cl
+N	115	0	1	-	//:common_headers
+N	116	0	1	-	//:common_sources
+N	117	0	1	-	//:dec_headers
+N	118	0	1	-	//:dec_sources
+N	119	0	1	-	//:dictionary
+N	120	0	1	-	//:enc_headers
+N	121	0	1	-	//:enc_sources
+N	122	0	1	-	//:msvc
+N	123	0	1	-	//:public_headers
+N	124	0	1	-	@@bazel_tools+xcode_configure_extension+local_config_xcode//:host_xcodes
+N	125	-	1	-	@@bazel_tools//tools/build_defs/build_info/templates:non_volatile_file.h.template
+N	126	-	1	-	@@bazel_tools//tools/build_defs/build_info/templates:redacted_file.h.template
+N	127	-	1	-	@@bazel_tools//tools/build_defs/build_info/templates:volatile_file.h.template
+N	128	0	1	-	@@bazel_tools//tools/build_defs/build_info:cc_build_info
+N	129	-	1	-	@@bazel_tools//tools/build_defs/cc/whitelists/parse_headers_and_layering_check:disabling_parse_headers_and_layering_check_allowed
+N	130	-	1	-	@@bazel_tools//tools/cpp/modules_tools:aggregate-ddi
+N	131	2	1	-	@@bazel_tools//tools/cpp/modules_tools:aggregate-ddi-bin
+N	132	-	1	-	@@bazel_tools//tools/cpp/modules_tools:generate-modmap
+N	133	2	1	-	@@bazel_tools//tools/cpp/modules_tools:generate-modmap-bin
+N	134	2	1	-	@@bazel_tools//tools/cpp/modules_tools:windows
+N	135	2	1	-	@@bazel_tools//tools/cpp:aggregate-ddi
+N	136	0	1	-	@@bazel_tools//tools/cpp:compiler
+N	137	0	1	-	@@bazel_tools//tools/cpp:empty_lib
+N	138	2	1	-	@@bazel_tools//tools/cpp:generate-modmap
+N	139	0	1	-	@@bazel_tools//tools/cpp:host_xcodes
+N	140	2	1	-	@@bazel_tools//tools/cpp:interface_library_builder
+N	141	2	1	-	@@bazel_tools//tools/cpp:link_dynamic_library
+N	142	0	1	-	@@bazel_tools//tools/cpp:link_extra_lib
+N	143	0	1	-	@@bazel_tools//tools/cpp:link_extra_libs
+N	144	0	1	-	@@bazel_tools//tools/cpp:malloc
+N	145	0	1	-	@@bazel_tools//tools/cpp:toolchain_type
+N	146	2	1	-	@@bazel_tools//tools/def_parser:def_parser
+N	147	-	1	-	@@bazel_tools//tools/def_parser:no_op.bat
+N	148	1	1	-	@@bazel_tools//tools:host_platform
+N	149	1	1	-	@@platforms//cpu:cpu
+N	150	1	1	-	@@platforms//cpu:x86_64
+N	151	1	1	-	@@platforms//host:host
+N	152	1	1	-	@@platforms//os:linux
+N	153	1	1	-	@@platforms//os:os
+N	154	1	1	-	@@platforms//os:windows
+N	155	-	1	-	@@rules_cc++cc_configure_extension+local_config_cc//:builtin_include_directory_paths
+N	156	0	1	-	@@rules_cc++cc_configure_extension+local_config_cc//:cc_wrapper
+N	157	-	1	-	@@rules_cc++cc_configure_extension+local_config_cc//:cc_wrapper.sh
+N	158	0	1	-	@@rules_cc++cc_configure_extension+local_config_cc//:compiler_deps
+N	159	0	1	-	@@rules_cc++cc_configure_extension+local_config_cc//:deps_scanner_wrapper
+N	160	-	1	-	@@rules_cc++cc_configure_extension+local_config_cc//:deps_scanner_wrapper.sh
+N	161	0	1	-	@@rules_cc++cc_configure_extension+local_config_cc//:empty
+N	162	0	1	-	@@rules_cc++cc_configure_extension+local_config_cc//:local
+N	163	0	1	-	@@rules_cc++cc_configure_extension+local_config_cc//:validate_static_library
+N	164	-	1	-	@@rules_cc++cc_configure_extension+local_config_cc//:validate_static_library.sh
+N	165	0	1	-	@@rules_cc+//:empty_lib
+N	166	0	1	-	@@rules_cc+//:link_extra_lib
+N	167	0	1	-	@@rules_cc+//:link_extra_libs
+N	168	0	1	-	@@rules_cc+//cc/compiler:compiler
+N	169	-	1	-	@@rules_cc+//cc/private/toolchain:build_interface_so
+N	170	0	1	-	@@rules_cc+//cc/private/toolchain:compiler
+N	171	2	1	-	@@rules_cc+//cc/private/toolchain:interface_library_builder
+N	172	2	1	-	@@rules_cc+//cc/private/toolchain:link_dynamic_library
+N	173	-	1	-	@@rules_cc+//cc/private/toolchain:link_dynamic_library.sh
+N	174	0	1	-	@@rules_cc+//cc:current_cc_toolchain
+N	175	0	1	@@platforms//host:host	@@rules_cc++cc_configure_extension+local_config_cc//:cc-compiler-k8
+D	0	122 114 148 151 145 175 113 3 4 166 144 142 146
+D	1	122 114 148 151 145 175 123 146
+D	2	122 114 148 151 145 175 116 115 1 146
+D	3	122 114 148 151 145 175 118 117 2 146
+D	4	122 114 148 151 145 175 121 120 2 146
+D	5	
+D	6	
+D	7	
+D	8	
+D	9	
+D	10	
+D	11	
+D	12	
+D	13	
+D	14	
+D	15	
+D	16	
+D	17	
+D	18	
+D	19	
+D	20	
+D	21	
+D	22	
+D	23	
+D	24	
+D	25	
+D	26	
+D	27	
+D	28	
+D	29	
+D	30	
+D	31	
+D	32	
+D	33	
+D	34	
+D	35	
+D	36	
+D	37	
+D	38	
+D	39	
+D	40	
+D	41	
+D	42	
+D	43	
+D	44	
+D	45	
+D	46	
+D	47	
+D	48	
+D	49	
+D	50	
+D	51	
+D	52	
+D	53	
+D	54	
+D	55	
+D	56	
+D	57	
+D	58	
+D	59	
+D	60	
+D	61	
+D	62	
+D	63	
+D	64	
+D	65	
+D	66	
+D	67	
+D	68	
+D	69	
+D	70	
+D	71	
+D	72	
+D	73	
+D	74	
+D	75	
+D	76	
+D	77	
+D	78	
+D	79	
+D	80	
+D	81	
+D	82	
+D	83	
+D	84	
+D	85	
+D	86	
+D	87	
+D	88	
+D	89	
+D	90	
+D	91	
+D	92	
+D	93	
+D	94	
+D	95	
+D	96	
+D	97	
+D	98	
+D	99	
+D	100	
+D	101	
+D	102	
+D	103	
+D	104	
+D	105	
+D	106	
+D	107	
+D	108	
+D	109	
+D	110	
+D	111	
+D	112	
+D	113	
+D	114	136
+D	115	148 151 6 8 11 12 14 16 17 19 20
+D	116	148 151 5 7 10 13 15 18
+D	117	148 151 22 24 27 29 30 32
+D	118	148 151 21 23 25 26 28 31
+D	119	148 151 9
+D	120	148 151 34 36 37 38 40 41 42 44 45 47 49 50 52 54 56 58 60 61 62 64 67 69 70 72 73 74 75 76 77 78 79 80 81 82 83 84 85 87 88 90 91 93 95 96 97 98 99 101 103 104 106 107
+D	121	148 151 33 35 39 43 46 48 51 53 55 57 59 63 65 66 68 71 86 89 92 94 100 102 105
+D	122	136
+D	123	148 151 108 109 110 111 112
+D	124	148 151
+D	125	
+D	126	
+D	127	
+D	128	148 151 127 125 126
+D	129	
+D	130	
+D	131	134 151 148 130
+D	132	
+D	133	134 151 148 132
+D	134	151 148 154
+D	135	151 148 131
+D	136	170
+D	137	148 151 145 175
+D	138	151 148 133
+D	139	124
+D	140	171
+D	141	172
+D	142	148 151 145 175 143
+D	143	137
+D	144	148 151 145 175
+D	145	
+D	146	154 151 148 147
+D	147	
+D	148	151
+D	149	
+D	150	149
+D	151	150 152
+D	152	153
+D	153	
+D	154	153
+D	155	
+D	156	148 151 157
+D	157	
+D	158	148 151 155 156 159 163
+D	159	148 151 160
+D	160	
+D	161	148 151
+D	162	148 151 139
+D	163	148 151 164
+D	164	
+D	165	148 151 145 175
+D	166	148 151 145 175 167
+D	167	165
+D	168	148 145 151 175 174
+D	169	
+D	170	168
+D	171	151 148 169
+D	172	151 148 173
+D	173	
+D	174	148 145 151 175
+D	175	148 151 158 161 162 145 129 128 140 141 135 138
+S	0 1 2 3 4 114 115 116 117 118 119 120 121 122 123
+E	115 120 3 122 123 116 121 118 117 4 1 2 119 114 0 166 71 136 83 103 79 63 39 97 82 84 57 12 36 52 22 56 53 77 175 102 72 59 64 49 74 23 35 51 67 25 13 27 6 145 42 65 86 28 104 144 61 47 44 107 46 88 113 54 58 87 18 17 69 78 29 148 101 43 14 19 75 68 20 85 10 95 31 96 26 110 37 111 5 11 94 15 108 91 38 9 66 92 32 45 21 41 70 90 48 60 98 34 80 16 62 105 8 151 112 73 50 30 93 40 24 81 89 142 33 100 76 106 99 109 146 55 7 152 161 147 128 141 150 140 158 162 143 138 135 167 154 170 129 125 155 127 137 168 126 149 156 133 165 131 171 139 172 163 159 153 174 157 169 173 124 160 130 132 164 134
+E8	115 120 3 122 123 116 121 118 117 4 1 2 119 114 0 71 166 136 83 103 79 63 39 97 82 84 57 12 36 52 22 56 53 77 175 102 72 59 64 49 74 23 35 51 67 25 13 27 6 145 42 65 86 28 104 144 61 47 44 107 46 88 113 54 58 87 18 17 69 78 29 148 101 43 14 19 75 68 20 85 10 95 31 96 26 110 37 111 5 11 94 15 108 91 38 9 66 92 32 45 21 41 70 90 48 60 98 34 80 16 62 105 8 151 112 73 50 30 93 40 24 81 89 142 33 100 76 106 99 109 146 55 7 152 161 147 128 141 150 140 158 162 143 138 135 167 154 170 129 125 155 127 137 168 126 149 156 133 165 131 171 139 172 163 159 153 174 157 169 173 124 160 130 132 164 134

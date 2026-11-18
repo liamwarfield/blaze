@@ -25,6 +25,8 @@ use blaze_actions::actions::fingerprint_util::add_paths;
 use blaze_actions::actions::parameter_file::ParameterFileType;
 use blaze_actions::actions::path_mapper::OutputPathsMode;
 use blaze_actions::analysis::actions::path_mappers;
+use blaze_analysis::platform::constraint_constants::get_os_from_constraints_or_host;
+use blaze_analysis::platform::platform_info::PlatformInfo as AnalysisPlatformInfo;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_build_config::fragments::cpp_configuration::CppConfiguration;
 use blaze_cc_features::actions as cc;
@@ -141,6 +143,10 @@ pub struct CppCompileAction {
     env: Arc<ActionEnvironment>,
     /// `PathMappers.getOutputPathsMode(configuration)`.
     output_paths_mode: OutputPathsMode,
+    /// `getOwner().getExecutionPlatform()` as the analysis layer's `PlatformInfo`: the action
+    /// layer's view of the owner's platform does not carry the constraints `getExecutionOs`
+    /// reads. Set by `CppCompileActionBuilder`.
+    execution_platform: Option<Arc<AnalysisPlatformInfo>>,
 }
 
 impl std::fmt::Debug for CppCompileAction {
@@ -307,6 +313,7 @@ impl CppCompileAction {
             modmap_input_file,
             env,
             output_paths_mode,
+            execution_platform: None,
         };
         action.initialize_modules_upper_bounds_if_not_scanning_includes();
         action
@@ -1112,8 +1119,17 @@ fn read_lines_as_latin1(path: &Path) -> std::io::Result<Vec<String>> {
     let mut bytes = Vec::new();
     path.get_input_stream()?.read_to_end(&mut bytes)?;
     // PORT: StringEncoding identity: Latin-1 decoding keeps the raw bytes, which is Rust's
-    // natural (UTF-8) form of a path string.
-    let text = String::from_utf8_lossy(&bytes);
+    // natural (UTF-8) form of a path string. Bytes that are not valid UTF-8 have no `String`
+    // form; they are not replaced (that would name another file) but fail loudly.
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) => blaze_util::unported!(
+            "FileSystemUtils.readLinesAsLatin1 (file content that is not valid UTF-8)",
+            "{}: {}",
+            path.as_fragment(),
+            e
+        ),
+    };
     let mut lines = Vec::new();
     let mut current = String::new();
     let mut chars = text.chars().peekable();
@@ -1200,12 +1216,17 @@ impl DiscoveringAction for CppDiscoveringAction<'_> {
         }
     }
 
-    // PORT: skipped, Windows only. Java computes `getOsFromConstraintsOrHost(
-    // action.getExecutionPlatform())`, which HeaderDiscovery only compares with WINDOWS (for
-    // case-insensitive file systems); Blaze executes on Linux only, and `blaze_actions`'
-    // `PlatformInfo` does not expose the platform's constraints.
+    // Java: com/google/devtools/build/lib/rules/cpp/HeaderDiscovery.java:161 HeaderDiscovery.discoverInputsFromDependencies
     fn get_execution_os(&self) -> cc::OS {
-        cc::OS::LINUX
+        // Java: ConstraintConstants.getOsFromConstraintsOrHost(action.getExecutionPlatform()).
+        match get_os_from_constraints_or_host(self.action.execution_platform.as_deref()) {
+            blaze_shell::util::os::OS::Darwin => cc::OS::DARWIN,
+            blaze_shell::util::os::OS::Freebsd => cc::OS::FREEBSD,
+            blaze_shell::util::os::OS::Openbsd => cc::OS::OPENBSD,
+            blaze_shell::util::os::OS::Linux => cc::OS::LINUX,
+            blaze_shell::util::os::OS::Windows => cc::OS::WINDOWS,
+            blaze_shell::util::os::OS::Unknown => cc::OS::UNKNOWN,
+        }
     }
 
     fn get_inputs(&self) -> NestedSet<cc::ArtifactRef> {
@@ -2140,6 +2161,9 @@ pub struct CppCompileActionBuilder {
     additional_prunable_headers: NestedSet<Artifact>,
     additional_outputs: Vec<Artifact>,
     needs_include_validation: bool,
+    /// The execution platform of `owner` (Java `owner.getExecutionPlatform()`), for
+    /// `CppCompileAction.getExecutionOs`.
+    execution_platform: Option<Arc<AnalysisPlatformInfo>>,
 }
 
 impl CppCompileActionBuilder {
@@ -2182,7 +2206,18 @@ impl CppCompileActionBuilder {
             additional_prunable_headers: NestedSetBuilder::empty_set(Order::STABLE_ORDER),
             additional_outputs: Vec::new(),
             needs_include_validation: false,
+            execution_platform: None,
         }
+    }
+
+    /// Records the execution platform of the builder's action owner (Java reads it from the
+    /// owner: `ActionOwner.getExecutionPlatform()`).
+    pub fn set_execution_platform(
+        &mut self,
+        execution_platform: Option<Arc<AnalysisPlatformInfo>>,
+    ) -> &mut Self {
+        self.execution_platform = execution_platform;
+        self
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:143 CppCompileActionBuilder.setSourceFile
@@ -2344,7 +2379,7 @@ impl CppCompileActionBuilder {
             eval_err(&self.cc_toolchain.built_in_include_directories)?;
         let grep_includes = eval_err(&self.cc_toolchain.grep_includes)?;
         // Copying the collections is needed to make the builder reusable.
-        Ok(CppCompileAction::new(
+        let mut action = CppCompileAction::new(
             self.owner.clone(),
             feature_configuration,
             self.variables.clone(),
@@ -2379,7 +2414,9 @@ impl CppCompileActionBuilder {
             self.additional_outputs.clone(),
             self.module_files.clone(),
             self.modmap_input_file.clone(),
-        ))
+        );
+        action.execution_platform = self.execution_platform.clone();
+        Ok(action)
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:327 CppCompileActionBuilder.getBuiltinIncludeFiles

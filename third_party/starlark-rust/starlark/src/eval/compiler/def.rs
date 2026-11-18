@@ -679,6 +679,15 @@ impl<'v> DefModule<'v> {
         self.frozen.is_some()
     }
 
+    /// BLAZE PATCH 0022: the extra value of the frozen defining module
+    /// (`FrozenModule::extra_value`), Java `Module.getClientData()` of `fn.getModule()`. `None`
+    /// while the defining module still executes: then it is the module of the evaluator running
+    /// the function (`Evaluator::module().extra_value()`), since an evaluator has one mutable
+    /// module.
+    pub fn frozen_extra_value(&self) -> Option<FrozenValue> {
+        self.frozen.and_then(|module| module.extra_value)
+    }
+
     /// Whether `self` and `other` are the same module (same compiled file).
     pub fn same_module(&self, other: &DefModule) -> bool {
         self.codemap == other.codemap

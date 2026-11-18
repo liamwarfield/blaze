@@ -11,6 +11,7 @@
 
 pub mod analysis_progress_receiver;
 pub mod aspect_function;
+pub mod build_options_scope_function;
 pub mod configured_target_function;
 pub mod dependency_resolver;
 pub mod incompatible_target_checker;

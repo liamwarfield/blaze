@@ -14,8 +14,8 @@ blaze_events = { path = "../blaze_events" }
 blaze_starlark = { path = "../blaze_starlark" }
 blaze_skyframe = { path = "../blaze_skyframe" }
 blaze_bzlmod_model = { path = "../blaze_bzlmod_model" }
-# PatchUtil (single_version_override patches); the DownloadManager registry seam stays behind the
-# `repo-fetch` feature (src/registry_fetcher.rs).
+# PatchUtil (single_version_override patches) and the DownloadManager behind the registry seam
+# (src/registry_fetcher.rs).
 blaze_repo_fetch = { path = "../blaze_repo_fetch" }
 blaze_options = { path = "../blaze_options" }
 blaze_optdefs = { path = "../blaze_optdefs" }
@@ -30,14 +30,8 @@ indexmap.workspace = true
 parking_lot.workspace = true
 sha2.workspace = true
 hex.workspace = true
-ureq.workspace = true
-flate2.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-
-[features]
-default = []
-# Use blaze_repo_fetch's DownloadManager for registry files instead of the local stand-in.
-repo-fetch = []
+flate2.workspace = true

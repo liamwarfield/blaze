@@ -207,15 +207,24 @@ pub fn register_label(builder: &mut GlobalsBuilder) {
             )));
         };
         let cx = ThreadContext::get(eval)?;
-        // The innermost Starlark frame's file decides the context (Java: BazelModuleContext
-        // .ofInnermostBzlOrFail). The top call-stack location is this call's site.
-        let file = eval
-            .call_stack_top_location()
-            .map(|l| l.filename().to_owned());
-        let pkg = file
-            .as_deref()
-            .and_then(|f| cx.package_context_for_file(f))
-            .ok_or_else(|| eval_err("Label() can only be called from a .bzl file"))?;
+        // The label string is interpreted with respect to the .bzl module containing the call
+        // to `Label()`: the module of the innermost Starlark function, whatever thread runs it.
+        // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:174 BazelModuleContext.ofInnermostBzlOrFail
+        let pkg = crate::defining_module::package_context_of_innermost_enclosing_starlark_function(
+            eval,
+        )
+        .or_else(|| {
+            // PORT: a context registered on the thread for the call site's file
+            // (`ThreadContext::with_file_package_context`), for modules executed without an
+            // extra value. There is no fallback to the thread's own file label: Java fails.
+            let file = eval
+                .call_stack_top_location()
+                .map(|l| l.filename().to_owned())?;
+            cx.file_package_contexts.get(&file).cloned()
+        })
+        .ok_or_else(|| {
+            eval_err("Label() can only be used during .bzl initialization (top-level evaluation)")
+        })?;
         // Java: thread.getThreadLocal(Label.RepoMappingRecorder.class)
         let mut recorder = cx.repo_mapping_recorder();
         let label = Label::parse_with_package_context_recording(

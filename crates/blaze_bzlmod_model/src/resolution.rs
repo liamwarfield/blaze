@@ -309,8 +309,19 @@ impl BazelModuleResolutionFunction {
                 None => to_fetch.push((m.key.clone(), m.name.clone(), registry.get_url())),
             }
         }
-        // PORT: Java fills these from a HashMap of Skyframe keys; ImmutableMap.Builder then keeps
-        // that order. The order only affects which yanked module is reported first.
+        // PORT: java-hash-order. Java keeps the modules whose yanked versions must be downloaded
+        // in a `HashMap<ModuleKey, YankedVersionsValue.Key>` and appends them to the
+        // ImmutableMap.Builder in that map's iteration order. checkNoYankedVersions keeps the
+        // order, so it decides which yanked module is reported first and the order of
+        // `selectedYankedVersions`, which BazelLockFileModule writes to MODULE.bazel.lock as is
+        // (BazelLockFileModule.java:175; an ImmutableMap, not sorted on write).
+        let to_fetch = crate::java_hash::java_hash_map_order(
+            to_fetch
+                .into_iter()
+                .map(|(key, name, url)| (key.java_hash_code(), (key, name, url))),
+        );
+        // Java requests every YankedVersionsValue.Key at once (env.getValuesAndExceptions) and
+        // then reads the results in the map's order.
         for (key, name, url) in to_fetch {
             values.insert(key, lookup.get_yanked_versions(&name, &url));
         }

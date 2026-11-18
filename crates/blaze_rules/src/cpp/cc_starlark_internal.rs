@@ -33,13 +33,11 @@ use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::starlark_simple_value;
 use starlark::values::ValueLike;
-use starlark::values::dict::{AllocDict, DictRef};
+use starlark::values::dict::DictRef;
 use starlark::values::list::{AllocList, ListRef};
 use starlark::values::none::NoneType;
 use starlark::values::tuple::{AllocTuple, TupleRef, UnpackTuple};
-use starlark::values::{
-    FrozenHeap, FrozenValue, Heap, NoSerialize, StarlarkValue, Value, starlark_value,
-};
+use starlark::values::{Heap, NoSerialize, StarlarkValue, Value, starlark_value};
 
 use super::cc_artifact::to_actions_param_file_info;
 use super::cc_compilation_context::CcCompilationContext;
@@ -56,8 +54,8 @@ use super::starlark_values::{
 };
 use super::util::{
     allowlist_entry_allows, artifact_param, configuration_param, depset_cast_artifacts,
-    depset_noneable_cast_artifacts, errorf, is_sequence, java_hash_map_order,
-    null_if_none_artifact, sequence_cast_artifacts, sequence_cast_strings, sequence_elements,
+    depset_noneable_cast_artifacts, errorf, is_sequence, null_if_none_artifact,
+    sequence_cast_artifacts, sequence_cast_strings, sequence_elements,
 };
 use super::variables::{cast_vars, eval_error};
 use super::wrapped_action_factory::{
@@ -103,28 +101,25 @@ fn ctx_rule_context(
     }
 }
 
+/// An `ImmutableList<String>` / `StarlarkList.immutableCopyOf(...)` result: an immutable list
+/// (`Starlark.fromJava` wraps a Java `List` with `StarlarkList.immutableCopyOf`).
+// Java: net/starlark/java/eval/StarlarkList.java:168 StarlarkList.immutableCopyOf
 fn string_list<'v>(heap: Heap<'v>, items: &[String]) -> Value<'v> {
     let values: Vec<Value<'v>> = items.iter().map(|s| heap.alloc_str(s).to_value()).collect();
-    heap.alloc(AllocList(values))
+    starlark::values::list::alloc_immutable_list(heap, &values)
 }
 
 /// `TargetUtils.getExecutionInfo(rule, allowTagsPropagation)` in Java's iteration order
-/// (`ImmutableMap.copyOf` of a `HashMap`).
+/// (`ImmutableMap.copyOf` of a `HashMap` filled in `tags` order), which
+/// `CppCompileActionBuilder.addExecutionInfo` keeps in its `LinkedHashMap`
+/// (rules/cpp/CppCompileActionBuilder.java:71).
+// PORT: java-hash-order (see `crate::generic::target_utils`).
 // Java: com/google/devtools/build/lib/packages/TargetUtils.java:264 TargetUtils.getExecutionInfo
 fn target_execution_info(rule_context: &RuleContext) -> IndexMap<String, String> {
-    let tags = blaze_packages::target::target_utils::get_execution_info_with_propagation(
+    crate::generic::target_utils::get_execution_info_with_propagation(
         rule_context.get_rule(),
         rule_context.is_allow_tags_propagation(),
-    );
-    // PORT: java-hash-order. Rule tags are inserted in attribute order into a HashMap.
-    let keys: Vec<String> = tags.keys().cloned().collect();
-    java_hash_map_order(&keys)
-        .into_iter()
-        .map(|k| {
-            let v = tags[&k].clone();
-            (k, v)
-        })
-        .collect()
+    )
 }
 
 /// `Module.ofInnermostEnclosingStarlarkFunction(thread, depth)` and the allowlist check of
@@ -250,17 +245,30 @@ fn create_cpp_compile_action_builder<'v>(
 ) -> starlark::Result<CppCompileActionBuilder> {
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:84 CppCompileActionBuilder.<init>
     let mut action_owner = None;
+    // The execution platform of the owner (Java `owner.getExecutionPlatform()`), kept for
+    // `CppCompileAction.getExecutionOs`.
+    let mut execution_platform = None;
     if rule_context.use_auto_exec_groups() {
-        action_owner = rule_context.get_action_owner_for(
-            &blaze_cmdline::Label::parse_canonical_unchecked(toolchain_type).to_string(),
-        );
+        let exec_group =
+            blaze_cmdline::Label::parse_canonical_unchecked(toolchain_type).to_string();
+        action_owner = rule_context.get_action_owner_for(&exec_group);
+        if action_owner.is_some() {
+            execution_platform = rule_context.get_execution_platform_for(&exec_group);
+        }
     }
-    let owner = action_owner.unwrap_or_else(|| rule_context.get_action_owner());
+    let owner = match action_owner {
+        Some(owner) => owner,
+        None => {
+            execution_platform = rule_context.get_execution_platform();
+            rule_context.get_action_owner()
+        }
+    };
     let mut builder = CppCompileActionBuilder::new(
         owner,
         cc_toolchain_compile_data(cc_toolchain, heap),
         configuration,
     );
+    builder.set_execution_platform(execution_platform);
     builder
         .set_source_file(source_artifact)
         .set_cc_compilation_context(cc_compilation_context)
@@ -392,21 +400,6 @@ fn os_name(os: blaze_shell::util::os::OS) -> &'static str {
         OS::Windows => "WINDOWS",
         OS::Unknown => "UNKNOWN",
     }
-}
-
-/// A value as a frozen value, for an immutable copy: frozen values as they are, strings and
-/// `File`s (deeply immutable) re-allocated on the frozen heap; `None` for anything else.
-fn freeze_element(v: Value, frozen_heap: &FrozenHeap) -> Option<FrozenValue> {
-    if let Some(f) = v.unpack_frozen() {
-        return Some(f);
-    }
-    if let Some(s) = v.unpack_str() {
-        return Some(frozen_heap.alloc(s));
-    }
-    if let Some(f) = v.downcast_ref::<StarlarkFile>() {
-        return Some(frozen_heap.alloc(StarlarkFile::new(f.artifact().clone())));
-    }
-    None
 }
 
 /// Java `StarlarkList.immutableCopyOf(items)`.
@@ -621,15 +614,11 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
                 toolchain_config_info.get_type()
             )));
         };
-        // Java: CcToolchainConfigInfo.PROVIDER.wrap(ccToolchainConfigInfo)
-        // PORT: Java compares the provider key; Blaze compares the exported provider name.
+        // Java: `CcToolchainConfigInfo.PROVIDER.wrap(ccToolchainConfigInfo)` is
+        // `new CcToolchainConfigInfo((StarlarkInfo) value)`: the provider of the value is not
+        // checked (rules/cpp/CcToolchainConfigInfo.java:106); a value without the fields fails
+        // when `CcToolchainFeatures` reads them.
         let converted = to_cc_starlark_info(info);
-        if converted.provider_printable_name != "CcToolchainConfigInfo" {
-            return Err(errorf(format!(
-                "got value of type '{}', want 'CcToolchainConfigInfo'",
-                toolchain_config_info.get_type()
-            )));
-        }
         let features = body::cc_toolchain_features(Arc::new(converted), tools_directory)
             .map_err(eval_error)?;
         Ok(CcToolchainFeaturesValue(Arc::new(features)))
@@ -1149,22 +1138,10 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
     ) -> starlark::Result<Value<'v>> {
         let _ = this;
         let heap = eval.heap();
-        if let Some(dict) = DictRef::from_value(value) {
-            let entries: Vec<(Value<'v>, Value<'v>)> = dict.iter().collect();
-            // Java: Dict.immutableCopyOf(dict).
-            let frozen: Option<Vec<(FrozenValue, FrozenValue)>> = entries
-                .iter()
-                .map(|(k, v)| {
-                    Some((
-                        freeze_element(*k, eval.frozen_heap())?,
-                        freeze_element(*v, eval.frozen_heap())?,
-                    ))
-                })
-                .collect();
-            if let Some(frozen) = frozen {
-                return Ok(eval.frozen_heap().alloc(AllocDict(frozen)).to_value());
-            }
-            return Ok(heap.alloc(AllocDict(entries)));
+        if DictRef::from_value(value).is_some() {
+            // Java: Dict.immutableCopyOf(dict): an immutable dict of the same entries (the dict
+            // itself when it is already immutable); keys and values are not copied.
+            return blaze_starlark::dict::dict_immutable_copy_of(heap, value);
         }
         // Java `Iterable`: StarlarkList, Tuple, RangeList, StarlarkSet ->
         // StarlarkList.immutableCopyOf(iterable).
@@ -1439,11 +1416,13 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
         let _ = this;
         let flags = match flags {
             Some(f) => f,
-            None => return Ok(heap.alloc(AllocList(Vec::<Value<'v>>::new()))),
+            // Java: `defaultValue = "[]"`, the immutable empty list.
+            None => return Ok(string_list(heap, &[])),
         };
         let flag_strings = sequence_cast_strings(flags, attr, heap)?;
         if flag_strings.is_empty() {
-            return Ok(string_list(heap, &flag_strings));
+            // Java: `return Sequence.cast(flags, String.class, attributeName)`: `flags` itself.
+            return Ok(flags);
         }
         let Some(starlark_ctx) = starlark_rule_context_from_value(ctx) else {
             return Err(errorf(format!(

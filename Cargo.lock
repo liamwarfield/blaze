@@ -336,7 +336,6 @@ dependencies = [
  "starlark_syntax",
  "tempfile",
  "thiserror",
- "ureq",
  "uuid",
 ]
 
@@ -360,6 +359,7 @@ dependencies = [
 name = "blaze_cc_features"
 version = "0.1.0"
 dependencies = [
+ "blaze_actions",
  "blaze_cmdline",
  "blaze_collect",
  "blaze_util",
@@ -531,6 +531,7 @@ dependencies = [
  "blaze_config",
  "blaze_events",
  "blaze_optdefs",
+ "blaze_query_engine",
  "blaze_starlark",
  "blaze_util",
  "blaze_vfs",
@@ -820,6 +821,7 @@ dependencies = [
  "blaze_config",
  "blaze_events",
  "blaze_optdefs",
+ "blaze_options",
  "blaze_packages",
  "blaze_query_engine",
  "blaze_skyframe",
@@ -914,6 +916,7 @@ dependencies = [
  "blaze_protos",
  "hex",
  "md-5",
+ "sha1",
  "sha2",
 ]
 

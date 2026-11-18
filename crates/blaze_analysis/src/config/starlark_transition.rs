@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, LazyLock};
 
-use blaze_build_config::build_options::{BuildOptions, StarlarkOptionValue};
+use blaze_build_config::build_options::{BuildOptions, JavaCollectionClass, StarlarkOptionValue};
+use blaze_build_config::core_option_converters::BuildSettingConverter;
 use blaze_cmdline::Label;
 use blaze_cmdline::label_constants::COMMAND_LINE_OPTION_PACKAGE_IDENTIFIER;
 use blaze_events::{Event, EventHandler, ExtendedEventHandler, StoredEventHandler};
@@ -104,8 +105,10 @@ impl Key for StarlarkBuildSettingsDetailsKey {
 
 /// The `BuildOptions` form (Java object) of a build setting's attribute value.
 ///
-/// PORT: Java stores the attribute value object itself in the Starlark options map; Blaze's
-/// `BuildOptions` holds [`StarlarkOptionValue`]s, so the value is converted here.
+/// PORT: Java stores the attribute value object itself in the Starlark options map (a
+/// `Boolean`, `StarlarkInt`, `String`, `Label`, an interned `ImmutableList` or a `Set`); Blaze's
+/// `BuildOptions` holds [`StarlarkOptionValue`]s, so the value is converted here, keeping the
+/// Java class.
 pub fn attr_value_to_starlark_option(value: &AttrValue) -> StarlarkOptionValue {
     match value {
         AttrValue::Bool(b) => StarlarkOptionValue::Bool(*b),
@@ -113,13 +116,14 @@ pub fn attr_value_to_starlark_option(value: &AttrValue) -> StarlarkOptionValue {
         AttrValue::String(s) => StarlarkOptionValue::Str(s.clone()),
         AttrValue::Label(l) => StarlarkOptionValue::Label(l.clone()),
         AttrValue::StringList(l) => {
-            StarlarkOptionValue::List(l.iter().cloned().map(StarlarkOptionValue::Str).collect())
+            StarlarkOptionValue::list(l.iter().cloned().map(StarlarkOptionValue::Str).collect())
         }
+        // Java: com/google/devtools/build/lib/packages/Type.java:812 Type.SetType.convert (a Set).
         AttrValue::StringSet(l) => {
-            StarlarkOptionValue::List(l.iter().cloned().map(StarlarkOptionValue::Str).collect())
+            StarlarkOptionValue::set(l.iter().cloned().map(StarlarkOptionValue::Str).collect())
         }
         AttrValue::LabelList(l) => {
-            StarlarkOptionValue::List(l.iter().cloned().map(StarlarkOptionValue::Label).collect())
+            StarlarkOptionValue::list(l.iter().cloned().map(StarlarkOptionValue::Label).collect())
         }
         other => blaze_util::unported!(
             "StarlarkBuildSettingsDetailsFunction.compute",
@@ -129,46 +133,144 @@ pub fn attr_value_to_starlark_option(value: &AttrValue) -> StarlarkOptionValue {
     }
 }
 
-/// Java `type.convert(value, what)` for a value read from `BuildOptions.getStarlarkOptions()`.
+// Java: com/google/devtools/build/lib/analysis/config/CoreOptionConverters.java:76 CoreOptionConverters.BUILD_SETTING_CONVERTERS
+/// `BUILD_SETTING_CONVERTERS.get(type)`: the converter that parses the string form of a build
+/// setting of the given type (on the command line, in `config_setting(flag_values)`, in platform
+/// `flags`). `None` where the Java map has no entry.
+pub fn build_setting_converter(type_: Type) -> Option<BuildSettingConverter> {
+    match type_ {
+        Type::Integer => Some(BuildSettingConverter::StarlarkInt),
+        Type::Boolean => Some(BuildSettingConverter::Boolean),
+        Type::String => Some(BuildSettingConverter::String),
+        Type::StringList => Some(BuildSettingConverter::CommaSeparatedOptionList),
+        Type::StringSet => Some(BuildSettingConverter::StringSet),
+        Type::Label => Some(BuildSettingConverter::Label),
+        Type::LabelList => Some(BuildSettingConverter::LabelList),
+        Type::NodepLabel => Some(BuildSettingConverter::Label),
+        _ => None,
+    }
+}
+
+// Java: com/google/devtools/build/lib/packages/Type.java:297 Type.ConversionException.message
+fn conversion_exception(
+    expected: &str,
+    value: &StarlarkOptionValue,
+    what: &str,
+) -> TransitionException {
+    // Java: new TransitionException(e): the message is the ConversionException's toString(),
+    // which for an EvalException is its message.
+    TransitionException(format!(
+        "expected {} for {}, but got {} ({})",
+        expected,
+        what,
+        value.starlark_repr(),
+        starlark_type_of(value)
+    ))
+}
+
+// Java: com/google/devtools/build/lib/packages/Type.java:305 Type.ConversionException.<init>
+fn type_conversion_exception(
+    type_: Type,
+    value: &StarlarkOptionValue,
+    what: &str,
+) -> TransitionException {
+    conversion_exception(&format!("value of type '{}'", type_), value, what)
+}
+
+/// Java `type.convert(value, what)` (no label converter) for a value read from
+/// `BuildOptions.getStarlarkOptions()`. `what` is `what.toString()`: the setting's label, or
+/// `element <i> of <label>` for the elements of a collection.
 // Java: com/google/devtools/build/lib/packages/Type.java:84 Type.convert
 fn convert_starlark_option(
     type_: Type,
     value: &StarlarkOptionValue,
-    what: &Label,
+    what: &str,
 ) -> Result<StarlarkOptionValue, TransitionException> {
-    let type_error = |expected: &str| {
-        TransitionException(format!(
-            "expected value of type '{}' for {}, but got {} ({})",
-            expected,
-            what,
-            value.java_to_string(),
-            starlark_type_of(value)
-        ))
-    };
-    match (type_, value) {
-        (Type::Boolean, StarlarkOptionValue::Bool(_))
-        | (Type::Integer, StarlarkOptionValue::Int(_))
-        | (Type::String, StarlarkOptionValue::Str(_))
-        | (Type::Label | Type::NodepLabel, StarlarkOptionValue::Label(_)) => Ok(value.clone()),
-        (Type::Label | Type::NodepLabel, StarlarkOptionValue::Str(s)) => {
-            match Label::parse_canonical(s) {
-                Ok(l) => Ok(StarlarkOptionValue::Label(l)),
-                Err(e) => Err(TransitionException(e.to_string())),
-            }
-        }
-        (Type::StringList, StarlarkOptionValue::List(items)) => {
-            for item in items {
-                if !matches!(item, StarlarkOptionValue::Str(_)) {
-                    return Err(type_error("string"));
+    match type_ {
+        // Java: com/google/devtools/build/lib/packages/Type.java:356 Type.IntegerType.convert
+        Type::Integer => match value {
+            StarlarkOptionValue::Int(i) => {
+                // i.toIntUnchecked(): assert signed 32-bit
+                if i32::try_from(*i).is_err() {
+                    return Err(TransitionException(format!(
+                        "for {}, got {}, want value in signed 32-bit range",
+                        what, i
+                    )));
                 }
+                Ok(value.clone())
             }
-            Ok(value.clone())
+            _ => Err(type_conversion_exception(type_, value, what)),
+        },
+        // Java: com/google/devtools/build/lib/packages/Type.java:410 Type.BooleanType.convert
+        // Conversion to boolean must also tolerate integers of 0 and 1 only.
+        Type::Boolean => match value {
+            StarlarkOptionValue::Bool(_) => Ok(value.clone()),
+            StarlarkOptionValue::Int(0) => Ok(StarlarkOptionValue::Bool(false)),
+            StarlarkOptionValue::Int(1) => Ok(StarlarkOptionValue::Bool(true)),
+            _ => Err(conversion_exception(
+                "one of [False, True, 0, 1]",
+                value,
+                what,
+            )),
+        },
+        // Java: com/google/devtools/build/lib/packages/Type.java:469 Type.StringType.convert
+        Type::String | Type::StringNoIntern => match value {
+            StarlarkOptionValue::Str(_) => Ok(value.clone()),
+            _ => Err(type_conversion_exception(type_, value, what)),
+        },
+        // Java: com/google/devtools/build/lib/packages/BuildType.java:412 BuildType.LabelType.convert
+        Type::Label | Type::NodepLabel => match value {
+            StarlarkOptionValue::Label(_) => Ok(value.clone()),
+            StarlarkOptionValue::Str(s) => match Label::parse_canonical(s) {
+                Ok(l) => Ok(StarlarkOptionValue::Label(l)),
+                Err(e) => Err(TransitionException(format!(
+                    "invalid label '{}' in {}: {}",
+                    s,
+                    what,
+                    e.get_message()
+                ))),
+            },
+            _ => Err(type_conversion_exception(Type::String, value, what)),
+        },
+        // Java: com/google/devtools/build/lib/packages/Type.java:730 Type.ListType.convert
+        Type::StringList | Type::LabelList | Type::NodepLabelList => {
+            // x instanceof Iterable (every Java collection is one); the result is an ArrayList.
+            let StarlarkOptionValue::List(iterable) = value else {
+                return Err(type_conversion_exception(type_, value, what));
+            };
+            let elem_type = type_.get_list_element_type().expect("list element type");
+            let mut result = Vec::with_capacity(iterable.len());
+            for (index, elem) in iterable.iter().enumerate() {
+                // Java: com/google/devtools/build/lib/packages/Type.java:688 Type.CollectionType.ConversionContext.toString
+                let conversion_context = format!("element {} of {}", index, what);
+                result.push(convert_starlark_option(
+                    elem_type,
+                    elem,
+                    &conversion_context,
+                )?);
+            }
+            Ok(StarlarkOptionValue::list(result))
         }
-        (Type::Boolean, _) => Err(type_error("bool")),
-        (Type::Integer, _) => Err(type_error("int")),
-        (Type::String, _) => Err(type_error("string")),
-        (Type::StringList, _) => Err(type_error("list(string)")),
-        (other, _) => blaze_util::unported!(
+        // Java: com/google/devtools/build/lib/packages/Type.java:812 Type.SetType.convert
+        Type::StringSet => {
+            let set = match value {
+                StarlarkOptionValue::List(l) if l.class() == JavaCollectionClass::Set => l,
+                _ => return Err(type_conversion_exception(type_, value, what)),
+            };
+            let elem_type = type_.get_list_element_type().expect("set element type");
+            let mut result = Vec::with_capacity(set.len());
+            for (index, elem) in set.iter().enumerate() {
+                let conversion_context = format!("element {} of {}", index, what);
+                result.push(convert_starlark_option(
+                    elem_type,
+                    elem,
+                    &conversion_context,
+                )?);
+            }
+            // A LinkedHashSet.
+            Ok(StarlarkOptionValue::set(result))
+        }
+        other => blaze_util::unported!(
             "StarlarkTransition.validateAndCheckIfAtDefault",
             "build setting of type {}",
             other
@@ -176,13 +278,25 @@ fn convert_starlark_option(
     }
 }
 
+/// Java `Starlark.type(value)`.
+// Java: net/starlark/java/eval/Starlark.java:337 Starlark.classType
 fn starlark_type_of(value: &StarlarkOptionValue) -> &'static str {
     match value {
         StarlarkOptionValue::Bool(_) => "bool",
         StarlarkOptionValue::Int(_) => "int",
         StarlarkOptionValue::Str(_) => "string",
         StarlarkOptionValue::Label(_) => "Label",
-        StarlarkOptionValue::List(_) => "list",
+        StarlarkOptionValue::List(l) => match l.class() {
+            JavaCollectionClass::StarlarkList => "list",
+            JavaCollectionClass::Tuple => "tuple",
+            // Any class of java.util.List that isn't a Sequence.
+            JavaCollectionClass::List => "List",
+            // PORT: Starlark.classType prints the simple name of the concrete Set class
+            // (RegularImmutableSet, LinkedHashSet, ...), which is not tracked.
+            JavaCollectionClass::Set => {
+                blaze_util::unported!("Starlark.classType", "java.util.Set")
+            }
+        },
     }
 }
 
@@ -320,10 +434,22 @@ pub fn validate(
             // BuildOptions so that the transition can read them. We have to remove these
             // explicitly set value here to preserve the invariant that Starlark settings at
             // default values are not explicitly set in the BuildOptions.
-            let is_input_only_setting_at_default = input_only_settings
-                .contains(maybe_alias_setting)
-                && details.build_setting_to_default.get(setting)
-                    == options.get_starlark_options().get(setting);
+            // Java: details.buildSettingToDefault().get(setting).equals(
+            //     options.getStarlarkOptions().get(setting))
+            let is_input_only_setting_at_default =
+                input_only_settings.contains(maybe_alias_setting) && {
+                    let default = details
+                        .build_setting_to_default
+                        .get(setting)
+                        .unwrap_or_else(|| {
+                            panic!("NullPointerException: no default of {}", setting)
+                        });
+                    match options.get_starlark_options().get(setting) {
+                        Some(value) => default.java_equals(value),
+                        // equals(null)
+                        None => false,
+                    }
+                };
             // For output settings, the raw value returned by the transition first has to be
             // validated and converted to the proper type before it can be compared to the
             // default value.
@@ -390,27 +516,45 @@ fn validate_and_check_if_at_default(
         .get(setting)
         .expect("type of a build setting");
     let default = details.build_setting_to_default.get(setting);
+    let what = maybe_alias_setting.to_string();
     if allows_multiple {
         // if this setting allows multiple settings
-        let StarlarkOptionValue::List(raw_new_value_as_list) = new_value else {
-            return Err(TransitionException(format!(
-                "'{}' allows multiple values and must be set in transition using a starlark list instead of single value '{}'",
-                setting,
-                new_value.java_to_string()
-            )));
+        // Java: !(newValue instanceof List<?> rawNewValueAsList)
+        let raw_new_value_as_list = match new_value {
+            StarlarkOptionValue::List(l) if l.is_java_list() => l,
+            _ => {
+                return Err(TransitionException(format!(
+                    "'{}' allows multiple values and must be set in transition using a starlark list instead of single value '{}'",
+                    setting,
+                    new_value.java_to_string()
+                )));
+            }
         };
         let mut converted_value = Vec::new();
-        for value in raw_new_value_as_list {
-            converted_value.push(convert_starlark_option(type_, value, maybe_alias_setting)?);
+        for value in raw_new_value_as_list.iter() {
+            converted_value.push(convert_starlark_option(type_, value, &what)?);
         }
-        // Java: convertedValue.equals(ImmutableList.of(default)), where the details' default of
-        // an allow-multiple setting is already `ImmutableList.of(rawDefault)`.
-        let as_list = StarlarkOptionValue::List(converted_value);
-        Ok(default == Some(&as_list))
+        // Java: convertedValue.equals(ImmutableList.of(details.buildSettingToDefault()
+        //     .get(setting))).
+        // The details' default of an allow-multiple setting is already
+        // `ImmutableList.of(rawDefault)` (StarlarkBuildSettingsDetailsFunction.java:93), so the
+        // right-hand side is a one-element list whose element is that list: the comparison is
+        // only true if the converted value is a list containing exactly that list, which the
+        // element type (a string) never allows. A setting that allows multiple values therefore
+        // stays in the configuration even when a transition sets it to its default.
+        let converted_value = StarlarkOptionValue::list(converted_value);
+        let default = default.unwrap_or_else(|| {
+            panic!(
+                "NullPointerException: ImmutableList.of(null): no default of {}",
+                setting
+            )
+        });
+        Ok(converted_value.java_equals(&StarlarkOptionValue::list(vec![default.clone()])))
     } else {
         // if this setting does not allow multiple settings
-        let converted_value = convert_starlark_option(type_, new_value, maybe_alias_setting)?;
-        Ok(default == Some(&converted_value))
+        let converted_value = convert_starlark_option(type_, new_value, &what)?;
+        // Java: convertedValue.equals(details.buildSettingToDefault().get(setting))
+        Ok(default.is_some_and(|default| converted_value.java_equals(default)))
     }
 }
 
@@ -663,4 +807,159 @@ mod tests {
     #[test]
     #[ignore = "needs a Starlark transition fixture (StarlarkRuleTransitionProviderTest)"]
     fn test_aliased_build_setting_output_return_mismatch() {}
+
+    fn s(v: &str) -> StarlarkOptionValue {
+        StarlarkOptionValue::Str(v.to_string())
+    }
+
+    // Expected texts: the oracle's transcript of scripts/w4/scenarios/flags-transitions
+    // (steps 15 to 21): Type.ConversionException prints the value with repr and names the
+    // element of a list.
+    #[test]
+    fn conversion_error_texts() {
+        let err = |type_: Type, value: StarlarkOptionValue, what: &str| {
+            convert_starlark_option(type_, &value, what).unwrap_err().0
+        };
+        assert_eq!(
+            err(Type::Integer, s("abc"), "//:level"),
+            "expected value of type 'int' for //:level, but got \"abc\" (string)"
+        );
+        assert_eq!(
+            err(Type::Integer, StarlarkOptionValue::Bool(true), "//:level"),
+            "expected value of type 'int' for //:level, but got True (bool)"
+        );
+        assert_eq!(
+            err(
+                Type::StringList,
+                StarlarkOptionValue::starlark_list(vec![s("a"), StarlarkOptionValue::Int(1)]),
+                "//:copts"
+            ),
+            "expected value of type 'string' for element 1 of //:copts, but got 1 (int)"
+        );
+        assert_eq!(
+            err(Type::StringList, s("a"), "//:copts"),
+            "expected value of type 'list(string)' for //:copts, but got \"a\" (string)"
+        );
+        assert_eq!(
+            err(Type::Boolean, s("yes"), "//:enabled"),
+            "expected one of [False, True, 0, 1] for //:enabled, but got \"yes\" (string)"
+        );
+        assert_eq!(
+            err(Type::String, StarlarkOptionValue::Int(5), "//:mode"),
+            "expected value of type 'string' for //:mode, but got 5 (int)"
+        );
+    }
+
+    // Expected: the oracle accepts `0` for a bool setting (flags-transitions step 20), and the
+    // converted list of a string_list setting is a plain java.util.List.
+    #[test]
+    fn conversions() {
+        assert_eq!(
+            convert_starlark_option(Type::Boolean, &StarlarkOptionValue::Int(0), "//:enabled"),
+            Ok(StarlarkOptionValue::Bool(false))
+        );
+        assert_eq!(
+            convert_starlark_option(
+                Type::StringList,
+                &StarlarkOptionValue::starlark_list(vec![s("c0")]),
+                "//:copts"
+            ),
+            Ok(StarlarkOptionValue::list(vec![s("c0")]))
+        );
+    }
+
+    fn details_of(
+        setting: &Label,
+        default: StarlarkOptionValue,
+        type_: Type,
+        allows_multiple: bool,
+    ) -> StarlarkBuildSettingsDetailsValue {
+        let mut details = StarlarkBuildSettingsDetailsValue::empty();
+        details
+            .build_setting_to_default
+            .insert(setting.clone(), default);
+        details.build_setting_to_type.insert(setting.clone(), type_);
+        if allows_multiple {
+            details
+                .build_setting_is_allows_multiple
+                .insert(setting.clone());
+        }
+        details
+    }
+
+    fn at_default(
+        details: &StarlarkBuildSettingsDetailsValue,
+        setting: &Label,
+        value: StarlarkOptionValue,
+    ) -> Result<bool, TransitionException> {
+        let options = BuildOptions::builder()
+            .add_starlark_option(setting.clone(), value)
+            .build();
+        let settings: IndexSet<Label> = [setting.clone()].into_iter().collect();
+        validate_and_check_if_at_default(details, &options, setting, setting, &settings)
+    }
+
+    // Expected: flags-transitions step 7 (the oracle keeps `//:multi` in the configuration when
+    // a transition sets the allow_multiple setting to `["m0"]`, its default) and step 11.
+    #[test]
+    fn allow_multiple_setting_set_to_its_default_is_not_at_default() {
+        let setting = Label::parse_canonical_unchecked("//:multi");
+        // StarlarkBuildSettingsDetailsFunction: ImmutableList.of(rawDefault).
+        let details = details_of(
+            &setting,
+            StarlarkOptionValue::list(vec![s("m0")]),
+            Type::String,
+            true,
+        );
+        assert_eq!(
+            at_default(
+                &details,
+                &setting,
+                StarlarkOptionValue::starlark_list(vec![s("m0")])
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            at_default(&details, &setting, s("a")),
+            Err(TransitionException(
+                "'//:multi' allows multiple values and must be set in transition using a starlark list instead of single value 'a'"
+                    .to_string()
+            ))
+        );
+    }
+
+    // Expected: flags-transitions steps 4 and 14 (a transition that sets a setting to its default
+    // gives the configuration without the setting).
+    #[test]
+    fn setting_set_to_its_default_is_at_default() {
+        let copts = Label::parse_canonical_unchecked("//:copts");
+        let details = details_of(
+            &copts,
+            StarlarkOptionValue::list(vec![s("c0")]),
+            Type::StringList,
+            false,
+        );
+        assert_eq!(
+            at_default(
+                &details,
+                &copts,
+                StarlarkOptionValue::starlark_list(vec![s("c0")])
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            at_default(
+                &details,
+                &copts,
+                StarlarkOptionValue::starlark_list(vec![s("-DX")])
+            ),
+            Ok(false)
+        );
+        let level = Label::parse_canonical_unchecked("//:level");
+        let details = details_of(&level, StarlarkOptionValue::Int(1), Type::Integer, false);
+        assert_eq!(
+            at_default(&details, &level, StarlarkOptionValue::Int(1)),
+            Ok(true)
+        );
+    }
 }

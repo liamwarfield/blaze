@@ -25,4 +25,5 @@ pub mod commands;
 pub mod fragment_options;
 pub mod local_resources;
 pub mod server_log;
+pub mod starlark_options_parser;
 pub mod version_info;

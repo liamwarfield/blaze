@@ -280,6 +280,7 @@ pub fn get_env(name: &str) -> String {
         if result.is_null() {
             String::new()
         } else {
+            // PORT: byte-strings (C++ GetEnv returns the value's raw bytes).
             CStr::from_ptr(result).to_string_lossy().into_owned()
         }
     }
@@ -555,6 +556,7 @@ pub fn acquire_lock(
         let new_owner = read_owner_information(fd, name);
         if new_owner != owner {
             owner = new_owner;
+            // PORT: byte-strings (C++ prints the lock file's owner bytes unchanged).
             bazel_log(
                 LogLevel::User,
                 BLAZE_UTIL_POSIX_CC,
@@ -603,8 +605,11 @@ pub fn release_lock(lock_handle: LockHandle) {
 
 // Java: src/main/cpp/blaze_util_posix.cc:763 KillServerProcess
 pub fn kill_server_process(pid: i32, _output_base: &Path) -> bool {
-    // PORT: the in-process server never leaves a server process behind; killing a process found
-    // through a stale pid file (e.g. one written by a real Bazel server) is not ported.
+    // PORT: not ported on purpose, and no longer called by the client. The in-process server
+    // never leaves a server process behind, so a live process found through server.pid.txt is
+    // another tool's server (a real Bazel server sharing the output base). The C++ kills it
+    // (killpg(pid, SIGKILL), then AwaitServerProcessTermination); Blaze refuses to run instead
+    // (blaze.rs, find_live_foreign_server).
     ::blaze_util::unported!("KillServerProcess", "pid={}", pid)
 }
 
@@ -634,6 +639,7 @@ pub fn get_user_name() -> String {
                 ),
             );
         }
+        // PORT: byte-strings (C++ returns pw_name's raw bytes).
         CStr::from_ptr((*pwent).pw_name)
             .to_string_lossy()
             .into_owned()
@@ -788,6 +794,7 @@ pub fn get_cache_dir() -> String {
                 let uid = libc::getuid();
                 let r = libc::getpwuid_r(uid, &mut pwbuf, buf.as_mut_ptr(), 2048, &mut pw);
                 if r == 0 && !pw.is_null() {
+                    // PORT: byte-strings (C++ keeps pw_dir's raw bytes).
                     home = CStr::from_ptr((*pw).pw_dir).to_string_lossy().into_owned();
                 } else {
                     return "/tmp".to_string();
@@ -943,6 +950,7 @@ pub fn get_system_javabase() -> String {
 fn get_start_time(pid: &str) -> Option<String> {
     let statfile = format!("/proc/{}/stat", pid);
     let statline = read_file(&statfile, 0)?;
+    // PORT: byte-strings (C++ splits the raw bytes of /proc/<pid>/stat; comm may not be UTF-8).
     let statline = String::from_utf8_lossy(&statline).into_owned();
     let stat_entries: Vec<&str> = statline.split(' ').collect();
     if stat_entries.len() < 22 {
@@ -1018,6 +1026,7 @@ pub fn get_self_path(_argv0: &str) -> String {
         );
     }
     buffer.truncate(bytes as usize);
+    // PORT: byte-strings (C++ returns the readlink result's raw bytes).
     String::from_utf8_lossy(&buffer).into_owned()
 }
 
@@ -1032,6 +1041,7 @@ pub fn get_processed_env() -> Vec<String> {
     unsafe {
         let mut env = environ;
         while !env.is_null() && !(*env).is_null() {
+            // PORT: byte-strings (C++ keeps each environ entry's raw bytes).
             processed_env.push(CStr::from_ptr(*env).to_string_lossy().into_owned());
             env = env.add(1);
         }

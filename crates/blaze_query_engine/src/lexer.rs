@@ -219,13 +219,11 @@ impl<'a> Lexer<'a> {
             let c = self.byte_at(self.pos);
             self.pos += 1;
             match c {
-                b'\'' | b'"' => {
-                    if c == quot {
-                        // close-quote, all done.
-                        return Ok(Token::of_word(
-                            self.buffer_slice(old_pos + 1, self.pos - 1).to_owned(),
-                        ));
-                    }
+                b'\'' | b'"' if c == quot => {
+                    // close-quote, all done.
+                    return Ok(Token::of_word(
+                        self.buffer_slice(old_pos + 1, self.pos - 1).to_owned(),
+                    ));
                 }
                 _ => {}
             }

@@ -144,8 +144,13 @@ impl ParameterFileWriteAction {
         let mut out: Vec<u8> = Vec::new();
         parameter_file::write_parameter_file(&mut out, self.get_arguments()?, self.type_)
             .expect("writing to a byte array cannot fail");
-        // PORT: StringEncoding identity; Java decodes the bytes as ISO_8859_1 (internal form).
-        Ok(String::from_utf8(out).expect("parameter file contents are UTF-8"))
+        // Java: `new String(out.toByteArray(), ISO_8859_1)`. The bytes are
+        // `internal_string_bytes` of the arguments, so this cannot fail.
+        Ok(
+            blaze_util::string_encoding::internal_string_from_bytes(&out)
+                .expect("parameter file contents came from strings")
+                .into_owned(),
+        )
     }
 
     /// Returns `None` where Java returns null; an error carries the `EvalException` message.
@@ -285,25 +290,49 @@ impl AbstractFileWriteAction for ParameterFileWriteAction {
     fn new_deterministic_writer(
         &self,
     ) -> Result<Box<dyn DeterministicWriter + '_>, NewDeterministicWriterError> {
+        // PORT: the trait method has no `ActionExecutionContext` (see
+        // `AbstractFileWriteAction::new_deterministic_writer`). Without tree artifact inputs the
+        // provider is never consulted for tree metadata, so the expansion runs without one. With
+        // inputs the caller must hand over the context's provider through
+        // `new_deterministic_writer_with_input_metadata_provider`.
+        if !self.get_inputs().is_empty() {
+            unported!("ActionExecutionContext.getInputMetadataProvider");
+        }
+        self.deterministic_writer(None)
+    }
+}
+
+impl ParameterFileWriteAction {
+    /// `newDeterministicWriter(ctx)` with `ctx.getInputMetadataProvider()`: tree artifacts in the
+    /// command line are expanded to the children the provider gives.
+    // Java: com/google/devtools/build/lib/analysis/actions/ParameterFileWriteAction.java:196 ParameterFileWriteAction.newDeterministicWriter
+    pub fn new_deterministic_writer_with_input_metadata_provider(
+        &self,
+        input_metadata_provider: &dyn InputMetadataProvider,
+    ) -> Result<Box<dyn DeterministicWriter + '_>, NewDeterministicWriterError> {
+        self.deterministic_writer(Some(input_metadata_provider))
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/actions/ParameterFileWriteAction.java:196 ParameterFileWriteAction.newDeterministicWriter
+    fn deterministic_writer(
+        &self,
+        input_metadata_provider: Option<&dyn InputMetadataProvider>,
+    ) -> Result<Box<dyn DeterministicWriter + '_>, NewDeterministicWriterError> {
         // Other actions consuming this parameter file may have path mapping disabled due to
         // inputs conflicting across configurations, in which case paths written to the file will
         // not match. Since this depends on the consumer but the decision is only made at
         // execution time, it is not clear how to improve that situation. Actions that are prone to
         // such collisions should avoid depending on parameter files.
-        //
-        // PORT: Java reads `ctx.getInputMetadataProvider()`; the execution context is not ported
-        // (wave W6). Without tree artifact inputs the provider is never consulted for tree
-        // metadata, so the expansion runs without one; with inputs it is `unported!`.
-        if !self.get_inputs().is_empty() {
-            unported!("ActionExecutionContext.getInputMetadataProvider");
-        }
         let path_mapper = path_mappers::create(
             self,
             self.get_output_paths_mode(),
             /* is_starlark_action= */ false,
             None,
         );
-        let arguments = match self.command_line.expand(None, path_mapper.as_ref()) {
+        let arguments = match self
+            .command_line
+            .expand(input_metadata_provider, path_mapper.as_ref())
+        {
             Ok(a) => a,
             Err(MapFnError::CommandLineExpansion(e)) => {
                 // Java: UserExecException with Code.COMMAND_LINE_EXPANSION_FAILURE.

@@ -9,6 +9,8 @@ pub mod query_adapters;
 use std::sync::Arc;
 
 use blaze_events::{Event, ExtendedEventHandler};
+use blaze_optdefs::command::analysis_options::AnalysisOptions;
+use blaze_optdefs::command::common_command_options::CommonCommandOptions;
 use blaze_optdefs::command::keep_going_option::KeepGoingOption;
 use blaze_optdefs::command::loading_phase_threads_option::LoadingPhaseThreadsOption;
 use blaze_options::OptionsParser;
@@ -41,8 +43,33 @@ pub struct PostAnalysisCommandEnvironment<'a> {
     pub working_directory: Path,
     /// `env.getRuntime().getProductName()`.
     pub product_name: String,
+    /// `runtime.getStartupOptionsProvider().getOptions(BlazeServerStartupOptions.class).batch`.
+    pub batch: bool,
     /// The command's options.
     pub options: &'a OptionsParser,
+}
+
+/// `env.getSkyframeExecutor().tracksStateForIncrementality()`: the `trackIncrementalState`
+/// `SequencedSkyframeExecutor.decideKeepIncrementalState` sets for the command.
+///
+/// PORT: blaze_sky_top's `SkyframeExecutor` does not keep this state (`decideKeepIncrementalState`
+/// and its warnings belong to the dispatcher); the value is computed from the same options here.
+// Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:399 SequencedSkyframeExecutor.decideKeepIncrementalState
+pub(crate) fn tracks_state_for_incrementality(env: &PostAnalysisCommandEnvironment<'_>) -> bool {
+    let should_track_incremental_state = env
+        .options
+        .get_options::<CommonCommandOptions>()
+        .expect("CommonCommandOptions")
+        .track_incremental_state;
+    let discard_analysis_cache = env
+        .options
+        .get_options::<AnalysisOptions>()
+        .expect("AnalysisOptions")
+        .discard_analysis_cache;
+    // First check if the incrementality state should be kept around during the build.
+    let explicitly_requested_no_incremental_data = !should_track_incremental_state;
+    let implicitly_requested_no_incremental_data = env.batch && discard_analysis_cache;
+    !explicitly_requested_no_incremental_data && !implicitly_requested_no_incremental_data
 }
 
 /// The main repository mapping as the post-analysis commands compute it, or the command's
@@ -116,10 +143,21 @@ pub(crate) fn read_query(
         let residue_path = env
             .working_directory
             .get_relative(&PathFragment::create(query_options.query_file()));
-        // PORT: InputFileEvent is not posted (event bus).
+        // PORT: skipped, Google-internal: InputFileEvent ("query_file", size) has no subscriber
+        // in Bazel.
         match std::fs::read(residue_path.get_path_string()) {
-            // new String(bytes, ISO_8859_1): PORT: StringEncoding identity (UTF-8 internally).
-            Ok(bytes) => query = String::from_utf8_lossy(&bytes).into_owned(),
+            // new String(bytes, ISO_8859_1): the internal string form (Latin-1 characters holding
+            // the file's bytes). PORT: StringEncoding identity for UTF-8 content. A Rust String
+            // cannot hold other bytes, and replacing them would change the query silently.
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(content) => query = content,
+                Err(e) => blaze_util::unported!(
+                    "QueryOptionHelper.readQuery",
+                    "--query_file {} is not valid UTF-8 ({})",
+                    residue_path.get_path_string(),
+                    e.utf8_error()
+                ),
+            },
             Err(_) => {
                 return Err(QueryException::new(
                     None,

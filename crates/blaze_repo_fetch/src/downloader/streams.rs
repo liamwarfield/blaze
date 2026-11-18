@@ -265,7 +265,18 @@ pub struct CheckContentLengthInputStream {
     actual_size: i64,
 }
 
+/// Whether `e` is the transport's report of a response body that ended before its
+/// `Content-Length` (`io::ErrorKind::UnexpectedEof`, which `From<io::Error>` turns into
+/// [`IoExceptionKind::EOFException`]).
+///
+/// PORT: no JDK stream below `CheckContentLengthInputStream` throws `EOFException` (a short
+/// fixed-length body ends with -1), so the kind identifies the transport's report.
+fn is_short_body(e: &IoException) -> bool {
+    e.kind == IoExceptionKind::EOFException
+}
+
 impl CheckContentLengthInputStream {
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/CheckContentLengthInputStream.java:31 CheckContentLengthInputStream.<init>
     pub fn new(delegate: Box<dyn InputStream>, expected_size: i64) -> Self {
         CheckContentLengthInputStream {
             delegate,
@@ -274,6 +285,7 @@ impl CheckContentLengthInputStream {
         }
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/CheckContentLengthInputStream.java:69 CheckContentLengthInputStream.checkContentLength
     fn check_content_length(&self) -> Result<(), IoException> {
         if self.actual_size != self.expected_size {
             // Java: com/google/devtools/build/lib/bazel/repository/downloader/ContentLengthMismatchException.java:25 ContentLengthMismatchException.<init>
@@ -290,8 +302,19 @@ impl CheckContentLengthInputStream {
 }
 
 impl InputStream for CheckContentLengthInputStream {
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/CheckContentLengthInputStream.java:48 CheckContentLengthInputStream.read
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, IoException> {
-        let amount = self.delegate.read(buf)?;
+        let amount = match self.delegate.read(buf) {
+            Ok(amount) => amount,
+            // PORT: a body that ends before its Content-Length is a normal end of stream for
+            // HttpURLConnection (`sun.net.www.MeteredStream.read` hands on the socket's -1), so
+            // Java reaches `checkContentLength()` here and throws
+            // ContentLengthMismatchException with the bytes read so far, which
+            // `DownloadManager.shouldRetryDownload` retries. The Rust transport (ureq) reports
+            // the same condition as an `UnexpectedEof` error instead; it is the end of stream.
+            Err(e) if is_short_body(&e) => 0,
+            Err(e) => return Err(e),
+        };
         if amount == 0 && !buf.is_empty() {
             self.check_content_length()?;
         } else {
@@ -323,6 +346,8 @@ pub struct RetryingInputStream {
     toto: i64,
     resumes: i32,
     suppressed: Vec<IoException>,
+    /// See [`RetryingInputStream::with_fixed_length_body`].
+    fixed_length_body: bool,
 }
 
 impl RetryingInputStream {
@@ -333,7 +358,21 @@ impl RetryingInputStream {
             toto: 0,
             resumes: 0,
             suppressed: Vec::new(),
+            fixed_length_body: false,
         }
+    }
+
+    /// Marks the response as having a `Content-Length`, for a stream that is wrapped in a
+    /// [`CheckContentLengthInputStream`].
+    ///
+    /// PORT: with HttpURLConnection a fixed-length body that ends early is a normal end of
+    /// stream, so Java's `RetryingInputStream` sees no exception and does not reconnect; the
+    /// `CheckContentLengthInputStream` above it throws. The Rust transport reports the short
+    /// body as an error (see `is_short_body`), which this stream then hands on unchanged instead
+    /// of resuming with a `Range` request.
+    pub fn with_fixed_length_body(mut self) -> Self {
+        self.fixed_length_body = true;
+        self
     }
 
     fn propagate(&self, mut error: IoException) -> IoException {
@@ -402,6 +441,8 @@ impl InputStream for RetryingInputStream {
                     self.toto += amount as i64;
                     return Ok(amount);
                 }
+                // PORT: see `with_fixed_length_body`.
+                Err(e) if self.fixed_length_body && is_short_body(&e) => return Err(e),
                 Err(e) => self.try_again_if_possible(e)?,
             }
         }

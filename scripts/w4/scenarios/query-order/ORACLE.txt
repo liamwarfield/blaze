@@ -1,0 +1,752 @@
+=== 1: run cquery "deps(//...)" --output=label_kind
+exit 0
+alias rule //:mid_alias (a7a71fd)
+filegroup rule //a:all_a (a7a71fd)
+lib rule //a:x (a7a71fd)
+lib rule //a:y (a7a71fd)
+lib rule //b/c:leaf (a7a71fd)
+tool rule //tools:tool (a7a71fd)
+lib rule //a:z (a7a71fd)
+genrule rule //:gen (a7a71fd)
+lib rule //:base (a7a71fd)
+lib rule //:mid (a7a71fd)
+config_setting rule //:opt (a7a71fd)
+alias rule //:mid_alias (e722a21)
+lib rule //:sel (a7a71fd)
+filegroup rule //:texts (a7a71fd)
+tool rule //tools:tool (04bf134)
+lib rule //a:unused (a7a71fd)
+lib rule //:top (a7a71fd)
+lib rule //b/c:twig (a7a71fd)
+source file //:six.txt (null)
+source file //b/c:leaf.txt (null)
+source file //:one.txt (null)
+source file //:two.txt (null)
+alias rule @bazel_tools//tools:host_platform (3030ed4)
+source file //:three.txt (null)
+source file //:eight.txt (null)
+platform rule @@platforms//host:host (3030ed4)
+source file //b/c:twig.txt (null)
+source file //:four.txt (null)
+source file //a:u.txt (null)
+source file @bazel_tools//tools/genrule:genrule-setup.sh (null)
+source file //a:y2.txt (null)
+source file //a:z.txt (null)
+source file //:seven.txt (null)
+source file //a:x.txt (null)
+source file //a:y1.txt (null)
+constraint_value rule @@platforms//os:linux (3030ed4)
+constraint_value rule @@platforms//cpu:x86_64 (3030ed4)
+constraint_setting rule @@platforms//cpu:cpu (3030ed4)
+constraint_setting rule @@platforms//os:os (3030ed4)
+INFO: Build completed successfully, 0 total actions
+=== 2: run cquery "deps(//:top, 1)" --output=label_kind
+exit 0
+lib rule //:top (a7a71fd)
+lib rule //a:x (a7a71fd)
+lib rule //a:y (a7a71fd)
+genrule rule //:gen (a7a71fd)
+alias rule @bazel_tools//tools:host_platform (3030ed4)
+lib rule //:sel (a7a71fd)
+source file //:eight.txt (null)
+tool rule //tools:tool (04bf134)
+platform rule @@platforms//host:host (3030ed4)
+INFO: Build completed successfully, 0 total actions
+=== 3: run cquery "deps(//:top, 2)" --output=label
+exit 0
+//:top (a7a71fd)
+//a:x (a7a71fd)
+//a:y (a7a71fd)
+//:gen (a7a71fd)
+@bazel_tools//tools:host_platform (3030ed4)
+//:sel (a7a71fd)
+//:eight.txt (null)
+//tools:tool (04bf134)
+@@platforms//host:host (3030ed4)
+//:six.txt (null)
+//:mid_alias (a7a71fd)
+@@platforms//os:linux (3030ed4)
+//a:z (a7a71fd)
+@bazel_tools//tools/genrule:genrule-setup.sh (null)
+@@platforms//cpu:x86_64 (3030ed4)
+//a:y2.txt (null)
+//:opt (a7a71fd)
+//:seven.txt (null)
+//a:x.txt (null)
+//b/c:twig (a7a71fd)
+//a:y1.txt (null)
+INFO: Build completed successfully, 0 total actions
+=== 4: run cquery "//... + //a:all" --output=label_kind
+exit 0
+filegroup rule //a:all_a (a7a71fd)
+lib rule //a:unused (a7a71fd)
+lib rule //a:x (a7a71fd)
+lib rule //a:y (a7a71fd)
+lib rule //a:z (a7a71fd)
+lib rule //b/c:leaf (a7a71fd)
+lib rule //b/c:twig (a7a71fd)
+tool rule //tools:tool (04bf134)
+tool rule //tools:tool (a7a71fd)
+lib rule //:base (a7a71fd)
+genrule rule //:gen (a7a71fd)
+lib rule //:mid (a7a71fd)
+alias rule //:mid_alias (a7a71fd)
+alias rule //:mid_alias (e722a21)
+config_setting rule //:opt (a7a71fd)
+lib rule //:sel (a7a71fd)
+filegroup rule //:texts (a7a71fd)
+lib rule //:top (a7a71fd)
+INFO: Build completed successfully, 0 total actions
+=== 5: run cquery "deps(//:top) except deps(//a:all_a)" --output=label_kind
+exit 0
+alias rule //:mid_alias (a7a71fd)
+source file //:six.txt (null)
+source file //:one.txt (null)
+source file //:two.txt (null)
+lib rule //:base (a7a71fd)
+lib rule //:mid (a7a71fd)
+config_setting rule //:opt (a7a71fd)
+lib rule //:sel (a7a71fd)
+source file //:three.txt (null)
+source file //:eight.txt (null)
+source file //:four.txt (null)
+genrule rule //:gen (a7a71fd)
+source file @bazel_tools//tools/genrule:genrule-setup.sh (null)
+source file //:seven.txt (null)
+filegroup rule //:texts (a7a71fd)
+lib rule //:top (a7a71fd)
+INFO: Build completed successfully, 0 total actions
+=== 6: run cquery "kind('source file', deps(//:top))" --output=label_kind
+exit 0
+source file //:eight.txt (null)
+source file //:six.txt (null)
+source file @bazel_tools//tools/genrule:genrule-setup.sh (null)
+source file //a:y2.txt (null)
+source file //:seven.txt (null)
+source file //a:x.txt (null)
+source file //a:y1.txt (null)
+source file //b/c:leaf.txt (null)
+source file //a:z.txt (null)
+source file //b/c:twig.txt (null)
+source file //:four.txt (null)
+source file //:one.txt (null)
+source file //:two.txt (null)
+source file //:three.txt (null)
+INFO: Build completed successfully, 0 total actions
+=== 7: run cquery "deps(//:top)" --noimplicit_deps --output=label_kind
+exit 0
+lib rule //:top (a7a71fd)
+lib rule //a:x (a7a71fd)
+lib rule //a:y (a7a71fd)
+genrule rule //:gen (a7a71fd)
+lib rule //:sel (a7a71fd)
+source file //:eight.txt (null)
+source file //:six.txt (null)
+alias rule //:mid_alias (a7a71fd)
+lib rule //a:z (a7a71fd)
+source file //a:y2.txt (null)
+config_setting rule //:opt (a7a71fd)
+source file //:seven.txt (null)
+source file //a:x.txt (null)
+tool rule //tools:tool (04bf134)
+lib rule //b/c:twig (a7a71fd)
+source file //a:y1.txt (null)
+source file //b/c:leaf.txt (null)
+lib rule //b/c:leaf (a7a71fd)
+lib rule //:mid (a7a71fd)
+source file //a:z.txt (null)
+source file //b/c:twig.txt (null)
+lib rule //:base (a7a71fd)
+source file //:four.txt (null)
+filegroup rule //:texts (a7a71fd)
+source file //:one.txt (null)
+source file //:two.txt (null)
+source file //:three.txt (null)
+INFO: Build completed successfully, 0 total actions
+=== 8: run cquery "deps(//:top)" --notool_deps --output=label_kind
+exit 0
+lib rule //:top (a7a71fd)
+lib rule //a:x (a7a71fd)
+lib rule //a:y (a7a71fd)
+genrule rule //:gen (a7a71fd)
+alias rule @bazel_tools//tools:host_platform (3030ed4)
+lib rule //:sel (a7a71fd)
+source file //:eight.txt (null)
+platform rule @@platforms//host:host (3030ed4)
+source file //:six.txt (null)
+alias rule //:mid_alias (a7a71fd)
+constraint_value rule @@platforms//os:linux (3030ed4)
+lib rule //a:z (a7a71fd)
+source file @bazel_tools//tools/genrule:genrule-setup.sh (null)
+constraint_value rule @@platforms//cpu:x86_64 (3030ed4)
+source file //a:y2.txt (null)
+config_setting rule //:opt (a7a71fd)
+source file //:seven.txt (null)
+source file //a:x.txt (null)
+lib rule //b/c:twig (a7a71fd)
+source file //a:y1.txt (null)
+source file //b/c:leaf.txt (null)
+lib rule //b/c:leaf (a7a71fd)
+constraint_setting rule @@platforms//cpu:cpu (3030ed4)
+lib rule //:mid (a7a71fd)
+source file //a:z.txt (null)
+constraint_setting rule @@platforms//os:os (3030ed4)
+source file //b/c:twig.txt (null)
+lib rule //:base (a7a71fd)
+source file //:four.txt (null)
+filegroup rule //:texts (a7a71fd)
+source file //:one.txt (null)
+source file //:two.txt (null)
+source file //:three.txt (null)
+INFO: Build completed successfully, 0 total actions
+=== 9: run cquery "deps(//:top)" --noimplicit_deps --notool_deps --output=label_kind
+exit 0
+lib rule //:top (a7a71fd)
+lib rule //a:x (a7a71fd)
+lib rule //a:y (a7a71fd)
+genrule rule //:gen (a7a71fd)
+lib rule //:sel (a7a71fd)
+source file //:eight.txt (null)
+source file //:six.txt (null)
+alias rule //:mid_alias (a7a71fd)
+lib rule //a:z (a7a71fd)
+source file //a:y2.txt (null)
+config_setting rule //:opt (a7a71fd)
+source file //:seven.txt (null)
+source file //a:x.txt (null)
+lib rule //b/c:twig (a7a71fd)
+source file //a:y1.txt (null)
+source file //b/c:leaf.txt (null)
+lib rule //b/c:leaf (a7a71fd)
+lib rule //:mid (a7a71fd)
+source file //a:z.txt (null)
+source file //b/c:twig.txt (null)
+lib rule //:base (a7a71fd)
+source file //:four.txt (null)
+filegroup rule //:texts (a7a71fd)
+source file //:one.txt (null)
+source file //:two.txt (null)
+source file //:three.txt (null)
+INFO: Build completed successfully, 0 total actions
+=== 10: run cquery "somepath(//:top, //b/c:leaf)" --output=label_kind
+exit 0
+lib rule //:top (a7a71fd)
+lib rule //:sel (a7a71fd)
+alias rule //:mid_alias (a7a71fd)
+lib rule //:mid (a7a71fd)
+lib rule //b/c:leaf (a7a71fd)
+INFO: Build completed successfully, 0 total actions
+=== 11: run cquery "//a:all" --output=jsonproto --noproto:include_configurations --proto:output_rule_attrs=name,srcs,deps
+exit 0
+{
+  "target": [{
+    "type": "RULE",
+    "rule": {
+      "name": "//a:all_a",
+      "ruleClass": "filegroup",
+      "location": "<WS>/a/BUILD.bazel:34:10",
+      "attribute": [{
+        "name": "name",
+        "type": "STRING",
+        "stringValue": "all_a",
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "srcs",
+        "type": "LABEL_LIST",
+        "stringListValue": ["//a:unused", "//a:x", "//a:y"],
+        "explicitlySpecified": true,
+        "nodep": false
+      }],
+      "ruleInput": ["//a:unused", "//a:x", "//a:y"]
+    }
+  }, {
+    "type": "RULE",
+    "rule": {
+      "name": "//a:unused",
+      "ruleClass": "lib",
+      "location": "<WS>/a/BUILD.bazel:29:4",
+      "attribute": [{
+        "name": "deps",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "name",
+        "type": "STRING",
+        "stringValue": "unused",
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "srcs",
+        "type": "LABEL_LIST",
+        "stringListValue": ["//a:u.txt"],
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "$rule_implementation_hash",
+        "type": "STRING",
+        "stringValue": "a6a6acb76193bf13e36032e83f321d0d42cf5c9dbaf3c933b3e60bfae4b1ca36"
+      }],
+      "ruleInput": ["//a:u.txt", "//tools:tool"]
+    }
+  }, {
+    "type": "RULE",
+    "rule": {
+      "name": "//a:x",
+      "ruleClass": "lib",
+      "location": "<WS>/a/BUILD.bazel:5:4",
+      "attribute": [{
+        "name": "deps",
+        "type": "LABEL_LIST",
+        "stringListValue": ["//a:z", "//b/c:twig"],
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "name",
+        "type": "STRING",
+        "stringValue": "x",
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "srcs",
+        "type": "LABEL_LIST",
+        "stringListValue": ["//a:x.txt"],
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "$rule_implementation_hash",
+        "type": "STRING",
+        "stringValue": "a6a6acb76193bf13e36032e83f321d0d42cf5c9dbaf3c933b3e60bfae4b1ca36"
+      }],
+      "ruleInput": ["//a:x.txt", "//a:z", "//b/c:twig", "//tools:tool"]
+    }
+  }, {
+    "type": "RULE",
+    "rule": {
+      "name": "//a:y",
+      "ruleClass": "lib",
+      "location": "<WS>/a/BUILD.bazel:14:4",
+      "attribute": [{
+        "name": "deps",
+        "type": "LABEL_LIST",
+        "stringListValue": ["//a:z"],
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "name",
+        "type": "STRING",
+        "stringValue": "y",
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "srcs",
+        "type": "LABEL_LIST",
+        "stringListValue": ["//a:y1.txt", "//a:y2.txt"],
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "$rule_implementation_hash",
+        "type": "STRING",
+        "stringValue": "a6a6acb76193bf13e36032e83f321d0d42cf5c9dbaf3c933b3e60bfae4b1ca36"
+      }],
+      "ruleInput": ["//a:y1.txt", "//a:y2.txt", "//a:z", "//tools:tool"]
+    }
+  }, {
+    "type": "RULE",
+    "rule": {
+      "name": "//a:z",
+      "ruleClass": "lib",
+      "location": "<WS>/a/BUILD.bazel:23:4",
+      "attribute": [{
+        "name": "deps",
+        "type": "LABEL_LIST",
+        "stringListValue": ["//b/c:leaf"],
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "name",
+        "type": "STRING",
+        "stringValue": "z",
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "srcs",
+        "type": "LABEL_LIST",
+        "stringListValue": ["//a:z.txt"],
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "$rule_implementation_hash",
+        "type": "STRING",
+        "stringValue": "a6a6acb76193bf13e36032e83f321d0d42cf5c9dbaf3c933b3e60bfae4b1ca36"
+      }],
+      "ruleInput": ["//a:z.txt", "//b/c:leaf", "//tools:tool"]
+    }
+  }]
+}
+INFO: Build completed successfully, 0 total actions
+=== 12: aquery "deps(//...)"
+exit 0
+{"actionKey": "788b2408cbacc34967eb453df47569847f027ae2779418941bd8cfd8cc418758", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/a/x.txt", "", "a/x.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["a/x.txt", "bazel-out/k8-fastbuild/bin/a/z.txt", "bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-fastbuild/bin/b/c/twig.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/a/x.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/x.txt", "ruleClass": "lib", "target": "//a:x"}
+{"actionKey": "a3a165cd43660538eafb433cb734761b60ab17050a8cc9d74d8cbad1f8948a98", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/a/y.txt", "", "a/y1.txt", "a/y2.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["a/y1.txt", "a/y2.txt", "bazel-out/k8-fastbuild/bin/a/z.txt", "bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/a/y.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/y.txt", "ruleClass": "lib", "target": "//a:y"}
+{"actionKey": "ac1e900f27199f5914b6346eafd78d4d6c402d7fb7a5988c9fd9c08e155b005f", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "", "b/c/leaf.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["b/c/leaf.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/b/c/leaf.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "ruleClass": "lib", "target": "//b/c:leaf"}
+{"actionKey": "bcefa6c554bf95c48eb66cf3a79680d08ac7bb2b559507c4a112fbec203e555a", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "#!/bin/sh\ncat \"$@\"\n", "inputs": [], "isExecutable": true, "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/tools/tool.sh"], "primaryOutput": "bazel-out/k8-fastbuild/bin/tools/tool.sh", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "946174e1ca015465aeabda07c21689ffe616d7e32d5ae3be67fc75ec774a9817", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": ",query_order,_main\n", "inputs": [], "mnemonic": "RepoMappingManifest", "outputs": ["bazel-out/k8-fastbuild/bin/tools/tool.sh.repo_mapping"], "primaryOutput": "bazel-out/k8-fastbuild/bin/tools/tool.sh.repo_mapping", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "<path-dependent>", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "_main/tools/tool.sh <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin/tools/tool.sh\n_repo_mapping <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin/tools/tool.sh.repo_mapping\n", "inputs": [], "mnemonic": "SourceSymlinkManifest", "outputs": ["bazel-out/k8-fastbuild/bin/tools/tool.sh.runfiles_manifest"], "primaryOutput": "bazel-out/k8-fastbuild/bin/tools/tool.sh.runfiles_manifest", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "be50c27653dd2d4d1e203aea9c57ef64828cc0b2326b40c29caf5d8db919fea2", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/tools/tool.sh.runfiles_manifest"], "mnemonic": "SymlinkTree", "outputs": ["bazel-out/k8-fastbuild/bin/tools/tool.sh.runfiles/MANIFEST"], "primaryOutput": "bazel-out/k8-fastbuild/bin/tools/tool.sh.runfiles/MANIFEST", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "64524680ae352918974e5de22f89166472d4f41ef8c12369e8c62a2141413139", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/tools/tool.sh", "bazel-out/k8-fastbuild/bin/tools/tool.sh.repo_mapping", "bazel-out/k8-fastbuild/bin/tools/tool.sh.runfiles/MANIFEST"], "mnemonic": "RunfilesTree", "outputs": ["bazel-out/k8-fastbuild/bin/tools/tool.sh.runfiles"], "primaryOutput": "bazel-out/k8-fastbuild/bin/tools/tool.sh.runfiles", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "ed094409acfe46a788e5be45456d54a45d93c89d8e1f11bc14250d86ab20c505", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/a/z.txt", "", "a/z.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["a/z.txt", "bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/a/z.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/z.txt", "ruleClass": "lib", "target": "//a:z"}
+{"actionKey": "cc210e9cd16c836ad5033801d0751a13de64b0af81b781b0408875c9421627d6", "argv": ["/bin/bash", "-c", "source external/bazel_tools/tools/genrule/genrule-setup.sh; bazel-out/k8-opt-exec/bin/tools/tool.sh bazel-out/k8-fastbuild/bin/base.txt bazel-out/k8-fastbuild/bin/b/c/leaf.txt bazel-out/k8-fastbuild/bin/mid.txt bazel-out/k8-fastbuild/bin/sel.txt seven.txt > bazel-out/k8-fastbuild/bin/gen.out"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {"PATH": "/bin:/usr/bin:/usr/local/bin"}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-fastbuild/bin/base.txt", "bazel-out/k8-fastbuild/bin/mid.txt", "bazel-out/k8-fastbuild/bin/sel.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles", "external/bazel_tools/tools/genrule/genrule-setup.sh", "seven.txt"], "mnemonic": "Genrule", "outputs": ["bazel-out/k8-fastbuild/bin/gen.out"], "primaryOutput": "bazel-out/k8-fastbuild/bin/gen.out", "ruleClass": "genrule", "target": "//:gen"}
+{"actionKey": "ae80f0306a41b5c6edff9094edde7d6409b039b3fb2b862cdd3a8f172eee0da1", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/base.txt", "", "one.txt", "three.txt", "two.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles", "one.txt", "three.txt", "two.txt"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/base.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/base.txt", "ruleClass": "lib", "target": "//:base"}
+{"actionKey": "bd3850a06fa03b2ee4bbbb48081d79ce67c0d506890639066f6b4a5fd49e821e", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/mid.txt", "", "four.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-fastbuild/bin/base.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles", "four.txt"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/mid.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/mid.txt", "ruleClass": "lib", "target": "//:mid"}
+{"actionKey": "3b73e6325355c1ec351659454603393aef44786839a3aa9a54a3022e8fef2db2", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/sel.txt", "", "six.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-fastbuild/bin/base.txt", "bazel-out/k8-fastbuild/bin/mid.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles", "six.txt"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/sel.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/sel.txt", "ruleClass": "lib", "target": "//:sel"}
+{"actionKey": "bcefa6c554bf95c48eb66cf3a79680d08ac7bb2b559507c4a112fbec203e555a", "argv": [], "aspects": [], "configuration": {"checksum": "04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067", "isTool": true, "mnemonic": "k8-opt-exec", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "#!/bin/sh\ncat \"$@\"\n", "inputs": [], "isExecutable": true, "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh"], "primaryOutput": "bazel-out/k8-opt-exec/bin/tools/tool.sh", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "946174e1ca015465aeabda07c21689ffe616d7e32d5ae3be67fc75ec774a9817", "argv": [], "aspects": [], "configuration": {"checksum": "04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067", "isTool": true, "mnemonic": "k8-opt-exec", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": ",query_order,_main\n", "inputs": [], "mnemonic": "RepoMappingManifest", "outputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh.repo_mapping"], "primaryOutput": "bazel-out/k8-opt-exec/bin/tools/tool.sh.repo_mapping", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "<path-dependent>", "argv": [], "aspects": [], "configuration": {"checksum": "04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067", "isTool": true, "mnemonic": "k8-opt-exec", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "_main/tools/tool.sh <OUTPUT_BASE>/execroot/_main/bazel-out/k8-opt-exec/bin/tools/tool.sh\n_repo_mapping <OUTPUT_BASE>/execroot/_main/bazel-out/k8-opt-exec/bin/tools/tool.sh.repo_mapping\n", "inputs": [], "mnemonic": "SourceSymlinkManifest", "outputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles_manifest"], "primaryOutput": "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles_manifest", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "a425358db35387ccb13b873bcd561936180707191f1bf7ab19f113ae96e52414", "argv": [], "aspects": [], "configuration": {"checksum": "04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067", "isTool": true, "mnemonic": "k8-opt-exec", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles_manifest"], "mnemonic": "SymlinkTree", "outputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles/MANIFEST"], "primaryOutput": "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles/MANIFEST", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "64524680ae352918974e5de22f89166472d4f41ef8c12369e8c62a2141413139", "argv": [], "aspects": [], "configuration": {"checksum": "04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067", "isTool": true, "mnemonic": "k8-opt-exec", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.repo_mapping", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles/MANIFEST"], "mnemonic": "RunfilesTree", "outputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "primaryOutput": "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "05a46b2ba384746dba714e97eb0466b2de57ac390330bd0eeb73f0474c355a05", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/a/unused.txt", "", "a/u.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["a/u.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/a/unused.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/unused.txt", "ruleClass": "lib", "target": "//a:unused"}
+{"actionKey": "ad91e688358672f5c5d08794b133a4a9c5a233c2cec57df195d640a449612c71", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/top.txt", "", "eight.txt", "bazel-out/k8-fastbuild/bin/gen.out"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/a/x.txt", "bazel-out/k8-fastbuild/bin/a/y.txt", "bazel-out/k8-fastbuild/bin/a/z.txt", "bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-fastbuild/bin/b/c/twig.txt", "bazel-out/k8-fastbuild/bin/base.txt", "bazel-out/k8-fastbuild/bin/gen.out", "bazel-out/k8-fastbuild/bin/mid.txt", "bazel-out/k8-fastbuild/bin/sel.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles", "eight.txt"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/top.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/top.txt", "ruleClass": "lib", "target": "//:top"}
+{"actionKey": "18d7907786b3dce925d6cd434faafbe4f6ffc58d427de2313114884c474eb698", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/b/c/twig.txt", "", "b/c/twig.txt", "b/c/leaf.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["b/c/leaf.txt", "b/c/twig.txt", "bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/b/c/twig.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/b/c/twig.txt", "ruleClass": "lib", "target": "//b/c:twig"}
+INFO: Build completed successfully, 0 total actions
+=== 13: aquery "deps(//:top)" --noimplicit_deps
+exit 0
+{"actionKey": "ad91e688358672f5c5d08794b133a4a9c5a233c2cec57df195d640a449612c71", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/top.txt", "", "eight.txt", "bazel-out/k8-fastbuild/bin/gen.out"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/a/x.txt", "bazel-out/k8-fastbuild/bin/a/y.txt", "bazel-out/k8-fastbuild/bin/a/z.txt", "bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-fastbuild/bin/b/c/twig.txt", "bazel-out/k8-fastbuild/bin/base.txt", "bazel-out/k8-fastbuild/bin/gen.out", "bazel-out/k8-fastbuild/bin/mid.txt", "bazel-out/k8-fastbuild/bin/sel.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles", "eight.txt"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/top.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/top.txt", "ruleClass": "lib", "target": "//:top"}
+{"actionKey": "788b2408cbacc34967eb453df47569847f027ae2779418941bd8cfd8cc418758", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/a/x.txt", "", "a/x.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["a/x.txt", "bazel-out/k8-fastbuild/bin/a/z.txt", "bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-fastbuild/bin/b/c/twig.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/a/x.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/x.txt", "ruleClass": "lib", "target": "//a:x"}
+{"actionKey": "a3a165cd43660538eafb433cb734761b60ab17050a8cc9d74d8cbad1f8948a98", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/a/y.txt", "", "a/y1.txt", "a/y2.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["a/y1.txt", "a/y2.txt", "bazel-out/k8-fastbuild/bin/a/z.txt", "bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/a/y.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/y.txt", "ruleClass": "lib", "target": "//a:y"}
+{"actionKey": "cc210e9cd16c836ad5033801d0751a13de64b0af81b781b0408875c9421627d6", "argv": ["/bin/bash", "-c", "source external/bazel_tools/tools/genrule/genrule-setup.sh; bazel-out/k8-opt-exec/bin/tools/tool.sh bazel-out/k8-fastbuild/bin/base.txt bazel-out/k8-fastbuild/bin/b/c/leaf.txt bazel-out/k8-fastbuild/bin/mid.txt bazel-out/k8-fastbuild/bin/sel.txt seven.txt > bazel-out/k8-fastbuild/bin/gen.out"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {"PATH": "/bin:/usr/bin:/usr/local/bin"}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-fastbuild/bin/base.txt", "bazel-out/k8-fastbuild/bin/mid.txt", "bazel-out/k8-fastbuild/bin/sel.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles", "external/bazel_tools/tools/genrule/genrule-setup.sh", "seven.txt"], "mnemonic": "Genrule", "outputs": ["bazel-out/k8-fastbuild/bin/gen.out"], "primaryOutput": "bazel-out/k8-fastbuild/bin/gen.out", "ruleClass": "genrule", "target": "//:gen"}
+{"actionKey": "3b73e6325355c1ec351659454603393aef44786839a3aa9a54a3022e8fef2db2", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/sel.txt", "", "six.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-fastbuild/bin/base.txt", "bazel-out/k8-fastbuild/bin/mid.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles", "six.txt"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/sel.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/sel.txt", "ruleClass": "lib", "target": "//:sel"}
+{"actionKey": "ed094409acfe46a788e5be45456d54a45d93c89d8e1f11bc14250d86ab20c505", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/a/z.txt", "", "a/z.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["a/z.txt", "bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/a/z.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/z.txt", "ruleClass": "lib", "target": "//a:z"}
+{"actionKey": "bcefa6c554bf95c48eb66cf3a79680d08ac7bb2b559507c4a112fbec203e555a", "argv": [], "aspects": [], "configuration": {"checksum": "04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067", "isTool": true, "mnemonic": "k8-opt-exec", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "#!/bin/sh\ncat \"$@\"\n", "inputs": [], "isExecutable": true, "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh"], "primaryOutput": "bazel-out/k8-opt-exec/bin/tools/tool.sh", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "946174e1ca015465aeabda07c21689ffe616d7e32d5ae3be67fc75ec774a9817", "argv": [], "aspects": [], "configuration": {"checksum": "04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067", "isTool": true, "mnemonic": "k8-opt-exec", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": ",query_order,_main\n", "inputs": [], "mnemonic": "RepoMappingManifest", "outputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh.repo_mapping"], "primaryOutput": "bazel-out/k8-opt-exec/bin/tools/tool.sh.repo_mapping", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "<path-dependent>", "argv": [], "aspects": [], "configuration": {"checksum": "04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067", "isTool": true, "mnemonic": "k8-opt-exec", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "_main/tools/tool.sh <OUTPUT_BASE>/execroot/_main/bazel-out/k8-opt-exec/bin/tools/tool.sh\n_repo_mapping <OUTPUT_BASE>/execroot/_main/bazel-out/k8-opt-exec/bin/tools/tool.sh.repo_mapping\n", "inputs": [], "mnemonic": "SourceSymlinkManifest", "outputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles_manifest"], "primaryOutput": "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles_manifest", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "a425358db35387ccb13b873bcd561936180707191f1bf7ab19f113ae96e52414", "argv": [], "aspects": [], "configuration": {"checksum": "04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067", "isTool": true, "mnemonic": "k8-opt-exec", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles_manifest"], "mnemonic": "SymlinkTree", "outputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles/MANIFEST"], "primaryOutput": "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles/MANIFEST", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "64524680ae352918974e5de22f89166472d4f41ef8c12369e8c62a2141413139", "argv": [], "aspects": [], "configuration": {"checksum": "04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067", "isTool": true, "mnemonic": "k8-opt-exec", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.repo_mapping", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles/MANIFEST"], "mnemonic": "RunfilesTree", "outputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "primaryOutput": "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles", "ruleClass": "tool", "target": "//tools:tool"}
+{"actionKey": "18d7907786b3dce925d6cd434faafbe4f6ffc58d427de2313114884c474eb698", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/b/c/twig.txt", "", "b/c/twig.txt", "b/c/leaf.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["b/c/leaf.txt", "b/c/twig.txt", "bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/b/c/twig.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/b/c/twig.txt", "ruleClass": "lib", "target": "//b/c:twig"}
+{"actionKey": "ac1e900f27199f5914b6346eafd78d4d6c402d7fb7a5988c9fd9c08e155b005f", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "", "b/c/leaf.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["b/c/leaf.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/b/c/leaf.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "ruleClass": "lib", "target": "//b/c:leaf"}
+{"actionKey": "bd3850a06fa03b2ee4bbbb48081d79ce67c0d506890639066f6b4a5fd49e821e", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/mid.txt", "", "four.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "bazel-out/k8-fastbuild/bin/base.txt", "bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles", "four.txt"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/mid.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/mid.txt", "ruleClass": "lib", "target": "//:mid"}
+{"actionKey": "ae80f0306a41b5c6edff9094edde7d6409b039b3fb2b862cdd3a8f172eee0da1", "argv": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" > bazel-out/k8-fastbuild/bin/base.txt", "", "one.txt", "three.txt", "two.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-opt-exec/bin/tools/tool.sh", "bazel-out/k8-opt-exec/bin/tools/tool.sh.runfiles", "one.txt", "three.txt", "two.txt"], "mnemonic": "Lib", "outputs": ["bazel-out/k8-fastbuild/bin/base.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/base.txt", "ruleClass": "lib", "target": "//:base"}
+INFO: Build completed successfully, 0 total actions
+=== 14: run aquery "deps(//a:x)" --output=jsonproto
+exit 0
+{
+  "artifacts": [{
+    "id": 1,
+    "pathFragmentId": 1
+  }, {
+    "id": 2,
+    "pathFragmentId": 7
+  }, {
+    "id": 3,
+    "pathFragmentId": 9
+  }, {
+    "id": 4,
+    "pathFragmentId": 10
+  }, {
+    "id": 5,
+    "pathFragmentId": 12
+  }, {
+    "id": 6,
+    "pathFragmentId": 16
+  }, {
+    "id": 7,
+    "pathFragmentId": 17
+  }, {
+    "id": 8,
+    "pathFragmentId": 18
+  }, {
+    "id": 9,
+    "pathFragmentId": 19
+  }, {
+    "id": 10,
+    "pathFragmentId": 20
+  }, {
+    "id": 11,
+    "pathFragmentId": 21
+  }, {
+    "id": 12,
+    "pathFragmentId": 22
+  }, {
+    "id": 13,
+    "pathFragmentId": 25
+  }],
+  "actions": [{
+    "targetId": 1,
+    "actionKey": "788b2408cbacc34967eb453df47569847f027ae2779418941bd8cfd8cc418758",
+    "mnemonic": "Lib",
+    "configurationId": 1,
+    "arguments": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" \u003e bazel-out/k8-fastbuild/bin/a/x.txt", "", "a/x.txt"],
+    "inputDepSetIds": [1],
+    "outputIds": [7],
+    "primaryOutputId": 7,
+    "executionPlatform": "@@platforms//host:host"
+  }, {
+    "targetId": 2,
+    "actionKey": "ed094409acfe46a788e5be45456d54a45d93c89d8e1f11bc14250d86ab20c505",
+    "mnemonic": "Lib",
+    "configurationId": 1,
+    "arguments": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" \u003e bazel-out/k8-fastbuild/bin/a/z.txt", "", "a/z.txt"],
+    "inputDepSetIds": [7],
+    "outputIds": [2],
+    "primaryOutputId": 2,
+    "executionPlatform": "@@platforms//host:host"
+  }, {
+    "targetId": 3,
+    "actionKey": "bcefa6c554bf95c48eb66cf3a79680d08ac7bb2b559507c4a112fbec203e555a",
+    "mnemonic": "FileWrite",
+    "configurationId": 2,
+    "outputIds": [5],
+    "primaryOutputId": 5,
+    "executionPlatform": "@@platforms//host:host",
+    "isExecutable": true
+  }, {
+    "targetId": 3,
+    "actionKey": "946174e1ca015465aeabda07c21689ffe616d7e32d5ae3be67fc75ec774a9817",
+    "mnemonic": "RepoMappingManifest",
+    "configurationId": 2,
+    "outputIds": [9],
+    "primaryOutputId": 9,
+    "executionPlatform": "@@platforms//host:host"
+  }, {
+    "targetId": 3,
+    "actionKey": "7fc026ea1d3ac8df8a9e053558fbd87372c348f5d5d99f7ddf4396b8c6555459",
+    "mnemonic": "SourceSymlinkManifest",
+    "configurationId": 2,
+    "outputIds": [10],
+    "primaryOutputId": 10,
+    "executionPlatform": "@@platforms//host:host"
+  }, {
+    "targetId": 3,
+    "actionKey": "a425358db35387ccb13b873bcd561936180707191f1bf7ab19f113ae96e52414",
+    "mnemonic": "SymlinkTree",
+    "configurationId": 2,
+    "inputDepSetIds": [10],
+    "outputIds": [11],
+    "primaryOutputId": 11,
+    "executionPlatform": "@@platforms//host:host"
+  }, {
+    "targetId": 3,
+    "actionKey": "64524680ae352918974e5de22f89166472d4f41ef8c12369e8c62a2141413139",
+    "mnemonic": "RunfilesTree",
+    "configurationId": 2,
+    "inputDepSetIds": [11],
+    "outputIds": [6],
+    "primaryOutputId": 6,
+    "executionPlatform": "@@platforms//host:host"
+  }, {
+    "targetId": 4,
+    "actionKey": "18d7907786b3dce925d6cd434faafbe4f6ffc58d427de2313114884c474eb698",
+    "mnemonic": "Lib",
+    "configurationId": 1,
+    "arguments": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" \u003e bazel-out/k8-fastbuild/bin/b/c/twig.txt", "", "b/c/twig.txt", "b/c/leaf.txt"],
+    "inputDepSetIds": [12],
+    "outputIds": [3],
+    "primaryOutputId": 3,
+    "executionPlatform": "@@platforms//host:host"
+  }, {
+    "targetId": 5,
+    "actionKey": "ac1e900f27199f5914b6346eafd78d4d6c402d7fb7a5988c9fd9c08e155b005f",
+    "mnemonic": "Lib",
+    "configurationId": 1,
+    "arguments": ["/bin/bash", "-c", "bazel-out/k8-opt-exec/bin/tools/tool.sh \"$@\" \u003e bazel-out/k8-fastbuild/bin/b/c/leaf.txt", "", "b/c/leaf.txt"],
+    "inputDepSetIds": [15],
+    "outputIds": [1],
+    "primaryOutputId": 1,
+    "executionPlatform": "@@platforms//host:host"
+  }],
+  "targets": [{
+    "id": 1,
+    "label": "//a:x",
+    "ruleClassId": 1
+  }, {
+    "id": 2,
+    "label": "//a:z",
+    "ruleClassId": 1
+  }, {
+    "id": 3,
+    "label": "//tools:tool",
+    "ruleClassId": 2
+  }, {
+    "id": 4,
+    "label": "//b/c:twig",
+    "ruleClassId": 1
+  }, {
+    "id": 5,
+    "label": "//b/c:leaf",
+    "ruleClassId": 1
+  }],
+  "depSetOfFiles": [{
+    "id": 3,
+    "directArtifactIds": [1, 2]
+  }, {
+    "id": 4,
+    "directArtifactIds": [1, 3]
+  }, {
+    "id": 2,
+    "transitiveDepSetIds": [3, 4],
+    "directArtifactIds": [4]
+  }, {
+    "id": 6,
+    "directArtifactIds": [5, 6]
+  }, {
+    "id": 5,
+    "transitiveDepSetIds": [6],
+    "directArtifactIds": [5]
+  }, {
+    "id": 1,
+    "transitiveDepSetIds": [2, 5]
+  }, {
+    "id": 8,
+    "directArtifactIds": [1, 8]
+  }, {
+    "id": 9,
+    "transitiveDepSetIds": [6],
+    "directArtifactIds": [5]
+  }, {
+    "id": 7,
+    "transitiveDepSetIds": [8, 9]
+  }, {
+    "id": 10,
+    "directArtifactIds": [10]
+  }, {
+    "id": 11,
+    "directArtifactIds": [5, 11, 9]
+  }, {
+    "id": 13,
+    "directArtifactIds": [1, 12, 13]
+  }, {
+    "id": 14,
+    "transitiveDepSetIds": [6],
+    "directArtifactIds": [5]
+  }, {
+    "id": 12,
+    "transitiveDepSetIds": [13, 14]
+  }, {
+    "id": 16,
+    "transitiveDepSetIds": [6],
+    "directArtifactIds": [5]
+  }, {
+    "id": 15,
+    "transitiveDepSetIds": [16],
+    "directArtifactIds": [13]
+  }],
+  "configuration": [{
+    "id": 1,
+    "mnemonic": "k8-fastbuild",
+    "platformName": "k8",
+    "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+  }, {
+    "id": 2,
+    "mnemonic": "k8-opt-exec",
+    "platformName": "k8",
+    "checksum": "04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067",
+    "isTool": true
+  }],
+  "ruleClasses": [{
+    "id": 1,
+    "name": "lib"
+  }, {
+    "id": 2,
+    "name": "tool"
+  }],
+  "pathFragments": [{
+    "id": 6,
+    "label": "bazel-out"
+  }, {
+    "id": 5,
+    "label": "k8-fastbuild",
+    "parentId": 6
+  }, {
+    "id": 4,
+    "label": "bin",
+    "parentId": 5
+  }, {
+    "id": 3,
+    "label": "b",
+    "parentId": 4
+  }, {
+    "id": 2,
+    "label": "c",
+    "parentId": 3
+  }, {
+    "id": 1,
+    "label": "leaf.txt",
+    "parentId": 2
+  }, {
+    "id": 8,
+    "label": "a",
+    "parentId": 4
+  }, {
+    "id": 7,
+    "label": "z.txt",
+    "parentId": 8
+  }, {
+    "id": 9,
+    "label": "twig.txt",
+    "parentId": 2
+  }, {
+    "id": 11,
+    "label": "a"
+  }, {
+    "id": 10,
+    "label": "x.txt",
+    "parentId": 11
+  }, {
+    "id": 15,
+    "label": "k8-opt-exec",
+    "parentId": 6
+  }, {
+    "id": 14,
+    "label": "bin",
+    "parentId": 15
+  }, {
+    "id": 13,
+    "label": "tools",
+    "parentId": 14
+  }, {
+    "id": 12,
+    "label": "tool.sh",
+    "parentId": 13
+  }, {
+    "id": 16,
+    "label": "tool.sh.runfiles",
+    "parentId": 13
+  }, {
+    "id": 17,
+    "label": "x.txt",
+    "parentId": 8
+  }, {
+    "id": 18,
+    "label": "z.txt",
+    "parentId": 11
+  }, {
+    "id": 19,
+    "label": "tool.sh.repo_mapping",
+    "parentId": 13
+  }, {
+    "id": 20,
+    "label": "tool.sh.runfiles_manifest",
+    "parentId": 13
+  }, {
+    "id": 21,
+    "label": "MANIFEST",
+    "parentId": 16
+  }, {
+    "id": 24,
+    "label": "b"
+  }, {
+    "id": 23,
+    "label": "c",
+    "parentId": 24
+  }, {
+    "id": 22,
+    "label": "twig.txt",
+    "parentId": 23
+  }, {
+    "id": 25,
+    "label": "leaf.txt",
+    "parentId": 23
+  }]
+}
+INFO: Build completed successfully, 0 total actions

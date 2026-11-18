@@ -211,7 +211,7 @@ impl RepoMappingManifestAction {
     /// `newDeterministicWriter()`: writes the manifest.
     // Java: com/google/devtools/build/lib/analysis/RepoMappingManifestAction.java:176 RepoMappingManifestAction.newDeterministicWriter
     // PORT: the writer body is this method; Java's PrintWriter over ISO-8859-1 writes the
-    // internal strings' bytes (StringEncoding identity).
+    // internal strings' bytes (`string_encoding::internal_string_bytes`).
     pub fn write_contents(&self, out: &mut dyn Write) -> io::Result<()> {
         let mut writer = io::BufWriter::new(out);
 
@@ -321,13 +321,12 @@ impl RepoMappingManifestAction {
         } else {
             target_canonical_name.get_name()
         };
-        writer.write_all(
-            format!(
+        writer.write_all(&blaze_util::string_encoding::internal_string_bytes(
+            &format!(
                 "{},{},{}\n",
                 source, target_apparent_name, target_repo_directory_name
-            )
-            .as_bytes(),
-        )
+            ),
+        ))
     }
 }
 
@@ -495,8 +494,10 @@ impl FileContentsProvider for RepoMappingManifestAction {
     fn get_file_contents(&self) -> Result<String, io::Error> {
         let mut stream: Vec<u8> = Vec::new();
         self.write_contents(&mut stream)?;
-        // PORT: StringEncoding identity; ISO-8859-1 decoding of the internal bytes.
-        String::from_utf8(stream).map_err(io::Error::other)
+        // Java: `stream.toString(ISO_8859_1)`.
+        blaze_util::string_encoding::internal_string_from_bytes(&stream)
+            .map(|s| s.into_owned())
+            .map_err(io::Error::other)
     }
 
     // Java: com/google/devtools/build/lib/analysis/actions/AbstractFileWriteAction.java:55 AbstractFileWriteAction.makeExecutable

@@ -1,0 +1,6 @@
+load(":vars.bzl", "my_vars")
+
+my_vars(
+    name = "vars",
+    visibility = ["//visibility:public"],
+)

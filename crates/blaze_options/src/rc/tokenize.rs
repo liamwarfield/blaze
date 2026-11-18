@@ -67,6 +67,7 @@ fn get_next_token(s: &[u8], comment: u8, iter: &mut usize, words: &mut Vec<Strin
         }
     }
     if !output.is_empty() {
+        // PORT: byte-strings (C++ Tokenize pushes the token's raw bytes).
         words.push(String::from_utf8_lossy(&output).into_owned());
     }
     *iter = last;

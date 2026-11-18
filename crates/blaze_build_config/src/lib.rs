@@ -8,14 +8,20 @@
 
 #![allow(clippy::too_many_arguments, clippy::new_without_default)]
 // Ported control flow keeps Java's branch structure (identical branches, nested ifs).
-#![allow(clippy::if_same_then_else, clippy::collapsible_if, clippy::type_complexity)]
+#![allow(
+    clippy::if_same_then_else,
+    clippy::collapsible_if,
+    clippy::type_complexity
+)]
 
 pub mod action_environment;
 pub mod bazel_rule_class_provider;
 pub mod build_configuration_key;
 pub mod build_configuration_value;
 pub mod build_options;
+pub mod build_options_scope_value;
 pub mod config_output;
+pub mod core_option_converters;
 pub mod flag_aliases;
 pub mod fragment;
 pub mod fragment_options_class;

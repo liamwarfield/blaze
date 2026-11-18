@@ -1,0 +1,36 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+# `tags` is an order-independent attribute: Bazel sorts its value when the rule is created
+# (BuildType.convertFromBuildLangType), so both orders below give the same execution info. Both
+# tags land in one bucket of the Java HashMap TargetUtils.getExecutionInfo fills.
+cc_library(
+    name = "remote_exec_first",
+    srcs = ["x.cc"],
+    tags = ["no-remote-exec", "no-remote"],
+)
+
+cc_library(
+    name = "remote_first",
+    srcs = ["x.cc"],
+    tags = ["no-remote", "no-remote-exec"],
+)
+
+# "exclusive" is not a legal execution info key; "no-cache" is.
+cc_library(
+    name = "cache_exclusive",
+    srcs = ["x.cc"],
+    tags = ["no-cache", "exclusive"],
+)
+
+cc_library(
+    name = "sandbox_asan",
+    srcs = ["x.cc"],
+    tags = ["no-sandbox", "no-asan"],
+)
+
+# Different buckets: bucket order, not sorted order.
+cc_library(
+    name = "sandbox_network",
+    srcs = ["x.cc"],
+    tags = ["no-sandbox", "requires-network", "no-sandbox"],
+)

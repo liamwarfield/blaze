@@ -4,14 +4,17 @@
 //! Getters read the provider fields on demand from the (live or frozen) Starlark value, with
 //! Java's `Structure.getValue(name, type)` errors.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use blaze_actions::Artifact;
 use blaze_actions::analysis::starlark::starlark_file::artifact_from_value;
 use blaze_cc_features::cc_toolchain_features::CcToolchainFeatures;
+use blaze_cmdline::Label;
 use blaze_collect::NestedSet;
+use blaze_packages::rule_class::ProviderKey;
+use blaze_packages::starlark_defs::provider::{StarlarkProvider, provider_view};
 use blaze_starlark::depset::Depset;
-use blaze_starlark::structs::{StarlarkInfo, provider_info};
+use blaze_starlark::structs::StarlarkInfo;
 use blaze_vfs::PathFragment;
 use starlark::values::{Heap, Value};
 
@@ -21,6 +24,27 @@ use super::util::{depset_get_set_artifacts, errorf, field_type_error, sequence_e
 /// Java `STARLARK_NAME`.
 // Java: com/google/devtools/build/lib/rules/cpp/CcToolchainProvider.java:52 CcToolchainProvider.STARLARK_NAME
 pub const STARLARK_NAME: &str = "CcToolchainInfo";
+
+/// The keys of Java's `RULES_CC_PROVIDER`, `BAZEL_PROVIDER` and `GOOGLE_PROVIDER`: the
+/// `CcToolchainInfo` symbol of `cc/private/rules_impl:cc_toolchain_info.bzl` in the main
+/// repository (rules_cc built as the main module), in `@rules_cc+`, or in Google's source tree.
+// Java: com/google/devtools/build/lib/rules/cpp/CcToolchainProvider.java:92 CcToolchainProvider.RulesCcCcToolchainInfoProvider
+// Java: com/google/devtools/build/lib/rules/cpp/CcToolchainProvider.java:101 CcToolchainProvider.BazelCcToolchainInfoProvider
+// Java: com/google/devtools/build/lib/rules/cpp/CcToolchainProvider.java:111 CcToolchainProvider.GoogleCcToolchainInfoProvider
+pub fn cc_toolchain_info_provider_keys() -> &'static [ProviderKey; 3] {
+    static KEYS: LazyLock<[ProviderKey; 3]> = LazyLock::new(|| {
+        let key = |bzl: &str| ProviderKey::Starlark {
+            extension_label: Label::parse_canonical_unchecked(bzl),
+            exported_name: STARLARK_NAME.to_owned(),
+        };
+        [
+            key("//cc/private/rules_impl:cc_toolchain_info.bzl"),
+            key("@rules_cc+//cc/private/rules_impl:cc_toolchain_info.bzl"),
+            key("//third_party/bazel_rules/rules_cc/cc/private/rules_impl:cc_toolchain_info.bzl"),
+        ]
+    });
+    &KEYS
+}
 
 /// Information about a C++ compiler used by the `cc_*` rules.
 // Java: com/google/devtools/build/lib/rules/cpp/CcToolchainProvider.java:50 CcToolchainProvider
@@ -35,14 +59,23 @@ impl<'v> CcToolchainProvider<'v> {
         CcToolchainProvider { value }
     }
 
-    /// Java `CcToolchainProvider.wrap(info)`: the rules_cc / Bazel / Google `CcToolchainInfo`
-    /// providers are all accepted (all three are Starlark providers named `CcToolchainInfo`).
-    // Java: com/google/devtools/build/lib/rules/cpp/CcToolchainProvider.java:62 CcToolchainProvider.wrap
-    // PORT: Java compares the provider key (the .bzl label of `cc_toolchain_info.bzl` in one of
-    // three repositories); Blaze compares the exported provider name.
+    /// Java `CcToolchainProvider.wrapOrThrowEvalException(info)`: `info` must be an instance (with
+    /// schema) of one of the three `CcToolchainInfo` providers, identified by their keys
+    /// ([`cc_toolchain_info_provider_keys`]). A provider that is merely named `CcToolchainInfo`
+    /// is rejected.
+    // Java: com/google/devtools/build/lib/rules/cpp/CcToolchainProvider.java:59 CcToolchainProvider.wrapOrThrowEvalException
+    // Java: com/google/devtools/build/lib/rules/cpp/CcToolchainProvider.java:124 CcToolchainInfoProvider.wrapOrThrowEvalException
     pub fn wrap(v: Value<'v>) -> starlark::Result<CcToolchainProvider<'v>> {
         if let Some(info) = StarlarkInfo::from_value(v) {
-            if provider_info(info.provider()).is_some_and(|p| p.printable_name == STARLARK_NAME) {
+            let provider = info.provider();
+            // Java: `value instanceof StarlarkInfoWithSchema`: the provider declares its fields.
+            let with_schema =
+                StarlarkProvider::from_value(provider).is_some_and(|p| p.get_fields().is_some());
+            // Java: `value.getProvider().getKey().equals(getKey())`.
+            let key_matches = provider_view(provider)
+                .and_then(|view| view.key)
+                .is_some_and(|key| cc_toolchain_info_provider_keys().contains(&key));
+            if with_schema && key_matches {
                 return Ok(CcToolchainProvider { value: info });
             }
         }
@@ -215,5 +248,54 @@ impl<'v> CcToolchainProvider<'v> {
             None => panic!("NullPointerException: CcToolchainInfo.{key}"),
             Some(v) => sequence_elements(v, heap),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The three provider keys of CcToolchainProvider.java:92-118 (`keyForBuild(label)` and the
+    /// exported name `CcToolchainInfo`): a provider with another key is not a `CcToolchainInfo`,
+    /// whatever its name (analysis review S2-13).
+    #[test]
+    fn cc_toolchain_info_provider_keys_are_javas() {
+        let keys: Vec<(String, String)> = cc_toolchain_info_provider_keys()
+            .iter()
+            .map(|key| match key {
+                ProviderKey::Starlark {
+                    extension_label,
+                    exported_name,
+                } => (
+                    extension_label.get_unambiguous_canonical_form(),
+                    exported_name.clone(),
+                ),
+                ProviderKey::Builtin { .. } => panic!("not a Starlark provider key"),
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                (
+                    "@@//cc/private/rules_impl:cc_toolchain_info.bzl".to_owned(),
+                    "CcToolchainInfo".to_owned()
+                ),
+                (
+                    "@@rules_cc+//cc/private/rules_impl:cc_toolchain_info.bzl".to_owned(),
+                    "CcToolchainInfo".to_owned()
+                ),
+                (
+                    "@@//third_party/bazel_rules/rules_cc/cc/private/rules_impl:cc_toolchain_info.bzl"
+                        .to_owned(),
+                    "CcToolchainInfo".to_owned()
+                ),
+            ]
+        );
+        // A provider of the same name defined elsewhere has another key.
+        let user_key = ProviderKey::Starlark {
+            extension_label: Label::parse_canonical_unchecked("//my:defs.bzl"),
+            exported_name: STARLARK_NAME.to_owned(),
+        };
+        assert!(!cc_toolchain_info_provider_keys().contains(&user_key));
     }
 }

@@ -1,0 +1,32 @@
+run cquery "deps(//:tooled)" --output=label_kind
+aquery "//:simple + //:multi + //:tool_gen + //:tooled + //:bindir + //:local + //:bash + //:stamped + //:heuristic + //:long + //:select_cmd + //:exec_tools"
+run build //:simple //:multi //:tooled //:bindir //:local //:bash //:stamped //:heuristic //:long //:select_cmd //:exec_tools
+cat bazel-bin/simple.out
+cat bazel-bin/m2.out
+cat bazel-bin/tooled.out
+cat bazel-bin/b.out
+cat bazel-bin/bash.out
+cat bazel-bin/h.out
+cat bazel-bin/long.out
+stat bazel-bin/tool.sh
+stat bazel-bin/simple.out
+run build //:missing_out
+run build //:dir_out
+run build //:fails
+run build //:bad_var
+run build //:bad_location
+run build //:dollar_lt_multi
+run build //:at_multi
+aquery //:bad_var
+aquery "//:with_vars + //:heuristic_on + //:tagged_local + //:subdir_out + //:darwin"
+run build //:with_vars //:heuristic_on //:tagged_local //:subdir_out
+cat bazel-bin/wv.out
+cat bazel-bin/ho.out
+cat bazel-bin/tl.out
+cat bazel-bin/sub/dir/so.out
+run build //:heuristic_multi
+run build //:exec_multi
+run build //:no_cmd
+run build //:no_outs
+run build //:braces
+run build //:multi_location

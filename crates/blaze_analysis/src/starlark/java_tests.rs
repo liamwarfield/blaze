@@ -1,6 +1,10 @@
-// Ports of src/test/java/com/google/devtools/build/lib/starlark/StarlarkRuleContextTest.java and
+// Ports of src/test/java/com/google/devtools/build/lib/starlark/StarlarkRuleContextTest.java,
+// starlark/StarlarkRuleImplementationFunctionsTest.java (the tests of `ctx.actions.run` /
+// `run_shell` / `write` / `expand_template` arguments, `Args` and `ctx.runfiles`) and
 // analysis/starlark/StarlarkSubruleTest.java. They build packages and analyze targets through the
 // whole pipeline (BuildViewTestCase), which Blaze does not have yet; each is ignored until it does.
+// Until then the behaviour is checked against the oracle by the scenarios
+// scripts/w4/scenarios/ctx-* (`scripts/w4/probe compare <scenario>`).
 
 macro_rules! needs_build_view {
     ($($name:ident),* $(,)?) => {
@@ -180,6 +184,36 @@ mod starlark_rule_context_test {
         string_set_repeatable_without_flag_fails,
         test_string_set_flag,
         test_package_relative_label,
+    );
+}
+
+mod starlark_rule_implementation_functions_test {
+    needs_build_view!(
+        test_create_spawn_action_shell_command_list,
+        test_create_spawn_action_unknown_param,
+        test_run_shell_arguments_with_command_sequence,
+        test_bad_param_type_error_message,
+        test_create_template_action,
+        test_create_template_action_unicode,
+        test_runfiles_add_from_dependencies,
+        test_runfiles_bad_list_generic_type,
+        test_runfiles_bad_set_generic_type,
+        test_runfiles_bad_map_generic_type,
+        test_runfiles_artifacts_from_artifact,
+        test_runfiles_artifacts_from_iterable_artifacts,
+        test_runfiles_artifacts_from_nested_set_artifacts,
+        test_runfiles_artifacts_from_default_and_files,
+        test_runfiles_artifacts_from_symlink,
+        test_runfiles_artifacts_from_root_symlink,
+        test_runfiles_bad_keyword_arguments,
+        test_multiple_lazy_args_mixed_with_strings,
+        test_lazy_args_with_param_file,
+        test_write_args_to_param_file,
+        test_lazy_args_with_param_file_invalid_format_string,
+        test_lazy_args_with_param_file_invalid_format,
+        test_lazy_args_object_immutability,
+        test_args_built_twice_with_external_label,
+        test_param_file_has_directory_as_input,
     );
 }
 

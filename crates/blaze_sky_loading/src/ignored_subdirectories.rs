@@ -393,17 +393,14 @@ fn compute_ignored_patterns(
 ) -> Result<Option<Vec<String>>, ComputeError> {
     let key = RepoFileKey::key(repository_name.clone());
     // Java: getValueOrThrow(key, IOException.class, BadRepoFileException.class)
-    let repo_file_value = match env.get_value_or_throw_with(key, |e| {
+    let repo_file_value = env.get_value_or_throw_with(key, |e| {
         if let Some(e) = e.downcast_ref::<IOException>() {
             Some(IgnoredSubdirectoriesFunctionException::Io(e.clone()))
         } else {
             e.downcast_ref::<BadRepoFileException>()
                 .map(|e| IgnoredSubdirectoriesFunctionException::BadRepoFile(e.clone()))
         }
-    })? {
-        Err(e) => return Err(e.into()),
-        Ok(v) => v,
-    };
+    })??;
     if env.values_missing() {
         return Ok(None);
     }

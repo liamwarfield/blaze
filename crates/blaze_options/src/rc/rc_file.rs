@@ -62,6 +62,7 @@ pub type CanonicalizePathFn<'a> = &'a dyn Fn(&str) -> String;
 
 // Java: src/main/cpp/rc_file.cc:261 RcFile::ReadFileDefault
 pub fn read_file_default(filename: &str) -> Result<String, String> {
+    // PORT: byte-strings (C++ ReadFile keeps the rc file's raw bytes in a std::string).
     std::fs::read(filename)
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .map_err(|e| {
@@ -85,6 +86,7 @@ pub fn read_file_default(filename: &str) -> Result<String, String> {
 // Java: src/main/cpp/util/file_posix.cc:378 blaze_util::MakeCanonical
 /// `realpath`, or "" on failure.
 pub fn make_canonical(path: &str) -> String {
+    // PORT: byte-strings (C++ MakeCanonical returns realpath's raw bytes).
     std::fs::canonicalize(path)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default()

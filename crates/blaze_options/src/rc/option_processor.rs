@@ -357,10 +357,32 @@ impl ClientEnvironment {
     }
 }
 
+// Java: <unistd.h> R_OK
+const R_OK: std::ffi::c_int = 4;
+
+// Java: src/main/cpp/util/file_posix.cc:389 blaze_util::CanAccess
+/// `access(path, mode) == 0`. The file is never opened (opening a FIFO would block).
+// PORT: blaze_options does not depend on the `libc` crate, so access(2) is declared here (std
+// links the C library). CanAccess(path, read, write, exec) builds the mode from three flags;
+// this takes the mode itself, and its only caller needs R_OK.
+fn can_access(path: &str, mode: std::ffi::c_int) -> bool {
+    unsafe extern "C" {
+        fn access(pathname: *const std::ffi::c_char, mode: std::ffi::c_int) -> std::ffi::c_int;
+    }
+    // PORT: C++ passes path.c_str(), which stops at an embedded NUL; such a path is reported as
+    // not accessible here.
+    let Ok(c_path) = std::ffi::CString::new(path) else {
+        return false;
+    };
+    // SAFETY: c_path is NUL-terminated and outlives the call.
+    unsafe { access(c_path.as_ptr(), mode) == 0 }
+}
+
 // Java: src/main/cpp/util/file_posix.cc:403 blaze_util::CanReadFile
 pub fn can_read_file(path: &str) -> bool {
-    let p = std::path::Path::new(path);
-    !p.is_dir() && std::fs::File::open(p).is_ok()
+    // Java: src/main/cpp/util/file_posix.cc:427 blaze_util::IsDirectory
+    // `Path::is_dir` is stat(2) and S_ISDIR, false when stat fails.
+    !std::path::Path::new(path).is_dir() && can_access(path, R_OK)
 }
 
 // Java: src/main/cpp/option_processor.cc:245 internal::DedupeBlazercPaths

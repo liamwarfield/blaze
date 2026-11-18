@@ -293,19 +293,44 @@ impl<'v> StarlarkValue<'v> for StarlarkTarget {
     // Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:127 AbstractConfiguredTarget.getValue
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         if !SPECIAL_FIELD_NAMES.contains(&attribute) {
-            // PORT: Java fails with "Accessing providers via the field syntax on structs is
-            // deprecated and removed."; starlark-rust reports a missing attribute instead
-            // (StarlarkValue::get_attr cannot return an error).
+            // Java throws here; `StarlarkValue::get_attr` cannot return an error, so the field
+            // is reported missing and `get_attr_error_message` supplies Java's text.
+            // PORT: `getattr(target, name, default)` returns the default where Java still
+            // fails (it needs a fallible attribute hook in the vendored crate; requested).
             return None;
         }
         if self.disable_target_default_provider_fields
             && DEFAULT_PROVIDER_FIELDS.contains(&attribute)
         {
-            // PORT: Java fails with "Accessing the default provider in this manner is
-            // deprecated ..."; see above.
+            // Java throws here; see above.
             return None;
         }
         self.get_value(attribute, heap)
+    }
+
+    /// The `EvalException`s of Java's `getValue(semantics, name)`, as the message of the failed
+    /// field access (vendored patch 0013).
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:127 AbstractConfiguredTarget.getValue
+    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
+        if !SPECIAL_FIELD_NAMES.contains(&attribute) {
+            return Some(
+                "Accessing providers via the field syntax on structs is deprecated and removed."
+                    .to_owned(),
+            );
+        }
+        if self.disable_target_default_provider_fields
+            && DEFAULT_PROVIDER_FIELDS.contains(&attribute)
+        {
+            return Some(
+                "Accessing the default provider in this manner is deprecated and will be removed \
+                 soon. It may be temporarily re-enabled by setting \
+                 --incompatible_disable_target_default_provider_fields=false. See \
+                 https://github.com/bazelbuild/bazel/issues/20183 for details."
+                    .to_owned(),
+            );
+        }
+        // Java: `getErrorMessageForUnknownField` returns null (the generic message).
+        None
     }
 
     fn has_attr(&self, attribute: &str, heap: Heap<'v>) -> bool {

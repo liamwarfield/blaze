@@ -6,8 +6,13 @@ use blaze_cmdline::EvalException;
 use indexmap::IndexMap;
 
 use crate::attribute::Attribute;
+use crate::attribute::AttributeMap;
+use crate::attribute::RawAttributeMapper;
 use crate::rule_class::RuleClass;
 use crate::rule_class::StarlarkCallable;
+use crate::target::Rule;
+use crate::target::TargetData;
+use crate::types::AttrValue;
 use crate::types::Type;
 
 /// What `AspectsList` needs to know about a Starlark aspect value (Java
@@ -74,6 +79,103 @@ impl AspectDetails {
             AspectDetails::Native { .. } => &[],
             // Java: com/google/devtools/build/lib/packages/AspectsList.java:259 AspectsList.StarlarkAspectDetails.getRequiredParameters
             AspectDetails::Starlark { info, .. } => &info.required_parameters,
+        }
+    }
+
+    /// Java `AspectDetails.parametersExtractor.apply(rule)` as the attribute name to value
+    /// map of the resulting `AspectParameters` (each extracted parameter has exactly one value).
+    ///
+    /// Native aspects: PORT: native aspect definitions (and their parameter extractors) are not
+    /// part of the loading-phase model; `get_aspect_attributes` is empty for them, so nothing
+    /// reads their parameters.
+    // Java: com/google/devtools/build/lib/packages/StarlarkDefinedAspect.java:299 StarlarkDefinedAspect.getDefaultParametersExtractor
+    pub fn get_default_parameters(&self, rule: &Rule) -> IndexMap<String, String> {
+        let AspectDetails::Starlark { info, .. } = self else {
+            return IndexMap::new();
+        };
+        let rule_attrs = RawAttributeMapper::of(rule);
+        let mut builder: IndexMap<String, String> = IndexMap::new();
+        for aspect_attr in &info.aspect_attributes {
+            let param = aspect_attr.get_name();
+            if Attribute::is_implicit_name(param) || Attribute::is_analysis_dependent(param) {
+                // These attributes are the private matters of the aspect
+                continue;
+            }
+
+            let rule_attr = rule_attrs.get_attribute_definition(param);
+            if info.required_parameters.iter().any(|p| p == param) {
+                // These are preconditions because if they are false, RuleFunction.call() should
+                // already have generated an error.
+                blaze_util::check_argument!(
+                    rule_attr.is_some(),
+                    "Cannot apply aspect {} to {} that does not define attribute '{}'.",
+                    info.name,
+                    rule.get_target_kind(),
+                    param
+                );
+                let rule_attr_type = rule_attr.expect("checked above").get_type();
+                blaze_util::check_argument!(
+                    rule_attr_type == Type::String
+                        || rule_attr_type == Type::Integer
+                        || rule_attr_type == Type::Boolean,
+                    "Cannot apply aspect {} to {} since attribute '{}' is not boolean, integer, \
+                     nor string.",
+                    info.name,
+                    rule.get_target_kind(),
+                    param
+                );
+            }
+
+            if let Some(rule_attr) = rule_attr
+                && rule_attr.get_type() == aspect_attr.get_type()
+            {
+                // If the attribute has a select() (which aspect attributes don't yet support),
+                // the error gets reported in RuleClass.checkAspectAllowedValues.
+                if !rule_attrs.is_configurable(param) {
+                    // Java: `ruleAttrs.get(param, ruleAttr.getType()).toString()`.
+                    let value = rule_attrs
+                        .get(param, rule_attr.get_type())
+                        .expect("NullPointerException: attribute value");
+                    let value = match value {
+                        AttrValue::String(s) => s,
+                        AttrValue::Int(i) => i.to_string(),
+                        AttrValue::Bool(b) => b.to_string(),
+                        other => blaze_util::unported!(
+                            "StarlarkDefinedAspect.getDefaultParametersExtractor",
+                            "toString() of {:?}",
+                            other
+                        ),
+                    };
+                    builder.insert(param.to_owned(), value);
+                }
+            }
+        }
+        builder
+    }
+
+    /// The default value Java's `addAttrValue` gives the aspect definition's attribute for a
+    /// parameter value.
+    // Java: com/google/devtools/build/lib/packages/StarlarkDefinedAspect.java:265 StarlarkDefinedAspect.addAttrValue
+    pub fn add_attr_value(attr: &Attribute, attr_value: &str) -> AttrValue {
+        let attr_type = attr.get_type();
+        // Java: StarlarkDefinedAspect.java:229 (buildDefinition)
+        blaze_util::check_state!(!Attribute::is_implicit_name(attr.get_name()));
+        blaze_util::check_state!(
+            attr_type == Type::String || attr_type == Type::Integer || attr_type == Type::Boolean
+        );
+        if attr_type == Type::Integer {
+            // Java: StarlarkInt.parse(attrValue, /* base= */ 0). The value is the decimal
+            // toString() of the rule's 32-bit attribute value.
+            AttrValue::Int(
+                attr_value
+                    .parse::<i32>()
+                    .expect("the decimal form of an integer attribute value"),
+            )
+        } else if attr_type == Type::Boolean {
+            // Java: Boolean.parseBoolean(attrValue)
+            AttrValue::Bool(attr_value.eq_ignore_ascii_case("true"))
+        } else {
+            AttrValue::String(attr_value.to_owned())
         }
     }
 

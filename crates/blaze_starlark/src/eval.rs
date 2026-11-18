@@ -78,21 +78,38 @@ impl std::fmt::Debug for CompiledFile {
 
 /// Parses `source` as a file of `kind` and runs Bazel's static checks.
 pub fn compile(kind: FileKind, file_name: &str, source: String) -> Result<CompiledFile, EvalError> {
-    let ast = AstModule::parse(file_name, source, &kind.dialect()).map_err(|e| {
-        let location = e
-            .span()
-            .map(Location::of_span_start)
-            .unwrap_or_else(|| Location {
-                file: file_name.to_owned(),
-                line: 0,
-                column: 0,
-            });
-        EvalError::syntax(vec![SyntaxError {
-            location,
-            message: crate::error::bare_message(&e),
-        }])
-    })?;
-    let (errors, build_facts) = crate::syntax::check_file(kind, &ast);
+    compile_with_options(kind, kind.file_options(), file_name, source)
+}
+
+/// Prefix of the syntax error the vendored parser gives for Bazel type syntax that is not ported
+/// (starlark-rust patch 0020, `grammar_util::BLAZE_TYPE_SYNTAX_NOT_PORTED`).
+pub const TYPE_SYNTAX_NOT_PORTED_PREFIX: &str =
+    starlark_syntax::syntax::grammar_util::BLAZE_TYPE_SYNTAX_NOT_PORTED;
+
+/// [`compile`] with explicit [`crate::file_kind::FileOptions`] (Java `FileOptions` whose values
+/// depend on flags: `allowTypeSyntax`).
+pub fn compile_with_options(
+    kind: FileKind,
+    options: crate::file_kind::FileOptions,
+    file_name: &str,
+    source: String,
+) -> Result<CompiledFile, EvalError> {
+    let ast =
+        AstModule::parse(file_name, source, &kind.dialect_with_options(options)).map_err(|e| {
+            let location = e
+                .span()
+                .map(Location::of_span_start)
+                .unwrap_or_else(|| Location {
+                    file: file_name.to_owned(),
+                    line: 0,
+                    column: 0,
+                });
+            EvalError::syntax(vec![SyntaxError {
+                location,
+                message: crate::error::bare_message(&e),
+            }])
+        })?;
+    let (errors, build_facts) = crate::syntax::check_file_with_options(kind, options, &ast);
     if !errors.is_empty() {
         return Err(EvalError::syntax(errors));
     }

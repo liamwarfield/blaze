@@ -105,6 +105,8 @@ struct ModuleScopeBuilder<'a> {
     globals: ScopeResolverGlobals,
     errors: Vec<EvalException>,
     top_level_stmt_count: usize,
+    /// BLAZE PATCH 0020: false for `DialectTypes::ParseOnly`.
+    resolve_type_exprs: bool,
 }
 
 pub(crate) struct ModuleScopes<'f> {
@@ -343,6 +345,8 @@ impl<'f> ModuleScopeBuilder<'f> {
             globals,
             errors: Vec::new(),
             top_level_stmt_count: top_level_stmts.len(),
+            // BLAZE PATCH 0020
+            resolve_type_exprs: dialect.enable_types != crate::syntax::DialectTypes::ParseOnly,
         };
         for stmt in top_level_stmts.iter_mut() {
             scope.resolve_idents(stmt);
@@ -638,6 +642,11 @@ impl<'f> ModuleScopeBuilder<'f> {
     }
 
     fn resolve_idents_in_type_expr(&mut self, expr: &mut CstTypeExpr) {
+        // BLAZE PATCH 0020: Bazel does not resolve annotations unless type checking is on
+        // (Resolver.java:874 `options.resolveTypeSyntax()`), so names in them may be undefined.
+        if !self.resolve_type_exprs {
+            return;
+        }
         self.resolve_idents_in_expr_impl(
             ResolveIdentScope::GlobalForTypeExpression,
             &mut expr.node.expr,

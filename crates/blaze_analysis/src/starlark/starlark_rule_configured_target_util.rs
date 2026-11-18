@@ -625,7 +625,8 @@ fn add_providers(
             )));
         }
         // A single declared provider (not in a list)
-        // PORT: StarlarkInfo.unsafeOptimizeMemoryLayout is a memory optimization.
+        // PORT: Java's StarlarkInfo.unsafeOptimizeMemoryLayout call here only changes the
+        // memory layout of the provider instance (no observable effect); nothing to port.
         // Single declared provider
         declared_providers.insert(key, raw_providers.clone());
     } else if ListRef::from_value(raw).is_some()

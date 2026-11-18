@@ -10,8 +10,8 @@
 //! - [`precomputed`]: `skyframe/PrecomputedValue` (`STARLARK_SEMANTICS`, `PATH_PACKAGE_LOCATOR`).
 //! - [`pkgcache`]: `pkgcache/PathPackageLocator`.
 //! - [`directories`]: the `BlazeDirectories` paths the loading functions need.
-//! - [`io`]: `java.io.IOException` and `lib/io` exceptions thrown through Skyframe;
-//!   [`file_chain_uniqueness`]: `lib/io/*UniquenessFunction`.
+//! - [`io`]: `java.io.IOException` and `lib/io` exceptions thrown through Skyframe.
+//! - [`file_chain_uniqueness`]: `lib/io/*UniquenessFunction`.
 //! - [`actions`]: `actions/FileStateValue`, `actions/FileValue`, `FileContentsProxy`.
 //! - [`file_state`] (FILE_STATE, `ExternalFilesHelper`), [`file`] (FILE),
 //!   [`directory_listing`] (DIRECTORY_LISTING_STATE, DIRECTORY_LISTING).
@@ -34,7 +34,14 @@
 //!   PACKAGE_ERROR(_MESSAGE); [`transitive_target`]: TRANSITIVE_TARGET.
 //! - [`skyframe_executor`]: registers every function on an `EvaluatorBuilder`.
 
-#![allow(clippy::too_many_arguments, clippy::new_without_default)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::new_without_default,
+    clippy::type_complexity,
+    clippy::large_enum_variant,
+    // The module map below is a list of "[`module`]: description" items.
+    clippy::doc_nested_refdefs
+)]
 
 pub mod actions;
 pub mod build_file_name;

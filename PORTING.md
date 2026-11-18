@@ -106,7 +106,29 @@ same option names, defaults, converters, tags and help text.
 - Only immutable `Send + Sync` values cross nodes; Starlark values must be frozen. Never keep a live
   Starlark module or heap across a dependency request (starlark-rust cannot suspend evaluation):
   request every dependency first, then evaluate.
-- `in_error_bubbling()` is always false: parents see child errors during normal compute.
+- Errors follow Java's protocol, so port the Java function as it is written:
+  - keep_going: `get_value_or_throw` / `get_or_throw` return the dependency's exception.
+  - no keep_going, normal evaluation: a dependency in error is `None` and sets
+    `values_missing()`, whatever exception type was asked for. Return `Ok(None)`. The first
+    exception *thrown* stops the evaluation; later ones are dropped.
+  - Error bubbling (`ParallelEvaluator.bubbleErrorUp`): after the first failure (or a catastrophe
+    with keep_going) the engine re-runs, once each, the functions on one path from the failed node
+    up to a top-level node, with `env.in_error_bubbling()` true. Only in that run do the
+    exceptions reach `get_value_or_throw` without keep_going. Requests compute nothing new there
+    (a dependency that is not done is missing), `env.check_interrupted()` fails once a dependency
+    in error was requested, and the function's stored events are reported. Keep every Java
+    `env.inErrorBubbling()` branch.
+  - So a function can run twice for one node. Request dependencies first, as the Java function
+    does; do not rely on "computed once". A value returned from the bubbling run is ignored.
+  - `get_value_or_throw::<K, E>` matches the concrete type `E` only (Java also matches
+    subclasses); use `get_value_or_throw_with` / `get_or_throw_with` for several types.
+- Requests are evaluated one at a time, in order (Java collects all requests of a run and
+  evaluates none before the function returns). Where a Java function relies on that, port it as
+  written and mark the spot `// PORT: request order`.
+- Not ported, fails with `unported!`: `env.get_state` (SkyKeyComputeState),
+  `env.register_dependencies`, `env.depend_on_future`, `SkyframeLookupResult::query_dep`; also
+  absent: `EvaluationProgressReceiver`, `SkyFunction.Reset`, partial reevaluation, the per-key
+  keep_going predicate, `EventFilter` (see `crates/blaze_skyframe/src/lib.rs`, "Not ported").
 
 ## Tests
 

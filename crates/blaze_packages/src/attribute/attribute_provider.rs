@@ -287,6 +287,8 @@ impl AttributeProvider {
         // none is specified.
         let mut attrs_with_computed_defaults: Vec<&Attribute> = Vec::new();
         let num_attributes = self.get_attribute_count();
+        // PORT: Java indexes the BitSet and the attribute list by attrIndex.
+        #[allow(clippy::needless_range_loop)]
         for attr_index in 0..num_attributes {
             if defined_attr_indices[attr_index] {
                 continue;

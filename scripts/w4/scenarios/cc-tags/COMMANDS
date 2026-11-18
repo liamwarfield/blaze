@@ -1,0 +1,7 @@
+# analysis review S1-6: the execution info of CppCompile has the iteration order of the Java
+# HashMap that TargetUtils.getExecutionInfo fills from the (sorted) `tags` attribute. The summary
+# prints executionInfo with sorted keys; the order is covered by actionKey
+# (CppCompileAction.computeKey: fp.addStringMap(executionInfo)). Raw order in Bazel 9.3.2
+# (aquery --output=jsonproto): remote_exec_first and remote_first: no-remote, no-remote-exec;
+# sandbox_asan: no-asan, no-sandbox; sandbox_network: requires-network, no-sandbox.
+aquery "mnemonic('CppCompile', //:all)"

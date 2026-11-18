@@ -61,14 +61,86 @@ pub fn register_fragments() {
     proto_configuration::register();
 }
 
+/// The identity of a fragment: the address of its shared allocation (Java: the `Fragment`
+/// object's identity, `Object.equals` / `Object.hashCode`).
+pub(crate) fn fragment_identity(fragment: &Arc<dyn Fragment>) -> usize {
+    Arc::as_ptr(fragment) as *const () as usize
+}
+
 /// Declares the Starlark value type of one fragment class: a shared handle on the fragment,
 /// type `$starlark_name`, Java's default `StarlarkValue.repr`
-/// (`<unknown object $java_name>`), identity equality (Java `Object.equals`) and the methods of
-/// `$methods`.
+/// (`<unknown object $java_name>`), the methods of `$methods`, and Java's hashability:
+/// `Fragment.isImmutable()` is true (analysis/config/Fragment.java:50), so every fragment is a
+/// valid dict key and depset element.
+///
+/// Equality and hash are the fragment's identity (Java `Object.equals` / `Object.hashCode`)
+/// unless the Java class overrides them; then the invocation ends with
+/// `equals = <fn(&$fragment, &$fragment) -> bool>, hash = <fn(&$fragment, &mut StarlarkHasher)>`.
 macro_rules! fragment_value {
     (
         $(#[$meta:meta])*
         $value:ident, $fragment:ty, $starlark_name:tt, $java_name:literal, $methods:ident
+    ) => {
+        $crate::fragments::fragment_value!(
+            @define
+            $(#[$meta])*
+            $value, $fragment, $starlark_name, $java_name, $methods,
+            {
+                // Java: Object.equals (the fragment class does not override it).
+                fn equals(&self, other: ::starlark::values::Value<'v>) -> starlark::Result<bool> {
+                    Ok(::starlark::values::ValueLike::downcast_ref::<$value>(other)
+                        .is_some_and(|o| ::std::sync::Arc::ptr_eq(&o.0, &self.0)))
+                }
+
+                // Java: Object.hashCode (the fragment class does not override it).
+                fn write_hash(
+                    &self,
+                    hasher: &mut ::starlark::collections::StarlarkHasher,
+                ) -> starlark::Result<()> {
+                    ::std::hash::Hash::hash(
+                        &$crate::fragments::fragment_identity(&self.0),
+                        hasher,
+                    );
+                    Ok(())
+                }
+            }
+        );
+    };
+    (
+        $(#[$meta:meta])*
+        $value:ident, $fragment:ty, $starlark_name:tt, $java_name:literal, $methods:ident,
+        equals = $equals:path, hash = $hash:path
+    ) => {
+        $crate::fragments::fragment_value!(
+            @define
+            $(#[$meta])*
+            $value, $fragment, $starlark_name, $java_name, $methods,
+            {
+                // Java: the fragment class's own `equals`.
+                fn equals(&self, other: ::starlark::values::Value<'v>) -> starlark::Result<bool> {
+                    Ok(::starlark::values::ValueLike::downcast_ref::<$value>(other)
+                        .is_some_and(|o| {
+                            ::std::sync::Arc::ptr_eq(&o.0, &self.0)
+                                || $equals(self.fragment(), o.fragment())
+                        }))
+                }
+
+                // Java: the fragment class's own `hashCode`.
+                fn write_hash(
+                    &self,
+                    hasher: &mut ::starlark::collections::StarlarkHasher,
+                ) -> starlark::Result<()> {
+                    $hash(self.fragment(), hasher);
+                    Ok(())
+                }
+            }
+        );
+    };
+    (
+        @define
+        $(#[$meta:meta])*
+        $value:ident, $fragment:ty, $starlark_name:tt, $java_name:literal, $methods:ident,
+        { $($equality:tt)* }
     ) => {
         $(#[$meta])*
         #[derive(Debug, ::starlark::any::ProvidesStaticType, ::starlark::values::NoSerialize, ::allocative::Allocative)]
@@ -110,10 +182,11 @@ macro_rules! fragment_value {
                 Some(RES.methods())
             }
 
-            // Java: Object.equals (fragments do not override it).
-            fn equals(&self, other: ::starlark::values::Value<'v>) -> starlark::Result<bool> {
-                Ok(::starlark::values::ValueLike::downcast_ref::<$value>(other)
-                    .is_some_and(|o| ::std::sync::Arc::ptr_eq(&o.0, &self.0)))
+            $($equality)*
+
+            // Java: com/google/devtools/build/lib/analysis/config/Fragment.java:50 Fragment.isImmutable
+            fn provide(&'v self, demand: &mut ::starlark::values::Demand<'_, 'v>) {
+                demand.provide_value(::blaze_starlark::structs::DeeplyImmutable);
             }
         }
     };

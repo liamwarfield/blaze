@@ -18,7 +18,7 @@ use anyhow::anyhow;
 use blaze_bzlmod_model::repo_spec::{GIT_REPOSITORY, HTTP_ARCHIVE};
 use blaze_bzlmod_model::{
     AttributeValue, AttributeValues, DepSpec, ModuleKey, ModuleOverride, MultipleVersionOverride,
-    NonRegistryOverride, RepoSpec, SingleVersionOverride, Version, local_path_repo_spec,
+    NonRegistryOverride, SingleVersionOverride, Version, local_path_repo_spec,
 };
 use blaze_cmdline::package_identifier::EMPTY_PACKAGE_ID;
 use blaze_cmdline::repository_name::{MAIN, is_valid_module_name};
@@ -35,14 +35,14 @@ use parking_lot::Mutex;
 use starlark::any::ProvidesStaticType;
 use starlark::codemap::FileSpan;
 use starlark::collections::SmallMap;
-use starlark::environment::{Globals, GlobalsBuilder};
+use starlark::environment::{Globals, GlobalsBuilder, Module};
 use starlark::eval::{Arguments, Evaluator};
 use starlark::starlark_module;
 use starlark::starlark_simple_value;
 use starlark::values::dict::DictRef;
 use starlark::values::list::ListRef;
 use starlark::values::none::NoneType;
-use starlark::values::tuple::{TupleRef, UnpackTuple};
+use starlark::values::tuple::{AllocTuple, TupleRef, UnpackTuple};
 use starlark::values::{
     Heap, NoSerialize, StarlarkValue, UnpackValue, Value, ValueLike, starlark_value,
 };
@@ -359,8 +359,9 @@ fn param_proxy(method: &str, param: &str, value: Value) -> anyhow::Result<ProxyR
 
 /// A Starlark value as stored in `AttributeValues` (Java keeps the Starlark object itself).
 // PORT: Java stores the kwargs `Dict` itself; the model crate stores plain data, so values are
-// copied when the tag or override is created. Values of kinds `AttributeValue` cannot hold
-// (floats, structs, functions, ...) are not ported.
+// copied, once the module file that passed them has been executed (see
+// `defer_attribute_values`). Values of kinds `AttributeValue` cannot hold (floats, structs,
+// functions, ...) are not ported.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValues.java:34 AttributeValues.create
 fn to_attribute_value(v: Value) -> AttributeValue {
     if v.is_none() {
@@ -403,6 +404,69 @@ fn to_attribute_values<'a, 'v: 'a>(
             .into_iter()
             .map(|(k, v)| (k.to_owned(), to_attribute_value(v))),
     )
+}
+
+/// Keeps the kwargs of a tag or override call alive, as live Starlark values, until the module
+/// file that made the call has been executed; `deferred` is the id the context gave the call
+/// (`ModuleThreadContext::tag_call_deferred`, `add_override_deferred`).
+///
+/// PORT: Java's `AttributeValues.create(kwargs)` keeps the kwargs `Dict` itself: the entries are
+/// those of the call, but a list or dict among the values can still be mutated by the rest of
+/// the file (`l = ["a"]; ext.tag(x = l); l.append("b")` gives the tag `["a", "b"]`), until the
+/// `Mutability` of the module file is closed. starlark-rust values cannot be stored in the
+/// context (they do not outlive their heap), so the call is recorded on the heap of the file's
+/// module: the module's extra value is a chain of tuples
+/// `(previous record or None, deferred id, name, value, name, value, ...)`, which the garbage
+/// collector traces. [`resolve_deferred_attribute_values`] converts them when the file is done.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValues.java:34 AttributeValues.create
+fn defer_attribute_values<'a, 'v: 'a>(
+    eval: &Evaluator<'v, '_, '_>,
+    deferred: usize,
+    kwargs: impl IntoIterator<Item = (&'a str, Value<'v>)>,
+) {
+    let heap = eval.heap();
+    let module = eval.module();
+    let mut record: Vec<Value<'v>> = vec![
+        module.extra_value().unwrap_or_else(Value::new_none),
+        heap.alloc(deferred as i32),
+    ];
+    for (name, value) in kwargs {
+        record.push(heap.alloc(name));
+        record.push(value);
+    }
+    module.set_extra_value(heap.alloc(AllocTuple(record)));
+}
+
+/// Converts the kwargs that the tag and override calls of the file executed in `module` left on
+/// its heap ([`defer_attribute_values`]) to `AttributeValues`, in call order, and stores them in
+/// `context`. Must run after the file has been executed and before its heap is dropped; this is
+/// the moment the values stop changing, as Java's do when the module file's `Mutability` closes.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunction.java:662 ModuleFileFunction.execModuleFile
+pub(crate) fn resolve_deferred_attribute_values<'v>(
+    module: &Module<'v>,
+    context: &mut ModuleThreadContext,
+) {
+    let mut records: Vec<&'v [Value<'v>]> = Vec::new();
+    let mut next = module.extra_value();
+    while let Some(record) = next {
+        // The chain ends with None.
+        let Some(tuple) = TupleRef::from_value(record) else {
+            break;
+        };
+        let content = tuple.content();
+        next = Some(content[0]);
+        records.push(content);
+    }
+    for content in records.into_iter().rev() {
+        let deferred = content[1].unpack_i32().expect("deferred id") as usize;
+        let attribute_values = to_attribute_values(
+            content[2..]
+                .chunks_exact(2)
+                .map(|entry| (entry[0].unpack_str().expect("attribute name"), entry[1])),
+        );
+        context.set_deferred_attribute_values(deferred, attribute_values);
+    }
+    module.set_extra_value(Value::new_none());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -660,10 +724,13 @@ impl<'v> StarlarkValue<'v> for TagCallable {
     ) -> starlark::Result<Value<'v>> {
         args.no_positional_args(eval.heap())?;
         let kwargs = args.names_map()?;
-        let attribute_values = to_attribute_values(kwargs.iter().map(|(k, v)| (k.as_str(), *v)));
         let location = caller_location_of(eval);
-        let mut context = proxy_context(eval)?;
-        context.tag_call(self.proxy, &self.tag_name, attribute_values, location);
+        // AttributeValues.create(kwargs) keeps the live kwargs; see defer_attribute_values.
+        let deferred = {
+            let mut context = proxy_context(eval)?;
+            context.tag_call_deferred(self.proxy, &self.tag_name, location)
+        };
+        defer_attribute_values(eval, deferred, kwargs.iter().map(|(k, v)| (k.as_str(), *v)));
         Ok(Value::new_none())
     }
 }
@@ -740,12 +807,10 @@ impl<'v> StarlarkValue<'v> for RepoRuleProxy {
                 containing_module_file_path,
             ),
         );
-        context.tag_call(
-            extension_proxy,
-            "repo",
-            to_attribute_values(kwargs),
-            location,
-        );
+        // extensionProxy.getValue("repo").call(kwargs, thread): AttributeValues.create(kwargs)
+        // keeps the live kwargs; see defer_attribute_values.
+        let deferred = context.tag_call_deferred(extension_proxy, "repo", location);
+        defer_attribute_values(eval, deferred, kwargs);
         let stack = call_stack(eval, &context.call_stack_prefix);
         context
             .proxy_add_import(extension_proxy, name, name, "by a repo rule", stack)
@@ -1285,14 +1350,11 @@ pub fn register_module_file_globals(builder: &mut GlobalsBuilder) {
         for patch in &patches {
             let _unused = convert_and_validate_patch_label(&context, patch)?;
         }
-        let attributes = to_attribute_values(kwargs.iter().map(|(k, v)| (k.as_str(), *v)));
-        context.add_override(
-            module_name,
-            ModuleOverride::NonRegistry(NonRegistryOverride::new(RepoSpec::new(
-                HTTP_ARCHIVE.clone(),
-                attributes,
-            ))),
-        )?;
+        // new NonRegistryOverride(new RepoSpec(HTTP_ARCHIVE, AttributeValues.create(kwargs))):
+        // AttributeValues.create keeps the live kwargs; see defer_attribute_values.
+        if let Some(deferred) = context.add_override_deferred(module_name, HTTP_ARCHIVE.clone())? {
+            defer_attribute_values(eval, deferred, kwargs.iter().map(|(k, v)| (k.as_str(), *v)));
+        }
         Ok(NoneType)
     }
 
@@ -1315,14 +1377,13 @@ pub fn register_module_file_globals(builder: &mut GlobalsBuilder) {
         for patch in &patches {
             let _unused = convert_and_validate_patch_label(&context, patch)?;
         }
-        let attributes = to_attribute_values(kwargs.iter().map(|(k, v)| (k.as_str(), *v)));
-        context.add_override(
-            module_name,
-            ModuleOverride::NonRegistry(NonRegistryOverride::new(RepoSpec::new(
-                GIT_REPOSITORY.clone(),
-                attributes,
-            ))),
-        )?;
+        // new NonRegistryOverride(new RepoSpec(GIT_REPOSITORY, AttributeValues.create(kwargs))):
+        // AttributeValues.create keeps the live kwargs; see defer_attribute_values.
+        if let Some(deferred) =
+            context.add_override_deferred(module_name, GIT_REPOSITORY.clone())?
+        {
+            defer_attribute_values(eval, deferred, kwargs.iter().map(|(k, v)| (k.as_str(), *v)));
+        }
         Ok(NoneType)
     }
 

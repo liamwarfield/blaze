@@ -156,6 +156,7 @@ fn unzip_until(
             Err(e) => read_error(archive_path, e),
         };
         let entry_type = entry.header().entry_type();
+        // PORT: byte-strings (the C++ zip extractor keeps member names as raw bytes).
         let name = match entry.path() {
             Ok(p) => p.to_string_lossy().into_owned(),
             Err(e) => read_error(archive_path, e),
@@ -259,6 +260,7 @@ pub fn extract_data(
                         );
                     }
                     Some(on_disk_key) if on_disk_key != expected_install_md5.as_bytes() => {
+                        // PORT: byte-strings (C++ prints the on-disk key bytes unchanged).
                         bazel_log(
                             LogLevel::User,
                             ARCHIVE_UTILS_CC,
@@ -471,6 +473,7 @@ pub fn extract_archive_or_die(
     }
 
     if install_md5 != expected_install_md5.as_bytes() {
+        // PORT: byte-strings (C++ prints the extracted install_base_key bytes unchanged).
         bazel_die(
             exit_code::LOCAL_ENVIRONMENTAL_ERROR,
             ARCHIVE_UTILS_CC,

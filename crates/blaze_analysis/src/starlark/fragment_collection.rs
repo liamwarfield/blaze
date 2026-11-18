@@ -252,10 +252,14 @@ impl<'v> StarlarkValue<'v> for FragmentCollection {
         collector.push_str(FRAGMENT_COLLECTION_REPR);
     }
 
-    // PORT: Java throws `EvalException`s from `getValue` (illegal fragment) and reports
-    // `getErrorMessageForUnknownField` for unknown names; starlark-rust's `get_attr` cannot fail,
-    // so both cases surface as starlark-rust's "has no attribute" error (core-language error
-    // text, docs/decisions.md).
+    // PORT: Java throws an `EvalException` from `getValue` for a fragment the rule did not
+    // declare. starlark-rust's `get_attr` cannot fail, so the error is reported through
+    // `get_attr_error_message` (vendored patch 0013): `ctx.fragments.cpp` and
+    // `getattr(ctx.fragments, "cpp")` fail with Java's text. `getattr(ctx.fragments, "cpp",
+    // default)` returns the default where Java throws (oracle scenario
+    // scripts/w4/scenarios/ctx-errors, step frag_undeclared_getattr_default), and `hasattr` can
+    // only stop loudly (`has_attr` below); both need a fallible attribute hook in the vendored
+    // crate (request in the wave report).
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         match self.get_value(attribute, heap) {
             Ok(v) => v,
@@ -263,8 +267,28 @@ impl<'v> StarlarkValue<'v> for FragmentCollection {
         }
     }
 
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:512 RuleContext.getStarlarkFragment
+    // (the EvalException of an undeclared fragment)
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/FragmentCollectionApi.java:40 FragmentCollectionApi.getErrorMessageForUnknownField
+    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
+        match self.fragments.iter().find(|(n, _)| n == attribute) {
+            Some((_, FragmentLookup::Illegal(message))) => Some(message.clone()),
+            _ => Some(self.get_error_message_for_unknown_field(attribute)),
+        }
+    }
+
+    // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr (`getValue(name) != null`)
     fn has_attr(&self, attribute: &str, heap: Heap<'v>) -> bool {
-        matches!(self.get_value(attribute, heap), Ok(Some(_)))
+        match self.get_value(attribute, heap) {
+            Ok(v) => v.is_some(),
+            // Java: `getValue` throws, so `hasattr(ctx.fragments, "cpp")` fails for a fragment
+            // the rule did not declare. starlark-rust's `has_attr` cannot fail (see `get_attr`).
+            Err(message) => blaze_util::unported!(
+                "Starlark.hasattr",
+                "EvalException from FragmentCollection.getValue: {}",
+                message
+            ),
+        }
     }
 
     fn dir_attr(&self) -> Vec<String> {

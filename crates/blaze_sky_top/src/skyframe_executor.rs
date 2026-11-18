@@ -163,9 +163,9 @@ impl SkyframeExecutor {
         inputs: SkyframeExecutorInputs,
     ) -> Result<SkyframeExecutor, SkyframeExecutorCreationError> {
         let options = &inputs.options;
-        // PORT: Java derives the semantics from BuildLanguageOptions.toStarlarkSemantics
-        // (getEffectiveStarlarkSemantics); only the flags configuration code reads are taken from
-        // the options (blaze_build_config::top_level::starlark_semantics_from).
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1722 SkyframeExecutor.sync
+        // getEffectiveStarlarkSemantics(buildLanguageOptions): the full
+        // BuildLanguageOptions.toStarlarkSemantics.
         let starlark_semantics = blaze_build_config::top_level::starlark_semantics_from(options);
         let digest_function = inputs.output_base.get_file_system().get_digest_function();
 
@@ -311,6 +311,9 @@ impl SkyframeExecutor {
                 platforms,
             });
             builder = register_configuration_functions(builder).client(client.clone());
+            // Java: SkyFunctions.BUILD_OPTIONS_SCOPE (BuildOptionsScopeFunction), requested by
+            // BUILD_CONFIGURATION_KEY for Starlark flags whose scope is not known yet.
+            builder = blaze_sky_analysis::build_options_scope_function::register(builder);
             builder = blaze_sky_analysis::toolchains::register_toolchain_functions(
                 builder,
                 services.clone(),
@@ -436,7 +439,7 @@ impl SkyframeExecutor {
                 package.get_source_root().clone(),
             ));
         }
-        roots.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
+        roots.sort_by_key(|a| a.0.to_string());
         roots.into_iter().collect()
     }
 
@@ -550,7 +553,7 @@ impl SkyframeExecutor {
     ) -> Result<Option<IndexMap<String, String>>, Interrupted> {
         let key = blaze_bzlmod::skyframe::keys::BazelDepGraphKey;
         let eval_result = self.evaluate(
-            &[SkyKey::new(key.clone())],
+            &[SkyKey::new(key)],
             false,
             DEFAULT_THREAD_COUNT,
             event_handler,
@@ -602,6 +605,32 @@ impl SkyframeExecutor {
             options.build_manual_tests,
             options.expand_test_suites,
             Some(TestFilter::for_options(options)),
+        );
+        self.get_target_pattern_phase_value(event_handler, thread_count, keep_going, key)
+    }
+
+    /// Loads the given target patterns without applying any filters (such as removing non-test
+    /// targets if `--build_tests_only` is set).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3156 SkyframeExecutor.loadTargetPatternsWithoutFilters
+    pub fn load_target_patterns_without_filters(
+        &self,
+        event_handler: Arc<dyn ExtendedEventHandler>,
+        target_patterns: &[String],
+        relative_working_directory: &PathFragment,
+        thread_count: usize,
+        keep_going: bool,
+    ) -> Result<TargetPatternPhaseValue, TargetPatternPhaseError> {
+        // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseValue.java:172 TargetPatternPhaseValue.keyWithoutFilters
+        let key = TargetPatternPhaseKey::key(
+            target_patterns.to_vec(),
+            relative_working_directory.clone(),
+            false,
+            false,
+            false,
+            Vec::new(),
+            false,
+            false,
+            None,
         );
         self.get_target_pattern_phase_value(event_handler, thread_count, keep_going, key)
     }

@@ -39,7 +39,6 @@ use blaze_sky_loading::precomputed::STARLARK_SEMANTICS;
 use blaze_sky_loading::repos::RepositoryDirectoryValue;
 use blaze_sky_loading::repos::RepositoryMappingKey;
 use blaze_sky_loading::starlark_util::event_location;
-use blaze_sky_loading::starlark_util::replay_starlark_events_on;
 use blaze_skyframe::ComputeError;
 use blaze_skyframe::Environment;
 use blaze_skyframe::Interrupted;
@@ -630,7 +629,7 @@ impl RepositoryFetchFunction {
             return Err(RepositoryFunctionException::io_message(
                 format!(
                     "to fix, run\n\tbazel fetch //...\nExternal repository {} not found and \
-                     fetching is disabled.",
+                     fetching repositories is disabled.",
                     repository_name
                 ),
                 Transience::Transient,
@@ -850,6 +849,10 @@ impl RepositoryFetchFunction {
                         &repo_definition.name,
                     )),
                     /* allow_watching_paths_outside_workspace= */ true,
+                )
+                .with_process_wrapper_options(
+                    services.process_wrapper_kill_delay,
+                    services.process_wrapper_graceful_sigterm,
                 );
                 let mut context = ExternalContext {
                     base,
@@ -861,9 +864,9 @@ impl RepositoryFetchFunction {
                     abort: None,
                 };
                 // PORT: the thread name ("repository " + display form) and the SymbolGenerator are
-                // not observable; the print handler, the repo mapping recorder and the
-                // StarlarkThreadContext with the main repo mapping are set up by
-                // `call_implementation`.
+                // not observable; the print handler (which reports to this environment's
+                // listener at once), the repo mapping recorder and the StarlarkThreadContext with
+                // the main repo mapping are set up by `call_implementation`.
                 if context.is_remotable() {
                     // If a rule is declared remotable then invalidate it if remote execution gets
                     // enabled or disabled.
@@ -884,7 +887,7 @@ impl RepositoryFetchFunction {
                 let ImplementationOutcome {
                     result,
                     mut context,
-                    events,
+                    ..
                 } = call_implementation(
                     &repo_rule.impl_,
                     repo_rule.module_context.as_ref(),
@@ -902,8 +905,8 @@ impl RepositoryFetchFunction {
                     },
                     extract_return_value,
                 );
-                // Java's print handler (Event.makeDebugPrintHandler) reports as it happens.
-                replay_starlark_events_on(context.base.env.get().listener(), events);
+                // Java: thread.setPrintHandler(Event.makeDebugPrintHandler(env.getListener())):
+                // `call_implementation` has reported print() output as it happened.
 
                 let body = (|| -> Result<FetchBody, FetchBodyError> {
                     match context.abort {

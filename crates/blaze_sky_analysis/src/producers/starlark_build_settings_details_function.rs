@@ -92,7 +92,8 @@ fn compute(
         value.build_setting_to_default.insert(
             rule.get_label().clone(),
             if build_setting.allows_multiple() {
-                StarlarkOptionValue::List(vec![default])
+                // ImmutableList.of(rule.getAttr(STARLARK_BUILD_SETTING_DEFAULT_ATTR_NAME))
+                StarlarkOptionValue::list(vec![default])
             } else {
                 default
             },

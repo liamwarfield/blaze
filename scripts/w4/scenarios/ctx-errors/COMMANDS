@@ -1,0 +1,38 @@
+# S2-7, S2-9, S2-4: errors Bazel raises (exit codes and first message lines are compared;
+# the Starlark error text is on later lines of each message).
+# Steps frag_undeclared_getattr_default and frag_undeclared_hasattr need a fallible attribute
+# hook in the vendored starlark-rust (see the wave report).
+run build //:frag_undeclared
+run build //:frag_undeclared_getattr_default
+run build //:frag_undeclared_hasattr
+run build //:frag_unknown
+run build //:frag_unknown_getattr_default
+run build //:frag_declared
+run build //:outputs_unknown
+run build //:outputs_unknown_getattr_default
+run build //:attr_unknown
+run build //:attr_unknown_getattr_default
+run build //:runfiles_symlinks_list
+run build //:runfiles_root_symlinks_list
+run build //:runfiles_collect_data_int
+run build //:runfiles_collect_default_none
+run build //:runfiles_ok
+run build //:run_use_default_shell_env_int
+run build //:run_shell_use_default_shell_env_none
+run build //:run_toolchain_int
+run build //:run_shell_toolchain_list
+run build //:run_outputs_depset
+run build //:run_inputs_string
+run build //:run_env_list
+run build //:run_tools_string
+run build //:run_unused_inputs_list_string
+run build //:run_resource_set_int
+run build //:run_outputs_strings
+run build //:run_ok
+cat bazel-bin/frag_unknown_getattr_default.txt
+cat bazel-bin/frag_declared.txt
+cat bazel-bin/outputs_unknown_getattr_default.txt
+cat bazel-bin/attr_unknown_getattr_default.txt
+cat bazel-bin/runfiles_ok.txt
+cat bazel-bin/run_ok.txt
+aquery //:run_ok

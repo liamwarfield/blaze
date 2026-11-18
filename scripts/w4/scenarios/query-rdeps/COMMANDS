@@ -1,0 +1,22 @@
+# Analysis review S1-8: PostAnalysisQueryEnvironment.filterReverseDeps tests
+# `parent.dependency instanceof RuleConfiguredTarget`, which is never true for aquery's node type
+# (ConfiguredTargetValue), so aquery's rdeps() is not filtered by --noimplicit_deps; cquery's is.
+aquery --noimplicit_deps "rdeps(//a/..., //a:tool)"
+aquery "rdeps(//a/..., //a:tool)"
+run cquery --noimplicit_deps "rdeps(//a/..., //a:tool)" --output=label_kind
+run cquery "rdeps(//a/..., //a:tool)" --output=label_kind
+aquery --noimplicit_deps "rdeps(//a/..., //a:other_tool)"
+run cquery --noimplicit_deps "rdeps(//a/..., //a:other_tool)" --output=label_kind
+run cquery "rdeps(//a/..., //a:other_tool, 1)" --output=label_kind
+run cquery --noimplicit_deps "deps(//a:over_implicit)" --output=label_kind
+aquery --noimplicit_deps "deps(//a:over_implicit)"
+# A target without reverse dependencies is reported as missing (ImmutableListMultimap drops keys
+# without values in skipDelegatingAncestors).
+run cquery "rdeps(//a/..., //a:over_explicit)" --output=label_kind
+# Reverse dependencies of a source file and of an output file: dropped by cquery, kept by aquery.
+aquery --noimplicit_deps "rdeps(//a/..., //a:data.txt, 1)"
+run cquery --noimplicit_deps "rdeps(//a/..., //a:data.txt, 1)" --output=label_kind
+run cquery "rdeps(//a/..., //a:data.txt, 1)" --output=label_kind
+aquery --noimplicit_deps "rdeps(//a/..., //a:gen.out)"
+run cquery --noimplicit_deps "rdeps(//a/..., //a:gen.out)" --output=label_kind
+run cquery "rdeps(//a/..., //a:gen.out)" --output=label_kind

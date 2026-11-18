@@ -30,6 +30,10 @@ by adding.
 | 0017 | applied | a function's defining module (`eval::DefModule`, `Evaluator::innermost_enclosing_def_module`) |
 | 0018 | applied | immutable dicts on a mutable heap (`dict::alloc_immutable_dict`, `dict::dict_is_immutable`) |
 | 0019 | applied | `dict.get` / `dict.setdefault` accept `default` by name |
+| 0020 | applied | Bazel 9.3.2 type syntax in `DialectTypes::ParseOnly` (tolerant, unresolved annotations; `cast`, `isinstance`, `type X = T`, `def f[T]`); var statements fail loudly |
+| 0021 | applied | `FrozenModule::names_any_visibility` (Java `Module.getGlobals`) |
+| 0022 | applied | a function's defining module's extra value (`DefModule::frozen_extra_value`) |
+| 0023 | applied | mutating a frozen list or dict fails with Java's text (part of 0010) |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -248,3 +252,71 @@ the native stack; Blaze runs evaluation on threads with large stacks
 - Fix: `types/dict/methods.rs`: drop `require = pos` from `default` in `get` and `setdefault`
   (`pop` already accepted it). `key` stays positional-only, as in Java.
 - Test: `patch_0019_dict_named_default`.
+
+## 0020 — Bazel 9.3.2 type syntax (`DialectTypes::ParseOnly`)
+
+- Gap: `--experimental_starlark_type_syntax` defaults to true at 9.3.2
+  (lib/packages/semantics/FlagConstants.java:36) and type checking to false, so
+  BzlCompileFunction.java:199-214 parses every non-prelude .bzl with `allowTypeSyntax(true)`,
+  `resolveTypeSyntax(false)`, `tolerateInvalidTypeExpressions(true)`: annotations are arbitrary
+  expressions (net/starlark/java/syntax/Parser.java:1084 `parseTypeExprWithFallback` calls
+  `parseTest`), the Resolver does not visit them (Resolver.java:874, 883, 1030) and the evaluator
+  ignores them. starlark-rust's `ParseOnly` still required well-formed type expressions
+  (`TypeExprUnpackP::unpack`) and resolved their identifiers (undefined names and locals were
+  errors), and has no `cast`, `isinstance`, type alias or type parameter syntax.
+- Fix (all only when `enable_types == ParseOnly`; `Disable` and `Enable` are unchanged):
+  - `starlark_syntax/src/syntax/grammar_util.rs` `dialect_check_type`: no structural check.
+  - `starlark/src/eval/compiler/scope.rs` `resolve_idents_in_type_expr`: not resolved
+    (`ModuleScopeBuilder::resolve_type_exprs`).
+  - `starlark/src/eval/compiler/module.rs`: annotations are not evaluated at compile time
+    (`populate_types_in_stmt` only when `check_types`); `expr_for_type` already ignored them.
+  - `starlark_syntax/src/syntax/parser_rd.rs`: `cast` and `isinstance` are keywords
+    (Lexer.java:615): `cast(T, e[,])` parses to `e` (Parser.java:558, Eval.java:568),
+    `isinstance(e, T[,])` is the resolver error "isinstance() is not yet supported"
+    (Resolver.java:897), and neither is accepted as an identifier; `type X[T, ..] = T` at top
+    level is a `pass` (Parser.java:1235, Resolver.java:623, Eval.java:322), inside a `def` the
+    error "type alias statement not at top level" (Resolver.java:906); `def f[T, U](..)` type
+    parameters are parsed and dropped (Parser.java:1255).
+- Not ported: a var statement (`x: T` without a value) binds `x` in the enclosing block with no
+  value (Resolver.java:562); the AST has no node for that, so the parser returns an error whose
+  message starts with `grammar_util::BLAZE_TYPE_SYNTAX_NOT_PORTED`, which BZL_COMPILE turns into
+  `unported!`. `...` stays accepted outside annotations (upstream behaviour for every
+  non-`Disable` mode; Java: only inside type expressions). Doc comments (`#:`) are comments.
+- Users: blaze_starlark `FileKind::dialect_with_options` / `eval::compile_with_options`
+  (BZL_COMPILE's `shouldUseTypeSyntax`).
+- Test: `patch_0020_bazel_type_syntax`.
+
+## 0021 — every binding of a frozen module
+
+- Gap: Java `Module.getGlobals()` returns all global bindings; PackageFunction.java:1068 takes
+  the BUILD prelude's (`_x` names and, since the prelude is compiled with `loadBindsGlobally`,
+  load-bound names included). `FrozenModule::names()` lists public names only.
+- Fix: `starlark/src/environment/modules.rs` `FrozenModule::names_any_visibility()`; values are
+  read with the existing `get_any_visibility`.
+- Test: `patch_0021_frozen_module_names_any_visibility`.
+
+## 0022 — the extra value of a function's defining module
+
+- Gap: 0017's `DefModule` identifies a module by its compiled file name, but Bazel executes one
+  compiled .bzl into several modules (BzlLoadFunction.java:907-918: `KeyForBuild` /
+  `KeyForBzlmod` and `KeyForBzlmodBootstrap` with different repo mappings), and reads the
+  module's client data from the function itself (`BazelModuleContext.of(fn.getModule())`,
+  lib/cmdline/BazelModuleContext.java:163-187).
+- Fix: `environment/modules.rs`: `FrozenModuleData` keeps the frozen `extra_value` (also still
+  on `FrozenModule`); `eval/compiler/def.rs` `DefModule::frozen_extra_value()`. For a function
+  whose module still executes the caller reads `Evaluator::module().extra_value()`.
+- Users: blaze_starlark `defining_module::module_extra_value_of_function` /
+  `module_extra_value_of_innermost_enclosing_starlark_function`; blaze_packages
+  `BazelModuleContext::of_function` / `of_innermost_bzl`; `Label()`.
+- Test: `patch_0022_def_module_frozen_extra_value`.
+
+## 0023 — error text for mutating a frozen list or dict
+
+- Gap: Java `Starlark.checkMutable` (net/starlark/java/eval/Starlark.java) fails with "trying to
+  mutate a frozen list value" / "... dict value"; starlark-rust says "Immutable" for values on a
+  frozen heap (0016 and 0018 already use Java's text for flagged-immutable values). Needed by
+  PackageFunctionTest.testPreludeSymbolCannotBeMutated. This is the part of queued patch 0010
+  (error texts where a test needs them) for these two types.
+- Fix: `types/list/value.rs` (`ListData::from_value_mut`, `FrozenListData::set_at`),
+  `types/dict/refs.rs` (`DictMut::from_value`), `types/dict/value.rs` (`FrozenDictData::set_at`).
+- Test: `patch_0023_frozen_mutation_text`.

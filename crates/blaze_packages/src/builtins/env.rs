@@ -7,9 +7,11 @@
 //! `StructProvider.STRUCT.create(...)` calls that build the `native` object.
 //!
 //! PORT: Java resolves a .bzl file against the predeclared map and reports an inaccessible
-//! guarded symbol with `getErrorFromAttemptingAccess`. starlark-rust resolves against a `Globals`,
-//! so [`build_globals`] leaves inaccessible symbols out (the error then is starlark-rust's
-//! "not found" text).
+//! guarded symbol with `getErrorFromAttemptingAccess` (`Module.resolve`). starlark-rust resolves
+//! against a `Globals`, so [`build_globals`] leaves inaccessible symbols out and starlark-rust
+//! reports its own undefined-variable error for a use of one. The code that reports that error
+//! replaces it by Java's message: [`undefined_variable_name`] extracts the name from
+//! starlark-rust's error and [`guarded_symbol_error`] gives the guard's message for it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -170,6 +172,73 @@ impl Guard {
     }
 }
 
+/// Java `Module.resolve(name)` for a predeclared name whose `GuardedValue` is not accessible
+/// ("Name is correctly spelled, but access is disabled by a flag or by client data"): the
+/// message of the `Undefined` error, which the resolver reports as is at the identifier
+/// (`Resolver.use`: `errorf(id, "%s", ex.getMessage())`, no "name ... is not defined" prefix and
+/// no spelling suggestion). `None` if `env` (the predeclared environment the file is compiled
+/// against) has no such name, or the name is accessible for `semantics` and `compile_label`.
+// Java: net/starlark/java/eval/Module.java:237 Module.resolve
+pub fn guarded_symbol_error(
+    env: &StarlarkEnv,
+    name: &str,
+    semantics: &StarlarkSemantics,
+    compile_label: Option<&Label>,
+) -> Option<String> {
+    // `Object v = getPredeclared(name)`: filterGuardedValue leaves a disabled GuardedValue in
+    // place for error reporting.
+    let guard = env.get(name)?.guard.as_ref()?;
+    if guard.is_object_accessible_using_semantics(semantics, compile_label) {
+        return None;
+    }
+    // `throw new Undefined(((GuardedValue) v).getErrorFromAttemptingAccess(name));`
+    Some(guard.get_error_from_attempting_access(name))
+}
+
+/// [`guarded_symbol_error`] for every name of `env` that is not accessible: the names
+/// [`build_globals`] leaves out, each with Java's error for a use of it.
+// Java: net/starlark/java/eval/Module.java:237 Module.resolve
+pub fn guarded_symbol_errors(
+    env: &StarlarkEnv,
+    semantics: &StarlarkSemantics,
+    compile_label: Option<&Label>,
+) -> IndexMap<String, String> {
+    let mut errors = IndexMap::new();
+    for (name, entry) in env {
+        if let Some(guard) = &entry.guard
+            && !guard.is_object_accessible_using_semantics(semantics, compile_label)
+        {
+            errors.insert(name.clone(), guard.get_error_from_attempting_access(name));
+        }
+    }
+    errors
+}
+
+/// The name in the message of starlark-rust's undefined-variable error, or `None` if `message`
+/// is not exactly such a message.
+///
+/// starlark-rust's scope resolver (`ModuleScopeBuilder::variable_not_found_err`) reports a name
+/// that is neither bound in the file nor in the `Globals` as `ScopeError::VariableNotFound`
+/// ("Variable `{0}` not found") or `ScopeError::VariableNotFoundDidYouMean`
+/// ("Variable `{0}` not found, did you mean `{1}`?"); an identifier contains no backquote.
+// PORT: Java `Resolver.Module.Undefined`; see third_party/starlark-rust
+// starlark/src/eval/compiler/scope.rs `ScopeError`.
+pub fn undefined_variable_name(message: &str) -> Option<&str> {
+    let rest = message.strip_prefix("Variable `")?;
+    let (name, rest) = rest.split_once("` not found")?;
+    if name.is_empty() || name.contains('`') {
+        return None;
+    }
+    if rest.is_empty() {
+        return Some(name);
+    }
+    let suggestion = rest.strip_prefix(", did you mean `")?.strip_suffix("`?")?;
+    if suggestion.is_empty() || suggestion.contains('`') {
+        return None;
+    }
+    Some(name)
+}
+
 /// One predeclared symbol: its value (Java `GuardedValue.getObject()` for guarded ones) and its
 /// guard, if any.
 #[derive(Clone)]
@@ -268,6 +337,9 @@ pub fn struct_fields(value: &OwnedFrozenValue) -> StarlarkEnv {
 /// The `Globals` of an environment for one file: the universe plus every entry accessible for
 /// `semantics` and `compile_label`. Accessibility of a name is decided by `guards` (the
 /// uninjected environment the file is compiled against) when given, else by the entry itself.
+///
+/// A name that is not accessible is left out; Java's error for a use of it is
+/// [`guarded_symbol_error`] of the environment that decided (`guards`, else `env`).
 pub fn build_globals(
     env: &StarlarkEnv,
     guards: Option<&StarlarkEnv>,
@@ -280,10 +352,10 @@ pub fn build_globals(
             Some(g) => g.get(name).and_then(|e| e.guard.clone()),
             None => entry.guard.clone(),
         };
-        if let Some(guard) = guard {
-            if !guard.is_object_accessible_using_semantics(semantics, compile_label) {
-                continue;
-            }
+        if let Some(guard) = guard
+            && !guard.is_object_accessible_using_semantics(semantics, compile_label)
+        {
+            continue;
         }
         // Java hides flag-disabled members of builtin objects per semantics
         // (`@StarlarkMethod(disableWithFlag = ...)`); `attr.license` is the one that matters for
@@ -338,5 +410,156 @@ impl GlobalsCache {
         let globals = Arc::new(build_globals(env, guards, semantics, compile_label));
         self.cache.lock().insert(key, globals.clone());
         globals
+    }
+}
+
+#[cfg(test)]
+mod guarded_symbol_tests {
+    use super::*;
+
+    fn none() -> OwnedFrozenValue {
+        freeze_value(|_| Value::new_none())
+    }
+
+    fn semantics() -> StarlarkSemantics {
+        StarlarkSemantics::default()
+    }
+
+    // The message formats are those of starlark-rust's `ScopeError` (see
+    // third_party/starlark-rust starlark/src/eval/compiler/scope.rs):
+    //   #[error("Variable `{0}` not found")]
+    //   #[error("Variable `{0}` not found, did you mean `{1}`?")]
+    #[test]
+    fn undefined_variable_name_reads_starlark_rusts_scope_errors() {
+        assert_eq!(
+            undefined_variable_name("Variable `CcInfo` not found"),
+            Some("CcInfo")
+        );
+        assert_eq!(
+            undefined_variable_name("Variable `CcInfo` not found, did you mean `DefaultInfo`?"),
+            Some("CcInfo")
+        );
+        assert_eq!(undefined_variable_name("Variable `` not found"), None);
+        assert_eq!(
+            undefined_variable_name("Variable `x` not found and more"),
+            None
+        );
+        assert_eq!(
+            undefined_variable_name("Error: Variable `x` not found"),
+            None
+        );
+        assert_eq!(
+            undefined_variable_name("Local variable `x` referenced before assignment"),
+            None
+        );
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/BaseRuleClasses.java:502 BaseRuleClasses.createEmptySymbol
+    //   return """
+    //       The %s symbol has been removed, add the following to your BUILD/bzl file:
+    //
+    //       load("%s", "%s")
+    //       """
+    //       .formatted(name, bzlLoadLabel, name);
+    #[test]
+    fn removed_symbol_gives_the_empty_symbol_message() {
+        let mut env = StarlarkEnv::new();
+        env.insert(
+            "CcInfo".to_owned(),
+            EnvEntry::guarded(
+                none(),
+                Guard::Removed {
+                    bzl_load_label: "@rules_cc//cc/common:cc_info.bzl",
+                },
+            ),
+        );
+        env.insert("plain".to_owned(), EnvEntry::plain(none()));
+        assert_eq!(
+            guarded_symbol_error(&env, "CcInfo", &semantics(), None),
+            Some(
+                "The CcInfo symbol has been removed, add the following to your BUILD/bzl \
+                 file:\n\nload(\"@rules_cc//cc/common:cc_info.bzl\", \"CcInfo\")\n"
+                    .to_owned()
+            )
+        );
+        // An unguarded name and an unknown name have no guard error.
+        assert_eq!(
+            guarded_symbol_error(&env, "plain", &semantics(), None),
+            None
+        );
+        assert_eq!(guarded_symbol_error(&env, "nope", &semantics(), None), None);
+        let all = guarded_symbol_errors(&env, &semantics(), None);
+        assert_eq!(all.keys().collect::<Vec<_>>(), vec!["CcInfo"]);
+    }
+
+    // Java: net/starlark/java/eval/FlagGuardedValue.java:36 FlagGuardedValue.onlyWhenExperimentalFlagIsTrue
+    //   return name
+    //       + " is experimental and thus unavailable with the current flags. It may be enabled by"
+    //       + " setting --"
+    //       + flag.substring(1);
+    // Java: net/starlark/java/eval/FlagGuardedValue.java:70 FlagGuardedValue.onlyWhenIncompatibleFlagIsFalse
+    //   return name
+    //       + " is deprecated and will be removed soon. It may be temporarily re-enabled by"
+    //       + " setting --"
+    //       + flag.substring(1)
+    //       + "=false";
+    #[test]
+    fn flag_guarded_symbols_give_the_flag_messages_only_when_disabled() {
+        let mut env = StarlarkEnv::new();
+        env.insert(
+            "experimental_thing".to_owned(),
+            EnvEntry::guarded(
+                none(),
+                Guard::WhenExperimentalFlagIsTrue {
+                    flag: "experimental_thing_flag",
+                    get: |_| false,
+                },
+            ),
+        );
+        env.insert(
+            "enabled_thing".to_owned(),
+            EnvEntry::guarded(
+                none(),
+                Guard::WhenExperimentalFlagIsTrue {
+                    flag: "experimental_enabled_flag",
+                    get: |_| true,
+                },
+            ),
+        );
+        env.insert(
+            "old_thing".to_owned(),
+            EnvEntry::guarded(
+                none(),
+                Guard::WhenIncompatibleFlagIsFalse {
+                    flag: "incompatible_no_old_thing",
+                    get: |_| true,
+                },
+            ),
+        );
+        assert_eq!(
+            guarded_symbol_error(&env, "experimental_thing", &semantics(), None),
+            Some(
+                "experimental_thing is experimental and thus unavailable with the current \
+                 flags. It may be enabled by setting --experimental_thing_flag"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            guarded_symbol_error(&env, "enabled_thing", &semantics(), None),
+            None
+        );
+        assert_eq!(
+            guarded_symbol_error(&env, "old_thing", &semantics(), None),
+            Some(
+                "old_thing is deprecated and will be removed soon. It may be temporarily \
+                 re-enabled by setting --incompatible_no_old_thing=false"
+                    .to_owned()
+            )
+        );
+        let all = guarded_symbol_errors(&env, &semantics(), None);
+        assert_eq!(
+            all.keys().collect::<Vec<_>>(),
+            vec!["experimental_thing", "old_thing"]
+        );
     }
 }

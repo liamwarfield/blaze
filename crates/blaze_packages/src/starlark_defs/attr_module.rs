@@ -27,6 +27,7 @@ use starlark::values::Trace;
 use starlark::values::Value;
 use starlark::values::ValueLifetimeless;
 use starlark::values::ValueLike;
+use starlark::values::dict::DictRef;
 use starlark::values::starlark_value;
 
 use super::aspect::aspect_info_of;
@@ -59,8 +60,10 @@ use crate::types::AttrValue;
 use crate::types::FileType;
 use crate::types::FileTypeSet;
 use crate::types::LabelClass;
+use crate::types::LabelConverter;
 use crate::types::Type;
 use crate::types::build_type::maybe_get_non_configurable_reason;
+use blaze_starlark::label::LabelValue;
 
 // Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkAttrModuleApi.java:82 StarlarkAttrModuleApi (argument names; the others are the Rust parameter names).
 const ALLOW_FILES_ARG: &str = "allow_files";
@@ -301,8 +304,13 @@ fn non_none<'v>(v: Option<Value<'v>>) -> Option<Value<'v>> {
 // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttrModule.java:108 StarlarkAttrModule.checkContext
 fn check_context(eval: &Evaluator, what: &str) -> starlark::Result<()> {
     // PORT: Java tests the RuleDefinitionEnvironment thread-local of BUILD threads; in Blaze a
-    // BUILD (or macro) evaluation carries the package builder payload.
-    if TargetDefinitionContext::from_or_null(eval).is_some() {
+    // BUILD (or macro) evaluation carries the package builder payload. While a rule initializer
+    // runs, the builder is off the thread (StarlarkRuleFunction.call) but the thread is still
+    // the BUILD thread: it then carries the initializer's LabelConverter thread-local.
+    if TargetDefinitionContext::from_or_null(eval).is_some()
+        || blaze_starlark::ThreadContext::get(eval)
+            .is_ok_and(|cx| cx.get_thread_local::<Arc<LabelConverter>>().is_some())
+    {
         // BUILD initialization.
         return Ok(());
     }
@@ -638,7 +646,9 @@ pub fn build_provider_predicate(
     if is_list_of_providers {
         Ok(vec![get_starlark_provider_identifiers(obj, argument_name)?])
     } else {
-        let mut providers_list = Vec::new();
+        // Java: `Sequence.cast(obj, Sequence.class, argumentName)` checks every element of the
+        // outer list before getProvidersList looks into any sublist.
+        let mut list_of_lists = Vec::new();
         for (i, sublist) in obj.iter().enumerate() {
             let Some(elems) = sequence_elements(*sublist) else {
                 return Err(errorf(format!(
@@ -646,7 +656,12 @@ pub fn build_provider_predicate(
                     starlark_type(*sublist)
                 )));
             };
-            providers_list.push(get_starlark_provider_identifiers(&elems, argument_name)?);
+            list_of_lists.push(elems);
+        }
+        // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttrModule.java:613 StarlarkAttrModule.getProvidersList
+        let mut providers_list = Vec::new();
+        for elems in &list_of_lists {
+            providers_list.push(get_starlark_provider_identifiers(elems, argument_name)?);
         }
         Ok(providers_list)
     }
@@ -756,6 +771,51 @@ fn configurable_param<'v>(func: &str, v: Option<Value<'v>>) -> starlark::Result<
     }
 }
 
+/// The interpreter's check of the `default` argument against the classes its `@Param` allows
+/// (`allowedTypes`, or the Java parameter type): `accepts` is the `isInstance` test of those
+/// classes and `want` is `ParamDescriptor.getTypeErrorMessage()` (the classes' Starlark names
+/// joined as "a", "a or b" or "a, b, or c", without the undocumented `NativeComputedDefault`).
+/// An absent argument takes the parameter's default value, which is not checked.
+// Java: net/starlark/java/eval/BuiltinFunction.java:498 BuiltinFunction.checkParamValue
+// Java: net/starlark/java/eval/ParamDescriptor.java:123 ParamDescriptor.getTypeErrorMessage
+fn check_default_param<'v>(
+    func: &str,
+    default: Option<Value<'v>>,
+    accepts: impl Fn(Value<'v>) -> bool,
+    want: &str,
+) -> starlark::Result<()> {
+    match default {
+        Some(d) if !accepts(d) => Err(super::util::param_type_error(func, DEFAULT_ARG, d, want)),
+        _ => Ok(()),
+    }
+}
+
+/// Java `x instanceof Sequence`: a list, a tuple or a range
+/// (net/starlark/java/eval/{StarlarkList,Tuple,RangeList}.java).
+fn is_java_sequence(v: Value) -> bool {
+    sequence_elements(v).is_some() || v.get_type() == "range"
+}
+
+/// Java `x instanceof Dict`.
+fn is_java_dict(v: Value) -> bool {
+    DictRef::from_value(v).is_some()
+}
+
+/// Java `x instanceof StarlarkInt`.
+fn is_java_starlark_int(v: Value) -> bool {
+    v.get_type() == "int"
+}
+
+/// Java `x instanceof Label`.
+fn is_java_label(v: Value) -> bool {
+    v.downcast_ref::<LabelValue>().is_some()
+}
+
+/// Java `x instanceof NativeComputedDefaultApi` (undocumented; never named in error messages).
+fn is_native_computed_default(v: Value) -> bool {
+    v.get_type() == "NativeComputedDefault"
+}
+
 // -------------------------------------------------------------------------------------------
 // The `attr` module
 
@@ -857,6 +917,8 @@ fn attr_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] values: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
+        // Java: `StarlarkInt defaultValue`.
+        check_default_param("int", default, is_java_starlark_int, "int")?;
         // TODO(bazel-team): Replace literal strings with constants.
         check_context(eval, "attr.int()")?;
         let doc = doc_param("int", doc)?;
@@ -921,6 +983,21 @@ fn attr_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] flags: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
+        // Java: @ParamType Label, String, LateBoundDefaultApi, NativeComputedDefaultApi,
+        // StarlarkFunction, NoneType.
+        check_default_param(
+            "label",
+            default,
+            |d| {
+                is_java_label(d)
+                    || d.unpack_str().is_some()
+                    || late_bound_default_of(d).is_some()
+                    || is_native_computed_default(d)
+                    || is_starlark_function(d)
+                    || d.is_none()
+            },
+            "Label, string, LateBoundDefault, function, or NoneType",
+        )?;
         check_context(eval, "attr.label()")?;
         check_materializer_flag(eval, materializer)?;
         let doc = doc_param("label", doc)?;
@@ -955,6 +1032,13 @@ fn attr_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] doc: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
+        // Java: @ParamType Sequence<String>, NativeComputedDefaultApi.
+        check_default_param(
+            "string_list",
+            default,
+            |d| is_java_sequence(d) || is_native_computed_default(d),
+            "sequence",
+        )?;
         check_context(eval, "attr.string_list()")?;
         let doc = doc_param("string_list", doc)?;
         let args = AttrArgs {
@@ -977,6 +1061,8 @@ fn attr_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] doc: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
+        // Java: @ParamType Sequence<StarlarkInt>.
+        check_default_param("int_list", default, is_java_sequence, "sequence")?;
         check_context(eval, "attr.int_list()")?;
         let doc = doc_param("int_list", doc)?;
         let args = AttrArgs {
@@ -1008,6 +1094,13 @@ fn attr_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] aspects: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
+        // Java: @ParamType Sequence<Label>, StarlarkFunction.
+        check_default_param(
+            "label_list",
+            default,
+            |d| is_java_sequence(d) || is_starlark_function(d),
+            "sequence or function",
+        )?;
         check_context(eval, "attr.label_list()")?;
         check_materializer_flag(eval, materializer)?;
         let doc = doc_param("label_list", doc)?;
@@ -1040,6 +1133,13 @@ fn attr_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
         check_dormant_deps_flag(eval, "dormant_label")?;
+        // Java: @ParamType Label, String, NoneType.
+        check_default_param(
+            "dormant_label",
+            default,
+            |d| is_java_label(d) || d.unpack_str().is_some() || d.is_none(),
+            "Label, string, or NoneType",
+        )?;
         check_context(eval, "attr.dormant_label()")?;
         let doc = doc_param("dormant_label", doc)?;
         let args = AttrArgs {
@@ -1062,6 +1162,8 @@ fn attr_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
         check_dormant_deps_flag(eval, "dormant_label_list")?;
+        // Java: @ParamType Sequence<Label>.
+        check_default_param("dormant_label_list", default, is_java_sequence, "sequence")?;
         check_context(eval, "attr.dormant_label_list()")?;
         let doc = doc_param("dormant_label_list", doc)?;
         let args = AttrArgs {
@@ -1097,6 +1199,13 @@ fn attr_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] aspects: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
+        // Java: @ParamType Dict, StarlarkFunction.
+        check_default_param(
+            "string_keyed_label_dict",
+            default,
+            |d| is_java_dict(d) || is_starlark_function(d),
+            "dict or function",
+        )?;
         check_context(eval, "attr.string_keyed_label_dict()")?;
         let doc = doc_param("string_keyed_label_dict", doc)?;
         let args = AttrArgs {
@@ -1141,6 +1250,13 @@ fn attr_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] aspects: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
+        // Java: @ParamType Dict, StarlarkFunction.
+        check_default_param(
+            "label_keyed_string_dict",
+            default,
+            |d| is_java_dict(d) || is_starlark_function(d),
+            "dict or function",
+        )?;
         check_context(eval, "attr.label_keyed_string_dict()")?;
         let doc = doc_param("label_keyed_string_dict", doc)?;
         let args = AttrArgs {
@@ -1186,6 +1302,8 @@ fn attr_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] aspects: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
+        // Java: `Dict<?, ?> defaultValue`.
+        check_default_param("label_list_dict", default, is_java_dict, "dict")?;
         check_context(eval, "attr.label_list_dict()")?;
         let doc = doc_param("label_list_dict", doc)?;
         let args = AttrArgs {
@@ -1212,16 +1330,18 @@ fn attr_methods(builder: &mut MethodsBuilder) {
     fn bool<'v>(
         #[starlark(this)] _this: Value<'v>,
         #[starlark(require = named)] configurable: Option<Value<'v>>,
-        #[starlark(require = named, default = false)] default: bool,
+        #[starlark(require = named)] default: Option<Value<'v>>,
         #[starlark(require = named)] doc: Option<Value<'v>>,
         #[starlark(require = named, default = false)] mandatory: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
+        // Java: `Boolean defaultValue` (defaultValue = "False").
+        check_default_param("bool", default, |d| d.unpack_bool().is_some(), "bool")?;
         check_context(eval, "attr.bool()")?;
         let doc = doc_param("bool", doc)?;
         let args = AttrArgs {
             configurable: configurable_param("bool", configurable)?,
-            default: Some(Value::new_bool(default)),
+            default: Some(default.unwrap_or_else(|| Value::new_bool(false))),
             mandatory: Some(mandatory),
             ..Default::default()
         };
@@ -1275,6 +1395,8 @@ fn attr_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named, default = false)] mandatory: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
+        // Java: `Dict<?, ?> defaultValue`.
+        check_default_param("string_dict", default, is_java_dict, "dict")?;
         check_context(eval, "attr.string_dict()")?;
         let doc = doc_param("string_dict", doc)?;
         let args = AttrArgs {
@@ -1297,6 +1419,8 @@ fn attr_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named, default = false)] mandatory: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Descriptor<'v>> {
+        // Java: `Dict<?, ?> defaultValue`.
+        check_default_param("string_list_dict", default, is_java_dict, "dict")?;
         check_context(eval, "attr.string_list_dict()")?;
         let doc = doc_param("string_list_dict", doc)?;
         let args = AttrArgs {

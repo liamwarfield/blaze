@@ -326,8 +326,16 @@ impl OutputFormatterCallback<CqueryNode> for ProtoOutputFormatterCallback<'_> {
     fn process_output(&self, partial_result: &[CqueryNode]) -> Result<(), OutputFormatterError> {
         let options = self.base.options;
         let formatter = ProtoOutputFormatter::new(ProtoKind::Proto);
+        let mut formatter_options = as_query_options(options);
+        // PORT: Java's ConfiguredProtoOutputFormatter overrides ProtoOutputFormatter.addAttributes
+        // and its override never adds the "$internal_attr_hash" attribute, the only use of
+        // includeSyntheticAttributeHash: cquery ignores --proto:include_synthetic_attribute_hash
+        // (scripts/w4/scenarios/query-errors). The base add_attributes still runs here (see
+        // below), so the flag is cleared for it.
+        // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:343 ConfiguredProtoOutputFormatter.addAttributes
+        formatter_options.proto_include_synthetic_attribute_hash = false;
         formatter.set_options(
-            &as_query_options(options),
+            &formatter_options,
             self.resolver.clone(),
             self.hash_function,
         );

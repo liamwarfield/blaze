@@ -15,7 +15,10 @@ use blaze_sky_top::build_tool::{BuildRequest, BuildTool};
 use parking_lot::RwLock;
 
 use crate::buildtool::cquery_processor::CqueryProcessor;
-use crate::commands::{PostAnalysisCommandEnvironment, main_repo_target_parser, read_query};
+use crate::commands::{
+    PostAnalysisCommandEnvironment, main_repo_target_parser, read_query,
+    tracks_state_for_incrementality,
+};
 use crate::cquery::config_function::ConfigFunctionSlot;
 use crate::cquery::configured_target_query_environment::{CqueryNode, functions};
 
@@ -133,7 +136,9 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
             target_pattern_set.insert(p);
         });
         top_level_targets = target_pattern_set.iter().cloned().collect();
-        // PORT: targetsForProjectResolution only feeds PROJECT.scl resolution (not ported).
+        // PORT: targetsForProjectResolution (the first pattern of a somepath()/allpaths() query)
+        // is only read by BuildTool's PROJECT.scl resolution, which belongs to
+        // blaze_sky_top::build_tool (BuildTool.java:342) and is not ported there.
     }
 
     let request = BuildRequest::new(
@@ -143,8 +148,9 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
         /* check_for_action_conflicts= */ false,
         /* report_incompatible_targets= */ false,
     );
-    // PORT: QueryCommandUtils.resetDeserializedKeysFromRemoteAnalysisCache only matters with
-    // remote analysis caching (not ported).
+    // PORT: skipped, incremental: QueryCommandUtils.resetDeserializedKeysFromRemoteAnalysisCache
+    // deletes the values a previous command of the server deserialized from the remote analysis
+    // cache.
     let processor = CqueryProcessor::new(
         Some(expr),
         main_repo_target_parser,
@@ -153,6 +159,7 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
         env.reporter.clone(),
         env.output.clone(),
         env.working_directory.clone(),
+        tracks_state_for_incrementality(env),
     );
     BuildTool::new(
         env.skyframe_executor,

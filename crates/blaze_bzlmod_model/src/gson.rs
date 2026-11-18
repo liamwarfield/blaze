@@ -335,6 +335,9 @@ impl<'a> LenientReader<'a> {
                                 continue;
                             }
                         }
+                        // PORT: byte-strings: Java keeps an unpaired surrogate escape as its
+                        // UTF-16 code unit in the String; a Rust String cannot hold one, so it
+                        // becomes U+FFFD.
                         out.push_str(&String::from_utf16_lossy(&[unit]));
                     }
                     't' => out.push('\t'),

@@ -312,6 +312,23 @@ impl<'v> StarlarkValue<'v> for StarlarkFileProvider {
         vec!["files_to_build".to_owned()]
     }
 
+    // Java: Object.equals (FileProvider does not override it): the provider's identity.
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        Ok(
+            starlark::values::ValueLike::downcast_ref::<StarlarkFileProvider>(other)
+                .is_some_and(|o| Arc::ptr_eq(&o.0, &self.0)),
+        )
+    }
+
+    /// Hashable (Java `FileProvider.isImmutable()` is true: "immutable and Starlark-hashable")
+    /// by identity (Java `Object.hashCode`): the address of the shared provider.
+    // Java: com/google/devtools/build/lib/analysis/FileProvider.java:49 FileProvider.isImmutable
+    fn write_hash(&self, hasher: &mut starlark_map::StarlarkHasher) -> starlark::Result<()> {
+        use std::hash::Hash;
+        (Arc::as_ptr(&self.0) as usize).hash(hasher);
+        Ok(())
+    }
+
     fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
         demand.provide_value(DeeplyImmutable);
     }

@@ -271,9 +271,10 @@ fn ignore_all_rc_files_ignores_all_master_and_user_rc_files() {
 }
 
 // Java: rc_file_test.cc ParseOptionsTest.LaterIgnoreAllRcFilesValueWins
-#[test]
-#[ignore = "needs StartupOptions (client crate): 'Unknown startup option' comes from StartupOptions::ProcessArgs"]
-fn later_ignore_all_rc_files_value_wins() {}
+// PORT: ported as `later_ignore_all_rc_files_value_wins` in
+// crates/blaze_client/tests/rc_file_test.rs. It needs `StartupOptions` ("Unknown startup
+// option" comes from StartupOptions::ProcessArgs), which lives in the client crate, and
+// blaze_client depends on blaze_options.
 
 // Java: rc_file_test.cc ParseOptionsTest.IgnoreAllRcFilesIgnoresCommandLineRcFileToo
 #[test]
@@ -295,14 +296,16 @@ fn ignore_all_rc_files_ignores_command_line_rc_file_too() {
 }
 
 // Java: rc_file_test.cc ParseOptionsTest.CommandLineBazelrcHasUnknownOption
-#[test]
-#[ignore = "needs StartupOptions (client crate): 'Unknown startup option' comes from StartupOptions::ProcessArgs"]
-fn command_line_bazelrc_has_unknown_option() {}
+// PORT: ported as `command_line_bazelrc_has_unknown_option` in
+// crates/blaze_client/tests/rc_file_test.rs. It needs `StartupOptions` ("Unknown startup
+// option" comes from StartupOptions::ProcessArgs), which lives in the client crate, and
+// blaze_client depends on blaze_options.
 
 // Java: rc_file_test.cc ParseOptionsTest.BazelrcHasUnknownOption
-#[test]
-#[ignore = "needs StartupOptions (client crate): 'Unknown startup option' comes from StartupOptions::ProcessArgs"]
-fn bazelrc_has_unknown_option() {}
+// PORT: ported as `bazelrc_has_unknown_option` in
+// crates/blaze_client/tests/rc_file_test.rs. It needs `StartupOptions` ("Unknown startup
+// option" comes from StartupOptions::ProcessArgs), which lives in the client crate, and
+// blaze_client depends on blaze_options.
 
 // Java: rc_file_test.cc ParseOptionsTest.IncorrectWorkspaceBazelrcIgnoredWhenNoWorkspaceRcIsPresent
 #[test]

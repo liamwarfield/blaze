@@ -1,0 +1,41 @@
+load("//:defs.bzl", "lib")
+
+package(default_visibility = ["//visibility:public"])
+
+lib(
+    name = "x",
+    srcs = ["x.txt"],
+    deps = [
+        ":z",
+        "//b/c:twig",
+    ],
+)
+
+lib(
+    name = "y",
+    srcs = [
+        "y1.txt",
+        "y2.txt",
+    ],
+    deps = [":z"],
+)
+
+lib(
+    name = "z",
+    srcs = ["z.txt"],
+    deps = ["//b/c:leaf"],
+)
+
+lib(
+    name = "unused",
+    srcs = ["u.txt"],
+)
+
+filegroup(
+    name = "all_a",
+    srcs = [
+        ":unused",
+        ":x",
+        ":y",
+    ],
+)

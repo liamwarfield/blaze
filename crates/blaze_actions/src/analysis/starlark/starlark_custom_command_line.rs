@@ -26,6 +26,11 @@
 //! values other than strings, files, labels and roots) are kept as `OwnedFrozenValue`s, which keep
 //! their frozen heap alive; `map_each` is called later in a fresh evaluation through
 //! `blaze_starlark::eval::with_evaluator`.
+//!
+//! Strings. Argument names, values, format strings, separators and `map_each` results are
+//! Starlark strings, which are internal strings (`blaze_util::string_encoding`), as in Java.
+//! Fingerprints add them with `Fingerprint::add_string` where Java calls `addString` (see
+//! `actions::fingerprint_util`).
 
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -1948,11 +1953,9 @@ enum PreprocessedArg {
     Grouped(Vec<PreprocessedArg>),
 }
 
-/// Java `String.length()` for command line strings.
-// PORT: as in `SimpleArgChunk.totalArgLength`, the length of Bazel's internal (Latin-1) string
-// form is the UTF-8 byte count.
+/// Java `String.length()` for command line strings, which are internal strings.
 fn len(s: &str) -> i32 {
-    s.len() as i32
+    blaze_util::string_encoding::internal_length(s) as i32
 }
 
 impl PreprocessedArg {

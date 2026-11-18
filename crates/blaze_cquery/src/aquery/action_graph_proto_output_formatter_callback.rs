@@ -214,7 +214,9 @@ impl OutputFormatterCallback<KeyedConfiguredTargetValue>
         let Some(handler) = handler.as_mut() else {
             return Ok(());
         };
-        // PORT: AqueryConsumingOutputHandler (processOutputInParallel) is not ported.
+        // PORT: processOutputInParallel (AqueryConsumingOutputHandler: proto, streamed_proto and
+        // textproto) is reached through UnportedStreamedConsumingOutputHandler, which fails
+        // loudly on its first use.
         let options = self.options;
         // Enabling includeParamFiles should enable includeCommandline by default.
         // PORT: Java mutates options.includeCommandline after the dump was constructed with the

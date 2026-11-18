@@ -397,6 +397,20 @@ pub fn register_aspect(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] subrules: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<StarlarkDefinedAspect<'v>> {
+        // Java: the interpreter checks `@Param(name = "propagation_predicate", allowedTypes =
+        // {StarlarkFunction, NoneType})` before the method body
+        // (lib/starlarkbuildapi/StarlarkRuleFunctionsApi.java:913; text:
+        // net/starlark/java/eval/BuiltinFunction.java:498 BuiltinFunction.checkParamValue).
+        if let Some(raw) = propagation_predicate
+            && !raw.is_none()
+            && !is_starlark_function(raw)
+        {
+            return Err(errorf(format!(
+                "in call to aspect(), parameter 'propagation_predicate' got value of type '{}', \
+                 want 'function or NoneType'",
+                starlark_type(raw)
+            )));
+        }
         let empty = || eval.heap().alloc(Vec::<Value>::new());
         let attr_aspects = attr_aspects.unwrap_or_else(empty);
         let toolchains_aspects = toolchains_aspects.unwrap_or_else(empty);

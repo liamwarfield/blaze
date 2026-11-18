@@ -142,7 +142,13 @@ fn exec_result_methods(builder: &mut MethodsBuilder) {
 /// PORT: StringEncoding identity. Bazel's internal form of a Latin-1-decoded byte string is the
 /// bytes themselves; Blaze strings must be UTF-8, so output that is not valid UTF-8 is decoded
 /// lossily.
+// Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkExecutionResult.java:183 Builder.toString
+// Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:1643 StarlarkBaseExternalContext.readFile
 pub(crate) fn latin1_internal_string(bytes: &[u8]) -> String {
+    // PORT: byte-strings. Java decodes with ISO-8859-1 (`stream.toString(ISO_8859_1)`,
+    // `RecordingOutErr.outAsLatin1()`, `readContent(path, ISO_8859_1)`): each byte becomes one
+    // char, so the raw bytes of `execute()` output and of files read by `read()` survive, valid
+    // UTF-8 or not. Here bytes that are not valid UTF-8 become U+FFFD.
     String::from_utf8_lossy(bytes).into_owned()
 }
 

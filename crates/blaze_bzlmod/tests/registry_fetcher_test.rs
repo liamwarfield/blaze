@@ -1,8 +1,11 @@
-//! Tests for the registry fetcher stand-in (`LocalDownloadManagerFetcher`): ports of the
-//! `HttpDownloaderTest` cases on the `downloadAndRead` / `downloadAndReadOneUrlForBzlmod` path,
-//! `DownloadCacheTest` (in-memory slice), a few `HttpConnectorTest` cases, and checks of the
-//! repository-cache behaviour of `DownloadManager.downloadAndReadOneUrlForBzlmod`, against a
-//! local HTTP server on 127.0.0.1.
+//! Tests for the registry fetcher seam (`DownloadManagerRegistryFetcher` over
+//! `blaze_repo_fetch`'s `DownloadManager`): ports of the `HttpDownloaderTest` cases on the
+//! `downloadAndRead` / `downloadAndReadOneUrlForBzlmod` path, a few `HttpConnectorTest` cases,
+//! and checks of the repository-cache behaviour of
+//! `DownloadManager.downloadAndReadOneUrlForBzlmod`, against a local HTTP server on 127.0.0.1.
+//!
+//! `DownloadCacheTest` is ported in `crates/blaze_repo_fetch/tests/download_cache_test.rs` (the
+//! in-memory slice of the cache that this file used to test was the deleted stand-in's).
 
 use std::any::Any;
 use std::io::{Read, Write};
@@ -12,16 +15,13 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use blaze_bzlmod::registry_fetcher::download_cache::{
-    DEFAULT_CACHE_FILENAME, assert_file_checksum, get_cache_path, get_checksum,
-};
-use blaze_bzlmod::registry_fetcher::{
-    CAS_DIR, DownloadCacheHitEvent, IoExceptionKind, LocalDownloadCache,
-    LocalDownloadManagerFetcher, LocalHttpDownloader,
-};
+use blaze_bzlmod::registry_fetcher::{CAS_DIR, DownloadManagerRegistryFetcher};
 use blaze_bzlmod_model::registry::{RegistryException, RegistryFetcher};
 use blaze_bzlmod_model::{Checksum, JavaUri, KeyType};
 use blaze_events::{Event, EventHandler, ExtendedEventHandler, Postable};
+use blaze_repo_fetch::cache::DownloadCacheHitEvent;
+use blaze_repo_fetch::cache::download_cache::DEFAULT_CACHE_FILENAME;
+use blaze_repo_fetch::downloader::HttpDownloader;
 use indexmap::IndexMap;
 
 // ---------------------------------------------------------------------------------------------
@@ -168,15 +168,23 @@ fn sha256(bytes: &[u8]) -> Checksum {
 fn fetcher(
     repository_cache: Option<PathBuf>,
     retries: i32,
-) -> (LocalDownloadManagerFetcher, Arc<RecordingHandler>) {
+) -> (DownloadManagerRegistryFetcher, Arc<RecordingHandler>) {
     let handler = Arc::new(RecordingHandler::default());
-    let mut f = LocalDownloadManagerFetcher::new(repository_cache, handler.clone(), retries);
-    f.set_http_downloader(test_http_downloader());
+    let f = DownloadManagerRegistryFetcher::create(
+        repository_cache.as_deref(),
+        test_http_downloader(),
+        handler.clone(),
+        retries,
+    );
     (f, handler)
 }
 
-fn test_http_downloader() -> LocalHttpDownloader {
-    LocalHttpDownloader::new(0, Duration::ZERO, 8, 0.1)
+fn test_http_downloader() -> HttpDownloader {
+    HttpDownloader::new(0, Duration::ZERO, 8, 0.1)
+}
+
+fn rf_uri(uri: &JavaUri) -> blaze_repo_fetch::uri::JavaUri {
+    blaze_repo_fetch::uri::JavaUri::create(&uri.to_string()).unwrap()
 }
 
 fn no_env() -> IndexMap<String, String> {
@@ -287,10 +295,11 @@ fn download_and_read_two_urls_first_not_found_and_second_ok() {
     let handler: Arc<dyn ExtendedEventHandler> = Arc::new(RecordingHandler::default());
     let content = test_http_downloader()
         .download_and_read(
-            &[server1.url("/foo"), server2.url("/foo")],
+            &[rf_uri(&server1.url("/foo")), rf_uri(&server2.url("/foo"))],
+            Arc::new(blaze_repo_fetch::authandtls::StaticCredentials::empty()),
             None,
-            &handler,
-            &no_env(),
+            handler,
+            &std::collections::HashMap::new(),
         )
         .unwrap();
     assert_eq!(content, b"content2");
@@ -299,9 +308,62 @@ fn download_and_read_two_urls_first_not_found_and_second_ok() {
 }
 
 // Java: src/test/java/com/google/devtools/build/lib/bazel/repository/downloader/HttpDownloaderTest.java:978 HttpDownloaderTest.downloadAndReadOneUrlForBzlmod_fallsBackToNextRewrittenUrl
+// PORT: Java mocks `UrlRewriter.amend`; here a real `--downloader_config` expands the registry
+// URL into the ordered [primary, fallback] list.
 #[test]
-#[ignore = "needs UrlRewriter (--downloader_config is not ported in the stand-in)"]
-fn download_and_read_one_url_for_bzlmod_falls_back_to_next_rewritten_url() {}
+fn download_and_read_one_url_for_bzlmod_falls_back_to_next_rewritten_url() {
+    // The first (e.g. proxy/mirror) URL fails ...
+    let mut primary = Server::start(vec![lines(&[
+        "HTTP/1.1 404 Not Found",
+        "Date: Fri, 31 Dec 1999 23:59:59 GMT",
+        "Connection: close",
+        "Content-Type: text/plain",
+        "Content-Length: 0",
+        "",
+        "",
+    ])]);
+    // ... so the read must fall back to the second (e.g. direct) URL.
+    let mut fallback = Server::start(vec![lines(&[
+        "HTTP/1.1 200 OK",
+        "Date: Fri, 31 Dec 1999 23:59:59 GMT",
+        "Connection: close",
+        "Content-Type: text/plain",
+        "",
+        "content2",
+    ])]);
+    let original_url = JavaUri::new("https://example.com/foo").unwrap();
+    let config = format!(
+        "rewrite example.com/foo http://127.0.0.1:{}/foo\n\
+         rewrite example.com/foo http://127.0.0.1:{}/foo\n",
+        primary.port, fallback.port
+    );
+    let rewriter =
+        blaze_repo_fetch::downloader::UrlRewriter::new(&["downloader.cfg".to_string()], &[config])
+            .unwrap();
+
+    let handler = Arc::new(RecordingHandler::default());
+    let http_downloader = Arc::new(test_http_downloader());
+    let mut download_manager = blaze_repo_fetch::downloader::DownloadManager::new(
+        blaze_repo_fetch::cache::RepositoryCache::new()
+            .get_download_cache()
+            .clone(),
+        Arc::new(blaze_repo_fetch::downloader::DelegatingDownloader::new(
+            http_downloader.clone(),
+        )),
+        http_downloader,
+        handler,
+    );
+    download_manager.set_url_rewriter(Some(rewriter));
+    let f = DownloadManagerRegistryFetcher::new(Arc::new(download_manager));
+
+    let content = f
+        .download_and_read_one_url_for_bzlmod(&original_url, &no_env(), None)
+        .unwrap();
+
+    assert_eq!(content, b"content2");
+    assert_eq!(primary.requests().len(), 1);
+    assert_eq!(fallback.requests().len(), 1);
+}
 
 // Java: src/test/java/com/google/devtools/build/lib/bazel/repository/downloader/HttpDownloaderTest.java:1048 HttpDownloaderTest.download_contentLengthMismatch_propagateErrorIfNotRetry
 // PORT: Java mocks HttpDownloader.download; here the bzlmod path is driven by a real server whose
@@ -569,7 +631,7 @@ fn cache_hit_with_checksum_does_not_use_network() {
         vec![DownloadCacheHitEvent {
             context: "Bazel module fetching".to_string(),
             file_hash: hex,
-            uri: url,
+            uri: rf_uri(&url),
         }]
     );
 }
@@ -659,7 +721,6 @@ fn disabled_cache_writes_nothing() {
     f.download_and_read_one_url_for_bzlmod(&server.url("/x"), &no_env(), None)
         .unwrap();
     assert!(!cache.path().join(CAS_DIR).exists());
-    assert!(!f.get_download_cache().is_enabled());
 }
 
 #[test]
@@ -681,165 +742,3 @@ fn checksum_mismatch_is_not_cached() {
     );
     assert!(!cache_file(cache.path(), &checksum.to_string()).exists());
 }
-
-// ---------------------------------------------------------------------------------------------
-// DownloadCacheTest (in-memory slice)
-// ---------------------------------------------------------------------------------------------
-
-/// `echo 'contents' | sha256sum`
-const HASH: &str = "bfe5ed57e6e323555b379c660aa8d35b70c2f8f07cf03ad6747266495ac13be0";
-const CONTENTS: &[u8] = b"contents\n";
-
-fn download_cache() -> (tempfile::TempDir, LocalDownloadCache) {
-    let dir = tempfile::tempdir().unwrap();
-    let cache = LocalDownloadCache::new(Some(dir.path().join("repository_cache")));
-    (dir, cache)
-}
-
-fn cache_value(cache: &LocalDownloadCache, key: &str) -> PathBuf {
-    get_cache_path(KeyType::Sha256, cache.get_path().unwrap())
-        .join(key)
-        .join(DEFAULT_CACHE_FILENAME)
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:111 DownloadCacheTest.testNonExistentCacheValue
-#[test]
-fn test_non_existent_cache_value() {
-    let (_dir, cache) = download_cache();
-    assert!(!cache.exists(&"a".repeat(64), KeyType::Sha256));
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:118 DownloadCacheTest.testPutCacheValue
-#[test]
-fn test_put_cache_value() {
-    let (_dir, cache) = download_cache();
-    cache.put_with_key(HASH, CONTENTS, KeyType::Sha256).unwrap();
-    assert_eq!(std::fs::read(cache_value(&cache, HASH)).unwrap(), CONTENTS);
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:132 DownloadCacheTest.testPutCacheValueWithoutHash
-#[test]
-fn test_put_cache_value_without_hash() {
-    let (_dir, cache) = download_cache();
-    let cache_key = cache.put(CONTENTS, KeyType::Sha256).unwrap();
-    assert_eq!(cache_key, HASH);
-    assert_eq!(std::fs::read(cache_value(&cache, HASH)).unwrap(), CONTENTS);
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:148 DownloadCacheTest.testPutCacheValueIdempotent
-#[test]
-fn test_put_cache_value_idempotent() {
-    let (_dir, cache) = download_cache();
-    cache.put_with_key(HASH, CONTENTS, KeyType::Sha256).unwrap();
-    cache.put_with_key(HASH, CONTENTS, KeyType::Sha256).unwrap();
-    assert_eq!(std::fs::read(cache_value(&cache, HASH)).unwrap(), CONTENTS);
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:162 DownloadCacheTest.testPutCacheValueConcurrent
-#[test]
-fn test_put_cache_value_concurrent() {
-    let (_dir, cache) = download_cache();
-    let cache = Arc::new(cache);
-    let handles: Vec<_> = (0..100)
-        .map(|_| {
-            let cache = cache.clone();
-            std::thread::spawn(move || cache.put_with_key(HASH, CONTENTS, KeyType::Sha256))
-        })
-        .collect();
-    let errors: Vec<_> = handles
-        .into_iter()
-        .filter_map(|h| h.join().unwrap().err())
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "Exceptions occurred during concurrent puts: {errors:?}"
-    );
-    assert_eq!(std::fs::read(cache_value(&cache, HASH)).unwrap(), CONTENTS);
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:194 DownloadCacheTest.testGetCacheValue
-// PORT: the in-memory slice has getBytes, not get(targetPath).
-#[test]
-fn test_get_cache_value() {
-    let (_dir, cache) = download_cache();
-    cache.put_with_key(HASH, CONTENTS, KeyType::Sha256).unwrap();
-    assert_eq!(
-        cache.get_bytes(HASH, KeyType::Sha256).unwrap(),
-        Some(CONTENTS.to_vec())
-    );
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:214 DownloadCacheTest.testGetNullCacheValue
-#[test]
-fn test_get_null_cache_value() {
-    let (_dir, cache) = download_cache();
-    assert_eq!(cache.get_bytes(HASH, KeyType::Sha256).unwrap(), None);
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:225 DownloadCacheTest.testInvalidSha256Throws
-#[test]
-fn test_invalid_sha256_throws() {
-    let (_dir, cache) = download_cache();
-    let e = cache
-        .put_with_key("foo", CONTENTS, KeyType::Sha256)
-        .unwrap_err();
-    assert_eq!(e.kind, IoExceptionKind::IOException);
-    assert!(
-        e.get_message()
-            .contains("Invalid key \"foo\" of type SHA-256"),
-        "{e}"
-    );
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:233 DownloadCacheTest.testPoisonedCache
-#[test]
-fn test_poisoned_cache() {
-    let (_dir, cache) = download_cache();
-    let poisoned_value = cache_value(&cache, HASH);
-    std::fs::create_dir_all(poisoned_value.parent().unwrap()).unwrap();
-    std::fs::write(&poisoned_value, "poisoned\n").unwrap();
-    let e = cache.get_bytes(HASH, KeyType::Sha256).unwrap_err();
-    assert!(e.get_message().contains("does not match expected"), "{e}");
-    assert!(
-        e.get_message().contains("Please delete the directory"),
-        "{e}"
-    );
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:249 DownloadCacheTest.testGetChecksum
-#[test]
-fn test_get_checksum() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("file.tmp");
-    std::fs::write(&file, CONTENTS).unwrap();
-    assert_eq!(get_checksum(KeyType::Sha256, &file).unwrap(), HASH);
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:255 DownloadCacheTest.testGetChecksumWithFastDigest
-#[test]
-#[ignore = "needs a file system with fast digests (Blaze's Linux file system has none)"]
-fn test_get_checksum_with_fast_digest() {}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:269 DownloadCacheTest.testAssertFileChecksumPass
-#[test]
-fn test_assert_file_checksum_pass() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("file.tmp");
-    std::fs::write(&file, CONTENTS).unwrap();
-    assert_file_checksum(HASH, &file, KeyType::Sha256).unwrap();
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:274 DownloadCacheTest.testAssertFileChecksumFail
-#[test]
-fn test_assert_file_checksum_fail() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("file.tmp");
-    std::fs::write(&file, CONTENTS).unwrap();
-    let e = assert_file_checksum(&"a".repeat(64), &file, KeyType::Sha256).unwrap_err();
-    assert!(e.get_message().contains("does not match expected"), "{e}");
-}
-
-// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/cache/DownloadCacheTest.java:284 DownloadCacheTest.testCanonicalId
-#[test]
-#[ignore = "needs DownloadCache.put(path, canonicalId) / get(targetPath); not in the bzlmod slice"]
-fn test_canonical_id() {}

@@ -63,7 +63,7 @@ impl LocalRepositoryLookupValue {
     // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:96 LocalRepositoryLookupValue.getRepository
     pub fn get_repository(&self) -> &RepositoryName {
         match self {
-            LocalRepositoryLookupValue::MainRepository => &*MAIN,
+            LocalRepositoryLookupValue::MainRepository => &MAIN,
             LocalRepositoryLookupValue::Successful {
                 repository_name, ..
             } => repository_name,

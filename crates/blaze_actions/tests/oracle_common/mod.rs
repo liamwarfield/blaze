@@ -141,11 +141,28 @@ impl Recording {
             serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).ok()?)
                 .unwrap();
         let paths = &manifest["context"]["paths"];
+        Some(Recording::from_json(
+            project,
+            json,
+            paths["output_base"].as_str().unwrap(),
+            paths["execroot"].as_str().unwrap(),
+            paths["workspace"].as_str().unwrap(),
+        ))
+    }
+
+    /// A recording from an already parsed aquery jsonproto.
+    pub fn from_json(
+        project: &str,
+        json: Value,
+        output_base: &str,
+        execroot: &str,
+        workspace: &str,
+    ) -> Recording {
         let mut r = Recording {
             project: project.to_string(),
-            output_base: paths["output_base"].as_str().unwrap().to_string(),
-            execroot: paths["execroot"].as_str().unwrap().to_string(),
-            workspace: paths["workspace"].as_str().unwrap().to_string(),
+            output_base: output_base.to_string(),
+            execroot: execroot.to_string(),
+            workspace: workspace.to_string(),
             fs: UnixFileSystem::create(DigestHashFunction::Sha256),
             path_fragments: HashMap::new(),
             artifact_paths: HashMap::new(),
@@ -214,7 +231,7 @@ impl Recording {
         for c in r.json["configuration"].as_array().unwrap() {
             r.configurations.insert(u(&c["id"]), c.clone());
         }
-        Some(r)
+        r
     }
 
     pub fn path_of_fragment(&self, mut id: u64) -> String {
@@ -393,6 +410,15 @@ impl Recording {
 
     /// An owner for an action of the given recorded target and configuration.
     pub fn action_owner(&self, action: &Value) -> ActionOwner {
+        self.action_owner_with_exec_properties(action, IndexMap::new())
+    }
+
+    /// [`Recording::action_owner`] for a target with an `exec_properties` attribute.
+    pub fn action_owner_with_exec_properties(
+        &self,
+        action: &Value,
+        exec_properties: IndexMap<String, String>,
+    ) -> ActionOwner {
         let target_id = u(&action["targetId"]);
         let label = self.target_label(target_id);
         let config = self.configuration(u(&action["configurationId"]));
@@ -409,7 +435,7 @@ impl Recording {
                 .unwrap_or(false),
             Some(host_platform()),
             Vec::new(),
-            IndexMap::new(),
+            exec_properties,
         )
     }
 }

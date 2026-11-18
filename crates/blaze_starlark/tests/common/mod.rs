@@ -32,13 +32,25 @@ pub fn context(
     semantics: StarlarkSemantics,
     events: Arc<CollectingEvents>,
 ) -> ThreadContext {
-    ThreadContext::new(phase, Arc::new(semantics), events)
-        .with_file_label(Label::parse_canonical("//pkg:test.bzl").unwrap())
+    let label = Label::parse_canonical("//pkg:test.bzl").unwrap();
+    // `Label()` resolves against the module of the calling function (Java
+    // BazelModuleContext.ofInnermostBzlOrFail). These tests execute modules without an extra
+    // value, so the package context of each test file is registered on the thread.
+    let package_context =
+        blaze_cmdline::LabelPackageContext::of(label.get_package_identifier(), main_mapping());
+    let mut ctx = ThreadContext::new(phase, Arc::new(semantics), events)
+        .with_file_label(label)
         .with_label_repo_context(LabelRepoContextImpl::of(
             blaze_cmdline::repository_name::MAIN.clone(),
             main_mapping(),
         ))
-        .with_main_repo_mapping(main_mapping())
+        .with_main_repo_mapping(main_mapping());
+    for file in [
+        "test.bzl", "a.bzl", "a/a.bzl", "b/b.bzl", "x.bzl", "x/x.bzl",
+    ] {
+        ctx = ctx.with_file_package_context(file, package_context.clone());
+    }
+    ctx
 }
 
 /// Executes `src` as a .bzl file (with blaze_starlark's builtins) on an evaluation thread.

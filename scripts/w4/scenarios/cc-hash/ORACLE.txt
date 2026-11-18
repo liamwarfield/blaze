@@ -1,0 +1,19 @@
+=== 1: run build //:probe
+exit 0
+INFO: Build completed successfully, 2 total actions
+Target //:probe up-to-date:
+=== 2: cat bazel-bin/probe.txt
+cpp key count: 1
+fragment keys: 4
+cpp value: 2
+cpp == cpp: True
+cpp == platform: False
+apple == apple: True
+depset of structs: 2
+dict of structs: 2
+same context equal: True
+different contexts equal: False
+dict of targets: 2
+depset of depsets: 1
+files_to_run in dict: 1
+runfiles in dict: 1

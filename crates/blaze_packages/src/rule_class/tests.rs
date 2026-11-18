@@ -372,11 +372,11 @@ fn test_override_with_right_type() {
 }
 
 #[test]
-#[ignore = "needs package loading (PackageFactory, Rule creation)"]
+#[ignore = "not ported yet: instantiates a RuleClass built in the test with RuleClass.createRule on a Package.Builder (RuleClassTest.createRule over packageFactory.newPackageBuilder); no BUILD file is loaded, so blaze_sky_loading's PACKAGE harness does not apply, and this module has no Package.Builder fixture (tests/package_builder_test.rs builds one with Package::new_package_builder)"]
 fn test_copy_and_override_attribute() {}
 
 #[test]
-#[ignore = "needs package loading (PackageFactory, Rule creation)"]
+#[ignore = "not ported yet: instantiates a RuleClass built in the test with RuleClass.createRule on a Package.Builder (RuleClassTest.createRule over packageFactory.newPackageBuilder); no BUILD file is loaded, so blaze_sky_loading's PACKAGE harness does not apply, and this module has no Package.Builder fixture (tests/package_builder_test.rs builds one with Package::new_package_builder)"]
 fn test_copy_and_override_attribute_mandatory_missing() {}
 
 #[test]
@@ -385,7 +385,7 @@ fn test_required_fragment_inheritance() {
     let mut child = builder(
         "child_rule",
         RuleClassType::Normal,
-        &[parent_rule_class.clone()],
+        std::slice::from_ref(&parent_rule_class),
     );
     let mut copied = child.factory(DUMMY_CONFIGURED_TARGET_FACTORY).copy("attr");
     copied.mandatory();
@@ -498,7 +498,10 @@ fn test_declared_exec_groups() {
     b.add_exec_groups(
         &groups(&[(
             "cherry",
-            exec_group(&[toolchain.clone()], &[constraint.clone()]),
+            exec_group(
+                std::slice::from_ref(&toolchain),
+                std::slice::from_ref(&constraint),
+            ),
         )]),
         false,
     );
@@ -580,41 +583,41 @@ fn test_build_too_long_attribute_name_rejected() {
 }
 
 #[test]
-#[ignore = "needs package loading (PackageFactory, Rule creation)"]
+#[ignore = "not ported yet: instantiates a RuleClass built in the test with RuleClass.createRule on a Package.Builder (RuleClassTest.createRule over packageFactory.newPackageBuilder); no BUILD file is loaded, so blaze_sky_loading's PACKAGE harness does not apply, and this module has no Package.Builder fixture (tests/package_builder_test.rs builds one with Package::new_package_builder)"]
 fn test_package_metadata_alternate_name() {
     let _ = APPLICABLE_METADATA_ATTR;
 }
 
 #[test]
-#[ignore = "needs package loading (PackageFactory, Rule creation)"]
+#[ignore = "not ported yet: needs only the RuleClass builder (RuleClassTest.createRuleClassA / createRuleClassB); no package or rule instance is involved"]
 fn test_rule_class_basics() {}
 
 #[test]
-#[ignore = "needs package loading (PackageFactory, Rule creation)"]
+#[ignore = "not ported yet: needs only the RuleClass builder (RuleClassTest.createRuleClassA / createRuleClassB); no package or rule instance is involved"]
 fn test_rule_class_inheritance() {}
 
 #[test]
-#[ignore = "needs package loading (PackageFactory, Rule creation)"]
+#[ignore = "not ported yet: instantiates a RuleClass built in the test with RuleClass.createRule on a Package.Builder (RuleClassTest.createRule over packageFactory.newPackageBuilder); no BUILD file is loaded, so blaze_sky_loading's PACKAGE harness does not apply, and this module has no Package.Builder fixture (tests/package_builder_test.rs builds one with Package::new_package_builder)"]
 fn test_duplicated_deps() {}
 
 #[test]
-#[ignore = "needs package loading (PackageFactory, Rule creation)"]
+#[ignore = "not ported yet: instantiates a RuleClass built in the test with RuleClass.createRule on a Package.Builder (RuleClassTest.createRule over packageFactory.newPackageBuilder); no BUILD file is loaded, so blaze_sky_loading's PACKAGE harness does not apply, and this module has no Package.Builder fixture (tests/package_builder_test.rs builds one with Package::new_package_builder)"]
 fn test_create_rule() {}
 
 #[test]
-#[ignore = "needs package loading (PackageFactory, Rule creation)"]
+#[ignore = "not ported yet: instantiates a RuleClass built in the test with RuleClass.createRule on a Package.Builder (RuleClassTest.createRule over packageFactory.newPackageBuilder); no BUILD file is loaded, so blaze_sky_loading's PACKAGE harness does not apply, and this module has no Package.Builder fixture (tests/package_builder_test.rs builds one with Package::new_package_builder)"]
 fn test_implicit_outputs() {}
 
 #[test]
-#[ignore = "needs package loading (PackageFactory, Rule creation)"]
+#[ignore = "not ported yet: instantiates a RuleClass built in the test with RuleClass.createRule on a Package.Builder (RuleClassTest.createRule over packageFactory.newPackageBuilder); no BUILD file is loaded, so blaze_sky_loading's PACKAGE harness does not apply, and this module has no Package.Builder fixture (tests/package_builder_test.rs builds one with Package::new_package_builder)"]
 fn test_computed_default() {}
 
 #[test]
-#[ignore = "needs package loading (PackageFactory, Rule creation)"]
+#[ignore = "not ported yet: instantiates a RuleClass built in the test with RuleClass.createRule on a Package.Builder (RuleClassTest.createRule over packageFactory.newPackageBuilder); no BUILD file is loaded, so blaze_sky_loading's PACKAGE harness does not apply, and this module has no Package.Builder fixture (tests/package_builder_test.rs builds one with Package::new_package_builder)"]
 fn test_outputs_are_ordered() {}
 
 #[test]
-#[ignore = "needs package loading (PackageFactory, Rule creation)"]
+#[ignore = "not ported yet: instantiates a RuleClass built in the test with RuleClass.createRule on a Package.Builder (RuleClassTest.createRule over packageFactory.newPackageBuilder); no BUILD file is loaded, so blaze_sky_loading's PACKAGE harness does not apply, and this module has no Package.Builder fixture (tests/package_builder_test.rs builds one with Package::new_package_builder)"]
 fn test_order_independent_attribute() {}
 
 // ---- RequiredProvidersTest

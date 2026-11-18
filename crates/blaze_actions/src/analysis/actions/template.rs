@@ -51,17 +51,19 @@ impl Template {
                     Ok(bytes)
                 };
                 match read() {
-                    // PORT: StringEncoding identity. Java reads the bytes as Latin-1 (the
-                    // internal form); a Rust String holds the same bytes as UTF-8. Templates that
-                    // are not valid UTF-8 have no lossless String form.
-                    Ok(bytes) => match String::from_utf8(bytes) {
-                        Ok(s) => Ok(s),
-                        Err(_) => blaze_util::unported!(
-                            "ArtifactTemplate.getContent",
-                            "template '{}' is not valid UTF-8",
-                            template_path.get_path_string()
-                        ),
-                    },
+                    // Java: `FileSystemUtils.readContent(templatePath, ISO_8859_1)`. Until the
+                    // decoding switch (`string_encoding::STRINGS_ARE_INTERNAL`) a template that
+                    // is not valid UTF-8 has no string.
+                    Ok(bytes) => {
+                        match blaze_util::string_encoding::internal_string_from_bytes(&bytes) {
+                            Ok(s) => Ok(s.into_owned()),
+                            Err(_) => blaze_util::unported!(
+                                "ArtifactTemplate.getContent",
+                                "template '{}' is not valid UTF-8",
+                                template_path.get_path_string()
+                            ),
+                        }
+                    }
                     Err(e) => Err(io::Error::new(
                         e.kind(),
                         format!(

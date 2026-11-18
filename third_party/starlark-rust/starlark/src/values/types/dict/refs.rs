@@ -100,7 +100,8 @@ impl<'v> DictMut<'v> {
         #[inline(never)]
         fn error<'v>(x: Value<'v>) -> anyhow::Error {
             if x.downcast_ref::<DictGen<FrozenDictData>>().is_some() {
-                ValueError::CannotMutateImmutableValue.into()
+                // BLAZE PATCH 0023: Java's text (Starlark.checkMutable).
+                crate::values::types::dict::value::frozen_dict_error()
             } else {
                 NotDictError(x.get_type()).into()
             }

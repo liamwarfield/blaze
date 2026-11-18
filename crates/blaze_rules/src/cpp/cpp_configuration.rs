@@ -3,6 +3,7 @@
 //! `blaze_analysis::starlark::fragment_collection`.
 
 use std::fmt;
+use std::hash::Hash;
 use std::sync::Arc;
 
 use allocative::Allocative;
@@ -14,15 +15,17 @@ use blaze_build_config::fragment::Fragment;
 use blaze_build_config::fragments::cpp_configuration::{CPP_CONFIGURATION, CppConfiguration};
 use blaze_cmdline::Label;
 use blaze_starlark::label::LabelValue;
+use blaze_starlark::structs::DeeplyImmutable;
 use starlark::any::ProvidesStaticType;
+use starlark::collections::StarlarkHasher;
 use starlark::environment::{Methods, MethodsBuilder, MethodsStatic};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::starlark_simple_value;
 use starlark::values::ValueLike;
-use starlark::values::list::AllocList;
+use starlark::values::list::alloc_immutable_list;
 use starlark::values::none::NoneOr;
-use starlark::values::{Heap, NoSerialize, StarlarkValue, Value, starlark_value};
+use starlark::values::{Demand, Heap, NoSerialize, StarlarkValue, Value, starlark_value};
 
 use super::util::{check_private_starlarkification_allowlist, errorf};
 
@@ -60,6 +63,26 @@ impl<'v> StarlarkValue<'v> for CppConfigurationValue {
         static RES: MethodsStatic = MethodsStatic::new("cpp", cpp_configuration_methods);
         Some(RES.methods())
     }
+
+    // Java: Object.equals (CppConfiguration does not override it): the fragment's identity.
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        Ok(other
+            .downcast_ref::<CppConfigurationValue>()
+            .is_some_and(|o| Arc::ptr_eq(&o.0, &self.0)))
+    }
+
+    /// Hashable (`Fragment.isImmutable()` is true) by identity (Java `Object.hashCode`): the
+    /// address of the shared fragment.
+    // Java: com/google/devtools/build/lib/analysis/config/Fragment.java:50 Fragment.isImmutable
+    fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        (Arc::as_ptr(&self.0) as *const () as usize).hash(hasher);
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/config/Fragment.java:50 Fragment.isImmutable
+    fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
+        demand.provide_value(DeeplyImmutable);
+    }
 }
 
 /// The `CppConfiguration` behind a `cpp` value, or Java's parameter type error.
@@ -78,9 +101,12 @@ pub fn cpp_configuration_param<'v>(
         })
 }
 
+/// An `ImmutableList<String>` / `StarlarkList.immutableCopyOf(...)` result: an immutable list
+/// (`Starlark.fromJava` wraps a Java `List` with `StarlarkList.immutableCopyOf`).
+// Java: net/starlark/java/eval/StarlarkList.java:168 StarlarkList.immutableCopyOf
 fn string_list<'v>(heap: Heap<'v>, items: &[String]) -> Value<'v> {
     let values: Vec<Value<'v>> = items.iter().map(|s| heap.alloc_str(s).to_value()).collect();
-    heap.alloc(AllocList(values))
+    alloc_immutable_list(heap, &values)
 }
 
 fn label_or_none<'v>(heap: Heap<'v>, label: Option<&Label>) -> Value<'v> {

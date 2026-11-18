@@ -230,6 +230,10 @@ fn err<T>(codemap: &CodeMap, span: Span, err: DialectError) -> Result<T, EvalExc
     Err(EvalException::new_anyhow(err.into(), span, codemap))
 }
 
+/// BLAZE PATCH 0020: prefix of the error for Bazel type syntax that is not ported yet. Callers
+/// turn it into a loud failure instead of a user-facing syntax error.
+pub const BLAZE_TYPE_SYNTAX_NOT_PORTED: &str = "BLAZE not ported yet: Bazel type syntax: ";
+
 pub(crate) fn dialect_check_type(
     state: &ParserState,
     x: Spanned<Expr>,
@@ -239,7 +243,12 @@ pub(crate) fn dialect_check_type(
         return err(state.codemap, x.span, DialectError::Types);
     }
 
-    TypeExprUnpackP::unpack(&x, state.codemap).map_err(EvalException::from)?;
+    // BLAZE PATCH 0020: Bazel 9.3.2 parses annotations as arbitrary expressions unless type
+    // checking is on (FileOptions.tolerateInvalidTypeExpressions; Parser.java:1084
+    // Parser.parseTypeExprWithFallback).
+    if state.dialect.enable_types != DialectTypes::ParseOnly {
+        TypeExprUnpackP::unpack(&x, state.codemap).map_err(EvalException::from)?;
+    }
 
     Ok(x.map(|node| TypeExprP {
         expr: Spanned { node, span },

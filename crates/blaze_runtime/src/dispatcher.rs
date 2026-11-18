@@ -11,7 +11,7 @@ use blaze_options::rc::handler::{
     BAD_OPTION_TAG, BlazeOptionHandler, ERROR_SEPARATOR, EventKind as HandlerEventKind,
     HandlerEvent, OptionsParseFailure, StoredEventHandler,
 };
-use blaze_options::{OptionsParser, PriorityCategory};
+use blaze_options::{OptionsParser, OptionsParsingException, PriorityCategory};
 use blaze_protos::failure_details::{self, FailureDetail};
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use parking_lot::Mutex;
@@ -20,6 +20,9 @@ use crate::command::{BlazeCommand, BlazeCommandResult};
 use crate::command_environment::CommandEnvironment;
 use crate::exit_code::DetailedExitCode;
 use crate::runtime::BlazeRuntime;
+use crate::starlark_options_parser::{
+    SkyframeExecutorTargetLoader, StarlarkOptionsParser, StarlarkOptionsParsingError,
+};
 
 /// What to do if the command lock is not available.
 // Java: com/google/devtools/build/lib/runtime/CommandDispatcher.java:35 LockingMode
@@ -469,7 +472,6 @@ impl BlazeCommandDispatcher {
                     );
                 }
             }
-            drop(skyframe_executor);
             if !early_exit_code.is_success() {
                 // PORT: NoBuildEvent (no event bus).
                 let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
@@ -493,28 +495,32 @@ impl BlazeCommandDispatcher {
                 let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
                 return self.after_command(&mut env, result, &out_err);
             }
+
+            // Parse starlark options.
+            // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:768 BlazeCommandDispatcher.execExclusively
+            // PORT: Java calls optionHandler.parseStarlarkOptions(env, args) for every command;
+            // it returns success at once unless the command analyzes ("For now, restrict
+            // starlark options to commands that already build to ensure that loading will
+            // work"), which is this branch. The build settings are loaded on the executor that
+            // computed the main repository mapping; like that computation, its events are
+            // stored and reported only if the command stops here (the command's own executor
+            // reports them when it loads the same packages).
+            let early_exit_code = parse_starlark_options(
+                &env,
+                &skyframe_executor,
+                &stored_events,
+                &mut options_parser,
+                args,
+            );
+            drop(skyframe_executor);
+            if !early_exit_code.is_success() {
+                // PORT: NoBuildEvent (no event bus).
+                let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
+                return self.after_command(&mut env, result, &out_err);
+            }
             // optionHandler.getOptionsResult(). Like Java, env.getOptions() keeps the first
             // parse; the command gets this one.
             options = Arc::new(options_parser);
-        }
-
-        // Parse starlark options.
-        // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:417 BlazeOptionHandler.parseStarlarkOptions
-        // For now, restrict starlark options to commands that already build to ensure that
-        // loading will work.
-        if command_annotation.build_phase.analyzes() {
-            // PORT: StarlarkOptionsParser (loading the build settings of `--//pkg:flag` options
-            // and putting their values into the options) is not ported; a command line or rc
-            // file that carries Starlark options fails loudly instead of analysing the default
-            // configuration.
-            let skipped_args = options.get_skipped_args();
-            if !skipped_args.is_empty() {
-                blaze_util::unported!(
-                    "BlazeOptionHandler.parseStarlarkOptions",
-                    "Starlark options {:?}",
-                    skipped_args
-                );
-            }
         }
 
         // PORT: the command-line BEP events (OriginalCommandLineEvent, ...) are not posted (no
@@ -735,6 +741,105 @@ fn boolean_option_value(options_parser: &OptionsParser, name: &str) -> bool {
             .and_then(|v| v.downcast_ref::<bool>().copied())
             .expect("ClassCastException: Boolean option default"),
     }
+}
+
+/// Parses the Starlark options of a command that analyzes: loads the build settings the
+/// skipped (`--//pkg:flag`-style) arguments name and stores their values and scopes on
+/// `options_parser`.
+///
+/// TODO(bazel-team): When we move CoreOptions options to be defined in starlark, make sure
+/// they're not passed in here during `getOptionsResult`.
+// Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:417 BlazeOptionHandler.parseStarlarkOptions
+fn parse_starlark_options(
+    env: &CommandEnvironment,
+    skyframe_executor: &blaze_sky_top::skyframe_executor::SkyframeExecutor,
+    stored_events: &Arc<blaze_events::StoredEventHandler>,
+    options_parser: &mut OptionsParser,
+    args: &[String],
+) -> DetailedExitCode {
+    // Java: new SkyframeExecutorTargetLoader(env) (reporter: NonPostingEventHandler over the
+    // command's reporter; see the PORT note at the call).
+    let build_setting_loader = SkyframeExecutorTargetLoader::new(
+        skyframe_executor,
+        env.get_relative_working_directory().clone(),
+        stored_events.clone(),
+    );
+    let result = {
+        let mut starlark_options_parser = StarlarkOptionsParser::builder()
+            .build_setting_loader(&build_setting_loader)
+            .native_options_parser(options_parser)
+            .build();
+        starlark_options_parser.parse()
+    };
+    match result {
+        Ok(parsed) => {
+            // Preconditions.checkState(starlarkOptionsParser.parse())
+            blaze_util::check_state!(parsed);
+            DetailedExitCode::success()
+        }
+        Err(StarlarkOptionsParsingError::OptionsParsing(e)) => {
+            let mut e = e;
+            let log_message = "Error parsing Starlark options";
+            if e.get_invalid_argument().is_some() {
+                for i in 0..args.len().saturating_sub(1) {
+                    if Some(args[i].as_str()) == e.get_invalid_argument()
+                        && !args[i + 1].starts_with('-')
+                    {
+                        e = OptionsParsingException::with_argument(
+                            format!(
+                                "{}. Did you mean {}={}?",
+                                e.get_message(),
+                                args[i],
+                                args[i + 1]
+                            ),
+                            e.get_invalid_argument().expect("checked above").to_string(),
+                        );
+                    }
+                }
+            }
+            // PORT: the events of loading the build settings (stored, see the call) come before
+            // the error, as they do when Java reports them while loading.
+            stored_events.replay_on(env.get_reporter().as_ref());
+            process_options_parsing_exception(
+                env.get_reporter().as_ref(),
+                &e,
+                log_message,
+                failure_details::command::Code::StarlarkOptionsParseFailure,
+            )
+        }
+        Err(StarlarkOptionsParsingError::Interrupted) => {
+            let message = "Interrupted while parsing Starlark options";
+            stored_events.replay_on(env.get_reporter().as_ref());
+            env.get_reporter().handle(&Event::error(message));
+            interrupted_detailed_exit_code(message)
+        }
+    }
+}
+
+// Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:623 BlazeOptionHandler.processOptionsParsingException
+fn process_options_parsing_exception(
+    event_handler: &dyn EventHandler,
+    e: &OptionsParsingException,
+    log_message: &str,
+    failure_code: failure_details::command::Code,
+) -> DetailedExitCode {
+    // Differentiates errors stemming from an invalid argument and errors from different parts of
+    // the codebase.
+    let error = match e.get_invalid_argument() {
+        Some(invalid_argument) => Event::error(format!(
+            "{}{}{}",
+            invalid_argument,
+            ERROR_SEPARATOR,
+            e.get_message()
+        ))
+        .with_tag(Some(BAD_OPTION_TAG)),
+        None => Event::error(e.get_message()),
+    };
+    event_handler.handle(&error);
+    create_options_detailed_exit_code(
+        &format!("{}: {}", log_message, e.get_message()),
+        failure_code,
+    )
 }
 
 // Java: com/google/devtools/build/lib/util/InterruptedFailureDetails.java:30 InterruptedFailureDetails.detailedExitCode

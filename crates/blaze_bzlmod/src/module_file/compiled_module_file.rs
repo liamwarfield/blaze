@@ -26,7 +26,9 @@ use starlark::syntax::ast::{
 };
 
 use super::java_hash::java_hash_order;
-use super::module_file_globals::{java_eval_error, module_file_globals};
+use super::module_file_globals::{
+    java_eval_error, module_file_globals, resolve_deferred_attribute_values,
+};
 use super::module_thread_context::ModuleThreadContext;
 use super::to_events_location;
 
@@ -103,6 +105,10 @@ fn create_parser_input(
             }
         }
     }
+    // PORT: byte-strings: Java keeps the file's raw bytes whatever they are
+    // (`ParserInput.fromLatin1(bytes, file)`: one char per byte), so a MODULE.bazel that is not
+    // UTF-8 still evaluates (with the warning above at the default enforcement mode); here it
+    // fails loudly.
     match String::from_utf8(bytes.to_vec()) {
         Ok(s) => Ok(s),
         Err(_) => blaze_util::unported!("ParserInput.fromLatin1", "non-UTF-8 file {file}"),
@@ -195,9 +201,20 @@ impl CompiledModuleFile {
             eval.set_forbid_recursion(!thread.semantics.allow_recursion);
             eval.set_max_callstack_size(DEFAULT_MAX_CALLSTACK)
                 .expect("fresh evaluator");
-            eval.eval_module(program, globals)
+            let result = eval
+                .eval_module(program, globals)
                 .map(|_| ())
-                .map_err(|e| java_eval_error(&e, &prefix))
+                .map_err(|e| java_eval_error(&e, &prefix));
+            if result.is_ok() {
+                // PORT: Java's tags and overrides hold the live kwargs of their calls until the
+                // module file's Mutability is closed; here they are converted now that this
+                // file has been executed, while its heap is still alive. See
+                // module_file_globals::defer_attribute_values.
+                if let Some(mut context) = thread.payload::<ModuleThreadContext>() {
+                    resolve_deferred_attribute_values(&module, &mut context);
+                }
+            }
+            result
         })
     }
 }

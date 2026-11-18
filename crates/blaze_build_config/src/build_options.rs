@@ -9,7 +9,7 @@ use blaze_options::definition::{OptionsBase, map_to_cache_key};
 use blaze_options::value::{OptionScalar, java_list_to_string};
 use blaze_options::{OptionsClass, OptionsParser, OptionsParsingException, Value};
 use blaze_util::Fingerprint;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 use crate::fragment_options_class::{FragmentOptionsClass, fragment_options_class};
 
@@ -49,6 +49,70 @@ impl ScopeType {
             _ => None,
         }
     }
+
+    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:54 Scope.ScopeType.allowedAttributeValues
+    /// Which values can a rule's `scope` attribute have?
+    pub fn allowed_attribute_values() -> Vec<String> {
+        [
+            ScopeType::UNIVERSAL,
+            ScopeType::TARGET,
+            ScopeType::PROJECT,
+            ScopeType::DEFAULT,
+        ]
+        .iter()
+        .map(|e| e.name().to_lowercase())
+        // "default" is an internal value for unset attributes.
+        .filter(|e| e != "default")
+        .collect()
+    }
+}
+
+// Java: com/google/devtools/build/lib/analysis/config/Scope.java:69 Scope.ScopeDefinition
+/// Definition of a scope. Users can define this in their PROJECT.scl file that is in the same
+/// directory as the BUILD file where the scoped flags are defined or in a parent directory. This
+/// is only relevant if the scope type is PROJECT.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopeDefinition {
+    owned_code_paths: IndexSet<String>,
+}
+
+impl ScopeDefinition {
+    pub fn new(owned_code_paths: IndexSet<String>) -> Self {
+        ScopeDefinition { owned_code_paths }
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:76 Scope.ScopeDefinition.getOwnedCodePaths
+    pub fn get_owned_code_paths(&self) -> &IndexSet<String> {
+        &self.owned_code_paths
+    }
+}
+
+// Java: com/google/devtools/build/lib/analysis/config/Scope.java:29 Scope
+/// Scope of a `BuildOptions` is defined by the `Scope.ScopeType` and `Scope.ScopeDefinition`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scope {
+    scope_type: ScopeType,
+    scope_definition: Option<ScopeDefinition>,
+}
+
+impl Scope {
+    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:89 Scope.Scope
+    pub fn new(scope_type: ScopeType, scope_definition: Option<ScopeDefinition>) -> Self {
+        Scope {
+            scope_type,
+            scope_definition,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:94 Scope.getScopeType
+    pub fn get_scope_type(&self) -> ScopeType {
+        self.scope_type
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/config/Scope.java:99 Scope.getScopeDefinition
+    pub fn get_scope_definition(&self) -> Option<&ScopeDefinition> {
+        self.scope_definition.as_ref()
+    }
 }
 
 impl OptionScalar for ScopeType {
@@ -58,37 +122,282 @@ impl OptionScalar for ScopeType {
     }
 }
 
+/// The Java class of a collection-valued Starlark option. The class decides `toString()` (which
+/// feeds `BuildOptions.checksum` and the ST hash) and `equals()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum JavaCollectionClass {
+    /// A `java.util.List` that is not a Starlark value (`ImmutableList` from an option converter
+    /// or an attribute value, `ArrayList` of an `allow_multiple`/`repeatable` flag).
+    /// `toString()` is `[a, b]`; `equals` is element-wise with any `java.util.List`.
+    List,
+    /// `net.starlark.java.eval.StarlarkList` (a list a transition returned). `toString()` is the
+    /// Starlark `repr` (`["a", "b"]`); `equals` only with another `StarlarkList`.
+    StarlarkList,
+    /// `net.starlark.java.eval.Tuple` (a tuple a transition returned). `toString()` is the
+    /// Starlark `repr` (`("a", "b")`); `equals` only with another `Tuple`.
+    Tuple,
+    /// A `java.util.Set` (`ImmutableSet` of a `string_set` setting, `LinkedHashSet` of a
+    /// repeatable one). `toString()` is `[a, b]`; `equals` only with another `Set`.
+    Set,
+}
+
+/// A collection-valued Starlark option: its Java class and elements (in iteration order).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct StarlarkOptionList {
+    class: JavaCollectionClass,
+    items: Vec<StarlarkOptionValue>,
+}
+
+impl StarlarkOptionList {
+    pub fn new(class: JavaCollectionClass, items: Vec<StarlarkOptionValue>) -> Self {
+        StarlarkOptionList { class, items }
+    }
+
+    /// The Java class of the collection.
+    pub fn class(&self) -> JavaCollectionClass {
+        self.class
+    }
+
+    pub fn items(&self) -> &[StarlarkOptionValue] {
+        &self.items
+    }
+
+    pub fn into_items(self) -> Vec<StarlarkOptionValue> {
+        self.items
+    }
+
+    /// `value instanceof java.util.List` (`StarlarkList` and `Tuple` implement `List`).
+    pub fn is_java_list(&self) -> bool {
+        self.class != JavaCollectionClass::Set
+    }
+}
+
+impl std::ops::Deref for StarlarkOptionList {
+    type Target = [StarlarkOptionValue];
+    fn deref(&self) -> &[StarlarkOptionValue] {
+        &self.items
+    }
+}
+
+/// A plain `java.util.List` ([`JavaCollectionClass::List`]).
+impl From<Vec<StarlarkOptionValue>> for StarlarkOptionList {
+    fn from(items: Vec<StarlarkOptionValue>) -> Self {
+        StarlarkOptionList::new(JavaCollectionClass::List, items)
+    }
+}
+
+/// A plain `java.util.List` ([`JavaCollectionClass::List`]).
+impl FromIterator<StarlarkOptionValue> for StarlarkOptionList {
+    fn from_iter<I: IntoIterator<Item = StarlarkOptionValue>>(iter: I) -> Self {
+        StarlarkOptionList::new(JavaCollectionClass::List, iter.into_iter().collect())
+    }
+}
+
 /// The value of a Starlark build setting stored in `BuildOptions` (Java `Object`).
 ///
-/// PORT: Java stores whatever the build setting's type converter produced (`Boolean`,
-/// `StarlarkInt`, `String`, `Label`, lists, sets). Each variant keeps that Java class's
-/// `toString()`/`equals()`, which feed `checksum()` and the ST hash.
+/// PORT: Java stores whatever object the producer made: the build setting converter's result on
+/// the command line (`Boolean`, `StarlarkInt`, `String`, `Label`, `ImmutableList`, `ImmutableSet`,
+/// `ArrayList`/`LinkedHashSet` for flags that allow multiple values), the attribute value for a
+/// default, or the raw Starlark value a transition returned (`StarlarkList`, `Tuple`). Each
+/// variant keeps that Java class's `toString()` and `equals()`.
+///
+/// `==` is structural (same Java class, same elements). Where Java calls `a.equals(b)` use
+/// [`StarlarkOptionValue::java_equals`], which is not symmetric across collection classes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum StarlarkOptionValue {
     /// `java.lang.Boolean`.
     Bool(bool),
     /// `StarlarkInt`.
+    ///
+    /// PORT: Java's `StarlarkInt` is unbounded; values beyond 64 bits are not representable here
+    /// and their producers fail loudly (`unported!("StarlarkInt.parse")`).
     Int(i64),
     /// `java.lang.String`.
     Str(String),
     /// `Label` (`toString()` is the canonical form).
     Label(Label),
-    /// A Java `List` (`ImmutableList`/`StarlarkList`): `[a, b]` with elements' `toString()`.
-    List(Vec<StarlarkOptionValue>),
+    /// A Java collection; see [`JavaCollectionClass`].
+    List(StarlarkOptionList),
 }
 
 impl StarlarkOptionValue {
-    /// Java `String.valueOf(value)`.
+    /// A `java.util.List` that is not a Starlark value (`ImmutableList`, `ArrayList`).
+    pub fn list(items: Vec<StarlarkOptionValue>) -> StarlarkOptionValue {
+        StarlarkOptionValue::List(StarlarkOptionList::new(JavaCollectionClass::List, items))
+    }
+
+    /// A `StarlarkList`.
+    pub fn starlark_list(items: Vec<StarlarkOptionValue>) -> StarlarkOptionValue {
+        StarlarkOptionValue::List(StarlarkOptionList::new(
+            JavaCollectionClass::StarlarkList,
+            items,
+        ))
+    }
+
+    /// A Starlark `Tuple`.
+    pub fn tuple(items: Vec<StarlarkOptionValue>) -> StarlarkOptionValue {
+        StarlarkOptionValue::List(StarlarkOptionList::new(JavaCollectionClass::Tuple, items))
+    }
+
+    /// A `java.util.Set` (`ImmutableSet`, `LinkedHashSet`): `items` without duplicates, in
+    /// insertion order.
+    pub fn set(items: Vec<StarlarkOptionValue>) -> StarlarkOptionValue {
+        let mut distinct: Vec<StarlarkOptionValue> = Vec::with_capacity(items.len());
+        for item in items {
+            if !distinct.contains(&item) {
+                distinct.push(item);
+            }
+        }
+        StarlarkOptionValue::List(StarlarkOptionList::new(JavaCollectionClass::Set, distinct))
+    }
+
+    /// Java `String.valueOf(value)` (`value.toString()`).
     pub fn java_to_string(&self) -> String {
         match self {
             StarlarkOptionValue::Bool(b) => b.to_string(),
             StarlarkOptionValue::Int(i) => i.to_string(),
             StarlarkOptionValue::Str(s) => s.clone(),
             StarlarkOptionValue::Label(l) => l.to_string(),
+            StarlarkOptionValue::List(l) => match l.class() {
+                // Java: java/util/AbstractCollection.java AbstractCollection.toString
+                JavaCollectionClass::List | JavaCollectionClass::Set => {
+                    java_list_to_string(l.iter().map(StarlarkOptionValue::java_to_string))
+                }
+                // Java: net/starlark/java/eval/StarlarkList.java:272 StarlarkList.toString
+                // Java: net/starlark/java/eval/Tuple.java:139 Tuple.toString
+                JavaCollectionClass::StarlarkList | JavaCollectionClass::Tuple => {
+                    self.starlark_repr()
+                }
+            },
+        }
+    }
+
+    /// Java `Starlark.repr(value)`.
+    // Java: net/starlark/java/eval/Printer.java:160 Printer.repr
+    pub fn starlark_repr(&self) -> String {
+        match self {
+            StarlarkOptionValue::Bool(b) => if *b { "True" } else { "False" }.to_string(),
+            StarlarkOptionValue::Int(i) => i.to_string(),
+            StarlarkOptionValue::Str(s) => blaze_starlark::printer::quote(s),
+            // Java: com/google/devtools/build/lib/cmdline/Label.java:718 Label.repr
+            StarlarkOptionValue::Label(l) => format!(
+                "Label({})",
+                blaze_starlark::printer::quote(&l.get_canonical_form())
+            ),
             StarlarkOptionValue::List(l) => {
-                java_list_to_string(l.iter().map(StarlarkOptionValue::java_to_string))
+                let elems: Vec<String> = l.iter().map(StarlarkOptionValue::starlark_repr).collect();
+                match l.class() {
+                    // Java: net/starlark/java/eval/StarlarkList.java:266 StarlarkList.repr; a
+                    // non-Starlark `List` prints the same way (Printer.java:203).
+                    JavaCollectionClass::StarlarkList | JavaCollectionClass::List => {
+                        format!("[{}]", elems.join(", "))
+                    }
+                    // Java: net/starlark/java/eval/RegularTuple.java:108 RegularTuple.repr and
+                    // SingletonTuple.repr (`(x,)`).
+                    JavaCollectionClass::Tuple => {
+                        if elems.len() == 1 {
+                            format!("({},)", elems[0])
+                        } else {
+                            format!("({})", elems.join(", "))
+                        }
+                    }
+                    // Java: net/starlark/java/eval/Printer.java:216 Printer.repr (other
+                    // non-Starlark values print their `toString()`).
+                    JavaCollectionClass::Set => self.java_to_string(),
+                }
             }
         }
+    }
+
+    /// Java `this.equals(other)`.
+    ///
+    /// Not symmetric: an `ImmutableList` equals a `StarlarkList` with the same elements
+    /// (`ImmutableList.equals` accepts any `java.util.List`), but a `StarlarkList` only equals
+    /// another `StarlarkList` (`net/starlark/java/eval/StarlarkList.java:244`), and a `Tuple`
+    /// only another `Tuple` (`net/starlark/java/eval/Tuple.java:129`).
+    pub fn java_equals(&self, other: &StarlarkOptionValue) -> bool {
+        match (self, other) {
+            (StarlarkOptionValue::Bool(a), StarlarkOptionValue::Bool(b)) => a == b,
+            (StarlarkOptionValue::Int(a), StarlarkOptionValue::Int(b)) => a == b,
+            (StarlarkOptionValue::Str(a), StarlarkOptionValue::Str(b)) => a == b,
+            (StarlarkOptionValue::Label(a), StarlarkOptionValue::Label(b)) => a == b,
+            (StarlarkOptionValue::List(a), StarlarkOptionValue::List(b)) => {
+                let same_elems =
+                    || a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.java_equals(y));
+                match a.class() {
+                    JavaCollectionClass::List => b.is_java_list() && same_elems(),
+                    JavaCollectionClass::StarlarkList => {
+                        b.class() == JavaCollectionClass::StarlarkList && same_elems()
+                    }
+                    JavaCollectionClass::Tuple => {
+                        b.class() == JavaCollectionClass::Tuple && same_elems()
+                    }
+                    // Java: java/util/AbstractSet.java AbstractSet.equals
+                    JavaCollectionClass::Set => {
+                        b.class() == JavaCollectionClass::Set
+                            && a.len() == b.len()
+                            && b.iter().all(|y| a.iter().any(|x| y.java_equals(x)))
+                    }
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Java `Objects.equals(a, b)` for nullable values.
+    pub fn java_objects_equals(
+        a: Option<&StarlarkOptionValue>,
+        b: Option<&StarlarkOptionValue>,
+    ) -> bool {
+        match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.java_equals(b),
+            _ => false,
+        }
+    }
+
+    /// `value instanceof List<?> && ((List<?>) value).isEmpty()`.
+    fn is_empty_java_list(&self) -> bool {
+        matches!(self, StarlarkOptionValue::List(l) if l.is_java_list() && l.is_empty())
+    }
+
+    /// The `BuildOptions` form of a value an `OptionsProvider` reports as a Starlark option
+    /// (Java: the same `Object`).
+    ///
+    /// PORT: `OptionsParser.setStarlarkOptions` takes type-erased option values. The Starlark
+    /// options parser stores [`StarlarkOptionValue`]s; plain option values (tests of the options
+    /// framework) are classified by their Java class.
+    pub fn from_option_value(value: &Value) -> StarlarkOptionValue {
+        if let Some(v) = value.downcast_ref::<StarlarkOptionValue>() {
+            return v.clone();
+        }
+        if let Some(b) = value.downcast_ref::<bool>() {
+            return StarlarkOptionValue::Bool(*b);
+        }
+        if let Some(s) = value.downcast_ref::<String>() {
+            return StarlarkOptionValue::Str(s.clone());
+        }
+        if let Some(i) = value.downcast_ref::<i32>() {
+            return StarlarkOptionValue::Int(i64::from(*i));
+        }
+        if let Some(i) = value.downcast_ref::<i64>() {
+            return StarlarkOptionValue::Int(*i);
+        }
+        if let Some(l) = value.downcast_ref::<blaze_options::Foreign<Label>>() {
+            return StarlarkOptionValue::Label(l.0.clone());
+        }
+        if let Some(list) = value.as_list() {
+            return StarlarkOptionValue::list(
+                list.iter()
+                    .map(StarlarkOptionValue::from_option_value)
+                    .collect(),
+            );
+        }
+        blaze_util::unported!(
+            "BuildOptions.labelizeStarlarkOptions",
+            "Starlark option value {:?}",
+            value
+        )
     }
 }
 
@@ -136,10 +445,6 @@ impl BuildOptions {
     // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:110 BuildOptions.of
     /// Creates a BuildOptions class by taking the option values from an options provider (eg. an
     /// OptionsParser).
-    ///
-    /// PORT: `labelizeStarlarkOptions(provider.getStarlarkOptions())` needs the build settings'
-    /// typed values (STARLARK_BUILD_SETTINGS_DETAILS); a provider with Starlark options fails
-    /// loudly until the Starlark options parser is ported.
     pub fn of(options_list: &[FragmentOptionsClass], provider: &OptionsParser) -> BuildOptions {
         let mut builder = BuildOptions::builder();
         for options_class in options_list {
@@ -148,14 +453,63 @@ impl BuildOptions {
                 .unwrap_or_else(|| panic!("NullPointerException: no {:?}", options_class));
             builder.add_fragment_options_dyn(options_class, options.as_ref());
         }
-        if !provider.get_starlark_options().is_empty() {
-            blaze_util::unported!(
-                "BuildOptions.labelizeStarlarkOptions",
-                "Starlark options on the command line: {:?}",
-                provider.get_starlark_options().keys().collect::<Vec<_>>()
-            );
+        builder
+            .add_starlark_options(BuildOptions::labelize_starlark_options(
+                provider.get_starlark_options(),
+            ))
+            .add_scope_type_map(BuildOptions::convert_scopes_attributes(
+                provider.get_scopes_attributes(),
+                provider.get_starlark_options(),
+            ))
+            .build()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:76 BuildOptions.labelizeStarlarkOptions
+    pub fn labelize_starlark_options(
+        starlark_options: &BTreeMap<String, Value>,
+    ) -> IndexMap<Label, StarlarkOptionValue> {
+        let mut result: IndexMap<Label, StarlarkOptionValue> = IndexMap::new();
+        for (key, value) in starlark_options {
+            let label = Label::parse_canonical_unchecked(key);
+            // Collectors.toMap throws on a duplicate key.
+            if result
+                .insert(label, StarlarkOptionValue::from_option_value(value))
+                .is_some()
+            {
+                panic!("IllegalStateException: Duplicate key {}", key);
+            }
         }
-        builder.build()
+        result
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:87 BuildOptions.convertScopesAttributes
+    /// Converts the map containing String representation of scopes attributes to a map of
+    /// `Label` of Starlark options to their corresponding `Scope.ScopeType`, keeping only
+    /// entries for flags present in `starlark_options`.
+    pub fn convert_scopes_attributes(
+        scopes_attributes: &BTreeMap<String, String>,
+        starlark_options: &BTreeMap<String, Value>,
+    ) -> IndexMap<Label, ScopeType> {
+        let mut result: IndexMap<Label, ScopeType> = IndexMap::new();
+        for (key, value) in scopes_attributes {
+            if !starlark_options.contains_key(key) {
+                continue;
+            }
+            let scope_type = ScopeType::value_of_ignore_case(value).unwrap_or_else(|| {
+                panic!(
+                    "IllegalArgumentException: No enum constant com.google.devtools.build.lib.analysis.config.Scope.ScopeType.{}",
+                    value.to_uppercase()
+                )
+            });
+            // toImmutableMap throws on a duplicate key.
+            if result
+                .insert(Label::parse_canonical_unchecked(key), scope_type)
+                .is_some()
+            {
+                panic!("IllegalArgumentException: Multiple entries with same key: {key}");
+            }
+        }
+        result
     }
 
     // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:110 BuildOptions.of
@@ -255,9 +609,7 @@ impl BuildOptions {
                 for options in self.fragment_options_map.values() {
                     fingerprint.add_string(&self.cache_key_of(options.as_ref()));
                 }
-                fingerprint.add_string(&map_to_cache_key(&starlark_map_as_values(
-                    &self.starlark_options_map,
-                )));
+                fingerprint.add_string(&starlark_map_to_cache_key(&self.starlark_options_map));
                 fingerprint.add_string(&map_to_cache_key(&scopes_as_values(&self.scopes)));
                 fingerprint.hex_digest_and_reset()
             }
@@ -332,7 +684,8 @@ impl BuildOptions {
     /// Returns true if the passed parsing result's options have the same value as these options.
     pub fn matches(&self, parsing_result: &OptionsParser) -> Result<bool, OptionsParsingException> {
         let explicit = parsing_result.as_list_of_explicit_options();
-        let mut ignored = 0usize;
+        // Set<OptionDefinition> ignoredDefinitions (an option name identifies its definition).
+        let mut ignored_definitions: IndexSet<&'static str> = IndexSet::new();
         for parsed_option in &explicit {
             let option_definition = parsed_option.get_option_definition();
             // All options obtained from an options parser are guaranteed to have been defined in
@@ -346,7 +699,7 @@ impl BuildOptions {
                 .map(|(_, v)| v);
             let Some(original_fragment) = original_fragment else {
                 // Ignore flags set in trimmed fragments.
-                ignored += 1;
+                ignored_definitions.insert(option_definition.get_option_name());
                 continue;
             };
             let original_value = original_fragment
@@ -358,13 +711,24 @@ impl BuildOptions {
                 return Ok(false);
             }
         }
-        if !parsing_result.get_starlark_options().is_empty() {
-            blaze_util::unported!(
-                "BuildOptions.matches",
-                "Starlark options in platform mappings"
-            );
+        let starlark_options =
+            BuildOptions::labelize_starlark_options(parsing_result.get_starlark_options());
+        // Maps.difference(starlarkOptionsMap, starlarkOptions).entriesInCommon(): the keys of
+        // both maps whose values are equal (`Objects.equals(leftValue, rightValue)`).
+        let entries_in_common = self
+            .starlark_options_map
+            .iter()
+            .filter(|(key, left_value)| {
+                starlark_options
+                    .get(*key)
+                    .is_some_and(|right_value| left_value.java_equals(right_value))
+            })
+            .count();
+        if entries_in_common < starlark_options.len() {
+            return Ok(false);
         }
-        if ignored == explicit.len() {
+
+        if ignored_definitions.len() == explicit.len() && starlark_options.is_empty() {
             // Zero options were compared, either because none were passed or because all of them
             // were trimmed.
             return Ok(false);
@@ -373,14 +737,31 @@ impl BuildOptions {
     }
 }
 
-/// `starlarkOptionsMap` as the `Map<?, Object>` `OptionsBase.mapToCacheKey` takes (keys by their
-/// `toString()`).
-fn starlark_map_as_values(
-    map: &IndexMap<Label, StarlarkOptionValue>,
-) -> IndexMap<String, Option<Value>> {
-    map.iter()
-        .map(|(k, v)| (k.to_string(), Some(Value::new(v.clone()))))
-        .collect()
+/// `OptionsBase.mapToCacheKey(starlarkOptionsMap)`: keys by their `toString()`, values by their
+/// Java class's `toString()`.
+// Java: com/google/devtools/common/options/OptionsBase.java:95 OptionsBase.mapToCacheKey
+fn starlark_map_to_cache_key(map: &IndexMap<Label, StarlarkOptionValue>) -> String {
+    let mut result = String::new();
+    for (key, value) in map {
+        result.push_str(&key.to_string());
+        result.push('=');
+        // This special case is needed because List.toString() prints the same ("[]") for an
+        // empty list and for a list with a single empty string.
+        if value.is_empty_java_list() {
+            result.push_str("EMPTY");
+        } else {
+            result.push('"');
+            result.push_str(
+                &value
+                    .java_to_string()
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\""),
+            );
+            result.push('"');
+        }
+        result.push_str(", ");
+    }
+    result
 }
 
 fn scopes_as_values(map: &IndexMap<Label, ScopeType>) -> IndexMap<String, Option<Value>> {

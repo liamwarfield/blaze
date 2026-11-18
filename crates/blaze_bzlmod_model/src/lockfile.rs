@@ -300,8 +300,10 @@ fn read_map<K: std::hash::Hash + Eq, V>(
 
 /// `lockFileVersion` pattern used to sniff the version before parsing.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileFunction.java:56 BazelLockFileFunction.LOCKFILE_VERSION_PATTERN
+// PORT: `\s` and `\d` of java.util.regex are ASCII-only (the pattern is compiled without
+// UNICODE_CHARACTER_CLASS), hence `(?-u:...)`.
 static LOCKFILE_VERSION_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#""lockFileVersion":\s*(\d+)"#).unwrap());
+    LazyLock::new(|| Regex::new(r#""lockFileVersion":(?-u:\s)*((?-u:\d)+)"#).unwrap());
 
 // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileFunction.java:59 BazelLockFileFunction.POSSIBLE_MERGE_CONFLICT_PATTERN
 static POSSIBLE_MERGE_CONFLICT_PATTERN: LazyLock<Regex> =
@@ -832,14 +834,17 @@ impl BazelLockFileFunction {
             // FileNotFoundException
             return Ok(Ok(BazelLockFileValue::empty_lockfile()));
         };
-        let version = LOCKFILE_VERSION_PATTERN
-            .captures(json)
-            .map(|c| {
-                c[1].parse::<i32>().unwrap_or_else(|_| {
-                    panic!("NumberFormatException: For input string: \"{}\"", &c[1])
-                })
-            })
-            .unwrap_or(-1);
+        // int version = matcher.find() ? Integer.parseInt(matcher.group(1)) : -1;
+        let version = match LOCKFILE_VERSION_PATTERN.captures(json) {
+            Some(c) => match c[1].parse::<i32>() {
+                Ok(version) => version,
+                // Integer.parseInt throws NumberFormatException (an IllegalArgumentException,
+                // which BazelLockFileFunction.compute catches) for digits beyond the int range.
+                // Java: java.base/java/lang/NumberFormatException.java NumberFormatException.forInputString
+                Err(_) => return err(format!("For input string: \"{}\"", &c[1])),
+            },
+            None => -1,
+        };
         let unsupported = || {
             ExternalDepsException::with_message(
                 ExternalDepsCode::BadLockfile,

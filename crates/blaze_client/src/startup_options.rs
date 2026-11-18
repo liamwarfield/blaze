@@ -1156,6 +1156,37 @@ impl StartupOptions {
             bazel_log(LogLevel::Warning, BAZEL_STARTUP_OPTIONS_CC, line, message);
         }
     }
+
+    // PORT: Blaze-only check (review 2026-11-18, S3 "TLS trust"); not in startup_options.cc.
+    //
+    // Bazel's HTTP downloads use the server JVM's trust store, by default the embedded JDK's
+    // lib/security/cacerts. The documented way to add certificate authorities (or a client
+    // certificate) is --host_jvm_args=-Djavax.net.ssl.trustStore=<file>, together with
+    // trustStorePassword / trustStoreType and the keyStore counterparts. Blaze has no JVM:
+    // --host_jvm_args only reach the server command line (GetServerExeArgs, written to
+    // server/cmdline) and the server's --host_jvm_args startup option, and are otherwise
+    // ignored. Ignoring these ones silently would make Blaze trust a different set of
+    // authorities than the user configured, so they fail loudly until they are ported. Every
+    // other --host_jvm_args value is still accepted and ignored, as before.
+    /// The error for the first `--host_jvm_args` value that sets a `javax.net.ssl` trust store
+    /// or key store property, or `None`. The message names the property, never its value (it
+    /// may be a password).
+    pub fn unported_host_jvm_arg_error(&self) -> Option<String> {
+        const UNPORTED_PREFIXES: [&str; 2] =
+            ["-Djavax.net.ssl.trustStore", "-Djavax.net.ssl.keyStore"];
+        let arg = self.host_jvm_args.iter().find(|arg| {
+            UNPORTED_PREFIXES
+                .iter()
+                .any(|prefix| arg.starts_with(*prefix))
+        })?;
+        let property = arg.split('=').next().unwrap_or(arg.as_str());
+        Some(format!(
+            "blaze: not ported yet: --host_jvm_args={}: the JVM trust store and key store options \
+             (-Djavax.net.ssl.trustStore*, -Djavax.net.ssl.keyStore*) are not ported. Blaze has \
+             no JVM and would silently ignore the option.",
+            property
+        ))
+    }
 }
 
 impl StartupArgsProcessor for StartupOptions {

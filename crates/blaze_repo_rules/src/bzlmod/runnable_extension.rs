@@ -36,7 +36,6 @@ use blaze_packages::types::label_converter::LabelConverter;
 use blaze_packages::types::label_converter::SharedRepoMappingRecorder;
 use blaze_sky_loading::bzl_load::check_valid_load_label;
 use blaze_sky_loading::starlark_util::event_location;
-use blaze_sky_loading::starlark_util::replay_starlark_events_on;
 use blaze_skyframe::Environment;
 use blaze_skyframe::Interrupted;
 use blaze_starlark::EvalError;
@@ -489,6 +488,10 @@ impl RegularRunnableExtension {
                     &self.static_env_vars,
                     &prepared.static_repo_mapping_entries,
                 );
+                let base = base.with_process_wrapper_options(
+                    services.process_wrapper_kill_delay,
+                    services.process_wrapper_graceful_sigterm,
+                );
                 let module_ctx = ModuleCtx {
                     extension_id: extension_id.to_string(),
                     os: base.get_os(),
@@ -517,8 +520,8 @@ impl RegularRunnableExtension {
                     |return_value, _eval| Ok(extract_metadata(return_value)),
                 );
                 let mut context = outcome.context;
-                // Event.makeDebugPrintHandler(env.getListener()): prints are reported as they happen.
-                replay_starlark_events_on(context.base.env.get().listener(), outcome.events);
+                // Java: thread.setPrintHandler(Event.makeDebugPrintHandler(env.getListener())):
+                // `call_implementation` has reported print() output as it happened.
 
                 // The body of Java's try-with-resources: its outcome, before the context is closed.
                 let body = (|| -> Result<Option<RunModuleExtensionResult>, BodyError> {

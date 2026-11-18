@@ -390,11 +390,15 @@ fn test_file_write_action_with_compression_does_not_force_lazy_string() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-#[ignore = "needs action execution (ActionExecutionContext, FileWriteActionContext; wave W6)"]
+#[ignore = "execution is in blaze_exec, which depends on this crate; the test is kept there \
+            (tests/analysis_actions_execute_test.rs), ignored for: needs an \
+            AbstractFileWriteAction subclass overriding afterWrite"]
 fn execute_action_successful_write_calls_after_write() {}
 
 #[test]
-#[ignore = "needs action execution (ActionExecutionContext, FileWriteActionContext; wave W6)"]
+#[ignore = "execution is in blaze_exec, which depends on this crate; the test is kept there \
+            (tests/analysis_actions_execute_test.rs), ignored for: needs an \
+            AbstractFileWriteAction subclass overriding afterWrite"]
 fn execute_action_failed_write_does_not_call_after_write() {}
 
 // ---------------------------------------------------------------------------------------------
@@ -408,6 +412,12 @@ fn execute_action_failed_write_does_not_call_after_write() {}
 //       for i in range(100)]), is_executable = True)
 //   ctx.actions.write(<g_short.txt>, "héllo wörld ☃\n")
 // in the k8-fastbuild configuration on this host (execution platform @@platforms//host:host).
+//
+// The same writes are targets `ascii_write_long`, `ascii_write_long_exec` and `write_plain` of
+// the probe workspace `tests/data/non_ascii_probe/workspace`; `scripts/actions-probe/run`
+// re-records the oracle's keys (`tests/data/non_ascii_probe/aquery.jsonproto`), and
+// `non_ascii_action_keys.rs` checks them from the recording. The empty-contents key is that of
+// the recording's empty `FileWrite` actions.
 // ---------------------------------------------------------------------------------------------
 
 fn oracle_key(contents: String, make_executable: bool) -> (String, bool) {

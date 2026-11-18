@@ -2,7 +2,7 @@
 //! `ParallelEvaluator` and `AbstractParallelEvaluator`, reshaped for blocking evaluation (see the
 //! crate docs).
 
-use crate::environment::{EnvState, Environment};
+use crate::environment::{BubbleErrorInfo, EnvState, Environment};
 use crate::evaluation_result::EvaluationResult;
 use crate::simple_cycle_detector::SimpleCycleDetector;
 use crate::{
@@ -16,11 +16,12 @@ use std::any::Any;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::thread::ThreadId;
+use std::thread::{Scope, ScopedJoinHandle, ThreadId};
 
 thread_local! {
     /// Number of keys this thread is computing inline (its compute stack depth).
@@ -61,11 +62,13 @@ pub static ERROR_TRANSIENCE_KEY: LazyLock<SkyKey> =
 pub(crate) enum DoneKind {
     /// Java: the node is done in the graph (value and/or error). Memoized.
     Committed,
-    /// Java: an error computed by `ParallelEvaluator.bubbleErrorUp`, which is never written to
-    /// the graph. Visible to waiting parents, dropped after the evaluation.
+    /// Java: an entry of `bubbleErrorInfo`, the error `ParallelEvaluator.bubbleErrorUp` built for
+    /// a node on the bubbling path. It is never written to the graph: such entries live only in
+    /// the map that `bubble_error_up` returns.
     Bubbled,
     /// Java: the node was still in flight when the evaluation aborted (no keep_going error,
-    /// catastrophe, crash). Parents see it as not done. Dropped after the evaluation.
+    /// catastrophe, crash), or it found a dep in error without keep_going and so cannot finish.
+    /// Parents see it as not done. Dropped after the evaluation.
     Aborted,
     /// Java: the evaluation was interrupted. Dropped after the evaluation.
     Interrupted,
@@ -80,15 +83,30 @@ pub(crate) struct DoneEntry {
     pub(crate) value: Option<SkyValue>,
     pub(crate) error: Option<Arc<ErrorInfo>>,
     pub(crate) deps: GroupedDeps,
+    /// For a node that is not done: its function returned null because of a dep that was not
+    /// available. Java then registers the node as a reverse dep of the deps it declared
+    /// (`enqueueChild`, or the edge to the child in error) and the node waits. False when the
+    /// function threw an exception that was ignored (not the first error), was interrupted, or
+    /// never ran: Java registers nothing for those.
+    pub(crate) awaits_deps: bool,
 }
 
 impl DoneEntry {
-    fn undone(kind: DoneKind, deps: GroupedDeps) -> DoneEntry {
+    pub(crate) fn undone(kind: DoneKind, deps: GroupedDeps) -> DoneEntry {
         DoneEntry {
             kind,
             value: None,
             error: None,
             deps,
+            awaits_deps: false,
+        }
+    }
+
+    /// An undone node whose function returned null (see `awaits_deps`).
+    fn awaiting_deps(kind: DoneKind, deps: GroupedDeps) -> DoneEntry {
+        DoneEntry {
+            awaits_deps: true,
+            ..DoneEntry::undone(kind, deps)
         }
     }
 
@@ -127,6 +145,14 @@ pub(crate) struct Node {
     done: Condvar,
     /// Committed nodes that depend on this one, in commit order.
     rdeps: Mutex<Vec<SkyKey>>,
+    /// Nodes that requested this one during the current evaluation while it was not done, in
+    /// request order. Taken (and so emptied) when the node commits. Lock order: `state`, then
+    /// this.
+    ///
+    /// The flag is true for a request that closed a dependency cycle through this node (the
+    /// requester is below this node and got "not done" back at once).
+    // Java: com/google/devtools/build/skyframe/NodeEntry.java:314 NodeEntry.getInProgressReverseDeps
+    in_progress_rdeps: Mutex<Vec<(SkyKey, bool)>>,
 }
 
 impl Node {
@@ -135,7 +161,40 @@ impl Node {
             state: Mutex::new(state),
             done: Condvar::new(),
             rdeps: Mutex::new(vec![]),
+            in_progress_rdeps: Mutex::new(vec![]),
         })
+    }
+
+    /// Java: `addReverseDepAndCheckIfDone(parent)` on a node that is not done.
+    fn add_in_progress_rdep(&self, requester: Option<&SkyKey>) {
+        if let Some(requester) = requester {
+            self.in_progress_rdeps
+                .lock()
+                .push((requester.clone(), false));
+        }
+    }
+
+    /// Marks the registration of `requester` as one that closed a cycle through this node.
+    fn mark_cycle_rdep(&self, requester: Option<&SkyKey>) {
+        if let Some(requester) = requester
+            && let Some(rdep) = self
+                .in_progress_rdeps
+                .lock()
+                .iter_mut()
+                .rev()
+                .find(|(k, _)| k == requester)
+        {
+            rdep.1 = true;
+        }
+    }
+
+    /// Java: `NodeEntry.getInProgressReverseDeps` of a node that is not done.
+    fn get_in_progress_reverse_deps(&self) -> Vec<SkyKey> {
+        self.in_progress_rdeps
+            .lock()
+            .iter()
+            .map(|(k, _)| k.clone())
+            .collect()
     }
 
     pub(crate) fn done_entry(&self) -> Option<Arc<DoneEntry>> {
@@ -329,6 +388,13 @@ pub struct Evaluator {
     live_threads: AtomicUsize,
     peak_threads: AtomicUsize,
     pub(crate) emitted_event_state: EmittedEventState,
+    /// Test hook: `Some(n)` lets `n` more evaluator threads start, then every spawn fails.
+    #[cfg(test)]
+    pub(crate) spawns_before_failure_for_testing: Mutex<Option<usize>>,
+    /// Test hook: error bubbling picks the alphabetically first reverse dep, as Java tests get
+    /// with `DeterministicHelper.DeterministicProcessableGraph`.
+    #[cfg(test)]
+    pub(crate) deterministic_for_testing: AtomicBool,
 }
 
 /// Builder for an [`Evaluator`].
@@ -391,6 +457,10 @@ impl EvaluatorBuilder {
             live_threads: AtomicUsize::new(0),
             peak_threads: AtomicUsize::new(0),
             emitted_event_state: EmittedEventState::default(),
+            #[cfg(test)]
+            spawns_before_failure_for_testing: Mutex::new(None),
+            #[cfg(test)]
+            deterministic_for_testing: AtomicBool::new(false),
         };
         // Java: ParallelEvaluator.injectErrorTransienceValue
         ev.insert_value(ERROR_TRANSIENCE_KEY.clone(), Arc::new(ErrorTransienceValue));
@@ -472,11 +542,22 @@ impl Evaluator {
             .cloned()
             .collect();
         let run = Run::new(self, ctx);
+        // Whatever way this call ends (result, interrupt, crash), the nodes Java would not have
+        // committed leave the graph.
+        struct Cleanup<'a, 'e>(&'a Run<'e>);
+        impl Drop for Cleanup<'_, '_> {
+            fn drop(&mut self) {
+                self.0.cleanup();
+            }
+        }
+        let _cleanup = Cleanup(&run);
 
         // Optimization: if all required node values are already present in the cache, return them
         // directly without launching the heavy machinery, spawning threads, etc.
         if roots.iter().all(|k| self.is_done(k)) {
-            return Ok(run.construct_result(&roots));
+            // Note that the 'catastrophe' parameter doesn't really matter here (it's only used
+            // for checking).
+            return Ok(run.construct_result(&roots, None, /* catastrophe= */ false));
         }
 
         if !ctx.keep_going {
@@ -490,24 +571,38 @@ impl Evaluator {
                 .collect();
             // Errors, even cached ones, should halt evaluations not in keepGoing mode.
             if !cached_error_keys.is_empty() {
-                return Ok(run.construct_result(&cached_error_keys));
+                return Ok(run.construct_result(
+                    &cached_error_keys,
+                    None,
+                    /* catastrophe= */ false,
+                ));
             }
         }
 
         run.evaluate_roots(&roots);
 
-        let crash = run.crash.lock().take();
-        if let Some(payload) = crash {
-            run.cleanup();
-            resume_unwind(payload);
-        }
+        // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:206 ParallelEvaluator.waitForCompletionAndConstructResult
+        run.propagate_crash_if_any();
         if run.saw_interrupt.load(Ordering::SeqCst) || self.interrupted.load(Ordering::SeqCst) {
-            run.cleanup();
             return Err(Interrupted);
         }
-        let result = run.construct_result(&roots);
-        run.cleanup();
-        Ok(result)
+        let mut bubble_error_info: Option<BubbleErrorInfo> = None;
+        let mut catastrophe = false;
+        let failure = run.failure.lock().take();
+        if let Some(e) = failure {
+            bubble_error_info = run.bubble_error_up_on_evaluator_thread(&e, &roots);
+            run.propagate_crash_if_any();
+            if ctx.keep_going {
+                check_state!(
+                    e.error_info.is_catastrophic(),
+                    "Scheduler exception only thrown for catastrophe in keep_going evaluation: \
+                     {:?}",
+                    e
+                );
+                catastrophe = true;
+            }
+        }
+        Ok(run.construct_result(&roots, bubble_error_info.as_ref(), catastrophe))
     }
 
     /// Returns the value of a done node (also one that has an error with a value).
@@ -567,6 +662,7 @@ impl Evaluator {
             value: Some(value),
             error: None,
             deps: GroupedDeps::new(),
+            awaits_deps: false,
         });
         self.graph.insert(key, Node::new(NodeState::Done(entry)));
     }
@@ -688,10 +784,47 @@ pub(crate) struct Run<'e> {
     /// Java: `NodeEntryVisitor.preventNewEvaluations` (first error without keep_going, or a
     /// catastrophe, or a crash).
     pub(crate) aborting: AtomicBool,
-    catastrophe: AtomicBool,
     saw_interrupt: AtomicBool,
     uncommitted: Mutex<Vec<SkyKey>>,
     crash: Mutex<Option<Box<dyn Any + Send>>>,
+    /// The failure that stopped the evaluation: Java's first `SchedulerException.ofError`, which
+    /// `waitForCompletion` rethrows. Lock order: this, then a node's `state`.
+    failure: Mutex<Option<SchedulerError>>,
+}
+
+/// Java: `SchedulerException.ofError(errorInfo, failedValue, rdepsToBubbleUpTo)`.
+// Java: com/google/devtools/build/skyframe/SchedulerException.java:21 SchedulerException
+#[derive(Debug)]
+struct SchedulerError {
+    error_info: Arc<ErrorInfo>,
+    failed_value: SkyKey,
+    rdeps_to_bubble_up_to: Vec<SkyKey>,
+}
+
+/// What a dependency request found.
+pub(crate) struct Requested {
+    pub(crate) entry: Arc<DoneEntry>,
+    /// The node was done when it was asked for (Java: `graph.get` during `compute` returns its
+    /// value). False when the request computed it or waited for it (Java: `compute` got null,
+    /// returned null, and the node waits to be restarted when the dep is done).
+    pub(crate) was_done: bool,
+}
+
+/// How a function's node finishes.
+struct Resolved {
+    entry: DoneEntry,
+    /// Java: `shouldFailFast` after the error was committed: throw
+    /// `SchedulerException.ofError(errorInfo, skyKey, rdepsToBubbleUpTo)`.
+    fail_fast: bool,
+}
+
+impl From<DoneEntry> for Resolved {
+    fn from(entry: DoneEntry) -> Self {
+        Resolved {
+            entry,
+            fail_fast: false,
+        }
+    }
 }
 
 impl<'e> Run<'e> {
@@ -704,11 +837,49 @@ impl<'e> Run<'e> {
                 cv: Condvar::new(),
             },
             aborting: AtomicBool::new(false),
-            catastrophe: AtomicBool::new(false),
             saw_interrupt: AtomicBool::new(false),
             uncommitted: Mutex::new(vec![]),
             crash: Mutex::new(None),
+            failure: Mutex::new(None),
         }
+    }
+
+    /// Java: `AbstractQueueVisitor.getExceptionLatchForTestingOnly()` is released: the visitor
+    /// has caught the exception that stops the evaluation (the failed node is done by then).
+    #[cfg(test)]
+    pub(crate) fn exception_latch_released_for_testing(&self) -> bool {
+        self.failure.lock().is_some() || self.crash.lock().is_some()
+    }
+
+    /// Java: `propagateEvaluatorContextCrashIfAny` / the visitor rethrowing a crash.
+    fn propagate_crash_if_any(&self) {
+        let crash = self.crash.lock().take();
+        if let Some(payload) = crash {
+            resume_unwind(payload);
+        }
+    }
+
+    /// Records a crash of the evaluation: stops new work; `evaluate` rethrows the first one.
+    fn note_crash(&self, payload: Box<dyn Any + Send>) {
+        self.crash.lock().get_or_insert(payload);
+        self.aborting.store(true, Ordering::SeqCst);
+    }
+
+    /// Starts an evaluator thread. An error (the OS refuses another thread) is returned, never
+    /// thrown: a claimed node must be finished on every path, or its waiters sleep forever.
+    fn spawn<'scope, T: Send + 'scope>(
+        &self,
+        scope: &'scope Scope<'scope, '_>,
+        f: impl FnOnce() -> T + Send + 'scope,
+    ) -> std::io::Result<ScopedJoinHandle<'scope, T>> {
+        #[cfg(test)]
+        if let Some(left) = &mut *self.ev.spawns_before_failure_for_testing.lock() {
+            if *left == 0 {
+                return Err(std::io::Error::other("injected spawn failure"));
+            }
+            *left -= 1;
+        }
+        self.spawn_builder().spawn_scoped(scope, f)
     }
 
     fn parallelism(&self) -> usize {
@@ -727,24 +898,34 @@ impl<'e> Run<'e> {
         self.ev.force_reserve_threads(workers);
         let queue = Mutex::new(roots.iter().cloned().collect::<VecDeque<_>>());
         std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..workers)
-                .map(|_| {
-                    let queue = &queue;
-                    self.spawn_builder()
-                        .spawn_scoped(scope, move || {
-                            self.permits.acquire();
-                            loop {
-                                let Some(k) = queue.lock().pop_front() else {
-                                    break;
-                                };
-                                self.eval_key(&k);
-                            }
-                            self.ev.unregister_thread();
-                            self.permits.release();
-                        })
-                        .expect("spawn evaluator thread")
-                })
-                .collect();
+            let mut handles = vec![];
+            for _ in 0..workers {
+                let queue = &queue;
+                let spawned = self.spawn(scope, move || {
+                    self.permits.acquire();
+                    loop {
+                        let Some(k) = queue.lock().pop_front() else {
+                            break;
+                        };
+                        self.eval_key(&k, None);
+                    }
+                    self.ev.unregister_thread();
+                    self.permits.release();
+                });
+                match spawned {
+                    Ok(h) => handles.push(h),
+                    Err(e) => {
+                        // The workers that did start drain the queue. With none, nothing can be
+                        // evaluated: crash, as Java does when it cannot create a thread.
+                        if handles.is_empty() {
+                            self.note_crash(Box::new(format!(
+                                "OutOfMemoryError: unable to create evaluator thread: {e}"
+                            )));
+                        }
+                        break;
+                    }
+                }
+            }
             for h in handles {
                 if let Err(p) = h.join() {
                     resume_unwind(p);
@@ -754,19 +935,45 @@ impl<'e> Run<'e> {
         self.ev.release_threads(workers);
     }
 
-    /// Computes or waits for `key` on the current thread (which holds a permit).
-    pub(crate) fn eval_key(&self, key: &SkyKey) -> Arc<DoneEntry> {
+    /// Computes or waits for `key` on the current thread (which holds a permit). `requester` is
+    /// the node whose function asked for `key` (`None` for a top-level key): it is registered as
+    /// a reverse dep of `key` unless `key` is already done, as Java's `enqueueChild` does.
+    pub(crate) fn eval_key(&self, key: &SkyKey, requester: Option<&SkyKey>) -> Arc<DoneEntry> {
+        self.eval_dep(key, requester).entry
+    }
+
+    /// [`Run::eval_key`], also telling whether the key was done when it was asked for.
+    fn eval_dep(&self, key: &SkyKey, requester: Option<&SkyKey>) -> Requested {
         let (node, claimed) = self.ev.graph.get_or_claim(key);
         if claimed {
-            if DEPTH.with(Cell::get) >= self.ctx.max_inline_depth {
-                return self.compute_on_fresh_thread(key, &node);
+            node.add_in_progress_rdep(requester);
+            let entry = if DEPTH.with(Cell::get) >= self.ctx.max_inline_depth {
+                self.compute_on_fresh_thread(key, &node)
+            } else {
+                self.compute_claimed(key, &node)
+            };
+            return Requested {
+                entry,
+                was_done: false,
+            };
+        }
+        {
+            let state = node.state.lock();
+            if let NodeState::Done(r) = &*state {
+                if !r.is_done() {
+                    node.add_in_progress_rdep(requester);
+                }
+                return Requested {
+                    entry: r.clone(),
+                    was_done: true,
+                };
             }
-            return self.compute_claimed(key, &node);
+            node.add_in_progress_rdep(requester);
         }
-        if let NodeState::Done(r) = &*node.state.lock() {
-            return r.clone();
+        Requested {
+            entry: self.wait_for(key, &node, requester),
+            was_done: false,
         }
-        self.wait_for(key, &node)
     }
 
     /// Computes a key this thread claimed on a new thread, so that inline recursion depth stays
@@ -783,15 +990,26 @@ impl<'e> Run<'e> {
         }
         self.ev.force_reserve_threads(1);
         let r = std::thread::scope(|scope| {
-            let h = self
-                .spawn_builder()
-                .spawn_scoped(scope, || {
-                    let r = self.compute_claimed(key, node);
-                    self.ev.unregister_thread();
-                    r
-                })
-                .expect("spawn evaluator thread");
-            h.join().unwrap_or_else(|p| resume_unwind(p))
+            let spawned = self.spawn(scope, || {
+                let r = self.compute_claimed(key, node);
+                self.ev.unregister_thread();
+                r
+            });
+            match spawned {
+                Ok(h) => h.join().unwrap_or_else(|p| resume_unwind(p)),
+                Err(e) => {
+                    // The key is claimed: finish it, or its waiters never wake. Java dies of an
+                    // OutOfMemoryError ("unable to create native thread") here; crash likewise.
+                    self.note_crash(Box::new(format!(
+                        "OutOfMemoryError: unable to create evaluator thread for {key:?}: {e}"
+                    )));
+                    self.finish(
+                        key,
+                        node,
+                        DoneEntry::undone(DoneKind::Aborted, GroupedDeps::new()).into(),
+                    )
+                }
+            }
         });
         self.ev.release_threads(1);
         if let Some(v) = self.ev.waits.lock().waiting.get_mut(&me) {
@@ -808,12 +1026,12 @@ impl<'e> Run<'e> {
             *node.state.lock() = NodeState::InProgress { owner: me };
             w.stacks.entry(me).or_default().push(key.clone());
         }
-        let entry = if self.ev.interrupted.load(Ordering::SeqCst) {
+        let entry: Resolved = if self.ev.interrupted.load(Ordering::SeqCst) {
             self.saw_interrupt.store(true, Ordering::SeqCst);
-            DoneEntry::undone(DoneKind::Interrupted, GroupedDeps::new())
+            DoneEntry::undone(DoneKind::Interrupted, GroupedDeps::new()).into()
         } else if self.aborting.load(Ordering::SeqCst) {
             // Java: no new evaluations start once the visitor prevents them.
-            DoneEntry::undone(DoneKind::Aborted, GroupedDeps::new())
+            DoneEntry::undone(DoneKind::Aborted, GroupedDeps::new()).into()
         } else {
             DEPTH.with(|d| d.set(d.get() + 1));
             let r = catch_unwind(AssertUnwindSafe(|| self.run_function(key)));
@@ -822,11 +1040,13 @@ impl<'e> Run<'e> {
                 Ok(e) => e,
                 Err(payload) => {
                     // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:548 Evaluate.run
-                    // A RuntimeException in a SkyFunction crashes the evaluation. Stop new work,
-                    // let waiters finish, and rethrow from `evaluate`.
-                    self.crash.lock().get_or_insert(payload);
-                    self.aborting.store(true, Ordering::SeqCst);
-                    DoneEntry::undone(DoneKind::Aborted, GroupedDeps::new())
+                    // Programmer error (most likely NPE or a failed precondition in a
+                    // SkyFunction). Output some context together with the exception.
+                    // Stop new work, let waiters finish, and rethrow from `evaluate`.
+                    let reverse_deps = node.get_in_progress_reverse_deps();
+                    let msg = prepare_crash_message(key, &reverse_deps);
+                    self.note_crash(wrap_crash(msg, payload));
+                    DoneEntry::undone(DoneKind::Aborted, GroupedDeps::new()).into()
                 }
             }
         };
@@ -836,28 +1056,63 @@ impl<'e> Run<'e> {
         self.finish(key, node, entry)
     }
 
-    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:415 Evaluate.run
-    fn run_function(&self, key: &SkyKey) -> DoneEntry {
+    fn function_for(&self, key: &SkyKey, node_state: &str) -> Arc<dyn SkyFunction> {
         let function_name = key.function_name();
         // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:457
         // PORT: Java also prints the NodeEntry's toString; the node here is simply in progress.
         let Some(function) = self.ev.functions.get(&function_name).cloned() else {
             panic!(
                 "NullPointerException: Unable to find SkyFunction '{function_name}' for node with \
-                 key {key:?}, NodeEntry{{state=EVALUATING}}"
+                 key {key:?}, NodeEntry{{state={node_state}}}"
             );
         };
+        function
+    }
+
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:415 Evaluate.run
+    fn run_function(&self, key: &SkyKey) -> Resolved {
+        let function = self.function_for(key, "EVALUATING");
         self.ev.computed.fetch_add(1, Ordering::Relaxed);
         let mut env = Environment::new(self, key, &*function);
         let r = function.compute(key, &mut env);
         self.resolve(key, env, r)
     }
 
+    /// What a dependency request shows to a function in normal evaluation.
+    ///
+    /// PORT: a dep that was not done when it was asked for, and is done now that the evaluation
+    /// has failed, looks not done. In Java the function got null for it and returned null; its
+    /// node waits to be restarted when the dep is done, and once the evaluation has failed the
+    /// visitor accepts no new work (`preventNewEvaluations`), so it never is: the node stays
+    /// unfinished whatever the dep became. Here the function was blocked in the request and
+    /// resumes its only run, so the result is withheld from that run. In particular the parents
+    /// that were waiting for the node whose exception stopped the evaluation do not see that
+    /// error in normal evaluation (with keep_going they otherwise would); they are re-run in
+    /// error bubbling.
+    ///
+    /// A dep that was done when asked for is shown as it is: Java's running function reads it
+    /// the same way ("there is a race-like opportunity for the error to be used, either by an
+    /// in-flight computation or by a future computation").
+    pub(crate) fn entry_seen_in_normal_evaluation(&self, requested: Requested) -> Arc<DoneEntry> {
+        if !requested.was_done && requested.entry.is_done() && self.aborting.load(Ordering::SeqCst)
+        {
+            return Arc::new(DoneEntry::undone(DoneKind::Aborted, GroupedDeps::new()));
+        }
+        requested.entry
+    }
+
     /// Decides how a node finishes from what its function returned and what it saw of its deps.
-    /// Ports the commit paths of `AbstractParallelEvaluator.Evaluate.run`, the result of
-    /// `ParallelEvaluator.bubbleErrorUp` (no keep_going), and `SkyFunctionEnvironment`'s
-    /// `commitAndGetParents` error construction.
-    fn resolve(&self, key: &SkyKey, env: Environment<'_>, r: ComputeResult) -> DoneEntry {
+    /// Ports the part of `AbstractParallelEvaluator.Evaluate.run` after `compute` returns, and
+    /// `SkyFunctionEnvironment.commitAndGetParents`' error construction.
+    ///
+    /// PORT: where Java enqueues the not-done deps and restarts the function when they are done,
+    /// the deps here were computed by the requests themselves. A dep that is still not done
+    /// afterwards (the evaluation is aborting, it is in a cycle, it was interrupted) never will
+    /// be in this evaluation, and neither will this node: it finishes "undone" with the deps it
+    /// declared, which is the in-flight `NodeEntry` Java leaves behind for error bubbling and
+    /// cycle detection.
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:473 Evaluate.run
+    fn resolve(&self, key: &SkyKey, env: Environment<'_>, r: ComputeResult) -> Resolved {
         let keep_going = self.ctx.keep_going;
         let (st, values_missing, listener) = env.into_parts();
         let ret = match r {
@@ -869,203 +1124,162 @@ impl<'e> Run<'e> {
                     || !self.aborting.load(Ordering::SeqCst)
                 {
                     self.saw_interrupt.store(true, Ordering::SeqCst);
-                    return DoneEntry::undone(DoneKind::Interrupted, st.deps);
+                    return DoneEntry::undone(DoneKind::Interrupted, st.deps).into();
                 }
                 Ret::Abandoned
             }
         };
         if st.interrupted_dep {
             self.saw_interrupt.store(true, Ordering::SeqCst);
-            return DoneEntry::undone(DoneKind::Interrupted, st.deps);
-        }
-        let any_child_transitively_transient = st
-            .child_error_infos
-            .iter()
-            .any(|e| e.is_transitively_transient());
-
-        if !keep_going {
-            if let Some(child_error) = &st.dep_error {
-                // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:290
-                // bubbleErrorUp. The parent saw the child's error during its normal compute (the
-                // blocking engine's equivalent of being re-run in error bubbling) and may have
-                // thrown its own exception; its return value is ignored.
-                let error = match &ret {
-                    Ret::Threw(e) => {
-                        ErrorInfo::from_exception(e, /* is_transitively_transient= */ false)
-                    }
-                    _ => (**child_error).clone(),
-                };
-                let error = ErrorInfo::from_child_errors(key, [&error]);
-                self.aborting.store(true, Ordering::SeqCst);
-                listener.flush();
-                return DoneEntry {
-                    kind: DoneKind::Bubbled,
-                    value: None,
-                    error: Some(Arc::new(error)),
-                    deps: st.deps,
-                };
-            }
-            match ret {
-                Ret::Threw(e) => {
-                    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:511
-                    // shouldFailFast.
-                    if self
-                        .aborting
-                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                        .is_err()
-                    {
-                        // This is not the first error encountered, so we ignore it so that we can
-                        // terminate with the first error.
-                        return DoneEntry::undone(DoneKind::Aborted, st.deps);
-                    }
-                    let error = ErrorInfo::from_exception(
-                        &e,
-                        e.is_transient() || any_child_transitively_transient,
-                    );
-                    listener.flush();
-                    return self.committed(None, Some(error), st);
-                }
-                Ret::Abandoned => return DoneEntry::undone(DoneKind::Aborted, st.deps),
-                Ret::Value(_) | Ret::Null => {}
-            }
-            if st.aborted_dep {
-                return DoneEntry::undone(DoneKind::Aborted, st.deps);
-            }
-            if st.in_cycle_dep {
-                return DoneEntry::undone(DoneKind::InCycle, st.deps);
-            }
-            return match ret {
-                Ret::Value(v) => {
-                    check_state!(
-                        !values_missing,
-                        "Evaluation of {:?} returned non-null value but requested dependencies \
-                         that weren't computed yet (one of {:?}), NodeEntry: {:?}",
-                        key,
-                        st.deps,
-                        "EVALUATING"
-                    );
-                    listener.flush();
-                    self.committed(Some(v), None, st)
-                }
-                _ => panic!(
-                    "IllegalStateException: Evaluation of SkyKey failed and no dependencies were \
-                     requested: {key:?} {:?}",
-                    st.deps
-                ),
-            };
+            return DoneEntry::undone(DoneKind::Interrupted, st.deps).into();
         }
 
-        // keep_going.
-        if let Ret::Threw(e) = &ret
-            && !values_missing
-        {
-            let error =
-                ErrorInfo::from_exception(e, e.is_transient() || any_child_transitively_transient);
-            if e.is_catastrophic() {
-                // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:511
-                // shouldFailFast also holds for catastrophes in keep_going.
-                if self
-                    .aborting
-                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_err()
-                {
-                    return DoneEntry::undone(DoneKind::Aborted, st.deps);
-                }
-                self.catastrophe.store(true, Ordering::SeqCst);
-            }
-            listener.flush();
-            if self.catastrophe.load(Ordering::SeqCst)
-                && st.child_error_infos.iter().any(|c| c.is_catastrophic())
-            {
-                // On the error-bubbling path of a catastrophe: not committed in Java.
-                return DoneEntry {
-                    kind: DoneKind::Bubbled,
-                    value: None,
-                    error: Some(Arc::new(error)),
-                    deps: st.deps,
-                };
-            }
-            return self.committed(None, Some(error), st);
-        }
         // In keep-going mode, we do not let SkyFunctions complete with a thrown error if they
         // have missing deps. Instead, we wait until their deps are done and restart the
         // SkyFunction, so we can have a definitive error and definitive graph structure, thus
         // avoiding non-determinism. It's completely reasonable for SkyFunctions to throw eagerly
         // because they do not know if they are in keep-going mode.
-        let catastrophic_child = st.child_error_infos.iter().any(|c| c.is_catastrophic());
-        if !catastrophic_child {
-            if st.aborted_dep {
-                return DoneEntry::undone(DoneKind::Aborted, st.deps);
+        if let Ret::Threw(builder_exception) = &ret
+            && (!keep_going || !values_missing)
+        {
+            let should_fail_fast = !keep_going || builder_exception.is_catastrophic();
+            if should_fail_fast {
+                // After we commit this error to the graph but before the doMutatingEvaluation
+                // call completes with the error there is a race-like opportunity for the error to
+                // be used, either by an in-flight computation or by a future computation.
+                // Java: preventNewEvaluations()
+                if self
+                    .aborting
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
+                    // This is not the first error encountered, so we ignore it so that we can
+                    // terminate with the first error.
+                    return DoneEntry::undone(DoneKind::Aborted, st.deps).into();
+                }
             }
-            if st.in_cycle_dep {
-                return DoneEntry::undone(DoneKind::InCycle, st.deps);
-            }
+            // Java: isAnyDirectDepErrorTransitivelyTransient ||
+            // isAnyNewlyRequestedDepErrorTransitivelyTransient
+            let is_transitively_transient = builder_exception.is_transient()
+                || st
+                    .child_error_infos
+                    .iter()
+                    .any(|e| e.is_transitively_transient());
+            let error_info =
+                ErrorInfo::from_exception(builder_exception, is_transitively_transient);
+            listener.flush();
+            return Resolved {
+                entry: self.committed(key, None, Some(error_info), st),
+                fail_fast: should_fail_fast,
+            };
         }
-        match ret {
-            Ret::Value(v) => {
-                check_state!(
-                    !values_missing,
-                    "Evaluation of {:?} returned non-null value but requested dependencies that \
-                     weren't computed yet (one of {:?}), NodeEntry: {:?}",
+
+        if let Ret::Value(value) = ret {
+            check_state!(
+                !values_missing,
+                "Evaluation of {:?} returned non-null value but requested dependencies that \
+                 weren't computed yet (one of {:?}), NodeEntry: {:?}",
+                key,
+                st.deps,
+                "EVALUATING"
+            );
+            // Java: ErrorInfoManager.UseChildErrorInfoIfNecessary.getErrorInfoToUse
+            let error_info = if st.child_error_infos.is_empty() {
+                None
+            } else {
+                Some(ErrorInfo::with_value(&ErrorInfo::from_child_errors(
                     key,
-                    st.deps,
-                    "EVALUATING"
-                );
-                // Java: ErrorInfoManager.UseChildErrorInfoIfNecessary.getErrorInfoToUse
-                let error = if st.child_error_infos.is_empty() {
-                    None
-                } else {
-                    Some(ErrorInfo::with_value(&ErrorInfo::from_child_errors(
-                        key,
-                        st.child_error_infos.iter().map(|e| &**e),
-                    )))
-                };
-                listener.flush();
-                self.committed(Some(v), error, st)
-            }
-            Ret::Null | Ret::Threw(_) | Ret::Abandoned => {
-                if st.child_error_infos.is_empty() {
-                    if matches!(ret, Ret::Abandoned) {
-                        return DoneEntry::undone(DoneKind::Aborted, st.deps);
-                    }
-                    panic!(
-                        "IllegalStateException: Evaluation of SkyKey failed and no dependencies \
-                         were requested: {key:?} {:?}",
-                        st.deps
-                    );
-                }
-                let error =
-                    ErrorInfo::from_child_errors(key, st.child_error_infos.iter().map(|e| &**e));
-                listener.flush();
-                if error.is_catastrophic() {
-                    return DoneEntry {
-                        kind: DoneKind::Bubbled,
-                        value: None,
-                        error: Some(Arc::new(error)),
-                        deps: st.deps,
-                    };
-                }
-                self.committed(None, Some(error), st)
-            }
+                    st.child_error_infos.iter().map(|e| &**e),
+                )))
+            };
+            listener.flush();
+            return self.committed(key, Some(value), error_info, st).into();
         }
+
+        // The function stopped with `Interrupted` because the evaluation is aborting. Java: the
+        // InterruptedException leaves the node as it was: nothing is committed, nothing is
+        // registered with its deps (SchedulerException.ofInterruption).
+        if matches!(ret, Ret::Abandoned) {
+            return DoneEntry::undone(DoneKind::Aborted, st.deps).into();
+        }
+        // From here on the function returned null (in keep_going also: threw with deps missing).
+
+        if let Some((child_error_key, child_error_info)) = &st.dep_error {
+            check_state!(!keep_going, "{:?} {:?}", key, child_error_key);
+            // We encountered a child error in noKeepGoing mode, so we want to fail fast. But we
+            // first need to add the edge between the current node and the child error it
+            // requested so that error bubbling can occur. Note that this edge will subsequently
+            // be removed during graph cleaning (since the current node will never be committed to
+            // the graph).
+            // PORT: the edge is the dep this run declared; the node finishes undone with it.
+            self.aborting.store(true, Ordering::SeqCst);
+            // Java: throw SchedulerException.ofError(childErrorInfo, childErrorKey,
+            // ImmutableSet.of(skyKey)); the visitor keeps the first exception thrown.
+            self.failure.lock().get_or_insert_with(|| SchedulerError {
+                error_info: child_error_info.clone(),
+                failed_value: child_error_key.clone(),
+                rdeps_to_bubble_up_to: vec![key.clone()],
+            });
+            return DoneEntry::awaiting_deps(DoneKind::Aborted, st.deps).into();
+        }
+
+        // Java enqueues the deps that are not done and returns; the node is restarted when they
+        // are. Here a dep that is not done after it was requested never will be.
+        if st.aborted_dep || st.in_cycle_dep {
+            let kind = if st.aborted_dep {
+                DoneKind::Aborted
+            } else {
+                DoneKind::InCycle
+            };
+            return DoneEntry::awaiting_deps(kind, st.deps).into();
+        }
+
+        // If there were no newly requested dependencies, then at least one of them was in error
+        // or there is a bug in the SkyFunction implementation. The environment has collected its
+        // errors, so we just order it to be built.
+        check_state!(
+            !st.child_error_infos.is_empty(),
+            "Evaluation of SkyKey failed and no dependencies were requested: {:?} {:?}",
+            key,
+            st.deps
+        );
+        // If the child error was catastrophic, committing this parent to the graph is not
+        // necessary, but since we don't do error bubbling in catastrophes, it doesn't violate any
+        // invariants either.
+        let error_info =
+            ErrorInfo::from_child_errors(key, st.child_error_infos.iter().map(|e| &**e));
+        listener.flush();
+        self.committed(key, None, Some(error_info), st).into()
     }
 
     /// A node committed to the graph. Deps that were not done when requested are not recorded
     /// (Java: `SkyFunctionEnvironment.removeUndoneNewlyRequestedDeps`), and a directly transient
     /// error adds a dependency on `ErrorTransienceValue.KEY`, always the last dep
     /// (`SkyFunctionEnvironment.setError`).
+    ///
+    /// PORT: Java registers a node as a reverse dep of the deps it requested only after its
+    /// function returns null (`enqueueChild`), so a node that commits (a function that threw with
+    /// deps missing) never registered on its undone deps. Here the request itself registered it;
+    /// that is taken back.
     fn committed(
         &self,
+        key: &SkyKey,
         value: Option<SkyValue>,
         error: Option<ErrorInfo>,
         st: EnvState,
     ) -> DoneEntry {
         let undone: HashSet<SkyKey> = st
             .requested
+            .lock()
             .iter()
             .filter(|(_, e)| e.is_undone_view())
             .map(|(k, _)| k.clone())
             .collect();
+        for dep in &undone {
+            if let Some(dep_node) = self.ev.node(dep) {
+                dep_node.in_progress_rdeps.lock().retain(|(r, _)| r != key);
+            }
+        }
         let mut deps = st.deps;
         deps.remove(&undone);
         if error.as_ref().is_some_and(|e| e.is_directly_transient()) {
@@ -1076,17 +1290,52 @@ impl<'e> Run<'e> {
             value,
             error: error.map(Arc::new),
             deps,
+            awaits_deps: false,
         }
     }
 
-    fn finish(&self, key: &SkyKey, node: &Node, entry: DoneEntry) -> Arc<DoneEntry> {
-        let entry = Arc::new(entry);
+    fn finish(&self, key: &SkyKey, node: &Node, resolved: Resolved) -> Arc<DoneEntry> {
+        let entry = Arc::new(resolved.entry);
         if entry.is_done() {
             self.ev.register_rdeps(key, &entry.deps);
         } else {
             self.uncommitted.lock().push(key.clone());
         }
-        *node.state.lock() = NodeState::Done(entry.clone());
+        // Java: `NodeEntry.setValue` returns the reverse deps registered while the node was in
+        // progress (`commitAndGetParents`); a parent that asks later finds the node done.
+        //
+        // PORT: without the requesters whose request closed a cycle through this node. They are
+        // below it: in Java they would have been evaluated only after this node's function
+        // returned null, and then it could not have committed. (Reached by a function that
+        // throws although a dep is missing; Java commits that error without ever evaluating what
+        // is below.)
+        let set_value = || -> Vec<SkyKey> {
+            let mut state = node.state.lock();
+            *state = NodeState::Done(entry.clone());
+            if entry.is_done() {
+                std::mem::take(&mut *node.in_progress_rdeps.lock())
+                    .into_iter()
+                    .filter(|(_, closed_cycle)| !closed_cycle)
+                    .map(|(k, _)| k)
+                    .collect()
+            } else {
+                vec![]
+            }
+        };
+        if resolved.fail_fast {
+            // Java: throw SchedulerException.ofError(errorInfo, skyKey, rdepsToBubbleUpTo). The
+            // failure is recorded before any waiter can see the node done
+            // (`entry_seen_in_normal_evaluation`).
+            let mut failure = self.failure.lock();
+            let rdeps_to_bubble_up_to = set_value();
+            failure.get_or_insert_with(|| SchedulerError {
+                error_info: entry.error.clone().expect("fail fast with an error"),
+                failed_value: key.clone(),
+                rdeps_to_bubble_up_to,
+            });
+        } else {
+            set_value();
+        }
         node.done.notify_all();
         entry
     }
@@ -1100,14 +1349,22 @@ impl<'e> Run<'e> {
             value: None,
             error: Some(Arc::new(error)),
             deps,
+            awaits_deps: false,
         });
         self.ev.register_rdeps(key, &entry.deps);
-        *node.state.lock() = NodeState::Done(entry);
+        let mut state = node.state.lock();
+        *state = NodeState::Done(entry);
+        node.in_progress_rdeps.lock().clear();
     }
 
     /// Blocks until `node` is done, detecting cycles first. Releases the permit while blocked.
     /// Returns an "in cycle" entry when waiting would close a cycle.
-    fn wait_for(&self, key: &SkyKey, node: &Arc<Node>) -> Arc<DoneEntry> {
+    fn wait_for(
+        &self,
+        key: &SkyKey,
+        node: &Arc<Node>,
+        requester: Option<&SkyKey>,
+    ) -> Arc<DoneEntry> {
         let me = std::thread::current().id();
         {
             let mut w = self.ev.waits.lock();
@@ -1124,6 +1381,7 @@ impl<'e> Run<'e> {
                 return match &*node.state.lock() {
                     NodeState::Done(r) => r.clone(),
                     NodeState::InProgress { .. } => {
+                        node.mark_cycle_rdep(requester);
                         Arc::new(DoneEntry::undone(DoneKind::InCycle, GroupedDeps::new()))
                     }
                 };
@@ -1194,15 +1452,21 @@ impl<'e> Run<'e> {
         dfs(self.ev, w, me, my_stack.len() - 1, me, &mut HashSet::new())
     }
 
-    /// Computes several keys, spreading unstarted ones over helper threads.
-    pub(crate) fn eval_keys(&self, keys: &[SkyKey]) -> Vec<Arc<DoneEntry>> {
+    /// Computes several keys, spreading unstarted ones over helper threads. `requester` as in
+    /// [`Run::eval_key`].
+    pub(crate) fn eval_keys(&self, keys: &[SkyKey], requester: Option<&SkyKey>) -> Vec<Requested> {
         if keys.len() <= 1 || self.parallelism() <= 1 {
-            return keys.iter().map(|k| self.eval_key(k)).collect();
+            return keys.iter().map(|k| self.eval_dep(k, requester)).collect();
         }
         // Already-done keys need no thread.
-        let mut results: Vec<Option<Arc<DoneEntry>>> = keys
+        let mut results: Vec<Option<Requested>> = keys
             .iter()
-            .map(|k| self.ev.graph.get(k).and_then(|n| n.done_entry()))
+            .map(|k| {
+                self.ev.committed_entry(k).map(|entry| Requested {
+                    entry,
+                    was_done: true,
+                })
+            })
             .collect();
         let pending: Vec<usize> = (0..keys.len()).filter(|&i| results[i].is_none()).collect();
         let helper_count = if pending.len() <= 1 {
@@ -1216,7 +1480,7 @@ impl<'e> Run<'e> {
         if helper_count == 0 {
             // One key, or the thread cap is reached: evaluate inline, in order.
             for i in pending {
-                results[i] = Some(self.eval_key(&keys[i]));
+                results[i] = Some(self.eval_dep(&keys[i], requester));
             }
             return results.into_iter().map(|r| r.expect("filled")).collect();
         }
@@ -1225,7 +1489,7 @@ impl<'e> Run<'e> {
         let me = std::thread::current().id();
         let rest: Vec<SkyKey> = pending[1..].iter().map(|&i| keys[i].clone()).collect();
         let queue = Mutex::new(rest.iter().cloned().enumerate().collect::<VecDeque<_>>());
-        let rest_results: Vec<Mutex<Option<Arc<DoneEntry>>>> =
+        let rest_results: Vec<Mutex<Option<Requested>>> =
             rest.iter().map(|_| Mutex::new(None)).collect();
         // The parent depends on every key of the batch from now on: record that before any
         // helper starts, so a helper that asks for a key on this thread's stack sees the cycle.
@@ -1248,7 +1512,7 @@ impl<'e> Run<'e> {
         if closes_cycle {
             self.ev.release_threads(helper_count);
             for i in pending {
-                results[i] = Some(self.eval_key(&keys[i]));
+                results[i] = Some(self.eval_dep(&keys[i], requester));
             }
             return results.into_iter().map(|r| r.expect("filled")).collect();
         }
@@ -1257,27 +1521,30 @@ impl<'e> Run<'e> {
                 let Some((i, k)) = queue.lock().pop_front() else {
                     break;
                 };
-                let r = self.eval_key(&k);
+                let r = self.eval_dep(&k, requester);
                 *rest_results[i].lock() = Some(r);
             }
         };
         std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..helper_count)
-                .map(|_| {
-                    let queue = &queue;
-                    let drain = &drain;
-                    self.spawn_builder()
-                        .spawn_scoped(scope, move || {
-                            self.permits.acquire();
-                            drain(queue);
-                            self.ev.unregister_thread();
-                            self.permits.release();
-                        })
-                        .expect("spawn evaluator helper")
-                })
-                .collect();
+            let mut handles = vec![];
+            for _ in 0..helper_count {
+                let queue = &queue;
+                let drain = &drain;
+                let spawned = self.spawn(scope, move || {
+                    self.permits.acquire();
+                    drain(queue);
+                    self.ev.unregister_thread();
+                    self.permits.release();
+                });
+                match spawned {
+                    Ok(h) => handles.push(h),
+                    // No more threads to be had: this thread drains what the helpers that did
+                    // start leave in the queue.
+                    Err(_) => break,
+                }
+            }
             let first = pending[0];
-            results[first] = Some(self.eval_key(&keys[first]));
+            results[first] = Some(self.eval_dep(&keys[first], requester));
             drain(&queue);
             // Give back the permit while the helpers finish.
             self.permits.release();
@@ -1298,64 +1565,316 @@ impl<'e> Run<'e> {
         results.into_iter().map(|r| r.expect("filled")).collect()
     }
 
-    /// Constructs the result from the graph. Looks for cycles if there are unfinished roots but
-    /// no error was already found through bubbling up.
+    /// Runs [`Run::bubble_error_up`] on a thread with the evaluator's stack size (functions are
+    /// re-run there).
+    fn bubble_error_up_on_evaluator_thread(
+        &self,
+        e: &SchedulerError,
+        roots: &[SkyKey],
+    ) -> Option<BubbleErrorInfo> {
+        self.ev.force_reserve_threads(1);
+        let r = std::thread::scope(|scope| {
+            match self.spawn(scope, || {
+                catch_unwind(AssertUnwindSafe(|| self.bubble_error_up(e, roots)))
+            }) {
+                Ok(h) => match h.join().unwrap_or_else(|p| resume_unwind(p)) {
+                    Ok(bubble_error_info) => bubble_error_info,
+                    Err(payload) => {
+                        self.note_crash(payload);
+                        None
+                    }
+                },
+                Err(err) => {
+                    self.note_crash(Box::new(format!(
+                        "OutOfMemoryError: unable to create evaluator thread for error bubbling: \
+                         {err}"
+                    )));
+                    None
+                }
+            }
+        });
+        self.ev.release_threads(1);
+        r
+    }
+
+    /// Walk up graph to find a top-level node (without parents) that wanted this failure. Store
+    /// the failed nodes along the way in a map, with ErrorInfos that are appropriate for that
+    /// layer. Example:
+    ///
+    /// ```text
+    ///                      foo   bar
+    ///                        \   /
+    ///           unrequested   baz
+    ///                     \    |
+    ///                      failed-node
+    /// ```
+    ///
+    /// User requests foo, bar. When failed-node fails, we look at its parents. unrequested is not
+    /// in-flight, so we replace failed-node by baz and repeat. We look at baz's parents. foo is
+    /// in-flight, so we replace baz by foo. Since foo is a top-level node and doesn't have
+    /// parents, we then break, since we know a top-level node, foo, that depended on the failed
+    /// node.
+    ///
+    /// There's the potential for a weird "track jump" here in the case:
+    ///
+    /// ```text
+    ///                        foo
+    ///                       / \
+    ///                   fail1 fail2
+    /// ```
+    ///
+    /// If fail1 and fail2 fail simultaneously, fail2 may start propagating up in the loop below.
+    /// However, foo requests fail1 first, and then throws an exception based on that. This is not
+    /// incorrect, but may be unexpected.
+    ///
+    /// Returns a map of errors that have been constructed during the bubbling up, so that the
+    /// appropriate error can be returned to the caller, even though that error was not written to
+    /// the graph. If a cycle is detected during the bubbling, this method aborts and returns null
+    /// so that the normal cycle detection can handle the cycle.
+    ///
+    /// Note that we are not propagating error to the first top-level node but to the highest one,
+    /// because during this process we can add useful information about error from other nodes.
+    ///
+    /// Every node on this walk but the leaf node is not done, by the following argument: the leaf
+    /// node is done, but the parents of it that we consider are in `rdepsToBubbleUpTo`. Each
+    /// parent is either (1) a parent that requested the leaf node and found it to be in error,
+    /// meaning it is not done, or (2) a parent that had registered a dependency on this leaf node
+    /// before it finished building. In the second case, that parent would not have been enqueued,
+    /// since we failed fast and prevented all new evaluations. Thus, we will only visit
+    /// unfinished parents of the leaf node. For the inductive argument, the only parents we
+    /// consider are those that were registered during this build (via
+    /// `NodeEntry.getInProgressReverseDeps`). Since we don't allow a node to build with
+    /// unfinished deps, those parents cannot have built.
+    ///
+    /// PORT: runs after every evaluator thread of the normal evaluation has finished, as in Java
+    /// (`waitForCompletion`). In case (2) the parent was blocked in its dependency request, not
+    /// waiting to be enqueued: its run resumed, found the dep missing and finished undone
+    /// (`Run::resolve`), so it is unfinished here as well. "Not done" nodes are those that did
+    /// not commit; their recorded deps are Java's temporary direct deps. The interrupt bit Java
+    /// sets and clears around each re-run is per environment
+    /// (`Environment::check_interrupted`), so there is nothing to clear or restore.
+    // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:290 ParallelEvaluator.bubbleErrorUp
+    fn bubble_error_up(&self, e: &SchedulerError, roots: &[SkyKey]) -> Option<BubbleErrorInfo> {
+        let leaf_failure = &e.error_info;
+        let rdeps_to_bubble_up_to = &e.rdeps_to_bubble_up_to;
+        // PORT: stateCache.invalidateAll() skipped, SkyKeyComputeState is not ported.
+        let root_values: HashSet<&SkyKey> = roots.iter().collect();
+        let mut error: Arc<ErrorInfo> = leaf_failure.clone();
+        let mut error_key = e.failed_value.clone();
+        let mut bubble_error_info: BubbleErrorInfo = HashMap::new();
+        let mut first_iteration = true;
+        loop {
+            let error_node = self
+                .ev
+                .node(&error_key)
+                .unwrap_or_else(|| panic!("NullPointerException: {error_key:?}"));
+            let error_entry = error_node
+                .done_entry()
+                .unwrap_or_else(|| panic!("NullPointerException: {error_key:?}"));
+            let all_reverse_deps: Vec<SkyKey> = if error_entry.is_done() {
+                check_state!(
+                    first_iteration,
+                    "Non-leaf done node reached: {:?} {:?} {:?} {:?} {:?}",
+                    error_key,
+                    leaf_failure,
+                    roots,
+                    rdeps_to_bubble_up_to,
+                    bubble_error_info
+                );
+                rdeps_to_bubble_up_to.clone()
+            } else {
+                check_state!(
+                    !first_iteration,
+                    "undone first iteration: {:?} {:?} {:?} {:?} {:?} {:?}",
+                    error_key,
+                    error_entry,
+                    leaf_failure,
+                    roots,
+                    rdeps_to_bubble_up_to,
+                    bubble_error_info
+                );
+                error_node.get_in_progress_reverse_deps()
+            };
+            // PORT: Java registers a node as a reverse dep when its function has returned null
+            // (`enqueueChild`); a request registers it here, before its function has ended. Only
+            // the requesters whose function did return null count: one that then threw (not the
+            // first error: ignored) or was interrupted registered nothing in Java.
+            #[allow(unused_mut)]
+            let mut reverse_deps: Vec<SkyKey> = all_reverse_deps
+                .iter()
+                .filter(|parent| {
+                    self.ev
+                        .done_entry(parent)
+                        .is_some_and(|e| !e.is_done() && e.awaits_deps)
+                })
+                .cloned()
+                .collect();
+            if reverse_deps.is_empty() && !root_values.contains(&error_key) {
+                // PORT: a state Java does not reach. The only requesters of this unfinished node
+                // threw after it failed under them (in Java a function that throws with a dep
+                // missing throws before that dep is evaluated, and is itself the first error).
+                // The error has to reach a top-level node: bubble through such a requester, which
+                // may throw again in its error-bubbling run.
+                reverse_deps = all_reverse_deps;
+            }
+            #[cfg(test)]
+            if self.ev.deterministic_for_testing.load(Ordering::SeqCst) {
+                // Java: DeterministicHelper.ALPHABETICAL_SKYKEY_COMPARATOR
+                reverse_deps.sort_by_key(|k| (format!("{:?}", k.argument()), k.function_name().0));
+            }
+            first_iteration = false;
+            // We should break from loop only when node doesn't have any parents.
+            if reverse_deps.is_empty() {
+                check_state!(
+                    root_values.contains(&error_key),
+                    "Current key {:?} has to be a top-level key: {:?}",
+                    error_key,
+                    root_values
+                );
+                // PORT: replaying the stored events of a done top-level node is skipped (one
+                // build per process, events are reported once when the node commits).
+                break;
+            }
+            let parent = reverse_deps[0].clone();
+            if bubble_error_info.contains_key(&parent) {
+                // Bubbled into a cycle. Don't try to bubble anything up. Cycle detection will
+                // kick in.
+                return None;
+            }
+            let parent_entry = self.ev.done_entry(&parent).unwrap_or_else(|| {
+                panic!("NullPointerException: parent {parent:?} of {error_key:?} not in graph")
+            });
+            check_state!(
+                !parent_entry.is_done(),
+                "We cannot bubble into a done node entry: a done node cannot depend on a not-done \
+                 node, and the first errorParent was not done: {:?} {:?} {:?} {:?} {:?} {:?} {:?} \
+                 {:?}",
+                error_key,
+                error_entry,
+                parent,
+                parent_entry,
+                leaf_failure,
+                roots,
+                rdeps_to_bubble_up_to,
+                bubble_error_info
+            );
+            // PORT: "In-progress reverse deps can only include in-flight nodes" has no
+            // counterpart: a node that is not done is in flight.
+            check_state!(
+                parent_entry.deps.contains(&error_key),
+                "In-progress reverse deps can only include nodes that have declared a dep: {:?} \
+                 {:?} {:?} {:?} {:?} {:?}",
+                error_key,
+                error_entry,
+                parent,
+                parent_entry,
+                leaf_failure,
+                roots
+            );
+            let sky_function = self.function_for(&parent, "EVALUATING");
+            // PORT: dirty-node handling skipped, incremental.
+            error_key = parent;
+            let env = {
+                let mut env = Environment::create_for_error(
+                    self,
+                    &error_key,
+                    &*sky_function,
+                    parent_entry.deps.clone(),
+                    &bubble_error_info,
+                );
+                // This build is only to check if the parent node can give us a better error. We
+                // don't care about a return value.
+                match sky_function.compute(&error_key, &mut env) {
+                    Ok(_) => {}
+                    Err(ComputeError::Interrupted(_)) => {
+                        // Do nothing.
+                        // This throw happens if the builder requested the failed node, and then
+                        // checked the interrupted state later -- getValueOrThrow sets the
+                        // interrupted bit after the failed value is requested, to prevent the
+                        // builder from doing too much work.
+                    }
+                    Err(ComputeError::Exception(builder_exception)) => {
+                        error = Arc::new(ErrorInfo::from_exception(
+                            &builder_exception,
+                            /* is_transitively_transient= */ false,
+                        ));
+                    }
+                }
+                env
+            };
+            // Builder didn't throw its own exception, so just propagate this one up. (Or it did,
+            // and `error` is now that exception.)
+            let (_, _, listener) = env.into_parts();
+            // Java: env.reportEventsAndGetEventsToStore(parentEntry, /*expectDoneDeps=*/ false)
+            listener.flush();
+            let value_with_metadata = Arc::new(DoneEntry {
+                kind: DoneKind::Bubbled,
+                value: None,
+                error: Some(Arc::new(ErrorInfo::from_child_errors(
+                    &error_key,
+                    [&*error],
+                ))),
+                deps: GroupedDeps::new(),
+                awaits_deps: false,
+            });
+            bubble_error_info.insert(error_key.clone(), value_with_metadata);
+        }
+        Some(bubble_error_info)
+    }
+
+    /// Constructs an [`EvaluationResult`] from the graph. Looks for cycles if there are
+    /// unfinished nodes but no error was already found through bubbling up (as indicated by
+    /// `bubble_error_info` being null).
     // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:506 ParallelEvaluator.constructResult
-    fn construct_result(&self, roots: &[SkyKey]) -> EvaluationResult {
+    fn construct_result(
+        &self,
+        sky_keys: &[SkyKey],
+        bubble_error_info: Option<&BubbleErrorInfo>,
+        catastrophe: bool,
+    ) -> EvaluationResult {
         let keep_going = self.ctx.keep_going;
-        // Java: bubbleErrorInfo != null.
-        let bubbled = self.aborting.load(Ordering::SeqCst);
-        let catastrophe = self.catastrophe.load(Ordering::SeqCst);
         let mut result = EvaluationResult::builder();
         let mut cycle_roots: Vec<SkyKey> = vec![];
-        let mut bubble_reported = false;
-        for sky_key in roots {
+        for sky_key in sky_keys {
             check_state!(
                 !catastrophe || keep_going,
-                "Catastrophe not consistent with keepGoing mode: {:?} {} {}",
+                "Catastrophe not consistent with keepGoing mode: {:?} {} {:?}",
                 sky_key,
                 catastrophe,
-                bubbled
+                bubble_error_info
             );
-            let entry = self.ev.done_entry(sky_key).expect("root evaluated");
-            match entry.kind {
-                DoneKind::Committed => {
-                    let error = entry.error.as_deref();
-                    if let Some(error) = error
-                        && !keep_going
-                    {
-                        // value will be null here unless the value was already built on a prior
-                        // keepGoing build.
-                        result.add_error(sky_key.clone(), error.clone());
-                        continue;
-                    }
-                    match &entry.value {
-                        // Note that we must be in the keepGoing case. Only make this value an
-                        // error if it doesn't have a value. The error shouldn't matter to the
-                        // caller since the value succeeded after a fashion.
-                        None => result
-                            .add_error(sky_key.clone(), error.expect("value or error").clone()),
-                        Some(v) => result.add_result(sky_key.clone(), v.clone()),
-                    }
+            // Java: maybeGetValueFromError
+            let value_with_metadata = bubble_error_info
+                .and_then(|b| b.get(sky_key).cloned())
+                .or_else(|| self.ev.committed_entry(sky_key));
+            // Cycle checking: if there is a cycle, evaluation cannot progress, therefore, the
+            // final values will not be in DONE state when the work runs out.
+            let Some(value_with_metadata) = value_with_metadata else {
+                // Don't look for cycles if the build failed for a known reason.
+                if bubble_error_info.is_none() {
+                    cycle_roots.push(sky_key.clone());
                 }
-                DoneKind::Bubbled => {
-                    // PORT: Java bubbles the error up one chain of in-progress parents to one
-                    // root. Here every root that waited on the failed node saw the error, so only
-                    // the first such root, in request order, reports it; the others have neither
-                    // value nor error, as in Java.
-                    if !bubble_reported {
-                        bubble_reported = true;
-                        let error = entry.error.as_deref().expect("bubbled error");
-                        result.add_error(sky_key.clone(), error.clone());
-                    }
+                continue;
+            };
+            let value = &value_with_metadata.value;
+            let error_info = value_with_metadata.error.as_deref();
+            check_state!(value.is_some() || error_info.is_some(), "{:?}", sky_key);
+            if let Some(error_info) = error_info
+                && !keep_going
+            {
+                // value will be null here unless the value was already built on a prior
+                // keepGoing build.
+                result.add_error(sky_key.clone(), error_info.clone());
+                continue;
+            }
+            match value {
+                // Note that we must be in the keepGoing case. Only make this value an error if
+                // it doesn't have a value. The error shouldn't matter to the caller since the
+                // value succeeded after a fashion.
+                None => {
+                    result.add_error(sky_key.clone(), error_info.expect("value or error").clone())
                 }
-                DoneKind::InCycle => {
-                    // Don't look for cycles if the build failed for a known reason.
-                    if !bubbled {
-                        cycle_roots.push(sky_key.clone());
-                    }
-                }
-                DoneKind::Aborted | DoneKind::Interrupted => {}
+                Some(v) => result.add_result(sky_key.clone(), v.clone()),
             }
         }
         if !cycle_roots.is_empty() {
@@ -1370,17 +1889,18 @@ impl<'e> Run<'e> {
             }
         }
         check_state!(
-            !result.is_empty() || roots.is_empty(),
-            "No result for keys {:?} ({} {})",
-            roots,
-            bubbled,
+            !result.is_empty() || sky_keys.is_empty(),
+            "No result for keys {:?} ({:?} {})",
+            sky_keys,
+            bubble_error_info,
             catastrophe
         );
         result.maybe_ensure_catastrophe(catastrophe);
         check_state!(
-            !bubbled || result.has_error(),
-            "If an error bubbled up, some top-level node must be in error: {:?}",
-            roots
+            bubble_error_info.is_none() || result.has_error(),
+            "If an error bubbled up, some top-level node must be in error: {:?} {:?}",
+            bubble_error_info,
+            sky_keys
         );
         result.build()
     }
@@ -1398,4 +1918,40 @@ impl<'e> Run<'e> {
             }
         }
     }
+}
+
+// Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:810 Evaluate.prepareCrashMessage
+fn prepare_crash_message(sky_key: &SkyKey, reverse_deps: &[SkyKey]) -> String {
+    const MAX_REVERSEDEP_DUMP_LENGTH: usize = 1000;
+    let mut reverse_dep_dump = String::new();
+    for key in reverse_deps {
+        if reverse_dep_dump.len() > MAX_REVERSEDEP_DUMP_LENGTH {
+            reverse_dep_dump.push_str(", ...");
+            break;
+        }
+        if !reverse_dep_dump.is_empty() {
+            reverse_dep_dump.push_str(", ");
+        }
+        let _ = write!(reverse_dep_dump, "'{key:?}'");
+    }
+    format!(
+        "Unrecoverable error while evaluating node '{sky_key:?}' (requested by nodes \
+         {reverse_dep_dump})"
+    )
+}
+
+/// Java: `new RuntimeException(msg, re)`, whose stack trace prints `msg`, then "Caused by: " and
+/// the original exception.
+///
+/// PORT: a panic payload that is a message becomes that text. Any other payload (a typed value
+/// some caller downcasts) cannot carry a message and is rethrown as it is.
+fn wrap_crash(msg: String, payload: Box<dyn Any + Send>) -> Box<dyn Any + Send> {
+    let cause: &str = if let Some(s) = payload.downcast_ref::<&'static str>() {
+        s
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s
+    } else {
+        return payload;
+    };
+    Box::new(format!("{msg}\nCaused by: {cause}"))
 }

@@ -11,6 +11,9 @@ blaze_util = { path = "../blaze_util" }
 blaze_collect = { path = "../blaze_collect" }
 blaze_vfs = { path = "../blaze_vfs" }
 blaze_cmdline = { path = "../blaze_cmdline" }
+# lib/actions types (ParameterFileType so far; see src/actions.rs for what is still a stand-in).
+# blaze_actions and its dependencies do not depend on this crate.
+blaze_actions = { path = "../blaze_actions" }
 parking_lot.workspace = true
 indexmap.workspace = true
 thiserror.workspace = true

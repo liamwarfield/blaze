@@ -49,14 +49,14 @@ fn exec_bzl_with(
     eval::run_on_evaluation_thread(move || {
         let label = Label::parse_canonical(&format!("//pkg:{file_name}")).unwrap();
         let mapping = blaze_cmdline::repository_mapping::EMPTY.clone();
-        BazelModuleContext::register(Arc::new(BazelModuleContext {
+        let module_context = Arc::new(BazelModuleContext {
             label: label.clone(),
             is_builtins: false,
             repo_mapping: mapping.clone(),
             filename: file_name.clone(),
             loads: Vec::new(),
             bzl_transitive_digest: vec![1, 2, 3],
-        }));
+        });
         let ctx = ThreadContext::new(
             Phase::BzlLoad,
             Arc::new(semantics.clone()),
@@ -78,7 +78,21 @@ fn exec_bzl_with(
         });
         let globals = registry().build(FileKind::Bzl, &semantics);
         eval::compile(FileKind::Bzl, &file_name, src).and_then(|c| {
-            eval::exec_module(c, &globals, &LoadMap::new(), &ctx, &Default::default())
+            eval::exec_module_with_extra_value(
+                c,
+                &globals,
+                &LoadMap::new(),
+                &ctx,
+                &Default::default(),
+                // Java: the module's client data (BazelModuleContext).
+                |module| {
+                    module
+                        .heap()
+                        .alloc(crate::bzl_context::BazelModuleContextValue(
+                            module_context.clone(),
+                        ))
+                },
+            )
         })
     })
 }
@@ -225,8 +239,10 @@ fn test_attr_default_value_bad_type() {
 
 #[test]
 fn test_attr_cfg_host_disabled() {
-    let mut semantics = StarlarkSemantics::default();
-    semantics.incompatible_disable_starlark_host_transitions = true;
+    let semantics = StarlarkSemantics {
+        incompatible_disable_starlark_host_transitions: true,
+        ..StarlarkSemantics::default()
+    };
     let msg = match exec_bzl_with("t13.bzl", "attr.label(cfg = 'host')\n", semantics) {
         Ok(_) => panic!("expected an error"),
         Err(e) => e.message,
@@ -480,5 +496,244 @@ fn test_rule_class_name_must_match_test_suffix() {
         "Invalid rule class name 'foo', test rule class names must end with '_test' and other \
          rule classes must not",
         "def impl(ctx): return None\nfoo = rule(impl, test = True)\n",
+    );
+}
+
+// ---- docs/reviews/2026-11-18-loading.md S2-4: typed `default` parameters of `attr.*`
+
+// Java: StarlarkRuleClassFunctionsTest.testFunctionAsAttrDefault
+#[test]
+fn test_function_as_attr_default() {
+    // Late-bound attributes, which are computed during analysis as a function of the
+    // configuration, are only available for attributes involving labels:
+    //   attr.label
+    //   attr.label_list
+    //   attr.label_keyed_string_dict
+    //   attr.output,
+    //   attr.output_list
+    exec_bzl(
+        "s2_4_a.bzl",
+        "def f(): pass\n\
+         a = attr.label(default=f)\n\
+         b = attr.label_list(default=f)\n\
+         c = attr.label_keyed_string_dict(default=f)\n",
+    );
+    // For all other attribute types, the default value may not be a function.
+    //
+    // (This is a regression test for github.com/bazelbuild/bazel/issues/9463. The
+    // loading-phase feature of "computed attribute defaults" is not exposed to Starlark; the bug
+    // was that the @StarlarkMethod annotation was more permissive than the method declaration.)
+    for (expected, expr) in [
+        (
+            "got value of type 'function', want 'string'",
+            "attr.string(default=f)",
+        ),
+        (
+            "got value of type 'function', want 'sequence'",
+            "attr.string_list(default=f)",
+        ),
+        (
+            "got value of type 'function', want 'int'",
+            "attr.int(default=f)",
+        ),
+        (
+            "got value of type 'function', want 'sequence'",
+            "attr.int_list(default=f)",
+        ),
+        (
+            "got value of type 'function', want 'bool'",
+            "attr.bool(default=f)",
+        ),
+        (
+            "got value of type 'function', want 'dict'",
+            "attr.string_dict(default=f)",
+        ),
+        (
+            "got value of type 'function', want 'dict'",
+            "attr.string_list_dict(default=f)",
+        ),
+    ] {
+        assert_error_contains(
+            "s2_4_b.bzl",
+            expected,
+            &format!("def f(): pass\nx = {expr}\n"),
+        );
+    }
+}
+
+// Java: net/starlark/java/eval/BuiltinFunction.java:516 checkParamValue ("in call to %s(),
+// parameter '%s' got value of type '%s', want '%s'"), with the allowed classes of
+// StarlarkAttrModuleApi's `default` parameters joined by ParamDescriptor.java:123
+// getTypeErrorMessage ("a", "a or b", "a, b, or c"; NativeComputedDefault is left out).
+#[test]
+fn attr_default_type_errors_name_the_function_and_the_allowed_types() {
+    for (expected, expr) in [
+        (
+            // StarlarkAttrModuleApi.java: `StarlarkInt defaultValue`.
+            "in call to int(), parameter 'default' got value of type 'function', want 'int'",
+            "attr.int(default = lambda: 3)",
+        ),
+        (
+            "in call to int(), parameter 'default' got value of type 'string', want 'int'",
+            "attr.int(default = '3')",
+        ),
+        (
+            // allowedTypes = {Sequence<String>, NativeComputedDefaultApi}.
+            "in call to string_list(), parameter 'default' got value of type 'dict', want \
+             'sequence'",
+            "attr.string_list(default = {})",
+        ),
+        (
+            // `Dict<?, ?> defaultValue`.
+            "in call to label_list_dict(), parameter 'default' got value of type 'function', \
+             want 'dict'",
+            "attr.label_list_dict(default = lambda: {})",
+        ),
+        (
+            // allowedTypes = {Sequence<Label>, StarlarkFunction}.
+            "in call to label_list(), parameter 'default' got value of type 'int', want \
+             'sequence or function'",
+            "attr.label_list(default = 1)",
+        ),
+        (
+            // allowedTypes = {Dict, StarlarkFunction}.
+            "in call to label_keyed_string_dict(), parameter 'default' got value of type \
+             'list', want 'dict or function'",
+            "attr.label_keyed_string_dict(default = [])",
+        ),
+        (
+            // allowedTypes = {Label, String, LateBoundDefaultApi, NativeComputedDefaultApi,
+            // StarlarkFunction, NoneType}.
+            "in call to label(), parameter 'default' got value of type 'int', want 'Label, \
+             string, LateBoundDefault, function, or NoneType'",
+            "attr.label(default = 1)",
+        ),
+    ] {
+        assert_error_contains("s2_4_c.bzl", expected, &format!("x = {expr}\n"));
+    }
+}
+
+// ---- docs/reviews/2026-11-18-loading.md S2-1: BuiltinRestriction allowlist entries
+
+/// `failIfLabelOutsideAllowlist(label, repoMapping, allowlist)`: `Ok(())` or the error message.
+fn allowlist_check(
+    label: &str,
+    repo_mapping: &blaze_cmdline::RepositoryMapping,
+    allowlist: &[(&str, &str)],
+) -> Result<(), String> {
+    super::rule_class_functions::fail_if_label_outside_allowlist(
+        &Label::parse_canonical(label).unwrap(),
+        repo_mapping,
+        allowlist,
+    )
+    .map_err(|e| e.to_string())
+}
+
+// Java: BuiltinRestriction.java:129-150 AllowlistEntry.reposMatch. For a label of the main
+// repository: `allowedName.equals("") || repoMapping.get(allowedName).isMain()`.
+#[test]
+fn allowlist_entry_matches_the_main_repo_when_it_is_the_ruleset() {
+    let main = blaze_cmdline::repository_name::MAIN.clone();
+    // The root module is rules_cc: its own name maps to the main repository.
+    let rules_cc_is_main = blaze_cmdline::RepositoryMapping::create(
+        [("", main.clone()), ("rules_cc", main.clone())],
+        main.clone(),
+    );
+    let other_root = blaze_cmdline::repository_mapping::EMPTY.clone();
+    let allowlist = [("rules_cc", "")];
+
+    assert_eq!(
+        allowlist_check(
+            "//cc/private/rules_impl:x.bzl",
+            &rules_cc_is_main,
+            &allowlist
+        ),
+        Ok(())
+    );
+    let err = allowlist_check("//cc/private/rules_impl:x.bzl", &other_root, &allowlist)
+        .expect_err("the main repository is not rules_cc");
+    // Java: BuiltinRestriction.java:203 "file '%s' cannot use private API".
+    assert!(
+        err.contains("file '//cc/private/rules_impl:x.bzl' cannot use private API"),
+        "{err}"
+    );
+    // `allowedName.equals(RepositoryName.MAIN.getName())`.
+    assert_eq!(
+        allowlist_check(
+            "//initializer_testing/builtins:b.bzl",
+            &other_root,
+            &[("", "initializer_testing/builtins")]
+        ),
+        Ok(())
+    );
+}
+
+// Java: BuiltinRestriction.java:144-149: `bazel_tools` only by its own name; any other
+// repository by `givenName.getName().startsWith(allowedName + "+")`.
+#[test]
+fn allowlist_entry_matches_canonical_repo_names_by_module_prefix() {
+    let mapping = blaze_cmdline::repository_mapping::EMPTY.clone();
+
+    assert_eq!(
+        allowlist_check("@@rules_cc+//cc:x.bzl", &mapping, &[("rules_cc", "")]),
+        Ok(())
+    );
+    assert_eq!(
+        allowlist_check("@@rules_cc+1.2.3//cc:x.bzl", &mapping, &[("rules_cc", "")]),
+        Ok(())
+    );
+    // A canonical name that is exactly the module name has no "+" after it.
+    assert!(allowlist_check("@@rules_cc//cc:x.bzl", &mapping, &[("rules_cc", "")]).is_err());
+    assert!(allowlist_check("@@rules_cc_extra+//cc:x.bzl", &mapping, &[("rules_cc", "")]).is_err());
+
+    assert_eq!(
+        allowlist_check(
+            "@@bazel_tools//tools/build_defs/build_info:x.bzl",
+            &mapping,
+            &[("bazel_tools", "tools/build_defs/build_info")]
+        ),
+        Ok(())
+    );
+    // "bazel_tools+..." is not @bazel_tools, and @bazel_tools matches no other entry name.
+    assert!(
+        allowlist_check(
+            "@@bazel_tools//tools/build_defs/build_info:x.bzl",
+            &mapping,
+            &[("bazel", "tools/build_defs/build_info")]
+        )
+        .is_err()
+    );
+
+    // Java: BuiltinRestriction.java:212 isNotAllowed: @_builtins is always allowed.
+    assert_eq!(
+        allowlist_check("@@_builtins//:common/cc/x.bzl", &mapping, &[]),
+        Ok(())
+    );
+}
+
+// Java: BuiltinRestriction.java:126 `label.getPackageFragment().startsWith(packagePrefix())`:
+// PathFragment.startsWith compares whole segments.
+#[test]
+fn allowlist_entry_compares_packages_by_segment() {
+    let mapping = blaze_cmdline::repository_mapping::EMPTY.clone();
+    let allowlist = [("rules_java", "java")];
+
+    assert_eq!(
+        allowlist_check("@@rules_java+//java:x.bzl", &mapping, &allowlist),
+        Ok(())
+    );
+    assert_eq!(
+        allowlist_check(
+            "@@rules_java+//java/common/rules:x.bzl",
+            &mapping,
+            &allowlist
+        ),
+        Ok(())
+    );
+    let err = allowlist_check("@@rules_java+//javatests/foo:x.bzl", &mapping, &allowlist)
+        .expect_err("javatests is not under java");
+    assert!(
+        err.contains("file '@@rules_java+//javatests/foo:x.bzl' cannot use private API"),
+        "{err}"
     );
 }

@@ -10,9 +10,13 @@ use std::sync::Arc;
 
 use blaze_cmdline::repository_name::BAZEL_TOOLS;
 use blaze_cmdline::{PackageIdentifier, RepositoryName};
+use blaze_optdefs::command::package_options::{LazyMacroExpansionPackages, PackageOptions};
+use blaze_packages::package::ConfigSettingVisibilityPolicy;
+use blaze_packages::package::RuleVisibility;
 use blaze_skyframe::EvaluatorBuilder;
 use blaze_starlark::env::NativeRegistry;
 use blaze_starlark::{FileKind, StarlarkSemantics};
+use blaze_util::unported;
 use blaze_vfs::{DigestHashFunction, Path, PathFragment, Root};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
@@ -168,6 +172,38 @@ impl LoadingFunctionsConfig {
             show_loading_progress: false,
             fragment_names: bazel_fragment_names(),
         }
+    }
+
+    /// Applies the `PackageOptions` that are not precomputed values: the package path
+    /// (`--package_path`), `--deleted_packages` and `--show_loading_progress`. Call it before
+    /// [`register_loading_functions`] (PACKAGE reads `show_loading_progress` when it is
+    /// registered), and inject the precomputed values with
+    /// [`inject_loading_precomputed_with_package_options`].
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:491 BlazeWorkspace.getOrCreatePackageLocatorForCommand
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3035 SkyframeExecutor.syncPackageLoading
+    pub fn sync_package_loading(&mut self, package_options: &PackageOptions) {
+        // Java: BlazeWorkspace.getOrCreatePackageLocatorForCommand (the event handler is
+        // NullEventHandler.INSTANCE and the client working directory is the workspace).
+        // PORT: skipped, `directories.getVirtualSourceRoot()` (Google-internal).
+        let workspace = self.directories.get_workspace().clone();
+        let pkg_locator = PathPackageLocator::create(
+            Some(self.directories.get_output_base().clone()),
+            &package_options.package_path,
+            blaze_events::NullEventHandler::INSTANCE,
+            workspace.as_fragment(),
+            &workspace,
+            self.build_files_by_priority.clone(),
+        );
+        // Java: SkyframeExecutor.java:1727 setPackageLocator(pkgLocator)
+        *self.pkg_locator.write() = pkg_locator;
+        // Java: SkyframeExecutor.java:1711 setShowLoadingProgress(packageOptions.showLoadingProgress)
+        self.show_loading_progress = package_options.show_loading_progress;
+        // Java: SkyframeExecutor.java:3060 setDeletedPackages(packageOptions.getDeletedPackages())
+        // PORT: skipped, incremental (invalidating the PACKAGE_LOOKUP nodes of changed entries).
+        *self.deleted_packages.write() = package_options
+            .get_deleted_packages()
+            .into_iter()
+            .collect::<HashSet<_>>();
     }
 
     /// [`LoadingFunctionsConfig::for_bazel`] with Bazel's rule class provider and Starlark
@@ -341,12 +377,81 @@ pub fn register_loading_functions(
 }
 
 /// Injects the precomputed values the loading functions read (Java
-/// `SkyframeExecutor.preparePackageLoading` / `setRepositoryOverrides` / `setStarlarkSemantics`).
+/// `SkyframeExecutor.preparePackageLoading` / `setRepositoryOverrides` / `setStarlarkSemantics`),
+/// with the `PackageOptions` defaults. Callers that have the command's `PackageOptions` use
+/// [`inject_loading_precomputed_with_package_options`].
 pub fn inject_loading_precomputed(
     builder: EvaluatorBuilder,
     config: &LoadingFunctionsConfig,
     starlark_semantics: StarlarkSemantics,
     repository_overrides: IndexMap<String, PathFragment>,
+) -> EvaluatorBuilder {
+    inject_loading_precomputed_impl(
+        builder,
+        config,
+        starlark_semantics,
+        repository_overrides,
+        package_function::default_visibility(),
+        package_function::config_setting_visibility_policy(true, false),
+        HashSet::new(),
+    )
+}
+
+/// [`inject_loading_precomputed`] with the command's `PackageOptions`
+/// (`--default_visibility`, `--incompatible_enforce_config_setting_visibility`,
+/// `--incompatible_config_setting_private_default_visibility`,
+/// `--experimental_lazy_macro_expansion_packages`). The options that are not precomputed values
+/// are applied by [`LoadingFunctionsConfig::sync_package_loading`].
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1693 SkyframeExecutor.preparePackageLoading
+pub fn inject_loading_precomputed_with_package_options(
+    builder: EvaluatorBuilder,
+    config: &LoadingFunctionsConfig,
+    starlark_semantics: StarlarkSemantics,
+    repository_overrides: IndexMap<String, PathFragment>,
+    package_options: &PackageOptions,
+) -> EvaluatorBuilder {
+    // setDefaultVisibility(packageOptions.defaultVisibility);
+    let default_visibility = if package_options.default_visibility
+        == blaze_optdefs::command::rule_visibility::RuleVisibility::PUBLIC
+    {
+        RuleVisibility::Public
+    } else {
+        RuleVisibility::Private
+    };
+    // if (!packageOptions.enforceConfigSettingVisibility) { LEGACY_OFF } else { ... }
+    let config_setting_visibility_policy = package_function::config_setting_visibility_policy(
+        package_options.enforce_config_setting_visibility,
+        package_options.config_setting_private_default_visibility,
+    );
+    // setLazyMacroExpansionPackages(packageOptions.lazyMacroExpansionPackages);
+    let lazy_macro_expansion_packages = match &package_options.lazy_macro_expansion_packages {
+        LazyMacroExpansionPackages::Set(ids) => {
+            ids.iter().map(|p| p.0.clone()).collect::<HashSet<_>>()
+        }
+        LazyMacroExpansionPackages::All => {
+            // PORT: the precomputed value is the listed set.
+            unported!("LazyMacroExpansionPackages.ALL")
+        }
+    };
+    inject_loading_precomputed_impl(
+        builder,
+        config,
+        starlark_semantics,
+        repository_overrides,
+        default_visibility,
+        config_setting_visibility_policy,
+        lazy_macro_expansion_packages,
+    )
+}
+
+fn inject_loading_precomputed_impl(
+    builder: EvaluatorBuilder,
+    config: &LoadingFunctionsConfig,
+    starlark_semantics: StarlarkSemantics,
+    repository_overrides: IndexMap<String, PathFragment>,
+    default_visibility: RuleVisibility,
+    config_setting_visibility_policy: ConfigSettingVisibilityPolicy,
+    lazy_macro_expansion_packages: HashSet<PackageIdentifier>,
 ) -> EvaluatorBuilder {
     let autoload_symbols = AutoloadSymbols::new(
         config
@@ -357,12 +462,8 @@ pub fn inject_loading_precomputed(
     let builder = STARLARK_SEMANTICS.set(builder, starlark_semantics);
     let builder = PATH_PACKAGE_LOCATOR.set(builder, config.pkg_locator.read().clone());
     let builder = AUTOLOAD_SYMBOLS.set(builder, autoload_symbols);
-    // Java SkyframeExecutor.preparePackageLoading with the PackageOptions defaults.
-    let builder = DEFAULT_VISIBILITY.set(builder, package_function::default_visibility());
-    let builder = CONFIG_SETTING_VISIBILITY_POLICY.set(
-        builder,
-        package_function::config_setting_visibility_policy(true, false),
-    );
-    let builder = LAZY_MACRO_EXPANSION_PACKAGES.set(builder, HashSet::new());
+    let builder = DEFAULT_VISIBILITY.set(builder, default_visibility);
+    let builder = CONFIG_SETTING_VISIBILITY_POLICY.set(builder, config_setting_visibility_policy);
+    let builder = LAZY_MACRO_EXPANSION_PACKAGES.set(builder, lazy_macro_expansion_packages);
     REPOSITORY_OVERRIDES.set(builder, repository_overrides)
 }

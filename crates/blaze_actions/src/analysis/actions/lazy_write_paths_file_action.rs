@@ -102,9 +102,8 @@ impl Action for LazyWritePathsFileAction {
     ) -> Result<(), ComputeKeyError> {
         fp.add_string(GUID);
         fp.add_boolean(self.include_derived_artifacts);
-        // PORT: StringEncoding. Exec paths are internal strings (see `FingerprintPathExt`, which
-        // adds paths with `add_string`; identical for ASCII).
-        fp.add_internal_string(&self.get_contents());
+        // Invariant: exec paths are internal strings (see `fingerprint_util`).
+        fp.add_string(&self.get_contents());
         Ok(())
     }
 
@@ -125,8 +124,10 @@ impl AbstractFileWriteAction for LazyWritePathsFileAction {
         &self,
     ) -> Result<Box<dyn DeterministicWriter + '_>, NewDeterministicWriterError> {
         Ok(Box::new(FnDeterministicWriter(|out: &mut dyn Write| {
-            // PORT: StringEncoding identity (`StringUnsafe.getInternalStringBytes`).
-            out.write_all(self.get_contents().as_bytes())
+            // Java: `out.write(StringUnsafe.getInternalStringBytes(getContents()))`.
+            out.write_all(&blaze_util::string_encoding::internal_string_bytes(
+                &self.get_contents(),
+            ))
         })))
     }
 }

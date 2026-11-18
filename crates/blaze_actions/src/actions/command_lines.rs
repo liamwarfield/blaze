@@ -183,8 +183,10 @@ impl CommandLines {
                             param_file_info.get_flag_format_string(),
                             path_mapper.map(&param_file_exec_path).get_path_string(),
                         );
-                        // PORT: Java String.length() of an internal string is its byte count.
-                        cmd_line_length = cmd_line_length.wrapping_add(param_arg.len() as i32 + 1);
+                        // Java `String.length()` of an internal string.
+                        cmd_line_length = cmd_line_length.wrapping_add(
+                            blaze_util::string_encoding::internal_length(&param_arg) as i32 + 1,
+                        );
                         arguments.push(param_arg);
 
                         if param_file_info.flags_only() {
@@ -198,8 +200,11 @@ impl CommandLines {
                             for positional_arg in
                                 parameter_file::non_flags(chunk.arguments(path_mapper))
                             {
-                                cmd_line_length =
-                                    cmd_line_length.wrapping_add(positional_arg.len() as i32 + 1);
+                                cmd_line_length = cmd_line_length.wrapping_add(
+                                    blaze_util::string_encoding::internal_length(&positional_arg)
+                                        as i32
+                                        + 1,
+                                );
                                 arguments.push(positional_arg);
                             }
                         } else {
@@ -390,8 +395,9 @@ fn add_param_file_info_to_fingerprint(
     fingerprint: &mut Fingerprint,
 ) {
     fingerprint.add_uuid(PARAM_FILE_UUID_LSB, PARAM_FILE_UUID_MSB);
-    // PORT: StringEncoding; the flag format string may come from Starlark (internal form).
-    fingerprint.add_internal_string(param_file_info.get_flag_format_string());
+    // Invariant: the flag format string (it may come from Starlark) is an internal string (see
+    // `fingerprint_util`).
+    fingerprint.add_string(param_file_info.get_flag_format_string());
     fingerprint.add_string(param_file_info.get_file_type().name());
 }
 

@@ -21,6 +21,7 @@ pub mod external_deps_exception;
 pub mod facts;
 pub mod gson;
 pub mod index_registry;
+pub mod java_hash;
 pub mod java_uri;
 pub mod lockfile;
 pub mod module;

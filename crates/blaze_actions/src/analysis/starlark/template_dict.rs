@@ -19,7 +19,6 @@ use blaze_starlark::depset::Depset;
 use blaze_starlark::eval::{EvalOptions, frozen_into, with_evaluator};
 use blaze_starlark::thread::{Phase, StarlarkEvents, ThreadContext};
 use blaze_starlark::{EvalError, Location, StarlarkSemantics};
-use blaze_util::unported;
 use starlark::any::ProvidesStaticType;
 use starlark::environment::{Methods, MethodsBuilder, MethodsStatic};
 use starlark::eval::Evaluator;
@@ -33,7 +32,7 @@ use starlark::values::{
 
 use crate::analysis::actions::substitution::{ComputedSubstitution, Substitution};
 
-use super::args::{is_global_function, is_starlark_function};
+use super::args::{is_global_function, is_starlark_function, map_each_not_global_error};
 use super::starlark_custom_command_line::java_to_string;
 
 fn err(msg: impl Into<String>) -> starlark::Error {
@@ -42,6 +41,7 @@ fn err(msg: impl Into<String>) -> starlark::Error {
 }
 
 /// One substitution as recorded by `add` / `add_joined`.
+#[derive(Clone)]
 enum TemplateItem<V> {
     /// `Substitution.of(key, value)`.
     Plain { key: String, value: String },
@@ -193,6 +193,23 @@ pub fn new_template_dict<'v>(heap: Heap<'v>) -> Value<'v> {
     heap.alloc(TemplateDict {
         substitutions: RefCell::new(Vec::new()),
     })
+}
+
+/// A copy of a `TemplateDict` value as it is at this call, as a new `TemplateDict` on `heap`.
+/// Later `add` / `add_joined` calls on `dict` do not reach the copy.
+///
+/// Java reads the dict when `ctx.actions.expand_template` is called (`TemplateDict.getAll()`
+/// goes into the action's substitutions then). The substitutions can only be read from a frozen
+/// value here ([`get_all`]), so the caller takes this copy at the call and reads the copy after
+/// freezing. A value that is not a mutable `TemplateDict` is returned as it is.
+// Java: com/google/devtools/build/lib/analysis/starlark/TemplateDict.java:91 TemplateDict.getAll
+pub fn snapshot_template_dict<'v>(dict: Value<'v>, heap: Heap<'v>) -> Value<'v> {
+    match dict.downcast_ref::<TemplateDict>() {
+        Some(d) => heap.alloc(TemplateDict {
+            substitutions: RefCell::new(d.substitutions.borrow().clone()),
+        }),
+        None => dict,
+    }
 }
 
 /// Java `x instanceof TemplateDict`.
@@ -403,14 +420,7 @@ fn template_dict_methods(builder: &mut MethodsBuilder) {
         let dict = mutable_dict(this)?;
         if is_starlark_function(map_each) {
             if !allow_closure && !is_global_function(map_each, eval) {
-                // Java: "to avoid unintended retention of analysis data structures, the map_each
-                // function (declared at %s) must be declared by a top-level def statement", with
-                // the def location, which starlark-rust does not expose.
-                unported!(
-                    "StarlarkFunction.getLocation",
-                    "map_each function '{}' is not global; its error needs the def location",
-                    map_each.function_name().unwrap_or("?")
-                );
+                return Err(map_each_not_global_error(map_each));
             }
         }
         let semantics = ThreadContext::get(eval)?.semantics.clone();

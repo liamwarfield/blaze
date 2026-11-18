@@ -299,9 +299,9 @@ const MIN_TREEIFY_CAPACITY: usize = 64;
 // Java: com/google/devtools/build/lib/vfs/PathFragment.java:501 PathFragment.hashCode
 fn java_path_fragment_hash_code(path: &PathFragment) -> i32 {
     let mut h: i32 = 0;
-    // PORT: StringEncoding identity; the internal Latin-1 string has one char per UTF-8 byte.
-    for b in path.get_path_string().as_bytes() {
-        h = h.wrapping_mul(31).wrapping_add(*b as i32);
+    // `String.hashCode()` over the chars of the internal string.
+    for c in blaze_util::string_encoding::to_internal(path.get_path_string()).chars() {
+        h = h.wrapping_mul(31).wrapping_add(c as i32);
     }
     h
 }

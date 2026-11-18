@@ -85,23 +85,51 @@ fn getattr_no_attr() {
     );
 }
 
-// Java hashes struct fields with `Object.hashCode`, under which lists, tuples and dicts are
-// hashable: a struct holding a list can be a depset element or a dict key (rules_cc
-// `depset([linker_input])`, where linker_input has list fields).
+/// Java: StarlarkRuleClassFunctionsTest.testStructsInDicts
 #[test]
-fn struct_with_list_and_dict_fields_is_hashable() {
-    assert_eq!(
-        eval_expr("len(dict([(struct(a = [1, 2]), 1), (struct(a = [1, 2]), 2)]))"),
-        Ok("1".into())
+fn structs_in_dicts() {
+    let m = common::exec(
+        "d = {struct(a = 1): 'aa', struct(b = 2): 'bb'}\n\
+         r1 = d[struct(a = 1)]\n\
+         r2 = d[struct(b = 2)]\n\
+         r3 = str([d[k] for k in d])\n",
+    )
+    .unwrap();
+    assert_eq!(common::global_repr(&m, "r1"), r#""aa""#);
+    assert_eq!(common::global_repr(&m, "r2"), r#""bb""#);
+    assert_eq!(common::global_repr(&m, "r3"), r#""[\"aa\", \"bb\"]""#);
+
+    let err = exec_err("{struct(a = []): 'foo'}").unwrap_err();
+    assert!(err.contains("unhashable type: 'struct'"), "{err}");
+}
+
+// Java: net/starlark/java/eval/StarlarkValue.java:104 StarlarkValue.checkHashable ("even though a
+// list may not be used as a dict key (even if frozen), a struct containing a list is hashable"):
+// StarlarkInfo is hashable iff it is immutable, and a frozen list or dict is immutable. Java then
+// hashes the fields with `Object.hashCode` (lists by elements in order, dicts order-independent).
+// This is the case of rules_cc's `depset([linker_input])`, whose list fields are frozen.
+#[test]
+fn struct_with_frozen_list_and_dict_fields_is_hashable() {
+    let a = common::exec(
+        "L12 = struct(a = [1, 2])\n\
+         L12B = struct(a = [1, 2])\n\
+         L21 = struct(a = [2, 1])\n\
+         DXY = struct(d = {'x': 1, 'y': 2})\n\
+         DYX = struct(d = {'y': 2, 'x': 1})\n",
+    )
+    .unwrap();
+    let mut loads = blaze_starlark::loader::LoadMap::new();
+    loads.insert("//pkg:a.bzl", a);
+    let (m, _) = common::exec_with(
+        "load('//pkg:a.bzl', 'L12', 'L12B', 'L21', 'DXY', 'DYX')\n\
+         r1 = len(dict([(L12, 1), (L12B, 2)]))\n\
+         r2 = len(dict([(L12, 1), (L21, 2)]))\n\
+         r3 = len(dict([(DXY, 1), (DYX, 2)]))\n",
+        blaze_starlark::StarlarkSemantics::default(),
+        loads,
     );
-    assert_eq!(
-        eval_expr("len(dict([(struct(a = [1, 2]), 1), (struct(a = [2, 1]), 2)]))"),
-        Ok("2".into())
-    );
-    assert_eq!(
-        eval_expr(
-            "len(dict([(struct(d = {'x': 1, 'y': 2}), 1), (struct(d = {'y': 2, 'x': 1}), 2)]))"
-        ),
-        Ok("1".into())
-    );
+    let m = m.unwrap();
+    assert_eq!(common::global_repr(&m, "r1"), "1");
+    assert_eq!(common::global_repr(&m, "r2"), "2");
+    assert_eq!(common::global_repr(&m, "r3"), "1");
 }

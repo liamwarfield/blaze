@@ -296,6 +296,15 @@ where
     // Java: StructImpl.hashCode (provider, then sorted field names and values). The provider's
     // own hash is not used, so unhashable provider values do not make instances unhashable.
     fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        // Java: net/starlark/java/eval/StarlarkValue.java:104 StarlarkValue.checkHashable, which
+        // StarlarkInfo inherits: a struct is hashable iff it is immutable (an exported provider
+        // and immutable field values; a frozen list counts, a mutable one does not).
+        // PORT: starlark-rust has one hook for Java's checkHashable and hashCode.
+        if !self.is_immutable() {
+            return Err(starlark::Error::new_other(anyhow::anyhow!(
+                "unhashable type: 'struct'"
+            )));
+        }
         self.printable_provider_name().hash(hasher);
         for (k, v) in &self.fields {
             k.hash(hasher);

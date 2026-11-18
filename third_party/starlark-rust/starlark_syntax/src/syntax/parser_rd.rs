@@ -37,6 +37,7 @@ use crate::lexer;
 use crate::lexer::Token;
 use crate::syntax::ast::*;
 use crate::syntax::grammar_util;
+use crate::syntax::grammar_util::BLAZE_TYPE_SYNTAX_NOT_PORTED;
 use crate::syntax::state::ParserState;
 
 pub(crate) type Lexeme = Result<(usize, Token, usize), EvalException>;
@@ -57,6 +58,12 @@ macro_rules! take_payload {
     }};
 }
 
+/// BLAZE PATCH 0020: Java `TokenKind.CAST` / `TokenKind.ISINSTANCE`.
+enum TypeKeyword {
+    Cast,
+    IsInstance,
+}
+
 pub(crate) struct ParserRd<'a, I: Iterator<Item = Lexeme>> {
     tokens: I,
     /// Current token with span, or None if EOF.
@@ -67,6 +74,10 @@ pub(crate) struct ParserRd<'a, I: Iterator<Item = Lexeme>> {
     /// token, used to construct EOF spans when `current` is None.
     last_end: usize,
     state: ParserState<'a>,
+    /// BLAZE PATCH 0020: Bazel's type syntax (`DialectTypes::ParseOnly`).
+    type_syntax: bool,
+    /// BLAZE PATCH 0020: nesting depth of `def` bodies (type aliases are top-level only).
+    def_depth: u32,
 }
 
 impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
@@ -75,12 +86,16 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             Ok(current) => (current, None),
             Err(err) => (None, Some(err)),
         };
+        // BLAZE PATCH 0020
+        let type_syntax = state.dialect.enable_types == crate::syntax::DialectTypes::ParseOnly;
         ParserRd {
             tokens,
             current,
             pending_error,
             last_end: 0,
             state,
+            type_syntax,
+            def_depth: 0,
         }
     }
 
@@ -237,6 +252,8 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
         let l = self.pos();
         self.consume(&Token::Def);
         let name = self.parse_assign_ident()?;
+        // BLAZE PATCH 0020: `def f[T, U](...)`.
+        self.parse_optional_type_parameters()?;
         self.expect(&Token::OpeningRound)?;
         let params = self.parse_comma_separated_def_params()?;
         self.expect(&Token::ClosingRound)?;
@@ -246,7 +263,10 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             None
         };
         self.expect(&Token::Colon)?;
-        let body = self.parse_suite()?;
+        self.def_depth += 1; // BLAZE PATCH 0020
+        let body = self.parse_suite();
+        self.def_depth -= 1; // BLAZE PATCH 0020
+        let body = body?;
         let r = self.last_end;
         Ok(StmtP::Def(DefP {
             name,
@@ -385,6 +405,15 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
     fn parse_assign_or_expr_stmt(&mut self) -> Result<AstStmt, EvalException> {
         let l = self.pos();
         let first = self.parse_test()?;
+        // BLAZE PATCH 0020: `type X = T`. This is the only context in which an identifier can be
+        // immediately followed by another identifier; the first one is the soft keyword `type`.
+        // Java: net/starlark/java/syntax/Parser.java:1545 Parser.parseSmallStatement
+        if self.type_syntax
+            && matches!(&first.node, Expr::Identifier(id) if id.node.ident == "type")
+            && matches!(self.peek(), Some(Token::Identifier(_)))
+        {
+            return self.parse_type_alias_statement_tail(l);
+        }
         let lhs_is_expr_list = self.peek() == Some(&Token::Comma);
         let lhs = if lhs_is_expr_list {
             self.parse_test_list_tail(l, first, false)?
@@ -407,6 +436,15 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             let r = self.last_end;
             let stmt = grammar_util::check_assignment(self.state.codemap, lhs, ty, assign_op, rhs)?;
             Ok(stmt.ast(l, r))
+        } else if self.type_syntax && ty.is_some() && !lhs_is_expr_list {
+            // BLAZE PATCH 0020: a var statement, `x: T`. Bazel binds `x` in the enclosing block
+            // without a value (Resolver.java:562); the AST has no node for that yet.
+            let r = self.last_end;
+            Err(self.error_at(
+                l,
+                r,
+                format!("{BLAZE_TYPE_SYNTAX_NOT_PORTED}VarStatement (`x: T` without a value)"),
+            ))
         } else if lhs_is_expr_list || ty.is_some() {
             Err(self.error_expected("assignment operator"))
         } else {
@@ -950,6 +988,12 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
     }
 
     fn parse_atom(&mut self) -> Result<AstExpr, EvalException> {
+        // BLAZE PATCH 0020
+        match self.at_type_keyword() {
+            Some(TypeKeyword::Cast) => return self.parse_cast_expression(),
+            Some(TypeKeyword::IsInstance) => return self.parse_is_instance_expression(),
+            None => {}
+        }
         match self.peek() {
             Some(Token::Identifier(_)) => {
                 let (l, ident, r) = take_payload!(self, Token::Identifier);
@@ -1152,6 +1196,10 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
     // ==================== Helpers ====================
 
     fn parse_identifier_string(&mut self) -> Result<AstString, EvalException> {
+        // BLAZE PATCH 0020: `cast` and `isinstance` are keywords when type syntax is allowed.
+        if self.at_type_keyword().is_some() {
+            return Err(self.error_expected("identifier"));
+        }
         match &self.current {
             Some((_, Token::Identifier(_), _)) => match self.take_current() {
                 Some((l, Token::Identifier(s), r)) => Ok(s.ast(l, r)),
@@ -1180,6 +1228,102 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             },
             _ => Err(self.error_expected("string literal")),
         }
+    }
+
+    // ==================== BLAZE PATCH 0020: Bazel type syntax ====================
+
+    /// The extra keyword at the current token, if type syntax is allowed.
+    // Java: net/starlark/java/syntax/Lexer.java:615 Lexer.identifierOrKeyword
+    fn at_type_keyword(&self) -> Option<TypeKeyword> {
+        if !self.type_syntax {
+            return None;
+        }
+        match self.peek() {
+            Some(Token::Identifier(s)) if s == "cast" => Some(TypeKeyword::Cast),
+            Some(Token::Identifier(s)) if s == "isinstance" => Some(TypeKeyword::IsInstance),
+            _ => None,
+        }
+    }
+
+    // cast_expression = 'cast' '(' TypeExpr ',' expr [','] ')'
+    // Java: net/starlark/java/syntax/Parser.java:558 Parser.parseCastExpression
+    // The value of a cast is the value of its operand (Eval.java:568).
+    fn parse_cast_expression(&mut self) -> Result<AstExpr, EvalException> {
+        self.advance();
+        self.expect(&Token::OpeningRound)?;
+        self.parse_type_expr()?;
+        self.expect(&Token::Comma)?;
+        let value = self.parse_test()?;
+        self.eat(&Token::Comma);
+        self.expect(&Token::ClosingRound)?;
+        Ok(value)
+    }
+
+    // isinstance_expression = 'isinstance' '(' expr ',' TypeExpr [','] ')'
+    // Java: net/starlark/java/syntax/Parser.java:573 Parser.parseIsInstanceExpression
+    fn parse_is_instance_expression(&mut self) -> Result<AstExpr, EvalException> {
+        let l = self.pos();
+        self.advance();
+        self.expect(&Token::OpeningRound)?;
+        let value = self.parse_test()?;
+        self.expect(&Token::Comma)?;
+        self.parse_type_expr()?;
+        self.eat(&Token::Comma);
+        self.expect(&Token::ClosingRound)?;
+        let r = self.last_end;
+        // Java: net/starlark/java/syntax/Resolver.java:897 Resolver.visit(IsInstanceExpression)
+        let err = self.error_at(l, r, "isinstance() is not yet supported".to_owned());
+        self.state.errors.push(err);
+        Ok(value)
+    }
+
+    // type_alias_stmt_tail = identifier optional_type_params '=' TypeExpr
+    // Java: net/starlark/java/syntax/Parser.java:1235 Parser.parseTypeAliasStatementTail
+    // Without type resolution the statement binds nothing (Resolver.java:623) and does nothing
+    // (Eval.java:322).
+    fn parse_type_alias_statement_tail(&mut self, l: usize) -> Result<AstStmt, EvalException> {
+        self.parse_assign_ident()?;
+        self.parse_optional_type_parameters()?;
+        self.expect(&Token::Equal)?;
+        self.parse_type_expr()?;
+        let r = self.last_end;
+        if self.def_depth > 0 {
+            // Java: net/starlark/java/syntax/Resolver.java:906 Resolver.visit(TypeAliasStatement)
+            let err = self.error_at(l, r, "type alias statement not at top level".to_owned());
+            self.state.errors.push(err);
+        }
+        Ok(StmtP::Pass.ast(l, r))
+    }
+
+    // optional_type_params = ['[' identifier {',' identifier} [','] ']']
+    // Java: net/starlark/java/syntax/Parser.java:1255 Parser.parseOptionalTypeParameters
+    fn parse_optional_type_parameters(&mut self) -> Result<(), EvalException> {
+        if !self.type_syntax || self.peek() != Some(&Token::OpeningSquare) {
+            return Ok(());
+        }
+        self.advance();
+        let mut unique: Vec<String> = Vec::new();
+        loop {
+            let id = self.parse_identifier_string()?;
+            if unique.contains(&id.node) {
+                let err = self.error_at(
+                    id.span.begin().get() as usize,
+                    id.span.end().get() as usize,
+                    format!("duplicate type parameter '{}'", id.node),
+                );
+                self.state.errors.push(err);
+            }
+            unique.push(id.node);
+            if self.peek() == Some(&Token::ClosingSquare) || self.peek().is_none() {
+                break;
+            }
+            self.expect(&Token::Comma)?;
+            if self.peek() == Some(&Token::ClosingSquare) {
+                break;
+            }
+        }
+        self.expect(&Token::ClosingSquare)?;
+        Ok(())
     }
 
     fn parse_type_expr(&mut self) -> Result<AstTypeExpr, EvalException> {

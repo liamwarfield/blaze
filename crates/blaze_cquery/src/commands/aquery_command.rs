@@ -19,7 +19,10 @@ use crate::aquery::action_graph_query_environment::{
     KeyedConfiguredTargetValue, aquery_functions, functions,
 };
 use crate::buildtool::aquery_processor::AqueryProcessor;
-use crate::commands::{PostAnalysisCommandEnvironment, main_repo_target_parser, read_query};
+use crate::commands::{
+    PostAnalysisCommandEnvironment, main_repo_target_parser, read_query,
+    tracks_state_for_incrementality,
+};
 
 /// Allows the command to provide command-specific option defaults and/or requirements.
 // Java: com/google/devtools/build/lib/runtime/commands/AqueryCommand.java:69 AqueryCommand.editOptions
@@ -98,8 +101,9 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
         .options
         .get_options::<AqueryOptions>()
         .expect("AqueryOptions");
-    // PORT: QueryCommandUtils.resetDeserializedKeysFromRemoteAnalysisCache only matters with
-    // remote analysis caching (not ported).
+    // PORT: skipped, incremental: QueryCommandUtils.resetDeserializedKeysFromRemoteAnalysisCache
+    // deletes the values a previous command of the server deserialized from the remote analysis
+    // cache.
     let query_current_skyframe_state = aquery_options.query_current_skyframe_state;
 
     let main_repo_target_parser = match main_repo_target_parser(env) {
@@ -166,6 +170,7 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
         env.reporter.clone(),
         env.output.clone(),
         env.working_directory.clone(),
+        tracks_state_for_incrementality(env),
     ) {
         Ok(p) => p,
         Err(e) => {

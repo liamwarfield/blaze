@@ -146,7 +146,10 @@ impl OptionsDiff {
             ) {
                 (None, Some(s)) => diff.add_extra_second_starlark_option(build_setting, s),
                 (Some(_), None) => diff.add_extra_first_starlark_option(build_setting),
-                (Some(f), Some(s)) if f != s => diff.put_starlark_diff(build_setting, f, s),
+                // Java: !starlarkFirst.get(buildSetting).equals(starlarkSecond.get(buildSetting))
+                (Some(f), Some(s)) if !f.java_equals(s) => {
+                    diff.put_starlark_diff(build_setting, f, s)
+                }
                 _ => {}
             }
         }

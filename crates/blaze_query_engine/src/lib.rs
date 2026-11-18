@@ -15,7 +15,12 @@
 //!   `QueryFunction<T>`.
 //! - Errors: Java's `throws QueryException, InterruptedException` is [`QueryError`].
 
-#![allow(clippy::too_many_arguments, clippy::new_without_default)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::new_without_default,
+    clippy::type_complexity,
+    clippy::large_enum_variant
+)]
 
 pub mod action_filter_function;
 pub mod aggregating_query_expression_visitor;

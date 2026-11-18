@@ -90,3 +90,19 @@ Each entry: date, decision, why, who decided.
   from the auditor (next protected batch): `diff_paths(limit=200)` can hide a non-allowed diff
   behind 200+ allowed ones (R2A-1); verify the recorded commit against the binary; refuse dirty
   trees for `scoreboard --write`; item-name ratchet in compare-scores. Root.
+- 2026-11-18. TLS trust for downloads stays `webpki-roots` only (no system store). Bazel 9.3.2
+  uses the embedded JDK 25.0.2's own `lib/security/cacerts` (a regular file with 105 CA entries
+  in the install base, not linked to the system store), so real Bazel does not trust locally
+  installed CAs either; the Mozilla-derived webpki set is the closest available. Adding native
+  roots would trust more than Bazel does. Bazel's way to add CAs, `--host_jvm_args=
+  -Djavax.net.ssl.trustStore...` (and `keyStore`), fails loudly in the client (exit 2). Exact
+  parity would mean reading `<install_base>/embedded_tools/jdk/lib/security/cacerts` (PKCS12);
+  not done. bzlmod/repos implementer, review 2026-11-18 follow-up.
+- 2026-11-18. In-process locking: the client keeps the output base lock (exclusive) and the
+  install base lock (shared) for the whole in-process command, as blaze.cc does in `--batch`
+  mode; contention shows the client's `AcquireLock` messages and exit 9 with
+  `--noblock_for_lock`, not the server's "Another command (pid=...) is running" wording, until
+  there is a server (W8). A live server process found through `server/server.pid.txt` that is
+  not this process (a real Bazel server sharing the default output base) makes Blaze exit 36
+  before it changes anything; Bazel's own client would connect to it or kill it. bzlmod/repos
+  implementer, review 2026-11-18 follow-up.

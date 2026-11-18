@@ -314,6 +314,9 @@ fn read_central_directory_file_header<R: Read>(
     let time = dos_to_unix_time(u32_at(&fixed, 12));
     Ok(ZipFileEntry {
         // Java decodes with UTF-8, replacing malformed input.
+        // PORT: byte-strings: nothing is kept as raw bytes here in Java either
+        // (`new String(name, charset)` in CentralDirectoryFileHeader.read replaces malformed
+        // input); ZipDecompressor then passes `entry.getName().getBytes(UTF_8)` on.
         name: String::from_utf8_lossy(&name).into_owned(),
         method: u16_at(&fixed, 10),
         time: if is_valid_in_dos(time) {
@@ -469,6 +472,9 @@ fn extract_zip_entry(
                     "Zip entries cannot refer to files outside of their directory: {} has a symlink {} pointing to {}",
                     reader.get_filename(),
                     stripped_relative_path,
+                    // PORT: byte-strings: Java prints `new String(buffer, UTF_8)` here (lossy
+                    // too); the raw bytes of the target are kept only for the symlink itself
+                    // (create_path_fragment).
                     String::from_utf8_lossy(&buffer)
                 )));
             }

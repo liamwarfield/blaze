@@ -266,17 +266,7 @@ fn py_builtins_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = pos)] pattern: &str,
     ) -> starlark::Result<bool> {
         let _ = this;
-        // Java `subject.matches(pattern)` (java.util.regex, whole-input match).
-        // PORT: the regex crate implements the common subset of java.util.regex; a pattern it
-        // cannot compile is not ported (Java would either accept it or crash with a
-        // PatternSyntaxException).
-        match regex::Regex::new(&format!("^(?:{pattern})$")) {
-            Ok(re) => Ok(re.is_match(subject)),
-            Err(e) => blaze_util::unported!(
-                "String.matches",
-                "pattern {pattern:?} is not supported by the regex crate: {e}"
-            ),
-        }
+        Ok(java_string_matches(subject, pattern))
     }
 
     /// Get the name of the rule for the given ctx
@@ -708,9 +698,214 @@ impl blaze_exec::actions::ExecutableAction for CopyWithoutCachingAction {
     }
 }
 
+// -------------------------------------------------------------------------------------------
+// java.lang.String.matches
+
+/// Translates a `java.util.regex` pattern into an equivalent whole-input pattern of the `regex`
+/// crate, for the constructs whose meaning is known to be equal; `Err` names the first construct
+/// that is not ported.
+///
+/// Ported (each checked against `java.util.regex` of the JDK Bazel 9.3.2 embeds, 25.0.2, over
+/// every code point):
+/// - a leading `(?U)` (`UNICODE_CHARACTER_CLASS`; rules_python's `is_importable_name` passes
+///   `(?U)\w+`);
+/// - `\w`, `\d`, `\s`: without `(?U)` the ASCII classes `[0-9A-Z_a-z]`, `[0-9]`, `[\t-\r ]`;
+///   with it the Unicode classes of UTS #18 Annex C, which are the `regex` crate's Unicode `\w`,
+///   `\d`, `\s` (regex-syntax 0.8.11 tables, Unicode 16.0.0, the Unicode version of that JDK);
+/// - `.`: any character but the line terminators `\n`, `\r`, U+0085, U+2028, U+2029;
+/// - literal ASCII letters, digits, `_`, `-`, `/`, and `\` followed by an ASCII punctuation
+///   character;
+/// - the greedy quantifiers `*`, `+`, `?` (for a whole-input match the result does not depend on
+///   greediness).
+// Java: java/util/regex/Pattern.java Pattern.compile
+fn translate_java_pattern(pattern: &str) -> Result<String, String> {
+    let (unicode_character_class, body) = match pattern.strip_prefix("(?U)") {
+        Some(body) => (true, body),
+        None => (false, pattern),
+    };
+    let chars: Vec<char> = body.chars().collect();
+    let mut out = String::from("^(?:");
+    // Whether the previous item can take a quantifier.
+    let mut quantifiable = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\\' => {
+                i += 1;
+                let Some(&escaped) = chars.get(i) else {
+                    return Err("a trailing '\\'".to_owned());
+                };
+                match escaped {
+                    'w' => out.push_str(if unicode_character_class {
+                        r"\w"
+                    } else {
+                        "[0-9A-Z_a-z]"
+                    }),
+                    'd' => out.push_str(if unicode_character_class {
+                        r"\d"
+                    } else {
+                        "[0-9]"
+                    }),
+                    's' => out.push_str(if unicode_character_class {
+                        r"\s"
+                    } else {
+                        r"[\t-\r ]"
+                    }),
+                    // Java: a backslash may be used prior to a non-alphabetic character
+                    // regardless of whether that character is part of an unescaped construct.
+                    e if e.is_ascii_punctuation() => out.push_str(&regex::escape(&e.to_string())),
+                    e => return Err(format!("the escape '\\{e}'")),
+                }
+                quantifiable = true;
+            }
+            '.' => {
+                out.push_str(r"[^\n\r\u{85}\u{2028}\u{2029}]");
+                quantifiable = true;
+            }
+            c if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/') => {
+                out.push_str(&regex::escape(&c.to_string()));
+                quantifiable = true;
+            }
+            '*' | '+' | '?' => {
+                if !quantifiable {
+                    return Err(format!("a dangling '{c}'"));
+                }
+                // `X*?` (reluctant) and `X*+` (possessive) are not ported.
+                if matches!(chars.get(i + 1), Some('?') | Some('+')) {
+                    return Err(format!("the quantifier '{c}{}'", chars[i + 1]));
+                }
+                out.push(c);
+                quantifiable = false;
+            }
+            c => return Err(format!("'{c}'")),
+        }
+        i += 1;
+    }
+    out.push_str(")$");
+    Ok(out)
+}
+
+/// Java `subject.matches(pattern)` (`Pattern.matches`: the whole input must match).
+///
+/// Bazel's strings are "internal" strings: the UTF-8 bytes of the text, each stored as one
+/// Latin-1 character (lib/util/StringEncoding.java), and `java.util.regex` matches those
+/// characters. So the subject is matched byte by byte, each byte as the character U+0000 to
+/// U+00FF: `(?U)\w+` rejects "café" (its bytes are `c`, `a`, `f`, U+00C3, U+00A9, and U+00A9 is
+/// not a word character) as Bazel does.
+///
+/// A pattern outside the ported subset (see [`translate_java_pattern`]) fails with `unported!`.
+// Java: java/lang/String.java String.matches
+fn java_string_matches(subject: &str, pattern: &str) -> bool {
+    static CACHE: LazyLock<parking_lot::Mutex<std::collections::HashMap<String, regex::Regex>>> =
+        LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+    let regex = {
+        let mut cache = CACHE.lock();
+        match cache.get(pattern) {
+            Some(regex) => regex.clone(),
+            None => {
+                let translated = match translate_java_pattern(pattern) {
+                    Ok(translated) => translated,
+                    Err(construct) => blaze_util::unported!(
+                        "String.matches (java.util.regex)",
+                        "pattern {pattern:?}: {construct} is not ported"
+                    ),
+                };
+                let regex = regex::Regex::new(&translated).unwrap_or_else(|e| {
+                    panic!("translated pattern {translated:?} of {pattern:?} does not compile: {e}")
+                });
+                cache.insert(pattern.to_owned(), regex.clone());
+                regex
+            }
+        }
+    };
+    // The internal string: one character per byte.
+    let internal_subject: String = subject.bytes().map(char::from).collect();
+    regex.is_match(&internal_subject)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `String.matches` of the JDK Bazel 9.3.2 embeds (25.0.2), applied to Bazel's internal form
+    /// of each subject (its UTF-8 bytes as Latin-1 characters): the expected values were printed
+    /// by that JDK (integrity audit / analysis review S2-12).
+    #[test]
+    fn java_string_matches_matches_the_jdk() {
+        let cases: &[(&str, &str, bool)] = &[
+            // rules_python: is_importable_name.
+            ("abc_1", r"(?U)\w+", true),
+            ("a-b", r"(?U)\w+", false),
+            ("", r"(?U)\w+", false),
+            ("a.b", r"(?U)\w+", false),
+            // Non-ASCII text is matched byte by byte.
+            ("caf\u{e9}", r"(?U)\w+", false),
+            ("\u{e4}", r"(?U)\w+", false),
+            ("\u{aa}", r"(?U)\w+", true),
+            ("x\u{b5}", r"(?U)\w+", true),
+            ("x\u{b5}", r"\w+", false),
+            ("\u{661}", r"(?U)\d+", false),
+            ("a b", r"\w+", false),
+            ("x1", r"\w\d", true),
+            ("x", r"\w\d?", true),
+            ("x12", r"\w\d?", false),
+            ("a.b", r"a\.b", true),
+            ("a\nb", r"a.b", false),
+            ("axb", r"a.b", true),
+            ("ab", r".*", true),
+            ("", r".*", true),
+            ("", r"", true),
+            ("", r"(?U)", true),
+            ("a", r"", false),
+            ("a\tb", r"a\sb", true),
+            ("a\u{a0}b", r"a\sb", false),
+            ("a\u{a0}b", r"(?U)a\sb", false),
+            ("a_b-c/d", r"a_b-c/d", true),
+            ("7", r"\d", true),
+            ("aaa", r"a*", true),
+            ("b", r"a*b?", true),
+        ];
+        for (subject, pattern, expected) in cases {
+            assert_eq!(
+                java_string_matches(subject, pattern),
+                *expected,
+                "{subject:?}.matches({pattern:?})"
+            );
+        }
+    }
+
+    /// Constructs outside the ported subset are named, not guessed.
+    #[test]
+    fn translate_java_pattern_rejects_unported_constructs() {
+        for pattern in [
+            "[a-z]+",
+            "a|b",
+            "(a)",
+            "a{2}",
+            "^a",
+            "a$",
+            r"\p{L}",
+            r"\bfoo",
+            "a+?",
+            "a*+",
+            "(?i)a",
+            r"a\",
+            "*a",
+            "caf\u{e9}",
+            "a b",
+        ] {
+            assert!(
+                translate_java_pattern(pattern).is_err(),
+                "{pattern:?} must not be translated"
+            );
+        }
+        assert_eq!(translate_java_pattern(r"(?U)\w+").unwrap(), r"^(?:\w+)$");
+        assert_eq!(
+            translate_java_pattern(r"\w+").unwrap(),
+            "^(?:[0-9A-Z_a-z]+)$"
+        );
+    }
 
     #[test]
     fn bazel_guid_matches_uuid_string() {

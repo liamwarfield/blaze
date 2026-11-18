@@ -432,6 +432,10 @@ fn template_content_of_derived_template_is_its_key() {
 // with tpl.txt = "hello %NAME%\nempty=[%EMPTY%]\n" in the workspace root (k8-fastbuild,
 // execution platform @@platforms//host:host). aquery reported templateContent = the file and
 // substitutions [{%NAME%, wörld}, {%EMPTY%}].
+//
+// The same action is target `template_executable` of the probe workspace
+// `tests/data/non_ascii_probe/workspace` (`scripts/actions-probe/run` re-records the oracle's
+// key; `non_ascii_action_keys.rs` checks it from the recording).
 #[test]
 fn oracle_template_expansion_key_and_content() {
     let dir = temp_dir("oracle");

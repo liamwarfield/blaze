@@ -79,6 +79,7 @@ pub fn parse_and_close(mut input: impl Read) -> Result<Netrc, IoException> {
     input.read_to_end(&mut bytes)?;
     // PORT: StringEncoding identity; the ISO-8859-1 reading keeps raw bytes, which Rust holds as
     // UTF-8 text (lossy only for invalid UTF-8).
+    // PORT: byte-strings (Java reads .netrc as ISO-8859-1, keeping the raw bytes)
     let content = String::from_utf8_lossy(&bytes);
     parse(&mut TokenStream::new(&content))
 }

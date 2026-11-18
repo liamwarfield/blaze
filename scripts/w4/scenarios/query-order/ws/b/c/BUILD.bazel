@@ -1,0 +1,17 @@
+load("//:defs.bzl", "lib")
+
+package(default_visibility = ["//visibility:public"])
+
+lib(
+    name = "leaf",
+    srcs = ["leaf.txt"],
+)
+
+lib(
+    name = "twig",
+    srcs = [
+        "twig.txt",
+        "leaf.txt",
+    ],
+    deps = [":leaf"],
+)

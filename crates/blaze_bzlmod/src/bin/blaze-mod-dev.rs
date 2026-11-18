@@ -15,7 +15,7 @@ use std::sync::Arc;
 use blaze_bzlmod::modcommand::mod_command::{
     ModCommandResult, exec_after_evaluation, exec_before_evaluation, report_evaluation_error,
 };
-use blaze_bzlmod::registry_fetcher::LocalDownloadManagerFetcher;
+use blaze_bzlmod::registry_fetcher::DownloadManagerRegistryFetcher;
 use blaze_bzlmod::skyframe::{
     BazelDepGraphKey, BazelModuleInspectorKey, BzlmodConfig, after_command,
     register_bzlmod_functions, register_lockfile_only_extension_functions,
@@ -136,14 +136,27 @@ fn real_main() -> i32 {
     // PORT: BuildLanguageOptions.toStarlarkSemantics is not wired yet; Bazel's defaults.
     let semantics = StarlarkSemantics::default();
     let client_env: IndexMap<String, String> = std::env::vars().collect();
+    // Java BazelRepositoryModule.beforeCommand: `--repository_cache` (relative to the workspace),
+    // else `<output_user_root>/cache/repos/v1`. PORT: this dev driver has no output user root
+    // (it takes --output_base only), so it refuses to pick a default location.
     let repo_cache = match &repo_options.repository_cache {
         Some(p) if p.get_path_string().is_empty() => None,
-        Some(p) => Some(PathBuf::from(p.get_path_string())),
-        // Java: RepositoryOptions default `{--output_user_root}/cache/repos/v1`.
-        None => output_base.parent().map(|p| p.join("cache/repos/v1")),
+        Some(p) => Some(workspace.join(p.get_path_string())),
+        None => {
+            reporter.handle(&Event::error(
+                "blaze-mod-dev has no output user root to put the default repository cache \
+                 under: pass --repository_cache=<path> (or --repository_cache= to disable it)"
+                    .to_string(),
+            ));
+            return 2;
+        }
     };
-    let fetcher = Arc::new(LocalDownloadManagerFetcher::new(
-        repo_cache,
+    // PORT: the dev driver does not parse CommonCommandOptions; these are the defaults of
+    // --http_connector_attempts, --http_connector_retry_max_timeout,
+    // --http_max_parallel_downloads and --http_timeout_scaling.
+    let fetcher = Arc::new(DownloadManagerRegistryFetcher::create(
+        repo_cache.as_deref(),
+        blaze_repo_fetch::downloader::HttpDownloader::new(8, std::time::Duration::ZERO, 8, 1.0),
         reporter.clone() as Arc<dyn ExtendedEventHandler>,
         repo_options.repository_downloader_retries,
     ));

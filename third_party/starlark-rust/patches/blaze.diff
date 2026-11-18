@@ -1,9 +1,45 @@
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2: .cargo-ok
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2: .cargo_vcs_info.json
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/environment/modules.rs starlark/src/environment/modules.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/environment/modules.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/environment/modules.rs	2026-11-18 09:57:21.308667630 -0700
+@@ -179,6 +179,11 @@
+     /// serialization and restore as `None`.
+     #[starlark_pagable(skip)]
+     heap_profile: Option<RetainedHeapProfile>,
++    /// BLAZE PATCH 0022: the module's frozen extra value, so that a function can reach its
++    /// defining module's extra value (`DefModule::frozen_extra_value`). Not paged (Blaze does not
++    /// page modules).
++    #[starlark_pagable(skip)]
++    pub(crate) extra_value: Option<FrozenValue>,
+ }
+ 
+ /// A container for user values, used during execution.
+@@ -292,6 +297,12 @@
+         self.module.names()
+     }
+ 
++    /// BLAZE PATCH 0021: every name bound in this module, private ones (`_x` and names bound by
++    /// `load()`) included. Bazel's `Module.getGlobals()`.
++    pub fn names_any_visibility(&self) -> impl Iterator<Item = FrozenStringValue> + '_ {
++        self.module.names.all_symbols().map(|x| x.0)
++    }
++
+     /// Obtain the [`FrozenHeapRef`] which owns the storage of all values defined in this module.
+     pub fn frozen_heap(&self) -> &FrozenHeapRef {
+         &self.heap
+@@ -561,6 +572,7 @@
+             slots,
+             docstring: docstring.into_inner(),
+             heap_profile: stacks,
++            extra_value, // BLAZE PATCH 0022
+         };
+         let frozen_module_ref = freezer.heap.alloc_any_value(rest);
+         for frozen_def in freezer.frozen_defs.borrow().as_slice() {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs starlark/src/eval/compiler/def.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/def.rs	2026-11-18 07:03:56.835192379 -0700
-@@ -610,6 +610,117 @@
++++ starlark/src/eval/compiler/def.rs	2026-11-18 09:56:00.922422074 -0700
+@@ -610,6 +610,126 @@
  pub(crate) type Def<'v> = DefGen<Value<'v>>;
  pub(crate) type FrozenDef = DefGen<FrozenValue>;
  
@@ -76,6 +112,15 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        self.frozen.is_some()
 +    }
 +
++    /// BLAZE PATCH 0022: the extra value of the frozen defining module
++    /// (`FrozenModule::extra_value`), Java `Module.getClientData()` of `fn.getModule()`. `None`
++    /// while the defining module still executes: then it is the module of the evaluator running
++    /// the function (`Evaluator::module().extra_value()`), since an evaluator has one mutable
++    /// module.
++    pub fn frozen_extra_value(&self) -> Option<FrozenValue> {
++        self.frozen.and_then(|module| module.extra_value)
++    }
++
 +    /// Whether `self` and `other` are the same module (same compiled file).
 +    pub fn same_module(&self, other: &DefModule) -> bool {
 +        self.codemap == other.codemap
@@ -121,7 +166,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  starlark_complex_values!(Def);
  
  impl<'v> Def<'v> {
-@@ -783,6 +894,25 @@
+@@ -783,6 +903,25 @@
      where
          'v: 'a,
      {
@@ -160,6 +205,55 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      match did_you_mean(attribute.as_str(), x.dir_attr().iter().map(|s| s.as_str())) {
          None => ValueError::NoAttr(x.get_type().to_owned(), attribute.as_str().to_owned()).into(),
          Some(better) => ValueError::NoAttrDidYouMean(
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/module.rs starlark/src/eval/compiler/module.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/module.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/compiler/module.rs	2026-11-18 10:00:27.727146091 -0700
+@@ -148,7 +148,11 @@
+ 
+         let mut last = Value::new_none();
+         for stmt in stmts.iter_mut() {
+-            self.populate_types_in_stmt(stmt)?;
++            // BLAZE PATCH 0020: without type checking (`DialectTypes::ParseOnly`; `Disable` has
++            // no annotations) annotations are not evaluated at all, as in Bazel.
++            if self.check_types {
++                self.populate_types_in_stmt(stmt)?;
++            }
+ 
+             match &mut stmt.node {
+                 StmtP::Load(load) => {
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/scope.rs starlark/src/eval/compiler/scope.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/scope.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/compiler/scope.rs	2026-11-18 09:47:25.247076715 -0700
+@@ -105,6 +105,8 @@
+     globals: ScopeResolverGlobals,
+     errors: Vec<EvalException>,
+     top_level_stmt_count: usize,
++    /// BLAZE PATCH 0020: false for `DialectTypes::ParseOnly`.
++    resolve_type_exprs: bool,
+ }
+ 
+ pub(crate) struct ModuleScopes<'f> {
+@@ -343,6 +345,8 @@
+             globals,
+             errors: Vec::new(),
+             top_level_stmt_count: top_level_stmts.len(),
++            // BLAZE PATCH 0020
++            resolve_type_exprs: dialect.enable_types != crate::syntax::DialectTypes::ParseOnly,
+         };
+         for stmt in top_level_stmts.iter_mut() {
+             scope.resolve_idents(stmt);
+@@ -638,6 +642,11 @@
+     }
+ 
+     fn resolve_idents_in_type_expr(&mut self, expr: &mut CstTypeExpr) {
++        // BLAZE PATCH 0020: Bazel does not resolve annotations unless type checking is on
++        // (Resolver.java:874 `options.resolveTypeSyntax()`), so names in them may be undefined.
++        if !self.resolve_type_exprs {
++            return;
++        }
+         self.resolve_idents_in_expr_impl(
+             ResolveIdentScope::GlobalForTypeExpression,
+             &mut expr.node.expr,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/stmt.rs starlark/src/eval/compiler/stmt.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/stmt.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/eval/compiler/stmt.rs	2026-11-18 05:24:38.313386238 -0700
@@ -534,7 +628,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let key = key.get_hashed()?;
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/refs.rs starlark/src/values/types/dict/refs.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/refs.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/dict/refs.rs	2026-11-18 07:16:15.929235902 -0700
++++ starlark/src/values/types/dict/refs.rs	2026-11-18 10:42:42.459799764 -0700
 @@ -16,7 +16,7 @@
   */
  
@@ -566,7 +660,15 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              })
          }
      }
-@@ -103,10 +106,12 @@
+@@ -97,16 +100,19 @@
+         #[inline(never)]
+         fn error<'v>(x: Value<'v>) -> anyhow::Error {
+             if x.downcast_ref::<DictGen<FrozenDictData>>().is_some() {
+-                ValueError::CannotMutateImmutableValue.into()
++                // BLAZE PATCH 0023: Java's text (Starlark.checkMutable).
++                crate::values::types::dict::value::frozen_dict_error()
+             } else {
+                 NotDictError(x.get_type()).into()
              }
          }
  
@@ -583,7 +685,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              },
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/value.rs starlark/src/values/types/dict/value.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/value.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/dict/value.rs	2026-11-18 07:15:51.947412288 -0700
++++ starlark/src/values/types/dict/value.rs	2026-11-18 10:42:42.459941633 -0700
 @@ -16,6 +16,7 @@
   */
  
@@ -756,6 +858,18 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              Ok(mut xs) => {
                  xs.content.insert_hashed(index, alloc_value);
                  Ok(())
+@@ -400,9 +471,8 @@
+     }
+ 
+     fn set_at(&self, _index: Hashed<Value<'v>>, _value: Value<'v>) -> crate::Result<()> {
+-        Err(crate::Error::new_other(
+-            ValueError::CannotMutateImmutableValue,
+-        ))
++        // BLAZE PATCH 0023: Java's text (Starlark.checkMutable).
++        Err(crate::Error::new_other(frozen_dict_error()))
+     }
+ }
+ 
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict.rs starlark/src/values/types/dict.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/dict.rs	2026-11-18 07:15:51.947753756 -0700
@@ -858,7 +972,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// [list.remove](
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list/value.rs starlark/src/values/types/list/value.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list/value.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/list/value.rs	2026-11-18 06:59:31.399442066 -0700
++++ starlark/src/values/types/list/value.rs	2026-11-18 10:42:42.459464556 -0700
 @@ -68,11 +68,27 @@
  pub(crate) struct ListGen<T>(pub(crate) T);
  
@@ -888,7 +1002,17 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  }
  
  /// Define the frozen list type.
-@@ -147,6 +163,10 @@
+@@ -119,7 +135,8 @@
+         #[inline(never)]
+         fn error<'v>(x: Value<'v>) -> anyhow::Error {
+             if x.downcast_ref::<ListGen<FrozenListData>>().is_some() {
+-                ValueError::CannotMutateImmutableValue.into()
++                // BLAZE PATCH 0023: Java's text (Starlark.checkMutable).
++                anyhow::anyhow!("trying to mutate a frozen list value")
+             } else {
+                 NotListError(x.get_type()).into()
+             }
+@@ -147,6 +164,10 @@
  
      /// Return an error if there's at least one iterator over the list.
      fn check_can_mutate(&self) -> anyhow::Result<()> {
@@ -899,7 +1023,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          if unlikely(self.content.get().as_ref().iter_count_is_non_zero()) {
              return Err(ValueError::MutationDuringIteration.into());
          }
-@@ -313,6 +333,7 @@
+@@ -313,6 +334,7 @@
      pub(crate) fn new(content: ValueTyped<'v, Array<'v>>) -> Self {
          ListData {
              content: Cell::new(content),
@@ -907,7 +1031,21 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  
-@@ -525,8 +546,10 @@
+@@ -390,9 +412,10 @@
+     }
+ 
+     fn set_at(&self, _i: usize, _v: Value<'v>) -> crate::Result<()> {
+-        Err(crate::Error::new_other(
+-            ValueError::CannotMutateImmutableValue,
+-        ))
++        // BLAZE PATCH 0023: Java's text (Starlark.checkMutable).
++        Err(crate::Error::new_other(anyhow::anyhow!(
++            "trying to mutate a frozen list value"
++        )))
+     }
+ 
+     unsafe fn iter_size_hint(&self, index: usize) -> (usize, Option<usize>) {
+@@ -525,8 +548,10 @@
      }
  
      fn add(&self, other: Value<'v>, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
@@ -920,7 +1058,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      fn mul(&self, other: Value, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
-@@ -535,6 +558,9 @@
+@@ -535,6 +560,9 @@
              Ok(None) => return None,
              Err(e) => return Some(Err(e)),
          };
@@ -930,7 +1068,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let mut result = Vec::with_capacity(self.0.content().len() * cmp::max(0, l) as usize);
          for _ in 0..l {
              result.extend(self.0.content().iter());
-@@ -653,3 +679,64 @@
+@@ -653,3 +681,64 @@
          assert::is_true("[1, 2] < [10]");
      }
  }
@@ -1179,6 +1317,266 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                                  res.push(c);
                              }
                              _ => break, // Out of chars
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/grammar_util.rs starlark_syntax/src/syntax/grammar_util.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/grammar_util.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/syntax/grammar_util.rs	2026-11-18 09:47:25.256853247 -0700
+@@ -230,6 +230,10 @@
+     Err(EvalException::new_anyhow(err.into(), span, codemap))
+ }
+ 
++/// BLAZE PATCH 0020: prefix of the error for Bazel type syntax that is not ported yet. Callers
++/// turn it into a loud failure instead of a user-facing syntax error.
++pub const BLAZE_TYPE_SYNTAX_NOT_PORTED: &str = "BLAZE not ported yet: Bazel type syntax: ";
++
+ pub(crate) fn dialect_check_type(
+     state: &ParserState,
+     x: Spanned<Expr>,
+@@ -239,7 +243,12 @@
+         return err(state.codemap, x.span, DialectError::Types);
+     }
+ 
+-    TypeExprUnpackP::unpack(&x, state.codemap).map_err(EvalException::from)?;
++    // BLAZE PATCH 0020: Bazel 9.3.2 parses annotations as arbitrary expressions unless type
++    // checking is on (FileOptions.tolerateInvalidTypeExpressions; Parser.java:1084
++    // Parser.parseTypeExprWithFallback).
++    if state.dialect.enable_types != DialectTypes::ParseOnly {
++        TypeExprUnpackP::unpack(&x, state.codemap).map_err(EvalException::from)?;
++    }
+ 
+     Ok(x.map(|node| TypeExprP {
+         expr: Spanned { node, span },
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/parser_rd.rs starlark_syntax/src/syntax/parser_rd.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/parser_rd.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/syntax/parser_rd.rs	2026-11-18 09:47:25.256462549 -0700
+@@ -37,6 +37,7 @@
+ use crate::lexer::Token;
+ use crate::syntax::ast::*;
+ use crate::syntax::grammar_util;
++use crate::syntax::grammar_util::BLAZE_TYPE_SYNTAX_NOT_PORTED;
+ use crate::syntax::state::ParserState;
+ 
+ pub(crate) type Lexeme = Result<(usize, Token, usize), EvalException>;
+@@ -57,6 +58,12 @@
+     }};
+ }
+ 
++/// BLAZE PATCH 0020: Java `TokenKind.CAST` / `TokenKind.ISINSTANCE`.
++enum TypeKeyword {
++    Cast,
++    IsInstance,
++}
++
+ pub(crate) struct ParserRd<'a, I: Iterator<Item = Lexeme>> {
+     tokens: I,
+     /// Current token with span, or None if EOF.
+@@ -67,6 +74,10 @@
+     /// token, used to construct EOF spans when `current` is None.
+     last_end: usize,
+     state: ParserState<'a>,
++    /// BLAZE PATCH 0020: Bazel's type syntax (`DialectTypes::ParseOnly`).
++    type_syntax: bool,
++    /// BLAZE PATCH 0020: nesting depth of `def` bodies (type aliases are top-level only).
++    def_depth: u32,
+ }
+ 
+ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
+@@ -75,12 +86,16 @@
+             Ok(current) => (current, None),
+             Err(err) => (None, Some(err)),
+         };
++        // BLAZE PATCH 0020
++        let type_syntax = state.dialect.enable_types == crate::syntax::DialectTypes::ParseOnly;
+         ParserRd {
+             tokens,
+             current,
+             pending_error,
+             last_end: 0,
+             state,
++            type_syntax,
++            def_depth: 0,
+         }
+     }
+ 
+@@ -237,6 +252,8 @@
+         let l = self.pos();
+         self.consume(&Token::Def);
+         let name = self.parse_assign_ident()?;
++        // BLAZE PATCH 0020: `def f[T, U](...)`.
++        self.parse_optional_type_parameters()?;
+         self.expect(&Token::OpeningRound)?;
+         let params = self.parse_comma_separated_def_params()?;
+         self.expect(&Token::ClosingRound)?;
+@@ -246,7 +263,10 @@
+             None
+         };
+         self.expect(&Token::Colon)?;
+-        let body = self.parse_suite()?;
++        self.def_depth += 1; // BLAZE PATCH 0020
++        let body = self.parse_suite();
++        self.def_depth -= 1; // BLAZE PATCH 0020
++        let body = body?;
+         let r = self.last_end;
+         Ok(StmtP::Def(DefP {
+             name,
+@@ -385,6 +405,15 @@
+     fn parse_assign_or_expr_stmt(&mut self) -> Result<AstStmt, EvalException> {
+         let l = self.pos();
+         let first = self.parse_test()?;
++        // BLAZE PATCH 0020: `type X = T`. This is the only context in which an identifier can be
++        // immediately followed by another identifier; the first one is the soft keyword `type`.
++        // Java: net/starlark/java/syntax/Parser.java:1545 Parser.parseSmallStatement
++        if self.type_syntax
++            && matches!(&first.node, Expr::Identifier(id) if id.node.ident == "type")
++            && matches!(self.peek(), Some(Token::Identifier(_)))
++        {
++            return self.parse_type_alias_statement_tail(l);
++        }
+         let lhs_is_expr_list = self.peek() == Some(&Token::Comma);
+         let lhs = if lhs_is_expr_list {
+             self.parse_test_list_tail(l, first, false)?
+@@ -407,6 +436,15 @@
+             let r = self.last_end;
+             let stmt = grammar_util::check_assignment(self.state.codemap, lhs, ty, assign_op, rhs)?;
+             Ok(stmt.ast(l, r))
++        } else if self.type_syntax && ty.is_some() && !lhs_is_expr_list {
++            // BLAZE PATCH 0020: a var statement, `x: T`. Bazel binds `x` in the enclosing block
++            // without a value (Resolver.java:562); the AST has no node for that yet.
++            let r = self.last_end;
++            Err(self.error_at(
++                l,
++                r,
++                format!("{BLAZE_TYPE_SYNTAX_NOT_PORTED}VarStatement (`x: T` without a value)"),
++            ))
+         } else if lhs_is_expr_list || ty.is_some() {
+             Err(self.error_expected("assignment operator"))
+         } else {
+@@ -950,6 +988,12 @@
+     }
+ 
+     fn parse_atom(&mut self) -> Result<AstExpr, EvalException> {
++        // BLAZE PATCH 0020
++        match self.at_type_keyword() {
++            Some(TypeKeyword::Cast) => return self.parse_cast_expression(),
++            Some(TypeKeyword::IsInstance) => return self.parse_is_instance_expression(),
++            None => {}
++        }
+         match self.peek() {
+             Some(Token::Identifier(_)) => {
+                 let (l, ident, r) = take_payload!(self, Token::Identifier);
+@@ -1152,6 +1196,10 @@
+     // ==================== Helpers ====================
+ 
+     fn parse_identifier_string(&mut self) -> Result<AstString, EvalException> {
++        // BLAZE PATCH 0020: `cast` and `isinstance` are keywords when type syntax is allowed.
++        if self.at_type_keyword().is_some() {
++            return Err(self.error_expected("identifier"));
++        }
+         match &self.current {
+             Some((_, Token::Identifier(_), _)) => match self.take_current() {
+                 Some((l, Token::Identifier(s), r)) => Ok(s.ast(l, r)),
+@@ -1182,6 +1230,102 @@
+         }
+     }
+ 
++    // ==================== BLAZE PATCH 0020: Bazel type syntax ====================
++
++    /// The extra keyword at the current token, if type syntax is allowed.
++    // Java: net/starlark/java/syntax/Lexer.java:615 Lexer.identifierOrKeyword
++    fn at_type_keyword(&self) -> Option<TypeKeyword> {
++        if !self.type_syntax {
++            return None;
++        }
++        match self.peek() {
++            Some(Token::Identifier(s)) if s == "cast" => Some(TypeKeyword::Cast),
++            Some(Token::Identifier(s)) if s == "isinstance" => Some(TypeKeyword::IsInstance),
++            _ => None,
++        }
++    }
++
++    // cast_expression = 'cast' '(' TypeExpr ',' expr [','] ')'
++    // Java: net/starlark/java/syntax/Parser.java:558 Parser.parseCastExpression
++    // The value of a cast is the value of its operand (Eval.java:568).
++    fn parse_cast_expression(&mut self) -> Result<AstExpr, EvalException> {
++        self.advance();
++        self.expect(&Token::OpeningRound)?;
++        self.parse_type_expr()?;
++        self.expect(&Token::Comma)?;
++        let value = self.parse_test()?;
++        self.eat(&Token::Comma);
++        self.expect(&Token::ClosingRound)?;
++        Ok(value)
++    }
++
++    // isinstance_expression = 'isinstance' '(' expr ',' TypeExpr [','] ')'
++    // Java: net/starlark/java/syntax/Parser.java:573 Parser.parseIsInstanceExpression
++    fn parse_is_instance_expression(&mut self) -> Result<AstExpr, EvalException> {
++        let l = self.pos();
++        self.advance();
++        self.expect(&Token::OpeningRound)?;
++        let value = self.parse_test()?;
++        self.expect(&Token::Comma)?;
++        self.parse_type_expr()?;
++        self.eat(&Token::Comma);
++        self.expect(&Token::ClosingRound)?;
++        let r = self.last_end;
++        // Java: net/starlark/java/syntax/Resolver.java:897 Resolver.visit(IsInstanceExpression)
++        let err = self.error_at(l, r, "isinstance() is not yet supported".to_owned());
++        self.state.errors.push(err);
++        Ok(value)
++    }
++
++    // type_alias_stmt_tail = identifier optional_type_params '=' TypeExpr
++    // Java: net/starlark/java/syntax/Parser.java:1235 Parser.parseTypeAliasStatementTail
++    // Without type resolution the statement binds nothing (Resolver.java:623) and does nothing
++    // (Eval.java:322).
++    fn parse_type_alias_statement_tail(&mut self, l: usize) -> Result<AstStmt, EvalException> {
++        self.parse_assign_ident()?;
++        self.parse_optional_type_parameters()?;
++        self.expect(&Token::Equal)?;
++        self.parse_type_expr()?;
++        let r = self.last_end;
++        if self.def_depth > 0 {
++            // Java: net/starlark/java/syntax/Resolver.java:906 Resolver.visit(TypeAliasStatement)
++            let err = self.error_at(l, r, "type alias statement not at top level".to_owned());
++            self.state.errors.push(err);
++        }
++        Ok(StmtP::Pass.ast(l, r))
++    }
++
++    // optional_type_params = ['[' identifier {',' identifier} [','] ']']
++    // Java: net/starlark/java/syntax/Parser.java:1255 Parser.parseOptionalTypeParameters
++    fn parse_optional_type_parameters(&mut self) -> Result<(), EvalException> {
++        if !self.type_syntax || self.peek() != Some(&Token::OpeningSquare) {
++            return Ok(());
++        }
++        self.advance();
++        let mut unique: Vec<String> = Vec::new();
++        loop {
++            let id = self.parse_identifier_string()?;
++            if unique.contains(&id.node) {
++                let err = self.error_at(
++                    id.span.begin().get() as usize,
++                    id.span.end().get() as usize,
++                    format!("duplicate type parameter '{}'", id.node),
++                );
++                self.state.errors.push(err);
++            }
++            unique.push(id.node);
++            if self.peek() == Some(&Token::ClosingSquare) || self.peek().is_none() {
++                break;
++            }
++            self.expect(&Token::Comma)?;
++            if self.peek() == Some(&Token::ClosingSquare) {
++                break;
++            }
++        }
++        self.expect(&Token::ClosingSquare)?;
++        Ok(())
++    }
++
+     fn parse_type_expr(&mut self) -> Result<AstTypeExpr, EvalException> {
+         let expr = self.parse_test()?;
+         grammar_util::dialect_check_type(&self.state, expr)
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_derive-0.14.2: .cargo-ok
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_derive-0.14.2: .cargo_vcs_info.json
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_map-0.14.2: .cargo-ok

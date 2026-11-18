@@ -11,9 +11,10 @@
 //! - [`register_action`] is Java's `ruleContext.registerAction(action)` for native code: every
 //!   action created while the implementation runs goes into one ordered list
 //!   ([`PendingAction`]), so registration order equals Java's `registerAction` order.
-//! - Starlark values that pending actions need after freezing (`Args`, `TemplateDict`) are kept
-//!   in an [`AnalysisKeepAlive`] list, which is the module's extra value (a GC root, and frozen
-//!   with the module).
+//! - Starlark values that pending actions need after freezing (copies of `Args` and
+//!   `TemplateDict` objects as they were when the action was created, translation functions)
+//!   are kept in an [`AnalysisKeepAlive`] list, which is the module's extra value (a GC root,
+//!   and frozen with the module).
 
 use std::cell::{Ref, RefCell, RefMut};
 use std::fmt;
@@ -106,7 +107,8 @@ impl fmt::Debug for RuleContextHandle {
 
 /// One part of a spawn action's command line (Java `StarlarkActionFactory.buildCommandLine`):
 /// a run of plain strings (`CommandLine.of(stringArgs)`) or an `Args` object (with its param
-/// file info), referenced by its index in the [`AnalysisKeepAlive`] list.
+/// file info) as it was when the action was created, referenced by the index of that copy in
+/// the [`AnalysisKeepAlive`] list.
 #[derive(Debug)]
 pub(crate) enum CommandLinePart {
     Strings(Vec<String>),
@@ -128,6 +130,7 @@ pub(crate) enum PendingAction {
     ParameterFileWrite {
         owner: ActionOwner,
         output: Artifact,
+        /// The index, in the keep-alive list, of the copy of the `Args` taken at the call.
         args: usize,
         is_executable: bool,
         mnemonic: String,
@@ -141,7 +144,8 @@ pub(crate) enum PendingAction {
         output: Artifact,
         /// The plain substitutions, in dict order.
         substitutions: Vec<Substitution>,
-        /// The `TemplateDict`'s index in the keep-alive list.
+        /// The index, in the keep-alive list, of the copy of the `TemplateDict` taken at the
+        /// call.
         computed_substitutions: usize,
         executable: bool,
     },

@@ -23,7 +23,8 @@ use blaze_vfs::Path;
 
 use crate::build_configuration_key::{BuildConfigurationKey, BuildConfigurationKeyValueKey};
 use crate::build_configuration_value::{BuildConfigurationValue, GlobalStateProvider};
-use crate::build_options::BuildOptions;
+use crate::build_options::{BuildOptions, ScopeDefinition, ScopeType, StarlarkOptionValue};
+use crate::build_options_scope_value::{BuildOptionsScopeKey, BuildOptionsScopeValue};
 use crate::fragment::{FragmentFactory, InvalidConfigurationException};
 use crate::output_directories::ConfigDirectories;
 use crate::platform::{PlatformValueKey, SharedPlatformValueProvider};
@@ -248,7 +249,7 @@ fn compute_build_configuration_key(
     // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:122 BuildConfigurationKeyProducer.step
     // Short-circuit if there are no platform options.
     let Some(platform_options) = options.get::<PlatformOptions>() else {
-        return find_build_options_scopes(options.as_ref().clone());
+        return find_build_options_scopes(options.clone(), env);
     };
 
     let target_platforms = &platform_options.platforms;
@@ -300,35 +301,239 @@ fn merge_from_platform_mapping(
         };
     // Java: BuildConfigurationKeyProducer.applyPlatformMapping
     match platform_mapping_value.map(options) {
-        Ok(key) => find_build_options_scopes(key.get_options().as_ref().clone()),
+        Ok(key) => find_build_options_scopes(key.get_options().clone(), env),
         Err(e) => Err(persistent(ConfigurationError::OptionsParsing(e))),
     }
 }
 
 // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:170 BuildConfigurationKeyProducer.findBuildOptionsScopes
+/// Performs a lookup for `BuildOptionsScopeValue` via `BuildOptionsScopeFunction` given
+/// `post_platform_processed_options`. This is only done if there are any flag that has
+/// `ScopeType.PROJECT` or its `ScopeType` is not yet resolved.
 fn find_build_options_scopes(
-    post_platform_processed_options: BuildOptions,
+    post_platform_processed_options: Arc<BuildOptions>,
+    env: &mut Environment<'_>,
 ) -> Result<Option<BuildConfigurationKey>, ComputeError> {
     // including platform-based flags in skykey for scopes lookUp
-    if !post_platform_processed_options
+    if post_platform_processed_options
         .get_starlark_options()
         .is_empty()
     {
-        // PORT: BUILD_OPTIONS_SCOPE (flag scoping) is not ported; no Starlark flags are set in
-        // the configurations the corpus builds create.
-        blaze_util::unported!(
-            "BuildConfigurationKeyProducer.findBuildOptionsScopes",
-            "Starlark options {:?}",
-            post_platform_processed_options
-                .get_starlark_options()
-                .keys()
-                .collect::<Vec<_>>()
+        return possibly_apply_scopes(env, post_platform_processed_options, None);
+    }
+
+    // the list of flags that are either project scoped or their scopes are not yet resolved.
+    // Lookup via BuildOptionsScopeFunction will be done for these flags
+    let mut flags_with_incomplete_scope_info: Vec<Label> = Vec::new();
+    for key in post_platform_processed_options
+        .get_starlark_options()
+        .keys()
+    {
+        let scope_type = post_platform_processed_options
+            .get_scope_type_map()
+            .get(key);
+        // scope is null is applicable for cases where a transition applies starlark flags that
+        // are not already part of the baseline configuration.
+        if scope_type.is_none() || scope_type == Some(&ScopeType::PROJECT) {
+            flags_with_incomplete_scope_info.push(key.clone());
+        }
+    }
+
+    // if flagsWithIncompleteScopeInfo is empty, we do not need to do any further lookUp for the
+    // ScopeType and ScopeDefinition
+    if flags_with_incomplete_scope_info.is_empty() {
+        return possibly_apply_scopes(env, post_platform_processed_options, None);
+    }
+
+    let build_options_scope_value_key = BuildOptionsScopeKey::create(
+        post_platform_processed_options.clone(),
+        flags_with_incomplete_scope_info,
+    );
+    // Java: tasks.lookUp(buildOptionsScopeValueKey, (Consumer<SkyValue>) this): an error of the
+    // lookup is this node's error.
+    let Some(build_options_scope_value) = env.get_value(build_options_scope_value_key)? else {
+        return Ok(None);
+    };
+    possibly_apply_scopes(
+        env,
+        post_platform_processed_options,
+        Some(build_options_scope_value),
+    )
+}
+
+// Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:268 BuildConfigurationKeyProducer.possiblyApplyScopes
+fn possibly_apply_scopes(
+    env: &mut Environment<'_>,
+    post_platform_processed_options: Arc<BuildOptions>,
+    build_options_scope_value: Option<Arc<BuildOptionsScopeValue>>,
+) -> Result<Option<BuildConfigurationKey>, ComputeError> {
+    // This is not the same as null associated with Skyframe lookUp. This happens when scoping
+    // logic is not enabled. This means the lookup via BuildOptionsScopesFunction was not
+    // performed.
+    let Some(build_options_scope_value) = build_options_scope_value else {
+        return finish_configuration_key_processing(post_platform_processed_options);
+    };
+    if post_platform_processed_options
+        .get_starlark_options()
+        .is_empty()
+    {
+        return finish_configuration_key_processing(post_platform_processed_options);
+    }
+
+    let should_apply_scopes = build_options_scope_value
+        .get_fully_resolved_scopes()
+        .values()
+        .any(|scope| scope.get_scope_type() == ScopeType::PROJECT);
+
+    if !should_apply_scopes {
+        return finish_configuration_key_processing(
+            build_options_scope_value
+                .get_resolved_build_options_with_scope_types()
+                .clone(),
         );
     }
-    // possiblyApplyScopes -> finishConfigurationKeyProcessing
-    Ok(Some(BuildConfigurationKey::create(Arc::new(
-        post_platform_processed_options,
-    ))))
+
+    // TODO: b/390669368 - The same performance issue still exists if we reach this point.
+    // Java: tasks.lookUp(PrecomputedValue.BASELINE_CONFIGURATION.getKey(), ...)
+    let baseline_configuration = client(env).baseline_configuration.clone();
+    // PORT: BuildConfigurationKeyFunction passes a null label; the analysis producers
+    // (BuildConfigurationKeyMapProducer) pass the target's label, but Blaze maps their options
+    // through this node (blaze_sky_analysis transition_applier), which has no label. Only
+    // PROJECT-scoped flags read it, and those stop at
+    // `unported!("BuildOptionsScopeFunction.findProjectFiles")` before this point.
+    apply_scopes(&build_options_scope_value, &baseline_configuration, None)
+}
+
+// Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:292 BuildConfigurationKeyProducer.applyScopes
+fn apply_scopes(
+    build_options_scope_value: &BuildOptionsScopeValue,
+    baseline_configuration: &Arc<BuildOptions>,
+    label: Option<&Label>,
+) -> Result<Option<BuildConfigurationKey>, ComputeError> {
+    let resolved = build_options_scope_value.get_resolved_build_options_with_scope_types();
+    // baselineConfiguration.getStarlarkOptions().equals(resolved.getStarlarkOptions())
+    let baseline_starlark_options = baseline_configuration.get_starlark_options();
+    let resolved_starlark_options = resolved.get_starlark_options();
+    let starlark_options_equal = baseline_starlark_options.len() == resolved_starlark_options.len()
+        && resolved_starlark_options.iter().all(|(key, value)| {
+            baseline_starlark_options
+                .get(key)
+                .is_some_and(|baseline_value| baseline_value.java_equals(value))
+        });
+    let final_build_options = if starlark_options_equal {
+        resolved.clone()
+    } else {
+        reset_flags(build_options_scope_value, baseline_configuration, label)
+    };
+    finish_configuration_key_processing(final_build_options)
+}
+
+// Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:301 BuildConfigurationKeyProducer.finishConfigurationKeyProcessing
+fn finish_configuration_key_processing(
+    final_build_options: Arc<BuildOptions>,
+) -> Result<Option<BuildConfigurationKey>, ComputeError> {
+    Ok(Some(BuildConfigurationKey::create(final_build_options)))
+}
+
+// Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:320 BuildConfigurationKeyProducer.resetFlags
+/// If a flag is considered to be out of scope, resetFlags does either of the following:
+///
+/// - If the flag is not present in the baseline configuration, remove the flag from the
+///   `BuildOptions`.
+/// - If the flag is present in the baseline configuration, set the flag to the baseline value.
+///   This is to ensure that we do not trigger an additional ST-<hash>, which defeats the purpose
+///   of scoping.
+///
+/// This method returns the final `BuildOptions` after scoping is applied and the object only has
+/// the `Scope.ScopeType` information for all starlark flags.
+fn reset_flags(
+    build_options_scope_value: &BuildOptionsScopeValue,
+    baseline_configuration: &Arc<BuildOptions>,
+    label: Option<&Label>,
+) -> Arc<BuildOptions> {
+    let transitioned_options_with_scope_type =
+        build_options_scope_value.get_resolved_build_options_with_scope_types();
+    // If there are no scopes, short circuit.
+    if build_options_scope_value
+        .get_fully_resolved_scopes()
+        .is_empty()
+    {
+        return transitioned_options_with_scope_type.clone();
+    }
+
+    let mut flags_removed = false;
+    let mut flags_reset_to_baseline = false;
+    let mut options_with_scope_types_builder = transitioned_options_with_scope_type.to_builder();
+    for (flag_label, flag_value) in transitioned_options_with_scope_type.get_starlark_options() {
+        let scope = build_options_scope_value
+            .get_fully_resolved_scopes()
+            .get(flag_label);
+        match scope {
+            None => {
+                // Verify.verify
+                if transitioned_options_with_scope_type
+                    .get_scope_type_map()
+                    .get(flag_label)
+                    == Some(&ScopeType::PROJECT)
+                {
+                    panic!("VerifyException");
+                }
+            }
+            Some(scope) if scope.get_scope_type() == ScopeType::PROJECT => {
+                let baseline_value: Option<&StarlarkOptionValue> = baseline_configuration
+                    .get_starlark_options()
+                    .get(flag_label);
+                // PORT: Java compares the two objects by reference (`flagValue !=
+                // baselineValue`). Values have no identity here; structural equality gives the
+                // same resulting options: an equal value that is a different object is "reset"
+                // to an equal value.
+                if baseline_value != Some(flag_value)
+                    && !is_in_scope(label, scope.get_scope_definition())
+                {
+                    match baseline_value {
+                        None => {
+                            options_with_scope_types_builder.remove_starlark_option(flag_label);
+                            flags_removed = true;
+                        }
+                        Some(baseline_value) => {
+                            options_with_scope_types_builder
+                                .add_starlark_option(flag_label.clone(), baseline_value.clone());
+                            flags_reset_to_baseline = true;
+                        }
+                    }
+                }
+            }
+            Some(_) => {}
+        }
+    }
+
+    if !flags_removed && !flags_reset_to_baseline {
+        return transitioned_options_with_scope_type.clone();
+    }
+
+    let scoped_build_options = options_with_scope_types_builder.build();
+    if scoped_build_options == **baseline_configuration {
+        return baseline_configuration.clone();
+    }
+
+    Arc::new(scoped_build_options)
+}
+
+// Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:374 BuildConfigurationKeyProducer.isInScope
+fn is_in_scope(label: Option<&Label>, scope_definition: Option<&ScopeDefinition>) -> bool {
+    // A null scopeDefinition means the flag's package has no PROJECT.scl file. Treat the target
+    // as not in scope so the flag resets to its baseline value.
+    // Also, if the label is null, we are evaluating a configuration without a target, so we also
+    // treat it as out of scope.
+    let (Some(label), Some(scope_definition)) = (label, scope_definition) else {
+        return false;
+    };
+    for path in scope_definition.get_owned_code_paths() {
+        if label.get_canonical_form().starts_with(path.as_str()) {
+            return true;
+        }
+    }
+    false
 }
 
 // Java: com/google/devtools/build/lib/skyframe/config/BaselineOptionsFunction.java:43 BaselineOptionsFunction.compute

@@ -556,3 +556,247 @@ fn patch_0019_dict_named_default() {
     );
     assert!(eval_with_probe("r = {}.get(key = 'a')").is_err());
 }
+
+/// Parses `src` with Bazel 9.3.2's default type syntax mode (`DialectTypes::ParseOnly`:
+/// FileOptions allowTypeSyntax, no resolveTypeSyntax, tolerateInvalidTypeExpressions) and
+/// evaluates it; returns repr of `r` or the error message.
+fn eval_with_type_syntax(src: &'static str) -> Result<String, String> {
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(move || {
+            let globals = dialect::bazel_universe();
+            let mut d = dialect::bzl_dialect();
+            d.enable_types = starlark::syntax::DialectTypes::ParseOnly;
+            let ast =
+                AstModule::parse("t.bzl", src.to_owned(), &d).map_err(|e| bare_message(&e))?;
+            Module::with_temp_heap(|module| {
+                let mut e = Evaluator::new(&module);
+                e.set_forbid_recursion(true);
+                e.eval_module(ast, &globals).map_err(|e| bare_message(&e))?;
+                Ok(module.get("r").map(|v| v.to_repr()).unwrap_or_default())
+            })
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+/// Java Parser.java (type syntax; `--experimental_starlark_type_syntax` defaults to true at
+/// 9.3.2, FlagConstants.java:36) with BzlCompileFunction's options: annotations are arbitrary
+/// expressions (Parser.parseTypeExprWithFallback), not resolved (Resolver.java:874) and not
+/// evaluated; `cast(T, e)` is `e` (Eval.java:568); `type X = T` does nothing (Eval.java:322).
+#[test]
+fn patch_0020_bazel_type_syntax() {
+    // Annotations on parameters, the return type and assignments, with names that are not
+    // defined anywhere and expressions that are not type expressions.
+    assert_eq!(
+        eval_with_type_syntax(
+            "def f(x: int, y: Undefined[str] = 2, *args: list[NoSuchType], **kwargs: 1 + 2) -> Nope | None:\n    z: whatever = x + y\n    return z\nr = f(1)"
+        ),
+        Ok("3".into())
+    );
+    // The same file without type syntax is a syntax error.
+    assert!(eval("def f(x: int):\n    return x\nr = f(1)").is_err());
+    // cast() evaluates to its operand; the type is not evaluated.
+    assert_eq!(
+        eval_with_type_syntax("r = cast(list[Undefined], [1, 2],)"),
+        Ok("[1, 2]".into())
+    );
+    // `cast` and `isinstance` are keywords when type syntax is allowed (Lexer.java:615) ...
+    assert!(eval_with_type_syntax("cast = 1\nr = cast").is_err());
+    assert!(eval_with_type_syntax("def isinstance(x):\n    return x\nr = 1").is_err());
+    // ... and ordinary identifiers when it is not.
+    assert_eq!(eval("cast = 1\nr = cast"), Ok("1".into()));
+    // Resolver.java:897
+    assert_eq!(
+        eval_with_type_syntax("r = isinstance(1, int)"),
+        Err("isinstance() is not yet supported".into())
+    );
+    // Type aliases bind nothing and are top-level only (Resolver.java:906).
+    assert_eq!(
+        eval_with_type_syntax("type X = list[Undefined]\ntype Y[T, U] = dict[T, U]\nr = 1"),
+        Ok("1".into())
+    );
+    assert_eq!(
+        eval_with_type_syntax("def f():\n    type X = int\nr = 1"),
+        Err("type alias statement not at top level".into())
+    );
+    // `type` stays an ordinary identifier.
+    assert_eq!(eval_with_type_syntax("r = type(1)"), Ok("\"int\"".into()));
+    // Generic defs: `def f[T](...)`.
+    assert_eq!(
+        eval_with_type_syntax("def f[T, U](x: T) -> U:\n    return x\nr = f(7)"),
+        Ok("7".into())
+    );
+    // A var statement (`x: T` without a value) is not ported: a loud, recognizable error.
+    let err = eval_with_type_syntax("x: int\nr = 1").unwrap_err();
+    assert!(
+        err.contains("BLAZE not ported yet: Bazel type syntax: VarStatement"),
+        "{err}"
+    );
+}
+
+/// Java Module.getGlobals(): every global binding, `_private` names included (and, in a file
+/// compiled with loadBindsGlobally, names bound by load()).
+#[test]
+fn patch_0021_frozen_module_names_any_visibility() {
+    use starlark::eval::ReturnFileLoader;
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| {
+            let globals = dialect::bazel_universe();
+            let run =
+                |file: &str, src: &str, loads: &[(&str, &starlark::environment::FrozenModule)]| {
+                    let ast = AstModule::parse(file, src.to_owned(), &dialect::bzl_dialect())
+                        .map_err(|e| bare_message(&e))
+                        .unwrap();
+                    Module::with_temp_heap(|module| {
+                        let loader = ReturnFileLoader {
+                            modules: &loads.iter().copied().collect(),
+                        };
+                        let mut e = Evaluator::new(&module);
+                        e.set_loader(&loader);
+                        e.eval_module(ast, &globals)
+                            .map_err(|e| bare_message(&e))
+                            .unwrap();
+                        drop(e);
+                        module.freeze()
+                    })
+                    .unwrap()
+                };
+            let a = run("a.bzl", "foo = 'FOO'\n", &[]);
+            let b = run(
+                "b.bzl",
+                "load('a.bzl', 'foo')\n_hidden = 1\npublic = 2\n",
+                &[("a.bzl", &a)],
+            );
+            let mut public: Vec<String> = b.names().map(|n| n.as_str().to_owned()).collect();
+            public.sort();
+            assert_eq!(public, ["public"]);
+            let mut all: Vec<String> = b
+                .names_any_visibility()
+                .map(|n| n.as_str().to_owned())
+                .collect();
+            all.sort();
+            assert_eq!(all, ["_hidden", "foo", "public"]);
+            assert_eq!(
+                b.get_any_visibility("foo").unwrap().0.value().to_repr(),
+                "\"FOO\""
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// Java `fn.getModule().getClientData()`: a frozen function reaches the extra value of the
+/// module that defined it, also when two modules were executed from the same file name.
+#[test]
+fn patch_0022_def_module_frozen_extra_value() {
+    use starlark::eval::DefModule;
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| {
+            let globals = dialect::bazel_universe();
+            let run = |extra: i32| {
+                let ast = AstModule::parse(
+                    "same.bzl",
+                    "def f():\n    pass\n".to_owned(),
+                    &dialect::bzl_dialect(),
+                )
+                .map_err(|e| bare_message(&e))
+                .unwrap();
+                Module::with_temp_heap(|module| {
+                    module.set_extra_value(module.heap().alloc(extra));
+                    let mut e = Evaluator::new(&module);
+                    e.eval_module(ast, &globals)
+                        .map_err(|e| bare_message(&e))
+                        .unwrap();
+                    // While the module executes, its defs are not frozen.
+                    let f = module.get("f").unwrap();
+                    let m = DefModule::of_function(f).unwrap();
+                    assert!(!m.is_frozen());
+                    assert!(m.frozen_extra_value().is_none());
+                    drop(e);
+                    module.freeze()
+                })
+                .unwrap()
+            };
+            let one = run(1);
+            let two = run(2);
+            let extra_of = |m: &starlark::environment::FrozenModule| {
+                let f = m.get("f").unwrap();
+                let d = DefModule::of_function(f.value()).unwrap();
+                assert!(d.is_frozen());
+                d.frozen_extra_value().map(|v| v.to_value().to_repr())
+            };
+            assert_eq!(extra_of(&one), Some("1".to_owned()));
+            assert_eq!(extra_of(&two), Some("2".to_owned()));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// Java Starlark.checkMutable: "trying to mutate a frozen %s value" for a value frozen with its
+/// module (PackageFunctionTest.testPreludeSymbolCannotBeMutated).
+#[test]
+fn patch_0023_frozen_mutation_text() {
+    use starlark::eval::ReturnFileLoader;
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| {
+            let globals = dialect::bazel_universe();
+            let a = {
+                let ast = AstModule::parse(
+                    "a.bzl",
+                    "L = ['FOO']\nD = {'a': 1}\n".to_owned(),
+                    &dialect::bzl_dialect(),
+                )
+                .unwrap();
+                Module::with_temp_heap(|module| {
+                    let mut e = Evaluator::new(&module);
+                    e.eval_module(ast, &globals).unwrap();
+                    drop(e);
+                    module.freeze()
+                })
+                .unwrap()
+            };
+            let run = |src: &str| -> Result<(), String> {
+                let ast = AstModule::parse("b.bzl", src.to_owned(), &dialect::bzl_dialect())
+                    .map_err(|e| bare_message(&e))?;
+                Module::with_temp_heap(|module| {
+                    let modules = [("a.bzl", &a)].into_iter().collect();
+                    let loader = ReturnFileLoader { modules: &modules };
+                    let mut e = Evaluator::new(&module);
+                    e.set_loader(&loader);
+                    e.eval_module(ast, &globals).map_err(|e| bare_message(&e))?;
+                    Ok(())
+                })
+            };
+            for (src, want) in [
+                (
+                    "load('a.bzl', 'L')\nL.append('BAR')\n",
+                    "trying to mutate a frozen list value",
+                ),
+                (
+                    "load('a.bzl', 'L')\nL[0] = 'BAR'\n",
+                    "trying to mutate a frozen list value",
+                ),
+                (
+                    "load('a.bzl', 'D')\nD['b'] = 2\n",
+                    "trying to mutate a frozen dict value",
+                ),
+                (
+                    "load('a.bzl', 'D')\nD.pop('a')\n",
+                    "trying to mutate a frozen dict value",
+                ),
+            ] {
+                let err = run(src).unwrap_err();
+                assert!(err.contains(want), "{src:?}: {err}");
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

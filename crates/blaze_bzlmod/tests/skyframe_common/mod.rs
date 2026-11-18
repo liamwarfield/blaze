@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use blaze_bzlmod::skyframe::{
-    BuiltinRepositoryDirectoryLookup, BzlmodConfig, register_bzlmod_functions,
-    register_lockfile_only_extension_functions,
+    BuiltinPackageLookup, BuiltinRepositoryDirectoryLookup, BzlmodConfig,
+    register_bzlmod_functions, register_lockfile_only_extension_functions,
 };
 use blaze_bzlmod_model::gson::JsonWriter;
 use blaze_bzlmod_model::{
@@ -430,6 +430,13 @@ impl Harness {
             repository_directory_lookup: Arc::new(BuiltinRepositoryDirectoryLookup {
                 embedded_tools: self.output_base.join("install/embedded_tools"),
                 workspace_root: self.root_directory.clone(),
+            }),
+            package_lookup: Arc::new(BuiltinPackageLookup {
+                workspace_root: self.root_directory.clone(),
+                repository_directory_lookup: Arc::new(BuiltinRepositoryDirectoryLookup {
+                    embedded_tools: self.output_base.join("install/embedded_tools"),
+                    workspace_root: self.root_directory.clone(),
+                }),
             }),
         }
     }

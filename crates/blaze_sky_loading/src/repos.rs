@@ -707,10 +707,8 @@ fn ensure_symbolic_link(link: &Path, target: &PathFragment) -> std::io::Result<(
         }
         Err(e) => return Err(e),
     }
-    if !parent_known_to_exist {
-        if let Some(parent) = link.get_parent_directory() {
-            parent.create_directory_and_parents()?;
-        }
+    if !parent_known_to_exist && let Some(parent) = link.get_parent_directory() {
+        parent.create_directory_and_parents()?;
     }
     link.create_symbolic_link_to_fragment(target)
 }

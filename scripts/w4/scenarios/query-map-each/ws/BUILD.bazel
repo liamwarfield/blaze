@@ -1,0 +1,12 @@
+load(":defs.bzl", "r")
+
+r(
+    name = "good",
+    srcs = ["a.txt"],
+)
+
+r(
+    name = "bad",
+    srcs = ["a.txt"],
+    bad = True,
+)

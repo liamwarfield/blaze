@@ -17,6 +17,7 @@ use blaze_cmdline::{Label, PackageIdentifier, TargetPatternParser};
 use blaze_events::{Event, EventHandler, EventKind, ExtendedEventHandler, Postable};
 use blaze_optdefs::command::keep_going_option::KeepGoingOption;
 use blaze_optdefs::command::loading_phase_threads_option::LoadingPhaseThreadsOption;
+use blaze_optdefs::command::package_options::PackageOptions;
 use blaze_optdefs::command::query_options::QueryOptions;
 use blaze_options::{OptionsClass, OptionsParser};
 use blaze_packages::target::{InputFile, Target};
@@ -36,7 +37,8 @@ use blaze_sky_loading::package_manager::{
 };
 use blaze_sky_loading::repos::OracleRepos;
 use blaze_sky_loading::skyframe_executor::{
-    LoadingFunctionsConfig, inject_loading_precomputed, register_loading_functions,
+    LoadingFunctionsConfig, inject_loading_precomputed_with_package_options,
+    register_loading_functions,
 };
 use blaze_skyframe::EvaluatorBuilder;
 use blaze_starlark::StarlarkSemantics;
@@ -239,6 +241,7 @@ fn main() {
     let mut parser = OptionsParser::builder()
         .options_classes(&[
             QueryOptions::class(),
+            PackageOptions::class(),
             KeepGoingOption::class(),
             LoadingPhaseThreadsOption::class(),
         ])
@@ -276,14 +279,20 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let config = LoadingFunctionsConfig::for_bazel_default(directories, Arc::new(external_repos));
+    let mut config =
+        LoadingFunctionsConfig::for_bazel_default(directories, Arc::new(external_repos));
+    // Java: SkyframeExecutor.syncPackageLoading (--package_path, --deleted_packages,
+    // --default_visibility, the config_setting visibility flags).
+    let package_options: PackageOptions = parser.get_options().expect("PackageOptions");
+    config.sync_package_loading(&package_options);
     let starlark_semantics = StarlarkSemantics::default();
     let evaluator = Arc::new(
-        inject_loading_precomputed(
+        inject_loading_precomputed_with_package_options(
             register_loading_functions(EvaluatorBuilder::new(), &config),
             &config,
             starlark_semantics.clone(),
             IndexMap::new(),
+            &package_options,
         )
         .build(),
     );

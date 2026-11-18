@@ -20,7 +20,9 @@ use blaze_options::{Foreign, OptionMetadataTag, OptionsParsingException, Value a
 use blaze_starlark::StarlarkSemantics;
 use indexmap::{IndexMap, IndexSet};
 
-use crate::build_options::{BuildOptions, BuildOptionsView, ScopeType, StarlarkOptionValue};
+use crate::build_options::{
+    BuildOptions, BuildOptionsView, JavaCollectionClass, ScopeType, StarlarkOptionValue,
+};
 use crate::fragment_options_class::{CORE_OPTIONS, PLATFORM_OPTIONS, TEST_OPTIONS};
 use crate::options_diff::{OptionInfo, OptionsDiff};
 pub use crate::starlark_transition::TransitionAttrObject;
@@ -563,6 +565,8 @@ fn find_starlark_option_value(build_options: &BuildOptions, setting: &Label) -> 
     }
 }
 
+/// The object a transition reads for a Starlark option (`Starlark.fromJava` then turns Java
+/// lists and sets into Starlark lists).
 fn starlark_option_to_java(v: &StarlarkOptionValue) -> JavaObject {
     match v {
         StarlarkOptionValue::Bool(b) => JavaObject::Bool(*b),
@@ -570,18 +574,37 @@ fn starlark_option_to_java(v: &StarlarkOptionValue) -> JavaObject {
         StarlarkOptionValue::Str(s) => JavaObject::Str(s.clone()),
         StarlarkOptionValue::Label(l) => JavaObject::Label(l.clone()),
         StarlarkOptionValue::List(l) => {
-            JavaObject::List(l.iter().map(starlark_option_to_java).collect())
+            let items = l.iter().map(starlark_option_to_java).collect();
+            match l.class() {
+                JavaCollectionClass::Tuple => JavaObject::Tuple(items),
+                JavaCollectionClass::List | JavaCollectionClass::StarlarkList => {
+                    JavaObject::List(items)
+                }
+                // PORT: Starlark.fromJava turns a java.util.Set into a StarlarkSet; Starlark
+                // sets are not carried through JavaObject.
+                JavaCollectionClass::Set => blaze_util::unported!(
+                    "FunctionTransitionUtil.findStarlarkOptionValue",
+                    "string_set build setting as a transition input"
+                ),
+            }
         }
     }
 }
 
+/// The `BuildOptions` form of a value a transition function returned: Java stores the Starlark
+/// object itself (`StarlarkList`, `Tuple`, `String`, `StarlarkInt`, `Boolean`, `Label`).
 fn java_to_starlark_option(v: &JavaObject) -> Result<StarlarkOptionValue, ValidationException> {
     Ok(match v {
         JavaObject::Bool(b) => StarlarkOptionValue::Bool(*b),
         JavaObject::Int(i) => StarlarkOptionValue::Int(*i),
         JavaObject::Str(s) => StarlarkOptionValue::Str(s.clone()),
         JavaObject::Label(l) => StarlarkOptionValue::Label(l.clone()),
-        JavaObject::List(l) => StarlarkOptionValue::List(
+        JavaObject::List(l) => StarlarkOptionValue::starlark_list(
+            l.iter()
+                .map(java_to_starlark_option)
+                .collect::<Result<_, _>>()?,
+        ),
+        JavaObject::Tuple(l) => StarlarkOptionValue::tuple(
             l.iter()
                 .map(java_to_starlark_option)
                 .collect::<Result<_, _>>()?,
@@ -644,8 +667,32 @@ fn apply_transition(
                     }
                 }
             }
-            let new_value = java_to_starlark_option(&option_value)?;
-            if old_value != Some(&new_value) {
+            let mut new_value = java_to_starlark_option(&option_value)?;
+            if let Some(StarlarkOptionValue::List(old_list)) = old_value
+                && old_list.class() == JavaCollectionClass::Set
+            {
+                // If this is a set-typed build setting, for backwards compatibility, if the
+                // provided value is a List, we need to convert it to a Set.
+                let as_set = match &new_value {
+                    // ImmutableSet.copyOf((List<?>) optionValue)
+                    StarlarkOptionValue::List(new_list) if new_list.is_java_list() => {
+                        Some(StarlarkOptionValue::set(new_list.items().to_vec()))
+                    }
+                    StarlarkOptionValue::List(_) => None,
+                    _ => {
+                        return Err(ValidationException(format!(
+                            "Invalid value type for option '{}': want set, got {}",
+                            option_key,
+                            option_value.starlark_type()
+                        )));
+                    }
+                };
+                if let Some(as_set) = as_set {
+                    new_value = as_set;
+                }
+            }
+            // Java: !Objects.equals(oldValue, optionValue)
+            if !StarlarkOptionValue::java_objects_equals(old_value, Some(&new_value)) {
                 changed_starlark_options.insert(option_key.clone(), new_value);
                 converted_affected_options.insert(option_key.to_string());
             }
@@ -666,8 +713,11 @@ fn apply_transition(
                     e.get_message()
                 ))
             };
-            if field.is_list && matches!(option_value, JavaObject::List(_)) {
-                let JavaObject::List(option_value_as_list) = &option_value else {
+            // Java: optionValue instanceof List (a Starlark tuple is a java.util.List too).
+            if field.is_list && matches!(option_value, JavaObject::List(_) | JavaObject::Tuple(_)) {
+                let (JavaObject::List(option_value_as_list)
+                | JavaObject::Tuple(option_value_as_list)) = &option_value
+                else {
                     unreachable!()
                 };
                 // This is possible with Starlark code like
@@ -814,7 +864,9 @@ impl JavaObject {
     /// checks).
     fn to_option_value_if_typed(&self) -> Option<OptionValue> {
         match self {
-            JavaObject::Null | JavaObject::List(_) | JavaObject::Map(_) => None,
+            JavaObject::Null | JavaObject::List(_) | JavaObject::Tuple(_) | JavaObject::Map(_) => {
+                None
+            }
             other => other.to_option_value(),
         }
     }

@@ -174,8 +174,9 @@ mod digest_map_test {
     }
 
     #[test]
-    #[ignore = "needs DigestHashFunction::SHA1 in blaze_util"]
-    fn simple_test_sha1() {}
+    fn simple_test_sha1() {
+        simple_test(DigestHashFunction::Sha1);
+    }
 
     #[test]
     fn concurrency_test_sha256() {
@@ -183,6 +184,7 @@ mod digest_map_test {
     }
 
     #[test]
-    #[ignore = "needs DigestHashFunction::SHA1 in blaze_util"]
-    fn concurrency_test_sha1() {}
+    fn concurrency_test_sha1() {
+        concurrency_test(DigestHashFunction::Sha1);
+    }
 }

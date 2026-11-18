@@ -135,7 +135,8 @@ impl<'v> ListData<'v> {
         #[inline(never)]
         fn error<'v>(x: Value<'v>) -> anyhow::Error {
             if x.downcast_ref::<ListGen<FrozenListData>>().is_some() {
-                ValueError::CannotMutateImmutableValue.into()
+                // BLAZE PATCH 0023: Java's text (Starlark.checkMutable).
+                anyhow::anyhow!("trying to mutate a frozen list value")
             } else {
                 NotListError(x.get_type()).into()
             }
@@ -411,9 +412,10 @@ impl<'v> ListLike<'v> for FrozenListData {
     }
 
     fn set_at(&self, _i: usize, _v: Value<'v>) -> crate::Result<()> {
-        Err(crate::Error::new_other(
-            ValueError::CannotMutateImmutableValue,
-        ))
+        // BLAZE PATCH 0023: Java's text (Starlark.checkMutable).
+        Err(crate::Error::new_other(anyhow::anyhow!(
+            "trying to mutate a frozen list value"
+        )))
     }
 
     unsafe fn iter_size_hint(&self, index: usize) -> (usize, Option<usize>) {

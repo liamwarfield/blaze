@@ -140,10 +140,7 @@ impl Fixture {
     // Java: FileFunctionTest.checkRealPath
     fn check_real_path(&self, path_string: &str) {
         let real_path = self.path(path_string).resolve_symbolic_links().unwrap();
-        self.assert_real_path(
-            path_string,
-            &self.pkg_root.relativize(&real_path).to_string(),
-        );
+        self.assert_real_path(path_string, self.pkg_root.relativize(&real_path).as_ref());
     }
 
     // Java: FileFunctionTest.assertRealPath
@@ -435,7 +432,7 @@ fn test_file_state_equality() {
     f.directory("d2");
     let k = |s: &str| FileStateKey::key(f.rooted_path(s));
     let names = ["a", "b1", "b2", "b3", "c1", "c2", "d1", "d2"];
-    let keys: Vec<FileStateKey> = names.iter().map(|n| k(*n)).collect();
+    let keys: Vec<FileStateKey> = names.iter().map(|n| k(n)).collect();
     let evaluator = f.setup.evaluator();
     let result = evaluate(
         &evaluator,

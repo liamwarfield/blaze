@@ -155,6 +155,7 @@ pub fn create_sibling_temp_dir(other_path: &Path) -> Path {
         );
     }
     buf.pop(); // NUL
+    // PORT: byte-strings (C++ keeps the mkdtemp path's raw bytes).
     let path = String::from_utf8_lossy(&buf).into_owned();
     // SAFETY: umask has no preconditions; restored immediately.
     let um = unsafe { libc::umask(0) };
@@ -174,6 +175,7 @@ fn remove_dir_recursively(path: &Path) -> bool {
         let Ok(ent) = ent else {
             return false;
         };
+        // PORT: byte-strings (C++ uses dirent d_name's raw bytes).
         let name = ent.file_name().to_string_lossy().into_owned();
         if name == "." || name == ".." {
             continue;
@@ -293,6 +295,7 @@ pub fn read_directory_symlink(symlink: &Path) -> Option<Path> {
         return None;
     }
     buf.truncate(len as usize);
+    // PORT: byte-strings (C++ keeps the readlink target's raw bytes).
     Some(Path::new(&String::from_utf8_lossy(&buf)))
 }
 
@@ -334,6 +337,7 @@ pub fn make_canonical(path: &str) -> String {
         if resolved.is_null() {
             return String::new();
         }
+        // PORT: byte-strings (C++ MakeCanonical returns realpath's raw bytes).
         let ret = std::ffi::CStr::from_ptr(resolved)
             .to_string_lossy()
             .into_owned();
@@ -531,6 +535,7 @@ pub fn get_cwd() -> String {
     }
     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     buf.truncate(len);
+    // PORT: byte-strings (C++ GetCwd returns getcwd's raw bytes).
     String::from_utf8_lossy(&buf).into_owned()
 }
 
@@ -548,6 +553,7 @@ pub fn for_each_directory_entry(path: &Path, consume: &mut dyn FnMut(&Path, bool
         return;
     };
     for ent in dir.flatten() {
+        // PORT: byte-strings (C++ uses dirent d_name's raw bytes).
         let name = ent.file_name().to_string_lossy().into_owned();
         if name == "." || name == ".." {
             continue;

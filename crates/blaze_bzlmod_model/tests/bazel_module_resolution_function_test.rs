@@ -438,6 +438,60 @@ fn test_yanked_version_check_ignored_by_all() {
     );
 }
 
+/// Not a JUnit test: `BazelModuleResolutionFunction.collectYankedVersionsValues` collects the
+/// modules whose yanked versions must be fetched in a `HashMap<ModuleKey, ...>`, so
+/// `getSelectedYankedVersions()` (written to MODULE.bazel.lock in that order) follows Java's
+/// hash order. The expected order was printed by OpenJDK 25 for a `HashMap` filled with these
+/// seven keys in dependency order.
+#[test]
+fn selected_yanked_versions_are_in_java_hash_map_order() {
+    const MODULES: [(&str, &str); 7] = [
+        ("aaa", "1.0"),
+        ("bbb", "1.1"),
+        ("ccc", "2.0"),
+        ("ddd", "0.0.1"),
+        ("rules_cc", "0.0.9"),
+        ("rules_java", "7.6.5"),
+        ("platforms", "0.0.10"),
+    ];
+    let mut root_module = InterimModuleBuilder::create("mod", "1.0").set_key(ModuleKey::root());
+    let mut setup = Setup::new();
+    for (name, version) in MODULES {
+        root_module = root_module.add_dep(name, create_module_key(name, version));
+        setup = setup
+            .add_module(InterimModuleBuilder::create(name, version).build())
+            .add_yanked_version(name, &[(version, "yanked")]);
+    }
+    let root = RootModuleFileValue::new(root_module.build(), IndexMap::new());
+    let events = EventCollector::new();
+    let result = resolve(
+        &setup,
+        &root,
+        &["all"],
+        BazelCompatibilityMode::Error,
+        "",
+        &events,
+    )
+    .unwrap();
+    let order: Vec<String> = result
+        .selected_yanked_versions
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "rules_java@7.6.5",
+            "bbb@1.1",
+            "aaa@1.0",
+            "ccc@2.0",
+            "rules_cc@0.0.9",
+            "ddd@0.0.1",
+            "platforms@0.0.10"
+        ]
+    );
+}
+
 #[test]
 fn test_yanked_version_check_ignored_by_specific() {
     let (setup, root) = setup_modules_for_yanked_version();

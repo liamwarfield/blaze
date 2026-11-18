@@ -45,22 +45,33 @@ fn is_empty_collection(value: &AttrValue) -> bool {
     }
 }
 
-/// Java `CollectionUtils.duplicatedElementsOf(list)`.
-// PORT: java-hash-order. Java collects the duplicates in a HashSet; they are kept here in order
-// of second occurrence.
+/// Java `CollectionUtils.duplicatedElementsOf(list)`: the set of all elements of the list that
+/// appear more than once, in the iteration order of Java's `HashSet`.
+// PORT: java-hash-order. Java collects the duplicates into a `new HashSet<>()` by `add` (once per
+// repeated occurrence) and `RuleClass.checkForDuplicateLabels` reports one error per element in
+// the set's iteration order; `java_hash_set_order` replays that order from `Label.hashCode()`.
 // Java: com/google/devtools/build/lib/collect/CollectionUtils.java:37 CollectionUtils.duplicatedElementsOf
 fn duplicated_elements_of(input: &[Label]) -> IndexSet<Label> {
-    let mut duplicates = IndexSet::new();
-    if input.len() < 2 {
-        return duplicates;
+    let count = input.len();
+    if count < 2 {
+        return IndexSet::new();
     }
-    let mut element_set = std::collections::HashSet::with_capacity(input.len());
+    let mut duplicates: Option<Vec<Label>> = None;
+    // PORT: Java's elementSet is a CompactHashSet that is only probed, never iterated.
+    let mut element_set = std::collections::HashSet::with_capacity(count);
     for el in input {
         if !element_set.insert(el) {
-            duplicates.insert(el.clone());
+            duplicates.get_or_insert_with(Vec::new).push(el.clone());
         }
     }
-    duplicates
+    match duplicates {
+        None => IndexSet::new(),
+        Some(duplicates) => {
+            blaze_query_engine::java_concurrent_hash_map::java_hash_set_order(duplicates)
+                .into_iter()
+                .collect()
+        }
+    }
 }
 
 impl<'a> AggregatingAttributeMapper<'a> {
@@ -834,5 +845,89 @@ impl AttributeMap for MapBackedAttributeMap<'_> {
     // Java: com/google/devtools/build/lib/packages/DelegatingAttributeMapper.java:91 DelegatingAttributeMapper.getPackageArgs
     fn get_package_args(&self) -> PackageArgs {
         self.owner.get_package_args()
+    }
+}
+
+#[cfg(test)]
+mod duplicated_elements_of_tests {
+    use super::*;
+
+    fn labels(names: &[&str]) -> Vec<Label> {
+        names
+            .iter()
+            .map(|n| Label::parse_canonical_unchecked(n))
+            .collect()
+    }
+
+    fn duplicates(names: &[&str]) -> Vec<Label> {
+        duplicated_elements_of(&labels(names)).into_iter().collect()
+    }
+
+    // The expected orders are the iteration orders of the `Set<Label>` returned by Bazel 9.3.2's
+    // own `CollectionUtils.duplicatedElementsOf` (run from the pinned server jar on the JDK the
+    // pin embeds), for `Label.parseCanonical` of the same strings.
+    // Java: com/google/devtools/build/lib/collect/CollectionUtils.java:37 CollectionUtils.duplicatedElementsOf
+
+    #[test]
+    fn fewer_than_two_elements_have_no_duplicates() {
+        assert_eq!(duplicates(&[]), labels(&[]));
+        assert_eq!(duplicates(&["//p:a"]), labels(&[]));
+    }
+
+    #[test]
+    fn no_repeated_element_gives_the_empty_set() {
+        assert_eq!(duplicates(&["//p:a", "//p:b", "//p:c"]), labels(&[]));
+    }
+
+    #[test]
+    fn an_element_repeated_twice_is_reported_once() {
+        assert_eq!(duplicates(&["//p:a", "//p:a", "//p:a"]), labels(&["//p:a"]));
+    }
+
+    #[test]
+    fn duplicates_iterate_in_java_hash_set_order_not_in_list_order() {
+        // Label.hashCode(): //p:a = 928562 (bin 2 of 16), //p:b = 928593 (bin 15).
+        assert_eq!(
+            duplicates(&["//p:a", "//p:b", "//p:a", "//p:b"]),
+            labels(&["//p:a", "//p:b"])
+        );
+        assert_eq!(
+            duplicates(&["//p:b", "//p:a", "//p:b", "//p:a"]),
+            labels(&["//p:a", "//p:b"])
+        );
+    }
+
+    #[test]
+    fn five_duplicates_in_java_hash_set_order() {
+        assert_eq!(
+            duplicates(&[
+                "//p:x", "//p:d", "//p:c", "//p:b", "//p:a", "//p:x", "//p:d", "//p:c", "//p:b",
+                "//p:a",
+            ]),
+            labels(&["//p:d", "//p:x", "//p:a", "//p:c", "//p:b"])
+        );
+        assert_eq!(
+            duplicates(&[
+                "//x:z", "//x:z", "//x:y", "//x:y", "//x:x", "//x:x", "//x:w", "//x:w",
+            ]),
+            labels(&["//x:w", "//x:y", "//x:x", "//x:z"])
+        );
+    }
+
+    #[test]
+    fn duplicates_across_packages_and_repositories_in_java_hash_set_order() {
+        assert_eq!(
+            duplicates(&[
+                "//x:dep2",
+                "//x:dep1",
+                "//x:dep2",
+                "//x:dep1",
+                "//other:lib",
+                "//other:lib",
+                "@@repo+//pkg:t",
+                "@@repo+//pkg:t",
+            ]),
+            labels(&["//x:dep2", "//x:dep1", "@@repo+//pkg:t", "//other:lib"])
+        );
     }
 }

@@ -23,6 +23,7 @@ const OPTION_PROCESSOR_CC: &str = "src/main/cpp/option_processor.cc";
 
 /// The environment `OptionProcessor` reads, taken from this process (C++ reads it directly).
 pub fn client_environment() -> ClientEnvironment {
+    // PORT: byte-strings (C++ reads cwd, $HOME, $BAZELRC and environ as raw bytes).
     let processed_env = get_processed_env();
     let mut env = std::collections::HashMap::new();
     for var_value in &processed_env {
@@ -45,19 +46,21 @@ pub fn client_environment() -> ClientEnvironment {
 }
 
 // Java: src/main/cpp/option_processor.cc:566 PrintStartupOptions
-fn print_startup_options(source: &str, options: &[String]) {
+fn print_startup_options(out: &mut String, source: &str, options: &[String]) {
     if !source.is_empty() {
         let startup_args = options.join(" ");
-        eprintln!(
-            "INFO: Reading 'startup' options from {}: {}",
+        out.push_str(&format!(
+            "INFO: Reading 'startup' options from {}: {}\n",
             source, startup_args
-        );
+        ));
     }
 }
 
 // Java: src/main/cpp/option_processor.cc:576 OptionProcessor::PrintStartupOptionsProvenanceMessage
-/// Prints the startup flags in the order they are parsed, grouped by origin.
-pub fn print_startup_options_provenance_message(parsed_startup_options: &StartupOptions) {
+/// The text `PrintStartupOptionsProvenanceMessage` writes to stderr (for tests, which capture
+/// stderr in C++).
+pub fn startup_options_provenance_message(parsed_startup_options: &StartupOptions) -> String {
+    let mut out = String::new();
     // Print the startup flags in the order they are parsed, to keep the precedence clear. In
     // order to minimize the number of lines of output in the terminal, group sequential flags by
     // origin. Note that an rc file may turn up multiple times in this list, if, for example, it
@@ -69,7 +72,7 @@ pub fn print_startup_options_provenance_message(parsed_startup_options: &Startup
         if flag.source == most_recent_blazerc {
             accumulated_options.push(flag.value.clone());
         } else {
-            print_startup_options(&most_recent_blazerc, &accumulated_options);
+            print_startup_options(&mut out, &most_recent_blazerc, &accumulated_options);
             // Start accumulating again.
             accumulated_options.clear();
             accumulated_options.push(flag.value.clone());
@@ -77,7 +80,17 @@ pub fn print_startup_options_provenance_message(parsed_startup_options: &Startup
         }
     }
     // Don't forget to print out the last ones.
-    print_startup_options(&most_recent_blazerc, &accumulated_options);
+    print_startup_options(&mut out, &most_recent_blazerc, &accumulated_options);
+    out
+}
+
+// Java: src/main/cpp/option_processor.cc:576 OptionProcessor::PrintStartupOptionsProvenanceMessage
+/// Prints the startup flags in the order they are parsed, grouped by origin.
+pub fn print_startup_options_provenance_message(parsed_startup_options: &StartupOptions) {
+    eprint!(
+        "{}",
+        startup_options_provenance_message(parsed_startup_options)
+    );
 }
 
 // Java: src/main/cpp/option_processor.cc:374 OptionProcessor::GetRcFiles

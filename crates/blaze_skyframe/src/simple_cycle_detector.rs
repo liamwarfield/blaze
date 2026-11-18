@@ -22,7 +22,8 @@ enum Visit {
 /// Depth-first implementation of cycle detection after an evaluation has completed with at least
 /// one root unfinished.
 ///
-/// PORT: "not done" nodes are the ones that finished "in cycle" in the blocking engine; their
+/// PORT: "not done" nodes are the ones that did not commit in the blocking engine (their
+/// function returned null on a dep that was in a cycle, or the evaluation aborted); their
 /// recorded deps stand in for Java's temporary direct deps. Dirty-node handling is skipped
 /// (incremental).
 // Java: com/google/devtools/build/skyframe/SimpleCycleDetector.java:41 SimpleCycleDetector

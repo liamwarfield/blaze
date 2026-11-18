@@ -37,6 +37,15 @@ pub struct BuildFileFacts {
 /// Runs Bazel's static checks for `kind` on a parsed file. Returns the errors (empty = ok) and,
 /// for BUILD files, the extracted facts.
 pub fn check_file(kind: FileKind, ast: &AstModule) -> (Vec<SyntaxError>, BuildFileFacts) {
+    check_file_with_options(kind, kind.file_options(), ast)
+}
+
+/// [`check_file`] with explicit file options.
+pub fn check_file_with_options(
+    kind: FileKind,
+    options: crate::file_kind::FileOptions,
+    ast: &AstModule,
+) -> (Vec<SyntaxError>, BuildFileFacts) {
     let mut errors = Vec::new();
     let mut facts = BuildFileFacts::default();
     if let Some((where_, can_load_bzl, allow_literal_star_star)) = kind.dot_bazel_checker_config() {
@@ -53,6 +62,6 @@ pub fn check_file(kind: FileKind, ast: &AstModule) -> (Vec<SyntaxError>, BuildFi
             return (errors, facts);
         }
     }
-    errors.extend(resolver::check(ast, kind.file_options()));
+    errors.extend(resolver::check(ast, options));
     (errors, facts)
 }

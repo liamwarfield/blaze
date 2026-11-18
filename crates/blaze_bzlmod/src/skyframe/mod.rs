@@ -37,8 +37,10 @@
 //! - [`RepositoryDirectoryLookup`] (in the config): where a repository is on disk, for modules
 //!   with non-registry overrides. [`BuiltinRepositoryDirectoryLookup`] knows `@bazel_tools` and
 //!   `local_path_override`s.
-//! - PACKAGE_LOOKUP and FILE are not ported in this crate; `ModuleFileFunction` looks for BUILD
-//!   files and reads files directly (see `module_file_function::package_lookup`).
+//! - [`PackageLookup`] (in the config): PACKAGE_LOOKUP for the packages of `include()`d files and
+//!   of `single_version_override` patches. [`BuiltinPackageLookup`] looks for BUILD files under
+//!   the workspace and fails loudly where it cannot be right.
+//! - FILE is not ported in this crate; `ModuleFileFunction` reads files directly.
 //! - [`precomputed`] holds local copies of `PrecomputedValue` and `ClientEnvironmentFunction`.
 
 pub mod config;
@@ -70,6 +72,7 @@ pub use keys::{
     SingleExtensionEvalKey, SingleExtensionKey, SingleExtensionValue, YankedVersionsKey,
 };
 pub use lock_file::{ENABLED_IN_MODES, after_command};
+pub use module_file_function::{BuiltinPackageLookup, PackageLookup, PackageLookupResult};
 pub use precomputed::{
     ClientEnvironmentKey, EnvironmentVariableValue, Precomputed, PrecomputedKey, PrecomputedValue,
 };

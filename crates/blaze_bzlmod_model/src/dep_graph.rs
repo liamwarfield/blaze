@@ -19,13 +19,47 @@ use crate::module_extension::{ModuleExtensionId, ModuleExtensionUsage};
 use crate::module_key::ModuleKey;
 use crate::version::Version;
 
-/// Guava `ImmutableTable` built with `ImmutableTable.builder()`: rows and columns are ordered by
-/// first appearance; `row(r)` and `column(c)` are ordered by cell insertion.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Guava `ImmutableTable` built with `ImmutableTable.builder()` (no row or column comparator).
+///
+/// Rows and columns are ordered by first appearance (`rowKeySet()`, `columnKeySet()`). The
+/// order inside `row(r)` and `column(c)` depends on the implementation Guava picks in
+/// `RegularImmutableTable.forOrderedComponents`:
+///
+/// - `DenseImmutableTable`, when there are more cells than half of rows times columns:
+///   `row(r)` lists the columns in column order and `column(c)` lists the rows in row order
+///   (`ImmutableArrayMap` over the key-to-index maps);
+/// - `SparseImmutableTable` otherwise: `row(r)` and `column(c)` are in cell insertion order
+///   (`LinkedHashMap`s filled from the cell list).
+///
+/// An empty table (`ImmutableTable.of()`) and a `SingletonImmutableTable` have nothing to order.
+///
+/// PORT: Java builds the table once (`Builder.buildOrThrow()`); here `put` adds to the table
+/// directly, and the table is at every moment what `buildOrThrow()` would return for the cells
+/// put so far. The Guava sources are not in the pinned tree; the orders were checked against
+/// `ImmutableTable` of Guava 33.5.0-jre (the version Bazel 9.3.2 builds with), see the tests.
+// Java: com/google/common/collect/RegularImmutableTable.java RegularImmutableTable.forOrderedComponents
+// Java: com/google/common/collect/DenseImmutableTable.java DenseImmutableTable
+// Java: com/google/common/collect/SparseImmutableTable.java SparseImmutableTable
+#[derive(Debug, Clone)]
 pub struct Table<R: Hash + Eq, C: Hash + Eq, V> {
+    /// `rowMap()`: row keys by first appearance; each row in the order described above.
     rows: IndexMap<R, IndexMap<C, V>>,
+    /// `columnMap()`: column keys by first appearance; each column in the order described above.
     columns: IndexMap<C, IndexMap<R, V>>,
+    /// The keys of `cellSet()`, in insertion order.
+    cells: Vec<(R, C)>,
+    /// Whether `rows` and `columns` are currently in `DenseImmutableTable` order.
+    dense: bool,
 }
+
+impl<R: Hash + Eq, C: Hash + Eq, V: PartialEq> PartialEq for Table<R, C, V> {
+    /// `AbstractTable.equals`: equal cell sets, whatever the order.
+    fn eq(&self, other: &Self) -> bool {
+        self.rows == other.rows
+    }
+}
+
+impl<R: Hash + Eq, C: Hash + Eq, V: Eq> Eq for Table<R, C, V> {}
 
 impl<R: Hash + Eq + Clone + Debug, C: Hash + Eq + Clone + Debug, V: Clone> Default
     for Table<R, C, V>
@@ -40,6 +74,8 @@ impl<R: Hash + Eq + Clone + Debug, C: Hash + Eq + Clone + Debug, V: Clone> Table
         Table {
             rows: IndexMap::new(),
             columns: IndexMap::new(),
+            cells: Vec::new(),
+            dense: false,
         }
     }
 
@@ -50,21 +86,116 @@ impl<R: Hash + Eq + Clone + Debug, C: Hash + Eq + Clone + Debug, V: Clone> Table
             panic!("IllegalArgumentException: Duplicate key: (row={row:?}, column={column:?})");
         }
         r.insert(column.clone(), value.clone());
-        self.columns.entry(column).or_default().insert(row, value);
+        self.columns
+            .entry(column.clone())
+            .or_default()
+            .insert(row.clone(), value);
+        self.cells.push((row.clone(), column.clone()));
+
+        let dense = self.is_dense();
+        if dense {
+            if self.dense {
+                // Only the row and the column of the new cell can be out of order.
+                let columns = &self.columns;
+                if let Some(r) = self.rows.get_mut(&row) {
+                    r.sort_by(|c1, _, c2, _| {
+                        columns.get_index_of(c1).cmp(&columns.get_index_of(c2))
+                    });
+                }
+                let rows = &self.rows;
+                if let Some(c) = self.columns.get_mut(&column) {
+                    c.sort_by(|r1, _, r2, _| rows.get_index_of(r1).cmp(&rows.get_index_of(r2)));
+                }
+            } else {
+                self.order_as_dense();
+            }
+        } else if self.dense {
+            self.order_as_sparse();
+        }
+        self.dense = dense;
     }
 
+    /// Whether `ImmutableTable.Builder.buildOrThrow()` returns a `DenseImmutableTable` for the
+    /// cells put so far (as opposed to `ImmutableTable.of()`, a `SingletonImmutableTable` or a
+    /// `SparseImmutableTable`).
+    // Java: com/google/common/collect/ImmutableTable.java ImmutableTable.Builder.buildOrThrow
+    // Java: com/google/common/collect/RegularImmutableTable.java RegularImmutableTable.forOrderedComponents
+    pub fn is_dense(&self) -> bool {
+        // use a dense table if more than half of the cells have values
+        self.cells.len() > 1
+            && self.cells.len() as u64 > (self.rows.len() as u64 * self.columns.len() as u64) / 2
+    }
+
+    /// `DenseImmutableTable`: each row lists its columns in column order, each column its rows
+    /// in row order.
+    fn order_as_dense(&mut self) {
+        let columns = &self.columns;
+        for r in self.rows.values_mut() {
+            r.sort_by(|c1, _, c2, _| columns.get_index_of(c1).cmp(&columns.get_index_of(c2)));
+        }
+        let rows = &self.rows;
+        for c in self.columns.values_mut() {
+            c.sort_by(|r1, _, r2, _| rows.get_index_of(r1).cmp(&rows.get_index_of(r2)));
+        }
+    }
+
+    /// `SparseImmutableTable`: each row and each column in cell insertion order.
+    fn order_as_sparse(&mut self) {
+        let mut rows: IndexMap<R, IndexMap<C, V>> = self
+            .rows
+            .keys()
+            .map(|r| (r.clone(), IndexMap::new()))
+            .collect();
+        let mut columns: IndexMap<C, IndexMap<R, V>> = self
+            .columns
+            .keys()
+            .map(|c| (c.clone(), IndexMap::new()))
+            .collect();
+        for (row, column) in &self.cells {
+            let value = self
+                .rows
+                .get_mut(row)
+                .and_then(|r| r.swap_remove(column))
+                .expect("cell of the row map");
+            rows.get_mut(row)
+                .expect("row")
+                .insert(column.clone(), value);
+            let value = self
+                .columns
+                .get_mut(column)
+                .and_then(|c| c.swap_remove(row))
+                .expect("cell of the column map");
+            columns
+                .get_mut(column)
+                .expect("column")
+                .insert(row.clone(), value);
+        }
+        self.rows = rows;
+        self.columns = columns;
+    }
+
+    /// `rowKeySet()`: the row keys in order of first appearance.
     pub fn row_key_set(&self) -> impl Iterator<Item = &R> {
         self.rows.keys()
+    }
+
+    /// `columnKeySet()`: the column keys in order of first appearance.
+    pub fn column_key_set(&self) -> impl Iterator<Item = &C> {
+        self.columns.keys()
     }
 
     pub fn contains_row(&self, row: &R) -> bool {
         self.rows.contains_key(row)
     }
 
+    /// `rowMap().get(row)`; `row(row)` is this or an empty map. See the type's documentation for
+    /// the order.
     pub fn row(&self, row: &R) -> Option<&IndexMap<C, V>> {
         self.rows.get(row)
     }
 
+    /// `columnMap().get(column)`; `column(column)` is this or an empty map. See the type's
+    /// documentation for the order.
     pub fn column(&self, column: &C) -> Option<&IndexMap<R, V>> {
         self.columns.get(column)
     }
@@ -73,9 +204,14 @@ impl<R: Hash + Eq + Clone + Debug, C: Hash + Eq + Clone + Debug, V: Clone> Table
         self.rows.get(row)?.get(column)
     }
 
+    /// `cellSet()` (and so `values()`): the cells in insertion order, for both implementations.
+    pub fn cell_set(&self) -> impl Iterator<Item = (&R, &C, &V)> {
+        self.cells.iter().map(|(r, c)| (r, c, &self.rows[r][c]))
+    }
+
     /// The number of cells.
     pub fn size(&self) -> usize {
-        self.rows.values().map(|r| r.len()).sum()
+        self.cells.len()
     }
 
     pub fn is_empty(&self) -> bool {

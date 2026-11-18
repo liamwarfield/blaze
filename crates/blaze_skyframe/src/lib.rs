@@ -12,20 +12,37 @@
 //!   depends on) a cycle, or was abandoned because the evaluation is aborting. As in Java, the
 //!   function should then return `Ok(None)` and the engine decides the node's error from its
 //!   children (`ErrorInfo::from_child_errors`).
-//! * `get_value_or_throw::<K, E>` returns `Ok(Err(e))` when the dependency failed with an `E`,
-//!   exactly like `getValueOrThrow(key, E.class)`.
+//! * `get_value_or_throw::<K, E>` returns `Ok(Err(e))` when the dependency failed with an `E`
+//!   and the evaluation is keep_going or the function is being re-run in error bubbling, like
+//!   `getValueOrThrow(key, E.class)`. Without keep_going, in normal evaluation, a dependency in
+//!   error is `Ok(Ok(None))` and marks values missing, as in Java.
+//!   PORT: Java matches `E` and its subclasses (`throwIfInstanceOf`); the downcast here matches
+//!   the one concrete type `E`. For several types or a Java class hierarchy use
+//!   `get_value_or_throw_with`, whose closure inspects the exception.
 //! * `get_values_and_exceptions` evaluates a batch in parallel and returns a
-//!   [`SkyframeLookupResult`] (`get`, `get_or_throw`), like Java.
+//!   [`SkyframeLookupResult`] (`get`, `get_or_throw`), like Java. As in Java, where the result is
+//!   the environment itself, it reads every dependency the environment has requested, by this
+//!   call or any other.
 //! * `values_missing()` reports whether any requested dependency was unavailable.
 //! * Every dependency request returns `Err(Interrupted)` once the evaluator is interrupted
 //!   (Java's `InterruptedException`); `?` propagates it through [`ComputeError`].
+//!
+//! PORT: dependencies are evaluated in request order, one request at a time: a request returns
+//! when its deps have been evaluated as far as they can be. Java collects every dep a run
+//! requests and evaluates none of them before the function returns. The difference shows when a
+//! function goes on after a missing dep: without keep_going, Java's function that requests a dep
+//! not yet built and then one whose error is cached fails on the cached error and the first dep
+//! is never evaluated; here the first dep is evaluated (and may fail first). Likewise a function
+//! that throws although a dep is missing: Java commits that exception without evaluating the
+//! dep; here the dep was evaluated by the request.
 //!
 //! Each `Evaluator::evaluate(roots, ctx)` call takes its own [`EvaluationContext`]
 //! (`keep_going`, parallelism, event handler), like `MemoizingEvaluator.evaluate`. Results that
 //! Java would not have committed to the graph (nodes still in flight when a no-keep-going
 //! evaluation aborted, nodes on the error-bubbling path, nodes in or above a cycle that the cycle
-//! detector did not reach, interrupted nodes) are dropped at the end of the call and re-evaluated
-//! by the next call. Committed values and errors are memoized for the life of the evaluator.
+//! detector did not reach, interrupted nodes) are dropped at the end of the call, however it
+//! ends, and re-evaluated by the next call. Committed values and errors are memoized for the life
+//! of the evaluator.
 //!
 //! A single build per process is assumed (no invalidation of changed files, no change pruning,
 //! no versions). `// PORT: skipped, incremental` marks the Java features this leaves out.
@@ -35,14 +52,34 @@
 //! * keep_going: every node is computed as far as possible. A function that throws while a
 //!   requested dependency is missing has its exception ignored, as in Java, and gets its
 //!   children's error.
-//! * no keep_going: the first exception thrown stops new work (`preventNewEvaluations`). Later
-//!   independent exceptions are dropped, like Java. Parents waiting on the failed node see its
-//!   error (Java's error bubbling, done during normal compute here) and may wrap it. The result
-//!   then holds the committed error(s) plus exactly one bubbled root error (the first such root in
-//!   request order); roots that only saw the abort have neither a value nor an error
-//!   (`ParallelEvaluator.constructResult`).
+//! * no keep_going: the first exception thrown is committed and stops new work
+//!   (`preventNewEvaluations`). Later exceptions are dropped, like Java. No function sees a
+//!   dependency's exception in normal evaluation: a function that asked for a dependency in error
+//!   gets `None`, returns `Ok(None)`, and its node stays unfinished.
 //! * Catastrophic exceptions (`SkyFunctionException::is_catastrophic`) stop a keep_going
 //!   evaluation the same way and set `EvaluationResult::catastrophe`.
+//!
+//! ### Error bubbling
+//!
+//! After an evaluation has failed that way, and every evaluator thread has stopped, the engine
+//! does what `ParallelEvaluator.bubbleErrorUp` does: it walks from the failed node up to a
+//! top-level node, one requester per level (the first that registered), and runs each one's
+//! function once more with [`Environment::in_error_bubbling`] true. In that run
+//!
+//! * a dependency request computes nothing: a dep is the error built for it on the way up, or
+//!   what is done in the graph, or missing;
+//! * `get_value_or_throw` hands the function its dependencies' exceptions, so it can throw a
+//!   better one (which replaces the error on the way up) or return anything (ignored);
+//! * [`Environment::check_interrupted`] fails once a dependency in error was requested (Java sets
+//!   the thread's interrupt bit);
+//! * the events the function stores are reported; events of the normal run that ended with a
+//!   missing dependency were dropped.
+//!
+//! So a function on that path runs twice: once in normal evaluation (it must return `Ok(None)`
+//! when values are missing, as in Java) and once in error bubbling. The errors built on the way
+//! are returned for the top-level nodes on the path and never written to the graph. If the walk
+//! comes back to a node it has passed (a cycle), it is abandoned and the cycle detector reports
+//! the cycle instead.
 //!
 //! ## Cycles
 //!
@@ -62,13 +99,41 @@
 //! to a global cap on live threads (`EvaluationContext::max_threads`); beyond it the batch is
 //! evaluated inline. A key whose inline computation would be deeper than
 //! `EvaluationContext::max_inline_depth` frames on the current thread is computed on a fresh
-//! thread with a large reserved stack (`thread_stack_size`).
+//! thread with a large reserved stack (`thread_stack_size`). If the OS refuses a thread, helpers
+//! are done without; a thread the engine cannot do without crashes the evaluation (Java:
+//! OutOfMemoryError), it does not hang it.
+//!
+//! A panic in a function crashes the evaluation: `evaluate` panics with Java's "Unrecoverable
+//! error while evaluating node '...' (requested by nodes ...)" followed by "Caused by: " and the
+//! function's panic message.
+//!
+//! ## Not ported
+//!
+//! Engine API of `com.google.devtools.build.skyframe` that has no port here. Where a Java method
+//! has a Rust counterpart to hang it on, calling it fails with `unported!`.
+//!
+//! * `EvaluationProgressReceiver` (enqueueing / stateStarting / evaluated) and
+//!   `InflightTrackingProgressReceiver`.
+//! * `SkyFunction.Environment.getState` / `SkyKeyComputeState` ([`Environment::get_state`]).
+//! * `Environment.registerDependencies` ([`Environment::register_dependencies`]).
+//! * `SkyframeLookupResult.queryDep` ([`SkyframeLookupResult::query_dep`]).
+//! * `Environment.dependOnFuture` and external deps ([`Environment::depend_on_future`]).
+//! * `SkyFunction.Reset`, node rewinding, partial reevaluation.
+//! * The per-key keep_going predicate (`ParallelEvaluatorContext.keepGoing(SkyKey)`): keep_going
+//!   is one flag per evaluation.
+//! * `EventFilter` and events stored on nodes for replay: stored events are reported once, when
+//!   the node commits or is re-run in error bubbling.
+//! * `ShortCircuitingCycleDetector` (`EvaluationContext::detect_cycles == false`).
+//! * `MemoizingEvaluator.delete` / `deleteDirty`, versions, dirtiness, change pruning
+//!   (incremental).
 //!
 //! ## Rules for ported SkyFunctions
 //!
 //! * Never hold a lock across `get_value` / `get_values_and_exceptions`: the call may compute
 //!   arbitrary other nodes on this thread or block on other threads.
 //! * Only immutable, `Send + Sync` values (frozen Starlark values) cross nodes.
+//! * A function can run twice for one node (normal evaluation, then error bubbling). Request
+//!   dependencies before doing work that must not be repeated, as the Java function does.
 
 #![allow(clippy::too_many_arguments, clippy::new_without_default)]
 

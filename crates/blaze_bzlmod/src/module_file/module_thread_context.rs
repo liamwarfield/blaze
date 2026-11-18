@@ -9,9 +9,10 @@
 use std::sync::Arc;
 
 use blaze_bzlmod_model::{
-    AttributeValues, DepSpec, InterimModule, InterimModuleBuilder, IsolationKey,
+    AttributeValue, AttributeValues, DepSpec, InterimModule, InterimModuleBuilder, IsolationKey,
     ModuleExtensionUsage, ModuleExtensionUsageProxy, ModuleKey, ModuleOverride,
-    NonRegistryOverride, Registry, RepoOverride as UsageRepoOverride, Tag, Version,
+    NonRegistryOverride, Registry, RepoOverride as UsageRepoOverride, RepoRuleId, RepoSpec, Tag,
+    Version,
 };
 use blaze_cmdline::label_constants::MODULE_DOT_BAZEL_FILE_NAME;
 use blaze_cmdline::{Label, RepositoryName};
@@ -174,6 +175,28 @@ impl ModuleExtensionUsageBuilder {
     }
 }
 
+/// Where the `AttributeValues` of a kwargs dict go once the module file that passed the kwargs
+/// has been executed.
+///
+/// PORT: Java's `AttributeValues` wraps the live kwargs `Dict` of the call, so a list or dict
+/// passed to a tag (or to `archive_override` / `git_override`) and mutated afterwards is seen with
+/// its final contents; the values only stop changing when the module file's `Mutability` is
+/// closed at the end of `ModuleFileFunction.execModuleFile`. Blaze's model holds plain data, and
+/// starlark-rust values cannot outlive their heap, so the tag or override is recorded at the call
+/// with empty attribute values and filled in when the file that made the call has been executed
+/// (`module_file_globals::resolve_deferred_attribute_values`). Bindings are not visible across
+/// `include()`, so no value can change after the end of the file that created it.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValues.java:34 AttributeValues.create
+#[derive(Debug, Clone)]
+enum DeferredAttributeValues {
+    /// `Tag.getAttributeValues()` of tag number `tag` of a usage builder.
+    Tag { usage_builder: usize, tag: usize },
+    /// `RepoSpec.attributes()` of the `NonRegistryOverride` of a module.
+    Override { module_name: String },
+    /// Already filled in.
+    Resolved,
+}
+
 /// The `InterimModule.Builder` of a module file plus the getters Java's AutoValue builder has
 /// (`getKey`, `getName`, `getVersion`, `getRepoName`).
 #[derive(Debug, Clone)]
@@ -209,6 +232,9 @@ pub struct ModuleThreadContext {
 
     /// The labels of the module files that are currently being executed via `include`.
     include_stack: IndexSet<String>,
+
+    /// See [`DeferredAttributeValues`]; the index is the id kept on the Starlark heap.
+    deferred_attribute_values: Vec<DeferredAttributeValues>,
 
     /// The Java call-stack entries of the files that are including the one being executed
     /// (outermost first, ending with the `include` builtin frame); see the module docs.
@@ -255,6 +281,7 @@ impl ModuleThreadContext {
             overridden_repos: JavaHashMap::new(),
             overriding_repos: JavaHashMap::new(),
             include_stack: IndexSet::new(),
+            deferred_attribute_values: Vec::new(),
             call_stack_prefix: Vec::new(),
         }
     }
@@ -494,6 +521,112 @@ impl ModuleThreadContext {
                 dev_dependency,
                 location,
             });
+    }
+
+    /// `TagCallable.call` with a kwargs dict whose values are still live Starlark values: adds
+    /// the tag now, with empty attribute values, and returns the id under which
+    /// [`ModuleThreadContext::set_deferred_attribute_values`] fills them in. See
+    /// [`DeferredAttributeValues`].
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileGlobals.java:592 TagCallable.call
+    pub(crate) fn tag_call_deferred(
+        &mut self,
+        proxy: ProxyRef,
+        tag_name: &str,
+        location: Location,
+    ) -> usize {
+        self.tag_call(
+            proxy,
+            tag_name,
+            AttributeValues::create(Vec::<(String, AttributeValue)>::new()),
+            location,
+        );
+        let tag = self.usage_builder_arena[proxy.usage_builder].tags.len() - 1;
+        self.deferred_attribute_values
+            .push(DeferredAttributeValues::Tag {
+                usage_builder: proxy.usage_builder,
+                tag,
+            });
+        self.deferred_attribute_values.len() - 1
+    }
+
+    /// `addOverride(moduleName, new NonRegistryOverride(new RepoSpec(repoRuleId,
+    /// AttributeValues.create(kwargs))))` with a kwargs dict whose values are still live Starlark
+    /// values: adds the override now, with empty attributes, and returns the id under which
+    /// [`ModuleThreadContext::set_deferred_attribute_values`] fills them in; `None` when the
+    /// override is ignored. See [`DeferredAttributeValues`].
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleThreadContext.java:372 ModuleThreadContext.addOverride
+    pub(crate) fn add_override_deferred(
+        &mut self,
+        module_name: &str,
+        repo_rule_id: RepoRuleId,
+    ) -> Result<Option<usize>, EvalException> {
+        if self.should_ignore_dev_deps() {
+            return Ok(None);
+        }
+        self.add_override(
+            module_name,
+            ModuleOverride::NonRegistry(NonRegistryOverride::new(RepoSpec::new(
+                repo_rule_id,
+                AttributeValues::create(Vec::<(String, AttributeValue)>::new()),
+            ))),
+        )?;
+        self.deferred_attribute_values
+            .push(DeferredAttributeValues::Override {
+                module_name: module_name.to_owned(),
+            });
+        Ok(Some(self.deferred_attribute_values.len() - 1))
+    }
+
+    /// Fills in the attribute values of the tag or override recorded under `deferred`.
+    pub(crate) fn set_deferred_attribute_values(
+        &mut self,
+        deferred: usize,
+        attribute_values: AttributeValues,
+    ) {
+        let target = std::mem::replace(
+            &mut self.deferred_attribute_values[deferred],
+            DeferredAttributeValues::Resolved,
+        );
+        match target {
+            DeferredAttributeValues::Tag { usage_builder, tag } => {
+                self.usage_builder_arena[usage_builder].tags[tag].attribute_values =
+                    attribute_values;
+            }
+            DeferredAttributeValues::Override { module_name } => {
+                let repo_rule_id = match self.overrides.get(&module_name) {
+                    Some(ModuleOverride::NonRegistry(o)) => o.repo_spec().repo_rule_id().cloned(),
+                    _ => None,
+                };
+                let Some(repo_rule_id) = repo_rule_id else {
+                    panic!("no non-registry override with deferred attributes for {module_name}");
+                };
+                // Replaces the value; the override keeps its position.
+                self.overrides.insert(
+                    module_name,
+                    ModuleOverride::NonRegistry(NonRegistryOverride::new(RepoSpec::new(
+                        repo_rule_id,
+                        attribute_values,
+                    ))),
+                );
+            }
+            DeferredAttributeValues::Resolved => {
+                panic!("deferred attribute values {deferred} were already filled in");
+            }
+        }
+    }
+
+    /// Every tag and override must have its attribute values before the module is built.
+    fn check_no_deferred_attribute_values(&self) {
+        if self
+            .deferred_attribute_values
+            .iter()
+            .any(|d| !matches!(d, DeferredAttributeValues::Resolved))
+        {
+            panic!(
+                "attribute values of a tag or override were not taken from the Starlark heap \
+                 (resolve_deferred_attribute_values)"
+            );
+        }
     }
 
     /// `ModuleExtensionProxy.addImport`.
@@ -791,6 +924,7 @@ impl ModuleThreadContext {
         &mut self,
         registry: Option<Arc<dyn Registry>>,
     ) -> Result<InterimModule, EvalException> {
+        self.check_no_deferred_attribute_values();
         // Add builtin modules as default deps of the current module.
         let builtin_module_names: Vec<String> = self.builtin_modules.keys().cloned().collect();
         for builtin_module in builtin_module_names {
@@ -865,6 +999,7 @@ impl ModuleThreadContext {
 
     // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleThreadContext.java:437 ModuleThreadContext.buildOverrides
     pub fn build_overrides(&mut self) -> IndexMap<String, ModuleOverride> {
+        self.check_no_deferred_attribute_values();
         // Add overrides for builtin modules if there is no existing override for them.
         if ModuleKey::root() == self.module.key {
             for (module_name, builtin) in &self.builtin_modules {

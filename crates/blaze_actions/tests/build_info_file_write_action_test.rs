@@ -182,11 +182,15 @@ fn build_info_owner() -> ArtifactOwner {
 }
 
 #[test]
-#[ignore = "needs action execution and the Starlark translation callback (wave W6)"]
+#[ignore = "BuildInfoFileWriteAction.execute is in blaze_exec \
+            (src/analysis/actions/build_info_file_write_action.rs), which depends on this crate; \
+            its JUnit tests are not ported there yet"]
 fn execute_writes_to_output_file() {}
 
 #[test]
-#[ignore = "needs action execution and the Starlark translation callback (wave W6)"]
+#[ignore = "BuildInfoFileWriteAction.execute is in blaze_exec \
+            (src/analysis/actions/build_info_file_write_action.rs), which depends on this crate; \
+            its JUnit tests are not ported there yet"]
 fn key_missing_template_partially_expanded() {}
 
 #[test]
@@ -228,19 +232,27 @@ fn action_inputs_vary_check_compute_key_results() {
 }
 
 #[test]
-#[ignore = "needs action execution and the Starlark translation callback (wave W6)"]
+#[ignore = "BuildInfoFileWriteAction.execute is in blaze_exec \
+            (src/analysis/actions/build_info_file_write_action.rs), which depends on this crate; \
+            its JUnit tests are not ported there yet"]
 fn wrong_key_read_exception_thrown() {}
 
 #[test]
-#[ignore = "needs action execution and the Starlark translation callback (wave W6)"]
+#[ignore = "BuildInfoFileWriteAction.execute is in blaze_exec \
+            (src/analysis/actions/build_info_file_write_action.rs), which depends on this crate; \
+            its JUnit tests are not ported there yet"]
 fn callback_return_value_invalid_type_exception_thrown() {}
 
 #[test]
-#[ignore = "needs action execution and the Starlark translation callback (wave W6)"]
+#[ignore = "BuildInfoFileWriteAction.execute is in blaze_exec \
+            (src/analysis/actions/build_info_file_write_action.rs), which depends on this crate; \
+            its JUnit tests are not ported there yet"]
 fn callback_return_dict_contains_invalid_type_exception_thrown() {}
 
 #[test]
-#[ignore = "needs action execution and the Starlark translation callback (wave W6)"]
+#[ignore = "BuildInfoFileWriteAction.execute is in blaze_exec \
+            (src/analysis/actions/build_info_file_write_action.rs), which depends on this crate; \
+            its JUnit tests are not ported there yet"]
 fn callback_fails_exception_thrown() {}
 
 #[test]

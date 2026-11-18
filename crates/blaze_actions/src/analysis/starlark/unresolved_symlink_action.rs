@@ -126,8 +126,8 @@ impl Action for UnresolvedSymlinkAction {
         fp: &mut Fingerprint,
     ) -> Result<(), ComputeKeyError> {
         fp.add_string(GUID);
-        // PORT: StringEncoding. The target is a Starlark (internal) string.
-        fp.add_internal_string(&self.target);
+        // Invariant: the target is a Starlark string, in internal form (see `fingerprint_util`).
+        fp.add_string(&self.target);
         fp.add_string(self.target_type.name());
         Ok(())
     }

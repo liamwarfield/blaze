@@ -6,10 +6,16 @@
 //! its `ToolchainInfo` on each index; the lookup is pure, so the values are resolved when the
 //! context is created and held as frozen values.
 //!
-//! PORT: indexing with a string converts it with `LabelConverter.forBzlEvaluatingThread`, which
-//! needs the innermost .bzl on the call stack; starlark-rust's `at` gets no evaluator, so the
-//! package context of the .bzl that defined the rule class is used (the same repository and
-//! package as the implementation function in every rule set Blaze builds).
+//! PORT: indexing with a string converts it with `LabelConverter.forBzlEvaluatingThread`
+//! (StarlarkToolchainContext.java:106), the package context of the innermost .bzl on the call
+//! stack. starlark-rust's `at` and `is_in` get no evaluator (no call stack), so the context is
+//! fixed when `ctx.toolchains` / `ctx.exec_groups` is read: the .bzl that defines the
+//! implementation function being run ([`implementation_package_context`]; the subrule's
+//! implementation for a subrule context). That is Java's answer whenever the string key is
+//! converted in a function of that .bzl. It differs when the conversion happens in a function of
+//! another .bzl with another repository, repository mapping or package (oracle scenario
+//! scripts/w4/scenarios/ctx-toolchains-string, step `//:helper`); an exact port needs the
+//! evaluator in the index operators of the vendored crate (request in the wave report).
 
 use std::fmt;
 
@@ -19,7 +25,9 @@ use blaze_packages::bzl_context::BazelModuleContext;
 use blaze_packages::rule_class::declared_exec_group::{
     DEFAULT_EXEC_GROUP_NAME, is_valid_identifier,
 };
+use blaze_packages::rule_class::rule_class::RuleClass;
 use blaze_packages::types::label_converter::LabelConverter;
+use blaze_starlark::defining_module::DefModule;
 use blaze_starlark::label::LabelValue;
 use indexmap::{IndexMap, IndexSet};
 use starlark::any::ProvidesStaticType;
@@ -27,26 +35,28 @@ use starlark::environment::{Methods, MethodsBuilder, MethodsStatic};
 use starlark::starlark_module;
 use starlark::starlark_simple_value;
 use starlark::values::ValueLike;
-use starlark::values::list::AllocList;
 use starlark::values::{Heap, NoSerialize, OwnedFrozenValue, StarlarkValue, Value, starlark_value};
 
-use super::util::errorf;
+use super::util::{alloc_immutable_list, errorf};
 use crate::platform::toolchain_type_label_from_value;
 use crate::toolchains::{ResolvedToolchainContext, ToolchainCollection};
 
-/// The package context used to convert string toolchain type keys (see the module docs).
-pub(crate) fn rule_definition_package_context(
-    rule: &blaze_packages::target::Rule,
+/// The package context used to convert string toolchain type keys (see the module docs): Java
+/// `BazelModuleContext.of(fn.getModule()).packageContext()` of the implementation function of
+/// `rule_class`, the innermost .bzl on the call stack while that function's own body runs.
+/// `None` when the implementation is not a Starlark function of a .bzl module.
+// Java: com/google/devtools/build/lib/packages/LabelConverter.java:41 LabelConverter.forBzlEvaluatingThread
+// Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:163 BazelModuleContext.ofInnermostBzlOrThrow
+pub(crate) fn implementation_package_context(
+    rule_class: &RuleClass,
 ) -> Option<LabelPackageContext> {
-    let rule_class = rule.get_rule_class_object();
-    let label = rule_class
-        .get_rule_definition_environment_label()
-        .or_else(|| rule_class.get_starlark_extension_label())?;
-    let pkg = label.get_package_identifier();
-    BazelModuleContext::all_package_contexts()
-        .into_iter()
-        .map(|(_, pc)| pc)
-        .find(|pc| &pc.package_identifier() == pkg)
+    let implementation = rule_class.get_configured_target_function()?.value();
+    // The implementation comes from a frozen .bzl module, whose extra value is its
+    // BazelModuleContext (Java `Module.getClientData()`).
+    let module = DefModule::of_function(implementation.to_value())?;
+    let extra_value = module.frozen_extra_value()?;
+    BazelModuleContext::of_module_extra_value(extra_value.to_value())
+        .map(|module_context| module_context.package_context())
 }
 
 /// The value of `ctx.toolchains` (type `ToolchainContext`).
@@ -262,9 +272,14 @@ fn toolchain_context_methods(builder: &mut MethodsBuilder) {
                 ..
             } => resolved_toolchain_type_labels.iter().cloned().collect(),
         };
-        Ok(heap.alloc(AllocList(
-            labels.into_iter().map(|l| heap.alloc(LabelValue(l))),
-        )))
+        // Java: StarlarkList.immutableCopyOf(resolvedToolchainTypeLabels())
+        Ok(alloc_immutable_list(
+            heap,
+            labels
+                .into_iter()
+                .map(|l| heap.alloc(LabelValue(l)))
+                .collect(),
+        ))
     }
 }
 

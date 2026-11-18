@@ -158,7 +158,8 @@ fn test_comparison() {
 }
 
 #[test]
-#[ignore = "needs JavaSemantics.JAVA_SOURCE / CppFileTypes (util/FileType not ported)"]
+#[ignore = "needs JavaSemantics.JAVA_SOURCE / CppFileTypes; CppFileTypes is in blaze_rules, which \
+            depends on this crate"]
 fn test_get_filename() {}
 
 #[test]
@@ -170,16 +171,23 @@ fn test_get_extension() {
 }
 
 #[test]
-#[ignore = "needs util/FileType (not ported)"]
+#[ignore = "needs util/FileType, which no crate below blaze_actions has (blaze_packages and \
+            blaze_rules each carry one; neither is a dependency of this crate)"]
 fn test_is_file_type() {}
 
 #[test]
-#[ignore = "needs util/FileTypeSet (not ported)"]
+#[ignore = "needs util/FileTypeSet, which no crate below blaze_actions has (blaze_packages and \
+            blaze_rules each carry a FileType; neither is a dependency of this crate)"]
 fn test_is_file_type_set() {}
 
 #[test]
-#[ignore = "needs Actions.escapedPath (lib/actions/Actions.java not ported)"]
-fn test_mangled_path() {}
+fn test_mangled_path() {
+    let path = "dir/sub_dir/name:end";
+    assert_eq!(
+        blaze_actions::rules::cpp::solib_symlink_action::escaped_path(path),
+        "dir_Ssub_Udir_Sname_Cend"
+    );
+}
 
 #[test]
 fn test_root_relative_path_is_same_as_exec_path() {
@@ -482,5 +490,6 @@ fn archived_tree_artifact_get_exec_path_within_archived_artifacts_tree_returns_c
 }
 
 #[test]
-#[ignore = "needs StarlarkSemantics-stored PathMapper and Java PathFragment.hashCode"]
+#[ignore = "needs PathMapper.storeIn / loadFrom (a PathMapper stored in StarlarkSemantics), not \
+            ported: starlark_custom_command_line.rs calls unported! for it"]
 fn mapped_artifact() {}

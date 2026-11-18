@@ -882,14 +882,14 @@ pub(crate) mod test_support {
         eval::run_on_evaluation_thread(move || {
             let label = Label::parse_canonical(&format!("//pkg:{file_name}")).unwrap();
             let mapping = blaze_cmdline::repository_mapping::EMPTY.clone();
-            BazelModuleContext::register(Arc::new(BazelModuleContext {
+            let module_context = Arc::new(BazelModuleContext {
                 label: label.clone(),
                 is_builtins: false,
                 repo_mapping: mapping.clone(),
                 filename: file_name.clone(),
                 loads: Vec::new(),
                 bzl_transitive_digest: Vec::new(),
-            }));
+            });
             let semantics = StarlarkSemantics::default();
             let ctx = ThreadContext::new(
                 Phase::BzlLoad,
@@ -915,7 +915,21 @@ pub(crate) mod test_support {
             });
             let globals = registry().build(FileKind::Bzl, &semantics);
             eval::compile(FileKind::Bzl, &file_name, src).and_then(|c| {
-                eval::exec_module(c, &globals, &LoadMap::new(), &ctx, &Default::default())
+                eval::exec_module_with_extra_value(
+                    c,
+                    &globals,
+                    &LoadMap::new(),
+                    &ctx,
+                    &Default::default(),
+                    // Java: the module's client data (BazelModuleContext).
+                    |module| {
+                        module
+                            .heap()
+                            .alloc(crate::bzl_context::BazelModuleContextValue(
+                                module_context.clone(),
+                            ))
+                    },
+                )
             })
         })
     }

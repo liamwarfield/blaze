@@ -94,5 +94,8 @@ fn relativize(path: &[u8]) -> PathFragment {
 /// UTF-8, so valid UTF-8 is taken as is and invalid sequences are replaced.
 // Java: com/google/devtools/build/lib/bazel/repository/decompressor/StripPrefixedPath.java:111 StripPrefixedPath.createPathFragment
 pub fn create_path_fragment(raw_bytes: &[u8]) -> PathFragment {
+    // PORT: byte-strings: Java keeps every raw byte of the entry or link name
+    // (`new String(rawBytes, ISO_8859_1)`, one char per byte); here bytes that are not UTF-8
+    // become U+FFFD.
     PathFragment::create(&String::from_utf8_lossy(raw_bytes))
 }

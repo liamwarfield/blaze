@@ -167,15 +167,18 @@ fn create_artifact(root: &ArtifactRoot, name: &str) -> Artifact {
 }
 
 #[test]
-#[ignore = "needs action execution (ActionExecutionContext, DummyExecutor; wave W6)"]
+#[ignore = "execution is in blaze_exec, which depends on this crate; this case is not ported \
+            there (tests/analysis_actions_execute_test.rs has only the not-executable failure)"]
 fn test_simple() {}
 
 #[test]
-#[ignore = "needs action execution (ActionExecutionContext, DummyExecutor; wave W6)"]
+#[ignore = "execution is in blaze_exec, which depends on this crate; this case is not ported \
+            there (tests/analysis_actions_execute_test.rs has only the not-executable failure)"]
 fn test_fail_if_input_is_not_a_file() {}
 
 #[test]
-#[ignore = "needs action execution (ActionExecutionContext, DummyExecutor; wave W6)"]
+#[ignore = "execution is in blaze_exec, which depends on this crate; ported there: \
+            tests/analysis_actions_execute_test.rs executable_symlink_to_non_executable_file_fails"]
 fn test_fail_if_input_is_not_executable() {}
 
 #[test]
@@ -203,7 +206,9 @@ fn to_executable_analysis_metadata() {
         PathFragment::create("in/some-file")
     );
     // Same key as a plain symlink (only the GUID is fingerprinted), as the oracle's
-    // ExecutableSymlink and Symlink actions show.
+    // ExecutableSymlink and Symlink actions show (targets `file_symlink` and
+    // `file_symlink_executable` of `tests/data/non_ascii_probe`, recorded by
+    // `scripts/actions-probe/run` and checked by `non_ascii_action_keys.rs`).
     let ctx = ActionKeyContext::new();
     let plain = SymlinkAction::to_artifact(
         null_action_owner(),

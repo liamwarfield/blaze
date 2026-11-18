@@ -1,0 +1,32 @@
+# Analysis review S2-11: ViewCreationFailedException keeps the cause
+# ("Error doing post analysis query: <cause>").
+run cquery "config(//:x, deadbeef)"
+run cquery "config(//:x, deadbeef)" --keep_going
+run cquery "siblings(//:x)"
+run cquery "buildfiles(//:x)"
+run cquery "visible(//:x, //:y)"
+run aquery "labels(deps, //:x)" --output=jsonproto
+run cquery "//nosuchpkg:x"
+run cquery "deps(//:nosuchtarget)"
+run cquery "deps(//:nosuchtarget)" --keep_going
+run cquery //:x --nodep_deps=false
+# Analysis review S2-4, last item: a pattern outside --universe_scope.
+run cquery "deps(//b/...)" --universe_scope=//a:x
+run cquery "deps(//b/...)" --universe_scope=//a:x --keep_going
+run aquery "deps(//b/...)" --universe_scope=//a:x --output=jsonproto
+# Analysis review S2-14: cquery ignores --proto:include_synthetic_attribute_hash.
+run cquery //:x --output=jsonproto --proto:include_synthetic_attribute_hash --noproto:include_configurations
+# Analysis review S2-18, last item: --query_file.
+run cquery --query_file=q.txt --output=label_kind
+run cquery --query_file=missing.txt
+run cquery //:x --query_file=q.txt
+run aquery --query_file=q.txt --output=jsonproto --noinclude_artifacts
+# Output format selection.
+run cquery //:x --output=nosuchformat
+run aquery //:x --output=nosuchformat
+run cquery
+run aquery
+# PostAnalysisQueryProcessor.process: queries need the incrementality state
+# (SequencedSkyframeExecutor.decideKeepIncrementalState, which also prints the warning).
+run cquery //:x --notrack_incremental_state
+run aquery //:x --notrack_incremental_state --output=jsonproto

@@ -57,6 +57,7 @@ fn err(msg: impl Into<String>) -> starlark::Error {
 // Recorded builder calls
 
 /// The values of one `add_all`/`add_joined` call.
+#[derive(Clone)]
 enum VectorValues<V> {
     /// A list, tuple or range, copied at call time (Java pushes the elements immediately).
     List(Vec<V>),
@@ -68,6 +69,7 @@ enum VectorValues<V> {
 }
 
 /// One `StarlarkCustomCommandLine.VectorArg.Builder`.
+#[derive(Clone)]
 struct VectorItem<V> {
     values: VectorValues<V>,
     location: Location,
@@ -84,6 +86,7 @@ struct VectorItem<V> {
 }
 
 /// One call on Java's `StarlarkCustomCommandLine.Builder`.
+#[derive(Clone)]
 enum ArgsItem<V> {
     RecordArgStart,
     /// `add(Object)` of a value.
@@ -95,6 +98,7 @@ enum ArgsItem<V> {
 }
 
 /// The fields of Java's `MutableArgs`.
+#[derive(Clone)]
 struct ArgsState<V> {
     starlark_semantics: Arc<StarlarkSemantics>,
     /// Java `commandLine` (a `StarlarkCustomCommandLine.Builder`), as recorded calls.
@@ -384,6 +388,27 @@ impl<'v> StarlarkValue<'v> for FrozenMutableArgs {
 // Java: com/google/devtools/build/lib/analysis/starlark/Args.java:129 Args.newArgs
 pub fn new_args<'v>(heap: Heap<'v>, starlark_semantics: Arc<StarlarkSemantics>) -> Value<'v> {
     heap.alloc(MutableArgs::new(starlark_semantics))
+}
+
+/// A copy of the state of an `Args` value as it is at this call, as a new `Args` value on
+/// `heap`. Later `add*`, `use_param_file` or `set_param_file_format` calls on `args` do not
+/// reach the copy.
+///
+/// Java reads an `Args` when an action is created from it (`Args.build`, which copies the
+/// arguments added so far: `StarlarkCustomCommandLine.Builder.build` is `arguments.toArray()`;
+/// `getParamFileInfo`, `getParameterFileType`, `getDirectoryArtifacts`), so what is added to the
+/// same object afterwards belongs to later actions only. A command line can only be built from
+/// frozen values here ([`build_args`]), so the caller takes this copy when the action is created
+/// and builds the copy after freezing. A value that is not a mutable `Args` (it is frozen, or not
+/// an `Args`) is returned as it is.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkCustomCommandLine.java:882 Builder.build
+pub fn snapshot_args<'v>(args: Value<'v>, heap: Heap<'v>) -> Value<'v> {
+    match args.downcast_ref::<MutableArgs>() {
+        Some(a) => heap.alloc(MutableArgs {
+            state: RefCell::new(a.state.borrow().clone()),
+        }),
+        None => args,
+    }
 }
 
 /// Java `x instanceof Args`.
@@ -883,28 +908,50 @@ fn is_directory(object: Value) -> bool {
         .is_some_and(|f| f.0.is_directory())
 }
 
-/// Java `StarlarkFunction.isGlobal()`: `module.getGlobal(getName()) == this`.
-///
-/// PORT: starlark-rust does not expose a function's defining module. A function value that is
-/// not frozen was defined by the module being evaluated, so it is looked up there (with
-/// `Module::get`, which only sees public names: an unfrozen `_private` top-level function counts
-/// as not global; during analysis every unfrozen function was created inside a function call,
-/// so it is not global in Java either). A frozen function comes from an already loaded (frozen)
-/// module, as rule implementation helpers do; it is treated as global unless it is a lambda. This
-/// misclassifies frozen nested `def`s returned by a top-level call, which Java rejects.
+/// Java `StarlarkFunction.isGlobal()`: `module.getGlobal(getName()) == this`, asked of the
+/// function's own (defining) module. False for lambdas, nested `def`s (also when a top-level
+/// name is bound to one) and a `def` whose top-level name was rebound.
+// Java: net/starlark/java/eval/StarlarkFunction.java:91 StarlarkFunction.isGlobal
 pub(crate) fn is_global_function<'v>(f: Value<'v>, eval: &Evaluator<'v, '_, '_>) -> bool {
-    let Some(name) = f.function_name() else {
-        return false;
-    };
-    if f.unpack_frozen().is_some() {
-        return name != "lambda";
-    }
-    eval.module().get(name).is_some_and(|g| g.ptr_eq(f))
+    blaze_starlark::defining_module::is_global_of_defining_module(f, eval)
 }
 
-/// Java `fn instanceof StarlarkFunction`.
+/// Java `fn instanceof StarlarkFunction`: a `def` or a `lambda`.
 pub(crate) fn is_starlark_function(f: Value) -> bool {
-    f.parameters_spec().is_some()
+    blaze_starlark::defining_module::DefModule::of_function(f).is_some()
+}
+
+/// Java `StarlarkFunction.getLocation()` as `Location.toString()` (`file:line:column` of the
+/// function's name, or of the `lambda` keyword).
+// Java: net/starlark/java/eval/StarlarkFunction.java:172 StarlarkFunction.getLocation
+// PORT: starlark-rust records this position (`DefInfo::signature_span`) but has no accessor for
+// it, and neither `starlark::eval::DefModule` (BLAZE PATCH 0017) nor
+// `blaze_starlark::defining_module` gives one. Until one exists this is `None`
+// (docs/reviews/2026-11-18-actions-response.md asks for it).
+fn starlark_function_location(_f: Value) -> Option<String> {
+    None
+}
+
+/// The error of a `map_each` function that is neither global nor allowed as a closure.
+// Java: com/google/devtools/build/lib/analysis/starlark/Args.java:380 MutableArgs.validateMapEach
+// Java: com/google/devtools/build/lib/analysis/starlark/TemplateDict.java:72 TemplateDict.addJoined
+pub(crate) fn map_each_not_global_error(f: Value) -> starlark::Error {
+    match starlark_function_location(f) {
+        Some(location) => err(map_each_not_global_message(&location)),
+        None => unported!(
+            "StarlarkFunction.getLocation",
+            "map_each function '{}' is not global; Bazel's error names the location of its \
+             declaration",
+            f.function_name().unwrap_or("?")
+        ),
+    }
+}
+
+fn map_each_not_global_message(location: &str) -> String {
+    format!(
+        "to avoid unintended retention of analysis data structures, the map_each function \
+         (declared at {location}) must be declared by a top-level def statement"
+    )
 }
 
 // Java: com/google/devtools/build/lib/analysis/starlark/Args.java:366 MutableArgs.validateMapEach
@@ -925,14 +972,7 @@ fn validate_map_each<'v>(
         // functions as "lambda x: x".
         // See https://github.com/bazelbuild/bazel/issues/12701.
         if !(is_global_function(f, eval) || allow_closure) {
-            // Java: "to avoid unintended retention of analysis data structures, the map_each
-            // function (declared at %s) must be declared by a top-level def statement", with
-            // the function's definition location, which starlark-rust does not expose.
-            unported!(
-                "StarlarkFunction.getLocation",
-                "map_each function '{}' is not global; its error needs the def location",
-                f.function_name().unwrap_or("?")
-            );
+            return Err(map_each_not_global_error(f));
         }
     }
     Ok(Some(f))

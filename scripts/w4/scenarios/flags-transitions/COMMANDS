@@ -1,0 +1,35 @@
+# Starlark flags set by transitions and matched by config_setting(flag_values) (analysis review
+# S1-10, S1-11, S2-2, S2-3, S2-4): configuration checksums, DEBUG lines of print() in transition
+# implementations, and the first line of each error.
+run cquery "deps(//:t_list)"
+run cquery "deps(//:t_list)" --//:copts=-DX,-DY
+run cquery "deps(//:t_tuple)"
+run cquery "deps(//:t_list_default)"
+run cquery "deps(//:t_list_empty)"
+run cquery "deps(//:t_list_empty)" --//:copts=
+run cquery "deps(//:t_multi_default)"
+run cquery "deps(//:t_multi_default)" --//:multi=a
+run cquery "deps(//:t_multi_two)"
+run cquery "deps(//:t_multi_two)" --//:multi=a --//:multi=b
+run cquery "deps(//:t_multi_scalar)"
+run cquery "deps(//:t_int)"
+run cquery "deps(//:t_int)" --//:level=0
+run cquery "deps(//:t_int_default)" --//:level=7
+run cquery "deps(//:t_bad_int)"
+run cquery "deps(//:t_bad_int_bool)"
+run cquery "deps(//:t_bad_list_elem)"
+run cquery "deps(//:t_bad_list)"
+run cquery "deps(//:t_bad_bool)"
+run cquery "deps(//:t_bool_int)"
+run cquery "deps(//:t_bad_string)"
+run cquery "deps(//:t_print_only)" --//:mode=fast
+run cquery "deps(//:t_fail_after_print)"
+run cquery "deps(//:t_split_bad_list)"
+run cquery "deps(//:t_split_bad_key)"
+run cquery "deps(//:t_split_ok)"
+run cquery "deps(//:sel_hex)" --//:level=16
+run cquery "deps(//:sel_hex)"
+run cquery "deps(//:sel_oct)" --//:level=8
+run cquery "deps(//:sel_space)" --//:level=5
+run cquery "deps(//:sel_enabled_no)" --no//:enabled
+run cquery "deps(//:sel_enabled_bad)"

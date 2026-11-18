@@ -11,6 +11,7 @@
 //! [`ThreadContext::payload`].
 
 use std::any::Any;
+use std::any::TypeId;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::cell::RefMut;
@@ -160,6 +161,9 @@ pub struct ThreadContext {
     /// Java `SymbolGenerator`: identity tokens for unexported providers, rules, aspects.
     next_symbol: Cell<u64>,
     payload: RefCell<Option<Box<dyn Any>>>,
+    /// Java: the other thread-locals of the `StarlarkThread`, keyed by class (see
+    /// [`ThreadContext::set_thread_local`]).
+    thread_locals: RefCell<HashMap<TypeId, Box<dyn Any>>>,
     /// Java: the `Label.RepoMappingRecorder` thread-local (see [`ThreadRepoMappingRecorder`]).
     repo_mapping_recorder: RefCell<Option<ThreadRepoMappingRecorder>>,
 }
@@ -225,6 +229,7 @@ impl ThreadContext {
             events,
             next_symbol: Cell::new(0),
             payload: RefCell::new(None),
+            thread_locals: RefCell::new(HashMap::new()),
             repo_mapping_recorder: RefCell::new(None),
         }
     }
@@ -373,6 +378,41 @@ impl ThreadContext {
     /// Removes and returns the payload whatever its type.
     pub fn clear_payload(&self) -> Option<Box<dyn Any>> {
         self.payload.borrow_mut().take()
+    }
+
+    /// Puts back a payload removed with [`ThreadContext::clear_payload`] (Java
+    /// `StarlarkThreadContext.storeInThread` on a thread whose context was set to null for a
+    /// while, e.g. around rule initializers). `None` leaves the thread without a payload.
+    // Java: com/google/devtools/build/lib/cmdline/StarlarkThreadContext.java:48 StarlarkThreadContext.storeInThread
+    pub fn restore_payload(&self, payload: Option<Box<dyn Any>>) {
+        *self.payload.borrow_mut() = payload;
+    }
+
+    /// Java `StarlarkThread.setThreadLocal(T.class, value)` for the thread-locals that are not
+    /// the phase payload (e.g. the `LabelConverter` of a running rule initializer): `Some`
+    /// stores the value under the type `T`, `None` removes it.
+    // Java: net/starlark/java/eval/StarlarkThread.java:130 StarlarkThread.setThreadLocal
+    pub fn set_thread_local<T: Any>(&self, value: Option<T>) {
+        let mut thread_locals = self.thread_locals.borrow_mut();
+        match value {
+            Some(value) => {
+                thread_locals.insert(TypeId::of::<T>(), Box::new(value));
+            }
+            None => {
+                thread_locals.remove(&TypeId::of::<T>());
+            }
+        }
+    }
+
+    /// Java `StarlarkThread.getThreadLocal(T.class)`: a clone of the value stored with
+    /// [`ThreadContext::set_thread_local`], or `None`.
+    // Java: net/starlark/java/eval/StarlarkThread.java:138 StarlarkThread.getThreadLocal
+    pub fn get_thread_local<T: Any + Clone>(&self) -> Option<T> {
+        self.thread_locals
+            .borrow()
+            .get(&TypeId::of::<T>())
+            .and_then(|value| value.downcast_ref::<T>())
+            .cloned()
     }
 
     /// Borrows the payload as `T`. `None` if there is none or it is another type: that is how a

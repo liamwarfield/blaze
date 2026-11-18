@@ -128,9 +128,10 @@ where
     S: AsRef<str>,
 {
     for line in arguments {
-        // PORT: StringEncoding identity; `getInternalStringBytes` of an internal string is its
-        // UTF-8 bytes.
-        out.write_all(line.as_ref().as_bytes())?;
+        // Java: `out.write(StringUnsafe.getInternalStringBytes(line))`.
+        out.write_all(&blaze_util::string_encoding::internal_string_bytes(
+            line.as_ref(),
+        ))?;
         out.write_all(b"\n")?;
     }
     out.flush()

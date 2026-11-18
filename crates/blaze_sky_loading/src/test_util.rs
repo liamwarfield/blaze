@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use blaze_cmdline::RepositoryName;
 use blaze_events::StoredEventHandler;
+use blaze_optdefs::command::package_options::PackageOptions;
 use blaze_skyframe::{
     ComputeError, Environment, EvaluationContext, EvaluationResult, Evaluator, EvaluatorBuilder,
     Key, SkyKey,
@@ -26,7 +27,8 @@ use crate::directories::LoadingDirectories;
 use crate::pkgcache::PathPackageLocator;
 use crate::repos::{ExternalRepos, RepositoryDirectoryValue, RepositoryMappingValue};
 use crate::skyframe_executor::{
-    LoadingFunctionsConfig, inject_loading_precomputed, register_loading_functions,
+    LoadingFunctionsConfig, inject_loading_precomputed,
+    inject_loading_precomputed_with_package_options, register_loading_functions,
 };
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -167,6 +169,9 @@ pub struct TestSetup {
     pub scratch: Scratch,
     pub config: LoadingFunctionsConfig,
     pub semantics: StarlarkSemantics,
+    /// The command's `PackageOptions`, when a test sets them
+    /// ([`TestSetup::set_package_options`]); `None` uses the defaults' precomputed values.
+    pub package_options: Option<PackageOptions>,
 }
 
 impl TestSetup {
@@ -188,6 +193,7 @@ impl TestSetup {
             scratch,
             config,
             semantics: StarlarkSemantics::from_flags(&BTreeMap::new()).unwrap(),
+            package_options: None,
         }
     }
 
@@ -207,6 +213,7 @@ impl TestSetup {
             scratch,
             config,
             semantics,
+            package_options: None,
         }
     }
 
@@ -228,14 +235,31 @@ impl TestSetup {
         *self.config.pkg_locator.write() = locator;
     }
 
+    /// Java `SkyframeExecutor.syncPackageLoading` with the command's `PackageOptions`
+    /// (`--package_path`, `--deleted_packages`, `--default_visibility`, ...). Call it after the
+    /// scratch files of the package path entries exist.
+    pub fn set_package_options(&mut self, package_options: PackageOptions) {
+        self.config.sync_package_loading(&package_options);
+        self.package_options = Some(package_options);
+    }
+
     pub fn evaluator(&self) -> Evaluator {
         let builder = register_loading_functions(EvaluatorBuilder::new(), &self.config);
-        inject_loading_precomputed(
-            builder,
-            &self.config,
-            self.semantics.clone(),
-            IndexMap::new(),
-        )
+        match &self.package_options {
+            None => inject_loading_precomputed(
+                builder,
+                &self.config,
+                self.semantics.clone(),
+                IndexMap::new(),
+            ),
+            Some(package_options) => inject_loading_precomputed_with_package_options(
+                builder,
+                &self.config,
+                self.semantics.clone(),
+                IndexMap::new(),
+                package_options,
+            ),
+        }
         .build()
     }
 }

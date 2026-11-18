@@ -1,0 +1,10 @@
+# S2-8: ctx.toolchains["//x:type"] is resolved against the innermost .bzl on the call stack.
+run build //:remote_impl
+cat bazel-bin/remote_impl.txt
+run build //:local_impl
+cat bazel-bin/local_impl.txt
+run build //:local_wrong
+# The key is converted in a helper of another repository's .bzl: needs the evaluator in the
+# index operator (see the wave report); Blaze resolves against the implementation's .bzl.
+run build //:helper
+cat bazel-bin/helper.txt

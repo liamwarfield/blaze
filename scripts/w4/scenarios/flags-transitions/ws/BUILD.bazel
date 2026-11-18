@@ -1,0 +1,90 @@
+load(
+    ":defs.bzl",
+    "bad_bool_rule",
+    "bad_int_bool_rule",
+    "bad_int_rule",
+    "bad_list_elem_rule",
+    "bad_list_rule",
+    "bad_string_rule",
+    "bool_flag",
+    "bool_int_rule",
+    "fail_after_print_rule",
+    "int_default_rule",
+    "int_flag",
+    "int_rule",
+    "list_default_rule",
+    "list_empty_rule",
+    "list_rule",
+    "multi_default_rule",
+    "multi_flag",
+    "multi_scalar_rule",
+    "multi_two_rule",
+    "print_only_rule",
+    "split_bad_key_rule",
+    "split_bad_list_rule",
+    "split_ok_rule",
+    "string_flag",
+    "string_list_flag",
+    "tuple_rule",
+)
+
+bool_flag(name = "enabled", build_setting_default = True)
+int_flag(name = "level", build_setting_default = 1)
+string_flag(name = "mode", build_setting_default = "dflt")
+string_list_flag(name = "copts", build_setting_default = ["c0"])
+multi_flag(name = "multi", build_setting_default = "m0")
+
+filegroup(name = "leaf")
+
+list_rule(name = "t_list", deps = [":leaf"])
+tuple_rule(name = "t_tuple", deps = [":leaf"])
+list_default_rule(name = "t_list_default", deps = [":leaf"])
+list_empty_rule(name = "t_list_empty", deps = [":leaf"])
+multi_default_rule(name = "t_multi_default", deps = [":leaf"])
+multi_two_rule(name = "t_multi_two", deps = [":leaf"])
+multi_scalar_rule(name = "t_multi_scalar", deps = [":leaf"])
+int_rule(name = "t_int", deps = [":leaf"])
+int_default_rule(name = "t_int_default", deps = [":leaf"])
+bad_int_rule(name = "t_bad_int", deps = [":leaf"])
+bad_int_bool_rule(name = "t_bad_int_bool", deps = [":leaf"])
+bad_list_elem_rule(name = "t_bad_list_elem", deps = [":leaf"])
+bad_list_rule(name = "t_bad_list", deps = [":leaf"])
+bad_bool_rule(name = "t_bad_bool", deps = [":leaf"])
+bool_int_rule(name = "t_bool_int", deps = [":leaf"])
+bad_string_rule(name = "t_bad_string", deps = [":leaf"])
+print_only_rule(name = "t_print_only", deps = [":leaf"])
+fail_after_print_rule(name = "t_fail_after_print", deps = [":leaf"])
+split_bad_list_rule(name = "t_split_bad_list", dep = ":leaf")
+split_bad_key_rule(name = "t_split_bad_key", dep = ":leaf")
+split_ok_rule(name = "t_split_ok", dep = ":leaf")
+
+config_setting(name = "level_hex", flag_values = {":level": "0x10"})
+config_setting(name = "level_oct", flag_values = {":level": "010"})
+config_setting(name = "level_space", flag_values = {":level": " 5"})
+config_setting(name = "enabled_no", flag_values = {":enabled": "no"})
+config_setting(name = "enabled_bad", flag_values = {":enabled": "maybe"})
+
+filegroup(name = "sixteen")
+filegroup(name = "other")
+filegroup(name = "disabled")
+
+filegroup(
+    name = "sel_hex",
+    srcs = select({":level_hex": [":sixteen"], "//conditions:default": [":other"]}),
+)
+filegroup(
+    name = "sel_oct",
+    srcs = select({":level_oct": [":sixteen"], "//conditions:default": [":other"]}),
+)
+filegroup(
+    name = "sel_space",
+    srcs = select({":level_space": [":sixteen"], "//conditions:default": [":other"]}),
+)
+filegroup(
+    name = "sel_enabled_no",
+    srcs = select({":enabled_no": [":disabled"], "//conditions:default": [":other"]}),
+)
+filegroup(
+    name = "sel_enabled_bad",
+    srcs = select({":enabled_bad": [":disabled"], "//conditions:default": [":other"]}),
+)

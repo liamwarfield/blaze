@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 use std::fmt;
+use std::hash::Hash;
 use std::sync::Arc;
 
 use allocative::Allocative;
@@ -12,9 +13,10 @@ use blaze_actions::analysis::starlark::starlark_file::StarlarkFile;
 use blaze_starlark::structs::DeeplyImmutable;
 use indexmap::IndexSet;
 use starlark::any::ProvidesStaticType;
+use starlark::collections::StarlarkHasher;
 use starlark::starlark_simple_value;
 use starlark::values::ValueLike;
-use starlark::values::list::AllocList;
+use starlark::values::list::alloc_immutable_list;
 use starlark::values::{Demand, Heap, NoSerialize, StarlarkValue, Value, starlark_value};
 
 use super::cpp_file_types;
@@ -229,12 +231,14 @@ fn file_or_none<'v>(a: &Option<Artifact>, heap: Heap<'v>) -> Value<'v> {
     }
 }
 
+/// `StarlarkList.immutableCopyOf(artifacts)`.
+// Java: net/starlark/java/eval/StarlarkList.java:168 StarlarkList.immutableCopyOf
 fn file_list<'v>(artifacts: &[Artifact], heap: Heap<'v>) -> Value<'v> {
     let files: Vec<Value<'v>> = artifacts
         .iter()
         .map(|a| heap.alloc(StarlarkFile::new(a.clone())))
         .collect();
-    heap.alloc(AllocList(files))
+    alloc_immutable_list(heap, &files)
 }
 
 #[starlark_value(type = "HeaderInfo")]
@@ -285,6 +289,14 @@ impl<'v> StarlarkValue<'v> for HeaderInfo {
     // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:785 HeaderInfo.equals
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
         Ok(header_info_of(other).is_some_and(|o| Arc::ptr_eq(&o, &self.0)))
+    }
+
+    /// Hashable (Java `isImmutable()` is true, `StarlarkValue.checkHashable`) by identity: the
+    /// `Arc`'s address stands for Java's `identityToken`.
+    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:793 HeaderInfo.hashCode
+    fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        (Arc::as_ptr(&self.0) as usize).hash(hasher);
+        Ok(())
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:798 HeaderInfo.isImmutable
@@ -339,6 +351,29 @@ mod tests {
 
     fn info(deps: Vec<Arc<HeaderInfoData>>) -> Arc<HeaderInfoData> {
         HeaderInfoData::create(None, None, &[], &[], &[], Vec::new(), None, None, deps, &[])
+    }
+
+    /// Java: `HeaderInfo.isImmutable()` is true and `equals`/`hashCode` use the identity token
+    /// (CcCompilationContext.java:785-800), so a HeaderInfo is a valid dict key and depset
+    /// element, two values of one HeaderInfo are the same key, and two HeaderInfos with equal
+    /// contents are different keys (analysis review S1-7; end to end:
+    /// scripts/w4/scenarios/cc-hash).
+    #[test]
+    fn header_info_is_hashable_by_identity() {
+        use starlark::values::Heap;
+        Heap::temp(|heap| {
+            let a = info(Vec::new());
+            let b = info(Vec::new());
+            let a1 = heap.alloc(HeaderInfo(a.clone()));
+            let a2 = heap.alloc(HeaderInfo(a.clone()));
+            let b1 = heap.alloc(HeaderInfo(b.clone()));
+            let ha1 = a1.get_hashed().expect("HeaderInfo is hashable");
+            let ha2 = a2.get_hashed().expect("HeaderInfo is hashable");
+            b1.get_hashed().expect("HeaderInfo is hashable");
+            assert_eq!(ha1.hash(), ha2.hash());
+            assert!(a1.equals(a2).unwrap());
+            assert!(!a1.equals(b1).unwrap());
+        });
     }
 
     #[test]

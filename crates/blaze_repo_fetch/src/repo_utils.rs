@@ -124,6 +124,7 @@ pub fn create_file_from_template(
     // PORT: Java reads and writes as Latin-1 (raw bytes); Rust uses UTF-8 strings, identical for
     // valid UTF-8 content.
     let raw = crate::fs_utils::read_content(template)?;
+    // PORT: byte-strings (Java reads the template as ISO-8859-1, keeping the raw bytes)
     let mut tpl = String::from_utf8_lossy(&raw).into_owned();
     for (k, v) in substitutions {
         tpl = replace_all_literal(&tpl, k, v);

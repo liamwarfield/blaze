@@ -255,6 +255,9 @@ impl NestedSetFingerprintCache {
         fingerprint: &mut Fingerprint,
         object: &T,
     ) -> Result<(), MapFnError> {
+        // Java: `mapFn.expandToCommandLine(object, fingerprint::addString)`. Invariant: the strings
+        // a map function produces (plain strings, exec paths, `map_each` results) are internal
+        // strings (`blaze_util::string_encoding`), as in Java; see `Fingerprint::add_string`.
         map_fn.expand_to_command_line(object, &mut |s| {
             fingerprint.add_string(s);
         })?;

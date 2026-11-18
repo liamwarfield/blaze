@@ -339,6 +339,8 @@ impl Action for SpawnAction {
         )?;
         fp.add_string(&self.mnemonic);
         self.env.add_to(fp);
+        // Invariant: execution info keys and values are internal strings (see
+        // `actions::fingerprint_util`).
         fp.add_string_map(execution_info.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         path_mappers::add_to_fingerprint(
             &self.get_mnemonic(),

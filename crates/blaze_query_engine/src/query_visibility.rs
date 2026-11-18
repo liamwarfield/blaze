@@ -78,10 +78,10 @@ impl<T> QueryVisibility<T> for SamePackageVisibility<'_, T> {
         }
 
         // packages in java/ are always visible from the corresponding package in javatests/
-        if let Some(rest) = other.strip_prefix(JAVATESTS_PREFIX) {
-            if self.package_name == format!("{JAVA_PREFIX}{rest}") {
-                return true;
-            }
+        if let Some(rest) = other.strip_prefix(JAVATESTS_PREFIX)
+            && self.package_name == format!("{JAVA_PREFIX}{rest}")
+        {
+            return true;
         }
 
         false
@@ -91,6 +91,6 @@ impl<T> QueryVisibility<T> for SamePackageVisibility<'_, T> {
 impl<T> fmt::Display for SamePackageVisibility<'_, T> {
     // Java: com/google/devtools/build/lib/query2/engine/QueryVisibility.java:88 SamePackageVisibility.toString
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "QueryVisibility(samePackage={})", "<PACKAGE>")
+        write!(f, "QueryVisibility(samePackage=<PACKAGE>)")
     }
 }

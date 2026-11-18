@@ -181,23 +181,28 @@ fn check_symlink_action(action: &SymlinkAction, inputs: &[Artifact], output: &Ar
 }
 
 #[test]
-#[ignore = "needs action execution (ActionExecutionContext, in-memory spied file system; wave W6)"]
+#[ignore = "execution is in blaze_exec, which depends on this crate; ported there: \
+            tests/analysis_actions_execute_test.rs test_symlink_to_source_file_use_exec_root_for_source_false and ..._true"]
 fn test_symlink_to_source_file() {}
 
 #[test]
-#[ignore = "needs action execution (ActionExecutionContext, in-memory spied file system; wave W6)"]
+#[ignore = "execution is in blaze_exec, which depends on this crate; ported there: \
+            tests/analysis_actions_execute_test.rs test_symlink_to_source_directory_use_exec_root_for_source_false and ..._true"]
 fn test_symlink_to_source_directory() {}
 
 #[test]
-#[ignore = "needs action execution (ActionExecutionContext, in-memory spied file system; wave W6)"]
+#[ignore = "execution is in blaze_exec, which depends on this crate; ported there: \
+            tests/analysis_actions_execute_test.rs test_symlink_to_output_file"]
 fn test_symlink_to_output_file() {}
 
 #[test]
-#[ignore = "needs action execution (ActionExecutionContext, in-memory spied file system; wave W6)"]
+#[ignore = "execution is in blaze_exec, which depends on this crate; ported there: \
+            tests/analysis_actions_execute_test.rs test_symlink_to_output_tree"]
 fn test_symlink_to_output_tree() {}
 
 #[test]
-#[ignore = "needs action execution (ActionExecutionContext, in-memory spied file system; wave W6)"]
+#[ignore = "execution is in blaze_exec, which depends on this crate; ported there: \
+            tests/analysis_actions_execute_test.rs test_symlink_to_absolute_path"]
 fn test_symlink_to_absolute_path() {}
 
 #[test]
@@ -440,6 +445,11 @@ fn solib_soname() {
 //       target_type = "directory")
 // (k8-fastbuild, execution platform @@platforms//host:host). aquery reported
 // unresolvedSymlinkTarget "../some/target" and "/abs/dir".
+//
+// Both are targets `symlink_unresolved_ascii` and `symlink_unresolved_dir` of the probe workspace
+// `tests/data/non_ascii_probe/workspace`; `scripts/actions-probe/run` re-records the oracle's
+// keys, and `non_ascii_action_keys.rs` checks them from the recording (re-derived 2026-11-18:
+// both keys below are the oracle's).
 #[test]
 fn oracle_unresolved_symlink_keys() {
     let fs = UnixFileSystem::create(DigestHashFunction::Sha256);

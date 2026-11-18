@@ -32,6 +32,7 @@ use crate::package::TargetDefinitionContext;
 use crate::rule_class::AdvertisedProviderSet;
 use crate::rule_class::AdvertisedProviderSetBuilder;
 use crate::rule_class::AllowlistChecker;
+use crate::rule_class::AspectDetails;
 use crate::rule_class::BuildSetting;
 use crate::rule_class::ConfigurationFragmentPolicy;
 use crate::rule_class::ConfigurationFragmentPolicyBuilder;
@@ -629,74 +630,64 @@ impl RuleClass {
         }
     }
 
-    // Java: com/google/devtools/build/lib/packages/RuleClass.java:2160 RuleClass.checkAspectAllowedValues
-    // PORT: aspects are not instantiated during loading; the values of an aspect's attributes
-    // are taken as Java's default parameter extractor does: the rule's attribute of the same
-    // (public) name if it is a required parameter the rule has, else the aspect attribute's
-    // default.
+    // Java: com/google/devtools/build/lib/packages/RuleClass.java:2158 RuleClass.checkAspectAllowedValues
     fn check_aspect_allowed_values(rule: &Rule, event_handler: &dyn EventHandler) {
-        if !rule.has_aspects() {
-            return;
-        }
-        for attr_of_rule in rule.get_attribute_provider().get_attributes() {
-            for aspect in attr_of_rule.get_aspects_list().get_aspect_details() {
-                for attr_of_aspect in aspect.get_aspect_attributes() {
-                    if !attr_of_aspect.check_allowed_values() {
-                        continue;
-                    }
-                    let allowed_values = attr_of_aspect
-                        .get_allowed_values()
-                        .expect("allowed values of a checked attribute");
-                    let public_name = attr_of_aspect.get_public_name();
-                    let configurable = rule
-                        .get_attribute_provider()
-                        .get_attribute_by_name_maybe(&public_name)
-                        .is_some()
-                        && RawAttributeMapper::of(rule).is_configurable(&public_name);
-                    let value = if configurable {
-                        None
-                    } else if aspect.get_required_parameters().contains(&public_name)
-                        && rule
-                            .get_attribute_provider()
-                            .has_attr(&public_name, attr_of_aspect.get_type())
-                    {
-                        NonconfigurableAttributeMapper::of(rule)
-                            .get(&public_name, attr_of_aspect.get_type())
-                    } else {
-                        attr_of_aspect.get_default_value(None)
-                    };
-                    let ok = value.as_ref().is_some_and(|v| allowed_values.apply(v));
-                    if ok {
-                        continue;
-                    }
-                    if configurable {
-                        rule.report_error(
-                            &format!(
-                                "{}: attribute '{}' has a select() and aspect {} also declares \
-                                 '{}'. Aspect attributes don't currently support select().",
-                                rule.get_label(),
-                                attr_of_aspect.get_name(),
-                                aspect.get_name(),
-                                rule.get_label()
-                            ),
-                            event_handler,
-                        );
-                    } else {
-                        let reason = match &value {
-                            Some(v) => allowed_values.get_error_reason(v),
-                            None => blaze_util::unported!(
-                                "RuleClass.checkAspectAllowedValues of a null value"
-                            ),
-                        };
-                        rule.report_error(
-                            &format!(
-                                "{}: invalid value in '{}' attribute: {}",
-                                rule.get_label(),
-                                attr_of_aspect.get_name(),
-                                reason
-                            ),
-                            event_handler,
-                        );
+        if rule.has_aspects() {
+            for attr_of_rule in rule.get_attribute_provider().get_attributes() {
+                // Java: `attrOfRule.getAspects(rule)` (AspectsList.getAspects): every aspect is
+                // instantiated with `parametersExtractor.apply(rule)`, and a Starlark aspect's
+                // definition is `StarlarkDefinedAspect.getDefinition(params)`.
+                for aspect in attr_of_rule.get_aspects_list().get_aspect_details() {
+                    let aspect_params = aspect.get_default_parameters(rule);
+                    for attr_of_aspect in aspect.get_aspect_attributes() {
+                        // By this point the AspectDefinition has been created and values assigned.
+                        if attr_of_aspect.check_allowed_values() {
+                            let allowed_values = attr_of_aspect
+                                .get_allowed_values()
+                                .expect("allowed values of a checked attribute");
+                            // Java: `attrOfAspect.getDefaultValue(null)` of the definition's
+                            // attribute, whose value StarlarkDefinedAspect.buildDefinition
+                            // replaced by the parameter (addAttrValue) when there is one.
+                            let value = match aspect_params.get(attr_of_aspect.get_name()) {
+                                Some(attr_value) => {
+                                    Some(AspectDetails::add_attr_value(attr_of_aspect, attr_value))
+                                }
+                                None => attr_of_aspect.get_default_value(None),
+                            };
+                            let Some(value) = value else {
+                                blaze_util::unported!(
+                                    "RuleClass.checkAspectAllowedValues of a null value"
+                                )
+                            };
+                            if !allowed_values.apply(&value) {
+                                if RawAttributeMapper::of(rule)
+                                    .is_configurable(attr_of_aspect.get_name())
+                                {
+                                    rule.report_error(
+                                        &format!(
+                                            "{}: attribute '{}' has a select() and aspect {} also \
+                                             declares '{}'. Aspect attributes don't currently \
+                                             support select().",
+                                            rule.get_label(),
+                                            attr_of_aspect.get_name(),
+                                            aspect.get_name(),
+                                            rule.get_label()
+                                        ),
+                                        event_handler,
+                                    );
+                                } else {
+                                    rule.report_error(
+                                        &format!(
+                                            "{}: invalid value in '{}' attribute: {}",
+                                            rule.get_label(),
+                                            attr_of_aspect.get_name(),
+                                            allowed_values.get_error_reason(&value)
+                                        ),
+                                        event_handler,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }

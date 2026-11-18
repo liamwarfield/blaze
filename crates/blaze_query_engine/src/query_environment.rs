@@ -719,6 +719,8 @@ pub trait TransitiveLoadFilesHelper<T> {
 
 /// List of the default query functions.
 // Java: com/google/devtools/build/lib/query2/engine/QueryEnvironment.java:741 QueryEnvironment.DEFAULT_QUERY_FUNCTIONS
+// PORT: one `add` per function, as Java's ImmutableList.Builder.
+#[allow(clippy::vec_init_then_push)]
 pub fn default_query_functions<T: Clone + 'static>() -> Vec<Arc<dyn QueryFunction<T>>> {
     let mut functions: Vec<Arc<dyn QueryFunction<T>>> = Vec::new();
     functions.push(Arc::new(AllPathsFunction::new()));

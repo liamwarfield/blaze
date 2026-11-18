@@ -19,6 +19,7 @@ pub mod configured_target_and_data_ext;
 pub mod configured_target_factory;
 pub mod depsets;
 pub mod expander;
+pub mod label_expander;
 pub mod location_expander;
 pub mod prerequisite_artifacts;
 pub mod prerequisites_collection;

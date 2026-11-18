@@ -1,0 +1,21 @@
+# Integrity audit S1-1 / analysis S2-5: cquery result order and aquery action order and ids are
+# Java's (ConcurrentHashMap / HashMap iteration over ConfiguredTargetKey.hashCode), which depends
+# on Runtime.availableProcessors() (16 on the recording machine).
+# Not recorded: allpaths() and rdeps() over several targets. Their order is not reproducible on
+# the oracle itself (two recordings of `cquery "allpaths(//:top, //b/c:leaf)"` differed):
+# PostAnalysisQueryEnvironment.getReverseDeps iterates a HashMap keyed by configured target
+# objects (identity hash codes), and a node's reverse deps are in Skyframe registration order.
+run cquery "deps(//...)" --output=label_kind
+run cquery "deps(//:top, 1)" --output=label_kind
+run cquery "deps(//:top, 2)" --output=label
+run cquery "//... + //a:all" --output=label_kind
+run cquery "deps(//:top) except deps(//a:all_a)" --output=label_kind
+run cquery "kind('source file', deps(//:top))" --output=label_kind
+run cquery "deps(//:top)" --noimplicit_deps --output=label_kind
+run cquery "deps(//:top)" --notool_deps --output=label_kind
+run cquery "deps(//:top)" --noimplicit_deps --notool_deps --output=label_kind
+run cquery "somepath(//:top, //b/c:leaf)" --output=label_kind
+run cquery "//a:all" --output=jsonproto --noproto:include_configurations --proto:output_rule_attrs=name,srcs,deps
+aquery "deps(//...)"
+aquery "deps(//:top)" --noimplicit_deps
+run aquery "deps(//a:x)" --output=jsonproto

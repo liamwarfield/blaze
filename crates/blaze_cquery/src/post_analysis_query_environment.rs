@@ -13,20 +13,44 @@
 //! (`evaluateQueryInternal`, `eval`, `handleError`, `transitiveLoadFiles`) are ported generically
 //! in this file.
 //!
-//! PORT: java-hash-order. Java's result sets (`ThreadSafeMutableKeyExtractorBackedSetImpl` over a
-//! `ConcurrentHashMap<ActionLookupKey, T>`) iterate in hash order of the keys; here they iterate
-//! in insertion order. cquery/aquery outputs are compared as sets.
+//! PORT: java-hash-order. The order of cquery results and of aquery actions (and so every id in
+//! aquery's output) is the iteration order of Java hash collections keyed by
+//! `ConfiguredTargetKey`; it is replicated here (validated against the oracle's output of both
+//! corpus projects, see `tests/java_order_test.rs`):
+//!
+//! - Result sets, the `deps()` frontier and `getFwdDeps` results are
+//!   `ThreadSafeMutableKeyExtractorBackedSetImpl`s over
+//!   `new ConcurrentHashMap<>(SkyQueryEnvironment.DEFAULT_THREAD_COUNT, 0.75f)`: [`KeyedNodeSet`]
+//!   over `blaze_query_engine::JavaConcurrentHashMap`. `DEFAULT_THREAD_COUNT` is
+//!   `Runtime.getRuntime().availableProcessors()`, so Bazel's output order depends on the number
+//!   of processors of the machine ([`default_thread_count`]).
+//! - `getFwdDeps` / `getReverseDeps` pass their keys through four `java.util.HashMap`s
+//!   (`Maps.newHashMapWithExpectedSize`, `InMemoryGraphImpl.getBatchMap`,
+//!   `DelegatingWalkableGraph.getDirectDeps`, `targetifyValues`): [`java_hash_map_key_order`],
+//!   [`delegating_walkable_graph_map_order`].
+//! - The hash codes are Java's `ConfiguredTargetKey.hashCode()`
+//!   ([`configured_target_key_java_hash_code`]).
+//! - Within one bin the order is the insertion order, which comes from the order of a node's
+//!   direct deps in the Skyframe graph (`WalkableGraph.getDirectDeps`, Java's `GroupedDeps`
+//!   order, i.e. the order in which `ConfiguredTargetFunction` and its state machines requested
+//!   them).
+//!
+//! Not replicable: `getReverseDeps` iterates a `HashMap` keyed by the node objects (identity hash
+//! codes), and a node's reverse deps are in the order the parents registered. Bazel's own
+//! `rdeps()`/`allpaths()` order over several targets changes from run to run (recorded twice in
+//! `scripts/w4/scenarios/query-order`); those two places keep insertion order here.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use blaze_actions::ActionLookupKeyRef;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::{CONFIGURED_TARGET, ConfiguredTargetKey};
 use blaze_analysis::configured_target_value::ConfiguredTargetValue;
 use blaze_analysis::configuredtargets::RuleConfiguredTarget;
+use blaze_analysis::toolchains::toolchain_context_key::ToolchainContextKey;
 use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_cmdline::{
@@ -45,6 +69,10 @@ use blaze_query::common::abstract_blaze_query_environment::{
 use blaze_query::compat::failure_details;
 use blaze_query_engine::callback::{
     IoException, IoExceptionSlot, OutputFormatterError, output_formatter_callback_process,
+};
+use blaze_query_engine::java_concurrent_hash_map::{
+    JavaConcurrentHashMap, JavaHashCode, java_hash_map_order_by, java_hash_map_table_size_for,
+    java_internal_string_hash_code,
 };
 use blaze_query_engine::query_util::{self, MinDepthUniquifierImpl, UniquifierImpl};
 use blaze_query_engine::{
@@ -70,8 +98,24 @@ use blaze_skyframe::{SkyKey, WalkableGraph};
 use blaze_vfs::{PathFragment, Root, RootedPath};
 use indexmap::{IndexMap, IndexSet};
 
-/// `SkyQueryEnvironment.DEFAULT_THREAD_COUNT`.
-const DEFAULT_THREAD_COUNT: i32 = 200;
+/// `SkyQueryEnvironment.DEFAULT_THREAD_COUNT`: `Runtime.getRuntime().availableProcessors()`.
+///
+/// It sizes the `ConcurrentHashMap`s behind every post-analysis query set, so it decides the
+/// order of cquery and aquery output (see the module documentation).
+///
+/// PORT: `std::thread::available_parallelism` counts the CPUs of the affinity mask and applies
+/// the cgroup CPU quota like HotSpot's `os::active_processor_count`, except that it rounds a
+/// fractional quota down where HotSpot rounds it up. `blaze_runtime::local_resources` has the
+/// exact port (`available_processors`, private, in a crate above this one).
+// Java: com/google/devtools/build/lib/query2/SkyQueryEnvironment.java:154 SkyQueryEnvironment.DEFAULT_THREAD_COUNT
+pub fn default_thread_count() -> i32 {
+    static DEFAULT_THREAD_COUNT: OnceLock<i32> = OnceLock::new();
+    *DEFAULT_THREAD_COUNT.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get() as i32)
+            .unwrap_or(1)
+    })
+}
 
 // -------------------------------------------------------------------------------------------
 // Node types.
@@ -84,11 +128,20 @@ pub trait PostAnalysisNode: Clone + 'static {
 
     /// Java `getValueFromKey`: the node for a `CONFIGURED_TARGET` value.
     fn from_configured_target_value(value: Arc<ConfiguredTargetValue>) -> Self;
+
+    /// Java `node instanceof RuleConfiguredTarget`, on the node object itself: true for a rule's
+    /// `CqueryNode`, never true for aquery's `ConfiguredTargetValue`.
+    // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:357 PostAnalysisQueryEnvironment.filterReverseDeps
+    fn is_instance_of_rule_configured_target(&self) -> bool;
 }
 
 impl PostAnalysisNode for ConfiguredTarget {
     fn get_configured_target(&self) -> &ConfiguredTarget {
         self
+    }
+
+    fn is_instance_of_rule_configured_target(&self) -> bool {
+        matches!(self, ConfiguredTarget::Rule(_))
     }
 
     fn from_configured_target_value(value: Arc<ConfiguredTargetValue>) -> Self {
@@ -99,6 +152,11 @@ impl PostAnalysisNode for ConfiguredTarget {
 impl PostAnalysisNode for Arc<ConfiguredTargetValue> {
     fn get_configured_target(&self) -> &ConfiguredTarget {
         ConfiguredTargetValue::get_configured_target(self)
+    }
+
+    fn is_instance_of_rule_configured_target(&self) -> bool {
+        // A ConfiguredTargetValue is not a RuleConfiguredTarget.
+        false
     }
 
     fn from_configured_target_value(value: Arc<ConfiguredTargetValue>) -> Self {
@@ -135,51 +193,364 @@ pub fn configured_target_key_extractor<T: PostAnalysisNode>()
     Arc::new(|t: &T| get_configured_target_key(t))
 }
 
-/// `ThreadSafeMutableKeyExtractorBackedSetImpl` keyed by the configured target key.
+// -------------------------------------------------------------------------------------------
+// Java hash codes and hash collection orders (PORT: java-hash-order, see the module
+// documentation).
+
+/// `HashCodes.hashObjects(o1, o2, o3)` over the hash codes of its arguments (0 for null).
+// Java: com/google/devtools/build/lib/util/HashCodes.java:52 HashCodes.hashObjects
+fn hash_objects3(h1: i32, h2: i32, h3: i32) -> i32 {
+    // h3 + MULTIPLIER * (h2 + (MULTIPLIER * (h1 + MULTIPLIER)))
+    h3.wrapping_add(31i32.wrapping_mul(h2.wrapping_add(31i32.wrapping_mul(h1.wrapping_add(31)))))
+}
+
+/// `BuildConfigurationKey.hashCode()`: `options.hashCode()`, which is
+/// `31 + checksum().hashCode()`.
+// Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:284 BuildOptions.hashCode
+fn build_configuration_key_java_hash_code(checksum: &str) -> i32 {
+    31i32.wrapping_add(java_internal_string_hash_code(checksum))
+}
+
+/// Java `ConfiguredTargetKey.hashCode()` of the key with these fields
+/// (`configuration_checksum` is `configurationKey.getOptionsChecksum()`, `None` for a null
+/// configuration key).
+// Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:320 ConfiguredTargetKey.computeHashCode
+pub fn configured_target_key_java_hash_code(
+    label: &Label,
+    configuration_checksum: Option<&str>,
+    execution_platform_label: Option<&Label>,
+    should_apply_rule_transition: bool,
+) -> i32 {
+    // int hashCode = hashObjects(label, configurationKey, executionPlatformLabel);
+    let mut hash_code = hash_objects3(
+        label.java_hash_code(),
+        configuration_checksum.map_or(0, build_configuration_key_java_hash_code),
+        execution_platform_label.map_or(0, |l| l.java_hash_code()),
+    );
+    if !should_apply_rule_transition {
+        hash_code = !hash_code;
+    }
+    hash_code
+}
+
+/// Java `hashCode()` of a `ConfiguredTargetKey`.
+// Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:122 ConfiguredTargetKey.hashCode
+fn java_hash_code_of_configured_target_key(key: &ConfiguredTargetKey) -> i32 {
+    configured_target_key_java_hash_code(
+        key.get_label(),
+        key.get_configuration_key()
+            .map(|k| k.get_options_checksum()),
+        key.get_execution_platform_label(),
+        key.should_apply_rule_transition(),
+    )
+}
+
+/// Java `hashCode()` of an `ActionLookupKey` that is a post-analysis query node key.
+pub fn action_lookup_key_java_hash_code(key: &ActionLookupKeyRef) -> i32 {
+    match as_configured_target_key(key) {
+        Some(k) => java_hash_code_of_configured_target_key(k),
+        None => blaze_util::unported!("AspectKey.hashCode", "aspect keys as query nodes ({})", key),
+    }
+}
+
+/// `java.lang.Boolean.hashCode(boolean)`.
+fn java_boolean_hash_code(b: bool) -> i32 {
+    if b { 1231 } else { 1237 }
+}
+
+/// Java `hashCode()` of a `ToolchainContextKey` (an `@AutoValue` class: `h = 1`, then for each
+/// property in declaration order `h *= 1000003; h ^= property.hashCode()`).
 ///
-/// PORT: java-hash-order (see the module documentation): insertion order.
+/// `ImmutableSet.hashCode()` is the sum of the element hash codes, `Optional.hashCode()` is the
+/// value's hash code or 0, and the record `ToolchainTypeRequirement` hashes as
+/// `(31 * (31 * toolchainType.hashCode() + hash(mandatory)) + hash(ignoreIfInvalid))`
+/// (`java.lang.runtime.ObjectMethods`).
+// Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java:30 ToolchainContextKey
+fn java_hash_code_of_toolchain_context_key(key: &ToolchainContextKey) -> i32 {
+    let mut toolchain_types: i32 = 0;
+    for requirement in key.toolchain_types() {
+        let mut record: i32 = 0;
+        record = record
+            .wrapping_mul(31)
+            .wrapping_add(requirement.toolchain_type.java_hash_code());
+        record = record
+            .wrapping_mul(31)
+            .wrapping_add(java_boolean_hash_code(requirement.mandatory));
+        record = record
+            .wrapping_mul(31)
+            .wrapping_add(java_boolean_hash_code(requirement.ignore_if_invalid));
+        toolchain_types = toolchain_types.wrapping_add(record);
+    }
+    let mut exec_constraint_labels: i32 = 0;
+    for label in key.exec_constraint_labels() {
+        exec_constraint_labels = exec_constraint_labels.wrapping_add(label.java_hash_code());
+    }
+    let mut h: i32 = 1;
+    h = h.wrapping_mul(1000003);
+    h ^= build_configuration_key_java_hash_code(key.configuration_key().get_options_checksum());
+    h = h.wrapping_mul(1000003);
+    h ^= toolchain_types;
+    h = h.wrapping_mul(1000003);
+    h ^= exec_constraint_labels;
+    h = h.wrapping_mul(1000003);
+    h ^= key
+        .force_execution_platform()
+        .map_or(0, |l| l.java_hash_code());
+    h = h.wrapping_mul(1000003);
+    h ^= java_boolean_hash_code(key.debug_target());
+    h
+}
+
+/// Java `hashCode()` of the SkyKeys `PostAnalysisQueryEnvironment.targetifyValues` looks at
+/// (`CONFIGURED_TARGET` and `TOOLCHAIN_RESOLUTION` keys), `None` for any other key.
+fn sky_key_java_hash_code_if_known(key: &SkyKey) -> Option<i32> {
+    if let Some(k) = key.downcast::<ConfiguredTargetKey>() {
+        return Some(java_hash_code_of_configured_target_key(k));
+    }
+    if let Some(k) = key.downcast::<ToolchainContextKey>() {
+        return Some(java_hash_code_of_toolchain_context_key(k));
+    }
+    None
+}
+
+/// Java `hashCode()` of the key of a query node as a SkyKey.
+fn sky_key_java_hash_code(key: &SkyKey) -> i32 {
+    match key.downcast::<ConfiguredTargetKey>() {
+        Some(k) => java_hash_code_of_configured_target_key(k),
+        None => blaze_util::unported!(
+            "SkyKey.hashCode",
+            "Java hash code of the query node key {:?}",
+            key
+        ),
+    }
+}
+
+/// Guava's `Maps.capacity(expectedSize)` (33.5.0): the `initialCapacity`
+/// `Maps.newHashMapWithExpectedSize(expectedSize)` passes to `new HashMap<>(int)`.
+// Java (Guava): com/google/common/collect/Maps.java Maps.capacity
+pub fn guava_maps_capacity(expected_size: usize) -> i32 {
+    if expected_size < 3 {
+        return expected_size as i32 + 1;
+    }
+    // Ints.MAX_POWER_OF_TWO
+    if expected_size < (1usize << 30) {
+        // (int) ceil(expectedSize / 0.75)
+        return (expected_size as f64 / 0.75).ceil() as i32;
+    }
+    i32::MAX // any large value
+}
+
+/// The entries of a `java.util.HashMap` whose table starts with `table_size` slots, in
+/// iteration order, after `put`ting `entries` in order.
+pub fn java_hash_map_entry_order<K: PartialEq, V>(
+    table_size: usize,
+    entries: Vec<(K, V)>,
+    hash_code: &impl Fn(&K) -> i32,
+) -> Vec<(K, V)> {
+    java_hash_map_order_by(table_size, entries, |k| hash_code(k))
+}
+
+/// The key set of [`java_hash_map_entry_order`].
+pub fn java_hash_map_key_order<K: PartialEq>(
+    table_size: usize,
+    keys: Vec<K>,
+    hash_code: &impl Fn(&K) -> i32,
+) -> Vec<K> {
+    java_hash_map_entry_order(
+        table_size,
+        keys.into_iter().map(|k| (k, ())).collect(),
+        hash_code,
+    )
+    .into_iter()
+    .map(|(k, ())| k)
+    .collect()
+}
+
+/// The key order of `Maps.newHashMapWithExpectedSize(expected_size)` after `put`ting `keys` in
+/// order (`targetsByKey` of `getFwdDeps` and `getReverseDeps`, where `expected_size` is
+/// `Iterables.size(targets)`).
+// Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:288 PostAnalysisQueryEnvironment.getFwdDeps
+pub fn targets_by_key_order<K: PartialEq>(
+    expected_size: usize,
+    keys: Vec<K>,
+    hash_code: &impl Fn(&K) -> i32,
+) -> Vec<K> {
+    java_hash_map_key_order(
+        java_hash_map_table_size_for(guava_maps_capacity(expected_size)),
+        keys,
+        hash_code,
+    )
+}
+
+/// The entry order of the map `DelegatingWalkableGraph.getDirectDeps(keys)` /
+/// `getReverseDeps(keys)` returns, given the entries of the keys that have a (done) node, in the
+/// order of `keys`.
+// Java: com/google/devtools/build/skyframe/DelegatingWalkableGraph.java:109 DelegatingWalkableGraph.getDirectDeps
+pub fn delegating_walkable_graph_map_order<K: PartialEq, V>(
+    entries: Vec<(K, V)>,
+    hash_code: &impl Fn(&K) -> i32,
+) -> Vec<(K, V)> {
+    // getBatch(null, reason, keys): InMemoryGraphImpl.getBatchMap puts the entries of the keys
+    // into `new HashMap<>()`.
+    // Java: com/google/devtools/build/skyframe/InMemoryGraphImpl.java:180 InMemoryGraphImpl.getBatchMap
+    let entries = java_hash_map_entry_order(16, entries, hash_code);
+    // Map<SkyKey, Iterable<SkyKey>> result = new HashMap<>(entries.size());
+    let table_size = java_hash_map_table_size_for(entries.len() as i32);
+    java_hash_map_entry_order(table_size, entries, hash_code)
+}
+
+/// The iteration order of `new HashSet<>()` after `add`ing `elements` in order, restricted to
+/// the elements whose Java hash code is known (`Some`). The other elements only count for the
+/// growth of the table.
+///
+/// `HashMap.resize` keeps the relative order of the nodes of a bin and `putVal` appends, so the
+/// iteration order is the insertion order stably sorted by the bin index in the final table,
+/// whose length depends only on the number of elements, unless a bin reaches 9 nodes
+/// (`treeifyBin`: a resize below 64 slots, a red-black tree above). Whether that happens depends
+/// on the hash codes of all elements, so this fails loudly as soon as the elements of unknown
+/// hash code could make a bin that long.
+// Java (JDK): java/util/HashMap.java HashMap.putVal
+fn java_hash_set_order_of_known<K: PartialEq + Clone + std::fmt::Debug>(
+    elements: Vec<(K, Option<i32>)>,
+) -> Vec<K> {
+    const TREEIFY_THRESHOLD: usize = 8;
+    // HashMap.hash: (h = key.hashCode()) ^ (h >>> 16)
+    fn hash(h: i32) -> usize {
+        let h = h as u32;
+        (h ^ (h >> 16)) as usize
+    }
+    let mut table_size: usize = 16;
+    let mut size: usize = 0;
+    let mut unknown: usize = 0;
+    let mut seen: Vec<K> = Vec::new();
+    let mut known: Vec<(K, usize)> = Vec::new();
+    let mut bin_counts: Vec<usize> = vec![0; table_size];
+    for (element, hash_code) in elements {
+        // HashSet.add: an element already present changes nothing.
+        if seen.contains(&element) {
+            continue;
+        }
+        match hash_code {
+            Some(h) => {
+                let h = hash(h);
+                let index = h & (table_size - 1);
+                bin_counts[index] += 1;
+                if bin_counts[index] + unknown > TREEIFY_THRESHOLD {
+                    blaze_util::unported!(
+                        "HashMap.treeifyBin",
+                        "iteration order of a HashSet<SkyKey> in which {} keys share a bin with \
+                         possibly {} keys of unported hashCode (adding {:?})",
+                        bin_counts[index],
+                        unknown,
+                        element
+                    );
+                }
+                seen.push(element.clone());
+                known.push((element, h));
+            }
+            None => {
+                unknown += 1;
+                if let Some(max) = bin_counts.iter().max()
+                    && max + unknown > TREEIFY_THRESHOLD
+                {
+                    blaze_util::unported!(
+                        "HashMap.treeifyBin",
+                        "iteration order of a HashSet<SkyKey> with {} keys of unported hashCode \
+                         (adding {:?})",
+                        unknown,
+                        element
+                    );
+                }
+                seen.push(element);
+            }
+        }
+        // if (++size > threshold) resize();  (threshold is 0.75 * table length)
+        size += 1;
+        if size > table_size * 3 / 4 {
+            table_size *= 2;
+            bin_counts = vec![0; table_size];
+            for (_, h) in &known {
+                bin_counts[h & (table_size - 1)] += 1;
+            }
+        }
+    }
+    let mut bins: Vec<Vec<K>> = (0..table_size).map(|_| Vec::new()).collect();
+    for (element, h) in known {
+        bins[h & (table_size - 1)].push(element);
+    }
+    bins.into_iter().flatten().collect()
+}
+
+/// An `ActionLookupKey` with its Java `hashCode()` (the key type of the query sets).
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct JavaActionLookupKey(pub ActionLookupKeyRef);
+
+impl JavaHashCode for JavaActionLookupKey {
+    fn java_hash_code(&self) -> i32 {
+        action_lookup_key_java_hash_code(&self.0)
+    }
+}
+
+/// `ThreadSafeMutableKeyExtractorBackedSetImpl` keyed by the configured target key
+/// (`createThreadSafeMutableSet` of both environments).
+///
+/// PORT: java-hash-order (see the module documentation): the backing
+/// `new ConcurrentHashMap<>(/*initialCapacity=*/ concurrencyLevel, /*loadFactor=*/ 0.75f)` is
+/// `blaze_query_engine::JavaConcurrentHashMap`, so iteration follows Java's order.
+// Java: com/google/devtools/build/lib/query2/engine/QueryUtil.java:179 QueryUtil.ThreadSafeMutableKeyExtractorBackedSetImpl
 pub struct KeyedNodeSet<T> {
-    map: Mutex<IndexMap<ActionLookupKeyRef, T>>,
+    map: Mutex<JavaConcurrentHashMap<JavaActionLookupKey, T>>,
 }
 
 impl<T> KeyedNodeSet<T> {
+    /// The set with `concurrencyLevel = SkyQueryEnvironment.DEFAULT_THREAD_COUNT`.
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:565 ConfiguredTargetQueryEnvironment.createThreadSafeMutableSet
     pub fn new() -> Self {
+        Self::with_concurrency_level(default_thread_count())
+    }
+
+    // Java: com/google/devtools/build/lib/query2/engine/QueryUtil.java:190 ThreadSafeMutableKeyExtractorBackedSetImpl.<init>
+    pub fn with_concurrency_level(concurrency_level: i32) -> Self {
         KeyedNodeSet {
-            map: Mutex::new(IndexMap::new()),
+            map: Mutex::new(JavaConcurrentHashMap::with_capacity(
+                concurrency_level,
+                0.75,
+                1,
+            )),
         }
     }
 }
 
 impl<T: PostAnalysisNode> ThreadSafeMutableSet<T> for KeyedNodeSet<T> {
+    // Java: com/google/devtools/build/lib/query2/engine/QueryUtil.java:211 ThreadSafeMutableKeyExtractorBackedSetImpl.add
     fn add(&self, element: T) -> bool {
-        let key = get_configured_target_key(&element);
-        let mut map = self.map.lock().unwrap();
-        if map.contains_key(&key) {
-            return false;
-        }
-        map.insert(key, element);
-        true
+        let key = JavaActionLookupKey(get_configured_target_key(&element));
+        self.map.lock().unwrap().put_if_absent(key, element)
     }
 
+    // Java: com/google/devtools/build/lib/query2/engine/QueryUtil.java:216 ThreadSafeMutableKeyExtractorBackedSetImpl.contains
     fn contains(&self, element: &T) -> bool {
         self.map
             .lock()
             .unwrap()
-            .contains_key(&get_configured_target_key(element))
+            .contains_key(&JavaActionLookupKey(get_configured_target_key(element)))
     }
 
+    // Java: com/google/devtools/build/lib/query2/engine/QueryUtil.java:225 ThreadSafeMutableKeyExtractorBackedSetImpl.remove
     fn remove(&self, element: &T) -> bool {
         self.map
             .lock()
             .unwrap()
-            .shift_remove(&get_configured_target_key(element))
+            .remove(&JavaActionLookupKey(get_configured_target_key(element)))
             .is_some()
     }
 
+    // Java: com/google/devtools/build/lib/query2/engine/QueryUtil.java:206 ThreadSafeMutableKeyExtractorBackedSetImpl.size
     fn size(&self) -> i32 {
         self.map.lock().unwrap().len() as i32
     }
 
+    // Java: com/google/devtools/build/lib/query2/engine/QueryUtil.java:201 ThreadSafeMutableKeyExtractorBackedSetImpl.iterator
     fn to_vec(&self) -> Vec<T> {
         self.map.lock().unwrap().values().cloned().collect()
     }
@@ -576,35 +947,57 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
         ans
     }
 
+    /// `targetsByKey` of `getFwdDeps` and `getReverseDeps`
+    /// (`Maps.newHashMapWithExpectedSize(Iterables.size(targets))` filled in the order of
+    /// `targets`) and its key set in Java's iteration order.
+    // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:288 PostAnalysisQueryEnvironment.getFwdDeps
+    fn targets_by_key(&self, targets: &[T]) -> (HashMap<SkyKey, T>, Vec<SkyKey>) {
+        let mut targets_by_key: HashMap<SkyKey, T> = HashMap::with_capacity(targets.len());
+        let mut keys: Vec<SkyKey> = Vec::with_capacity(targets.len());
+        for target in targets {
+            let key = lookup_key_to_sky_key(&get_configured_target_key(target));
+            targets_by_key.insert(key.clone(), target.clone());
+            keys.push(key);
+        }
+        // PORT: java-hash-order.
+        let key_set = targets_by_key_order(targets.len(), keys, &sky_key_java_hash_code);
+        (targets_by_key, key_set)
+    }
+
+    /// The warning of `getFwdDeps` / `getReverseDeps` for the targets the graph has no entry for:
+    /// `Sets.difference(targetsByKey.keySet(), result.keySet())` in the order of the first set.
+    fn warn_missing_targets<V>(&self, targets_by_key_set: &[SkyKey], result: &[(SkyKey, V)]) {
+        let missing_targets: Vec<String> = targets_by_key_set
+            .iter()
+            .filter(|k| !result.iter().any(|(r, _)| r == *k))
+            // SKYKEY_TO_CTKEY: ConfiguredTargetKey.toString()
+            .map(|k| format!("{:?}", k))
+            .collect();
+        self.event_handler.handle(&Event::warn(format!(
+            "Targets were missing from graph: [{}]",
+            missing_targets.join(", ")
+        )));
+    }
+
     // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:287 PostAnalysisQueryEnvironment.getFwdDeps
     pub fn get_fwd_deps_set(&self, targets: &[T]) -> Arc<dyn ThreadSafeMutableSet<T>> {
-        // PORT: java-hash-order. Java's HashMap<SkyKey, T> iterates in hash order.
-        let mut targets_by_key: IndexMap<SkyKey, T> = IndexMap::new();
-        for target in targets {
-            targets_by_key.insert(
-                lookup_key_to_sky_key(&get_configured_target_key(target)),
-                target.clone(),
-            );
-        }
-        let mut direct_deps_input: Vec<(SkyKey, Vec<SkyKey>)> = Vec::new();
-        for key in targets_by_key.keys() {
-            // Java WalkableGraph.getDirectDeps(keys) only returns done nodes.
+        let (targets_by_key, targets_by_key_set) = self.targets_by_key(targets);
+        // graph.getDirectDeps(targetsByKey.keySet())
+        let mut direct_deps_of_keys: Vec<(SkyKey, Vec<SkyKey>)> = Vec::new();
+        for key in &targets_by_key_set {
+            // Java WalkableGraph.getDirectDeps(keys) only returns the keys that have a node.
             if self.graph.get_value(key).is_none() && self.graph.get_exception(key).is_none() {
                 continue;
             }
-            direct_deps_input.push((key.clone(), self.graph.get_direct_deps(key)));
+            direct_deps_of_keys.push((key.clone(), self.graph.get_direct_deps(key)));
         }
-        let direct_deps = self.targetify_values_map(&targets_by_key, &direct_deps_input);
+        // PORT: java-hash-order (the HashMaps of InMemoryGraphImpl.getBatchMap and
+        // DelegatingWalkableGraph.getDirectDeps).
+        let direct_deps_of_keys =
+            delegating_walkable_graph_map_order(direct_deps_of_keys, &sky_key_java_hash_code);
+        let direct_deps = self.targetify_values_map(&targets_by_key, direct_deps_of_keys);
         if targets_by_key.len() != direct_deps.len() {
-            let missing_targets: Vec<String> = targets_by_key
-                .keys()
-                .filter(|k| !direct_deps.contains_key(*k))
-                .map(|k| format!("{:?}", k))
-                .collect();
-            self.event_handler.handle(&Event::warn(format!(
-                "Targets were missing from graph: [{}]",
-                missing_targets.join(", ")
-            )));
+            self.warn_missing_targets(&targets_by_key_set, &direct_deps);
         }
         let result = self.create_set();
         for (key, deps) in &direct_deps {
@@ -627,27 +1020,27 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
 
     // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:323 PostAnalysisQueryEnvironment.getReverseDeps
     fn get_reverse_deps_impl(&self, targets: &[T]) -> Vec<T> {
-        let mut targets_by_key: IndexMap<SkyKey, T> = IndexMap::new();
-        for target in targets {
-            targets_by_key.insert(
-                lookup_key_to_sky_key(&get_configured_target_key(target)),
-                target.clone(),
-            );
-        }
-        let keys: Vec<SkyKey> = targets_by_key.keys().cloned().collect();
-        let reverse_deps = self.skip_delegating_ancestors(self.graph.get_reverse_deps(&keys));
-        let reverse_deps_by_key = self.targetify_values_map(&targets_by_key, &reverse_deps);
+        let (targets_by_key, targets_by_key_set) = self.targets_by_key(targets);
+        // graph.getReverseDeps(targetsByKey.keySet()): the entries of the done nodes.
+        // PORT: java-hash-order (the HashMaps of InMemoryGraphImpl.getBatchMap and
+        // DelegatingWalkableGraph.getReverseDeps). A node that exists without being done is in
+        // Java's first map and not in its second; WalkableGraph only shows done nodes here.
+        let reverse_deps = delegating_walkable_graph_map_order(
+            self.graph.get_reverse_deps(&targets_by_key_set),
+            &sky_key_java_hash_code,
+        );
+        let reverse_deps_by_key = self.targetify_values_map(
+            &targets_by_key,
+            self.skip_delegating_ancestors(reverse_deps),
+        );
         if targets_by_key.len() != reverse_deps_by_key.len() {
-            let missing_targets: Vec<String> = targets_by_key
-                .keys()
-                .filter(|k| !reverse_deps_by_key.contains_key(*k))
-                .map(|k| format!("{:?}", k))
-                .collect();
-            self.event_handler.handle(&Event::warn(format!(
-                "Targets were missing from graph: [{}]",
-                missing_targets.join(", ")
-            )));
+            self.warn_missing_targets(&targets_by_key_set, &reverse_deps_by_key);
         }
+        // Map<T, ImmutableList<ClassifiedDependency<T>>> reverseDepsByCT = new HashMap<>();
+        // PORT: java-hash-order, not replicable. The map is keyed by the nodes, whose hashCode is
+        // the identity hash code (neither ConfiguredTarget nor ConfiguredTargetValue overrides
+        // it), so Java's iteration order changes from run to run; here it is the order of
+        // `reverseDepsByKey`.
         let mut reverse_deps_by_ct: Vec<(T, Vec<ClassifiedDependency<T>>)> = Vec::new();
         for (key, deps) in reverse_deps_by_key {
             reverse_deps_by_ct.push((targets_by_key[&key].clone(), deps));
@@ -664,26 +1057,31 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
         &self,
         raw_reverse_deps: Vec<(T, Vec<ClassifiedDependency<T>>)>,
     ) -> Vec<T> {
-        let result = KeyedNodeSet::<T>::new();
+        // Set<T> result = CompactHashSet.create();
+        // PORT: a CompactHashSet iterates in insertion order. Java compares the nodes by
+        // identity; a node is identified by its lookup key here.
+        let mut result: IndexMap<ActionLookupKeyRef, T> = IndexMap::new();
         for (target, rdeps) in raw_reverse_deps {
             let mut rule_deps: Vec<ClassifiedDependency<T>> = Vec::new();
             for parent in rdeps {
-                let dependency = parent.dependency.clone();
-                if matches!(
-                    parent.dependency.get_configured_target(),
-                    ConfiguredTarget::Rule(_)
-                ) && !self.dependency_filter_is_all_deps
+                // `parent.dependency instanceof RuleConfiguredTarget` is a test of the node
+                // object: never true for aquery, whose nodes are ConfiguredTargetValues.
+                if parent.dependency.is_instance_of_rule_configured_target()
+                    && !self.dependency_filter_is_all_deps
                 {
                     rule_deps.push(parent);
                 } else {
-                    result.add(dependency);
+                    let dependency = parent.dependency;
+                    result
+                        .entry(get_configured_target_key(&dependency))
+                        .or_insert(dependency);
                 }
             }
             for dep in self.get_allowed_deps(&target, rule_deps) {
-                result.add(dep);
+                result.entry(get_configured_target_key(&dep)).or_insert(dep);
             }
         }
-        result.to_vec()
+        result.into_values().collect()
     }
 
     /// Expands any delegating ancestors when computing reverse dependencies.
@@ -692,11 +1090,19 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
         &self,
         reverse_deps: Vec<(SkyKey, Vec<SkyKey>)>,
     ) -> Vec<(SkyKey, Vec<SkyKey>)> {
+        // var result = ImmutableListMultimap.<SkyKey, SkyKey>builder();
         let mut result: Vec<(SkyKey, Vec<SkyKey>)> = Vec::new();
         for (child, rdeps) in reverse_deps {
             let unwound_rdeps =
                 self.unwind_reverse_dependency_delegation_layers_if_found(&child, &rdeps);
-            result.push((child, unwound_rdeps.unwrap_or(rdeps)));
+            let values = unwound_rdeps.unwrap_or(rdeps);
+            // result.putAll(child, values): ImmutableMultimap.Builder.putAll adds nothing, not
+            // even the key, for an empty collection, so a node without reverse deps (a top-level
+            // target) is absent from the result and reported as missing from the graph.
+            if values.is_empty() {
+                continue;
+            }
+            result.push((child, values));
         }
         result
     }
@@ -727,10 +1133,33 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
         if !found_delegating_rdep {
             return None;
         }
-        // PORT: java-hash-order (a HashSet of logical parents); insertion order.
-        let mut logical_parents: IndexSet<SkyKey> = IndexSet::new();
+        // var logicalParents = new HashSet<SkyKey>();
+        let mut logical_parents: Vec<SkyKey> = Vec::new();
         self.unwind_reverse_dependency_delegation_layers(child, rdeps, &mut logical_parents);
-        Some(logical_parents.into_iter().collect())
+        // PORT: java-hash-order. The caller iterates the HashSet. The keys targetifyValues looks
+        // at (CONFIGURED_TARGET, TOOLCHAIN_RESOLUTION) come in Java's order; the keys of other
+        // functions, which it skips, follow them (their place cannot be observed).
+        let mut ignored: Vec<SkyKey> = Vec::new();
+        let mut elements: Vec<(SkyKey, Option<i32>)> = Vec::new();
+        for key in logical_parents {
+            let hash_code = sky_key_java_hash_code_if_known(&key);
+            if hash_code.is_none() {
+                if key.function_name().get_name() == "ASPECT" {
+                    blaze_util::unported!(
+                        "AspectKey.hashCode",
+                        "aspect keys as reverse dependencies ({:?})",
+                        key
+                    );
+                }
+                if !ignored.contains(&key) {
+                    ignored.push(key.clone());
+                }
+            }
+            elements.push((key, hash_code));
+        }
+        let mut ordered = java_hash_set_order_of_known(elements);
+        ordered.extend(ignored);
+        Some(ordered)
     }
 
     // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:421 PostAnalysisQueryEnvironment.unwindReverseDependencyDelegationLayers
@@ -738,13 +1167,13 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
         &self,
         child: &SkyKey,
         rdeps: &[SkyKey],
-        output: &mut IndexSet<SkyKey>,
+        output: &mut Vec<SkyKey>,
     ) {
         // Checks the value of each rdep to see if it is delegating to `child`. If so, fetches
         // its rdeps and processes those, applying the same expansion as needed.
         for rdep_key in rdeps {
             if rdep_key.function_name() != CONFIGURED_TARGET {
-                output.insert(rdep_key.clone());
+                output.push(rdep_key.clone());
                 continue;
             }
             let Some(rdep_value) = self.get_value_from_key(rdep_key) else {
@@ -753,7 +1182,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
             };
             let actual_parent_key = lookup_key_to_sky_key(&get_configured_target_key(&rdep_value));
             if actual_parent_key != *child {
-                output.insert(rdep_key.clone());
+                output.push(rdep_key.clone());
                 continue;
             }
             // Otherwise `rdepKey` is delegating to child and needs to be unwound.
@@ -942,22 +1371,23 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
     // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:632 PostAnalysisQueryEnvironment.targetifyValues
     fn targetify_values_map(
         &self,
-        from_targets_by_key: &IndexMap<SkyKey, T>,
-        input: &[(SkyKey, Vec<SkyKey>)],
-    ) -> IndexMap<SkyKey, Vec<ClassifiedDependency<T>>> {
-        let mut result: IndexMap<SkyKey, Vec<ClassifiedDependency<T>>> = IndexMap::new();
+        from_targets_by_key: &HashMap<SkyKey, T>,
+        input: Vec<(SkyKey, Vec<SkyKey>)>,
+    ) -> Vec<(SkyKey, Vec<ClassifiedDependency<T>>)> {
+        // Map<SkyKey, ImmutableList<ClassifiedDependency<T>>> result = new HashMap<>();
+        let mut result: Vec<(SkyKey, Vec<ClassifiedDependency<T>>)> =
+            Vec::with_capacity(input.len());
         for (from_key, deps) in input {
-            result.insert(
-                from_key.clone(),
-                self.targetify_values(
-                    from_targets_by_key.get(from_key),
-                    deps,
-                    &mut HashSet::new(),
-                    &mut HashSet::new(),
-                ),
+            let values = self.targetify_values(
+                from_targets_by_key.get(&from_key),
+                &deps,
+                &mut HashSet::new(),
+                &mut HashSet::new(),
             );
+            result.push((from_key, values));
         }
-        result
+        // PORT: java-hash-order.
+        java_hash_map_entry_order(16, result, &sky_key_java_hash_code)
     }
 
     fn create_set(&self) -> Arc<dyn ThreadSafeMutableSet<T>> {
@@ -1030,9 +1460,12 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
             Err(TargetPatternEvalError::Interrupted) => {
                 Err(QueryError::Interrupted(InterruptedException::new()))
             }
+            // RecursivePkgValueRootPackageExtractor throws
+            // `new QueryException(message, Code.TARGET_NOT_IN_UNIVERSE_SCOPE)`: no expression, so
+            // the top level describes it as "Evaluation failed: ...".
+            // Java: com/google/devtools/build/lib/skyframe/RecursivePkgValueRootPackageExtractor.java:60 RecursivePkgValueRootPackageExtractor.streamPackagesFromRoots
             Err(TargetPatternEvalError::ProcessPackageDirectory(message)) => Err(
-                QueryException::new(Some(owner), message, query::Code::TargetNotInUniverseScope)
-                    .into(),
+                QueryException::new(None, message, query::Code::TargetNotInUniverseScope).into(),
             ),
             Err(other) => panic!(
                 "IllegalStateException: unexpected target pattern evaluation failure: {:?}",
@@ -1061,7 +1494,8 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
                         .expect("DetailedExitCode without FailureDetail"),
                 ));
             } else {
-                // PORT: BugReport.sendBugReport("Undetailed failure: ...") skipped (bug reports).
+                // PORT: skipped, Google-internal: BugReport.sendBugReport("Undetailed failure:
+                // ...").
                 return Err(QueryException::new(
                     Some(expression),
                     message,
@@ -1216,8 +1650,8 @@ fn check_settings(settings: &HashSet<Setting>) -> Result<(), QueryException> {
     if settings.contains(&Setting::NoNodepDeps)
         || settings.contains(&Setting::TestsExpressionStrict)
     {
-        // Sets.difference(settings, {ONLY_TARGET_DEPS, NO_IMPLICIT_DEPS})
-        // PORT: java-hash-order (a HashSet view); ordinal order here.
+        // Sets.difference(settings, {ONLY_TARGET_DEPS, NO_IMPLICIT_DEPS}): a view of `settings`,
+        // an EnumSet (CommonQueryOptions.toSettings), which iterates in ordinal order.
         let mut remaining: Vec<&Setting> = settings
             .iter()
             .filter(|s| **s != Setting::OnlyTargetDeps && **s != Setting::NoImplicitDeps)
@@ -1543,7 +1977,7 @@ where
     fn create_min_depth_uniquifier(&self) -> Box<dyn MinDepthUniquifier<T>> {
         Box::new(MinDepthUniquifierImpl::new(
             configured_target_key_extractor::<T>(),
-            DEFAULT_THREAD_COUNT,
+            default_thread_count(),
         ))
     }
 
@@ -1884,6 +2318,25 @@ mod tests {
     #[ignore = "needs the BuildViewTestCase analysis harness"]
     fn test_target_literal_with_missing_targets() {}
 
+    // Oracle (scripts/w4/scenarios/query-errors, `cquery //:x --nodep_deps=false`): "The following
+    // filter(s) are not currently supported by configured query: [NO_NODEP_DEPS,
+    // INCLUDE_ASPECTS]" (the EnumSet's ordinal order).
+    #[test]
+    fn check_settings_lists_the_other_settings_in_ordinal_order() {
+        let settings: HashSet<Setting> = [
+            Setting::IncludeAspects,
+            Setting::NoNodepDeps,
+            Setting::NoImplicitDeps,
+        ]
+        .into_iter()
+        .collect();
+        let e = check_settings(&settings).unwrap_err();
+        assert_eq!(
+            e.get_message(),
+            "The following filter(s) are not currently supported by configured query: [NO_NODEP_DEPS, INCLUDE_ASPECTS]"
+        );
+    }
+
     #[test]
     fn check_settings_rejects_nodep_filtering() {
         let settings: HashSet<Setting> = [Setting::NoNodepDeps, Setting::OnlyTargetDeps]
@@ -1894,6 +2347,293 @@ mod tests {
             e.get_message(),
             "The following filter(s) are not currently supported by configured query: [NO_NODEP_DEPS]"
         );
+    }
+
+    /// `BuildConfigurationKey.create(BuildOptions.builder().build())`: empty options, whose
+    /// checksum is 64 zeros.
+    fn empty_configuration_key() -> BuildConfigurationKey {
+        let key = BuildConfigurationKey::create(Arc::new(
+            blaze_build_config::build_options::BuildOptions::builder().build(),
+        ));
+        assert_eq!(key.get_options_checksum(), "0".repeat(64));
+        key
+    }
+
+    // Expected values: `hashCode()` of the keys built by Bazel 9.3.2's own classes (the oracle's
+    // A-server.jar run on JDK 25): ConfiguredTargetKey.builder().setLabel(label) with, in this
+    // order, (1) no configuration key, (2) BuildConfigurationKey.create(BuildOptions.builder()
+    // .build()), (3) that and setExecutionPlatformLabel(@@platforms//host:host), (4) as 2 with
+    // setShouldApplyRuleTransition(false), (5) as 3 with setShouldApplyRuleTransition(false).
+    // The last label is Java's internal form of a non-ASCII name (Latin-1 characters holding the
+    // UTF-8 bytes).
+    #[test]
+    fn configured_target_key_hash_codes_match_java() {
+        let cases: [(&str, [i32; 5]); 6] = [
+            (
+                "//:brotli",
+                [-178071824, 954342065, 1214327892, -954342066, -1214327893],
+            ),
+            (
+                "//a/b:c",
+                [983405715, 2115819604, -1919161865, -2115819605, 1919161864],
+            ),
+            (
+                "@@rules_cc+//cc:defs.bzl",
+                [-316621397, 815792492, 1075778319, -815792493, -1075778320],
+            ),
+            (
+                "@@platforms//host:host",
+                [738306370, 1870720259, 2130706086, -1870720260, -2130706087],
+            ),
+            (
+                "@@rules_python++python+python_3_11_x86_64-unknown-linux-gnu//:lib/python3.11/site-packages/setuptools/script (dev).tmpl",
+                [765386214, 1897800103, -2137181366, -1897800104, 2137181365],
+            ),
+            (
+                "//pkg:\u{e4}",
+                [1181073805, -1981479602, -1721493775, 1981479601, 1721493774],
+            ),
+        ];
+        let configuration_key = empty_configuration_key();
+        let execution_platform_label = Label::parse_canonical_unchecked("@@platforms//host:host");
+        for (raw, expected) in cases {
+            let label = Label::parse_canonical_unchecked(raw);
+            let builder = || ConfiguredTargetKey::builder().set_label(label.clone());
+            let keys = [
+                builder().build(),
+                builder()
+                    .set_configuration_key(Some(configuration_key.clone()))
+                    .build(),
+                builder()
+                    .set_configuration_key(Some(configuration_key.clone()))
+                    .set_execution_platform_label(Some(execution_platform_label.clone()))
+                    .build(),
+                builder()
+                    .set_configuration_key(Some(configuration_key.clone()))
+                    .set_should_apply_rule_transition(false)
+                    .build(),
+                builder()
+                    .set_configuration_key(Some(configuration_key.clone()))
+                    .set_execution_platform_label(Some(execution_platform_label.clone()))
+                    .set_should_apply_rule_transition(false)
+                    .build(),
+            ];
+            for (key, expected) in keys.into_iter().zip(expected) {
+                assert_eq!(
+                    java_hash_code_of_configured_target_key(&key),
+                    expected,
+                    "{:?}",
+                    key
+                );
+                assert_eq!(sky_key_java_hash_code(&SkyKey::new(key.clone())), expected);
+                assert_eq!(
+                    JavaActionLookupKey(ActionLookupKeyRef::new(key)).java_hash_code(),
+                    expected
+                );
+            }
+        }
+    }
+
+    // Expected values: `hashCode()` of ToolchainContextKey.key().configurationKey(
+    // BuildConfigurationKey.create(BuildOptions.builder().build()))...build() computed by Bazel
+    // 9.3.2's own classes (the oracle's A-server.jar run on JDK 25).
+    #[test]
+    fn toolchain_context_key_hash_codes_match_java() {
+        use blaze_analysis::toolchains::ToolchainTypeRequirement;
+        let configuration_key = empty_configuration_key();
+        // ToolchainTypeRequirement.create(@@bazel_tools//tools/cpp:toolchain_type)
+        let mandatory = ToolchainTypeRequirement {
+            toolchain_type: Label::parse_canonical_unchecked(
+                "@@bazel_tools//tools/cpp:toolchain_type",
+            ),
+            mandatory: true,
+            ignore_if_invalid: false,
+        };
+        // ToolchainTypeRequirement.builder(...default_test_toolchain_type).mandatory(false).build()
+        let optional = ToolchainTypeRequirement {
+            toolchain_type: Label::parse_canonical_unchecked(
+                "@@bazel_tools//tools/test:default_test_toolchain_type",
+            ),
+            mandatory: false,
+            ignore_if_invalid: false,
+        };
+        let hash_code = |configure: &dyn Fn(
+            &mut blaze_analysis::toolchains::toolchain_context_key::ToolchainContextKeyBuilder,
+        )| {
+            let mut builder = ToolchainContextKey::key();
+            builder.configuration_key(configuration_key.clone());
+            configure(&mut builder);
+            let key = builder.build();
+            let hash_code = java_hash_code_of_toolchain_context_key(&key);
+            assert_eq!(
+                sky_key_java_hash_code_if_known(&SkyKey::new(key)),
+                Some(hash_code)
+            );
+            hash_code
+        };
+        assert_eq!(hash_code(&|_| {}), -1093658679);
+        assert_eq!(
+            hash_code(&|b| {
+                b.toolchain_types([mandatory.clone()]);
+            }),
+            -1381495969
+        );
+        assert_eq!(
+            hash_code(&|b| {
+                b.toolchain_types([mandatory.clone(), optional.clone()]);
+            }),
+            1840457987
+        );
+        assert_eq!(
+            hash_code(&|b| {
+                b.toolchain_types([mandatory.clone()])
+                    .exec_constraint_labels([
+                        Label::parse_canonical_unchecked("@@platforms//os:linux"),
+                        Label::parse_canonical_unchecked("@@platforms//cpu:x86_64"),
+                    ]);
+            }),
+            -1457625024
+        );
+        assert_eq!(
+            hash_code(&|b| {
+                b.toolchain_types([mandatory.clone()])
+                    .force_execution_platform(Label::parse_canonical_unchecked(
+                        "@@platforms//host:host",
+                    ));
+            }),
+            -865283406
+        );
+        assert_eq!(
+            hash_code(&|b| {
+                b.toolchain_types([optional.clone()]).debug_target(true);
+            }),
+            1020521479
+        );
+    }
+
+    // Expected values: Guava 33.5.0's Maps.capacity(expectedSize), called by reflection on the
+    // oracle's A-server.jar.
+    #[test]
+    fn guava_maps_capacity_matches_guava() {
+        let cases: [(usize, i32); 20] = [
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 4),
+            (4, 6),
+            (5, 7),
+            (6, 8),
+            (7, 10),
+            (8, 11),
+            (9, 12),
+            (12, 16),
+            (13, 18),
+            (15, 20),
+            (16, 22),
+            (24, 32),
+            (25, 34),
+            (48, 64),
+            (49, 66),
+            (100, 134),
+            (3295, 4394),
+        ];
+        for (expected_size, capacity) in cases {
+            assert_eq!(
+                guava_maps_capacity(expected_size),
+                capacity,
+                "{expected_size}"
+            );
+        }
+    }
+
+    /// `Integer.hashCode()`.
+    fn integer_hash_code(i: &i32) -> i32 {
+        *i
+    }
+
+    // Expected values: the JVM of the oracle's JDK (25). For Integer keys put in the given order,
+    // the key order of Maps.newHashMapWithExpectedSize(n); then of `new HashMap<>()` filled in
+    // that order followed by `new HashMap<>(size)` filled in the order of the former (what
+    // InMemoryGraphImpl.getBatchMap and DelegatingWalkableGraph.getDirectDeps do).
+    #[test]
+    fn hash_map_orders_of_get_fwd_deps_match_java() {
+        let cases: [(&[i32], &[i32], &[i32]); 3] = [
+            (&[33, 1, 17, 2], &[33, 1, 17, 2], &[33, 1, 17, 2]),
+            (&[9, 1, 5, 13, 3], &[9, 1, 3, 5, 13], &[1, 9, 3, 5, 13]),
+            (
+                &[64, 0, 32, 16, 48, 8, 5],
+                &[64, 0, 32, 16, 48, 5, 8],
+                &[64, 0, 32, 16, 48, 5, 8],
+            ),
+        ];
+        for (keys, expected_targets_by_key, expected_graph_map) in cases {
+            let targets_by_key =
+                targets_by_key_order(keys.len(), keys.to_vec(), &integer_hash_code);
+            assert_eq!(targets_by_key, expected_targets_by_key);
+            let graph_map: Vec<i32> = delegating_walkable_graph_map_order(
+                targets_by_key.into_iter().map(|k| (k, ())).collect(),
+                &integer_hash_code,
+            )
+            .into_iter()
+            .map(|(k, ())| k)
+            .collect();
+            assert_eq!(graph_map, expected_graph_map);
+        }
+    }
+
+    // Expected values: iteration order of `new HashSet<Integer>()` after adding the elements in
+    // the given order, on the JVM of the oracle's JDK (25).
+    #[test]
+    fn java_hash_set_order_of_known_matches_java() {
+        let cases: [(&[i32], &[i32]); 6] = [
+            (&[17, 1, 33], &[17, 1, 33]),
+            (&[5, 2, 20], &[2, 20, 5]),
+            (&[100, 36, 4, 68, 7, 23], &[100, 36, 4, 68, 7, 23]),
+            (
+                &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 29, 45],
+                &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 45, 29],
+            ),
+            (
+                &[65536, 1, 131072, 17, 196608],
+                &[65536, 1, 17, 131072, 196608],
+            ),
+            (
+                &[40, 8, 24, 56, 9, 72, 25, 41, 57, 10, 26, 42, 58, 11],
+                &[40, 8, 72, 9, 41, 10, 42, 11, 24, 56, 25, 57, 26, 58],
+            ),
+        ];
+        for (elements, expected) in cases {
+            let got =
+                java_hash_set_order_of_known(elements.iter().map(|e| (*e, Some(*e))).collect());
+            assert_eq!(got, expected);
+            // An element added twice changes nothing.
+            let got = java_hash_set_order_of_known(
+                elements
+                    .iter()
+                    .chain(elements.iter())
+                    .map(|e| (*e, Some(*e)))
+                    .collect(),
+            );
+            assert_eq!(got, expected);
+        }
+        // Elements of unknown hash code count for the growth of the table only: the last set
+        // without the hash codes of 72 and 25 is Java's order without those two elements.
+        let elements: [i32; 14] = [40, 8, 24, 56, 9, 72, 25, 41, 57, 10, 26, 42, 58, 11];
+        let got = java_hash_set_order_of_known(
+            elements
+                .iter()
+                .map(|e| (*e, if *e == 72 || *e == 25 { None } else { Some(*e) }))
+                .collect(),
+        );
+        assert_eq!(got, [40, 8, 9, 41, 10, 42, 11, 24, 56, 57, 26, 58]);
+    }
+
+    // A bin of 9 nodes makes java.util.HashMap resize or build a tree; whether the elements of
+    // unknown hash code produce one cannot be told, so the order is refused.
+    #[test]
+    #[should_panic(expected = "HashMap.treeifyBin")]
+    fn java_hash_set_order_of_known_refuses_possible_tree_bins() {
+        java_hash_set_order_of_known((0..9).map(|e: i32| (e, None)).collect());
     }
 
     #[test]

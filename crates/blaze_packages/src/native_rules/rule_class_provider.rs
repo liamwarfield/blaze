@@ -645,7 +645,7 @@ mod tests {
                     {
                         let allowed: Vec<&str> = rule_classes
                             .iter()
-                            .filter(|rc| attr.get_allowed_rule_class_object_predicate(&***rc))
+                            .filter(|rc| attr.get_allowed_rule_class_object_predicate(rc))
                             .filter(|rc| rc.get_rule_class_type() != RuleClassType::Abstract)
                             .map(|rc| rc.get_name())
                             .collect();

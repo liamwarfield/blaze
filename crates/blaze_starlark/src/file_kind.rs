@@ -80,8 +80,9 @@ impl FileKind {
                 ..FileOptions::DEFAULT
             },
             // Java: BzlCompileFunction.java:199 (loadBindsGlobally only for the prelude; .scl
-            // literals ASCII-only; type syntax off unless --experimental_starlark_type_syntax
-            // applies, which Blaze does not support yet).
+            // literals ASCII-only). Type syntax depends on the flags and the file's label
+            // (BzlCompileFunction.shouldUseTypeSyntax): BZL_COMPILE sets `allow_type_syntax`
+            // and compiles with `eval::compile_with_options`.
             FileKind::Bzl | FileKind::BuiltinsBzl => FileOptions::DEFAULT,
             FileKind::Scl => FileOptions {
                 string_literals_are_ascii_only: true,
@@ -100,7 +101,17 @@ impl FileKind {
     /// The starlark-rust parser dialect for this kind. Bazel-specific rules starlark-rust has no
     /// switch for are AST checks in `crate::syntax`.
     pub fn dialect(self) -> Dialect {
-        let opts = self.file_options();
+        self.dialect_with_options(self.file_options())
+    }
+
+    /// The starlark-rust parser dialect for this kind with explicit options (the options that
+    /// depend on flags, such as `allow_type_syntax`).
+    ///
+    /// `allow_type_syntax` maps to `DialectTypes::ParseOnly`, which the vendored crate's patch
+    /// 0020 makes Bazel 9.3.2's mode without type checking: annotations are arbitrary
+    /// expressions that are neither resolved nor evaluated (Java FileOptions
+    /// `allowTypeSyntax && !resolveTypeSyntax && tolerateInvalidTypeExpressions`).
+    pub fn dialect_with_options(self, opts: FileOptions) -> Dialect {
         Dialect {
             enable_def: true,
             enable_lambda: true,

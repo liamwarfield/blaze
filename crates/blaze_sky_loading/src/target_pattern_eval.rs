@@ -228,10 +228,10 @@ fn get_wildcard_conflict<T>(
 
     if let Some(target) = target {
         resolver.warn(&format!(
-            "The target pattern '{}' is ambiguous: '{}' is both a wildcard, and the name of an \
+            "The target pattern '{}' is ambiguous: ':{}' is both a wildcard, and the name of an \
              existing {}; using the latter interpretation",
             pattern.get_original_pattern(),
-            format!(":{}", suffix),
+            suffix,
             resolver.get_target_kind(&target)
         ));
         return match resolver.get_explicit_target(&label) {

@@ -83,6 +83,11 @@ impl ActionLookupValue for Target {
 }
 
 impl ConfiguredTargetView for Target {
+    // PORT (harness/test): the target has no BUILD file; a fixed location.
+    fn get_location(&self) -> blaze_events::location::Location {
+        blaze_events::location::Location::from_file_line_column("/BUILD", 1, 1)
+    }
+
     fn get_label(&self) -> Label {
         self.key.get_label().unwrap()
     }

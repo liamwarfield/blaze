@@ -13,7 +13,6 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use allocative::Allocative;
 use blaze_cmdline::label_constants::EXTERNAL_PACKAGE_IDENTIFIER;
 use blaze_cmdline::repository_name::{BAZEL_TOOLS, MAIN};
 use blaze_cmdline::{
@@ -35,10 +34,7 @@ use blaze_starlark::{EvalError, Location, Phase, StarlarkSemantics, ThreadContex
 use blaze_util::Fingerprint;
 use blaze_vfs::{DigestHashFunction, PathFragment, Root};
 use parking_lot::Mutex;
-use starlark::any::ProvidesStaticType;
 use starlark::environment::{FrozenModule, Globals};
-use starlark::starlark_simple_value;
-use starlark::values::{NoSerialize, StarlarkValue, starlark_value};
 
 use crate::bzl_compile::{BzlCompileFunction, BzlCompileKey, BzlCompileValue, FailedIOException};
 use crate::containing_package_lookup::{ContainingPackageLookupKey, ContainingPackageLookupValue};
@@ -307,21 +303,9 @@ impl BzlLoadValue {
     }
 }
 
-/// The `BazelModuleContext` as a Starlark value: the module extra value of every frozen .bzl
-/// module (DESIGN.md).
-#[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
-pub struct BazelModuleContextValue(#[allocative(skip)] pub Arc<BazelModuleContext>);
-
-starlark_simple_value!(BazelModuleContextValue);
-
-impl fmt::Display for BazelModuleContextValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<module context of {}>", self.0.label)
-    }
-}
-
-#[starlark_value(type = "BazelModuleContext")]
-impl<'v> StarlarkValue<'v> for BazelModuleContextValue {}
+/// The `BazelModuleContext` as a Starlark value (moved to blaze_packages `bzl_context`, where
+/// the natives read it back from the calling function's module).
+pub use blaze_packages::bzl_context::BazelModuleContextValue;
 
 // ---------------------------------------------------------------------------------------------
 // Exceptions
@@ -1222,6 +1206,7 @@ impl BzlLoadFunction {
             crate::bzl_compile::clone_compiled_file(prog),
             key,
             &globals,
+            self.compile_environment(key),
             &load_map,
             context,
             bazel_module_context.clone(),
@@ -1400,12 +1385,32 @@ impl BzlLoadFunction {
         }
     }
 
+    /// The predeclared environment whose names (and `GuardedValue`s) Java's BzlCompileFunction
+    /// resolves a .bzl file against: the .scl toplevels, the `@_builtins` environment, or the
+    /// uninjected environment of BUILD-loaded .bzl files ("the names of the symbols are the
+    /// same, and the names are all we need to do symbol resolution").
+    ///
+    /// PORT: Java takes the last one from `AutoloadSymbols.getUninjectedBuildBzlEnv(repo)`; like
+    /// `get_and_digest_predeclared_environment` this uses the BazelStarlarkEnvironment's.
+    // Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:150 BzlCompileFunction.computeInline
+    fn compile_environment(&self, key: &BzlLoadKey) -> &blaze_packages::builtins::env::StarlarkEnv {
+        let starlark_env = &self.config.bazel_starlark_environment;
+        if key.is_scl_dialect() {
+            starlark_env.get_scl_toplevels()
+        } else if key.is_builtins() {
+            starlark_env.get_builtins_bzl_env()
+        } else {
+            starlark_env.get_uninjected_build_bzl_env()
+        }
+    }
+
     /// Executes the compiled .bzl file defining the module to be loaded.
     // Java: com/google/devtools/build/lib/skyframe/BzlLoadFunction.java:1378 BzlLoadFunction.executeBzlFile
     fn execute_bzl_file(
         prog: CompiledFile,
         key: &BzlLoadKey,
         globals: &Globals,
+        compile_env: &blaze_packages::builtins::env::StarlarkEnv,
         loaded_modules: &LoadMap,
         context: BzlInitThreadContext,
         module_context: Arc<BazelModuleContext>,
@@ -1422,30 +1427,23 @@ impl BzlLoadFunction {
         BzlLoadFailedException,
     > {
         let label = key.get_label();
-        // Registered before execution so natives can find the module of the innermost Starlark
-        // function (BazelModuleContext.ofInnermostBzl).
+        // PORT: natives find the module of the innermost Starlark function through the module's
+        // extra value (`exec_module_with_context`; Java Module client data). The table keyed by
+        // file name is still filled for callers in other crates (it is ambiguous when a file is
+        // executed under several keys; see blaze_packages `bzl_context`).
         BazelModuleContext::register(module_context.clone());
 
         let events = Arc::new(CollectingEvents::default());
-        let mut thread_context =
-            ThreadContext::new(Phase::BzlLoad, starlark_semantics, events.clone())
-                .with_file_label(label.clone())
-                .with_label_repo_context(LabelRepoContextImpl::of(
-                    label.get_repository().clone(),
-                    module_context.repo_mapping.clone(),
-                ))
-                .with_main_repo_mapping(main_repo_mapping.clone())
-                .with_file_package_context(
-                    module_context.filename.clone(),
-                    module_context.package_context(),
-                );
-        // `Label()` called from functions of loaded modules resolves against their packages.
-        BazelModuleContext::visit_load_graph_recursively(&module_context.loads, &mut |m| {
-            thread_context
-                .file_package_contexts
-                .insert(m.filename.clone(), m.package_context());
-            true
-        });
+        let compile_semantics = starlark_semantics.clone();
+        let thread_context = ThreadContext::new(Phase::BzlLoad, starlark_semantics, events.clone())
+            .with_file_label(label.clone())
+            .with_label_repo_context(LabelRepoContextImpl::of(
+                label.get_repository().clone(),
+                module_context.repo_mapping.clone(),
+            ))
+            .with_main_repo_mapping(main_repo_mapping.clone());
+        // `Label()` resolves against the module of the innermost Starlark function (this module
+        // or a loaded one), read from that module's extra value.
         // This is needed so that any calls to `Label()` will have its used repo mapping entries
         // recorded. See #20721 for more details.
         let thread_context = thread_context
@@ -1469,6 +1467,35 @@ impl BzlLoadFunction {
                 if let EvalErrorKind::Syntax(errors) = &ex.kind {
                     // starlark-rust reports name resolution errors when executing.
                     starlark_util::replay_syntax_errors_on(skyframe_event_handler, errors);
+                } else if let Some(error) = starlark_util::guarded_symbol_syntax_error(
+                    &ex,
+                    compile_env,
+                    &compile_semantics,
+                    Some(label),
+                ) {
+                    // A use of a predeclared symbol that is disabled by a flag, restricted to
+                    // other repositories or removed. Java finds it while resolving names in
+                    // BzlCompileFunction (Module.resolve throws Undefined with the guard's
+                    // message): the syntax error is replayed on the listener and the load fails
+                    // with the compile error, not with executionFailed.
+                    // PORT: starlark-rust resolves names when the module starts executing and
+                    // stops at the first unresolved name; Java reports every one.
+                    // Java: net/starlark/java/eval/Module.java:237 Module.resolve
+                    // Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:236 BzlCompileFunction.computeInline
+                    // Java: com/google/devtools/build/lib/skyframe/BzlLoadFunction.java:782 BzlLoadFunction.computeInternalWithCompiledBzl
+                    starlark_util::replay_syntax_errors_on(skyframe_event_handler, &[error]);
+                    return Err(BzlLoadFailedException::new(
+                        format!(
+                            "compilation of module '{}'{} failed",
+                            label.to_path_fragment(),
+                            if is_builtins_repo(label.get_repository()) {
+                                " (internal)"
+                            } else {
+                                ""
+                            }
+                        ),
+                        StarlarkLoadingCode::CompileError,
+                    ));
                 } else {
                     skyframe_event_handler.handle(&Event::error(ex.message_with_stack()));
                 }

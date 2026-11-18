@@ -1018,10 +1018,10 @@ impl TargetDefinitionContext {
         what: &str,
         participle: &str,
     ) -> Result<std::cell::RefMut<'a, TargetDefinitionContext>, blaze_cmdline::EvalException> {
-        if let Some(builder) = TargetDefinitionContext::from_or_null(eval) {
-            if builder.recorder.get_current_macro_frame().is_none() {
-                return Ok(builder);
-            }
+        if let Some(builder) = TargetDefinitionContext::from_or_null(eval)
+            && builder.recorder.get_current_macro_frame().is_none()
+        {
+            return Ok(builder);
         }
         let symbolic_macros_enabled = match blaze_starlark::ThreadContext::get(eval) {
             Ok(cx) => cx.semantics.experimental_enable_first_class_macros,

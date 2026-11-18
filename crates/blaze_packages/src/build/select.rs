@@ -74,7 +74,9 @@ pub(crate) fn select_library(builder: &mut GlobalsBuilder) {
     // Java: com/google/devtools/build/lib/packages/SelectorList.java:255 SelectorList.SelectLibrary.select
     fn select<'v>(
         #[starlark(require = pos)] x: DictRef<'v>,
-        #[starlark(require = named, default = "")] no_match_error: &str,
+        // Java: `@Param(name = "no_match_error", defaultValue = "''", named = true)`;
+        // `positional` defaults to true, so it is positional-or-named.
+        #[starlark(default = "")] no_match_error: &str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
         // If this is not null, string keys in the dict will be resolved to Labels eagerly using
@@ -87,18 +89,29 @@ pub(crate) fn select_library(builder: &mut GlobalsBuilder) {
         if !resolve_eagerly {
             return Ok(heap.alloc(select_impl(x, no_match_error, None, heap)?));
         }
-        // The payload borrow is held only while converting keys and allocating (no Starlark
-        // code runs).
+        // Handle the case of an initializer (Java `thread.getThreadLocal(LabelConverter.class)`,
+        // installed by StarlarkRuleFunction.call while the rule's initializers run; the package
+        // builder is off the thread then).
+        if let Some(label_converter) = blaze_starlark::ThreadContext::get(eval)
+            .map_err(starlark::Error::new_other)?
+            .get_thread_local::<std::sync::Arc<LabelConverter>>()
+        {
+            return Ok(heap.alloc(select_impl(
+                x,
+                no_match_error,
+                Some(label_converter.as_ref()),
+                heap,
+            )?));
+        }
+        // Handle the case of a regular BUILD thread. The payload borrow is held only while
+        // converting keys and allocating (no Starlark code runs).
         if let Some(ctx) = TargetDefinitionContext::from_or_null(eval) {
-            // Handle the case of an initializer.
-            // PORT: Java's `thread.getThreadLocal(LabelConverter.class)` is the builder's
-            // initializer label converter while a rule initializer runs.
-            let converter = match ctx.get_initializer_label_converter() {
-                Some(c) => c.as_ref(),
-                // Handle the case of a regular BUILD thread.
-                None => ctx.get_label_converter(),
-            };
-            return Ok(heap.alloc(select_impl(x, no_match_error, Some(converter), heap)?));
+            return Ok(heap.alloc(select_impl(
+                x,
+                no_match_error,
+                Some(ctx.get_label_converter()),
+                heap,
+            )?));
         }
         // In all other cases, must be in a .bzl file.
         let label_converter = LabelConverter::for_bzl_evaluating_thread(eval).map_err(eval_err)?;

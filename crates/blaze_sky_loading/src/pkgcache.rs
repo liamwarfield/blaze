@@ -1,7 +1,7 @@
 //! Port of `PathPackageLocator` (the parts Skyframe loading reads).
 //!
 //! Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java. Not ported yet:
-//! `create` (the `--package_path` flag with `%workspace%` substitution), `getWorkspaceFile`.
+//! `getWorkspaceFile`.
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -11,6 +11,9 @@ use blaze_cmdline::label_constants::EXTERNAL_REPOSITORY_LOCATION;
 use blaze_vfs::{DirentType, Path, PathFragment, Root, Symlinks};
 
 use crate::build_file_name::BuildFileName;
+
+// Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:51 PathPackageLocator.WORKSPACE_WILDCARD
+const WORKSPACE_WILDCARD: &str = "%workspace%";
 
 /// A mapping from the name of a package to the location of its BUILD file. The implementation
 /// composes the package path entries in order.
@@ -35,6 +38,63 @@ impl PathPackageLocator {
             output_base,
             build_files_by_priority,
         }
+    }
+
+    // Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:136 PathPackageLocator.maybeReplaceWorkspaceInString
+    pub fn maybe_replace_workspace_in_string(
+        path_element: &str,
+        workspace: &PathFragment,
+    ) -> String {
+        path_element.replace(WORKSPACE_WILDCARD, workspace.get_path_string())
+    }
+
+    /// A factory of PathPackageLocators from a list of path elements. Elements may contain
+    /// "%workspace%", indicating the workspace.
+    ///
+    /// `path_elements`: each element must be an absolute path, relative path, or some string
+    /// "%workspace%" + relative, where relative is itself a relative path. The special symbol
+    /// "%workspace%" means to interpret the path relative to the nearest enclosing workspace.
+    /// Relative paths are interpreted relative to the client's working directory, which may be
+    /// below the workspace.
+    // Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:159 PathPackageLocator.create
+    // Java: com/google/devtools/build/lib/pkgcache/PathPackageLocator.java:191 PathPackageLocator.createInternal
+    pub fn create(
+        output_base: Option<Path>,
+        path_elements: &[String],
+        event_handler: &dyn blaze_events::EventHandler,
+        workspace: &PathFragment,
+        client_working_directory: &Path,
+        build_files_by_priority: Vec<BuildFileName>,
+    ) -> PathPackageLocator {
+        let mut resolved_paths: Vec<Root> = Vec::new();
+
+        for path_element in path_elements {
+            // Replace "%workspace%" with the path of the enclosing workspace directory.
+            let path_element = Self::maybe_replace_workspace_in_string(path_element, workspace);
+
+            let path_element_fragment = PathFragment::create(&path_element);
+
+            // If the path string started with "%workspace%" or "/", it is already absolute, so
+            // the following line returns a path pointing to pathElementFragment.
+            let root_path = client_working_directory.get_relative(&path_element_fragment);
+
+            if !path_element_fragment.is_absolute()
+                && client_working_directory.as_fragment() != workspace
+            {
+                event_handler.handle(&blaze_events::Event::warn(format!(
+                    "The package path element '{}' will be taken relative to your working \
+                     directory. You may have intended to have the path taken relative to your \
+                     workspace directory. If so, please usethe '{}' wildcard.",
+                    path_element_fragment, WORKSPACE_WILDCARD
+                )));
+            }
+
+            if root_path.exists() {
+                resolved_paths.push(Root::from_path(root_path));
+            }
+        }
+
+        PathPackageLocator::new(output_base, resolved_paths, build_files_by_priority)
     }
 
     /// Returns an immutable ordered list of the directories on the package path.

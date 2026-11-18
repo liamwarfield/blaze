@@ -345,7 +345,7 @@ impl<'v, 'a> Visitor<'v, 'a> {
         } else if self.mode == VisitorMode::SomePath {
             self.parent_map
                 .entry(target.get_label().clone())
-                .or_insert_with(Vec::new);
+                .or_default();
         }
 
         if self.visited.insert(target.get_label().clone()) {

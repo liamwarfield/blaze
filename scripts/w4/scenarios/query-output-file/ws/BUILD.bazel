@@ -1,0 +1,8 @@
+load(":defs.bzl", "w")
+
+w(name = "y")
+
+w(
+    name = "x",
+    deps = [":y"],
+)

@@ -23,6 +23,7 @@ pub fn strerror(errnum: i32) -> String {
         if p.is_null() {
             return String::new();
         }
+        // PORT: byte-strings (C++ uses strerror's raw bytes (locale-encoded)).
         CStr::from_ptr(p).to_string_lossy().into_owned()
     }
 }

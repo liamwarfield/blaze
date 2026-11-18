@@ -1,0 +1,5 @@
+load("//:defs.bzl", "tool")
+
+package(default_visibility = ["//visibility:public"])
+
+tool(name = "tool")

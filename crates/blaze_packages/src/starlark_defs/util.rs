@@ -315,33 +315,6 @@ pub fn call_stack(eval: &Evaluator) -> Vec<StackEntry> {
     stack
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn trim_doc_string_strips_indentation() {
-        assert_eq!(
-            trim_doc_string("Heading\n\n    Details paragraph\n    "),
-            "Heading\n\nDetails paragraph"
-        );
-        assert_eq!(
-            trim_doc_string("\n    Heading\n\n    Details paragraph\n    "),
-            "Heading\n\nDetails paragraph"
-        );
-        assert_eq!(trim_doc_string(""), "");
-    }
-
-    #[test]
-    fn identifiers() {
-        assert!(is_valid_identifier("a_1"));
-        assert!(is_valid_identifier("_x"));
-        assert!(!is_valid_identifier("1a"));
-        assert!(!is_valid_identifier(""));
-        assert!(!is_valid_identifier("a-b"));
-    }
-}
-
 /// Java's Starlark call-machinery error for an argument of a wrong type.
 // Java: net/starlark/java/eval/BuiltinFunction.java BuiltinFunction.getArgumentVector
 pub fn param_type_error(func: &str, param: &str, v: Value, want: &str) -> starlark::Error {
@@ -383,4 +356,31 @@ pub fn fail_if_called_outside_builtins(eval: &Evaluator) -> starlark::Result<()>
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trim_doc_string_strips_indentation() {
+        assert_eq!(
+            trim_doc_string("Heading\n\n    Details paragraph\n    "),
+            "Heading\n\nDetails paragraph"
+        );
+        assert_eq!(
+            trim_doc_string("\n    Heading\n\n    Details paragraph\n    "),
+            "Heading\n\nDetails paragraph"
+        );
+        assert_eq!(trim_doc_string(""), "");
+    }
+
+    #[test]
+    fn identifiers() {
+        assert!(is_valid_identifier("a_1"));
+        assert!(is_valid_identifier("_x"));
+        assert!(!is_valid_identifier("1a"));
+        assert!(!is_valid_identifier(""));
+        assert!(!is_valid_identifier("a-b"));
+    }
 }

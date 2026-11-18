@@ -200,7 +200,14 @@ pub fn call_subrule<'v>(
         actions,
         fragments,
         declared_subrules,
-        package_context: rule_context.package_context(),
+        // The innermost .bzl while the subrule's implementation runs (see
+        // `starlark_toolchain_context`).
+        // Java: com/google/devtools/build/lib/packages/LabelConverter.java:41 LabelConverter.forBzlEvaluatingThread
+        package_context: blaze_packages::bzl_context::BazelModuleContext::of_function(
+            view.implementation,
+            eval,
+        )
+        .map(|module_context| module_context.package_context()),
     });
     AnalysisThreadPayload::from_or_fail(eval, &name)?
         .subrule_contexts

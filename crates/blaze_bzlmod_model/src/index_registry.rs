@@ -335,6 +335,7 @@ impl IndexRegistry {
     ) -> Result<Option<String>, RegistryException> {
         match self.grab_file(url, event_handler, download_manager, use_checksum) {
             // PORT: new String(bytes, UTF_8) replaces malformed input with U+FFFD.
+            // PORT: byte-strings (Java also replaces malformed input here (new String(bytes, UTF_8)))
             Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
             Err(RegistryException::NotFound(_)) => Ok(None),
             Err(e) => Err(e),

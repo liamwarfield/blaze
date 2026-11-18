@@ -78,7 +78,9 @@ pub struct TargetDefinitionContext {
     /// The container on which targets and macro instances are added and conflicts detected.
     pub(crate) recorder: TargetRecorder,
     pub(crate) simplify_unconditional_selects_in_rule_attrs: bool,
-    pub(crate) label_converter: LabelConverter,
+    // PORT: an `Arc` so that `StarlarkRuleFunction.call` can install this same converter as the
+    // thread's `LabelConverter` thread-local while the builder is off the thread.
+    pub(crate) label_converter: Arc<LabelConverter>,
     /// Sorted so that the iteration order of variables is deterministic.
     pub(crate) make_env: BTreeMap<String, String>,
     pub(crate) local_event_handler: Arc<StoredEventHandler>,
@@ -98,6 +100,9 @@ pub struct TargetDefinitionContext {
         parking_lot::Mutex<TestSuiteImplicitTestsAccumulator>,
     pub(crate) failure_detail_override: Option<DetailedExitCode>,
     pub(crate) already_built: bool,
+    /// Java `pkg.targets != null`: finishBuild() has propagated the builder's targets and error
+    /// status to the packageoid.
+    pub(crate) packageoid_initialized: bool,
     pub(crate) computation_steps: i64,
     /// Java `StarlarkThreadContext`'s main repository mapping supplier.
     pub(crate) main_repository_mapping: RepositoryMapping,
@@ -141,10 +146,10 @@ impl TargetDefinitionContext {
         track_full_macro_information: bool,
         package_limits: PackageLimits,
     ) -> TargetDefinitionContext {
-        let label_converter = LabelConverter::new(
+        let label_converter = Arc::new(LabelConverter::new(
             &metadata.package_identifier,
             metadata.repository_mapping.clone(),
-        );
+        ));
         let mut context = TargetDefinitionContext {
             metadata: metadata.clone(),
             declarations,
@@ -169,6 +174,7 @@ impl TargetDefinitionContext {
             ),
             failure_detail_override: None,
             already_built: false,
+            packageoid_initialized: false,
             computation_steps: 0,
             main_repository_mapping,
             precompute_transitive_loads: package_settings.precompute_transitive_loads,
@@ -250,10 +256,10 @@ impl TargetDefinitionContext {
         eval: &Evaluator<'_, 'a, '_>,
         what: &str,
     ) -> Result<RefMut<'a, TargetDefinitionContext>, EvalException> {
-        if let Some(ctx) = Self::from_or_null(eval) {
-            if !ctx.recorder.currently_in_non_finalizer_macro() {
-                return Ok(ctx);
-            }
+        if let Some(ctx) = Self::from_or_null(eval)
+            && !ctx.recorder.currently_in_non_finalizer_macro()
+        {
+            return Ok(ctx);
         }
         let symbolic_macros_enabled = match ThreadContext::get(eval) {
             Ok(cx) => cx.semantics.experimental_enable_first_class_macros,
@@ -360,6 +366,13 @@ impl TargetDefinitionContext {
         &self.label_converter
     }
 
+    /// [`TargetDefinitionContext::get_label_converter`] as a shared handle (Java passes the same
+    /// object to `thread.setThreadLocal(LabelConverter.class, ...)` around rule initializers).
+    // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:456 TargetDefinitionContext.getLabelConverter
+    pub fn get_label_converter_arc(&self) -> &Arc<LabelConverter> {
+        &self.label_converter
+    }
+
     // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:464 TargetDefinitionContext.getFilename
     pub fn get_filename(&self) -> &RootedPath {
         &self.metadata.build_filename
@@ -436,8 +449,10 @@ impl TargetDefinitionContext {
 
     // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:491 TargetDefinitionContext.setContainsErrors
     pub fn set_contains_errors(&mut self) {
+        // Java: `checkState(pkg.targets == null, ...)`: errors may still be set by
+        // finalBuilderValidationHook(), which finishBuild() runs after `alreadyBuilt = true`.
         blaze_util::check_state!(
-            !self.already_built,
+            !self.packageoid_initialized,
             "TargetDefinitionContext.setContainsErrors() can only be used before finishBuild() has \
              propagated the builder's error status to the packageoid"
         );
@@ -964,6 +979,7 @@ impl TargetDefinitionContext {
         self.final_builder_validation_hook();
 
         // Initialize packageoid.
+        self.packageoid_initialized = true;
         let contains_errors = self.declarations.contains_errors() || self.contains_errors();
         let failure_detail = self.get_failure_detail();
         let targets: BTreeMap<String, Target> = self

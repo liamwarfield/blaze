@@ -126,8 +126,14 @@ pub fn get_visibility<'a>(
     caller: &QueryExpression,
     target: &Target,
 ) -> Result<Vec<Arc<dyn QueryVisibility<Target> + 'a>>, QueryError> {
-    let mut result: Vec<Arc<dyn QueryVisibility<Target> + 'a>> = Vec::new();
-    result.push(Arc::new(query_visibility::same_package(target, accessor)));
+    // PORT: the visibilities borrow the single-threaded accessor; `Arc` is the element type of
+    // QueryVisibility lists.
+    #[allow(clippy::arc_with_non_send_sync, clippy::vec_init_then_push)]
+    let mut result: Vec<Arc<dyn QueryVisibility<Target> + 'a>> = {
+        let mut result: Vec<Arc<dyn QueryVisibility<Target> + 'a>> = Vec::new();
+        result.push(Arc::new(query_visibility::same_package(target, accessor)));
+        result
+    };
     convert_visibility(query_environment, caller, &mut result, target)?;
     // ImmutableSet.Builder: the visibilities are distinct objects.
     Ok(result)

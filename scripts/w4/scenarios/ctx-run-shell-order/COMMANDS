@@ -1,0 +1,5 @@
+# S1-9: aquery order is write, run_shell, helper script, run_shell, write.
+aquery //:order
+run build //:order
+cat bazel-bin/order.long
+stat bazel-bin/order.run_shell_1.sh

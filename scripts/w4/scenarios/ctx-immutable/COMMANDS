@@ -1,0 +1,19 @@
+# S2-6: mutating a value Bazel returns immutable fails the analysis; mutable ones succeed.
+# Only exit codes and first message lines are compared (Starlark error text is in later lines).
+run build //:read_only
+run build //:files_append
+run build //:files_empty_append
+run build //:attr_label_list_append
+run build //:attr_string_list_append
+run build //:attr_string_dict_set
+run build //:attr_label_keyed_string_dict_clear
+run build //:attr_string_keyed_label_dict_set
+run build //:outputs_list_append
+run build //:var_set
+run build //:tokenize_append
+run build //:features_append
+run build //:disabled_features_append
+run build //:toolchain_types_append
+cat bazel-bin/read_only.txt
+cat bazel-bin/features_append.txt
+cat bazel-bin/disabled_features_append.txt

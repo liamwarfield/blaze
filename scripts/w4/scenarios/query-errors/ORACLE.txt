@@ -1,0 +1,274 @@
+=== 1: run cquery "config(//:x, deadbeef)"
+exit 1
+ERROR: Build did NOT complete successfully
+ERROR: Error doing post analysis query: Evaluation failed: Unknown configuration ID 'deadbeef'.
+=== 2: run cquery "config(//:x, deadbeef)" --keep_going
+exit 0
+ERROR: Error doing post analysis query: Unknown configuration ID 'deadbeef'.
+INFO: Build completed successfully, 0 total actions
+=== 3: run cquery "siblings(//:x)"
+exit 1
+ERROR: Build did NOT complete successfully
+ERROR: Error doing post analysis query: Evaluation failed: siblings() not supported for post analysis queries
+=== 4: run cquery "buildfiles(//:x)"
+exit 1
+ERROR: Build did NOT complete successfully
+ERROR: Error doing post analysis query: Evaluation failed: buildfiles() doesn't make sense for the configured target graph
+=== 5: run cquery "visible(//:x, //:y)"
+exit 1
+ERROR: Build did NOT complete successfully
+ERROR: Error doing post analysis query: Evaluation failed: visible() is not supported on configured targets
+=== 6: run aquery "labels(deps, //:x)" --output=jsonproto
+exit 1
+ERROR: Build did NOT complete successfully
+ERROR: Error doing post analysis query: Evaluation failed: labels() is not supported for aquery
+=== 7: run cquery "//nosuchpkg:x"
+exit 1
+ERROR: Build did NOT complete successfully
+ERROR: Skipping '//nosuchpkg:x': no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ERROR: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+WARNING: Target pattern parsing failed.
+=== 8: run cquery "deps(//:nosuchtarget)"
+exit 1
+ERROR: Build did NOT complete successfully
+ERROR: Skipping '//:nosuchtarget': no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+WARNING: Target pattern parsing failed.
+=== 9: run cquery "deps(//:nosuchtarget)" --keep_going
+exit 1
+ERROR: Build did NOT complete successfully
+ERROR: Evaluation of query "//:nosuchtarget" failed: no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: Skipping '//:nosuchtarget': no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: command succeeded, but there were errors parsing the target pattern
+WARNING: --keep_going specified, ignoring errors. Results may be inaccurate
+WARNING: Target pattern parsing failed.
+=== 10: run cquery //:x --nodep_deps=false
+exit 1
+ERROR: Build did NOT complete successfully
+ERROR: Error doing post analysis query: The following filter(s) are not currently supported by configured query: [NO_NODEP_DEPS, INCLUDE_ASPECTS]
+=== 11: run cquery "deps(//b/...)" --universe_scope=//a:x
+exit 1
+ERROR: Build did NOT complete successfully
+ERROR: Error doing post analysis query: Evaluation failed: Unable to load package '[<WS>]/[b]' because package is not in scope. Check that all target patterns in query expression are within the --universe_scope of this query.
+=== 12: run cquery "deps(//b/...)" --universe_scope=//a:x --keep_going
+exit 0
+ERROR: Error doing post analysis query: Unable to load package '[<WS>]/[b]' because package is not in scope. Check that all target patterns in query expression are within the --universe_scope of this query.
+INFO: Build completed successfully, 0 total actions
+=== 13: run aquery "deps(//b/...)" --universe_scope=//a:x --output=jsonproto
+exit 1
+ERROR: Build did NOT complete successfully
+ERROR: Error doing post analysis query: Evaluation failed: Unable to load package '[<WS>]/[b]' because package is not in scope. Check that all target patterns in query expression are within the --universe_scope of this query.
+=== 14: run cquery //:x --output=jsonproto --proto:include_synthetic_attribute_hash --noproto:include_configurations
+exit 0
+{
+  "target": [{
+    "type": "RULE",
+    "rule": {
+      "name": "//:x",
+      "ruleClass": "w",
+      "location": "<WS>/BUILD.bazel:7:2",
+      "attribute": [{
+        "name": "$config_dependencies",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": ":action_listener",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "aspect_hints",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "compatible_with",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "deprecation",
+        "type": "STRING",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "deps",
+        "type": "LABEL_LIST",
+        "stringListValue": ["//:y"],
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "exec_compatible_with",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "exec_group_compatible_with",
+        "type": "LABEL_LIST_DICT",
+        "explicitlySpecified": false
+      }, {
+        "name": "exec_properties",
+        "type": "STRING_DICT",
+        "explicitlySpecified": false
+      }, {
+        "name": "expect_failure",
+        "type": "STRING",
+        "stringValue": "",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "features",
+        "type": "STRING_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "generator_function",
+        "type": "STRING",
+        "stringValue": "",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "generator_location",
+        "type": "STRING",
+        "stringValue": "",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "generator_name",
+        "type": "STRING",
+        "stringValue": "",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "name",
+        "type": "STRING",
+        "stringValue": "x",
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "package_metadata",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "restricted_to",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "tags",
+        "type": "STRING_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "target_compatible_with",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "testonly",
+        "type": "BOOLEAN",
+        "intValue": 0,
+        "stringValue": "false",
+        "explicitlySpecified": false,
+        "booleanValue": false
+      }, {
+        "name": "toolchains",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "transitive_configs",
+        "type": "STRING_LIST",
+        "explicitlySpecified": false,
+        "nodep": true
+      }, {
+        "name": "visibility",
+        "type": "STRING_LIST",
+        "explicitlySpecified": false,
+        "nodep": true
+      }, {
+        "name": "$rule_implementation_hash",
+        "type": "STRING",
+        "stringValue": "2ff853b97f06a8ca9169cb6d2e0225eb5d7b07a6e2992e40cee71df8faf16256"
+      }],
+      "ruleInput": ["//:y"]
+    }
+  }]
+}
+INFO: Build completed successfully, 0 total actions
+=== 15: run cquery --query_file=q.txt --output=label_kind
+exit 0
+w rule //:x (a7a71fd)
+w rule //:y (a7a71fd)
+alias rule @bazel_tools//tools:host_platform (3030ed4)
+platform rule @@platforms//host:host (3030ed4)
+constraint_value rule @@platforms//os:linux (3030ed4)
+constraint_value rule @@platforms//cpu:x86_64 (3030ed4)
+constraint_setting rule @@platforms//cpu:cpu (3030ed4)
+constraint_setting rule @@platforms//os:os (3030ed4)
+INFO: Build completed successfully, 0 total actions
+=== 16: run cquery --query_file=missing.txt
+exit 2
+=== 17: run cquery //:x --query_file=q.txt
+exit 2
+=== 18: run aquery --query_file=q.txt --output=jsonproto --noinclude_artifacts
+exit 0
+{
+  "actions": [{
+    "targetId": 1,
+    "actionKey": "077fd921393782700ad382a0f90af3fb012092ea950506e2c388e4fd3e94e72f",
+    "mnemonic": "FileWrite",
+    "configurationId": 1,
+    "executionPlatform": "@@platforms//host:host"
+  }, {
+    "targetId": 2,
+    "actionKey": "077fd921393782700ad382a0f90af3fb012092ea950506e2c388e4fd3e94e72f",
+    "mnemonic": "FileWrite",
+    "configurationId": 1,
+    "executionPlatform": "@@platforms//host:host"
+  }],
+  "targets": [{
+    "id": 1,
+    "label": "//:x",
+    "ruleClassId": 1
+  }, {
+    "id": 2,
+    "label": "//:y",
+    "ruleClassId": 1
+  }],
+  "configuration": [{
+    "id": 1,
+    "mnemonic": "k8-fastbuild",
+    "platformName": "k8",
+    "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+  }],
+  "ruleClasses": [{
+    "id": 1,
+    "name": "w"
+  }]
+}
+INFO: Build completed successfully, 0 total actions
+=== 19: run cquery //:x --output=nosuchformat
+exit 2
+ERROR: Build did NOT complete successfully
+ERROR: Invalid output format 'nosuchformat'. Valid values are: label_kind, label, transitions, proto, streamed_proto, textproto, jsonproto, build, graph, starlark, files
+=== 20: run aquery //:x --output=nosuchformat
+exit 2
+ERROR: Build did NOT complete successfully
+ERROR: Invalid output format 'nosuchformat'. Valid values are: proto, streamed_proto, textproto, jsonproto, text, commands, summary
+=== 21: run cquery
+exit 2
+=== 22: run aquery
+exit 2
+=== 23: run cquery //:x --notrack_incremental_state
+exit 2
+ERROR: Build did NOT complete successfully
+ERROR: Queries based on analysis results are not allowed if incrementality state is not being kept
+WARNING: --notrack_incremental_state was specified, but without --nokeep_state_after_build. Inmemory state from this build will not be reusable, but it will not get fully wiped until the beginning of the next build. Use --nokeep_state_after_build to clean up eagerly.
+=== 24: run aquery //:x --notrack_incremental_state --output=jsonproto
+exit 2
+ERROR: Build did NOT complete successfully
+ERROR: Queries based on analysis results are not allowed if incrementality state is not being kept
+WARNING: --notrack_incremental_state was specified, but without --nokeep_state_after_build. Inmemory state from this build will not be reusable, but it will not get fully wiped until the beginning of the next build. Use --nokeep_state_after_build to clean up eagerly.

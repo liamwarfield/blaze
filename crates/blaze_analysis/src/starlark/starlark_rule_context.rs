@@ -55,12 +55,13 @@ use super::starlark_attributes_collection::{
 use super::starlark_configuration::{StarlarkConfiguration, is_code_coverage_enabled};
 use super::starlark_runfiles::{StarlarkRunfiles, symlink_entry_from_value};
 use super::starlark_toolchain_context::{
-    StarlarkExecGroupCollection, StarlarkToolchainContext, rule_definition_package_context,
+    StarlarkExecGroupCollection, StarlarkToolchainContext, implementation_package_context,
 };
 use super::thread_payload::RuleContextHandle;
 use super::util::{
-    depset_cast_artifacts, errorf, fail_if_called_outside_default_allowlist, is_sequence,
-    sequence_cast_artifacts, sequence_cast_strings, truth,
+    alloc_immutable_dict, alloc_immutable_list, check_bool_param, depset_cast_artifacts, errorf,
+    fail_if_called_outside_default_allowlist, is_sequence, param_type_error,
+    sequence_cast_artifacts, sequence_cast_strings,
 };
 use crate::configured_target::ConfiguredTarget;
 use crate::configuredtargets::{target_from_starlark, target_to_starlark};
@@ -110,9 +111,6 @@ pub struct StarlarkRuleContext<'v> {
     /// Counter for calls to `ctx.resolve_command` with a long command.
     #[allocative(skip)]
     resolve_command_script_counter: Cell<i32>,
-    /// The package context for string toolchain keys (see `starlark_toolchain_context`).
-    #[allocative(skip)]
-    package_context: Option<LabelPackageContext>,
 }
 
 /// `ctx` after the rule implementation returned (Java: a nullified `StarlarkRuleContext`).
@@ -328,6 +326,7 @@ impl<'v> StarlarkRuleContext<'v> {
             }
 
             // Grab all associated outputs.
+            // Java: StarlarkList<Artifact> artifacts = StarlarkList.immutableCopyOf(...)
             let mut artifacts: Vec<Artifact> = Vec::new();
             if let Some(output_files) = explicit_out_map.get(attr_name) {
                 for output_file in output_files {
@@ -349,11 +348,13 @@ impl<'v> StarlarkRuleContext<'v> {
                     add_output(attr_name, Value::new_none(), &mut outputs)?;
                 }
             } else if type_ == Type::OutputList {
-                let list = heap.alloc(AllocList(
+                let list = alloc_immutable_list(
+                    heap,
                     artifacts
                         .into_iter()
-                        .map(|a| heap.alloc(StarlarkFile::new(a))),
-                ));
+                        .map(|a| heap.alloc(StarlarkFile::new(a)))
+                        .collect(),
+                );
                 add_output(attr_name, list, &mut outputs)?;
             } else {
                 return Err(handle.borrow_mut().throw_with_rule_error(&format!(
@@ -416,7 +417,6 @@ impl<'v> StarlarkRuleContext<'v> {
             rule_class_under_evaluation: RefCell::new(rule_class_under_evaluation),
             super_called: Cell::new(false),
             resolve_command_script_counter: Cell::new(0),
-            package_context: rule_definition_package_context(&rule),
         })
     }
 
@@ -480,9 +480,11 @@ impl<'v> StarlarkRuleContext<'v> {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// The package context for string toolchain keys.
+    /// The package context for string toolchain keys (see `starlark_toolchain_context`): that
+    /// of the .bzl defining the implementation function of the rule class under evaluation
+    /// (the parent's while `ctx.super()` runs).
     pub(crate) fn package_context(&self) -> Option<LabelPackageContext> {
-        self.package_context.clone()
+        implementation_package_context(&self.rule_class_under_evaluation.borrow())
     }
 
     /// Java `close()`'s check: an extended rule must call `super`.
@@ -627,9 +629,14 @@ fn build_split_attribute_info<'v>(
                     other => panic!("ClassCastException: LABEL_LIST_DICT value {other:?}"),
                 }
             } else {
-                heap.alloc(AllocList(
-                    targets.iter().map(|t| target_to_starlark(t, heap)),
-                ))
+                // Java: StarlarkList.immutableCopyOf(...)
+                alloc_immutable_list(
+                    heap,
+                    targets
+                        .iter()
+                        .map(|t| target_to_starlark(t, heap))
+                        .collect(),
+                )
             };
 
             match key {
@@ -648,14 +655,17 @@ fn build_split_attribute_info<'v>(
             }
         }
 
+        // Java: Dict.immutableCopyOf(splitPrereqsMap)
         split_attr_infos.push((
             attr.get_public_name(),
-            heap.alloc(AllocDict(split_prereqs_map)),
+            alloc_immutable_dict(heap, split_prereqs_map),
         ));
     }
 
-    // PORT: Java's message "No attribute '%s' in split_attr.This attribute is not defined with a
-    // split configuration." is not carried by starlark-rust structs (docs/decisions.md).
+    // PORT: Java's struct carries the unknown-field format "No attribute '%s' in
+    // split_attr.This attribute is not defined with a split configuration."; blaze_starlark's
+    // `StarlarkInfo` has no such format yet (request: `StarlarkInfo::with_message`), so an
+    // unknown field fails with "'struct' value has no field or method '...'" instead.
     alloc_struct(heap, split_attr_infos)
 }
 
@@ -716,7 +726,8 @@ fn call_parent<'v>(
         }
         eval.heap().alloc(AllocList([raw_providers]))
     } else if raw_providers.is_none() {
-        eval.heap().alloc(AllocList::EMPTY)
+        // Java: StarlarkList.empty()
+        alloc_immutable_list(eval.heap(), Vec::new())
     } else {
         raw_providers
     };
@@ -883,10 +894,11 @@ impl<'v> StarlarkValue<'v> for CtxOutputs<'v> {
         collector.push_str(&self.to_string());
     }
 
-    // PORT: Java's `checkMutable` error ("cannot access outputs of rule '%s' outside of its own
-    // rule implementation function") and `getErrorMessageForUnknownField` ("No attribute '%s'
-    // in outputs. Make sure you declared a rule output with this name.") cannot be raised from
-    // starlark-rust's `get_attr`; both cases give starlark-rust's "has no attribute" error.
+    // PORT: starlark-rust's `get_attr` cannot fail, so Java's `checkMutable` error is reported
+    // through `get_attr_error_message` (vendored patch 0013). That covers `ctx.outputs.x` and
+    // `getattr(ctx.outputs, "x")`; `getattr(ctx.outputs, "x", default)` on a locked or closed
+    // `ctx.outputs` returns the default where Java throws, and `hasattr` can only stop loudly
+    // (request: a fallible attribute hook in the vendored crate).
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         if self.context.is_immutable() {
             return None;
@@ -894,9 +906,29 @@ impl<'v> StarlarkValue<'v> for CtxOutputs<'v> {
         self.get_value(attribute, heap)
     }
 
-    fn has_attr(&self, attribute: &str, _heap: Heap<'v>) -> bool {
-        (self.is_executable && attribute == EXECUTABLE_OUTPUT_NAME)
-            || self.outputs.iter().any(|(k, _)| k == attribute)
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:441 Outputs.checkMutable
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:408 Outputs.getErrorMessageForUnknownField
+    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
+        if self.context.is_immutable() {
+            return Some(outputs_check_mutable_message(
+                &self.context.rule_label_canonical_name,
+            ));
+        }
+        Some(outputs_error_message_for_unknown_field(attribute))
+    }
+
+    // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr (`getValue(name) != null`,
+    // so `hasattr(ctx.outputs, "executable")` creates the default executable like a read does).
+    fn has_attr(&self, attribute: &str, heap: Heap<'v>) -> bool {
+        if self.context.is_immutable() {
+            // Java: `getValue` throws (checkMutable); starlark-rust's `has_attr` cannot fail.
+            blaze_util::unported!(
+                "Starlark.hasattr",
+                "EvalException from Outputs.getValue: {}",
+                outputs_check_mutable_message(&self.context.rule_label_canonical_name)
+            );
+        }
+        self.get_value(attribute, heap).is_some()
     }
 
     fn dir_attr(&self) -> Vec<String> {
@@ -911,6 +943,41 @@ impl<'v> StarlarkValue<'v> for ClosedCtxOutputs {
     fn collect_repr(&self, collector: &mut String) {
         collector.push_str(&self.to_string());
     }
+
+    // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr: `getValue` throws
+    // (checkMutable) on a closed `ctx.outputs`; starlark-rust's `has_attr` cannot fail.
+    fn has_attr(&self, _attribute: &str, _heap: Heap<'v>) -> bool {
+        blaze_util::unported!(
+            "Starlark.hasattr",
+            "EvalException from Outputs.getValue: {}",
+            outputs_check_mutable_message(&self.rule_label_canonical_name)
+        )
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:441 Outputs.checkMutable
+    // (every `getValue` of a closed `ctx.outputs` fails; see `CtxOutputs::get_attr`).
+    fn get_attr_error_message(&self, _attribute: &str) -> Option<String> {
+        Some(outputs_check_mutable_message(
+            &self.rule_label_canonical_name,
+        ))
+    }
+}
+
+/// The message of Java `Outputs.checkMutable`.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:441 Outputs.checkMutable
+fn outputs_check_mutable_message(rule_label_canonical_name: &str) -> String {
+    format!(
+        "cannot access outputs of rule '{rule_label_canonical_name}' outside of its own rule \
+         implementation function"
+    )
+}
+
+/// Java `Outputs.getErrorMessageForUnknownField`.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:408 Outputs.getErrorMessageForUnknownField
+fn outputs_error_message_for_unknown_field(name: &str) -> String {
+    format!(
+        "No attribute '{name}' in outputs. Make sure you declared a rule output with this name."
+    )
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1305,6 +1372,11 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:775 StarlarkRuleContext.getFeatures
+    // Java returns an `ImmutableList<String>`, which the interpreter converts with
+    // `Starlark.fromJava(result, thread.mutability())` (net/starlark/java/eval/MethodDescriptor.java:315,
+    // Starlark.java:214 `StarlarkList.copyOf(mutability, list)`): a new list on each access that
+    // the rule may mutate (oracle: scripts/w4/scenarios/ctx-immutable, features_append). The
+    // same holds for `disabled_features`, `aspect_ids` and `build_setting_value`.
     #[starlark(attribute)]
     fn features<'v>(this: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
         let ctx = live(this, "features")?;
@@ -1394,27 +1466,7 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:831 StarlarkRuleContext.var
     #[starlark(attribute)]
     fn var<'v>(this: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
-        let ctx = live(this, "var")?;
-        if let Some(v) = ctx.cached_make_variables.get() {
-            return Ok(v);
-        }
-        let vars = {
-            let rc = ctx.context.handle.borrow_mut();
-            if rc.should_include_required_config_fragments_provider() {
-                // When tracking required fragments, use a key-tracking dict to support
-                // lookedUpVariables().
-                blaze_util::unported!("Dict.Builder.buildImmutableWithKeyTracking");
-            }
-            rc.get_configuration_make_variable_context()
-                .collect_make_variables()
-                .map_err(|e| errorf(e.0))?
-        };
-        let dict = heap
-            .alloc(AllocDict(vars.iter().map(|(k, v)| {
-                (heap.alloc_str(k).to_value(), heap.alloc_str(v).to_value())
-            })));
-        ctx.cached_make_variables.set(Some(dict));
-        Ok(dict)
+        get_var(this, heap)
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:802 StarlarkRuleContext.toolchains
@@ -1431,12 +1483,12 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
                 /* resolve_toolchain_data_func= */ &|l| rc.get_toolchain_info(l),
                 /* resolved_toolchain_type_labels= */
                 StarlarkRuleContext::get_requested_toolchain_type_labels_from_auto_exec_groups(&rc),
-                ctx.package_context.clone(),
+                ctx.package_context(),
             ))
         } else {
             Ok(StarlarkToolchainContext::of_resolved(
                 toolchain_context,
-                ctx.package_context.clone(),
+                ctx.package_context(),
             ))
         }
     }
@@ -1463,7 +1515,7 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
         match rc.get_toolchain_contexts() {
             Some(toolchain_contexts) => Ok(StarlarkExecGroupCollection::create(
                 toolchain_contexts,
-                ctx.package_context.clone(),
+                ctx.package_context(),
             )),
             None => blaze_util::unported!(
                 "StarlarkExecGroupCollection.create",
@@ -1488,9 +1540,14 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
                 option
             )));
         }
-        Ok(heap.alloc(AllocList(
-            options.iter().map(|o| heap.alloc_str(o).to_value()),
-        )))
+        // Java: StarlarkList.immutableCopyOf(options)
+        Ok(alloc_immutable_list(
+            heap,
+            options
+                .iter()
+                .map(|o| heap.alloc_str(o).to_value())
+                .collect(),
+        ))
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:863 StarlarkRuleContext.checkPlaceholders
@@ -1631,6 +1688,28 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named, default = false)] skip_conflict_checking: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<StarlarkRunfiles> {
+        // The interpreter checks every argument against its `@Param` before the method runs
+        // (net/starlark/java/eval/BuiltinFunction.java:405), in declaration order.
+        // Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkRuleContextApi.java:469 StarlarkRuleContextApi.runfiles
+        if !is_sequence(files) {
+            return Err(param_type_error("runfiles", "files", files, "sequence"));
+        }
+        if !(transitive_files.is_none() || Depset::from_value(transitive_files).is_some()) {
+            return Err(param_type_error(
+                "runfiles",
+                "transitive_files",
+                transitive_files,
+                "depset or NoneType",
+            ));
+        }
+        let collect_data = check_bool_param("runfiles", "collect_data", collect_data)?;
+        let collect_default = check_bool_param("runfiles", "collect_default", collect_default)?;
+        for (name, value) in [("symlinks", symlinks), ("root_symlinks", root_symlinks)] {
+            if !(DictRef::from_value(value).is_some() || Depset::from_value(value).is_some()) {
+                return Err(param_type_error("runfiles", name, value, "dict or depset"));
+            }
+        }
+
         if skip_conflict_checking {
             fail_if_called_outside_default_allowlist(eval)?;
         }
@@ -1638,10 +1717,11 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
         let rc = ctx.context.handle.borrow();
         let mut builder = RunfilesBuilder::new(rc.get_workspace_name());
         let mut check_conflicts = false;
-        if truth(collect_data) {
+        // Java: Starlark.truth(collectData)
+        if collect_data {
             add_runfiles(&mut builder, &rc, RunfilesMapping::Data);
         }
-        if truth(collect_default) {
+        if collect_default {
             add_runfiles(&mut builder, &rc, RunfilesMapping::Default);
         }
         let files_list = sequence_cast_artifacts(files, "files", eval)?;
@@ -1792,23 +1872,32 @@ pub fn get_starlark_semantics(ctx: &StarlarkRuleContext) -> Arc<blaze_starlark::
     ctx.context.get_starlark_semantics()
 }
 
-/// `ctx.var` as a dict, for natives (Java `starlarkRuleContext.var()`).
+/// `ctx.var` (Java `starlarkRuleContext.var()`), also for natives: the make variables as an
+/// immutable dict, computed once.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:831 StarlarkRuleContext.var
 pub fn get_var<'v>(this: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
     let ctx = live(this, "var")?;
     if let Some(v) = ctx.cached_make_variables.get() {
         return Ok(v);
     }
-    let vars = ctx
-        .context
-        .handle
-        .borrow_mut()
-        .get_configuration_make_variable_context()
-        .collect_make_variables()
-        .map_err(|e| errorf(e.0))?;
-    let dict = heap
-        .alloc(AllocDict(vars.iter().map(|(k, v)| {
-            (heap.alloc_str(k).to_value(), heap.alloc_str(v).to_value())
-        })));
+    let vars = {
+        let rc = ctx.context.handle.borrow_mut();
+        if rc.should_include_required_config_fragments_provider() {
+            // When tracking required fragments, use a key-tracking dict to support
+            // lookedUpVariables().
+            blaze_util::unported!("Dict.Builder.buildImmutableWithKeyTracking");
+        }
+        rc.get_configuration_make_variable_context()
+            .collect_make_variables()
+            .map_err(|e| errorf(e.0))?
+    };
+    // Java: vars.buildImmutable()
+    let dict = alloc_immutable_dict(
+        heap,
+        vars.iter()
+            .map(|(k, v)| (heap.alloc_str(k).to_value(), heap.alloc_str(v).to_value()))
+            .collect(),
+    );
     ctx.cached_make_variables.set(Some(dict));
     Ok(dict)
 }
@@ -1828,5 +1917,32 @@ mod tests {
             rule_label_canonical_name: "//foo:bar".to_owned(),
         };
         assert_eq!(o.to_string(), "ctx.outputs(for //foo:bar)");
+    }
+
+    // Expected text: the oracle (Bazel 9.3.2) on scripts/w4/scenarios/ctx-errors, target
+    // outputs_unknown.
+    #[test]
+    fn outputs_unknown_field_message() {
+        assert_eq!(
+            outputs_error_message_for_unknown_field("nosuch"),
+            "No attribute 'nosuch' in outputs. Make sure you declared a rule output with this \
+             name."
+        );
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:441 Outputs.checkMutable
+    #[test]
+    fn closed_outputs_report_check_mutable() {
+        let o = ClosedCtxOutputs {
+            rule_label_canonical_name: "//foo:bar".to_owned(),
+        };
+        assert_eq!(
+            o.get_attr_error_message("out"),
+            Some(
+                "cannot access outputs of rule '//foo:bar' outside of its own rule \
+                 implementation function"
+                    .to_owned()
+            )
+        );
     }
 }

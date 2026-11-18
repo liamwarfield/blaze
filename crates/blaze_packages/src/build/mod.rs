@@ -49,9 +49,13 @@ pub fn register_select(builder: &mut GlobalsBuilder) {
 
 /// Adds the non-rule members of `native` (Java `StarlarkNativeModule`; also BUILD toplevels).
 ///
-/// PORT: Java hides `repository_name` unless `--incompatible_enable_deprecated_label_apis`
-/// (default true) through `enableOnlyWithFlag`; the registry has no semantics, so the
-/// composing code (agent D) must drop it when the flag is false.
+/// `repository_name` is `enableOnlyWithFlag = INCOMPATIBLE_ENABLE_DEPRECATED_LABEL_APIS` in
+/// Java. It is always bound, as here: `StarlarkNativeModule.BINDINGS_FOR_BUILD_FILES` comes
+/// from `Starlark.addMethods(bindings, new StarlarkNativeModule())`, which selects methods
+/// under the default semantics (the flag defaults to true). The flag is checked when the
+/// function is called (`MethodDescriptor.checkEnabled`), which the function itself does.
+// Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:86 StarlarkNativeModule.initializeBindings
+// Java: net/starlark/java/eval/Starlark.java:1065 Starlark.addMethods
 pub fn register_native_module_functions(builder: &mut GlobalsBuilder) {
     starlark_native_module::starlark_native_module(builder);
 }

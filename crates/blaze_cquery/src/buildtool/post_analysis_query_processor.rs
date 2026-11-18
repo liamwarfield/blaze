@@ -125,12 +125,16 @@ where
         .map_err(|e| PostAnalysisQueryError::Io(e.to_string()))?;
     match callback.process(&aggregate_results_callback.get_result()) {
         Ok(()) => {}
-        Err(QueryError::Interrupted(_)) => {
-            return Err(match callback.get_io_exception() {
-                Some(e) => PostAnalysisQueryError::Io(e.to_string()),
-                None => PostAnalysisQueryError::Interrupted,
-            });
-        }
+        // OutputFormatterCallback.process turns an IOException of processOutput into
+        // `new InterruptedException("Interrupting due to a failure in the output formatter")`
+        // and keeps the IOException for getIoException(). Unlike
+        // OutputFormatterCallback.processAllTargets, doPostAnalysisQuery never asks for it, and
+        // PostAnalysisQueryProcessor.process does not catch InterruptedException: BuildTool
+        // reports "build interrupted" (exit code 8). That is what Bazel 9.3.2 prints for an
+        // aquery action whose command line cannot be expanded
+        // (scripts/w4/scenarios/query-map-each).
+        // Java: com/google/devtools/build/lib/query2/engine/OutputFormatterCallback.java:49 OutputFormatterCallback.process
+        Err(QueryError::Interrupted(_)) => return Err(PostAnalysisQueryError::Interrupted),
         Err(QueryError::Query(e)) => return Err(PostAnalysisQueryError::Query(e)),
         Err(QueryError::Cancellation) => panic!("java.util.concurrent.CancellationException"),
     }
@@ -149,6 +153,17 @@ where
     Ok(())
 }
 
+/// The message of `new ViewCreationFailedException(message, failureDetail, cause)`.
+// Java: com/google/devtools/build/lib/analysis/ViewCreationFailedException.java:51 ViewCreationFailedException.combineMessages
+fn combine_messages(message: &str, cause_message: &str) -> String {
+    // isNullOrEmpty(cause.getMessage())
+    if cause_message.is_empty() {
+        message.to_owned()
+    } else {
+        format!("{}: {}", message, cause_message)
+    }
+}
+
 /// The error handling of `PostAnalysisQueryProcessor.process` around `doPostAnalysisQuery`.
 // Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:71 PostAnalysisQueryProcessor.process
 pub fn handle_post_analysis_query_result(
@@ -161,8 +176,9 @@ pub fn handle_post_analysis_query_result(
         Err(PostAnalysisQueryError::Query(e)) => {
             let error_message = "Error doing post analysis query";
             if !keep_going {
+                // new ViewCreationFailedException(errorMessage, e.getFailureDetail(), e)
                 return Err(BuildToolError::ViewCreationFailed {
-                    message: error_message.to_owned(),
+                    message: combine_messages(error_message, e.get_message()),
                     failure_detail: e.get_failure_detail().clone(),
                 });
             }
@@ -182,8 +198,9 @@ pub fn handle_post_analysis_query_result(
                 })),
             };
             if !keep_going {
+                // new ViewCreationFailedException(errorMessage, failureDetail, e)
                 return Err(BuildToolError::ViewCreationFailed {
-                    message: error_message.to_owned(),
+                    message: combine_messages(error_message, &message),
                     failure_detail,
                 });
             }
@@ -208,11 +225,23 @@ pub fn handle_post_analysis_query_result(
 
 /// The checks `process` makes before running the query.
 // Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:84 PostAnalysisQueryProcessor.process
-pub fn before_post_analysis_query() -> Result<(), BuildToolError> {
+pub fn before_post_analysis_query(
+    tracks_state_for_incrementality: bool,
+) -> Result<(), BuildToolError> {
     // This query will operate over the graph as constructed by analysis, but will also pick up
     // any nodes that are in the graph from prior builds, including dirty nodes.
-    // PORT: deleteOldNodes / applyInvalidation are incremental-state plumbing (one evaluation
-    // per process); the executor always tracks state for incrementality.
+    // PORT: skipped, incremental: deleteOldNodes / applyInvalidation (one evaluation per
+    // process).
+    if !tracks_state_for_incrementality {
+        return Err(BuildToolError::Exit(DetailedExitCode::of(FailureDetail {
+            message: "Queries based on analysis results are not allowed if incrementality state \
+                      is not being kept"
+                .to_owned(),
+            category: Some(Category::Query(failure_details::Query {
+                code: query::Code::AnalysisQueryPrereqUnmet as i32,
+            })),
+        })));
+    }
     Ok(())
 }
 
@@ -233,4 +262,122 @@ pub fn create_query_runtime_helper(
                 failure_detail,
             ))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blaze_events::{EventKind, StoredEventHandler};
+    use blaze_protos::failure_details::{ConfigurableQuery, configurable_query};
+
+    /// The exception `evaluateQueryInternal` throws for `cquery "config(//:x, deadbeef)"`.
+    fn unknown_configuration_exception() -> QueryException {
+        QueryException::with_failure_detail(
+            None,
+            "Evaluation failed: Unknown configuration ID 'deadbeef'.",
+            FailureDetail {
+                message: "Unknown configuration ID 'deadbeef'.".to_owned(),
+                category: Some(Category::ConfigurableQuery(ConfigurableQuery {
+                    code: configurable_query::Code::IncorrectConfigArgumentError as i32,
+                })),
+            },
+        )
+    }
+
+    // Expected text: scripts/w4/scenarios/query-errors/ORACLE.txt step 1 (Bazel 9.3.2):
+    // "ERROR: Error doing post analysis query: Evaluation failed: Unknown configuration ID
+    // 'deadbeef'." (ViewCreationFailedException.combineMessages keeps the cause).
+    #[test]
+    fn view_creation_failed_exception_keeps_the_cause() {
+        let stored = Arc::new(StoredEventHandler::new());
+        let reporter: Arc<dyn ExtendedEventHandler> = stored.clone();
+        let result = handle_post_analysis_query_result(
+            Err(PostAnalysisQueryError::Query(
+                unknown_configuration_exception(),
+            )),
+            /* keep_going= */ false,
+            &reporter,
+        );
+        match result {
+            Err(BuildToolError::ViewCreationFailed {
+                message,
+                failure_detail,
+            }) => {
+                assert_eq!(
+                    message,
+                    "Error doing post analysis query: Evaluation failed: Unknown configuration \
+                     ID 'deadbeef'."
+                );
+                assert_eq!(
+                    failure_detail.message,
+                    "Unknown configuration ID 'deadbeef'."
+                );
+            }
+            other => panic!("expected ViewCreationFailed, got {:?}", other),
+        }
+        assert!(stored.get_events().is_empty());
+    }
+
+    // Expected text: scripts/w4/scenarios/query-errors/ORACLE.txt step 2 (--keep_going):
+    // "ERROR: Error doing post analysis query: Unknown configuration ID 'deadbeef'.", exit 0.
+    #[test]
+    fn keep_going_reports_the_failure_detail_message() {
+        let stored = Arc::new(StoredEventHandler::new());
+        let reporter: Arc<dyn ExtendedEventHandler> = stored.clone();
+        let result = handle_post_analysis_query_result(
+            Err(PostAnalysisQueryError::Query(
+                unknown_configuration_exception(),
+            )),
+            /* keep_going= */ true,
+            &reporter,
+        );
+        assert!(result.is_ok());
+        let events = stored.get_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].get_kind(), EventKind::Error);
+        assert_eq!(
+            events[0].get_message(),
+            "Error doing post analysis query: Unknown configuration ID 'deadbeef'."
+        );
+    }
+
+    // Expected text and exit code: scripts/w4/scenarios/query-errors/ORACLE.txt
+    // (`cquery //:x --notrack_incremental_state`): "ERROR: Queries based on analysis results are
+    // not allowed if incrementality state is not being kept", exit 2.
+    #[test]
+    fn queries_need_incrementality_state() {
+        assert!(before_post_analysis_query(true).is_ok());
+        match before_post_analysis_query(false) {
+            Err(BuildToolError::Exit(detailed_exit_code)) => {
+                assert_eq!(detailed_exit_code.get_exit_code(), 2);
+                assert_eq!(
+                    detailed_exit_code
+                        .get_failure_detail()
+                        .expect("failure detail")
+                        .message,
+                    "Queries based on analysis results are not allowed if incrementality state \
+                     is not being kept"
+                );
+            }
+            other => panic!("expected an ExitException, got {:?}", other),
+        }
+    }
+
+    // scripts/w4/scenarios/query-map-each/ORACLE.txt: an output formatter failure surfaces as
+    // the InterruptedException of OutputFormatterCallback.process ("ERROR: build interrupted",
+    // exit 8), with and without --keep_going.
+    #[test]
+    fn interrupted_stays_interrupted() {
+        for keep_going in [false, true] {
+            let stored = Arc::new(StoredEventHandler::new());
+            let reporter: Arc<dyn ExtendedEventHandler> = stored.clone();
+            let result = handle_post_analysis_query_result(
+                Err(PostAnalysisQueryError::Interrupted),
+                keep_going,
+                &reporter,
+            );
+            assert!(matches!(result, Err(BuildToolError::Interrupted)));
+            assert!(stored.get_events().is_empty());
+        }
+    }
 }

@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 
 use allocative::Allocative;
 use blaze_cmdline::Label;
+use blaze_cmdline::RepositoryMapping;
 use blaze_cmdline::RepositoryName;
 use blaze_starlark::Location;
 use blaze_starlark::ThreadContext;
@@ -95,6 +96,7 @@ use crate::target::IS_EXECUTABLE_ATTRIBUTE_NAME;
 use crate::types::AttrValue;
 use crate::types::FileTypeSet;
 use crate::types::LabelClass;
+use crate::types::LabelConverter;
 use crate::types::Type;
 
 // -------------------------------------------------------------------------------------------
@@ -227,40 +229,95 @@ fn builtin_provider_id(name: &str) -> StarlarkProviderIdentifier {
     })
 }
 
-/// Java `BuiltinRestriction.failIfCalledOutsideAllowlist`.
-// Java: com/google/devtools/build/lib/packages/BuiltinRestriction.java:61 BuiltinRestriction.failIfCalledOutsideAllowlist
+/// Java `BuiltinRestriction.failIfCalledOutsideAllowlist`: the innermost .bzl's label, checked
+/// under that module's own repo mapping (`failIfModuleOutsideAllowlist`).
+// Java: com/google/devtools/build/lib/packages/BuiltinRestriction.java:169 BuiltinRestriction.failIfCalledOutsideAllowlist
+// Java: com/google/devtools/build/lib/packages/BuiltinRestriction.java:190 BuiltinRestriction.failIfModuleOutsideAllowlist
 pub fn fail_if_called_outside_allowlist(
     eval: &Evaluator,
     allowlist: &[(&str, &str)],
 ) -> starlark::Result<()> {
     let module = super::util::module_context_or_throw(eval)?;
-    fail_if_label_outside_allowlist(module.label(), allowlist)
+    fail_if_label_outside_allowlist(module.label(), &module.repo_mapping, allowlist)
 }
 
-/// Java `BuiltinRestriction.failIfLabelOutsideAllowlist` (repo-mapping dependent entries use
-/// the canonical repository name).
-// Java: com/google/devtools/build/lib/packages/BuiltinRestriction.java:84 BuiltinRestriction.failIfLabelOutsideAllowlist
+/// Java `BuiltinRestriction.failIfLabelOutsideAllowlist`. Each allowlist entry is an
+/// `AllowlistEntry` (apparent repository name, package prefix).
+// Java: com/google/devtools/build/lib/packages/BuiltinRestriction.java:199 BuiltinRestriction.failIfLabelOutsideAllowlist
 pub fn fail_if_label_outside_allowlist(
     label: &Label,
+    repo_mapping: &RepositoryMapping,
     allowlist: &[(&str, &str)],
 ) -> starlark::Result<()> {
-    if label.get_repository().get_name() == "_builtins" {
-        return Ok(());
-    }
-    // PORT: Java resolves each entry's apparent repository name through the main repository
-    // mapping; the entries here name canonical or main-repo repositories.
-    let allowed = allowlist.iter().any(|(repo, pkg_prefix)| {
-        let repo_name = label.get_repository().get_name();
-        let repo_matches = repo_name == *repo || repo_name.starts_with(&format!("{repo}+"));
-        repo_matches && label.get_package_name().starts_with(pkg_prefix)
-    });
-    if !allowed {
+    if is_not_allowed(label, repo_mapping, allowlist) {
         return Err(errorf(format!(
             "file '{}' cannot use private API",
             label.get_canonical_form()
         )));
     }
     Ok(())
+}
+
+/// Java `BuiltinRestriction.isNotAllowed`: true if the label is neither in the builtins
+/// repository nor in a package or subpackage of an allowlist entry.
+// Java: com/google/devtools/build/lib/packages/BuiltinRestriction.java:211 BuiltinRestriction.isNotAllowed
+fn is_not_allowed(
+    label: &Label,
+    repo_mapping: &RepositoryMapping,
+    allowlist: &[(&str, &str)],
+) -> bool {
+    if *label.get_repository() == *blaze_cmdline::repository_name::BUILTINS {
+        return false;
+    }
+    !allowlist
+        .iter()
+        .any(|(apparent_repo_name, package_prefix)| {
+            allowlist_entry_allows(apparent_repo_name, package_prefix, label, repo_mapping)
+        })
+}
+
+/// Java `BuiltinRestriction.AllowlistEntry.allows`.
+// Java: com/google/devtools/build/lib/packages/BuiltinRestriction.java:124 BuiltinRestriction.AllowlistEntry.allows
+fn allowlist_entry_allows(
+    apparent_repo_name: &str,
+    package_prefix: &str,
+    label: &Label,
+    repo_mapping: &RepositoryMapping,
+) -> bool {
+    allowlist_entry_repos_match(apparent_repo_name, label.get_repository(), repo_mapping)
+        && label
+            .get_package_fragment()
+            .starts_with(&blaze_vfs::PathFragment::create(package_prefix))
+}
+
+/// Java `BuiltinRestriction.AllowlistEntry.reposMatch`.
+// Java: com/google/devtools/build/lib/packages/BuiltinRestriction.java:129 BuiltinRestriction.AllowlistEntry.reposMatch
+fn allowlist_entry_repos_match(
+    allowed_name: &str,
+    given_name: &RepositoryName,
+    repo_mapping: &RepositoryMapping,
+) -> bool {
+    if *given_name == *blaze_cmdline::repository_name::MAIN {
+        // The main repository may be one of the allowlisted rulesets, in which case we need to
+        // fall back to interpreting allowedName as the apparent repo name. This is not a
+        // performance concern since:
+        // * In Bazel, the main repo is not expected to use private API unless it is one of the
+        //   allowlisted rulesets. For these rulesets, it is acceptable to pay the cost of a
+        //   failed RepositoryMapping lookup, which is expensive because it uses SpellChecker to
+        //   construct error messages. The only other case in which this cost is paid is if the
+        //   main repo attempts to use private APIs and subsequently fails.
+        // * In Blaze, the repo mapping is always trivial and lookups are cheap.
+        return allowed_name == blaze_cmdline::repository_name::MAIN.get_name()
+            || repo_mapping.get(allowed_name).is_main();
+    }
+    if *given_name == *blaze_cmdline::repository_name::BAZEL_TOOLS {
+        return allowed_name == blaze_cmdline::repository_name::BAZEL_TOOLS.get_name();
+    }
+    // allowedName is a module name and givenName is a real canonical repo name, so it belongs
+    // to any version of that module if and only if it contains <allowedName>+ as a prefix.
+    given_name
+        .get_name()
+        .starts_with(&format!("{allowed_name}+"))
 }
 
 // -------------------------------------------------------------------------------------------
@@ -353,7 +410,7 @@ pub static DEPENDENCY_RESOLUTION_BASE_RULE: LazyLock<Arc<RuleClass>> = LazyLock:
         "$dependency_resolution_base_rule",
         RuleClassType::Abstract,
         true,
-        &[BASE_RULE.clone()],
+        std::slice::from_ref(&*BASE_RULE),
     );
     builder
         .set_dependency_resolution_rule()
@@ -377,7 +434,7 @@ pub static MATERIALIZER_BASE_RULE: LazyLock<Arc<RuleClass>> = LazyLock::new(|| {
         "$materializer_base_rule",
         RuleClassType::Abstract,
         true,
-        &[BASE_RULE.clone()],
+        std::slice::from_ref(&*BASE_RULE),
     );
     builder
         .set_is_materializer_rule(true)
@@ -403,7 +460,7 @@ pub static BINARY_BASE_RULE: LazyLock<Arc<RuleClass>> = LazyLock::new(|| {
         "$binary_base_rule",
         RuleClassType::Abstract,
         true,
-        &[BASE_RULE.clone()],
+        std::slice::from_ref(&*BASE_RULE),
     );
     builder
         .add(&attr("args", Type::StringList))
@@ -449,7 +506,7 @@ pub fn get_test_base_rule(env: &dyn RuleDefinitionEnvironment) -> Arc<RuleClass>
         "$test_base_rule",
         RuleClassType::Abstract,
         true,
-        &[BASE_RULE.clone()],
+        std::slice::from_ref(&*BASE_RULE),
     );
     builder
         .requires_configuration_fragments(&["TestConfiguration"])
@@ -968,26 +1025,45 @@ fn validate_rule_propagated_aspects(rule_class: &RuleClass) -> starlark::Result<
     Ok(())
 }
 
-/// `BuildType.copyAndLiftStarlarkValue` with the package's label converter (borrowed from the
-/// package builder only for the conversion).
-fn copy_and_lift_with_package_converter<'v>(
-    eval: &Evaluator<'v, '_, '_>,
-    attr_owner: &str,
-    attr: &Attribute,
-    value: Value<'v>,
-    heap: starlark::values::Heap<'v>,
-) -> starlark::Result<Value<'v>> {
-    let target_definition_context =
-        TargetDefinitionContext::from_or_fail_participle(eval, "a rule", "instantiated")
-            .map_err(eval_exception)?;
-    crate::types::build_type::copy_and_lift_starlark_value(
-        attr_owner,
-        attr,
-        value,
-        Some(target_definition_context.get_label_converter()),
-        heap,
-    )
-    .map_err(|e| errorf(e.to_string()))
+/// The thread state of `StarlarkRuleFunction.call` while the rule's initializers run: the
+/// `TargetDefinitionContext` is off the thread (so initializers cannot call load-time
+/// functions) and the package's `LabelConverter` is a thread-local (for
+/// `native.package_relative_label()` and `select()` in an initializer). Dropping it is Java's
+/// `finally` block: it runs on every exit path, including errors and panics.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1789 StarlarkRuleFunction.call
+struct InitializerThreadState<'a> {
+    thread: &'a ThreadContext,
+    target_definition_context: Option<Box<dyn std::any::Any>>,
+}
+
+impl<'a> InitializerThreadState<'a> {
+    fn enter(thread: &'a ThreadContext, label_converter: Arc<LabelConverter>) -> Self {
+        // Temporarily remove `targetDefinitionContext` from the thread to prevent calls to load
+        // time functions. Mutating values in initializers is mostly not a problem, because the
+        // attribute values are copied before calling the initializers (<-TODO) and before they
+        // are set on the target. Exception is a legacy case allowing arbitrary type of parameter
+        // values. In that case the values may be mutated by the initializer, but they are still
+        // copied when set on the target.
+        let target_definition_context = thread.clear_payload();
+        // Allow access to the LabelConverter to support native.package_relative_label() in an
+        // initializer.
+        thread.set_thread_local::<Arc<LabelConverter>>(Some(label_converter));
+        // PORT: skipped, `thread.setUncheckedExceptionContext(() -> "an initializer")` (crash
+        // report context only).
+        InitializerThreadState {
+            thread,
+            target_definition_context,
+        }
+    }
+}
+
+impl Drop for InitializerThreadState<'_> {
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1880 StarlarkRuleFunction.call
+    fn drop(&mut self) {
+        self.thread.set_thread_local::<Arc<LabelConverter>>(None);
+        self.thread
+            .restore_payload(self.target_definition_context.take());
+    }
 }
 
 /// Java `StarlarkRuleFunction.call`.
@@ -1005,10 +1081,21 @@ fn call_rule_function<'v>(
             "Invalid rule class hasn't been exported by a bzl file",
         ));
     };
-    drop(
-        TargetDefinitionContext::from_or_fail_participle(eval, "a rule", "instantiated")
-            .map_err(eval_exception)?,
-    );
+    // PORT: Java keeps the `targetDefinitionContext` reference across the initializers; here
+    // the builder is the thread's payload, so what the initializer loop needs from it (its
+    // label converter and main repo mapping) is taken now.
+    let (package_label_converter, main_repo_mapping) = {
+        let target_definition_context =
+            TargetDefinitionContext::from_or_fail_participle(eval, "a rule", "instantiated")
+                .map_err(eval_exception)?;
+        (
+            target_definition_context.get_label_converter_arc().clone(),
+            target_definition_context
+                .get_main_repository_mapping()
+                .clone(),
+        )
+    };
+    let thread = ThreadContext::get(eval)?;
 
     validate_rule_propagated_aspects(&rule_class)?;
 
@@ -1020,10 +1107,12 @@ fn call_rule_function<'v>(
         .map(|(k, v)| (k.as_str().to_owned(), v))
         .collect();
 
-    // PORT: Java removes the package builder from the thread while initializers run (so they
-    // cannot call load-time functions) and installs the package's LabelConverter for
-    // native.package_relative_label(); blaze_starlark's ThreadContext cannot swap payloads yet.
     let heap = eval.heap();
+    // Java's `try { ... } finally { ... }`: the state is restored when this guard drops.
+    let initializer_thread_state =
+        InitializerThreadState::enter(thread, package_label_converter.clone());
+    // We call all the initializers of the rule and its ancestor rules, proceeding from child to
+    // ancestor, so each initializer can transform the attributes it knows about in turn.
     let mut current_rule_class = Some(rule_class.clone());
     while let Some(current) = current_rule_class {
         let Some(initializer) = current.get_initializer() else {
@@ -1036,24 +1125,25 @@ fn call_rule_function<'v>(
         // the users. The less magic the better. Do not give in those temptations!
         let mut initializer_kwargs: Vec<(String, Value<'v>)> = Vec::new();
         for attr in current.get_attribute_provider().get_attributes() {
-            if (attr.is_public() && attr.starlark_defined()) || attr.get_name() == "name" {
-                if let Some(value) = kwargs.get(attr.get_name()).copied() {
-                    if value.is_none() {
-                        continue;
-                    }
-                    let reified_value = if legacy_any_type_attrs.contains(attr.get_name()) {
-                        value
-                    } else {
-                        copy_and_lift_with_package_converter(
-                            eval,
-                            current.get_name(),
-                            attr,
-                            value,
-                            heap,
-                        )?
-                    };
-                    initializer_kwargs.push((attr.get_name().to_owned(), reified_value));
+            if ((attr.is_public() && attr.starlark_defined()) || attr.get_name() == "name")
+                && let Some(value) = kwargs.get(attr.get_name()).copied()
+            {
+                if value.is_none() {
+                    continue;
                 }
+                let reified_value = if legacy_any_type_attrs.contains(attr.get_name()) {
+                    value
+                } else {
+                    crate::types::build_type::copy_and_lift_starlark_value(
+                        current.get_name(),
+                        attr,
+                        value,
+                        Some(package_label_converter.as_ref()),
+                        heap,
+                    )
+                    .map_err(|e| errorf(e.to_string()))?
+                };
+                initializer_kwargs.push((attr.get_name().to_owned(), reified_value));
             }
         }
         let initializer_fn = resolve(initializer)
@@ -1094,6 +1184,7 @@ fn call_rule_function<'v>(
                     .expect("Starlark rule class has a definition label");
                 fail_if_label_outside_allowlist(
                     definition_label,
+                    &main_repo_mapping,
                     ALLOWLIST_RULE_EXTENSION_API_EXPERIMENTAL,
                 )?;
             }
@@ -1117,13 +1208,14 @@ fn call_rule_function<'v>(
                 {
                     // Reify to the location of the initializer definition (except for outputs)
                     if attr.get_type() == Type::Output || attr.get_type() == Type::OutputList {
-                        copy_and_lift_with_package_converter(
-                            eval,
+                        crate::types::build_type::copy_and_lift_starlark_value(
                             current.get_name(),
                             attr,
                             value,
+                            Some(package_label_converter.as_ref()),
                             heap,
-                        )?
+                        )
+                        .map_err(|e| errorf(e.to_string()))?
                     } else {
                         crate::types::build_type::copy_and_lift_starlark_value(
                             current.get_name(),
@@ -1143,11 +1235,12 @@ fn call_rule_function<'v>(
         }
         current_rule_class = current.get_starlark_parent().cloned();
     }
+    // Java's `finally`: `thread.setThreadLocal(LabelConverter.class, null)` and
+    // `targetDefinitionContext.storeInThread(thread)`.
+    drop(initializer_thread_state);
 
     let attribute_values = BuildLangTypedAttributeValuesMap::new(kwargs);
-    let fail_on_unknown_attributes = ThreadContext::get(eval)?
-        .semantics
-        .incompatible_fail_on_unknown_attributes;
+    let fail_on_unknown_attributes = thread.semantics.incompatible_fail_on_unknown_attributes;
     let callstack = call_stack(eval);
     let mut target_definition_context =
         TargetDefinitionContext::from_or_fail_participle(eval, "a rule", "instantiated")
@@ -1175,6 +1268,15 @@ where
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
         call_rule_function(&self.state, args, eval)
+    }
+
+    /// The name in tracebacks and "Error in <name>:" (Java `StarlarkCallable.getName`).
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1762 StarlarkRuleFunction.getName
+    fn name_for_call_stack(&self, _me: Value<'v>) -> String {
+        match self.state.rule_class.get() {
+            Some(rule_class) => rule_class.get_name().to_owned(),
+            None => "unexported rule".to_owned(),
+        }
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:2008 StarlarkRuleFunction.equals
@@ -1452,7 +1554,12 @@ fn create_rule<'v>(
         if parent.is_some() {
             return Err(errorf("materializer rules cannot have a parent"));
         }
-        let mut b = RuleClassBuilder::new("", type_, true, &[MATERIALIZER_BASE_RULE.clone()]);
+        let mut b = RuleClassBuilder::new(
+            "",
+            type_,
+            true,
+            std::slice::from_ref(&*MATERIALIZER_BASE_RULE),
+        );
         b.set_materializer_rule_allows_real_deps(a.allow_materializer_rule_real_deps);
         b
     } else if a.dependency_resolution_rule {
@@ -1461,7 +1568,12 @@ fn create_rule<'v>(
                 "rules used in dependency resolution cannot have a parent",
             ));
         }
-        RuleClassBuilder::new("", type_, true, &[DEPENDENCY_RESOLUTION_BASE_RULE.clone()])
+        RuleClassBuilder::new(
+            "",
+            type_,
+            true,
+            std::slice::from_ref(&*DEPENDENCY_RESOLUTION_BASE_RULE),
+        )
     } else if let Some(parent) = &parent {
         if parent.is_dependency_resolution_rule() {
             return Err(errorf("dependency resolution rules cannot be parents"));
@@ -1470,7 +1582,7 @@ fn create_rule<'v>(
             return Err(errorf("materializer rules cannot be parents"));
         }
         // We'll set the name later, pass the empty string for now.
-        RuleClassBuilder::new("", type_, true, &[parent.clone()])
+        RuleClassBuilder::new("", type_, true, std::slice::from_ref(parent))
     } else {
         // We'll set the name later, pass the empty string for now.
         let base_parent = if test {
@@ -2014,6 +2126,14 @@ pub fn register_rule_class_functions(builder: &mut GlobalsBuilder) {
             ));
         }
         let test_unchecked = bool_or_unbound("rule", "test", test)?;
+        // Java: `@Param(name = "attrs", allowedTypes = {@ParamType(type = Dict.class)})`
+        // (lib/starlarkbuildapi/StarlarkRuleFunctionsApi.java:267), checked by the interpreter
+        // before the method body, in parameter order.
+        if let Some(attrs) = attrs
+            && starlark::values::dict::DictRef::from_value(attrs).is_none()
+        {
+            return Err(param_type_error("rule", "attrs", attrs, "dict"));
+        }
         let executable_unchecked = bool_or_unbound("rule", "executable", executable)?;
         let doc = optional_str("rule", "doc", doc)?;
         let outputs = outputs.unwrap_or_else(Value::new_none);

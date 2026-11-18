@@ -1,7 +1,9 @@
 //! Ports of the attribute mapper tests: `analysis/select/AbstractAttributeMapperTest.java`,
 //! `AggregatingAttributeMapperTest.java`, `RawAttributeMapperTest.java`,
 //! `NonconfigurableAttributeMapperTest.java`. Their rules come from BUILD files
-//! (`scratchRule`), so most are ignored until package loading works; the combination logic of
+//! (`scratchRule`), so most belong on the PACKAGE harness of blaze_sky_loading
+//! (`PackageLoadingTestCase`), which this crate cannot depend on; their stubs stay here, ignored
+//! with the reason, until they are ported there. The combination logic of
 //! `AggregatingAttributeMapper.getAllValues` is tested directly on selectors.
 
 use blaze_cmdline::Label;
@@ -47,11 +49,11 @@ fn label_lists(lists: &[&[&str]]) -> Vec<AttrValue> {
 // ---- AggregatingAttributeMapperTest
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "not ported yet: the rule comes from a BUILD file (Java scratchRule with //test_defs:foo_binary.bzl or genrule), so the test belongs on blaze_sky_loading's PackageLoadingTestCase, which this crate cannot depend on; nothing else blocks it"]
 fn test_get_possible_values_direct_attribute() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "not ported yet: the rule comes from a BUILD file (Java scratchRule with //test_defs:foo_binary.bzl or genrule), so the test belongs on blaze_sky_loading's PackageLoadingTestCase, which this crate cannot depend on; nothing else blocks it"]
 fn test_get_possible_values_configurable_attribute() {}
 
 /// Java `testGetPossibleValuesWithConcatenatedSelects`, on the selectors directly.
@@ -144,103 +146,103 @@ fn get_all_values_may_treat_multiple_as_none() {
 }
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "not ported yet: the rule comes from a BUILD file (Java scratchRule with //test_defs:foo_binary.bzl or genrule), so the test belongs on blaze_sky_loading's PackageLoadingTestCase, which this crate cannot depend on; nothing else blocks it"]
 fn test_visitation_configurable_attribute() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_get_reachable_labels() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file (Java scratchRule) and is of a test-only native rule class added to the test rule class provider (rule_with_default / rule_with_computed_defaults): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) and a way to add a native rule class to its rule class provider"]
 fn test_visitation_with_default_values() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file (Java scratchRule) and is of a test-only native rule class added to the test rule class provider (rule_with_default / rule_with_computed_defaults): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) and a way to add a native rule class to its rule class provider"]
 fn test_get_reachable_labels_with_default_values() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file (Java scratchRule) and is of a test-only native rule class added to the test rule class provider (rule_with_default / rule_with_computed_defaults): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) and a way to add a native rule class to its rule class provider"]
 fn test_computed_default_with_configurable_deps() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file (Java scratchRule) and is of a test-only native rule class added to the test rule class provider (rule_with_default / rule_with_computed_defaults): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) and a way to add a native rule class to its rule class provider"]
 fn test_computed_default_without_configurable_deps() {}
 
 // ---- AbstractAttributeMapperTest
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_rule_properties() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_package_default_properties() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_attribute_type_checking() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_get_attribute_type() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_get_attribute_definition() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_is_attribute_explicitly_specified() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_visitation() {}
 
 // ---- RawAttributeMapperTest
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "not ported yet: the rule comes from a BUILD file (Java scratchRule with //test_defs:foo_binary.bzl or genrule), so the test belongs on blaze_sky_loading's PackageLoadingTestCase, which this crate cannot depend on; nothing else blocks it"]
 fn test_get_attribute() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "not ported yet: the rule comes from a BUILD file (Java scratchRule with //test_defs:foo_binary.bzl or genrule), so the test belongs on blaze_sky_loading's PackageLoadingTestCase, which this crate cannot depend on; nothing else blocks it"]
 fn test_configurability_check() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "not ported yet: the rule comes from a BUILD file (Java scratchRule with //test_defs:foo_binary.bzl or genrule), so the test belongs on blaze_sky_loading's PackageLoadingTestCase, which this crate cannot depend on; nothing else blocks it"]
 fn test_visit_labels() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "not ported yet: the rule comes from a BUILD file (Java scratchRule with //test_defs:foo_binary.bzl or genrule), so the test belongs on blaze_sky_loading's PackageLoadingTestCase, which this crate cannot depend on; nothing else blocks it"]
 fn test_get_configurability_keys() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "not ported yet: the rule comes from a BUILD file (Java scratchRule with //test_defs:foo_binary.bzl or genrule), so the test belongs on blaze_sky_loading's PackageLoadingTestCase, which this crate cannot depend on; nothing else blocks it"]
 fn test_get_merged_values() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "not ported yet: the rule comes from a BUILD file (Java scratchRule with //test_defs:foo_binary.bzl or genrule), so the test belongs on blaze_sky_loading's PackageLoadingTestCase, which this crate cannot depend on; nothing else blocks it"]
 fn test_merged_values_with_concatenated_selects() {}
 
 // ---- NonconfigurableAttributeMapperTest
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_get_nonconfigurable_attribute() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_get_configurable_attribute() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_get_nonexistent_attribute() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_nonconfigurable_attribute_type_checking() {}
 
 #[test]
-#[ignore = "needs BUILD loading (PackageFactory / scratchRule)"]
+#[ignore = "the rule comes from a BUILD file that loads @rules_cc//cc:cc_binary.bzl (Java scratchRule): needs blaze_sky_loading's PackageLoadingTestCase (this crate cannot depend on it) with an @rules_cc repository in the scratch workspace, which the harness does not have"]
 fn test_nonconfigurable_visitation() {}

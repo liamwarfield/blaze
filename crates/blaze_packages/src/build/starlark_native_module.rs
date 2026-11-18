@@ -27,13 +27,14 @@ use starlark::values::NoSerialize;
 use starlark::values::StarlarkValue;
 use starlark::values::Value;
 use starlark::values::ValueLike;
-use starlark::values::dict::AllocDict;
 use starlark::values::list::AllocList;
 use starlark::values::none::NoneOr;
 use starlark::values::none::NoneType;
 use starlark::values::starlark_value;
 use starlark::values::tuple::AllocTuple;
 
+use crate::build::build_globals::check_sequence_or_none_param;
+use crate::build::build_globals::check_sequence_param;
 use crate::build::build_globals::convert_label_list;
 use crate::build::build_globals::convert_string_list;
 use crate::build::caller_location;
@@ -50,10 +51,13 @@ use crate::target::Rule;
 use crate::target::RuleOrMacroInstance;
 use crate::types::AttrValue;
 use crate::types::BuildTypeSelectorList;
+use crate::types::LabelConverter;
 use crate::types::SelectorList;
 use crate::types::SelectorValue;
 use crate::types::TriState;
 use crate::types::Type;
+use crate::types::type_::alloc_immutable_dict;
+use crate::types::type_::alloc_immutable_list;
 
 /// Java `Globber.Operation.toString()` (the enum constant name).
 fn operation_name(op: GlobberOperation) -> &'static str {
@@ -209,7 +213,10 @@ pub fn starlarkify_value<'v>(
 ) -> Option<Value<'v>> {
     let val = val?;
     let tuple_of = |items: Vec<Value<'v>>| Some(heap.alloc(AllocTuple(items)));
-    let dict_of = |items: Vec<(Value<'v>, Value<'v>)>| Some(heap.alloc(AllocDict(items)));
+    // Java `Dict.Builder.build(mu)` with `mu == null /* immutable */` (the only caller is
+    // ExistingRuleView.starlarkifyAttribute): mutating the dict fails with "trying to mutate a
+    // frozen dict value".
+    let dict_of = |items: Vec<(Value<'v>, Value<'v>)>| Some(alloc_immutable_dict(heap, items));
     let label = |l: &Label| heap.alloc(starlarkify_label(l, package_identifier));
     let string = |s: &str| heap.alloc(s);
     match val {
@@ -581,8 +588,8 @@ fn dict_like_view_methods(builder: &mut MethodsBuilder) {
     fn keys<'v>(this: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
         // For now, we return an immutable list, so that migration to a sequence view is less
         // likely to cause breakage.
-        // PORT: starlark-rust lists are mutable; a fresh list is returned.
-        Ok(heap.alloc(AllocList(view_keys(this, heap)?)))
+        // Java: StarlarkList.immutableCopyOf(this)
+        Ok(alloc_immutable_list(heap, view_keys(this, heap)?))
     }
 
     // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:194 StarlarkNativeModule.DictLikeView.starlarkValues
@@ -591,7 +598,8 @@ fn dict_like_view_methods(builder: &mut MethodsBuilder) {
         for key in view_keys(this, heap)? {
             value_list.push(view_get(this, heap, key).expect("NullPointerException: view value"));
         }
-        Ok(heap.alloc(AllocList(value_list)))
+        // Java: StarlarkList.immutableCopyOf(valueList)
+        Ok(alloc_immutable_list(heap, value_list))
     }
 
     // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:209 StarlarkNativeModule.DictLikeView.items
@@ -601,7 +609,8 @@ fn dict_like_view_methods(builder: &mut MethodsBuilder) {
             let value = view_get(this, heap, key).expect("NullPointerException: view value");
             items_list.push(heap.alloc((key, value)));
         }
-        Ok(heap.alloc(AllocList(items_list)))
+        // Java: StarlarkList.immutableCopyOf(itemsList)
+        Ok(alloc_immutable_list(heap, items_list))
     }
 }
 
@@ -618,11 +627,22 @@ pub(crate) fn starlark_native_module(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
         let heap = eval.heap();
+        // Java: the interpreter checks the arguments against the `@Param` types before the
+        // method runs: `include` and `exclude` are
+        // `@ParamType(type = Sequence.class, generic1 = String.class)`, `exclude_directories` is
+        // a `StarlarkInt`.
+        if let Some(include) = include {
+            check_sequence_param("glob", "include", include)?;
+        }
+        if let Some(exclude) = exclude {
+            check_sequence_param("glob", "exclude", exclude)?;
+        }
+        let exclude_dirs_nonzero = exclude_directories_nonzero(exclude_directories)?;
         TargetDefinitionContext::from_or_fail_allow_build_only(eval, "glob()").map_err(eval_err)?;
         let empty = heap.alloc(AllocList(Vec::<Value>::new()));
-        let includes = convert_string_list(include.unwrap_or(empty), "'glob' argument")?;
-        let excludes = convert_string_list(exclude.unwrap_or(empty), "'glob' argument")?;
-        let op = if exclude_directories_nonzero(exclude_directories)? {
+        let includes = convert_string_list(include.unwrap_or(empty), "'glob' argument", heap)?;
+        let excludes = convert_string_list(exclude.unwrap_or(empty), "'glob' argument", heap)?;
+        let op = if exclude_dirs_nonzero {
             GlobberOperation::Files
         } else {
             GlobberOperation::FilesAndDirs
@@ -677,7 +697,8 @@ pub(crate) fn starlark_native_module(builder: &mut GlobalsBuilder) {
     // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:509 StarlarkNativeModule.existingRules
     fn existing_rules<'v>(eval: &mut Evaluator<'v, '_, '_>) -> starlark::Result<Value<'v>> {
         if existing_rules_should_be_no_op(eval) {
-            return Ok(eval.heap().alloc(AllocDict(Vec::<(Value, Value)>::new())));
+            // Java: Dict.empty() (the immutable empty dict).
+            return Ok(alloc_immutable_dict(eval.heap(), Vec::new()));
         }
         let snapshot = {
             let target_definition_context =
@@ -701,6 +722,14 @@ pub(crate) fn starlark_native_module(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
         let heap = eval.heap();
+        // Java: `packages` and `includes` are
+        // `@ParamType(type = Sequence.class, generic1 = String.class)`.
+        if let Some(packages) = packages {
+            check_sequence_param("package_group", "packages", packages)?;
+        }
+        if let Some(includes) = includes {
+            check_sequence_param("package_group", "includes", includes)?;
+        }
         let semantics = ThreadContext::get(eval)
             .map_err(starlark::Error::new_other)?
             .semantics
@@ -712,11 +741,13 @@ pub(crate) fn starlark_native_module(builder: &mut GlobalsBuilder) {
         let packages = convert_string_list(
             packages.unwrap_or(empty),
             "'package_group.packages argument'",
+            heap,
         )?;
         let includes = convert_label_list(
             includes.unwrap_or(empty),
             "'package_group.includes argument'",
             &target_definition_context,
+            heap,
         )?;
 
         match target_definition_context.add_package_group(
@@ -748,17 +779,30 @@ pub(crate) fn starlark_native_module(builder: &mut GlobalsBuilder) {
         #[starlark(default = NoneOr::None)] licenses: NoneOr<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
+        let heap = eval.heap();
+        // Java: `srcs` is `@ParamType(type = Sequence.class, generic1 = String.class)`;
+        // `visibility` and `licenses` are Sequence or NoneType.
+        check_sequence_param("exports_files", "srcs", srcs)?;
+        let visibility = visibility.into_option();
+        if let Some(visibility) = visibility {
+            check_sequence_or_none_param("exports_files", "visibility", visibility)?;
+        }
+        let licenses = licenses.into_option();
+        if let Some(licenses) = licenses {
+            check_sequence_or_none_param("exports_files", "licenses", licenses)?;
+        }
         let loc = caller_location(eval).unwrap_or_else(Location::builtin);
         let mut target_definition_context =
             TargetDefinitionContext::from_or_fail(eval, "exports_files()").map_err(eval_err)?;
-        let files = convert_string_list(srcs, "'exports_files' operand")?;
+        let files = convert_string_list(srcs, "'exports_files' operand", heap)?;
 
-        let mut visibility = match visibility.into_option() {
+        let mut visibility = match visibility {
             None => RuleVisibility::Public,
             Some(v) => RuleVisibility::parse(&convert_label_list(
                 v,
                 "'exports_files' operand",
                 &target_definition_context,
+                heap,
             )?)
             .map_err(eval_err)?,
         };
@@ -769,7 +813,7 @@ pub(crate) fn starlark_native_module(builder: &mut GlobalsBuilder) {
         }
 
         // Java: BuildType.LICENSE.convertOptional (None -> null).
-        let license = match licenses.into_option() {
+        let license = match licenses {
             None => None,
             Some(v) => match Type::License
                 .convert(v, Some(&"'exports_files' operand"), None)
@@ -855,6 +899,22 @@ pub(crate) fn starlark_native_module(builder: &mut GlobalsBuilder) {
     /// at-sign prefixed.
     // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:637 StarlarkNativeModule.repositoryName
     fn repository_name<'v>(eval: &mut Evaluator<'v, '_, '_>) -> starlark::Result<String> {
+        // Java: `@StarlarkMethod(enableOnlyWithFlag = INCOMPATIBLE_ENABLE_DEPRECATED_LABEL_APIS)`.
+        // The function is always bound (`Starlark.addMethods(bindings, new
+        // StarlarkNativeModule())` selects methods with the default semantics, under which the
+        // flag is true); calling it checks the thread's semantics first.
+        // Java: net/starlark/java/eval/MethodDescriptor.java:409 MethodDescriptor.checkEnabled
+        if !ThreadContext::get(eval)
+            .map_err(starlark::Error::new_other)?
+            .semantics
+            .incompatible_enable_deprecated_label_apis
+        {
+            return Err(eval_err(
+                "function repository_name() is experimental and thus unavailable with the \
+                 current flags. It may be enabled by setting \
+                 --incompatible_enable_deprecated_label_apis",
+            ));
+        }
         TargetDefinitionContext::from_or_fail(eval, "repository_name()").map_err(eval_err)?;
         Ok(format!("@{}", repo_name_impl(eval)?))
     }
@@ -874,25 +934,36 @@ pub(crate) fn starlark_native_module(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
         let heap = eval.heap();
-        // PORT: Java's thread-local LabelConverter of a running rule initializer is the
-        // builder's initializer label converter; without one, fromOrFail.
-        let target_definition_context =
-            TargetDefinitionContext::from_or_fail(eval, "package_relative_label()")
-                .map_err(eval_err)?;
-        if input.downcast_ref::<LabelValue>().is_some() {
-            return Ok(input);
-        }
-        let Some(input) = input.unpack_str() else {
+        // Java: the interpreter checks `input` against
+        // `allowedTypes = {String.class, Label.class}` before the method runs.
+        if input.downcast_ref::<LabelValue>().is_none() && input.unpack_str().is_none() {
             return Err(eval_err(format!(
                 "in call to package_relative_label(), parameter 'input' got value of type '{}', \
                  want 'string or Label'",
                 input.get_type()
             )));
+        }
+        // In an initializer, BazelStarlarkContext isn't available, just the label converter
+        // (Java `thread.getThreadLocal(LabelConverter.class)`, installed by
+        // StarlarkRuleFunction.call around the rule's initializers).
+        let label_converter: Arc<LabelConverter> = match ThreadContext::get(eval)
+            .map_err(starlark::Error::new_other)?
+            .get_thread_local::<Arc<LabelConverter>>()
+        {
+            Some(label_converter) => label_converter,
+            None => {
+                let target_definition_context =
+                    TargetDefinitionContext::from_or_fail(eval, "package_relative_label()")
+                        .map_err(eval_err)?;
+                target_definition_context.get_label_converter_arc().clone()
+            }
         };
-        let label_converter = match target_definition_context.get_initializer_label_converter() {
-            Some(c) => c.as_ref(),
-            None => target_definition_context.get_label_converter(),
-        };
+        if input.downcast_ref::<LabelValue>().is_some() {
+            return Ok(input);
+        }
+        let input = input
+            .unpack_str()
+            .expect("ClassCastException: input is not a String");
         match label_converter.convert(input) {
             Ok(label) => Ok(heap.alloc(LabelValue(label))),
             Err(e) => Err(eval_err(format!(
@@ -935,11 +1006,18 @@ pub(crate) fn starlark_native_module(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
         let heap = eval.heap();
+        // Java: `include` and `exclude` are
+        // `@ParamType(type = Sequence.class, generic1 = String.class)`.
+        check_sequence_param("subpackages", "include", include)?;
+        if let Some(exclude) = exclude {
+            check_sequence_param("subpackages", "exclude", exclude)?;
+        }
         TargetDefinitionContext::from_or_fail_allow_build_only(eval, "subpackages()")
             .map_err(eval_err)?;
         let empty = heap.alloc(AllocList(Vec::<Value>::new()));
-        let includes = convert_string_list(include, "'subpackages' argument")?;
-        let excludes = convert_string_list(exclude.unwrap_or(empty), "'subpackages' argument")?;
+        let includes = convert_string_list(include, "'subpackages' argument", heap)?;
+        let excludes =
+            convert_string_list(exclude.unwrap_or(empty), "'subpackages' argument", heap)?;
 
         let mut matches = run_glob_operation(
             eval,

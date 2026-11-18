@@ -43,11 +43,99 @@ impl<'v> StarlarkValue<'v> for CcStarlarkInternal {
         Some(RES.methods())
     }
 
+    // Java: net/starlark/java/eval/Starlark.java:978 Starlark.getattr
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
-        // Methods are found through get_methods first; any other member is analysis-time.
-        Some(heap.alloc(StubMethod::new("cc_internal", attribute)))
+        // The ported methods are found through get_methods first. Any other @StarlarkMethod of
+        // the Java class is analysis-time: a stub that fails loudly when called. Other names
+        // are not members (`getattr` yields its default, `hasattr` is False).
+        if CC_STARLARK_INTERNAL_METHODS.contains(&attribute) {
+            Some(heap.alloc(StubMethod::new("cc_internal", attribute)))
+        } else {
+            None
+        }
+    }
+
+    // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr
+    fn has_attr(&self, attribute: &str, _heap: Heap<'v>) -> bool {
+        CC_STARLARK_INTERNAL_METHODS.contains(&attribute)
+    }
+
+    // Java: net/starlark/java/eval/Starlark.java:1024 Starlark.dir
+    fn dir_attr(&self) -> Vec<String> {
+        // The ported methods are listed through get_methods.
+        CC_STARLARK_INTERNAL_METHODS
+            .iter()
+            .filter(|name| !CC_STARLARK_INTERNAL_PORTED_METHODS.contains(name))
+            .map(|name| (*name).to_owned())
+            .collect()
+    }
+
+    // Java: net/starlark/java/eval/Starlark.java:1015 Starlark.getattr
+    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
+        Some(super::stubs::no_field_or_method_message(
+            "cc_internal",
+            attribute,
+            CC_STARLARK_INTERNAL_METHODS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+        ))
     }
 }
+
+/// The methods of `cc_internal_methods` (ported; keep in step with it).
+const CC_STARLARK_INTERNAL_PORTED_METHODS: &[&str] = &[
+    "check_private_api",
+    "freeze",
+    "create_header_info",
+    "create_header_info_with_deps",
+];
+
+/// The `@StarlarkMethod` names of Java `CcStarlarkInternal` (none is a struct field or
+/// flag-guarded).
+// Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:87 CcStarlarkInternal
+const CC_STARLARK_INTERNAL_METHODS: &[&str] = &[
+    "absolute_symlink",
+    "actions2ctx_cheat",
+    "aspect_class",
+    "cc_toolchain_features",
+    "cc_toolchain_variables",
+    "check_private_api",
+    "check_toplevel",
+    "collect_per_file_lto_backend_opts",
+    "combine_cc_toolchain_variables",
+    "compute_output_name_prefix_dir",
+    "create_cc_compile_action",
+    "create_cc_compile_action_template",
+    "create_header_info",
+    "create_header_info_with_deps",
+    "create_lto_backend_action",
+    "create_lto_backend_action_template",
+    "declare_compile_output_file",
+    "declare_other_output_file",
+    "declare_shareable_directory",
+    "dynamic_library_soname",
+    "dynamic_library_symlink",
+    "dynamic_library_symlink2",
+    "exec_os",
+    "expand_and_tokenize",
+    "freeze",
+    "get_artifact_name_extension_for_category",
+    "get_artifact_name_for_category",
+    "get_link_args",
+    "intern_seq",
+    "intern_string_sequence_variable_value",
+    "is_package_headers_checking_mode_set",
+    "is_package_headers_checking_mode_set_for_aspect",
+    "is_tree_artifact",
+    "package_headers_checking_mode",
+    "package_headers_checking_mode_for_aspect",
+    "per_file_copts",
+    "rule_class",
+    "solib_symlink_action",
+    "stl_computed_default",
+    "wrap_link_actions",
+];
 
 /// `_builtins.internal.cc_internal`.
 pub fn cc_internal() -> CcStarlarkInternal {
@@ -239,11 +327,11 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
             let entries: Vec<(Value<'v>, Value<'v>)> = dict.iter().collect();
             return Ok(heap.alloc(AllocDict(entries)));
         }
-        if value.get_type() != "string" {
-            if let Ok(it) = value.iterate(heap) {
-                let items: Vec<Value<'v>> = it.collect();
-                return Ok(heap.alloc(AllocList(items)));
-            }
+        if value.get_type() != "string"
+            && let Ok(it) = value.iterate(heap)
+        {
+            let items: Vec<Value<'v>> = it.collect();
+            return Ok(heap.alloc(AllocList(items)));
         }
         Ok(value)
     }

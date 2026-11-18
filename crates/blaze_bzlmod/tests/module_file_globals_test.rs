@@ -1423,3 +1423,239 @@ fn natives_require_module_thread_context() {
         "{err}"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Live kwargs (not JUnit tests).
+//
+// Java's `AttributeValues.create(kwargs)` wraps the kwargs `Dict` of the call
+// (ModuleFileGlobals.java:592-600 for tags, :1104-1107 and :1151-1154 for archive_override and
+// git_override), so a list or dict passed as a value and mutated later in the module file is
+// seen with its final contents: the values only stop changing when the module file's
+// `Mutability` is closed (ModuleFileFunction.java:662). `single_version_override` and
+// `multiple_version_override` copy their sequences during the call
+// (ModuleFileGlobals.java:1022-1033).
+// ---------------------------------------------------------------------------------------------
+
+fn string_list(items: &[&str]) -> AttributeValue {
+    AttributeValue::string_list(items.iter().copied())
+}
+
+#[test]
+fn tag_attribute_values_are_read_after_the_module_file_has_been_executed() {
+    let h = ModuleFileHarness::new();
+    let my_mod = create_module_key("mymod", "1.0");
+    let module = h
+        .eval_registry_module(
+            &my_mod,
+            &lines(&[
+                "module(name='mymod',version='1.0')",
+                "ext = use_extension('//:defs.bzl','ext')",
+                "l = ['a']",
+                "d = {'k': ['x']}",
+                "ext.tag(x = l, y = d, z = 'fixed')",
+                "l.append('b')",
+                "d['k'].append('y')",
+                "d['k2'] = 'v2'",
+                "l2 = ['p']",
+                "ext.tag2(v = l2, w = l)",
+                "l.append('c')",
+            ]),
+        )
+        .unwrap();
+    assert_eq!(module.extension_usages.len(), 1);
+    let tags = &module.extension_usages[0].tags;
+    assert_eq!(tags.len(), 2);
+    assert_eq!(tags[0].tag_name, "tag");
+    assert_eq!(
+        tags[0].attribute_values,
+        AttributeValues::create([
+            ("x", string_list(&["a", "b", "c"])),
+            (
+                "y",
+                AttributeValue::Dict(vec![
+                    (AttributeValue::string("k"), string_list(&["x", "y"])),
+                    (AttributeValue::string("k2"), AttributeValue::string("v2")),
+                ])
+            ),
+            ("z", AttributeValue::string("fixed")),
+        ])
+    );
+    assert_eq!(tags[1].tag_name, "tag2");
+    assert_eq!(
+        tags[1].attribute_values,
+        AttributeValues::create([
+            ("v", string_list(&["p"])),
+            ("w", string_list(&["a", "b", "c"])),
+        ])
+    );
+    // The tags keep the locations of their calls.
+    assert_eq!(
+        tags[0].location,
+        Location::from_file_line_column(MYMOD, 5, 8)
+    );
+    assert_eq!(
+        tags[1].location,
+        Location::from_file_line_column(MYMOD, 10, 9)
+    );
+}
+
+#[test]
+fn repo_rule_proxy_attribute_values_are_read_after_the_module_file_has_been_executed() {
+    let h = ModuleFileHarness::new();
+    let result = h
+        .eval_root(
+            &lines(&[
+                "repo = use_repo_rule('//:repo.bzl','repo')",
+                "srcs = ['a']",
+                "repo(name='repo_name', srcs=srcs)",
+                "srcs.append('b')",
+            ]),
+            &[],
+        )
+        .unwrap();
+    assert_eq!(result.module.extension_usages.len(), 1);
+    let tags = &result.module.extension_usages[0].tags;
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].tag_name, "repo");
+    assert_eq!(
+        tags[0].attribute_values,
+        AttributeValues::create([
+            ("srcs", string_list(&["a", "b"])),
+            ("name", AttributeValue::string("repo_name")),
+        ])
+    );
+}
+
+#[test]
+fn included_file_tag_attribute_values_are_read_after_each_file_has_been_executed() {
+    let h = ModuleFileHarness::new();
+    let result = h
+        .eval_root(
+            &lines(&[
+                "module(name='aaa')",
+                "ext = use_extension('//:defs.bzl','ext')",
+                "l = ['root']",
+                "ext.tag(x = l)",
+                "include('//:inc.MODULE.bazel')",
+                "l.append('after-include')",
+            ]),
+            &[(
+                "//:inc.MODULE.bazel",
+                &lines(&[
+                    "ext2 = use_extension('//:defs.bzl','ext')",
+                    "m = ['inc']",
+                    "ext2.tag(x = m)",
+                    "m.append('inc-later')",
+                ]),
+            )],
+        )
+        .unwrap();
+    assert_eq!(result.module.extension_usages.len(), 1);
+    let tags = &result.module.extension_usages[0].tags;
+    assert_eq!(tags.len(), 2);
+    assert_eq!(
+        tags[0].attribute_values,
+        AttributeValues::create([("x", string_list(&["root", "after-include"]))])
+    );
+    assert_eq!(
+        tags[1].attribute_values,
+        AttributeValues::create([("x", string_list(&["inc", "inc-later"]))])
+    );
+}
+
+#[test]
+fn non_registry_override_attribute_values_are_read_after_the_module_file_has_been_executed() {
+    let h = ModuleFileHarness::new();
+    let result = h
+        .eval_root(
+            &lines(&[
+                "module(name='aaa')",
+                "urls = ['https://hello.com/world.zip']",
+                "archive_override(module_name='ggg', urls=urls)",
+                "urls.append('https://mirror.com/world.zip')",
+                "cmds = ['echo a']",
+                "git_override(module_name='hhh', remote='https://hello.com/h.git', patch_cmds=cmds)",
+                "cmds.append('echo b')",
+            ]),
+            &[],
+        )
+        .unwrap();
+    let mut expected_overrides = IndexMap::new();
+    expected_overrides.insert(
+        "ggg".to_owned(),
+        ModuleOverride::NonRegistry(NonRegistryOverride::new(
+            ArchiveRepoSpecBuilder::new()
+                .set_urls(vec![
+                    "https://hello.com/world.zip".to_owned(),
+                    "https://mirror.com/world.zip".to_owned(),
+                ])
+                .build(),
+        )),
+    );
+    expected_overrides.insert(
+        "hhh".to_owned(),
+        ModuleOverride::NonRegistry(NonRegistryOverride::new(blaze_bzlmod_model::RepoSpec::new(
+            blaze_bzlmod_model::repo_spec::GIT_REPOSITORY.clone(),
+            AttributeValues::create([
+                ("remote", AttributeValue::string("https://hello.com/h.git")),
+                ("patch_cmds", string_list(&["echo a", "echo b"])),
+            ]),
+        ))),
+    );
+    assert_eq!(result.overrides, expected_overrides);
+    // The overrides keep the order of their calls.
+    assert_eq!(
+        result.overrides.keys().collect::<Vec<_>>(),
+        expected_overrides.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn single_version_override_sequences_are_copied_during_the_call() {
+    let h = ModuleFileHarness::new();
+    let result = h
+        .eval_root(
+            &lines(&[
+                "module(name='aaa')",
+                "patches = ['//:a.patch']",
+                "cmds = ['echo a']",
+                "versions = ['1.0', '2.0']",
+                "single_version_override(",
+                "    module_name = 'bbb',",
+                "    version = '1.0',",
+                "    patches = patches,",
+                "    patch_cmds = cmds,",
+                ")",
+                "multiple_version_override(module_name = 'ccc', versions = versions)",
+                "patches.append('//:b.patch')",
+                "cmds.append('echo b')",
+                "versions.append('3.0')",
+            ]),
+            &[],
+        )
+        .unwrap();
+    let mut expected_overrides = IndexMap::new();
+    expected_overrides.insert(
+        "bbb".to_owned(),
+        ModuleOverride::SingleVersion(SingleVersionOverride {
+            version: Version::parse("1.0").unwrap(),
+            registry: String::new(),
+            patches: vec![blaze_cmdline::Label::parse_canonical_unchecked(
+                "//:a.patch",
+            )],
+            patch_cmds: vec!["echo a".to_owned()],
+            patch_strip: 0,
+        }),
+    );
+    expected_overrides.insert(
+        "ccc".to_owned(),
+        ModuleOverride::MultipleVersion(MultipleVersionOverride {
+            versions: vec![
+                Version::parse("1.0").unwrap(),
+                Version::parse("2.0").unwrap(),
+            ],
+            registry: String::new(),
+        }),
+    );
+    assert_eq!(result.overrides, expected_overrides);
+}

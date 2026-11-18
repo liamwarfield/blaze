@@ -17,9 +17,9 @@ use blaze_packages::rule_class::rule_class::EXEC_GROUP_COMPATIBLE_WITH_ATTR;
 use blaze_packages::types::{AttrValue, LabelClass, Type};
 use blaze_starlark::structs::{StarlarkInfo, StructProvider};
 use indexmap::{IndexMap, IndexSet};
-use starlark::values::dict::AllocDict;
-use starlark::values::list::AllocList;
 use starlark::values::{Heap, Value};
+
+use super::util::{alloc_immutable_dict, alloc_immutable_list};
 
 use crate::configured_target::ConfiguredTarget;
 use crate::configuredtargets::target_to_starlark;
@@ -29,8 +29,11 @@ use crate::rule::prerequisite_artifacts::PrerequisiteArtifacts;
 use crate::rule::prerequisites_collection::PrerequisitesCollection;
 
 /// Java `StarlarkAttributesCollection.ERROR_MESSAGE_FOR_NO_ATTR`.
-// PORT: starlark-rust reports unknown struct fields with its own text (docs/decisions.md);
-// the message is kept for the day structs can carry it.
+// PORT: Java builds `ctx.attr` with `StructProvider.STRUCT.create(attrs, ERROR_MESSAGE_FOR_NO_ATTR)`
+// (a `StarlarkInfoWithMessage`), so `ctx.attr.nosuch` fails with this text. blaze_starlark's
+// `StarlarkInfo` has no unknown-field format yet (request: `StarlarkInfo::with_message`), so the
+// error is "'struct' value has no field or method 'nosuch'" plus the same "Available
+// attributes" line. An error either way; only the first sentence of the message differs.
 #[allow(dead_code)]
 pub(crate) const ERROR_MESSAGE_FOR_NO_ATTR: &str =
     "No attribute '%s' in attr. Make sure you declared a rule attribute with this name.";
@@ -99,15 +102,22 @@ pub(crate) fn convert_string_to_label_map<'v>(
 ) -> Value<'v> {
     let values = targets_to_starlark(heap, prerequisites);
     let prerequisite_map = build_prerequisite_map(prerequisites, &values);
-    heap.alloc(AllocDict(unconfigured_value.iter().map(|(key, label)| {
-        (
-            heap.alloc_str(key).to_value(),
-            prerequisite_map
-                .get(label)
-                .copied()
-                .unwrap_or_else(Value::new_none),
-        )
-    })))
+    // Java: Dict.immutableCopyOf(builder.buildOrThrow())
+    alloc_immutable_dict(
+        heap,
+        unconfigured_value
+            .iter()
+            .map(|(key, label)| {
+                (
+                    heap.alloc_str(key).to_value(),
+                    prerequisite_map
+                        .get(label)
+                        .copied()
+                        .unwrap_or_else(Value::new_none),
+                )
+            })
+            .collect(),
+    )
 }
 
 /// Java `Builder.convertStringToLabelListMap`.
@@ -119,17 +129,31 @@ pub(crate) fn convert_string_to_label_list_map<'v>(
 ) -> Value<'v> {
     let values = targets_to_starlark(heap, prerequisites);
     let prerequisite_map = build_prerequisite_map(prerequisites, &values);
-    heap.alloc(AllocDict(unconfigured_value.iter().map(|(key, labels)| {
-        (
-            heap.alloc_str(key).to_value(),
-            heap.alloc(AllocList(labels.iter().map(|l| {
-                prerequisite_map
-                    .get(l)
-                    .copied()
-                    .unwrap_or_else(Value::new_none)
-            }))),
-        )
-    })))
+    // Java: Dict.immutableCopyOf of StarlarkList.immutableCopyOf(Lists.transform(labels,
+    // prerequisiteMap::get)) values.
+    alloc_immutable_dict(
+        heap,
+        unconfigured_value
+            .iter()
+            .map(|(key, labels)| {
+                (
+                    heap.alloc_str(key).to_value(),
+                    alloc_immutable_list(
+                        heap,
+                        labels
+                            .iter()
+                            .map(|l| {
+                                prerequisite_map
+                                    .get(l)
+                                    .copied()
+                                    .unwrap_or_else(Value::new_none)
+                            })
+                            .collect(),
+                    ),
+                )
+            })
+            .collect(),
+    )
 }
 
 /// Java `Builder.shouldIgnore`.
@@ -217,7 +241,11 @@ pub fn convert_attribute_value<'v>(
         })
     } else if type_ == Type::LabelList || (type_ == Type::Label && is_split) {
         let all_prereq = prerequisite_supplier();
-        Some(heap.alloc(AllocList(targets_to_starlark(heap, &all_prereq))))
+        // Java: StarlarkList.immutableCopyOf(allPrereq)
+        Some(alloc_immutable_list(
+            heap,
+            targets_to_starlark(heap, &all_prereq),
+        ))
     } else if type_ == Type::LabelDictUnary {
         let Some(AttrValue::LabelDictUnary(m)) = val else {
             panic!("ClassCastException: LABEL_DICT_UNARY value {val:?}");
@@ -241,7 +269,8 @@ pub fn convert_attribute_value<'v>(
             };
             entries.push((key, value));
         }
-        Some(heap.alloc(AllocDict(entries)))
+        // Java: Dict.immutableCopyOf(builder.buildOrThrow())
+        Some(alloc_immutable_dict(heap, entries))
     } else if type_ == Type::LabelListDict {
         let Some(AttrValue::LabelListDict(m)) = val else {
             panic!("ClassCastException: LABEL_LIST_DICT value {val:?}");
@@ -305,16 +334,16 @@ impl<'a, 'v> StarlarkAttributesCollectionBuilder<'a, 'v> {
         }
 
         let files = PrerequisiteArtifacts::nested_set(self.prerequisites, a.get_name());
-        let files_value = if files.is_empty() {
-            heap.alloc(AllocList::EMPTY)
-        } else {
-            heap.alloc(AllocList(
-                files
-                    .to_list()
-                    .iter()
-                    .map(|f| heap.alloc(StarlarkFile::new(f.clone()))),
-            ))
-        };
+        // Java: files.isEmpty() ? StarlarkList.empty() : StarlarkList.lazyImmutable(files::toList)
+        // (both immutable; the lazy list is flattened here, with the same elements and order).
+        let files_value = alloc_immutable_list(
+            heap,
+            files
+                .to_list()
+                .iter()
+                .map(|f| heap.alloc(StarlarkFile::new(f.clone())))
+                .collect(),
+        );
         self.files_builder.insert(skyname.clone(), files_value);
 
         if a.is_executable() {

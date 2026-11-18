@@ -148,7 +148,11 @@ impl<'v> Compiler<'v, '_, '_, '_> {
 
         let mut last = Value::new_none();
         for stmt in stmts.iter_mut() {
-            self.populate_types_in_stmt(stmt)?;
+            // BLAZE PATCH 0020: without type checking (`DialectTypes::ParseOnly`; `Disable` has
+            // no annotations) annotations are not evaluated at all, as in Bazel.
+            if self.check_types {
+                self.populate_types_in_stmt(stmt)?;
+            }
 
             match &mut stmt.node {
                 StmtP::Load(load) => {

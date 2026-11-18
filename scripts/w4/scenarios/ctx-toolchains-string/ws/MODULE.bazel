@@ -1,0 +1,7 @@
+module(name = "ctx_toolchains_string_probe")
+
+bazel_dep(name = "rules_a")
+local_path_override(
+    module_name = "rules_a",
+    path = "rules_a",
+)

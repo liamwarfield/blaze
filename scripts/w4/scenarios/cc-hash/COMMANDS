@@ -1,0 +1,4 @@
+# analysis review S1-7: fragments, HeaderInfo (inside a compilation context) and other natives
+# as dict keys and depset elements.
+run build //:probe
+cat bazel-bin/probe.txt

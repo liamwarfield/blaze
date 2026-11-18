@@ -183,6 +183,20 @@ impl Version {
         &self.normalized
     }
 
+    /// Java `Version.hashCode()`: `Objects.hash("version", getNormalized().hashCode())`, that is
+    /// `Arrays.hashCode` over the two (the second boxed as an `Integer`).
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/Version.java:204 Version.hashCode
+    pub fn java_hash_code(&self) -> i32 {
+        let mut result: i32 = 1;
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(crate::java_hash::java_string_hash_code("version"));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(crate::java_hash::java_string_hash_code(&self.normalized));
+        result
+    }
+
     /// Whether this is just the "empty string" version, which signifies a non-registry override
     /// for the module.
     // Java: com/google/devtools/build/lib/bazel/bzlmod/Version.java:120 Version.isEmpty

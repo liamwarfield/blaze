@@ -123,9 +123,10 @@ pub fn parse_values(file: &Path) -> io::Result<HashMap<String, String>> {
 // Java: com/google/devtools/build/lib/analysis/WorkspaceStatusAction.java:120 WorkspaceStatusAction.parseValues
 pub fn parse_values_content(bytes: &[u8]) -> HashMap<String, String> {
     let mut result = HashMap::new();
-    // PORT: StringEncoding. Java reads the file as Latin-1 (the internal form); the UTF-8 form of
-    // the same bytes is used here, and invalid UTF-8 is not representable.
-    let content = match std::str::from_utf8(bytes) {
+    // Java: `new String(FileSystemUtils.readContentAsLatin1(file))`. Until the decoding switch
+    // (`string_encoding::STRINGS_ARE_INTERNAL`) a status file that is not valid UTF-8 has no
+    // string.
+    let content = match blaze_util::string_encoding::internal_string_from_bytes(bytes) {
         Ok(s) => s,
         Err(_) => blaze_util::unported!(
             "WorkspaceStatusAction.parseValues",

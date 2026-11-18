@@ -14,8 +14,10 @@ use blaze_events::{Event, ExtendedEventHandler, Location};
 use blaze_skyframe::{
     ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName, Transience,
 };
-use blaze_starlark::eval::{CompiledFile, compile};
-use blaze_starlark::{FileKind, SyntaxError};
+use blaze_starlark::eval::{CompiledFile, TYPE_SYNTAX_NOT_PORTED_PREFIX, compile_with_options};
+use blaze_starlark::file_kind::FileOptions;
+use blaze_starlark::{FileKind, StarlarkSemantics, SyntaxError};
+use blaze_util::unported;
 use blaze_vfs::{DigestHashFunction, Root, RootedPath};
 
 use crate::file::FileKey;
@@ -459,9 +461,19 @@ impl BzlCompileFunction {
             }
         };
 
+        let use_type_syntax = Self::should_use_type_syntax(&semantics, key);
+        // Type checking requires the syntax flag to be enabled, though technically it shouldn't
+        // matter to semantics if unannotated code is considered untyped.
+        let do_type_checking = use_type_syntax && semantics.experimental_starlark_type_checking;
+        if do_type_checking {
+            // Java: `.resolveTypeSyntax(true).tolerateInvalidTypeExpressions(false)` and the
+            // static type checker (Program.java:108).
+            unported!("BzlCompileFunction.compute: --experimental_starlark_type_checking");
+        }
+
         // PORT: Java's FileOptions (loadBindsGlobally for the prelude, ASCII-only string literals
-        // for .scl, type syntax per --experimental_starlark_type_syntax and
-        // --experimental_starlark_types_allowed_paths) are blaze_starlark's FileKind options.
+        // for .scl) are blaze_starlark's FileKind options; allowTypeSyntax depends on the flags
+        // and is set here.
         let file_kind = if key.is_scl_dialect() {
             FileKind::Scl
         } else if key.is_build_prelude() {
@@ -471,8 +483,12 @@ impl BzlCompileFunction {
         } else {
             FileKind::Bzl
         };
+        let options = FileOptions {
+            allow_type_syntax: use_type_syntax,
+            ..file_kind.file_options()
+        };
 
-        match compile(file_kind, &input_name.clone(), source) {
+        match compile_with_options(file_kind, options, &input_name.clone(), source) {
             Ok(program) => Ok(Ok(Some(BzlCompileValue::with_program(
                 program, digest, input_name,
             )))),
@@ -481,6 +497,18 @@ impl BzlCompileFunction {
                     blaze_starlark::error::EvalErrorKind::Syntax(errors) => errors,
                     _ => unreachable!("compile only fails with syntax errors"),
                 };
+                // Type syntax Bazel accepts and the vendored parser does not have yet
+                // (starlark-rust patch 0020) fails loudly, not as a user syntax error.
+                for err in errors {
+                    if let Some(i) = err.message.find(TYPE_SYNTAX_NOT_PORTED_PREFIX) {
+                        unported!(
+                            "Parser (Bazel type syntax)",
+                            "{} at {}",
+                            &err.message[i + TYPE_SYNTAX_NOT_PORTED_PREFIX.len()..],
+                            err.location
+                        );
+                    }
+                }
                 Self::add_syntax_errors_to_listener(env.listener(), errors, key);
                 let label = key.label.as_ref().expect("the empty prelude compiles");
                 Ok(Ok(Some(BzlCompileValue::no_file(format!(
@@ -496,6 +524,32 @@ impl BzlCompileFunction {
         }
     }
 
+    /// Whether the file should permit type syntax (annotations, etc.) based on flags and the type
+    /// of file.
+    // Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:249 BzlCompileFunction.shouldUseTypeSyntax
+    fn should_use_type_syntax(semantics: &StarlarkSemantics, key: &BzlCompileKey) -> bool {
+        let type_syntax_flag = semantics.experimental_starlark_type_syntax;
+        let allowlist = &semantics.experimental_starlark_types_allowed_paths;
+
+        let ok_filetype =
+            // annotations in prelude not allowed (it has null key.label)
+            !key.is_build_prelude()
+            // annotations in SCL now allowed (not yet compatible with Go-Starlark interpreter)
+            && !key.is_scl_dialect();
+
+        if type_syntax_flag && ok_filetype {
+            let label = key.label.as_ref().expect("non-prelude keys have a label");
+            if allowlist.is_empty()
+                || allowlist
+                    .iter()
+                    .any(|s| label.get_canonical_form().starts_with(s.as_str()))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Replays the syntax errors from a file onto an event handler, adding more context if
     /// necessary.
     // Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:268 BzlCompileFunction.addSyntaxErrorsToListener
@@ -508,7 +562,12 @@ impl BzlCompileFunction {
         // If type annotations are disallowed, it could either be because the required flags
         // aren't enabled or because the filetype disallows it.
         for err in errors {
-            if err.message.contains(": type annotations are disallowed") {
+            // PORT: starlark-rust's text for Java's ": type annotations are disallowed".
+            if err.message.contains(": type annotations are disallowed")
+                || err
+                    .message
+                    .contains("type annotations are not allowed in this dialect")
+            {
                 let file_loc = Location::new(err.location.file.clone(), 0, 0);
                 let explanation = if key.is_scl_dialect() {
                     "Type annotations are not permitted in .scl files."

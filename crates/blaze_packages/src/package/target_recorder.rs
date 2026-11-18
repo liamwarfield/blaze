@@ -374,10 +374,10 @@ impl TargetRecorder {
 
         // Track whether a main submacro has been seen yet. Conflict checking for this is done in
         // checkMacroName().
-        if let Some(frame) = self.current_macro_frame.as_mut() {
-            if macro_.get_name() == frame.macro_instance.get_name() {
-                frame.main_submacro_has_been_defined = true;
-            }
+        if let Some(frame) = self.current_macro_frame.as_mut()
+            && macro_.get_name() == frame.macro_instance.get_name()
+        {
+            frame.main_submacro_has_been_defined = true;
         }
         Ok(())
     }
@@ -503,17 +503,17 @@ impl TargetRecorder {
         // Check for the same file appearing as both an input and output of the new rule.
         let package_identifier = rule.get_label().get_package_identifier();
         for input_label in labels {
-            if package_identifier == input_label.get_package_identifier() {
-                if let Some(output) = output_files_by_name.get(input_label.get_name()) {
-                    return Err(NameConflictException::for_target(
-                        format!(
-                            "rule '{}' has file '{}' as both an input and an output",
-                            rule_name,
-                            input_label.get_name()
-                        ),
-                        Target::OutputFile(output.clone()),
-                    ));
-                }
+            if package_identifier == input_label.get_package_identifier()
+                && let Some(output) = output_files_by_name.get(input_label.get_name())
+            {
+                return Err(NameConflictException::for_target(
+                    format!(
+                        "rule '{}' has file '{}' as both an input and an output",
+                        rule_name,
+                        input_label.get_name()
+                    ),
+                    Target::OutputFile(output.clone()),
+                ));
             }
         }
         Ok(())
@@ -528,15 +528,15 @@ impl TargetRecorder {
 
         self.check_for_existing_macro_name(&TargetOrMacro::Target(target))?;
 
-        if let Some(frame) = &self.current_macro_frame {
-            if !Self::name_is_within_macro_namespace(
+        if let Some(frame) = &self.current_macro_frame
+            && !Self::name_is_within_macro_namespace(
                 target.get_name(),
                 frame.macro_instance.get_name(),
-            ) {
-                let macro_name = frame.macro_instance.get_name().to_owned();
-                self.macro_namespace_violating_targets
-                    .insert(target.get_name().to_owned(), macro_name);
-            }
+            )
+        {
+            let macro_name = frame.macro_instance.get_name().to_owned();
+            self.macro_namespace_violating_targets
+                .insert(target.get_name().to_owned(), macro_name);
         }
         Ok(())
     }
@@ -586,18 +586,18 @@ impl TargetRecorder {
 
         self.check_for_existing_macro_name(&TargetOrMacro::Macro(macro_))?;
 
-        if let Some(frame) = &self.current_macro_frame {
-            if !Self::name_is_within_macro_namespace(name, frame.macro_instance.get_name()) {
-                return Err(NameConflictException::macro_namespace_violation(
-                    format!(
-                        "macro '{}' cannot declare submacro named '{}'. {}",
-                        frame.macro_instance.get_name(),
-                        name,
-                        MACRO_NAMING_RULES
-                    ),
-                    macro_.clone(),
-                ));
-            }
+        if let Some(frame) = &self.current_macro_frame
+            && !Self::name_is_within_macro_namespace(name, frame.macro_instance.get_name())
+        {
+            return Err(NameConflictException::macro_namespace_violation(
+                format!(
+                    "macro '{}' cannot declare submacro named '{}'. {}",
+                    frame.macro_instance.get_name(),
+                    name,
+                    MACRO_NAMING_RULES
+                ),
+                macro_.clone(),
+            ));
         }
         Ok(())
     }
@@ -616,10 +616,11 @@ impl TargetRecorder {
         // we have the same name as the immediately enclosing macro (relying inductively on the
         // check that was done when that macro was added), and 2) there is no sibling macro of the
         // same name already defined in the current frame.
-        if let Some(frame) = &self.current_macro_frame {
-            if name == frame.macro_instance.get_name() && !frame.main_submacro_has_been_defined {
-                return Ok(());
-            }
+        if let Some(frame) = &self.current_macro_frame
+            && name == frame.macro_instance.get_name()
+            && !frame.main_submacro_has_been_defined
+        {
+            return Ok(());
         }
 
         Err(target_or_macro.conflict(format!(

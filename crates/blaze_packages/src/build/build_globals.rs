@@ -7,8 +7,11 @@ use blaze_starlark::Location;
 use starlark::environment::GlobalsBuilder;
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
+use starlark::values::Heap;
 use starlark::values::Value;
+use starlark::values::list::ListRef;
 use starlark::values::none::NoneType;
+use starlark::values::tuple::TupleRef;
 
 use crate::build::caller_location;
 use crate::build::eval_err;
@@ -20,14 +23,55 @@ use crate::package::TargetDefinitionContext;
 use crate::types::AttrValue;
 use crate::types::Type;
 
-/// Converts `x` with `BuildType.LABEL_LIST` (Java `LABEL_LIST.convert(x, what, converter)`).
-pub(crate) fn convert_label_list(
+/// Java `x instanceof Sequence`: a list, a tuple or a range
+/// (net/starlark/java/eval/{StarlarkList,Tuple,RangeList}.java). Not a dict, set or depset.
+// Java: net/starlark/java/eval/Sequence.java:36 Sequence
+pub(crate) fn is_java_sequence(x: Value<'_>) -> bool {
+    ListRef::from_value(x).is_some() || TupleRef::from_value(x).is_some() || x.get_type() == "range"
+}
+
+/// The interpreter's check of an argument whose `@Param` allows only `Sequence` (declared with
+/// `@ParamType(type = Sequence.class, ...)` or as a `Sequence<?>` Java parameter; the element
+/// type `generic1` is not checked at the call). `func` is the `@StarlarkMethod` name.
+// Java: net/starlark/java/eval/BuiltinFunction.java:498 BuiltinFunction.checkParamValue
+// Java: net/starlark/java/eval/ParamDescriptor.java:123 ParamDescriptor.getTypeErrorMessage
+pub(crate) fn check_sequence_param(func: &str, param: &str, x: Value<'_>) -> starlark::Result<()> {
+    if is_java_sequence(x) {
+        return Ok(());
+    }
+    Err(eval_err(format!(
+        "in call to {func}(), parameter '{param}' got value of type '{}', want 'sequence'",
+        x.get_type()
+    )))
+}
+
+/// Like [`check_sequence_param`] for `allowedTypes = {Sequence, NoneType}`.
+// Java: net/starlark/java/eval/BuiltinFunction.java:498 BuiltinFunction.checkParamValue
+pub(crate) fn check_sequence_or_none_param(
+    func: &str,
+    param: &str,
     x: Value<'_>,
+) -> starlark::Result<()> {
+    if is_java_sequence(x) || x.is_none() {
+        return Ok(());
+    }
+    Err(eval_err(format!(
+        "in call to {func}(), parameter '{param}' got value of type '{}', want 'sequence or \
+         NoneType'",
+        x.get_type()
+    )))
+}
+
+/// Converts `x` with `BuildType.LABEL_LIST` (Java `LABEL_LIST.convert(x, what, converter)`).
+/// `heap` is the heap of `x` (starlark-rust iterates a `range` only with a heap).
+pub(crate) fn convert_label_list<'v>(
+    x: Value<'v>,
     what: &str,
     ctx: &TargetDefinitionContext,
+    heap: Heap<'v>,
 ) -> starlark::Result<Vec<Label>> {
     match Type::LabelList
-        .convert(x, Some(&what), Some(ctx.get_label_converter()))
+        .convert_with_heap(x, Some(&what), Some(ctx.get_label_converter()), heap)
         .map_err(eval_err)?
     {
         AttrValue::LabelList(l) => Ok(l),
@@ -35,10 +79,15 @@ pub(crate) fn convert_label_list(
     }
 }
 
-/// Converts `x` with `Types.STRING_LIST` (Java `STRING_LIST.convert(x, what)`).
-pub(crate) fn convert_string_list(x: Value<'_>, what: &str) -> starlark::Result<Vec<String>> {
+/// Converts `x` with `Types.STRING_LIST` (Java `STRING_LIST.convert(x, what)`). `heap` is the
+/// heap of `x` (starlark-rust iterates a `range` only with a heap).
+pub(crate) fn convert_string_list<'v>(
+    x: Value<'v>,
+    what: &str,
+    heap: Heap<'v>,
+) -> starlark::Result<Vec<String>> {
     match Type::StringList
-        .convert(x, Some(&what), None)
+        .convert_with_heap(x, Some(&what), None, heap)
         .map_err(eval_err)?
     {
         AttrValue::StringList(l) => Ok(l),
@@ -57,13 +106,22 @@ pub(crate) fn build_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] defaults: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
+        // Java: both parameters are `@ParamType(type = Sequence.class, generic1 = Label.class)`.
+        check_sequence_param("environment_group", "environments", environments)?;
+        check_sequence_param("environment_group", "defaults", defaults)?;
+        let heap = eval.heap();
         let loc = caller_location(eval).unwrap_or_else(Location::builtin);
         let mut pkg_builder =
             TargetDefinitionContext::from_or_fail_allow_build_only(eval, "environment_group()")
                 .map_err(eval_err)?;
-        let environments =
-            convert_label_list(environments, "'environment_group argument'", &pkg_builder)?;
-        let defaults = convert_label_list(defaults, "'environment_group argument'", &pkg_builder)?;
+        let environments = convert_label_list(
+            environments,
+            "'environment_group argument'",
+            &pkg_builder,
+            heap,
+        )?;
+        let defaults =
+            convert_label_list(defaults, "'environment_group argument'", &pkg_builder, heap)?;
 
         if environments.is_empty() {
             return Err(eval_err(format!(
@@ -87,6 +145,8 @@ pub(crate) fn build_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = pos)] license_strings: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
+        // Java: `@ParamType(type = Sequence.class, generic1 = String.class)`.
+        check_sequence_param("licenses", "license_strings", license_strings)?;
         let loc = caller_location(eval);
         let mut pkg_builder =
             TargetDefinitionContext::from_or_fail_allow_build_only(eval, "licenses()")

@@ -16,7 +16,7 @@ use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::starlark_simple_value;
 use starlark::values::dict::AllocDict;
-use starlark::values::list::AllocList;
+use starlark::values::list::alloc_immutable_list;
 use starlark::values::none::NoneType;
 use starlark::values::{Heap, NoSerialize, StarlarkValue, Value, starlark_value};
 
@@ -72,10 +72,12 @@ fn semantics(eval: &Evaluator) -> starlark::Result<Arc<StarlarkSemantics>> {
         .map_err(|e| errorf(e.to_string()))
 }
 
+/// `StarlarkList.immutableCopyOf(items)`.
+// Java: net/starlark/java/eval/StarlarkList.java:168 StarlarkList.immutableCopyOf
 fn string_list<'v>(eval: &Evaluator<'v, '_, '_>, items: &[String]) -> Value<'v> {
     let heap = eval.heap();
     let values: Vec<Value<'v>> = items.iter().map(|s| heap.alloc_str(s).to_value()).collect();
-    heap.alloc(AllocList(values))
+    alloc_immutable_list(heap, &values)
 }
 
 #[starlark_module]
@@ -216,7 +218,8 @@ fn cc_module_methods(builder: &mut MethodsBuilder) {
             .iter()
             .map(|(k, v)| (heap.alloc_str(k).to_value(), heap.alloc_str(v).to_value()))
             .collect();
-        Ok(heap.alloc(AllocDict(entries)))
+        // Java: Dict.immutableCopyOf(...).
+        blaze_starlark::dict::dict_immutable_copy_of(heap, heap.alloc(AllocDict(entries)))
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:135 CcModule.getVariables

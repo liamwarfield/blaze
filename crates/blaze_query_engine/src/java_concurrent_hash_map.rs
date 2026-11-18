@@ -493,6 +493,204 @@ impl<K: JavaHashCode + Eq, V> Default for JavaConcurrentHashMap<K, V> {
     }
 }
 
+/// Java `HashMap.hash(key)`: `(h = key.hashCode()) ^ (h >>> 16)`.
+// Java (JDK): java/util/HashMap.java HashMap.hash
+fn hash_map_hash(h: i32) -> u32 {
+    let h = h as u32;
+    h ^ (h >> 16)
+}
+
+/// The iteration order of a `java.util.HashMap` (or of a `java.util.HashSet`, which is a
+/// `HashMap` of its elements) made by `new HashMap<>()` and filled by `put` in the order of
+/// `entries`. A later put of an equal key replaces the value in place.
+///
+/// PORT: java-hash-order. This replays `java.util.HashMap` (JDK 8 through 25 share the
+/// algorithm): `hash = h ^ (h >>> 16)`, bin index `hash & (n - 1)`, a table of 16 slots that
+/// doubles when the size exceeds 3/4 of the capacity, `putVal` appending at the bin tail, and
+/// `resize` splitting each bin into a low and a high list that keep the bin's relative order.
+/// A bin that reaches 9 nodes in a table under 64 slots resizes instead of treeifying
+/// (`treeifyBin`). A real treeified bin (9+ colliding keys in a table of 64+ slots) iterates in
+/// an order that depends on the red-black tree (`moveRootToFront`, `putTreeVal`, and
+/// `tieBreakOrder`, which uses `System.identityHashCode`); that is not ported and fails loudly.
+// Java (JDK): java/util/HashMap.java HashMap.putVal
+pub fn java_hash_map_order<K: JavaHashCode + Eq, V>(entries: Vec<(K, V)>) -> Vec<(K, V)> {
+    java_hash_map_order_by(DEFAULT_CAPACITY, entries, |k| k.java_hash_code())
+}
+
+/// The iteration order of a `java.util.HashSet` made by `new HashSet<>()` and filled by `add`
+/// in the order of `elements` (an `add` of an element already present changes nothing). See
+/// [`java_hash_map_order`].
+// Java (JDK): java/util/HashSet.java HashSet.add
+pub fn java_hash_set_order<K: JavaHashCode + Eq>(elements: Vec<K>) -> Vec<K> {
+    java_hash_map_order(elements.into_iter().map(|k| (k, ())).collect())
+        .into_iter()
+        .map(|(k, ())| k)
+        .collect()
+}
+
+/// The table length of a `new HashMap<>(initialCapacity)` once its first entry is put
+/// (`HashMap.tableSizeFor(initialCapacity)`).
+// Java (JDK): java/util/HashMap.java HashMap.tableSizeFor
+pub fn java_hash_map_table_size_for(initial_capacity: i32) -> usize {
+    table_size_for(initial_capacity) as usize
+}
+
+/// [`java_hash_map_order`] for a map whose table starts with `table_size` slots (a power of
+/// two: 16 for `new HashMap<>()`, [`java_hash_map_table_size_for`]`(c)` for
+/// `new HashMap<>(c)`), with the keys' Java `hashCode()` given by `hash_code`.
+// Java (JDK): java/util/HashMap.java HashMap.putVal
+pub fn java_hash_map_order_by<K: PartialEq, V>(
+    table_size: usize,
+    entries: Vec<(K, V)>,
+    hash_code: impl Fn(&K) -> i32,
+) -> Vec<(K, V)> {
+    assert!(
+        table_size.is_power_of_two(),
+        "HashMap table length {table_size} is not a power of two"
+    );
+    let mut table: Vec<Vec<(u32, K, V)>> = (0..table_size).map(|_| Vec::new()).collect();
+    let mut size = 0usize;
+
+    // Java (JDK): java/util/HashMap.java HashMap.resize
+    fn resize<K, V>(table: &mut Vec<Vec<(u32, K, V)>>) {
+        let new_cap = table.len() * 2;
+        let mut new_table: Vec<Vec<(u32, K, V)>> = (0..new_cap).map(|_| Vec::new()).collect();
+        for bin in table.drain(..) {
+            for (h, k, v) in bin {
+                new_table[(h as usize) & (new_cap - 1)].push((h, k, v));
+            }
+        }
+        *table = new_table;
+    }
+
+    for (key, value) in entries {
+        let h = hash_map_hash(hash_code(&key));
+        let idx = (h as usize) & (table.len() - 1);
+        if let Some(entry) = table[idx]
+            .iter_mut()
+            .find(|(hh, k, _)| *hh == h && *k == key)
+        {
+            entry.2 = value;
+            continue;
+        }
+        table[idx].push((h, key, value));
+        // putVal: `if (binCount >= TREEIFY_THRESHOLD - 1) treeifyBin(tab, hash);` where binCount
+        // counts the nodes before the appended one, less one.
+        if table[idx].len() > TREEIFY_THRESHOLD {
+            if table.len() < MIN_TREEIFY_CAPACITY {
+                // HashMap.treeifyBin resizes instead of treeifying small tables.
+                resize(&mut table);
+            } else {
+                blaze_util::unported!(
+                    "HashMap.treeifyBin",
+                    "iteration order of a treeified bin ({} colliding keys in a table of {} slots)",
+                    table[idx].len(),
+                    table.len()
+                );
+            }
+        }
+        size += 1;
+        // `if (++size > threshold) resize();` with threshold = capacity * 0.75.
+        if size > table.len() * 3 / 4 {
+            resize(&mut table);
+        }
+    }
+    table
+        .into_iter()
+        .flatten()
+        .map(|(_, k, v)| (k, v))
+        .collect()
+}
+
+#[cfg(test)]
+mod java_hash_map_tests {
+    use super::*;
+
+    #[derive(PartialEq, Eq, Debug, Clone)]
+    struct H(i32, &'static str);
+
+    impl JavaHashCode for H {
+        fn java_hash_code(&self) -> i32 {
+            self.0
+        }
+    }
+
+    // java.util.HashMap: "a".hashCode() = 97 -> bin 1, "b" = 98 -> bin 2, "q" = 113 -> bin 1 of
+    // a 16-slot table; iteration walks the bins in index order and each bin in insertion order.
+    #[test]
+    fn small_string_map_iterates_by_bucket() {
+        let order = java_hash_map_order(vec![
+            ("q".to_owned(), 1),
+            ("b".to_owned(), 2),
+            ("a".to_owned(), 3),
+        ]);
+        let keys: Vec<&str> = order.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["q", "a", "b"]);
+    }
+
+    // HashSet.add of a present element changes nothing; the set iterates by bin.
+    #[test]
+    fn hash_set_order_ignores_repeated_adds() {
+        let order = java_hash_set_order(vec![H(18, "c"), H(1, "a"), H(18, "c"), H(17, "b")]);
+        let names: Vec<&str> = order.iter().map(|k| k.1).collect();
+        // Bins: 18 & 15 = 2, 1 & 15 = 1, 17 & 15 = 1.
+        assert_eq!(names, vec!["a", "b", "c"]);
+    }
+
+    // HashMap.resize: the 13th entry of a 16-slot table (threshold 12) doubles it; hash 16
+    // moves from bin 0 to bin 16, so it now iterates after the entries of bins 1..15.
+    #[test]
+    fn resize_splits_bins_keeping_relative_order() {
+        let mut entries = vec![
+            (H(16, "sixteen"), ()),
+            (H(0, "zero"), ()),
+            (H(32, "32"), ()),
+        ];
+        let fillers = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10"];
+        for (i, f) in fillers.iter().enumerate() {
+            entries.push((H(i as i32 + 1, f), ()));
+        }
+        assert_eq!(entries.len(), 13);
+        let names: Vec<&str> = java_hash_map_order(entries)
+            .into_iter()
+            .map(|(k, ())| k.1)
+            .collect();
+        let mut expected = vec!["zero", "32"];
+        expected.extend(fillers);
+        expected.push("sixteen");
+        assert_eq!(names, expected);
+    }
+
+    // `new HashMap<>(3)`: tableSizeFor(3) = 4 slots, threshold 3.
+    #[test]
+    fn initial_capacity_sets_the_table_length() {
+        assert_eq!(java_hash_map_table_size_for(3), 4);
+        assert_eq!(java_hash_map_table_size_for(2), 2);
+        let order = java_hash_map_order_by(
+            java_hash_map_table_size_for(3),
+            vec![(H(6, "six"), ()), (H(5, "five"), ()), (H(2, "two"), ())],
+            |k| k.java_hash_code(),
+        );
+        // Bins of a 4-slot table: 6 & 3 = 2, 5 & 3 = 1, 2 & 3 = 2.
+        let names: Vec<&str> = order.into_iter().map(|(k, ())| k.1).collect();
+        assert_eq!(names, vec!["five", "six", "two"]);
+    }
+
+    // HashMap.treeifyBin: a table of 64+ slots turns a bin of 9 nodes into a red-black tree,
+    // whose iteration order is not ported.
+    #[test]
+    #[should_panic(expected = "HashMap.treeifyBin")]
+    fn treeified_bin_fails_loudly() {
+        // 25 keys in distinct bins grow the table to 64 slots (16 -> 32 at the 13th put, 32 -> 64
+        // at the 25th); then nine keys collide in bin 63.
+        let mut entries: Vec<(H, ())> = (0..25).map(|i| (H(i, "filler"), ())).collect();
+        for i in 0..9 {
+            entries.push((H(63 + 64 * (i + 1), "collide"), ()));
+        }
+        java_hash_map_order(entries);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,7 +749,7 @@ mod tests {
         m.put(H(16, "c"), ());
         let fillers = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9"];
         for (i, f) in fillers.iter().enumerate() {
-            m.put(H(i as i32 + 1, *f), ());
+            m.put(H(i as i32 + 1, f), ());
         }
         assert_eq!(m.table.len(), 32);
         let keys: Vec<_> = m.keys().map(|k| k.1).collect();

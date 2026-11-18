@@ -218,5 +218,7 @@ fn percent_decode(s: &str) -> String {
         out.push(b[i]);
         i += 1;
     }
+    // PORT: byte-strings: Java keeps no raw bytes here either: `URI.decode` decodes the escaped
+    // octets as UTF-8 and replaces malformed input with U+FFFD.
     String::from_utf8_lossy(&out).into_owned()
 }

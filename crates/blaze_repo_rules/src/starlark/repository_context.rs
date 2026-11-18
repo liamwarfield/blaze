@@ -24,7 +24,6 @@ use blaze_cmdline::label_constants::WORKSPACE_DOT_BAZEL_FILE_NAME;
 use blaze_cmdline::label_constants::WORKSPACE_FILE_NAME;
 use blaze_repo_fetch::decompressor::patch_util;
 use blaze_repo_fetch::decompressor::patch_util::PatchError;
-use blaze_repo_fetch::errors::IoException;
 use blaze_sky_loading::ignored_subdirectories::IgnoredSubdirectories;
 use blaze_sky_loading::pkgcache::PathPackageLocator;
 use blaze_starlark::label::LabelValue;
@@ -42,11 +41,14 @@ use starlark::values::ValueLike;
 use starlark::values::dict::DictRef;
 use starlark::values::none::NoneType;
 
+use crate::repository::exceptions::JavaThrowable;
 use crate::repository::repo_definition::RepoAttrs;
 use crate::repository::repo_definition::RepoDefinition;
 use crate::repository::repo_recorded_input::RepoRecordedInput;
 use crate::starlark::base_external_context::ShouldWatch;
 use crate::starlark::base_external_context::StarlarkBaseExternalContext;
+use crate::starlark::base_external_context::check_in_output_directory_error;
+use crate::starlark::base_external_context::repository_function_exception;
 use crate::starlark::context::ExternalContext;
 use crate::starlark::context::RepositoryCtx;
 use crate::starlark::path::StarlarkPath;
@@ -111,20 +113,6 @@ pub fn repository_fetch_context_string(repo_name: &RepositoryName) -> String {
 /// Java `Starlark.errorf` / `new EvalException(msg)`.
 fn eval_error(msg: impl fmt::Display) -> starlark::Error {
     starlark::Error::new_other(anyhow::anyhow!("{msg}"))
-}
-
-/// A `RepositoryFunctionException(IOException e, ...)` thrown out of a Starlark method: Starlark
-/// reports `new EvalException(rfe)`, whose message is the RFE's message, `e.toString()`
-/// (`<class>: <message>`).
-// Java: net/starlark/java/eval/MethodDescriptor.java:294 MethodDescriptor.call
-fn repository_function_exception_io(e: IoException) -> starlark::Error {
-    eval_error(e.to_java_string())
-}
-
-/// A `RepositoryFunctionException(EvalException e, ...)` thrown out of a Starlark method: the
-/// message is `e.toString()`, which for an `EvalException` without a call stack is its message.
-fn repository_function_exception_eval(message: impl fmt::Display) -> starlark::Error {
-    eval_error(message)
 }
 
 /// Java `BuiltinFunction` argument type check (`ParamDescriptor.getTypeErrorMessage`).
@@ -380,7 +368,7 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
         // PORT: WorkspaceRuleEvent.newSymlinkEvent not posted (see module doc).
         ctx.base
             .check_in_output_directory("write", &link_path)
-            .map_err(repository_function_exception_eval)?;
+            .map_err(check_in_output_directory_error)?;
         let created = (|| -> std::io::Result<bool> {
             StarlarkBaseExternalContext::make_directories(&link_path.path)?;
             link_path.path.create_symbolic_link(&target_path.path)?;
@@ -398,12 +386,16 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
                 }
                 Ok(NoneType)
             }
-            Err(e) => Err(repository_function_exception_io(IoException::new(format!(
-                "Could not create symlink from {} to {}: {}",
-                target_path,
-                link_path,
-                IoException::from(e).get_message()
-            )))),
+            // Java: RepositoryFunctionException(new IOException("Could not create symlink ...: "
+            // + e.getMessage(), e), Transience.TRANSIENT)
+            Err(e) => Err(repository_function_exception(JavaThrowable::io_exception(
+                format!(
+                    "Could not create symlink from {} to {}: {}",
+                    target_path,
+                    link_path,
+                    JavaThrowable::from(&e).get_message()
+                ),
+            ))),
         }
     }
 
@@ -475,27 +467,38 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
         ctx.maybe_watch(&t, should_watch)?;
         ctx.base
             .check_in_output_directory("write", &p)
-            .map_err(repository_function_exception_eval)?;
-        let written = (|| -> std::io::Result<()> {
+            .map_err(check_in_output_directory_error)?;
+        let written = (|| -> Result<(), JavaThrowable> {
             StarlarkBaseExternalContext::make_directories(&p.path)?;
             // Read and write files as raw bytes by using the Latin-1 encoding, which matches the
             // encoding used by Bazel for strings.
-            let mut tpl = blaze_repo_fetch::fs_utils::read_content(&t.path)?;
+            // PORT: `read_content` opens and reads; a failure is classified as Java's failure to
+            // open the stream (`FileSystemUtils.readContent` -> `Path.getInputStream`).
+            let mut tpl = blaze_repo_fetch::fs_utils::read_content(&t.path)
+                .map_err(|e| JavaThrowable::from_stream_open(&e))?;
             for (key, value) in &substitution_map {
                 tpl = replace_all_literal(&tpl, key.as_bytes(), value.as_bytes());
             }
             p.path.delete()?;
             {
-                let mut stream = p.path.get_output_stream()?;
-                stream.write_all(&tpl)?;
-                stream.flush()?;
+                let mut stream = p
+                    .path
+                    .get_output_stream()
+                    .map_err(|e| JavaThrowable::from_stream_open(&e))?;
+                stream
+                    .write_all(&tpl)
+                    .map_err(|e| JavaThrowable::from_stream_io(&e))?;
+                stream
+                    .flush()
+                    .map_err(|e| JavaThrowable::from_stream_io(&e))?;
             }
             if executable {
                 p.path.set_executable(true)?;
             }
             Ok(())
         })();
-        written.map_err(|e| repository_function_exception_io(IoException::from(e)))?;
+        // Java: RepositoryFunctionException(e, Transience.TRANSIENT)
+        written.map_err(repository_function_exception)?;
         Ok(NoneType)
     }
 
@@ -522,7 +525,8 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
             path.delete_trees_below()?;
             path.delete()
         })();
-        deleted.map_err(|e| repository_function_exception_io(IoException::from(e)))
+        // Java: RepositoryFunctionException(e, Transience.TRANSIENT)
+        deleted.map_err(repository_function_exception)
     }
 
     /// Renames the file or directory from `src` to `dst`. Parent directories are created as
@@ -543,26 +547,31 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
         // PORT: WorkspaceRuleEvent.newRenameEvent not posted (see module doc).
         ctx.base
             .check_in_output_directory("write", &src_path)
-            .map_err(repository_function_exception_eval)?;
+            .map_err(check_in_output_directory_error)?;
         ctx.base
             .check_in_output_directory("write", &dst_path)
-            .map_err(repository_function_exception_eval)?;
+            .map_err(check_in_output_directory_error)?;
         if dst_path.path.exists() {
-            return Err(repository_function_exception_io(IoException::new(format!(
-                "Could not rename {} to {}: already exists",
-                src_path, dst_path
-            ))));
+            // Java: RepositoryFunctionException(new IOException(...), Transience.TRANSIENT)
+            return Err(repository_function_exception(JavaThrowable::io_exception(
+                format!(
+                    "Could not rename {} to {}: already exists",
+                    src_path, dst_path
+                ),
+            )));
         }
         let renamed = (|| -> std::io::Result<()> {
             StarlarkBaseExternalContext::make_directories(&dst_path.path)?;
             src_path.path.rename_to(&dst_path.path)
         })();
+        // Java: RepositoryFunctionException(new IOException("Could not rename ...: " +
+        // e.getMessage(), e), Transience.TRANSIENT)
         renamed.map_err(|e| {
-            repository_function_exception_io(IoException::new(format!(
+            repository_function_exception(JavaThrowable::io_exception(format!(
                 "Could not rename {} to {}: {}",
                 src_path,
                 dst_path,
-                IoException::from(e).get_message()
+                JavaThrowable::from(&e).get_message()
             )))
         })?;
         Ok(NoneType)
@@ -608,7 +617,7 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
         let directory_path = ctx.get_path(directory)?;
         ctx.base
             .check_in_output_directory("write", &directory_path)
-            .map_err(repository_function_exception_eval)?;
+            .map_err(check_in_output_directory_error)?;
         // PORT: WorkspaceRuleEvent.newPatchEvent not posted (see module doc).
         if starlark_path.path.is_directory() {
             return Err(eval_error(format!(
@@ -620,11 +629,15 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
         ctx.maybe_watch(&starlark_path, should_watch)?;
         match patch_util::apply(&starlark_path.path, strip, &directory_path.path) {
             Ok(()) => Ok(NoneType),
-            Err(PatchError::Patch(e)) => Err(repository_function_exception_eval(format!(
-                "Error applying patch {}: {}",
-                starlark_path, e.message
-            ))),
-            Err(PatchError::Io(e)) => Err(repository_function_exception_io(e)),
+            // Java: RepositoryFunctionException(Starlark.errorf(...), Transience.TRANSIENT)
+            Err(PatchError::Patch(e)) => Err(repository_function_exception(
+                JavaThrowable::eval_exception(format!(
+                    "Error applying patch {}: {}",
+                    starlark_path, e.message
+                )),
+            )),
+            // Java: RepositoryFunctionException(e, Transience.TRANSIENT)
+            Err(PatchError::Io(e)) => Err(repository_function_exception(e)),
         }
     }
 

@@ -157,3 +157,74 @@ fn module_extension_generates_repos_and_lockfile_entry() {
         assert!(lock.contains("\"data\": \"fu\""), "{lock}");
     })
 }
+
+/// `include()` in the root MODULE.bazel resolves its package through the real PACKAGE_LOOKUP
+/// (review 2026-11-18, S2-15): a `.bazelignore` in the workspace is honoured rather than refused,
+/// and an included file under an ignored directory is not in a package.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunction.java:466 ModuleFileFunction.advanceHorizon
+#[test]
+fn include_uses_package_lookup_with_bazelignore() {
+    fn workspace(s: &Scratch, include: &str) {
+        s.file(
+            "MODULE.bazel",
+            &format!(
+                "module(name = 'root')\n\
+                 include('{include}')\n"
+            ),
+        );
+        s.file("BUILD", "");
+        s.file(".bazelignore", "ignored\n");
+        s.file("sub/BUILD", "");
+        s.file(
+            "sub/extra.MODULE.bazel",
+            "my_rule = use_repo_rule('//:rule.bzl', 'my_rule')\n\
+             my_rule(name = 'foo')\n",
+        );
+        s.file("ignored/BUILD", "");
+        s.file("ignored/extra.MODULE.bazel", "");
+        s.file(
+            "rule.bzl",
+            "def _impl(rctx):\n\
+             \x20 rctx.file('BUILD', '')\n\
+             my_rule = repository_rule(implementation = _impl)\n",
+        );
+    }
+    run(|| {
+        let s = Scratch::new();
+        workspace(&s, "//sub:extra.MODULE.bazel");
+        let ev = s.evaluator(&[]);
+        assert_eq!(canonical(&s, &ev, "foo"), "+my_rule+foo");
+    });
+    run(|| {
+        let s = Scratch::new();
+        workspace(&s, "//ignored:extra.MODULE.bazel");
+        let ev = s.evaluator(&[]);
+        let key = SkyKey::new(RepositoryMappingKey::key(
+            RepositoryName::create_unvalidated(""),
+        ));
+        let ctx = EvaluationContext {
+            keep_going: true,
+            event_handler: s.events.clone(),
+            ..EvaluationContext::default()
+        };
+        let result = ev
+            .evaluator
+            .evaluate(std::slice::from_ref(&key), &ctx)
+            .unwrap();
+        let error = result
+            .get_error(&key)
+            .unwrap_or_else(|| panic!("expected an error: {:?}", s.events()));
+        let message = error
+            .get_exception()
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| format!("{error:?}"));
+        // errorf(Code.BAD_MODULE, "unable to load package for '%s' included at %s: %s", ...)
+        // with PackageLookupValue.DELETED_PACKAGE_VALUE.getErrorMsg().
+        assert!(
+            message
+                .contains("unable to load package for '//ignored:extra.MODULE.bazel' included at ")
+                && message.ends_with(": Package is considered deleted due to --deleted_packages"),
+            "{message}"
+        );
+    });
+}

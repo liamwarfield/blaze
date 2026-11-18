@@ -1,0 +1,84 @@
+=== 1: run build //:read_only
+exit 0
+INFO: Build completed successfully, 2 total actions
+Target //:read_only up-to-date:
+=== 2: run build //:files_append
+exit 1
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:files_append' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:files_append:
+ERROR: Analysis of target '//:files_append' failed; build aborted
+ERROR: Build did NOT complete successfully
+=== 3: run build //:files_empty_append
+exit 1
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:files_empty_append' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:files_empty_append:
+ERROR: Analysis of target '//:files_empty_append' failed; build aborted
+ERROR: Build did NOT complete successfully
+=== 4: run build //:attr_label_list_append
+exit 1
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:attr_label_list_append' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:attr_label_list_append:
+ERROR: Analysis of target '//:attr_label_list_append' failed; build aborted
+ERROR: Build did NOT complete successfully
+=== 5: run build //:attr_string_list_append
+exit 1
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:attr_string_list_append' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:attr_string_list_append:
+ERROR: Analysis of target '//:attr_string_list_append' failed; build aborted
+ERROR: Build did NOT complete successfully
+=== 6: run build //:attr_string_dict_set
+exit 1
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:attr_string_dict_set' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:attr_string_dict_set:
+ERROR: Analysis of target '//:attr_string_dict_set' failed; build aborted
+ERROR: Build did NOT complete successfully
+=== 7: run build //:attr_label_keyed_string_dict_clear
+exit 1
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:attr_label_keyed_string_dict_clear' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:attr_label_keyed_string_dict_clear:
+ERROR: Analysis of target '//:attr_label_keyed_string_dict_clear' failed; build aborted
+ERROR: Build did NOT complete successfully
+=== 8: run build //:attr_string_keyed_label_dict_set
+exit 1
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:attr_string_keyed_label_dict_set' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:attr_string_keyed_label_dict_set:
+ERROR: Analysis of target '//:attr_string_keyed_label_dict_set' failed; build aborted
+ERROR: Build did NOT complete successfully
+=== 9: run build //:outputs_list_append
+exit 1
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:outputs_list_append' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:outputs_list_append:
+ERROR: Analysis of target '//:outputs_list_append' failed; build aborted
+ERROR: Build did NOT complete successfully
+=== 10: run build //:var_set
+exit 1
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:var_set' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:var_set:
+ERROR: Analysis of target '//:var_set' failed; build aborted
+ERROR: Build did NOT complete successfully
+=== 11: run build //:tokenize_append
+exit 1
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:tokenize_append' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:tokenize_append:
+ERROR: Analysis of target '//:tokenize_append' failed; build aborted
+ERROR: Build did NOT complete successfully
+=== 12: run build //:features_append
+exit 0
+INFO: Build completed successfully, 2 total actions
+Target //:features_append up-to-date:
+=== 13: run build //:disabled_features_append
+exit 0
+INFO: Build completed successfully, 2 total actions
+Target //:disabled_features_append up-to-date:
+=== 14: run build //:toolchain_types_append
+exit 1
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:toolchain_types_append' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:toolchain_types_append:
+ERROR: Analysis of target '//:toolchain_types_append' failed; build aborted
+ERROR: Build did NOT complete successfully
+=== 15: cat bazel-bin/read_only.txt
+2 2 ["s"] {"k": "v"} ["a", "b c"]
+=== 16: cat bazel-bin/features_append.txt
+["probe_feature", "zz"] ["probe_feature"]
+=== 17: cat bazel-bin/disabled_features_append.txt
+["probe_disabled", "zz"] ["probe_disabled"]

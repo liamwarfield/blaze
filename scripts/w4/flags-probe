@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+# Starlark-flag probe: runs a fixed list of cquery command lines with user-defined flags on a
+# scratch workspace and prints one transcript (exit code, stdout, ERROR/WARNING/DEBUG lines).
+# usage: scripts/w4/flags-probe <oracle|blaze> [--case N]      transcript on stdout
+#        scripts/w4/flags-probe expected                       path of the oracle's transcript
+#        scripts/w4/flags-probe compare                        runs blaze, diffs with the oracle's
+#        scripts/w4/flags-probe help
+# The scratch workspace (bool/int/string/string_list/allow_multiple/repeatable/label flags, an
+# alias to a flag, alias chains and cycles, string_set flags, scope attributes, select() on
+# flag_values, an exec-configured tool, .bazelrc with Starlark flags and a --flag_alias) is
+# written to ~/.cache/blaze/work/flags-probe-<who>.
+# Output user roots: ~/.cache/blaze/oracle-out/ur-flags-<who>. Environment: BLAZE (binary,
+# default target/debug/blaze). The oracle's transcript is committed as
+# crates/blaze_sky_top/tests/data/flags_probe.oracle.txt (regenerate: flags-probe oracle > it).
+set -uo pipefail
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,14p' "$0"; exit 0; fi
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+expected="$root/crates/blaze_sky_top/tests/data/flags_probe.oracle.txt"
+who="$1"; shift
+if [[ "$who" == "expected" ]]; then echo "$expected"; exit 0; fi
+if [[ "$who" == "compare" ]]; then
+  out="$(mktemp)"
+  "$0" blaze "$@" > "$out"
+  if diff -u "$expected" "$out"; then echo "flags-probe: MATCH"; rm -f "$out"; exit 0; fi
+  echo "flags-probe: DIFF (blaze transcript: $out)"; exit 1
+fi
+only=""
+if [[ "${1:-}" == "--case" ]]; then only="$2"; shift 2; fi
+case "$who" in
+  oracle) bin="$HOME/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64" ;;
+  blaze) bin="${BLAZE:-$root/target/debug/blaze}" ;;
+  *) echo "first argument must be oracle, blaze, expected or compare" >&2; exit 2 ;;
+esac
+ws="$HOME/.cache/blaze/work/flags-probe-$who"
+ur="$HOME/.cache/blaze/oracle-out/ur-flags-$who"
+rm -rf "$ws"; mkdir -p "$ws/pkg" "$ws/sub"
+cat > "$ws/MODULE.bazel" <<'EOF'
+module(name = "flags_probe")
+EOF
+cat > "$ws/.bazelrc" <<'EOF'
+common --flag_alias=myint=//:int_flag
+build:rcflags --//:string_flag=fromrc
+build:rcflags --//:multi=rc1
+build:rcall --//:bool_flag=false --//:int_flag=42 --//pkg:pkg_flag=p
+EOF
+cat > "$ws/defs.bzl" <<'EOF'
+BuildSettingInfo = provider(fields = ["value"])
+
+def _flag_impl(ctx):
+    return [BuildSettingInfo(value = ctx.build_setting_value)]
+
+bool_flag = rule(implementation = _flag_impl, build_setting = config.bool(flag = True))
+int_flag = rule(implementation = _flag_impl, build_setting = config.int(flag = True))
+string_flag = rule(
+    implementation = _flag_impl,
+    build_setting = config.string(flag = True),
+    attrs = {"scope": attr.string()},
+)
+string_list_flag = rule(implementation = _flag_impl, build_setting = config.string_list(flag = True))
+multi_string_flag = rule(
+    implementation = _flag_impl,
+    build_setting = config.string(flag = True, allow_multiple = True),
+)
+repeatable_flag = rule(
+    implementation = _flag_impl,
+    build_setting = config.string_list(flag = True, repeatable = True),
+)
+string_setting = rule(implementation = _flag_impl, build_setting = config.string())
+string_set_flag = rule(implementation = _flag_impl, build_setting = config.string_set(flag = True))
+repeatable_set_flag = rule(
+    implementation = _flag_impl,
+    build_setting = config.string_set(flag = True, repeatable = True),
+)
+
+def _show_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    lines = ["%s=%r" % (f.label, f[BuildSettingInfo].value) for f in ctx.attr.flags]
+    lines.append("lf=%s" % ctx.attr.lf.label)
+    ctx.actions.run_shell(
+        outputs = [out],
+        tools = [ctx.executable.tool],
+        command = "echo '%s' > %s" % ("\n".join(lines), out.path),
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+show = rule(
+    implementation = _show_impl,
+    attrs = {
+        "flags": attr.label_list(),
+        "lf": attr.label(),
+        "tool": attr.label(executable = True, cfg = "exec"),
+    },
+)
+
+def _tool_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(out, "#!/bin/sh\necho %r\n" % ctx.attr.flag[BuildSettingInfo].value, is_executable = True)
+    return [DefaultInfo(executable = out)]
+
+tool = rule(implementation = _tool_impl, executable = True, attrs = {"flag": attr.label()})
+EOF
+cat > "$ws/BUILD.bazel" <<'EOF'
+load(
+    ":defs.bzl",
+    "bool_flag",
+    "int_flag",
+    "multi_string_flag",
+    "repeatable_flag",
+    "show",
+    "string_flag",
+    "string_list_flag",
+    "repeatable_set_flag",
+    "string_set_flag",
+    "string_setting",
+    "tool",
+)
+
+bool_flag(name = "bool_flag", build_setting_default = True)
+int_flag(name = "int_flag", build_setting_default = 1)
+string_flag(name = "string_flag", build_setting_default = "dflt")
+string_list_flag(name = "string_list_flag", build_setting_default = ["x", "y"])
+multi_string_flag(name = "multi", build_setting_default = "m0")
+repeatable_flag(name = "rep", build_setting_default = ["r0"])
+string_setting(name = "setting", build_setting_default = "internal")
+string_flag(name = "universal_flag", build_setting_default = "u", scope = "universal")
+string_flag(name = "target_flag", build_setting_default = "t", scope = "target")
+alias(name = "alias_to_int", actual = ":int_flag")
+alias(name = "alias_to_alias", actual = ":alias_to_int")
+alias(name = "alias_to_file", actual = "defs.bzl")
+alias(name = "alias_select", actual = select({"//conditions:default": ":int_flag"}))
+
+filegroup(name = "lf_default")
+filegroup(name = "lf_other")
+label_flag(name = "lf", build_setting_default = ":lf_default")
+label_flag(name = "lf_universal", build_setting_default = ":lf_default", scope = "universal")
+string_flag(name = "bad_scope", build_setting_default = "", scope = "galaxy")
+string_set_flag(name = "sset", build_setting_default = set(["s0"]))
+repeatable_set_flag(name = "rsset", build_setting_default = set(["r0"]))
+alias(name = "cyc_one", actual = "//sub:cyc_two")
+alias(name = "cyc_three", actual = ":cyc_one")
+alias(
+    name = "alias_real_select",
+    actual = select({":int_is_7": ":int_flag", "//conditions:default": ":bool_flag"}),
+)
+
+config_setting(name = "int_is_7", flag_values = {":int_flag": "7"})
+config_setting(name = "string_is_abc", flag_values = {":string_flag": "abc"})
+config_setting(name = "list_has_b", flag_values = {":string_list_flag": "b"})
+config_setting(name = "bool_off", flag_values = {":bool_flag": "False"})
+
+filegroup(name = "seven")
+filegroup(name = "abc")
+filegroup(name = "has_b")
+filegroup(name = "off")
+filegroup(name = "none")
+
+filegroup(
+    name = "selected",
+    srcs = select({":int_is_7": [":seven"], "//conditions:default": [":none"]}) +
+           select({":string_is_abc": [":abc"], "//conditions:default": []}) +
+           select({":list_has_b": [":has_b"], "//conditions:default": []}) +
+           select({":bool_off": [":off"], "//conditions:default": []}),
+)
+
+tool(name = "tool", flag = ":string_flag")
+
+show(
+    name = "t",
+    flags = [
+        ":bool_flag",
+        ":int_flag",
+        ":string_flag",
+        ":string_list_flag",
+        ":multi",
+        ":rep",
+        ":universal_flag",
+        ":target_flag",
+        "//pkg:pkg_flag",
+    ],
+    lf = ":lf",
+    tool = ":tool",
+)
+EOF
+cat > "$ws/pkg/BUILD.bazel" <<'EOF'
+load("//:defs.bzl", "string_flag")
+
+string_flag(name = "pkg_flag", build_setting_default = "", visibility = ["//visibility:public"])
+EOF
+cat > "$ws/sub/BUILD.bazel" <<'EOF'
+load("//:defs.bzl", "string_flag")
+
+string_flag(name = "one", build_setting_default = "")
+string_flag(name = "two", build_setting_default = "")
+alias(name = "cyc_two", actual = "//:cyc_three")
+EOF
+
+# One case per line: cquery arguments (the query expression is appended).
+cases=(
+  ""
+  "--//:bool_flag"
+  "--no//:bool_flag"
+  "--//:bool_flag=false"
+  "--//:bool_flag=0"
+  "--//:int_flag=7"
+  "--//:int_flag=1"
+  "--//:int_flag=0x10"
+  "--//:string_flag=abc"
+  "--//:string_flag="
+  "--//:string_list_flag=a,b"
+  "--//:string_list_flag=x,y"
+  "--//:string_list_flag="
+  "--//:multi=a --//:multi=b"
+  "--//:multi=m0"
+  "--//:rep=a --//:rep=b,c"
+  "--//:rep=r0"
+  "--//:lf=//:lf_other"
+  "--//:lf=//:lf_default"
+  "--//:lf=:lf_other"
+  "--//:alias_to_int=3"
+  "--//:alias_to_alias=3"
+  "--//:int_flag=3 --//:alias_to_int=7"
+  "--myint=5"
+  "--config=rcflags"
+  "--config=rcflags --//:multi=cl"
+  "--config=rcall"
+  "--//:universal_flag=uu"
+  "--//:target_flag=tt"
+  "--//:universal_flag=uu --//:target_flag=tt --//:string_flag=abc"
+  "--//pkg:pkg_flag=v --@//:int_flag=7 --@flags_probe//:string_flag=abc"
+  "--//:int_flag=7 --//:string_flag=abc --//:string_list_flag=b --no//:bool_flag"
+  "--//:string_flag=abc --incompatible_exclude_starlark_flags_from_exec_config"
+  "--//:string_flag=abc --noincompatible_exclude_starlark_flags_from_exec_config"
+  "--//:nonexistent=1"
+  "--//nopkg:flag=1"
+  "--//:int_flag=abc"
+  "--//:int_flag"
+  "--no//:int_flag"
+  "--//:bool_flag=maybe"
+  "--//:setting=x"
+  "--//:lf_default=x"
+  "--//:alias_to_file=x"
+  "--//:alias_select=3"
+  "--//:defs.bzl=x"
+  "--//:universal_flag uu"
+  "--//:lf_universal=//:lf_other"
+  "--//:bad_scope=x"
+  "--//sub:all=x"
+  "--//:cyc_one=1"
+  "--//:alias_real_select=3"
+  "--//:sset=b,a,b"
+  "--//:sset=s0"
+  "--//:sset="
+  "--//:rsset=a --//:rsset=b --//:rsset=a"
+  "--//:rsset=r0"
+  "--//:int_flag=010"
+  "--//:int_flag=-0x10"
+  "--//:string_flag=a=b"
+  "--config=rcflags --//:string_flag=cl"
+  "--//:string_flag=cl --config=rcflags"
+  "--//:multi=a --config=rcflags"
+  "--//:bool_flag=1 --no//:bool_flag"
+  "--//:universal_flag=u"
+  "--//:universal_flag=uu --//:string_flag=abc --incompatible_exclude_starlark_flags_from_exec_config"
+  "--//:string_flag=abc --//pkg:pkg_flag=p --incompatible_exclude_starlark_flags_from_exec_config --experimental_propagate_custom_flag=//:string_flag"
+  "--//:string_flag=abc --//pkg:pkg_flag=p --incompatible_exclude_starlark_flags_from_exec_config --experimental_propagate_custom_flag=//pkg/..."
+  "--//:rep=a,b"
+  "--//:multi=a,b"
+  "--//:string_list_flag=a,,b"
+  "--//:lf=@flags_probe//:lf_other"
+)
+run() {
+  ( cd "$ws" && systemd-run --user --scope --collect --quiet -p MemoryMax=8G -p MemorySwapMax=0 \
+    env -i HOME="$HOME" PATH=/usr/bin:/bin "$bin" --output_user_root="$ur" --nohome_rc --nosystem_rc \
+    "$@" )
+}
+errfile="$(mktemp)"
+i=0
+for c in "${cases[@]}"; do
+  i=$((i + 1))
+  if [[ -n "$only" && "$only" != "$i" ]]; then continue; fi
+  echo "=== case $i: cquery $c 'deps(//:t + //:selected)' --output=label_kind"
+  # shellcheck disable=SC2086
+  out="$(run cquery --color=no --curses=no $c 'deps(//:t + //:selected)' --output=label_kind 2> "$errfile")"
+  code=$?
+  echo "exit $code"
+  # Only the workspace's own targets: the builtin tool repositories do not depend on the flags.
+  echo "$out" | grep -v ' @@\?bazel_tools\| @@\?platforms\| @@rules_\| @@[a-z_]*+' | LC_ALL=C sort
+  grep -E '^(ERROR|WARNING|DEBUG): ' "$errfile" | sed -e "s#$ws#<WS>#g" | grep -v 'Build did NOT complete\|discarding analysis cache'
+  echo "--- configurations (cquery //:t --output=jsonproto)"
+  # shellcheck disable=SC2086
+  run cquery --color=no --curses=no $c '//:t' --output=jsonproto 2> /dev/null |
+    python3 -I -c '
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    print("no output"); sys.exit(0)
+for c in sorted(doc.get("configurations", []), key=lambda c: c.get("checksum", "")):
+    print(c.get("mnemonic"), c.get("platformName"), c.get("checksum"), c.get("isTool", False))
+'
+done
+run shutdown > /dev/null 2>&1
+rm -f "$errfile"

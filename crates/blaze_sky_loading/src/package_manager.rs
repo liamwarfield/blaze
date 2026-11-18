@@ -464,16 +464,14 @@ fn wrap_exception(
     exception: &blaze_skyframe::SkyError,
     key_is_package: bool,
 ) -> TargetParsingException {
-    if key_is_package {
-        if let Some(e) = exception.downcast_ref::<NoSuchPackageException>() {
-            // A "simple" target pattern (like "//pkg:t") doesn't have a TargetPatternKey, just a
-            // Package key, so it results in NoSuchPackageException that we transform here.
-            // PORT: Java keeps the exception's DetailedExitCode.
-            return TargetParsingException::new(
-                e.get_message(),
-                TargetPatternsCode::TargetPatternsUnknown,
-            );
-        }
+    if key_is_package && let Some(e) = exception.downcast_ref::<NoSuchPackageException>() {
+        // A "simple" target pattern (like "//pkg:t") doesn't have a TargetPatternKey, just a
+        // Package key, so it results in NoSuchPackageException that we transform here.
+        // PORT: Java keeps the exception's DetailedExitCode.
+        return TargetParsingException::new(
+            e.get_message(),
+            TargetPatternsCode::TargetPatternsUnknown,
+        );
     }
     TargetParsingException::new(
         format!(

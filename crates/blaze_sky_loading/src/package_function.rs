@@ -416,6 +416,9 @@ enum CompiledBuildFile {
         generator_map: IndexMap<Location, String>,
         /// The predeclared environment the program was compiled against.
         predeclared: Arc<Globals>,
+        /// The predeclared names left out of `predeclared` because their `GuardedValue` is not
+        /// accessible, each with Java's error for a use of it (`Module.resolve`).
+        guarded_symbol_errors: IndexMap<String, String>,
     },
 }
 
@@ -590,15 +593,13 @@ impl PackageFunction {
         }
 
         let contains_errors = pkg_builder.contains_errors();
-        if let Err(e) = self.handle_glob_deps_and_propagate_filesystem_exceptions(
+        self.handle_glob_deps_and_propagate_filesystem_exceptions(
             package_id,
             package_lookup_value.get_root(),
             &loaded_package.glob_requests,
             env,
             contains_errors,
-        )? {
-            return Err(e);
-        }
+        )??;
 
         if let Some(pfe) = pfe_from_non_skyframe_globbing {
             // Throw before checking for missing values, since this may be our last chance to throw
@@ -983,7 +984,10 @@ impl PackageFunction {
 
         match compiled {
             CompiledBuildFile::Ok {
-                prog, predeclared, ..
+                prog,
+                predeclared,
+                guarded_symbol_errors,
+                ..
             } => {
                 let (load_map, direct_loads) =
                     loaded_modules.expect("loads are computed for a compiled BUILD file");
@@ -997,6 +1001,44 @@ impl PackageFunction {
                     &repository_mapping,
                     &main_repository_mapping,
                 )?;
+                // Java resolves the BUILD file's names in compileBuildFile: a use of a
+                // predeclared symbol whose GuardedValue is not accessible is a static error with
+                // the guard's message (Module.resolve), reported as a SYNTAX_ERROR event at the
+                // identifier, and the file is not executed.
+                // PORT: starlark-rust resolves names when execution starts and PackageFactory
+                // (blaze_packages `handle_eval_error`) reports its "Variable `X` not found" as
+                // an evaluation error. Bazel 9.3.2 registers no guarded BUILD toplevel, so this
+                // cannot happen with Bazel's rule class provider; with one that does, fail
+                // loudly instead of showing the wrong error.
+                // Java: net/starlark/java/eval/Module.java:237 Module.resolve
+                // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1276 PackageFunction.compileBuildFile
+                if !guarded_symbol_errors.is_empty() {
+                    for event in pkg_builder.get_local_event_handler().get_events() {
+                        let message = event.get_message();
+                        let Some(error) = message
+                            .lines()
+                            .last()
+                            .and_then(|line| line.strip_prefix("Error: "))
+                        else {
+                            continue;
+                        };
+                        let Some(name) =
+                            blaze_packages::builtins::env::undefined_variable_name(error)
+                        else {
+                            continue;
+                        };
+                        if let Some(java_message) = guarded_symbol_errors.get(name) {
+                            blaze_util::unported!(
+                                "Module.resolve",
+                                "BUILD file of package '{}' uses the guarded symbol '{}'; Java \
+                                 reports the syntax error: {}",
+                                package_id,
+                                name,
+                                java_message
+                            );
+                        }
+                    }
+                }
                 // TODO: b/155396641 - Validate that transitive visibility groups are correctly
                 // declared and that this package is a member of all transitive visibility groups
                 // it declares, but probably not in this part of the code.
@@ -1063,25 +1105,16 @@ impl PackageFunction {
         let events = Arc::new(DebugPrintHandler::new(
             pkg_builder.get_local_event_handler_arc().clone(),
         ));
-        let mut thread_context =
-            ThreadContext::new(Phase::Loading, semantics.clone(), events.clone())
-                .with_file_label(build_file_label.clone())
-                .with_label_repo_context(LabelRepoContextImpl::of(
-                    build_file_label.get_repository().clone(),
-                    repository_mapping.clone(),
-                ))
-                .with_main_repo_mapping(main_repository_mapping.clone());
-        // `Label()` called from functions of loaded modules resolves against their packages.
-        let mut seen = HashSet::new();
-        visit_load_graph(direct_loads, &mut |m| {
-            if !seen.insert(m.label.clone()) {
-                return false;
-            }
-            thread_context
-                .file_package_contexts
-                .insert(m.filename.clone(), m.package_context());
-            true
-        });
+        let thread_context = ThreadContext::new(Phase::Loading, semantics.clone(), events.clone())
+            .with_file_label(build_file_label.clone())
+            .with_label_repo_context(LabelRepoContextImpl::of(
+                build_file_label.get_repository().clone(),
+                repository_mapping.clone(),
+            ))
+            .with_main_repo_mapping(main_repository_mapping.clone());
+        // `Label()` called from functions of loaded modules (the BUILD file's loads, the
+        // prelude's loads, @_builtins modules) resolves against the function's own module, read
+        // from its extra value (Java BazelModuleContext.ofInnermostBzlOrFail).
         let thread_context = thread_context.with_payload(pkg_builder);
 
         let result = self.config.package_factory.execute_build_file(
@@ -1189,16 +1222,32 @@ impl PackageFunction {
         } else {
             &starlark_builtins_value.predeclared_for_build
         };
+        let guarded_symbol_errors;
         let predeclared = match prelude_bindings {
-            None => starlark_builtins_value.globals(predeclared_env, None, None),
+            None => {
+                guarded_symbol_errors = blaze_packages::builtins::env::guarded_symbol_errors(
+                    predeclared_env,
+                    semantics,
+                    None,
+                );
+                starlark_builtins_value.globals(predeclared_env, None, None)
+            }
             Some(prelude) => {
                 let mut env = predeclared_env.clone();
-                for name in prelude.names() {
+                // Java: PackageFunction.java:1068 `preludeBindings = prelude.getGlobals()` and
+                // :1400 `predeclared.putAll(preludeBindings)`. Module.getGlobals() has every
+                // global binding: names starting with `_` and, because the prelude is compiled
+                // with loadBindsGlobally (BzlCompileFunction.java:204), names bound by load().
+                // starlark-rust keeps both as private module bindings (patch 0021 lists them).
+                // A name declared but never assigned has no value and no entry, as in Java.
+                for name in prelude.names_any_visibility() {
                     let name = name.as_str().to_owned();
-                    if let Ok(Some(value)) = prelude.get_option(&name) {
+                    if let Ok((value, _visibility)) = prelude.get_any_visibility(&name) {
                         env.insert(name, EnvEntry::plain(value));
                     }
                 }
+                guarded_symbol_errors =
+                    blaze_packages::builtins::env::guarded_symbol_errors(&env, semantics, None);
                 Arc::new(build_globals(&env, None, semantics, None))
             }
         };
@@ -1208,6 +1257,7 @@ impl PackageFunction {
             prog,
             generator_map,
             predeclared,
+            guarded_symbol_errors,
         })
     }
 }
@@ -1326,8 +1376,8 @@ fn load_bzl_modules(
         Ok(Some(v)) => v,
     };
     // Validate that the current BUILD file satisfies each loaded dependency's load visibility.
-    if check_visibility {
-        if let Err(e) = check_load_visibilities(
+    if check_visibility
+        && let Err(e) = check_load_visibilities(
             package_id,
             requesting_file_description,
             &bzl_loads,
@@ -1335,9 +1385,9 @@ fn load_bzl_modules(
             program_loads,
             /* demote_errors_to_warnings= */ !semantics.check_bzl_visibility,
             env.listener(),
-        ) {
-            return Ok(Err(bzl_load_failed(package_id, &e)));
-        }
+        )
+    {
+        return Ok(Err(bzl_load_failed(package_id, &e)));
     }
 
     // Build map of loaded modules. Java's LinkedHashMap keeps the first position of each load

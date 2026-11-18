@@ -39,6 +39,9 @@ pub fn formatted_length(format_str: &str) -> i32 {
 /// Returns the formatted length or `-1` if invalid.
 // Java: com/google/devtools/build/lib/actions/SingleStringArgFormatter.java:65 SingleStringArgFormatter.formattedLengthOrInvalid
 fn formatted_length_or_invalid(format_str: &str) -> i32 {
+    // Java counts the chars of the internal string (`internal_length`); the pieces are cut at
+    // ASCII `%`, so they are whole strings.
+    use blaze_util::string_encoding::internal_length;
     let bytes = format_str.as_bytes();
     let mut length: i32 = 0;
     let n = bytes.len();
@@ -48,7 +51,7 @@ fn formatted_length_or_invalid(format_str: &str) -> i32 {
     while idx < n {
         let next = match index_of_percent(bytes, idx) {
             None => {
-                length += (n - idx) as i32;
+                length += internal_length(&format_str[idx..n]) as i32;
                 break;
             }
             Some(next) => next,
@@ -61,10 +64,10 @@ fn formatted_length_or_invalid(format_str: &str) -> i32 {
                 if found {
                     return -1; // Multiple '%s'.
                 }
-                length += (next - idx) as i32;
+                length += internal_length(&format_str[idx..next]) as i32;
                 found = true;
             }
-            b'%' => length += (next + 1 - idx) as i32,
+            b'%' => length += internal_length(&format_str[idx..next + 1]) as i32,
             _ => {
                 return -1; // Illegal sequence.
             }

@@ -128,10 +128,10 @@ impl AttributeContainer {
         match self.frozen_state.get() {
             None => self.attr_values[attr_index].as_ref(),
             Some(frozen) => {
-                if let Some((index, _)) = &self.implicit_tests {
-                    if *index == attr_index {
-                        return frozen.implicit_tests_value.as_ref();
-                    }
+                if let Some((index, _)) = &self.implicit_tests
+                    && *index == attr_index
+                {
+                    return frozen.implicit_tests_value.as_ref();
                 }
                 if frozen.omitted[attr_index] {
                     None

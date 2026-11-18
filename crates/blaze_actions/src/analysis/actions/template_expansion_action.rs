@@ -264,14 +264,14 @@ impl Action for TemplateExpansionAction {
         } else {
             "false"
         });
-        // PORT: StringEncoding. The template text and the substitutions are Bazel internal
-        // strings, which Java's addString UTF-8-encodes once more (checked against the oracle).
-        fp.add_internal_string(&self.template.get_key());
+        // Invariant: the template text and the substitutions are internal strings (see
+        // `fingerprint_util`).
+        fp.add_string(&self.template.get_key());
         fp.add_int(self.substitutions.len() as i32);
         for entry in &self.substitutions {
-            fp.add_internal_string(entry.get_key());
+            fp.add_string(entry.get_key());
             let value = entry.get_value().map_err(ComputeKeyError::Eval)?;
-            fp.add_internal_string(&value);
+            fp.add_string(&value);
         }
         Ok(())
     }

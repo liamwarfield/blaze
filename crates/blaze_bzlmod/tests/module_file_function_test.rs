@@ -7,13 +7,17 @@ mod skyframe_common;
 
 use std::sync::Arc;
 
-use blaze_bzlmod::skyframe::{ModuleFileKey, ModuleFileValue};
-use blaze_bzlmod_model::{
-    ArchiveRepoSpecBuilder, ModuleKey, ModuleOverride, MultipleVersionOverride,
-    NonRegistryOverride, Registry, SingleVersionOverride, Version, local_path_repo_spec,
+use blaze_bzlmod::skyframe::{
+    BuiltinPackageLookup, ModuleFileKey, ModuleFileValue, PackageLookup, PackageLookupResult,
+    register_bzlmod_functions, register_lockfile_only_extension_functions,
 };
-use blaze_cmdline::RepositoryName;
-use blaze_skyframe::{EvaluationResult, SkyKey};
+use blaze_bzlmod_model::{
+    ArchiveRepoSpecBuilder, DepSpec, ExternalDepsException, ModuleKey, ModuleOverride,
+    MultipleVersionOverride, NonRegistryOverride, Registry, SingleVersionOverride, Version,
+    local_path_repo_spec,
+};
+use blaze_cmdline::{PackageIdentifier, RepositoryName};
+use blaze_skyframe::{ComputeError, Environment, EvaluationResult, EvaluatorBuilder, SkyKey};
 use indexmap::IndexMap;
 use skyframe_common::*;
 
@@ -1223,17 +1227,447 @@ fn test_invalid_use_extension_label() {
     );
 }
 
-#[test]
-#[ignore = "needs PatchUtil.applyToSingleFile (blaze_repo_fetch, which cannot build next to starlark yet)"]
-fn test_single_version_override_patches() {}
+/// `result.getError().getException()` `.hasMessageThat()`.
+fn exception_message(result: &EvaluationResult) -> String {
+    result
+        .get_first_error()
+        .expect("an error")
+        .exception_as::<ExternalDepsException>()
+        .expect("an ExternalDepsException")
+        .get_message()
+        .to_owned()
+}
 
 #[test]
-#[ignore = "needs PatchUtil.applyToSingleFile (blaze_repo_fetch, which cannot build next to starlark yet)"]
-fn test_single_version_override_patches_default_patch_strip_for_git_patch() {}
+fn test_single_version_override_patches() {
+    let mut h = Harness::new();
+    let bbb = create_module_key("bbb", "1.0");
+    let registry = h
+        .registry_factory
+        .new_fake_registry("/foo")
+        .add_module(bbb.clone(), &["module(name='bbb',version='1.0')"]);
+    h.set_registries(&[registry.url()]);
+
+    h.scratch_file("BUILD", &[]);
+    h.scratch_file(
+        "patch.diff",
+        &[
+            "diff --git a/MODULE.bazel b/MODULE.bazel",
+            "--- a/MODULE.bazel",
+            "+++ b/MODULE.bazel",
+            "@@ -1,1 +1,1 @@",
+            "-module(name='bbb',version='1.0')",
+            "+module(name='bbb',version='1.0',bazel_compatibility=[\">=7.0.0\"])",
+            "diff --git a/not/MODULE.bazel b/not/MODULE.bazel",
+            "--- a/not/MODULE.bazel",
+            "+++ b/not/MODULE.bazel",
+            "@@ -1,1 +1,2 @@",
+            " module(name='bbb',version='1.0',bazel_compatibility=[\">=7.0.0\"])",
+            "+bazel_dep(name='ccc',version='3.0')",
+            "diff --git a/also/not/MODULE.bazel b/also/not/MODULE.bazel.bak",
+            "similarity index 55%",
+            "rename from also/not/MODULE.bazel",
+            "rename to also/not/MODULE.bazel.bak",
+            "index 3f855b5..949dd15 100644",
+        ],
+    );
+    h.scratch_file("other/pkg/BUILD", &[]);
+    h.scratch_file(
+        "other/pkg/other_patch.diff",
+        &[
+            "--- a/MODULE.bazel",
+            "+++ b/MODULE.bazel",
+            "@@ -1,1 +1,2 @@",
+            " module(name='bbb',version='1.0',bazel_compatibility=[\">=7.0.0\"])",
+            "+bazel_dep(name='ccc',version='3.0')",
+        ],
+    );
+    h.scratch_file(
+        "MODULE.bazel",
+        &[
+            "single_version_override(",
+            "  module_name=\"bbb\",",
+            "  patches = [",
+            "    \"//:patch.diff\",",
+            "    \"@@other_repo//:patch.diff\",",
+            "    \"//other/pkg:other_patch.diff\",",
+            "  ],",
+            "  patch_strip = 1,",
+            ")",
+        ],
+    );
+
+    let module_file_key = ModuleFileKey::key(bbb);
+    let result = h.evaluate(&[SkyKey::new(module_file_key.clone())]);
+    assert_no_error(&result);
+    let value = result.get(&module_file_key).unwrap();
+    assert_eq!(value.module().bazel_compatibility, [">=7.0.0"]);
+    assert_eq!(
+        value.module().deps,
+        IndexMap::from([(
+            "ccc".to_string(),
+            DepSpec::from_module_key(&create_module_key("ccc", "3.0"))
+        )])
+    );
+
+    // PORT: Java rewrites the patch and invalidates its FileStateValue; `evaluate` uses a fresh
+    // evaluator, which reads the file again.
+    h.scratch_file(
+        "other/pkg/other_patch.diff",
+        &[
+            "--- a/MODULE.bazel",
+            "+++ b/MODULE.bazel",
+            "@@ -1,1 +1,2 @@",
+            " module(name='bbb',version='1.0',bazel_compatibility=[\">=7.0.0\"])",
+            "+bazel_dep(name='ccc',version='2.0')",
+        ],
+    );
+
+    let result = h.evaluate(&[SkyKey::new(module_file_key.clone())]);
+    assert_no_error(&result);
+    let value = result.get(&module_file_key).unwrap();
+    assert_eq!(value.module().bazel_compatibility, [">=7.0.0"]);
+    assert_eq!(
+        value.module().deps,
+        IndexMap::from([(
+            "ccc".to_string(),
+            DepSpec::from_module_key(&create_module_key("ccc", "2.0"))
+        )])
+    );
+}
 
 #[test]
-#[ignore = "needs PatchUtil.applyToSingleFile (blaze_repo_fetch, which cannot build next to starlark yet)"]
-fn test_single_version_override_patches_fails_on_rename() {}
+fn test_single_version_override_patches_default_patch_strip_for_git_patch() {
+    let mut h = Harness::new();
+    let bbb = create_module_key("bbb", "1.0");
+    let registry = h
+        .registry_factory
+        .new_fake_registry("/foo")
+        .add_module(bbb.clone(), &["module(name='bbb',version='1.0')"]);
+    h.set_registries(&[registry.url()]);
+
+    h.scratch_file("BUILD", &[]);
+    h.scratch_file(
+        "patch.diff",
+        &[
+            "diff --git a/MODULE.bazel b/MODULE.bazel",
+            "--- a/MODULE.bazel",
+            "+++ b/MODULE.bazel",
+            "@@ -1,1 +1,1 @@",
+            "-module(name='bbb',version='1.0')",
+            "+module(name='bbb',version='1.0',bazel_compatibility=[\">=7.0.0\"])",
+        ],
+    );
+    h.scratch_file(
+        "MODULE.bazel",
+        &[
+            "single_version_override(",
+            "  module_name=\"bbb\",",
+            "  patches = [",
+            "    \"//:patch.diff\",",
+            "  ],",
+            ")",
+        ],
+    );
+
+    let result = h.evaluate(&[SkyKey::new(ModuleFileKey::key(bbb))]);
+    assert!(result.has_error());
+    // PORT: Java's workspace is /workspace; the harness has a temporary directory.
+    assert_eq!(
+        exception_message(&result),
+        format!(
+            "error applying single_version_override patch {}/patch.diff to module file: error at \
+             line 2: the patch file contains a/b prefixes, did you forget to set patch_strip = \
+             1?",
+            h.root_directory.display()
+        )
+    );
+}
+
+#[test]
+fn test_single_version_override_patches_fails_on_rename() {
+    let mut h = Harness::new();
+    let bbb = create_module_key("bbb", "1.0");
+    let registry = h
+        .registry_factory
+        .new_fake_registry("/foo")
+        .add_module(bbb.clone(), &["module(name='bbb',version='1.0')"]);
+    h.set_registries(&[registry.url()]);
+
+    h.scratch_file("BUILD", &[]);
+    h.scratch_file(
+        "patch.diff",
+        &[
+            "diff --git a/MODULE.bazel b/MODULE.bazel.bak",
+            "similarity index 55%",
+            "rename from MODULE.bazel",
+            "rename to MODULE.bazel.bak",
+            "index 3f855b5..949dd15 100644",
+        ],
+    );
+    h.scratch_file(
+        "MODULE.bazel",
+        &[
+            "single_version_override(",
+            "  module_name=\"bbb\",",
+            "  patches = [\"//:patch.diff\"],",
+            "  patch_strip = 1,",
+            ")",
+        ],
+    );
+
+    let result = h.evaluate(&[SkyKey::new(ModuleFileKey::key(bbb))]);
+    assert!(result.has_error());
+    // PORT: Java's workspace is /workspace; the harness has a temporary directory.
+    assert_eq!(
+        exception_message(&result),
+        format!(
+            "error applying single_version_override patch {}/patch.diff to module file: Renaming \
+             /module/MODULE.bazel while applying patches to it as a single file is not \
+             supported.",
+            h.root_directory.display()
+        )
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// PACKAGE_LOOKUP seam (not JUnit tests): ModuleFileFunction.java:466-490 (include) and :896-915
+// (single_version_override patches) read PackageLookupValue through `BzlmodConfig::package_lookup`.
+// ---------------------------------------------------------------------------------------------
+
+/// A PACKAGE_LOOKUP with two package path entries (`alt` and the workspace) and one deleted
+/// package.
+struct FakePackageLookup {
+    workspace_root: std::path::PathBuf,
+    alt_root: std::path::PathBuf,
+}
+
+impl PackageLookup for FakePackageLookup {
+    fn lookup(
+        &self,
+        package_id: &PackageIdentifier,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<PackageLookupResult>, ComputeError> {
+        let package = package_id.get_package_fragment().get_path_string();
+        if package == "deleted" {
+            // PackageLookupValue.DELETED_PACKAGE_VALUE
+            return Ok(Some(PackageLookupResult::unsuccessful(
+                "Package is considered deleted due to --deleted_packages",
+            )));
+        }
+        if self.alt_root.join(package).join("BUILD").is_file() {
+            return Ok(Some(PackageLookupResult::success(
+                self.alt_root.clone(),
+                "BUILD",
+            )));
+        }
+        Ok(Some(BuiltinPackageLookup::find_package(
+            &self.workspace_root,
+            package_id,
+        )))
+    }
+
+    fn explain_no_build_file_value(
+        &self,
+        package_id: &PackageIdentifier,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<String>, ComputeError> {
+        // PackageLookupFunction.explainNoBuildFileValue with two package path entries.
+        let package = package_id.get_package_fragment().get_path_string();
+        Ok(Some(format!(
+            "BUILD file not found in any of the following directories. Add a BUILD file to a \
+             directory to mark it as a package.\n - {}/{package}\n - {}/{package}",
+            self.alt_root.display(),
+            self.workspace_root.display()
+        )))
+    }
+}
+
+/// Evaluates with [`FakePackageLookup`] installed in the config.
+fn evaluate_with_fake_package_lookup(h: &Harness, keys: &[SkyKey]) -> EvaluationResult {
+    let mut config = h.config();
+    config.package_lookup = Arc::new(FakePackageLookup {
+        workspace_root: h.root_directory.clone(),
+        alt_root: h.output_base.join("alt"),
+    });
+    let builder = register_bzlmod_functions(EvaluatorBuilder::new(), Arc::new(config));
+    let builder = register_lockfile_only_extension_functions(builder);
+    builder
+        .build()
+        .evaluate(keys, &h.evaluation_context())
+        .expect("not interrupted")
+}
+
+#[test]
+fn include_of_package_without_build_file_explains_no_build_file_value() {
+    let h = with_registry();
+    h.scratch_file(
+        "MODULE.bazel",
+        &["module(name='aaa')", "include('//java:java.MODULE.bazel')"],
+    );
+    h.scratch_file("java/java.MODULE.bazel", &[]);
+
+    let result = h.evaluate(&[root_key()]);
+    assert!(result.has_error());
+    assert_eq!(
+        exception_message(&result),
+        format!(
+            "unable to load package for '//java:java.MODULE.bazel' included at \
+             {}/MODULE.bazel:2:1: BUILD file not found in any of the following directories. Add \
+             a BUILD file to a directory to mark it as a package.\n - java",
+            h.root_directory.display()
+        )
+    );
+}
+
+#[test]
+fn include_uses_package_lookup_error_message_and_root() {
+    let h = with_registry();
+    h.scratch_file(
+        "MODULE.bazel",
+        &[
+            "module(name='aaa')",
+            "include('//alt:alt.MODULE.bazel')",
+            "include('//deleted:deleted.MODULE.bazel')",
+        ],
+    );
+    // The package of the first include is on the second package path entry only.
+    let alt = h.output_base.join("alt");
+    write_file(&alt.join("alt/BUILD"), "");
+    write_file(
+        &alt.join("alt/alt.MODULE.bazel"),
+        "bazel_dep(name='from-alt', version='1.0')\n",
+    );
+    h.scratch_file("deleted/BUILD", &[]);
+    h.scratch_file("deleted/deleted.MODULE.bazel", &[]);
+
+    let result = evaluate_with_fake_package_lookup(&h, &[root_key()]);
+    assert!(result.has_error());
+    // pkgLookupValue.getErrorMsg() of a value that is not NO_BUILD_FILE_VALUE.
+    assert_eq!(
+        exception_message(&result),
+        format!(
+            "unable to load package for '//deleted:deleted.MODULE.bazel' included at \
+             {}/MODULE.bazel:3:1: Package is considered deleted due to --deleted_packages",
+            h.root_directory.display()
+        )
+    );
+
+    // Without the deleted package, the file under the other root is included.
+    h.scratch_file(
+        "MODULE.bazel",
+        &["module(name='aaa')", "include('//alt:alt.MODULE.bazel')"],
+    );
+    let result = evaluate_with_fake_package_lookup(&h, &[root_key()]);
+    assert_no_error(&result);
+    let value = root_value(&result);
+    assert_eq!(
+        value.as_root().module.deps,
+        IndexMap::from([(
+            "from-alt".to_string(),
+            DepSpec::from_module_key(&create_module_key("from-alt", "1.0"))
+        )])
+    );
+}
+
+#[test]
+fn single_version_override_patch_uses_package_lookup() {
+    let mut h = Harness::new();
+    let bbb = create_module_key("bbb", "1.0");
+    let registry = h
+        .registry_factory
+        .new_fake_registry("/foo")
+        .add_module(bbb.clone(), &["module(name='bbb',version='1.0')"]);
+    h.set_registries(&[registry.url()]);
+    h.scratch_file("deleted/BUILD", &[]);
+    h.scratch_file("deleted/patch.diff", &[]);
+    h.scratch_file(
+        "MODULE.bazel",
+        &[
+            "single_version_override(",
+            "  module_name=\"bbb\",",
+            "  patches = [\"//deleted:patch.diff\"],",
+            "  patch_strip = 1,",
+            ")",
+        ],
+    );
+
+    let result = evaluate_with_fake_package_lookup(&h, &[SkyKey::new(ModuleFileKey::key(bbb))]);
+    assert!(result.has_error());
+    // Java prints PackageLookupFunction.explainNoBuildFileValue for every unsuccessful value.
+    assert_eq!(
+        exception_message(&result),
+        format!(
+            "unable to load package for single_version_override patch //deleted:patch.diff: \
+             BUILD file not found in any of the following directories. Add a BUILD file to a \
+             directory to mark it as a package.\n - {}/deleted\n - {}/deleted",
+            h.output_base.join("alt").display(),
+            h.root_directory.display()
+        )
+    );
+}
+
+fn main_package(name: &str) -> PackageIdentifier {
+    PackageIdentifier::create(
+        blaze_cmdline::repository_name::MAIN.clone(),
+        blaze_vfs::PathFragment::create(name),
+    )
+}
+
+#[test]
+fn builtin_package_lookup_finds_build_files_under_the_root() {
+    let h = Harness::new();
+    h.scratch_file("a/BUILD", &[]);
+    h.scratch_file("b/BUILD.bazel", &[]);
+    h.scratch_file("b/BUILD", &[]);
+    h.scratch_file("c/file", &[]);
+    h.scratch_file("external/BUILD", &[]);
+    let root = &h.root_directory;
+    assert_eq!(
+        BuiltinPackageLookup::find_package(root, &main_package("a")),
+        PackageLookupResult::success(root.clone(), "BUILD")
+    );
+    // BUILD_FILES_BY_PRIORITY
+    assert_eq!(
+        BuiltinPackageLookup::find_package(root, &main_package("b")),
+        PackageLookupResult::success(root.clone(), "BUILD.bazel")
+    );
+    let no_build_file = BuiltinPackageLookup::find_package(root, &main_package("c"));
+    assert_eq!(no_build_file, PackageLookupResult::no_build_file());
+    assert!(!no_build_file.package_exists);
+    assert!(no_build_file.is_no_build_file_value);
+    assert_eq!(
+        no_build_file.get_error_msg(),
+        "BUILD file not found on package path"
+    );
+    assert_eq!(
+        BuiltinPackageLookup::find_package(root, &main_package("missing/dir")),
+        PackageLookupResult::no_build_file()
+    );
+    // LabelConstants.EXTERNAL_PACKAGE_IDENTIFIER is never a package.
+    assert_eq!(
+        BuiltinPackageLookup::find_package(root, &main_package("external")),
+        PackageLookupResult::no_build_file()
+    );
+}
+
+#[test]
+#[should_panic(expected = "IgnoredSubdirectoriesFunction.compute")]
+fn builtin_package_lookup_fails_loudly_with_bazelignore() {
+    let h = Harness::new();
+    h.scratch_file("a/BUILD", &[]);
+    h.scratch_file(".bazelignore", &["a"]);
+    BuiltinPackageLookup::find_package(&h.root_directory, &main_package("a"));
+}
+
+#[test]
+#[should_panic(expected = "IgnoredSubdirectoriesFunction.compute")]
+fn builtin_package_lookup_fails_loudly_with_ignore_directories() {
+    let h = Harness::new();
+    h.scratch_file("a/BUILD", &[]);
+    h.scratch_file("REPO.bazel", &["ignore_directories(['a'])"]);
+    BuiltinPackageLookup::find_package(&h.root_directory, &main_package("a"));
+}
 
 #[test]
 #[ignore = "not ported yet: asserts override_repo/inject_repo usages built by ModuleFileGlobals"]

@@ -179,6 +179,11 @@ pub(crate) struct FrozenModuleData {
     /// serialization and restore as `None`.
     #[starlark_pagable(skip)]
     heap_profile: Option<RetainedHeapProfile>,
+    /// BLAZE PATCH 0022: the module's frozen extra value, so that a function can reach its
+    /// defining module's extra value (`DefModule::frozen_extra_value`). Not paged (Blaze does not
+    /// page modules).
+    #[starlark_pagable(skip)]
+    pub(crate) extra_value: Option<FrozenValue>,
 }
 
 /// A container for user values, used during execution.
@@ -290,6 +295,12 @@ impl FrozenModule {
     /// Only includes symbols that are publicly exposed.
     pub fn names(&self) -> impl Iterator<Item = FrozenStringValue> + '_ {
         self.module.names()
+    }
+
+    /// BLAZE PATCH 0021: every name bound in this module, private ones (`_x` and names bound by
+    /// `load()`) included. Bazel's `Module.getGlobals()`.
+    pub fn names_any_visibility(&self) -> impl Iterator<Item = FrozenStringValue> + '_ {
+        self.module.names.all_symbols().map(|x| x.0)
     }
 
     /// Obtain the [`FrozenHeapRef`] which owns the storage of all values defined in this module.
@@ -561,6 +572,7 @@ impl<'v> Module<'v> {
             slots,
             docstring: docstring.into_inner(),
             heap_profile: stacks,
+            extra_value, // BLAZE PATCH 0022
         };
         let frozen_module_ref = freezer.heap.alloc_any_value(rest);
         for frozen_def in freezer.frozen_defs.borrow().as_slice() {

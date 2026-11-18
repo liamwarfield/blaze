@@ -1,9 +1,9 @@
 //! Port of `SkyFunction.Environment` (`SkyFunctionEnvironment`) and `SkyframeLookupResult`.
 
-use crate::evaluator::{DoneEntry, DoneKind, Run};
+use crate::evaluator::{DoneEntry, DoneKind, ERROR_TRANSIENCE_KEY, Run};
 use crate::{ErrorInfo, GroupedDeps, Interrupted, Key, SkyError, SkyFunction, SkyKey, SkyValue};
 use blaze_events::{Event, EventHandler, EventKind, ExtendedEventHandler, Postable, Reportable};
-use blaze_util::check_state;
+use blaze_util::{check_argument, check_state};
 use parking_lot::Mutex;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -14,16 +14,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// exception of the requested type.
 pub type ValueOrThrow<V, E> = Result<Option<V>, E>;
 
+/// Java: the `bubbleErrorInfo` map of `ParallelEvaluator.bubbleErrorUp`: the errors built so far
+/// for the nodes on the bubbling path. They are never written to the graph.
+pub(crate) type BubbleErrorInfo = HashMap<SkyKey, Arc<DoneEntry>>;
+
+/// The entry each dep had when this environment requested it. Java:
+/// `previouslyRequestedDepsValues` plus `newlyRequestedDepsValues`. Shared with the
+/// [`SkyframeLookupResult`]s of the environment, which in Java are the environment itself.
+pub(crate) type RequestedDeps = Arc<Mutex<HashMap<SkyKey, Arc<DoneEntry>>>>;
+
 /// What the environment learned about the node's dependencies.
 pub(crate) struct EnvState {
     /// Direct deps in request order. Java: `newlyRequestedDepsValues` plus group sizes.
     pub(crate) deps: GroupedDeps,
     /// The entry each dep had when requested.
-    pub(crate) requested: HashMap<SkyKey, Arc<DoneEntry>>,
+    pub(crate) requested: RequestedDeps,
     /// Java: `childErrorInfos` (a `LinkedHashSet`).
     pub(crate) child_error_infos: Vec<Arc<ErrorInfo>>,
-    /// Java: `depErrorKey` — the first dep in error, without keep_going.
-    pub(crate) dep_error: Option<Arc<ErrorInfo>>,
+    /// Java: `depErrorKey` — the first dep in error, without keep_going (with its error).
+    pub(crate) dep_error: Option<(SkyKey, Arc<ErrorInfo>)>,
     pub(crate) aborted_dep: bool,
     pub(crate) in_cycle_dep: bool,
     pub(crate) interrupted_dep: bool,
@@ -37,16 +46,26 @@ pub struct Environment<'a> {
     st: EnvState,
     values_missing: Arc<AtomicBool>,
     listener: EnvListener<'a>,
+    /// This is not `None` only during error bubbling. When it is not `None`, values in this map
+    /// are used over values from the graph for keys present in this map.
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:110 bubbleErrorInfo
+    bubble_error_info: Option<&'a BubbleErrorInfo>,
+    /// Java: `previouslyRequestedDeps` of an environment made by `createForError`: the deps the
+    /// node declared during normal evaluation. Empty outside error bubbling.
+    previously_requested_deps: GroupedDeps,
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:112 encounteredErrorDuringBubbling
+    encountered_error_during_bubbling: bool,
 }
 
 impl<'a> Environment<'a> {
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:164 SkyFunctionEnvironment.create
     pub(crate) fn new(run: &'a Run<'a>, key: &'a SkyKey, function: &'a dyn SkyFunction) -> Self {
         Environment {
             run,
             key,
             st: EnvState {
                 deps: GroupedDeps::new(),
-                requested: HashMap::new(),
+                requested: Arc::new(Mutex::new(HashMap::new())),
                 child_error_infos: vec![],
                 dep_error: None,
                 aborted_dep: false,
@@ -60,6 +79,27 @@ impl<'a> Environment<'a> {
                 function,
                 events_to_report: Mutex::new(vec![]),
             },
+            bubble_error_info: None,
+            previously_requested_deps: GroupedDeps::new(),
+            encountered_error_during_bubbling: false,
+        }
+    }
+
+    /// The environment a node on the error-bubbling path is re-run with: dependency requests
+    /// compute nothing. A dep is the error built for it during bubbling, or what is done in the
+    /// graph, or missing.
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:192 SkyFunctionEnvironment.createForError
+    pub(crate) fn create_for_error(
+        run: &'a Run<'a>,
+        key: &'a SkyKey,
+        function: &'a dyn SkyFunction,
+        previously_requested_deps: GroupedDeps,
+        bubble_error_info: &'a BubbleErrorInfo,
+    ) -> Self {
+        Environment {
+            bubble_error_info: Some(bubble_error_info),
+            previously_requested_deps,
+            ..Environment::new(run, key, function)
         }
     }
 
@@ -92,27 +132,42 @@ impl<'a> Environment<'a> {
         self.values_missing.load(Ordering::SeqCst)
     }
 
-    /// Always false.
-    ///
-    /// PORT: Java re-runs the parents of a failed node "in error bubbling" so they can wrap the
-    /// error when there is no keep_going. In the blocking engine a parent already observes its
-    /// child's error during its normal compute (`get_value_or_throw` returns it in both modes),
-    /// which is equivalent, so no evaluation is ever in error bubbling.
+    /// Whether this function is being re-run by `ParallelEvaluator.bubbleErrorUp`: the
+    /// evaluation failed (first error without keep_going, or a catastrophe) and the evaluator
+    /// walks up from the failed node to a top-level node, giving each node on the way one chance
+    /// to throw a better error. Only then (and with keep_going) does a dependency's exception
+    /// reach the function through `get_value_or_throw`; requests compute nothing new.
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:1036 SkyFunctionEnvironment.inErrorBubbling
     pub fn in_error_bubbling(&self) -> bool {
-        false
+        self.bubble_error_info.is_some()
     }
 
     /// Returns `Err(Interrupted)` if the evaluation was interrupted or is aborting (Java
     /// interrupts in-flight work when a no-keep-going evaluation fails). Long computations that
     /// do not request dependencies should poll this (Java: `Thread.interrupted()`).
+    ///
+    /// During error bubbling it returns `Err(Interrupted)` once a dependency in error was
+    /// requested: Java sets the thread's interrupt bit there "to try to prevent the calling
+    /// SkyFunction from doing anything fancy after this" (`processDepValue`).
     pub fn check_interrupted(&self) -> Result<(), Interrupted> {
-        if self.run.ev.interrupt_flag().load(Ordering::SeqCst)
-            || self.run.aborting.load(Ordering::SeqCst)
-        {
+        if self.run.ev.interrupt_flag().load(Ordering::SeqCst) {
+            return Err(Interrupted);
+        }
+        let stop = match self.bubble_error_info {
+            Some(_) => self.encountered_error_during_bubbling,
+            None => self.run.aborting.load(Ordering::SeqCst),
+        };
+        if stop {
             return Err(Interrupted);
         }
         Ok(())
+    }
+
+    /// Java: `SkyFunctionEnvironment.getExceptionLatchForTesting()` is released (it stays
+    /// released during error bubbling).
+    #[cfg(test)]
+    pub(crate) fn exception_latch_released_for_testing(&self) -> bool {
+        self.bubble_error_info.is_some() || self.run.exception_latch_released_for_testing()
     }
 
     fn check_external_interrupt(&self) -> Result<(), Interrupted> {
@@ -122,10 +177,38 @@ impl<'a> Environment<'a> {
         Ok(())
     }
 
-    /// The deps requested so far, in request order.
+    /// The deps requested so far, in request order. During error bubbling: the deps the node
+    /// declared during normal evaluation.
+    ///
+    /// PORT: Java returns the deps of earlier restarts. There are no restarts here, so normal
+    /// evaluation returns what this (only) run has requested so far.
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:811 SkyFunctionEnvironment.getTemporaryDirectDeps
     pub fn get_temporary_direct_deps(&self) -> &GroupedDeps {
+        if self.bubble_error_info.is_some() {
+            return &self.previously_requested_deps;
+        }
         &self.st.deps
+    }
+
+    /// PORT: not ported. Java registers deps without requesting their values (used by
+    /// `SkyframeLookupResult`-free producers and `StateMachine` drivers).
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:1041 SkyFunctionEnvironment.registerDependencies
+    pub fn register_dependencies(&mut self, _keys: &[SkyKey]) {
+        blaze_util::unported!("SkyFunctionEnvironment.registerDependencies")
+    }
+
+    /// PORT: not ported. `SkyKeyComputeState` keeps work between restarts of one function; the
+    /// blocking engine never restarts a function during normal evaluation.
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:1110 SkyFunctionEnvironment.getState
+    pub fn get_state<T>(&mut self, _state_supplier: impl FnOnce() -> T) -> &mut T {
+        blaze_util::unported!("SkyFunctionEnvironment.getState")
+    }
+
+    /// PORT: not ported. Java lets a function depend on an external `ListenableFuture` and be
+    /// restarted when it completes; a blocking function waits for the future itself.
+    // Java: com/google/devtools/build/skyframe/SkyFunction.java:433 SkyFunction.Environment.dependOnFuture
+    pub fn depend_on_future(&mut self) {
+        blaze_util::unported!("SkyFunctionEnvironment.dependOnFuture")
     }
 
     /// Java: Environment.getValue. `Ok(None)` means the dependency is unavailable (error, cycle,
@@ -142,15 +225,23 @@ impl<'a> Environment<'a> {
         Ok(unwrap_or_throw::<()>(
             &entry,
             self.run.ctx.keep_going,
+            self.in_error_bubbling(),
             &self.values_missing,
             |_| None,
         )
         .unwrap_or(None))
     }
 
-    /// Java: Environment.getValueOrThrow(key, E.class). A dependency error whose exception is an
-    /// `E` is returned as `Ok(Err(e))` and does not count as missing; other errors give
-    /// `Ok(Ok(None))`.
+    /// Java: Environment.getValueOrThrow(key, E.class). With keep_going or during error bubbling,
+    /// a dependency error whose exception is an `E` is returned as `Ok(Err(e))` and does not
+    /// count as missing; other errors give `Ok(Ok(None))`. Without keep_going and outside error
+    /// bubbling a dependency in error is always `Ok(Ok(None))` and marks values missing: the
+    /// function returns `Ok(None)` and is re-run in error bubbling if it is on the path from the
+    /// failed node to a top-level node ([`Environment::in_error_bubbling`]).
+    ///
+    /// PORT: Java matches subclasses of `E` (`SkyFunctionException.throwIfInstanceOf`); the
+    /// downcast here matches the one concrete type `E`. To catch several exception types, or what
+    /// is a class hierarchy in Java, use [`Environment::get_value_or_throw_with`].
     pub fn get_value_or_throw<K: Key, E>(
         &mut self,
         key: K,
@@ -176,6 +267,7 @@ impl<'a> Environment<'a> {
         Ok(unwrap_or_throw(
             &entry,
             self.run.ctx.keep_going,
+            self.in_error_bubbling(),
             &self.values_missing,
             |e| e.downcast_ref::<E>().cloned(),
         ))
@@ -188,12 +280,16 @@ impl<'a> Environment<'a> {
         &mut self,
         key: K,
         catch: impl FnOnce(&SkyError) -> Option<T>,
-    ) -> Result<Result<Option<Arc<K::Value>>, T>, Interrupted> {
+    ) -> Result<ValueOrThrow<Arc<K::Value>, T>, Interrupted> {
         let entry = self.request(&SkyKey::new(key))?;
-        Ok(
-            unwrap_or_throw(&entry, self.run.ctx.keep_going, &self.values_missing, catch)
-                .map(|v| v.map(downcast_value::<K>)),
+        Ok(unwrap_or_throw(
+            &entry,
+            self.run.ctx.keep_going,
+            self.in_error_bubbling(),
+            &self.values_missing,
+            catch,
         )
+        .map(|v| v.map(downcast_value::<K>)))
     }
 
     /// Requests a batch of deps, computing unstarted ones in parallel. Read the results with
@@ -206,32 +302,39 @@ impl<'a> Environment<'a> {
         self.check_external_interrupt()?;
         let mut in_request: HashSet<SkyKey> = HashSet::new();
         let mut missing_keys: Vec<SkyKey> = vec![];
-        for k in dep_keys {
-            if !in_request.insert(k.clone()) {
-                continue; // Duplicate key in this request.
-            }
-            if !self.st.requested.contains_key(k) {
-                missing_keys.push(k.clone());
+        {
+            let requested = self.st.requested.lock();
+            for k in dep_keys {
+                self.check_not_error_transience(k);
+                if !in_request.insert(k.clone()) {
+                    continue; // Duplicate key in this request.
+                }
+                if !requested.contains_key(k) {
+                    missing_keys.push(k.clone());
+                }
             }
         }
-        let entries = self.run.eval_keys(&missing_keys);
-        for (k, e) in missing_keys.iter().zip(entries) {
-            self.st.requested.insert(k.clone(), e);
+        let entries = self.lookup(&missing_keys);
+        {
+            let mut requested = self.st.requested.lock();
+            for (k, e) in missing_keys.iter().zip(entries) {
+                requested.insert(k.clone(), e);
+            }
         }
         self.st.deps.append_group(missing_keys);
-        let mut result = HashMap::new();
         let mut processed: HashSet<&SkyKey> = HashSet::new();
         for k in dep_keys {
             if !processed.insert(k) {
                 continue;
             }
-            let entry = self.st.requested[k].clone();
-            self.process_dep_value(&entry);
-            result.insert(k.clone(), entry);
+            let entry = self.st.requested.lock()[k].clone();
+            self.process_dep_value(k, &entry);
         }
+        // Java returns `this`: the result reads every dep the environment has requested.
         Ok(SkyframeLookupResult {
-            entries: result,
+            requested: self.st.requested.clone(),
             keep_going: self.run.ctx.keep_going,
+            in_error_bubbling: self.in_error_bubbling(),
             values_missing: self.values_missing.clone(),
         })
     }
@@ -255,24 +358,69 @@ impl<'a> Environment<'a> {
             .collect())
     }
 
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:494 SkyFunctionEnvironment.lookupRequestedDep
+    fn check_not_error_transience(&self, dep_key: &SkyKey) {
+        check_argument!(
+            *dep_key != *ERROR_TRANSIENCE_KEY,
+            "Error transience key cannot be in requested deps of {:?}",
+            self.key
+        );
+    }
+
+    /// Fetches deps this environment has not requested before.
+    ///
+    /// Normal evaluation: computes them (or waits for them), Java's `graph.get` after the restarts
+    /// that made the deps done. Error bubbling: nothing is computed. A dep is its entry in
+    /// `bubbleErrorInfo`, else its done value in the graph, else missing (`NULL_MARKER`).
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:494 SkyFunctionEnvironment.lookupRequestedDep
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:601 SkyFunctionEnvironment.processDepEntry
+    fn lookup(&self, keys: &[SkyKey]) -> Vec<Arc<DoneEntry>> {
+        match self.bubble_error_info {
+            Some(bubble_error_info) => keys
+                .iter()
+                .map(|k| {
+                    bubble_error_info
+                        .get(k)
+                        .cloned()
+                        .or_else(|| self.run.ev.committed_entry(k))
+                        .unwrap_or_else(|| {
+                            Arc::new(DoneEntry::undone(DoneKind::Aborted, GroupedDeps::new()))
+                        })
+                })
+                .collect(),
+            None => {
+                let entries = self.run.eval_keys(keys, Some(self.key));
+                entries
+                    .into_iter()
+                    .map(|requested| self.run.entry_seen_in_normal_evaluation(requested))
+                    .collect()
+            }
+        }
+    }
+
     /// Java: `lookupRequestedDep` + `processDepEntry`/`processDepValue` for a single key.
     fn request(&mut self, key: &SkyKey) -> Result<Arc<DoneEntry>, Interrupted> {
         self.check_external_interrupt()?;
-        let entry = match self.st.requested.get(key) {
-            Some(e) => e.clone(),
+        self.check_not_error_transience(key);
+        let known = self.st.requested.lock().get(key).cloned();
+        let entry = match known {
+            Some(e) => e,
             None => {
-                let e = self.run.eval_key(key);
-                self.st.requested.insert(key.clone(), e.clone());
+                let e = self
+                    .lookup(std::slice::from_ref(key))
+                    .pop()
+                    .expect("one entry per key");
+                self.st.requested.lock().insert(key.clone(), e.clone());
                 self.st.deps.append_singleton(key.clone());
                 e
             }
         };
-        self.process_dep_value(&entry);
+        self.process_dep_value(key, &entry);
         Ok(entry)
     }
 
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:613 SkyFunctionEnvironment.processDepValue
-    fn process_dep_value(&mut self, entry: &DoneEntry) {
+    fn process_dep_value(&mut self, dep_key: &SkyKey, entry: &DoneEntry) {
         if entry.is_undone_view() {
             self.values_missing.store(true, Ordering::SeqCst);
             match entry.kind {
@@ -294,6 +442,16 @@ impl<'a> Environment<'a> {
         {
             self.st.child_error_infos.push(error_info.clone());
         }
+        let keep_going = self.run.ctx.keep_going;
+        if self.bubble_error_info.is_some() {
+            self.encountered_error_during_bubbling = true;
+            // Set interrupted status, to try to prevent the calling SkyFunction from doing
+            // anything fancy after this. SkyFunctions executed during error bubbling are supposed
+            // to (quickly) rethrow errors or return a value/null (but there's currently no way to
+            // enforce this).
+            // PORT: the "interrupted status" is `encountered_error_during_bubbling`, which
+            // `check_interrupted` reads.
+        }
 
         // If we get here, then the dep node is present and also (i) depends on a cycle or (ii)
         // errorful or (iii) both. The remaining question is whether or not to convey to the
@@ -303,15 +461,25 @@ impl<'a> Environment<'a> {
         // though the dep is missing (cycles are not supposed to be observable by SkyFunctions),
         // so we always set valuesMissing.
         //
-        // PORT: Java also sets valuesMissing for an errorful dep without keep_going outside error
-        // bubbling. Here a function always observes dep errors as Java does in error bubbling
-        // (see `in_error_bubbling`), so only the dep error is recorded.
-        if !error_info.get_cycle_info().is_empty() {
+        // If the dep node is errorful and we're in nokeep_going mode and not in error bubbling,
+        // then the SkyFunction is not supposed to be able to observe the error and is supposed to
+        // act like the dep is missing, so we set valuesMissing. In contrast, if we are in error
+        // bubbling, then the SkyFunction is supposed to be able to observe the error (so as to
+        // have the chance to produce an enriched error).
+        //
+        // If the dep node is errorful and we're in keep_going mode, then SkyFunction is supposed
+        // to be able to observe the error (say, with a followup SkyframeLookupResult#getOrThrow)
+        // so we don't set valuesMissing.
+        if !error_info.get_cycle_info().is_empty()
+            || (error_info.get_exception().is_some()
+                && !keep_going
+                && self.bubble_error_info.is_none())
+        {
             self.values_missing.store(true, Ordering::SeqCst);
-        }
-        // We arbitrarily record the first child error if we are about to abort.
-        if !self.run.ctx.keep_going && self.st.dep_error.is_none() {
-            self.st.dep_error = Some(error_info.clone());
+            // We arbitrarily record the first child error if we are about to abort.
+            if !keep_going && self.st.dep_error.is_none() {
+                self.st.dep_error = Some((dep_key.clone(), error_info.clone()));
+            }
         }
     }
 }
@@ -321,6 +489,7 @@ impl<'a> Environment<'a> {
 fn unwrap_or_throw<T>(
     entry: &DoneEntry,
     keep_going: bool,
+    in_error_bubbling: bool,
     values_missing: &AtomicBool,
     catch: impl FnOnce(&SkyError) -> Option<T>,
 ) -> Result<Option<SkyValue>, T> {
@@ -349,9 +518,10 @@ fn unwrap_or_throw<T>(
             );
         }
         Some(exception) => {
-            // The exception may only propagate in keepGoing mode or during error bubbling (here:
-            // always, see `Environment::in_error_bubbling`).
-            if let Some(e) = catch(exception) {
+            // The exception may only propagate in keepGoing mode or during error bubbling.
+            if (keep_going || in_error_bubbling)
+                && let Some(e) = catch(exception)
+            {
                 return Err(e);
             }
         }
@@ -368,8 +538,11 @@ fn downcast_value<K: Key>(v: SkyValue) -> Arc<K::Value> {
 /// The result of [`Environment::get_values_and_exceptions`].
 // Java: com/google/devtools/build/skyframe/SkyframeLookupResult.java:30 SkyframeLookupResult
 pub struct SkyframeLookupResult {
-    entries: HashMap<SkyKey, Arc<DoneEntry>>,
+    /// Every dep the environment has requested (Java: the result is the environment itself, and
+    /// `getOrThrow` reads `maybeGetValueFromErrorOrDeps`).
+    requested: RequestedDeps,
     keep_going: bool,
+    in_error_bubbling: bool,
     values_missing: Arc<AtomicBool>,
 }
 
@@ -386,7 +559,9 @@ impl SkyframeLookupResult {
         self.get(&SkyKey::new(key.clone())).map(downcast_value::<K>)
     }
 
-    /// Returns the value for `key`, or `Err(e)` when its exception is an `E`.
+    /// Returns the value for `key`, or `Err(e)` when its exception is an `E` (one concrete type;
+    /// see [`Environment::get_value_or_throw`]) and the evaluation is keep_going or in error
+    /// bubbling.
     // Java: com/google/devtools/build/skyframe/SkyframeLookupResult.java:59 SkyframeLookupResult.getOrThrow
     pub fn get_or_throw<E>(&self, key: &SkyKey) -> Result<Option<SkyValue>, E>
     where
@@ -423,12 +598,28 @@ impl SkyframeLookupResult {
         key: &SkyKey,
         catch: impl FnOnce(&SkyError) -> Option<T>,
     ) -> Result<Option<SkyValue>, T> {
-        let Some(entry) = self.entries.get(key) else {
-            // Java: BugReport.sendNonFatalBugReport("Value for %s was missing, this should never
-            // happen") and returns null.
+        // Java: maybeGetValueFromErrorOrDeps(depKey): any dep this environment requested, by
+        // this call or by any other `get_value` / `get_values_and_exceptions` call.
+        let entry = self.requested.lock().get(key).cloned();
+        let Some(entry) = entry else {
+            // The key was never requested from this environment. Java:
+            // BugReport.sendNonFatalBugReport("Value for %s was missing, this should never
+            // happen") and returns null without marking values missing.
             return Ok(None);
         };
-        unwrap_or_throw(entry, self.keep_going, &self.values_missing, catch)
+        unwrap_or_throw(
+            &entry,
+            self.keep_going,
+            self.in_error_bubbling,
+            &self.values_missing,
+            catch,
+        )
+    }
+
+    /// PORT: not ported (callback form of `getOrThrow`).
+    // Java: com/google/devtools/build/skyframe/SkyframeLookupResult.java:93 SkyframeLookupResult.queryDep
+    pub fn query_dep(&self, _key: &SkyKey) -> bool {
+        blaze_util::unported!("SkyframeLookupResult.queryDep")
     }
 }
 
@@ -475,9 +666,10 @@ impl EnvListener<'_> {
         }
     }
 
-    /// Reports the events stored while the node computed, tagged. Called when the node commits
-    /// (or its error bubbles). Events of a computation that ends with missing deps are dropped,
-    /// as in Java, where only the run that completes reports them.
+    /// Reports the events stored while the node computed, tagged. Called when the node commits,
+    /// and after its error-bubbling run (`bubbleErrorUp` reports the events of each function it
+    /// re-runs). Events of a run in normal evaluation that ends with missing deps are dropped, as
+    /// in Java, where only the run that completes reports them.
     ///
     /// PORT: Java also stores the events on the node to replay them on later builds; one build
     /// per process needs no replay.

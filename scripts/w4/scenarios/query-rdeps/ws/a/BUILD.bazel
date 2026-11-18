@@ -1,0 +1,51 @@
+load(":defs.bzl", "explicit_user", "implicit_user", "reader", "tool")
+
+# //a:tool is an implicit dependency of :implicit, which :over_implicit depends on explicitly.
+tool(name = "tool")
+
+implicit_user(name = "implicit")
+
+explicit_user(
+    name = "over_implicit",
+    deps = [":implicit"],
+)
+
+# //a:other_tool is an explicit dependency of :explicit, which :over_explicit depends on explicitly.
+tool(name = "other_tool")
+
+explicit_user(
+    name = "explicit",
+    deps = [":other_tool"],
+)
+
+explicit_user(
+    name = "over_explicit",
+    deps = [":explicit"],
+)
+
+# data.txt is a source file read by :reader, which :over_reader depends on. Every reverse
+# dependency of a node that is neither a rule, an alias nor an output file is classified implicit
+# (PostAnalysisQueryEnvironment.targetifyValues), so cquery --noimplicit_deps drops :reader.
+reader(
+    name = "reader",
+    srcs = ["data.txt"],
+)
+
+explicit_user(
+    name = "over_reader",
+    deps = [":reader"],
+)
+
+# gen.out is an output file of :gen read by :gen_reader: a reverse dependency of an output file
+# that is not its generating rule is classified implicit.
+genrule(
+    name = "gen",
+    srcs = ["data2.txt"],
+    outs = ["gen.out"],
+    cmd = "cp $< $@",
+)
+
+reader(
+    name = "gen_reader",
+    srcs = ["gen.out"],
+)

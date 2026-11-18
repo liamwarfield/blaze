@@ -471,9 +471,8 @@ impl<'v> DictLike<'v> for FrozenDictData {
     }
 
     fn set_at(&self, _index: Hashed<Value<'v>>, _value: Value<'v>) -> crate::Result<()> {
-        Err(crate::Error::new_other(
-            ValueError::CannotMutateImmutableValue,
-        ))
+        // BLAZE PATCH 0023: Java's text (Starlark.checkMutable).
+        Err(crate::Error::new_other(frozen_dict_error()))
     }
 }
 

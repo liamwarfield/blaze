@@ -36,6 +36,25 @@ impl ModuleKey {
         }
     }
 
+    /// Java `ModuleKey.hashCode()`.
+    ///
+    /// PORT: java-hash-order. `ModuleKey` is a record without a `hashCode()` of its own, so the
+    /// value comes from `java.lang.runtime.ObjectMethods`, which the specification leaves open.
+    /// OpenJDK (checked on 25, which Bazel 9.3.2 embeds as 25.0.2) folds the components in
+    /// declaration order with `result = result * 31 + hash(component)` starting from 0, where a
+    /// reference component hashes with `Objects.hashCode`.
+    // Java: java.base/java/lang/runtime/ObjectMethods.java ObjectMethods.makeHashCode
+    pub fn java_hash_code(&self) -> i32 {
+        let mut result: i32 = 0;
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(crate::java_hash::java_string_hash_code(&self.name));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.version.java_hash_code());
+        result
+    }
+
     pub fn is_root(&self) -> bool {
         self.name.is_empty() && self.version.is_empty()
     }

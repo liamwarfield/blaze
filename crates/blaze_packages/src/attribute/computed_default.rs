@@ -148,8 +148,11 @@ impl ComputedDefault {
 #[derive(Debug, Clone)]
 pub struct StarlarkComputedDefault {
     dependency_types: Vec<Type>,
-    // PORT: Java HashMap<List<Object>, Object>; keys are the dependencies' values in order. Only
-    // values() iteration order is observable (getPossibleValues); see getPossibleValues.
+    // PORT: java-hash-order. Java `HashMap<List<Object>, Object>`; keys are the dependencies'
+    // values in order. Its iteration order is observable through `values()` (getPossibleValues:
+    // the possible values query prints and the order labels are visited in) and `keySet()` (the
+    // "Available keys" message), so the entries are kept in Java's iteration order (see
+    // `starlark_lookup_table_order`).
     lookup_table: Vec<(Vec<Option<AttrValue>>, Option<AttrValue>)>,
 }
 
@@ -182,17 +185,14 @@ impl StarlarkComputedDefault {
             Some((_, v)) => v.clone(),
             None => panic!(
                 "IllegalStateException: Error in rule '{}': precomputed value missing for \
-                 dependencies: {}. Available keys: {}.",
+                 dependencies: {}. Available keys: [{}].",
                 rule.describe_rule(),
                 tuple_to_string(&key),
-                format!(
-                    "[{}]",
-                    self.lookup_table
-                        .iter()
-                        .map(|(k, _)| tuple_to_string(k))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
+                self.lookup_table
+                    .iter()
+                    .map(|(k, _)| tuple_to_string(k))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         }
     }
@@ -313,9 +313,13 @@ impl StarlarkComputedDefaultTemplate {
             Ok(table)
         })();
         match result {
-            Ok(lookup_table) => Ok(ComputedDefault::new_starlark(
+            Ok(value_map) => Ok(ComputedDefault::new_starlark(
                 self.dependencies.clone(),
-                StarlarkComputedDefault::new(dependency_types, lookup_table),
+                // Java: `lookupTable = new HashMap<>(strategy.computeValuesForAllCombinations(..))`.
+                StarlarkComputedDefault::new(
+                    dependency_types,
+                    starlark_lookup_table_order(value_map),
+                ),
             )),
             Err(message) => {
                 let msg = format!(
@@ -381,15 +385,9 @@ impl StarlarkComputedDefaultTemplate {
             }
         }
         let events = Arc::new(CollectingEvents::default());
-        let mut ctx = ThreadContext::new(Phase::Loading, semantics.clone(), events.clone());
         // Java: `Label()` in the callback resolves against the module of the innermost Starlark
-        // function (the callback's .bzl file).
-        // PORT: the callback's own module is not known here, so every loaded .bzl is registered.
-        for (file, package_context) in
-            crate::bzl_context::BazelModuleContext::all_package_contexts()
-        {
-            ctx.file_package_contexts.insert(file, package_context);
-        }
+        // function (the callback's .bzl file); blaze_starlark reads it from that module.
+        let ctx = ThreadContext::new(Phase::Loading, semantics.clone(), events.clone());
         let type_ = self.type_;
         let result = call_frozen(
             &self.callback.to_owned_frozen_value(),
@@ -591,35 +589,194 @@ enum ComputeError<E> {
     Compute(E),
 }
 
+/// The entries of a `Map<List<Object>, T>` keyed by dependency assignment tuples.
+type DependencyAssignmentEntries = Vec<(Vec<Option<AttrValue>>, Option<AttrValue>)>;
+
+/// Java `Object.hashCode()` of one attribute value of a dependency assignment tuple (`null`
+/// hashes as 0 in `List.hashCode()`).
+///
+/// A value whose Java hash code is an identity hash (enums: `TriState`, the license types of
+/// a `License`) or belongs to a default-computing object cannot be replayed and fails loudly.
+fn attr_value_java_hash_code(value: Option<&AttrValue>) -> i32 {
+    use blaze_query_engine::JavaHashCode;
+    // Java (JDK): java/util/AbstractList.java AbstractList.hashCode (the `List.hashCode()`
+    // contract, which ArrayList and ImmutableList follow).
+    fn list_hash(hashes: impl Iterator<Item = i32>) -> i32 {
+        let mut hash_code: i32 = 1;
+        for e in hashes {
+            hash_code = 31i32.wrapping_mul(hash_code).wrapping_add(e);
+        }
+        hash_code
+    }
+    // Java (JDK): java/util/AbstractMap.java AbstractMap.hashCode (the `Map.hashCode()` contract:
+    // the sum of `key.hashCode() ^ value.hashCode()` over the entries), and
+    // java/util/AbstractSet.java AbstractSet.hashCode (the sum of the elements' hash codes).
+    fn sum_hash(hashes: impl Iterator<Item = i32>) -> i32 {
+        let mut h: i32 = 0;
+        for e in hashes {
+            h = h.wrapping_add(e);
+        }
+        h
+    }
+    // Java: net/starlark/java/eval/StarlarkInt.java:216 StarlarkInt.Int32.hashCode
+    fn starlark_int_hash(v: i32) -> i32 {
+        0x316c5239i32.wrapping_mul(v) ^ 0x67c4a7d5
+    }
+    let Some(value) = value else {
+        return 0;
+    };
+    match value {
+        // `Type.STRING`: java.lang.String.
+        AttrValue::String(s) => s.java_hash_code(),
+        // `Type.INTEGER`: StarlarkInt (Int32).
+        AttrValue::Int(i) => starlark_int_hash(*i),
+        // `Type.BOOLEAN`: java.lang.Boolean.hashCode() is 1231 for true and 1237 for false.
+        AttrValue::Bool(b) => {
+            if *b {
+                1231
+            } else {
+                1237
+            }
+        }
+        // Java: com/google/devtools/build/lib/cmdline/Label.java:642 Label.hashCode
+        AttrValue::Label(l) => l.java_hash_code(),
+        AttrValue::StringList(l) => list_hash(l.iter().map(|s| s.java_hash_code())),
+        AttrValue::IntList(l) => list_hash(l.iter().map(|i| starlark_int_hash(*i))),
+        AttrValue::LabelList(l) => list_hash(l.iter().map(|l| l.java_hash_code())),
+        AttrValue::StringSet(set) => sum_hash(set.iter().map(|s| s.java_hash_code())),
+        AttrValue::StringDict(d) => sum_hash(
+            d.iter()
+                .map(|(k, v)| k.java_hash_code() ^ v.java_hash_code()),
+        ),
+        AttrValue::StringListDict(d) => sum_hash(
+            d.iter()
+                .map(|(k, v)| k.java_hash_code() ^ list_hash(v.iter().map(|s| s.java_hash_code()))),
+        ),
+        AttrValue::LabelDictUnary(d) => sum_hash(
+            d.iter()
+                .map(|(k, v)| k.java_hash_code() ^ v.java_hash_code()),
+        ),
+        AttrValue::LabelKeyedStringDict(d) => sum_hash(
+            d.iter()
+                .map(|(k, v)| k.java_hash_code() ^ v.java_hash_code()),
+        ),
+        AttrValue::LabelListDict(d) => sum_hash(
+            d.iter()
+                .map(|(k, v)| k.java_hash_code() ^ list_hash(v.iter().map(|l| l.java_hash_code()))),
+        ),
+        AttrValue::License(_)
+        | AttrValue::TriState(_)
+        | AttrValue::SelectorList(_)
+        | AttrValue::ComputedDefault(_)
+        | AttrValue::StarlarkComputedDefaultTemplate(_)
+        | AttrValue::LateBound(_)
+        | AttrValue::Materializer(_) => blaze_util::unported!(
+            "Attribute.ComputationStrategy.computeValuesForAllCombinations",
+            "the iteration order of Java's HashMap of dependency assignments needs the Java \
+             hashCode() of {:?}, which is an identity hash",
+            value
+        ),
+    }
+}
+
+/// Java `List<Object>.hashCode()` of a dependency assignment tuple (an `ArrayList`).
+// Java (JDK): java/util/AbstractList.java AbstractList.hashCode
+fn dependency_assignment_tuple_java_hash_code(tuple: &[Option<AttrValue>]) -> i32 {
+    let mut hash_code: i32 = 1;
+    for e in tuple {
+        hash_code = 31i32
+            .wrapping_mul(hash_code)
+            .wrapping_add(attr_value_java_hash_code(e.as_ref()));
+    }
+    hash_code
+}
+
+/// The iteration order of a `java.util.HashMap` made by `new HashMap<>(initial_capacity)` and
+/// filled with `entries` (distinct keys) in order. A map of fewer than two entries has only one
+/// order, so no hash code is needed for it.
+// PORT: java-hash-order.
+fn java_hash_map_order_of_assignments(
+    initial_capacity: i32,
+    entries: DependencyAssignmentEntries,
+) -> DependencyAssignmentEntries {
+    if entries.len() < 2 {
+        return entries;
+    }
+    blaze_query_engine::java_concurrent_hash_map::java_hash_map_order_by(
+        blaze_query_engine::java_concurrent_hash_map::java_hash_map_table_size_for(
+            initial_capacity,
+        ),
+        entries,
+        |key| dependency_assignment_tuple_java_hash_code(key),
+    )
+}
+
+/// Java `Maps.capacity(expectedSize)` of Guava 33.5.0 (the version Bazel 9.3.2 pins in
+/// MODULE.bazel): the `initialCapacity` `Maps.newHashMapWithExpectedSize` passes to `HashMap`.
+// Java (Guava): com/google/common/collect/Maps.java Maps.capacity
+fn guava_maps_capacity(expected_size: usize) -> i32 {
+    if expected_size < 3 {
+        return expected_size as i32 + 1;
+    }
+    // `(int) Math.ceil(expectedSize / 0.75)`; expectedSize is far below Ints.MAX_POWER_OF_TWO.
+    (expected_size as f64 / 0.75).ceil() as i32
+}
+
+/// Java `new HashMap<>(valueMap)` of `StarlarkComputedDefaultTemplate.computePossibleValues`:
+/// the lookup table's entries in its iteration order, given `value_map` in the iteration order
+/// of the map it is copied from.
+///
+/// `HashMap(Map)` calls `putMapEntries`, which sizes the empty table for
+/// `(int) Math.ceil(s / (double) loadFactor)` (JDK 19 and later; Bazel 9.3.2 embeds JDK 25.0.2,
+/// on which the resulting table lengths 2, 4, 4, 8, 8, 8, 16 for 1 to 7 entries were measured)
+/// and then puts the entries in the source map's iteration order.
+// PORT: java-hash-order.
+// Java: com/google/devtools/build/lib/packages/Attribute.java:1436 Attribute.StarlarkComputedDefaultTemplate.computePossibleValues
+// Java (JDK): java/util/HashMap.java HashMap.putMapEntries
+fn starlark_lookup_table_order(
+    value_map: DependencyAssignmentEntries,
+) -> DependencyAssignmentEntries {
+    let s = value_map.len();
+    let t = (s as f64 / 0.75).ceil() as i32;
+    java_hash_map_order_of_assignments(t, value_map)
+}
+
 /// Computes `compute` for every combination of the possible values of `dependencies` (Java
 /// `ComputationStrategy.computeValuesForAllCombinations`). Entries are keyed by the
 /// dependencies' values; a repeated key replaces the earlier value in place.
-// PORT: java-hash-order. Java collects into a HashMap and callers iterate its values(); entries
-// here are in combination order.
+// PORT: java-hash-order. Java collects into `Maps.newHashMapWithExpectedSize(depMaps.size())` and
+// callers iterate it (`values()` in ComputedDefault.getPossibleValues, the copy constructor in
+// StarlarkComputedDefaultTemplate.computePossibleValues); the entries are returned in that
+// map's iteration order.
 // Java: com/google/devtools/build/lib/packages/Attribute.java:1182 Attribute.ComputationStrategy.computeValuesForAllCombinations
 fn compute_values_for_all_combinations<E>(
     dependencies: &[String],
     rule: &dyn RuleOrMacroInstance,
     limiter: &mut dyn FnMut(i32) -> Result<(), String>,
     compute: &mut dyn FnMut(&dyn AttributeMap) -> Result<Option<AttrValue>, E>,
-) -> Result<Vec<(Vec<Option<AttrValue>>, Option<AttrValue>)>, ComputeError<E>> {
+) -> Result<DependencyAssignmentEntries, ComputeError<E>> {
     let mapper = AggregatingAttributeMapper::of(rule);
     // This will hold every (value1, value2, ..) combination of the declared dependencies.
     let dep_maps = mapper
         .visit_attributes(dependencies, limiter)
         .map_err(ComputeError::Limit)?;
     // For each combination, call compute() on a specialized AttributeMap providing those values.
-    let mut value_map: Vec<(Vec<Option<AttrValue>>, Option<AttrValue>)> = Vec::new();
+    let expected_size = dep_maps.len();
+    let mut value_map: DependencyAssignmentEntries = Vec::new();
     for dep_map in dep_maps {
         let attr_map = mapper.create_map_backed_attribute_map(dep_map);
         let value = compute(&*attr_map).map_err(ComputeError::Compute)?;
         let key = create_dependency_assignment_tuple(dependencies, &*attr_map);
+        // HashMap.put of a key already present replaces the value and keeps the entry's place.
         match value_map.iter_mut().find(|(k, _)| *k == key) {
             Some(entry) => entry.1 = value,
             None => value_map.push((key, value)),
         }
     }
-    Ok(value_map)
+    Ok(java_hash_map_order_of_assignments(
+        guava_maps_capacity(expected_size),
+        value_map,
+    ))
 }
 
 // Java: com/google/devtools/build/lib/packages/Attribute.java:1201 Attribute.ComputationStrategy.createDependencyAssignmentTuple
@@ -800,5 +957,259 @@ fn cast_callback_result(type_: Type, result: Value<'_>) -> Result<Option<AttrVal
             "of type {}",
             type_
         ),
+    }
+}
+
+#[cfg(test)]
+mod java_hash_order_tests {
+    use super::*;
+
+    // The expected hash codes and orders were printed by the JDK 25 that Bazel 9.3.2 embeds, with
+    // the pinned server jar on the class path, for
+    //   Map<List<Object>, Object> valueMap = Maps.newHashMapWithExpectedSize(n);  // puts in order
+    //   Map<List<Object>, Object> lookupTable = new HashMap<>(valueMap);
+    // as `ComputationStrategy.computeValuesForAllCombinations` and
+    // `StarlarkComputedDefaultTemplate.computePossibleValues` build them, with keys made of
+    // String, StarlarkInt, Boolean, Label and ImmutableList values (and null).
+    // Java: com/google/devtools/build/lib/packages/Attribute.java:1221 Attribute.ComputationStrategy.computeValuesForAllCombinations
+    // Java: com/google/devtools/build/lib/packages/Attribute.java:1436 Attribute.StarlarkComputedDefaultTemplate.computePossibleValues
+
+    fn s(v: &str) -> Option<AttrValue> {
+        Some(AttrValue::String(v.to_owned()))
+    }
+
+    fn label(v: &str) -> Label {
+        Label::parse_canonical_unchecked(v)
+    }
+
+    fn strings(v: &[&str]) -> Option<AttrValue> {
+        Some(AttrValue::StringList(
+            v.iter().map(|s| (*s).to_owned()).collect(),
+        ))
+    }
+
+    /// Both maps, as Java builds them from `n` combinations whose keys are `keys` in order
+    /// (a repeated key replaces the value in place): the keys of `valueMap` and of
+    /// `lookupTable` with the index of the combination each holds.
+    fn orders(n: usize, keys: Vec<Vec<Option<AttrValue>>>) -> (Vec<String>, Vec<String>) {
+        assert_eq!(n, keys.len());
+        let mut entries: DependencyAssignmentEntries = Vec::new();
+        for (i, key) in keys.into_iter().enumerate() {
+            let value = Some(AttrValue::Int(i as i32));
+            match entries.iter_mut().find(|(k, _)| *k == key) {
+                Some(entry) => entry.1 = value,
+                None => entries.push((key, value)),
+            }
+        }
+        let show = |entries: &DependencyAssignmentEntries| -> Vec<String> {
+            entries
+                .iter()
+                .map(|(k, v)| {
+                    let Some(AttrValue::Int(i)) = v else {
+                        panic!("not an index")
+                    };
+                    format!("{}=v{}", tuple_to_string(k), i)
+                })
+                .collect()
+        };
+        let value_map = java_hash_map_order_of_assignments(guava_maps_capacity(n), entries);
+        let shown_value_map = show(&value_map);
+        let lookup_table = starlark_lookup_table_order(value_map);
+        (shown_value_map, show(&lookup_table))
+    }
+
+    fn hash(key: Vec<Option<AttrValue>>) -> i32 {
+        dependency_assignment_tuple_java_hash_code(&key)
+    }
+
+    #[test]
+    fn tuple_hash_codes_match_java() {
+        assert_eq!(hash(vec![s("a")]), 128);
+        assert_eq!(hash(vec![s("eta")]), 100785);
+        assert_eq!(hash(vec![s("zeta")]), 3735287);
+        assert_eq!(hash(vec![s("theta")]), 110327485);
+        // StarlarkInt.Int32.hashCode.
+        assert_eq!(hash(vec![Some(AttrValue::Int(0))]), 1740941300);
+        assert_eq!(hash(vec![Some(AttrValue::Int(3))]), -209694307);
+        assert_eq!(hash(vec![Some(AttrValue::Int(-1))]), -1453913551);
+        assert_eq!(hash(vec![Some(AttrValue::Int(1000000))]), 2119886772);
+        // Boolean.hashCode.
+        assert_eq!(hash(vec![Some(AttrValue::Bool(false))]), 1268);
+        assert_eq!(hash(vec![Some(AttrValue::Bool(true))]), 1262);
+        // Label.hashCode.
+        assert_eq!(hash(vec![Some(AttrValue::Label(label("//q:m")))]), 928966);
+        assert_eq!(hash(vec![Some(AttrValue::Label(label("//p:z")))]), 929368);
+        // Two-element tuples.
+        assert_eq!(hash(vec![s("x"), Some(AttrValue::Bool(true))]), 5912);
+        assert_eq!(hash(vec![s("w"), Some(AttrValue::Bool(false))]), 5887);
+        // List values.
+        assert_eq!(hash(vec![strings(&[])]), 32);
+        assert_eq!(hash(vec![strings(&["a", "b"])]), 4097);
+        assert_eq!(hash(vec![strings(&["b", "a"])]), 4127);
+        assert_eq!(
+            hash(vec![Some(AttrValue::LabelList(vec![
+                label("//p:z"),
+                label("//p:y")
+            ]))]),
+            29739745
+        );
+        assert_eq!(
+            hash(vec![Some(AttrValue::LabelList(vec![label("//p:a")]))]),
+            928624
+        );
+        assert_eq!(hash(vec![Some(AttrValue::IntList(vec![2, 1]))]), -183670011);
+        assert_eq!(hash(vec![Some(AttrValue::IntList(vec![7]))]), 1043503256);
+        // null.
+        assert_eq!(hash(vec![None]), 31);
+        // An internal-form (Latin-1 holding UTF-8) string: the bytes C3 A9.
+        assert_eq!(hash(vec![s("\u{e9}")]), 6245);
+    }
+
+    #[test]
+    fn string_keys_iterate_in_java_hash_map_order() {
+        let (value_map, lookup_table) = orders(
+            5,
+            vec![
+                vec![s("zeta")],
+                vec![s("eta")],
+                vec![s("theta")],
+                vec![s("iota")],
+                vec![s("kappa")],
+            ],
+        );
+        let expected = vec![
+            "[eta]=v1",
+            "[iota]=v3",
+            "[kappa]=v4",
+            "[theta]=v2",
+            "[zeta]=v0",
+        ];
+        assert_eq!(value_map, expected);
+        assert_eq!(lookup_table, expected);
+    }
+
+    #[test]
+    fn int_keys_iterate_in_java_hash_map_order() {
+        let (value_map, lookup_table) = orders(
+            4,
+            vec![
+                vec![Some(AttrValue::Int(3))],
+                vec![Some(AttrValue::Int(-1))],
+                vec![Some(AttrValue::Int(0))],
+                vec![Some(AttrValue::Int(1000000))],
+            ],
+        );
+        let expected = vec!["[0]=v2", "[3]=v0", "[-1]=v1", "[1000000]=v3"];
+        assert_eq!(value_map, expected);
+        assert_eq!(lookup_table, expected);
+    }
+
+    #[test]
+    fn label_keys_iterate_in_java_hash_map_order() {
+        let (value_map, lookup_table) = orders(
+            3,
+            vec![
+                vec![Some(AttrValue::Label(label("//p:z")))],
+                vec![Some(AttrValue::Label(label("//p:a")))],
+                vec![Some(AttrValue::Label(label("//q:m")))],
+            ],
+        );
+        let expected = vec!["[//q:m]=v2", "[//p:z]=v0", "[//p:a]=v1"];
+        assert_eq!(value_map, expected);
+        assert_eq!(lookup_table, expected);
+    }
+
+    #[test]
+    fn two_dependencies_iterate_in_java_hash_map_order() {
+        let t = || Some(AttrValue::Bool(true));
+        let f = || Some(AttrValue::Bool(false));
+        let (value_map, lookup_table) = orders(
+            6,
+            vec![
+                vec![s("x"), t()],
+                vec![s("x"), f()],
+                vec![s("y"), t()],
+                vec![s("y"), f()],
+                vec![s("w"), t()],
+                vec![s("w"), f()],
+            ],
+        );
+        let expected = vec![
+            "[x, true]=v0",
+            "[w, true]=v4",
+            "[y, false]=v3",
+            "[x, false]=v1",
+            "[y, true]=v2",
+            "[w, false]=v5",
+        ];
+        assert_eq!(value_map, expected);
+        assert_eq!(lookup_table, expected);
+    }
+
+    #[test]
+    fn list_and_null_keys_iterate_in_java_hash_map_order() {
+        let (value_map, lookup_table) = orders(
+            3,
+            vec![
+                vec![strings(&["b", "a"])],
+                vec![strings(&[])],
+                vec![strings(&["a", "b"])],
+            ],
+        );
+        let expected = vec!["[[]]=v1", "[[a, b]]=v2", "[[b, a]]=v0"];
+        assert_eq!(value_map, expected);
+        assert_eq!(lookup_table, expected);
+
+        let (value_map, lookup_table) = orders(2, vec![vec![None], vec![s("s")]]);
+        let expected = vec!["[s]=v1", "[null]=v0"];
+        assert_eq!(value_map, expected);
+        assert_eq!(lookup_table, expected);
+    }
+
+    // Two select branches with the same value give the same key: HashMap.put replaces the value
+    // and keeps the entry; the copy is then sized for 3 entries, not 6.
+    #[test]
+    fn repeated_keys_keep_their_place_and_take_the_last_value() {
+        let (value_map, lookup_table) = orders(
+            6,
+            vec![
+                vec![s("zeta")],
+                vec![s("eta")],
+                vec![s("zeta")],
+                vec![s("theta")],
+                vec![s("eta")],
+                vec![s("theta")],
+            ],
+        );
+        let expected = vec!["[eta]=v4", "[theta]=v5", "[zeta]=v2"];
+        assert_eq!(value_map, expected);
+        assert_eq!(lookup_table, expected);
+    }
+
+    // Java: enum hash codes are identity hashes, so the order of a HashMap keyed by them is
+    // not reproducible.
+    #[test]
+    #[should_panic(expected = "Attribute.ComputationStrategy.computeValuesForAllCombinations")]
+    fn tristate_keys_fail_loudly_when_the_order_depends_on_them() {
+        orders(
+            2,
+            vec![
+                vec![Some(AttrValue::TriState(crate::types::TriState::Yes))],
+                vec![Some(AttrValue::TriState(crate::types::TriState::No))],
+            ],
+        );
+    }
+
+    // A map of one entry has one order: no hash code is needed.
+    #[test]
+    fn a_single_combination_needs_no_hash_code() {
+        let (value_map, lookup_table) = orders(
+            1,
+            vec![vec![Some(AttrValue::TriState(
+                crate::types::TriState::Auto,
+            ))]],
+        );
+        assert_eq!(value_map.len(), 1);
+        assert_eq!(lookup_table.len(), 1);
     }
 }

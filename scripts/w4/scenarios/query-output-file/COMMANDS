@@ -1,0 +1,14 @@
+# Analysis review S1-5: --output_file for cquery and aquery (runtime/QueryRuntimeHelper.java):
+# the query output goes to the file (relative to the working directory), nothing to stdout.
+run cquery //:x --output_file=out.txt
+cat out.txt
+run cquery "deps(//:x)" --output=label_kind --output_file=sub/out2.txt
+cat sub/out2.txt
+run aquery //:x --output=jsonproto --output_file=aq.json
+cat aq.json
+run cquery //:x --output_file=missing-dir/out.txt
+run aquery //:x --output=jsonproto --output_file=missing-dir/out.txt
+run cquery //:x --output_file=sub
+run cquery //:x --output_file=
+run cquery "//:nosuch" --output_file=err.txt
+stat err.txt

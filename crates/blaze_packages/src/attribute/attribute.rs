@@ -36,9 +36,9 @@ use crate::types::LabelConverter;
 use crate::types::Type;
 use crate::types::select::SelectorList;
 use crate::types::select::SelectorValue;
+use crate::types::type_::alloc_immutable_dict;
+use crate::types::type_::alloc_immutable_list;
 use blaze_starlark::label::LabelValue;
-use starlark::values::dict::AllocDict;
-use starlark::values::list::AllocList;
 
 /// Java `Object.toString()` of an attribute value, for error messages.
 // PORT: Java prints the value's Java form (String as is, List as "[a, b]", Map as "{k=v}").
@@ -1257,32 +1257,48 @@ impl Attribute {
         }
     }
 
-    /// Converts an attribute value from internal form to Starlark form.
+    /// Converts an attribute value from internal form to Starlark form. Lists and dicts are
+    /// immutable: Java builds them with `Dict.Builder.buildImmutable`,
+    /// `StarlarkList.immutableCopyOf` and `Starlark.fromJava(x, /* mutability= */ null)`.
     // Java: com/google/devtools/build/lib/packages/Attribute.java:2442 Attribute.valueToStarlark
     pub fn value_to_starlark<'v>(x: Option<&AttrValue>, heap: Heap<'v>) -> Value<'v> {
         let Some(x) = x else {
             // Java: Starlark.fromJava(null) is None.
             return Value::new_none();
         };
+        // Java `StarlarkList.copyOf(null, list)` / `Dict.copyOf(null, map)`. Elements are
+        // allocated before their container.
+        let list = |items: Vec<Value<'v>>| alloc_immutable_list(heap, items);
+        let dict = |items: Vec<(Value<'v>, Value<'v>)>| alloc_immutable_dict(heap, items);
         match x {
             // Is x a non-empty {label,string}_list_dict? Recursively convert subelements.
-            AttrValue::StringListDict(m) => heap.alloc(AllocDict(m.iter().map(|(k, v)| {
-                (
-                    heap.alloc_str(k).to_value(),
-                    heap.alloc(AllocList(v.iter().map(|s| heap.alloc_str(s).to_value()))),
-                )
-            }))),
-            AttrValue::LabelListDict(m) => heap.alloc(AllocDict(m.iter().map(|(k, v)| {
-                (
-                    heap.alloc_str(k).to_value(),
-                    heap.alloc(AllocList(
-                        v.iter().map(|l| heap.alloc(LabelValue(l.clone()))),
-                    )),
-                )
-            }))),
+            AttrValue::StringListDict(m) => dict(
+                m.iter()
+                    .map(|(k, v)| {
+                        (
+                            heap.alloc_str(k).to_value(),
+                            list(v.iter().map(|s| heap.alloc_str(s).to_value()).collect()),
+                        )
+                    })
+                    .collect(),
+            ),
+            AttrValue::LabelListDict(m) => dict(
+                m.iter()
+                    .map(|(k, v)| {
+                        (
+                            heap.alloc_str(k).to_value(),
+                            list(
+                                v.iter()
+                                    .map(|l| heap.alloc(LabelValue(l.clone())))
+                                    .collect(),
+                            ),
+                        )
+                    })
+                    .collect(),
+            ),
             // Until Starlark gains a set data type, shallow-convert Java sets to Starlark lists.
             AttrValue::StringSet(s) => {
-                heap.alloc(AllocList(s.iter().map(|e| heap.alloc_str(e).to_value())))
+                list(s.iter().map(|e| heap.alloc_str(e).to_value()).collect())
             }
             // Convert TriState to integer (same as in query output and native.existing_rules())
             AttrValue::TriState(t) => heap.alloc(t.to_int()),
@@ -1329,28 +1345,39 @@ impl Attribute {
             AttrValue::Bool(b) => Value::new_bool(*b),
             AttrValue::Label(l) => heap.alloc(LabelValue(l.clone())),
             AttrValue::StringList(l) => {
-                heap.alloc(AllocList(l.iter().map(|s| heap.alloc_str(s).to_value())))
+                list(l.iter().map(|s| heap.alloc_str(s).to_value()).collect())
             }
-            AttrValue::IntList(l) => heap.alloc(AllocList(l.iter().map(|i| heap.alloc(*i)))),
-            AttrValue::LabelList(l) => heap.alloc(AllocList(
-                l.iter().map(|x| heap.alloc(LabelValue(x.clone()))),
-            )),
-            AttrValue::StringDict(m) => heap
-                .alloc(AllocDict(m.iter().map(|(k, v)| {
-                    (heap.alloc_str(k).to_value(), heap.alloc_str(v).to_value())
-                }))),
-            AttrValue::LabelDictUnary(m) => heap.alloc(AllocDict(m.iter().map(|(k, v)| {
-                (
-                    heap.alloc_str(k).to_value(),
-                    heap.alloc(LabelValue(v.clone())),
-                )
-            }))),
-            AttrValue::LabelKeyedStringDict(m) => heap.alloc(AllocDict(m.iter().map(|(k, v)| {
-                (
-                    heap.alloc(LabelValue(k.clone())),
-                    heap.alloc_str(v).to_value(),
-                )
-            }))),
+            AttrValue::IntList(l) => list(l.iter().map(|i| heap.alloc(*i)).collect()),
+            AttrValue::LabelList(l) => list(
+                l.iter()
+                    .map(|x| heap.alloc(LabelValue(x.clone())))
+                    .collect(),
+            ),
+            AttrValue::StringDict(m) => dict(
+                m.iter()
+                    .map(|(k, v)| (heap.alloc_str(k).to_value(), heap.alloc_str(v).to_value()))
+                    .collect(),
+            ),
+            AttrValue::LabelDictUnary(m) => dict(
+                m.iter()
+                    .map(|(k, v)| {
+                        (
+                            heap.alloc_str(k).to_value(),
+                            heap.alloc(LabelValue(v.clone())),
+                        )
+                    })
+                    .collect(),
+            ),
+            AttrValue::LabelKeyedStringDict(m) => dict(
+                m.iter()
+                    .map(|(k, v)| {
+                        (
+                            heap.alloc(LabelValue(k.clone())),
+                            heap.alloc_str(v).to_value(),
+                        )
+                    })
+                    .collect(),
+            ),
             AttrValue::License(_) => blaze_util::unported!("License as a Starlark value"),
             AttrValue::ComputedDefault(_)
             | AttrValue::StarlarkComputedDefaultTemplate(_)

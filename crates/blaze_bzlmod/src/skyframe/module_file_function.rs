@@ -21,7 +21,7 @@ use blaze_starlark::StarlarkSemantics;
 use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
 
-use super::config::BzlmodConfig;
+use super::config::{BzlmodConfig, RepositoryDirectoryLookup};
 use super::keys::{ModuleFileKey, ModuleFileValue, RegistryKey};
 use super::precomputed::{
     ClientEnvironmentKey, IGNORE_DEV_DEPS, INJECTED_REPOSITORIES, MODULE_OVERRIDES, REGISTRIES,
@@ -241,6 +241,8 @@ fn compute_for_root_module(
     let compiled_module_file = CompiledModuleFile::parse_and_compile(
         ModuleFile::create(
             module_file_contents,
+            // PORT: byte-strings: Java keeps the path's raw bytes (`Path.getPathString()` is
+            // the internal Latin-1 form); a path that is not UTF-8 gets U+FFFD here.
             module_file_path.to_string_lossy().into_owned(),
         ),
         &ModuleKey::root(),
@@ -423,15 +425,32 @@ fn advance_horizon(
         }
         include_labels.push(include_label);
     }
+    // Java: env.getValuesAndExceptions(PackageLookupValue.key(l.getPackageIdentifier()) ...)
+    let mut pkg_lookup_values: Vec<Option<PackageLookupResult>> =
+        Vec::with_capacity(include_labels.len());
+    for include_label in &include_labels {
+        pkg_lookup_values.push(
+            config
+                .package_lookup
+                .lookup(include_label.get_package_identifier(), env)?,
+        );
+    }
     let mut rooted_paths: Vec<PathBuf> = Vec::with_capacity(pending.len());
     for (i, include_label) in include_labels.iter().enumerate() {
-        let Some(pkg_lookup_value) =
-            package_lookup(config, include_label.get_package_identifier(), env)?
-        else {
+        let Some(pkg_lookup_value) = &pkg_lookup_values[i] else {
             return Ok(None);
         };
-        let Some(root) = pkg_lookup_value else {
-            let message = explain_no_build_file_value(include_label.get_package_identifier());
+        if !pkg_lookup_value.package_exists {
+            let mut message = pkg_lookup_value.get_error_msg().to_owned();
+            if pkg_lookup_value.is_no_build_file_value {
+                let Some(explanation) = config
+                    .package_lookup
+                    .explain_no_build_file_value(include_label.get_package_identifier(), env)?
+                else {
+                    return Ok(None);
+                };
+                message = explanation;
+            }
             return Err(errorf(
                 ExternalDepsCode::BadModule,
                 format!(
@@ -439,8 +458,13 @@ fn advance_horizon(
                     pending[i].include_label, pending[i].location, message
                 ),
             ));
-        };
-        rooted_paths.push(root.join(include_label.to_path_fragment().get_path_string()));
+        }
+        // RootedPath.toRootedPath(pkgLookupValue.getRoot(), includeLabel.toPathFragment())
+        rooted_paths.push(
+            pkg_lookup_value
+                .get_root()
+                .join(include_label.to_path_fragment().get_path_string()),
+        );
     }
     // PORT: Java requests FileValue keys for the include files here (a dependency for
     // invalidation); the stand-in checks the file system directly below.
@@ -470,6 +494,8 @@ fn advance_horizon(
             }
         };
         let compiled_module_file = CompiledModuleFile::parse_and_compile(
+            // PORT: byte-strings: Java keeps the path's raw bytes
+            // (`RootedPath.asPath().getPathString()`); a path that is not UTF-8 gets U+FFFD.
             ModuleFile::create(bytes, rooted_path.to_string_lossy().into_owned()),
             &ModuleKey::root(),
             starlark_semantics,
@@ -501,58 +527,259 @@ fn active_include_statements(
         .collect()
 }
 
-/// PORT: a stand-in for `PackageLookupFunction` (PACKAGE_LOOKUP), which is not ported in this
-/// crate. The outer `Option` is "values missing"; the inner one is `None` when the package has
-/// no BUILD file (`PackageLookupValue.NO_BUILD_FILE_VALUE`), otherwise the package root.
-/// Main-repo packages are looked up under the workspace (a single package path entry); other
-/// repos under [`super::config::RepositoryDirectoryLookup::repo_root`]. Deleted packages,
-/// invalid package names and local-repository boundaries are not checked.
-fn package_lookup(
-    config: &BzlmodConfig,
-    package_id: &PackageIdentifier,
-    env: &mut Environment<'_>,
-) -> Result<Option<Option<PathBuf>>, ComputeError> {
-    let root: PathBuf = if package_id.get_repository().is_main() {
-        config.workspace_root.clone()
-    } else {
-        match config
-            .repository_directory_lookup
-            .repo_root(package_id.get_repository(), env)?
-        {
-            Some(r) => r,
-            None => return Ok(None),
-        }
-    };
-    let package_dir = root.join(package_id.get_package_fragment().get_path_string());
-    // BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY
-    for build_file_name in ["BUILD.bazel", "BUILD"] {
-        if package_dir.join(build_file_name).is_file() {
-            return Ok(Some(Some(root)));
-        }
-    }
-    Ok(Some(None))
+/// What `ModuleFileFunction` reads from a `PackageLookupValue` (the value of PACKAGE_LOOKUP for
+/// one package).
+// Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:47 PackageLookupValue
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageLookupResult {
+    /// `packageExists()`.
+    pub package_exists: bool,
+    /// `getRoot()`: the package path entry (or repository directory) the package was found
+    /// under. `None` for an unsuccessful lookup (Java throws `IllegalStateException`).
+    pub root: Option<PathBuf>,
+    /// `getBuildFileName().getFilenameFragment()`, e.g. `BUILD.bazel`. `None` for an
+    /// unsuccessful lookup (Java throws `IllegalStateException`).
+    pub build_file_name: Option<String>,
+    /// `this == PackageLookupValue.NO_BUILD_FILE_VALUE`.
+    pub is_no_build_file_value: bool,
+    /// `getErrorMsg()`. `None` for a successful lookup (Java throws `IllegalStateException`).
+    pub error_msg: Option<String>,
 }
 
-/// The message for a package without a BUILD file.
+impl PackageLookupResult {
+    /// `PackageLookupValue.success(root, buildFileName)`.
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:160 SuccessfulPackageLookupValue
+    pub fn success(root: PathBuf, build_file_name: impl Into<String>) -> PackageLookupResult {
+        PackageLookupResult {
+            package_exists: true,
+            root: Some(root),
+            build_file_name: Some(build_file_name.into()),
+            is_no_build_file_value: false,
+            error_msg: None,
+        }
+    }
+
+    /// `PackageLookupValue.NO_BUILD_FILE_VALUE`.
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:239 NoBuildFilePackageLookupValue
+    pub fn no_build_file() -> PackageLookupResult {
+        PackageLookupResult {
+            package_exists: false,
+            root: None,
+            build_file_name: None,
+            is_no_build_file_value: true,
+            error_msg: Some("BUILD file not found on package path".to_owned()),
+        }
+    }
+
+    /// Any other unsuccessful value (`DELETED_PACKAGE_VALUE`, `invalidPackageName`,
+    /// `incorrectRepositoryReference`, `NoRepositoryPackageLookupValue`) with its `getErrorMsg()`.
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:220 UnsuccessfulPackageLookupValue
+    pub fn unsuccessful(error_msg: impl Into<String>) -> PackageLookupResult {
+        PackageLookupResult {
+            package_exists: false,
+            root: None,
+            build_file_name: None,
+            is_no_build_file_value: false,
+            error_msg: Some(error_msg.into()),
+        }
+    }
+
+    /// `getRoot()`.
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:228 UnsuccessfulPackageLookupValue.getRoot
+    pub fn get_root(&self) -> &Path {
+        match &self.root {
+            Some(root) => root,
+            None => panic!("IllegalStateException"),
+        }
+    }
+
+    /// `getErrorMsg()`.
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:202 SuccessfulPackageLookupValue.getErrorMsg
+    pub fn get_error_msg(&self) -> &str {
+        match &self.error_msg {
+            Some(error_msg) => error_msg,
+            None => panic!("IllegalStateException"),
+        }
+    }
+}
+
+/// The PACKAGE_LOOKUP seam of `ModuleFileFunction`, which needs it for the packages of
+/// `include()`d files and of `single_version_override` patches
+/// (ModuleFileFunction.java:466-490 and :896-915). PACKAGE_LOOKUP belongs to the loading phase
+/// (`blaze_sky_loading`), which this crate cannot depend on, so the function is reached through
+/// [`BzlmodConfig::package_lookup`], like [`RepositoryDirectoryLookup`].
 ///
-/// PORT: Java lists every package path entry of `PATH_PACKAGE_LOCATOR` for the main repo; Blaze
-/// has a single entry (the workspace), for which Java prints the package fragment.
-// Java: com/google/devtools/build/lib/skyframe/PackageLookupFunction.java:130 PackageLookupFunction.explainNoBuildFileValue
-fn explain_no_build_file_value(package_key: &PackageIdentifier) -> String {
-    let educational_message = "Add a BUILD file to a directory to mark it as a package.";
-    if package_key.get_repository().is_main() {
-        format!(
-            "BUILD file not found in any of the following directories. {}\n - {}",
-            educational_message,
-            package_key.get_package_fragment().get_path_string()
-        )
-    } else {
-        format!(
-            "BUILD file not found in directory '{}' of external repository {}. {}",
-            package_key.get_package_fragment(),
-            package_key.get_repository(),
-            educational_message
-        )
+/// An implementation backed by the real PACKAGE_LOOKUP honours `--package_path`,
+/// `--deleted_packages`, `.bazelignore` and `REPO.bazel`'s `ignore_directories()`. The default,
+/// [`BuiltinPackageLookup`], knows none of them and can only detect the last two (see there).
+pub trait PackageLookup: Send + Sync {
+    /// `env.getValue(PackageLookupValue.key(packageId))`, reduced to what `ModuleFileFunction`
+    /// reads. `Ok(None)` when a dependency is unavailable (Java returns null); an error of
+    /// PACKAGE_LOOKUP itself (`BuildFileNotFoundException`, `InconsistentFilesystemException`)
+    /// is the `Err`.
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupFunction.java:84 PackageLookupFunction.compute
+    fn lookup(
+        &self,
+        package_id: &PackageIdentifier,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<PackageLookupResult>, ComputeError>;
+
+    /// `PackageLookupFunction.explainNoBuildFileValue(packageId, env)`: the message for a
+    /// package without a BUILD file, which lists the package path entries
+    /// (`PrecomputedValue.PATH_PACKAGE_LOCATOR`). `Ok(None)` when a dependency is unavailable.
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupFunction.java:130 PackageLookupFunction.explainNoBuildFileValue
+    fn explain_no_build_file_value(
+        &self,
+        package_id: &PackageIdentifier,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<String>, ComputeError>;
+}
+
+/// PORT: a stand-in for `PackageLookupFunction` (PACKAGE_LOOKUP), for commands and tests that do
+/// not wire the real one: a package exists when its directory has a `BUILD.bazel` or `BUILD`
+/// file, under the workspace for the main repository and under
+/// [`RepositoryDirectoryLookup::repo_root`] for another repository (the module files of modules
+/// with non-registry overrides may `include()` files of their own repository). That is
+/// PACKAGE_LOOKUP's answer only with the default `--package_path` (`%workspace%`), no
+/// `--deleted_packages`, and nothing ignored by `.bazelignore` or by `ignore_directories()` in
+/// `REPO.bazel`.
+///
+/// The stand-in does not see the two flags (`BzlmodConfig` does not carry them): whoever passes
+/// a non-default `--package_path` or any `--deleted_packages` must install a real
+/// [`PackageLookup`]. It fails loudly (`unported!`) where it can tell that its answer may be
+/// wrong: a `.bazelignore` file in the repository, a `REPO.bazel` that mentions
+/// `ignore_directories`, and an I/O error on a BUILD file.
+#[derive(Clone)]
+pub struct BuiltinPackageLookup {
+    /// The workspace directory, the only package path entry.
+    pub workspace_root: PathBuf,
+    /// Where the repositories other than the main one are (REPOSITORY_DIRECTORY seam).
+    pub repository_directory_lookup: Arc<dyn RepositoryDirectoryLookup>,
+}
+
+/// `BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY`.
+// Java: com/google/devtools/build/lib/skyframe/BazelSkyframeExecutorConstants.java:32 BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY
+const BUILD_FILES_BY_PRIORITY: [&str; 2] = ["BUILD.bazel", "BUILD"];
+
+impl BuiltinPackageLookup {
+    /// The part of the stand-in's `PackageLookupFunction.compute` that follows the lookup of the
+    /// repository's `root`: the ignored-subdirectories check and the search for a BUILD file. It
+    /// requests no Skyframe dependency.
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupFunction.java:84 PackageLookupFunction.compute
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupFunction.java:335 PackageLookupFunction.computeExternalPackageLookupValue
+    pub fn find_package(root: &Path, package_id: &PackageIdentifier) -> PackageLookupResult {
+        // packageKey.equals(LabelConstants.EXTERNAL_PACKAGE_IDENTIFIER)
+        if package_id.get_repository().is_main()
+            && package_id.get_package_fragment().get_path_string() == "external"
+        {
+            return PackageLookupResult::no_build_file();
+        }
+
+        // Check .bazelignore file under main repository. / Check .bazelignore file after
+        // fetching the external repository.
+        // PORT: IgnoredSubdirectoriesFunction is not ported here. A package under an ignored
+        // directory is DELETED_PACKAGE_VALUE in Java, which this stand-in cannot tell.
+        let bazelignore = root.join(".bazelignore");
+        if std::fs::symlink_metadata(&bazelignore).is_ok() {
+            blaze_util::unported!(
+                "IgnoredSubdirectoriesFunction.compute",
+                "{} exists; the PACKAGE_LOOKUP stand-in of ModuleFileFunction cannot tell \
+                 whether package '{}' is ignored",
+                bazelignore.display(),
+                package_id
+            );
+        }
+        let repo_file = root.join("REPO.bazel");
+        if let Ok(content) = std::fs::read(&repo_file)
+            && String::from_utf8_lossy(&content).contains("ignore_directories")
+        {
+            blaze_util::unported!(
+                "IgnoredSubdirectoriesFunction.compute",
+                "{} uses ignore_directories(); the PACKAGE_LOOKUP stand-in of \
+                 ModuleFileFunction cannot tell whether package '{}' is ignored",
+                repo_file.display(),
+                package_id
+            );
+        }
+
+        // findPackageByBuildFile with a single package path entry (--package_path is not known
+        // here; see the type's documentation).
+        let package_dir = root.join(package_id.get_package_fragment().get_path_string());
+        for build_file_name in BUILD_FILES_BY_PRIORITY {
+            let build_file = package_dir.join(build_file_name);
+            // fileValue.isFile(), following symbolic links.
+            match std::fs::metadata(&build_file) {
+                Ok(metadata) if metadata.is_file() => {
+                    return PackageLookupResult::success(root.to_path_buf(), build_file_name);
+                }
+                Ok(_) => {}
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) => {}
+                // Java: "IO errors while looking for BUILD file reading ...", a symlink cycle, ...
+                Err(e) => blaze_util::unported!(
+                    "PackageLookupFunction.getFileValue",
+                    "{}: {}",
+                    build_file.display(),
+                    e
+                ),
+            }
+        }
+        PackageLookupResult::no_build_file()
+    }
+}
+
+impl PackageLookup for BuiltinPackageLookup {
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupFunction.java:84 PackageLookupFunction.compute
+    fn lookup(
+        &self,
+        package_id: &PackageIdentifier,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<PackageLookupResult>, ComputeError> {
+        // PORT: LabelValidator.validatePackageName is skipped: the identifiers come from parsed
+        // labels. `deletedPackages` (--deleted_packages) is not known here; see the type's
+        // documentation.
+        let root: PathBuf = if package_id.get_repository().is_main() {
+            self.workspace_root.clone()
+        } else {
+            // PORT: a repository that cannot be found is the lookup's error here; Java returns
+            // NoRepositoryPackageLookupValue for RepositoryDirectoryValue.Failure.
+            match self
+                .repository_directory_lookup
+                .repo_root(package_id.get_repository(), env)?
+            {
+                Some(r) => r,
+                None => return Ok(None),
+            }
+        };
+        Ok(Some(Self::find_package(&root, package_id)))
+    }
+
+    /// PORT: Java lists every package path entry of `PATH_PACKAGE_LOCATOR` for the main repo; the
+    /// stand-in has a single entry (the workspace), for which Java prints the package fragment.
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupFunction.java:130 PackageLookupFunction.explainNoBuildFileValue
+    fn explain_no_build_file_value(
+        &self,
+        package_key: &PackageIdentifier,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<String>, ComputeError> {
+        let educational_message = "Add a BUILD file to a directory to mark it as a package.";
+        Ok(Some(if package_key.get_repository().is_main() {
+            format!(
+                "BUILD file not found in any of the following directories. {}\n - {}",
+                educational_message,
+                package_key.get_package_fragment().get_path_string()
+            )
+        } else {
+            format!(
+                "BUILD file not found in directory '{}' of external repository {}. {}",
+                package_key.get_package_fragment(),
+                package_key.get_repository(),
+                educational_message
+            )
+        }))
     }
 }
 
@@ -948,23 +1175,45 @@ fn maybe_patch_module_file(
     }
 
     // Get the patch paths.
-    let mut patch_paths: Vec<(PathBuf, PathFragment)> = Vec::new();
+    // Java: env.getValuesAndExceptions(patchPackageLookupKeys); if (env.valuesMissing()) return null
+    let mut patch_package_lookup_result: Vec<Option<PackageLookupResult>> =
+        Vec::with_capacity(patches_in_main_repo.len());
     for label in &patches_in_main_repo {
-        let Some(pkg_lookup_value) = package_lookup(config, label.get_package_identifier(), env)?
-        else {
+        patch_package_lookup_result.push(
+            config
+                .package_lookup
+                .lookup(label.get_package_identifier(), env)?,
+        );
+    }
+    if patch_package_lookup_result.iter().any(|v| v.is_none()) {
+        return Ok(None);
+    }
+    let mut patch_paths: Vec<(PathBuf, PathFragment)> = Vec::new();
+    for (i, label) in patches_in_main_repo.iter().enumerate() {
+        let Some(pkg_lookup_value) = &patch_package_lookup_result[i] else {
             return Ok(None);
         };
-        let Some(root) = pkg_lookup_value else {
+        if !pkg_lookup_value.package_exists {
+            let Some(explanation) = config
+                .package_lookup
+                .explain_no_build_file_value(label.get_package_identifier(), env)?
+            else {
+                return Ok(None);
+            };
             return Err(errorf(
                 ExternalDepsCode::BadModule,
                 format!(
                     "unable to load package for single_version_override patch {}: {}",
                     label.get_canonical_form(),
-                    explain_no_build_file_value(label.get_package_identifier())
+                    explanation
                 ),
             ));
-        };
-        patch_paths.push((root, label.to_path_fragment()));
+        }
+        // RootedPath.toRootedPath(pkgLookupValue.getRoot(), label.toPathFragment())
+        patch_paths.push((
+            pkg_lookup_value.get_root().to_path_buf(),
+            label.to_path_fragment(),
+        ));
     }
 
     // Register dependencies on the patch files and ensure that they exist.
@@ -975,6 +1224,8 @@ fn maybe_patch_module_file(
                 format!(
                     "error reading single_version_override patch [{}]/[{}]: is a directory or \
                      doesn't exist",
+                    // PORT: byte-strings: Java prints the root's raw path bytes
+                    // (RootedPath.toString); a path that is not UTF-8 gets U+FFFD here.
                     root.display(),
                     relative
                 ),
@@ -1016,6 +1267,11 @@ fn apply_patches_to_module_file(
             format!("error applying single_version_override patches to module file: {e}"),
         )
     };
+    // PORT: Java's copy is `/module/MODULE.bazel` in an InMemoryFileSystem, and PatchUtil's
+    // messages name that path ("Renaming /module/MODULE.bazel while applying patches ..."). The
+    // copy here is in a temporary directory, whose path is replaced by Java's in the messages.
+    let module_root_string = module_root.to_string_lossy().into_owned();
+    let java_paths = |message: &str| message.replace(&module_root_string, "/module");
     std::fs::create_dir_all(module_root).map_err(io_error)?;
     let module_file_path = module_root.join("MODULE.bazel");
     std::fs::write(&module_file_path, &module_file.content).map_err(io_error)?;
@@ -1025,6 +1281,8 @@ fn apply_patches_to_module_file(
         let fs: blaze_vfs::FileSystemRef = Arc::new(blaze_vfs::UnixFileSystem::new(
             blaze_vfs::DigestHashFunction::Sha256,
         ));
+        // PORT: byte-strings: Java passes `Path` objects holding the raw bytes of the patch
+        // and module file paths; a path that is not UTF-8 gets U+FFFD here.
         let vfs_path = |p: &Path| blaze_vfs::Path::create_from_str(&p.to_string_lossy(), &fs);
         match apply_to_single_file(
             &vfs_path(&patch_path),
@@ -1038,15 +1296,20 @@ fn apply_patches_to_module_file(
                     ExternalDepsCode::BadModule,
                     format!(
                         "error applying single_version_override patch {} to module file: {}",
+                        // PORT: byte-strings: Java prints the path's raw bytes
+                        // (Path.toString); a path that is not UTF-8 gets U+FFFD here.
                         patch_path.display(),
-                        e.message
+                        java_paths(&e.message)
                     ),
                 ));
             }
             Err(PatchError::Io(e)) => {
                 return Err(errorf(
                     ExternalDepsCode::BadModule,
-                    format!("error applying single_version_override patches to module file: {e}"),
+                    format!(
+                        "error applying single_version_override patches to module file: {}",
+                        java_paths(&e.to_string())
+                    ),
                 ));
             }
         }
@@ -1062,6 +1325,8 @@ fn read_module_file(path: &Path) -> Result<Vec<u8>, ComputeError> {
             ExternalDepsCode::ModuleNotFound,
             format!(
                 "MODULE.bazel expected but not found at {}: {}",
+                // PORT: byte-strings: Java prints the path's raw bytes (Path.toString); a
+                // path that is not UTF-8 gets U+FFFD here.
                 path.display(),
                 java_io_message(path, &e)
             ),
@@ -1076,6 +1341,8 @@ fn create_module_file(path: &Path, bytes: &[u8]) -> Result<(), ComputeError> {
             ExternalDepsCode::ExternalDepsUnknown,
             format!(
                 "MODULE.bazel cannot be created at {}: {}",
+                // PORT: byte-strings: Java prints the path's raw bytes (Path.toString); a
+                // path that is not UTF-8 gets U+FFFD here.
                 path.display(),
                 java_io_message(path, &e)
             ),

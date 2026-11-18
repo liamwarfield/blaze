@@ -1,0 +1,208 @@
+genrule(
+    name = "simple",
+    srcs = ["a.txt"],
+    outs = ["simple.out"],
+    cmd = "cat $< > $@",
+)
+
+genrule(
+    name = "multi",
+    srcs = ["a.txt", "b.txt"],
+    outs = ["m1.out", "m2.out"],
+    cmd = "cat $(SRCS) > $(location m1.out) && echo $(OUTS) $(@D) $(RULEDIR) $(BINDIR) $(GENDIR) $(TARGET_CPU) $(COMPILATION_MODE) > $(location :m2.out)",
+)
+
+genrule(
+    name = "tool_gen",
+    outs = ["tool.sh"],
+    cmd = "echo '#!/bin/sh' > $@; echo 'cat \"$$@\"' >> $@",
+    executable = True,
+)
+
+genrule(
+    name = "tooled",
+    srcs = [":simple", "b.txt"],
+    outs = ["tooled.out"],
+    cmd = "$(location :tool_gen) $(locations :simple) $(execpath b.txt) > $@",
+    message = "Tooling it",
+    tags = ["no-sandbox", "requires-network", "manual-ish"],
+    tools = [":tool_gen"],
+)
+
+genrule(
+    name = "bindir",
+    outs = ["b.out"],
+    cmd = "echo $(rootpath a.txt) $(rlocationpath a.txt) $(execpaths :multi) > $@",
+    output_to_bindir = True,
+    srcs = ["a.txt", ":multi"],
+)
+
+genrule(
+    name = "local",
+    outs = ["l.out"],
+    cmd = "echo local > $@",
+    local = True,
+)
+
+genrule(
+    name = "bash",
+    outs = ["bash.out"],
+    cmd = "echo cmd > $@",
+    cmd_bash = "echo cmd_bash > $@",
+    cmd_bat = "echo cmd_bat > $@",
+)
+
+genrule(
+    name = "stamped",
+    outs = ["s.out"],
+    cmd = "echo stamped > $@",
+    stamp = True,
+)
+
+genrule(
+    name = "heuristic",
+    srcs = ["a.txt"],
+    outs = ["h.out"],
+    cmd = "cat a.txt > $@ # //:b.txt :a.txt",
+)
+
+genrule(
+    name = "long",
+    outs = ["long.out"],
+    cmd = "echo " + ("x" * 70000) + " | wc -c > $@",
+)
+
+genrule(
+    name = "select_cmd",
+    outs = ["sel.out"],
+    cmd = select({"//conditions:default": "echo default > $@"}),
+)
+
+genrule(
+    name = "missing_out",
+    outs = ["never.out"],
+    cmd = "true",
+)
+
+genrule(
+    name = "dir_out",
+    outs = ["d"],
+    cmd = "mkdir $@",
+)
+
+genrule(
+    name = "fails",
+    outs = ["f.out"],
+    cmd = "echo oops >&2; exit 3",
+)
+
+genrule(
+    name = "bad_var",
+    outs = ["bv.out"],
+    cmd = "echo $(NO_SUCH_VAR) > $@",
+)
+
+genrule(
+    name = "bad_location",
+    outs = ["bl.out"],
+    cmd = "echo $(location :nothing) > $@",
+)
+
+genrule(
+    name = "dollar_lt_multi",
+    srcs = ["a.txt", "b.txt"],
+    outs = ["dl.out"],
+    cmd = "cat $< > $@",
+)
+
+genrule(
+    name = "at_multi",
+    outs = ["am1.out", "am2.out"],
+    cmd = "touch $@",
+)
+
+genrule(
+    name = "exec_tools",
+    srcs = ["a.txt"],
+    outs = ["et.out"],
+    cmd = "$(execpath :tool_gen) $(SRCS) > $@",
+    testonly = True,
+    tools = [":tool_gen"],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "with_vars",
+    outs = ["wv.out"],
+    cmd = "echo $(MY_VAR) $(COMPILATION_MODE) $(TARGET_CPU) > $@",
+    toolchains = ["//vars"],
+)
+
+genrule(
+    name = "heuristic_on",
+    srcs = ["a.txt"],
+    outs = ["ho.out"],
+    cmd = "cat a.txt :a.txt //:a.txt > $@ # b.txt --x=:tool_gen,:a.txt",
+    heuristic_label_expansion = True,
+    tools = [":tool_gen"],
+)
+
+genrule(
+    name = "heuristic_multi",
+    srcs = [":multi"],
+    outs = ["hm.out"],
+    cmd = "cat :multi > $@",
+    heuristic_label_expansion = True,
+)
+
+genrule(
+    name = "exec_multi",
+    outs = ["em1.out", "em2.out"],
+    cmd = "touch $(OUTS)",
+    executable = True,
+)
+
+genrule(
+    name = "no_cmd",
+    outs = ["nc.out"],
+)
+
+genrule(
+    name = "no_outs",
+    outs = [],
+    cmd = "true",
+)
+
+genrule(
+    name = "tagged_local",
+    outs = ["tl.out"],
+    cmd = "echo $(@D) $(RULEDIR) > $@",
+    local = True,
+    tags = ["no-sandbox", "requires-network", "no-remote", "no-cache"],
+)
+
+genrule(
+    name = "subdir_out",
+    outs = ["sub/dir/so.out"],
+    cmd = "echo $(@D) $(RULEDIR) $${PWD:+pwd} $$(basename /p/q) > $@",
+)
+
+genrule(
+    name = "darwin",
+    outs = ["dw.out"],
+    cmd = "echo x > $@",
+    tags = ["requires-darwin"],
+)
+
+genrule(
+    name = "braces",
+    outs = ["br.out"],
+    cmd = "echo ${HOME} > $@",
+)
+
+genrule(
+    name = "multi_location",
+    srcs = [":multi"],
+    outs = ["ml.out"],
+    cmd = "echo $(location :multi) > $@",
+)

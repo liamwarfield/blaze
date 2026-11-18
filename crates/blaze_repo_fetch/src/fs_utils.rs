@@ -164,6 +164,7 @@ pub fn read_content(input_file: &Path) -> io::Result<Vec<u8>> {
 pub fn read_lines(input_file: &Path) -> io::Result<Vec<String>> {
     let content = read_content(input_file)?;
     // PORT: Java decodes with REPLACE for malformed UTF-8.
+    // PORT: byte-strings (Java also replaces malformed input here)
     let text = String::from_utf8_lossy(&content);
     Ok(split_lines(&text))
 }

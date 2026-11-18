@@ -43,6 +43,8 @@ pub struct AqueryProcessor {
     /// the `QueryRuntimeHelper`.
     output: OutputStream,
     working_directory: blaze_vfs::Path,
+    /// `env.getSkyframeExecutor().tracksStateForIncrementality()`.
+    tracks_state_for_incrementality: bool,
 }
 
 impl AqueryProcessor {
@@ -54,6 +56,7 @@ impl AqueryProcessor {
         reporter: Arc<dyn ExtendedEventHandler>,
         output: OutputStream,
         working_directory: blaze_vfs::Path,
+        tracks_state_for_incrementality: bool,
     ) -> Result<Self, AqueryActionFilterException> {
         let action_filters = build_action_filters(query_expression.as_ref())?;
         Ok(AqueryProcessor {
@@ -64,6 +67,7 @@ impl AqueryProcessor {
             reporter,
             output,
             working_directory,
+            tracks_state_for_incrementality,
         })
     }
 
@@ -197,7 +201,7 @@ impl AnalysisPostProcessor for AqueryProcessor {
         let Some(query_expression) = &self.query_expression else {
             return Ok(());
         };
-        before_post_analysis_query()?;
+        before_post_analysis_query(self.tracks_state_for_incrementality)?;
 
         // doPostAnalysisQuery
         let walkable_graph = skyframe_executor.get_walkable_graph();

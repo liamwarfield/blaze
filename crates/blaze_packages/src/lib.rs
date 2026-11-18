@@ -2,7 +2,12 @@
 //! `analysis/starlark`, marked `// PORT: move to blaze_analysis`). Design and file ownership:
 //! `crates/blaze_packages/DESIGN.md`.
 
-#![allow(clippy::too_many_arguments, clippy::new_without_default)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::new_without_default,
+    clippy::type_complexity,
+    clippy::large_enum_variant
+)]
 
 pub mod attribute;
 pub mod build;

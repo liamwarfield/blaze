@@ -43,9 +43,9 @@ impl ArgChunk for SimpleArgChunk {
     fn total_arg_length(&self, _path_mapper: &dyn PathMapper) -> i32 {
         let mut total: i32 = 0;
         for arg in &self.args {
-            // PORT: Java String.length() counts UTF-16 units; command lines here are byte strings
-            // in Bazel's internal (Latin-1) form, where length is the UTF-8 byte count.
-            total = total.wrapping_add(arg.len() as i32 + 1);
+            // Java `String.length()` of an internal string.
+            total =
+                total.wrapping_add(blaze_util::string_encoding::internal_length(arg) as i32 + 1);
         }
         total
     }
@@ -105,9 +105,8 @@ pub trait CommandLine: Send + Sync + fmt::Debug + std::any::Any {
         fingerprint: &mut Fingerprint,
     ) -> Result<(), CommandLineError> {
         for s in self.arguments_with(None, for_action_key(effective_output_paths_mode))? {
-            // PORT: StringEncoding. Arguments are Bazel internal strings, which Java's addString
-            // UTF-8-encodes once more (identical to add_string for ASCII).
-            fingerprint.add_internal_string(&s);
+            // Invariant: arguments are internal strings (see `fingerprint_util`).
+            fingerprint.add_string(&s);
         }
         Ok(())
     }

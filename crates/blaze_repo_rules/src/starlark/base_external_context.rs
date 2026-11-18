@@ -82,16 +82,44 @@ use super::execution_result::latin1_internal_string;
 use super::os::StarlarkOS;
 use super::path::StarlarkPath;
 use crate::env_handle::SkyEnv;
+use crate::repository::exceptions::JavaThrowable;
 use crate::repository::repo_recorded_input::MaybeValue;
 use crate::repository::repo_recorded_input::RepoCacheFriendlyPath;
 use crate::repository::repo_recorded_input::RepoRecordedInput;
 use crate::repository::repo_recorded_input::RepoRecordedInputWithValue;
 use crate::repository::repository_utils;
 
-/// Java `EvalException(msg)` (also used for `RepositoryFunctionException`s and `IOException`s
-/// thrown out of a Starlark method, which become an `EvalException` with their message).
+/// Java `EvalException(msg)` / `Starlark.errorf(...)` thrown by a Starlark method.
+///
+/// A `RepositoryFunctionException` goes through [`repository_function_exception`] instead: its
+/// message is not its cause's message.
 pub fn eval_error(msg: impl fmt::Display) -> starlark::Error {
     starlark::Error::new_other(anyhow::anyhow!("{msg}"))
+}
+
+/// Java `throw new RepositoryFunctionException(cause, transience)` escaping a `@StarlarkMethod`.
+///
+/// `RepositoryFunctionException` is a `SkyFunctionException`, whose constructor calls
+/// `Exception(Throwable cause)`: its message is `cause.toString()`. The interpreter then wraps
+/// the checked exception in `new EvalException(e)`, which takes over that message. So Starlark
+/// sees `java.io.IOException: <message>` (or the subclass' fully qualified name) for an
+/// `IOException` cause, and the bare message for an `EvalException` cause.
+///
+/// Every `RepositoryFunctionException` thrown by `StarlarkBaseExternalContext`,
+/// `StarlarkRepositoryContext` and `StarlarkPath` goes through this function; the conversion
+/// into [`JavaThrowable`] decides the class name.
+// Java: com/google/devtools/build/lib/bazel/repository/RepositoryFunctionException.java:34 RepositoryFunctionException.<init>
+// Java: com/google/devtools/build/skyframe/SkyFunctionException.java:64 SkyFunctionException.<init>
+// Java: net/starlark/java/eval/MethodDescriptor.java:295 MethodDescriptor.call
+pub fn repository_function_exception(cause: impl Into<JavaThrowable>) -> starlark::Error {
+    eval_error(cause.into().to_java_string())
+}
+
+/// Throws the error of [`StarlarkBaseExternalContext::check_in_output_directory`]: `new
+/// RepositoryFunctionException(Starlark.errorf(...), Transience.PERSISTENT)`.
+// Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:334 StarlarkBaseExternalContext.checkInOutputDirectory
+pub fn check_in_output_directory_error(message: String) -> starlark::Error {
+    repository_function_exception(JavaThrowable::eval_exception(message))
 }
 
 /// What [`StarlarkBaseExternalContext::close`] throws.
@@ -173,6 +201,8 @@ impl ProcessWrapperCommandLine {
             // Java Duration.toSeconds(): floor division.
             full_command_line.push(format!("--timeout={}", timeout_millis.div_euclid(1000)));
         }
+        // Java: `if (killDelay != null)`: a command without LocalExecutionOptions passes no
+        // kill delay at all.
         if let Some(kill_delay) = self.kill_delay {
             full_command_line.push(format!("--kill_delay={}", kill_delay.as_secs()));
         }
@@ -183,6 +213,21 @@ impl ProcessWrapperCommandLine {
         full_command_line.extend(self.command_arguments);
         full_command_line
     }
+}
+
+/// The command line `execute` runs when there is a process-wrapper: Java
+/// `processWrapper.commandLineBuilder(args).setTimeout(Duration.ofMillis(timeoutMillis)).build()`.
+/// Repository rules set no stdout, stderr or statistics path.
+// Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:2079 StarlarkBaseExternalContext.execute
+fn process_wrapper_command_line(
+    process_wrapper: &ProcessWrapper,
+    args: Vec<String>,
+    timeout_millis: i64,
+) -> Vec<String> {
+    process_wrapper
+        .command_line_builder(args)
+        .set_timeout_millis(timeout_millis)
+        .build()
 }
 
 /// The state of a `repository_ctx` / `module_ctx` (Java `StarlarkBaseExternalContext` fields).
@@ -196,8 +241,9 @@ pub struct StarlarkBaseExternalContext {
     pub download_manager: Option<Arc<DownloadManager>>,
     pub timeout_scaling: f64,
     pub process_wrapper: Option<Path>,
-    /// Java `ProcessWrapper.killDelay` (`--local_termination_grace_seconds` when the command
-    /// has `LocalExecutionOptions`, else null).
+    /// Java `ProcessWrapper.killDelay` (`LocalExecutionOptions.getLocalSigkillGraceSeconds()`,
+    /// `--local_termination_grace_seconds`, when the command has `LocalExecutionOptions`, else
+    /// null: no `--kill_delay` argument).
     pub process_wrapper_kill_delay: Option<Duration>,
     /// Java `ProcessWrapper.gracefulSigterm` (`--experimental_process_wrapper_graceful_sigterm`).
     pub process_wrapper_graceful_sigterm: bool,
@@ -236,13 +282,13 @@ impl StarlarkBaseExternalContext {
             download_manager,
             timeout_scaling,
             process_wrapper,
-            // PORT: Java reads these from LocalExecutionOptions (ProcessWrapper
-            // .fromCommandEnvironment); RepoServices does not carry them yet. These are the
-            // option defaults for commands that inherit BuildCommand's options (build, test,
-            // run, fetch, ...): --local_termination_grace_seconds=15,
-            // --experimental_process_wrapper_graceful_sigterm=false. The caller overrides them
-            // when it knows the actual options.
-            process_wrapper_kill_delay: Some(Duration::from_secs(15)),
+            // Java: the `ProcessWrapper` object carries these (ProcessWrapper
+            // .fromCommandEnvironment reads them from LocalExecutionOptions). Here they are the
+            // values of a command without LocalExecutionOptions (`killDelay == null`, no
+            // graceful SIGTERM) until the caller copies `RepoServices
+            // .process_wrapper_kill_delay` / `.process_wrapper_graceful_sigterm` into them
+            // (`with_process_wrapper_options`).
+            process_wrapper_kill_delay: None,
             process_wrapper_graceful_sigterm: false,
             starlark_semantics,
             identifying_string_for_logging,
@@ -253,6 +299,19 @@ impl StarlarkBaseExternalContext {
             allow_watching_paths_outside_workspace,
             was_successful: false,
         }
+    }
+
+    /// Sets the `killDelay` and `gracefulSigterm` of Java's `ProcessWrapper` object
+    /// (`RepoServices::process_wrapper_kill_delay`, `process_wrapper_graceful_sigterm`).
+    // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:72 ProcessWrapper.fromCommandEnvironment
+    pub fn with_process_wrapper_options(
+        mut self,
+        kill_delay: Option<Duration>,
+        graceful_sigterm: bool,
+    ) -> Self {
+        self.process_wrapper_kill_delay = kill_delay;
+        self.process_wrapper_graceful_sigterm = graceful_sigterm;
+        self
     }
 
     /// Marks the evaluation using this context as otherwise successful. This is used to
@@ -378,8 +437,9 @@ impl StarlarkBaseExternalContext {
             .collect()
     }
 
-    /// `Err` is the message of Java's `RepositoryFunctionException` (an `EvalException`,
-    /// PERSISTENT).
+    /// `Err` is the message of the `EvalException` (`Starlark.errorf`) that Java wraps in a
+    /// PERSISTENT `RepositoryFunctionException`; callers throw it with
+    /// [`check_in_output_directory_error`].
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:331 StarlarkBaseExternalContext.checkInOutputDirectory
     pub fn check_in_output_directory(
         &self,
@@ -428,10 +488,12 @@ impl StarlarkBaseExternalContext {
                 Ok(c) => Ok(Some(c)),
                 Err(e) => {
                     self.warn_about_checksum_error(urls, &e.message);
-                    Err(ChecksumValidationError::Repository(format!(
-                        "Checksum error in {}: {}",
-                        self.identifying_string_for_logging, e.message
-                    )))
+                    Err(ChecksumValidationError::Repository(
+                        JavaThrowable::eval_exception(format!(
+                            "Checksum error in {}: {}",
+                            self.identifying_string_for_logging, e.message
+                        )),
+                    ))
                 }
             };
         }
@@ -444,10 +506,12 @@ impl StarlarkBaseExternalContext {
             Ok(c) => Ok(Some(c)),
             Err(e) => {
                 self.warn_about_checksum_error(urls, &e.message);
-                Err(ChecksumValidationError::Repository(format!(
-                    "Checksum error in {}: {}",
-                    self.identifying_string_for_logging, e.message
-                )))
+                Err(ChecksumValidationError::Repository(
+                    JavaThrowable::eval_exception(format!(
+                        "Checksum error in {}: {}",
+                        self.identifying_string_for_logging, e.message
+                    )),
+                ))
             }
         }
     }
@@ -523,9 +587,10 @@ impl StarlarkBaseExternalContext {
         self.os_object.clone()
     }
 
-    /// `Err` is the message of Java's `RepositoryFunctionException`.
+    /// `Err` is the cause of Java's `RepositoryFunctionException` (the `IOException`,
+    /// TRANSIENT); callers throw it with [`repository_function_exception`].
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:1843 StarlarkBaseExternalContext.createDirectory
-    fn create_directory(directory: &Path) -> Result<(), String> {
+    fn create_directory(directory: &Path) -> Result<(), JavaThrowable> {
         let r = (|| -> io::Result<()> {
             if !directory.exists() {
                 Self::make_directories(directory)?;
@@ -535,7 +600,7 @@ impl StarlarkBaseExternalContext {
         })();
         // PORT: Java's InvalidPathException branch has no counterpart (paths are not converted
         // to java.nio paths).
-        r.map_err(|e| e.to_string())
+        r.map_err(JavaThrowable::from)
     }
 
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:2366 StarlarkBaseExternalContext.findCommandOnPath
@@ -578,10 +643,11 @@ fn java_is_blank(s: &str) -> bool {
 }
 
 /// Errors from `validateChecksum`: Java throws an `EvalException` (propagates immediately) or a
-/// `RepositoryFunctionException` (deferred until the download finishes).
+/// `RepositoryFunctionException` (deferred until the download finishes; this is its cause, an
+/// `EvalException`).
 enum ChecksumValidationError {
     Eval(String),
-    Repository(String),
+    Repository(JavaThrowable),
 }
 
 /// The `FetchProgress` posted by `report_progress` (Java anonymous class).
@@ -667,7 +733,8 @@ struct PendingDownloadTask {
 #[derive(Debug)]
 struct DownloadFuture {
     handle: Option<JoinHandle<Result<Path, IoException>>>,
-    result: Option<Result<Path, IoException>>,
+    /// The download's result; the error is the `IOException` Java's future fails with.
+    result: Option<Result<Path, JavaThrowable>>,
 }
 
 impl PendingDownloadTask {
@@ -687,7 +754,7 @@ impl PendingDownloadTask {
     }
 
     /// Java `Futures.immediateFailedFuture(e)`.
-    fn failed(description: String, location: blaze_events::Location, e: IoException) -> Self {
+    fn failed(description: String, location: blaze_events::Location, e: JavaThrowable) -> Self {
         PendingDownloadTask {
             description,
             location,
@@ -724,13 +791,13 @@ impl PendingDownloadTask {
                 Ok(r) => r,
                 Err(panic) => std::panic::resume_unwind(panic),
             };
-            future.result = Some(result);
+            future.result = Some(result.map_err(JavaThrowable::from));
         }
     }
 
     /// Java `downloadManager.finalizeDownload(future)`: the download's result.
     // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:162 DownloadManager.finalizeDownload
-    fn finalize(&self) -> Result<Path, IoException> {
+    fn finalize(&self) -> Result<Path, JavaThrowable> {
         self.close();
         self.future
             .lock()
@@ -752,9 +819,9 @@ pub struct PendingDownload {
     output_path: StarlarkPath,
     #[allocative(skip)]
     checksum: Option<Checksum>,
-    /// The message of the deferred checksum `RepositoryFunctionException`.
+    /// The cause of the deferred checksum `RepositoryFunctionException`.
     #[allocative(skip)]
-    checksum_validation: Option<String>,
+    checksum_validation: Option<JavaThrowable>,
     #[allocative(skip)]
     task: Arc<PendingDownloadTask>,
 }
@@ -855,12 +922,12 @@ fn calculate_checksum(
     }
 }
 
-/// `Err` is the message of Java's `RepositoryFunctionException`.
+/// `Err` is the cause of Java's `RepositoryFunctionException` (a new `IOException`, PERSISTENT).
 // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:559 StarlarkBaseExternalContext.calculateDownloadResult
 fn calculate_download_result(
     checksum: Option<&Checksum>,
     downloaded_path: &Path,
-) -> Result<DownloadOutcome, String> {
+) -> Result<DownloadOutcome, JavaThrowable> {
     let r = (|| -> Result<(Checksum, i64), IoException> {
         let final_checksum = calculate_checksum(checksum, downloaded_path)?;
         let size = downloaded_path.get_file_size()?;
@@ -868,16 +935,16 @@ fn calculate_download_result(
     })();
     match r {
         Ok((checksum, size)) => Ok(DownloadOutcome::Success { checksum, size }),
-        Err(_) => Err(format!(
+        Err(_) => Err(JavaThrowable::io_exception(format!(
             "Couldn't hash downloaded file ({})",
             downloaded_path.get_path_string()
-        )),
+        ))),
     }
 }
 
 // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:658 StarlarkBaseExternalContext.completeDownload
 fn complete_download(pending_download: &PendingDownload) -> starlark::Result<DownloadOutcome> {
-    let downloaded = (|| -> Result<Path, IoException> {
+    let downloaded = (|| -> Result<Path, JavaThrowable> {
         let downloaded_path = pending_download.task.finalize()?;
         if pending_download.executable {
             pending_download
@@ -895,14 +962,15 @@ fn complete_download(pending_download: &PendingDownload) -> starlark::Result<Dow
                 return Ok(DownloadOutcome::Failed);
             }
             // Java: RepositoryFunctionException(e, Transience.TRANSIENT)
-            return Err(eval_error(e.get_message()));
+            return Err(repository_function_exception(e));
         }
     };
     if let Some(checksum_validation) = &pending_download.checksum_validation {
-        return Err(eval_error(checksum_validation));
+        // Java: throw pendingDownload.checksumValidation
+        return Err(repository_function_exception(checksum_validation.clone()));
     }
     calculate_download_result(pending_download.checksum.as_ref(), &downloaded_path)
-        .map_err(eval_error)
+        .map_err(repository_function_exception)
 }
 
 /// This method wraps the deleteTree method in a retry loop, to solve an issue when trying to
@@ -910,8 +978,10 @@ fn complete_download(pending_download: &PendingDownload) -> starlark::Result<Dow
 /// on filesystems where unlinking a file may not be immediately reflected in a list of its parent
 /// directory. See https://github.com/bazelbuild/bazel/issues/23687 and
 /// https://github.com/bazelbuild/bazel/issues/20013.
+///
+/// `Err` is the cause of Java's `RepositoryFunctionException` (a new `IOException`, TRANSIENT).
 // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:1212 StarlarkBaseExternalContext.deleteTreeWithRetries
-fn delete_tree_with_retries(download_directory: &Path) -> Result<(), String> {
+fn delete_tree_with_retries(download_directory: &Path) -> Result<(), JavaThrowable> {
     let start = Instant::now();
     let deadline = start + Duration::from_secs(5);
     let mut attempts: i32 = 1;
@@ -929,12 +999,13 @@ fn delete_tree_with_retries(download_directory: &Path) -> Result<(), String> {
             }
             Err(e) => {
                 if Instant::now() > deadline {
-                    return Err(format!(
+                    // Java: RepositoryFunctionException(new IOException(..., e), TRANSIENT)
+                    return Err(JavaThrowable::io_exception(format!(
                         "Couldn't delete temporary directory ({}) after {} attempts: {}",
                         download_directory.get_path_string(),
                         attempts,
-                        e
-                    ));
+                        JavaThrowable::from(&e).get_message()
+                    )));
                 }
             }
         }
@@ -1365,18 +1436,31 @@ fn get_urls(
         UrlParam::BadItem(msg) => return Err(eval_error(msg)),
     };
     if ensure_non_empty && url_strings.is_empty() {
-        return Err(eval_error("urls not set"));
+        // Java: RepositoryFunctionException(new IOException("urls not set"), PERSISTENT)
+        return Err(repository_function_exception(JavaThrowable::io_exception(
+            "urls not set",
+        )));
     }
     let mut urls = Vec::new();
     for url_string in url_strings {
         let url = match JavaUri::create(url_string) {
             Ok(u) => u,
-            Err(_) => return Err(eval_error(format!("Bad URL: {}", url_string))),
+            Err(_) => {
+                // Java: RepositoryFunctionException(new IOException("Bad URL: " + urlString, e),
+                // PERSISTENT)
+                return Err(repository_function_exception(JavaThrowable::io_exception(
+                    format!("Bad URL: {}", url_string),
+                )));
+            }
         };
         if !http_utils::is_url_supported_by_downloader(&url) {
-            return Err(eval_error(format!(
-                "Unsupported protocol: {}",
-                url.get_scheme().unwrap_or("null")
+            // Java: RepositoryFunctionException(new IOException("Unsupported protocol: " +
+            // url.getScheme()), PERSISTENT)
+            return Err(repository_function_exception(JavaThrowable::io_exception(
+                format!(
+                    "Unsupported protocol: {}",
+                    url.get_scheme().unwrap_or("null")
+                ),
             )));
         }
         if !checksum_given {
@@ -1391,10 +1475,11 @@ fn get_urls(
         }
     }
     if ensure_non_empty && urls.is_empty() {
-        return Err(eval_error(
+        // Java: RepositoryFunctionException(new IOException(...), PERSISTENT)
+        return Err(repository_function_exception(JavaThrowable::io_exception(
             "No URLs left after removing plain http URLs due to missing checksum. Please provide \
              either a checksum or an https download location.",
-        ));
+        )));
     }
     Ok(urls)
 }
@@ -1438,14 +1523,17 @@ impl ExternalContext {
         })
     }
 
-    /// Java `getValueAndRecordInput`; an `IOException` becomes an error with its message.
+    /// Java `getValueAndRecordInput` in a `try` whose `catch (IOException e)` throws `new
+    /// RepositoryFunctionException(e, Transience.TRANSIENT)` (`maybeWatch`, `maybeWatchDirents`,
+    /// `StarlarkRepositoryContext.watchTree`).
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:283 StarlarkBaseExternalContext.getValueAndRecordInput
+    // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryContext.java:606 StarlarkRepositoryContext.watchTree
     pub fn get_value_and_record_input(
         &mut self,
         input: RepoRecordedInput,
     ) -> starlark::Result<Option<String>> {
         self.get_value_and_record_input_or_io(input)?
-            .map_err(eval_error)
+            .map_err(|reason| repository_function_exception(JavaThrowable::io_exception(reason)))
     }
 
     /// A path from a string (relative to the working directory), label, or path.
@@ -1488,9 +1576,10 @@ impl ExternalContext {
         } else {
             ShouldWatch::Auto
         };
-        // Java: a RepositoryFunctionException becomes Starlark.errorf("%s", cause message),
-        // which is what maybe_watch returns.
-        self.maybe_watch(&starlark_path, should_watch)?;
+        // Java: catch (RepositoryFunctionException e) { throw Starlark.errorf("%s",
+        // e.getCause().getMessage()); }: here the IOException's message, without its class.
+        self.maybe_watch_or_io(&starlark_path, should_watch)?
+            .map_err(eval_error)?;
         Ok(starlark_path)
     }
 
@@ -1580,15 +1669,28 @@ impl ExternalContext {
         starlark_path: &StarlarkPath,
         should_watch: ShouldWatch,
     ) -> starlark::Result<()> {
+        // Java: catch (IOException e) { throw new RepositoryFunctionException(e, TRANSIENT); }
+        self.maybe_watch_or_io(starlark_path, should_watch)?
+            .map_err(|reason| repository_function_exception(JavaThrowable::io_exception(reason)))
+    }
+
+    /// The body of Java's `maybeWatch`: `Ok(Err(message))` is the `IOException` of
+    /// `getValueAndRecordInput` (the cause of the `RepositoryFunctionException` `maybeWatch`
+    /// throws, which `getPathFromLabel` unwraps again).
+    // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:1721 StarlarkBaseExternalContext.maybeWatch
+    fn maybe_watch_or_io(
+        &mut self,
+        starlark_path: &StarlarkPath,
+        should_watch: ShouldWatch,
+    ) -> starlark::Result<Result<(), String>> {
         let Some(repo_cache_friendly_path) =
             self.to_repo_cache_friendly_path(starlark_path.get_path(), should_watch)?
         else {
-            return Ok(());
+            return Ok(Ok(()));
         };
-        // Java: an IOException becomes RepositoryFunctionException(e, TRANSIENT).
-        self.get_value_and_record_input_or_io(RepoRecordedInput::File(repo_cache_friendly_path))?
-            .map_err(eval_error)?;
-        Ok(())
+        Ok(self
+            .get_value_and_record_input_or_io(RepoRecordedInput::File(repo_cache_friendly_path))?
+            .map(|_| ()))
     }
 
     /// Records a watch on a directory's non-recursive contents.
@@ -1608,14 +1710,9 @@ impl ExternalContext {
         // Dirents can only be recorded for directories, so we have to additionally track the
         // type of the file. When checking for invalidation, the type is verified first and if it
         // doesn't match, the directory entries are never requested.
-        self.get_value_and_record_input_or_io(RepoRecordedInput::File(
-            repo_cache_friendly_path.clone(),
-        ))?
-        .map_err(eval_error)?;
-        self.get_value_and_record_input_or_io(RepoRecordedInput::Dirents(
-            repo_cache_friendly_path,
-        ))?
-        .map_err(eval_error)?;
+        // Java: catch (IOException e) { throw new RepositoryFunctionException(e, TRANSIENT); }
+        self.get_value_and_record_input(RepoRecordedInput::File(repo_cache_friendly_path.clone()))?;
+        self.get_value_and_record_input(RepoRecordedInput::Dirents(repo_cache_friendly_path))?;
         Ok(())
     }
 
@@ -1657,13 +1754,13 @@ impl ExternalContext {
 
         self.base
             .check_in_output_directory("write", &output_path)
-            .map_err(eval_error)?;
+            .map_err(check_in_output_directory_error)?;
         let description = format!("downloading to '{}'", output_path);
         let task = match StarlarkBaseExternalContext::make_directories(output_path.get_path()) {
             Err(e) => Arc::new(PendingDownloadTask::failed(
                 description,
                 location,
-                IoException::from(e),
+                JavaThrowable::from(e),
             )),
             Ok(()) => {
                 let handle = self.base.start_download(
@@ -1746,11 +1843,11 @@ impl ExternalContext {
         let output_path = self.get_path(output)?;
         self.base
             .check_in_output_directory("write", &output_path)
-            .map_err(eval_error)?;
+            .map_err(check_in_output_directory_error)?;
         StarlarkBaseExternalContext::create_directory(output_path.get_path())
-            .map_err(eval_error)?;
+            .map_err(repository_function_exception)?;
 
-        let downloaded = (|| -> Result<(Path, Path), IoException> {
+        let downloaded = (|| -> Result<(Path, Path), JavaThrowable> {
             // Download to temp directory inside the outputDirectory and delete it after
             // extraction
             let download_directory = output_path.get_path().create_temp_directory("temp")?;
@@ -1786,11 +1883,12 @@ impl ExternalContext {
                     return Ok(DownloadOutcome::Failed);
                 }
                 // Java: RepositoryFunctionException(e, Transience.TRANSIENT)
-                return Err(eval_error(e.get_message()));
+                return Err(repository_function_exception(e));
             }
         };
         if let Some(checksum_validation) = checksum_validation {
-            return Err(eval_error(checksum_validation));
+            // Java: throw checksumValidation
+            return Err(repository_function_exception(checksum_validation));
         }
         self.base
             .env
@@ -1815,7 +1913,8 @@ impl ExternalContext {
             /* force_decompressor_type= */
             None,
         )
-        .map_err(|e| eval_error(e.get_message()))?;
+        // Java: DecompressorValue.decompress throws RepositoryFunctionException.
+        .map_err(repository_function_exception)?;
         self.base
             .env
             .get()
@@ -1824,9 +1923,9 @@ impl ExternalContext {
                 output_path.get_path().to_string(),
             )));
 
-        let download_result =
-            calculate_download_result(checksum.as_ref(), &downloaded_path).map_err(eval_error)?;
-        delete_tree_with_retries(&download_directory).map_err(eval_error)?;
+        let download_result = calculate_download_result(checksum.as_ref(), &downloaded_path)
+            .map_err(repository_function_exception)?;
+        delete_tree_with_retries(&download_directory).map_err(repository_function_exception)?;
         Ok(download_result)
     }
 
@@ -1848,10 +1947,13 @@ impl ExternalContext {
         let archive_path = self.get_path(archive)?;
 
         if !archive_path.exists() {
-            return Err(eval_error(format!(
-                "Archive path '{}' does not exist.",
-                archive_path
-            )));
+            // Java: RepositoryFunctionException(Starlark.errorf(...), Transience.TRANSIENT)
+            return Err(repository_function_exception(
+                JavaThrowable::eval_exception(format!(
+                    "Archive path '{}' does not exist.",
+                    archive_path
+                )),
+            ));
         }
         if archive_path.is_dir() {
             return Err(eval_error(format!(
@@ -1864,7 +1966,7 @@ impl ExternalContext {
         let output_path = self.get_path(output)?;
         self.base
             .check_in_output_directory("write", &output_path)
-            .map_err(eval_error)?;
+            .map_err(check_in_output_directory_error)?;
 
         let rename_files_map = string_dict(rename_files, "rename_files")?;
 
@@ -1894,7 +1996,8 @@ impl ExternalContext {
                 .build(),
             force_type,
         )
-        .map_err(|e| eval_error(e.get_message()))?;
+        // Java: DecompressorValue.decompress throws RepositoryFunctionException.
+        .map_err(repository_function_exception)?;
         self.base
             .env
             .get()
@@ -1917,16 +2020,23 @@ impl ExternalContext {
         // PORT: WorkspaceRuleEvent.newFileEvent not posted (see module docs).
         self.base
             .check_in_output_directory("write", &p)
-            .map_err(eval_error)?;
-        let r = (|| -> io::Result<()> {
+            .map_err(check_in_output_directory_error)?;
+        let r = (|| -> Result<(), JavaThrowable> {
             StarlarkBaseExternalContext::make_directories(p.get_path())?;
             p.get_path().delete()?;
             {
-                let mut stream = p.get_path().get_output_stream()?;
+                let mut stream = p
+                    .get_path()
+                    .get_output_stream()
+                    .map_err(|e| JavaThrowable::from_stream_open(&e))?;
                 // Java: StringUnsafe.getInternalStringBytes(content).
                 // PORT: StringEncoding identity.
-                stream.write_all(content.as_bytes())?;
-                stream.flush()?;
+                stream
+                    .write_all(content.as_bytes())
+                    .map_err(|e| JavaThrowable::from_stream_io(&e))?;
+                stream
+                    .flush()
+                    .map_err(|e| JavaThrowable::from_stream_io(&e))?;
             }
             if executable {
                 p.get_path().set_executable(true)?;
@@ -1935,7 +2045,7 @@ impl ExternalContext {
         })();
         // Java: RepositoryFunctionException(e, Transience.TRANSIENT). PORT: Java's
         // InvalidPathException branch has no counterpart.
-        r.map_err(|e| eval_error(e.to_string()))
+        r.map_err(repository_function_exception)
     }
 
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:1557 StarlarkBaseExternalContext.getEnvironmentValue
@@ -1958,16 +2068,23 @@ impl ExternalContext {
             )));
         }
         // Java: FileSystemUtils.readContent(p.getPath(), ISO_8859_1)
-        let r = (|| -> io::Result<Vec<u8>> {
-            let mut stream = p.get_path().get_input_stream()?;
+        let r = (|| -> Result<Vec<u8>, JavaThrowable> {
+            let mut stream = p
+                .get_path()
+                .get_input_stream()
+                .map_err(|e| JavaThrowable::from_stream_open(&e))?;
             let mut bytes = Vec::new();
-            io::Read::read_to_end(&mut stream, &mut bytes)?;
+            io::Read::read_to_end(&mut stream, &mut bytes)
+                .map_err(|e| JavaThrowable::from_stream_io(&e))?;
             Ok(bytes)
         })();
         match r {
+            // PORT: byte-strings. Java decodes the file as ISO-8859-1, so every byte becomes one
+            // char of the internal string and nothing is lost; `latin1_internal_string` replaces
+            // bytes that are not valid UTF-8 with U+FFFD.
             Ok(bytes) => Ok(latin1_internal_string(&bytes)),
             // Java: RepositoryFunctionException(e, Transience.TRANSIENT)
-            Err(e) => Err(eval_error(e.to_string())),
+            Err(e) => Err(repository_function_exception(e)),
         }
     }
 
@@ -2051,7 +2168,7 @@ impl ExternalContext {
 
         // PORT: WorkspaceRuleEvent.newExecuteEvent not posted (see module docs).
         StarlarkBaseExternalContext::create_directory(&self.base.working_directory)
-            .map_err(eval_error)?;
+            .map_err(repository_function_exception)?;
 
         // Java: Math.round(timeout * 1000L * timeoutScaling)
         let timeout_millis =
@@ -2062,10 +2179,7 @@ impl ExternalContext {
                 kill_delay: self.base.process_wrapper_kill_delay,
                 graceful_sigterm: self.base.process_wrapper_graceful_sigterm,
             };
-            args = process_wrapper
-                .command_line_builder(args)
-                .set_timeout_millis(timeout_millis)
-                .build();
+            args = process_wrapper_command_line(&process_wrapper, args, timeout_millis);
         }
 
         let working_directory_path = if !override_working_directory.is_empty() {
@@ -2076,7 +2190,7 @@ impl ExternalContext {
             self.base.working_directory.clone()
         };
         StarlarkBaseExternalContext::create_directory(&working_directory_path)
-            .map_err(eval_error)?;
+            .map_err(repository_function_exception)?;
 
         let result =
             StarlarkExecutionResult::builder(self.base.os_object.get_environment_variables())
@@ -2504,6 +2618,145 @@ mod tests {
     fn doc_supported_formats() {
         let expected = decompressor::readable_supported_formats("\"", "\"", "or");
         assert_eq!(SUPPORTED_DECOMPRESSION_FORMATS, expected);
+    }
+
+    fn process_wrapper(
+        bin_path: &str,
+        kill_delay: Option<Duration>,
+        graceful_sigterm: bool,
+    ) -> ProcessWrapper {
+        ProcessWrapper {
+            bin_path: PathFragment::create(bin_path),
+            kill_delay,
+            graceful_sigterm,
+        }
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/ProcessWrapperTest.java:35
+    // ProcessWrapperTest.testProcessWrapperCommandLineBuilder_buildsWithoutOptionalArguments
+    #[test]
+    fn test_process_wrapper_command_line_builder_builds_without_optional_arguments() {
+        let command_arguments = vec!["echo".to_owned(), "hello, world".to_owned()];
+
+        let expected_command_line = vec!["/some/path", "echo", "hello, world"];
+
+        let process_wrapper = process_wrapper(
+            "/some/path",
+            /* kill_delay= */ None,
+            /* graceful_sigterm= */ false,
+        );
+        let command_line = process_wrapper
+            .command_line_builder(command_arguments)
+            .build();
+
+        assert_eq!(command_line, expected_command_line);
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/ProcessWrapperTest.java:53
+    // ProcessWrapperTest.testProcessWrapperCommandLineBuilder_buildsWithOptionalArguments
+    // PORT: only the optional arguments this crate's builder has (timeout, kill delay, graceful
+    // SIGTERM); the builder with the stdout, stderr and statistics paths and the path override
+    // is `blaze_exec::runtime::process_wrapper`, which ports the whole Java test.
+    #[test]
+    fn test_process_wrapper_command_line_builder_builds_with_optional_arguments() {
+        let command_arguments = vec!["echo".to_owned(), "hello, world".to_owned()];
+
+        let timeout = Duration::from_secs(10);
+        let kill_delay = Duration::from_secs(2);
+
+        let expected_command_line = vec![
+            "/path/process-wrapper".to_owned(),
+            format!("--timeout={}", timeout.as_secs()),
+            format!("--kill_delay={}", kill_delay.as_secs()),
+            "--graceful_sigterm".to_owned(),
+            "echo".to_owned(),
+            "hello, world".to_owned(),
+        ];
+
+        let process_wrapper = process_wrapper(
+            "/path/process-wrapper",
+            Some(kill_delay),
+            /* graceful_sigterm= */ true,
+        );
+        let command_line = process_wrapper
+            .command_line_builder(command_arguments)
+            .set_timeout_millis(timeout.as_millis() as i64)
+            .build();
+
+        assert_eq!(command_line, expected_command_line);
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/ProcessWrapperTest.java:96
+    // ProcessWrapperTest.testProcessWrapperCommandLineBuilder_withExecutionInfo
+    #[test]
+    #[ignore = "this crate's process-wrapper builder has no addExecutionInfo (repository rules \
+                have no execution info); the test is ported with the full builder in \
+                blaze_exec/tests/local_process_wrapper_test.rs"]
+    fn test_process_wrapper_command_line_builder_with_execution_info() {}
+
+    /// The command line `execute` builds for the three states of Java's `ProcessWrapper`:
+    /// options absent (`killDelay == null`), `--local_termination_grace_seconds=15` (the
+    /// default), and that with `--experimental_process_wrapper_graceful_sigterm`. The order is
+    /// `CommandLineBuilder.build`'s: path, `--timeout`, `--kill_delay`, `--graceful_sigterm`,
+    /// then the command.
+    // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:177 CommandLineBuilder.build
+    // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:72 ProcessWrapper.fromCommandEnvironment
+    #[test]
+    fn execute_process_wrapper_command_line_follows_local_execution_options() {
+        let args = || vec!["echo".to_owned(), "hello, world".to_owned()];
+        // execute(timeout = 600) with --experimental_scale_timeouts=1.0
+        let timeout_millis = 600_000;
+
+        assert_eq!(
+            process_wrapper_command_line(
+                &process_wrapper("/install/process-wrapper", None, false),
+                args(),
+                timeout_millis
+            ),
+            vec![
+                "/install/process-wrapper",
+                "--timeout=600",
+                "echo",
+                "hello, world"
+            ]
+        );
+        assert_eq!(
+            process_wrapper_command_line(
+                &process_wrapper(
+                    "/install/process-wrapper",
+                    Some(Duration::from_secs(15)),
+                    false
+                ),
+                args(),
+                timeout_millis
+            ),
+            vec![
+                "/install/process-wrapper",
+                "--timeout=600",
+                "--kill_delay=15",
+                "echo",
+                "hello, world"
+            ]
+        );
+        assert_eq!(
+            process_wrapper_command_line(
+                &process_wrapper(
+                    "/install/process-wrapper",
+                    Some(Duration::from_secs(15)),
+                    true
+                ),
+                args(),
+                timeout_millis
+            ),
+            vec![
+                "/install/process-wrapper",
+                "--timeout=600",
+                "--kill_delay=15",
+                "--graceful_sigterm",
+                "echo",
+                "hello, world"
+            ]
+        );
     }
 
     #[test]

@@ -1,0 +1,9 @@
+# S1-3: Args / TemplateDict snapshots at registration (argv, param files, file contents, keys).
+aquery //:snap
+run build //:snap
+cat bazel-bin/snap.w1
+cat bazel-bin/snap.w2
+cat bazel-bin/snap.f1
+cat bazel-bin/snap.f2
+cat bazel-bin/snap.t1
+cat bazel-bin/snap.t2

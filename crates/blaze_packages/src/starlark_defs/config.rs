@@ -503,10 +503,10 @@ pub fn convert_cfg<'v>(
         return Ok(c);
     }
     // PORT: ComposedConfigurationTransition values are not created by any ported builtin.
-    if let Some((factory, transition_type)) = native_transition_value(trans) {
-        if transition_type.is_compatible_with(TransitionType::Attribute) {
-            return Ok(native_factory(factory));
-        }
+    if let Some((factory, transition_type)) = native_transition_value(trans)
+        && transition_type.is_compatible_with(TransitionType::Attribute)
+    {
+        return Ok(native_factory(factory));
     }
     // We don't actively advertise the hard-coded but exposed transitions like
     // android_split_transition because users of those transitions should already know about
@@ -531,10 +531,10 @@ pub fn convert_config<'v>(
     if let Some(c) = starlark_factory(cfg, false, eval) {
         return Ok(c);
     }
-    if let Some((factory, transition_type)) = native_transition_value(cfg) {
-        if transition_type.is_compatible_with(TransitionType::Rule) {
-            return Ok(native_factory(factory));
-        }
+    if let Some((factory, transition_type)) = native_transition_value(cfg)
+        && transition_type.is_compatible_with(TransitionType::Rule)
+    {
+        return Ok(native_factory(factory));
     }
     Err(errorf(
         "`cfg` must be set to a transition object initialized by the transition() function.",

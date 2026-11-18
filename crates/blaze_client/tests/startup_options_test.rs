@@ -629,3 +629,84 @@ fn test_tmpdir_is_read_from_the_environment() {
     unsetenv("TEST_TMPDIR");
     assert_eq!(10800, StartupOptions::bazel().max_idle_secs);
 }
+
+/// Blaze-only (review 2026-11-18, S3 "TLS trust"): `--host_jvm_args` that set the JVM's trust
+/// store or key store cannot be honoured without a JVM and are reported instead of ignored. The
+/// message names the property, never its value.
+#[test]
+fn host_jvm_args_trust_store_options_are_not_ported() {
+    let _f = Fixture::new();
+    for (arg, property) in [
+        (
+            "-Djavax.net.ssl.trustStore=/etc/ssl/cacerts",
+            "-Djavax.net.ssl.trustStore",
+        ),
+        (
+            "-Djavax.net.ssl.trustStorePassword=changeit",
+            "-Djavax.net.ssl.trustStorePassword",
+        ),
+        (
+            "-Djavax.net.ssl.trustStoreType=PKCS12",
+            "-Djavax.net.ssl.trustStoreType",
+        ),
+        (
+            "-Djavax.net.ssl.keyStore=/x/client.p12",
+            "-Djavax.net.ssl.keyStore",
+        ),
+        (
+            "-Djavax.net.ssl.keyStorePassword=secret",
+            "-Djavax.net.ssl.keyStorePassword",
+        ),
+    ] {
+        let mut startup_options = StartupOptions::bazel();
+        assert_eq!(
+            Ok(()),
+            startup_options.process_args_impl(&[
+                flag("", "--host_jvm_args=-Xmx2g"),
+                flag("/x/.bazelrc", &format!("--host_jvm_args={}", arg)),
+            ])
+        );
+        assert_eq!(
+            Some(format!(
+                "blaze: not ported yet: --host_jvm_args={}: the JVM trust store and key store \
+                 options (-Djavax.net.ssl.trustStore*, -Djavax.net.ssl.keyStore*) are not \
+                 ported. Blaze has no JVM and would silently ignore the option.",
+                property
+            )),
+            startup_options.unported_host_jvm_arg_error()
+        );
+    }
+
+    // The space-separated form is checked too.
+    let mut startup_options = StartupOptions::bazel();
+    assert_eq!(
+        Ok(()),
+        startup_options.process_args_impl(&[
+            flag("", "--host_jvm_args"),
+            flag("", "-Djavax.net.ssl.trustStore=/etc/ssl/cacerts"),
+        ])
+    );
+    assert!(startup_options.unported_host_jvm_arg_error().is_some());
+}
+
+/// Every other `--host_jvm_args` value is accepted (and has no effect in-process), as before.
+#[test]
+fn other_host_jvm_args_are_accepted() {
+    let _f = Fixture::new();
+    let mut startup_options = StartupOptions::bazel();
+    assert_eq!(None, startup_options.unported_host_jvm_arg_error());
+    assert_eq!(
+        Ok(()),
+        startup_options.process_args_impl(&[
+            flag("", "--host_jvm_args=-Xmx2g"),
+            flag("", "--host_jvm_args"),
+            flag("", "-Dfoo=bar"),
+            flag("/x/.bazelrc", "--host_jvm_args=-Djavax.net.debug=ssl"),
+        ])
+    );
+    assert_eq!(
+        vec!["-Xmx2g", "-Dfoo=bar", "-Djavax.net.debug=ssl"],
+        startup_options.host_jvm_args
+    );
+    assert_eq!(None, startup_options.unported_host_jvm_arg_error());
+}

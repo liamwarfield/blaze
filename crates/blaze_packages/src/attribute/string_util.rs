@@ -13,6 +13,8 @@ pub fn join_english_list_full<S: AsRef<str>>(
     let mut buf = String::new();
     let mut num_choices_seen = 0;
     let n = choices.len();
+    // PORT: Java's own counter, kept apart from the index.
+    #[allow(clippy::explicit_counter_loop)]
     for (i, choice) in choices.iter().enumerate() {
         let has_next = i + 1 < n;
         if !buf.is_empty() {

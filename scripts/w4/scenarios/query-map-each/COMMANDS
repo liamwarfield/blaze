@@ -1,0 +1,11 @@
+# Actions review, last section: a CommandLineExpansionException while aquery prints an action
+# becomes an IOException in ActionGraphProtoOutputFormatterCallback.processOutput, which
+# OutputFormatterCallback.process turns into an InterruptedException; PostAnalysisQueryProcessor
+# does not catch it, so BuildTool reports "build interrupted" (exit 8).
+# (Not recorded: `aquery //:bad --noinclude_commandline` succeeds on the oracle but prints a
+# random UUID as the action key.)
+aquery //:good
+run aquery //:bad --output=jsonproto
+run aquery "//:good + //:bad" --output=jsonproto
+run aquery //:bad --output=jsonproto --keep_going
+run cquery //:bad --output=label_kind

@@ -501,13 +501,12 @@ impl Rule {
                     {
                         explicit.push((attribute.clone(), label));
                     }
-                } else if type_ == Type::OutputList {
-                    if let Some(AttrValue::LabelList(labels)) =
+                } else if type_ == Type::OutputList
+                    && let Some(AttrValue::LabelList(labels)) =
                         non_configurable_attributes.get(name, Type::OutputList)
-                    {
-                        for label in labels {
-                            explicit.push((attribute.clone(), label));
-                        }
+                {
+                    for label in labels {
+                        explicit.push((attribute.clone(), label));
                     }
                 }
             }

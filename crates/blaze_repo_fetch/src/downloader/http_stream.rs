@@ -81,6 +81,13 @@ impl HttpStreamFactory {
         let mut stream: Box<dyn InputStream> = connection.get_input_stream()?;
         let connection_url = connection.get_url().clone();
         let result = (|| -> Result<Box<dyn InputStream>, (IoException, Box<dyn InputStream>)> {
+            // PORT: the Content-Length header is read before the RetryingInputStream is built
+            // (Java reads it after; reading a header has no effect) because the retrying stream
+            // must know that a short body is reported by the CheckContentLengthInputStream and
+            // is not a read error to resume from. See RetryingInputStream.with_fixed_length_body.
+            let content_length: Option<u64> = connection
+                .get_header_field("Content-Length")
+                .and_then(|content_length| content_length.parse::<u64>().ok());
             // If server supports range requests, we can retry on read errors.
             if connection
                 .get_header_field("Accept-Ranges")
@@ -88,12 +95,15 @@ impl HttpStreamFactory {
                 .split(',')
                 .any(|s| s.trim() == "bytes")
             {
-                stream = Box::new(RetryingInputStream::new(stream, reconnector));
+                let retrying = RetryingInputStream::new(stream, reconnector);
+                stream = if content_length.is_some() {
+                    Box::new(retrying.with_fixed_length_body())
+                } else {
+                    Box::new(retrying)
+                };
             }
             let mut total_bytes = None;
-            if let Some(content_length) = connection.get_header_field("Content-Length")
-                && let Ok(n) = content_length.parse::<u64>()
-            {
+            if let Some(n) = content_length {
                 total_bytes = Some(n as i64);
                 stream = Box::new(CheckContentLengthInputStream::new(stream, n as i64));
             }

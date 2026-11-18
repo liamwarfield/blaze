@@ -1,10 +1,15 @@
 //! Minimal stand-ins for the `lib/actions` types the C++ core touches (`Artifact`, `PathMapper`,
-//! `InputMetadataProvider`, `ArtifactResolver`, `ParameterFile.ParameterFileType`, the
+//! `InputMetadataProvider`, `ArtifactResolver`, `ParamFileInfo`, the
 //! `ActionExecutionException` / `CommandLineExpansionException` errors) and for `util/OS`.
 //!
-//! PORT: no Blaze crate ports `lib/actions` yet. These are traits so that the actions crate can
-//! implement them for its real types later; only the members this crate calls are declared, with
-//! Java's names and semantics.
+//! PORT: this crate was ported before `lib/actions` was. `blaze_actions` now has the real types,
+//! and this crate depends on it (no cycle: `blaze_actions` and its dependencies do not depend on
+//! this crate). `ParameterFileType` is already the `blaze_actions` enum. The rest are still
+//! stand-ins, bridged in `blaze_rules/src/cpp/cc_artifact.rs`, because replacing them changes the
+//! public signatures that `blaze_rules` implements and calls (the `Artifact` trait object becomes
+//! the `blaze_actions::Artifact` struct, `ParamFileInfo` loses its public fields), so that must
+//! be one change across both crates (docs/reviews/2026-11-18-actions-response.md, S4-3). Only
+//! the members this crate calls are declared, with Java's names and semantics.
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -138,30 +143,10 @@ pub trait ArtifactResolver {
     fn is_derived_artifact(&self, exec_path: &PathFragment) -> bool;
 }
 
-/// Port of `com.google.devtools.build.lib.actions.ParameterFile.ParameterFileType`.
+/// `com.google.devtools.build.lib.actions.ParameterFile.ParameterFileType`: the `blaze_actions`
+/// port (this crate had its own copy before `lib/actions` was ported).
 // Java: com/google/devtools/build/lib/actions/ParameterFile.java:37 ParameterFile.ParameterFileType
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ParameterFileType {
-    UNQUOTED,
-    SHELL_QUOTED,
-    GCC_QUOTED,
-    WINDOWS,
-}
-
-impl ParameterFileType {
-    /// Java: `ParameterFileType.valueOf(name)`; `None` where Java throws
-    /// `IllegalArgumentException`.
-    pub fn value_of(name: &str) -> Option<ParameterFileType> {
-        match name {
-            "UNQUOTED" => Some(ParameterFileType::UNQUOTED),
-            "SHELL_QUOTED" => Some(ParameterFileType::SHELL_QUOTED),
-            "GCC_QUOTED" => Some(ParameterFileType::GCC_QUOTED),
-            "WINDOWS" => Some(ParameterFileType::WINDOWS),
-            _ => None,
-        }
-    }
-}
+pub use blaze_actions::actions::parameter_file::ParameterFileType;
 
 /// The fields of `com.google.devtools.build.lib.actions.ParamFileInfo` set by the C++ code.
 // Java: com/google/devtools/build/lib/actions/ParamFileInfo.java:30 ParamFileInfo

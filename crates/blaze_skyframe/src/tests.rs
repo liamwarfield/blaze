@@ -150,7 +150,8 @@ fn get_value_or_throw_catches() {
         .typed_function::<Num, _>(num_fn)
         .typed_function::<Catcher, _>(|_, env| {
             match env.get_value_or_throw::<Num, BadNumber>(Num(13))? {
-                Ok(_) => Ok(Some("no error".into())),
+                Ok(None) => Ok(None),
+                Ok(Some(_)) => Ok(Some("no error".into())),
                 Err(e) => Ok(Some(format!("caught: {e}"))),
             }
         })
@@ -164,12 +165,15 @@ fn get_value_or_throw_catches() {
     assert_eq!(stored.exception_as::<BadNumber>(), Some(&BadNumber(13)));
     assert!(ev.get_existing_value(&SkyKey::new(Catcher)).is_some());
 
-    // no keep_going: the child's error bubbles through the parent whatever it returns.
+    // no keep_going: the child's exception does not reach the parent in normal evaluation (the
+    // dep is null); in error bubbling it does, and the error bubbles through the parent whatever
+    // it returns.
     let ev2 = EvaluatorBuilder::new()
         .typed_function::<Num, _>(num_fn)
         .typed_function::<Catcher, _>(|_, env| {
             match env.get_value_or_throw::<Num, BadNumber>(Num(13))? {
-                Ok(_) => Ok(Some("no error".into())),
+                Ok(None) => Ok(None),
+                Ok(Some(_)) => Ok(Some("no error".into())),
                 Err(e) => Ok(Some(format!("caught: {e}"))),
             }
         })
@@ -352,6 +356,8 @@ struct Spec {
     /// Request all deps as one batch (getValuesAndExceptions) instead of one by one.
     batch: bool,
     builder: Option<Builder>,
+    /// Java: TestFunction.tag (extractTag).
+    tag: Option<String>,
 }
 
 #[derive(Default)]
@@ -372,6 +378,28 @@ impl Tester {
     }
     fn set_has_error(&self, name: &'static str, has_error: bool) -> &Self {
         self.with(name, |s| s.has_error = has_error)
+    }
+    /// Java: TestFunction.addErrorDependency.
+    fn add_error_dependency(
+        &self,
+        name: &'static str,
+        dep: &'static str,
+        alt: &'static str,
+    ) -> &Self {
+        self.with(name, |s| s.deps.push((dep, Some(alt))))
+    }
+    fn set_has_transient_error(&self, name: &'static str, has_error: bool) -> &Self {
+        self.with(name, |s| s.has_transient_error = has_error)
+    }
+    fn set_warning(&self, name: &'static str, warning: &str) -> &Self {
+        self.with(name, |s| s.warning = Some(warning.to_string()))
+    }
+    fn set_progress(&self, name: &'static str, progress: &str) -> &Self {
+        self.with(name, |s| s.progress = Some(progress.to_string()))
+    }
+    /// Java: TestFunction.setBuilder(ChainedFunction).
+    fn set_chained(&self, name: &'static str, f: Chained) -> &Self {
+        self.set_builder(name, move |t, env| f.compute(t, env))
     }
     fn set_builder(
         &self,
@@ -460,6 +488,136 @@ impl SkyFunction for TestFunction {
         }
         // CONCATENATE
         Ok(Some(Arc::new(deps.concat())))
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:163 GraphTester.extractTag
+    fn extract_tag(&self, _key: &SkyKey) -> Option<String> {
+        None
+    }
+}
+
+/// [`TestFunction`] with `extractTag` from the spec (the function has no access to the tester
+/// outside `compute`, so the tester is captured).
+struct TaggingTestFunction(Arc<Tester>);
+
+impl SkyFunction for TaggingTestFunction {
+    fn compute(&self, key: &SkyKey, env: &mut Environment<'_>) -> ComputeResult {
+        TestFunction.compute(key, env)
+    }
+    fn extract_tag(&self, key: &SkyKey) -> Option<String> {
+        self.0.spec(key.downcast::<T>().expect("T").0).tag
+    }
+}
+
+/// A `'static` name for a key made at run time.
+fn leak(name: String) -> &'static str {
+    Box::leak(name.into_boxed_str())
+}
+
+/// Java: `evalValueInError(key)`.
+fn eval_value_in_error(ev: &Evaluator, key: &SkyKey) -> ErrorInfo {
+    eval(ev, true, 4, std::slice::from_ref(key))
+        .get_error(key)
+        .unwrap_or_else(|| panic!("{key:?} is not in error"))
+        .clone()
+}
+
+/// Java: `assertThatEvaluationResult(result).hasSingletonErrorThat(key)`.
+fn singleton_error<'a>(r: &'a EvaluationResult, key: &SkyKey) -> &'a ErrorInfo {
+    assert_eq!(r.errors.len(), 1, "{r:?}");
+    assert_eq!(r.errors[0].0, *key, "{r:?}");
+    &r.errors[0].1
+}
+
+fn exception_message(e: &ErrorInfo) -> String {
+    e.get_exception().expect("exception").to_string()
+}
+
+/// Java: CountDownLatch, awaited through TrackingAwaiter (a timeout fails the test).
+struct Latch {
+    count: Mutex<usize>,
+    cv: parking_lot::Condvar,
+}
+
+impl Latch {
+    fn new(count: usize) -> Arc<Latch> {
+        Arc::new(Latch {
+            count: Mutex::new(count),
+            cv: parking_lot::Condvar::new(),
+        })
+    }
+    fn count_down(&self) {
+        let mut c = self.count.lock();
+        *c = c.saturating_sub(1);
+        if *c == 0 {
+            self.cv.notify_all();
+        }
+    }
+    fn wait(&self, what: &str) {
+        let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+        let mut c = self.count.lock();
+        while *c > 0 {
+            assert!(!self.cv.wait_until(&mut c, deadline).timed_out(), "{what}");
+        }
+    }
+}
+
+/// Java: TestUtils.WAIT_TIMEOUT_SECONDS.
+const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Java: `SkyFunctionEnvironment.getExceptionLatchForTesting().await()`: waits until the
+/// evaluation has failed (new evaluations are prevented).
+fn wait_for_exception(env: &Environment<'_>, what: &str) {
+    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+    while !env.exception_latch_released_for_testing() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Java: ChainedFunction. A function that counts down a latch when it starts, waits for another
+/// one, requests its deps, and throws `SomeErrorException("oops")` if it has no value.
+#[derive(Default, Clone)]
+struct Chained {
+    notify_start: Option<Arc<Latch>>,
+    wait_to_finish: Option<Arc<Latch>>,
+    notify_finish: Option<Arc<Latch>>,
+    wait_for_exception: bool,
+    value: Option<&'static str>,
+    deps: Vec<&'static str>,
+}
+
+impl Chained {
+    // Java: src/test/java/com/google/devtools/build/skyframe/ChainedFunction.java:70 ChainedFunction.compute
+    fn compute(&self, key: &T, env: &mut Environment<'_>) -> ComputeResultT {
+        struct NotifyFinish<'a>(&'a Option<Arc<Latch>>);
+        impl Drop for NotifyFinish<'_> {
+            fn drop(&mut self) {
+                if let Some(l) = self.0 {
+                    l.count_down();
+                }
+            }
+        }
+        let _finally = NotifyFinish(&self.notify_finish);
+        if let Some(l) = &self.notify_start {
+            l.count_down();
+        }
+        if let Some(l) = &self.wait_to_finish {
+            l.wait(&format!("{key:?} timed out waiting to finish"));
+            if self.wait_for_exception {
+                wait_for_exception(env, &format!("{key:?} timed out waiting for exception"));
+            }
+        }
+        for dep in &self.deps {
+            env.get_value(T(dep))?;
+        }
+        let Some(value) = self.value else {
+            return Err(SkyFunctionException::persistent(SomeErrorException("oops".into())).into());
+        };
+        if env.values_missing() {
+            return Ok(None);
+        }
+        Ok(Some(value.to_string()))
     }
 }
 
@@ -1016,9 +1174,10 @@ fn no_keep_going_reports_one_bubbled_root_and_drops_aborted_roots() {
         .add_dependency("waits_for_slow", "slow");
     let ev = tester_evaluator(tester);
     let r = eval(&ev, false, 4, &[k("waits_for_slow"), k("p1"), k("p2")]);
-    // Exactly one bubbled error, on the first root (in request order) that saw it.
+    // Exactly one bubbled error: Java bubbles up one chain of parents
+    // (`Iterables.getFirst(reverseDeps)`); which parent registered first is a race.
     assert_eq!(r.errors.len(), 1, "{r:?}");
-    assert_eq!(r.errors[0].0, k("p1"));
+    assert!([k("p1"), k("p2")].contains(&r.errors[0].0), "{r:?}");
     assert_eq!(
         r.errors[0].1.get_exception().unwrap().to_string(),
         "err",
@@ -1108,20 +1267,37 @@ fn keep_going_throw_with_missing_dep_is_replaced_by_child_error() {
 }
 
 #[test]
-fn in_error_bubbling_is_always_false() {
+fn in_error_bubbling_is_true_only_in_the_rerun_after_a_failure() {
     let tester = new_tester();
+    let runs = Arc::new(Mutex::new(vec![]));
+    let seen = runs.clone();
     tester
         .set_has_error("child", true)
-        .set_builder("parent", |_, env| {
+        .set_builder("parent", move |_, env| {
             let _ = env.get_value(T("child"))?;
-            assert!(!env.in_error_bubbling());
+            seen.lock().push(env.in_error_bubbling());
             Ok(None)
         });
     let ev = tester_evaluator(tester);
-    for keep_going in [false, true] {
-        let r = eval(&ev, keep_going, 2, &[k("parent")]);
-        assert!(r.has_error());
-    }
+    // keep_going: one run, never in error bubbling.
+    let r = eval(&ev, true, 2, &[k("parent")]);
+    assert!(r.has_error());
+    assert_eq!(*runs.lock(), vec![false]);
+    // no keep_going (fresh graph): the normal run, then the error-bubbling run.
+    runs.lock().clear();
+    let tester = new_tester();
+    let seen = runs.clone();
+    tester
+        .set_has_error("child", true)
+        .set_builder("parent", move |_, env| {
+            let _ = env.get_value(T("child"))?;
+            seen.lock().push(env.in_error_bubbling());
+            Ok(None)
+        });
+    let ev = tester_evaluator(tester);
+    let r = eval(&ev, false, 2, &[k("parent")]);
+    assert!(r.has_error());
+    assert_eq!(*runs.lock(), vec![false, true]);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1645,3 +1821,9 @@ fn get_value_or_throw_with_catches_several_types() {
     let r = eval(&ev, true, 2, &[SkyKey::new(Multi)]);
     assert_eq!(*r.get(&Multi).unwrap(), "bad: bad number 13");
 }
+
+mod engine_test;
+mod grouped_deps_test;
+mod memoizing_evaluator_test;
+mod not_ported;
+mod parallel_evaluator_test;

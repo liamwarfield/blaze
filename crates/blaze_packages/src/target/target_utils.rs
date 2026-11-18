@@ -367,15 +367,15 @@ pub fn format_missing_edge_with_attribute(
                 format!("{} and referenced by '{}'", e, rule.get_label())
             } else {
                 let mut additional_info = String::new();
-                if let Some(attr) = attr {
-                    if let Some(doc) = attr.get_doc().filter(|d| !d.is_empty()) {
-                        additional_info = format!(
-                            "\nDocumentation for implicit attribute {} of rules of type {}:\n{}",
-                            attr.get_public_name(),
-                            rule.get_rule_class(),
-                            doc
-                        );
-                    }
+                if let Some(attr) = attr
+                    && let Some(doc) = attr.get_doc().filter(|d| !d.is_empty())
+                {
+                    additional_info = format!(
+                        "\nDocumentation for implicit attribute {} of rules of type {}:\n{}",
+                        attr.get_public_name(),
+                        rule.get_rule_class(),
+                        doc
+                    );
                 }
                 // N.B. If you see this error message in one of our integration tests during
                 // development of a change that adds a new implicit dependency when running Blaze,

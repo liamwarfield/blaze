@@ -21,6 +21,7 @@ use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
 
 use super::keys::ModuleFileKey;
+use super::module_file_function::{BuiltinPackageLookup, PackageLookup};
 
 /// The Bazel version modules' `bazel_compatibility` is checked against
 /// (`BlazeVersionInfo.instance().getVersion()`): the release at the pin (`UPSTREAM.json`).
@@ -144,6 +145,10 @@ pub struct BzlmodConfig {
     pub builtin_modules: IndexMap<String, NonRegistryOverride>,
     /// Where fetched repositories are (REPOSITORY_DIRECTORY seam).
     pub repository_directory_lookup: Arc<dyn RepositoryDirectoryLookup>,
+    /// Whether a package exists and under which root (PACKAGE_LOOKUP seam). The default,
+    /// [`BuiltinPackageLookup`], is only right with the default `--package_path` and no
+    /// `--deleted_packages`.
+    pub package_lookup: Arc<dyn PackageLookup>,
 }
 
 /// An `AbruptExitException` raised while computing the configuration.
@@ -208,8 +213,10 @@ fn normalize_base_urls(base_urls: &[String]) -> IndexSet<String> {
 /// working directory. If it starts with `%workspace%`, it is relative to the workspace root.
 // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:700 BazelRepositoryModule.getAbsolutePath
 fn get_absolute_path(path: &str, workspace_root: &Path, working_directory: &Path) -> String {
+    // PORT: byte-strings (workspace and working directory paths are converted lossily; Java keeps the bytes)
     let mut path = path.replace("%workspace%", &workspace_root.to_string_lossy());
     if !PathFragment::is_absolute_str(&path) {
+        // PORT: byte-strings (workspace and working directory paths are converted lossily; Java keeps the bytes)
         path = PathFragment::create(&working_directory.to_string_lossy())
             .get_relative_str(&path)
             .get_path_string()
@@ -359,6 +366,13 @@ impl BzlmodConfig {
             repository_directory_lookup: Arc::new(BuiltinRepositoryDirectoryLookup {
                 embedded_tools: install_base.join("embedded_tools"),
                 workspace_root: workspace_root.to_path_buf(),
+            }),
+            package_lookup: Arc::new(BuiltinPackageLookup {
+                workspace_root: workspace_root.to_path_buf(),
+                repository_directory_lookup: Arc::new(BuiltinRepositoryDirectoryLookup {
+                    embedded_tools: install_base.join("embedded_tools"),
+                    workspace_root: workspace_root.to_path_buf(),
+                }),
             }),
         })
     }

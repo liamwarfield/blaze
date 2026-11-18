@@ -140,6 +140,7 @@ fn url_decode(s: &str) -> Result<String, IoException> {
             }
         }
     }
+    // PORT: byte-strings (percent-decoded proxy credentials; URLDecoder.decode(.., UTF_8) also replaces malformed input)
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 

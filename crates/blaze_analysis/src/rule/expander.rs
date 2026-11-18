@@ -177,12 +177,24 @@ impl<'a> Expander<'a> {
     /// unchanged.
     // Java: com/google/devtools/build/lib/analysis/Expander.java:156 Expander.expand
     pub fn expand_attribute(&self, attribute_name: &str) -> String {
-        let value = self
+        // Java: expand(attributeName, ruleContext.attributes().get(attributeName, Type.STRING)).
+        // `get` fails (IllegalArgumentException) for an attribute that does not exist or is not
+        // a string; a null value fails in TemplateExpander.expand.
+        let value = match self
             .rule_context
             .attributes()
             .get(attribute_name, Type::String)
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_default();
+        {
+            Some(v) => match v.as_str() {
+                Some(s) => s.to_owned(),
+                None => {
+                    panic!("ClassCastException: attribute {attribute_name} is not a string: {v:?}")
+                }
+            },
+            None => panic!(
+                "NullPointerException: Expander.expand: attribute {attribute_name} has no value"
+            ),
+        };
         self.expand(Some(attribute_name), &value)
     }
 
@@ -265,11 +277,27 @@ impl<'a> Expander<'a> {
         self.looked_up_variables.lock().clone()
     }
 
+    /// Java `ruleContext.attributes().get(attrName, Types.STRING_LIST)`. `get` fails
+    /// (IllegalArgumentException) for an attribute that does not exist or is not a string list;
+    /// a null value fails when Java iterates it.
+    // Java: com/google/devtools/build/lib/analysis/Expander.java:198 Expander.list
+    // Java: com/google/devtools/build/lib/analysis/Expander.java:214 Expander.tokenized
     fn string_list_attribute(&self, attr_name: &str) -> Vec<String> {
-        self.rule_context
+        match self
+            .rule_context
             .attributes()
             .get(attr_name, Type::StringList)
-            .and_then(|v| v.as_string_list().map(|s| s.to_vec()))
-            .unwrap_or_default()
+        {
+            Some(v) => match v.as_string_list() {
+                Some(l) => l.to_vec(),
+                None => {
+                    panic!("ClassCastException: attribute {attr_name} is not a string list: {v:?}")
+                }
+            },
+            None => panic!(
+                "NullPointerException: Expander.expandAndTokenizeList: attribute {attr_name} \
+                 has no value"
+            ),
+        }
     }
 }

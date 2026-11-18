@@ -116,6 +116,7 @@ fn decode(s: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
+    // PORT: byte-strings (percent-decoded bytes; java.net.URI also decodes them as UTF-8 with replacement)
     String::from_utf8_lossy(&out).into_owned()
 }
 

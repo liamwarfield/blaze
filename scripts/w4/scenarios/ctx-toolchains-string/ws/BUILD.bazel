@@ -1,0 +1,9 @@
+load(":defs.bzl", "helper", "local_impl", "local_wrong", "remote_impl")
+
+remote_impl(name = "remote_impl")
+
+local_impl(name = "local_impl")
+
+local_wrong(name = "local_wrong")
+
+helper(name = "helper")

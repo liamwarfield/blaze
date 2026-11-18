@@ -2,12 +2,16 @@
 //! `starlarkbuildapi/apple/AppleConfigurationApi.java`). `xcode_config` (apple_support) reads it
 //! in both corpus projects; rules_cc's `unix_cc_toolchain_config` reads `single_arch_platform`.
 
+use std::hash::Hash;
+
 use blaze_build_config::fragments::apple_configuration::{
     APPLE_CONFIGURATION, AppleConfiguration, AppleConfigurationAppleCpus,
 };
 use blaze_optdefs::fragment::apple_platform::apple_platform_platform_type as platform_type;
 use blaze_optdefs::fragment::dotted_version::DottedVersion;
+use blaze_options::definition::OptionsBase;
 use blaze_starlark::structs::{StarlarkInfo, StructProvider};
+use starlark::collections::StarlarkHasher;
 use starlark::environment::MethodsBuilder;
 use starlark::starlark_module;
 use starlark::values::none::NoneOr;
@@ -24,8 +28,28 @@ fragment_value!(
     AppleConfiguration,
     "apple",
     "com.google.devtools.build.lib.rules.apple.AppleConfiguration",
-    apple_configuration_methods
+    apple_configuration_methods,
+    equals = apple_configuration_equals,
+    hash = apple_configuration_hash
 );
+
+/// Two `AppleConfiguration`s are equal when their options are (Java `OptionsBase.equals`: same
+/// class and equal option values).
+// Java: com/google/devtools/build/lib/rules/apple/AppleConfiguration.java:351 AppleConfiguration.equals
+fn apple_configuration_equals(this: &AppleConfiguration, that: &AppleConfiguration) -> bool {
+    // `PartialEq` of an options class is `OptionsBase.equals` (blaze_options' `options!`).
+    this.get_options() == that.get_options()
+}
+
+/// Java `options.hashCode()` (`OptionsBase.hashCode`: the class's hash plus `asMap().hashCode()`).
+///
+/// PORT: Java's hash value is never observable; any function of the option values agrees with
+/// `apple_configuration_equals`. The options' cache key (`OptionsBase.cacheKey`, a rendering of
+/// `asMap()`) is hashed.
+// Java: com/google/devtools/build/lib/rules/apple/AppleConfiguration.java:362 AppleConfiguration.hashCode
+fn apple_configuration_hash(this: &AppleConfiguration, hasher: &mut StarlarkHasher) {
+    <dyn OptionsBase>::cache_key(this.get_options()).hash(hasher);
+}
 
 pub(super) fn register() {
     super::register(&APPLE_CONFIGURATION, AppleConfigurationValue::alloc);

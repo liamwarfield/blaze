@@ -716,10 +716,10 @@ pub fn transitive_load_files(
                 let build_file_target_for_load_file_target =
                     helper.maybe_get_build_file_target_for_load_file_target(target, bzl_label)?;
                 // Can be null in genquery: see http://b/123795023#comment6.
-                if let Some(t) = build_file_target_for_load_file_target {
-                    if uniquifier.unique(&t)? {
-                        result.push(t);
-                    }
+                if let Some(t) = build_file_target_for_load_file_target
+                    && uniquifier.unique(&t)?
+                {
+                    result.push(t);
                 }
             }
             Ok(true)

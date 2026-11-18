@@ -30,7 +30,8 @@ use blaze_skyframe::SkyKey;
 use blaze_starlark::StarlarkSemantics;
 use indexmap::IndexMap;
 
-/// Records events.
+/// Records events (`<kind>: <message>`) and posts (`POST: <Debug form>`), in the order the
+/// handler receives them.
 #[derive(Default)]
 pub struct Events(pub Mutex<Vec<String>>);
 
@@ -47,7 +48,9 @@ impl EventHandler for Events {
 }
 
 impl ExtendedEventHandler for Events {
-    fn post(&self, _obj: Arc<dyn Postable>) {}
+    fn post(&self, obj: Arc<dyn Postable>) {
+        self.0.lock().unwrap().push(format!("POST: {:?}", obj));
+    }
 }
 
 /// The test's directories.
@@ -101,6 +104,15 @@ impl Scratch {
     }
 
     pub fn evaluator(&self, extra_options: &[&str]) -> FetchEvaluator {
+        self.evaluator_with_precomputed(extra_options, RepoPrecomputedValues::default())
+    }
+
+    /// [`Scratch::evaluator`] with the given precomputed values (`--nofetch`, ...).
+    pub fn evaluator_with_precomputed(
+        &self,
+        extra_options: &[&str],
+        precomputed: RepoPrecomputedValues,
+    ) -> FetchEvaluator {
         let mut parser = OptionsParser::builder()
             .options_classes(&[RepositoryOptions::class()])
             .build()
@@ -130,7 +142,7 @@ impl Scratch {
             client_env: env.clone(),
             repo_env: env.clone(),
             nonstrict_repo_env: env,
-            precomputed: RepoPrecomputedValues::default(),
+            precomputed,
             reporter: self.events.clone(),
         })
         .unwrap()

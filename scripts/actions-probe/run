@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Record the oracle's action keys for the non-ASCII probe workspace. See `run help`."""
+
+import os
+import shutil
+import subprocess
+import sys
+
+USAGE = """\
+usage: scripts/actions-probe/run [--binary <path>] [--out <file>]
+       scripts/actions-probe/run help
+
+Copies crates/blaze_actions/tests/data/non_ascii_probe/workspace to
+~/.cache/blaze/work/actions-fix/workspace and runs <binary> (default: the oracle,
+~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64) with
+--output_user_root=~/.cache/blaze/oracle-out/ur-actions-fix:
+
+  aquery //:all --output=jsonproto --include_commandline --include_param_files
+      --include_file_write_contents --include_artifacts
+
+and writes its stdout, byte for byte, to <out> (default
+crates/blaze_actions/tests/data/non_ascii_probe/aquery.jsonproto; only an oracle run may
+replace that file). The output holds Bazel's internal strings as raw bytes, so it is not valid
+UTF-8 where a probe uses a byte that is not; crates/blaze_actions/tests/non_ascii_action_keys.rs
+reads it as Latin-1. Nothing in it depends on the output base or the workspace path.
+
+With --binary <blaze> --out <file> the same probe runs through Blaze; compare the `actionKey`s
+with the recorded ones.
+
+Then (oracle only) it copies crates/blaze_actions/tests/data/map_each_probe/workspace to
+~/.cache/blaze/work/actions-fix/map_each and runs `build --nobuild //:<case>` for each case of
+its cases.bzl, and writes crates/blaze_actions/tests/data/map_each_probe/expected.txt: one line
+per case, `<case><TAB>OK` or `<case><TAB><the "Error in ..." line>`, with the workspace
+directory replaced by `<WORKSPACE>`.
+(crates/blaze_actions/tests/map_each_global_test.rs reads it.)
+
+Run it inside `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`
+(AGENTS.md).
+"""
+
+HOME = os.path.expanduser("~")
+ORACLE = f"{HOME}/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+WORK = f"{HOME}/.cache/blaze/work/actions-fix"
+WS = f"{WORK}/workspace"
+UR = f"{HOME}/.cache/blaze/oracle-out/ur-actions-fix"
+REPO_CACHE = f"{HOME}/.cache/blaze/repo-cache"
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROBE = os.path.join(REPO, "crates/blaze_actions/tests/data/non_ascii_probe")
+
+
+def main(argv):
+    if argv[:1] in (["help"], ["--help"]):
+        print(USAGE)
+        return 0
+    binary, out = ORACLE, os.path.join(PROBE, "aquery.jsonproto")
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == "--binary" and args:
+            binary = args.pop(0)
+        elif a == "--out" and args:
+            out = args.pop(0)
+        else:
+            print(USAGE)
+            return 2
+    if binary != ORACLE and out == os.path.join(PROBE, "aquery.jsonproto"):
+        print("refusing to replace the oracle recording with another binary's output; pass --out")
+        return 2
+    if os.path.exists(WS):
+        shutil.rmtree(WS)
+    os.makedirs(WORK, exist_ok=True)
+    shutil.copytree(os.path.join(PROBE, "workspace"), WS)
+    env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+    startup = [binary, f"--output_user_root={UR}", "--nohome_rc", "--nosystem_rc"]
+    cmd = startup + [
+        "aquery",
+        f"--repository_cache={REPO_CACHE}",
+        "--color=no",
+        "--curses=no",
+        "//:all",
+        "--output=jsonproto",
+        "--include_commandline",
+        "--include_param_files",
+        "--include_file_write_contents",
+        "--include_artifacts",
+    ]
+    p = subprocess.run(cmd, cwd=WS, env=env, capture_output=True)
+    sys.stderr.buffer.write(p.stderr)
+    if p.returncode == 0:
+        with open(out, "wb") as f:
+            f.write(p.stdout)
+        print(f"wrote {out} ({len(p.stdout)} bytes)")
+    subprocess.run(startup + ["shutdown"], cwd=WS, env=env, capture_output=True)
+    if p.returncode != 0 or binary != ORACLE:
+        return p.returncode
+    return map_each_probe(startup, env)
+
+
+def map_each_probe(startup, env):
+    probe = os.path.join(REPO, "crates/blaze_actions/tests/data/map_each_probe")
+    ws = f"{WORK}/map_each"
+    if os.path.exists(ws):
+        shutil.rmtree(ws)
+    shutil.copytree(os.path.join(probe, "workspace"), ws)
+    cases = []
+    with open(os.path.join(ws, "cases.bzl"), encoding="utf-8") as f:
+        in_cases = False
+        for line in f:
+            if line.startswith("CASES = {"):
+                in_cases = True
+            elif in_cases and line.strip().startswith('"'):
+                cases.append(line.strip().split('"')[1])
+    lines = []
+    for case in cases:
+        cmd = startup + [
+            "build",
+            f"--repository_cache={REPO_CACHE}",
+            "--color=no",
+            "--curses=no",
+            "--nobuild",
+            f"//:{case}",
+        ]
+        p = subprocess.run(cmd, cwd=ws, env=env, capture_output=True)
+        stderr = p.stderr.decode("latin-1")
+        errors = [l for l in stderr.splitlines() if l.startswith("Error in ")]
+        if p.returncode == 0 and not errors:
+            lines.append(f"{case}\tOK")
+        elif len(errors) == 1:
+            lines.append(f"{case}\t" + errors[0].replace(ws, "<WORKSPACE>"))
+        else:
+            sys.stderr.write(stderr)
+            print(f"unexpected result for {case}: exit {p.returncode}")
+            return 1
+    subprocess.run(startup + ["shutdown"], cwd=ws, env=env, capture_output=True)
+    out = os.path.join(probe, "expected.txt")
+    with open(out, "w", encoding="latin-1") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"wrote {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

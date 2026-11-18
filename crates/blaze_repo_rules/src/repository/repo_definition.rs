@@ -4,6 +4,7 @@
 //! RepoDefinitionValue.java.
 
 use std::fmt;
+use std::hash::Hash;
 use std::sync::Arc;
 
 use allocative::Allocative;
@@ -12,14 +13,19 @@ use blaze_cmdline::RepositoryName;
 use blaze_options::spelling::SpellChecker;
 use blaze_skyframe::Key;
 use blaze_skyframe::SkyFunctionName;
+use blaze_starlark::structs::DeeplyImmutable;
+use blaze_starlark::structs::StructureMarker;
 use blaze_vfs::PathFragment;
 use starlark::any::ProvidesStaticType;
 use starlark::starlark_simple_value;
+use starlark::values::Demand;
 use starlark::values::Heap;
 use starlark::values::NoSerialize;
 use starlark::values::StarlarkValue;
 use starlark::values::Value;
+use starlark::values::ValueLike;
 use starlark::values::starlark_value;
+use starlark_map::StarlarkHasher;
 
 use super::repo_rule::RepoRule;
 use crate::attr_values::attr_value_to_attribute_value;
@@ -80,8 +86,27 @@ impl RepoDefinition {
     }
 }
 
-/// The `rctx.attr` object: a structure over a [`RepoDefinition`] (Java returns the
-/// `RepoDefinition` itself, which implements `Structure`).
+/// The `rctx.attr` object: a structure over a [`RepoDefinition`].
+///
+/// Java's `StarlarkRepositoryContext.getAttr` returns the `RepoDefinition` record itself, which
+/// implements `net.starlark.java.eval.Structure` directly. It is not a `struct` (`StructImpl`):
+///
+/// - `type(rctx.attr)` is `"RepoDefinition"`: neither the record nor `Structure` /
+///   `StarlarkValue` carries `@StarlarkBuiltin`, so `Starlark.classType` falls through to
+///   `Class.getSimpleName()`.
+/// - `repr`, `str` and `print` give `StarlarkValue.repr`'s default, `<unknown object
+///   com.google.devtools.build.lib.bazel.repository.RepoDefinition>`; the record does not
+///   override `repr` (and the interpreter never calls `toString`).
+/// - It has no `@StarlarkMethod`s, so there is no `to_json` or `to_proto`; `dir()` is the sorted
+///   field names (the rule's attributes and `name`), `hasattr` is `getValue(name) != null`, and a
+///   missing field fails with `getErrorMessageForUnknownField`.
+/// - `isImmutable()` is true, so it is hashable.
+// Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryContext.java:170 StarlarkRepositoryContext.getAttr
+// Java: com/google/devtools/build/lib/bazel/repository/RepoDefinition.java:31 RepoDefinition
+// Java: net/starlark/java/eval/Starlark.java:337 Starlark.classType
+// Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr
+// Java: net/starlark/java/eval/Starlark.java:978 Starlark.getattr
+// Java: net/starlark/java/eval/Starlark.java:1024 Starlark.dir
 #[derive(ProvidesStaticType, NoSerialize, Allocative)]
 pub struct RepoAttrs(#[allocative(skip)] pub Arc<RepoDefinition>);
 
@@ -94,25 +119,65 @@ impl fmt::Debug for RepoAttrs {
 }
 
 impl fmt::Display for RepoAttrs {
-    // PORT: Java's Structure repr is `struct(name = value, ...)` over the attributes; nothing in
-    // the corpus prints `rctx.attr`.
+    // Java: `RepoDefinition` does not override `repr` (or `str` / `debugPrint`, which default to
+    // it), so `repr()`, `str()` and `print()` all give the default of `StarlarkValue.repr`.
+    // Java: net/starlark/java/eval/StarlarkValue.java:50 StarlarkValue.repr
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<repository attributes of {}>", self.0.name)
+        f.write_str(
+            "<unknown object com.google.devtools.build.lib.bazel.repository.RepoDefinition>",
+        )
     }
 }
 
-#[starlark_value(type = "struct")]
+// Java: `Starlark.type(x)` is `RepoDefinition.class.getSimpleName()`.
+#[starlark_value(type = "RepoDefinition")]
 impl<'v> StarlarkValue<'v> for RepoAttrs {
+    // Java: net/starlark/java/eval/Starlark.java:978 Starlark.getattr (`struct.getValue(semantics, name)`)
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         self.0.get_value(attribute, heap)
     }
 
+    // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr (`getValue(name) != null`:
+    // `name`, and every attribute of the rule, whose value or default is never Java null after
+    // `Attribute.valueToStarlark`).
     fn has_attr(&self, attribute: &str, _heap: Heap<'v>) -> bool {
         attribute == "name" || self.0.repo_rule.attribute_indices.contains_key(attribute)
     }
 
+    // Java: net/starlark/java/eval/Starlark.java:1024 Starlark.dir (starlark-rust sorts the names,
+    // as Java's TreeSet does).
     fn dir_attr(&self) -> Vec<String> {
         self.0.get_field_names()
+    }
+
+    // Java: com/google/devtools/build/lib/bazel/repository/RepoDefinition.java:65 RepoDefinition.getErrorMessageForUnknownField
+    // (raised by net/starlark/java/eval/Starlark.java:1006 Starlark.getattr; starlark-rust patch 0013)
+    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
+        Some(self.0.get_error_message_for_unknown_field(attribute))
+    }
+
+    // Java: the record's `equals` compares its components.
+    // PORT: Blaze allocates a new value for each `rctx.attr`; values over the same
+    // `RepoDefinition` object are equal. Two equal definitions held in different objects (never
+    // reachable from one repository rule evaluation) would compare unequal.
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        Ok(other
+            .downcast_ref::<RepoAttrs>()
+            .is_some_and(|o| Arc::ptr_eq(&o.0, &self.0)))
+    }
+
+    // Java: com/google/devtools/build/lib/bazel/repository/RepoDefinition.java:36 RepoDefinition.isImmutable
+    // (true, so the value is hashable; consistent with `equals` above).
+    fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        (Arc::as_ptr(&self.0) as usize).hash(hasher);
+        Ok(())
+    }
+
+    // Java: `RepoDefinition implements Structure` (json.encode treats it as an object of its
+    // fields) and `isImmutable()` is true.
+    fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
+        demand.provide_value(StructureMarker { native_info: false });
+        demand.provide_value(DeeplyImmutable);
     }
 }
 

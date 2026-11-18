@@ -11,12 +11,12 @@ use blaze_starlark::depset::Depset;
 use blaze_starlark::label::LabelValue;
 use indexmap::IndexMap;
 use indexmap::IndexSet;
+use starlark::collections::SmallMap;
 use starlark::values::Heap;
 use starlark::values::Value;
 use starlark::values::ValueLike;
-use starlark::values::dict::AllocDict;
+use starlark::values::dict::Dict;
 use starlark::values::dict::DictRef;
-use starlark::values::list::AllocList;
 use starlark::values::list::ListRef;
 use starlark::values::set::SetRef;
 use starlark::values::tuple::TupleRef;
@@ -330,9 +330,11 @@ impl Type {
     }
 
     /// Copies a Starlark value to an immutable one, converting label strings to Labels and type
-    /// checking it (Java `Type.copyAndLiftStarlarkValue`).
-    // PORT: Java returns immutable Starlark lists and dicts; starlark-rust values allocated here
-    // are ordinary (mutable) lists and dicts.
+    /// checking it (Java `Type.copyAndLiftStarlarkValue`). Lists and dicts are immutable
+    /// (`StarlarkList.immutableCopyOf`, `Dict.immutableCopyOf`: starlark-rust patches 0016 and
+    /// 0018); mutating one fails with "trying to mutate a frozen list value".
+    // PORT: a `string_set` value is still a mutable starlark-rust set (Java
+    // `StarlarkSet.immutableCopyOf`): the vendored crate has no immutable set yet.
     // Java: com/google/devtools/build/lib/packages/Type.java:126 Type.copyAndLiftStarlarkValue
     pub fn copy_and_lift_starlark_value<'v>(
         self,
@@ -385,9 +387,9 @@ impl Type {
                     )?;
                     result.push((k2, v2));
                 }
-                // LinkedHashMap.put then Dict.immutableCopyOf: AllocDict keeps the first position
-                // and the last value of a repeated key, as LinkedHashMap does.
-                Ok(heap.alloc(AllocDict(result)))
+                // LinkedHashMap.put then Dict.immutableCopyOf: the first position and the last
+                // value of a repeated key are kept, as LinkedHashMap does.
+                Ok(alloc_immutable_dict(heap, result))
             }
             // Java: com/google/devtools/build/lib/packages/BuildType.java:515 BuildType.LicenseType.copyAndLiftStarlarkValue
             Type::License => {
@@ -1057,14 +1059,41 @@ fn convert_dict<'v>(
     Ok(result)
 }
 
-/// A native value as a Starlark value (Java: the converted object itself is a Starlark value).
+/// Java `StarlarkList.immutableCopyOf(elems)`: an immutable list of `elems` (the shared empty
+/// list when there are none). Mutating it fails with "trying to mutate a frozen list value".
+// Java: net/starlark/java/eval/StarlarkList.java:168 StarlarkList.immutableCopyOf
+pub(crate) fn alloc_immutable_list<'v>(heap: Heap<'v>, elems: Vec<Value<'v>>) -> Value<'v> {
+    starlark::values::list::alloc_immutable_list(heap, &elems)
+}
+
+/// Java `Dict.immutableCopyOf(map)` of a `LinkedHashMap` filled with `entries` in order: a
+/// repeated key keeps its first position and its last value. Mutating the result fails with
+/// "trying to mutate a frozen dict value". Keys must be hashable (strings and labels here).
+// Java: net/starlark/java/eval/Dict.java:495 Dict.immutableCopyOf
+pub(crate) fn alloc_immutable_dict<'v>(
+    heap: Heap<'v>,
+    entries: Vec<(Value<'v>, Value<'v>)>,
+) -> Value<'v> {
+    let mut content: SmallMap<Value<'v>, Value<'v>> = SmallMap::with_capacity(entries.len());
+    for (key, value) in entries {
+        let key = key
+            .get_hashed()
+            .unwrap_or_else(|e| panic!("IllegalArgumentException: unhashable dict key: {e}"));
+        content.insert_hashed(key, value);
+    }
+    starlark::values::dict::alloc_immutable_dict(heap, Dict::new(content))
+}
+
+/// A native value as an immutable Starlark value (Java: the converted object wrapped by
+/// `StarlarkList.immutableCopyOf` / `Dict.immutableCopyOf` in `copyAndLiftStarlarkValue`).
+// Java: com/google/devtools/build/lib/packages/Type.java:770 Type.ListType.copyAndLiftStarlarkValue
 pub(crate) fn native_to_starlark<'v>(value: &AttrValue, heap: Heap<'v>) -> Value<'v> {
     // Elements are allocated before their container (no allocation while a container is being
     // allocated).
     let string = |s: &str| heap.alloc(s);
     let label = |l: &Label| heap.alloc(LabelValue(l.clone()));
-    let list = |items: Vec<Value<'v>>| heap.alloc(AllocList(items));
-    let dict = |items: Vec<(Value<'v>, Value<'v>)>| heap.alloc(AllocDict(items));
+    let list = |items: Vec<Value<'v>>| alloc_immutable_list(heap, items);
+    let dict = |items: Vec<(Value<'v>, Value<'v>)>| alloc_immutable_dict(heap, items);
     match value {
         AttrValue::Int(i) => heap.alloc(*i),
         AttrValue::String(s) => string(s),
@@ -1092,8 +1121,8 @@ pub(crate) fn native_to_starlark<'v>(value: &AttrValue, heap: Heap<'v>) -> Value
                 .map(|(k, v)| (string(k), list(v.iter().map(label).collect())))
                 .collect(),
         ),
-        // Java StarlarkSet.immutableCopyOf. PORT: a mutable starlark-rust set (as for lists and
-        // dicts above); strings are always hashable.
+        // Java StarlarkSet.immutableCopyOf. PORT: a mutable starlark-rust set (the vendored crate
+        // has no immutable set, unlike lists and dicts above); strings are always hashable.
         AttrValue::StringSet(l) => {
             let items: Vec<Value<'v>> = l.iter().map(|s| string(s)).collect();
             starlark::values::set::alloc_set(heap, items).expect("strings are hashable")

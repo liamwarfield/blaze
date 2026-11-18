@@ -1,0 +1,6 @@
+load(":defs.bzl", "snap")
+
+snap(
+    name = "snap",
+    template = "tmpl.txt",
+)

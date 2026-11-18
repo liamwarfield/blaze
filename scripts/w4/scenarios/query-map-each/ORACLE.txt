@@ -1,0 +1,20 @@
+=== 1: aquery //:good
+exit 0
+{"actionKey": "c04631b81c50f24085c964c8940538b10aa629c7a5105532b29473e36eab8cf5", "argv": ["/bin/bash", "-c", "echo \"$@\" > bazel-out/k8-fastbuild/bin/good.out", "", "a.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["a.txt"], "mnemonic": "MapEach", "outputs": ["bazel-out/k8-fastbuild/bin/good.out"], "primaryOutput": "bazel-out/k8-fastbuild/bin/good.out", "ruleClass": "r", "target": "//:good"}
+INFO: Build completed successfully, 0 total actions
+=== 2: run aquery //:bad --output=jsonproto
+exit 8
+ERROR: Build did NOT complete successfully
+ERROR: build interrupted
+=== 3: run aquery "//:good + //:bad" --output=jsonproto
+exit 8
+ERROR: Build did NOT complete successfully
+ERROR: build interrupted
+=== 4: run aquery //:bad --output=jsonproto --keep_going
+exit 8
+ERROR: Build did NOT complete successfully
+ERROR: build interrupted
+=== 5: run cquery //:bad --output=label_kind
+exit 0
+r rule //:bad (a7a71fd)
+INFO: Build completed successfully, 0 total actions

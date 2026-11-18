@@ -61,8 +61,10 @@ pub enum JavaObject {
     Float(f64),
     Str(String),
     Label(Label),
-    /// A Java `List` (`ImmutableList` from an option, `StarlarkList`/tuple from Starlark).
+    /// A Java `List` (`ImmutableList` from an option, `StarlarkList` from Starlark).
     List(Vec<JavaObject>),
+    /// A Starlark `Tuple` (also a `java.util.List`, but never equal to a list).
+    Tuple(Vec<JavaObject>),
     /// A Java `Map` (`Dict` from Starlark).
     Map(Vec<(JavaObject, JavaObject)>),
     /// An option value whose Java class implements `StarlarkValue` (enums such as
@@ -84,6 +86,7 @@ impl PartialEq for JavaObject {
             (Str(a), Str(b)) => a == b,
             (Label(a), Label(b)) => a == b,
             (List(a), List(b)) => a == b,
+            (Tuple(a), Tuple(b)) => a == b,
             (Map(a), Map(b)) => a.len() == b.len() && a.iter().all(|e| b.contains(e)),
             (StarlarkValue(a), StarlarkValue(b)) => a == b,
             (Other(a), Other(b)) => a == b,
@@ -104,6 +107,11 @@ impl JavaObject {
             JavaObject::Label(l) => l.to_string(),
             JavaObject::List(l) => {
                 blaze_options::value::java_list_to_string(l.iter().map(|e| e.java_to_string()))
+            }
+            // Java: net/starlark/java/eval/Tuple.java:139 Tuple.toString (the Starlark repr).
+            // PORT: only reached for a tuple nested in a value given to a native list option.
+            JavaObject::Tuple(_) => {
+                blaze_util::unported!("Tuple.toString", "tuple as an element of an option value")
             }
             JavaObject::Map(m) => {
                 let entries: Vec<String> = m
@@ -126,6 +134,7 @@ impl JavaObject {
             JavaObject::Str(_) => "string",
             JavaObject::Label(_) => "Label",
             JavaObject::List(_) => "list",
+            JavaObject::Tuple(_) => "tuple",
             JavaObject::Map(_) => "dict",
             JavaObject::StarlarkValue(_) | JavaObject::Other(_) => "unknown",
         }
@@ -178,7 +187,7 @@ impl JavaObject {
             JavaObject::Float(f) => Some(OptionValue::new(*f)),
             JavaObject::Str(s) => Some(OptionValue::new(s.clone())),
             JavaObject::Label(l) => Some(OptionValue::new(blaze_options::Foreign(l.clone()))),
-            JavaObject::List(l) => Some(OptionValue::list(
+            JavaObject::List(l) | JavaObject::Tuple(l) => Some(OptionValue::list(
                 l.iter().filter_map(|e| e.to_option_value()).collect(),
             )),
             JavaObject::Map(_) => {
@@ -276,6 +285,14 @@ fn from_java<'v>(x: &JavaObject, heap: starlark::values::Heap<'v>) -> Option<Val
             }
             Some(heap.alloc(AllocList(elems)))
         }
+        // A Tuple is a StarlarkValue: Starlark.fromJava returns it unchanged.
+        JavaObject::Tuple(l) => {
+            let mut elems = Vec::with_capacity(l.len());
+            for e in l {
+                elems.push(from_java(e, heap)?);
+            }
+            Some(heap.alloc(starlark::values::tuple::AllocTuple(elems)))
+        }
         JavaObject::Map(m) => {
             let mut entries = Vec::with_capacity(m.len());
             for (k, v) in m {
@@ -298,6 +315,7 @@ fn is_from_java_convertible(x: &JavaObject) -> bool {
         | JavaObject::Int(_)
         | JavaObject::Float(_) => true,
         JavaObject::List(l) => l.iter().all(is_valid),
+        JavaObject::Tuple(l) => l.iter().all(is_from_java_convertible),
         JavaObject::Map(m) => m.iter().all(|(k, v)| is_valid(k) && is_valid(v)),
         JavaObject::Other(_) => false,
     }
@@ -311,6 +329,7 @@ fn is_valid(x: &JavaObject) -> bool {
             | JavaObject::Str(_)
             | JavaObject::Label(_)
             | JavaObject::StarlarkValue(_)
+            | JavaObject::Tuple(_)
     )
 }
 
@@ -321,6 +340,7 @@ fn check_valid<'v>(x: &JavaObject, heap: starlark::values::Heap<'v>) -> Option<V
         | JavaObject::Str(_)
         | JavaObject::Label(_)
         | JavaObject::StarlarkValue(_)
+        | JavaObject::Tuple(_)
         | JavaObject::Null => {
             if matches!(x, JavaObject::Null) {
                 return None;
@@ -357,7 +377,7 @@ fn to_java_object(v: Value) -> Result<JavaObject, String> {
         ));
     }
     if let Some(tuple) = TupleRef::from_value(v) {
-        return Ok(JavaObject::List(
+        return Ok(JavaObject::Tuple(
             tuple
                 .content()
                 .iter()
@@ -1162,8 +1182,14 @@ impl StarlarkDefinedConfigTransition {
             }
         }
 
+        // thread.setPrintHandler(Event.makeDebugPrintHandler(handler)): print() output of the
+        // implementation function reaches `handler` as DEBUG events, before the error of a
+        // failed call.
+        // PORT: the events are collected while the function runs (the Starlark thread context
+        // needs a 'static sink) and handed to `handler` in order right after the call returns.
+        let print_events = Arc::new(blaze_starlark::thread::CollectingEvents::default());
         let result = blaze_starlark::eval::run_on_evaluation_thread(|| {
-            let ctx = ThreadContext::new(Phase::Analysis, semantics.clone(), Arc::new(NoEvents));
+            let ctx = ThreadContext::new(Phase::Analysis, semantics.clone(), print_events.clone());
             blaze_starlark::eval::call_frozen(
                 &self.implementation,
                 &ctx,
@@ -1187,6 +1213,17 @@ impl StarlarkDefinedConfigTransition {
                 |res, _module, _eval| Ok(Self::extract_result(res)),
             )
         });
+        // Java: com/google/devtools/build/lib/events/Event.java:425 Event.makeDebugPrintHandler
+        for event in print_events.take() {
+            let location = event.location.as_ref().map(|l| {
+                blaze_events::Location::new(l.file.clone(), l.line as i32, l.column as i32)
+            });
+            handler.handle(&match event.kind {
+                "DEBUG" => Event::debug_at(location, event.message),
+                "WARNING" => Event::warn_at(location, event.message),
+                _ => Event::error_at(location, event.message),
+            });
+        }
         let result = match result {
             Ok(r) => r,
             Err(e) => {
@@ -1229,15 +1266,17 @@ impl StarlarkDefinedConfigTransition {
                     return Some(builder);
                 }
                 // Try if this is a patch transition.
-                if let Some((k, _)) = entries
+                // Java: net/starlark/java/eval/Dict.java:659 Dict.cast
+                if let Some((k, v)) = entries
                     .iter()
                     .find(|(k, _)| !matches!(k, JavaObject::Str(_)))
                 {
                     self.errorf(
                         handler,
                         &format!(
-                            "invalid result from transition function: got dict<{}, ...> for 'dictionary of options', want dict<string, unknown>",
-                            k.starlark_type()
+                            "invalid result from transition function: got dict<{}, {}> for 'dictionary of options', want dict<string, unknown>",
+                            k.starlark_type(),
+                            v.starlark_type()
                         ),
                     );
                     return None;
@@ -1262,14 +1301,40 @@ impl StarlarkDefinedConfigTransition {
                     return Some(IndexMap::new());
                 }
                 let mut builder = IndexMap::new();
-                for (i, entry) in items.into_iter().enumerate() {
-                    let JavaObject::Map(raw) = entry else {
+                // Sequence.cast(result, Dict.class, "dictionary of options dictionaries") checks
+                // every element before any entry is canonicalized.
+                // Java: net/starlark/java/eval/Sequence.java:142 Sequence.cast
+                for (i, entry) in items.iter().enumerate() {
+                    if !matches!(entry, JavaObject::Map(_)) {
                         self.errorf(
                             handler,
-                            "invalid result from transition function: at index 0 of dictionary of options dictionaries, got element of type unknown, want dict",
+                            &format!(
+                                "invalid result from transition function: at index {} of dictionary of options dictionaries, got element of type {}, want dict",
+                                i,
+                                entry.starlark_type()
+                            ),
                         );
                         return None;
+                    }
+                }
+                for (i, entry) in items.into_iter().enumerate() {
+                    let JavaObject::Map(raw) = entry else {
+                        unreachable!("checked by the cast above")
                     };
+                    // Dict.cast(entry, String.class, Object.class, "dictionary of options")
+                    // Java: net/starlark/java/eval/Dict.java:659 Dict.cast
+                    if let Some((k, v)) = raw.iter().find(|(k, _)| !matches!(k, JavaObject::Str(_)))
+                    {
+                        self.errorf(
+                            handler,
+                            &format!(
+                                "invalid result from transition function: got dict<{}, {}> for 'dictionary of options', want dict<string, unknown>",
+                                k.starlark_type(),
+                                v.starlark_type()
+                            ),
+                        );
+                        return None;
+                    }
                     match self.canonicalize_transition_output_dict(&raw) {
                         Ok(d) => {
                             builder.insert(i.to_string(), d);
@@ -1321,7 +1386,9 @@ impl StarlarkDefinedConfigTransition {
         }
         if ListRef::from_value(res).is_some() || TupleRef::from_value(res).is_some() {
             return match to_java_object(res) {
-                Ok(JavaObject::List(items)) => ExtractedResult::List(items),
+                Ok(JavaObject::List(items)) | Ok(JavaObject::Tuple(items)) => {
+                    ExtractedResult::List(items)
+                }
                 Ok(_) => unreachable!(),
                 Err(t) => ExtractedResult::Unconvertible(t),
             };

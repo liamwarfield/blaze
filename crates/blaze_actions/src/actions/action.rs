@@ -245,6 +245,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
             }
         }
         let exec_properties = self.get_exec_properties();
+        // Invariant: exec properties are internal strings (see `fingerprint_util`).
         fp.add_string_map(
             exec_properties
                 .iter()

@@ -9,16 +9,72 @@ use blaze_actions::analysis::starlark::starlark_file::artifact_from_value;
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
 use blaze_starlark::depset::Depset;
 use indexmap::IndexMap;
+use starlark::collections::SmallMap;
 use starlark::eval::Evaluator;
-use starlark::values::Value;
-use starlark::values::dict::DictRef;
+use starlark::values::dict::{Dict, DictRef};
 use starlark::values::list::ListRef;
 use starlark::values::tuple::TupleRef;
+use starlark::values::{Heap, Value};
 
 /// Java `Starlark.errorf(...)` / `new EvalException(msg)`.
 pub(crate) fn errorf(msg: impl Into<String>) -> starlark::Error {
     let msg: String = msg.into();
     starlark::Error::new_other(anyhow::anyhow!("{msg}"))
+}
+
+/// The interpreter's error for an argument whose class is not among the parameter's
+/// `@Param(allowedTypes = ...)` (or, without `allowedTypes`, the Java parameter class).
+/// `type_error_message` is Java `ParamDescriptor.getTypeErrorMessage()`: "a", "a or b",
+/// "a, b, or c".
+// Java: net/starlark/java/eval/BuiltinFunction.java:405 BuiltinFunction.checkParamValue
+pub(crate) fn param_type_error(
+    method_name: &str,
+    param_name: &str,
+    value: Value,
+    type_error_message: &str,
+) -> starlark::Error {
+    errorf(format!(
+        "in call to {method_name}(), parameter '{param_name}' got value of type '{}', want \
+         '{type_error_message}'",
+        value.get_type()
+    ))
+}
+
+/// Java `x instanceof Boolean` for a parameter declared `Boolean` (no `allowedTypes`).
+pub(crate) fn check_bool_param(
+    method_name: &str,
+    param_name: &str,
+    value: Value,
+) -> starlark::Result<bool> {
+    match value.unpack_bool() {
+        Some(b) => Ok(b),
+        None => Err(param_type_error(method_name, param_name, value, "bool")),
+    }
+}
+
+/// Java `StarlarkList.immutableCopyOf(elems)`: an immutable list of `elems` (the shared empty
+/// list when there are none). Mutating it fails with "trying to mutate a frozen list value".
+// Java: net/starlark/java/eval/StarlarkList.java:168 StarlarkList.immutableCopyOf
+pub(crate) fn alloc_immutable_list<'v>(heap: Heap<'v>, elems: Vec<Value<'v>>) -> Value<'v> {
+    starlark::values::list::alloc_immutable_list(heap, &elems)
+}
+
+/// Java `Dict.immutableCopyOf(map)` of a map filled with `entries` in order: a repeated key
+/// keeps its first position and its last value. Mutating the result fails with "trying to
+/// mutate a frozen dict value". Keys must be hashable (strings, `None` and `Target`s here).
+// Java: net/starlark/java/eval/Dict.java:495 Dict.immutableCopyOf
+pub(crate) fn alloc_immutable_dict<'v>(
+    heap: Heap<'v>,
+    entries: Vec<(Value<'v>, Value<'v>)>,
+) -> Value<'v> {
+    let mut content: SmallMap<Value<'v>, Value<'v>> = SmallMap::with_capacity(entries.len());
+    for (key, value) in entries {
+        let key = key
+            .get_hashed()
+            .unwrap_or_else(|e| panic!("IllegalArgumentException: unhashable dict key: {e}"));
+        content.insert_hashed(key, value);
+    }
+    starlark::values::dict::alloc_immutable_dict(heap, Dict::new(content))
 }
 
 /// Java `x instanceof Sequence` (list, tuple, range).
@@ -313,11 +369,6 @@ pub(crate) fn fail_if_called_outside_default_allowlist(eval: &Evaluator) -> star
     )
 }
 
-/// Java `Starlark.truth(x)`.
-pub(crate) fn truth(x: Value) -> bool {
-    x.to_bool()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +387,62 @@ mod tests {
         assert!(!legal_exec_info_keys("manual"));
         assert!(!legal_exec_info_keys("exclusive"));
         assert!(!legal_exec_info_keys("flaky"));
+    }
+
+    // Expected texts: the oracle (Bazel 9.3.2) on scripts/w4/scenarios/ctx-errors, targets
+    // runfiles_symlinks_list, runfiles_collect_default_none and run_env_list.
+    #[test]
+    fn param_type_error_matches_the_interpreter() {
+        let list = starlark::values::FrozenValue::new_empty_list().to_value();
+        assert_eq!(
+            param_type_error("runfiles", "symlinks", list, "dict or depset").to_string(),
+            "in call to runfiles(), parameter 'symlinks' got value of type 'list', want 'dict or \
+             depset'"
+        );
+        assert_eq!(
+            param_type_error("run", "env", list, "dict or NoneType").to_string(),
+            "in call to run(), parameter 'env' got value of type 'list', want 'dict or NoneType'"
+        );
+    }
+
+    #[test]
+    fn check_bool_param_rejects_non_bool() {
+        assert!(check_bool_param("runfiles", "collect_data", Value::new_bool(true)).unwrap());
+        assert!(!check_bool_param("runfiles", "collect_data", Value::new_bool(false)).unwrap());
+        assert_eq!(
+            check_bool_param("runfiles", "collect_default", Value::new_none())
+                .unwrap_err()
+                .to_string(),
+            "in call to runfiles(), parameter 'collect_default' got value of type 'NoneType', \
+             want 'bool'"
+        );
+    }
+
+    // Java: StarlarkList.immutableCopyOf / Dict.immutableCopyOf results reject mutation
+    // ("trying to mutate a frozen dict value": the oracle on scripts/w4/scenarios/ctx-immutable,
+    // target var_set).
+    #[test]
+    fn immutable_copies_are_immutable() {
+        starlark::environment::Module::with_temp_heap(|module| {
+            let heap = module.heap();
+            let list = alloc_immutable_list(heap, vec![Value::new_none()]);
+            assert_eq!(starlark::values::list::list_is_immutable(list), Some(true));
+            assert_eq!(list.length().unwrap(), 1);
+            let empty = alloc_immutable_list(heap, Vec::new());
+            assert_eq!(starlark::values::list::list_is_immutable(empty), Some(true));
+
+            let key = heap.alloc_str("k").to_value();
+            let dict = alloc_immutable_dict(heap, vec![(key, Value::new_none())]);
+            assert_eq!(starlark::values::dict::dict_is_immutable(dict), Some(true));
+            let error = dict.set_at(key, Value::new_bool(true)).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("trying to mutate a frozen dict value"),
+                "{error}"
+            );
+            let empty = alloc_immutable_dict(heap, Vec::new());
+            assert_eq!(starlark::values::dict::dict_is_immutable(empty), Some(true));
+        });
     }
 }

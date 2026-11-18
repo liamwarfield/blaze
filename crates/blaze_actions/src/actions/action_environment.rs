@@ -167,6 +167,7 @@ impl ActionEnvironment {
 
     // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:134 ActionEnvironment.addTo
     pub fn add_to(&self, f: &mut Fingerprint) {
+        // Invariant: variable names and values are internal strings (see `fingerprint_util`).
         let fixed = self.get_fixed_env();
         f.add_string_map(fixed.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         let inherited = self.get_inherited_env();

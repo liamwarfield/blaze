@@ -1,0 +1,24 @@
+=== 1: run build //:remote_impl
+exit 0
+INFO: Build completed successfully, 2 total actions
+Target //:remote_impl up-to-date:
+=== 2: cat bazel-bin/remote_impl.txt
+toolchain: None, in: True
+=== 3: run build //:local_impl
+exit 0
+INFO: Build completed successfully, 2 total actions
+Target //:local_impl up-to-date:
+=== 4: cat bazel-bin/local_impl.txt
+toolchain: None, in: True
+=== 5: run build //:local_wrong
+exit 1
+ERROR: <WS>/BUILD.bazel:7:12: Analysis of target '//:local_wrong' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:7:12: in local_wrong rule //:local_wrong:
+ERROR: Analysis of target '//:local_wrong' failed; build aborted
+ERROR: Build did NOT complete successfully
+=== 6: run build //:helper
+exit 0
+INFO: Build completed successfully, 2 total actions
+Target //:helper up-to-date:
+=== 7: cat bazel-bin/helper.txt
+toolchain: None, in: True

@@ -112,8 +112,8 @@ enum FileWriteActionKind {
 /// The output file is generally encoded as UTF-8, but by an unusual path. BUILD files and
 /// directory entries, which are actually UTF-8, are misinterpreted by Bazel as Latin1, so that
 /// most Strings within the build language use this unusual representation. FileWriteAction writes
-/// those Strings out again as Latin1. (PORT: StringEncoding identity; Rust strings already hold
-/// the UTF-8 bytes, which are written as is.)
+/// those Strings out again as Latin1. (The bytes of the contents are
+/// `blaze_util::string_encoding::internal_string_bytes`.)
 ///
 /// The contents may be lazily computed or compressed. If the object representing the contents is
 /// a `String`, its length is greater than `COMPRESS_CHARS_THRESHOLD`, and compression is enabled,
@@ -232,12 +232,12 @@ impl FileWriteAction {
         allow_compression: Compression,
         mnemonic: String,
     ) -> FileWriteAction {
-        // PORT: Java's `length()` counts the chars of the internal (Latin-1-of-UTF-8) string,
-        // which is the UTF-8 byte length.
+        // Java's `length()` counts the chars of the internal string.
         let kind = match file_contents {
             CharSequence::String(s)
                 if allow_compression == Compression::ALLOW
-                    && s.len() > COMPRESS_CHARS_THRESHOLD =>
+                    && blaze_util::string_encoding::internal_length(&s)
+                        > COMPRESS_CHARS_THRESHOLD =>
             {
                 compressed_kind(&s)
             }
@@ -278,10 +278,11 @@ impl FileWriteAction {
                     uncompressed_bytes.len() == *uncompressed_size,
                     "Corrupt byte buffer in FileWriteAction"
                 );
-                // PORT: StringEncoding identity (`StringUnsafe.newInstance(bytes, LATIN1)`); the
-                // bytes came from a Rust String.
-                String::from_utf8(uncompressed_bytes)
-                    .expect("FileWriteAction compressed contents are UTF-8")
+                // Java: `StringUnsafe.newInstance(uncompressedBytes, StringUnsafe.LATIN1)`. The
+                // bytes are `internal_string_bytes` of a string, so this cannot fail.
+                blaze_util::string_encoding::internal_string_from_bytes(&uncompressed_bytes)
+                    .expect("FileWriteAction compressed contents came from a string")
+                    .into_owned()
             }
         }
     }
@@ -313,9 +314,9 @@ impl FileWriteAction {
 fn compressed_kind(file_contents: &str) -> FileWriteActionKind {
     // Grab the string's internal byte array. Calling getBytes() makes a copy, which can cause
     // memory spikes resulting in OOMs (b/290807073). Do not mutate this!
-    // PORT: StringEncoding identity: the internal Latin-1 bytes are the UTF-8 bytes.
-    let data_to_compress = file_contents.as_bytes();
-    let compressed_bytes = gzip(data_to_compress);
+    // Java: `StringUnsafe.getInternalStringBytes(fileContents)`.
+    let data_to_compress = blaze_util::string_encoding::internal_string_bytes(file_contents);
+    let compressed_bytes = gzip(&data_to_compress);
     FileWriteActionKind::Compressed {
         compressed_bytes,
         uncompressed_size: data_to_compress.len(),
@@ -347,9 +348,9 @@ impl Action for FileWriteAction {
             FileWriteActionKind::Regular { .. } => {
                 fp.add_string(REGULAR_GUID)
                     .add_boolean(self.make_executable)
-                    // PORT: StringEncoding. The contents are a Bazel internal string, which
-                    // Java's addString UTF-8-encodes once more (checked against the oracle).
-                    .add_internal_string(&self.get_file_contents());
+                    // Invariant: the contents are an internal string (see `fingerprint_util`;
+                    // `tests/non_ascii_action_keys.rs` has the oracle's key).
+                    .add_string(&self.get_file_contents());
             }
             // Java: com/google/devtools/build/lib/analysis/actions/FileWriteAction.java:351 CompressedFileWriteAction.computeKey
             FileWriteActionKind::Compressed {
@@ -391,8 +392,10 @@ impl AbstractFileWriteAction for FileWriteAction {
             // Java: com/google/devtools/build/lib/analysis/actions/FileWriteAction.java:271 RegularFileWriteAction.newDeterministicWriter
             FileWriteActionKind::Regular { .. } => {
                 Ok(Box::new(FnDeterministicWriter(|out: &mut dyn Write| {
-                    // PORT: StringEncoding identity (`StringUnsafe.getInternalStringBytes`).
-                    out.write_all(self.get_file_contents().as_bytes())
+                    // Java: `out.write(StringUnsafe.getInternalStringBytes(getFileContents()))`.
+                    out.write_all(&blaze_util::string_encoding::internal_string_bytes(
+                        &self.get_file_contents(),
+                    ))
                 })))
             }
             // Java: com/google/devtools/build/lib/analysis/actions/FileWriteAction.java:341 CompressedFileWriteAction.newDeterministicWriter

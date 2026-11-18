@@ -23,19 +23,13 @@ use super::repo_recorded_input::RepoRecordedInputWithValue;
 use super::repo_recorded_input::wrap_env_vars;
 use super::repository_utils::get_external_repository_directory;
 use crate::semantics_fingerprint::stable_fingerprint;
+use crate::starlark::os::java_os_arch_lower_case;
+use crate::starlark::os::java_os_name_lower_case;
 
 /// The marker file version is inject in the rule key digest so the rule key is always different
 /// when we decide to update the format.
 // Java: com/google/devtools/build/lib/bazel/repository/DigestWriter.java:46 DigestWriter.MARKER_FILE_VERSION
 const MARKER_FILE_VERSION: i32 = 7;
-
-/// Java `OS_NAME.value().toLowerCase(Locale.ROOT)` on Linux.
-// PORT: Blaze runs on Linux only.
-const OS_NAME: &str = "linux";
-
-/// Java `System.getProperty("os.arch").toLowerCase(Locale.ROOT)` on x86-64.
-// PORT: Blaze runs on x86-64 only (the JVM reports "amd64").
-const OS_ARCH: &str = "amd64";
 
 /// Either an error the caller rethrows (Java `RepositoryFunctionException`) or an interruption.
 #[derive(Debug)]
@@ -161,6 +155,9 @@ impl DigestWriter {
         // PORT: StringEncoding identity. Java decodes the file as ISO-8859-1 (bytes as internal
         // chars); a file that is not UTF-8 was not written by Blaze and is treated as outdated
         // through a lossy decode that cannot match the hash or parse as written.
+        // PORT: byte-strings. Java's `readContent(markerPath, ISO_8859_1)` keeps every byte of
+        // the marker file as one char (recorded input values hold raw path and environment
+        // bytes); here bytes that are not valid UTF-8 become U+FFFD.
         let content = String::from_utf8_lossy(&content);
         let Some(recorded_input_values) =
             Self::read_marker_file(&content, &self.predeclared_input_hash)
@@ -244,8 +241,10 @@ impl DigestWriter {
             .add_internal_string(&attr_values_json)
             // This info is accessible via rctx.os.{name,arch} and can also influence the result
             // of a repo rule in subtle ways (e.g. behavior of host tools, line breaks, etc).
-            .add_internal_string(OS_NAME)
-            .add_internal_string(OS_ARCH);
+            // PORT: both values come from the functions `repository_os` uses, so that
+            // `rctx.os.{name,arch}` and this hash cannot disagree (Blaze is Linux x86-64 only).
+            .add_internal_string(&java_os_name_lower_case())
+            .add_internal_string(&java_os_arch_lower_case());
         fp.add_int(environ_inputs.len() as i32);
         for (key, value) in &environ_inputs {
             fp.add_internal_string(&key.to_string());

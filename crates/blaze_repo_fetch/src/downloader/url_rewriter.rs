@@ -378,6 +378,7 @@ impl UrlRewriter {
         })?;
         UrlRewriter::new(
             &[config_path.get_path_string().to_string()],
+            // PORT: byte-strings (Java reads the config with a UTF-8 reader, which also replaces malformed input)
             &[String::from_utf8_lossy(&content).into_owned()],
         )
     }

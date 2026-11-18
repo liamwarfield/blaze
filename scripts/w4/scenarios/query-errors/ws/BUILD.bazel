@@ -1,0 +1,10 @@
+load(":defs.bzl", "w")
+
+package(default_visibility = ["//visibility:public"])
+
+w(name = "y")
+
+w(
+    name = "x",
+    deps = [":y"],
+)

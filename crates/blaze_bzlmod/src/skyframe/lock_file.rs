@@ -45,6 +45,7 @@ pub fn compute(
     // PORT: profiling ("parse lockfile") skipped.
     // FileSystemUtils.readContent(path, UTF_8): malformed input is replaced.
     let contents = match std::fs::read(&lockfile_path) {
+        // PORT: byte-strings (Java also replaces malformed input here (readContent(path, UTF_8)))
         Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
         // FileNotFoundException: the lockfile does not exist.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

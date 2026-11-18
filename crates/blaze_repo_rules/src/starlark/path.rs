@@ -32,6 +32,7 @@ use starlark_map::StarlarkHasher;
 
 use super::base_external_context::ShouldWatch;
 use super::base_external_context::eval_error;
+use super::base_external_context::repository_function_exception;
 use super::context::ExternalContext;
 
 /// A Path object to be used in repo rules and module extensions.
@@ -151,7 +152,7 @@ fn starlark_path_methods(builder: &mut MethodsBuilder) {
         match this.path.get_directory_entries() {
             Ok(entries) => Ok(entries.into_iter().map(StarlarkPath::new).collect()),
             // Java: RepositoryFunctionException(e, Transience.TRANSIENT)
-            Err(e) => Err(eval_error(e.to_string())),
+            Err(e) => Err(repository_function_exception(e)),
         }
     }
 
@@ -209,7 +210,9 @@ fn starlark_path_methods(builder: &mut MethodsBuilder) {
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkPath.java:194 StarlarkPath.realpath
     #[starlark(attribute)]
     fn realpath(this: &StarlarkPath) -> starlark::Result<StarlarkPath> {
-        // Java: the IOException becomes an EvalException carrying its message.
+        // Java: `realpath()` throws the IOException itself (no RepositoryFunctionException), so
+        // the interpreter's `new EvalException(e)` carries `e.getMessage()`, without the class.
+        // Java: net/starlark/java/eval/MethodDescriptor.java:295 MethodDescriptor.call
         this.path
             .resolve_symbolic_links()
             .map(StarlarkPath::new)

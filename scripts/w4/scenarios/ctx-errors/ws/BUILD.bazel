@@ -1,0 +1,6 @@
+load(":defs.bzl", "OPS", "err")
+
+[err(
+    name = op,
+    op = op,
+) for op in OPS]

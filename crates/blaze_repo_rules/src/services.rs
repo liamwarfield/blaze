@@ -6,6 +6,7 @@
 //! `BazelRepositoryModule.beforeCommand`.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use blaze_repo_fetch::cache::local_repo_contents_cache::LocalRepoContentsCache;
 use blaze_repo_fetch::downloader::download_manager::DownloadManager;
@@ -28,6 +29,16 @@ pub struct RepoServices {
     pub timeout_scaling: f64,
     /// Java `ProcessWrapper`: `<install_base>/process-wrapper` when it exists.
     pub process_wrapper: Option<Path>,
+    /// Java `ProcessWrapper.killDelay`: `LocalExecutionOptions.getLocalSigkillGraceSeconds()`
+    /// (`--local_termination_grace_seconds`), or `None` (Java null) when the command has no
+    /// `LocalExecutionOptions`; then no `--kill_delay` argument is passed to the process-wrapper.
+    // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:72 ProcessWrapper.fromCommandEnvironment
+    pub process_wrapper_kill_delay: Option<Duration>,
+    /// Java `ProcessWrapper.gracefulSigterm`: `LocalExecutionOptions.processWrapperGracefulSigterm`
+    /// (`--experimental_process_wrapper_graceful_sigterm`), false when the command has no
+    /// `LocalExecutionOptions`.
+    // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:72 ProcessWrapper.fromCommandEnvironment
+    pub process_wrapper_graceful_sigterm: bool,
     /// Java `RepositoryFetchFunction.repoContentsCache`.
     pub repo_contents_cache: Arc<LocalRepoContentsCache>,
 }

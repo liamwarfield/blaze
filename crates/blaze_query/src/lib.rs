@@ -7,7 +7,12 @@
 //! interfaces query consumes) and `compat` (lib/packages helpers only query uses, to move to
 //! blaze_packages).
 
-#![allow(clippy::too_many_arguments, clippy::new_without_default)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::new_without_default,
+    clippy::type_complexity,
+    clippy::large_enum_variant
+)]
 
 pub mod commands;
 pub mod common;

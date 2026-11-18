@@ -8,9 +8,9 @@
 //! only Java code that looks at neighbouring slots (`VectorArgFragment.eval` reading
 //! `arguments.get(argi - 1)`) always sees the fragment itself, so the outputs are unchanged.
 //!
-//! PORT: StringEncoding. Command line strings are Bazel internal strings, which Java's
-//! `Fingerprint.addString` UTF-8-encodes once more; fingerprints therefore use
-//! `Fingerprint::add_internal_string` (identical for ASCII).
+//! Strings: command line strings are internal strings (`blaze_util::string_encoding`), as in
+//! Java, so fingerprints add them with `Fingerprint::add_string` where Java calls `addString`
+//! (see `actions::fingerprint_util`).
 
 use std::fmt;
 use std::hash::Hash;
@@ -405,13 +405,13 @@ impl<T: VectorArgElement> ErasedVectorValues for TypedVectorValues<T> {
                 Some(map_fn) => {
                     for object in values {
                         map_fn.expand_to_command_line(object, &mut |s: &str| {
-                            fingerprint.add_internal_string(s);
+                            fingerprint.add_string(s);
                         })?;
                     }
                 }
                 None => {
                     for object in values {
-                        fingerprint.add_internal_string(&object.expand_item_to_command_line());
+                        fingerprint.add_string(&object.expand_item_to_command_line());
                     }
                 }
             },
@@ -460,7 +460,7 @@ impl<T: VectorArgElement> ErasedVectorValues for TypedVectorValues<T> {
             // Java: `arg instanceof Iterable`.
             VectorValues::Collection(values) => {
                 for value in values {
-                    fingerprint.add_internal_string(&value.expand_item_to_command_line());
+                    fingerprint.add_string(&value.expand_item_to_command_line());
                 }
                 Ok(())
             }
@@ -838,16 +838,16 @@ impl VectorArgFragment {
         values.add_values_to_fingerprint(action_key_context, fingerprint)?;
         if self.has_format_each {
             add_uuid(fingerprint, FORMAT_EACH_UUID);
-            fingerprint.add_internal_string(string_at(arguments, argi));
+            fingerprint.add_string(string_at(arguments, argi));
             argi += 1;
         }
         if self.has_before_each {
             add_uuid(fingerprint, BEFORE_EACH_UUID);
-            fingerprint.add_internal_string(string_at(arguments, argi));
+            fingerprint.add_string(string_at(arguments, argi));
             argi += 1;
         } else if self.has_join_with {
             add_uuid(fingerprint, JOIN_WITH_UUID);
-            fingerprint.add_internal_string(string_at(arguments, argi));
+            fingerprint.add_string(string_at(arguments, argi));
             argi += 1;
         }
         Ok(argi)
@@ -903,10 +903,10 @@ fn format_arg_add_to_fingerprint(
     let arg_count = int_at(arguments, argi);
     argi += 1;
     add_uuid(fingerprint, FORMAT_UUID);
-    fingerprint.add_internal_string(string_at(arguments, argi));
+    fingerprint.add_string(string_at(arguments, argi));
     argi += 1;
     for _ in 0..arg_count {
-        fingerprint.add_internal_string(&arguments[argi].expand_to_command_line());
+        fingerprint.add_string(&arguments[argi].expand_to_command_line());
         argi += 1;
     }
     argi
@@ -1039,10 +1039,10 @@ fn prefix_arg_add_to_fingerprint(
     fingerprint: &mut Fingerprint,
 ) -> usize {
     add_uuid(fingerprint, PREFIX_UUID);
-    fingerprint.add_internal_string(string_at(arguments, argi));
+    fingerprint.add_string(string_at(arguments, argi));
     argi += 1;
     let value = prefix_arg_value(arguments, &mut argi);
-    fingerprint.add_internal_string(&value);
+    fingerprint.add_string(&value);
     argi
 }
 
@@ -1109,7 +1109,7 @@ fn argv_fragment_add_to_fingerprint(
         Obj::ExpandedTreeArtifactArg(tree_artifact) => {
             add_uuid(fingerprint, TREE_UUID);
             // Java: Fingerprint.addPath(PathFragment) = addString(getPathString()).
-            fingerprint.add_internal_string(tree_artifact.get_exec_path().get_path_string());
+            fingerprint.add_string(tree_artifact.get_exec_path().get_path_string());
             Ok(argi)
         }
         other => panic!("IllegalStateException: not an ArgvFragment: {:?}", other),
@@ -1316,7 +1316,7 @@ impl CommandLine for CustomCommandLine {
                     )?;
                 }
                 _ => {
-                    fingerprint.add_internal_string(&arg.expand_to_command_line());
+                    fingerprint.add_string(&arg.expand_to_command_line());
                 }
             }
         }

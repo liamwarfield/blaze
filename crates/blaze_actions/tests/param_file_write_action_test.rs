@@ -4,6 +4,7 @@ use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
+use blaze_actions::actions::action::InputMetadataProvider;
 use blaze_actions::actions::action_lookup::{ActionLookupData, ActionLookupKey};
 use blaze_actions::actions::command_line::{self, CommandLineRef};
 use blaze_actions::actions::parameter_file::ParameterFileType;
@@ -188,11 +189,15 @@ fn test_inputs() {
 }
 
 #[test]
-#[ignore = "needs action execution (ActionExecutionContext, output file permissions)"]
+#[ignore = "execution is in blaze_exec, which depends on this crate; output permissions of a \
+            ParameterFileWriteAction are not tested there yet (the FileWriteAction ones are: \
+            tests/analysis_actions_execute_test.rs test_can_write_executable_file)"]
 fn test_non_executable_output() {}
 
 #[test]
-#[ignore = "needs action execution (ActionExecutionContext, output file permissions)"]
+#[ignore = "execution is in blaze_exec, which depends on this crate; output permissions of a \
+            ParameterFileWriteAction are not tested there yet (the FileWriteAction ones are: \
+            tests/analysis_actions_execute_test.rs test_can_write_executable_file)"]
 fn test_executable_output() {}
 
 #[test]
@@ -211,11 +216,48 @@ fn test_write_command_line_without_tree_artifact_expansion() {
     assert_eq!(content.trim(), "--flag1\n--flag2\n--flag3\nvalue1\nvalue2");
 }
 
+/// Java: `ParamFileWriteActionTest.actionExecutionContext()`'s `FakeActionInputFileCache` with
+/// the tree's two children.
+struct FakeActionInputFileCache {
+    tree: Artifact,
+    children: Vec<Artifact>,
+}
+
+impl InputMetadataProvider for FakeActionInputFileCache {
+    fn get_tree_children(&self, tree: &Artifact) -> Option<Vec<Artifact>> {
+        (*tree == self.tree).then(|| self.children.clone())
+    }
+}
+
 #[test]
-#[ignore = "needs ActionExecutionContext with an InputMetadataProvider holding the tree artifact"]
 fn test_write_command_line_with_tree_artifact_expansion_default() {
+    // PORT: Java executes the action with an ActionExecutionContext; execution lives in
+    // blaze_exec, so the test checks the bytes of the action's deterministic writer for the
+    // context's input metadata provider, which is what `execute` writes.
     let f = fixture();
     let _ = (&f.exec_root, &f.root_dir);
+    let action = f.create_parameter_file_write_action(
+        NestedSetBuilder::create(Order::STABLE_ORDER, [f.tree_artifact.clone()]),
+        f.create_tree_artifact_expansion_command_line_default(),
+        false,
+    );
+    let provider = FakeActionInputFileCache {
+        tree: f.tree_artifact.clone(),
+        children: vec![
+            Artifact::create_tree_output_str(&f.tree_artifact, "artifacts/treeFileArtifact1"),
+            Artifact::create_tree_output_str(&f.tree_artifact, "artifacts/treeFileArtifact2"),
+        ],
+    };
+    let writer = action
+        .new_deterministic_writer_with_input_metadata_provider(&provider)
+        .unwrap();
+    let content = String::from_utf8(writer.get_bytes().unwrap()).unwrap();
+    assert_eq!(
+        content.trim(),
+        "--flag1\n\
+         out/artifact/myTreeFileArtifact/artifacts/treeFileArtifact1\n\
+         out/artifact/myTreeFileArtifact/artifacts/treeFileArtifact2"
+    );
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

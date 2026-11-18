@@ -1,0 +1,13 @@
+load(":defs.bzl", "OPS", "mut")
+
+[mut(
+    name = op,
+    op = op,
+    srcs = ["one.txt", "two.txt"],
+    strs = ["s"],
+    sdict = {"k": "v"},
+    lkd = {"one.txt": "1"},
+    skl = {"k": "two.txt"},
+    outs = [op + ".o"],
+    features = ["probe_feature", "-probe_disabled"],
+) for op in OPS]

@@ -313,10 +313,7 @@ impl FileSystem for BundledFileSystem {
     fn get_directory_entries(&self, path: &PathFragment) -> io::Result<Vec<String>> {
         match self.node(path)? {
             Node::Directory(children) => Ok(children.clone()),
-            Node::File(_) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("{} (Not a directory)", path),
-            )),
+            Node::File(_) => Err(io::Error::other(format!("{} (Not a directory)", path))),
         }
     }
 
@@ -347,10 +344,7 @@ impl FileSystem for BundledFileSystem {
     fn get_input_stream(&self, path: &PathFragment) -> io::Result<Box<dyn Read + Send>> {
         match self.node(path)? {
             Node::File(c) => Ok(Box::new(io::Cursor::new(c.as_bytes()))),
-            Node::Directory(_) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("{} (Is a directory)", path),
-            )),
+            Node::Directory(_) => Err(io::Error::other(format!("{} (Is a directory)", path))),
         }
     }
 

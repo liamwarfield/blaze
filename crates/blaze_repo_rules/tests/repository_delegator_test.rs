@@ -48,6 +48,8 @@ fn setup_delegator() -> Fixture {
         download_manager: None,
         timeout_scaling: 1.0,
         process_wrapper: None,
+        process_wrapper_kill_delay: None,
+        process_wrapper_graceful_sigterm: false,
         repo_contents_cache: Arc::new(LocalRepoContentsCache::new()),
     });
     let fetch_function = Arc::new(RepositoryFetchFunction::new(services));

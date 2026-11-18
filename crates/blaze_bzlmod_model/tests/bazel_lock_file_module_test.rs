@@ -281,6 +281,55 @@ fn facts_too_deep() {
     assert_eq!(e, "Facts cannot be nested more than 7 levels deep");
 }
 
+/// Not a JUnit test. `BazelLockFileFunction.getLockfileValue` reads the version with
+/// `Integer.parseInt(matcher.group(1))` (BazelLockFileFunction.java:124); digits beyond the int
+/// range throw NumberFormatException, an IllegalArgumentException that `compute` (:99-117) turns
+/// into BAD_LOCKFILE, or into the empty lockfile for the hidden lockfile.
+#[test]
+fn lock_file_version_beyond_int_range_is_a_bad_lockfile() {
+    for (digits, json) in [
+        (
+            "99999999999",
+            "{\n  \"lockFileVersion\": 99999999999,\n  \"moduleExtensions\": {}\n}",
+        ),
+        ("2147483648", "{\"lockFileVersion\":2147483648}"),
+    ] {
+        for mode in [
+            LockfileMode::Update,
+            LockfileMode::Refresh,
+            LockfileMode::Error,
+        ] {
+            let e = BazelLockFileFunction::compute(Ok(Some(json.into())), false, mode).unwrap_err();
+            assert_eq!(e.get_code(), ExternalDepsCode::BadLockfile);
+            assert_eq!(
+                e.get_message(),
+                format!(
+                    "Failed to read and parse the MODULE.bazel.lock file with error: For input \
+                     string: \"{digits}\". Try deleting it and rerun the build."
+                )
+            );
+        }
+        // The hidden lockfile never fails.
+        assert_eq!(
+            BazelLockFileFunction::compute(Ok(Some(json.into())), true, LockfileMode::Update)
+                .unwrap(),
+            BazelLockFileValue::empty_lockfile()
+        );
+        // Off mode ignores the file.
+        assert_eq!(
+            BazelLockFileFunction::compute(Ok(Some(json.into())), false, LockfileMode::Off)
+                .unwrap(),
+            BazelLockFileValue::empty_lockfile()
+        );
+    }
+    // Integer.MAX_VALUE parses: it is an unsupported version, not a malformed file.
+    let max = "{\"lockFileVersion\": 2147483647}";
+    assert_eq!(
+        BazelLockFileFunction::compute(Ok(Some(max.into())), false, LockfileMode::Update).unwrap(),
+        BazelLockFileValue::empty_lockfile()
+    );
+}
+
 #[test]
 fn read_errors() {
     // Old versions are ignored (or rejected in error mode).

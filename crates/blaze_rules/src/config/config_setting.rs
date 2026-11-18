@@ -24,9 +24,7 @@ use blaze_build_config::fragment_options_class::TEST_OPTIONS;
 use blaze_cmdline::label_constants::COMMAND_LINE_OPTION_PREFIX;
 use blaze_cmdline::{Label, PackageIdentifier};
 use blaze_optdefs::fragment::core_options::CoreOptions;
-use blaze_options::{
-    BooleanConverter, CommaSeparatedOptionListConverter, OptionsParser, Value as OptionValue,
-};
+use blaze_options::{OptionsParser, OptionsParsingException, Value as OptionValue};
 use blaze_packages::attribute::{AttributeMap, NonconfigurableAttributeMapper};
 use blaze_packages::native_rules::config_rule_classes::ConfigSettingRule;
 use blaze_packages::starlark_defs::platform_common::CONSTRAINT_VALUE_INFO;
@@ -593,35 +591,22 @@ fn build_setting_value_of(default: Option<&AttrValue>) -> Option<StarlarkOptionV
     default.map(blaze_analysis::config::starlark_transition::attr_value_to_starlark_option)
 }
 
-/// Java `BUILD_SETTING_CONVERTERS.get(type).convert(value)` into the `BuildOptions` form.
-// Java: com/google/devtools/build/lib/analysis/config/CoreOptionConverters.java:76 CoreOptionConverters.BUILD_SETTING_CONVERTERS
-fn convert_build_setting_value(type_: Type, value: &str) -> Result<StarlarkOptionValue, ()> {
-    match type_ {
-        Type::Integer => value
-            .trim()
-            .parse::<i64>()
-            .map(StarlarkOptionValue::Int)
-            .map_err(|_| ()),
-        Type::Boolean => BooleanConverter
-            .convert_bool(Some(value))
-            .map(StarlarkOptionValue::Bool)
-            .map_err(|_| ()),
-        Type::String => Ok(StarlarkOptionValue::Str(value.to_owned())),
-        Type::StringList => CommaSeparatedOptionListConverter
-            .convert_list(value)
-            .map(|l| {
-                StarlarkOptionValue::List(l.into_iter().map(StarlarkOptionValue::Str).collect())
-            })
-            .map_err(|_| ()),
-        Type::Label | Type::NodepLabel => Label::parse_canonical(value)
-            .map(StarlarkOptionValue::Label)
-            .map_err(|_| ()),
-        other => blaze_util::unported!(
-            "CoreOptionConverters.BUILD_SETTING_CONVERTERS",
-            "build setting type {}",
-            other
-        ),
-    }
+/// Java `BUILD_SETTING_CONVERTERS.get(type).convert(value, /* conversionContext= */ null)`: the
+/// converted object in its `BuildOptions` form (the shared port of the converters is
+/// `blaze_build_config::core_option_converters`).
+// Java: com/google/devtools/build/lib/rules/config/ConfigSetting.java:697 ConfigSetting.UserDefinedFlagMatch.fromAttributeValueAndPrerequisites
+fn convert_build_setting_value(
+    type_: Type,
+    value: &str,
+) -> Result<StarlarkOptionValue, OptionsParsingException> {
+    let converter = blaze_analysis::config::starlark_transition::build_setting_converter(type_)
+        .unwrap_or_else(|| {
+            panic!(
+                "NullPointerException: BUILD_SETTING_CONVERTERS has no converter for type {}",
+                type_
+            )
+        });
+    converter.convert(value, /* conversion_context= */ None)
 }
 
 /// Java `String.valueOf` of a nullable string (`"null"` for null).
@@ -720,7 +705,7 @@ impl UserDefinedFlagMatch {
                     &specified,
                 ) {
                     Ok(v) => v,
-                    Err(()) => {
+                    Err(_) => {
                         // This is a configuration-independent error on the attributes of
                         // config_setting. So, is appropriate to error immediately.
                         rule_context.attribute_error(
@@ -738,19 +723,28 @@ impl UserDefinedFlagMatch {
 
                 let configuration_value =
                     configuration_value.expect("NullPointerException: build setting value");
+                // Java: configurationValue instanceof List || configurationValue instanceof Set
                 if let StarlarkOptionValue::List(configuration_list) = &configuration_value {
                     // If the build_setting is a list or set, it's either an allow-multiple
                     // string-typed build setting, a string_list-typed build setting or a
                     // string_set-typed build setting. We use the same semantics as for
                     // multi-value native flags: if *any* entry in the list matches the
                     // config_setting's expected entry, it's a match.
+
+                    // If this is an allow-multiple build setting, the converter will have
+                    // converted the config settings value to a singular object, if it's a
+                    // string_list or string_set build setting the converter will have converted
+                    // it to a list or set respectively.
                     let specified_value_as_iterable: Vec<StarlarkOptionValue> =
                         if provider.allows_multiple() {
                             vec![converted_specified_value.clone()]
                         } else {
                             match &converted_specified_value {
-                                StarlarkOptionValue::List(l) => l.clone(),
-                                other => vec![other.clone()],
+                                StarlarkOptionValue::List(l) => l.items().to_vec(),
+                                other => panic!(
+                                    "ClassCastException: {} cannot be cast to Iterable",
+                                    other.java_to_string()
+                                ),
                             }
                         };
                     if specified_value_as_iterable.len() != 1 {
@@ -761,14 +755,17 @@ impl UserDefinedFlagMatch {
                                 specified, specified_label
                             ),
                         );
-                    } else if !configuration_list.contains(&specified_value_as_iterable[0]) {
+                    } else if !configuration_list
+                        .iter()
+                        .any(|entry| specified_value_as_iterable[0].java_equals(entry))
+                    {
                         diffs.push(Diff::new(
                             specified_label.clone(),
                             converted_specified_value.java_to_string(),
                             configuration_value.java_to_string(),
                         ));
                     }
-                } else if configuration_value != converted_specified_value {
+                } else if !configuration_value.java_equals(&converted_specified_value) {
                     diffs.push(Diff::new(
                         specified_label.clone(),
                         converted_specified_value.java_to_string(),
@@ -924,4 +921,33 @@ mod tests {
     #[test]
     #[ignore = "needs BuildViewTestCase (ConfigSettingTest matching tests)"]
     fn match_on_native_flag_values() {}
+
+    // Expected values: the oracle's transcript of scripts/w4/scenarios/flags-transitions
+    // (steps 27 to 32): `flag_values = {":level": "0x10"}` matches `--//:level=16`; "010", " 5"
+    // and the boolean "maybe" "cannot be converted"; "no" is the boolean false.
+    #[test]
+    fn convert_build_setting_value_uses_the_build_setting_converters() {
+        assert_eq!(
+            convert_build_setting_value(Type::Integer, "0x10"),
+            Ok(StarlarkOptionValue::Int(16))
+        );
+        assert!(convert_build_setting_value(Type::Integer, "010").is_err());
+        assert!(convert_build_setting_value(Type::Integer, " 5").is_err());
+        assert_eq!(
+            convert_build_setting_value(Type::Boolean, "no"),
+            Ok(StarlarkOptionValue::Bool(false))
+        );
+        assert!(convert_build_setting_value(Type::Boolean, "maybe").is_err());
+        assert_eq!(
+            convert_build_setting_value(Type::String, " a "),
+            Ok(StarlarkOptionValue::Str(" a ".to_owned()))
+        );
+        assert_eq!(
+            convert_build_setting_value(Type::StringList, "a,b"),
+            Ok(StarlarkOptionValue::list(vec![
+                StarlarkOptionValue::Str("a".to_owned()),
+                StarlarkOptionValue::Str("b".to_owned()),
+            ]))
+        );
+    }
 }

@@ -213,16 +213,27 @@ impl DependencySet {
             text.push_str(d.get_path_string()); // should already be root relative
         }
         text.push('\n');
-        out.write_all(text.as_bytes())?;
+        // Java: a `PrintStream` in the default charset, ISO-8859-1 (`blaze.cc:431`
+        // `-Dfile.encoding`): the internal strings' bytes.
+        out.write_all(&blaze_util::string_encoding::internal_string_bytes(&text))?;
         out.flush()
     }
 }
 
-/// Java: `new String(bytes, ISO_8859_1)`.
-// PORT: StringEncoding identity: the bytes are taken as UTF-8 (Bazel's internal form); invalid
-// UTF-8 is replaced.
+/// Java: `new String(content, 0, w, ISO_8859_1)`: the path keeps its bytes, whatever they are.
+// Java: com/google/devtools/build/lib/util/DependencySet.java:151 DependencySet.process
+// PORT: until the decoding switch (`blaze_util::string_encoding::STRINGS_ARE_INTERNAL`) a path
+// that is not valid UTF-8 has no string in Blaze. It is never replaced by a lossy one: that
+// would name a different file (review 2026-11-18-actions S2-1).
 fn latin1(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+    match blaze_util::string_encoding::internal_string_from_bytes(bytes) {
+        Ok(s) => s.into_owned(),
+        Err(_) => blaze_util::unported!(
+            "DependencySet.process",
+            "path in a .d file is not valid UTF-8: {}",
+            bytes.escape_ascii()
+        ),
+    }
 }
 
 /// Java: `FileSystemUtils.replaceExtension(PathFragment, String)`.

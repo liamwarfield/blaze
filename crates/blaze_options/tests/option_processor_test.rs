@@ -7,7 +7,7 @@ mod rc_support;
 
 use blaze_options::rc::option_processor::{
     BAZEL_SYSTEM_BAZELRC_PATH, CommandLine, OptionProcessor, RecordingStartupArgsProcessor,
-    StartupFlagRegistry, dedupe_blazerc_paths,
+    StartupFlagRegistry, can_read_file, dedupe_blazerc_paths,
 };
 use rc_support::*;
 
@@ -449,4 +449,28 @@ fn split_command_line_fails_with_deprecated_option_in_startup_args() {
         &["bazel", "--nomaster_bazelrc"],
         "Unknown startup option: '--nomaster_bazelrc'.\n  For more info, run 'bazel help startup_options'.",
     );
+}
+
+// Java: src/main/cpp/util/file_posix.cc:403 blaze_util::CanReadFile
+/// CanReadFile is `!IsDirectory(path) && access(path, R_OK) == 0`: it never opens the file.
+/// Opening a FIFO for reading would block until a writer appears (review 2026-11-18, S4).
+#[test]
+fn can_read_file_uses_access_and_does_not_open_a_fifo() {
+    unsafe extern "C" {
+        fn mkfifo(pathname: *const std::ffi::c_char, mode: u32) -> std::ffi::c_int;
+    }
+    let t = OptionProcessorTest::new("can_read_file");
+    let fifo = join(&t.workspace, "fifo.bazelrc");
+    let c_fifo = std::ffi::CString::new(fifo.clone()).unwrap();
+    // SAFETY: c_fifo is NUL-terminated and outlives the call.
+    assert_eq!(0, unsafe { mkfifo(c_fifo.as_ptr(), 0o644) });
+    // Nobody ever writes to the FIFO: an open(2) for reading would hang this test.
+    assert!(can_read_file(&fifo));
+
+    let file = join(&t.workspace, "file.bazelrc");
+    write_file("startup --foo", &file);
+    assert!(can_read_file(&file));
+    // A directory is not a readable file, and neither is a missing path.
+    assert!(!can_read_file(&t.workspace));
+    assert!(!can_read_file(&join(&t.workspace, "missing.bazelrc")));
 }

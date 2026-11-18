@@ -24,10 +24,9 @@ use crate::platform::{
     DurationMillis, EnvVarAction, EnvVarValue, K_LIST_SEPARATOR, K_SERVER_PID_FILE, LockHandle,
     LockMode, acquire_lock, create_secure_directory, exclude_path_from_backup, exists_env,
     get_milliseconds_monotonic, get_oom_file_path, get_process_id_as_string, get_processed_env,
-    get_self_path, get_system_javabase, is_running_within_test, is_shared_library,
-    kill_server_process, release_lock, set_debug_log, set_scheduling, setup_std_streams,
-    symlink_directories, unlimit_coredumps, unlimit_resources, verify_server_process,
-    warn_filesystem_type, warn_if_started_from_desktop,
+    get_self_path, get_system_javabase, is_running_within_test, is_shared_library, release_lock,
+    set_debug_log, set_scheduling, setup_std_streams, symlink_directories, unlimit_coredumps,
+    unlimit_resources, verify_server_process, warn_filesystem_type, warn_if_started_from_desktop,
 };
 use crate::server::{InProcessServer, ServerStartup};
 use crate::startup_options::StartupOptions;
@@ -49,6 +48,8 @@ use crate::workspace_layout::WorkspaceLayout;
 
 const BLAZE_CC: &str = "src/main/cpp/blaze.cc";
 const BLAZE_UTIL_POSIX_CC: &str = "src/main/cpp/blaze_util_posix.cc";
+/// The file name logged for fatal errors that only Blaze has (no line of blaze.cc to name).
+const BLAZE_RS: &str = file!();
 
 // Java: src/main/cpp/blaze.cc:175 ReasonString
 /// String representation of RestartReason.
@@ -209,6 +210,10 @@ impl BlazeServer {
     }
 
     // Java: src/main/cpp/blaze.cc:336 BlazeServer::ReleaseLocks
+    // PORT: never called while the server runs in-process: `communicate` keeps both locks for
+    // the whole command (see the PORT comment there). Kept for the gRPC client (W8), which
+    // releases them once a long-lived server has accepted the request.
+    #[allow(dead_code)]
     fn release_locks(&mut self) {
         let Some(output_base_lock) = self.output_base_lock_.take() else {
             bazel_die(
@@ -240,6 +245,16 @@ impl BlazeServer {
         // PORT: no gRPC server exists until W8; the in-process server is started per command
         // (StartServerAndConnect), so connecting to an existing one always fails.
         false
+    }
+
+    // Java: src/main/cpp/blaze.cc:936 StartServerAndConnect
+    /// Puts this object in connected state for the in-process server.
+    // PORT: ExecuteDaemon + ConnectOrDie: the server runs in this process (it is started by
+    // InProcessServer::run_command), so "connecting" always succeeds and the server pid is ours.
+    pub fn connect_in_process(&mut self) {
+        assert!(!self.connected());
+        self.process_info_.server_pid_ = std::process::id() as i32;
+        self.connected = true;
     }
 
     // Java: src/main/cpp/blaze.cc:1947 BlazeServer::KillRunningServer
@@ -291,15 +306,30 @@ impl BlazeServer {
             self.preemptible_,
         );
 
-        // Release the client-side locks, as the server may outlive the client and must implement
-        // its own locking of the install and output bases.
-        bazel_log(
-            LogLevel::Info,
-            BLAZE_CC,
-            2071,
-            "Released the client-side locks on the install and output bases",
-        );
-        self.release_locks();
+        // Java: src/main/cpp/blaze.cc:2067 BlazeServer::Communicate
+        // The C++ releases the client-side locks here ("as the server may outlive the client and
+        // must implement its own locking of the install and output bases"), logs "Released the
+        // client-side locks on the install and output bases" and calls ReleaseLocks().
+        //
+        // PORT: the locks are NOT released. Blaze has no long-lived server: the command runs in
+        // this process (`server.run_command` below), so the client's file locks are the only
+        // locks there are between two Blaze processes. Both stay held for the whole command, as
+        // in RunBatchMode, and are released when the process exits (the descriptors are never
+        // closed; BlazeServer has no destructor in C++ either). What the Java server does
+        // instead does not apply in-process:
+        // - BlazeCommandDispatcher.java:239-266 (the server's command lock: "Another command (%s)
+        //   is running. Waiting for it to complete on the server%s..." and, with
+        //   --noblock_for_lock, "Another command (%s) is running. Exiting immediately." with
+        //   LOCK_HELD_NOBLOCK_FOR_LOCK) can never be observed between two Blaze clients: the
+        //   second client waits in AcquireLock ("Another command holds the output base lock:
+        //   ...", "Waiting for it to complete...") or, with --noblock_for_lock, exits there with
+        //   LOCK_HELD_NOBLOCK_FOR_LOCK ("Exiting because the output base lock is held and
+        //   --noblock_for_lock was given."). That is what Bazel prints in --batch mode.
+        // - BlazeRuntime.java:1396-1408 (the server's own shared lock on the install base) is
+        //   covered by the client's shared install base lock, held as long as the server runs.
+        // Outside --batch the lock descriptors are O_CLOEXEC (AcquireLock), so processes the
+        // server spawns do not inherit the locks, and an exec of this process (the `run`
+        // command's ExecRequest, once ported) drops them, as Bazel's client has by then.
 
         // PORT: in-process, the server runs the request here and writes to this process's
         // stdout/stderr itself; cancellation, broken-pipe handling, ExecRequest (`run`) and the
@@ -880,11 +910,80 @@ fn get_server_pid(server_dir: &Path) -> i32 {
     let Some(bufstr) = read_file_path(&pid_file, 32) else {
         return -1;
     };
+    // PORT: byte-strings (C++ parses the pid file's raw bytes; a non-digit fails either way).
     let (ok, result) = safe_strto32(&String::from_utf8_lossy(&bufstr));
     if !ok {
         return -1;
     }
     result
+}
+
+// PORT: Blaze-only (review 2026-11-18, S2-1); there is no such function in blaze.cc.
+//
+// Blaze computes the same default output user root and output base as Bazel (GetCacheDir,
+// GetHashedBaseDir), so a real Bazel server may be running in the output base. What Bazel's own
+// client does then: it connects to that server (BlazeServer::Connect); if the install base
+// differs it kills the server ("Killing running server because it is using another version of
+// Bazel", EnsureCorrectRunningVersion) and repoints <output_base>/install; if the startup options
+// differ it kills it ("Running Bazel server needs to be killed, because the following startup
+// options are different:", KillRunningServerIfDifferentStartupOptions); a server it cannot
+// connect to is killed with SIGKILL (EnsurePreviousServerProcessTerminated -> KillServerProcess,
+// "Killed non-responsive server process (pid=%d)"); then it starts a new server, deleting
+// server/command_port and rewriting server/cmdline.
+//
+// Blaze refuses instead: it has no server protocol (it cannot connect to, reuse or shut down a
+// server), and it must not kill another tool's server or change the files that server owns.
+// Continuing would repoint `install`, delete `command_port` and run a second writer in the
+// output base next to the live server, whose commands are not excluded by the client locks
+// (Bazel's client releases them once the server has the request).
+//
+// The server is identified the way EnsurePreviousServerProcessTerminated identifies it: the pid
+// in server/server.pid.txt (GetServerPid), alive and with the start time recorded in
+// server/server.starttime (VerifyServerProcess). A pid file whose process is gone, or whose pid
+// now belongs to another process (different start time), is stale and ignored as before.
+/// The pid of a live server process, other than this process, that owns `output_base`.
+pub fn find_live_foreign_server(output_base: &Path) -> Option<i32> {
+    let server_pid = get_server_pid(&output_base.get_relative("server"));
+    if is_live_foreign_server(server_pid, output_base) {
+        Some(server_pid)
+    } else {
+        None
+    }
+}
+
+fn is_live_foreign_server(server_pid: i32, output_base: &Path) -> bool {
+    // PORT: a pid file naming this very process cannot be a server (Blaze writes no pid file):
+    // the pid of a dead server was reused for us.
+    server_pid > 0
+        && server_pid != std::process::id() as i32
+        && verify_server_process(server_pid, output_base)
+}
+
+/// The fatal error for a live server (`server_pid`) that is not this process.
+fn die_foreign_server_is_running(server_pid: i32, output_base: &Path) -> ! {
+    // LOCAL_ENVIRONMENTAL_ERROR, as for RunServerMode's "exec-server failed, please shut down
+    // existing server pid=%d and retry." (blaze.cc:724).
+    bazel_die(
+        exit_code::LOCAL_ENVIRONMENTAL_ERROR,
+        BLAZE_RS,
+        line!(),
+        format!(
+            "blaze: a running Bazel server (pid={}) owns the output base '{}'. Blaze has no \
+             server protocol and will not kill or modify another tool's server. Run 'bazel \
+             shutdown' in this workspace, or run Blaze with a different --output_user_root or \
+             --output_base.",
+            server_pid,
+            output_base.as_printable_path()
+        ),
+    )
+}
+
+/// Dies if a live server process that is not this process owns `output_base`. Reads only;
+/// nothing under the output base is created, changed or deleted.
+pub fn die_if_foreign_server_is_running(output_base: &Path) {
+    if let Some(server_pid) = find_live_foreign_server(output_base) {
+        die_foreign_server_is_running(server_pid, output_base);
+    }
 }
 
 // Java: src/main/cpp/blaze.cc:916 EnsurePreviousServerProcessTerminated
@@ -896,18 +995,14 @@ fn ensure_previous_server_process_terminated(
 ) {
     let server_pid = get_server_pid(server_dir);
     if server_pid > 0 {
-        if verify_server_process(server_pid, &startup_options.output_base) {
-            if kill_server_process(server_pid, &startup_options.output_base) {
-                bazel_log(
-                    LogLevel::User,
-                    BLAZE_CC,
-                    923,
-                    format!("Killed non-responsive server process (pid={})", server_pid),
-                );
-                logging_info.set_restart_reason_if_not_set(RestartReason::ServerUnresponsive);
-            } else {
-                logging_info.set_restart_reason_if_not_set(RestartReason::ServerVanished);
-            }
+        if is_live_foreign_server(server_pid, &startup_options.output_base) {
+            // PORT: the C++ kills the server here (KillServerProcess: SIGKILL to its process
+            // group, "Killed non-responsive server process (pid=%d)", restart reason
+            // SERVER_UNRESPONSIVE, or SERVER_VANISHED if it died meanwhile). Blaze never kills
+            // another tool's server (see find_live_foreign_server). RunLauncher already checked
+            // twice, so this is a server that appeared while this client held the output base
+            // lock.
+            die_foreign_server_is_running(server_pid, &startup_options.output_base);
         } else {
             logging_info.set_restart_reason_if_not_set(RestartReason::PidFileButNoServer);
         }
@@ -976,10 +1071,8 @@ fn start_server_and_connect(
     // would be the daemon's environment); the call is kept for its warnings.
     let _env = prepare_environment_for_jvm();
 
-    // PORT: ExecuteDaemon + ConnectOrDie: the server runs in this process (it is started by
-    // InProcessServer::run_command), so "connecting" always succeeds and the server pid is ours.
-    blaze_server.process_info_.server_pid_ = std::process::id() as i32;
-    blaze_server.connected = true;
+    // PORT: ExecuteDaemon + ConnectOrDie: see BlazeServer::connect_in_process.
+    blaze_server.connect_in_process();
 }
 
 // Java: src/main/cpp/blaze.cc:1090 KillRunningServerIfDifferentStartupOptions
@@ -1414,6 +1507,14 @@ fn run_launcher(
     logging_info: &mut LoggingInfo,
     server: &dyn InProcessServer,
 ) -> i32 {
+    // PORT: Blaze-only (see find_live_foreign_server): refuse to touch an output base that a
+    // live Bazel server owns, before anything in it is changed. Even the lock file is left
+    // alone (AcquireLock rewrites it with this client's pid).
+    die_if_foreign_server_is_running(&startup_options.output_base);
+
+    // PORT: `blaze_server` is dropped when this function returns, which does not release the
+    // locks: a LockHandle is a plain descriptor that only ReleaseLock closes. They are held until
+    // the process exits (the C++ never deletes its global `blaze_server` either).
     let mut blaze_server = BlazeServer::new(startup_options);
 
     let command_wait_duration = Some(blaze_server.acquire_locks());
@@ -1424,6 +1525,11 @@ fn run_launcher(
         1532,
         format!("Acquired the client lock, waited {} milliseconds", wait_ms),
     );
+
+    // PORT: Blaze-only: check again now that the output base lock is held. A Bazel client
+    // starts its server while it holds that lock, so a server that came up while this client
+    // waited for the lock is seen here, and none can come up from now on.
+    die_if_foreign_server_is_running(&startup_options.output_base);
 
     warn_filesystem_type(&startup_options.output_base);
 
@@ -1604,6 +1710,15 @@ fn blaze_main(
         1680,
         format!("Running (pid={})", get_process_id_as_string()),
     );
+
+    // PORT: Blaze-only: --host_jvm_args that configure the JVM's TLS trust store or key store
+    // cannot be honoured without a JVM and must not be ignored silently (see
+    // StartupOptions::unported_host_jvm_arg_error). BAD_ARGV: the user must change the command
+    // line or the rc file the provenance message names.
+    if let Some(error) = startup_options.unported_host_jvm_arg_error() {
+        print_startup_options_provenance_message(startup_options);
+        bazel_die(exit_code::BAD_ARGV, BLAZE_RS, line!(), error);
+    }
 
     if startup_options.unlimit_coredumps {
         unlimit_coredumps();

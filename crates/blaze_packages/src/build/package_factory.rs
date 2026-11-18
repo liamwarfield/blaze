@@ -116,7 +116,7 @@ impl PackageFactory {
         globber: Option<Arc<dyn Globber>>,
     ) -> TargetDefinitionContext {
         Package::new_package_builder(
-            self.package_settings.clone(),
+            self.package_settings,
             package_id,
             filename,
             self.rule_class_provider
@@ -262,7 +262,18 @@ impl PackageFactory {
         // `blaze_starlark::eval::exec_module` from `ctx` (its events must replay into the
         // builder's local event handler; agent D supplies them). The rule definition
         // environment thread-local (for analysis_test) is the payload's rule class provider.
-        // PORT: computation steps: starlark-rust does not count steps.
+        // Java: `pkgBuilder.updateStartedThreadComputationSteps(thread)` adds the thread's
+        // executed steps (StarlarkThread.getExecutedSteps) to the package. starlark-rust does not
+        // count Java's steps, so the package's count stays 0 and `--max_computation_steps`
+        // could never fire: fail loudly when the limit is set. (Bazel installs no package
+        // validator that reads the count.)
+        let max_steps = ctx.semantics.max_computation_steps;
+        if max_steps > 0 {
+            blaze_util::unported!(
+                "PackageFactory.afterDoneLoadingPackage",
+                "--max_computation_steps={max_steps} (StarlarkThread.getExecutedSteps)"
+            );
+        }
         match blaze_starlark::eval::exec_module(
             build_file_program,
             globals,

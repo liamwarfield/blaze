@@ -7,6 +7,11 @@
 //! before their command lines can be built), `write` with an `Args` content and
 //! `expand_template` with `computed_substitutions` are built by
 //! [`finish_pending_actions`] after the rule's module is frozen, in registration order.
+//!
+//! Java reads an `Args` (`Args.build`, `getParamFileInfo`, ...) and a `TemplateDict` (`getAll`)
+//! when the action is created, so later calls on the same object do not change the action.
+//! Here a copy of the object's state is taken at that point (`snapshot_args`,
+//! `snapshot_template_dict`) and the copy is what is frozen and built.
 
 use std::cell::Cell;
 use std::fmt;
@@ -28,12 +33,12 @@ use blaze_actions::analysis::actions::starlark_action::{
 use blaze_actions::analysis::actions::substitution::Substitution;
 use blaze_actions::analysis::actions::symlink_action::SymlinkAction;
 use blaze_actions::analysis::actions::template_expansion_action::TemplateExpansionAction;
-use blaze_actions::analysis::starlark::args::{build_args, is_args, new_args};
+use blaze_actions::analysis::starlark::args::{build_args, is_args, new_args, snapshot_args};
 use blaze_actions::analysis::starlark::starlark_file::{
     StarlarkFile, StarlarkFileRoot, artifact_from_value,
 };
 use blaze_actions::analysis::starlark::template_dict::{
-    get_all, is_template_dict, new_template_dict,
+    get_all, is_template_dict, new_template_dict, snapshot_template_dict,
 };
 use blaze_actions::analysis::starlark::unresolved_symlink_action::{
     SymlinkTargetType, UnresolvedSymlinkAction,
@@ -43,6 +48,7 @@ use blaze_cmdline::Label;
 use blaze_collect::{NestedSetBuilder, Order};
 use blaze_packages::rule_class::declared_exec_group::DEFAULT_EXEC_GROUP_NAME;
 use blaze_packages::types::label_converter::LabelConverter;
+use blaze_shell::util::os::OS;
 use blaze_starlark::StarlarkSemantics;
 use blaze_starlark::depset::Depset;
 use blaze_starlark::label::LabelValue;
@@ -67,10 +73,10 @@ use super::thread_payload::{
     RuleContextHandle, keep_alive_push,
 };
 use super::util::{
-    depset_cast_artifacts, depset_get_set_artifacts, depset_to_list, dict_cast_string_object,
-    dict_cast_string_string, errorf, fail_if_called_outside_default_allowlist,
-    get_filtered_execution_info, is_sequence, sequence_cast_artifacts, sequence_cast_strings,
-    sequence_elements, truth,
+    check_bool_param, depset_cast_artifacts, depset_get_set_artifacts, depset_to_list,
+    dict_cast_string_object, dict_cast_string_string, errorf,
+    fail_if_called_outside_default_allowlist, get_filtered_execution_info, is_sequence,
+    param_type_error, sequence_cast_artifacts, sequence_cast_strings, sequence_elements,
 };
 use crate::platform::PlatformInfo;
 use crate::providers::file_provider::FilesToRunProvider;
@@ -589,7 +595,8 @@ fn register_action(
 }
 
 /// Java `StarlarkActionFactory.buildCommandLine(builder, argumentsList, repoMappingSupplier)`:
-/// the command line parts, with each `Args` kept alive for the build after freezing.
+/// the command line parts, with a copy of each `Args` as it is now kept alive for the build
+/// after freezing.
 // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:695 StarlarkActionFactory.buildCommandLine
 fn build_command_line<'v>(
     arguments_list: &[Value<'v>],
@@ -604,7 +611,17 @@ fn build_command_line<'v>(
             if let Some(strings) = string_args.take() {
                 parts.push(CommandLinePart::Strings(strings));
             }
-            parts.push(CommandLinePart::Args(keep_alive_push(eval, *value)?));
+            // Java: ParamFileInfo paramFileInfo = args.getParamFileInfo();
+            //       builder.addCommandLine(args.build(repoMappingSupplier), paramFileInfo);
+            // `args.build` copies the arguments added so far
+            // (com/google/devtools/build/lib/analysis/starlark/StarlarkCustomCommandLine.java:882
+            // StarlarkCustomCommandLine.Builder.build: `arguments.toArray()`), and the param file
+            // settings are read here, so `args.add(...)`, `use_param_file` or
+            // `set_param_file_format` called afterwards do not reach this action.
+            // PORT: the command line can only be built from frozen values, so the state of the
+            // Args object at this point is copied, and the copy is built after freezing.
+            let snapshot = snapshot_args(*value, eval.heap());
+            parts.push(CommandLinePart::Args(keep_alive_push(eval, snapshot)?));
         } else {
             return Err(errorf(format!(
                 "expected list of strings or ctx.actions.args() for arguments instead of {}",
@@ -782,7 +799,7 @@ fn register_starlark_action<'v>(
     tools_unchecked: Option<Value<'v>>,
     mnemonic_unchecked: Option<&str>,
     progress_message: Option<&str>,
-    use_default_shell_env: Value<'v>,
+    use_default_shell_env: bool,
     env_unchecked: Value<'v>,
     execution_requirements_unchecked: Value<'v>,
     exec_group_unchecked: Option<&str>,
@@ -888,7 +905,8 @@ fn register_starlark_action<'v>(
     if !env_unchecked.is_none() {
         env = dict_cast_string_string(env_unchecked, "env")?;
     }
-    if truth(use_default_shell_env) {
+    // Java: Starlark.truth(useDefaultShellEnv)
+    if use_default_shell_env {
         builder.use_default_shell_environment(env);
     } else {
         builder.set_environment(env);
@@ -937,11 +955,18 @@ fn register_starlark_action<'v>(
             {
                 validate_is_top_level_starlark_function(resource_set_unchecked, eval)?;
             }
-            // PORT: Java sets a `StarlarkActionResourceSetBuilder` (the callback, called at
-            // execution with the OS and the input count to estimate local resources). The Rust
-            // SpawnAction builder (blaze_actions) only holds a fixed `ResourceSet`, so the action
-            // keeps the default resource set. Resources are neither in the action key nor in
-            // aquery output; they only weigh local scheduling.
+            // Java: builder.setResources(new StarlarkActionResourceSetBuilder(fn, mnemonic,
+            // getSemantics())): the callback is called at execution with the OS and the number
+            // of inputs to estimate the local resources of the spawn.
+            // PORT: not carried. blaze_actions' `SpawnActionBuilder::set_resources` only takes a
+            // fixed `ResourceSet` (no `ResourceSetOrBuilder`), and no executor reads an action's
+            // resource set yet (`SpawnAction::get_resource_set_or_builder` has no caller), so
+            // the action keeps the default resource set. This cannot be `unported!` here:
+            // rules_cc's link action passes a callback on every C++ link
+            // (@rules_cc//cc/private/link:finalize_link_action.bzl), so analysis of any cc_binary
+            // would stop. The loud failure belongs where the resource set is consumed (request
+            // in the wave report: `SpawnActionBuilder::set_resources_or_builder`). Resources are
+            // neither in the action key nor in aquery output.
         }
     }
 
@@ -982,17 +1007,190 @@ fn validate_is_top_level_starlark_function<'v>(
     Ok(())
 }
 
-/// `toolchain`'s `unbound` default: `None` when the parameter was not passed.
-fn toolchain_param<'v>(toolchain: Option<Value<'v>>) -> starlark::Result<Option<Value<'v>>> {
+/// `toolchain`'s `unbound` default: `None` when the parameter was not passed. Fails like the
+/// interpreter when the argument is not a Label, a string or None.
+// Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkActionFactoryApi.java:597 StarlarkActionFactoryApi.run (@Param toolchain)
+fn toolchain_param<'v>(
+    method_name: &str,
+    toolchain: Option<Value<'v>>,
+) -> starlark::Result<Option<Value<'v>>> {
     if let Some(t) = toolchain {
         if !(t.is_none() || t.downcast_ref::<LabelValue>().is_some() || t.unpack_str().is_some()) {
-            return Err(errorf(format!(
-                "got value of type '{}', want 'Label, string, or NoneType'",
-                t.get_type()
-            )));
+            return Err(param_type_error(
+                method_name,
+                "toolchain",
+                t,
+                "Label, string, or NoneType",
+            ));
         }
     }
     Ok(toolchain)
+}
+
+/// Java `x instanceof Sequence || x instanceof Depset`.
+fn is_sequence_or_depset(v: Value) -> bool {
+    is_sequence(v) || Depset::from_value(v).is_some()
+}
+
+/// Java `x instanceof Dict || x == Starlark.NONE`.
+fn is_dict_or_none(v: Value) -> bool {
+    v.is_none() || DictRef::from_value(v).is_some()
+}
+
+/// Java `x instanceof StarlarkCallable`, as far as `resource_set` is concerned (see
+/// `validateResourceSetBuilder` in `register_starlark_action`).
+fn is_starlark_callable(v: Value) -> bool {
+    matches!(v.get_type(), "function" | "builtin_function_or_method")
+}
+
+/// The interpreter's type checks of the `run` / `run_shell` arguments that both methods declare
+/// with the same `@Param` types and that the Rust signatures take as plain values. The
+/// interpreter checks arguments in declaration order before the method body runs, so the
+/// callers interleave these with the checks of their own parameters.
+// Java: net/starlark/java/eval/BuiltinFunction.java:405 BuiltinFunction.checkParamValue
+// Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkActionFactoryApi.java:399 StarlarkActionFactoryApi.run
+// Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkActionFactoryApi.java:637 StarlarkActionFactoryApi.runShell
+fn check_outputs_and_inputs_params<'v>(
+    method_name: &str,
+    outputs: Value<'v>,
+    inputs: Value<'v>,
+) -> starlark::Result<()> {
+    if !is_sequence(outputs) {
+        return Err(param_type_error(
+            method_name,
+            "outputs",
+            outputs,
+            "sequence",
+        ));
+    }
+    if !is_sequence_or_depset(inputs) {
+        return Err(param_type_error(
+            method_name,
+            "inputs",
+            inputs,
+            "sequence or depset",
+        ));
+    }
+    Ok(())
+}
+
+/// See [`check_outputs_and_inputs_params`]: `tools` and `arguments`.
+fn check_tools_and_arguments_params<'v>(
+    method_name: &str,
+    tools: Option<Value<'v>>,
+    arguments: Value<'v>,
+) -> starlark::Result<()> {
+    if let Some(tools) = tools {
+        if !is_sequence_or_depset(tools) {
+            return Err(param_type_error(
+                method_name,
+                "tools",
+                tools,
+                "sequence or depset",
+            ));
+        }
+    }
+    if !is_sequence(arguments) {
+        return Err(param_type_error(
+            method_name,
+            "arguments",
+            arguments,
+            "sequence",
+        ));
+    }
+    Ok(())
+}
+
+/// See [`check_outputs_and_inputs_params`]: the parameters from `use_default_shell_env` to
+/// `toolchain`. Returns `use_default_shell_env` and `toolchain` (`None` when unbound).
+fn check_trailing_spawn_params<'v>(
+    method_name: &str,
+    use_default_shell_env: Value<'v>,
+    env: Value<'v>,
+    execution_requirements: Value<'v>,
+    input_manifests: Value<'v>,
+    resource_set: Value<'v>,
+    toolchain: Option<Value<'v>>,
+) -> starlark::Result<(bool, Option<Value<'v>>)> {
+    let use_default_shell_env =
+        check_bool_param(method_name, "use_default_shell_env", use_default_shell_env)?;
+    if !is_dict_or_none(env) {
+        return Err(param_type_error(
+            method_name,
+            "env",
+            env,
+            "dict or NoneType",
+        ));
+    }
+    if !is_dict_or_none(execution_requirements) {
+        return Err(param_type_error(
+            method_name,
+            "execution_requirements",
+            execution_requirements,
+            "dict or NoneType",
+        ));
+    }
+    if !(input_manifests.is_none() || is_sequence(input_manifests)) {
+        return Err(param_type_error(
+            method_name,
+            "input_manifests",
+            input_manifests,
+            "sequence or NoneType",
+        ));
+    }
+    if !(is_dict_or_none(resource_set) || is_starlark_callable(resource_set)) {
+        return Err(param_type_error(
+            method_name,
+            "resource_set",
+            resource_set,
+            "callable, dict, or NoneType",
+        ));
+    }
+    let toolchain = toolchain_param(method_name, toolchain)?;
+    Ok((use_default_shell_env, toolchain))
+}
+
+/// Java `CommandHelper.commandHelperScriptMaybe(ruleContext, command, constructor,
+/// executionOs)` as `run_shell` uses it: if `command` is too long, the helper shell script that
+/// runs it and the `FileWriteAction` that writes it; otherwise `None`.
+///
+/// PORT: Java's `FileWriteAction.createFile` registers the action with the rule context. The
+/// actions of a Starlark rule are registered through the ordered pending list (module docs), so
+/// the action is returned for the caller to put there, in place. `script_name_suffix` is the
+/// suffix Java passes through its `BashCommandConstructor`, whose shell path this code path does
+/// not read.
+// Java: com/google/devtools/build/lib/analysis/CommandHelper.java:281 CommandHelper.commandHelperScriptMaybe
+// Java: com/google/devtools/build/lib/analysis/BashCommandConstructor.java:44 BashCommandConstructor.commandAsScript
+// Java: com/google/devtools/build/lib/analysis/actions/FileWriteAction.java:84 FileWriteAction.createFile
+fn command_helper_script_maybe(
+    rule_context: &RuleContext,
+    command: &str,
+    script_name_suffix: &str,
+    execution_os: OS,
+) -> Option<(Artifact, FileWriteAction)> {
+    // Java: String.length() counts UTF-16 code units.
+    if command.encode_utf16().count()
+        <= crate::rule::command_helper::max_command_length(execution_os)
+    {
+        return None;
+    }
+    let script_file_name = format!(
+        "{}{}",
+        rule_context.get_target().get_name(),
+        script_name_suffix
+    );
+    let script_file_contents = format!("#!/bin/bash\n{command}");
+    let script_file_artifact = rule_context.get_package_relative_artifact(
+        &PathFragment::create(&script_file_name),
+        &rule_context.get_genfiles_directory(),
+    );
+    let action = FileWriteAction::create_from_context(
+        rule_context.get_action_owner(),
+        script_file_artifact.clone(),
+        script_file_contents,
+        /* make_executable= */ true,
+    );
+    Some((script_file_artifact, action))
 }
 
 #[starlark_module]
@@ -1284,10 +1482,14 @@ fn actions_methods(builder: &mut MethodsBuilder) {
                 allow,
             )?;
             let owner = handle.borrow_mut().get_action_owner();
+            // Java: args.getDirectoryArtifacts(), args.build(getMainRepoMappingSupplier()) and
+            // args.getParameterFileType() are read here: a copy of the Args state as it is now
+            // (see `build_command_line`).
+            let snapshot = snapshot_args(content, eval.heap());
             PendingAction::ParameterFileWrite {
                 owner,
                 output: output.artifact().clone(),
-                args: keep_alive_push(eval, content)?,
+                args: keep_alive_push(eval, snapshot)?,
                 is_executable,
                 mnemonic,
                 unmodified_execution_requirements: unmodified_execution_requirements
@@ -1335,27 +1537,51 @@ fn actions_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] toolchain: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<starlark::values::none::NoneType> {
-        let _ = input_manifests;
+        // The interpreter checks every argument against its `@Param` before the method runs,
+        // in declaration order (`mnemonic`, `progress_message` and `exec_group` are checked by
+        // their Rust parameter types).
+        check_outputs_and_inputs_params("run", outputs, inputs)?;
+        if !(unused_inputs_list.is_none() || artifact_from_value(unused_inputs_list).is_some()) {
+            return Err(param_type_error(
+                "run",
+                "unused_inputs_list",
+                unused_inputs_list,
+                "File or NoneType",
+            ));
+        }
+        if !(artifact_from_value(executable).is_some()
+            || executable.unpack_str().is_some()
+            || files_to_run_provider(executable).is_some())
+        {
+            return Err(param_type_error(
+                "run",
+                "executable",
+                executable,
+                "File, string, or FilesToRunProvider",
+            ));
+        }
+        check_tools_and_arguments_params("run", tools, arguments)?;
+        let (use_default_shell_env, toolchain) = check_trailing_spawn_params(
+            "run",
+            use_default_shell_env,
+            env,
+            execution_requirements,
+            input_manifests,
+            resource_set,
+            toolchain,
+        )?;
+
         let f = factory(this, "actions.run")?;
         let exec_group = f
             .context
             .maybe_override_exec_group(exec_group.into_option())?;
-        let toolchain = f
-            .context
-            .maybe_override_toolchain(toolchain_param(toolchain)?, eval.heap())?;
+        let toolchain = f.context.maybe_override_toolchain(toolchain, eval.heap())?;
 
         let handle = f.context.handle;
         let use_auto_exec_groups = handle.borrow().use_auto_exec_groups();
 
         let mut builder = starlark_action_builder();
-        let arguments = if is_sequence(arguments) {
-            sequence_elements(arguments, eval)?
-        } else {
-            return Err(errorf(format!(
-                "in call to run(), parameter 'arguments' got value of type '{}', want 'sequence'",
-                arguments.get_type()
-            )));
-        };
+        let arguments = sequence_elements(arguments, eval)?;
         let command_line = build_command_line(&arguments, eval)?;
         if let Some(executable) = artifact_from_value(executable) {
             match f
@@ -1392,11 +1618,7 @@ fn actions_methods(builder: &mut MethodsBuilder) {
             );
         } else {
             // Should have been verified by Starlark before this function is called
-            return Err(errorf(format!(
-                "in call to run(), parameter 'executable' got value of type '{}', want 'File, \
-                 string, or FilesToRunProvider'",
-                executable.get_type()
-            )));
+            panic!("IllegalStateException");
         }
         register_starlark_action(
             f,
@@ -1447,26 +1669,38 @@ fn actions_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] toolchain: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<starlark::values::none::NoneType> {
-        let _ = input_manifests;
+        // The interpreter checks every argument against its `@Param` before the method runs,
+        // in declaration order (`mnemonic`, `progress_message` and `exec_group` are checked by
+        // their Rust parameter types).
+        check_outputs_and_inputs_params("run_shell", outputs, inputs)?;
+        check_tools_and_arguments_params("run_shell", tools, arguments)?;
+        if !(command.unpack_str().is_some() || is_sequence(command)) {
+            return Err(param_type_error(
+                "run_shell",
+                "command",
+                command,
+                "string or sequence",
+            ));
+        }
+        let (use_default_shell_env, toolchain) = check_trailing_spawn_params(
+            "run_shell",
+            use_default_shell_env,
+            env,
+            execution_requirements,
+            input_manifests,
+            resource_set,
+            toolchain,
+        )?;
+
         let f = factory(this, "actions.run_shell")?;
         let exec_group = f
             .context
             .maybe_override_exec_group(exec_group.into_option())?;
-        let toolchain = f
-            .context
-            .maybe_override_toolchain(toolchain_param(toolchain)?, eval.heap())?;
+        let toolchain = f.context.maybe_override_toolchain(toolchain, eval.heap())?;
         let handle = f.context.handle;
 
         let mut builder = starlark_action_builder();
-        let arguments = if is_sequence(arguments) {
-            sequence_elements(arguments, eval)?
-        } else {
-            return Err(errorf(format!(
-                "in call to run_shell(), parameter 'arguments' got value of type '{}', want \
-                 'sequence'",
-                arguments.get_type()
-            )));
-        };
+        let arguments = sequence_elements(arguments, eval)?;
         let command_line = build_command_line(&arguments, eval)?;
 
         // When we use a shell command, add an empty argument before other arguments.
@@ -1476,36 +1710,37 @@ fn actions_methods(builder: &mut MethodsBuilder) {
         let pad = !arguments.is_empty();
 
         if let Some(command) = command.unpack_str() {
-            let mut rule_context = handle.borrow_mut();
-            let execution_info =
-                blaze_packages::target::target_utils::get_execution_info(rule_context.get_rule());
-            let counter = f.run_shell_output_counter.get();
-            f.run_shell_output_counter.set(counter + 1);
-            let helper_script_suffix = format!(".run_shell_{counter}.sh");
-            let execution_platform = get_execution_platform(exec_group, &rule_context)?;
-            let sh_executable = crate::rule::sh_toolchain::get_path_for_platform(
-                rule_context.get_configuration(),
-                get_execution_platform(exec_group, &rule_context)?.as_ref(),
-            );
-            let constructor = crate::rule::command_helper::build_bash_command_constructor(
-                &execution_info,
-                &sh_executable,
-                &helper_script_suffix,
-            );
-            // PORT: Java registers the helper script's action with the rule context here, before
-            // this run_shell action; `command_helper_script_maybe` registers it directly with the
-            // rule context, so it precedes every Starlark action still pending.
-            let helper_script = crate::rule::command_helper::command_helper_script_maybe(
-                &mut rule_context,
-                command,
-                &constructor,
-                crate::platform::get_os_from_constraints_or_host(execution_platform.as_deref()),
-            );
+            let (sh_executable, helper_script) = {
+                let rule_context = handle.borrow();
+                // Java: `executionInfo` (TargetUtils.getExecutionInfo(ruleContext.getRule()))
+                // only chooses the shell path of the BashCommandConstructor, which
+                // commandHelperScriptMaybe does not read (see `command_helper_script_maybe`).
+                let counter = f.run_shell_output_counter.get();
+                f.run_shell_output_counter.set(counter + 1);
+                let helper_script_suffix = format!(".run_shell_{counter}.sh");
+                let execution_platform = get_execution_platform(exec_group, &rule_context)?;
+                let sh_executable = crate::rule::sh_toolchain::get_path_for_platform(
+                    rule_context.get_configuration(),
+                    get_execution_platform(exec_group, &rule_context)?.as_ref(),
+                );
+                let helper_script = command_helper_script_maybe(
+                    &rule_context,
+                    command,
+                    &helper_script_suffix,
+                    crate::platform::get_os_from_constraints_or_host(execution_platform.as_deref()),
+                );
+                (sh_executable, helper_script)
+            };
             match helper_script {
                 None => {
                     builder.set_shell_command(&sh_executable, command, pad);
                 }
-                Some(helper_script) => {
+                Some((helper_script, helper_script_action)) => {
+                    // Java: FileWriteAction.createFile calls ruleContext.registerAction(action)
+                    // here: after the actions registered so far, before this run_shell action.
+                    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:640 StarlarkActionFactory.runShell
+                    AnalysisThreadPayload::from_or_fail(eval, "registerAction")?
+                        .push_pending(PendingAction::Built(Arc::new(helper_script_action)));
                     builder.set_shell_command(
                         &sh_executable,
                         helper_script.get_exec_path_string(),
@@ -1595,12 +1830,20 @@ fn actions_methods(builder: &mut MethodsBuilder) {
                         computed.get_type()
                     )));
                 }
+                // Java: the substitutions of `((TemplateDict) computedSubstitutions).getAll()`
+                // are put into the action's list here, so `add` / `add_joined` called afterwards
+                // do not reach this action: a copy of the TemplateDict as it is now is kept.
+                // PORT: Java also rejects a key that repeats one of `substitutions` here
+                // ("Multiple entries with same key: ..."); the keys of a TemplateDict can only
+                // be read once it is frozen, so that case is reported (loudly) by
+                // `finish_pending_actions`.
+                let snapshot = snapshot_template_dict(computed, eval.heap());
                 PendingAction::TemplateExpansion {
                     owner,
                     template: template.artifact().clone(),
                     output: output.artifact().clone(),
                     substitutions: substitutions_builder,
-                    computed_substitutions: keep_alive_push(eval, computed)?,
+                    computed_substitutions: keep_alive_push(eval, snapshot)?,
                     executable: is_executable,
                 }
             }
@@ -1925,5 +2168,96 @@ mod tests {
     fn context_repr_rule_and_aspect() {
         assert_eq!(context_repr(false, "//a:b"), "<rule context for //a:b>");
         assert_eq!(context_repr(true, "//a:b"), "<aspect context for //a:b>");
+    }
+
+    // Expected texts: the oracle (Bazel 9.3.2) on scripts/w4/scenarios/ctx-errors, targets
+    // run_shell_toolchain_list, run_shell_use_default_shell_env_none, run_env_list.
+    #[test]
+    fn toolchain_param_names_the_method_and_parameter() {
+        let list = starlark::values::FrozenValue::new_empty_list().to_value();
+        assert_eq!(
+            toolchain_param("run_shell", Some(list))
+                .unwrap_err()
+                .to_string(),
+            "in call to run_shell(), parameter 'toolchain' got value of type 'list', want \
+             'Label, string, or NoneType'"
+        );
+        assert!(toolchain_param("run", None).unwrap().is_none());
+        assert!(
+            toolchain_param("run", Some(Value::new_none()))
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn trailing_spawn_params_are_type_checked_in_declaration_order() {
+        let none = Value::new_none();
+        let list = starlark::values::FrozenValue::new_empty_list().to_value();
+        // use_default_shell_env comes first.
+        assert_eq!(
+            check_trailing_spawn_params("run_shell", none, list, none, none, none, None)
+                .unwrap_err()
+                .to_string(),
+            "in call to run_shell(), parameter 'use_default_shell_env' got value of type \
+             'NoneType', want 'bool'"
+        );
+        assert_eq!(
+            check_trailing_spawn_params(
+                "run",
+                Value::new_bool(false),
+                list,
+                none,
+                none,
+                none,
+                None
+            )
+            .unwrap_err()
+            .to_string(),
+            "in call to run(), parameter 'env' got value of type 'list', want 'dict or NoneType'"
+        );
+        let (use_default_shell_env, toolchain) = check_trailing_spawn_params(
+            "run",
+            Value::new_bool(true),
+            none,
+            none,
+            none,
+            none,
+            Some(none),
+        )
+        .unwrap();
+        assert!(use_default_shell_env);
+        assert!(toolchain.is_some());
+    }
+
+    // Java: StarlarkActionFactoryApi.run / runShell `@Param` types of outputs, inputs, tools
+    // and arguments; texts in the interpreter's format (oracle: ctx-errors, run_outputs_depset
+    // and run_inputs_string have the same shape with other value types).
+    #[test]
+    fn leading_spawn_params_are_type_checked() {
+        let none = Value::new_none();
+        let list = starlark::values::FrozenValue::new_empty_list().to_value();
+        assert_eq!(
+            check_outputs_and_inputs_params("run", none, list)
+                .unwrap_err()
+                .to_string(),
+            "in call to run(), parameter 'outputs' got value of type 'NoneType', want 'sequence'"
+        );
+        assert_eq!(
+            check_outputs_and_inputs_params("run", list, none)
+                .unwrap_err()
+                .to_string(),
+            "in call to run(), parameter 'inputs' got value of type 'NoneType', want 'sequence \
+             or depset'"
+        );
+        assert!(check_outputs_and_inputs_params("run_shell", list, list).is_ok());
+        assert_eq!(
+            check_tools_and_arguments_params("run", Some(none), list)
+                .unwrap_err()
+                .to_string(),
+            "in call to run(), parameter 'tools' got value of type 'NoneType', want 'sequence \
+             or depset'"
+        );
+        assert!(check_tools_and_arguments_params("run", None, list).is_ok());
     }
 }
