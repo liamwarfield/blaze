@@ -17,16 +17,17 @@ Updated 2026-11-17 (root).
 - CppCompile argv for brotli dictionary.c equals the oracle's (blaze_cc_features).
 - Action keys: 238/238 rebuilt oracle actions match; aquery dump replay byte-identical (W5).
 - Spawn replay: 43/43 brotli, 551/551 re2 spawns match through Blaze's linux-sandbox runner (W6).
-- `query` (W3, interim): brotli 162/162; re2 main targets match; re2 deps() in progress.
+- `query`: brotli 162/162, re2 1091/1091 (label_kind + streamed_jsonproto, incl. deps()) (W3).
+- Repos: every fetched repo tree identical to the oracle (brotli 67/67, re2 74/74); marker files
+  and one lockfile entry per project pending Label() repo-mapping recording.
+- Execution replay: brotli action graph reproduces all 96 outputs; re2 tests 21/21.
+- Upstream integration tests: harness ready; oracle baseline 211/237 targets, 2,878 functions.
 
 ## In flight
-- W3 lead: finishing re2 `deps()` query.
-- Repo-rules lead: repository_rule/repository_ctx, module extensions, real fetching.
 - Analysis lead: platforms/toolchains, configured targets, ctx API, cc/py natives, cquery/aquery.
-- Build-driver/test lead: ACTION_EXECUTION, BuildDriver, symlink forest, summaries, test strategy.
-- Upstream integration-test shim.
+- Integration agent: Label() repo-mapping recorder (lockfile/marker parity), shared-crate requests.
 
 ## Next
-Analysis lead (configured targets, toolchains/platforms, ctx API, providers, cc_internal/cc_common
-wrappers over blaze_cc_features, py_builtins, `cquery`) once W3 lands → wire aquery (W5) → build
-driver + execution (W6) → brotli build → re2 tests (W7) → BEP (W8).
+Final integration: wire `build`/`test`/`fetch`/`mod`/`query` into the `blaze` binary with real
+repository fetching (no oracle seams: OracleRepos, BLAZE_W4_ORACLE_PLATFORMS), then record Blaze
+with scripts/oracle on both projects and climb the scoreboard; then the upstream-tests hill; BEP (W8).
