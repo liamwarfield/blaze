@@ -44,3 +44,7 @@ Each entry: date, decision, why, who decided.
   output directories, Starlark exec transition) for now; 06 puts them in blaze_actions/blaze_config.
   Reconcile when the analysis lead needs it. Platform facts temporarily come from the oracle via
   `BLAZE_W4_ORACLE_PLATFORMS` until PlatformFunction is ported. Root.
+- 2026-11-18. Upstream integration tests (scripts/upstream-tests): oracle baseline is 211/237
+  targets and 2,878 functions passing in all 4 runs on this host; that pass list is the long-term
+  hill for Blaze. The shim swaps //src:bazel for the binary under test and lets the oracle run
+  the test targets. Root.
