@@ -21,13 +21,15 @@ Updated 2026-11-17 (root).
 - Repos: every fetched repo tree identical to the oracle (brotli 67/67, re2 74/74); marker files
   and one lockfile entry per project pending Label() repo-mapping recording.
 - Execution replay: brotli action graph reproduces all 96 outputs; re2 tests 21/21.
-- Through the real `blaze` binary (brotli): query 162/162, cquery label_kind 176/176, cquery
-  jsonproto 16/16, aquery actions 60/60 (2 allowed). Lockfiles byte-identical (both projects).
+- Through the real `blaze` binary, both projects: query 162/162 + 1091/1091, cquery label_kind
+  176/176 + 3295/3295, cquery jsonproto 16/16 + 37/37, aquery actions 60/60 + 1420/1420 (allow-
+  listed runfiles-manifest keys only). Lockfiles byte-identical (both projects).
 - Upstream integration tests: harness ready; oracle baseline 211/237 targets, 2,878 functions.
 
 ## In flight
-- Analysis lead: platforms/toolchains, configured targets, ctx API, cc/py natives, cquery/aquery.
-- Integration agent: Label() repo-mapping recorder (lockfile/marker parity), shared-crate requests.
+- Integration lead: build/test commands end to end, real repos (no oracle seams), mod/fetch,
+  lockfile writing, full oracle scoreboard (label blaze-int).
+- BEP lead: blaze_bep (BuildEventStreamer, JSON transport) for the `bep` surface.
 
 ## Next
 Final integration: wire `build`/`test`/`fetch`/`mod`/`query` into the `blaze` binary with real
