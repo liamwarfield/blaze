@@ -1,0 +1,12 @@
+[package]
+name = "blaze_collect"
+description = "Port of com.google.devtools.build.lib.collect (NestedSet and helpers)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_util = { path = "../blaze_util" }
+indexmap.workspace = true
+parking_lot.workspace = true

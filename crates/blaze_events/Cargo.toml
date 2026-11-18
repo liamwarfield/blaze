@@ -1,0 +1,13 @@
+[package]
+name = "blaze_events"
+description = "Port of Bazel's lib/events and the terminal formatting of events"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_util = { path = "../blaze_util" }
+parking_lot.workspace = true
+regex.workspace = true
+libc = "0.2"
