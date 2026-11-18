@@ -10,14 +10,17 @@ Updated 2026-11-17 (root).
   blaze_events (66), blaze_vfs + blaze_cmdline (163), starlark_conformance (ScriptTest 86.8% asserts).
 - blaze_options: framework + rc handling ported; OptionsParserTest still being ported.
 
-## In flight (wave 2a/2b)
-- blaze_skyframe §3.3 fixes; blaze_protos (prost + JsonFormat-compatible printer);
-  blaze_shell; blaze_optdefs (fragment / command / misc transcriptions);
-  blaze_bzlmod_model (Version, Selection, Discovery, registry, lockfile bytes);
-  blaze_repo_fetch (repo cache, downloader, decompressors, PatchUtil);
-  vendored starlark-rust + blaze_starlark; scripts/oracle recorder.
+## In flight (2026-11-17, late)
+- Referee done: scripts/oracle (13 surfaces, oracle vs oracle 100%).
+- Committed since: blaze_options (405 tests), blaze_optdefs (all 1,121 options), blaze_starlark +
+  vendored starlark-rust (patches 1-4, 6), blaze_protos (byte-exact), blaze_shell,
+  blaze_bzlmod_model (lockfile byte-exact), blaze_repo_fetch (shared cache), skyframe fixes.
+- Leads running: W1 client/runtime/`blaze` bin (version/info/clean/shutdown); W2 blaze_bzlmod
+  (MODULE.bazel eval, registry, `mod graph`, lockfile); W3 packages + rule-definition builtins +
+  @_builtins + loading SkyFunctions + query (repos taken from the oracle's output base for now);
+  blaze_cc_features (C++ feature engine); optdefs helper cleanup.
 
 ## Next (wave plan from docs/research/06 §5.4)
-W1 client/runtime skeleton (version, info, clean, shutdown) → W2 `mod graph` + lockfile →
-W3 packages/BUILD/.bzl loading + repo rules + `query` → W4 configs/analysis/`cquery` →
-W5 actions/`aquery` → W6 brotli build → W7 re2 tests → W8 BEP/server.
+Repo rules + module extensions (needs W3's attr/rule machinery and W2's seam) → W4 configs/
+analysis/`cquery` → W5 actions/`aquery` → W6 brotli build → W7 re2 tests → W8 BEP/server.
+Also pending: runfiles shim to run Bazel's shell/Python integration tests against `blaze`.
