@@ -55,3 +55,17 @@ Read them again after a context reset.
   from the oracle, never from Blaze.
 - Do not edit `scripts/oracle`, `scripts/gate`, `corpus/` or recorded baselines unless your task
   names them.
+
+## Reviewers
+
+- Independent reviewers and regression auditors run on Fable 5.2 (`model: "fable"`), by the user's
+  decision (2026-11-18). Implementers keep the session default.
+- A reviewer is read-only: it does not edit code, tests, expectations, scripts or baselines, and
+  does not run Cargo. It reviews the Rust against the pinned Java and the oracle evidence, writes
+  its findings to `docs/reviews/<date>-<area>.md`, and returns one verdict, PASS or STOP, bound to
+  the commit it read.
+- A STOP names the blocking findings. Root cannot overrule it with a summary or a passing test;
+  the finding is fixed (or shown wrong with Java evidence) and the same reviewer role re-checks.
+- Findings are ranked: S1 wrong output or wrong behaviour on valid input; S2 a deviation that is
+  masked today (corpus-specific shortcut, guessed value, weakened check, expectation taken from
+  Blaze); S3 missing port marked honestly (`unported!`, `#[ignore]`); S4 style.

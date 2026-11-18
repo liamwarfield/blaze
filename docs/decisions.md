@@ -81,3 +81,6 @@ Each entry: date, decision, why, who decided.
   places Java calls StringEncoding. Migration per 07 section 5 after the build/test integration
   lands (it touches many crates); brotli/re2 must stay byte-identical at every step. Trigger:
   workerd's aspect_tools_telemetry sha1.bzl. Root.
+- 2026-11-18. Reviewers and auditors run on Fable 5.2; rules in AGENTS.md "Reviewers". First
+  review round covers the evaluator, execution, actions, loading, analysis, bzlmod/repos, and an
+  integrity audit of the referee and tests. User (model choice); root (scope).
