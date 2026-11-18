@@ -20,3 +20,11 @@ Each entry: date, decision, why, who decided.
 - 2026-11-17. `linux-sandbox` and `process-wrapper` come from the oracle's install base until they
   are ported; `@bazel_tools` (embedded_tools) is copied from the oracle's install base into
   Blaze's install base. Root.
+- 2026-11-17. Vendor starlark-rust 0.14.2 (`starlark`, `starlark_syntax`, `starlark_derive`,
+  `starlark_map`) under `third_party/starlark-rust` with `[patch.crates-io]` and a numbered patch
+  queue in `third_party/starlark-rust/PATCHES.md`, per docs/research/05-starlark-rust.md 4.3. Bazel
+  natives, struct, json, print, fail, depset, Label, providers, BUILD checks and tracebacks live in
+  Blaze crates on the public API. Root.
+- 2026-11-17. String length/indexing/order: starlark-rust's code-point semantics for now. Bazel
+  9.3.2 uses UTF-8 byte strings internally; both corpus projects are ASCII, so outputs agree.
+  Revisit when a non-ASCII case shows up. Root.
