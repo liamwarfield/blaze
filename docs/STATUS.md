@@ -30,13 +30,16 @@ Updated 2026-11-17 (root).
   listed runfiles-manifest keys only). Lockfiles byte-identical (both projects).
 - Upstream integration tests: harness ready; oracle baseline 211/237 targets, 2,878 functions.
 
-## In flight (2026-11-18, after review round 1)
-- Integration lead: finishing build/test end to end (re2 test matched before its exec-review
-  fixes; re-recording), exec review S1s, loud failures for dropped Starlark flags.
-- Fix wave (implementers): skyframe findings; loading findings; bzlmod/repos/client findings;
-  referee and gate (order items, missing-surface failures, commit binding, baseline, hooks).
-- Waiting for the lead's handback: analysis findings (12 S1), actions findings, then the
-  byte-strings migration (also fixes the non-ASCII action-key S1), then reviewers re-check.
+## In flight (2026-11-18, review round 2)
+Review verdicts (docs/reviews/): referee/gate PASS (round 2A), skyframe PASS, bzlmod/repos/client
+PASS, actions PASS, loading STOP (one new blocker: `proto` global; being fixed), analysis STOP
+(fix wave in progress), execution STOP (six S1 fixed; rest in the analysis lead's wave; not yet
+re-reviewed), integrity audit STOP outside the referee scope.
+- Analysis fix lead: Starlark options (done: flags probe 71/71), semantics flags, cquery order
+  (brotli order item matches), then Args snapshots, incompatible targets, conflicts, genrule,
+  analysis errors, aquery order, and wiring requests from the other fixers.
+- Follow-up fixers: loading (proto, string_set, stubs), skyframe NEW-1, repos N1/N4, actions N2/N3.
+- Latest building checkpoint: 8663bba (verified from a clean checkout).
 
 ## Next
 Final integration: wire `build`/`test`/`fetch`/`mod`/`query` into the `blaze` binary with real
