@@ -1,0 +1,811 @@
+{
+ "allowed_by": {
+  "build-metrics-volatile-counters": {
+   "items": 2,
+   "reason": "Skyframe evaluates in parallel, so how many nodes of each SkyFunction are evaluated or dirtied in one invocation varies between identical runs (re2: a few per cent). The serialized action cache size also varies by a few hundred bytes on re2 (161890 vs 161688) with identical actions and outputs. Action, artifact, target, package and per-mnemonic action counts in the same event are still compared."
+  },
+  "runfiles-manifest-action-key": {
+   "items": 56,
+   "reason": "SourceManifestAction's action key fingerprints the manifest content, which names absolute execroot paths. Every recording has its own workspace copy and output base, so the hash differs; the normalised manifest bytes (outputs surface), argv, inputs and outputs still match."
+  }
+ },
+ "clean": false,
+ "exceptions": [
+  {
+   "explanation": "Not a recording made by scripts/oracle/record's protocol. On a fresh output base the oracle's `aquery deps(//src/workerd/server:workerd) --output=jsonproto` exits 8 (build interrupted) and leaves no usable output; label oracle-9.3.2-workerd holds that recording unchanged (aquery_actions FAILED, exit code 8). In this record the exit code of aquery_deps_jsonproto was changed by hand from 8 to 0 and raw/aquery_deps_jsonproto.stdout was replaced by the output of the same command run on ~/.cache/blaze/oracle-out/ur-workerd after a full oracle build (scripts/workerd/run oracle aquery ...; docs/workerd.md). Absolute paths in it name that output base and are not normalised. A candidate that exits 0 and prints these actions matches something the oracle does not do under the protocol, so the two surfaces are compared for information and never count as a pass.",
+   "id": "workerd-aquery-spliced",
+   "kind": "spliced",
+   "label": "oracle-9.3.2",
+   "project": "workerd",
+   "surfaces": [
+    "aquery_actions",
+    "exit_codes"
+   ]
+  }
+ ],
+ "excluded": [
+  {
+   "project": "workerd",
+   "reason": "recorded by neither side",
+   "reference_items": 0,
+   "surface": "build_stderr"
+  },
+  {
+   "project": "workerd",
+   "reason": "recorded by neither side",
+   "reference_items": 0,
+   "surface": "execlog"
+  },
+  {
+   "project": "workerd",
+   "reason": "recorded by neither side",
+   "reference_items": 0,
+   "surface": "bep"
+  },
+  {
+   "project": "workerd",
+   "reason": "recorded by neither side",
+   "reference_items": 0,
+   "surface": "outputs"
+  },
+  {
+   "project": "workerd",
+   "reason": "recorded by neither side",
+   "reference_items": 0,
+   "surface": "tests"
+  }
+ ],
+ "failures": [
+  "3 surfaces DIFF",
+  "8 surfaces MISSING",
+  "2 surfaces under a declared recording exception"
+ ],
+ "label": "blaze-12ca29ee95e0",
+ "project_totals": {
+  "brotli": {
+   "allowed": 3,
+   "compared": 1001,
+   "extra": 0,
+   "failed": 4,
+   "matching": 997,
+   "surfaces": {
+    "DIFF": 1,
+    "FAILED": 0,
+    "MATCH": 12,
+    "MISSING": 0,
+    "NOT_RECORDED": 0,
+    "NO_REFERENCE": 0
+   },
+   "total": 1004
+  },
+  "re2": {
+   "allowed": 55,
+   "compared": 12857,
+   "extra": 1,
+   "failed": 4,
+   "matching": 12853,
+   "surfaces": {
+    "DIFF": 2,
+    "FAILED": 0,
+    "MATCH": 11,
+    "MISSING": 0,
+    "NOT_RECORDED": 0,
+    "NO_REFERENCE": 0
+   },
+   "total": 12912
+  },
+  "workerd": {
+   "allowed": 0,
+   "compared": 0,
+   "extra": 0,
+   "failed": 145072,
+   "matching": 0,
+   "surfaces": {
+    "DIFF": 0,
+    "FAILED": 0,
+    "MATCH": 0,
+    "MISSING": 8,
+    "NOT_RECORDED": 5,
+    "NO_REFERENCE": 0
+   },
+   "total": 145072
+  }
+ },
+ "provenance": {
+  "brotli": {
+   "candidate": {
+    "binary": "~/.cache/blaze/work/accept-12ca29ee95e0/target/debug/blaze",
+    "binary_sha256": "fe43027c8a5ac368969dd739b8cdbe9c6a77dbf3823703692986a91f2273bf10",
+    "created": "2026-11-18T20:41:58+00:00",
+    "extractor_sha256": "cdf91c84cbdf3df31f2613a57843f84e3f89b659938d8c89e624cbeade512078",
+    "label": "blaze-12ca29ee95e0",
+    "project": "brotli",
+    "recorded": true,
+    "repo_commit": "12ca29ee95e00cec4771da58e02644106025fafc",
+    "repo_dirty": false,
+    "repo_dirty_diff_sha256": null
+   },
+   "reference": {
+    "binary": "~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64",
+    "binary_sha256": "2e14c55c298752d71e8a0bbd762665ffce5966c9ad00ec5d1a8b82a58e7bfa06",
+    "created": "2026-11-18T02:00:34+00:00",
+    "extractor_sha256": "cdf91c84cbdf3df31f2613a57843f84e3f89b659938d8c89e624cbeade512078",
+    "label": "oracle-9.3.2",
+    "project": "brotli",
+    "recorded": true,
+    "repo_commit": null,
+    "repo_dirty": null,
+    "repo_dirty_diff_sha256": null
+   }
+  },
+  "re2": {
+   "candidate": {
+    "binary": "~/.cache/blaze/work/accept-12ca29ee95e0/target/debug/blaze",
+    "binary_sha256": "fe43027c8a5ac368969dd739b8cdbe9c6a77dbf3823703692986a91f2273bf10",
+    "created": "2026-11-18T20:48:11+00:00",
+    "extractor_sha256": "cdf91c84cbdf3df31f2613a57843f84e3f89b659938d8c89e624cbeade512078",
+    "label": "blaze-12ca29ee95e0",
+    "project": "re2",
+    "recorded": true,
+    "repo_commit": "12ca29ee95e00cec4771da58e02644106025fafc",
+    "repo_dirty": false,
+    "repo_dirty_diff_sha256": null
+   },
+   "reference": {
+    "binary": "~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64",
+    "binary_sha256": "2e14c55c298752d71e8a0bbd762665ffce5966c9ad00ec5d1a8b82a58e7bfa06",
+    "created": "2026-11-18T02:06:36+00:00",
+    "extractor_sha256": "cdf91c84cbdf3df31f2613a57843f84e3f89b659938d8c89e624cbeade512078",
+    "label": "oracle-9.3.2",
+    "project": "re2",
+    "recorded": true,
+    "repo_commit": null,
+    "repo_dirty": null,
+    "repo_dirty_diff_sha256": null
+   }
+  },
+  "workerd": {
+   "candidate": {
+    "label": "blaze-12ca29ee95e0",
+    "project": "workerd",
+    "recorded": false
+   },
+   "reference": {
+    "binary": "~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64",
+    "binary_sha256": "2e14c55c298752d71e8a0bbd762665ffce5966c9ad00ec5d1a8b82a58e7bfa06",
+    "created": "2026-11-18T15:12:21+00:00",
+    "extractor_sha256": "cdf91c84cbdf3df31f2613a57843f84e3f89b659938d8c89e624cbeade512078",
+    "label": "oracle-9.3.2",
+    "project": "workerd",
+    "recorded": true,
+    "repo_commit": null,
+    "repo_dirty": null,
+    "repo_dirty_diff_sha256": null
+   }
+  }
+ },
+ "referee_sha256": "26e4400ec7d2e689c87ef4df25229671a39c5d5ca28b66746b0eefa082e79372",
+ "reference": "oracle-9.3.2",
+ "restriction": {
+  "projects": null,
+  "surfaces": null
+ },
+ "rows": [
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 10,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 10,
+   "project": "brotli",
+   "status": "MATCH",
+   "surface": "exit_codes",
+   "total": 10
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 27,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 27,
+   "project": "brotli",
+   "status": "MATCH",
+   "surface": "mod_graph",
+   "total": 27
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 193,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 193,
+   "project": "brotli",
+   "status": "MATCH",
+   "surface": "lockfile",
+   "total": 193
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 162,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 162,
+   "project": "brotli",
+   "status": "MATCH",
+   "surface": "query_label_kind",
+   "total": 162
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 162,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 162,
+   "project": "brotli",
+   "status": "MATCH",
+   "surface": "query_jsonproto",
+   "total": 162
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 177,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 177,
+   "project": "brotli",
+   "status": "MATCH",
+   "surface": "cquery_label_kind",
+   "total": 177
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 18,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 18,
+   "project": "brotli",
+   "status": "MATCH",
+   "surface": "cquery_jsonproto",
+   "total": 18
+  },
+  {
+   "allow_used": {
+    "runfiles-manifest-action-key": 2
+   },
+   "allow_violations": [],
+   "allowed": 2,
+   "compared": 66,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 66,
+   "project": "brotli",
+   "status": "MATCH",
+   "surface": "aquery_actions",
+   "total": 68
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 5,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 5,
+   "project": "brotli",
+   "status": "MATCH",
+   "surface": "build_stderr",
+   "total": 5
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 44,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 44,
+   "project": "brotli",
+   "status": "MATCH",
+   "surface": "execlog",
+   "total": 44
+  },
+  {
+   "allow_used": {
+    "build-metrics-volatile-counters": 1
+   },
+   "allow_violations": [],
+   "allowed": 1,
+   "compared": 41,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 4,
+   "matching": 37,
+   "project": "brotli",
+   "status": "DIFF",
+   "surface": "bep",
+   "total": 42
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 96,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 96,
+   "project": "brotli",
+   "status": "MATCH",
+   "surface": "outputs",
+   "total": 96
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": true,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 0,
+   "project": "brotli",
+   "status": "MATCH",
+   "surface": "tests",
+   "total": 0
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 10,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 10,
+   "project": "re2",
+   "status": "MATCH",
+   "surface": "exit_codes",
+   "total": 10
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 29,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 29,
+   "project": "re2",
+   "status": "MATCH",
+   "surface": "mod_graph",
+   "total": 29
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 191,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 191,
+   "project": "re2",
+   "status": "MATCH",
+   "surface": "lockfile",
+   "total": 191
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 1091,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 1091,
+   "project": "re2",
+   "status": "MATCH",
+   "surface": "query_label_kind",
+   "total": 1091
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 1091,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 1091,
+   "project": "re2",
+   "status": "MATCH",
+   "surface": "query_jsonproto",
+   "total": 1091
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 3296,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 3296,
+   "project": "re2",
+   "status": "MATCH",
+   "surface": "cquery_label_kind",
+   "total": 3296
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 39,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 39,
+   "project": "re2",
+   "status": "MATCH",
+   "surface": "cquery_jsonproto",
+   "total": 39
+  },
+  {
+   "allow_used": {
+    "runfiles-manifest-action-key": 54
+   },
+   "allow_violations": [],
+   "allowed": 54,
+   "compared": 1374,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 1374,
+   "project": "re2",
+   "status": "MATCH",
+   "surface": "aquery_actions",
+   "total": 1428
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 7,
+   "empty": false,
+   "exceptions": [],
+   "extra": 1,
+   "failed": 0,
+   "matching": 7,
+   "project": "re2",
+   "status": "DIFF",
+   "surface": "build_stderr",
+   "total": 7
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 552,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 552,
+   "project": "re2",
+   "status": "MATCH",
+   "surface": "execlog",
+   "total": 552
+  },
+  {
+   "allow_used": {
+    "build-metrics-volatile-counters": 1
+   },
+   "allow_violations": [],
+   "allowed": 1,
+   "compared": 113,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 4,
+   "matching": 109,
+   "project": "re2",
+   "status": "DIFF",
+   "surface": "bep",
+   "total": 114
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 5043,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 5043,
+   "project": "re2",
+   "status": "MATCH",
+   "surface": "outputs",
+   "total": 5043
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 21,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 21,
+   "project": "re2",
+   "status": "MATCH",
+   "surface": "tests",
+   "total": 21
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [
+    "workerd-aquery-spliced"
+   ],
+   "extra": 0,
+   "failed": 9,
+   "matching": 0,
+   "project": "workerd",
+   "status": "MISSING",
+   "surface": "exit_codes",
+   "total": 9
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 0,
+   "project": "workerd",
+   "status": "MISSING",
+   "surface": "mod_graph",
+   "total": 0
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 0,
+   "project": "workerd",
+   "status": "MISSING",
+   "surface": "lockfile",
+   "total": 0
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 46371,
+   "matching": 0,
+   "project": "workerd",
+   "status": "MISSING",
+   "surface": "query_label_kind",
+   "total": 46371
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 46371,
+   "matching": 0,
+   "project": "workerd",
+   "status": "MISSING",
+   "surface": "query_jsonproto",
+   "total": 46371
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 38892,
+   "matching": 0,
+   "project": "workerd",
+   "status": "MISSING",
+   "surface": "cquery_label_kind",
+   "total": 38892
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 4,
+   "matching": 0,
+   "project": "workerd",
+   "status": "MISSING",
+   "surface": "cquery_jsonproto",
+   "total": 4
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [
+    "workerd-aquery-spliced"
+   ],
+   "extra": 0,
+   "failed": 13425,
+   "matching": 0,
+   "project": "workerd",
+   "status": "MISSING",
+   "surface": "aquery_actions",
+   "total": 13425
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 0,
+   "project": "workerd",
+   "status": "NOT_RECORDED",
+   "surface": "build_stderr",
+   "total": 0
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 0,
+   "project": "workerd",
+   "status": "NOT_RECORDED",
+   "surface": "execlog",
+   "total": 0
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 0,
+   "project": "workerd",
+   "status": "NOT_RECORDED",
+   "surface": "bep",
+   "total": 0
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 0,
+   "project": "workerd",
+   "status": "NOT_RECORDED",
+   "surface": "outputs",
+   "total": 0
+  },
+  {
+   "allow_used": {},
+   "allow_violations": [],
+   "allowed": 0,
+   "compared": 0,
+   "empty": false,
+   "exceptions": [],
+   "extra": 0,
+   "failed": 0,
+   "matching": 0,
+   "project": "workerd",
+   "status": "NOT_RECORDED",
+   "surface": "tests",
+   "total": 0
+  }
+ ],
+ "schema": 1,
+ "totals": {
+  "allowed": 58,
+  "compared": 13858,
+  "extra": 1,
+  "failed": 145080,
+  "matching": 13850,
+  "surfaces": {
+   "DIFF": 3,
+   "FAILED": 0,
+   "MATCH": 23,
+   "MISSING": 8,
+   "NOT_RECORDED": 5,
+   "NO_REFERENCE": 0
+  },
+  "total": 158988
+ },
+ "verdict": "FAIL (3 surfaces DIFF; 8 surfaces MISSING; 2 surfaces under a declared recording exception) [5 surfaces recorded by neither side]",
+ "warnings": []
+}

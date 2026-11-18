@@ -9,43 +9,44 @@ it byte for byte or item by item.
 
 ## Status
 
-**Read this first.** An independent review round on 2026-11-18 returned STOP on all seven areas
-it covered (`docs/reviews/`). The scores below are real, but they cover two projects with default
-flags, and the reviews found wrong behaviour outside that: flags that are accepted and silently
-ignored, error paths that differ from Bazel or panic, and action keys that are wrong for
-non-ASCII strings. Treat Blaze as a demo of the approach, not a Bazel replacement.
+Two real projects are the targets: [brotli](https://github.com/google/brotli) (simple C,
+`build //...`) and [re2](https://github.com/google/re2) (C++ with abseil, a pybind11 Python
+extension via rules_python, googletest; `test //:all //python:all`).
 
-Two real projects are the targets: [brotli](https://github.com/google/brotli) (simple C) and
-[re2](https://github.com/google/re2) (C++ with abseil, a pybind11 Python extension via
-rules_python, googletest). Compared with Bazel 9.3.2 by `scripts/oracle`:
+**Score** at commit `12ca29e`, from a binary built on a clean checkout, with Blaze's own
+repository fetching and no oracle shortcuts (label `blaze-12ca29ee95e0`; full table in
+`corpus/scores/blaze-12ca29ee95e0.md`):
 
 | Surface | brotli | re2 |
 | --- | --- | --- |
-| `query` (label_kind, streamed_jsonproto, incl. `deps()`) | 162/162 | 1091/1091 |
-| `cquery` label_kind (compared as a set; output order differs from Bazel) | 176/176 | 3295/3295 |
-| `cquery` jsonproto | 16/16 | 37/37 |
-| `aquery` actions (compared as a set; allow-listed runfiles-manifest keys) | 60/60 | 1420/1420 |
-| `mod graph --output=json` | byte-identical | byte-identical |
-| `MODULE.bazel.lock` | byte-identical | byte-identical |
-| fetched external repositories | 67/67 | 81/81 |
-| build configuration checksums (target, exec, test) | all | all |
+| exit codes | 10/10 | 10/10 |
+| `mod graph`, `MODULE.bazel.lock` | 27/27, 193/193 | 29/29, 191/191 |
+| `query` (label_kind, streamed_jsonproto, incl. `deps()`) | 162/162, 162/162 | 1091/1091, 1091/1091 |
+| `cquery` (label_kind, jsonproto), including output order | 177/177, 18/18 | 3296/3296, 39/39 |
+| `aquery` actions, including order and ids | 66/66 (+2 allowed) | 1374/1374 (+54 allowed) |
+| build stderr summary lines | 5/5 | 7/7, plus 1 extra line |
+| execution log | 44/44 | 552/552 |
+| output files (sha256) | 96/96 | 5043/5043 |
+| test results | none | 21/21 |
+| build event stream | 37/41 | 109/113 |
 
-How these were measured: the query, cquery and aquery rows came from the `blaze` binary reading
-external repositories from an oracle output base; the repository and lockfile rows came from a
-separate dev binary. A newer, not yet committed integration build runs `blaze build` (brotli) and
-`blaze test` (re2) end to end with Blaze's own fetching and matches on outputs, exec log and test
-results; it will be recorded against a commit when it lands. Numbers are not yet bound to
-commits; that is being fixed.
+23 of 26 surfaces match; 13,850 of 13,858 compared items. "Allowed" items are runfiles-manifest
+action keys and volatile build-metric counters, which also differ between two runs of real Bazel.
+A third project, workerd, is recorded on the oracle only and counts as missing in the score file.
 
-`version`, `clean`, `shutdown`, rc/`--config` handling and `info <key>` match for 39 of 57
-compared cases; the other 18 are not ported and fail loudly (among them `info` with no key and
-the JVM-only keys).
+**Reviews.** Independent reviewers (read-only, on a different footing from the implementers) read
+the code against Bazel's Java; reports and verdicts are in `docs/reviews/`. Round 1 returned STOP
+on all seven areas. After fixes: evaluator, loading, actions, Bzlmod/repositories/client and the
+referee scripts have PASS; analysis and execution are fixed and awaiting re-review; the integrity
+audit is open outside the referee.
 
-Known limits: Linux x86-64 only; one command per process (no persistent server); two Blaze
-commands in one output base are not locked against each other; `linux-sandbox`,
-`process-wrapper` and `@bazel_tools` are taken from Bazel 9.3.2's install base; Starlark flags
-(`--//pkg:flag=value`) are not applied; aspects, genrule and symbolic macros are not ported;
-remote caching and execution are not ported; non-ASCII strings do not follow Bazel's semantics.
+Known limits: Linux x86-64 only, and scores are only comparable on a 16-CPU machine (Bazel's
+`cquery` order depends on the CPU count); one command per process (no persistent server);
+`linux-sandbox`, `process-wrapper` and `@bazel_tools` come from Bazel 9.3.2's install base;
+aspects, symbolic macros, `fetch`/`sync`, coverage and the credential helper are not ported and
+fail loudly; remote caching and execution are in progress; non-ASCII strings do not yet follow
+Bazel's byte semantics (UTF-8 text in action keys does). `info` matches for 42 of 57 compared
+cases; the other 15 (among them `info` with no key and JVM-only keys) fail loudly.
 
 ## Build
 
