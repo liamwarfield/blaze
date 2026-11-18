@@ -1396,10 +1396,19 @@ impl StarlarkDefinedConfigTransition {
         ExtractedResult::Other(res.get_type().to_string())
     }
 
+    /// `impl.getLocation()` as an event location prefix: where the implementation function is
+    /// declared (the name of its `def`), not where `transition()` was called.
+    // Java: net/starlark/java/eval/StarlarkFunction.java:172 StarlarkFunction.getLocation
     fn impl_location_prefix(&self) -> String {
-        match &self.data.location {
+        let impl_location = blaze_starlark::defining_module::DefModule::declaration_span(
+            self.implementation.value(),
+        )
+        .map(|span| Location::of_span_start(&span));
+        match impl_location {
             Some(l) => format!("{}: ", l),
-            None => String::new(),
+            // Java: a callable that is not a StarlarkFunction has Location.BUILTIN.
+            // Java: net/starlark/java/syntax/Location.java:114 Location.BUILTIN
+            None => "<builtin>: ".to_owned(),
         }
     }
 

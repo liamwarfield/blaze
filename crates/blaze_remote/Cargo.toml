@@ -1,0 +1,50 @@
+[package]
+name = "blaze_remote"
+description = "Port of Bazel's lib/remote (disk cache, remote cache, remote execution, build without the bytes) and the gRPC side of lib/authandtls."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_util = { path = "../blaze_util" }
+blaze_vfs = { path = "../blaze_vfs" }
+blaze_cmdline = { path = "../blaze_cmdline" }
+blaze_events = { path = "../blaze_events" }
+blaze_protos = { path = "../blaze_protos" }
+blaze_options = { path = "../blaze_options" }
+blaze_optdefs = { path = "../blaze_optdefs" }
+blaze_collect = { path = "../blaze_collect" }
+blaze_actions = { path = "../blaze_actions" }
+blaze_exec = { path = "../blaze_exec" }
+blaze_shell = { path = "../blaze_shell" }
+blaze_repo_fetch = { path = "../blaze_repo_fetch" }
+indexmap.workspace = true
+parking_lot.workspace = true
+sha2.workspace = true
+hex.workspace = true
+libc.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+zstd.workspace = true
+uuid.workspace = true
+base64.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+http.workspace = true
+bytes.workspace = true
+tower.workspace = true
+hyper-util.workspace = true
+
+[build-dependencies]
+tonic-build.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

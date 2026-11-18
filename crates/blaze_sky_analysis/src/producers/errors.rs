@@ -190,6 +190,20 @@ impl ConfiguredValueCreationException {
         &self.message
     }
 
+    /// Clones this exception with its `message` field removed (what a `ReportedException`
+    /// carries: the error was already reported to the user, so callers like `BuildTool` must not
+    /// report it again).
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetEvaluationExceptions.java:34 ReportedException.withoutMessage
+    pub fn without_message(&self) -> ConfiguredValueCreationException {
+        ConfiguredValueCreationException {
+            location: self.location.clone(),
+            message: String::new(),
+            configuration: self.configuration.clone(),
+            root_causes: self.root_causes.clone(),
+            detailed_exit_code: self.detailed_exit_code.clone(),
+        }
+    }
+
     pub fn get_location(&self) -> Option<&Location> {
         self.location.as_ref()
     }

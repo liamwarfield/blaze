@@ -41,6 +41,12 @@ const PROTOS: &[&str] = &[
     "build/bazel/semver/semver.proto",
     "google/rpc/status.proto",
     "google/longrunning/operations.proto",
+    // Remote caching and execution (blaze_remote): ByteStream and error details of
+    // googleapis, the gRPC log entries and the cache salt.
+    "google/bytestream/bytestream.proto",
+    "google/rpc/error_details.proto",
+    "src/main/protobuf/remote_execution_log.proto",
+    "src/main/protobuf/cache_salt.proto",
     // Well-known types JsonFormat prints specially; compiled so that `Any` can hold them.
     "google/protobuf/wrappers.proto",
     "google/protobuf/field_mask.proto",

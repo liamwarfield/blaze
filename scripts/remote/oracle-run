@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Run the pinned oracle (Bazel 9.3.2) on a corpus project with remote/disk-cache flags.
+
+See `oracle-run help`.
+"""
+
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+CACHE = os.path.expanduser("~/.cache/blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+WORK = os.path.join(CACHE, "work", "remote")
+OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-remote")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+
+USAGE = """\
+usage: scripts/remote/oracle-run <run-name> <project> [--fresh] [--binary PATH] [--clean]
+                                 [--command "build //..."] [-- <extra command options>]
+       scripts/remote/oracle-run help
+
+Runs the project's command (corpus/projects.json; brotli: `build //...`, re2:
+`test //:all //python:all`) with real Bazel 9.3.2 in a copy of the corpus checkout:
+
+  workspace          ~/.cache/blaze/work/remote/<run-name>/ws   (rsync of the read-only checkout,
+                     restored to git HEAD, as scripts/oracle/record does)
+  output user root   ~/.cache/blaze/oracle-out/ur-remote/<run-name>
+  results            ~/.cache/blaze/work/remote/<run-name>/<step>/{stdout,stderr,execlog.json,
+                     command.json}; <step> is `run1`, `run2`, ... (one per call)
+
+Startup options: --output_user_root=<above> --nohome_rc --nosystem_rc. Command options:
+--repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no
+--execution_log_json_file=<step>/execlog.json --execution_log_sort, then the extra options given
+after `--` (for example --disk_cache=DIR, --remote_cache=grpc://localhost:PORT,
+--remote_grpc_log=FILE). `{step}` in an extra option is replaced by the step directory.
+Environment: HOME and PATH=/usr/bin:/bin only. Everything runs inside
+`systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`; the Bazel server dies
+with the unit, so every call starts a new server.
+
+  --fresh     delete the workspace copy and the output user root first (cold output base)
+  --clean     run `bazel clean` (same startup options) before the command: same output base and
+              install base, no local action cache or outputs
+  --binary    another Bazel-compatible binary (default: the oracle)
+  --command   override the project's command (one string, split on spaces)
+
+Prints the step directory and the exit code; exits with Bazel's exit code.
+"""
+
+
+def load_record_module():
+    path = os.path.join(ROOT, "scripts", "oracle", "record")
+    loader = importlib.machinery.SourceFileLoader("oracle_record", path)
+    spec = importlib.util.spec_from_loader("oracle_record", loader)
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, os.path.dirname(path))
+    loader.exec_module(mod)
+    return mod
+
+
+def systemd(cmd, cwd, stdout_path, stderr_path):
+    env_cmd = ["env", "-i", "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin"]
+    full = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
+            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0"] + env_cmd + cmd
+    with open(stdout_path, "wb") as so, open(stderr_path, "wb") as se:
+        return subprocess.run(full, cwd=cwd, stdout=so, stderr=se).returncode
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    extra = []
+    if "--" in args:
+        i = args.index("--")
+        args, extra = args[:i], args[i + 1:]
+    if len(args) < 2:
+        print(USAGE, end="", file=sys.stderr)
+        return 2
+    name, project = args[0], args[1]
+    fresh = clean = False
+    binary = ORACLE
+    command = None
+    rest = args[2:]
+    while rest:
+        a = rest.pop(0)
+        if a == "--fresh":
+            fresh = True
+        elif a == "--clean":
+            clean = True
+        elif a == "--binary":
+            binary = os.path.abspath(os.path.expanduser(rest.pop(0)))
+        elif a == "--command":
+            command = rest.pop(0).split()
+        else:
+            print("unknown option: " + a, file=sys.stderr)
+            return 2
+
+    projects = json.load(open(os.path.join(ROOT, "corpus", "projects.json")))["projects"]
+    if project not in projects:
+        print("unknown project: " + project, file=sys.stderr)
+        return 2
+    spec = projects[project]
+    if command is None:
+        command = spec["commands"][0]
+    checkout = os.path.expanduser(spec["checkout"])
+
+    run_dir = os.path.join(WORK, name)
+    ws = os.path.join(run_dir, "ws")
+    our = os.path.join(OUT_ROOT, name)
+    record = load_record_module()
+    if fresh:
+        for p in (ws, our):
+            if os.path.lexists(p):
+                record.make_writable_and_remove(p)
+    os.makedirs(run_dir, exist_ok=True)
+    if not os.path.isdir(ws):
+        record.prepare_workspace(checkout, ws)
+
+    n = 1
+    while os.path.exists(os.path.join(run_dir, "run%d" % n)):
+        n += 1
+    step = os.path.join(run_dir, "run%d" % n)
+    os.makedirs(step)
+
+    startup = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc"]
+    if clean:
+        systemd(startup + ["clean", "--color=no", "--curses=no"], ws,
+                os.path.join(step, "clean.stdout"), os.path.join(step, "clean.stderr"))
+    cmd = startup + [command[0],
+                     "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no",
+                     "--execution_log_json_file=" + os.path.join(step, "execlog.json"),
+                     "--execution_log_sort"]
+    cmd += [e.replace("{step}", step) for e in extra] + command[1:]
+    json.dump({"cmd": cmd, "cwd": ws}, open(os.path.join(step, "command.json"), "w"), indent=1)
+    code = systemd(cmd, ws, os.path.join(step, "stdout"), os.path.join(step, "stderr"))
+    print("step: " + step)
+    print("exit code: %d" % code)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

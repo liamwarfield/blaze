@@ -87,6 +87,14 @@ pub fn register(builder: EvaluatorBuilder, services: Arc<AnalysisServices>) -> E
 }
 
 fn throw(e: ConfiguredTargetFunctionException) -> ComputeError {
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetEvaluationExceptions.java:29 ReportedException.<init>
+    // A ReportedException carries the exception without its message.
+    let e = match e {
+        ConfiguredTargetFunctionException::Reported(cvce) => {
+            ConfiguredTargetFunctionException::Reported(cvce.without_message())
+        }
+        other => other,
+    };
     SkyFunctionException::new(e, Transience::Persistent).into()
 }
 

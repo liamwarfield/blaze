@@ -1,0 +1,154 @@
+//! How the Java exception hierarchy of the remote package maps to `std::io::Error`.
+//!
+//! Java signals almost every remote failure with an `IOException` subclass
+//! (`CacheNotFoundException`, `BulkTransferException`, `OutputDigestMismatchException`, ...) or
+//! with an `IOException` whose cause is a gRPC `StatusRuntimeException`. The port keeps
+//! `io::Error` as the one error type and carries the typed exception as its payload:
+//! `X::into()` builds the error, [`downcast_ref`] is Java's `e instanceof X` (looking through
+//! [`SharedIoError`]), and [`status_from_throwable`] is `io.grpc.Status.fromThrowable(e)`.
+//! `InterruptedException` is an error of kind `Interrupted` ([`interrupted`]).
+
+use std::error::Error;
+use std::fmt;
+use std::io;
+use std::sync::Arc;
+
+/// An `io::Error` shared between the waiters of one deduplicated task (Java hands every waiter
+/// the same exception object).
+#[derive(Debug, Clone)]
+pub struct SharedIoError(pub Arc<io::Error>);
+
+impl fmt::Display for SharedIoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl Error for SharedIoError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.0.source()
+    }
+}
+
+/// Wraps a shared error into an `io::Error` of the same kind.
+pub fn shared(e: &Arc<io::Error>) -> io::Error {
+    io::Error::new(e.kind(), SharedIoError(e.clone()))
+}
+
+/// `e instanceof T` for an `IOException` subclass carried as the payload of `e`.
+pub fn downcast_ref<T: Error + Send + Sync + 'static>(e: &io::Error) -> Option<&T> {
+    let mut inner: &(dyn Error + Send + Sync + 'static) = e.get_ref()?;
+    loop {
+        if let Some(t) = inner.downcast_ref::<T>() {
+            return Some(t);
+        }
+        match inner.downcast_ref::<SharedIoError>() {
+            Some(s) => inner = s.0.get_ref()?,
+            None => return None,
+        }
+    }
+}
+
+/// Takes the payload out of `e` (`(T) e`), or gives `e` back. A shared error is cloned out.
+pub fn downcast<T: Error + Send + Sync + Clone + 'static>(e: io::Error) -> Result<T, io::Error> {
+    match downcast_ref::<T>(&e) {
+        Some(t) => Ok(t.clone()),
+        None => Err(e),
+    }
+}
+
+/// A gRPC `StatusRuntimeException`.
+// Java: io/grpc/StatusRuntimeException.java
+#[derive(Debug, Clone)]
+pub struct StatusRuntimeException {
+    /// `getStatus()` (with the trailers).
+    pub status: tonic::Status,
+}
+
+impl StatusRuntimeException {
+    /// `new StatusRuntimeException(status)`.
+    pub fn new(status: tonic::Status) -> StatusRuntimeException {
+        StatusRuntimeException { status }
+    }
+
+    /// `Status.formatThrowableMessage(status)`: `CODE` or `CODE: description`.
+    // Java: io/grpc/Status.java Status.formatThrowableMessage
+    pub fn format_throwable_message(status: &tonic::Status) -> String {
+        let code = code_name(status.code());
+        if status.message().is_empty() {
+            code.to_string()
+        } else {
+            format!("{code}: {}", status.message())
+        }
+    }
+}
+
+impl fmt::Display for StatusRuntimeException {
+    /// `new IOException(statusRuntimeException).getMessage()`, which is the cause's `toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "io.grpc.StatusRuntimeException: {}",
+            StatusRuntimeException::format_throwable_message(&self.status)
+        )
+    }
+}
+
+impl Error for StatusRuntimeException {}
+
+impl From<StatusRuntimeException> for io::Error {
+    /// `new IOException(statusRuntimeException)`.
+    fn from(e: StatusRuntimeException) -> io::Error {
+        io::Error::other(e)
+    }
+}
+
+/// `new IOException(new StatusRuntimeException(status))`.
+pub fn status_to_io_error(status: tonic::Status) -> io::Error {
+    StatusRuntimeException::new(status).into()
+}
+
+/// `io.grpc.Status.fromThrowable(e)`: the status of the `StatusRuntimeException` in the cause
+/// chain, else `UNKNOWN` (`None` here; Java returns `Status.UNKNOWN.withCause(e)`).
+pub fn status_from_throwable(e: &io::Error) -> Option<&tonic::Status> {
+    downcast_ref::<StatusRuntimeException>(e).map(|s| &s.status)
+}
+
+/// `Status.Code.name()`.
+// Java: io/grpc/Status.java Status.Code
+pub fn code_name(code: tonic::Code) -> &'static str {
+    match code {
+        tonic::Code::Ok => "OK",
+        tonic::Code::Cancelled => "CANCELLED",
+        tonic::Code::Unknown => "UNKNOWN",
+        tonic::Code::InvalidArgument => "INVALID_ARGUMENT",
+        tonic::Code::DeadlineExceeded => "DEADLINE_EXCEEDED",
+        tonic::Code::NotFound => "NOT_FOUND",
+        tonic::Code::AlreadyExists => "ALREADY_EXISTS",
+        tonic::Code::PermissionDenied => "PERMISSION_DENIED",
+        tonic::Code::ResourceExhausted => "RESOURCE_EXHAUSTED",
+        tonic::Code::FailedPrecondition => "FAILED_PRECONDITION",
+        tonic::Code::Aborted => "ABORTED",
+        tonic::Code::OutOfRange => "OUT_OF_RANGE",
+        tonic::Code::Unimplemented => "UNIMPLEMENTED",
+        tonic::Code::Internal => "INTERNAL",
+        tonic::Code::Unavailable => "UNAVAILABLE",
+        tonic::Code::DataLoss => "DATA_LOSS",
+        tonic::Code::Unauthenticated => "UNAUTHENTICATED",
+    }
+}
+
+/// An `InterruptedException` travelling through an `io::Result`.
+pub fn interrupted() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, "interrupted")
+}
+
+/// Whether `e` stands for an `InterruptedException`.
+pub fn is_interrupted(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::Interrupted
+}
+
+/// A plain `new IOException(message)`.
+pub fn io_exception(message: impl Into<String>) -> io::Error {
+    io::Error::other(message.into())
+}

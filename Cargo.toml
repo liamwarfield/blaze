@@ -47,6 +47,19 @@ prost-build = "0.14"
 protox = "0.10"
 heck = "0.5"
 base64 = "0.22"
+# gRPC stack of blaze_remote (remote cache and execution): tonic on tokio, TLS by rustls (ring)
+# with the webpki roots (see docs/decisions.md 2026-11-18, TLS trust).
+tonic = { version = "0.14", default-features = false, features = ["transport", "codegen", "tls-ring", "tls-webpki-roots"] }
+tonic-prost = "0.14"
+tonic-build = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+futures = "0.3"
+async-trait = "0.1"
+http = "1"
+bytes = "1"
+tower = { version = "0.5", features = ["util"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 
 # starlark-rust 0.14.2, vendored with Blaze's patch queue (third_party/starlark-rust/PATCHES.md).
 [patch.crates-io]
