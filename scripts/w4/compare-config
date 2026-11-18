@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""W4: compare Blaze's build configurations with the oracle's. See `compare-config help`."""
+
+import json
+import os
+import re
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, os.path.join(ROOT, "scripts", "oracle"))
+sys.dont_write_bytecode = True
+import oracle_common as oc  # noqa: E402
+
+USAGE = """\
+usage: scripts/w4/compare-config [--project brotli|re2|all] [--blaze PATH] [--verbose]
+       scripts/w4/compare-config help
+
+Prints Blaze's configurations next to the oracle's, per project:
+  - role top / trimmed / exec / noconfig: checksum, mnemonic, isExec and every option value
+    (`bazel config --output=json <id>` form), Blaze from target/debug/blaze-config-dev, the
+    oracle from scripts/w4/oracle-probe (~/.cache/blaze/w4/oracle/<p>/config_<id>.json.stdout,
+    roles taken from `bazel config` output: "(exec)", "-noconfig", "(test-trimmed)", plain);
+  - the oracle recording's cquery checksums (~/.cache/blaze/oracle-records/oracle-9.3.2/<p>);
+  - make variables (`info --show_make_env` keys BINDIR, COMPILATION_MODE, GENDIR, TARGET_CPU) and
+    `info bazel-bin bazel-genfiles bazel-testlogs` (paths relative to the output base);
+  - with --blaze PATH: the same info keys from running `PATH info` in the work copy
+    (make variables as `info --show_make_env BINDIR COMPILATION_MODE GENDIR TARGET_CPU`: a bare
+    `info --show_make_env` also prints the JVM items, unported by decision)
+    ~/.cache/blaze/work/w4/<p> (startup --output_user_root=~/.cache/blaze/w4/blaze-ur
+    --nohome_rc --nosystem_rc; env BLAZE_W4_ORACLE_PLATFORMS=~/.cache/blaze/w4/<p>.platforms.json).
+
+Inputs Blaze cannot compute yet: the oracle's `mod graph` (flag aliases) and
+~/.cache/blaze/w4/<p>.platforms.json (scripts/w4/oracle-platforms; the PLATFORM seam).
+Prerequisites: scripts/w4/oracle-probe --project all; scripts/w4/oracle-platforms --project all;
+scripts/cargo-capped build -p blaze_build_config --bins.
+Exit code 0 iff everything matches.
+"""
+
+W4 = os.path.join(oc.CACHE, "w4")
+DEV = os.path.join(ROOT, "target", "debug", "blaze-config-dev")
+
+
+def oracle_configs(project):
+    d = os.path.join(W4, "oracle", project)
+    listing = open(os.path.join(d, "config_list.stdout")).read()
+    roles = {}
+    for m in re.finditer(r"^([0-9a-f]{64}) (\S+)(.*)$", listing, re.M):
+        cid, mnemonic, suffix = m.groups()
+        if "(exec)" in suffix:
+            role = "exec"
+        elif mnemonic.endswith("-noconfig"):
+            role = "noconfig"
+        elif "(test-trimmed)" in suffix:
+            role = "trimmed"
+        else:
+            role = "top"
+        roles[role] = json.load(open(os.path.join(d, "config_%s.json.stdout" % cid)))
+    return roles
+
+
+def oracle_info(project, name):
+    d = os.path.join(W4, "oracle", project)
+    out = {}
+    for line in open(os.path.join(d, name + ".stdout")):
+        k, _, v = line.rstrip("\n").partition(": ")
+        out[k] = v
+    return out
+
+
+def blaze_configs(project):
+    ws = os.path.join(oc.WORK, "w4", project)
+    mod_graph = os.path.join(oc.RECORDS, oc.REFERENCE_LABEL, project, "raw", "mod_graph.stdout")
+    cmd = [DEV, "--workspace", ws, "--output-base", "/OUTPUT_BASE", "--mod-graph", mod_graph,
+           "--platforms", os.path.join(W4, project + ".platforms.json")]
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if p.returncode != 0:
+        raise SystemExit("blaze-config-dev failed:\n" + p.stderr.decode())
+    out = {}
+    for line in p.stdout.decode().splitlines():
+        role, _, js = line.partition(" ")
+        out[role] = json.loads(js)
+    return out
+
+
+def options_of(config):
+    return {(f["name"], k): v for f in config["fragmentOptions"] for k, v in f["options"].items()}
+
+
+def compare(project, blaze_bin, verbose):
+    ok = True
+    print("== " + project)
+    oracle = oracle_configs(project)
+    blaze = blaze_configs(project)
+    recorded = set()
+    items = json.load(open(os.path.join(oc.RECORDS, oc.REFERENCE_LABEL, project, "items",
+                                        "cquery_jsonproto.json")))["items"]
+    for k in items:
+        if k.startswith("configuration "):
+            recorded.add(k.split(" ", 1)[1])
+    for role in ("top", "trimmed", "exec", "noconfig"):
+        o, b = oracle.get(role), blaze.get(role)
+        if o is None or b is None:
+            print("  %-9s missing (oracle %s, blaze %s)" % (role, o is not None, b is not None))
+            ok = False
+            continue
+        same = all(o[k] == b[k] for k in ("configHash", "mnemonic", "isExec", "fragments"))
+        oo, bo = options_of(o), options_of(b)
+        diffs = sorted(k for k in set(oo) | set(bo) if oo.get(k) != bo.get(k))
+        status = "MATCH" if same and not diffs else "DIFF"
+        ok = ok and status == "MATCH"
+        print("  %-9s %s  blaze %s %-18s oracle %s %-18s isExec %s/%s%s" % (
+            role, status, b["configHash"][:12], b["mnemonic"], o["configHash"][:12],
+            o["mnemonic"], b["isExec"], o["isExec"],
+            "  (in recorded cquery)" if o["configHash"] in recorded else ""))
+        for k in diffs[: (None if verbose else 10)]:
+            print("      %s %s: blaze=%r oracle=%r" % (k[0].split(".")[-1], k[1], bo.get(k),
+                                                      oo.get(k)))
+    make = oracle_info(project, "info_make_env")
+    for k, v in sorted(blaze["make_env"].items()):
+        st = "MATCH" if make.get(k) == v else "DIFF"
+        ok = ok and st == "MATCH"
+        print("  make %-17s %s  blaze %s oracle %s" % (k, st, v, make.get(k)))
+    dirs = oracle_info(project, "info_dirs")
+    obase = re.sub(r"/execroot/.*", "", dirs["bazel-bin"])
+    for k, v in sorted(blaze["dirs"].items()):
+        rel_b = v.replace("/OUTPUT_BASE", "<OUTPUT_BASE>")
+        rel_o = dirs.get(k, "").replace(obase, "<OUTPUT_BASE>")
+        st = "MATCH" if rel_b == rel_o else "DIFF"
+        ok = ok and st == "MATCH"
+        print("  info %-17s %s  %s" % (k, st, rel_b if st == "MATCH" else rel_b + " vs " + rel_o))
+    if blaze_bin:
+        ok = compare_blaze_info(project, blaze_bin, make, dirs, obase) and ok
+    return ok
+
+
+def compare_blaze_info(project, blaze_bin, make, dirs, obase):
+    ws = os.path.join(oc.WORK, "w4", project)
+    env = {"HOME": oc.HOME, "PATH": "/usr/bin:/bin",
+           "BLAZE_W4_ORACLE_PLATFORMS": os.path.join(W4, project + ".platforms.json")}
+    base = [blaze_bin, "--output_user_root=" + os.path.join(W4, "blaze-ur"), "--nohome_rc",
+            "--nosystem_rc", "info", "--repository_cache=" + oc.REPO_CACHE]
+    ok = True
+    for args, expected in ((["bazel-bin", "bazel-genfiles", "bazel-testlogs"], dirs),
+                           (["--show_make_env", "BINDIR", "COMPILATION_MODE", "GENDIR", "TARGET_CPU"], make)):
+        p = subprocess.run(base + args, cwd=ws, env=env, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+        got = {}
+        for line in p.stdout.decode().splitlines():
+            k, _, v = line.partition(": ")
+            got[k] = v
+        if p.returncode != 0:
+            print("  blaze info %s: exit %d\n%s" % (" ".join(args), p.returncode,
+                                                   p.stderr.decode()[-2000:]))
+            ok = False
+            continue
+        bbase = re.sub(r"/execroot/.*", "", got.get("bazel-bin", ""))
+        for k in sorted(k for k in expected if args[0] != "--show_make_env" or k.isupper()):
+            g = got.get(k, "").replace(bbase, "<OUTPUT_BASE>") if bbase else got.get(k)
+            e = expected[k].replace(obase, "<OUTPUT_BASE>")
+            st = "MATCH" if g == e else "DIFF"
+            ok = ok and st == "MATCH"
+            print("  blaze info %-15s %s  %s" % (k, st, g if st == "MATCH" else "%s vs %s" % (g, e)))
+    return ok
+
+
+def main(argv):
+    if argv and argv[0] in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    project, blaze_bin, verbose = "all", None, False
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--project":
+            project = argv[i + 1]
+            i += 2
+        elif argv[i] == "--blaze":
+            blaze_bin = argv[i + 1]
+            i += 2
+        elif argv[i] == "--verbose":
+            verbose = True
+            i += 1
+        else:
+            print(USAGE, file=sys.stderr)
+            return 2
+    names = list(oc.load_projects()) if project == "all" else [project]
+    ok = True
+    for n in names:
+        ok = compare(n, blaze_bin, verbose) and ok
+    print("ALL MATCH" if ok else "DIFFERENCES FOUND")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""W4: run extra configuration probes on the oracle. See `oracle-probe help`."""
+
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ORACLE_DIR = os.path.join(os.path.dirname(HERE), "oracle")
+sys.path.insert(0, ORACLE_DIR)
+sys.dont_write_bytecode = True
+
+import oracle_common as oc  # noqa: E402
+
+
+def _load_record():
+    """Imports scripts/oracle/record (no .py suffix) for prepare_workspace."""
+    path = os.path.join(ORACLE_DIR, "record")
+    loader = importlib.machinery.SourceFileLoader("oracle_record", path)
+    spec = importlib.util.spec_from_loader("oracle_record", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+USAGE = """\
+usage: scripts/w4/oracle-probe --project <brotli|re2|all> [--binary PATH]
+       scripts/w4/oracle-probe help
+
+Runs configuration probes on the oracle (Bazel 9.3.2) and stores raw stdout/stderr under
+~/.cache/blaze/w4/oracle/<project>/:
+
+  1. copies ~/.cache/blaze/corpus/<project> to ~/.cache/blaze/work/w4/<project> (as
+     scripts/oracle/record does: rsync minus bazel-* and .git, restored to git HEAD);
+  2. runs, with startup --output_user_root=~/.cache/blaze/oracle-out/ur-w4 --nohome_rc
+     --nosystem_rc and --repository_cache=~/.cache/blaze/repo-cache, env HOME and
+     PATH=/usr/bin:/bin, inside systemd-run --user --scope -p MemoryMax=12G -p MemorySwapMax=0:
+       info bazel-bin bazel-genfiles bazel-testlogs     -> info_dirs.*
+       info --show_make_env                            -> info_make_env.*
+       cquery deps(P) --output=label_kind              -> cquery_deps.*
+       cquery P --output=starlark --starlark:expr=...  -> cquery_buildoptions.*  (build_options)
+       config                                          -> config_list.*
+       config <id>  (each listed configuration)        -> config_<id>.*
+       config --output=json <id>                       -> config_<id>.json.*
+       shutdown
+     P is the project's target patterns joined with ' + '.
+"""
+
+UR = os.path.join(oc.OUTPUT_ROOTS, "ur-w4")
+OUT = os.path.join(oc.CACHE, "w4", "oracle")
+ORACLE = os.path.join(oc.CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+
+
+def env():
+    return {"HOME": oc.HOME, "PATH": "/usr/bin:/bin"}
+
+
+def run(binary, ws, out_dir, name, args):
+    cmd = [binary, "--output_user_root=" + UR, "--nohome_rc", "--nosystem_rc"] + args
+    p = subprocess.run(cmd, cwd=ws, env=env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       stdin=subprocess.DEVNULL)
+    with open(os.path.join(out_dir, name + ".stdout"), "wb") as f:
+        f.write(p.stdout)
+    with open(os.path.join(out_dir, name + ".stderr"), "wb") as f:
+        f.write(p.stderr)
+    print("%-24s exit %d" % (name, p.returncode), flush=True)
+    return p.stdout.decode()
+
+
+def probe(binary, project, spec):
+    record = _load_record()
+    ws = os.path.join(oc.WORK, "w4", project)
+    record.prepare_workspace(oc.expand(spec["checkout"]), ws)
+    out_dir = os.path.join(OUT, project)
+    os.makedirs(out_dir, exist_ok=True)
+    cmd = spec["commands"][0]
+    patterns = cmd[1:]
+    pat = " + ".join(patterns)
+    common = ["--repository_cache=" + oc.REPO_CACHE, "--color=no", "--curses=no"]
+    run(binary, ws, out_dir, "info_dirs",
+        ["info"] + common + ["bazel-bin", "bazel-genfiles", "bazel-testlogs"])
+    run(binary, ws, out_dir, "info_make_env", ["info"] + common + ["--show_make_env"])
+    run(binary, ws, out_dir, "cquery_deps",
+        ["cquery"] + common + ["deps(%s)" % pat, "--output=label_kind"])
+    run(binary, ws, out_dir, "cquery_buildoptions",
+        ["cquery"] + common + [pat, "--output=starlark",
+                               "--starlark:expr=str(target.label) + ' ' + "
+                               "json.encode({str(k): str(v) for k, v in "
+                               "build_options(target).items()})"])
+    listing = run(binary, ws, out_dir, "config_list", ["config"] + common)
+    ids = re.findall(r"^([0-9a-f]{64})\b", listing, re.M)
+    for cid in ids:
+        run(binary, ws, out_dir, "config_" + cid, ["config"] + common + [cid])
+        run(binary, ws, out_dir, "config_" + cid + ".json",
+            ["config"] + common + ["--output=json", cid])
+    run(binary, ws, out_dir, "shutdown", ["shutdown"])
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    project, binary = None, ORACLE
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--project":
+            project = argv[i + 1]
+            i += 2
+        elif argv[i] == "--binary":
+            binary = argv[i + 1]
+            i += 2
+        else:
+            print("unknown argument: " + argv[i], file=sys.stderr)
+            return 2
+    projects = oc.load_projects()
+    names = list(projects) if project == "all" else [project]
+    for name in names:
+        print("== " + name, flush=True)
+        probe(binary, name, projects[name])
+    return 0
+
+
+if __name__ == "__main__":
+    if os.environ.get("BLAZE_W4_SCOPE") != "1" and len(sys.argv) > 1 and sys.argv[1] != "help":
+        os.execvp("systemd-run", [
+            "systemd-run", "--user", "--scope", "--collect", "--quiet",
+            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0",
+            "--", "env", "BLAZE_W4_SCOPE=1", sys.executable, "-I", os.path.abspath(__file__),
+        ] + sys.argv[1:])
+    sys.exit(main(sys.argv[1:]))

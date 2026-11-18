@@ -1,0 +1,167 @@
+//! Port of `rules/objc/J2ObjcConfiguration.java`.
+
+use std::any::Any;
+use std::sync::Arc;
+
+use blaze_cmdline::Label;
+use blaze_events::{Event, EventHandler};
+use blaze_optdefs::fragment::j2objc_command_line_options::J2ObjcCommandLineOptions;
+
+use crate::build_options::BuildOptions;
+use crate::fragment::{
+    Fragment, FragmentClass, FragmentClassInfo, InvalidConfigurationException, required,
+};
+use crate::fragment_options_class::J2OBJC_OPTIONS;
+
+// Java: com/google/devtools/build/lib/rules/objc/J2ObjcConfiguration.java:44 J2ObjcConfiguration.J2OBJC_ALWAYS_ON_TRANSLATION_FLAGS
+/// Always-on flags for J2ObjC translation. These flags are always used when invoking the J2ObjC
+/// transpiler, and cannot be overridden by user-specified flags in `J2ObjcCommandLineOptions`.
+/// See https://j2objc.org/reference/j2objc.html for flag documentation.
+const J2OBJC_ALWAYS_ON_TRANSLATION_FLAGS: &[&str] = &[
+    "-encoding",
+    "UTF-8",
+    "--doc-comments",
+    "-XcombineJars",
+    "-XDinjectLogSites=true",
+];
+
+// Java: com/google/devtools/build/lib/rules/objc/J2ObjcConfiguration.java:53 J2ObjcConfiguration.J2OBJC_DEFAULT_TRANSLATION_FLAGS
+/// Default flags for J2ObjC translation. These flags are used by default when invoking the J2ObjC
+/// transpiler, but can be overridden by user-specified flags in `J2ObjcCommandLineOptions`.
+/// See https://j2objc.org/reference/j2objc.html for flag documentation.
+const J2OBJC_DEFAULT_TRANSLATION_FLAGS: &[&str] = &["-g:relative"]; // Java source debugging with WORKSPACE-relative paths.
+
+// Java: com/google/devtools/build/lib/rules/objc/J2ObjcConfiguration.java:60 J2ObjcConfiguration.J2OBJC_BLACKLISTED_TRANSLATION_FLAGS
+/// Disallowed flags for J2ObjC translation. See https://j2objc.org/reference/j2objc.html for flag
+/// documentation.
+pub const J2OBJC_BLACKLISTED_TRANSLATION_FLAGS: &[&str] = &["--prefixes", "--prefix", "-x"];
+
+// Java: com/google/devtools/build/lib/rules/objc/J2ObjcConfiguration.java:63 J2ObjcConfiguration.INVALID_TRANSLATION_FLAGS_MSG_TEMPLATE
+fn invalid_translation_flags_msg(flags: &str, unsupported: &str) -> String {
+    format!(
+        "J2Objc translation flags: {} not supported. Unsupported flags are: {}",
+        flags, unsupported
+    )
+}
+
+// Java: com/google/devtools/build/lib/rules/objc/J2ObjcConfiguration.java:38 J2ObjcConfiguration
+/// A J2ObjC transpiler configuration fragment containing J2ObjC translation flags. This
+/// configuration fragment is used by Java rules that can be transpiled (specifically,
+/// J2ObjCAspects thereof).
+#[derive(Debug)]
+pub struct J2ObjcConfiguration {
+    translation_flags: Vec<String>,
+    dead_code_report: Option<Label>,
+}
+
+/// `J2ObjcConfiguration.class`.
+pub static J2OBJC_CONFIGURATION: FragmentClassInfo = FragmentClassInfo {
+    java_name: "com.google.devtools.build.lib.rules.objc.J2ObjcConfiguration",
+    starlark_name: Some("j2objc"),
+    required_options: || vec![&J2OBJC_OPTIONS],
+    requires_starlark_options: false,
+    constructor: create,
+};
+
+fn create(options: &BuildOptions) -> Result<Arc<dyn Fragment>, InvalidConfigurationException> {
+    let fragment: Arc<dyn Fragment> = Arc::new(J2ObjcConfiguration::new(options));
+    Ok(fragment)
+}
+
+impl J2ObjcConfiguration {
+    // Java: com/google/devtools/build/lib/rules/objc/J2ObjcConfiguration.java:70 J2ObjcConfiguration.<init>
+    pub fn new(build_options: &BuildOptions) -> J2ObjcConfiguration {
+        let j2objc_options = required::<J2ObjcCommandLineOptions>(build_options);
+        let mut translation_flags: Vec<String> = Vec::new();
+        translation_flags.extend(
+            J2OBJC_DEFAULT_TRANSLATION_FLAGS
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        translation_flags.extend(j2objc_options.translation_flags.iter().cloned());
+        translation_flags.extend(
+            J2OBJC_ALWAYS_ON_TRANSLATION_FLAGS
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        J2ObjcConfiguration {
+            translation_flags,
+            dead_code_report: j2objc_options
+                .dead_code_report
+                .as_ref()
+                .map(|l| l.get().clone()),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/rules/objc/J2ObjcConfiguration.java:89 J2ObjcConfiguration.getTranslationFlags
+    /// Returns the translation flags used to invoke the J2ObjC transpiler. The returned flags
+    /// contain the default flags from `J2OBJC_DEFAULT_TRANSLATION_FLAGS`, user-specified flags
+    /// from `J2ObjcCommandLineOptions`, and always-on flags from
+    /// `J2OBJC_ALWAYS_ON_TRANSLATION_FLAGS`. The set of disallowed flags can be found at
+    /// [`J2OBJC_BLACKLISTED_TRANSLATION_FLAGS`].
+    pub fn get_translation_flags(&self) -> &[String] {
+        &self.translation_flags
+    }
+
+    // Java: com/google/devtools/build/lib/rules/objc/J2ObjcConfiguration.java:106 J2ObjcConfiguration.deadCodeReport
+    /// Returns the label of the dead code report generated by ProGuard for J2ObjC to eliminate
+    /// dead code. The dead Java code in the report will not be translated to Objective-C code.
+    ///
+    /// Returns `None` if no such report was requested.
+    pub fn dead_code_report(&self) -> Option<&Label> {
+        self.dead_code_report.as_ref()
+    }
+}
+
+impl Fragment for J2ObjcConfiguration {
+    fn fragment_class(&self) -> FragmentClass {
+        &J2OBJC_CONFIGURATION
+    }
+
+    // Java: com/google/devtools/build/lib/rules/objc/J2ObjcConfiguration.java:111 J2ObjcConfiguration.reportInvalidOptions
+    fn report_invalid_options(&self, reporter: &dyn EventHandler, _build_options: &BuildOptions) {
+        let disjoint = !self
+            .translation_flags
+            .iter()
+            .any(|f| J2OBJC_BLACKLISTED_TRANSLATION_FLAGS.contains(&f.as_str()));
+        if !disjoint {
+            let error_msg = invalid_translation_flags_msg(
+                &self.translation_flags.join(","),
+                &J2OBJC_BLACKLISTED_TRANSLATION_FLAGS.join(","),
+            );
+            reporter.handle(&Event::error(error_msg));
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fragment_options_class::all_known_fragment_options_classes;
+
+    #[test]
+    fn translation_flags_order() {
+        let options = BuildOptions::of_args(
+            &all_known_fragment_options_classes(),
+            &["--j2objc_translation_flags=-use-arc"],
+        )
+        .unwrap_or_else(|e| panic!("{}", e.get_message()));
+        let config = J2ObjcConfiguration::new(&options);
+        assert_eq!(
+            config.get_translation_flags(),
+            &[
+                "-g:relative",
+                "-use-arc",
+                "-encoding",
+                "UTF-8",
+                "--doc-comments",
+                "-XcombineJars",
+                "-XDinjectLogSites=true",
+            ]
+        );
+    }
+}

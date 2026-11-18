@@ -26,31 +26,144 @@ use crate::info_item::{ConfigurationSupplier, InfoItem};
 use crate::module::AbruptExitException;
 use crate::options_result::OptionsParsingResult;
 
-/// The configuration supplier of `blaze info` until `BuildConfigurationValue` is ported (W4).
-///
-/// Java's supplier syncs package loading, creates the `BuildOptions` and asks Skyframe for the
-/// configuration; none of this exists yet, so every method fails loudly.
-pub struct UnportedConfigurationSupplier;
+/// The memoizing configuration supplier of `blaze info` (Java: the `Suppliers.memoize` lambda in
+/// `InfoCommand.exec`).
+pub struct BuildConfigurationSupplier {
+    options: Arc<OptionsParsingResult>,
+    exec_root_base: blaze_vfs::Path,
+    product_name: String,
+    workspace: Option<blaze_vfs::Path>,
+    reporter: Arc<blaze_events::Reporter>,
+    configuration:
+        Option<Arc<blaze_build_config::build_configuration_value::BuildConfigurationValue>>,
+}
 
-impl ConfigurationSupplier for UnportedConfigurationSupplier {
+impl BuildConfigurationSupplier {
+    pub fn new(env: &CommandEnvironment, options: &OptionsParsingResult) -> Self {
+        let _ = options;
+        BuildConfigurationSupplier {
+            options: env.get_options().clone(),
+            exec_root_base: env.get_directories().get_exec_root_base().clone(),
+            product_name: env.get_runtime().get_product_name().to_string(),
+            workspace: env.get_workspace().cloned(),
+            reporter: env.get_reporter().clone(),
+            configuration: None,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/commands/InfoCommand.java:169 InfoCommand.exec
+    fn configuration(
+        &mut self,
+    ) -> Result<
+        Arc<blaze_build_config::build_configuration_value::BuildConfigurationValue>,
+        AbruptExitException,
+    > {
+        use blaze_build_config::bazel_rule_class_provider::BazelRuleClassProvider;
+        use blaze_build_config::top_level::{
+            TopLevelConfigurationInputs, create_build_options, create_top_level_configuration,
+            starlark_semantics_from,
+        };
+        if let Some(c) = &self.configuration {
+            return Ok(c.clone());
+        }
+        // In order to be able to answer configuration-specific queries, we need to set up the
+        // package path. Since info inherits all the build options, all the necessary information
+        // is available here.
+        // PORT: ensureSyncPackageLoading(env, optionsParsingResult) is not ported
+        // (CommandEnvironment.syncPackageLoading); configuration creation reads the package
+        // path roots (the workspace, `--package_path=%workspace%`) directly.
+        let rule_class_provider = Arc::new(BazelRuleClassProvider::create());
+        // TODO(bazel-team): What if there are multiple configurations? [multi-config]
+        let build_options = create_build_options(&rule_class_provider, &self.options);
+        // PORT: PlatformFunction (analysis of platform targets) is not ported; platform facts
+        // come from BLAZE_W4_ORACLE_PLATFORMS (scripts/w4/oracle-platforms) when set.
+        let platforms: blaze_build_config::platform::SharedPlatformValueProvider =
+            match std::env::var("BLAZE_W4_ORACLE_PLATFORMS") {
+                Ok(path) => Arc::new(
+                    blaze_build_config::platform::OraclePlatforms::load(std::path::Path::new(
+                        &path,
+                    ))
+                    .unwrap_or_else(|e| panic!("BLAZE_W4_ORACLE_PLATFORMS: {}", e)),
+                ),
+                Err(_) => Arc::new(blaze_build_config::platform::UnportedPlatforms),
+            };
+        let result = create_top_level_configuration(
+            TopLevelConfigurationInputs {
+                directories: blaze_build_config::output_directories::ConfigDirectories {
+                    exec_root_base: self.exec_root_base.clone(),
+                    product_name: self.product_name.clone(),
+                },
+                rule_class_provider,
+                starlark_semantics: Arc::new(starlark_semantics_from(&self.options)),
+                package_path_roots: self.workspace.iter().cloned().collect(),
+                platforms,
+                event_handler: self.reporter.clone(),
+            },
+            build_options,
+            /* keep_going= */ true,
+        );
+        match result {
+            Ok(top) => {
+                self.configuration = Some(top.configuration.clone());
+                Ok(top.configuration)
+            }
+            Err(e) => {
+                self.reporter.handle(&Event::error(e.get_message()));
+                let code = failure_details::build_configuration::Code::from_str_name(e.code)
+                    .unwrap_or(
+                        failure_details::build_configuration::Code::BuildConfigurationUnknown,
+                    );
+                Err(AbruptExitException::new(DetailedExitCode::of(
+                    FailureDetail {
+                        message: e.get_message().to_string(),
+                        category: Some(Category::BuildConfiguration(
+                            failure_details::BuildConfiguration { code: code as i32 },
+                        )),
+                    },
+                )))
+            }
+        }
+    }
+}
+
+impl ConfigurationSupplier for BuildConfigurationSupplier {
     fn get_make_environment(&mut self) -> Result<Vec<(String, String)>, AbruptExitException> {
-        blaze_util::unported!("SkyframeExecutor.getConfiguration")
+        Ok(self
+            .configuration()?
+            .get_make_environment()
+            .into_iter()
+            .collect())
     }
 
     fn get_bin_directory(&mut self) -> Result<String, AbruptExitException> {
-        blaze_util::unported!("SkyframeExecutor.getConfiguration")
+        let main = blaze_build_config::output_directories::main_repository();
+        Ok(self
+            .configuration()?
+            .get_bin_directory(&main)
+            .get_root_path()
+            .to_string())
     }
 
     fn get_genfiles_directory(&mut self) -> Result<String, AbruptExitException> {
-        blaze_util::unported!("SkyframeExecutor.getConfiguration")
+        let main = blaze_build_config::output_directories::main_repository();
+        Ok(self
+            .configuration()?
+            .get_genfiles_directory(&main)
+            .get_root_path()
+            .to_string())
     }
 
     fn get_test_logs_directory(&mut self) -> Result<String, AbruptExitException> {
-        blaze_util::unported!("SkyframeExecutor.getConfiguration")
+        let main = blaze_build_config::output_directories::main_repository();
+        Ok(self
+            .configuration()?
+            .get_test_logs_directory(&main)
+            .get_root_path()
+            .to_string())
     }
 
     fn get(&mut self) -> Result<(), AbruptExitException> {
-        blaze_util::unported!("SkyframeExecutor.getConfiguration")
+        self.configuration().map(|_| ())
     }
 }
 
@@ -59,7 +172,8 @@ impl ConfigurationSupplier for UnportedConfigurationSupplier {
 pub struct InfoCommand {
     info_item_handler_factory: Box<dyn InfoItemHandlerFactory>,
     /// Creates the (memoizing) configuration supplier of one `exec`.
-    configuration_supplier_factory: fn() -> Box<dyn ConfigurationSupplier>,
+    configuration_supplier_factory:
+        fn(&CommandEnvironment, &OptionsParsingResult) -> Box<dyn ConfigurationSupplier>,
 }
 
 /// What the body of `exec`'s try block throws.
@@ -98,7 +212,9 @@ impl InfoCommand {
     pub fn new() -> Self {
         InfoCommand {
             info_item_handler_factory: Box::new(InfoItemHandlerFactoryImpl),
-            configuration_supplier_factory: || Box::new(UnportedConfigurationSupplier),
+            configuration_supplier_factory: |env, options| {
+                Box::new(BuildConfigurationSupplier::new(env, options))
+            },
         }
     }
 
@@ -106,7 +222,10 @@ impl InfoCommand {
     // Java: com/google/devtools/build/lib/runtime/commands/InfoCommand.java:160 InfoCommand.<init>
     pub fn with_factories(
         info_item_handler_factory: Box<dyn InfoItemHandlerFactory>,
-        configuration_supplier_factory: fn() -> Box<dyn ConfigurationSupplier>,
+        configuration_supplier_factory: fn(
+            &CommandEnvironment,
+            &OptionsParsingResult,
+        ) -> Box<dyn ConfigurationSupplier>,
     ) -> Self {
         InfoCommand {
             info_item_handler_factory,
@@ -311,7 +430,8 @@ impl BlazeCommand for InfoCommand {
         // Creating a BuildConfigurationValue is expensive and often unnecessary. Delay the
         // creation until it is needed. We memoize so that it's cached intra-command (it's still
         // created freshly on every command since the configuration can change across commands).
-        let mut configuration_supplier = (self.configuration_supplier_factory)();
+        let mut configuration_supplier =
+            (self.configuration_supplier_factory)(env, options_parsing_result);
 
         let mut items = Self::get_info_item_map(env, options_parsing_result);
         let residue = options_parsing_result.get_residue();

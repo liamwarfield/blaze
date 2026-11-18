@@ -40,3 +40,7 @@ Each entry: date, decision, why, who decided.
   (~17 MB) in the `blaze` binary; install key is Blaze's own md5 over the file list. In-process
   server prints Bazel's "Starting local Bazel server" line per command. JVM-only `info` items
   (heap sizes, gc, java-runtime/vm) stay `unported!` for now. Root.
+- 2026-11-18. Configurations live in `blaze_build_config` (BuildOptions, BuildConfigurationValue,
+  output directories, Starlark exec transition) for now; 06 puts them in blaze_actions/blaze_config.
+  Reconcile when the analysis lead needs it. Platform facts temporarily come from the oracle via
+  `BLAZE_W4_ORACLE_PLATFORMS` until PlatformFunction is ported. Root.

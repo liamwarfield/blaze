@@ -189,6 +189,7 @@ version = "0.1.0"
 dependencies = [
  "allocative",
  "anyhow",
+ "blaze_bzlmod_model",
  "blaze_cmdline",
  "blaze_events",
  "blaze_optdefs",
@@ -199,6 +200,7 @@ dependencies = [
  "blaze_vfs",
  "indexmap",
  "parking_lot",
+ "serde_json",
  "starlark",
  "thiserror",
 ]
@@ -451,9 +453,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_repo_rules"
+version = "0.1.0"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "base64",
+ "blaze_bzlmod",
+ "blaze_bzlmod_model",
+ "blaze_cmdline",
+ "blaze_events",
+ "blaze_optdefs",
+ "blaze_options",
+ "blaze_packages",
+ "blaze_repo_fetch",
+ "blaze_shell",
+ "blaze_sky_loading",
+ "blaze_skyframe",
+ "blaze_starlark",
+ "blaze_util",
+ "blaze_vfs",
+ "dupe",
+ "hex",
+ "indexmap",
+ "libc",
+ "num-bigint",
+ "once_cell",
+ "parking_lot",
+ "regex",
+ "sha2",
+ "starlark",
+ "starlark_map",
+ "starlark_syntax",
+ "tempfile",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "blaze_runtime"
 version = "0.1.0"
 dependencies = [
+ "blaze_build_config",
  "blaze_events",
  "blaze_optdefs",
  "blaze_options",
@@ -484,6 +525,7 @@ dependencies = [
 name = "blaze_sky_loading"
 version = "0.1.0"
 dependencies = [
+ "allocative",
  "anyhow",
  "blaze_cmdline",
  "blaze_config",

@@ -101,7 +101,7 @@ pub fn get_common_options(suppliers: &[Arc<dyn BlazeModule>]) -> Vec<OptionsClas
 /// order; Blaze keeps the first-seen order. The order only affects which class an
 /// `OptionsParser` lists first, which is not observable for the W1 commands.
 /// PORT: the rule class provider argument is replaced by
-/// [`crate::fragment_options::fragment_options_classes`] (Bazel's fixed fragment registry).
+/// [`crate::fragment_options::fragment_options_classes`] (Bazel's fragment registry, from `blaze_build_config`).
 // Java: com/google/devtools/build/lib/runtime/BlazeCommandUtils.java:74 BlazeCommandUtils.getOptions
 pub fn get_options(
     annotation: &CommandAnnotation,

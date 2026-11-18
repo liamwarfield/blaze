@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""W4: record platform facts from the oracle for Blaze's PLATFORM seam. See `oracle-platforms help`."""
+
+import json
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "oracle"))
+sys.dont_write_bytecode = True
+import oracle_common as oc  # noqa: E402
+
+USAGE = """\
+usage: scripts/w4/oracle-platforms --project <brotli|re2|all>
+       scripts/w4/oracle-platforms help
+
+Writes ~/.cache/blaze/w4/<project>.platforms.json: for the host platform
+(@@bazel_tools//tools:host_platform) and the platform it resolves to, the resolved platform label,
+its constraint values keyed by constraint setting, and its flags. This stands in for
+PlatformFunction (analysis of platform() targets) until the analysis phase is ported
+(crates/blaze_build_config/src/platform.rs, OraclePlatforms).
+
+Runs `query --output=streamed_jsonproto` on the oracle in ~/.cache/blaze/work/w4/<project>
+(prepared by scripts/w4/oracle-probe) with startup --output_user_root=~/.cache/blaze/oracle-out/ur-w4
+--nohome_rc --nosystem_rc, inside systemd-run --user --scope -p MemoryMax=12G.
+"""
+
+UR = os.path.join(oc.OUTPUT_ROOTS, "ur-w4")
+ORACLE = os.path.join(oc.CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+HOST = "@@bazel_tools//tools:host_platform"
+
+
+def query(ws, expr):
+    cmd = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
+           "-p", "MemorySwapMax=0", "env", "HOME=" + oc.HOME, "PATH=/usr/bin:/bin",
+           ORACLE, "--output_user_root=" + UR, "--nohome_rc", "--nosystem_rc", "query",
+           "--repository_cache=" + oc.REPO_CACHE, expr, "--output=streamed_jsonproto"]
+    out = subprocess.run(cmd, cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                         check=True).stdout.decode()
+    targets = {}
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        t = json.loads(line)
+        rule = t.get("rule")
+        if not rule:
+            continue
+        attrs = {a["name"]: a for a in rule.get("attribute", [])}
+        targets[rule["name"]] = (rule["ruleClass"], attrs)
+    return targets
+
+
+def attr_list(attrs, name):
+    a = attrs.get(name)
+    return a.get("stringListValue", []) if a else []
+
+
+def attr_str(attrs, name):
+    a = attrs.get(name)
+    return a.get("stringValue") if a else None
+
+
+def record(project):
+    ws = os.path.join(oc.WORK, "w4", project)
+    platforms = {}
+    label = HOST
+    chain = []
+    while True:
+        (cls, attrs), = query(ws, label).values()
+        chain.append(label)
+        if cls == "alias":
+            label = attr_str(attrs, "actual")
+            continue
+        if cls != "platform":
+            raise SystemExit("unexpected rule class %s for %s" % (cls, label))
+        if attr_list(attrs, "parents"):
+            raise SystemExit("platform parents are not recorded: " + label)
+        values = attr_list(attrs, "constraint_values")
+        flags = attr_list(attrs, "flags")
+        break
+    constraints = {}
+    if values:
+        for v in values:
+            (_, vattrs), = query(ws, v).values()
+            constraints[attr_str(vattrs, "constraint_setting")] = v
+    for name in chain:
+        platforms[name] = {"label": label, "constraints": constraints, "flags": flags}
+    out = os.path.join(oc.CACHE, "w4", project + ".platforms.json")
+    with open(out, "w") as f:
+        json.dump({"platforms": platforms}, f, indent=1, sort_keys=True)
+        f.write("\n")
+    print("wrote " + out)
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    if argv[0] != "--project" or len(argv) != 2:
+        print(USAGE, file=sys.stderr)
+        return 2
+    names = list(oc.load_projects()) if argv[1] == "all" else [argv[1]]
+    for n in names:
+        record(n)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
