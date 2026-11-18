@@ -44,17 +44,8 @@ pub use crate::runtime::get_from_future;
 // Java: com/google/devtools/build/lib/util/StringUtilities.java:118 StringUtilities.bytesCountToDisplayString
 pub use blaze_repo_fetch::downloader::download_progress_event::bytes_count_to_display_string;
 
-/// Interface for providing call credentials and refreshing them.
-///
-/// PORT: a minimal stand-in for `lib/authandtls/CallCredentialsProvider.java` (only `refresh`,
-/// which is all `Utils` calls). The port of `lib/authandtls` will own the real trait; this one
-/// then becomes a re-export.
-// Java: com/google/devtools/build/lib/authandtls/CallCredentialsProvider.java:26 CallCredentialsProvider
-pub trait CallCredentialsProvider: Send + Sync {
-    /// Refresh the authorization data, discarding any cached state.
-    // Java: com/google/devtools/build/lib/authandtls/CallCredentialsProvider.java:36 CallCredentialsProvider.refresh
-    fn refresh(&self) -> io::Result<()>;
-}
+/// `lib/authandtls/CallCredentialsProvider.java` (re-exported for the callers of `Utils`).
+pub use crate::authandtls::call_credentials_provider::CallCredentialsProvider;
 
 /// Returns the (exec root relative) path of a spawn output that should be made available via
 /// `SpawnResult.getInMemoryOutput(ActionInput)`.

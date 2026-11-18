@@ -17,7 +17,9 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use blaze_remote::authandtls::call_credentials_provider::CallCredentialsProvider;
+use blaze_remote::authandtls::call_credentials_provider::{
+    CallCredentialsProvider, NO_CREDENTIALS,
+};
 use blaze_remote::byte_stream_uploader::ByteStreamUploader;
 use blaze_remote::chunker::Chunker;
 use blaze_remote::common::errors::{self, StatusRuntimeException};
@@ -83,11 +85,7 @@ impl Random {
     }
 
     fn next(&mut self, bits: u32) -> i32 {
-        self.seed = (self
-            .seed
-            .wrapping_mul(Random::MULTIPLIER)
-            .wrapping_add(0xB))
-            & Random::MASK;
+        self.seed = (self.seed.wrapping_mul(Random::MULTIPLIER).wrapping_add(0xB)) & Random::MASK;
         (self.seed >> (48 - bits)) as u32 as i32
     }
 
@@ -198,7 +196,11 @@ where
     E: FnMut(&mut S, &Status) + Send,
     C: FnMut(&mut S, &mut WriteResponseObserver) + Send,
 {
-    fn on_next(&mut self, write_request: WriteRequest, stream_observer: &mut WriteResponseObserver) {
+    fn on_next(
+        &mut self,
+        write_request: WriteRequest,
+        stream_observer: &mut WriteResponseObserver,
+    ) {
         (self.on_next)(&mut self.state, write_request, stream_observer)
     }
 
@@ -373,8 +375,9 @@ impl ByteStream for RegisteredByteStream {
             }
             match requests.message().await {
                 Ok(Some(write_request)) => {
-                    registry
-                        .guarded(|| request_observer.on_next(write_request, &mut stream_observer))?;
+                    registry.guarded(|| {
+                        request_observer.on_next(write_request, &mut stream_observer)
+                    })?;
                 }
                 Ok(None) => {
                     registry.guarded(|| request_observer.on_completed(&mut stream_observer))?;
@@ -521,20 +524,8 @@ impl Blob for BlobAfterWriteCall {
 }
 
 /// `CallCredentialsProvider.NO_CREDENTIALS`.
-struct NoCredentials;
-
-impl CallCredentialsProvider for NoCredentials {
-    fn get_call_credentials(&self) -> Option<Arc<dyn CallCredentials>> {
-        None
-    }
-
-    fn refresh(&self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 fn no_credentials() -> Arc<dyn CallCredentialsProvider> {
-    Arc::new(NoCredentials)
+    NO_CREDENTIALS.clone()
 }
 
 /// The `CallCredentialsProvider` of the authentication tests: no credentials, counts refreshes.
@@ -566,7 +557,10 @@ impl Backoff for MockBackoff {
         let mut calls = self.next_delay_millis.lock();
         calls.push(errors::downcast_ref::<StatusRuntimeException>(e).is_some());
         // A mock never stops the retries; a test that went wrong must still end.
-        assert!(calls.len() < 1000, "mockBackoff: the upload is retried forever");
+        assert!(
+            calls.len() < 1000,
+            "mockBackoff: the upload is retried forever"
+        );
         0
     }
 
@@ -716,7 +710,7 @@ struct ByteStreamUploaderTest {
 
 /// `Single.just(ServerCapabilities.getDefaultInstance())`.
 fn default_server_capabilities() -> CapabilitiesFetcher {
-    Arc::new(|_channel| Box::pin(async { Ok(ServerCapabilities::default()) }))
+    Arc::new(|_channel| Box::pin(async { Ok::<_, io::Error>(ServerCapabilities::default()) }))
 }
 
 impl ByteStreamUploaderTest {
@@ -727,9 +721,11 @@ impl ByteStreamUploaderTest {
         let service_registry = Arc::new(MutableHandlerRegistry::default());
         let server = start_server(service_registry.clone());
         let write_calls = Arc::new(WriteCalls::default());
+        let interceptors: Vec<Arc<dyn ClientInterceptor>> =
+            vec![Arc::new(WriteCallsInterceptor(write_calls.clone()))];
         let reference_counted_channel = channel_to(
             server.addr,
-            vec![Arc::new(WriteCallsInterceptor(write_calls.clone()))],
+            interceptors,
             Some(default_server_capabilities()),
         );
         let metadata = tracing_metadata_utils::build_metadata(
@@ -768,8 +764,12 @@ impl Drop for ByteStreamUploaderTest {
     /// `tearDown()`.
     fn drop(&mut self) {
         self.reference_counted_channel.release();
-        if !std::thread::panicking() {
-            let failures = self.service_registry.failures.lock().clone();
+        let failures = self.service_registry.failures.lock().clone();
+        if std::thread::panicking() {
+            if !failures.is_empty() {
+                eprintln!("assertions failed in the fake ByteStream service: {failures:?}");
+            }
+        } else {
             assert!(
                 failures.is_empty(),
                 "assertions failed in the fake ByteStream service: {failures:?}"
@@ -1092,28 +1092,30 @@ fn single_chunk_compressed_upload_already_exists() {
     let digest = DIGEST_UTIL.compute(&blob);
 
     t.service_registry
-        .add_service(ByteStreamImplBase::new().write(|_headers, _stream_observer| {
-            stream_observer(
-                /* num_chunks_received= */ 0,
-                |num_chunks_received: &mut i32, write_request, stream_observer| {
-                    // This should be the first and only chunk written.
-                    *num_chunks_received += 1;
-                    assert_eq!(*num_chunks_received, 1);
-                    let data = &write_request.data;
-                    assert!(!data.is_empty());
-                    assert!(write_request.finish_write);
+        .add_service(
+            ByteStreamImplBase::new().write(|_headers, _stream_observer| {
+                stream_observer(
+                    /* num_chunks_received= */ 0,
+                    |num_chunks_received: &mut i32, write_request, stream_observer| {
+                        // This should be the first and only chunk written.
+                        *num_chunks_received += 1;
+                        assert_eq!(*num_chunks_received, 1);
+                        let data = &write_request.data;
+                        assert!(!data.is_empty());
+                        assert!(write_request.finish_write);
 
-                    // On receiving the chunk, respond with a committed size of -1
-                    // to indicate that the blob already exists (per the remote API
-                    // spec) and close the stream.
-                    let response = WriteResponse { committed_size: -1 };
-                    stream_observer.on_next(response);
-                    stream_observer.on_completed();
-                },
-                fail_on_error,
-                |_, _| {},
-            )
-        }));
+                        // On receiving the chunk, respond with a committed size of -1
+                        // to indicate that the blob already exists (per the remote API
+                        // spec) and close the stream.
+                        let response = WriteResponse { committed_size: -1 };
+                        stream_observer.on_next(response);
+                        stream_observer.on_completed();
+                    },
+                    fail_on_error,
+                    |_, _| {},
+                )
+            }),
+        );
 
     upload_blob(&uploader, &t.context, &digest, chunker).unwrap();
 
@@ -1374,8 +1376,8 @@ fn progressive_compressed_upload_should_work() {
 
     upload_blob(&uploader, &t.context, &digest, chunker).unwrap();
     // Zstd.decompress(output.toByteArray(), blob.length - skipSize)
-    let decompressed =
-        zstd::bulk::decompress(&output.lock(), (blob_length - skip_size) as usize).unwrap();
+    let decompressed = zstd::stream::decode_all(&output.lock()[..]).unwrap();
+    assert_eq!(decompressed.len() as i64, blob_length - skip_size);
     assert!(decompressed[..] == blob[skip_size as usize..]);
 
     // This test triggers one retry.
@@ -1597,13 +1599,15 @@ fn early_write_response_should_complete_upload() {
     let digest = DIGEST_UTIL.compute(&blob);
 
     t.service_registry
-        .add_service(ByteStreamImplBase::new().write(move |_headers, stream_observer| {
-            stream_observer.on_next(WriteResponse {
-                committed_size: blob_length,
-            });
-            stream_observer.on_completed();
-            noop_stream_observer()
-        }));
+        .add_service(
+            ByteStreamImplBase::new().write(move |_headers, stream_observer| {
+                stream_observer.on_next(WriteResponse {
+                    committed_size: blob_length,
+                });
+                stream_observer.on_completed();
+                noop_stream_observer()
+            }),
+        );
 
     upload_blob(&uploader, &t.context, &digest, chunker).unwrap();
 
@@ -1638,20 +1642,22 @@ fn incorrect_committed_size_fails_completed_upload() {
     let digest = DIGEST_UTIL.compute(&blob);
 
     t.service_registry
-        .add_service(ByteStreamImplBase::new().write(move |_headers, _stream_observer| {
-            stream_observer(
-                (),
-                |_, _write_request, _stream_observer| {},
-                fail_on_error,
-                move |_, stream_observer| {
-                    let response = WriteResponse {
-                        committed_size: blob_length + 1,
-                    };
-                    stream_observer.on_next(response);
-                    stream_observer.on_completed();
-                },
-            )
-        }));
+        .add_service(
+            ByteStreamImplBase::new().write(move |_headers, _stream_observer| {
+                stream_observer(
+                    (),
+                    |_, _write_request, _stream_observer| {},
+                    fail_on_error,
+                    move |_, stream_observer| {
+                        let response = WriteResponse {
+                            committed_size: blob_length + 1,
+                        };
+                        stream_observer.on_next(response);
+                        stream_observer.on_completed();
+                    },
+                )
+            }),
+        );
 
     // fail("Should have thrown an exception.") / catch (IOException e) { /* expected */ }
     let e = upload_blob(&uploader, &t.context, &digest, chunker)
@@ -1702,14 +1708,15 @@ fn incorrect_committed_size_does_not_fail_incomplete_upload() {
         .build();
     let digest = DIGEST_UTIL.compute(&blob);
 
-    t.service_registry
-        .add_service(ByteStreamImplBase::new().write(|_headers, stream_observer| {
+    t.service_registry.add_service(
+        ByteStreamImplBase::new().write(|_headers, stream_observer| {
             stream_observer.on_next(WriteResponse {
                 committed_size: CHUNK_SIZE as i64,
             });
             stream_observer.on_completed();
             noop_stream_observer()
-        }));
+        }),
+    );
 
     upload_blob(&uploader, &t.context, &digest, chunker).unwrap();
 }
@@ -1936,13 +1943,15 @@ fn context_should_be_preserved_upon_retries() {
     }
 
     let bs_service = ByteStreamImplBase::new()
-        .write(move |headers, _response| {
+        .write(move |headers, response| {
             // ServerInterceptors.intercept(bsService, new TracingMetadataUtils.ServerHeadersInterceptor())
-            let meta = match request_metadata_from_headers(headers, "google.bytestream.ByteStream/Write")
-            {
+            let meta = match request_metadata_from_headers(
+                headers,
+                "google.bytestream.ByteStream/Write",
+            ) {
                 Ok(meta) => meta,
                 Err(status) => {
-                    _response.on_error(status);
+                    response.on_error(status);
                     return noop_stream_observer();
                 }
             };
@@ -1964,15 +1973,12 @@ fn context_should_be_preserved_upon_retries() {
                     let tool_details = meta.tool_details.clone().unwrap_or_default();
                     assert_eq!(tool_details.tool_name, "bazel");
                     assert_eq!(tool_details.tool_version, TOOL_VERSION);
-                    {
-                        let mut uploads_failed = uploads_failed.lock();
-                        let num_failures = *uploads_failed.get(&digest_hash).unwrap();
-                        if num_failures < 3 {
-                            uploads_failed.insert(digest_hash, num_failures + 1);
-                            response.on_error(Status::internal(""));
-                            #[allow(clippy::needless_return)]
-                            return;
-                        }
+                    // synchronized (this)
+                    let mut uploads_failed = uploads_failed.lock();
+                    let num_failures = *uploads_failed.get(&digest_hash).unwrap();
+                    if num_failures < 3 {
+                        uploads_failed.insert(digest_hash, num_failures + 1);
+                        response.on_error(Status::internal(""));
                     }
                 },
                 fail_on_error,
@@ -2031,13 +2037,14 @@ fn custom_headers_are_attached_to_request() {
     ];
 
     t.reference_counted_channel.release();
+    let interceptors: Vec<Arc<dyn ClientInterceptor>> = vec![
+        // MetadataUtils.newAttachHeadersInterceptor(metadata)
+        Arc::new(AttachHeadersInterceptor::new(&metadata).unwrap()),
+        Arc::new(WriteCallsInterceptor(t.write_calls.clone())),
+    ];
     t.reference_counted_channel = channel_to(
         t.server.addr,
-        vec![
-            // MetadataUtils.newAttachHeadersInterceptor(metadata)
-            Arc::new(AttachHeadersInterceptor::new(&metadata).unwrap()),
-            Arc::new(WriteCallsInterceptor(t.write_calls.clone())),
-        ],
+        interceptors,
         Some(default_server_capabilities()),
     );
     let uploader = ByteStreamUploader::new(
@@ -2058,30 +2065,32 @@ fn custom_headers_are_attached_to_request() {
     let digest = DIGEST_UTIL.compute(&blob);
 
     t.service_registry
-        .add_service(ByteStreamImplBase::new().write(move |headers, _stream_observer| {
-            // The ServerInterceptor of the Java test.
-            let get = |name: &str| {
-                headers
-                    .get(name)
-                    .map(|value| value.to_str().unwrap().to_string())
-            };
-            assert_eq!(get("key1").as_deref(), Some("Value1"));
-            assert_eq!(get("key2").as_deref(), Some("Value2"));
-            assert_eq!(get("key3"), None);
+        .add_service(
+            ByteStreamImplBase::new().write(move |headers, _stream_observer| {
+                // The ServerInterceptor of the Java test.
+                let get = |name: &str| {
+                    headers
+                        .get(name)
+                        .map(|value| value.to_str().unwrap().to_string())
+                };
+                assert_eq!(get("key1").as_deref(), Some("Value1"));
+                assert_eq!(get("key2").as_deref(), Some("Value2"));
+                assert_eq!(get("key3"), None);
 
-            stream_observer(
-                (),
-                |_, _write_request, _stream_observer| {},
-                fail_on_error,
-                move |_, stream_observer| {
-                    let response = WriteResponse {
-                        committed_size: blob_length,
-                    };
-                    stream_observer.on_next(response);
-                    stream_observer.on_completed();
-                },
-            )
-        }));
+                stream_observer(
+                    (),
+                    |_, _write_request, _stream_observer| {},
+                    fail_on_error,
+                    move |_, stream_observer| {
+                        let response = WriteResponse {
+                            committed_size: blob_length,
+                        };
+                        stream_observer.on_next(response);
+                        stream_observer.on_completed();
+                    },
+                )
+            }),
+        );
 
     upload_blob(&uploader, &t.context, &digest, chunker).unwrap();
 }
@@ -2321,12 +2330,14 @@ fn unauthenticated_error_should_not_be_retried() {
     let num_uploads = Arc::new(AtomicI32::new(0));
     let num_uploads_for_service = num_uploads.clone();
     t.service_registry
-        .add_service(ByteStreamImplBase::new().write(move |_headers, stream_observer| {
-            num_uploads_for_service.fetch_add(1, Ordering::SeqCst);
+        .add_service(
+            ByteStreamImplBase::new().write(move |_headers, stream_observer| {
+                num_uploads_for_service.fetch_add(1, Ordering::SeqCst);
 
-            stream_observer.on_error(Status::unauthenticated(""));
-            noop_stream_observer()
-        }));
+                stream_observer.on_error(Status::unauthenticated(""));
+                noop_stream_observer()
+            }),
+        );
 
     upload_blob(&uploader, &t.context, &digest, chunker).unwrap_err();
 
@@ -2373,33 +2384,35 @@ fn should_refresh_credentials_on_authentication_error() {
     let num_uploads_for_service = num_uploads.clone();
     let refresh_times_for_service = refresh_times.clone();
     t.service_registry
-        .add_service(ByteStreamImplBase::new().write(move |_headers, stream_observer| {
-            num_uploads_for_service.fetch_add(1, Ordering::SeqCst);
+        .add_service(
+            ByteStreamImplBase::new().write(move |_headers, stream_observer| {
+                num_uploads_for_service.fetch_add(1, Ordering::SeqCst);
 
-            if refresh_times_for_service.load(Ordering::SeqCst) == 0 {
-                stream_observer.on_error(Status::unauthenticated(""));
-                return noop_stream_observer();
-            }
+                if refresh_times_for_service.load(Ordering::SeqCst) == 0 {
+                    stream_observer.on_error(Status::unauthenticated(""));
+                    return noop_stream_observer();
+                }
 
-            self::stream_observer(
-                /* next_offset= */ 0i64,
-                move |next_offset, write_request, _stream_observer| {
-                    *next_offset += write_request.data.len() as i64;
-                    let last_write = blob_length == *next_offset;
-                    assert_eq!(write_request.finish_write, last_write);
-                },
-                fail_on_error,
-                move |next_offset, stream_observer| {
-                    assert_eq!(*next_offset, blob_length);
+                self::stream_observer(
+                    /* next_offset= */ 0i64,
+                    move |next_offset, write_request, _stream_observer| {
+                        *next_offset += write_request.data.len() as i64;
+                        let last_write = blob_length == *next_offset;
+                        assert_eq!(write_request.finish_write, last_write);
+                    },
+                    fail_on_error,
+                    move |next_offset, stream_observer| {
+                        assert_eq!(*next_offset, blob_length);
 
-                    let response = WriteResponse {
-                        committed_size: *next_offset,
-                    };
-                    stream_observer.on_next(response);
-                    stream_observer.on_completed();
-                },
-            )
-        }));
+                        let response = WriteResponse {
+                            committed_size: *next_offset,
+                        };
+                        stream_observer.on_next(response);
+                        stream_observer.on_completed();
+                    },
+                )
+            }),
+        );
 
     upload_blob(&uploader, &t.context, &digest, chunker).unwrap();
 
@@ -2498,63 +2511,65 @@ fn test_compressed_uploads() {
 
     let num_uploads_for_service = num_uploads.clone();
     t.service_registry
-        .add_service(ByteStreamImplBase::new().write(move |_headers, _stream_observer| {
-            #[derive(Default)]
-            struct State {
-                baos: Vec<u8>,
-                resource_name: Option<String>,
-            }
-            let num_uploads = num_uploads_for_service.clone();
-            stream_observer(
-                State::default(),
-                |s, write_request, _stream_observer| {
-                    if !write_request.resource_name.is_empty() {
-                        match &s.resource_name {
-                            Some(resource_name) => {
-                                assert_eq!(resource_name, &write_request.resource_name);
-                            }
-                            None => {
-                                s.resource_name = Some(write_request.resource_name.clone());
-                                assert!(
-                                    write_request
-                                        .resource_name
-                                        .contains("/compressed-blobs/zstd/")
-                                );
+        .add_service(
+            ByteStreamImplBase::new().write(move |_headers, _stream_observer| {
+                #[derive(Default)]
+                struct State {
+                    baos: Vec<u8>,
+                    resource_name: Option<String>,
+                }
+                let num_uploads = num_uploads_for_service.clone();
+                stream_observer(
+                    State::default(),
+                    |s, write_request, _stream_observer| {
+                        if !write_request.resource_name.is_empty() {
+                            match &s.resource_name {
+                                Some(resource_name) => {
+                                    assert_eq!(resource_name, &write_request.resource_name);
+                                }
+                                None => {
+                                    s.resource_name = Some(write_request.resource_name.clone());
+                                    assert!(
+                                        write_request
+                                            .resource_name
+                                            .contains("/compressed-blobs/zstd/")
+                                    );
+                                }
                             }
                         }
-                    }
-                    s.baos.extend_from_slice(&write_request.data);
-                },
-                fail_on_error,
-                move |s, stream_observer| {
-                    let data = s.baos.clone();
-                    // try { ... } finally { respond }
-                    let checked = catch_unwind(AssertUnwindSafe(|| {
-                        let decompressed = zstd::stream::decode_all(&data[..])
-                            .expect("Failed decompressing data.");
-                        let digest = DIGEST_UTIL.compute(&decompressed);
+                        s.baos.extend_from_slice(&write_request.data);
+                    },
+                    fail_on_error,
+                    move |s, stream_observer| {
+                        let data = s.baos.clone();
+                        // try { ... } finally { respond }
+                        let checked = catch_unwind(AssertUnwindSafe(|| {
+                            let decompressed = zstd::stream::decode_all(&data[..])
+                                .expect("Failed decompressing data.");
+                            let digest = DIGEST_UTIL.compute(&decompressed);
 
-                        assert_eq!(blob_length, decompressed.len());
-                        let resource_name = s.resource_name.as_ref().expect("resourceName");
-                        assert!(
-                            resource_name
-                                .ends_with(&format!("/{}/{}", digest.hash, digest.size_bytes))
-                        );
+                            assert_eq!(blob_length, decompressed.len());
+                            let resource_name = s.resource_name.as_ref().expect("resourceName");
+                            assert!(
+                                resource_name
+                                    .ends_with(&format!("/{}/{}", digest.hash, digest.size_bytes))
+                            );
 
-                        num_uploads.fetch_add(1, Ordering::SeqCst);
-                    }));
-                    let response = WriteResponse {
-                        committed_size: data.len() as i64,
-                    };
+                            num_uploads.fetch_add(1, Ordering::SeqCst);
+                        }));
+                        let response = WriteResponse {
+                            committed_size: data.len() as i64,
+                        };
 
-                    stream_observer.on_next(response);
-                    stream_observer.on_completed();
-                    if let Err(payload) = checked {
-                        std::panic::resume_unwind(payload);
-                    }
-                },
-            )
-        }));
+                        stream_observer.on_next(response);
+                        stream_observer.on_completed();
+                        if let Err(payload) = checked {
+                            std::panic::resume_unwind(payload);
+                        }
+                    },
+                )
+            }),
+        );
 
     let chunker = Chunker::builder()
         .set_input_bytes(blob.clone())

@@ -1,4 +1,4 @@
-//! Port of the download half of `lib/remote/RemoteExecutionService.java` (lines 841-1725 at the
+//! Port of the download half of `lib/remote/RemoteExecutionService.java` (lines 860-1725 at the
 //! pin): parsing the metadata of an `ActionResult`, downloading the outputs of a remote action
 //! into the output tree, and the reuse of the outputs of a concurrent local execution.
 //!
@@ -9,7 +9,7 @@
 //! kept, in Java's order, and none is added. Where Java does not validate a server-provided value
 //! the spot carries a `// SECURITY:` comment that says what Java relies on instead.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -214,33 +214,6 @@ impl<V> JavaHashMap<V> {
     fn values(&self) -> impl Iterator<Item = &V> {
         self.iter().map(|(_, value)| value)
     }
-}
-
-/// Removes digests referenced by `metadata` from `known_missing_cas_digests` and returns whether
-/// any were removed.
-///
-/// PORT: a module function rather than a `RemoteExecutionService` method so that it cannot clash
-/// with the other half of the class, whose `lookupCache` calls it too.
-// Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:841 RemoteExecutionService.updateKnownMissingCasDigests
-pub(crate) fn update_known_missing_cas_digests(
-    known_missing_cas_digests: &mut HashSet<Digest>,
-    metadata: &ActionResultMetadata,
-) -> bool {
-    // Using `remove` below because we assume the missing blob will be uploaded afterwards.
-    let mut result = false;
-    for file in metadata.files() {
-        if known_missing_cas_digests.remove(file.digest()) {
-            result = true;
-        }
-    }
-    for (_, directory) in metadata.directories() {
-        for file in directory.files() {
-            if known_missing_cas_digests.remove(file.digest()) {
-                result = true;
-            }
-        }
-    }
-    result
 }
 
 /// `ActionResultMetadata.SymlinkMetadata`.
@@ -474,13 +447,10 @@ enum TreeDownload {
     },
 }
 
-/// `RemoteExecutionService.parseActionResultMetadata(combinedCache, digestUtil, context, result,
-/// remotePathResolver)`.
-///
-/// PORT: the same function as [`RemoteExecutionService::parse_action_result_metadata`], for
-/// callers that do not name the class.
+/// The body of [`RemoteExecutionService::parse_action_result_metadata`] (Java: a static method
+/// of the class).
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1121 RemoteExecutionService.parseActionResultMetadata
-pub(crate) fn parse_action_result_metadata(
+fn parse_action_result_metadata(
     combined_cache: &CombinedCache,
     digest_util: &DigestUtil,
     context: &RemoteActionExecutionContext<'_>,
@@ -562,7 +532,7 @@ pub(crate) fn parse_action_result_metadata(
                     let tree = Tree::decode(tree_bytes)
                         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                     *slot.lock() = Some(tree);
-                    Ok(())
+                    Ok::<(), io::Error>(())
                 }));
             }
         }
@@ -1001,6 +971,77 @@ fn copy_trees_below(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The body of the `try` block of `captureCorruptedOutputs`, for one
+/// `OutputDigestMismatchException`; an `Err` is what Java's `catch (Exception ee)` catches.
+// Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:892 RemoteExecutionService.captureCorruptedOutputs
+fn capture_corrupted_output(
+    capture_corrupted_outputs_dir: &Path,
+    output_digest_mismatch_exception: &OutputDigestMismatchException,
+) -> io::Result<()> {
+    let output_path = output_digest_mismatch_exception.get_output_path();
+    let local_path = output_digest_mismatch_exception.get_local_path();
+    // `captureCorruptedOutputsDir.getRelative(outputPath)` throws a `NullPointerException` for a
+    // mismatch without an output path (a blob that was not downloaded to a file), which
+    // `catch (Exception ee)` catches.
+    // PORT: Java's message of that exception is the JVM's.
+    let output_path =
+        output_path.ok_or_else(|| errors::io_exception("java.lang.NullPointerException"))?;
+    // SECURITY: the directories are created before `dst` is checked to be under the capture
+    // directory, and the check is on the normalized path strings (symbolic links are not
+    // resolved), as in Java. The output path comes from
+    // `RemotePathResolver.localPathToOutputPath` of a file that `downloadOutputs` has already put
+    // under the exec root with `relativeTo(execRoot)`.
+    let dst = capture_corrupted_outputs_dir.get_relative_str(output_path);
+    dst.create_directory_and_parents()?;
+
+    // Make sure dst is still under captureCorruptedOutputsDir, otherwise
+    // IllegalArgumentException will be thrown.
+    dst.as_fragment()
+        .try_relative_to(capture_corrupted_outputs_dir.as_fragment())
+        .map_err(errors::io_exception)?;
+
+    // `FileSystemUtils.copyFile(localPath, dst)` throws a `NullPointerException` for a mismatch
+    // without a local path.
+    let local_path =
+        local_path.ok_or_else(|| errors::io_exception("java.lang.NullPointerException"))?;
+    fs_utils::copy_file(local_path, &dst)
+}
+
+/// The body of the `try` block of `deletePartialDownloadedOutputs`.
+// Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:914 RemoteExecutionService.deletePartialDownloadedOutputs
+fn delete_tmp_paths_and_clear_out_err(
+    real_to_tmp_path: &JavaHashMap<Path>,
+    tmp_out_err: &FileOutErr,
+) -> io::Result<()> {
+    // Delete any (partially) downloaded output files.
+    for tmp_path in real_to_tmp_path.values() {
+        tmp_path.delete()?;
+    }
+
+    tmp_out_err.clear_out()?;
+    tmp_out_err.clear_err()?;
+    Ok(())
+}
+
+/// The body of the inner `try` block of `waitForAndReuseOutputs`: copies one output of the
+/// previous execution to a temporary path.
+// Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1637 RemoteExecutionService.waitForAndReuseOutputs
+fn copy_previous_output(
+    output_artifact: &ActionInputRef,
+    source_path: &Path,
+    tmp_path: &Path,
+) -> io::Result<()> {
+    if output_artifact.is_directory() {
+        tmp_path.create_directory()?;
+        copy_trees_below(source_path, tmp_path)?;
+    } else if output_artifact.is_symlink() {
+        fs_utils::ensure_symbolic_link(tmp_path, &source_path.read_symbolic_link()?)?;
+    } else {
+        fs_utils::copy_file(source_path, tmp_path)?;
+    }
+    Ok(())
+}
+
 impl RemoteExecutionService {
     /// PORT: Java returns a `ListenableFuture<FileMetadata>` that completes with `file`; the
     /// future here completes with `()` and the caller keeps `file`.
@@ -1063,37 +1104,10 @@ impl RemoteExecutionService {
                     errors::downcast_ref::<OutputDigestMismatchException>(&suppressed)
                 {
                     // Capture corrupted outputs
-                    let captured = (|| -> io::Result<()> {
-                        let output_path = output_digest_mismatch_exception.get_output_path();
-                        let local_path = output_digest_mismatch_exception.get_local_path();
-                        // `captureCorruptedOutputsDir.getRelative(outputPath)` throws a
-                        // `NullPointerException` for a mismatch without an output path (a blob
-                        // that was not downloaded to a file), which `catch (Exception ee)`
-                        // catches.
-                        // PORT: Java's message of that exception is the JVM's.
-                        let output_path = output_path.ok_or_else(|| {
-                            errors::io_exception("java.lang.NullPointerException")
-                        })?;
-                        // SECURITY: the directories are created before `dst` is checked to be
-                        // under the capture directory, and the check is on the normalized path
-                        // strings (symbolic links are not resolved), as in Java. The output path
-                        // comes from `RemotePathResolver.localPathToOutputPath` of a file that
-                        // `downloadOutputs` has already put under the exec root with
-                        // `relativeTo(execRoot)`.
-                        let dst = capture_corrupted_outputs_dir.get_relative_str(output_path);
-                        dst.create_directory_and_parents()?;
-
-                        // Make sure dst is still under captureCorruptedOutputsDir, otherwise
-                        // IllegalArgumentException will be thrown.
-                        dst.as_fragment()
-                            .try_relative_to(capture_corrupted_outputs_dir.as_fragment())
-                            .map_err(|message| errors::io_exception(message))?;
-
-                        let local_path = local_path.ok_or_else(|| {
-                            errors::io_exception("java.lang.NullPointerException")
-                        })?;
-                        fs_utils::copy_file(local_path, &dst)
-                    })();
+                    let captured = capture_corrupted_output(
+                        capture_corrupted_outputs_dir,
+                        output_digest_mismatch_exception,
+                    );
                     if let Err(ee) = captured {
                         // `e.addSuppressed(ee)`
                         // PORT: `BulkTransferException::add` also clears the "all caused by
@@ -1114,16 +1128,7 @@ impl RemoteExecutionService {
         tmp_out_err: &FileOutErr,
         _e: &io::Error,
     ) -> Result<(), ExecException> {
-        let deleted = (|| -> io::Result<()> {
-            // Delete any (partially) downloaded output files.
-            for tmp_path in real_to_tmp_path.values() {
-                tmp_path.delete()?;
-            }
-
-            tmp_out_err.clear_out()?;
-            tmp_out_err.clear_err()?;
-            Ok(())
-        })();
+        let deleted = delete_tmp_paths_and_clear_out_err(real_to_tmp_path, tmp_out_err);
         if let Err(io_ex) = deleted {
             // PORT: `ioEx.addSuppressed(e)` and `execEx.addSuppressed(e)` have no counterpart
             // (neither error type carries suppressed exceptions).
@@ -1255,22 +1260,22 @@ impl RemoteExecutionService {
     /// `checkState(actionFileSystem instanceof RemoteActionFileSystem, "expected the
     /// ActionFileSystem to be a RemoteActionFileSystem")`. `blaze_exec`'s `SpawnExecutionContext`
     /// has no action file system and `RemoteActionFileSystem` (the remote output tree) is not
-    /// ported, so both are asked for here, where the file system is first used: a download in
+    /// ported: the injection goes through `crate::hooks::RemoteOutputInjector`, asked for here,
+    /// where the file system is first used: a download in
     /// which every output is written to disk (`--remote_download_outputs=all` without an
     /// in-memory output) never gets here.
     // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:308 RemoteActionFileSystem.injectRemoteFile
     fn inject_remote_file(
         &self,
         _action: &RemoteAction<'_>,
-        _path: &PathFragment,
-        _digest: Vec<u8>,
-        _size: i64,
-        _expiration_time: SystemTime,
-        _in_memory_output: bool,
+        path: &PathFragment,
+        digest: Vec<u8>,
+        size: i64,
+        expiration_time: SystemTime,
+        in_memory_output: bool,
     ) -> io::Result<()> {
-        blaze_util::unported!(
-            "RemoteExecutionService.downloadOutputs (missing hook: action.getSpawnExecutionContext().getActionFileSystem() as RemoteActionFileSystem, then remoteActionFileSystem.injectRemoteFile(path, digest, size, expirationTime, inMemoryOutput))"
-        )
+        self.hooks
+            .inject_remote_file(path, digest, size, expiration_time, in_memory_output)
     }
 
     /// Downloads the outputs of a remotely executed action and injects their metadata.
@@ -1309,10 +1314,9 @@ impl RemoteExecutionService {
                 context.with_read_cache_policy(context.get_read_cache_policy().add_remote_cache());
         }
         let context = context;
-        let remote_path_resolver: &dyn RemotePathResolver =
-            action.get_remote_path_resolver().as_ref();
+        let remote_path_resolver: &dyn RemotePathResolver = &**action.get_remote_path_resolver();
 
-        let metadata = result.get_or_parse_action_result_metadata(
+        let metadata: &ActionResultMetadata = result.get_or_parse_action_result_metadata(
             combined_cache,
             &self.digest_util,
             &context,
@@ -1416,7 +1420,7 @@ impl RemoteExecutionService {
                                     )
                                     .await?;
                                 *in_memory_output_data.lock() = Some(data);
-                                Ok(())
+                                Ok::<(), io::Error>(())
                             }));
                             download_files.push(None);
                         }
@@ -1496,7 +1500,7 @@ impl RemoteExecutionService {
         // spawn strategy.
         action.get_spawn_execution_context().lock_output_files(
             result.get_exit_code(),
-            &result.get_message(),
+            result.get_message(),
             &tmp_out_err,
         )?;
         // Will these be properly garbage-collected if the above throws an exception?
@@ -1544,12 +1548,15 @@ impl RemoteExecutionService {
             }
 
             if result.execute_response.is_some() {
-                let mut known_missing_cas_digests = self.known_missing_cas_digests.lock();
-                if !known_missing_cas_digests.is_empty() {
+                let known_missing_cas_digests_is_empty =
+                    self.known_missing_cas_digests.lock().is_empty();
+                if !known_missing_cas_digests_is_empty {
                     // A succeeded execution uploads outputs to CAS. Refresh our knowledge about
                     // missing digests.
-                    let _unused =
-                        update_known_missing_cas_digests(&mut known_missing_cas_digests, &metadata);
+                    let _unused = Self::update_known_missing_cas_digests(
+                        &self.known_missing_cas_digests,
+                        metadata,
+                    );
                 }
             }
 
@@ -1557,7 +1564,13 @@ impl RemoteExecutionService {
             // comes from Execution response which means, if disk cache is enabled, action result
             // hasn't been uploaded to it. Upload action result to disk cache here so next build
             // could hit it.
-            if self.use_disk_cache() && result.execute_response.is_some() {
+            // PORT: `useDiskCache()` (RemoteExecutionService.java:338) is private to the module of
+            // the other half of the class; this is its body.
+            let use_disk_cache = self
+                .combined_cache
+                .as_ref()
+                .is_some_and(|combined_cache| combined_cache.has_disk_cache());
+            if use_disk_cache && result.execute_response.is_some() {
                 let action_key: ActionKey = action.get_action_key().clone();
                 get_from_future(combined_cache.upload_action_result(
                     &context.with_write_cache_policy(CachePolicy::DiskCacheOnly),
@@ -1703,7 +1716,7 @@ impl RemoteExecutionService {
 
     /// The `try` block of `waitForAndReuseOutputs`. Returns false where Java returns null from
     /// inside the block.
-    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1622 RemoteExecutionService.waitForAndReuseOutputs
+    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1623 RemoteExecutionService.waitForAndReuseOutputs
     fn reuse_outputs(
         &self,
         action: &RemoteAction<'_>,
@@ -1747,17 +1760,7 @@ impl RemoteExecutionService {
                 .expect("NullPointerException")
                 .create_directory_and_parents()?;
             let output_artifact = output_artifact.expect("NullPointerException");
-            let copied = (|| -> io::Result<()> {
-                if output_artifact.is_directory() {
-                    tmp_path.create_directory()?;
-                    copy_trees_below(&source_path, &tmp_path)?;
-                } else if output_artifact.is_symlink() {
-                    fs_utils::ensure_symbolic_link(&tmp_path, &source_path.read_symbolic_link()?)?;
-                } else {
-                    fs_utils::copy_file(&source_path, &tmp_path)?;
-                }
-                Ok(())
-            })();
+            let copied = copy_previous_output(output_artifact, &source_path, &tmp_path);
             match copied {
                 Ok(()) => {
                     real_to_tmp_path.put(target_path, tmp_path);
@@ -1801,7 +1804,7 @@ impl RemoteExecutionService {
     ///
     /// PORT: missing hook. `blaze_exec`'s `SpawnResult` is a plain struct; it has no
     /// `DelegateSpawnResult` and no way to give a built result another in-memory output.
-    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1687 RemoteExecutionService.waitForAndReuseOutputs
+    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1689 RemoteExecutionService.waitForAndReuseOutputs
     fn delegate_spawn_result_with_in_memory_output(
         _previous_spawn_result: SpawnResult,
         _final_in_memory_output_path: String,
@@ -1833,8 +1836,10 @@ impl RemoteExecutionService {
             .should_download_output_path(exec_path, tree_root_exec_path)
     }
 
+    /// PORT: the other half of the class has its own (module-private) copy for
+    /// `buildUploadManifest`.
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1718 RemoteExecutionService.prettyPrint
-    pub(crate) fn pretty_print(action_input: &dyn ActionInput) -> String {
+    fn pretty_print(action_input: &dyn ActionInput) -> String {
         if let Some(artifact) = action_input.as_artifact() {
             // `artifact.prettyPrint()`
             // Java: com/google/devtools/build/lib/actions/Artifact.java:669 Artifact.prettyPrint

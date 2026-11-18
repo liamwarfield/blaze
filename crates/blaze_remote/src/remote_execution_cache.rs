@@ -457,7 +457,7 @@ impl RemoteExecutionCache {
                     )
                     .await?;
                 if !should_upload {
-                    return Ok(());
+                    return Ok::<(), io::Error>(());
                 }
                 match self
                     .upload_blob_of_merkle_tree(

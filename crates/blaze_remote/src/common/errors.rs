@@ -108,10 +108,54 @@ pub fn status_to_io_error(status: tonic::Status) -> io::Error {
     StatusRuntimeException::new(status).into()
 }
 
+/// `new IOException(message, cause)`: displays `message`; the cause stays reachable for
+/// [`find_cause`] / [`status_from_throwable`] (`Status.fromThrowable` walks the cause chain)
+/// but not for [`downcast_ref`] (`instanceof` does not).
+#[derive(Debug, Clone)]
+pub struct IoExceptionWithCause {
+    message: String,
+    cause: Arc<io::Error>,
+}
+
+impl IoExceptionWithCause {
+    /// `getCause()`.
+    pub fn get_cause(&self) -> &io::Error {
+        &self.cause
+    }
+}
+
+impl fmt::Display for IoExceptionWithCause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for IoExceptionWithCause {}
+
+/// `new IOException(message, cause)`.
+pub fn io_exception_with_cause(message: impl Into<String>, cause: io::Error) -> io::Error {
+    io::Error::other(IoExceptionWithCause {
+        message: message.into(),
+        cause: Arc::new(cause),
+    })
+}
+
+/// The first `T` in the cause chain of `e` (`e` itself included): what a Java loop over
+/// `getCause()` with `instanceof T` finds.
+pub fn find_cause<T: Error + Send + Sync + 'static>(e: &io::Error) -> Option<&T> {
+    let mut current = e;
+    loop {
+        if let Some(t) = downcast_ref::<T>(current) {
+            return Some(t);
+        }
+        current = downcast_ref::<IoExceptionWithCause>(current)?.get_cause();
+    }
+}
+
 /// `io.grpc.Status.fromThrowable(e)`: the status of the `StatusRuntimeException` in the cause
 /// chain, else `UNKNOWN` (`None` here; Java returns `Status.UNKNOWN.withCause(e)`).
 pub fn status_from_throwable(e: &io::Error) -> Option<&tonic::Status> {
-    downcast_ref::<StatusRuntimeException>(e).map(|s| &s.status)
+    find_cause::<StatusRuntimeException>(e).map(|s| &s.status)
 }
 
 /// `Status.Code.name()`.

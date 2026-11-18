@@ -27,6 +27,12 @@ impl MockCallCredentialsProvider {
 }
 
 impl CallCredentialsProvider for MockCallCredentialsProvider {
+    fn get_call_credentials(
+        &self,
+    ) -> Option<std::sync::Arc<dyn blaze_remote::grpc::CallCredentials>> {
+        None
+    }
+
     fn refresh(&self) -> io::Result<()> {
         self.refresh_times.fetch_add(1, Ordering::SeqCst);
         Ok(())

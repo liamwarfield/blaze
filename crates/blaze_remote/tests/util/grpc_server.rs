@@ -6,14 +6,16 @@
 //! PORT: there is no in-process transport; a fake server listens on `127.0.0.1:0` and the
 //! clients talk to it over a plaintext channel ([`blaze_remote::grpc::channel::testing`]).
 //! [`FakeServer`] binds its address when it is made, so a client can be created before the
-//! services are registered (as the Java tests do), but the services of a tonic server are fixed
-//! once it serves: register them, then call [`FakeServer::start`] before the first call.
+//! services are registered (as the Java tests do); the services are fixed once it serves:
+//! register them in [`FakeServer::service_registry`], then call [`FakeServer::start`] before
+//! the first call.
 //!
 //! The `Fake*` services stand for Java's anonymous `*ImplBase` subclasses: every method is an
 //! optional handler, and a method without a handler answers `UNIMPLEMENTED` as the generated
 //! Java base class does. A handler that panics (a failed assertion) fails its call.
 #![allow(dead_code)]
 
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -37,14 +39,130 @@ use blaze_remote::reapi::{
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse,
     GetActionResultRequest, GetCapabilitiesRequest, GetTreeRequest, GetTreeResponse,
-    ServerCapabilities, SpliceBlobRequest, SpliceBlobResponse, SplitBlobRequest,
-    SplitBlobResponse, UpdateActionResultRequest,
+    ServerCapabilities, SpliceBlobRequest, SpliceBlobResponse, SplitBlobRequest, SplitBlobResponse,
+    UpdateActionResultRequest,
 };
 use futures::Stream;
 use futures::future::BoxFuture;
-use tonic::service::{Routes, RoutesBuilder};
+use tonic::body::Body;
+use tonic::server::NamedService;
 use tonic::transport::server::TcpIncoming;
 use tonic::{Request, Response, Status, Streaming};
+use tower::Service;
+use tower::util::BoxCloneService;
+
+/// One registered service: the generated `*Server` behind a box.
+type BoxedService = BoxCloneService<http::Request<Body>, http::Response<Body>, Infallible>;
+
+/// The services of a fake server (`io.grpc.util.MutableHandlerRegistry`): dispatches a call to
+/// the service named in its path (`/<package.Service>/<Method>`).
+///
+/// PORT: tonic's own router is behind a feature the workspace does not enable, so this is the
+/// routing a `HandlerRegistry` does, by hand.
+#[derive(Clone, Default)]
+pub struct ServiceRegistry {
+    /// `/<package.Service>/` and the service.
+    services: Vec<(String, BoxedService)>,
+}
+
+impl ServiceRegistry {
+    /// `new MutableHandlerRegistry()`.
+    pub fn new() -> ServiceRegistry {
+        ServiceRegistry::default()
+    }
+
+    fn add<S>(&mut self, name: &str, service: S)
+    where
+        S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
+            + Clone
+            + Send
+            + 'static,
+        S::Future: Send + 'static,
+    {
+        let prefix = format!("/{name}/");
+        // `MutableHandlerRegistry.addService` replaces a service of the same name.
+        self.services.retain(|(p, _)| *p != prefix);
+        self.services.push((prefix, BoxCloneService::new(service)));
+    }
+
+    /// `serviceRegistry.addService(new ByteStreamImplBase() {...})`.
+    pub fn add_byte_stream<T: ByteStream>(&mut self, service: T) {
+        self.add(
+            <ByteStreamServer<T> as NamedService>::NAME,
+            ByteStreamServer::new(service)
+                .max_decoding_message_size(usize::MAX)
+                .max_encoding_message_size(usize::MAX),
+        );
+    }
+
+    /// `serviceRegistry.addService(new ContentAddressableStorageImplBase() {...})`.
+    pub fn add_content_addressable_storage<T: ContentAddressableStorage>(&mut self, service: T) {
+        self.add(
+            <ContentAddressableStorageServer<T> as NamedService>::NAME,
+            ContentAddressableStorageServer::new(service)
+                .max_decoding_message_size(usize::MAX)
+                .max_encoding_message_size(usize::MAX),
+        );
+    }
+
+    /// `serviceRegistry.addService(new ActionCacheImplBase() {...})`.
+    pub fn add_action_cache<T: ActionCache>(&mut self, service: T) {
+        self.add(
+            <ActionCacheServer<T> as NamedService>::NAME,
+            ActionCacheServer::new(service)
+                .max_decoding_message_size(usize::MAX)
+                .max_encoding_message_size(usize::MAX),
+        );
+    }
+
+    /// `serviceRegistry.addService(new CapabilitiesImplBase() {...})`.
+    pub fn add_capabilities<T: Capabilities>(&mut self, service: T) {
+        self.add(
+            <CapabilitiesServer<T> as NamedService>::NAME,
+            CapabilitiesServer::new(service)
+                .max_decoding_message_size(usize::MAX)
+                .max_encoding_message_size(usize::MAX),
+        );
+    }
+
+    /// `serviceRegistry.addService(new ExecutionImplBase() {...})`.
+    pub fn add_execution<T: Execution>(&mut self, service: T) {
+        self.add(
+            <ExecutionServer<T> as NamedService>::NAME,
+            ExecutionServer::new(service)
+                .max_decoding_message_size(usize::MAX)
+                .max_encoding_message_size(usize::MAX),
+        );
+    }
+}
+
+impl Service<http::Request<Body>> for ServiceRegistry {
+    type Response = http::Response<Body>;
+    type Error = Infallible;
+    type Future = BoxFuture<'static, Result<http::Response<Body>, Infallible>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+        // The generated servers are always ready.
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+        let path = request.uri().path().to_string();
+        for (prefix, service) in &mut self.services {
+            if path.starts_with(prefix.as_str()) {
+                return service.call(request);
+            }
+        }
+        // Java: ServerImpl answers a method no registry knows with UNIMPLEMENTED.
+        Box::pin(async move {
+            Ok(Status::unimplemented(format!(
+                "Method not found: {}",
+                path.trim_start_matches('/')
+            ))
+            .into_http())
+        })
+    }
+}
 
 /// Stops a fake server (`Server.shutdownNow()`); dropping it does the same.
 pub struct ShutdownHandle {
@@ -71,8 +189,11 @@ impl Drop for ShutdownHandle {
     }
 }
 
-/// Serves `routes` on `listener` on the remote runtime.
-fn serve(listener: std::net::TcpListener, routes: Routes) -> (SocketAddr, ShutdownHandle) {
+/// Serves `services` on `listener` on the remote runtime.
+fn serve(
+    listener: std::net::TcpListener,
+    services: ServiceRegistry,
+) -> (SocketAddr, ShutdownHandle) {
     let addr = listener
         .local_addr()
         .expect("fake server: no local address");
@@ -84,8 +205,7 @@ fn serve(listener: std::net::TcpListener, routes: Routes) -> (SocketAddr, Shutdo
         let listener = tokio::net::TcpListener::from_std(listener)
             .expect("fake server: cannot register the listener");
         tonic::transport::Server::builder()
-            .add_routes(routes)
-            .serve_with_incoming_shutdown(TcpIncoming::from(listener), async move {
+            .serve_with_incoming_shutdown(services, TcpIncoming::from(listener), async move {
                 let _ = stopped.await;
             })
             .await
@@ -100,12 +220,12 @@ fn serve(listener: std::net::TcpListener, routes: Routes) -> (SocketAddr, Shutdo
     )
 }
 
-/// Starts an in-process server for `routes` on `127.0.0.1:0` and returns its address and the
+/// Starts an in-process server for `services` on `127.0.0.1:0` and returns its address and the
 /// handle that stops it.
-pub fn start_server(routes: Routes) -> (SocketAddr, ShutdownHandle) {
+pub fn start_server(services: ServiceRegistry) -> (SocketAddr, ShutdownHandle) {
     let listener =
         std::net::TcpListener::bind("127.0.0.1:0").expect("fake server: cannot bind 127.0.0.1:0");
-    serve(listener, routes)
+    serve(listener, services)
 }
 
 /// A plaintext channel to the fake server at `addr` (Java: `InProcessChannelBuilder`).
@@ -117,11 +237,14 @@ pub fn channel_to(
     blaze_remote::grpc::channel::testing::channel_to(addr, interceptors, capabilities_fetcher)
 }
 
-/// A fake server with a service registry (`fakeServer` + `serviceRegistry` of the Java tests).
+/// A fake server with its service registry (`fakeServer` + `serviceRegistry` of the Java
+/// tests).
 pub struct FakeServer {
     addr: SocketAddr,
     listener: Option<std::net::TcpListener>,
-    service_registry: Option<RoutesBuilder>,
+    /// `serviceRegistry`: register the services of a test here, then call
+    /// [`FakeServer::start`].
+    pub service_registry: ServiceRegistry,
     shutdown: Option<ShutdownHandle>,
 }
 
@@ -136,7 +259,7 @@ impl FakeServer {
         FakeServer {
             addr,
             listener: Some(listener),
-            service_registry: Some(Routes::builder()),
+            service_registry: ServiceRegistry::new(),
             shutdown: None,
         }
     }
@@ -146,70 +269,14 @@ impl FakeServer {
         self.addr
     }
 
-    fn service_registry(&mut self) -> &mut RoutesBuilder {
-        self.service_registry
-            .as_mut()
-            .expect("fake server: services must be added before start()")
-    }
-
-    /// `serviceRegistry.addService(new ByteStreamImplBase() {...})`.
-    pub fn add_byte_stream<T: ByteStream>(&mut self, service: T) {
-        self.service_registry().add_service(
-            ByteStreamServer::new(service)
-                .max_decoding_message_size(usize::MAX)
-                .max_encoding_message_size(usize::MAX),
-        );
-    }
-
-    /// `serviceRegistry.addService(new ContentAddressableStorageImplBase() {...})`.
-    pub fn add_content_addressable_storage<T: ContentAddressableStorage>(&mut self, service: T) {
-        self.service_registry().add_service(
-            ContentAddressableStorageServer::new(service)
-                .max_decoding_message_size(usize::MAX)
-                .max_encoding_message_size(usize::MAX),
-        );
-    }
-
-    /// `serviceRegistry.addService(new ActionCacheImplBase() {...})`.
-    pub fn add_action_cache<T: ActionCache>(&mut self, service: T) {
-        self.service_registry().add_service(
-            ActionCacheServer::new(service)
-                .max_decoding_message_size(usize::MAX)
-                .max_encoding_message_size(usize::MAX),
-        );
-    }
-
-    /// `serviceRegistry.addService(new CapabilitiesImplBase() {...})`.
-    pub fn add_capabilities<T: Capabilities>(&mut self, service: T) {
-        self.service_registry().add_service(
-            CapabilitiesServer::new(service)
-                .max_decoding_message_size(usize::MAX)
-                .max_encoding_message_size(usize::MAX),
-        );
-    }
-
-    /// `serviceRegistry.addService(new ExecutionImplBase() {...})`.
-    pub fn add_execution<T: Execution>(&mut self, service: T) {
-        self.service_registry().add_service(
-            ExecutionServer::new(service)
-                .max_decoding_message_size(usize::MAX)
-                .max_encoding_message_size(usize::MAX),
-        );
-    }
-
-    /// Starts serving the registered services. A service that is not registered answers
+    /// Starts serving the services registered so far. A service that is not registered answers
     /// `UNIMPLEMENTED`, as a `MutableHandlerRegistry` without it does.
     pub fn start(&mut self) {
         let listener = self
             .listener
             .take()
             .expect("fake server: start() called twice");
-        let routes = self
-            .service_registry
-            .take()
-            .expect("fake server: start() called twice")
-            .routes();
-        let (_, shutdown) = serve(listener, routes);
+        let (_, shutdown) = serve(listener, self.service_registry.clone());
         self.shutdown = Some(shutdown);
     }
 
@@ -470,9 +537,7 @@ impl ActionCache for FakeActionCache {
     ) -> Result<Response<ActionResult>, Status> {
         match &self.update_action_result {
             Some(handler) => handler(request).map(Response::new),
-            None => Err(unimplemented(&format!(
-                "{ACTION_CACHE}/UpdateActionResult"
-            ))),
+            None => Err(unimplemented(&format!("{ACTION_CACHE}/UpdateActionResult"))),
         }
     }
 }

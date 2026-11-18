@@ -280,8 +280,8 @@ fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
 /// `http::uri::Authority`, so the text of the first failure is the `http` crate's.
 // Java: io/grpc/internal/GrpcUtil.java:530 GrpcUtil.checkAuthority
 fn check_authority(authority: &str) -> Result<http::uri::Authority, String> {
-    let parsed: http::uri::Authority = authority
-        .parse()
+    let parsed = authority
+        .parse::<http::uri::Authority>()
         .map_err(|e| format!("Invalid authority: {authority}: {e}"))?;
     // Verify that the user Info is not provided.
     if authority.contains('@') {
