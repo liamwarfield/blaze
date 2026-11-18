@@ -1,10 +1,15 @@
 # Status
 
-**2026-11-18: review round 1 returned STOP on all seven areas (docs/reviews/). The fix wave is
-the current priority; numbers below predate it and several are stale or overstated (see
-docs/reviews/2026-11-18-integrity-audit.md, claims table).**
+Updated 2026-11-18 (root).
 
-Updated 2026-11-17 (root).
+**Accepted evidence.** Score `corpus/scores/blaze-12ca29ee95e0.md` (clean checkout of 12ca29e):
+brotli and re2, 23 of 26 surfaces MATCH, 13,850 of 13,858 compared items; open: 4 BEP items per
+project, 1 extra re2 stderr line. Rust tests at 12ca29e (clean): 4,922 pass, 0 fail, 2,012
+ignored; 31 baseline names are absent and need a reviewed name map before the baseline moves.
+
+**Reviews** (docs/reviews/): referee/gate PASS, skyframe PASS, loading PASS, actions PASS,
+bzlmod/repos/client PASS; analysis and execution: fixed at 12ca29e, re-review running; integrity
+audit: open outside the referee.
 
 ## Done (committed, tests green)
 - Oracle pinned (Bazel 9.3.2), corpus: brotli builds (53 actions), re2 tests 21/21 on the oracle.
@@ -30,18 +35,12 @@ Updated 2026-11-17 (root).
   listed runfiles-manifest keys only). Lockfiles byte-identical (both projects).
 - Upstream integration tests: harness ready; oracle baseline 211/237 targets, 2,878 functions.
 
-## In flight (2026-11-18, review round 2)
-Review verdicts (docs/reviews/): referee/gate PASS (round 2A), skyframe PASS, bzlmod/repos/client
-PASS, actions PASS, loading STOP (one new blocker: `proto` global; being fixed), analysis STOP
-(fix wave in progress), execution STOP (six S1 fixed; rest in the analysis lead's wave; not yet
-re-reviewed), integrity audit STOP outside the referee scope.
-- Analysis fix lead: Starlark options (done: flags probe 71/71), semantics flags, cquery order
-  (brotli order item matches), then Args snapshots, incompatible targets, conflicts, genrule,
-  analysis errors, aquery order, and wiring requests from the other fixers.
-- Follow-up fixers: loading (proto, string_set, stubs), skyframe NEW-1, repos N1/N4, actions N2/N3.
-- Latest building checkpoint: 8663bba (verified from a clean checkout).
+## In flight
+- Re-reviews (Fable 5.2): analysis, execution.
+- Remote lead (Fable 5.2; Opus workers): crates/blaze_remote, disk cache → gRPC cache → remote
+  execution → build without the bytes (docs/remote.md).
+- Gate name map for the 31 absent test names.
 
 ## Next
-Final integration: wire `build`/`test`/`fetch`/`mod`/`query` into the `blaze` binary with real
-repository fetching (no oracle seams: OracleRepos, BLAZE_W4_ORACLE_PLATFORMS), then record Blaze
-with scripts/oracle on both projects and climb the scoreboard; then the upstream-tests hill; BEP (W8).
+Byte-strings migration (docs/research/07), then workerd end to end (aspects are its next
+blocker), the remaining BEP items, the upstream integration-test hill, and auditor round 2B.
