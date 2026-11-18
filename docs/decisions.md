@@ -126,3 +126,9 @@ Each entry: date, decision, why, who decided.
   (S2-5/R2-3): accepted as an order-only deviation in one tie-break; the `graph-order` probe
   scenario stays as a visible known difference. (3) Probe evidence: Blaze's probe transcripts
   must be saved next to the oracle's so counts can be re-derived (R3-2). Root.
+- 2026-11-19. Remote review (docs/reviews/2026-11-19-remote.md): STOP at ef66f55, six S1 in the
+  integration (no action file system for remote-only outputs, capabilities check, interrupts,
+  eviction). Ruling on the reviewer's question: for output symlink paths, Tree node names and
+  server-log keys Blaze stays identical to Bazel (which does not confine them) rather than
+  hardening beyond it; each site is marked and listed in docs/remote.md. Flagged to the user as
+  a decision they may want to overrule. Root.
