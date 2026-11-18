@@ -71,3 +71,6 @@ Each entry: date, decision, why, who decided.
   `$BLAZE_ORACLE_REPOS` or `~/.cache/blaze/w3/<workspace basename>.repos.json`
   (blaze_sky_top::external_repos). `LateBoundDefault` carries a resolver name; analysis
   resolves it (blaze_sky_analysis::late_bound_defaults). Analysis lead, root-approved.
+- 2026-11-18. The user asked to try workerd (cloudflare/workerd @6ee5f171) with Blaze. Added to
+  corpus/projects.json as a stress project; target `build //src/workerd/server:workerd`. It pins
+  Bazel 9.3.1; the oracle stays 9.3.2. User (request); root (target choice).

@@ -5,7 +5,12 @@
       "repo": "https://github.com/google/brotli",
       "commit": "3dce8720b74194027c7b4cf42dee5bd159786df5",
       "checkout": "~/.cache/blaze/corpus/brotli",
-      "commands": [["build", "//..."]],
+      "commands": [
+        [
+          "build",
+          "//..."
+        ]
+      ],
       "notes": "C library. Only direct dep is rules_cc, but bazel_tools pulls ~15 modules. No Bazel tests. Oracle: 53 actions, 12 s."
     },
     "re2": {
@@ -13,10 +18,31 @@
       "repo": "https://github.com/google/re2",
       "commit": "2da0056814cf180480a19f5cf811e7e1c054bf6d",
       "checkout": "~/.cache/blaze/corpus/re2",
-      "commands": [["test", "//:all", "//python:all"]],
-      "excluded": {"//app/...": "upstream package is broken on Bazel 9 (cc_binary without load); fails on the oracle too"},
+      "commands": [
+        [
+          "test",
+          "//:all",
+          "//python:all"
+        ]
+      ],
+      "excluded": {
+        "//app/...": "upstream package is broken on Bazel 9 (cc_binary without load); fails on the oracle too"
+      },
       "notes": "C++17 with abseil (select/config_setting heavy), pybind11 Python extension via rules_python (python toolchain download, transitions), googletest, google_benchmark, apple_support, .bazelrc with --enable_platform_specific_config and features. Oracle: 716 actions, 21/21 tests pass, ~6 min (dfa_test 347 s)."
+    },
+    "workerd": {
+      "tier": "stress",
+      "repo": "https://github.com/cloudflare/workerd",
+      "commit": "6ee5f1717a0a984d971672bc75dcdfda415fb842",
+      "checkout": "~/.cache/blaze/corpus/workerd",
+      "commands": [
+        [
+          "build",
+          "//src/workerd/server:workerd"
+        ]
+      ],
+      "notes": "Added at the user's request (2026-11-18). Pins Bazel 9.3.1 (.bazelversion); we run it with 9.3.2. V8, toolchains_llvm, rules_rust crate_universe, aspect_rules_js/npm, pyodide, rules_oci, 705-line .bazelrc."
     }
   },
-  "policy": "Only these two projects until the user asks for more."
+  "policy": "brotli and re2 are the core targets; workerd added at the user's request as a stress project. Add more only when the user asks."
 }
