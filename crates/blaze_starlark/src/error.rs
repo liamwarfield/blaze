@@ -9,6 +9,7 @@ use std::fmt;
 use starlark::codemap::FileSpan;
 use starlark::syntax::AstModule;
 use starlark::syntax::Dialect;
+use starlark::syntax::ast::BinOp;
 use starlark::syntax::ast::ExprP;
 use starlark::syntax::ast::StmtP;
 
@@ -124,13 +125,21 @@ fn operator_offset(text: &str) -> Option<usize> {
         None
     };
     let pos = match &e.node {
-        ExprP::Op(lhs, _, _) => {
+        ExprP::Op(lhs, op, _) => {
             // First non-blank char after the left operand.
             let from = lhs.span.end().get() as usize;
-            src[from..]
-                .char_indices()
-                .find(|(_, c)| !c.is_whitespace() && *c != '\\' && *c != ')')
-                .map(|(i, _)| from + i)
+            let first = |from: usize| {
+                src[from..]
+                    .char_indices()
+                    .find(|(_, c)| !c.is_whitespace() && *c != '\\' && *c != ')')
+                    .map(|(i, _)| from + i)
+            };
+            match (first(from), op) {
+                // Java's `not in` operator is located at its `in` token (the parser records the
+                // position of the token that completes the operator).
+                (Some(at), BinOp::NotIn) if src[at..].starts_with("not") => first(at + 3),
+                (at, _) => at,
+            }
         }
         ExprP::Dot(obj, _) => skip_to(obj.span.end().get() as usize, '.'),
         ExprP::Index(b) => skip_to(b.0.span.end().get() as usize, '['),
@@ -300,8 +309,14 @@ impl EvalError {
             callstack.push(entry("<toplevel>", e.span()));
         } else {
             let mut caller = "<toplevel>";
-            for f in frames {
-                callstack.push(entry(caller, f.location.as_ref()));
+            for (i, f) in frames.iter().enumerate() {
+                // A function called from native code (a rule implementation, a transition, a
+                // `map_each` callback) is the outermost frame and has no call site: Java's stack
+                // starts at that callee (StarlarkThread has no `<toplevel>` frame then), so there
+                // is no `File "<builtin>", in <toplevel>` entry.
+                if i > 0 || f.location.is_some() {
+                    callstack.push(entry(caller, f.location.as_ref()));
+                }
                 caller = &f.name;
             }
             let last = frames.last().unwrap();

@@ -411,15 +411,6 @@ fn main() -> ExitCode {
     let injector = Arc::new(RecordingInjector::default());
     let hooks = RemoteHooks {
         remote_output_injector: Some(injector.clone()),
-        // Java: TestRunnerAction, JavaCompileAction and JavaHeaderCompileAction return true.
-        may_modify_spawn_outputs_after_execution: Some(Arc::new(
-            |owner: &dyn ActionExecutionMetadata| {
-                matches!(
-                    owner.get_mnemonic().as_str(),
-                    "TestRunner" | "Javac" | "JavacTurbine"
-                )
-            },
-        )),
     };
     let build_request_id = opt_arg(&args, "--build-request-id")
         .unwrap_or_else(|| "00000000-0000-0000-0000-000000000001".to_string());
@@ -554,6 +545,10 @@ fn main() -> ExitCode {
             .map(blaze_cmdline::Label::parse_canonical_unchecked);
         let mnemonic = s["mnemonic"].as_str().unwrap();
         let mut owner = FakeOwner::new(mnemonic, None, label);
+        // Java: TestRunnerAction, JavaCompileAction and JavaHeaderCompileAction return true from
+        // mayModifySpawnOutputsAfterExecution.
+        owner.may_modify_spawn_outputs_after_execution =
+            matches!(mnemonic, "TestRunner" | "Javac" | "JavacTurbine");
         // The oracle's aquery reports executionPlatform @@platforms//host:host (no exec
         // properties) for every action of both projects.
         owner.platform = Some(blaze_exec::actions::PlatformInfo {

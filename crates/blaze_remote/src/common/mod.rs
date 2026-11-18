@@ -3,11 +3,9 @@
 pub mod bulk_transfer_exception;
 pub mod cache_not_found_exception;
 pub mod errors;
-#[cfg(feature = "wip")]
 pub mod lazy_file_output_stream;
 pub mod network_time;
 pub mod output_digest_mismatch_exception;
-#[cfg(feature = "wip")]
 pub mod progress_status_listener;
 pub mod remote_action_execution_context;
 pub mod remote_cache_client;

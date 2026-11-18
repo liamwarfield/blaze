@@ -271,9 +271,14 @@ impl CallCompiled {
             return type_is;
         }
 
-        if let Some(inline) = CallCompiled::try_inline(span, &fun, &args, ctx) {
-            return inline.node;
-        }
+        // BLAZE PATCH 0028: calls are not inlined. Java has no inliner: every Starlark call is a
+        // frame of the traceback (an inlined body's errors were located at the call site, with
+        // the callee missing from the stack, and the call escaped the recursion check).
+        if false { // BLAZE PATCH 0028
+            if let Some(inline) = CallCompiled::try_inline(span, &fun, &args, ctx) { // BLAZE PATCH 0028
+                return inline.node; // BLAZE PATCH 0028
+            } // BLAZE PATCH 0028
+        } // BLAZE PATCH 0028
 
         if fun.is_fn_len() {
             if let Some(arg) = args.one_pos() {

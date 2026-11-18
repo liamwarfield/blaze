@@ -73,9 +73,11 @@ pub struct BazelModuleContextValue(#[allocative(skip)] pub Arc<BazelModuleContex
 
 starlark_simple_value!(BazelModuleContextValue);
 
+/// Java prints the label (a def's repr is `<function f from //pkg:file.bzl>`, patch 0009).
+// Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:133 BazelModuleContext.toString
 impl std::fmt::Display for BazelModuleContextValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<module context of {}>", self.0.label)
+        write!(f, "{}", self.0.label)
     }
 }
 

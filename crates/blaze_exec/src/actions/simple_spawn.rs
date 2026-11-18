@@ -116,16 +116,16 @@ impl Spawn for SimpleSpawn {
     }
     // Java: com/google/devtools/build/lib/actions/SimpleSpawn.java:157 SimpleSpawn.getLocalResources
     fn get_local_resources(&self) -> Result<ResourceSet, ExecException> {
-        Ok(self
-            .local_resources_cached
-            .get_or_init(|| {
-                self.local_resources.build_local_resources(
-                    self.inputs.memoized_flatten_and_get_size(),
-                    self.get_execution_info(),
-                    &self.get_combined_exec_properties(),
-                )
-            })
-            .clone())
+        if let Some(result) = self.local_resources_cached.get() {
+            return Ok(result.clone());
+        }
+        // Not expected to be called concurrently, and an idempotent computation if it is.
+        let result = self.local_resources.build_local_resources(
+            self.inputs.memoized_flatten_and_get_size(),
+            self.get_execution_info(),
+            &self.get_combined_exec_properties(),
+        )?;
+        Ok(self.local_resources_cached.get_or_init(|| result).clone())
     }
     fn get_mnemonic(&self) -> String {
         self.owner.get_mnemonic()

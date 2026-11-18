@@ -44,6 +44,7 @@ use crate::values::typing::iter::StarlarkIter;
 
 // This does not exists in rust, split would cut the string incorrectly and
 // split_whitespace cannot take a n parameter.
+#[allow(dead_code)] // BLAZE PATCH 0005: Java has no whitespace split
 fn splitn_whitespace(s: &str, maxsplit: usize) -> Vec<String> {
     let mut v = Vec::new();
     let mut cur = String::new();
@@ -70,6 +71,7 @@ fn splitn_whitespace(s: &str, maxsplit: usize) -> Vec<String> {
     v
 }
 
+#[allow(dead_code)] // BLAZE PATCH 0005: Java has no whitespace split
 fn rsplitn_whitespace(s: &str, maxsplit: usize) -> Vec<String> {
     let mut v = Vec::new();
     let mut cur = String::new();
@@ -776,15 +778,13 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = pos)] count: Option<i32>,
         heap: Heap<'v>,
     ) -> anyhow::Result<StringValue<'v>> {
+        // BLAZE PATCH 0005: a negative count means no limit (Java StringModule.replace,
+        // StringModule.java:358).
         match count {
             Some(count) if count >= 0 => {
                 Ok(heap.alloc_str(&this.replacen(old, new, count as usize)))
             }
-            Some(count) => Err(anyhow::anyhow!(
-                "Replace final argument was negative '{}'",
-                count
-            )),
-            None => {
+            _ => { // BLAZE PATCH 0005
                 // Optimise `replace` using the Rust standard library definition,
                 // but avoiding redundant allocation in the last step
                 let x = this.as_str();
@@ -929,41 +929,29 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "one two  three".rsplit(None, 1) == ["one two", "three"]
     /// # "#);
     /// ```
+    // BLAZE PATCH 0005: Java StringModule.rsplit (StringModule.java:426): `sep` is required and
+    // may be named, `maxsplit` is an int (named or positional, negative: no limit), an empty
+    // separator fails with "Empty separator".
     #[starlark(speculative_exec_safe)]
     fn rsplit<'v>(
         this: &str,
-        #[starlark(require = pos, default = NoneOr::None)] sep: NoneOr<&str>,
-        #[starlark(require = pos, default = NoneOr::None)] maxsplit: NoneOr<i32>,
+        sep: &str, // BLAZE PATCH 0005
+        maxsplit: Option<i32>, // BLAZE PATCH 0005
         heap: Heap<'v>,
     ) -> anyhow::Result<ValueOfUnchecked<'v, UnpackList<String>>> {
-        let maxsplit = match maxsplit.into_option() {
-            None => None,
-            Some(v) => {
-                if v < 0 {
-                    None
-                } else {
-                    Some((v + 1) as usize)
-                }
-            }
-        };
-        Ok(match sep.into_option() {
-            None => match maxsplit {
-                None => heap
-                    .alloc_typed_unchecked(AllocList(this.split_whitespace()))
-                    .cast(),
-                Some(maxsplit) => heap
-                    .alloc_typed_unchecked(rsplitn_whitespace(this, maxsplit))
-                    .cast(),
-            },
-            Some(sep) => {
-                let mut v: Vec<_> = match maxsplit {
-                    None => this.rsplit(sep).collect(),
-                    Some(maxsplit) => this.rsplitn(maxsplit, sep).collect(),
-                };
-                v.reverse();
-                heap.alloc_typed_unchecked(AllocList(v)).cast()
-            }
-        })
+        if sep.is_empty() { // BLAZE PATCH 0005
+            return Err(anyhow::anyhow!("Empty separator")); // BLAZE PATCH 0005
+        } // BLAZE PATCH 0005
+        let maxsplit = match maxsplit { // BLAZE PATCH 0005
+            Some(v) if v >= 0 => Some(v as usize + 1), // BLAZE PATCH 0005
+            _ => None, // BLAZE PATCH 0005
+        }; // BLAZE PATCH 0005
+        let mut v: Vec<_> = match maxsplit { // BLAZE PATCH 0005
+            None => this.rsplit(sep).collect(), // BLAZE PATCH 0005
+            Some(maxsplit) => this.rsplitn(maxsplit, sep).collect(), // BLAZE PATCH 0005
+        }; // BLAZE PATCH 0005
+        v.reverse(); // BLAZE PATCH 0005
+        Ok(heap.alloc_typed_unchecked(AllocList(v)).cast()) // BLAZE PATCH 0005
     }
 
     /// [string.rstrip](
@@ -1028,54 +1016,48 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "banana".split("n", 1) == ["ba", "ana"]
     /// # "#);
     /// ```
+    // BLAZE PATCH 0005: Java StringModule.split (StringModule.java:387): `sep` is required and
+    // may be named, `maxsplit` is an int (named or positional, negative: no limit), an empty
+    // separator fails with "Empty separator".
     #[starlark(speculative_exec_safe)]
     fn split<'v>(
         this: &str,
-        #[starlark(require = pos, default = NoneOr::None)] sep: NoneOr<&str>,
-        #[starlark(require = pos, default = NoneOr::None)] maxsplit: NoneOr<i32>,
+        sep: &str, // BLAZE PATCH 0005
+        maxsplit: Option<i32>, // BLAZE PATCH 0005
         heap: Heap<'v>,
     ) -> anyhow::Result<ValueOfUnchecked<'v, UnpackList<String>>> {
-        let maxsplit = match maxsplit.into_option() {
-            None => None,
-            Some(v) => {
-                if v < 0 {
-                    None
-                } else {
-                    Some((v + 1) as usize)
-                }
-            }
-        };
-        Ok(match (sep.into_option(), maxsplit) {
-            (None, None) => heap
-                .alloc_typed_unchecked(AllocList(this.split_whitespace()))
-                .cast(),
-            (None, Some(maxsplit)) => heap
-                .alloc_typed_unchecked(AllocList(splitn_whitespace(this, maxsplit)))
-                .cast(),
-            (Some(sep), None) => {
-                if sep.len() == 1 {
+        if sep.is_empty() { // BLAZE PATCH 0005
+            return Err(anyhow::anyhow!("Empty separator")); // BLAZE PATCH 0005
+        } // BLAZE PATCH 0005
+        let maxsplit = match maxsplit { // BLAZE PATCH 0005
+            Some(v) if v >= 0 => Some(v as usize + 1), // BLAZE PATCH 0005
+            _ => None, // BLAZE PATCH 0005
+        }; // BLAZE PATCH 0005
+        Ok(match maxsplit { // BLAZE PATCH 0005
+            None => { // BLAZE PATCH 0005
+                if sep.len() == 1 { // BLAZE PATCH 0005
                     // If we are searching for a 1-byte string, we can provide a much faster path.
                     // Since it is one byte, given how UTF8 works, all the resultant slices must be UTF8 too.
-                    let b = sep.as_bytes()[0];
-                    let count = fast_string::count_matches_byte(this, b);
-                    let mut res = Vec::with_capacity(count + 1);
-                    res.extend(
-                        this.as_bytes()
-                            .split(|x| *x == b)
-                            .map(|x| unsafe { std::str::from_utf8_unchecked(x) }),
-                    );
-                    debug_assert_eq!(res.len(), count + 1);
-                    heap.alloc_typed_unchecked(AllocList(res)).cast()
-                } else {
-                    heap.alloc_typed_unchecked(AllocList(this.split(sep)))
-                        .cast()
-                }
-            }
-            (Some(sep), Some(maxsplit)) => heap
-                .alloc_typed_unchecked(AllocList(this.splitn(maxsplit, sep)))
-                .cast(),
-        })
-    }
+                    let b = sep.as_bytes()[0]; // BLAZE PATCH 0005
+                    let count = fast_string::count_matches_byte(this, b); // BLAZE PATCH 0005
+                    let mut res = Vec::with_capacity(count + 1); // BLAZE PATCH 0005
+                    res.extend( // BLAZE PATCH 0005
+                        this.as_bytes() // BLAZE PATCH 0005
+                            .split(|x| *x == b) // BLAZE PATCH 0005
+                            .map(|x| unsafe { std::str::from_utf8_unchecked(x) }), // BLAZE PATCH 0005
+                    ); // BLAZE PATCH 0005
+                    debug_assert_eq!(res.len(), count + 1); // BLAZE PATCH 0005
+                    heap.alloc_typed_unchecked(AllocList(res)).cast() // BLAZE PATCH 0005
+                } else { // BLAZE PATCH 0005
+                    heap.alloc_typed_unchecked(AllocList(this.split(sep))) // BLAZE PATCH 0005
+                        .cast() // BLAZE PATCH 0005
+                } // BLAZE PATCH 0005
+            } // BLAZE PATCH 0005
+            Some(maxsplit) => heap // BLAZE PATCH 0005
+                .alloc_typed_unchecked(AllocList(this.splitn(maxsplit, sep))) // BLAZE PATCH 0005
+                .cast(), // BLAZE PATCH 0005
+        }) // BLAZE PATCH 0005
+    } // BLAZE PATCH 0005
 
     /// [string.splitlines](
     /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·splitlines

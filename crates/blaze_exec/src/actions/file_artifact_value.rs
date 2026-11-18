@@ -335,10 +335,118 @@ impl FileArtifactValue {
         ))
     }
 
+    /// `createForUnresolvedSymlink(Path)`: the value of the symlink at `path`, whose digest is
+    /// the (tweaked) digest of its target string.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:394 FileArtifactValue.createForUnresolvedSymlink
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1149 UnresolvedSymlinkArtifactValue.<init>
+    pub fn create_for_unresolved_symlink(symlink: &Path) -> io::Result<FileArtifactValue> {
+        let symlink_target = symlink.read_symbolic_link()?.get_path_string().to_owned();
+
+        // PORT: `hashString(symlinkTarget, ISO_8859_1)` of the internal (Latin-1) form is the hash
+        // of the target's bytes (StringEncoding identity).
+        let mut digest = symlink
+            .get_file_system()
+            .get_digest_function()
+            .hash_reader(&mut symlink_target.as_bytes())?;
+
+        // We need to be able to tell the difference between a symlink and a file containing the
+        // same text. So we transform the digest a bit. This works because if one wants to craft
+        // a file with the same digest as a symlink, one would need to mount a preimage attack on
+        // the digest function (this would be different if we tweaked the data before applying
+        // the hash function)
+        digest[0] ^= 0xff;
+
+        Ok(FileArtifactValue::UnresolvedSymlink {
+            target: symlink_target,
+            digest,
+        })
+    }
+
     /// `createForTesting(Path)`.
     pub fn create_for_testing(path: &Path) -> io::Result<FileArtifactValue> {
         let stat = path.stat_with(Symlinks::Follow)?;
         FileArtifactValue::create_from_stat(path, &stat)
+    }
+}
+
+impl FileArtifactValue {
+    /// Returns whether the file contents have changed since the digest was computed, as far as
+    /// this value can tell (`path` is the file's current location).
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:228 FileArtifactValue.wasModifiedSinceDigest
+    pub fn was_modified_since_digest(&self, path: &Path) -> io::Result<bool> {
+        match self {
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:631 RegularFileArtifactValue.wasModifiedSinceDigest
+            FileArtifactValue::RegularFile { digest, proxy, .. } => {
+                let Some(proxy) = proxy else {
+                    return Ok(false);
+                };
+                let stat = path.stat_if_found(Symlinks::Follow)?;
+                let Some(stat) = stat.filter(|stat| stat.is_file()) else {
+                    // The file no longer exists or changed type, so it certainly has changed.
+                    return Ok(true);
+                };
+                let new_proxy = FileContentsProxy::create(&stat);
+                if *proxy == new_proxy {
+                    // If the proxy is the same, then the file certainly hasn't been modified. This is
+                    // the common case, so we check it first.
+                    return Ok(false);
+                }
+                if proxy.is_modified(&new_proxy) {
+                    // If the non-ctime information in the proxy changed, the file has certainly been
+                    // modified between the time the digest was computed and now.
+                    return Ok(true);
+                }
+                // At this point the ctime changed, so some of the file's metadata has changed since
+                // we computed the digest. Returning true here would allow us to cautiously report
+                // modification even in complex ABA scenarios (file modified, then modified back with
+                // its mtime reset). However, we would also report modification in case a hardlink to
+                // the file was created or removed, such as by the hermetic Linux sandbox or certain
+                // optimized copy actions.
+                // As a compromise, we check whether the current state of the file differs from the
+                // previous one, ignoring any inbetween modifications that may have happened.
+                //
+                // Note that this path is always taken when using the hermetic Linux sandbox, but the
+                // associated cost should amortize over the next build as the digest will be cached
+                // under the new stat.
+                //
+                // Java: DigestUtils.getDigestWithManualFallback(path, SyscallCache.NO_CACHE, stat)
+                let new_digest = path.get_digest()?;
+                Ok(digest.as_deref() != Some(&new_digest[..]))
+            }
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:513 DirectoryArtifactValue.wasModifiedSinceDigest
+            FileArtifactValue::Directory { .. } => Ok(false),
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:567 HashedDirectoryArtifactValue.wasModifiedSinceDigest
+            //
+            // TODO(ulfjack): Ideally, we'd attempt to detect intra-build modifications here. I'm
+            // consciously deferring work here as this code will most likely change again, and we're
+            // already doing better than before by detecting inter-build modifications.
+            FileArtifactValue::HashedDirectory { .. } => Ok(false),
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1213 UnresolvedSymlinkArtifactValue.wasModifiedSinceDigest
+            FileArtifactValue::UnresolvedSymlink { digest, .. } => {
+                match FileArtifactValue::create_for_unresolved_symlink(path) {
+                    Ok(new_metadata) => Ok(Some(&digest[..]) != new_metadata.get_digest()),
+                    Err(_) => Ok(true),
+                }
+            }
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:801 RemoteFileArtifactValue.wasModifiedSinceDigest
+            FileArtifactValue::RemoteFile { .. } => Ok(false),
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1017 ResolvedSymlinkArtifactValue.wasModifiedSinceDigest
+            FileArtifactValue::ResolvedSymlink { delegate, .. } => {
+                delegate.was_modified_since_digest(path)
+            }
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:706 RunfilesProxyArtifactValue.wasModifiedSinceDigest
+            FileArtifactValue::RunfilesProxy { .. } => Ok(false),
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1461 ConstantMetadataValue.wasModifiedSinceDigest
+            FileArtifactValue::ConstantMetadata => panic!(
+                "UnsupportedOperationException: ConstantMetadataValue doesn't support wasModifiedSinceDigest {path}"
+            ),
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1377 ProxyFileArtifactValue.wasModifiedSinceDigest
+            FileArtifactValue::Proxy { delegate, .. } => delegate.was_modified_since_digest(path),
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1415 SingletonMarkerValue.wasModifiedSinceDigest
+            FileArtifactValue::RunfilesTreeMarker | FileArtifactValue::MissingFileMarker => {
+                Ok(false)
+            }
+        }
     }
 }
 

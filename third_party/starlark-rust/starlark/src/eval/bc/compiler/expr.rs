@@ -250,7 +250,8 @@ impl IrSpanned<ExprCompiled> {
                             );
                         });
                     } else {
-                        let key_spans = xs.map(|(k, _v)| k.span);
+                        // BLAZE PATCH 0028: a key's error is located at its entry's `:` (Java Eval.evalDict).
+                        let key_spans = xs.map(|(k, v)| k.span.dict_colon(&v.span)); // BLAZE PATCH 0028
                         write_exprs(xs.iter().flat_map(|(k, v)| [k, v]), bc, |kvs, bc| {
                             bc.write_instr_explicit::<InstrDictNPop>(
                                 BcInstrSlowArg {

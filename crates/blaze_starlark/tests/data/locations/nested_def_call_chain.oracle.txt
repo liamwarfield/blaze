@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+	File "<WS>/nested_def_call_chain/nested_def_call_chain.bzl", line 10, column 2, in <toplevel>
+		c()
+	File "<WS>/nested_def_call_chain/nested_def_call_chain.bzl", line 8, column 14, in c
+		return [b()]
+	File "<WS>/nested_def_call_chain/nested_def_call_chain.bzl", line 5, column 13, in b
+		return a()
+	File "<WS>/nested_def_call_chain/nested_def_call_chain.bzl", line 2, column 14, in a
+		return {}["missing"]
+Error: key "missing" not found in dictionary

@@ -15,11 +15,11 @@ by adding.
 | 0002 | applied | allocation limits (repeat, concat, extend) and nesting-depth guards (repr/str/to_json) |
 | 0003 | applied | raw strings keep the backslash before a quote |
 | 0004 | applied | opt-in recursion check (`Evaluator::set_forbid_recursion`) |
-| 0005 | partly applied | string methods: `elems()` sequence (applied); named `sep`/`maxsplit`, negative `replace` count, `rsplit("")` error (queued) |
+| 0005 | applied | string methods: `elems()` sequence; `split`/`rsplit` (`sep` required and nameable, named `maxsplit`, "Empty separator"); negative `replace` count |
 | 0006 | applied | `list.pop` with a negative index |
-| 0007 | queued | set semantics (in-place augmented assignment, variadic methods, `pop` order, repr, missing methods) |
-| 0008 | queued | float repr (shortest round-trip), `%` on floats, exact int/float comparison |
-| 0009 | queued | builtin `type()` / `repr` names (`builtin_function_or_method`, `<built-in function len>`, `<function f>`) |
+| 0007 | applied | set semantics (in-place `\|=` `&=` `^=` `-=`, variadic methods, `pop` order, `set()` repr, `isdisjoint` and the `*_update` methods, Java's argument errors) |
+| 0008 | applied | float repr and `%e`/`%f`/`%g` (Java's digits), `%d`/`%o`/`%x`/`%X` on floats and Java's two's complement, exact int/float comparison, "int too large to convert to float", division-by-zero texts |
+| 0009 | applied | builtin `type()` / `repr` names (`builtin_function_or_method`, `<built-in function len>`, `<built-in method m of T value>`, `<function f[ from M]>`); builtins unhashable |
 | 0010 | queued | error texts, only where a test or the oracle needs them |
 | 0011 | applied | `%s` and `"{}".format` use `str`, not `repr` |
 | 0012 | applied | per-thread heap chunk size overflow |
@@ -30,12 +30,18 @@ by adding.
 | 0017 | applied | a function's defining module (`eval::DefModule`, `Evaluator::innermost_enclosing_def_module`) |
 | 0018 | applied | immutable dicts on a mutable heap (`dict::alloc_immutable_dict`, `dict::dict_is_immutable`) |
 | 0019 | applied | `dict.get` / `dict.setdefault` accept `default` by name |
-| 0020 | applied | Bazel 9.3.2 type syntax in `DialectTypes::ParseOnly` (tolerant, unresolved annotations; `cast`, `isinstance`, `type X = T`, `def f[T]`); var statements fail loudly |
+| 0020 | applied | Bazel 9.3.2 type syntax in `DialectTypes::ParseOnly` (tolerant, unresolved annotations; `cast`, `isinstance`, `type X = T`, `def f[T]`); var statements: 0030 |
 | 0021 | applied | `FrozenModule::names_any_visibility` (Java `Module.getGlobals`) |
 | 0022 | applied | a function's defining module's extra value (`DefModule::frozen_extra_value`) |
 | 0023 | applied | mutating a frozen list or dict fails with Java's text (part of 0010) |
 | 0024 | applied | a function's declaration position (`DefModule::declaration_span`, Java `StarlarkFunction.getLocation`) |
 | 0025 | applied | immutable sets on a mutable heap (`set::alloc_immutable_set`, `set::set_is_immutable`); mutating a frozen set fails with Java's text |
+| 0026 | applied | fallible attribute access with the evaluator (`StarlarkValue::get_attr_fallible` / `has_attr_fallible`); `getattr` default only for a missing field |
+| 0027 | applied | `x[i]` and `in` with the evaluator (`StarlarkValue::at_with_eval` / `is_in_with_eval`) |
+| 0028 | applied | Java error locations (callee frame for argument errors, `=` of index/unpack assignments, `.` of method lookups and `x.f op=`, `if` conditions, `for` collections, dict `:`); no call inlining; `int()` parse errors are value errors |
+| 0029 | applied | every unresolved name of a file (`starlark::eval::resolve_errors`) |
+| 0030 | applied | var statements `x: T` under type syntax (bound, never assigned) |
+| 0031 | applied | a cycle in repr/str prints `...` |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -45,6 +51,7 @@ resilient = aborted chunks re-run statement by statement):
 | stock 0.14.2 + harness json shim | 28/95 | 2060 | 2356/2714 | 4 (panic, 2 GiB+ allocations, stack overflow) |
 | + patches 0001–0004, 0006 | 30/95 | 2077 | 2379/2725 | 0 |
 | + blaze_starlark universe and `json` port | 30/95 | 2180 | 2443/2744 | 0 |
+| + 0005, 0007–0009, 0026–0031 (tree of 2026-11-18, before commit) | 37/95 | 2494 | 2567/2773 | 0 |
 
 Known gap left by 0002: GC tracing, freezing and equality of very deep values still recurse on
 the native stack; Blaze runs evaluation on threads with large stacks
@@ -98,7 +105,7 @@ the native stack; Blaze runs evaluation on threads with large stacks
   per `def` call, as in Java.
 - Test: `patch_0004_recursion_check`.
 
-## 0005 — string methods (part: `elems()`)
+## 0005 — string methods
 
 - Gap: Java `str.elems()` returns `StarlarkList.wrap(null, strings)` (net/starlark/java/eval/
   StringModule.java:932), an immutable list; starlark-rust returned a lazy `iterator` value, so
@@ -108,8 +115,13 @@ the native stack; Blaze runs evaluation on threads with large stacks
   (`alloc_immutable_list`, patch 0016); `iter.rs` `iterate_chars` is now unused. Elements are
   code points (decisions.md: code-point string semantics); Java yields the internal Latin-1
   chars, i.e. UTF-8 bytes, which differ only for non-ASCII strings.
-- Queued: named `sep`/`maxsplit`, negative `replace` count, `rsplit("")` error.
-- Test: `patch_0005_elems_list`.
+- Also (second part): `split` and `rsplit` follow net/starlark/java/eval/StringModule.java:387 and
+  :426: `sep` is required (Java has no whitespace split) and may be named, `maxsplit` is an int,
+  positional or named, negative meaning no limit; an empty separator fails with "Empty
+  separator" (both methods). `replace` (StringModule.java:338) treats a negative `count` as no
+  limit (was "Replace final argument was negative"). The whitespace-split helpers are unused
+  (`#[allow(dead_code)]`).
+- Tests: `patch_0005_elems_list`, `patch_0005_split_and_replace`.
 
 ## 0006 — `list.pop(negative)`
 
@@ -117,6 +129,70 @@ the native stack; Blaze runs evaluation on threads with large stacks
 - Fix: `types/list/methods.rs` `pop` resolves negative indexes against the length
   (StarlarkList.pop, EvalUtils.getSequenceIndex).
 - Test: `patch_0006_list_pop_negative_index`.
+
+## 0007 — set semantics
+
+- Gap: starlark-rust's `set` differed from Java's StarlarkSet: `s |= t`, `&=`, `^=`, `-=` rebound
+  `s` to a new set (Java Eval.inplaceBinaryOp, net/starlark/java/eval/Eval.java:498-536, mutates
+  the left set when both operands are sets); `union`, `intersection`, `difference`, `update`
+  took exactly one argument (Java: any number, StarlarkSet.java:451-723); `isdisjoint`,
+  `intersection_update`, `difference_update`, `symmetric_difference_update` were missing; `pop`
+  removed the last element (Java: the first, StarlarkSet.java:570); `repr(set())` was `set([])`
+  (Java `set()`, StarlarkSet.java:216); arguments were any iterable (Java
+  `toHashableCollection`, StarlarkSet.java:818: a set, dict keys, or a list/tuple/range, else
+  "for <method> argument got value of type 'T', want a collection of hashable elements").
+- Fix: `types/set/methods.rs`: the methods above rewritten after Java (texts: "set is empty",
+  "element X not found in set"; `difference_update` names "intersection_update argument" as
+  Java does); `hashable_collection`, `set_inplace_op` (`SetInplaceOp`). `eval/compiler/stmt.rs`
+  `bit_or_assign` and new opcodes `SubAssign`, `BitAndAssign`, `BitXorAssign`
+  (`bc/opcode.rs`, `bc/instr_impl.rs`, `bc/compiler/assign_modify.rs`) mutate a set in place;
+  other operands keep the plain operator. Mutation goes through `SetMut` (0025's frozen text).
+  `types/set/value.rs` Display: `set()` when empty.
+- Not done: error texts of operators (`unsupported binary operation`), `unhashable type`,
+  argument-count texts (queued 0010); Java's shallow `freeze()` (harness).
+- Test: `patch_0007_set_semantics`.
+
+## 0008 — floats
+
+- Gap: `str(float)` used a `%g`-like format with 6 digits (`1.23e-45` where Bazel prints
+  `1.2299999999999998e-45`; `1e16` where Bazel prints `10000000000000000.0`); `%d`/`%o`/`%x`/
+  `%X` rejected floats; int/float comparison went through f64 (inexact for big ints); a big int
+  combined with a float became `inf` (Java: "int too large to convert to float"); division texts
+  were starlark-rust's.
+- Fix (Java at net/starlark/java/eval/StarlarkFloat.java:120 `format`, Printer.java:353-400
+  `formatWithList`, StarlarkInt.java:376 `toFiniteDouble`, :756 `compareIntAndDouble`):
+  - `types/float/float.rs`: Java's digits are the shortest round-trip digits (Formatter /
+    FormattedFloatingDecimal), rounded half-up for a precision: `java_e` (`%e`), `java_f` (`%f`),
+    `java_g` (`%.17g` with StarlarkFloat's trailing-zero clean-up; used by `str`, `repr`, `%g`).
+    Division texts: `//` "integer division by zero", `%` "floating-point modulo by zero".
+  - `types/string/interpolation.rs`: `%d %o %x %X` take an int or a finite float (truncated;
+    "got nan, want a finite number"); an int32/int64 prints in two's complement for `%o %x %X`
+    (java.util.Formatter on Integer/Long), larger ints as sign and magnitude; other types fail
+    "got T for '%c' format, want int or float". `%e %f %g` convert ints with toFiniteDouble.
+  - `types/num/value.rs`: `NumRef` equality/ordering compare an int and a float exactly
+    (`cmp_int_float`); `as_finite_float`, `check_float_operands` (used by float and big-int
+    `+ - * / // %`, and `float()`); `/` by zero "floating-point division by zero".
+  - `types/int/int_or_big.rs`: int `//` and `%` by zero "integer division by zero" / "integer
+    modulo by zero"; `int(inf)` "can't convert float +inf to int" (MethodLibrary.java:634).
+- Not done: the texts of `float("x")` ("invalid float literal: x") and of a string beyond the
+  double range ("floating-point number too large"), left to 0010.
+- Test: `patch_0008_floats`.
+
+## 0009 — builtin type and repr names
+
+- Gap: `type(len)` and `type([].clear)` were "function" (Java `builtin_function_or_method`,
+  net/starlark/java/eval/BuiltinFunction.java:38); `str(len)` was `len` (Java
+  `<built-in function len>`), `str([].clear)` `clear` (Java `<built-in method clear of list
+  value>`, BuiltinFunction.java:192); a def printed as `file.f` (Java `<function f>`, plus
+  ` from <client data>` when the module has client data, StarlarkFunction.java:222); builtins
+  were hashable (Java: not immutable, so "unhashable type").
+- Fix: `values/types/function.rs` `BUILTIN_FUNCTION_TYPE` for `NativeFunction` and
+  `BoundMethodGen`, their repr, and `name_for_call_stack` (the bare name, so tracebacks still say
+  `Error in len`); `eval/compiler/def.rs` Display of `DefGen`: `<function NAME>` and, for a def
+  whose defining module is frozen with a non-None extra value, ` from ` + that value's `str`.
+- Users: everything that tested `get_type() == "function"` for natives (blaze_starlark json and
+  structs updated; see the consumer list in docs/research/05-starlark-rust.md section 9).
+- Test: `patch_0009_function_type_and_repr`.
 
 ## 0011 — `%s` and `"{}".format` use `str`, not `repr`
 
@@ -279,10 +355,8 @@ the native stack; Blaze runs evaluation on threads with large stacks
     level is a `pass` (Parser.java:1235, Resolver.java:623, Eval.java:322), inside a `def` the
     error "type alias statement not at top level" (Resolver.java:906); `def f[T, U](..)` type
     parameters are parsed and dropped (Parser.java:1255).
-- Not ported: a var statement (`x: T` without a value) binds `x` in the enclosing block with no
-  value (Resolver.java:562); the AST has no node for that, so the parser returns an error whose
-  message starts with `grammar_util::BLAZE_TYPE_SYNTAX_NOT_PORTED`, which BZL_COMPILE turns into
-  `unported!`. `...` stays accepted outside annotations (upstream behaviour for every
+- A var statement (`x: T` without a value) was a "not ported" parse error here; patch 0030
+  ports it. `...` stays accepted outside annotations (upstream behaviour for every
   non-`Disable` mode; Java: only inside type expressions). Doc comments (`#:`) are comments.
 - Users: blaze_starlark `FileKind::dialect_with_options` / `eval::compile_with_options`
   (BZL_COMPILE's `shouldUseTypeSyntax`).
@@ -369,3 +443,104 @@ the native stack; Blaze runs evaluation on threads with large stacks
 - Users: blaze_starlark `set::set_is_immutable` (`structs::is_immutable`), blaze_packages
   `types/type_.rs` (`string_set` values lifted by `Type::copy_and_lift_starlark_value`).
 - Test: `patch_0025_immutable_set`.
+
+## 0026 — fallible attribute access with the evaluator
+
+- Gap: `StarlarkValue::get_attr` cannot fail or see the thread, but Bazel's
+  `Structure.getValue(StarlarkSemantics, String)` throws (`ctx.fragments.cpp` when undeclared:
+  "err has to declare 'cpp' as a required fragment ...", RuleContext.java:512) and reads the
+  semantics (`--experimental_platforms_api` fields, `enableOnlyWithFlag`). Java
+  `Starlark.getattr` (net/starlark/java/eval/Starlark.java:978) returns the default of
+  `getattr(x, name, default)` only when the field is missing and propagates the error;
+  `Starlark.hasattr` (Starlark.java:967) propagates it too. Blaze's `getattr(.., default)`
+  returned the default (oracle: scripts/w4/scenarios/ctx-errors steps 2-3 fail).
+- Fix: `values/traits.rs` `get_attr_fallible(&self, Hashed<&str>, &mut Evaluator) ->
+  Result<Option<Value>>` (default: `get_attr_hashed`) and `has_attr_fallible(&self, &str, &mut
+  Evaluator) -> Result<bool>` (default: `has_attr`); vtable entries (`layout/vtable.rs`);
+  `Value::get_attr_fallible` / `has_attr_fallible` (methods first, as `get_attr`).
+  `eval/compiler/expr.rs` `get_attr_hashed_raw` / `get_attr_hashed_bind` (used by `x.f`,
+  `x.f(...)` and `x.f op= y`) call it; `compile_time_getattr` folds only methods now (a field
+  may fail or depend on the thread). `stdlib/funcs/other.rs` `getattr` and `hasattr` call it
+  and are no longer `speculative_exec_safe`.
+- Rust callers of `Value::get_attr` (no evaluator) still get `get_attr`; a type that overrides
+  the fallible form keeps `get_attr` consistent for the fields it can compute without a thread.
+- Test: `patch_0026_fallible_attributes`.
+
+## 0027 — `x[i]` and `in` with the evaluator
+
+- Gap: Java `StarlarkIndexable.Threaded` (`getIndex` / `containsKey` with the StarlarkThread)
+  lets `ctx.toolchains["//x:type"]` resolve the label against the innermost .bzl on the stack
+  (StarlarkToolchainContext.java:106); starlark-rust's `at` / `is_in` get only a heap.
+- Fix: `values/traits.rs` `at_with_eval` (default `at`) and `is_in_with_eval` (default `is_in`),
+  vtable entries, `Value::at_with_eval` / `is_in_with_eval`; `bc/instr_impl.rs` `InstrArrayIndex`
+  (also `x[i] op= y`) and `InstrIn` (now its own instruction, `in` and `not in`) call them.
+  Compile-time folding only touches builtin values, which do not override them.
+- Test: `patch_0027_index_and_in_with_evaluator`.
+
+## 0028 — Java error locations
+
+- Gap: several errors were located where Java does not locate them (checked against the oracle:
+  crates/blaze_starlark/tests/data/locations/*.oracle.txt, recorded by
+  `scripts/starlark-locations record`; 17 of 51 cases differed): an argument or recursion error
+  of a `def` was reported as a builtin error at the call (Java: inside the callee's frame, at its
+  declaration: StarlarkThread.push sets the frame location to StarlarkFunction.getLocation);
+  `x[i] = v` and unpacking at the target's start (Java Eval.execAssignment: the `=`); a failed
+  method lookup at the call's `(` (Java Eval.evalCall → evalDot: the `.`); `x.f op= y` at the
+  operator (Java: the `.` for getattr/setField); an `if` condition at the `if`
+  (the optimizer gave the condition the statement's span); `for` over a non-iterable at the
+  `for` (Java Eval.evalAsIterable: the collection's start); a dict literal's bad key at the key
+  (Java Eval.evalDict: the entry's `:`). The optimizer inlined calls to small frozen functions,
+  so their errors were located at the call site with the callee missing from the traceback.
+  `int("x")` failed with the lexer's `Parser` kind, which reads as a syntax error of the file.
+- Fix: `eval/compiler/def.rs` `at_declaration` (argument binding and the recursion check, moved
+  after binding as in StarlarkFunction.java:565-573); `compiler/stmt.rs`
+  `IrSpanned<AssignCompiledValue>::located_at` (assignment and `for` targets), `if_stmt` keeps
+  the condition's span, `AssignModifyLhs::Dot` carries the `object.field` span
+  (`bc/compiler/assign_modify.rs`); `bc/compiler/stmt.rs` `write_for` uses an empty span at the
+  collection's start (`FrameSpan::begin_point`); `bc/compiler/call.rs` `write_call_method`: the
+  instruction's span is `object.method`, the frame keeps the call span, and
+  `bc/instr_impl.rs` `call_method_common` / `call_maybe_known_method_common` locate the call's own
+  errors at the call; `bc/compiler/expr.rs` dict keys at `FrameSpan::dict_colon`;
+  `compiler/call.rs` does not inline; `types/int/int_or_big.rs` `from_str_radix` maps the lexer
+  error to a value error. blaze_starlark maps spans to Java's token (`Location::bazel_position`).
+- Remaining (pinned in `traceback_locations_test.rs` KNOWN_DEVIATIONS): calling a non-callable
+  value, `f(*x)` with a non-iterable `x`, `f(**x)` with a non-dict `x`.
+- Tests: `patch_0028_error_locations`; blaze_starlark `traceback_locations_test` (51 oracle
+  cases), `traceback_test::argument_error_is_in_the_callee_frame`,
+  `native_call_has_no_builtin_toplevel_frame`.
+
+## 0029 — every unresolved name
+
+- Gap: Java's Resolver reports every undefined name of a file (net/starlark/java/syntax/
+  Resolver.java:941 `use`, errors collected and thrown together by Program.compileFile);
+  `Evaluator::eval_module` stops at the first (`ModuleScopes::check_module_err`).
+- Fix: `eval.rs` `starlark::eval::resolve_errors(&AstModule, &Globals) -> Vec<Error>`: the
+  resolver run alone (a scratch `MutableNames` and `FrozenHeap`), every error in source order.
+  `eval_module` is unchanged.
+- Users: blaze_starlark `eval::resolve` (a syntax error list, Java's compile step).
+- Test: `patch_0029_resolve_errors`.
+
+## 0030 — var statements
+
+- Gap: under type syntax Java parses `x: T` without a value as a VarStatement
+  (net/starlark/java/syntax/Parser.java:1582): it binds `x` in the enclosing block
+  (Resolver.java:562 createBindings) and executing it does nothing (Eval.java:324). 0020 made it
+  a "not ported" parse error.
+- Fix: `starlark_syntax/src/syntax/parser_rd.rs` parses it as `if 0: x = 0` whose condition, body
+  and assignment carry the identifier's span (`AstStmtP::blaze_var_statement` in `ast.rs`
+  recognizes that shape; no source text can produce it), so `x` is bound in the same block and
+  never assigned (reads fail "referenced before assignment" until assigned). `validate.rs`
+  allows it at top level. A non-identifier target fails with Java's "type annotations must have
+  a single identifier on the left-hand side" (Parser.java:1586).
+  `grammar_util::BLAZE_TYPE_SYNTAX_NOT_PORTED` is no longer produced (kept: consumers name it).
+- Users: blaze_starlark `syntax/resolver.rs` binds it (top-level rebinding, Java's "type
+  annotation on 'x' may only appear at its first declaration").
+- Test: `patch_0030_var_statement`.
+
+## 0031 — cycle repr
+
+- Gap: a list or dict met again while printing printed `[...]` / `{...}` (other types
+  `<T...>`); Java prints `...` for every value (net/starlark/java/eval/Printer.java:191).
+- Fix: `types/list/value.rs`, `types/dict/value.rs` and the default
+  `StarlarkValue::collect_repr_cycle` (`values/traits.rs`).
+- Test: `patch_0031_cycle_repr`.

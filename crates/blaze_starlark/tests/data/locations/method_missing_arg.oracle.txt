@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/method_missing_arg/method_missing_arg.bzl", line 1, column 14, in <toplevel>
+		x = [].append()
+Error in append: append() missing 1 required positional argument: item

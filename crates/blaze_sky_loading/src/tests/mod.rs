@@ -21,6 +21,7 @@ mod package_lookup_function_test;
 mod repo_file_function_test;
 mod review_2026_11_18_test;
 mod review_s2_builtins_test;
+mod resolve_names_test;
 mod review_s2_natives_test;
 mod rule_class_loading_test;
 mod rule_test;

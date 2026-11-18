@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/global_before_assignment/global_before_assignment.bzl", line 4, column 2, in <toplevel>
+		f()
+	File "<WS>/global_before_assignment/global_before_assignment.bzl", line 2, column 12, in f
+		return y
+Error: global variable 'y' is referenced before assignment.

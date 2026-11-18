@@ -152,7 +152,7 @@ pub use error_info::ErrorInfo;
 pub use evaluation_result::EvaluationResult;
 pub use evaluator::{
     ERROR_TRANSIENCE_KEY, ErrorTransienceKey, ErrorTransienceValue, EvaluationContext, Evaluator,
-    EvaluatorBuilder,
+    EvaluatorBuilder, IN_FLIGHT_INTERRUPT_POLL,
 };
 pub use grouped_deps::GroupedDeps;
 pub use walkable_graph::WalkableGraph;

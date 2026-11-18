@@ -404,6 +404,20 @@ impl Path {
             .get_last_modified_time(&self.path_fragment, follow_symlinks.to_boolean())
     }
 
+    /// Flushes the contents of the file to stable storage (`fsync`).
+    ///
+    /// PORT: Java syncs the `FileDescriptor` of an open `FileOutputStream` /
+    /// `FileInputStream` (`LazyFileOutputStream.syncIfPossible`, `DiskCacheClient.syncFile`);
+    /// the streams of this file system are opaque, and `fsync` acts on the file, so the file is
+    /// synced through a descriptor of its own. Every file system here is the host file system.
+    pub fn fsync(&self) -> io::Result<()> {
+        std::fs::File::open(self.path_fragment.get_path_string())
+            .map_err(|e| {
+                crate::unix_file_system::posix_error(self.path_fragment.get_path_string(), e)
+            })?
+            .sync_all()
+    }
+
     /// Sets the modification time (ms since epoch, or [`NOW_SENTINEL_TIME`]).
     // Java: com/google/devtools/build/lib/vfs/Path.java:733 Path.setLastModifiedTime
     pub fn set_last_modified_time(&self, new_time: i64) -> io::Result<()> {

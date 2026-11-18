@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/binop_multiline/binop_multiline.bzl", line 1, column 8, in <toplevel>
+		x = (1 +
+Error: unsupported binary operation: int + string

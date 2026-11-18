@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/for_not_iterable/for_not_iterable.bzl", line 5, column 2, in <toplevel>
+		f()
+	File "<WS>/for_not_iterable/for_not_iterable.bzl", line 2, column 14, in f
+		for x in 1:
+Error: type 'int' is not iterable

@@ -796,3 +796,22 @@ impl Display for Stmt {
         self.fmt_with_tab(f, "".to_owned())
     }
 }
+
+/// BLAZE PATCH 0030: a Bazel var statement `x: T` is parsed as `if 0: x = 0` whose condition,
+/// body and assignment all have the identifier's span (no source text can produce that).
+impl<P: AstPayload> AstStmtP<P> { // BLAZE PATCH 0030
+    /// The declared identifier if this statement is a var statement (`x: T`).
+    pub fn blaze_var_statement(&self) -> Option<&AstAssignIdentP<P>> { // BLAZE PATCH 0030
+        let StmtP::If(cond, body) = &self.node else { // BLAZE PATCH 0030
+            return None; // BLAZE PATCH 0030
+        }; // BLAZE PATCH 0030
+        let StmtP::Assign(AssignP { lhs, .. }) = &body.node else { // BLAZE PATCH 0030
+            return None; // BLAZE PATCH 0030
+        }; // BLAZE PATCH 0030
+        let AssignTargetP::Identifier(id) = &lhs.node else { // BLAZE PATCH 0030
+            return None; // BLAZE PATCH 0030
+        }; // BLAZE PATCH 0030
+        let zero = matches!(&cond.node, ExprP::Literal(AstLiteral::Int(i)) if i.node == TokenInt::I32(0)); // BLAZE PATCH 0030
+        (zero && cond.span == body.span && body.span == id.span).then_some(id) // BLAZE PATCH 0030
+    } // BLAZE PATCH 0030
+} // BLAZE PATCH 0030

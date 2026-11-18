@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+	File "<WS>/starlark_call_arity/starlark_call_arity.bzl", line 7, column 2, in <toplevel>
+		f()
+	File "<WS>/starlark_call_arity/starlark_call_arity.bzl", line 5, column 13, in f
+		return g(1, 2)
+	File "<WS>/starlark_call_arity/starlark_call_arity.bzl", line 1, column 5, in g
+		def g(a):
+Error: g() accepts no more than 1 positional argument but got 2

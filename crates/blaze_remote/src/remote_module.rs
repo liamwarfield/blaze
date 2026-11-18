@@ -20,7 +20,7 @@ use std::sync::Arc;
 use blaze_events::ui::Clock;
 use blaze_events::{Event, EventHandler, ExtendedEventHandler};
 use blaze_exec::exec::abstract_spawn_strategy::AbstractSpawnStrategy;
-use blaze_exec::exec::action_execution_context::SpawnCache;
+use blaze_exec::exec::action_execution_context::{RemoteOutputTree, SpawnCache};
 use blaze_exec::exec::spawn_strategy_registry::AbruptExitException;
 use blaze_optdefs::command::execution_options::ExecutionOptions;
 use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
@@ -52,6 +52,7 @@ use crate::hooks::RemoteHooks;
 use crate::logging::logging_interceptor::LoggingInterceptor;
 use crate::logging::{FileLogEntrySink, LogEntrySink};
 use crate::reapi::{Digest, digest_function};
+use crate::remote_action_input_fetcher::RemoteActionInputFetcher;
 use crate::remote_execution_cache::RemoteExecutionCache;
 use crate::remote_execution_service::RemoteExecutionService;
 use crate::remote_grpc_service_config;
@@ -127,6 +128,15 @@ pub struct RemoteModule {
     temp_path_generator: Option<Arc<TempPathGenerator>>,
     rpc_log_file: Option<Arc<dyn LogEntrySink>>,
     cache_available: bool,
+    /// The remote output tree of the build (see [`RemoteModule::get_remote_output_tree`]).
+    remote_output_tree: Option<Arc<RemoteOutputTree>>,
+    /// `actionInputFetcher` (see [`RemoteModule::create_action_input_fetcher`]).
+    action_input_fetcher: Option<Arc<RemoteActionInputFetcher>>,
+    /// `env.getExecRoot()`, for `createActionInputFetcher`.
+    exec_root: Option<Path>,
+    /// `env.getBuildRequestId()` / `env.getCommandId()`, for `createActionInputFetcher`.
+    build_request_id: String,
+    command_id: String,
 }
 
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1370 RemoteModule.createOptionsExitException
@@ -202,6 +212,11 @@ impl RemoteModule {
             temp_path_generator: None,
             rpc_log_file: None,
             cache_available: false,
+            remote_output_tree: None,
+            action_input_fetcher: None,
+            exec_root: Some(env.exec_root.clone()),
+            build_request_id: env.build_request_id.clone(),
+            command_id: env.command_id.clone(),
         };
         // PORT: `knownMissingCasDigests` survives across commands in the Bazel server (cleared
         // by `clean`); one command per process here.
@@ -222,6 +237,90 @@ impl RemoteModule {
     /// `remoteOutputChecker`.
     pub fn get_remote_output_checker(&self) -> Option<&Arc<RemoteOutputChecker>> {
         self.remote_output_checker.as_ref()
+    }
+
+    /// The remote output tree into which `RemoteExecutionService.downloadOutputs` injects the
+    /// outputs it does not download, when `setup` enabled a cache and the integrator gave no
+    /// `RemoteHooks.remote_output_injector` of its own. Register it as an action context so the
+    /// output metadata stores consult it (`blaze_exec::exec::action_execution_context
+    /// ::RemoteOutputTree`).
+    ///
+    /// PORT: stands for the remote output trees of the `RemoteActionFileSystem`s that
+    /// `RemoteOutputService` creates per action.
+    pub fn get_remote_output_tree(&self) -> Option<&Arc<RemoteOutputTree>> {
+        self.remote_output_tree.as_ref()
+    }
+
+    /// `createActionInputFetcher(combinedCache)`: the `RemoteActionInputFetcher` of the command
+    /// (`null` without a combined cache), kept as `actionInputFetcher`. `reporter` is
+    /// `env.getReporter()`; `output_permissions` is `OutputPermissions.WRITABLE` with
+    /// `--experimental_writable_outputs`, else `READONLY`; `output_directory_helper` is
+    /// `env.getOutputDirectoryHelper()` (null without `BuildRequestOptions`).
+    ///
+    /// PORT: Java calls it at the end of `setup` (`beforeCommand`); the reporter of
+    /// `blaze_runtime` is not part of [`RemoteModuleEnvironment`], so the integrator calls it
+    /// right after [`RemoteModule::before_command`].
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:331 RemoteModule.createActionInputFetcher
+    pub fn create_action_input_fetcher(
+        &mut self,
+        reporter: Arc<blaze_events::Reporter>,
+        output_permissions: blaze_exec::actions::cache::OutputPermissions,
+        output_directory_helper: Option<
+            Arc<blaze_exec::actions::action_output_directory_helper::ActionOutputDirectoryHelper>,
+        >,
+    ) -> Option<Arc<RemoteActionInputFetcher>> {
+        let combined_cache = self
+            .action_context_provider
+            .as_ref()
+            .and_then(|p| p.get_combined_cache().cloned())?;
+        let fetcher = Arc::new(RemoteActionInputFetcher::new(
+            reporter,
+            &self.build_request_id,
+            &self.command_id,
+            combined_cache,
+            self.exec_root.clone().expect("env.getExecRoot()"),
+            self.temp_path_generator
+                .clone()
+                .expect("NullPointerException: tempPathGenerator"),
+            self.remote_output_checker
+                .clone()
+                .expect("NullPointerException: remoteOutputChecker"),
+            output_directory_helper,
+            output_permissions,
+        ));
+        self.action_input_fetcher = Some(fetcher.clone());
+        Some(fetcher)
+    }
+
+    /// `actionInputFetcher`.
+    pub fn get_action_input_fetcher(&self) -> Option<&Arc<RemoteActionInputFetcher>> {
+        self.action_input_fetcher.as_ref()
+    }
+
+    /// The salt of every action key (`ExecutorBuilder.setActionExecutionSalt`): whether a remote
+    /// cache is enabled and the default exec properties.
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1312 RemoteModule.computeActionExecutionSalt
+    pub fn compute_action_execution_salt(remote_options: Option<&RemoteOptions>) -> String {
+        let mut fp = blaze_util::fingerprint::Fingerprint::new();
+
+        // When building without a remote cache following a build with one, cached actions may
+        // reference remotely stored files which cannot be downloaded. For simplicity we also
+        // invalidate in the reverse situation (building with a remote cache after building
+        // without one) even though cached local actions don't need it.
+        fp.add_boolean(remote_options.is_some_and(|o| o.is_remote_cache_enabled()));
+
+        // The default exec properties may affect how a spawn is remotely executed without
+        // affecting the action key. In practice, only spawns with no execution platform or whose
+        // execution platform has no exec properties are affected, but we don't have access to
+        // this information at the time we're computing the action key, so we unconditionally
+        // include the defaults. This shouldn't be too bad, as we don't expect the defaults to
+        // change very often.
+        let defaults = remote_options
+            .map(|o| o.get_remote_default_exec_properties())
+            .unwrap_or_default();
+        fp.add_string_map(defaults.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+
+        fp.hex_digest_and_reset()
     }
 
     /// Sets up all requested remote functionality (caching, execution, downloader, ...) and
@@ -345,6 +444,17 @@ impl RemoteModule {
             Arc::new(Mutex::new(HashSet::new()));
         let retry_scheduler: Arc<dyn RetryScheduler> = Arc::new(TokioRetryScheduler);
         let remote_options_arc_for = |o: &RemoteOptions| Arc::new(o.clone());
+
+        // PORT: the remote output tree (see `get_remote_output_tree`) is created for a build
+        // that enables a cache, unless the integrator provides its own injector.
+        let mut hooks = hooks;
+        let any_cache =
+            enable_disk_cache || enable_http_cache || enable_grpc_cache || enable_remote_execution;
+        if any_cache && hooks.remote_output_injector.is_none() {
+            let tree = Arc::new(RemoteOutputTree::new());
+            hooks.remote_output_injector = Some(tree.clone());
+            self.remote_output_tree = Some(tree);
+        }
 
         let provider_env = ProviderEnvironment {
             reporter: reporter.clone(),
@@ -762,6 +872,7 @@ impl RemoteModule {
             }
         }
         self.remote_output_checker = None;
+        self.action_input_fetcher = None;
         match failure {
             Some(e) => Err(e),
             None => Ok(()),

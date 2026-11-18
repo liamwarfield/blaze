@@ -226,22 +226,29 @@ impl<'v> StarlarkValue<'v> for StarlarkBigInt {
     }
 
     fn add(&self, rhs: Value<'v>, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
-        Some(Ok(heap.alloc(
-            NumRef::Int(StarlarkIntRef::Big(self)) + rhs.unpack_num()?,
-        )))
+        let rhs = rhs.unpack_num()?; // BLAZE PATCH 0008
+        if let Err(e) = NumRef::Int(StarlarkIntRef::Big(self)).check_float_operands(rhs) { // BLAZE PATCH 0008
+            return Some(Err(e.into())); // BLAZE PATCH 0008
+        } // BLAZE PATCH 0008
+        Some(Ok(heap.alloc(NumRef::Int(StarlarkIntRef::Big(self)) + rhs))) // BLAZE PATCH 0008
     }
 
     fn sub(&self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
         match other.unpack_num() {
-            Some(other) => Ok(heap.alloc(NumRef::Int(StarlarkIntRef::Big(self)) - other)),
+            Some(other) => { // BLAZE PATCH 0008
+                NumRef::Int(StarlarkIntRef::Big(self)).check_float_operands(other)?; // BLAZE PATCH 0008
+                Ok(heap.alloc(NumRef::Int(StarlarkIntRef::Big(self)) - other)) // BLAZE PATCH 0008
+            } // BLAZE PATCH 0008
             None => ValueError::unsupported_with(self, "-", other),
         }
     }
 
     fn mul(&self, other: Value<'v>, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
-        Some(Ok(heap.alloc(
-            NumRef::Int(StarlarkIntRef::Big(self)) * other.unpack_num()?,
-        )))
+        let other = other.unpack_num()?; // BLAZE PATCH 0008
+        if let Err(e) = NumRef::Int(StarlarkIntRef::Big(self)).check_float_operands(other) { // BLAZE PATCH 0008
+            return Some(Err(e.into())); // BLAZE PATCH 0008
+        } // BLAZE PATCH 0008
+        Some(Ok(heap.alloc(NumRef::Int(StarlarkIntRef::Big(self)) * other))) // BLAZE PATCH 0008
     }
 
     fn div(&self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {

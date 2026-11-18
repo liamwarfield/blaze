@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Incremental (second) builds with a disk cache: oracle vs Blaze. See `second-build help`."""
+
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+WORK = os.path.expanduser("~/.cache/blaze/work/remote")
+
+USAGE = """\
+usage: scripts/remote/second-build seed <tag> <project>
+       scripts/remote/second-build run <tag> <project> <oracle|BLAZE-BINARY> <label> <mode>
+                                   [-- <extra options>]
+       scripts/remote/second-build help
+
+`seed` runs the oracle once in a fresh output base with --disk_cache=<WORK>/<tag>-dc-seed (a disk
+cache written by real Bazel; the seed run's name is <tag>-seed).
+
+`run` copies the seed disk cache to <WORK>/<tag>-<label>-<mode>-dc and runs, through
+scripts/remote/oracle-run with run name <tag>-<label>-<mode> (fresh output base for step 1):
+
+  run1  build in a fresh output base (warm disk cache)
+  run2  the same build again, no clean
+  run3  after appending a comment line to one source file (brotli: c/common/constants.c,
+        re2: re2/re2.cc), build again
+
+with --disk_cache=<that copy> --remote_download_outputs=<mode> (toplevel, minimal or all) and
+the extra options. For each step it prints the `N processes:` line, the action cache line of
+the oracle's / Blaze's `INFO:` output when present, and writes <step>/bazel-bin.sha256 (sha256
+and path of every regular file and symlink target under bazel-bin, sorted) for comparing the
+bazel-bin trees of two runs (`diff`).
+
+WORK is ~/.cache/blaze/work/remote. Do not use the run names of other jobs.
+"""
+
+SOURCES = {"brotli": "c/common/constants.c", "re2": "re2/re2.cc"}
+
+
+def oracle_run(*args):
+    cmd = [os.path.join(HERE, "oracle-run")] + list(args)
+    out = subprocess.run(cmd, capture_output=True, text=True)
+    step = None
+    for line in out.stdout.splitlines():
+        if line.startswith("step: "):
+            step = line[len("step: "):]
+    return step, out.returncode
+
+
+def tree_hashes(ws, step):
+    root = os.path.join(ws, "bazel-bin")
+    lines = []
+    if os.path.exists(root):
+        real = os.path.realpath(root)
+        for dirpath, dirnames, filenames in os.walk(real):
+            dirnames.sort()
+            for f in sorted(filenames):
+                p = os.path.join(dirpath, f)
+                rel = os.path.relpath(p, real)
+                if os.path.islink(p):
+                    lines.append("link %s -> %s" % (rel, os.readlink(p)))
+                    continue
+                h = hashlib.sha256()
+                try:
+                    with open(p, "rb") as fh:
+                        for chunk in iter(lambda: fh.read(1 << 20), b""):
+                            h.update(chunk)
+                    lines.append("%s %s" % (h.hexdigest(), rel))
+                except OSError as e:
+                    lines.append("error %s %s" % (rel, e))
+    with open(os.path.join(step, "bazel-bin.sha256"), "w") as fh:
+        fh.write("".join(l + "\n" for l in sorted(lines)))
+    return len(lines)
+
+
+def summary(step):
+    text = open(os.path.join(step, "stderr"), errors="replace").read()
+    procs = [l for l in text.splitlines() if re.match(r"INFO: \d+ process", l)]
+    return procs[-1] if procs else "(no processes line)"
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    extra = []
+    if "--" in args:
+        i = args.index("--")
+        args, extra = args[:i], args[i + 1:]
+    if args[0] == "seed" and len(args) == 3:
+        tag, project = args[1], args[2]
+        dc = os.path.join(WORK, tag + "-dc-seed")
+        if os.path.exists(dc):
+            shutil.rmtree(dc)
+        step, code = oracle_run(tag + "-seed", project, "--fresh", "--", "--disk_cache=" + dc)
+        print("seed: %s exit %d: %s" % (step, code, summary(step)))
+        return code
+    if args[0] == "run" and len(args) == 6:
+        tag, project, binary, label, mode = args[1:]
+        seed = os.path.join(WORK, tag + "-dc-seed")
+        if not os.path.isdir(seed):
+            print("no seed disk cache: " + seed, file=sys.stderr)
+            return 2
+        name = "%s-%s-%s" % (tag, label, mode)
+        dc = os.path.join(WORK, name + "-dc")
+        if os.path.exists(dc):
+            shutil.rmtree(dc)
+        shutil.copytree(seed, dc, symlinks=True)
+        base = []
+        if binary != "oracle":
+            base = ["--binary", binary]
+        opts = ["--", "--disk_cache=" + dc, "--remote_download_outputs=" + mode] + extra
+        ws = os.path.join(WORK, name, "ws")
+        for n in (1, 2, 3):
+            if n == 3:
+                src = os.path.join(ws, SOURCES[project])
+                os.chmod(src, 0o644)
+                with open(src, "a") as fh:
+                    fh.write("\n// second-build probe\n")
+            fresh = ["--fresh"] if n == 1 else []
+            step, code = oracle_run(name, project, *(fresh + base + opts))
+            count = tree_hashes(ws, step)
+            print("%s run%d exit %d: %s [bazel-bin %d files]" % (name, n, code, summary(step), count))
+        return 0
+    print(USAGE, end="", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -68,6 +68,33 @@ use crate::values::Value;
 // Register CodeMap for use with StarlarkAny
 register_starlark_any!(CodeMap);
 
+/// BLAZE PATCH 0029: every name of `ast` that is neither bound in the file nor in `globals`, as
+/// the errors `Evaluator::eval_module` would raise (it stops at the first), in source order.
+/// Java's Resolver reports every undefined name of a file (net/starlark/java/syntax/
+/// Resolver.java:941 `use`, errors collected by `errorf` and thrown together by
+/// `Program.compileFile`). Other resolver errors are included too.
+pub fn resolve_errors(ast: &AstModule, globals: &Globals) -> Vec<crate::Error> { // BLAZE PATCH 0029
+    let names = crate::environment::names::MutableNames::new(); // BLAZE PATCH 0029
+    let heap = crate::values::FrozenHeap::new(); // BLAZE PATCH 0029
+    let (codemap, statement, dialect, _) = ast.clone().into_parts(); // BLAZE PATCH 0029
+    let codemap = heap.alloc_any_value(codemap); // BLAZE PATCH 0029
+    let globals = heap.alloc_any_value(globals.dupe()); // BLAZE PATCH 0029
+    let (errors, _) = ModuleScopes::check_module( // BLAZE PATCH 0029
+        &names, // BLAZE PATCH 0029
+        &heap, // BLAZE PATCH 0029
+        &HashMap::new(), // BLAZE PATCH 0029
+        statement, // BLAZE PATCH 0029
+        ScopeResolverGlobals { // BLAZE PATCH 0029
+            globals: Some(globals), // BLAZE PATCH 0029
+        }, // BLAZE PATCH 0029
+        codemap, // BLAZE PATCH 0029
+        &dialect, // BLAZE PATCH 0029
+    ); // BLAZE PATCH 0029
+    let mut errors: Vec<crate::Error> = errors.into_iter().map(|e| e.into_error()).collect(); // BLAZE PATCH 0029
+    errors.sort_by_key(|e| e.span().map(|s| s.span.begin())); // BLAZE PATCH 0029
+    errors // BLAZE PATCH 0029
+} // BLAZE PATCH 0029
+
 impl<'v, 'a, 'e> Evaluator<'v, 'a, 'e> {
     /// Evaluate an [`AstModule`] with this [`Evaluator`], modifying the in-scope
     /// [`Module`](crate::environment::Module) as appropriate.

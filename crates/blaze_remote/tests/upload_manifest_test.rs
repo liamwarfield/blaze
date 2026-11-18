@@ -1,4 +1,3 @@
-#![cfg(feature = "wip")]
 // Options and protos are filled in field by field, as the Java tests set them.
 #![allow(clippy::field_reassign_with_default)]
 // The deprecated ActionResult symlink fields are still written by Java and asserted by the tests.
@@ -102,15 +101,12 @@ impl Fixture {
     // Java: com/google/devtools/build/lib/remote/UploadManifestTest.java:737 UploadManifestTest.createSpecialFile
     fn create_special_file(&self, exec_path: &str) -> Path {
         let special = self.exec_root.get_relative_str(exec_path);
-        let c_path = std::ffi::CString::new(special.get_path_string()).unwrap();
-        // SAFETY: `c_path` is a valid NUL-terminated string that outlives the call.
-        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) };
-        assert_eq!(
-            rc,
-            0,
-            "mkfifo({special}): {}",
-            std::io::Error::last_os_error()
-        );
+        // mkfifo(path, 0644), without `unsafe`: the coreutils tool.
+        let status = std::process::Command::new("mkfifo")
+            .args(["-m", "644", special.get_path_string()])
+            .status()
+            .unwrap();
+        assert!(status.success(), "mkfifo({special}): {status}");
         special
     }
 

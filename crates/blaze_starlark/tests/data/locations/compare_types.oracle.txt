@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/compare_types/compare_types.bzl", line 1, column 7, in <toplevel>
+		x = 1 < "a"
+Error: unsupported comparison: int <=> string

@@ -610,8 +610,18 @@ fn deserialize_optimized_on_freeze_stmt(
 }
 
 impl<V> Display for DefGen<V> {
+    // BLAZE PATCH 0009: Java StarlarkFunction.repr (StarlarkFunction.java:222):
+    // `<function NAME>`, plus ` from CLIENT_DATA` when the defining module has client data (the
+    // frozen module's extra value, its `str`).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.parameters.signature())
+        write!(f, "<function {}", self.def_info.name.as_str())?; // BLAZE PATCH 0009
+        let module = self.module.load_relaxed(); // BLAZE PATCH 0009
+        if let Some(extra) = module.and_then(|m| m.as_ref().extra_value) { // BLAZE PATCH 0009
+            if !extra.is_none() { // BLAZE PATCH 0009
+                write!(f, " from {}", extra.to_value().to_str())?; // BLAZE PATCH 0009
+            } // BLAZE PATCH 0009
+        } // BLAZE PATCH 0009
+        write!(f, ">") // BLAZE PATCH 0009
     }
 }
 
@@ -916,16 +926,9 @@ where
         Ok(())
     }
 
-    #[inline(always)]
-    fn invoke_impl<'a, A: ArgumentsImpl<'v, 'a>>(
-        &self,
-        me: Value<'v>,
-        args: &A,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> crate::Result<Value<'v>>
-    where
-        'v: 'a,
-    {
+    /// BLAZE PATCH 0004: Bazel forbids recursion (moved after argument binding by 0028, as in
+    /// Java StarlarkFunction.java:565-573).
+    fn check_recursion(&self, eval: &mut Evaluator<'v, '_, '_>) -> crate::Result<()> { // BLAZE PATCH 0028
         // BLAZE PATCH 0004: Bazel forbids recursion. Two function values are the same function
         // when they share the compiled definition (closures of one lambda included).
         if eval.forbid_recursion {
@@ -945,6 +948,27 @@ where
                 )));
             }
         }
+        Ok(()) // BLAZE PATCH 0028
+    } // BLAZE PATCH 0028
+
+    /// BLAZE PATCH 0028: `e` located at the function's declaration (unless already located).
+    #[cold] // BLAZE PATCH 0028
+    fn at_declaration(&self, mut e: crate::Error) -> crate::Error { // BLAZE PATCH 0028
+        let span = &self.def_info.declaration_span; // BLAZE PATCH 0028
+        e.set_span(span.span(), span.file().as_ref()); // BLAZE PATCH 0028
+        e // BLAZE PATCH 0028
+    } // BLAZE PATCH 0028
+
+    #[inline(always)]
+    fn invoke_impl<'a, A: ArgumentsImpl<'v, 'a>>(
+        &self,
+        me: Value<'v>,
+        args: &A,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> crate::Result<Value<'v>>
+    where
+        'v: 'a,
+    {
         let bc = self.bc();
         alloca_frame(
             eval,
@@ -957,7 +981,14 @@ where
                 //   We use `slots` only in `collect_inline`,
                 //   which does not have access to `eval` thus cannot access the frame indirectly.
                 let slots = unsafe { eval.current_frame.locals_mut() };
-                self.parameters.collect_inline(args, slots, eval.heap())?;
+                // BLAZE PATCH 0028: argument and recursion errors are located at the callee's
+                // declaration (Java: StarlarkThread.push sets the new frame's location to
+                // StarlarkFunction.getLocation; ArgumentProcessor and the recursion check,
+                // StarlarkFunction.java:572, throw inside that frame).
+                self.parameters // BLAZE PATCH 0028
+                    .collect_inline(args, slots, eval.heap()) // BLAZE PATCH 0028
+                    .map_err(|e| self.at_declaration(e))?; // BLAZE PATCH 0028
+                self.check_recursion(eval).map_err(|e| self.at_declaration(e))?; // BLAZE PATCH 0028
                 self.invoke_raw(me, eval)
             },
         )

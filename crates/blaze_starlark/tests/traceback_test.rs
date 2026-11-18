@@ -178,3 +178,93 @@ fn syntax_errors_render_as_locations() {
     );
     assert_eq!(e.message, "'x' redeclared at top level (+ 1 more)");
 }
+
+/// A function called from native code (Java `Starlark.call` of a rule implementation) is the
+/// outermost frame: no `File "<builtin>", in <toplevel>` entry (oracle: scripts/w4/scenarios/
+/// ctx-errors, every "in err rule" traceback starts at `_err_impl`).
+#[test]
+fn native_call_has_no_builtin_toplevel_frame() {
+    let m =
+        exec("def impl(x):\n    return helper(x)\n\ndef helper(x):\n    return x + 'a'\n").unwrap();
+    let f = m.get("impl").unwrap();
+    let e = blaze_starlark::eval::run_on_evaluation_thread(move || {
+        let events = std::sync::Arc::new(blaze_starlark::thread::CollectingEvents::default());
+        let ctx = common::context(
+            blaze_starlark::Phase::Analysis,
+            StarlarkSemantics::default(),
+            events,
+        );
+        blaze_starlark::eval::call_frozen(
+            &f,
+            &ctx,
+            &Default::default(),
+            |m| (vec![m.heap().alloc(1)], vec![]),
+            |_, _, _| Ok(()),
+        )
+        .unwrap_err()
+    });
+    let s = e.message_with_stack();
+    let (head, last) = s.rsplit_once('\n').unwrap();
+    assert_eq!(
+        head,
+        "Traceback (most recent call last):\n\
+\tFile \"test.bzl\", line 2, column 18, in impl\n\
+\t\treturn helper(x)\n\
+\tFile \"test.bzl\", line 5, column 14, in helper\n\
+\t\treturn x + 'a'"
+    );
+    assert!(last.starts_with("Error: "), "{last}");
+}
+
+/// Java: an argument error of a Starlark function is reported in the callee's frame, located at
+/// its declaration (oracle: tests/data/locations/starlark_call_arity.oracle.txt).
+#[test]
+fn argument_error_is_in_the_callee_frame() {
+    let (head, last) = stack("def g(a):\n    return a\n\ng(1, 2)\n");
+    assert_eq!(
+        head,
+        "Traceback (most recent call last):\n\
+\tFile \"test.bzl\", line 4, column 2, in <toplevel>\n\
+\t\tg(1, 2)\n\
+\tFile \"test.bzl\", line 1, column 5, in g\n\
+\t\tdef g(a):"
+    );
+    assert!(last.starts_with("Error: "), "{last}");
+}
+
+/// Java's Resolver reports every undefined name of a file, in source order, each at its
+/// identifier (net/starlark/java/syntax/Resolver.java:941).
+#[test]
+fn resolve_reports_every_undefined_name() {
+    let semantics = StarlarkSemantics::default();
+    let globals = blaze_starlark::env::NativeRegistry::with_blaze_starlark_builtins()
+        .build(blaze_starlark::FileKind::Bzl, &semantics);
+    let src = "x = y\ndef f():\n    return zz + w\nq = len(x)\n";
+    let compiled =
+        blaze_starlark::eval::compile(blaze_starlark::FileKind::Bzl, "test.bzl", src.to_owned())
+            .unwrap();
+    let e = blaze_starlark::eval::resolve(&compiled, &globals).unwrap_err();
+    let EvalErrorKind::Syntax(errors) = &e.kind else {
+        panic!("{e:?}");
+    };
+    let got: Vec<String> = errors.iter().map(|e| format!("{}", e.location)).collect();
+    assert_eq!(got, ["test.bzl:1:5", "test.bzl:3:12", "test.bzl:3:17"]);
+    assert!(
+        errors[0].message.starts_with("Variable `y` not found"),
+        "{}",
+        errors[0].message
+    );
+    assert!(
+        errors[2].message.starts_with("Variable `w` not found"),
+        "{}",
+        errors[2].message
+    );
+    // A file whose names all resolve.
+    let ok = blaze_starlark::eval::compile(
+        blaze_starlark::FileKind::Bzl,
+        "test.bzl",
+        "x = len([])\n".to_owned(),
+    )
+    .unwrap();
+    assert!(blaze_starlark::eval::resolve(&ok, &globals).is_ok());
+}

@@ -54,6 +54,8 @@ use crate::eval::bc::stack_ptr::BcSlotInRange;
 use crate::eval::bc::stack_ptr::BcSlotInRangeFrom;
 use crate::eval::bc::stack_ptr::BcSlotOut;
 use crate::eval::compiler::add_span_to_expr_error;
+use crate::values::types::set::methods::SetInplaceOp; // BLAZE PATCH 0007
+use crate::values::types::set::methods::set_inplace_op; // BLAZE PATCH 0007
 use crate::eval::compiler::def::Def;
 use crate::eval::compiler::def::FrozenDef;
 use crate::eval::compiler::def::ParameterCompiled;
@@ -334,7 +336,7 @@ impl InstrNoFlowImpl for InstrArrayIndexImpl {
     ) -> crate::Result<()> {
         let array = frame.get_bc_slot(*array);
         let index = frame.get_bc_slot(*index);
-        let value = array.at(index, eval.heap())?;
+        let value = array.at_with_eval(index, eval)?; // BLAZE PATCH 0027
         frame.set_bc_slot(*target, value);
         Ok(())
     }
@@ -385,7 +387,7 @@ impl InstrNoFlowImpl for InstrObjectFieldImpl {
         (object, field, target): &(BcSlotIn, Symbol, BcSlotOut),
     ) -> crate::Result<()> {
         let object = frame.get_bc_slot(*object);
-        let value = get_attr_hashed_bind(object, field, eval.heap())?;
+        let value = get_attr_hashed_bind(object, field, eval)?; // BLAZE PATCH 0026
         frame.set_bc_slot(*target, value);
         Ok(())
     }
@@ -663,10 +665,39 @@ pub(crate) type InstrFloorDivide = InstrBinOp<InstrFloorDivideImpl>;
 pub(crate) type InstrBitAnd = InstrBinOp<InstrBitAndImpl>;
 pub(crate) type InstrBitOr = InstrBinOp<InstrBitOrImpl>;
 pub(crate) type InstrBitOrAssign = InstrBinOp<InstrBitOrAssignImpl>;
+pub(crate) struct InstrSubAssignImpl; // BLAZE PATCH 0007
+pub(crate) struct InstrBitAndAssignImpl; // BLAZE PATCH 0007
+pub(crate) struct InstrBitXorAssignImpl; // BLAZE PATCH 0007
+pub(crate) type InstrSubAssign = InstrBinOp<InstrSubAssignImpl>; // BLAZE PATCH 0007
+pub(crate) type InstrBitAndAssign = InstrBinOp<InstrBitAndAssignImpl>; // BLAZE PATCH 0007
+pub(crate) type InstrBitXorAssign = InstrBinOp<InstrBitXorAssignImpl>; // BLAZE PATCH 0007
+
+// BLAZE PATCH 0007: `set -= set`, `set &= set`, `set ^= set` mutate the left set (Java
+// Eval.inplaceBinaryOp); other operands are the plain binary operators.
+impl InstrBinOpImpl for InstrSubAssignImpl { // BLAZE PATCH 0007
+    #[inline(always)] // BLAZE PATCH 0007
+    fn eval<'v>(v0: Value<'v>, v1: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> { // BLAZE PATCH 0007
+        set_inplace_op(v0, v1, SetInplaceOp::Sub).unwrap_or_else(|| v0.sub(v1, heap)) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
+} // BLAZE PATCH 0007
+
+impl InstrBinOpImpl for InstrBitAndAssignImpl { // BLAZE PATCH 0007
+    #[inline(always)] // BLAZE PATCH 0007
+    fn eval<'v>(v0: Value<'v>, v1: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> { // BLAZE PATCH 0007
+        set_inplace_op(v0, v1, SetInplaceOp::And).unwrap_or_else(|| v0.bit_and(v1, heap)) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
+} // BLAZE PATCH 0007
+
+impl InstrBinOpImpl for InstrBitXorAssignImpl { // BLAZE PATCH 0007
+    #[inline(always)] // BLAZE PATCH 0007
+    fn eval<'v>(v0: Value<'v>, v1: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> { // BLAZE PATCH 0007
+        set_inplace_op(v0, v1, SetInplaceOp::Xor).unwrap_or_else(|| v0.bit_xor(v1, heap)) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
+} // BLAZE PATCH 0007
 pub(crate) type InstrBitXor = InstrBinOp<InstrBitXorImpl>;
 pub(crate) type InstrLeftShift = InstrBinOp<InstrLeftShiftImpl>;
 pub(crate) type InstrRightShift = InstrBinOp<InstrRightShiftImpl>;
-pub(crate) type InstrIn = InstrBinOp<InstrInImpl>;
+pub(crate) type InstrIn = InstrNoFlow<InstrInImpl>; // BLAZE PATCH 0027
 
 impl InstrBinOpImpl for InstrAddImpl {
     #[inline(always)]
@@ -759,11 +790,22 @@ impl InstrBinOpImpl for InstrRightShiftImpl {
     }
 }
 
-impl InstrBinOpImpl for InstrInImpl {
-    #[inline(always)]
-    fn eval<'v>(v0: Value<'v>, v1: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
-        Ok(Value::new_bool(v1.is_in(v0)?))
-    }
+impl InstrNoFlowImpl for InstrInImpl { // BLAZE PATCH 0027
+    type Arg = (BcSlotIn, BcSlotIn, BcSlotOut); // BLAZE PATCH 0027
+
+    #[inline(always)] // BLAZE PATCH 0027
+    fn run_with_args<'v>( // BLAZE PATCH 0027
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
+        frame: BcFramePtr<'v>, // BLAZE PATCH 0027
+        _ip: BcPtrAddr, // BLAZE PATCH 0027
+        (v0, v1, target): &(BcSlotIn, BcSlotIn, BcSlotOut), // BLAZE PATCH 0027
+    ) -> crate::Result<()> { // BLAZE PATCH 0027
+        let v0 = frame.get_bc_slot(*v0); // BLAZE PATCH 0027
+        let v1 = frame.get_bc_slot(*v1); // BLAZE PATCH 0027
+        let v = Value::new_bool(v1.is_in_with_eval(v0, eval)?); // BLAZE PATCH 0027
+        frame.set_bc_slot(*target, v); // BLAZE PATCH 0027
+        Ok(()) // BLAZE PATCH 0027
+    } // BLAZE PATCH 0027
 }
 
 pub(crate) struct InstrPercentSOneImpl;
@@ -1633,8 +1675,10 @@ fn call_method_common<'v>(
 ) -> crate::Result<()> {
     eval.report_forward_progress()?;
     // TODO: wrong span: should be span of `object.method`, not of the whole expression
-    let method = get_attr_hashed_raw(this, symbol, eval.heap())?;
-    let r = method.invoke(this, span, arguments, eval)?;
+    let method = get_attr_hashed_raw(this, symbol, eval)?; // BLAZE PATCH 0026
+    let r = method // BLAZE PATCH 0028
+        .invoke(this, span, arguments, eval) // BLAZE PATCH 0028
+        .map_err(|e| add_span_to_expr_error(e, *span, eval).into_error())?; // BLAZE PATCH 0028
     frame.set_bc_slot(target, r);
     Ok(())
 }
@@ -1656,9 +1700,11 @@ fn call_maybe_known_method_common<'v>(
         // If pointers are equal, getattr would return the same method
         // we already have.
         if ptr::eq(methods, known_method.type_methods) {
-            let r = eval.with_call_stack(known_method.to_value(), Some(span), |eval| {
-                known_method.invoke_method(this, arguments, eval)
-            })?;
+            let r = eval // BLAZE PATCH 0028
+                .with_call_stack(known_method.to_value(), Some(span), |eval| { // BLAZE PATCH 0028
+                    known_method.invoke_method(this, arguments, eval) // BLAZE PATCH 0028
+                }) // BLAZE PATCH 0028
+                .map_err(|e| add_span_to_expr_error(e, *span, eval).into_error())?; // BLAZE PATCH 0028
             frame.set_bc_slot(target, r);
             return Ok(());
         }

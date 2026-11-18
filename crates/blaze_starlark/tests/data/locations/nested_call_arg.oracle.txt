@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/nested_call_arg/nested_call_arg.bzl", line 1, column 12, in <toplevel>
+		x = str(len(1))
+Error in len: in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'

@@ -332,9 +332,12 @@ impl BlazeServer {
         // command's ExecRequest, once ported) drops them, as Bazel's client has by then.
 
         // PORT: in-process, the server runs the request here and writes to this process's
-        // stdout/stderr itself; cancellation, broken-pipe handling, ExecRequest (`run`) and the
-        // abrupt-exit paths of the response loop belong to the gRPC client (W8).
-        server.run_command(startup, request)
+        // stdout/stderr itself; broken-pipe handling, ExecRequest (`run`) and the abrupt-exit
+        // paths of the response loop belong to the gRPC client (W8). The cancel thread runs while
+        // the command does (Ctrl-C: `signal_handler`).
+        crate::signal_handler::with_cancel_thread(server.canceller(), || {
+            server.run_command(startup, request)
+        })
     }
 }
 
@@ -1200,14 +1203,19 @@ fn run_client_server_mode(
     let client_startup_duration =
         DurationMillis::new(logging_info.start_time_ms, get_milliseconds_monotonic());
 
-    // PORT: SignalHandler::Install is skipped: Ctrl-C cancellation goes over gRPC (W8).
+    crate::signal_handler::install(
+        &startup_options.product_name,
+        &startup_options.output_base,
+        blaze_server.process_info().server_pid_,
+        &blaze_server.process_info().jvm_log_file_,
+    );
     let startup = ServerStartup {
         server_exe_args: server_exe_args.to_vec(),
         first_startup_arg,
     };
     let _ = std::io::Write::flush(&mut std::io::stdout());
     // SignalHandler::PropagateSignalOrExit(exit_code): the caller exits with the code.
-    blaze_server.communicate(
+    let exit_code = blaze_server.communicate(
         &option_processor.get_command(),
         &option_processor.get_command_arguments(),
         &startup_options.invocation_policy,
@@ -1218,7 +1226,8 @@ fn run_client_server_mode(
         command_wait_duration,
         server,
         &startup,
-    )
+    );
+    crate::signal_handler::propagate_signal_or_exit(exit_code)
 }
 
 // Java: src/main/cpp/blaze.cc:1265 ParseOptionsOrDie

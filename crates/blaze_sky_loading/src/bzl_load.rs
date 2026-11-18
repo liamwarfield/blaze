@@ -1076,6 +1076,43 @@ impl BzlLoadFunction {
         let pkg = label.get_package_identifier();
         let semantics = &builtins.starlark_semantics;
 
+        // Java resolves the file's names in BzlCompileFunction (`Program.compileFile`), before
+        // any load is requested: every undefined name, and every use of a predeclared symbol
+        // whose GuardedValue is not accessible (with the guard's message), is a syntax error
+        // replayed on the listener, and the load fails with the compile error.
+        // PORT: Blaze's BzlCompileFunction parses only (the predeclared `Globals` are built
+        // here); the names, and so the errors, are the same ("the names are all we need to do
+        // symbol resolution", BzlCompileFunction.java:157).
+        // Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:234 BzlCompileFunction.computeInline
+        {
+            let globals =
+                self.get_and_digest_predeclared_environment(key, builtins, &mut Fingerprint::new());
+            let compile_env = self.compile_environment(key);
+            let errors = starlark_util::resolve_errors(prog, &globals, |name| {
+                blaze_packages::builtins::env::guarded_symbol_error(
+                    compile_env,
+                    name,
+                    semantics,
+                    Some(label),
+                )
+            });
+            if !errors.is_empty() {
+                starlark_util::replay_syntax_errors_on(env.listener(), &errors);
+                return Ok(Err(BzlLoadFailedException::new(
+                    format!(
+                        "compilation of module '{}'{} failed",
+                        label.to_path_fragment(),
+                        if is_builtins_repo(label.get_repository()) {
+                            " (internal)"
+                        } else {
+                            ""
+                        }
+                    ),
+                    StarlarkLoadingCode::CompileError,
+                )));
+            }
+        }
+
         let is_scl_flag_enabled = semantics.experimental_enable_scl_dialect;
         if key.is_scl_dialect() && !is_scl_flag_enabled {
             return Ok(Err(BzlLoadFailedException::new(
@@ -1206,7 +1243,6 @@ impl BzlLoadFunction {
             crate::bzl_compile::clone_compiled_file(prog),
             key,
             &globals,
-            self.compile_environment(key),
             &load_map,
             context,
             bazel_module_context.clone(),
@@ -1410,7 +1446,6 @@ impl BzlLoadFunction {
         prog: CompiledFile,
         key: &BzlLoadKey,
         globals: &Globals,
-        compile_env: &blaze_packages::builtins::env::StarlarkEnv,
         loaded_modules: &LoadMap,
         context: BzlInitThreadContext,
         module_context: Arc<BazelModuleContext>,
@@ -1434,7 +1469,6 @@ impl BzlLoadFunction {
         BazelModuleContext::register(module_context.clone());
 
         let events = Arc::new(CollectingEvents::default());
-        let compile_semantics = starlark_semantics.clone();
         let thread_context = ThreadContext::new(Phase::BzlLoad, starlark_semantics, events.clone())
             .with_file_label(label.clone())
             .with_label_repo_context(LabelRepoContextImpl::of(
@@ -1465,40 +1499,9 @@ impl BzlLoadFunction {
             Ok(m) => Some(m),
             Err(ex) => {
                 if let EvalErrorKind::Syntax(errors) = &ex.kind {
-                    // starlark-rust reports name resolution errors when executing.
+                    // Static errors are found before execution (above, by resolve); a syntax
+                    // error from execution is replayed as such.
                     starlark_util::replay_syntax_errors_on(skyframe_event_handler, errors);
-                } else if let Some(error) = starlark_util::guarded_symbol_syntax_error(
-                    &ex,
-                    compile_env,
-                    &compile_semantics,
-                    Some(label),
-                )
-                .or_else(|| starlark_util::undefined_name_syntax_error(&ex))
-                {
-                    // A use of an undefined name, or of a predeclared symbol that is disabled by
-                    // a flag, restricted to other repositories or removed (then with the guard's
-                    // message). Java finds it while resolving names in
-                    // BzlCompileFunction (Module.resolve throws Undefined with the guard's
-                    // message): the syntax error is replayed on the listener and the load fails
-                    // with the compile error, not with executionFailed.
-                    // PORT: starlark-rust resolves names when the module starts executing and
-                    // stops at the first unresolved name; Java reports every one.
-                    // Java: net/starlark/java/eval/Module.java:237 Module.resolve
-                    // Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:236 BzlCompileFunction.computeInline
-                    // Java: com/google/devtools/build/lib/skyframe/BzlLoadFunction.java:782 BzlLoadFunction.computeInternalWithCompiledBzl
-                    starlark_util::replay_syntax_errors_on(skyframe_event_handler, &[error]);
-                    return Err(BzlLoadFailedException::new(
-                        format!(
-                            "compilation of module '{}'{} failed",
-                            label.to_path_fragment(),
-                            if is_builtins_repo(label.get_repository()) {
-                                " (internal)"
-                            } else {
-                                ""
-                            }
-                        ),
-                        StarlarkLoadingCode::CompileError,
-                    ));
                 } else {
                     skyframe_event_handler.handle(&Event::error(ex.message_with_stack()));
                 }

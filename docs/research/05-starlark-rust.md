@@ -494,7 +494,7 @@ message text stays starlark-rust's unless patched. Events print it as Bazel does
   (Java) unless `INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS` is set. starlark-rust is
   code-point-based for `len` and indexing. ASCII-only builds agree. The root needs to decide
   whether non-ASCII fidelity matters.
-- **Operator columns in tracebacks** need an AST pass (not done).
+- **Operator columns in tracebacks**: done (blaze_starlark `Location::bazel_position` and patch 0028; section 9).
 - **Fork decision** (section 4.3) for the root to rule on in decisions.md.
 - **Upgrades.** `tests/dialect.rs::deviation_*` pins 9 current deviations. When a patch or an
   upgrade fixes one, its test fails, and the test and this document get updated.
@@ -519,3 +519,63 @@ message text stays starlark-rust's unless patched. Events print it as Bazel does
 - Crate graph: blaze_starlark depends on blaze_cmdline (Label) and blaze_collect (Order,
   NestedSet), i.e. it sits above them, not below as in section 5.2 of 06-bazel-architecture-map.md.
   Neither needs Starlark itself.
+
+## 9. Patch queue status
+
+State of the working tree on 2026-11-18 (on top of commit `1a68622`, not committed yet). Every
+entry is in `third_party/starlark-rust/PATCHES.md` (with the Java file:line it follows), every
+changed line carries `BLAZE PATCH NNNN`, `patches/blaze.diff` is regenerated, and each patch has
+a `patch_NNNN_*` test in `crates/starlark_conformance/tests/patches.rs`.
+
+**Applied:** 0001–0009, 0011–0031. **Queued:** 0010 (error texts; only the parts in 0008, 0023
+and 0025 are applied). Added in this round:
+
+| # | what |
+|---|---|
+| 0005 (rest) | `split`/`rsplit`: `sep` required and nameable, named `maxsplit`, "Empty separator"; negative `replace` count |
+| 0007 | set semantics: in-place `\|=` `&=` `^=` `-=`, variadic methods, `isdisjoint` and the `*_update` methods, `pop` of the first element, `set()` repr, Java's argument errors |
+| 0008 | float `str`/`repr`/`%e`/`%f`/`%g` with Java's digits, `%d %o %x %X` of floats (and Java's two's complement), exact int/float comparison, "int too large to convert to float", division texts |
+| 0009 | `builtin_function_or_method`, `<built-in function len>`, `<built-in method m of T value>`, `<function f[ from M]>`; builtins unhashable |
+| 0026 | `StarlarkValue::get_attr_fallible` / `has_attr_fallible` (errors and the evaluator); `getattr` default only for a missing field |
+| 0027 | `StarlarkValue::at_with_eval` / `is_in_with_eval` |
+| 0028 | Java's error locations (oracle-checked, 48 of 51 cases), no call inlining, `int()` errors not syntax errors |
+| 0029 | `starlark::eval::resolve_errors`: every unresolved name |
+| 0030 | var statements `x: T` |
+| 0031 | cycles print `...` |
+
+blaze_starlark (not patches): `EvalError::from_starlark` drops the `File "<builtin>", in
+<toplevel>` entry of a function called from native code; the `not in` operator is located at its
+`in`; `eval::resolve` (all unresolved names as one syntax error list); the var statement in the
+top-level binding checks; `structs::is_immutable` and `json` follow the new type names.
+Location oracle: `scripts/starlark-locations record` writes
+`crates/blaze_starlark/tests/data/locations/*.oracle.txt`, compared by
+`traceback_locations_test`.
+
+**Conformance** (Bazel ScriptTest, `starlark_conformance run`; strict / resilient as in section
+3):
+
+| tree | chunks | strict asserts | resilient asserts | categories (missing-builtin / error-text / semantic / harness) |
+|---|---|---|---|---|
+| before this round (HEAD `1a68622`) | 31/95 | 2186/2371 | 2444/2745 | 27 / 240 / 98 / 19 |
+| after (this tree) | 37/95 | 2494/2658 | 2567/2773 | 7 / 207 / 18 / 19 |
+
+The ratchet in `tests/script_test.rs` is now 37 chunks and 2494 assertions.
+
+**Remaining known deviations:**
+
+- Error texts (queued 0010): 207 ScriptTest assertions, e.g. "Operation `+` not supported for
+  types ..." (Java "unsupported binary operation: int + string"), "Index `3` is out of bound"
+  (Java "index out of range (index is 3, but sequence has 3 elements)"), "Value of type `list`
+  is not hashable" ("unhashable type: 'list'"), parameter type and arity texts, `int()` parse
+  texts, undefined names ("Variable `x` not found"; Java "name 'x' is not defined").
+- Semantic (18): `int()` base inference (`int("016", 0)`, `int()` without argument), range
+  lengths beyond 32 bits ("Integer overflow"), `sorted` of dicts/None (starlark-rust compares
+  them; Java identical-element short cut), UTF-16 ordering of strings, json's surrogate handling.
+- Harness (19): Java's shallow `freeze()` has no starlark-rust equivalent.
+- Locations: calling a non-callable value, `f(*x)` / `f(**x)` with a bad `x` (pinned in
+  `traceback_locations_test::KNOWN_DEVIATIONS`).
+- A def's repr names ` from <module>` only once its module is frozen (Java prints the client data
+  while the module still executes too).
+- `eval_module` itself still stops at the first unresolved name; callers that want Java's list
+  call `blaze_starlark::eval::resolve` first.
+- GC tracing, freezing and equality of very deep values recurse on the native stack (0002).

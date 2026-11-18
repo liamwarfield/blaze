@@ -100,7 +100,7 @@ impl RemoteSpawnCache {
         total_time: Instant,
         this_execution: &mut Option<Arc<LocalExecution>>,
         previous_execution: &mut Option<Arc<LocalExecution>>,
-    ) -> Result<Option<Box<dyn CacheHandle>>, SpawnCacheError> {
+    ) -> Result<Option<Box<dyn CacheHandle + 'static>>, SpawnCacheError> {
         let in_flight_executions = self.in_flight_executions.clone();
         let action_key = action.get_action_key().clone();
         *this_execution = LocalExecution::create_if_deduplicatable(
@@ -298,11 +298,11 @@ fn deduplicated_spawn_result(
 
 impl SpawnCache for RemoteSpawnCache {
     // Java: com/google/devtools/build/lib/remote/RemoteSpawnCache.java:84 RemoteSpawnCache.lookup
-    fn lookup(
+    fn lookup<'a>(
         &self,
-        spawn: &dyn Spawn,
-        context: &dyn SpawnExecutionContext,
-    ) -> Result<Box<dyn CacheHandle>, SpawnCacheError> {
+        spawn: &'a dyn Spawn,
+        context: &'a dyn SpawnExecutionContext,
+    ) -> Result<Box<dyn CacheHandle + 'a>, SpawnCacheError> {
         let should_accept_cached_result = self
             .remote_execution_service
             .get_read_cache_policy(spawn)
@@ -357,16 +357,6 @@ impl SpawnCache for RemoteSpawnCache {
         }
 
         if should_upload_local_results {
-            // SAFETY: the handle keeps the `RemoteAction`, which borrows `spawn` and `context`
-            // (Java's anonymous `CacheHandle` captures `action`). blaze_exec's
-            // `SpawnCache::lookup` returns a `'static` handle, so the borrow is extended to
-            // `'static` here. This is sound only because the handle is used and dropped while
-            // `spawn` and `context` are alive: `AbstractSpawnStrategy.exec` (the only caller)
-            // calls `store` and `close` on it and drops it inside the scope of both. Missing
-            // hook: `SpawnCache::lookup<'a>(&self, spawn: &'a dyn Spawn, context: &'a dyn
-            // SpawnExecutionContext) -> Result<Box<dyn CacheHandle + 'a>, SpawnCacheError>`.
-            let action: RemoteAction<'static> =
-                unsafe { std::mem::transmute::<RemoteAction<'_>, RemoteAction<'static>>(action) };
             Ok(Box::new(RemoteCacheHandle {
                 options: self.options.clone(),
                 remote_execution_service: self.remote_execution_service.clone(),
@@ -386,15 +376,15 @@ impl SpawnCache for RemoteSpawnCache {
 
 /// The anonymous `CacheHandle` that `lookup` returns when local results should be uploaded.
 // Java: com/google/devtools/build/lib/remote/RemoteSpawnCache.java:252 RemoteSpawnCache.lookup
-struct RemoteCacheHandle {
+struct RemoteCacheHandle<'a> {
     options: Arc<RemoteOptions>,
     remote_execution_service: Arc<RemoteExecutionService>,
-    /// See the SAFETY note in `RemoteSpawnCache::lookup`: borrows the spawn and its context.
-    action: RemoteAction<'static>,
+    /// Borrows the spawn and its context (Java's anonymous handle captures `action`).
+    action: RemoteAction<'a>,
     this_execution_final: Option<Arc<LocalExecution>>,
 }
 
-impl CacheHandle for RemoteCacheHandle {
+impl CacheHandle for RemoteCacheHandle<'_> {
     // Java: com/google/devtools/build/lib/remote/RemoteSpawnCache.java:254 RemoteSpawnCache.lookup.hasResult
     fn has_result(&self) -> bool {
         false
@@ -439,11 +429,10 @@ impl CacheHandle for RemoteCacheHandle {
             )?;
         if let Some(this_execution_final) = &self.this_execution_final
             && self
-                .remote_execution_service
-                .hooks
-                .may_modify_spawn_outputs_after_execution(
-                    self.action.get_spawn().get_resource_owner(),
-                )
+                .action
+                .get_spawn()
+                .get_resource_owner()
+                .may_modify_spawn_outputs_after_execution()
         {
             // In this case outputs have been uploaded synchronously and the callback above has
             // run, so no new executions will be deduplicated against this one. We can safely

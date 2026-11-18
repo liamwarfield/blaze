@@ -457,6 +457,22 @@ impl<'v> AValueDyn<'v> {
         (self.vtable.starlark_value.at)(self.value, index, heap)
     }
 
+    pub(crate) fn at_with_eval( // BLAZE PATCH 0027
+        self, // BLAZE PATCH 0027
+        index: Value<'v>, // BLAZE PATCH 0027
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
+    ) -> crate::Result<Value<'v>> { // BLAZE PATCH 0027
+        (self.vtable.starlark_value.at_with_eval)(self.value, index, eval) // BLAZE PATCH 0027
+    } // BLAZE PATCH 0027
+
+    pub(crate) fn is_in_with_eval( // BLAZE PATCH 0027
+        self, // BLAZE PATCH 0027
+        collection: Value<'v>, // BLAZE PATCH 0027
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
+    ) -> crate::Result<bool> { // BLAZE PATCH 0027
+        (self.vtable.starlark_value.is_in_with_eval)(self.value, collection, eval) // BLAZE PATCH 0027
+    } // BLAZE PATCH 0027
+
     pub(crate) fn at2(
         self,
         index0: Value<'v>,
@@ -505,6 +521,22 @@ impl<'v> AValueDyn<'v> {
     pub(crate) fn get_attr_error_message(self, attribute: &str) -> Option<String> { // BLAZE PATCH 0013
         (self.vtable.starlark_value.get_attr_error_message)(self.value, attribute) // BLAZE PATCH 0013
     } // BLAZE PATCH 0013
+
+    pub(crate) fn get_attr_fallible( // BLAZE PATCH 0026
+        self, // BLAZE PATCH 0026
+        attribute: Hashed<&str>, // BLAZE PATCH 0026
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
+    ) -> crate::Result<Option<Value<'v>>> { // BLAZE PATCH 0026
+        (self.vtable.starlark_value.get_attr_fallible)(self.value, attribute, eval) // BLAZE PATCH 0026
+    } // BLAZE PATCH 0026
+
+    pub(crate) fn has_attr_fallible( // BLAZE PATCH 0026
+        self, // BLAZE PATCH 0026
+        attribute: &str, // BLAZE PATCH 0026
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
+    ) -> crate::Result<bool> { // BLAZE PATCH 0026
+        (self.vtable.starlark_value.has_attr_fallible)(self.value, attribute, eval) // BLAZE PATCH 0026
+    } // BLAZE PATCH 0026
 
     #[inline]
     pub(crate) fn bit_and(self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {

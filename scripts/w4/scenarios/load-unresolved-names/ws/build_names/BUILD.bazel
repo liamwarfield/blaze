@@ -1,0 +1,5 @@
+# Three undefined names: Java's resolver reports every one, and the file is not executed.
+print("not executed")
+x = undefined_one + undefined_two
+
+undefined_rule(name = "t")

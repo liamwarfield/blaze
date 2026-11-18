@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Interruption probe: runs the oracle (Bazel 9.3.2) and Blaze on scenarios that need signals or
+timing, which scripts/w4/probe cannot express, and prints both transcripts side by side.
+
+usage: scripts/w4/interrupt-probe <oracle|blaze|both> [scenario ...]
+       scripts/w4/interrupt-probe list
+       scripts/w4/interrupt-probe help
+
+Scenarios (each starts from a fresh workspace and output user root):
+  sigint          `build //:slow` (a 30 s genrule); once the genrule's `sleep` runs, SIGINT to
+                  the client's process group, as a terminal's Ctrl-C does
+  sigint-batch    the same with --batch
+  sigterm         the same, SIGTERM to the client process only
+  sigint-twice    two SIGINTs to the process group, 0.2 s apart
+  fail-fast       `build //:bad //:slow`: //:bad fails after 1 s while //:slow sleeps 30 s
+  fail-fast-keep  the same with --keep_going (nothing is interrupted: //:slow runs to its end)
+  jobs400         `build //:all --jobs=400`: 400 genrules that each sleep 3 s at once
+
+Per run it prints the exit code (or the signal that killed the client), the wall time from the
+signal (or from the start, for fail-fast and jobs400) to the client's exit as a bucket (<5s,
+5-25s, >=25s), whether any of the genrules' `sleep` processes outlived the client, and the
+client's stderr normalised (paths, durations, progress lines dropped as in scripts/w4/probe).
+
+Runs use ~/.cache/blaze/work/iprobe-<scenario>, output user roots
+~/.cache/blaze/oracle-out/ur-iprobe-<scenario>-<who>, env HOME and PATH=/usr/bin:/bin, startup
+options --nohome_rc --nosystem_rc, each client in a systemd-run scope (MemoryMax=12G), then
+`shutdown`. Environment: BLAZE (binary, default target/debug/blaze).
+"""
+
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ORACLE = os.path.expanduser("~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+HOME = os.path.expanduser("~")
+PROGRESS = re.compile(
+    r"^(Computing main repo mapping:|Loading:|Analyzing:|Fetching |Building:|Testing:|"
+    r"\[[\d,]+ / [\d,]+\])"
+)
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+SLEEP_MARK = "31.5"  # the slow genrule sleeps this long; found with pgrep
+
+MODULE = 'module(name = "iprobe")\n'
+SLOW = """
+genrule(
+    name = "slow",
+    outs = ["slow.out"],
+    cmd = "sleep %s; touch $@",
+)
+genrule(
+    name = "bad",
+    outs = ["bad.out"],
+    cmd = "sleep 1; echo failing >&2; exit 1",
+)
+""" % SLEEP_MARK
+
+
+def jobs400_build():
+    rules = []
+    for i in range(400):
+        rules.append('genrule(name = "g%d", outs = ["g%d.out"], cmd = "sleep 3; touch $@")\n' % (i, i))
+    return "".join(rules)
+
+
+SCENARIOS = {
+    "sigint": dict(build=SLOW, args=["build", "//:slow"], signal=("group", [signal.SIGINT])),
+    "sigint-batch": dict(build=SLOW, startup=["--batch"], args=["build", "//:slow"],
+                         signal=("group", [signal.SIGINT])),
+    "sigterm": dict(build=SLOW, args=["build", "//:slow"], signal=("client", [signal.SIGTERM])),
+    "sigint-twice": dict(build=SLOW, args=["build", "//:slow"],
+                         signal=("group", [signal.SIGINT, signal.SIGINT])),
+    "fail-fast": dict(build=SLOW, args=["build", "//:bad", "//:slow"]),
+    "fail-fast-keep": dict(build=SLOW, args=["build", "--keep_going", "//:bad", "//:slow"]),
+    "jobs400": dict(build=jobs400_build(), args=["build", "--jobs=400", "//:all"]),
+}
+
+
+def sleeps_running():
+    p = subprocess.run(["pgrep", "-f", "^sleep %s$" % re.escape(SLEEP_MARK)], stdout=subprocess.PIPE)
+    return [int(x) for x in p.stdout.split()]
+
+
+def bucket(seconds):
+    if seconds < 5:
+        return "<5s"
+    if seconds < 25:
+        return "5-25s"
+    return ">=25s"
+
+
+class Run:
+    def __init__(self, who, name):
+        self.who = who
+        self.name = name
+        self.s = SCENARIOS[name]
+        self.binary = ORACLE if who == "oracle" else os.environ.get("BLAZE", os.path.join(ROOT, "target/debug/blaze"))
+        self.ws = os.path.expanduser("~/.cache/blaze/work/iprobe-%s" % name)
+        self.ur = os.path.expanduser("~/.cache/blaze/oracle-out/ur-iprobe-%s-%s" % (name, who))
+
+    def argv(self, args, startup=()):
+        return (["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
+                 "-p", "MemorySwapMax=0", "env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin",
+                 self.binary, "--output_user_root=" + self.ur, "--nohome_rc", "--nosystem_rc"]
+                + list(startup) + args[:1]
+                + ["--repository_cache=" + HOME + "/.cache/blaze/repo-cache", "--color=no", "--curses=no"]
+                + args[1:])
+
+    def shutdown(self):
+        if os.path.isdir(self.ur):
+            subprocess.run(self.argv(["shutdown"])[:-3], cwd=self.ws if os.path.isdir(self.ws) else HOME,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def prepare(self):
+        self.shutdown()
+        for path in (self.ws, self.ur):
+            if os.path.lexists(path):
+                subprocess.run(["chmod", "-R", "u+w", path], check=False)
+                shutil.rmtree(path)
+        os.makedirs(self.ws)
+        with open(os.path.join(self.ws, "MODULE.bazel"), "w") as f:
+            f.write(MODULE)
+        with open(os.path.join(self.ws, "BUILD.bazel"), "w") as f:
+            f.write(self.s["build"])
+
+    def norm(self, text):
+        text = ANSI.sub("", text)
+        text = re.sub(re.escape(self.ur) + r"/[0-9a-f]{32}", "<OUTPUT_BASE>", text)
+        text = text.replace(self.ur, "<OUTPUT_USER_ROOT>").replace(self.ws, "<WS>").replace(HOME, "<HOME>")
+        text = re.sub(r"/sandbox/([a-z-]+)/\d+/", r"/sandbox/\1/<N>/", text)
+        text = re.sub(r"\b\d+(\.\d+)?m?s\b", "<DUR>", text)
+        text = re.sub(r"server pid=\d+|JVM process \d+", "<PID>", text)
+        lines = []
+        for line in text.split("\n"):
+            line = line.split("\r")[-1]
+            if not line.strip() or PROGRESS.match(line):
+                continue
+            lines.append(line)
+        return lines
+
+    def go(self):
+        self.prepare()
+        assert not sleeps_running(), "a `sleep %s` is already running" % SLEEP_MARK
+        p = subprocess.Popen(self.argv(self.s["args"], self.s.get("startup", [])), cwd=self.ws,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        start = time.monotonic()
+        sig = self.s.get("signal")
+        if sig:
+            deadline = time.monotonic() + 120
+            while not sleeps_running():
+                if p.poll() is not None or time.monotonic() > deadline:
+                    break
+                time.sleep(0.05)
+            time.sleep(0.5)
+            start = time.monotonic()
+            target, signals = sig
+            for i, s in enumerate(signals):
+                if i:
+                    time.sleep(0.2)
+                if target == "group":
+                    os.killpg(p.pid, s)
+                else:
+                    os.kill(p.pid, s)
+        out, err = p.communicate()
+        elapsed = time.monotonic() - start
+        time.sleep(0.5)
+        leftover = sleeps_running()
+        for pid in leftover:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        code = p.returncode
+        status = "exit %d" % code if code >= 0 else "killed by signal %d" % -code
+        result = ["%s %s" % (self.who, self.name), status, "time " + bucket(elapsed),
+                  "leftover sleep processes: %d" % len(leftover), "--- stdout"]
+        result += self.norm(out.decode("utf-8", "replace"))
+        result.append("--- stderr")
+        result += self.norm(err.decode("utf-8", "replace"))
+        self.shutdown()
+        return result
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        print(__doc__.strip())
+        return 0
+    if argv[0] == "list":
+        print("\n".join(SCENARIOS))
+        return 0
+    who = argv[0]
+    if who not in ("oracle", "blaze", "both"):
+        print(__doc__.strip())
+        return 2
+    names = argv[1:] or list(SCENARIOS)
+    for name in names:
+        if name not in SCENARIOS:
+            sys.stderr.write("interrupt-probe: no scenario %r\n" % name)
+            return 2
+    differ = 0
+    for name in names:
+        results = {}
+        for w in (["oracle", "blaze"] if who == "both" else [who]):
+            results[w] = Run(w, name).go()
+            print("\n".join(results[w]))
+            print()
+        if who == "both":
+            o, b = results["oracle"][1:], results["blaze"][1:]
+            same = o == b
+            differ += not same
+            print("=== %s: %s" % (name, "SAME" if same else "DIFF"))
+            if not same:
+                import difflib
+                print("\n".join(difflib.unified_diff(o, b, "oracle", "blaze", lineterm="")))
+            print()
+    return 1 if differ else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

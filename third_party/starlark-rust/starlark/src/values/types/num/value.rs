@@ -21,6 +21,7 @@ use std::ops::Mul;
 use std::ops::Sub;
 
 use dupe::Dupe;
+use num_traits::FromPrimitive; // BLAZE PATCH 0008
 
 use crate as starlark;
 use crate::collections::StarlarkHashValue;
@@ -34,7 +35,7 @@ use crate::values::types::int::int_or_big::StarlarkIntRef;
 
 #[derive(Debug, thiserror::Error)]
 enum NumError {
-    #[error("float division by zero: {0} / {1}")]
+    #[error("floating-point division by zero")] // BLAZE PATCH 0008: Java StarlarkFloat.div
     DivisionByZero(Num, Num),
 }
 
@@ -123,6 +124,29 @@ impl<'v> NumRef<'v> {
         StarlarkHashValue::hash_64(self.get_hash_64())
     }
 
+
+    /// Java StarlarkInt.toFiniteDouble (StarlarkInt.java:376): an int too large for a finite
+    /// float fails.
+    pub(crate) fn as_finite_float(&self) -> anyhow::Result<f64> { // BLAZE PATCH 0008
+        let f = self.as_float(); // BLAZE PATCH 0008
+        if let Self::Int(_) = self { // BLAZE PATCH 0008
+            if !f.is_finite() { // BLAZE PATCH 0008
+                return Err(anyhow::anyhow!("int too large to convert to float")); // BLAZE PATCH 0008
+            } // BLAZE PATCH 0008
+        } // BLAZE PATCH 0008
+        Ok(f) // BLAZE PATCH 0008
+    } // BLAZE PATCH 0008
+
+    /// Java EvalUtils.binaryOp: an arithmetic operation with a float operand converts the other
+    /// operand with StarlarkInt.toFiniteDouble.
+    pub(crate) fn check_float_operands(self, other: NumRef) -> anyhow::Result<()> { // BLAZE PATCH 0008
+        if matches!(self, NumRef::Float(_)) || matches!(other, NumRef::Float(_)) { // BLAZE PATCH 0008
+            self.as_finite_float()?; // BLAZE PATCH 0008
+            other.as_finite_float()?; // BLAZE PATCH 0008
+        } // BLAZE PATCH 0008
+        Ok(()) // BLAZE PATCH 0008
+    } // BLAZE PATCH 0008
+
     fn to_owned(self) -> Num {
         match self {
             NumRef::Int(i) => Num::Int(i.to_owned()),
@@ -131,8 +155,8 @@ impl<'v> NumRef<'v> {
     }
 
     pub(crate) fn div(self, other: NumRef) -> anyhow::Result<f64> {
-        let a = self.as_float();
-        let b = other.as_float();
+        let a = self.as_finite_float()?; // BLAZE PATCH 0008
+        let b = other.as_finite_float()?; // BLAZE PATCH 0008
         if b == 0.0 {
             Err(NumError::DivisionByZero(self.to_owned(), other.to_owned()).into())
         } else {
@@ -144,7 +168,8 @@ impl<'v> NumRef<'v> {
         if let (NumRef::Int(a), NumRef::Int(b)) = (self, other) {
             a.floor_div(b).map(Num::Int)
         } else {
-            StarlarkFloat::floor_div_impl(self.as_float(), other.as_float()).map(Num::Float)
+            StarlarkFloat::floor_div_impl(self.as_finite_float()?, other.as_finite_float()?) // BLAZE PATCH 0008
+                .map(Num::Float) // BLAZE PATCH 0008
         }
     }
 
@@ -152,7 +177,8 @@ impl<'v> NumRef<'v> {
         if let (NumRef::Int(a), NumRef::Int(b)) = (self, other) {
             a.percent(b).map(Num::Int)
         } else {
-            StarlarkFloat::percent_impl(self.as_float(), other.as_float()).map(Num::Float)
+            StarlarkFloat::percent_impl(self.as_finite_float()?, other.as_finite_float()?) // BLAZE PATCH 0008
+                .map(Num::Float) // BLAZE PATCH 0008
         }
     }
 }
@@ -166,13 +192,30 @@ impl<'v> From<f64> for NumRef<'v> {
 /// This is total eq per starlark spec, not Rust's partial eq.
 impl<'v> PartialEq for NumRef<'v> {
     fn eq(&self, other: &Self) -> bool {
-        if let (NumRef::Int(a), NumRef::Int(b)) = (self, other) {
-            a == b
-        } else {
-            StarlarkFloat::compare_impl(self.as_float(), other.as_float()) == Ordering::Equal
-        }
+        self.cmp(other) == Ordering::Equal // BLAZE PATCH 0008
     }
 }
+
+/// BLAZE PATCH 0008: Java StarlarkInt.compareIntAndDouble (StarlarkInt.java:756): an exact
+/// comparison of an int with a float; NaN is greater than every number (Starlark spec, as
+/// `StarlarkFloat::compare_impl`).
+fn cmp_int_float(x: StarlarkIntRef, y: f64) -> Ordering { // BLAZE PATCH 0008
+    if y.is_nan() { // BLAZE PATCH 0008
+        return Ordering::Less; // BLAZE PATCH 0008
+    } // BLAZE PATCH 0008
+    if let StarlarkIntRef::Small(_) = x { // BLAZE PATCH 0008
+        // An i32 is exact as an f64.
+        return StarlarkFloat::compare_impl(x.to_f64(), y); // BLAZE PATCH 0008
+    } // BLAZE PATCH 0008
+    if y.is_infinite() { // BLAZE PATCH 0008
+        return if y > 0.0 { Ordering::Less } else { Ordering::Greater }; // BLAZE PATCH 0008
+    } // BLAZE PATCH 0008
+    let whole = num_bigint::BigInt::from_f64(y.trunc()).unwrap(); // BLAZE PATCH 0008
+    match x.to_big().cmp(&whole) { // BLAZE PATCH 0008
+        Ordering::Equal => StarlarkFloat::compare_impl(0.0, y.fract()), // BLAZE PATCH 0008
+        o => o, // BLAZE PATCH 0008
+    } // BLAZE PATCH 0008
+} // BLAZE PATCH 0008
 
 impl<'v> Eq for NumRef<'v> {}
 
@@ -184,11 +227,12 @@ impl<'v> PartialOrd for NumRef<'v> {
 
 impl<'v> Ord for NumRef<'v> {
     fn cmp(&self, other: &Self) -> Ordering {
-        if let (NumRef::Int(a), NumRef::Int(b)) = (self, other) {
-            a.cmp(b)
-        } else {
-            StarlarkFloat::compare_impl(self.as_float(), other.as_float())
-        }
+        match (self, other) { // BLAZE PATCH 0008
+            (NumRef::Int(a), NumRef::Int(b)) => a.cmp(b), // BLAZE PATCH 0008
+            (NumRef::Int(a), NumRef::Float(b)) => cmp_int_float(*a, b.0), // BLAZE PATCH 0008
+            (NumRef::Float(a), NumRef::Int(b)) => cmp_int_float(*b, a.0).reverse(), // BLAZE PATCH 0008
+            (NumRef::Float(a), NumRef::Float(b)) => StarlarkFloat::compare_impl(a.0, b.0), // BLAZE PATCH 0008
+        } // BLAZE PATCH 0008
     }
 }
 

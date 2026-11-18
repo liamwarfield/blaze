@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/binop_in_def/binop_in_def.bzl", line 4, column 2, in <toplevel>
+		f(1)
+	File "<WS>/binop_in_def/binop_in_def.bzl", line 2, column 14, in f
+		return a * {}
+Error: unsupported binary operation: int * dict

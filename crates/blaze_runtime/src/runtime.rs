@@ -291,6 +291,11 @@ impl BlazeRuntime {
         };
         // server.pid was written in the C++ launcher; in-process the server is this process.
         let server_pid = std::process::id() as i32;
+        // The server is a daemon (ExecuteDaemon: setsid), so its children have no controlling
+        // terminal and a Ctrl-C reaches only the client, which cancels the command
+        // (blaze_client::signal_handler). In-process, the children get a session of their own.
+        // Java: src/main/tools/daemonize.cc:270 main
+        blaze_shell::java_process::set_start_children_in_new_session(true);
         let dispatcher = BlazeCommandDispatcher::new(runtime.clone(), server_pid);
 
         // Java: com/google/devtools/build/lib/server/GrpcServerImpl.java:539 GrpcServerImpl.executeCommand

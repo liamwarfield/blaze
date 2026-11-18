@@ -1,0 +1,6 @@
+# Analysis review R3-1: --noexperimental_enable_starlark_set keeps `set` defined; a call fails.
+run build --noexperimental_enable_starlark_set //:mentions
+cat bazel-bin/mentions.txt
+run build --noexperimental_enable_starlark_set //:calls
+run build //:calls
+cat bazel-bin/calls.txt

@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/comprehension_not_iterable/comprehension_not_iterable.bzl", line 1, column 17, in <toplevel>
+		x = [y for y in 1]
+Error: type 'int' is not iterable

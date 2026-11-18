@@ -9,7 +9,6 @@ use std::io;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use blaze_exec::actions::ActionExecutionMetadata;
 use blaze_vfs::PathFragment;
 
 /// The part of `RemoteActionFileSystem` that `RemoteExecutionService.downloadOutputs` writes
@@ -29,11 +28,45 @@ pub trait RemoteOutputInjector: Send + Sync {
     ) -> io::Result<()>;
 }
 
-/// `ActionExecutionMetadata.mayModifySpawnOutputsAfterExecution()` (true for
-/// `TestRunnerAction`, `JavaCompileAction`, `JavaHeaderCompileAction`).
-// Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:125 ActionExecutionMetadata.mayModifySpawnOutputsAfterExecution
-pub type MayModifySpawnOutputsAfterExecution =
-    Arc<dyn Fn(&dyn ActionExecutionMetadata) -> bool + Send + Sync>;
+/// The build's remote output tree receives the injected metadata
+/// (`RemoteActionFileSystem.injectRemoteFile`).
+// Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:308 RemoteActionFileSystem.injectRemoteFile
+impl RemoteOutputInjector for blaze_exec::exec::action_execution_context::RemoteOutputTree {
+    fn inject_remote_file(
+        &self,
+        path: &PathFragment,
+        digest: Vec<u8>,
+        size: i64,
+        expiration_time: SystemTime,
+        in_memory_output: bool,
+    ) -> io::Result<()> {
+        if !self.is_attached() {
+            // No output metadata store consults the tree (`blaze_sky_exec`'s
+            // `ActionOutputMetadataStore` stands for Java's stat through the
+            // RemoteActionFileSystem), so the output would be reported as not created. This is
+            // an IOException of the download: a cache hit becomes a miss with the warning
+            // "Remote Cache: ...", a remote execution fails.
+            return Err(io::Error::other(
+                "not ported yet: RemoteActionFileSystem.injectRemoteFile (missing hook: ActionOutputMetadataStore does not consult the RemoteOutputTree of the build)",
+            ));
+        }
+        // `Instant` as `RemoteFileArtifactValue` keeps it: epoch milliseconds.
+        let expiration_time_millis = match expiration_time.duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(d) => i64::try_from(d.as_millis()).unwrap_or(i64::MAX),
+            Err(e) => -i64::try_from(e.duration().as_millis()).unwrap_or(i64::MAX),
+        };
+        let metadata =
+            blaze_exec::actions::FileArtifactValue::create_for_remote_file_with_materialization_data(
+                digest,
+                size,
+                /* location_index= */ 1,
+                Some(expiration_time_millis),
+                in_memory_output,
+            );
+        self.inject_file(path.clone(), metadata);
+        Ok(())
+    }
+}
 
 /// The hooks of one build.
 #[derive(Clone, Default)]
@@ -41,27 +74,12 @@ pub struct RemoteHooks {
     /// Missing hook: `SpawnExecutionContext.getActionFileSystem()` as a
     /// `RemoteActionFileSystem`.
     pub remote_output_injector: Option<Arc<dyn RemoteOutputInjector>>,
-    /// Missing hook: `blaze_exec::actions::ActionExecutionMetadata::may_modify_spawn_outputs_after_execution`.
-    pub may_modify_spawn_outputs_after_execution: Option<MayModifySpawnOutputsAfterExecution>,
 }
 
 impl RemoteHooks {
     /// No hook provided.
     pub fn new() -> RemoteHooks {
         RemoteHooks::default()
-    }
-
-    /// `spawnOwner.mayModifySpawnOutputsAfterExecution()`.
-    pub fn may_modify_spawn_outputs_after_execution(
-        &self,
-        spawn_owner: &dyn ActionExecutionMetadata,
-    ) -> bool {
-        match &self.may_modify_spawn_outputs_after_execution {
-            Some(f) => f(spawn_owner),
-            None => blaze_util::unported!(
-                "ActionExecutionMetadata.mayModifySpawnOutputsAfterExecution (missing hook: blaze_exec::actions::ActionExecutionMetadata::may_modify_spawn_outputs_after_execution; RemoteHooks.may_modify_spawn_outputs_after_execution is not set)"
-            ),
-        }
     }
 
     /// `remoteActionFileSystem.injectRemoteFile(...)`.

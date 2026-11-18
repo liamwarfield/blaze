@@ -189,8 +189,8 @@ impl ResourceSetOrBuilder for IgnoringOverrides {
         _inputs_size: i32,
         _execution_info: &IndexMap<String, String>,
         _exec_properties: &IndexMap<String, String>,
-    ) -> ResourceSet {
-        self.0.clone()
+    ) -> Result<ResourceSet, ExecException> {
+        Ok(self.0.clone())
     }
 }
 

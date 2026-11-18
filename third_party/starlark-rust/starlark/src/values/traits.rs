@@ -375,7 +375,8 @@ pub trait StarlarkValue<'v>:
 
     /// Invoked to print `repr` when a cycle is the object stack is detected.
     fn collect_repr_cycle(&self, collector: &mut String) {
-        write!(collector, "<{}...>", Self::TYPE).unwrap()
+        // Java Printer.repr (Printer.java:191): every value met again on the path is "...".
+        collector.push_str("...") // BLAZE PATCH 0031
     }
 
     /// Return a string representation of self, as returned by the `str()` function.
@@ -469,6 +470,18 @@ pub trait StarlarkValue<'v>:
     fn at(&self, index: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
         ValueError::unsupported_with(self, "[]", index)
     }
+
+    /// `a[index]` with the evaluator (Bazel's `StarlarkIndexable.Threaded.getIndex`, which
+    /// receives the `StarlarkThread`). Used by the index expression and `a[index] op= y`.
+    ///
+    /// Default: [`at`](Self::at).
+    fn at_with_eval( // BLAZE PATCH 0027
+        &self, // BLAZE PATCH 0027
+        index: Value<'v>, // BLAZE PATCH 0027
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
+    ) -> crate::Result<Value<'v>> { // BLAZE PATCH 0027
+        self.at(index, eval.heap()) // BLAZE PATCH 0027
+    } // BLAZE PATCH 0027
 
     /// Return the result of `a[index0, index1]` if `a` is indexable by two parameters.
     fn at2(
@@ -651,6 +664,34 @@ pub trait StarlarkValue<'v>:
         None // BLAZE PATCH 0013
     } // BLAZE PATCH 0013
 
+    /// Attribute access that may fail and may read the evaluator (Bazel's
+    /// `Structure.getValue(StarlarkSemantics, String)`, which throws `EvalException`).
+    /// `Ok(None)` means the field is missing. Used by `x.f`, `x.f(...)`, `x.f op= y` and
+    /// `getattr`, after the type's methods (`get_methods`). A type that overrides this should
+    /// make [`get_attr`](Self::get_attr) agree for the fields it can compute without an
+    /// evaluator (Rust callers use that one).
+    ///
+    /// Default: [`get_attr_hashed`](Self::get_attr_hashed).
+    fn get_attr_fallible( // BLAZE PATCH 0026
+        &self, // BLAZE PATCH 0026
+        attribute: Hashed<&str>, // BLAZE PATCH 0026
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
+    ) -> crate::Result<Option<Value<'v>>> { // BLAZE PATCH 0026
+        Ok(self.get_attr_hashed(attribute, eval.heap())) // BLAZE PATCH 0026
+    } // BLAZE PATCH 0026
+
+    /// `hasattr` that may fail and may read the evaluator (Bazel's `Starlark.hasattr`, where
+    /// `Structure.getValue` may throw). Used by the `hasattr` builtin after the type's methods.
+    ///
+    /// Default: [`has_attr`](Self::has_attr).
+    fn has_attr_fallible( // BLAZE PATCH 0026
+        &self, // BLAZE PATCH 0026
+        attribute: &str, // BLAZE PATCH 0026
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
+    ) -> crate::Result<bool> { // BLAZE PATCH 0026
+        Ok(self.has_attr(attribute, eval.heap())) // BLAZE PATCH 0026
+    } // BLAZE PATCH 0026
+
     /// Tell whether `other` is in the current value, if it is a container.
     ///
     /// # Examples
@@ -665,6 +706,18 @@ pub trait StarlarkValue<'v>:
     fn is_in(&self, other: Value<'v>) -> crate::Result<bool> {
         ValueError::unsupported_owned(other.get_type(), "in", Some(Self::TYPE))
     }
+
+    /// `other in self` with the evaluator (Bazel's `StarlarkIndexable.Threaded.containsKey`).
+    /// Used by the `in` and `not in` operators.
+    ///
+    /// Default: [`is_in`](Self::is_in).
+    fn is_in_with_eval( // BLAZE PATCH 0027
+        &self, // BLAZE PATCH 0027
+        other: Value<'v>, // BLAZE PATCH 0027
+        _eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
+    ) -> crate::Result<bool> { // BLAZE PATCH 0027
+        self.is_in(other) // BLAZE PATCH 0027
+    } // BLAZE PATCH 0027
 
     /// Apply the `+` unary operator to the current value.
     ///

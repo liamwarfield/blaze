@@ -3,22 +3,24 @@
 
 use std::sync::Arc;
 
+use blaze_actions::Artifact;
 use blaze_actions::actions::action::Action;
 use blaze_actions::actions::command_line_limits::CommandLineLimits;
 use blaze_actions::analysis::actions::path_mappers;
 use blaze_actions::analysis::actions::spawn_action::{
-    ResourceSet as AnalysisResourceSet, SpawnAction,
+    ResourceSet as AnalysisResourceSet, ResourceSetBuilder, SpawnAction,
 };
 use blaze_collect::command_line_item::{CommandLineExpansionException, MapFnError};
-use blaze_collect::{NestedSetBuilder, Order};
+use blaze_collect::{NestedSet, NestedSetBuilder, Order};
 use blaze_protos::failure_details::{self, failure_detail::Category};
+use blaze_shell::util::os::OS;
 use indexmap::IndexMap;
 
 use super::{KeyMetadataAdapter, failure_detail, to_action_input_set};
 use crate::actions::action_adapters::{ActionMetadataSnapshot, artifact_input};
 use crate::actions::{
     ActionExecutionException, ActionInputRef, ActionResult, ExecException, ExecutableAction,
-    PathMapper, ResourceSet, SimpleSpawn, SpawnResult,
+    PathMapper, ResourceSet, ResourceSetOrBuilder, SimpleSpawn, SpawnResult, UserExecException,
 };
 use crate::exec::action_execution_context::ActionExecutionContext;
 use crate::exec::spawn_strategy_resolver::SpawnStrategyResolver;
@@ -155,9 +157,61 @@ fn new_action_spawn(
         to_action_input_set(&parent.get_tools()),
         outputs,
         None,
-        Arc::new(to_resource_set(parent.get_resource_set_or_builder())),
+        match parent.get_resource_set_builder() {
+            // Java BaseSpawn.getLocalResources -> buildLocalResources(OS.getCurrent(),
+            // action.getInputs().memoizedFlattenAndGetSize(), ...)
+            Some(builder) => Arc::new(StarlarkResourceSet {
+                builder: builder.clone(),
+                action_inputs: parent.get_inputs(),
+            }),
+            None => Arc::new(to_resource_set(parent.get_resource_set_or_builder())),
+        },
         path_mapper,
     ))
+}
+
+/// The action's `ResourceSetOrBuilder` when it is a builder (the Starlark `resource_set`
+/// callback, `StarlarkActionFactory.StarlarkActionResourceSetBuilder`).
+///
+/// PORT: Java's `BaseSpawn.getLocalResources` passes the size of the *action's* inputs
+/// (`action.getInputs().memoizedFlattenAndGetSize()`), not the spawn's (which add the param
+/// files); `action_inputs` keeps them so the size is the action's.
+struct StarlarkResourceSet {
+    builder: Arc<dyn ResourceSetBuilder>,
+    action_inputs: NestedSet<Artifact>,
+}
+
+impl std::fmt::Debug for StarlarkResourceSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StarlarkResourceSet({:?})", self.builder)
+    }
+}
+
+impl ResourceSetOrBuilder for StarlarkResourceSet {
+    fn build_resource_set(&self, inputs_size: i32) -> ResourceSet {
+        match self.try_build_resource_set(inputs_size) {
+            Ok(r) => r,
+            Err(e) => panic!("{}", e.get_message()),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:923 StarlarkActionResourceSetBuilder.buildResourceSet
+    fn try_build_resource_set(&self, _inputs_size: i32) -> Result<ResourceSet, ExecException> {
+        let inputs_size = self.action_inputs.memoized_flatten_and_get_size();
+        self.builder
+            .build_resource_set(OS::get_current(), inputs_size)
+            .map(|r| to_resource_set(&r))
+            // Java: catch (EvalException e) -> throw new UserExecException(FailureDetail
+            // { message, StarlarkAction { code: STARLARK_ACTION_UNKNOWN } })
+            .map_err(|e| {
+                ExecException::User(UserExecException::new(failure_detail(
+                    &e.message,
+                    Category::StarlarkAction(failure_details::StarlarkAction {
+                        code: failure_details::starlark_action::Code::StarlarkActionUnknown as i32,
+                    }),
+                )))
+            })
+    }
 }
 
 // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:299 SpawnAction.createCommandLineException

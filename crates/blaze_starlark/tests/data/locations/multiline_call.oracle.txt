@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/multiline_call/multiline_call.bzl", line 7, column 2, in <toplevel>
+		f()
+	File "<WS>/multiline_call/multiline_call.bzl", line 4, column 12, in f
+		len(3),
+Error in len: in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'

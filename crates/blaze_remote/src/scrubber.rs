@@ -358,17 +358,13 @@ impl Hash for SpawnScrubber {
 }
 
 /// `actionOwner.getTargetKind()`.
-// Java: com/google/devtools/build/lib/actions/ActionOwner.java ActionOwner.getTargetKind
-fn action_owner_get_target_kind(_action_owner: &ActionOwner) -> String {
-    blaze_util::unported!(
-        "ActionOwner.getTargetKind (missing hook: blaze_exec::actions::ActionOwner has no target kind)"
-    )
+// Java: com/google/devtools/build/lib/actions/ActionOwner.java:111 ActionOwner.getTargetKind
+fn action_owner_get_target_kind(action_owner: &ActionOwner) -> String {
+    action_owner.get_target_kind().to_owned()
 }
 
 /// `actionOwner.isBuildConfigurationForTool()`.
-// Java: com/google/devtools/build/lib/actions/ActionOwner.java ActionOwner.isBuildConfigurationForTool
-fn action_owner_is_build_configuration_for_tool(_action_owner: &ActionOwner) -> bool {
-    blaze_util::unported!(
-        "ActionOwner.isBuildConfigurationForTool (missing hook: blaze_exec::actions::ActionOwner does not say whether the configuration is a tool configuration)"
-    )
+// Java: com/google/devtools/build/lib/actions/ActionOwner.java:169 ActionOwner.isBuildConfigurationForTool
+fn action_owner_is_build_configuration_for_tool(action_owner: &ActionOwner) -> bool {
+    action_owner.is_build_configuration_for_tool()
 }

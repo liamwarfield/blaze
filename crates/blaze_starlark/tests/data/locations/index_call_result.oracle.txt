@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/index_call_result/index_call_result.bzl", line 4, column 8, in <toplevel>
+		x = f()[5]
+Error: index out of range (index is 5, but sequence has 1 elements)

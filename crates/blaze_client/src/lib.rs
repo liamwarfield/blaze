@@ -17,6 +17,7 @@ pub mod blaze;
 pub mod option_processor;
 pub mod platform;
 pub mod server;
+pub mod signal_handler;
 pub mod startup_options;
 pub mod util;
 pub mod workspace_layout;

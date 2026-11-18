@@ -471,6 +471,10 @@ impl<'v, T: SetLike<'v>> Serialize for SetGen<T> {
 
 impl<'v, T: SetLike<'v>> Display for SetGen<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // BLAZE PATCH 0007: Java StarlarkSet.repr (StarlarkSet.java:216): `set()` when empty.
+        if self.0.content().is_empty() { // BLAZE PATCH 0007
+            return f.write_str("set()"); // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
         fmt_container(f, "set([", "])", self.0.content().iter())
     }
 }

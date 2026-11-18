@@ -13,6 +13,9 @@ use blaze_starlark::structs::StructureMarker;
 use blaze_util::Fingerprint;
 use starlark::any::ProvidesStaticType;
 use starlark::starlark_simple_value;
+use crate::platform::constraint_collection::{gated_get_attr, gated_has_attr};
+use starlark::collections::Hashed;
+use starlark::eval::Evaluator;
 use starlark::values::ValueLike;
 use starlark::values::{Demand, Heap, NoSerialize, StarlarkValue, Value, starlark_value};
 use starlark_map::StarlarkHasher;
@@ -138,9 +141,9 @@ impl fmt::Display for ConstraintSettingInfo {
 }
 
 /// The struct fields of `ConstraintSettingInfoApi`, sorted.
-// PORT: `label` and `default_constraint_value` are `enableOnlyWithFlag =
-// EXPERIMENTAL_PLATFORMS_API`; starlark-rust attribute lookup has no access to the thread's
-// semantics, so they are always readable here.
+/// The fields with `enableOnlyWithFlag = EXPERIMENTAL_PLATFORMS_API`
+/// (ConstraintSettingInfoApi.java:36, :43): absent when the flag is off.
+const GATED: [&str; 2] = ["default_constraint_value", "label"];
 const FIELDS: [&str; 3] = [
     "default_constraint_value",
     "has_default_constraint_value",
@@ -167,6 +170,25 @@ impl<'v> StarlarkValue<'v> for ConstraintSettingInfo {
     fn has_attr(&self, attribute: &str, _heap: Heap<'v>) -> bool {
         FIELDS.contains(&attribute)
     }
+
+    fn get_attr_fallible(
+        &self,
+        attribute: Hashed<&str>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Option<Value<'v>>> {
+        gated_get_attr(self, &GATED, attribute.key(), eval)
+    }
+
+    fn has_attr_fallible(
+        &self,
+        attribute: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<bool> {
+        gated_has_attr(self, &GATED, attribute, eval)
+    }
+
+    // PORT: Java's `dir` leaves out the GATED fields when the flag is off
+    // (CallUtils.getAnnotatedMethods); `dir_attr` has no evaluator, so they are listed.
 
     fn dir_attr(&self) -> Vec<String> {
         FIELDS.iter().map(|s| (*s).to_owned()).collect()

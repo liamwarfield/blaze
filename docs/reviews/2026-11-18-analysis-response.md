@@ -145,7 +145,8 @@ Analysis fixer, 2026-11-18. Covers the "Round 2" section of docs/reviews/2026-11
 (bound to `12ca29e`). State described: HEAD `4c29efc` plus the uncommitted working tree, which also
 holds the in-flight edits of the execution fixer (blaze_exec, blaze_sky_exec, blaze_buildtool,
 blaze_runtime commands) and of the remote lead (blaze_remote); binary
-`~/.cache/blaze/int-bin/blaze-anafix-1` (sha256 `5c6616b9582f`, built from that tree). Every
+`~/.cache/blaze/int-bin/blaze-anafix-3` (sha256 `0ff8fc5e96cf`, built from that tree at the end of
+the round; `blaze-anafix-1`, sha256 `5c6616b9582f`, is the first build of the round). Every
 expected value below comes from the Java at the pin or from an oracle transcript.
 
 ## Blocking
@@ -253,6 +254,14 @@ reach no key and have no reader in Java either.
 | R2-13 Variables repr; hasattr(target, "files") | FIXED | `cpp/starlark_values.rs` prints `CcToolchainVariables$MapVariables` / `$SingleVariables`; `target_value.rs` `has_attr` is Java's one-argument `getValue(name) != null` | `repr_names_the_runtime_subclass`; hasattr: no test (needs a configured target) |
 | R2-14 absolute_symlink | FIXED | `cc_starlark_internal.rs` accepts any `StarlarkActionContext` (rule or subrule context, `starlark_subrule::starlark_action_context_rule_context`), Java's type error text otherwise | none (needs a subrule test bed) |
 
+Found by the full-transcript probe: the traceback of a failing rule implementation or transition
+had an extra first line `File "<builtin>", in <toplevel>` (starlark-rust reports the outermost
+frame of a call made from native code without a call site; Java's stack starts at the callee).
+Fixed where my crates format those errors (`starlark_rule_configured_target_util.rs`
+`native_call_stack`, `blaze_build_config/src/starlark_transition.rs`); test
+`native_call_stack_tests` with the oracle's text. The general fix belongs in blaze_starlark's
+`EvalError::from_starlark` (request).
+
 Found while fixing (same class as S2-4): `Dict.cast(x, String.class, Object.class, what)` said
 "for resource_set, got string, want dict" and "want dict<string, any>"; Java says
 "got string for 'resource_set', want dict" and "dict<string, unknown>"
@@ -278,3 +287,42 @@ mapping `ResourceSetBuildError { message }` to a `UserExecException` with
 `FailureDetail { message, StarlarkAction { code: STARLARK_ACTION_UNKNOWN } }`. That needs
 `ResourceSetOrBuilder::build_resource_set` to return `Result<ResourceSet, ExecException>` (Java
 throws `ExecException`); `SimpleSpawn::get_local_resources` already returns a `Result`.
+
+## Evidence (Round 2)
+
+- Rust tests, my crates plus blaze_actions (`cargo test -p blaze_analysis -p blaze_rules
+  -p blaze_sky_analysis -p blaze_sky_top -p blaze_cquery -p blaze_build_config -p blaze_config
+  -p blaze_actions`, the working tree above): 550 passed, 0 failed, 685 ignored. Not a
+  workspace run. `clippy --tests -D warnings` on the same crates: clean (blaze_sky_loading, a
+  dependency I do not own, has 3 `collapsible_if` / `explicit_auto_deref` errors under the
+  current clippy).
+- Referee, brotli and re2 (`scripts/oracle/record`, labels `blaze-anafix-1` with binary
+  `5c6616b9582f` and `blaze-anafix-3b` with `0ff8fc5e96cf`; scored with `scoreboard`, not
+  written to corpus/): every per-surface row equals `corpus/scores/blaze-12ca29ee95e0.md`:
+  23 of 26 surfaces MATCH, 13,850 of 13,858 items (open: 4 BEP items per project, 1 extra re2
+  stderr line). No regression. (Label `blaze-anafix-3` has a failed re2 build: the
+  repository rule's `process-wrapper` spawn got ENOMEM while the probe, the tests and clippy ran
+  at the same time; `blaze-anafix-3b` is the same binary recorded alone.)
+- Probe (R2-12). `scripts/w4/probe` now compares full normalised transcripts (exit code, full
+  stdout, every stderr line in order; only run-specific values are normalised and only
+  rate-limited progress lines dropped; see `probe help`), step by step, prints
+  `M of N steps match`, and exits 1 on any difference; `compare-all` adds the totals.
+  `scripts/w4/flags-probe` is now the probe scenario `flags-probe` (the 71 former cases, each as
+  a label_kind and a full jsonproto step; the transcript is no longer sorted or filtered).
+  Every ORACLE.txt was re-recorded with the oracle in the new format (35 scenarios, including
+  the execution fixer's `exec-*`, `test-*`, `ui-*`; new: `transition-results`,
+  `cquery-project-resolution`). With `blaze-anafix-3`:
+  **94 of 694 steps match in full; 0 of 35 scenarios match in full.** In the narrower
+  `--messages` view (exit code, stdout, complete text of every message, as a sorted list):
+  225 of 694. The old first-line comparison hid most of this. The recurring causes I saw
+  (ctx-immutable, ctx-errors, flags-transitions inspected line by line): (1) every successful
+  build's `INFO: Elapsed time: ..., Critical Path: ...` lacks the critical path (critical path
+  not ported); (2) Blaze's server does not survive the probe's per-command `systemd-run --scope`
+  while Bazel's does, so later steps print `Starting local Bazel server` again and load every
+  package again (`N packages loaded`), and Bazel's `discarding analysis cache` warnings have no
+  Blaze counterpart; (3) a failed analysis prints `INFO: 0 processes.` where Bazel prints
+  `INFO: 1 process: 1 internal.`; (4) starlark-rust's error positions (an index assignment or
+  call is located at its start, Java at `=` or `(`); (5) the known S2-7 `hasattr` / `getattr`
+  steps. (1)-(3) are outside the analysis crates (client, execution summary, critical path);
+  (4) is the vendored interpreter. These numbers are the true counts; the round-1 "71/71" and
+  scenario MATCHes were first-line comparisons.

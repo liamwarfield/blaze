@@ -1,0 +1,30 @@
+load(":defs.bzl", "probe")
+
+constraint_setting(
+    name = "color",
+    default_constraint_value = ":red",
+)
+
+constraint_value(
+    name = "red",
+    constraint_setting = ":color",
+)
+
+platform(
+    name = "plat",
+    constraint_values = [":red"],
+)
+
+[probe(
+    name = op,
+    op = op,
+    platform = ":plat",
+    setting = ":color",
+    value = ":red",
+) for op in [
+    "inspect",
+    "platform_label",
+    "setting_label",
+    "value_constraint",
+    "constraints_get",
+]]

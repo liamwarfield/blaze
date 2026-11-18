@@ -118,6 +118,8 @@ pub(crate) fn validate_module(stmt: &AstStmt, parser_state: &mut ParserState) {
                     f(body, parser_state, false, true, inside_def)
                 }
             }
+            // BLAZE PATCH 0030: a var statement is allowed anywhere (it is not an `if`).
+            Stmt::If(..) if stmt.blaze_var_statement().is_some() => {} // BLAZE PATCH 0030
             Stmt::If(..) | Stmt::IfElse(..) => {
                 if top_level && !parser_state.dialect.enable_top_level_stmt {
                     parser_state.error(span, "`if` cannot be used outside `def` in this dialect")

@@ -36,9 +36,325 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          };
          let frozen_module_ref = freezer.heap.alloc_any_value(rest);
          for frozen_def in freezer.frozen_defs.borrow().as_slice() {
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/compiler/assign_modify.rs starlark/src/eval/bc/compiler/assign_modify.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/compiler/assign_modify.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/bc/compiler/assign_modify.rs	2026-11-18 16:00:27.169025972 -0700
+@@ -24,8 +24,13 @@
+ use crate::eval::bc::instr_impl::InstrAddAssign;
+ use crate::eval::bc::instr_impl::InstrArrayIndex;
+ use crate::eval::bc::instr_impl::InstrArrayIndexSet;
++#[allow(unused_imports)] // BLAZE PATCH 0007
+ use crate::eval::bc::instr_impl::InstrBitAnd;
+ use crate::eval::bc::instr_impl::InstrBitOrAssign;
++use crate::eval::bc::instr_impl::InstrBitAndAssign; // BLAZE PATCH 0007
++use crate::eval::bc::instr_impl::InstrBitXorAssign; // BLAZE PATCH 0007
++use crate::eval::bc::instr_impl::InstrSubAssign; // BLAZE PATCH 0007
++#[allow(unused_imports)] // BLAZE PATCH 0007
+ use crate::eval::bc::instr_impl::InstrBitXor;
+ use crate::eval::bc::instr_impl::InstrDivide;
+ use crate::eval::bc::instr_impl::InstrFloorDivide;
+@@ -37,6 +42,7 @@
+ use crate::eval::bc::instr_impl::InstrRightShift;
+ use crate::eval::bc::instr_impl::InstrSetObjectField;
+ use crate::eval::bc::instr_impl::InstrStoreModule;
++#[allow(unused_imports)] // BLAZE PATCH 0007
+ use crate::eval::bc::instr_impl::InstrSub;
+ use crate::eval::bc::stack_ptr::BcSlotIn;
+ use crate::eval::bc::stack_ptr::BcSlotOut;
+@@ -70,14 +76,14 @@
+         let arg = (v0, v1, target);
+         match self {
+             AssignOp::Add => bc.write_instr::<InstrAddAssign>(span, arg),
+-            AssignOp::Subtract => bc.write_instr::<InstrSub>(span, arg),
++            AssignOp::Subtract => bc.write_instr::<InstrSubAssign>(span, arg), // BLAZE PATCH 0007
+             AssignOp::Multiply => bc.write_instr::<InstrMultiply>(span, arg),
+             AssignOp::Divide => bc.write_instr::<InstrDivide>(span, arg),
+             AssignOp::FloorDivide => bc.write_instr::<InstrFloorDivide>(span, arg),
+             AssignOp::Percent => bc.write_instr::<InstrPercent>(span, arg),
+-            AssignOp::BitAnd => bc.write_instr::<InstrBitAnd>(span, arg),
++            AssignOp::BitAnd => bc.write_instr::<InstrBitAndAssign>(span, arg), // BLAZE PATCH 0007
+             AssignOp::BitOr => bc.write_instr::<InstrBitOrAssign>(span, arg),
+-            AssignOp::BitXor => bc.write_instr::<InstrBitXor>(span, arg),
++            AssignOp::BitXor => bc.write_instr::<InstrBitXorAssign>(span, arg), // BLAZE PATCH 0007
+             AssignOp::LeftShift => bc.write_instr::<InstrLeftShift>(span, arg),
+             AssignOp::RightShift => bc.write_instr::<InstrRightShift>(span, arg),
+         }
+@@ -110,9 +116,12 @@
+             AssignModifyLhs::Dot(ref object, ref field) => {
+                 object.write_bc_cb(bc, |object, bc| {
+                     bc.alloc_slots_c(|lhs_rhs: BcSlotsN<2>, bc| {
+-                        let field = Symbol::new(field.as_str());
++                        // BLAZE PATCH 0028: reading and setting the field fail at the `.`
++                        // (Java Eval.execAugmentedAssignment); the operator at the statement.
++                        let dot_span = field.span; // BLAZE PATCH 0028
++                        let field = Symbol::new(field.node.as_str()); // BLAZE PATCH 0028
+                         bc.write_instr::<InstrObjectField>(
+-                            span,
++                            dot_span, // BLAZE PATCH 0028
+                             (object, field.clone(), lhs_rhs.get::<0>().to_out()),
+                         );
+                         rhs.write_bc(lhs_rhs.get::<1>().to_out(), bc);
+@@ -124,7 +133,7 @@
+                             bc,
+                         );
+                         bc.write_instr::<InstrSetObjectField>(
+-                            span,
++                            dot_span, // BLAZE PATCH 0028
+                             (lhs_rhs.get::<1>().to_in(), object, field),
+                         );
+                     })
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/compiler/call.rs starlark/src/eval/bc/compiler/call.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/compiler/call.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/bc/compiler/call.rs	2026-11-18 15:44:12.588418919 -0700
+@@ -167,14 +167,20 @@
+ 
+     fn write_call_method(
+         target: BcSlotOut,
+-        span: FrameSpan,
++        call_span: FrameSpan, // BLAZE PATCH 0028
++        getattr_span: FrameSpan, // BLAZE PATCH 0028
+         this: &IrSpanned<ExprCompiled>,
+         symbol: &Symbol,
+         args: &ArgsCompiledValue,
+         bc: &mut BcWriter,
+     ) {
++        // BLAZE PATCH 0028: the instruction's own span (where errors without a location are
++        // reported) is `object.method`, so a failed method lookup is located at the `.` (Java
++        // Eval.evalCall evaluates the callee with Eval.evalDot); the call frame and errors of
++        // the call itself keep the call's span (`call_method_common`).
++        let span = getattr_span; // BLAZE PATCH 0028
+         this.write_bc_cb(bc, |this, bc| {
+-            let file_span = bc.alloc_file_span(span);
++            let file_span = bc.alloc_file_span(call_span); // BLAZE PATCH 0028
+             let known_method = get_known_method(symbol.as_str());
+             if let Some(pos) = args.pos_only() {
+                 write_exprs(pos, bc, |pos, bc| {
+@@ -256,7 +262,7 @@
+                 }
+             },
+             Some((this, symbol, args)) => {
+-                Self::write_call_method(target, span, this, symbol, args, bc)
++                Self::write_call_method(target, span, self.fun.span, this, symbol, args, bc) // BLAZE PATCH 0028
+             }
+         }
+     }
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/compiler/expr.rs starlark/src/eval/bc/compiler/expr.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/compiler/expr.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/bc/compiler/expr.rs	2026-11-18 15:45:28.483153638 -0700
+@@ -250,7 +250,8 @@
+                             );
+                         });
+                     } else {
+-                        let key_spans = xs.map(|(k, _v)| k.span);
++                        // BLAZE PATCH 0028: a key's error is located at its entry's `:` (Java Eval.evalDict).
++                        let key_spans = xs.map(|(k, v)| k.span.dict_colon(&v.span)); // BLAZE PATCH 0028
+                         write_exprs(xs.iter().flat_map(|(k, v)| [k, v]), bc, |kvs, bc| {
+                             bc.write_instr_explicit::<InstrDictNPop>(
+                                 BcInstrSlowArg {
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/compiler/stmt.rs starlark/src/eval/bc/compiler/stmt.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/compiler/stmt.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/bc/compiler/stmt.rs	2026-11-18 15:42:52.158466813 -0700
+@@ -47,12 +47,16 @@
+     body: impl FnOnce(&mut BcWriter),
+ ) {
+     let definitely_assigned = bc.save_definitely_assigned();
++    // BLAZE PATCH 0028: iteration errors are located at the collection's start (Java
++    // Eval.evalAsIterable); `span` (the statement) stays for the loop variable's assignment.
++    let iter_span = over.span.begin_point(); // BLAZE PATCH 0028
++    let _ = span; // BLAZE PATCH 0028
+ 
+     over.write_bc_cb(bc, |over, bc| {
+         if let Some(var) = var.as_local_non_captured() {
+             // Typical case: `for x in ...: ...`,
+             // compile loop assignment directly to a local variable.
+-            bc.write_for(over, var.to_bc_slot().to_out(), span, |bc| {
++            bc.write_for(over, var.to_bc_slot().to_out(), iter_span, |bc| { // BLAZE PATCH 0028
+                 bc.mark_definitely_assigned(var);
+                 body(bc);
+             })
+@@ -61,7 +65,7 @@
+             // compile loop assignment to a temporary variable,
+             // and reassign it in the loop body.
+             bc.alloc_slot(|var_slot, bc| {
+-                bc.write_for(over, var_slot.to_out(), span, |bc| {
++                bc.write_for(over, var_slot.to_out(), iter_span, |bc| { // BLAZE PATCH 0028
+                     var.write_bc(var_slot.to_in(), bc);
+                     var.mark_definitely_assigned_after(bc);
+                     body(bc);
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/instr_impl.rs starlark/src/eval/bc/instr_impl.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/instr_impl.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/bc/instr_impl.rs	2026-11-18 16:14:19.274070355 -0700
+@@ -54,6 +54,8 @@
+ use crate::eval::bc::stack_ptr::BcSlotInRangeFrom;
+ use crate::eval::bc::stack_ptr::BcSlotOut;
+ use crate::eval::compiler::add_span_to_expr_error;
++use crate::values::types::set::methods::SetInplaceOp; // BLAZE PATCH 0007
++use crate::values::types::set::methods::set_inplace_op; // BLAZE PATCH 0007
+ use crate::eval::compiler::def::Def;
+ use crate::eval::compiler::def::FrozenDef;
+ use crate::eval::compiler::def::ParameterCompiled;
+@@ -334,7 +336,7 @@
+     ) -> crate::Result<()> {
+         let array = frame.get_bc_slot(*array);
+         let index = frame.get_bc_slot(*index);
+-        let value = array.at(index, eval.heap())?;
++        let value = array.at_with_eval(index, eval)?; // BLAZE PATCH 0027
+         frame.set_bc_slot(*target, value);
+         Ok(())
+     }
+@@ -385,7 +387,7 @@
+         (object, field, target): &(BcSlotIn, Symbol, BcSlotOut),
+     ) -> crate::Result<()> {
+         let object = frame.get_bc_slot(*object);
+-        let value = get_attr_hashed_bind(object, field, eval.heap())?;
++        let value = get_attr_hashed_bind(object, field, eval)?; // BLAZE PATCH 0026
+         frame.set_bc_slot(*target, value);
+         Ok(())
+     }
+@@ -663,10 +665,39 @@
+ pub(crate) type InstrBitAnd = InstrBinOp<InstrBitAndImpl>;
+ pub(crate) type InstrBitOr = InstrBinOp<InstrBitOrImpl>;
+ pub(crate) type InstrBitOrAssign = InstrBinOp<InstrBitOrAssignImpl>;
++pub(crate) struct InstrSubAssignImpl; // BLAZE PATCH 0007
++pub(crate) struct InstrBitAndAssignImpl; // BLAZE PATCH 0007
++pub(crate) struct InstrBitXorAssignImpl; // BLAZE PATCH 0007
++pub(crate) type InstrSubAssign = InstrBinOp<InstrSubAssignImpl>; // BLAZE PATCH 0007
++pub(crate) type InstrBitAndAssign = InstrBinOp<InstrBitAndAssignImpl>; // BLAZE PATCH 0007
++pub(crate) type InstrBitXorAssign = InstrBinOp<InstrBitXorAssignImpl>; // BLAZE PATCH 0007
++
++// BLAZE PATCH 0007: `set -= set`, `set &= set`, `set ^= set` mutate the left set (Java
++// Eval.inplaceBinaryOp); other operands are the plain binary operators.
++impl InstrBinOpImpl for InstrSubAssignImpl { // BLAZE PATCH 0007
++    #[inline(always)] // BLAZE PATCH 0007
++    fn eval<'v>(v0: Value<'v>, v1: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> { // BLAZE PATCH 0007
++        set_inplace_op(v0, v1, SetInplaceOp::Sub).unwrap_or_else(|| v0.sub(v1, heap)) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++} // BLAZE PATCH 0007
++
++impl InstrBinOpImpl for InstrBitAndAssignImpl { // BLAZE PATCH 0007
++    #[inline(always)] // BLAZE PATCH 0007
++    fn eval<'v>(v0: Value<'v>, v1: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> { // BLAZE PATCH 0007
++        set_inplace_op(v0, v1, SetInplaceOp::And).unwrap_or_else(|| v0.bit_and(v1, heap)) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++} // BLAZE PATCH 0007
++
++impl InstrBinOpImpl for InstrBitXorAssignImpl { // BLAZE PATCH 0007
++    #[inline(always)] // BLAZE PATCH 0007
++    fn eval<'v>(v0: Value<'v>, v1: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> { // BLAZE PATCH 0007
++        set_inplace_op(v0, v1, SetInplaceOp::Xor).unwrap_or_else(|| v0.bit_xor(v1, heap)) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++} // BLAZE PATCH 0007
+ pub(crate) type InstrBitXor = InstrBinOp<InstrBitXorImpl>;
+ pub(crate) type InstrLeftShift = InstrBinOp<InstrLeftShiftImpl>;
+ pub(crate) type InstrRightShift = InstrBinOp<InstrRightShiftImpl>;
+-pub(crate) type InstrIn = InstrBinOp<InstrInImpl>;
++pub(crate) type InstrIn = InstrNoFlow<InstrInImpl>; // BLAZE PATCH 0027
+ 
+ impl InstrBinOpImpl for InstrAddImpl {
+     #[inline(always)]
+@@ -759,11 +790,22 @@
+     }
+ }
+ 
+-impl InstrBinOpImpl for InstrInImpl {
+-    #[inline(always)]
+-    fn eval<'v>(v0: Value<'v>, v1: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
+-        Ok(Value::new_bool(v1.is_in(v0)?))
+-    }
++impl InstrNoFlowImpl for InstrInImpl { // BLAZE PATCH 0027
++    type Arg = (BcSlotIn, BcSlotIn, BcSlotOut); // BLAZE PATCH 0027
++
++    #[inline(always)] // BLAZE PATCH 0027
++    fn run_with_args<'v>( // BLAZE PATCH 0027
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
++        frame: BcFramePtr<'v>, // BLAZE PATCH 0027
++        _ip: BcPtrAddr, // BLAZE PATCH 0027
++        (v0, v1, target): &(BcSlotIn, BcSlotIn, BcSlotOut), // BLAZE PATCH 0027
++    ) -> crate::Result<()> { // BLAZE PATCH 0027
++        let v0 = frame.get_bc_slot(*v0); // BLAZE PATCH 0027
++        let v1 = frame.get_bc_slot(*v1); // BLAZE PATCH 0027
++        let v = Value::new_bool(v1.is_in_with_eval(v0, eval)?); // BLAZE PATCH 0027
++        frame.set_bc_slot(*target, v); // BLAZE PATCH 0027
++        Ok(()) // BLAZE PATCH 0027
++    } // BLAZE PATCH 0027
+ }
+ 
+ pub(crate) struct InstrPercentSOneImpl;
+@@ -1633,8 +1675,10 @@
+ ) -> crate::Result<()> {
+     eval.report_forward_progress()?;
+     // TODO: wrong span: should be span of `object.method`, not of the whole expression
+-    let method = get_attr_hashed_raw(this, symbol, eval.heap())?;
+-    let r = method.invoke(this, span, arguments, eval)?;
++    let method = get_attr_hashed_raw(this, symbol, eval)?; // BLAZE PATCH 0026
++    let r = method // BLAZE PATCH 0028
++        .invoke(this, span, arguments, eval) // BLAZE PATCH 0028
++        .map_err(|e| add_span_to_expr_error(e, *span, eval).into_error())?; // BLAZE PATCH 0028
+     frame.set_bc_slot(target, r);
+     Ok(())
+ }
+@@ -1656,9 +1700,11 @@
+         // If pointers are equal, getattr would return the same method
+         // we already have.
+         if ptr::eq(methods, known_method.type_methods) {
+-            let r = eval.with_call_stack(known_method.to_value(), Some(span), |eval| {
+-                known_method.invoke_method(this, arguments, eval)
+-            })?;
++            let r = eval // BLAZE PATCH 0028
++                .with_call_stack(known_method.to_value(), Some(span), |eval| { // BLAZE PATCH 0028
++                    known_method.invoke_method(this, arguments, eval) // BLAZE PATCH 0028
++                }) // BLAZE PATCH 0028
++                .map_err(|e| add_span_to_expr_error(e, *span, eval).into_error())?; // BLAZE PATCH 0028
+             frame.set_bc_slot(target, r);
+             return Ok(());
+         }
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/opcode.rs starlark/src/eval/bc/opcode.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/opcode.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/bc/opcode.rs	2026-11-18 16:00:00.495893116 -0700
+@@ -64,6 +64,7 @@
+     Add,
+     AddAssign,
+     Sub,
++    SubAssign, // BLAZE PATCH 0007
+     Multiply,
+     Percent,
+     PercentSOne,
+@@ -71,9 +72,11 @@
+     Divide,
+     FloorDivide,
+     BitAnd,
++    BitAndAssign, // BLAZE PATCH 0007
+     BitOr,
+     BitOrAssign,
+     BitXor,
++    BitXorAssign, // BLAZE PATCH 0007
+     LeftShift,
+     RightShift,
+     Len,
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/call.rs starlark/src/eval/compiler/call.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/call.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/compiler/call.rs	2026-11-18 16:14:11.695413009 -0700
+@@ -271,9 +271,14 @@
+             return type_is;
+         }
+ 
+-        if let Some(inline) = CallCompiled::try_inline(span, &fun, &args, ctx) {
+-            return inline.node;
+-        }
++        // BLAZE PATCH 0028: calls are not inlined. Java has no inliner: every Starlark call is a
++        // frame of the traceback (an inlined body's errors were located at the call site, with
++        // the callee missing from the stack, and the call escaped the recursion check).
++        if false { // BLAZE PATCH 0028
++            if let Some(inline) = CallCompiled::try_inline(span, &fun, &args, ctx) { // BLAZE PATCH 0028
++                return inline.node; // BLAZE PATCH 0028
++            } // BLAZE PATCH 0028
++        } // BLAZE PATCH 0028
+ 
+         if fun.is_fn_len() {
+             if let Some(arg) = args.one_pos() {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs starlark/src/eval/compiler/def.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/def.rs	2026-11-18 11:18:46.299108798 -0700
++++ starlark/src/eval/compiler/def.rs	2026-11-18 16:14:11.695641338 -0700
 @@ -42,6 +42,7 @@
  use crate as starlark;
  use crate::any::ProvidesStaticType;
@@ -82,7 +398,26 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              parameter_captures: self
                  .eval
                  .frozen_heap()
-@@ -610,6 +618,141 @@
+@@ -602,14 +610,159 @@
+ }
+ 
+ impl<V> Display for DefGen<V> {
++    // BLAZE PATCH 0009: Java StarlarkFunction.repr (StarlarkFunction.java:222):
++    // `<function NAME>`, plus ` from CLIENT_DATA` when the defining module has client data (the
++    // frozen module's extra value, its `str`).
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+-        write!(f, "{}", self.parameters.signature())
++        write!(f, "<function {}", self.def_info.name.as_str())?; // BLAZE PATCH 0009
++        let module = self.module.load_relaxed(); // BLAZE PATCH 0009
++        if let Some(extra) = module.and_then(|m| m.as_ref().extra_value) { // BLAZE PATCH 0009
++            if !extra.is_none() { // BLAZE PATCH 0009
++                write!(f, " from {}", extra.to_value().to_str())?; // BLAZE PATCH 0009
++            } // BLAZE PATCH 0009
++        } // BLAZE PATCH 0009
++        write!(f, ">") // BLAZE PATCH 0009
+     }
+ }
+ 
  pub(crate) type Def<'v> = DefGen<Value<'v>>;
  pub(crate) type FrozenDef = DefGen<FrozenValue>;
  
@@ -224,10 +559,13 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  starlark_complex_values!(Def);
  
  impl<'v> Def<'v> {
-@@ -783,6 +926,25 @@
-     where
-         'v: 'a,
-     {
+@@ -773,6 +926,39 @@
+         Ok(())
+     }
+ 
++    /// BLAZE PATCH 0004: Bazel forbids recursion (moved after argument binding by 0028, as in
++    /// Java StarlarkFunction.java:565-573).
++    fn check_recursion(&self, eval: &mut Evaluator<'v, '_, '_>) -> crate::Result<()> { // BLAZE PATCH 0028
 +        // BLAZE PATCH 0004: Bazel forbids recursion. Two function values are the same function
 +        // when they share the compiled definition (closures of one lambda included).
 +        if eval.forbid_recursion {
@@ -247,13 +585,69 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +                )));
 +            }
 +        }
-         let bc = self.bc();
-         alloca_frame(
-             eval,
++        Ok(()) // BLAZE PATCH 0028
++    } // BLAZE PATCH 0028
++
++    /// BLAZE PATCH 0028: `e` located at the function's declaration (unless already located).
++    #[cold] // BLAZE PATCH 0028
++    fn at_declaration(&self, mut e: crate::Error) -> crate::Error { // BLAZE PATCH 0028
++        let span = &self.def_info.declaration_span; // BLAZE PATCH 0028
++        e.set_span(span.span(), span.file().as_ref()); // BLAZE PATCH 0028
++        e // BLAZE PATCH 0028
++    } // BLAZE PATCH 0028
++
+     #[inline(always)]
+     fn invoke_impl<'a, A: ArgumentsImpl<'v, 'a>>(
+         &self,
+@@ -795,7 +981,14 @@
+                 //   We use `slots` only in `collect_inline`,
+                 //   which does not have access to `eval` thus cannot access the frame indirectly.
+                 let slots = unsafe { eval.current_frame.locals_mut() };
+-                self.parameters.collect_inline(args, slots, eval.heap())?;
++                // BLAZE PATCH 0028: argument and recursion errors are located at the callee's
++                // declaration (Java: StarlarkThread.push sets the new frame's location to
++                // StarlarkFunction.getLocation; ArgumentProcessor and the recursion check,
++                // StarlarkFunction.java:572, throw inside that frame).
++                self.parameters // BLAZE PATCH 0028
++                    .collect_inline(args, slots, eval.heap()) // BLAZE PATCH 0028
++                    .map_err(|e| self.at_declaration(e))?; // BLAZE PATCH 0028
++                self.check_recursion(eval).map_err(|e| self.at_declaration(e))?; // BLAZE PATCH 0028
+                 self.invoke_raw(me, eval)
+             },
+         )
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/expr.rs starlark/src/eval/compiler/expr.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/expr.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/expr.rs	2026-11-18 11:18:41.095968319 -0700
-@@ -1111,6 +1111,9 @@
++++ starlark/src/eval/compiler/expr.rs	2026-11-18 15:33:20.899670422 -0700
+@@ -871,18 +871,16 @@
+         attr: &Symbol,
+         ctx: &mut OptCtx,
+     ) -> Option<FrozenValue> {
+-        // We assume `getattr` has no side effects.
+-        let v = get_attr_hashed_raw(left.to_value(), attr, ctx.heap()).ok()?;
+-        match v {
+-            MemberOrValue::Member(m) => match m {
+-                UnboundValue::Method(m) => Some(
+-                    ctx.frozen_heap()
+-                        .alloc_simple(BoundMethodGen::new(left, *m)),
+-                ),
+-                UnboundValue::Attr(..) => None,
+-            },
+-            MemberOrValue::Value(v) => v.unpack_frozen(),
+-        }
++        // Only methods are folded: a field may fail or read the evaluator
++        // (`StarlarkValue::get_attr_fallible`), so it is read at run time.
++        let methods = left.to_value().get_ref().vtable().methods()?; // BLAZE PATCH 0026
++        match methods.get_frozen_symbol(attr)? { // BLAZE PATCH 0026
++            UnboundValue::Method(m) => Some( // BLAZE PATCH 0026
++                ctx.frozen_heap() // BLAZE PATCH 0026
++                    .alloc_simple(BoundMethodGen::new(left, *m)), // BLAZE PATCH 0026
++            ), // BLAZE PATCH 0026
++            UnboundValue::Attr(..) => None, // BLAZE PATCH 0026
++        } // BLAZE PATCH 0026
+     }
+ 
+     pub(crate) fn dot(
+@@ -1111,6 +1109,9 @@
  #[cold]
  #[inline(never)]
  fn get_attr_no_attr_error<'v>(x: Value<'v>, attribute: &Symbol) -> crate::Error {
@@ -263,7 +657,44 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      match did_you_mean(attribute.as_str(), x.dir_attr().iter().map(|s| s.as_str())) {
          None => ValueError::NoAttr(x.get_type().to_owned(), attribute.as_str().to_owned()).into(),
          Some(better) => ValueError::NoAttrDidYouMean(
-@@ -1247,7 +1250,15 @@
+@@ -1147,7 +1148,7 @@
+ pub(crate) fn get_attr_hashed_raw<'v>(
+     x: Value<'v>,
+     attribute: &Symbol,
+-    heap: Heap<'v>,
++    eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
+ ) -> crate::Result<MemberOrValue<'v, 'static>> {
+     let aref = x.get_ref();
+     if let Some(methods) = aref.vtable().methods() {
+@@ -1155,7 +1156,7 @@
+             return Ok(MemberOrValue::Member(v));
+         }
+     }
+-    match aref.get_attr_hashed(attribute.as_str_hashed(), heap) {
++    match aref.get_attr_fallible(attribute.as_str_hashed(), eval)? { // BLAZE PATCH 0026
+         None => Err(get_attr_no_attr_error(x, attribute)),
+         Some(x) => Ok(MemberOrValue::Value(x)),
+     }
+@@ -1164,15 +1165,15 @@
+ pub(crate) fn get_attr_hashed_bind<'v>(
+     x: Value<'v>,
+     attribute: &Symbol,
+-    heap: Heap<'v>,
++    eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
+ ) -> crate::Result<Value<'v>> {
+     let aref = x.get_ref();
+     if let Some(methods) = aref.vtable().methods() {
+         if let Some(v) = methods.get_frozen_symbol(attribute) {
+-            return v.bind(x, heap);
++            return v.bind(x, eval.heap()); // BLAZE PATCH 0026
+         }
+     }
+-    match aref.get_attr_hashed(attribute.as_str_hashed(), heap) {
++    match aref.get_attr_fallible(attribute.as_str_hashed(), eval)? { // BLAZE PATCH 0026
+         None => Err(get_attr_no_attr_error(x, attribute)),
+         Some(x) => {
+             // Only `get_methods` is allowed to return unbound methods or attributes.
+@@ -1247,7 +1248,15 @@
                      // TODO(nga): unnecessary clone.
                      node: StmtP::Return(Some(*body.clone())),
                  };
@@ -331,8 +762,94 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              &mut expr.node.expr,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/stmt.rs starlark/src/eval/compiler/stmt.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/stmt.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/stmt.rs	2026-11-18 11:18:41.095646240 -0700
-@@ -572,6 +572,13 @@
++++ starlark/src/eval/compiler/stmt.rs	2026-11-18 16:00:00.495651247 -0700
+@@ -68,6 +68,8 @@
+ use crate::values::Value;
+ use crate::values::ValueError;
+ use crate::values::dict::Dict;
++use crate::values::types::set::methods::SetInplaceOp; // BLAZE PATCH 0007
++use crate::values::types::set::methods::set_inplace_op; // BLAZE PATCH 0007
+ use crate::values::dict::DictMut;
+ use crate::values::dict::DictRef;
+ use crate::values::types::list::value::ListData;
+@@ -75,7 +77,8 @@
+ 
+ #[derive(Clone, Debug, StarlarkPagable)]
+ pub(crate) enum AssignModifyLhs {
+-    Dot(IrSpanned<ExprCompiled>, String),
++    // BLAZE PATCH 0028: the field name spans `object.field`, where Java locates errors (the `.`).
++    Dot(IrSpanned<ExprCompiled>, IrSpanned<String>), // BLAZE PATCH 0028
+     Array(IrSpanned<ExprCompiled>, IrSpanned<ExprCompiled>),
+     Local(IrSpanned<LocalSlotId>),
+     LocalCaptured(IrSpanned<LocalCapturedSlotId>),
+@@ -124,7 +127,7 @@
+     fn optimize(&self, ctx: &mut OptCtx) -> AssignModifyLhs {
+         match self {
+             AssignModifyLhs::Dot(expr, name) => {
+-                AssignModifyLhs::Dot(expr.optimize(ctx), name.clone())
++                AssignModifyLhs::Dot(expr.optimize(ctx), name.clone()) // BLAZE PATCH 0028
+             }
+             AssignModifyLhs::Array(expr, index) => {
+                 AssignModifyLhs::Array(expr.optimize(ctx), index.optimize(ctx))
+@@ -298,6 +301,7 @@
+         t: StmtsCompiled,
+         f: StmtsCompiled,
+     ) -> StmtsCompiled {
++        let cond_span = cond.span; // BLAZE PATCH 0028
+         let cond = ExprCompiledBool::new(cond);
+         match cond.node {
+             ExprCompiledBool::Const(true) => t,
+@@ -312,7 +316,9 @@
+                     stmt
+                 }
+                 cond => {
+-                    let cond = IrSpanned { span, node: cond };
++                    // BLAZE PATCH 0028: the condition keeps its own span, so its errors are
++                    // located in it (Java: the failing operator), not at the `if`.
++                    let cond = IrSpanned { span: cond_span, node: cond }; // BLAZE PATCH 0028
+                     if t.is_empty() && f.is_empty() {
+                         Self::expr(cond)
+                     } else {
+@@ -370,6 +376,21 @@
+ }
+ 
+ impl IrSpanned<AssignCompiledValue> {
++    /// BLAZE PATCH 0028: index assignments and unpacking (at any depth) report their errors at
++    /// `span` (Java: the enclosing statement's location); `x.f = ...` keeps its own span.
++    pub(crate) fn located_at(self, span: FrameSpan) -> IrSpanned<AssignCompiledValue> { // BLAZE PATCH 0028
++        match self.node { // BLAZE PATCH 0028
++            AssignCompiledValue::Index(..) => IrSpanned { node: self.node, span }, // BLAZE PATCH 0028
++            AssignCompiledValue::Tuple(xs) => IrSpanned { // BLAZE PATCH 0028
++                node: AssignCompiledValue::Tuple( // BLAZE PATCH 0028
++                    xs.into_iter().map(|x| x.located_at(span)).collect(), // BLAZE PATCH 0028
++                ), // BLAZE PATCH 0028
++                span, // BLAZE PATCH 0028
++            }, // BLAZE PATCH 0028
++            node => IrSpanned { node, span: self.span }, // BLAZE PATCH 0028
++        } // BLAZE PATCH 0028
++    } // BLAZE PATCH 0028
++
+     pub(crate) fn optimize(&self, ctx: &mut OptCtx) -> IrSpanned<AssignCompiledValue> {
+         let span = self.span;
+         let assign = match self.node {
+@@ -457,7 +478,7 @@
+                 Ok(StmtsCompiled::one(IrSpanned {
+                     span: span_stmt,
+                     node: StmtCompiled::AssignModify(
+-                        AssignModifyLhs::Dot(e, s.node.clone()),
++                        AssignModifyLhs::Dot(e, IrSpanned { node: s.node.clone(), span: span_lhs }), // BLAZE PATCH 0028
+                         op,
+                         rhs,
+                     ),
+@@ -568,10 +589,21 @@
+     // When mutating, be careful if they alias, so we don't have `lhs`
+     // mutably borrowed when we iterate over `rhs`, as they might alias.
+ 
++    // Java Eval.inplaceBinaryOp: `set |= set` updates the left set.
++    if let Some(r) = set_inplace_op(lhs, rhs, SetInplaceOp::Or) { // BLAZE PATCH 0007
++        return r; // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
+     let lhs_aref = lhs.get_ref();
      let lhs_ty = lhs_aref.vtable().static_type_of_value.get();
  
      if Dict::is_dict_type(lhs_ty) {
@@ -346,7 +863,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let mut dict = DictMut::from_value(lhs)?;
          if lhs.ptr_eq(rhs) {
              // Nothing to do as union is idempotent
-@@ -592,7 +599,7 @@
+@@ -592,7 +624,7 @@
          }
          Ok(lhs)
      } else {
@@ -355,7 +872,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  }
  
-@@ -747,6 +754,7 @@
+@@ -747,6 +779,7 @@
                      node: self.function(
                          &name.ident,
                          signature_span,
@@ -363,6 +880,25 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                          *scope_id,
                          params,
                          return_type.as_deref(),
+@@ -766,6 +799,8 @@
+             StmtP::For(ForP { var, over, body }) => {
+                 let over = list_to_tuple(over);
+                 let var = self.assign_target(var)?;
++                // Java Eval.execFor: an assignment error is located at the `for`.
++                let var = var.located_at(span); // BLAZE PATCH 0028
+                 let over = self.expr(&over)?;
+                 let st = self.stmt(body, false)?;
+                 Ok(StmtsCompiled::for_stmt(span, var, over, st))
+@@ -801,6 +836,9 @@
+                 let rhs = self.expr(rhs)?;
+                 let ty = self.expr_for_type(ty.as_ref());
+                 let lhs = self.assign_target(lhs)?;
++                // Java Eval.execAssignment: an error assigning to `x[i]` or unpacking is located
++                // at the `=` (the statement span; `x.f` keeps the `.`, Eval.assign).
++                let lhs = lhs.located_at(span); // BLAZE PATCH 0028
+                 Ok(StmtsCompiled::one(IrSpanned {
+                     span,
+                     node: StmtCompiled::Assign(lhs, ty, rhs),
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/cheap_call_stack.rs starlark/src/eval/runtime/cheap_call_stack.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/cheap_call_stack.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/eval/runtime/cheap_call_stack.rs	2026-11-18 07:02:46.445228006 -0700
@@ -481,6 +1017,72 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Sets max call stack size.
      /// Stack allocation will happen on entry point of evaluation if not allocated yet.
      pub fn set_max_callstack_size(&mut self, stack_size: usize) -> anyhow::Result<()> {
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/frame_span.rs starlark/src/eval/runtime/frame_span.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/frame_span.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/runtime/frame_span.rs	2026-11-18 15:45:28.482923649 -0700
+@@ -50,6 +50,44 @@
+         }
+     }
+ 
++    /// The `:` between a dict entry's key (`self`) and its value (Java
++    /// `DictExpression.Entry.getColonLocation`); the key's span if it cannot be found.
++    pub(crate) fn dict_colon(&self, value: &FrameSpan) -> FrameSpan { // BLAZE PATCH 0028
++        let file = self.span.file(); // BLAZE PATCH 0028
++        let (from, to) = (self.span.span().end(), value.span.span().begin()); // BLAZE PATCH 0028
++        if value.span.file() != file || to < from { // BLAZE PATCH 0028
++            return *self; // BLAZE PATCH 0028
++        } // BLAZE PATCH 0028
++        let text = file.source_span(crate::codemap::Span::new(from, to)); // BLAZE PATCH 0028
++        let mut in_comment = false; // BLAZE PATCH 0028
++        for (i, c) in text.char_indices() { // BLAZE PATCH 0028
++            match c { // BLAZE PATCH 0028
++                '\n' => in_comment = false, // BLAZE PATCH 0028
++                _ if in_comment => {} // BLAZE PATCH 0028
++                '#' => in_comment = true, // BLAZE PATCH 0028
++                ':' => { // BLAZE PATCH 0028
++                    let at = from + i as u32; // BLAZE PATCH 0028
++                    let colon = crate::codemap::Span::new(at, at + 1); // BLAZE PATCH 0028
++                    return FrameSpan { // BLAZE PATCH 0028
++                        span: FrozenFileSpan::new_unchecked(file, colon), // BLAZE PATCH 0028
++                        inlined_frames: self.inlined_frames, // BLAZE PATCH 0028
++                    }; // BLAZE PATCH 0028
++                } // BLAZE PATCH 0028
++                _ => {} // BLAZE PATCH 0028
++            } // BLAZE PATCH 0028
++        } // BLAZE PATCH 0028
++        *self // BLAZE PATCH 0028
++    } // BLAZE PATCH 0028
++
++    /// An empty span at the start of this one, with the same inlined frames: errors located
++    /// there render at the node's start (Java `Node.getStartLocation`).
++    pub(crate) fn begin_point(&self) -> FrameSpan { // BLAZE PATCH 0028
++        FrameSpan { // BLAZE PATCH 0028
++            span: self.span.begin_point(), // BLAZE PATCH 0028
++            inlined_frames: self.inlined_frames, // BLAZE PATCH 0028
++        } // BLAZE PATCH 0028
++    } // BLAZE PATCH 0028
++
+     pub(crate) fn end_span(&self) -> FrameSpan {
+         FrameSpan {
+             span: self.span.end_span(),
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/frozen_file_span.rs starlark/src/eval/runtime/frozen_file_span.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/frozen_file_span.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/runtime/frozen_file_span.rs	2026-11-18 15:42:52.158278344 -0700
+@@ -82,6 +82,14 @@
+         self.span
+     }
+ 
++    /// An empty span at the start of this one (Java `Node.getStartLocation`).
++    pub(crate) fn begin_point(&self) -> FrozenFileSpan { // BLAZE PATCH 0028
++        FrozenFileSpan { // BLAZE PATCH 0028
++            file: self.file, // BLAZE PATCH 0028
++            span: Span::new(self.span.begin(), self.span.begin()), // BLAZE PATCH 0028
++        } // BLAZE PATCH 0028
++    } // BLAZE PATCH 0028
++
+     pub(crate) fn end_span(&self) -> FrozenFileSpan {
+         FrozenFileSpan {
+             file: self.file,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/inlined_frame.rs starlark/src/eval/runtime/inlined_frame.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/inlined_frame.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/eval/runtime/inlined_frame.rs	2026-11-18 07:02:46.445365955 -0700
@@ -496,7 +1098,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          while let Some(frames) = frames_iter.frames {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval.rs starlark/src/eval.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval.rs	2026-11-18 07:00:05.299175653 -0700
++++ starlark/src/eval.rs	2026-11-18 15:50:36.318451392 -0700
 @@ -42,6 +42,8 @@
  pub use runtime::profile::mode::ProfileMode;
  pub use soft_error::SoftErrorHandler;
@@ -506,10 +1108,61 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  use starlark_syntax::slice_vec_ext::SliceExt;
  use starlark_syntax::syntax::module::AstModule;
  use starlark_syntax::syntax::module::AstModuleFields;
+@@ -66,6 +68,33 @@
+ // Register CodeMap for use with StarlarkAny
+ register_starlark_any!(CodeMap);
+ 
++/// BLAZE PATCH 0029: every name of `ast` that is neither bound in the file nor in `globals`, as
++/// the errors `Evaluator::eval_module` would raise (it stops at the first), in source order.
++/// Java's Resolver reports every undefined name of a file (net/starlark/java/syntax/
++/// Resolver.java:941 `use`, errors collected by `errorf` and thrown together by
++/// `Program.compileFile`). Other resolver errors are included too.
++pub fn resolve_errors(ast: &AstModule, globals: &Globals) -> Vec<crate::Error> { // BLAZE PATCH 0029
++    let names = crate::environment::names::MutableNames::new(); // BLAZE PATCH 0029
++    let heap = crate::values::FrozenHeap::new(); // BLAZE PATCH 0029
++    let (codemap, statement, dialect, _) = ast.clone().into_parts(); // BLAZE PATCH 0029
++    let codemap = heap.alloc_any_value(codemap); // BLAZE PATCH 0029
++    let globals = heap.alloc_any_value(globals.dupe()); // BLAZE PATCH 0029
++    let (errors, _) = ModuleScopes::check_module( // BLAZE PATCH 0029
++        &names, // BLAZE PATCH 0029
++        &heap, // BLAZE PATCH 0029
++        &HashMap::new(), // BLAZE PATCH 0029
++        statement, // BLAZE PATCH 0029
++        ScopeResolverGlobals { // BLAZE PATCH 0029
++            globals: Some(globals), // BLAZE PATCH 0029
++        }, // BLAZE PATCH 0029
++        codemap, // BLAZE PATCH 0029
++        &dialect, // BLAZE PATCH 0029
++    ); // BLAZE PATCH 0029
++    let mut errors: Vec<crate::Error> = errors.into_iter().map(|e| e.into_error()).collect(); // BLAZE PATCH 0029
++    errors.sort_by_key(|e| e.span().map(|s| s.span.begin())); // BLAZE PATCH 0029
++    errors // BLAZE PATCH 0029
++} // BLAZE PATCH 0029
++
+ impl<'v, 'a, 'e> Evaluator<'v, 'a, 'e> {
+     /// Evaluate an [`AstModule`] with this [`Evaluator`], modifying the in-scope
+     /// [`Module`](crate::environment::Module) as appropriate.
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/stdlib/funcs/other.rs starlark/src/stdlib/funcs/other.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/stdlib/funcs/other.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/stdlib/funcs/other.rs	2026-11-18 05:24:21.556122907 -0700
-@@ -199,7 +199,12 @@
++++ starlark/src/stdlib/funcs/other.rs	2026-11-18 15:33:41.246700547 -0700
+@@ -187,19 +187,25 @@
+     /// getattr("banana", "split")("a") == ["b", "n", "n", ""] # equivalent to "banana".split("a")
+     /// # "#);
+     /// ```
+-    #[starlark(speculative_exec_safe)]
++    // BLAZE PATCH 0026: not `speculative_exec_safe`: a field may fail or read the evaluator.
+     fn getattr<'v>(
+         #[starlark(require = pos)] a: Value<'v>,
+         #[starlark(require = pos)] attr: &str,
+         #[starlark(require = pos)] default: Option<Value<'v>>,
+-        heap: Heap<'v>,
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
+     ) -> starlark::Result<Value<'v>> {
+-        // TODO(nga): this doesn't cache string hash, so it is suboptimal.
+-        match a.get_attr(attr, heap)? {
++        // Java: net/starlark/java/eval/Starlark.java:978 Starlark.getattr: an error computing a
++        // field propagates; the default only replaces a missing field.
++        match a.get_attr_fallible(attr, eval)? { // BLAZE PATCH 0026
              Some(v) => Ok(v),
              None => match default {
                  Some(x) => Ok(x),
@@ -522,6 +1175,36 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +                }
              },
          }
+     }
+@@ -210,13 +216,14 @@
+     ///
+     /// `hasattr(x, name)` reports whether x has an attribute (field or method)
+     /// named `name`.
+-    #[starlark(speculative_exec_safe)]
++    // BLAZE PATCH 0026: not `speculative_exec_safe`: a field may fail or read the evaluator.
+     fn hasattr<'v>(
+         #[starlark(require = pos)] a: Value<'v>,
+         #[starlark(require = pos)] attr: &str,
+-        heap: Heap<'v>,
+-    ) -> anyhow::Result<bool> {
+-        Ok(a.has_attr(attr, heap))
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
++    ) -> starlark::Result<bool> { // BLAZE PATCH 0026
++        // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr
++        a.has_attr_fallible(attr, eval) // BLAZE PATCH 0026
+     }
+ 
+     /// [hash](
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/error.rs starlark/src/values/error.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/error.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/error.rs	2026-11-18 16:05:12.252034303 -0700
+@@ -105,6 +105,7 @@
+     }
+ 
+     #[cold]
++    #[allow(dead_code)] // BLAZE PATCH 0008
+     pub(crate) fn unsupported_type<T>(left: Value, op: &str) -> crate::Result<T> {
+         Self::unsupported_owned(left.get_type(), op, None)
      }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/heap/allocator/alloc/per_thread.rs starlark/src/values/layout/heap/allocator/alloc/per_thread.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/heap/allocator/alloc/per_thread.rs	2006-07-23 19:21:28.000000000 -0600
@@ -542,8 +1225,40 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          AlignedSize::new_bytes(1 << 31)
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/value.rs starlark/src/values/layout/value.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/value.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/layout/value.rs	2026-11-18 05:24:21.556612374 -0700
-@@ -644,7 +644,15 @@
++++ starlark/src/values/layout/value.rs	2026-11-18 15:33:06.222319567 -0700
+@@ -575,6 +575,15 @@
+         self.get_ref().at(index, heap)
+     }
+ 
++    /// `x[index]` as Starlark evaluates it ([`StarlarkValue::at_with_eval`]).
++    pub fn at_with_eval( // BLAZE PATCH 0027
++        self, // BLAZE PATCH 0027
++        index: Value<'v>, // BLAZE PATCH 0027
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
++    ) -> crate::Result<Value<'v>> { // BLAZE PATCH 0027
++        self.get_ref().at_with_eval(index, eval) // BLAZE PATCH 0027
++    } // BLAZE PATCH 0027
++
+     /// `x[start:stop:stride]`.
+     pub fn slice(
+         self,
+@@ -596,6 +605,15 @@
+         self.get_ref().is_in(other)
+     }
+ 
++    /// `other in x` as Starlark evaluates it ([`StarlarkValue::is_in_with_eval`]).
++    pub fn is_in_with_eval( // BLAZE PATCH 0027
++        self, // BLAZE PATCH 0027
++        other: Value<'v>, // BLAZE PATCH 0027
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
++    ) -> crate::Result<bool> { // BLAZE PATCH 0027
++        self.get_ref().is_in_with_eval(other, eval) // BLAZE PATCH 0027
++    } // BLAZE PATCH 0027
++
+     /// `+x`.
+     pub fn plus(self, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+         self.get_ref().plus(heap)
+@@ -644,7 +662,15 @@
  
      /// `x | other`.
      pub fn bit_or(self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
@@ -560,7 +1275,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// `x ^ other`.
-@@ -981,11 +989,22 @@
+@@ -981,11 +1007,55 @@
      /// Like `get_attr` but return an error if the attribute is not available.
      pub fn get_attr_error(self, attribute: &str, heap: Heap<'v>) -> crate::Result<Value<'v>> {
          match self.get_attr(attribute, heap)? {
@@ -581,10 +1296,43 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        self.get_ref().get_attr_error_message(attribute) // BLAZE PATCH 0013
 +    } // BLAZE PATCH 0013
 +
++    /// `x.attribute` as Starlark evaluates it: the type's methods, then
++    /// [`StarlarkValue::get_attr_fallible`]. `Ok(None)`: no such attribute.
++    pub fn get_attr_fallible( // BLAZE PATCH 0026
++        self, // BLAZE PATCH 0026
++        attribute: &str, // BLAZE PATCH 0026
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
++    ) -> crate::Result<Option<Value<'v>>> { // BLAZE PATCH 0026
++        let aref = self.get_ref(); // BLAZE PATCH 0026
++        let attribute = Hashed::new(attribute); // BLAZE PATCH 0026
++        if let Some(methods) = aref.vtable().methods() { // BLAZE PATCH 0026
++            if let Some(v) = methods.get_hashed(attribute) { // BLAZE PATCH 0026
++                return Ok(Some(v.bind(self, eval.heap())?)); // BLAZE PATCH 0026
++            } // BLAZE PATCH 0026
++        } // BLAZE PATCH 0026
++        aref.get_attr_fallible(attribute, eval) // BLAZE PATCH 0026
++    } // BLAZE PATCH 0026
++
++    /// `hasattr(x, attribute)` as Starlark evaluates it: the type's methods, then
++    /// [`StarlarkValue::has_attr_fallible`].
++    pub fn has_attr_fallible( // BLAZE PATCH 0026
++        self, // BLAZE PATCH 0026
++        attribute: &str, // BLAZE PATCH 0026
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
++    ) -> crate::Result<bool> { // BLAZE PATCH 0026
++        let aref = self.get_ref(); // BLAZE PATCH 0026
++        if let Some(methods) = aref.vtable().methods() { // BLAZE PATCH 0026
++            if methods.get(attribute).is_some() { // BLAZE PATCH 0026
++                return Ok(true); // BLAZE PATCH 0026
++            } // BLAZE PATCH 0026
++        } // BLAZE PATCH 0026
++        aref.has_attr_fallible(attribute, eval) // BLAZE PATCH 0026
++    } // BLAZE PATCH 0026
++
      /// Query whether an attribute exists on a type. Should be equivalent to whether
      /// [`get_attr`](Value::get_attr) succeeds, but potentially more efficient.
      pub fn has_attr(self, attribute: &str, heap: Heap<'v>) -> bool {
-@@ -1237,6 +1256,12 @@
+@@ -1237,6 +1307,12 @@
      where
          S: Serializer,
      {
@@ -599,8 +1347,31 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              Err(..) => Err(serde::ser::Error::custom(ToJsonCycleError(self.get_type()))),
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/vtable.rs starlark/src/values/layout/vtable.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/vtable.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/layout/vtable.rs	2026-11-18 05:24:21.556453735 -0700
-@@ -502,6 +502,10 @@
++++ starlark/src/values/layout/vtable.rs	2026-11-18 15:32:51.831530703 -0700
+@@ -457,6 +457,22 @@
+         (self.vtable.starlark_value.at)(self.value, index, heap)
+     }
+ 
++    pub(crate) fn at_with_eval( // BLAZE PATCH 0027
++        self, // BLAZE PATCH 0027
++        index: Value<'v>, // BLAZE PATCH 0027
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
++    ) -> crate::Result<Value<'v>> { // BLAZE PATCH 0027
++        (self.vtable.starlark_value.at_with_eval)(self.value, index, eval) // BLAZE PATCH 0027
++    } // BLAZE PATCH 0027
++
++    pub(crate) fn is_in_with_eval( // BLAZE PATCH 0027
++        self, // BLAZE PATCH 0027
++        collection: Value<'v>, // BLAZE PATCH 0027
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
++    ) -> crate::Result<bool> { // BLAZE PATCH 0027
++        (self.vtable.starlark_value.is_in_with_eval)(self.value, collection, eval) // BLAZE PATCH 0027
++    } // BLAZE PATCH 0027
++
+     pub(crate) fn at2(
+         self,
+         index0: Value<'v>,
+@@ -502,6 +518,26 @@
          (self.vtable.starlark_value.dir_attr)(self.value)
      }
  
@@ -608,10 +1379,26 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        (self.vtable.starlark_value.get_attr_error_message)(self.value, attribute) // BLAZE PATCH 0013
 +    } // BLAZE PATCH 0013
 +
++    pub(crate) fn get_attr_fallible( // BLAZE PATCH 0026
++        self, // BLAZE PATCH 0026
++        attribute: Hashed<&str>, // BLAZE PATCH 0026
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
++    ) -> crate::Result<Option<Value<'v>>> { // BLAZE PATCH 0026
++        (self.vtable.starlark_value.get_attr_fallible)(self.value, attribute, eval) // BLAZE PATCH 0026
++    } // BLAZE PATCH 0026
++
++    pub(crate) fn has_attr_fallible( // BLAZE PATCH 0026
++        self, // BLAZE PATCH 0026
++        attribute: &str, // BLAZE PATCH 0026
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
++    ) -> crate::Result<bool> { // BLAZE PATCH 0026
++        (self.vtable.starlark_value.has_attr_fallible)(self.value, attribute, eval) // BLAZE PATCH 0026
++    } // BLAZE PATCH 0026
++
      #[inline]
      pub(crate) fn bit_and(self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
          (self.vtable.starlark_value.bit_and)(self.value, other, heap)
-@@ -512,6 +516,11 @@
+@@ -512,6 +548,11 @@
          (self.vtable.starlark_value.bit_or)(self.value, other, heap)
      }
  
@@ -657,8 +1444,37 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          } else {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/traits.rs starlark/src/values/traits.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/traits.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/traits.rs	2026-11-18 05:24:21.556258186 -0700
-@@ -644,6 +644,13 @@
++++ starlark/src/values/traits.rs	2026-11-18 16:09:56.218255023 -0700
+@@ -375,7 +375,8 @@
+ 
+     /// Invoked to print `repr` when a cycle is the object stack is detected.
+     fn collect_repr_cycle(&self, collector: &mut String) {
+-        write!(collector, "<{}...>", Self::TYPE).unwrap()
++        // Java Printer.repr (Printer.java:191): every value met again on the path is "...".
++        collector.push_str("...") // BLAZE PATCH 0031
+     }
+ 
+     /// Return a string representation of self, as returned by the `str()` function.
+@@ -470,6 +471,18 @@
+         ValueError::unsupported_with(self, "[]", index)
+     }
+ 
++    /// `a[index]` with the evaluator (Bazel's `StarlarkIndexable.Threaded.getIndex`, which
++    /// receives the `StarlarkThread`). Used by the index expression and `a[index] op= y`.
++    ///
++    /// Default: [`at`](Self::at).
++    fn at_with_eval( // BLAZE PATCH 0027
++        &self, // BLAZE PATCH 0027
++        index: Value<'v>, // BLAZE PATCH 0027
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
++    ) -> crate::Result<Value<'v>> { // BLAZE PATCH 0027
++        self.at(index, eval.heap()) // BLAZE PATCH 0027
++    } // BLAZE PATCH 0027
++
+     /// Return the result of `a[index0, index1]` if `a` is indexable by two parameters.
+     fn at2(
+         &self,
+@@ -644,6 +657,41 @@
          Vec::new()
      }
  
@@ -669,10 +1485,57 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        None // BLAZE PATCH 0013
 +    } // BLAZE PATCH 0013
 +
++    /// Attribute access that may fail and may read the evaluator (Bazel's
++    /// `Structure.getValue(StarlarkSemantics, String)`, which throws `EvalException`).
++    /// `Ok(None)` means the field is missing. Used by `x.f`, `x.f(...)`, `x.f op= y` and
++    /// `getattr`, after the type's methods (`get_methods`). A type that overrides this should
++    /// make [`get_attr`](Self::get_attr) agree for the fields it can compute without an
++    /// evaluator (Rust callers use that one).
++    ///
++    /// Default: [`get_attr_hashed`](Self::get_attr_hashed).
++    fn get_attr_fallible( // BLAZE PATCH 0026
++        &self, // BLAZE PATCH 0026
++        attribute: Hashed<&str>, // BLAZE PATCH 0026
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
++    ) -> crate::Result<Option<Value<'v>>> { // BLAZE PATCH 0026
++        Ok(self.get_attr_hashed(attribute, eval.heap())) // BLAZE PATCH 0026
++    } // BLAZE PATCH 0026
++
++    /// `hasattr` that may fail and may read the evaluator (Bazel's `Starlark.hasattr`, where
++    /// `Structure.getValue` may throw). Used by the `hasattr` builtin after the type's methods.
++    ///
++    /// Default: [`has_attr`](Self::has_attr).
++    fn has_attr_fallible( // BLAZE PATCH 0026
++        &self, // BLAZE PATCH 0026
++        attribute: &str, // BLAZE PATCH 0026
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
++    ) -> crate::Result<bool> { // BLAZE PATCH 0026
++        Ok(self.has_attr(attribute, eval.heap())) // BLAZE PATCH 0026
++    } // BLAZE PATCH 0026
++
      /// Tell whether `other` is in the current value, if it is a container.
      ///
      /// # Examples
-@@ -832,6 +839,13 @@
+@@ -659,6 +707,18 @@
+         ValueError::unsupported_owned(other.get_type(), "in", Some(Self::TYPE))
+     }
+ 
++    /// `other in self` with the evaluator (Bazel's `StarlarkIndexable.Threaded.containsKey`).
++    /// Used by the `in` and `not in` operators.
++    ///
++    /// Default: [`is_in`](Self::is_in).
++    fn is_in_with_eval( // BLAZE PATCH 0027
++        &self, // BLAZE PATCH 0027
++        other: Value<'v>, // BLAZE PATCH 0027
++        _eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
++    ) -> crate::Result<bool> { // BLAZE PATCH 0027
++        self.is_in(other) // BLAZE PATCH 0027
++    } // BLAZE PATCH 0027
++
+     /// Apply the `+` unary operator to the current value.
+     ///
+     /// # Examples
+@@ -832,6 +892,13 @@
          ValueError::unsupported_with(self, "|", other)
      }
  
@@ -686,6 +1549,46 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Bitwise `^` operator.
      fn bit_xor(&self, other: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
          ValueError::unsupported_with(self, "^", other)
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/bigint.rs starlark/src/values/types/bigint.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/bigint.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/bigint.rs	2026-11-18 16:04:00.479306245 -0700
+@@ -226,22 +226,29 @@
+     }
+ 
+     fn add(&self, rhs: Value<'v>, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
+-        Some(Ok(heap.alloc(
+-            NumRef::Int(StarlarkIntRef::Big(self)) + rhs.unpack_num()?,
+-        )))
++        let rhs = rhs.unpack_num()?; // BLAZE PATCH 0008
++        if let Err(e) = NumRef::Int(StarlarkIntRef::Big(self)).check_float_operands(rhs) { // BLAZE PATCH 0008
++            return Some(Err(e.into())); // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        Some(Ok(heap.alloc(NumRef::Int(StarlarkIntRef::Big(self)) + rhs))) // BLAZE PATCH 0008
+     }
+ 
+     fn sub(&self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+         match other.unpack_num() {
+-            Some(other) => Ok(heap.alloc(NumRef::Int(StarlarkIntRef::Big(self)) - other)),
++            Some(other) => { // BLAZE PATCH 0008
++                NumRef::Int(StarlarkIntRef::Big(self)).check_float_operands(other)?; // BLAZE PATCH 0008
++                Ok(heap.alloc(NumRef::Int(StarlarkIntRef::Big(self)) - other)) // BLAZE PATCH 0008
++            } // BLAZE PATCH 0008
+             None => ValueError::unsupported_with(self, "-", other),
+         }
+     }
+ 
+     fn mul(&self, other: Value<'v>, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
+-        Some(Ok(heap.alloc(
+-            NumRef::Int(StarlarkIntRef::Big(self)) * other.unpack_num()?,
+-        )))
++        let other = other.unpack_num()?; // BLAZE PATCH 0008
++        if let Err(e) = NumRef::Int(StarlarkIntRef::Big(self)).check_float_operands(other) { // BLAZE PATCH 0008
++            return Some(Err(e.into())); // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        Some(Ok(heap.alloc(NumRef::Int(StarlarkIntRef::Big(self)) * other))) // BLAZE PATCH 0008
+     }
+ 
+     fn div(&self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/methods.rs starlark/src/values/types/dict/methods.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/methods.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/dict/methods.rs	2026-11-18 08:10:39.694237883 -0700
@@ -768,7 +1671,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              },
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/value.rs starlark/src/values/types/dict/value.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/value.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/dict/value.rs	2026-11-18 10:42:42.459941633 -0700
++++ starlark/src/values/types/dict/value.rs	2026-11-18 16:09:08.434500823 -0700
 @@ -16,6 +16,7 @@
   */
  
@@ -953,6 +1856,15 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  }
  
+@@ -437,7 +507,7 @@
+     }
+ 
+     fn collect_repr_cycle(&self, collector: &mut String) {
+-        collector.push_str("{...}");
++        collector.push_str("..."); // BLAZE PATCH 0031: Java Printer.repr (Printer.java:191)
+     }
+ 
+     fn to_bool(&self) -> bool {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict.rs starlark/src/values/types/dict.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/dict.rs	2026-11-18 07:15:51.947753756 -0700
@@ -962,6 +1874,302 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  pub use crate::values::dict::value::Dict;
 +pub use crate::values::dict::value::alloc_immutable_dict; // BLAZE PATCH 0018
 +pub use crate::values::dict::value::dict_is_immutable; // BLAZE PATCH 0018
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/float/float.rs starlark/src/values/types/float/float.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/float/float.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/float/float.rs	2026-11-18 16:05:57.072278347 -0700
+@@ -66,11 +66,146 @@
+     }
+ }
+ 
++
++// BLAZE PATCH 0008: Java formats a double from its shortest round-trip decimal digits
++// (java.util.Formatter / FormattedFloatingDecimal, then StarlarkFloat.format's clean-up,
++// StarlarkFloat.java:120), rounding half-up on those digits.
++
++/// The shortest round-trip digits of finite `f`: (negative, digits without leading zeros
++/// (`[0]` for zero), decimal exponent of the first digit).
++fn java_digits(f: f64) -> (bool, Vec<u8>, i32) { // BLAZE PATCH 0008
++    let s = format!("{:e}", f.abs()); // BLAZE PATCH 0008
++    let (mantissa, exponent) = s.split_once('e').unwrap(); // BLAZE PATCH 0008
++    let digits: Vec<u8> = mantissa.bytes().filter(|b| b.is_ascii_digit()).map(|b| b - b'0').collect(); // BLAZE PATCH 0008
++    (f.is_sign_negative(), digits, exponent.parse().unwrap()) // BLAZE PATCH 0008
++} // BLAZE PATCH 0008
++
++/// The first `keep` digits rounded half-up (zeros added when there are fewer); `true` when
++/// rounding carried into a new leading digit (the digits are then all zero, read as `1` before).
++fn round_half_up(digits: &[u8], keep: i64) -> (Vec<u8>, bool) { // BLAZE PATCH 0008
++    if keep < 0 { // BLAZE PATCH 0008
++        return (Vec::new(), false); // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    let keep = keep as usize; // BLAZE PATCH 0008
++    if keep >= digits.len() { // BLAZE PATCH 0008
++        let mut r = digits.to_vec(); // BLAZE PATCH 0008
++        r.resize(keep, 0); // BLAZE PATCH 0008
++        return (r, false); // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    let mut r = digits[..keep].to_vec(); // BLAZE PATCH 0008
++    if digits[keep] >= 5 { // BLAZE PATCH 0008
++        for d in r.iter_mut().rev() { // BLAZE PATCH 0008
++            if *d == 9 { // BLAZE PATCH 0008
++                *d = 0; // BLAZE PATCH 0008
++            } else { // BLAZE PATCH 0008
++                *d += 1; // BLAZE PATCH 0008
++                return (r, false); // BLAZE PATCH 0008
++            } // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        return (r, true); // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    (r, false) // BLAZE PATCH 0008
++} // BLAZE PATCH 0008
++
++fn push_digits(out: &mut String, digits: &[u8]) { // BLAZE PATCH 0008
++    out.extend(digits.iter().map(|d| (b'0' + d) as char)); // BLAZE PATCH 0008
++} // BLAZE PATCH 0008
++
++/// Java `String.format("%.<p>e", f)` for finite `f`.
++fn java_e(f: f64, p: usize, exponent_char: char) -> String { // BLAZE PATCH 0008
++    let (neg, digits, mut exp) = java_digits(f); // BLAZE PATCH 0008
++    let (mut r, carry) = round_half_up(&digits, p as i64 + 1); // BLAZE PATCH 0008
++    if carry { // BLAZE PATCH 0008
++        r.insert(0, 1); // BLAZE PATCH 0008
++        r.pop(); // BLAZE PATCH 0008
++        exp += 1; // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    if f == 0.0 { // BLAZE PATCH 0008
++        exp = 0; // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    let mut out = String::new(); // BLAZE PATCH 0008
++    if neg { // BLAZE PATCH 0008
++        out.push('-'); // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    push_digits(&mut out, &r[..1]); // BLAZE PATCH 0008
++    if p > 0 { // BLAZE PATCH 0008
++        out.push('.'); // BLAZE PATCH 0008
++        push_digits(&mut out, &r[1..]); // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    out.push(exponent_char); // BLAZE PATCH 0008
++    out.push(if exp < 0 { '-' } else { '+' }); // BLAZE PATCH 0008
++    out.push_str(&format!("{:02}", exp.abs())); // BLAZE PATCH 0008
++    out // BLAZE PATCH 0008
++} // BLAZE PATCH 0008
++
++/// Java `String.format("%.<p>f", f)` for finite `f`.
++fn java_f(f: f64, p: usize) -> String { // BLAZE PATCH 0008
++    let (neg, digits, exp) = java_digits(f); // BLAZE PATCH 0008
++    let mut int_len = if f == 0.0 { 1 } else { exp as i64 + 1 }; // BLAZE PATCH 0008
++    let (mut r, carry) = round_half_up(&digits, int_len + p as i64); // BLAZE PATCH 0008
++    if carry { // BLAZE PATCH 0008
++        r.insert(0, 1); // BLAZE PATCH 0008
++        int_len += 1; // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    let mut out = String::new(); // BLAZE PATCH 0008
++    if neg { // BLAZE PATCH 0008
++        out.push('-'); // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    if int_len > 0 { // BLAZE PATCH 0008
++        push_digits(&mut out, &r[..int_len as usize]); // BLAZE PATCH 0008
++    } else { // BLAZE PATCH 0008
++        out.push('0'); // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    if p > 0 { // BLAZE PATCH 0008
++        out.push('.'); // BLAZE PATCH 0008
++        let mut frac: Vec<u8> = Vec::new(); // BLAZE PATCH 0008
++        if int_len < 0 { // BLAZE PATCH 0008
++            frac.resize((-int_len) as usize, 0); // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        frac.extend_from_slice(&r[int_len.max(0) as usize..]); // BLAZE PATCH 0008
++        frac.resize(p, 0); // BLAZE PATCH 0008
++        push_digits(&mut out, &frac); // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    out // BLAZE PATCH 0008
++} // BLAZE PATCH 0008
++
++/// Java StarlarkFloat.format(f, 'g'/'G') for finite `f`: `%.17g`, then trailing zeros removed
++/// (a fixed-point result keeps one digit after the point).
++fn java_g(f: f64, exponent_char: char) -> String { // BLAZE PATCH 0008
++    let (neg, digits, exp) = java_digits(f); // BLAZE PATCH 0008
++    let exp = if f == 0.0 { 0 } else { exp }; // BLAZE PATCH 0008
++    if (-4..17).contains(&exp) { // BLAZE PATCH 0008
++        let mut s = java_f(f, (16 - exp) as usize); // BLAZE PATCH 0008
++        if !s.contains('.') { // BLAZE PATCH 0008
++            // No digit after the point (17 integer digits): StarlarkFloat.format adds ".0".
++            return s + ".0"; // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        let dot = s.find('.').unwrap(); // BLAZE PATCH 0008
++        let trimmed = s.trim_end_matches('0').len().max(dot + 2); // BLAZE PATCH 0008
++        s.truncate(trimmed); // BLAZE PATCH 0008
++        s // BLAZE PATCH 0008
++    } else { // BLAZE PATCH 0008
++        let mut out = String::new(); // BLAZE PATCH 0008
++        if neg { // BLAZE PATCH 0008
++            out.push('-'); // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        push_digits(&mut out, &digits[..1]); // BLAZE PATCH 0008
++        if digits.len() > 1 { // BLAZE PATCH 0008
++            out.push('.'); // BLAZE PATCH 0008
++            push_digits(&mut out, &digits[1..]); // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        out.push(exponent_char); // BLAZE PATCH 0008
++        out.push(if exp < 0 { '-' } else { '+' }); // BLAZE PATCH 0008
++        out.push_str(&format!("{:02}", exp.abs())); // BLAZE PATCH 0008
++        out // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++} // BLAZE PATCH 0008
++
+ pub(crate) fn write_decimal<W: fmt::Write>(output: &mut W, f: f64) -> fmt::Result {
+     if !f.is_finite() {
+         write_non_finite(output, f)
+     } else {
+-        write!(output, "{f:.WRITE_PRECISION$}")
++        output.write_str(&java_f(f, WRITE_PRECISION)) // BLAZE PATCH 0008
+     }
+ }
+ 
+@@ -82,6 +217,8 @@
+ ) -> fmt::Result {
+     if !f.is_finite() {
+         write_non_finite(output, f)
++    } else if !strip_trailing_zeros { // BLAZE PATCH 0008
++        output.write_str(&java_e(f, WRITE_PRECISION, exponent_char)) // BLAZE PATCH 0008
+     } else {
+         let abs = f.abs();
+         let exponent = if f == 0.0 {
+@@ -139,6 +276,8 @@
+ ) -> fmt::Result {
+     if !f.is_finite() {
+         write_non_finite(output, f)
++    } else if true { // BLAZE PATCH 0008
++        output.write_str(&java_g(f, exponent_char)) // BLAZE PATCH 0008
+     } else {
+         let abs = f.abs();
+         let exponent = if f == 0.0 {
+@@ -190,7 +329,8 @@
+ 
+     pub(crate) fn floor_div_impl(a: f64, b: f64) -> anyhow::Result<f64> {
+         if b == 0.0 {
+-            Err(ValueError::DivisionByZero.into())
++            // Java StarlarkFloat.floordiv (StarlarkFloat.java:213).
++            Err(anyhow::anyhow!("integer division by zero")) // BLAZE PATCH 0008
+         } else {
+             Ok((a / b).floor())
+         }
+@@ -198,7 +338,8 @@
+ 
+     pub(crate) fn percent_impl(a: f64, b: f64) -> anyhow::Result<f64> {
+         if b == 0.0 {
+-            Err(ValueError::DivisionByZero.into())
++            // Java StarlarkFloat.mod (StarlarkFloat.java:229).
++            Err(anyhow::anyhow!("floating-point modulo by zero")) // BLAZE PATCH 0008
+         } else {
+             let r = a % b;
+             if r == 0.0 {
+@@ -292,18 +433,29 @@
+     }
+ 
+     fn add(&self, other: Value, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
+-        Some(Ok(heap.alloc(NumRef::Float(*self) + other.unpack_num()?)))
++        let other = other.unpack_num()?; // BLAZE PATCH 0008
++        if let Err(e) = NumRef::Float(*self).check_float_operands(other) { // BLAZE PATCH 0008
++            return Some(Err(e.into())); // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        Some(Ok(heap.alloc(NumRef::Float(*self) + other))) // BLAZE PATCH 0008
+     }
+ 
+     fn sub(&self, other: Value, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+         match other.unpack_num() {
+             None => ValueError::unsupported_with(self, "-", other),
+-            Some(other) => Ok(heap.alloc(NumRef::Float(*self) - other)),
++            Some(other) => { // BLAZE PATCH 0008
++                NumRef::Float(*self).check_float_operands(other)?; // BLAZE PATCH 0008
++                Ok(heap.alloc(NumRef::Float(*self) - other)) // BLAZE PATCH 0008
++            } // BLAZE PATCH 0008
+         }
+     }
+ 
+     fn mul(&self, other: Value<'v>, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
+-        Some(Ok(heap.alloc(NumRef::Float(*self) * other.unpack_num()?)))
++        let other = other.unpack_num()?; // BLAZE PATCH 0008
++        if let Err(e) = NumRef::Float(*self).check_float_operands(other) { // BLAZE PATCH 0008
++            return Some(Err(e.into())); // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        Some(Ok(heap.alloc(NumRef::Float(*self) * other))) // BLAZE PATCH 0008
+     }
+ 
+     fn div(&self, other: Value, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/float/globals.rs starlark/src/values/types/float/globals.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/float/globals.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/float/globals.rs	2026-11-18 16:05:57.071867660 -0700
+@@ -62,7 +62,8 @@
+         }
+         let a = a.unwrap();
+         match a {
+-            Either::Left(Either::Left(f)) => Ok(f.as_float()),
++            // Java MethodLibrary.float: StarlarkInt.toFiniteDouble.
++            Either::Left(Either::Left(f)) => Ok(f.as_finite_float()?), // BLAZE PATCH 0008
+             Either::Left(Either::Right(b)) => Ok(if b { 1.0 } else { 0.0 }),
+             Either::Right(s) => {
+                 match s.parse::<f64>() {
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/function.rs starlark/src/values/types/function.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/function.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/function.rs	2026-11-18 16:08:22.848704557 -0700
+@@ -67,6 +67,10 @@
+ /// Return value of `type(any function)`.
+ pub const FUNCTION_TYPE: &str = "function";
+ 
++/// BLAZE PATCH 0009: Java `Starlark.type` of a built-in function or bound method
++/// (net/starlark/java/eval/BuiltinFunction.java:38).
++pub const BUILTIN_FUNCTION_TYPE: &str = "builtin_function_or_method"; // BLAZE PATCH 0009
++
+ #[derive(Debug, Allocative, Clone, Copy, Dupe, pagable::Pagable)]
+ #[doc(hidden)]
+ pub enum SpecialBuiltinFunction {
+@@ -116,7 +120,7 @@
+     crate::StarlarkPagable
+ )]
+ #[derivative(Debug)]
+-#[display("{}", name)]
++#[display("<built-in function {}>", name)] // BLAZE PATCH 0009: Java BuiltinFunction.repr
+ pub(crate) struct NativeFunction {
+     #[derivative(Debug = "ignore")]
+     pub(crate) function: NativeFunc,
+@@ -148,8 +152,12 @@
+ }
+ 
+ /// Define the function type
+-#[starlark_value(type = FUNCTION_TYPE)]
++#[starlark_value(type = BUILTIN_FUNCTION_TYPE)] // BLAZE PATCH 0009
+ impl<'v> StarlarkValue<'v> for NativeFunction {
++    fn name_for_call_stack(&self, _me: Value<'v>) -> String { // BLAZE PATCH 0009
++        self.name.clone() // BLAZE PATCH 0009
++    } // BLAZE PATCH 0009
++
+     fn invoke(
+         &self,
+         _me: Value<'v>,
+@@ -386,11 +394,22 @@
+     }
+ }
+ 
+-#[starlark_value(type = FUNCTION_TYPE)]
++#[starlark_value(type = BUILTIN_FUNCTION_TYPE)] // BLAZE PATCH 0009
+ impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for BoundMethodGen<V>
+ where
+     Self: ProvidesStaticType<'v>,
+ {
++    fn name_for_call_stack(&self, _me: Value<'v>) -> String { // BLAZE PATCH 0009
++        self.method.to_string() // BLAZE PATCH 0009
++    } // BLAZE PATCH 0009
++
++    // BLAZE PATCH 0009: Java BuiltinFunction.repr (BuiltinFunction.java:192).
++    fn collect_repr(&self, s: &mut String) { // BLAZE PATCH 0009
++        use std::fmt::Write as _; // BLAZE PATCH 0009
++        let ty = self.this.to_value().get_type(); // BLAZE PATCH 0009
++        write!(s, "<built-in method {} of {} value>", self.method, ty).unwrap() // BLAZE PATCH 0009
++    } // BLAZE PATCH 0009
++
+     fn invoke(
+         &self,
+         _me: Value<'v>,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/inline_int.rs starlark/src/values/types/int/inline_int.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/inline_int.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/int/inline_int.rs	2026-11-17 22:47:14.139673452 -0700
@@ -987,8 +2195,22 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      pub(crate) fn to_bigint(self) -> BigInt {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/int_or_big.rs starlark/src/values/types/int/int_or_big.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/int_or_big.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/int/int_or_big.rs	2026-11-17 22:47:14.139842491 -0700
-@@ -59,6 +59,9 @@
++++ starlark/src/values/types/int/int_or_big.rs	2026-11-18 16:05:57.072030439 -0700
+@@ -49,16 +49,20 @@
+ 
+ #[derive(Debug, thiserror::Error)]
+ enum StarlarkIntError {
+-    #[error("Float `{0}` cannot be represented as exact integer")]
++    // Java MethodLibrary.int (MethodLibrary.java:634), with the float's Starlark repr.
++    #[error("can't convert float {} to int", crate::values::float::StarlarkFloat(*.0))] // BLAZE PATCH 0008
+     CannotRepresentAsExact(f64),
+-    #[error("Floor division by zero: {0} // {1}")]
++    #[error("integer division by zero")] // BLAZE PATCH 0008: Java EvalUtils.binaryOp
+     FloorDivisionByZero(StarlarkInt, StarlarkInt),
+-    #[error("Modulo by zero: {0} % {1}")]
++    #[error("integer modulo by zero")] // BLAZE PATCH 0008: Java EvalUtils.binaryOp
+     ModuloByZero(StarlarkInt, StarlarkInt),
+     #[error("Integer overflow computing left shift")]
      LeftShiftOverflow,
      #[error("Negative left shift")]
      LeftShiftNegative,
@@ -998,7 +2220,29 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      #[error("Negative right shift")]
      RightShiftNegative,
  }
-@@ -345,10 +348,10 @@
+@@ -105,7 +109,11 @@
+ 
+ impl StarlarkInt {
+     pub(crate) fn from_str_radix(s: &str, base: u32) -> crate::Result<StarlarkInt> {
+-        Ok(StarlarkInt::from(TokenInt::from_str_radix(s, base)?))
++        // BLAZE PATCH 0028: a value error, not the lexer's `Parser` kind (which reads as a syntax
++        // error of the file; Java: `int()` fails as an ordinary EvalException).
++        Ok(StarlarkInt::from(TokenInt::from_str_radix(s, base).map_err(|e| { // BLAZE PATCH 0028
++            crate::Error::new_value(anyhow::anyhow!("{}", e.without_diagnostic())) // BLAZE PATCH 0028
++        })?)) // BLAZE PATCH 0028
+     }
+ 
+     pub(crate) fn from_f64_exact(f: f64) -> anyhow::Result<StarlarkInt> {
+@@ -162,7 +170,7 @@
+         }
+     }
+ 
+-    fn to_big(self) -> BigInt {
++    pub(crate) fn to_big(self) -> BigInt { // BLAZE PATCH 0008
+         match self {
+             StarlarkIntRef::Small(i) => i.to_bigint(),
+             StarlarkIntRef::Big(i) => i.get().clone(),
+@@ -345,10 +353,10 @@
          if self.is_zero() || other.is_zero() {
              return Ok(self.to_owned());
          }
@@ -1055,7 +2299,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// [list.remove](
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list/value.rs starlark/src/values/types/list/value.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list/value.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/list/value.rs	2026-11-18 10:42:42.459464556 -0700
++++ starlark/src/values/types/list/value.rs	2026-11-18 16:09:08.435969415 -0700
 @@ -68,11 +68,27 @@
  pub(crate) struct ListGen<T>(pub(crate) T);
  
@@ -1128,6 +2372,15 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      unsafe fn iter_size_hint(&self, index: usize) -> (usize, Option<usize>) {
+@@ -455,7 +478,7 @@
+     }
+ 
+     fn collect_repr_cycle(&self, collector: &mut String) {
+-        collector.push_str("[...]");
++        collector.push_str("..."); // BLAZE PATCH 0031: Java Printer.repr (Printer.java:191)
+     }
+ 
+     fn to_bool(&self) -> bool {
 @@ -525,8 +548,10 @@
      }
  
@@ -1225,10 +2478,841 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  pub use crate::values::types::list::unpack::UnpackList;
 +pub use crate::values::types::list::value::alloc_immutable_list; // BLAZE PATCH 0016
 +pub use crate::values::types::list::value::list_is_immutable; // BLAZE PATCH 0016
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/num/value.rs starlark/src/values/types/num/value.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/num/value.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/num/value.rs	2026-11-18 16:14:11.695898046 -0700
+@@ -21,6 +21,7 @@
+ use std::ops::Sub;
+ 
+ use dupe::Dupe;
++use num_traits::FromPrimitive; // BLAZE PATCH 0008
+ 
+ use crate as starlark;
+ use crate::collections::StarlarkHashValue;
+@@ -34,7 +35,7 @@
+ 
+ #[derive(Debug, thiserror::Error)]
+ enum NumError {
+-    #[error("float division by zero: {0} / {1}")]
++    #[error("floating-point division by zero")] // BLAZE PATCH 0008: Java StarlarkFloat.div
+     DivisionByZero(Num, Num),
+ }
+ 
+@@ -123,6 +124,29 @@
+         StarlarkHashValue::hash_64(self.get_hash_64())
+     }
+ 
++
++    /// Java StarlarkInt.toFiniteDouble (StarlarkInt.java:376): an int too large for a finite
++    /// float fails.
++    pub(crate) fn as_finite_float(&self) -> anyhow::Result<f64> { // BLAZE PATCH 0008
++        let f = self.as_float(); // BLAZE PATCH 0008
++        if let Self::Int(_) = self { // BLAZE PATCH 0008
++            if !f.is_finite() { // BLAZE PATCH 0008
++                return Err(anyhow::anyhow!("int too large to convert to float")); // BLAZE PATCH 0008
++            } // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        Ok(f) // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++
++    /// Java EvalUtils.binaryOp: an arithmetic operation with a float operand converts the other
++    /// operand with StarlarkInt.toFiniteDouble.
++    pub(crate) fn check_float_operands(self, other: NumRef) -> anyhow::Result<()> { // BLAZE PATCH 0008
++        if matches!(self, NumRef::Float(_)) || matches!(other, NumRef::Float(_)) { // BLAZE PATCH 0008
++            self.as_finite_float()?; // BLAZE PATCH 0008
++            other.as_finite_float()?; // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        Ok(()) // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++
+     fn to_owned(self) -> Num {
+         match self {
+             NumRef::Int(i) => Num::Int(i.to_owned()),
+@@ -131,8 +155,8 @@
+     }
+ 
+     pub(crate) fn div(self, other: NumRef) -> anyhow::Result<f64> {
+-        let a = self.as_float();
+-        let b = other.as_float();
++        let a = self.as_finite_float()?; // BLAZE PATCH 0008
++        let b = other.as_finite_float()?; // BLAZE PATCH 0008
+         if b == 0.0 {
+             Err(NumError::DivisionByZero(self.to_owned(), other.to_owned()).into())
+         } else {
+@@ -144,7 +168,8 @@
+         if let (NumRef::Int(a), NumRef::Int(b)) = (self, other) {
+             a.floor_div(b).map(Num::Int)
+         } else {
+-            StarlarkFloat::floor_div_impl(self.as_float(), other.as_float()).map(Num::Float)
++            StarlarkFloat::floor_div_impl(self.as_finite_float()?, other.as_finite_float()?) // BLAZE PATCH 0008
++                .map(Num::Float) // BLAZE PATCH 0008
+         }
+     }
+ 
+@@ -152,7 +177,8 @@
+         if let (NumRef::Int(a), NumRef::Int(b)) = (self, other) {
+             a.percent(b).map(Num::Int)
+         } else {
+-            StarlarkFloat::percent_impl(self.as_float(), other.as_float()).map(Num::Float)
++            StarlarkFloat::percent_impl(self.as_finite_float()?, other.as_finite_float()?) // BLAZE PATCH 0008
++                .map(Num::Float) // BLAZE PATCH 0008
+         }
+     }
+ }
+@@ -166,14 +192,31 @@
+ /// This is total eq per starlark spec, not Rust's partial eq.
+ impl<'v> PartialEq for NumRef<'v> {
+     fn eq(&self, other: &Self) -> bool {
+-        if let (NumRef::Int(a), NumRef::Int(b)) = (self, other) {
+-            a == b
+-        } else {
+-            StarlarkFloat::compare_impl(self.as_float(), other.as_float()) == Ordering::Equal
+-        }
++        self.cmp(other) == Ordering::Equal // BLAZE PATCH 0008
+     }
+ }
+ 
++/// BLAZE PATCH 0008: Java StarlarkInt.compareIntAndDouble (StarlarkInt.java:756): an exact
++/// comparison of an int with a float; NaN is greater than every number (Starlark spec, as
++/// `StarlarkFloat::compare_impl`).
++fn cmp_int_float(x: StarlarkIntRef, y: f64) -> Ordering { // BLAZE PATCH 0008
++    if y.is_nan() { // BLAZE PATCH 0008
++        return Ordering::Less; // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    if let StarlarkIntRef::Small(_) = x { // BLAZE PATCH 0008
++        // An i32 is exact as an f64.
++        return StarlarkFloat::compare_impl(x.to_f64(), y); // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    if y.is_infinite() { // BLAZE PATCH 0008
++        return if y > 0.0 { Ordering::Less } else { Ordering::Greater }; // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    let whole = num_bigint::BigInt::from_f64(y.trunc()).unwrap(); // BLAZE PATCH 0008
++    match x.to_big().cmp(&whole) { // BLAZE PATCH 0008
++        Ordering::Equal => StarlarkFloat::compare_impl(0.0, y.fract()), // BLAZE PATCH 0008
++        o => o, // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++} // BLAZE PATCH 0008
++
+ impl<'v> Eq for NumRef<'v> {}
+ 
+ impl<'v> PartialOrd for NumRef<'v> {
+@@ -184,11 +227,12 @@
+ 
+ impl<'v> Ord for NumRef<'v> {
+     fn cmp(&self, other: &Self) -> Ordering {
+-        if let (NumRef::Int(a), NumRef::Int(b)) = (self, other) {
+-            a.cmp(b)
+-        } else {
+-            StarlarkFloat::compare_impl(self.as_float(), other.as_float())
+-        }
++        match (self, other) { // BLAZE PATCH 0008
++            (NumRef::Int(a), NumRef::Int(b)) => a.cmp(b), // BLAZE PATCH 0008
++            (NumRef::Int(a), NumRef::Float(b)) => cmp_int_float(*a, b.0), // BLAZE PATCH 0008
++            (NumRef::Float(a), NumRef::Int(b)) => cmp_int_float(*b, a.0).reverse(), // BLAZE PATCH 0008
++            (NumRef::Float(a), NumRef::Float(b)) => StarlarkFloat::compare_impl(a.0, b.0), // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
+     }
+ }
+ 
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/methods.rs starlark/src/values/types/set/methods.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/methods.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/set/methods.rs	2026-11-18 11:27:07.144332007 -0700
-@@ -714,7 +714,7 @@
++++ starlark/src/values/types/set/methods.rs	2026-11-18 16:00:00.495343469 -0700
+@@ -19,6 +19,7 @@
+ 
+ use std::mem;
+ 
++#[allow(unused_imports)] // BLAZE PATCH 0007
+ use either::Either;
+ use starlark_derive::starlark_module;
+ use starlark_map::Hashed;
+@@ -36,12 +37,20 @@
+ use crate::values::set::refs::SetRef;
+ use crate::values::set::value::SetData;
+ use crate::values::typing::StarlarkIter;
++use crate::values::dict::DictRef; // BLAZE PATCH 0007
++use crate::values::list::ListRef; // BLAZE PATCH 0007
++use crate::values::range::Range; // BLAZE PATCH 0007
++use crate::values::ValueLike; // BLAZE PATCH 0007
++use crate::values::tuple::TupleRef; // BLAZE PATCH 0007
++use crate::values::tuple::UnpackTuple; // BLAZE PATCH 0007
+ 
++#[allow(dead_code)] // BLAZE PATCH 0007: replaced by `hashable_collection`
+ enum SetFromValue<'v> {
+     Set(SmallSet<Value<'v>>),
+     Ref(SetRef<'v>),
+ }
+ 
++#[allow(dead_code)] // BLAZE PATCH 0007
+ impl<'v> SetFromValue<'v> {
+     fn from_value(
+         value: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+@@ -82,6 +91,113 @@
+     }
+ }
+ 
++// BLAZE PATCH 0007: Java StarlarkSet.toHashableCollection (StarlarkSet.java:818): a set, a dict
++// (its keys), or a list, tuple or range whose elements are hashable; anything else fails with
++// "for <what> got value of type '<type>', want a collection of hashable elements".
++fn hashable_collection<'v>( // BLAZE PATCH 0007
++    other: Value<'v>, // BLAZE PATCH 0007
++    what: &str, // BLAZE PATCH 0007
++    heap: Heap<'v>, // BLAZE PATCH 0007
++) -> crate::Result<Vec<Hashed<Value<'v>>>> { // BLAZE PATCH 0007
++    if let Some(set) = SetRef::unpack_value_opt(other) { // BLAZE PATCH 0007
++        return Ok(set.aref.content.iter_hashed().map(|h| h.copied()).collect()); // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++    if let Some(dict) = DictRef::from_value(other) { // BLAZE PATCH 0007
++        return Ok(dict.iter_hashed().map(|(k, _)| k).collect()); // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++    let collection = ListRef::from_value(other).is_some() // BLAZE PATCH 0007
++        || TupleRef::from_value(other).is_some() // BLAZE PATCH 0007
++        || ValueLike::downcast_ref::<Range>(other).is_some(); // BLAZE PATCH 0007
++    if !collection { // BLAZE PATCH 0007
++        return Err(value_error!( // BLAZE PATCH 0007
++            "for {} got value of type '{}', want a collection of hashable elements", // BLAZE PATCH 0007
++            what, // BLAZE PATCH 0007
++            other.get_type() // BLAZE PATCH 0007
++        )); // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++    other.iterate(heap)?.map(|v| v.get_hashed()).collect() // BLAZE PATCH 0007
++} // BLAZE PATCH 0007
++
++// BLAZE PATCH 0007
++fn retain_in<'v>(set: &SmallSet<Value<'v>>, keep: &SmallSet<Value<'v>>) -> SmallSet<Value<'v>> { // BLAZE PATCH 0007
++    let mut r = SmallSet::new(); // BLAZE PATCH 0007
++    for h in set.iter_hashed() { // BLAZE PATCH 0007
++        if keep.contains_hashed(h) { // BLAZE PATCH 0007
++            r.insert_hashed(h.copied()); // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++    r // BLAZE PATCH 0007
++} // BLAZE PATCH 0007
++
++// BLAZE PATCH 0007
++fn to_small_set<'v>(elems: Vec<Hashed<Value<'v>>>) -> SmallSet<Value<'v>> { // BLAZE PATCH 0007
++    let mut set = SmallSet::with_capacity(elems.len()); // BLAZE PATCH 0007
++    for h in elems { // BLAZE PATCH 0007
++        set.insert_hashed(h); // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++    set // BLAZE PATCH 0007
++} // BLAZE PATCH 0007
++
++/// BLAZE PATCH 0007: the augmented assignments that mutate a set in place. // BLAZE PATCH 0007
++#[derive(Clone, Copy)] // BLAZE PATCH 0007
++pub(crate) enum SetInplaceOp { // BLAZE PATCH 0007
++    /// `|=` (Java StarlarkSet.update). // BLAZE PATCH 0007
++    Or, // BLAZE PATCH 0007
++    /// `&=` (Java StarlarkSet.intersectionUpdate). // BLAZE PATCH 0007
++    And, // BLAZE PATCH 0007
++    /// `^=` (Java StarlarkSet.symmetricDifferenceUpdate). // BLAZE PATCH 0007
++    Xor, // BLAZE PATCH 0007
++    /// `-=` (Java StarlarkSet.differenceUpdate). // BLAZE PATCH 0007
++    Sub, // BLAZE PATCH 0007
++} // BLAZE PATCH 0007
++
++/// BLAZE PATCH 0007: Java Eval.inplaceBinaryOp (Eval.java:498-536): `set op= set` mutates the // BLAZE PATCH 0007
++/// left set and evaluates to it; `None` when either operand is not a set (a plain binary op). // BLAZE PATCH 0007
++pub(crate) fn set_inplace_op<'v>( // BLAZE PATCH 0007
++    lhs: Value<'v>, // BLAZE PATCH 0007
++    rhs: Value<'v>, // BLAZE PATCH 0007
++    op: SetInplaceOp, // BLAZE PATCH 0007
++) -> Option<crate::Result<Value<'v>>> { // BLAZE PATCH 0007
++    SetRef::unpack_value_opt(lhs)?; // BLAZE PATCH 0007
++    let other: Vec<Hashed<Value<'v>>> = SetRef::unpack_value_opt(rhs)? // BLAZE PATCH 0007
++        .aref // BLAZE PATCH 0007
++        .content // BLAZE PATCH 0007
++        .iter_hashed() // BLAZE PATCH 0007
++        .map(|h| h.copied()) // BLAZE PATCH 0007
++        .collect(); // BLAZE PATCH 0007
++    let run = || -> crate::Result<Value<'v>> { // BLAZE PATCH 0007
++        let mut set = SetMut::from_value(lhs)?; // BLAZE PATCH 0007
++        let content = &mut set.aref.content; // BLAZE PATCH 0007
++        match op { // BLAZE PATCH 0007
++            SetInplaceOp::Or => { // BLAZE PATCH 0007
++                for h in other { // BLAZE PATCH 0007
++                    content.insert_hashed(h); // BLAZE PATCH 0007
++                } // BLAZE PATCH 0007
++            } // BLAZE PATCH 0007
++            SetInplaceOp::And => { // BLAZE PATCH 0007
++                *content = retain_in(content, &to_small_set(other)); // BLAZE PATCH 0007
++            } // BLAZE PATCH 0007
++            SetInplaceOp::Xor => { // BLAZE PATCH 0007
++                let original = content.clone(); // BLAZE PATCH 0007
++                for h in other { // BLAZE PATCH 0007
++                    if original.contains_hashed(h.as_ref()) { // BLAZE PATCH 0007
++                        content.shift_remove_hashed(h.as_ref()); // BLAZE PATCH 0007
++                    } else { // BLAZE PATCH 0007
++                        content.insert_hashed(h); // BLAZE PATCH 0007
++                    } // BLAZE PATCH 0007
++                } // BLAZE PATCH 0007
++            } // BLAZE PATCH 0007
++            SetInplaceOp::Sub => { // BLAZE PATCH 0007
++                for h in other { // BLAZE PATCH 0007
++                    content.shift_remove_hashed(h.as_ref()); // BLAZE PATCH 0007
++                } // BLAZE PATCH 0007
++            } // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
++        Ok(lhs) // BLAZE PATCH 0007
++    }; // BLAZE PATCH 0007
++    Some(run()) // BLAZE PATCH 0007
++} // BLAZE PATCH 0007
++
+ #[starlark_module]
+ pub(crate) fn set_methods(builder: &mut MethodsBuilder) {
+     fn clear(this: Value) -> anyhow::Result<NoneType> {
+@@ -90,345 +206,212 @@
+         Ok(NoneType)
+     }
+ 
+-    /// Return a new set with elements from the set and all others.
+-    /// Unlike Python does not support variable number of arguments.
+-    /// ```
+-    /// # starlark::assert::is_true(r#"
+-    /// x = set([1, 2, 3])
+-    /// y = [3, 4, 5]
+-    /// x.union(y) == set([1, 2, 3, 4, 5])
+-    /// # "#);
+-    /// ```
+-    fn union<'v>(
+-        this: SetRef<'v>,
+-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+-        heap: Heap<'v>,
+-    ) -> starlark::Result<SetData<'v>> {
+-        if this.aref.content.is_empty() {
+-            let other_set = SetFromValue::from_value(other, heap)?;
+-            return Ok(SetData {
+-                content: other_set.into_set(),
+-            });
+-        }
+-        let mut data = this.aref.content.clone();
+-        for elem in other.get().iterate(heap)? {
+-            let hashed = elem.get_hashed()?;
+-            data.insert_hashed(hashed);
+-        }
+-        Ok(SetData { content: data })
+-    }
+-
+-    /// Return a new set with elements common to the set and all others.
+-    /// Unlike Python does not support variable number of arguments.
+-    /// ```
+-    /// # starlark::assert::is_true(r#"
+-    /// x = set([1, 2, 3])
+-    /// y = [3, 4, 5]
+-    /// x.intersection(y) == set([3])
+-    /// # "#);
+-    /// ```
+-    fn intersection<'v>(
+-        this: SetRef<'v>,
+-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+-        heap: Heap<'v>,
+-    ) -> starlark::Result<SetData<'v>> {
+-        let other_set = SetFromValue::from_value(other, heap)?;
+-        let mut data = SetData::default();
+-        if other_set.is_empty() {
+-            return Ok(data);
+-        }
+-
+-        for hashed in this.aref.content.iter_hashed() {
+-            if other_set.contains_hashed(hashed.copied()) {
+-                data.content.insert_hashed_unique_unchecked(hashed.copied());
+-            }
+-        }
+-        Ok(data)
+-    }
+-
+-    /// Returns a new set with elements in either the set or the specified iterable but not both.
+-    /// ```
+-    /// # starlark::assert::is_true(r#"
+-    /// x = set([1, 2, 3])
+-    /// y = [3, 4, 5]
+-    /// x.symmetric_difference(y) == set([1, 2, 4, 5])
+-    /// # "#);
+-    /// ```
+-    fn symmetric_difference<'v>(
+-        this: SetRef<'v>,
+-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+-        heap: Heap<'v>,
+-    ) -> starlark::Result<SetData<'v>> {
+-        let other_set = SetFromValue::from_value(other, heap)?;
+-
+-        if other_set.is_empty() {
+-            return Ok(SetData {
+-                content: this.aref.content.clone(),
+-            });
+-        }
+-
+-        //TODO(romanp) add symmetric_difference to small set and use it here and in xor
+-        if this.aref.content.is_empty() {
+-            return Ok(SetData {
+-                content: other_set.into_set(),
+-            });
+-        }
+-
+-        let mut data = SetData::default();
+-        for elem in this.aref.content.iter_hashed() {
+-            if !other_set.contains_hashed(elem.copied()) {
+-                data.add_hashed(elem.copied());
+-            }
+-        }
+-
+-        for elem in other_set.get() {
+-            let hashed = elem.get_hashed()?;
+-            if !this.aref.content.contains_hashed(hashed.as_ref()) {
+-                data.add_hashed(hashed);
+-            }
+-        }
+-        Ok(data)
+-    }
+-
+-    /// Add an item to the set.
+-    /// ```
+-    /// # starlark::assert::is_true(r#"
+-    /// x = set([1, 2, 3])
+-    /// x.add(4)
+-    /// x == set([1, 2, 3, 4])
+-    /// # "#);
+-    /// ```
+-    fn add<'v>(
+-        this: Value<'v>,
+-        #[starlark(require = pos)] value: Value<'v>,
+-    ) -> starlark::Result<NoneType> {
+-        let mut this = SetMut::from_value(this)?;
+-        let hashed = value.get_hashed()?;
+-        this.aref.add_hashed(hashed);
+-        Ok(NoneType)
+-    }
+-
+-    /// Update the set by adding items from an iterable.
+-    /// ```
+-    /// # starlark::assert::is_true(r#"
+-    /// x = set([1, 3, 2])
+-    /// x.update([4, 3])
+-    /// list(x) == [1, 3, 2, 4]
+-    /// # "#);
+-    /// ```
+-    fn update<'v>(
+-        this: Value<'v>,
+-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+-        heap: Heap<'v>,
+-    ) -> starlark::Result<NoneType> {
+-        let is_self_ptr = other.get().ptr_eq(this);
+-        let mut this = SetMut::from_value(this)?;
+-        if is_self_ptr {
+-            return Ok(NoneType);
+-        }
+-
+-        if this.aref.content.is_empty() {
+-            this.aref.content = SetFromValue::from_value(other, heap)?.into_set();
+-        } else {
+-            for elem in other.get().iterate(heap)? {
+-                let hashed = elem.get_hashed()?;
+-                this.aref.add_hashed(hashed);
+-            }
+-        }
+-
+-        Ok(NoneType)
+-    }
+-
+-    /// Remove the item from the set. It raises an error if there is no such item.
+-    ///
+-    /// `remove` fails if the key is unhashable or if the dictionary is
+-    /// frozen.
+-    /// Time complexity of this operation is *O(N)* where *N* is the number of entries in the set.
+-    ///
+-    /// ```
+-    /// # starlark::assert::is_true(r#"
+-    /// x = set([1, 2, 3])
+-    /// x.remove(2)
+-    /// x == set([1, 3])
+-    /// # "#)
+-    /// ```
+-    /// A subsequent call to `x.remove(2)` would yield an error because the
+-    /// element won't be found.
+-    /// ```
+-    /// # starlark::assert::fail(r#"
+-    /// x = set([1, 2, 3])
+-    /// x.remove(2)
+-    /// x.remove(2) # error: not found
+-    /// # "#, "not found");
+-    /// ```
+-    fn remove<'v>(
+-        this: Value<'v>,
+-        #[starlark(require = pos)] value: Value<'v>,
+-    ) -> starlark::Result<NoneType> {
+-        let mut set = SetMut::from_value(this)?;
+-        let hashed = value.get_hashed()?;
+-        if set.aref.remove_hashed(hashed.as_ref()) {
+-            Ok(NoneType)
+-        } else {
+-            mem::drop(set);
+-            Err(value_error!("`{value}` not found in `{this}`"))
+-        }
+-    }
+-
+-    /// Remove the item from the set. It does nothing if there is no such item.
+-    ///
+-    /// `discard` fails if the key is unhashable or if the dictionary is
+-    /// frozen.
+-    /// Time complexity of this operation is *O(N)* where *N* is the number of entries in the set.
+-    ///
+-    /// ```
+-    /// # starlark::assert::is_true(r#"
+-    /// x = set([1, 2, 3])
+-    /// x.discard(2)
+-    /// x == set([1, 3])
+-    /// # "#)
+-    /// ```
+-    /// A subsequent call to `x.discard(2)` would do nothing.
+-    /// ```
+-    /// # starlark::assert::is_true(r#"
+-    /// x = set([1, 2, 3])
+-    /// x.discard(2)
+-    /// x.discard(2)
+-    /// x == set([1, 3])
+-    /// # "#);
+-    /// ```
+-    fn discard<'v>(
+-        this: Value<'v>,
+-        #[starlark(require = pos)] value: Value<'v>,
+-    ) -> starlark::Result<NoneType> {
+-        let mut set = SetMut::from_value(this)?;
+-        let hashed = value.get_hashed()?;
+-        set.aref.remove_hashed(hashed.as_ref());
+-        Ok(NoneType)
+-    }
+-
+-    /// Removes and returns the **last** element of a set.
+-    ///
+-    /// `S.pop()` removes and returns the last element of the set S.
+-    ///
+-    /// `pop` fails if the set is empty, or if the set is frozen or has active iterators.
+-    /// Time complexity of this operation is *O(1)*.
+-    ///
+-    /// ```
+-    /// # starlark::assert::is_true(r#"
+-    /// x = set([1, 2, 3])
+-    /// # (
+-    /// x.pop() == 3
+-    /// # and
+-    /// x.pop() == 2
+-    /// # and
+-    /// x == set([1])
+-    /// # )"#);
+-    /// ```
+-    fn pop<'v>(this: Value<'v>) -> starlark::Result<Value<'v>> {
+-        let mut set = SetMut::from_value(this)?;
+-        match set.aref.content.pop() {
+-            Some(x) => Ok(x),
+-            None => Err(value_error!("pop from an empty set")),
+-        }
+-    }
+-
+-    /// Returns a new set with elements unique the set when compared to the specified iterable.
+-    /// ```
+-    /// # starlark::assert::is_true(r#"
+-    /// x = set([1, 2, 3])
+-    /// y = [3, 4, 5]
+-    /// x.difference(y) == set([1, 2])
+-    /// # "#);
+-    /// ```
+-    fn difference<'v>(
+-        this: SetRef<'v>,
+-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+-        heap: Heap<'v>,
+-    ) -> starlark::Result<SetData<'v>> {
+-        if this.aref.content.is_empty() {
+-            other.get().iterate(heap)?;
+-            return Ok(SetData::default());
+-        }
+-
+-        let other_set = SetFromValue::from_value(other, heap)?;
+-
+-        if other_set.is_empty() {
+-            return Ok(SetData {
+-                content: this.aref.content.clone(),
+-            });
+-        }
+-
+-        let mut data = SetData::default();
+-        for elem in this.aref.content.iter_hashed() {
+-            if !other_set.contains_hashed(elem.copied()) {
+-                data.add_hashed(elem.copied());
+-            }
+-        }
+-        Ok(data)
+-    }
+-
+-    /// Test whether every element other iterable is in the set.
+-    /// ```
+-    /// # starlark::assert::is_true(r#"
+-    /// x = set([1, 2, 3])
+-    /// y = [1, 3]
+-    /// x.issuperset(y) == True
+-    /// # "#);
+-    /// ```
+-    fn issuperset<'v>(
+-        this: SetRef<'v>,
+-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+-        heap: Heap<'v>,
+-    ) -> starlark::Result<bool> {
+-        let other_var;
+-        let other = match SetRef::unpack_value_opt(other.get()) {
+-            Some(other) => {
+-                if this.aref.content.len() < other.aref.content.len() {
+-                    return Ok(false);
+-                }
+-                other_var = other;
+-                Either::Left(other_var.aref.content.iter_hashed().map(|v| Ok(v.copied())))
+-            }
+-            _ => Either::Right(other.get().iterate(heap)?.map(|v| v.get_hashed())),
+-        };
+-
+-        for elem in other {
+-            if !this.aref.contains_hashed(elem?) {
+-                return Ok(false);
+-            }
+-        }
+-        Ok(true)
+-    }
+-
+-    /// Test whether every element in the set is in other iterable.
+-    /// ```
+-    /// # starlark::assert::is_true(r#"
+-    /// x = set([1, 2, 3])
+-    /// y = [3, 1, 2]
+-    /// x.issubset(y)
+-    /// # "#);
+-    /// ```
+-    fn issubset<'v>(
+-        this: SetRef<'v>,
+-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+-        heap: Heap<'v>,
+-    ) -> starlark::Result<bool> {
+-        if this.aref.content.is_empty() {
+-            other.get().iterate(heap)?;
+-            return Ok(true);
+-        }
+-        let rhs = SetFromValue::from_value(other, heap)?;
+-        if this.aref.content.len() > rhs.get().len() {
+-            return Ok(false);
+-        }
+-        for elem in this.aref.content.iter_hashed() {
+-            if !rhs.contains_hashed(elem.copied()) {
+-                return Ok(false);
+-            }
+-        }
+-        Ok(true)
+-    }
++    // Java StarlarkSet.union (StarlarkSet.java:586): any number of collections.
++    fn union<'v>( // BLAZE PATCH 0007
++        this: SetRef<'v>, // BLAZE PATCH 0007
++        #[starlark(args)] others: UnpackTuple<Value<'v>>, // BLAZE PATCH 0007
++        heap: Heap<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<SetData<'v>> { // BLAZE PATCH 0007
++        let mut data = this.aref.content.clone(); // BLAZE PATCH 0007
++        for other in others.items { // BLAZE PATCH 0007
++            for h in hashable_collection(other, "union argument", heap)? { // BLAZE PATCH 0007
++                data.insert_hashed(h); // BLAZE PATCH 0007
++            } // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
++        Ok(SetData { content: data }) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.intersection (StarlarkSet.java:615).
++    fn intersection<'v>( // BLAZE PATCH 0007
++        this: SetRef<'v>, // BLAZE PATCH 0007
++        #[starlark(args)] others: UnpackTuple<Value<'v>>, // BLAZE PATCH 0007
++        heap: Heap<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<SetData<'v>> { // BLAZE PATCH 0007
++        let mut data = this.aref.content.clone(); // BLAZE PATCH 0007
++        for other in others.items { // BLAZE PATCH 0007
++            let other = to_small_set(hashable_collection(other, "intersection argument", heap)?); // BLAZE PATCH 0007
++            data = retain_in(&data, &other); // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
++        Ok(SetData { content: data }) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.intersectionUpdate (StarlarkSet.java:644).
++    fn intersection_update<'v>( // BLAZE PATCH 0007
++        this: Value<'v>, // BLAZE PATCH 0007
++        #[starlark(args)] others: UnpackTuple<Value<'v>>, // BLAZE PATCH 0007
++        heap: Heap<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
++        SetMut::from_value(this)?; // BLAZE PATCH 0007
++        for other in others.items { // BLAZE PATCH 0007
++            let other = to_small_set(hashable_collection(other, "intersection_update argument", heap)?); // BLAZE PATCH 0007
++            let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
++            set.aref.content = retain_in(&set.aref.content, &other); // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
++        Ok(NoneType) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.symmetricDifference (StarlarkSet.java:730): one collection.
++    fn symmetric_difference<'v>( // BLAZE PATCH 0007
++        this: SetRef<'v>, // BLAZE PATCH 0007
++        #[starlark(require = pos)] other: Value<'v>, // BLAZE PATCH 0007
++        heap: Heap<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<SetData<'v>> { // BLAZE PATCH 0007
++        let other = hashable_collection(other, "symmetric_difference argument", heap)?; // BLAZE PATCH 0007
++        let mut data = this.aref.content.clone(); // BLAZE PATCH 0007
++        for h in other { // BLAZE PATCH 0007
++            if this.aref.content.contains_hashed(h.as_ref()) { // BLAZE PATCH 0007
++                data.shift_remove_hashed(h.as_ref()); // BLAZE PATCH 0007
++            } else { // BLAZE PATCH 0007
++                data.insert_hashed(h); // BLAZE PATCH 0007
++            } // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
++        Ok(SetData { content: data }) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.symmetricDifferenceUpdate (StarlarkSet.java:766).
++    fn symmetric_difference_update<'v>( // BLAZE PATCH 0007
++        this: Value<'v>, // BLAZE PATCH 0007
++        #[starlark(require = pos)] other: Value<'v>, // BLAZE PATCH 0007
++        heap: Heap<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
++        let original = SetMut::from_value(this)?.aref.content.clone(); // BLAZE PATCH 0007
++        let other = hashable_collection(other, "symmetric_difference_update argument", heap)?; // BLAZE PATCH 0007
++        let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
++        for h in other { // BLAZE PATCH 0007
++            if original.contains_hashed(h.as_ref()) { // BLAZE PATCH 0007
++                set.aref.content.shift_remove_hashed(h.as_ref()); // BLAZE PATCH 0007
++            } else { // BLAZE PATCH 0007
++                set.aref.content.insert_hashed(h); // BLAZE PATCH 0007
++            } // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
++        Ok(NoneType) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.addElement (StarlarkSet.java:482).
++    fn add<'v>( // BLAZE PATCH 0007
++        this: Value<'v>, // BLAZE PATCH 0007
++        #[starlark(require = pos)] element: Value<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
++        let mut this = SetMut::from_value(this)?; // BLAZE PATCH 0007
++        let hashed = element.get_hashed()?; // BLAZE PATCH 0007
++        this.aref.add_hashed(hashed); // BLAZE PATCH 0007
++        Ok(NoneType) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.update (StarlarkSet.java:451): any number of collections.
++    fn update<'v>( // BLAZE PATCH 0007
++        this: Value<'v>, // BLAZE PATCH 0007
++        #[starlark(args)] others: UnpackTuple<Value<'v>>, // BLAZE PATCH 0007
++        heap: Heap<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
++        SetMut::from_value(this)?; // BLAZE PATCH 0007
++        for other in others.items { // BLAZE PATCH 0007
++            let elems = hashable_collection(other, "update argument", heap)?; // BLAZE PATCH 0007
++            let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
++            for h in elems { // BLAZE PATCH 0007
++                set.aref.add_hashed(h); // BLAZE PATCH 0007
++            } // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
++        Ok(NoneType) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.removeElement (StarlarkSet.java:501).
++    fn remove<'v>( // BLAZE PATCH 0007
++        this: Value<'v>, // BLAZE PATCH 0007
++        #[starlark(require = pos)] element: Value<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
++        let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
++        let hashed = element.get_hashed()?; // BLAZE PATCH 0007
++        if set.aref.remove_hashed(hashed.as_ref()) { // BLAZE PATCH 0007
++            Ok(NoneType) // BLAZE PATCH 0007
++        } else { // BLAZE PATCH 0007
++            mem::drop(set); // BLAZE PATCH 0007
++            Err(value_error!("element {} not found in set", element.to_repr())) // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.discard (StarlarkSet.java:526).
++    fn discard<'v>( // BLAZE PATCH 0007
++        this: Value<'v>, // BLAZE PATCH 0007
++        #[starlark(require = pos)] element: Value<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
++        let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
++        let hashed = element.get_hashed()?; // BLAZE PATCH 0007
++        set.aref.remove_hashed(hashed.as_ref()); // BLAZE PATCH 0007
++        Ok(NoneType) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.pop (StarlarkSet.java:552): the first element in iteration order.
++    fn pop<'v>(this: Value<'v>) -> starlark::Result<Value<'v>> { // BLAZE PATCH 0007
++        let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
++        match set.aref.content.shift_remove_index(0) { // BLAZE PATCH 0007
++            Some(x) => Ok(x), // BLAZE PATCH 0007
++            None => Err(value_error!("set is empty")), // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.difference (StarlarkSet.java:673).
++    fn difference<'v>( // BLAZE PATCH 0007
++        this: SetRef<'v>, // BLAZE PATCH 0007
++        #[starlark(args)] others: UnpackTuple<Value<'v>>, // BLAZE PATCH 0007
++        heap: Heap<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<SetData<'v>> { // BLAZE PATCH 0007
++        let mut data = this.aref.content.clone(); // BLAZE PATCH 0007
++        for other in others.items { // BLAZE PATCH 0007
++            for h in hashable_collection(other, "difference argument", heap)? { // BLAZE PATCH 0007
++                data.shift_remove_hashed(h.as_ref()); // BLAZE PATCH 0007
++            } // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
++        Ok(SetData { content: data }) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.differenceUpdate (StarlarkSet.java:702; its error names
++    // "intersection_update argument").
++    fn difference_update<'v>( // BLAZE PATCH 0007
++        this: Value<'v>, // BLAZE PATCH 0007
++        #[starlark(args)] others: UnpackTuple<Value<'v>>, // BLAZE PATCH 0007
++        heap: Heap<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
++        SetMut::from_value(this)?; // BLAZE PATCH 0007
++        for other in others.items { // BLAZE PATCH 0007
++            let elems = hashable_collection(other, "intersection_update argument", heap)?; // BLAZE PATCH 0007
++            let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
++            for h in elems { // BLAZE PATCH 0007
++                set.aref.content.shift_remove_hashed(h.as_ref()); // BLAZE PATCH 0007
++            } // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
++        Ok(NoneType) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.isSuperset (StarlarkSet.java:409).
++    fn issuperset<'v>( // BLAZE PATCH 0007
++        this: SetRef<'v>, // BLAZE PATCH 0007
++        #[starlark(require = pos)] other: Value<'v>, // BLAZE PATCH 0007
++        heap: Heap<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<bool> { // BLAZE PATCH 0007
++        let other = hashable_collection(other, "issuperset argument", heap)?; // BLAZE PATCH 0007
++        Ok(other.iter().all(|h| this.aref.content.contains_hashed(h.as_ref()))) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.isSubset (StarlarkSet.java:389).
++    fn issubset<'v>( // BLAZE PATCH 0007
++        this: SetRef<'v>, // BLAZE PATCH 0007
++        #[starlark(require = pos)] other: Value<'v>, // BLAZE PATCH 0007
++        heap: Heap<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<bool> { // BLAZE PATCH 0007
++        let other = to_small_set(hashable_collection(other, "issubset argument", heap)?); // BLAZE PATCH 0007
++        Ok(this.aref.content.iter_hashed().all(|h| other.contains_hashed(h))) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
++
++    // Java StarlarkSet.isDisjoint (StarlarkSet.java:429).
++    fn isdisjoint<'v>( // BLAZE PATCH 0007
++        this: SetRef<'v>, // BLAZE PATCH 0007
++        #[starlark(require = pos)] other: Value<'v>, // BLAZE PATCH 0007
++        heap: Heap<'v>, // BLAZE PATCH 0007
++    ) -> starlark::Result<bool> { // BLAZE PATCH 0007
++        let other = hashable_collection(other, "isdisjoint argument", heap)?; // BLAZE PATCH 0007
++        Ok(!other.iter().any(|h| this.aref.content.contains_hashed(h.as_ref()))) // BLAZE PATCH 0007
++    } // BLAZE PATCH 0007
+ }
+ 
+ #[cfg(test)]
+@@ -714,7 +697,7 @@
  
  S.update(S)
  "#,
@@ -1339,7 +3423,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          Ok(result)
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/value.rs starlark/src/values/types/set/value.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/value.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/set/value.rs	2026-11-18 11:26:47.816940932 -0700
++++ starlark/src/values/types/set/value.rs	2026-11-18 15:58:29.166404741 -0700
 @@ -15,6 +15,7 @@
   * limitations under the License.
   */
@@ -1491,6 +3575,17 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  }
  
+@@ -397,6 +471,10 @@
+ 
+ impl<'v, T: SetLike<'v>> Display for SetGen<T> {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        // BLAZE PATCH 0007: Java StarlarkSet.repr (StarlarkSet.java:216): `set()` when empty.
++        if self.0.content().is_empty() { // BLAZE PATCH 0007
++            return f.write_str("set()"); // BLAZE PATCH 0007
++        } // BLAZE PATCH 0007
+         fmt_container(f, "set([", "])", self.0.content().iter())
+     }
+ }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set.rs starlark/src/values/types/set.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/set.rs	2026-11-18 11:22:15.595208930 -0700
@@ -1515,8 +3610,108 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/interpolation.rs starlark/src/values/types/string/interpolation.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/interpolation.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/string/interpolation.rs	2026-11-18 02:31:09.627450600 -0700
-@@ -220,7 +220,7 @@
++++ starlark/src/values/types/string/interpolation.rs	2026-11-18 16:05:12.251768694 -0700
+@@ -21,18 +21,24 @@
+ use std::fmt::Write;
+ 
+ use dupe::Dupe;
++use num_traits::FromPrimitive; // BLAZE PATCH 0008
+ use num_traits::Signed;
++use num_traits::ToPrimitive; // BLAZE PATCH 0008
+ use thiserror::Error;
+ 
+ use crate::values::Heap;
+ use crate::values::StringValue;
++#[allow(unused_imports)] // BLAZE PATCH 0008
+ use crate::values::UnpackValue;
+ use crate::values::Value;
++#[allow(unused_imports)] // BLAZE PATCH 0008
+ use crate::values::ValueError;
+ use crate::values::ValueLike;
++#[allow(unused_imports)] // BLAZE PATCH 0008
+ use crate::values::float::StarlarkFloat;
+ use crate::values::float::float;
+ use crate::values::string::dot_format::format_one;
++#[allow(unused_imports)] // BLAZE PATCH 0008
+ use crate::values::types::int::int_or_big::StarlarkIntRef;
+ use crate::values::types::num::value::NumRef;
+ use crate::values::types::tuple::value::Tuple;
+@@ -40,7 +46,9 @@
+ // `i32::abs(i32::MIN)` panics as `i32::MIN` has no corresponding
+ // positive value that fits inside `i32`. For this edge case,
+ // let's just hardcode the results.
++#[allow(dead_code)] // BLAZE PATCH 0008
+ const I32_MIN_OCTAL: &str = "-20000000000";
++#[allow(dead_code)] // BLAZE PATCH 0008
+ const I32_MIN_HEX: &str = "-80000000";
+ 
+ /// Operator `%` format or evaluation errors
+@@ -190,6 +198,64 @@
+     }
+ }
+ 
++
++// BLAZE PATCH 0008: Java Printer.formatWithList's numeric conversions.
++fn want_int_or_float(value: Value, conv: char) -> crate::Error { // BLAZE PATCH 0008
++    crate::Error::new_other(anyhow::anyhow!( // BLAZE PATCH 0008
++        "got {} for '%{}' format, want int or float", // BLAZE PATCH 0008
++        value.get_type(), // BLAZE PATCH 0008
++        conv // BLAZE PATCH 0008
++    )) // BLAZE PATCH 0008
++} // BLAZE PATCH 0008
++
++/// `%d`, `%o`, `%x`, `%X`: Java formats an int32 or int64 with java.util.Formatter, so negative
++/// values print in two's complement for `%o`/`%x`/`%X`; larger ints print sign and magnitude.
++fn java_int_conv(res: &mut String, value: Value, conv: char) -> crate::Result<()> { // BLAZE PATCH 0008
++    let i: num_bigint::BigInt = match value.unpack_num() { // BLAZE PATCH 0008
++        Some(NumRef::Int(i)) => i.to_big(), // BLAZE PATCH 0008
++        Some(NumRef::Float(f)) => { // BLAZE PATCH 0008
++            if !f.0.is_finite() { // BLAZE PATCH 0008
++                return Err(crate::Error::new_other(anyhow::anyhow!( // BLAZE PATCH 0008
++                    "got {}, want a finite number", // BLAZE PATCH 0008
++                    value.to_repr() // BLAZE PATCH 0008
++                ))); // BLAZE PATCH 0008
++            } // BLAZE PATCH 0008
++            num_bigint::BigInt::from_f64(f.0.trunc()).unwrap() // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        None => return Err(want_int_or_float(value, conv)), // BLAZE PATCH 0008
++    }; // BLAZE PATCH 0008
++    let radix = |u: &dyn Fn() -> String, x: &dyn Fn() -> String, ux: &dyn Fn() -> String| match conv { // BLAZE PATCH 0008
++        'o' => u(), // BLAZE PATCH 0008
++        'x' => x(), // BLAZE PATCH 0008
++        _ => ux(), // BLAZE PATCH 0008
++    }; // BLAZE PATCH 0008
++    if conv == 'd' { // BLAZE PATCH 0008
++        write!(res, "{i}").unwrap(); // BLAZE PATCH 0008
++    } else if let Some(v) = i.to_i32() { // BLAZE PATCH 0008
++        let v = v as u32; // BLAZE PATCH 0008
++        res.push_str(&radix(&|| format!("{v:o}"), &|| format!("{v:x}"), &|| format!("{v:X}"))); // BLAZE PATCH 0008
++    } else if let Some(v) = i.to_i64() { // BLAZE PATCH 0008
++        let v = v as u64; // BLAZE PATCH 0008
++        res.push_str(&radix(&|| format!("{v:o}"), &|| format!("{v:x}"), &|| format!("{v:X}"))); // BLAZE PATCH 0008
++    } else { // BLAZE PATCH 0008
++        if i.is_negative() { // BLAZE PATCH 0008
++            res.push('-'); // BLAZE PATCH 0008
++        } // BLAZE PATCH 0008
++        let m = i.magnitude(); // BLAZE PATCH 0008
++        res.push_str(&radix(&|| format!("{m:o}"), &|| format!("{m:x}"), &|| format!("{m:X}"))); // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++    Ok(()) // BLAZE PATCH 0008
++} // BLAZE PATCH 0008
++
++/// `%e`, `%f`, `%g` and upper case: a float, or an int converted with
++/// StarlarkInt.toFiniteDouble.
++fn java_float_arg(value: Value, conv: char) -> crate::Result<f64> { // BLAZE PATCH 0008
++    match value.unpack_num() { // BLAZE PATCH 0008
++        Some(n) => Ok(n.as_finite_float()?), // BLAZE PATCH 0008
++        None => Err(want_int_or_float(value, conv)), // BLAZE PATCH 0008
++    } // BLAZE PATCH 0008
++} // BLAZE PATCH 0008
++
+ pub(crate) fn percent(format: &str, value: Value) -> crate::Result<String> {
+     // NOTE(nga): use could reuse `Evaluator::string_pool` here, but
+     //   * we don't have access to `Evaluator` in `StarlarkValue::percent`
+@@ -220,130 +286,38 @@
              Some(PercentSFormat::Str) => {
                  let arg = next_value()?;
                  match arg.unpack_str() {
@@ -1525,6 +3720,156 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                      Some(s) => res.push_str(s),
                  }
              }
+             Some(PercentSFormat::Repr) => next_value()?.collect_repr(&mut res),
+-            Some(PercentSFormat::Dec) => {
+-                let value = next_value()?;
+-                match value.unpack_num() {
+-                    Some(NumRef::Int(StarlarkIntRef::Small(v))) => {
+-                        write!(res, "{}", v.to_i32()).unwrap()
+-                    }
+-                    Some(NumRef::Int(StarlarkIntRef::Big(v))) => {
+-                        write!(res, "{}", v.get()).unwrap()
+-                    }
+-                    Some(NumRef::Float(v)) => {
+-                        match NumRef::Float(StarlarkFloat(v.0.trunc())).as_int() {
+-                            Some(v) => write!(res, "{v}").unwrap(),
+-                            None => ValueError::unsupported_type(value, "format(%d)")?,
+-                        }
+-                    }
+-                    None => ValueError::unsupported_type(value, "format(%d)")?,
+-                }
+-            }
+-            Some(PercentSFormat::Oct) => {
+-                let value = next_value()?;
+-                match value.unpack_num() {
+-                    Some(NumRef::Int(StarlarkIntRef::Small(v))) => {
+-                        let v = v.to_i32();
+-                        match v.checked_abs() {
+-                            Some(vp) => {
+-                                write!(res, "{}{:o}", if v < 0 { "-" } else { "" }, vp).unwrap()
+-                            }
+-                            None => write!(res, "{I32_MIN_OCTAL}").unwrap(),
+-                        }
+-                    }
+-                    Some(NumRef::Int(StarlarkIntRef::Big(v))) => {
+-                        let v = v.get();
+-                        write!(
+-                            res,
+-                            "{}{:o}",
+-                            if v.is_negative() { "-" } else { "" },
+-                            v.abs()
+-                        )
+-                        .unwrap()
+-                    }
+-                    Some(NumRef::Float(_)) | None => {
+-                        ValueError::unsupported_type(value, "format(%o)")?
+-                    }
+-                }
+-            }
+-            Some(PercentSFormat::Hex) => {
+-                let value = next_value()?;
+-                match value.unpack_num() {
+-                    Some(NumRef::Int(StarlarkIntRef::Small(v))) => {
+-                        let v = v.to_i32();
+-                        match v.checked_abs() {
+-                            Some(vp) => {
+-                                write!(res, "{}{:x}", if v < 0 { "-" } else { "" }, vp).unwrap()
+-                            }
+-                            None => write!(res, "{I32_MIN_HEX}").unwrap(),
+-                        }
+-                    }
+-                    Some(NumRef::Int(StarlarkIntRef::Big(v))) => {
+-                        let v = v.get();
+-                        write!(
+-                            res,
+-                            "{}{:x}",
+-                            if v.is_negative() { "-" } else { "" },
+-                            v.abs()
+-                        )
+-                        .unwrap()
+-                    }
+-                    Some(NumRef::Float(_)) | None => {
+-                        ValueError::unsupported_type(value, "format(%x)")?
+-                    }
+-                }
+-            }
+-            Some(PercentSFormat::HexUpper) => {
+-                let value = next_value()?;
+-                match value.unpack_num() {
+-                    Some(NumRef::Int(StarlarkIntRef::Small(v))) => {
+-                        let v = v.to_i32();
+-                        match v.checked_abs() {
+-                            Some(vp) => {
+-                                write!(res, "{}{:X}", if v < 0 { "-" } else { "" }, vp).unwrap()
+-                            }
+-                            None => write!(res, "{I32_MIN_HEX}").unwrap(),
+-                        }
+-                    }
+-                    Some(NumRef::Int(StarlarkIntRef::Big(v))) => {
+-                        let v = v.get();
+-                        write!(
+-                            res,
+-                            "{}{:X}",
+-                            if v.is_negative() { "-" } else { "" },
+-                            v.abs()
+-                        )
+-                        .unwrap()
+-                    }
+-                    Some(NumRef::Float(_)) | None => {
+-                        ValueError::unsupported_type(value, "format(%X)")?
+-                    }
+-                }
+-            }
+-            Some(PercentSFormat::Exp) => {
+-                let v = NumRef::unpack_param(next_value()?)?.as_float();
+-                float::write_scientific(&mut res, v, 'e', false).unwrap()
+-            }
+-            Some(PercentSFormat::ExpUpper) => {
+-                let v = NumRef::unpack_param(next_value()?)?.as_float();
+-                float::write_scientific(&mut res, v, 'E', false).unwrap()
+-            }
+-            Some(PercentSFormat::Float) => {
+-                let v = NumRef::unpack_param(next_value()?)?.as_float();
+-                float::write_decimal(&mut res, v).unwrap()
+-            }
+-            Some(PercentSFormat::FloatCompact) => {
+-                let v = NumRef::unpack_param(next_value()?)?.as_float();
+-                float::write_compact(&mut res, v, 'e').unwrap()
+-            }
+-            Some(PercentSFormat::FloatCompactUpper) => {
+-                let v = NumRef::unpack_param(next_value()?)?.as_float();
+-                float::write_compact(&mut res, v, 'E').unwrap()
+-            }
++            // Java Printer.formatWithList (Printer.java:353-400): %d %o %x %X take an int or a
++            // finite float (truncated); %e %f %g (and upper case) take a float or an int that
++            // converts to a finite float.
++            Some(PercentSFormat::Dec) => java_int_conv(&mut res, next_value()?, 'd')?, // BLAZE PATCH 0008
++            Some(PercentSFormat::Oct) => java_int_conv(&mut res, next_value()?, 'o')?, // BLAZE PATCH 0008
++            Some(PercentSFormat::Hex) => java_int_conv(&mut res, next_value()?, 'x')?, // BLAZE PATCH 0008
++            Some(PercentSFormat::HexUpper) => java_int_conv(&mut res, next_value()?, 'X')?, // BLAZE PATCH 0008
++            Some(PercentSFormat::Exp) => { // BLAZE PATCH 0008
++                let v = java_float_arg(next_value()?, 'e')?; // BLAZE PATCH 0008
++                float::write_scientific(&mut res, v, 'e', false).unwrap() // BLAZE PATCH 0008
++            } // BLAZE PATCH 0008
++            Some(PercentSFormat::ExpUpper) => { // BLAZE PATCH 0008
++                let v = java_float_arg(next_value()?, 'E')?; // BLAZE PATCH 0008
++                float::write_scientific(&mut res, v, 'E', false).unwrap() // BLAZE PATCH 0008
++            } // BLAZE PATCH 0008
++            Some(PercentSFormat::Float) => { // BLAZE PATCH 0008
++                let v = java_float_arg(next_value()?, 'f')?; // BLAZE PATCH 0008
++                float::write_decimal(&mut res, v).unwrap() // BLAZE PATCH 0008
++            } // BLAZE PATCH 0008
++            Some(PercentSFormat::FloatCompact) => { // BLAZE PATCH 0008
++                let v = java_float_arg(next_value()?, 'g')?; // BLAZE PATCH 0008
++                float::write_compact(&mut res, v, 'e').unwrap() // BLAZE PATCH 0008
++            } // BLAZE PATCH 0008
++            Some(PercentSFormat::FloatCompactUpper) => { // BLAZE PATCH 0008
++                let v = java_float_arg(next_value()?, 'G')?; // BLAZE PATCH 0008
++                float::write_compact(&mut res, v, 'E').unwrap() // BLAZE PATCH 0008
++            } // BLAZE PATCH 0008
+         }
+     }
+     if values.next().is_some() {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/iter.rs starlark/src/values/types/string/iter.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/iter.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/string/iter.rs	2026-11-18 07:57:12.584746662 -0700
@@ -1538,8 +3883,8 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      heap: Heap<'v>,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/methods.rs starlark/src/values/types/string/methods.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/methods.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/string/methods.rs	2026-11-18 07:57:12.584321635 -0700
-@@ -39,7 +39,6 @@
++++ starlark/src/values/types/string/methods.rs	2026-11-18 16:14:11.696618192 -0700
+@@ -39,12 +39,12 @@
  use crate::values::string::dot_format;
  use crate::values::tuple::UnpackTuple;
  use crate::values::type_repr::StarlarkTypeRepr;
@@ -1547,7 +3892,21 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  use crate::values::types::string::iter::iterate_codepoints;
  use crate::values::typing::iter::StarlarkIter;
  
-@@ -121,11 +120,16 @@
+ // This does not exists in rust, split would cut the string incorrectly and
+ // split_whitespace cannot take a n parameter.
++#[allow(dead_code)] // BLAZE PATCH 0005: Java has no whitespace split
+ fn splitn_whitespace(s: &str, maxsplit: usize) -> Vec<String> {
+     let mut v = Vec::new();
+     let mut cur = String::new();
+@@ -71,6 +71,7 @@
+     v
+ }
+ 
++#[allow(dead_code)] // BLAZE PATCH 0005: Java has no whitespace split
+ fn rsplitn_whitespace(s: &str, maxsplit: usize) -> Vec<String> {
+     let mut v = Vec::new();
+     let mut cur = String::new();
+@@ -121,11 +122,16 @@
      /// list("Hello, 世界".elems()) == ["H", "e", "l", "l", "o", ",", " ", "世", "界"]
      /// # "#);
      /// ```
@@ -1569,6 +3928,175 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.capitalize](
+@@ -772,15 +778,13 @@
+         #[starlark(require = pos)] count: Option<i32>,
+         heap: Heap<'v>,
+     ) -> anyhow::Result<StringValue<'v>> {
++        // BLAZE PATCH 0005: a negative count means no limit (Java StringModule.replace,
++        // StringModule.java:358).
+         match count {
+             Some(count) if count >= 0 => {
+                 Ok(heap.alloc_str(&this.replacen(old, new, count as usize)))
+             }
+-            Some(count) => Err(anyhow::anyhow!(
+-                "Replace final argument was negative '{}'",
+-                count
+-            )),
+-            None => {
++            _ => { // BLAZE PATCH 0005
+                 // Optimise `replace` using the Rust standard library definition,
+                 // but avoiding redundant allocation in the last step
+                 let x = this.as_str();
+@@ -925,41 +929,29 @@
+     /// "one two  three".rsplit(None, 1) == ["one two", "three"]
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0005: Java StringModule.rsplit (StringModule.java:426): `sep` is required and
++    // may be named, `maxsplit` is an int (named or positional, negative: no limit), an empty
++    // separator fails with "Empty separator".
+     #[starlark(speculative_exec_safe)]
+     fn rsplit<'v>(
+         this: &str,
+-        #[starlark(require = pos, default = NoneOr::None)] sep: NoneOr<&str>,
+-        #[starlark(require = pos, default = NoneOr::None)] maxsplit: NoneOr<i32>,
++        sep: &str, // BLAZE PATCH 0005
++        maxsplit: Option<i32>, // BLAZE PATCH 0005
+         heap: Heap<'v>,
+     ) -> anyhow::Result<ValueOfUnchecked<'v, UnpackList<String>>> {
+-        let maxsplit = match maxsplit.into_option() {
+-            None => None,
+-            Some(v) => {
+-                if v < 0 {
+-                    None
+-                } else {
+-                    Some((v + 1) as usize)
+-                }
+-            }
+-        };
+-        Ok(match sep.into_option() {
+-            None => match maxsplit {
+-                None => heap
+-                    .alloc_typed_unchecked(AllocList(this.split_whitespace()))
+-                    .cast(),
+-                Some(maxsplit) => heap
+-                    .alloc_typed_unchecked(rsplitn_whitespace(this, maxsplit))
+-                    .cast(),
+-            },
+-            Some(sep) => {
+-                let mut v: Vec<_> = match maxsplit {
+-                    None => this.rsplit(sep).collect(),
+-                    Some(maxsplit) => this.rsplitn(maxsplit, sep).collect(),
+-                };
+-                v.reverse();
+-                heap.alloc_typed_unchecked(AllocList(v)).cast()
+-            }
+-        })
++        if sep.is_empty() { // BLAZE PATCH 0005
++            return Err(anyhow::anyhow!("Empty separator")); // BLAZE PATCH 0005
++        } // BLAZE PATCH 0005
++        let maxsplit = match maxsplit { // BLAZE PATCH 0005
++            Some(v) if v >= 0 => Some(v as usize + 1), // BLAZE PATCH 0005
++            _ => None, // BLAZE PATCH 0005
++        }; // BLAZE PATCH 0005
++        let mut v: Vec<_> = match maxsplit { // BLAZE PATCH 0005
++            None => this.rsplit(sep).collect(), // BLAZE PATCH 0005
++            Some(maxsplit) => this.rsplitn(maxsplit, sep).collect(), // BLAZE PATCH 0005
++        }; // BLAZE PATCH 0005
++        v.reverse(); // BLAZE PATCH 0005
++        Ok(heap.alloc_typed_unchecked(AllocList(v)).cast()) // BLAZE PATCH 0005
+     }
+ 
+     /// [string.rstrip](
+@@ -1024,54 +1016,48 @@
+     /// "banana".split("n", 1) == ["ba", "ana"]
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0005: Java StringModule.split (StringModule.java:387): `sep` is required and
++    // may be named, `maxsplit` is an int (named or positional, negative: no limit), an empty
++    // separator fails with "Empty separator".
+     #[starlark(speculative_exec_safe)]
+     fn split<'v>(
+         this: &str,
+-        #[starlark(require = pos, default = NoneOr::None)] sep: NoneOr<&str>,
+-        #[starlark(require = pos, default = NoneOr::None)] maxsplit: NoneOr<i32>,
++        sep: &str, // BLAZE PATCH 0005
++        maxsplit: Option<i32>, // BLAZE PATCH 0005
+         heap: Heap<'v>,
+     ) -> anyhow::Result<ValueOfUnchecked<'v, UnpackList<String>>> {
+-        let maxsplit = match maxsplit.into_option() {
+-            None => None,
+-            Some(v) => {
+-                if v < 0 {
+-                    None
+-                } else {
+-                    Some((v + 1) as usize)
+-                }
+-            }
+-        };
+-        Ok(match (sep.into_option(), maxsplit) {
+-            (None, None) => heap
+-                .alloc_typed_unchecked(AllocList(this.split_whitespace()))
+-                .cast(),
+-            (None, Some(maxsplit)) => heap
+-                .alloc_typed_unchecked(AllocList(splitn_whitespace(this, maxsplit)))
+-                .cast(),
+-            (Some(sep), None) => {
+-                if sep.len() == 1 {
++        if sep.is_empty() { // BLAZE PATCH 0005
++            return Err(anyhow::anyhow!("Empty separator")); // BLAZE PATCH 0005
++        } // BLAZE PATCH 0005
++        let maxsplit = match maxsplit { // BLAZE PATCH 0005
++            Some(v) if v >= 0 => Some(v as usize + 1), // BLAZE PATCH 0005
++            _ => None, // BLAZE PATCH 0005
++        }; // BLAZE PATCH 0005
++        Ok(match maxsplit { // BLAZE PATCH 0005
++            None => { // BLAZE PATCH 0005
++                if sep.len() == 1 { // BLAZE PATCH 0005
+                     // If we are searching for a 1-byte string, we can provide a much faster path.
+                     // Since it is one byte, given how UTF8 works, all the resultant slices must be UTF8 too.
+-                    let b = sep.as_bytes()[0];
+-                    let count = fast_string::count_matches_byte(this, b);
+-                    let mut res = Vec::with_capacity(count + 1);
+-                    res.extend(
+-                        this.as_bytes()
+-                            .split(|x| *x == b)
+-                            .map(|x| unsafe { std::str::from_utf8_unchecked(x) }),
+-                    );
+-                    debug_assert_eq!(res.len(), count + 1);
+-                    heap.alloc_typed_unchecked(AllocList(res)).cast()
+-                } else {
+-                    heap.alloc_typed_unchecked(AllocList(this.split(sep)))
+-                        .cast()
+-                }
+-            }
+-            (Some(sep), Some(maxsplit)) => heap
+-                .alloc_typed_unchecked(AllocList(this.splitn(maxsplit, sep)))
+-                .cast(),
+-        })
+-    }
++                    let b = sep.as_bytes()[0]; // BLAZE PATCH 0005
++                    let count = fast_string::count_matches_byte(this, b); // BLAZE PATCH 0005
++                    let mut res = Vec::with_capacity(count + 1); // BLAZE PATCH 0005
++                    res.extend( // BLAZE PATCH 0005
++                        this.as_bytes() // BLAZE PATCH 0005
++                            .split(|x| *x == b) // BLAZE PATCH 0005
++                            .map(|x| unsafe { std::str::from_utf8_unchecked(x) }), // BLAZE PATCH 0005
++                    ); // BLAZE PATCH 0005
++                    debug_assert_eq!(res.len(), count + 1); // BLAZE PATCH 0005
++                    heap.alloc_typed_unchecked(AllocList(res)).cast() // BLAZE PATCH 0005
++                } else { // BLAZE PATCH 0005
++                    heap.alloc_typed_unchecked(AllocList(this.split(sep))) // BLAZE PATCH 0005
++                        .cast() // BLAZE PATCH 0005
++                } // BLAZE PATCH 0005
++            } // BLAZE PATCH 0005
++            Some(maxsplit) => heap // BLAZE PATCH 0005
++                .alloc_typed_unchecked(AllocList(this.splitn(maxsplit, sep))) // BLAZE PATCH 0005
++                .cast(), // BLAZE PATCH 0005
++        }) // BLAZE PATCH 0005
++    } // BLAZE PATCH 0005
+ 
+     /// [string.splitlines](
+     /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·splitlines
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/str_type.rs starlark/src/values/types/string/str_type.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/str_type.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/string/str_type.rs	2026-11-17 22:49:07.484514763 -0700
@@ -1622,6 +4150,32 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                                  res.push(c);
                              }
                              _ => break, // Out of chars
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/ast.rs starlark_syntax/src/syntax/ast.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/ast.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/syntax/ast.rs	2026-11-18 15:53:55.966247222 -0700
+@@ -796,3 +796,22 @@
+         self.fmt_with_tab(f, "".to_owned())
+     }
+ }
++
++/// BLAZE PATCH 0030: a Bazel var statement `x: T` is parsed as `if 0: x = 0` whose condition,
++/// body and assignment all have the identifier's span (no source text can produce that).
++impl<P: AstPayload> AstStmtP<P> { // BLAZE PATCH 0030
++    /// The declared identifier if this statement is a var statement (`x: T`).
++    pub fn blaze_var_statement(&self) -> Option<&AstAssignIdentP<P>> { // BLAZE PATCH 0030
++        let StmtP::If(cond, body) = &self.node else { // BLAZE PATCH 0030
++            return None; // BLAZE PATCH 0030
++        }; // BLAZE PATCH 0030
++        let StmtP::Assign(AssignP { lhs, .. }) = &body.node else { // BLAZE PATCH 0030
++            return None; // BLAZE PATCH 0030
++        }; // BLAZE PATCH 0030
++        let AssignTargetP::Identifier(id) = &lhs.node else { // BLAZE PATCH 0030
++            return None; // BLAZE PATCH 0030
++        }; // BLAZE PATCH 0030
++        let zero = matches!(&cond.node, ExprP::Literal(AstLiteral::Int(i)) if i.node == TokenInt::I32(0)); // BLAZE PATCH 0030
++        (zero && cond.span == body.span && body.span == id.span).then_some(id) // BLAZE PATCH 0030
++    } // BLAZE PATCH 0030
++} // BLAZE PATCH 0030
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/grammar_util.rs starlark_syntax/src/syntax/grammar_util.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/grammar_util.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark_syntax/src/syntax/grammar_util.rs	2026-11-18 09:47:25.256853247 -0700
@@ -1652,12 +4206,12 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          expr: Spanned { node, span },
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/parser_rd.rs starlark_syntax/src/syntax/parser_rd.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/parser_rd.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark_syntax/src/syntax/parser_rd.rs	2026-11-18 09:47:25.256462549 -0700
++++ starlark_syntax/src/syntax/parser_rd.rs	2026-11-18 16:14:11.696211684 -0700
 @@ -37,6 +37,7 @@
  use crate::lexer::Token;
  use crate::syntax::ast::*;
  use crate::syntax::grammar_util;
-+use crate::syntax::grammar_util::BLAZE_TYPE_SYNTAX_NOT_PORTED;
++use crate::lexer::TokenInt; // BLAZE PATCH 0030
  use crate::syntax::state::ParserState;
  
  pub(crate) type Lexeme = Result<(usize, Token, usize), EvalException>;
@@ -1739,23 +4293,63 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let lhs_is_expr_list = self.peek() == Some(&Token::Comma);
          let lhs = if lhs_is_expr_list {
              self.parse_test_list_tail(l, first, false)?
-@@ -407,6 +436,15 @@
+@@ -393,6 +422,7 @@
+         };
+ 
+         // Check for type annotation
++        let colon = self.pos(); // BLAZE PATCH 0030
+         let ty = if self.eat(&Token::Colon) {
+             Some(Box::new(self.parse_type_expr()?))
+         } else {
+@@ -407,6 +437,47 @@
              let r = self.last_end;
              let stmt = grammar_util::check_assignment(self.state.codemap, lhs, ty, assign_op, rhs)?;
              Ok(stmt.ast(l, r))
-+        } else if self.type_syntax && ty.is_some() && !lhs_is_expr_list {
-+            // BLAZE PATCH 0020: a var statement, `x: T`. Bazel binds `x` in the enclosing block
-+            // without a value (Resolver.java:562); the AST has no node for that yet.
++        } else if self.type_syntax && ty.is_some() { // BLAZE PATCH 0030
++            // BLAZE PATCH 0030: a var statement, `x: T` (Parser.java:1582). Bazel binds `x` in the
++            // enclosing block (Resolver.java:562 createBindings) and executing it does nothing
++            // (Eval.java:324), so `x` reads as "referenced before assignment" until assigned.
++            // The AST has no node for a binding without a value: it becomes `if 0: x = 0`, whose
++            // assignment binds `x` in the same block and never runs (the annotation is dropped,
++            // as `ParseOnly` ignores annotations).
 +            let r = self.last_end;
-+            Err(self.error_at(
-+                l,
-+                r,
-+                format!("{BLAZE_TYPE_SYNTAX_NOT_PORTED}VarStatement (`x: T` without a value)"),
-+            ))
++            let Expr::Identifier(id) = lhs.node else { // BLAZE PATCH 0030
++                // Java: Parser.java:1586.
++                return Err(self.error_at( // BLAZE PATCH 0030
++                    colon, // BLAZE PATCH 0030
++                    colon + 1, // BLAZE PATCH 0030
++                    "type annotations must have a single identifier on the left-hand side" // BLAZE PATCH 0030
++                        .to_owned(), // BLAZE PATCH 0030
++                )); // BLAZE PATCH 0030
++            }; // BLAZE PATCH 0030
++            let id_span = id.span; // BLAZE PATCH 0030
++            let zero = |span: Span| { // BLAZE PATCH 0030
++                Spanned { // BLAZE PATCH 0030
++                    span, // BLAZE PATCH 0030
++                    node: Expr::Literal(AstLiteral::Int(Spanned { // BLAZE PATCH 0030
++                        span, // BLAZE PATCH 0030
++                        node: TokenInt::I32(0), // BLAZE PATCH 0030
++                    })), // BLAZE PATCH 0030
++                } // BLAZE PATCH 0030
++            }; // BLAZE PATCH 0030
++            let target = Spanned { // BLAZE PATCH 0030
++                span: id_span, // BLAZE PATCH 0030
++                node: AssignTarget::Identifier(id.map(|s| AssignIdentP { // BLAZE PATCH 0030
++                    ident: s.ident, // BLAZE PATCH 0030
++                    payload: (), // BLAZE PATCH 0030
++                })), // BLAZE PATCH 0030
++            }; // BLAZE PATCH 0030
++            let assign = Stmt::Assign(AssignP { // BLAZE PATCH 0030
++                lhs: target, // BLAZE PATCH 0030
++                ty: None, // BLAZE PATCH 0030
++                rhs: zero(id_span), // BLAZE PATCH 0030
++            }); // BLAZE PATCH 0030
++            let body = Spanned { span: id_span, node: assign }; // BLAZE PATCH 0030
++            Ok(Stmt::If(zero(id_span), Box::new(body)).ast(l, r)) // BLAZE PATCH 0030
          } else if lhs_is_expr_list || ty.is_some() {
              Err(self.error_expected("assignment operator"))
          } else {
-@@ -950,6 +988,12 @@
+@@ -950,6 +1021,12 @@
      }
  
      fn parse_atom(&mut self) -> Result<AstExpr, EvalException> {
@@ -1768,7 +4362,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          match self.peek() {
              Some(Token::Identifier(_)) => {
                  let (l, ident, r) = take_payload!(self, Token::Identifier);
-@@ -1152,6 +1196,10 @@
+@@ -1152,6 +1229,10 @@
      // ==================== Helpers ====================
  
      fn parse_identifier_string(&mut self) -> Result<AstString, EvalException> {
@@ -1779,7 +4373,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          match &self.current {
              Some((_, Token::Identifier(_), _)) => match self.take_current() {
                  Some((l, Token::Identifier(s), r)) => Ok(s.ast(l, r)),
-@@ -1182,6 +1230,102 @@
+@@ -1182,6 +1263,102 @@
          }
      }
  
@@ -1882,6 +4476,18 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      fn parse_type_expr(&mut self) -> Result<AstTypeExpr, EvalException> {
          let expr = self.parse_test()?;
          grammar_util::dialect_check_type(&self.state, expr)
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/validate.rs starlark_syntax/src/syntax/validate.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/validate.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/syntax/validate.rs	2026-11-18 15:53:55.966458751 -0700
+@@ -118,6 +118,8 @@
+                     f(body, parser_state, false, true, inside_def)
+                 }
+             }
++            // BLAZE PATCH 0030: a var statement is allowed anywhere (it is not an `if`).
++            Stmt::If(..) if stmt.blaze_var_statement().is_some() => {} // BLAZE PATCH 0030
+             Stmt::If(..) | Stmt::IfElse(..) => {
+                 if top_level && !parser_state.dialect.enable_top_level_stmt {
+                     parser_state.error(span, "`if` cannot be used outside `def` in this dialect")
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_derive-0.14.2: .cargo-ok
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_derive-0.14.2: .cargo_vcs_info.json
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_map-0.14.2: .cargo-ok

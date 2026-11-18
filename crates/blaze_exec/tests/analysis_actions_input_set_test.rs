@@ -42,3 +42,46 @@ fn a_shared_sub_set_is_one_node_in_every_converted_set() {
     // Different sets stay different nodes.
     assert!(first_inputs.to_node() != second_inputs.to_node());
 }
+
+// Java: a converted set is the same NestedSet object, so it has the order of the set it came
+// from. Sets that share a node but not an order are different objects.
+#[test]
+fn sets_that_share_a_node_keep_their_own_order() {
+    use blaze_collect::Order;
+    let dirs = TestDirs::new();
+    // Every empty set of one order shares a node with the empty sets of the others.
+    for order in [
+        Order::STABLE_ORDER,
+        Order::COMPILE_ORDER,
+        Order::LINK_ORDER,
+        Order::NAIVE_LINK_ORDER,
+    ] {
+        let empty = NestedSetBuilder::empty_set(order);
+        assert_eq!(to_action_input_set(&empty).get_order(), order);
+    }
+    // Equal singletons of two orders.
+    let a = dirs.source_artifact("pkg/a.h");
+    for order in [
+        Order::LINK_ORDER,
+        Order::STABLE_ORDER,
+        Order::NAIVE_LINK_ORDER,
+    ] {
+        let single = NestedSetBuilder::create(order, [a.clone()]);
+        assert_eq!(to_action_input_set(&single).get_order(), order);
+    }
+    // A set of another order that wraps a single transitive set (the builder may reuse the
+    // node of the wrapped set).
+    let mut inner = NestedSetBuilder::stable_order();
+    inner.add(dirs.source_artifact("pkg/x.h"));
+    inner.add(dirs.source_artifact("pkg/y.h"));
+    let inner = inner.build();
+    assert_eq!(to_action_input_set(&inner).get_order(), Order::STABLE_ORDER);
+    let mut outer = NestedSetBuilder::compile_order();
+    outer.add_transitive(&inner);
+    let outer = outer.build();
+    assert_eq!(
+        to_action_input_set(&outer).get_order(),
+        Order::COMPILE_ORDER
+    );
+    assert_eq!(to_action_input_set(&inner).get_order(), Order::STABLE_ORDER);
+}

@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/assign_dot/assign_dot.bzl", line 5, column 2, in <toplevel>
+		f()
+	File "<WS>/assign_dot/assign_dot.bzl", line 3, column 6, in f
+		s.a = 2
+Error: struct value does not support field assignment

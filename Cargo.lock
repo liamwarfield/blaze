@@ -775,6 +775,7 @@ dependencies = [
  "blaze_protos",
  "blaze_query",
  "blaze_query_engine",
+ "blaze_remote",
  "blaze_rules",
  "blaze_shell",
  "blaze_sky_analysis",
@@ -944,6 +945,7 @@ name = "blaze_skyframe"
 version = "0.1.0"
 dependencies = [
  "blaze_events",
+ "blaze_shell",
  "blaze_util",
  "parking_lot",
 ]
@@ -979,6 +981,7 @@ dependencies = [
 name = "blaze_vfs"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "sha2",
 ]
 

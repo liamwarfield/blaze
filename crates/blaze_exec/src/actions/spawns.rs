@@ -21,7 +21,12 @@ pub fn may_be_cached_info(execution_info: &indexmap::IndexMap<String, String>) -
 
 /// `mayBeCachedRemotely(Spawn)`.
 pub fn may_be_cached_remotely(spawn: &dyn Spawn) -> bool {
-    let info = spawn.get_execution_info();
+    may_be_cached_remotely_info(spawn.get_execution_info())
+}
+
+/// `mayBeCachedRemotely(Map executionInfo)`.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:45 Spawns.mayBeCachedRemotely
+pub fn may_be_cached_remotely_info(info: &indexmap::IndexMap<String, String>) -> bool {
     may_be_cached_info(info)
         && !info.contains_key(er::NO_REMOTE)
         && !info.contains_key(er::NO_REMOTE_CACHE)

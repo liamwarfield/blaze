@@ -37,7 +37,7 @@ use crate::lexer;
 use crate::lexer::Token;
 use crate::syntax::ast::*;
 use crate::syntax::grammar_util;
-use crate::syntax::grammar_util::BLAZE_TYPE_SYNTAX_NOT_PORTED;
+use crate::lexer::TokenInt; // BLAZE PATCH 0030
 use crate::syntax::state::ParserState;
 
 pub(crate) type Lexeme = Result<(usize, Token, usize), EvalException>;
@@ -422,6 +422,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
         };
 
         // Check for type annotation
+        let colon = self.pos(); // BLAZE PATCH 0030
         let ty = if self.eat(&Token::Colon) {
             Some(Box::new(self.parse_type_expr()?))
         } else {
@@ -436,15 +437,47 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             let r = self.last_end;
             let stmt = grammar_util::check_assignment(self.state.codemap, lhs, ty, assign_op, rhs)?;
             Ok(stmt.ast(l, r))
-        } else if self.type_syntax && ty.is_some() && !lhs_is_expr_list {
-            // BLAZE PATCH 0020: a var statement, `x: T`. Bazel binds `x` in the enclosing block
-            // without a value (Resolver.java:562); the AST has no node for that yet.
+        } else if self.type_syntax && ty.is_some() { // BLAZE PATCH 0030
+            // BLAZE PATCH 0030: a var statement, `x: T` (Parser.java:1582). Bazel binds `x` in the
+            // enclosing block (Resolver.java:562 createBindings) and executing it does nothing
+            // (Eval.java:324), so `x` reads as "referenced before assignment" until assigned.
+            // The AST has no node for a binding without a value: it becomes `if 0: x = 0`, whose
+            // assignment binds `x` in the same block and never runs (the annotation is dropped,
+            // as `ParseOnly` ignores annotations).
             let r = self.last_end;
-            Err(self.error_at(
-                l,
-                r,
-                format!("{BLAZE_TYPE_SYNTAX_NOT_PORTED}VarStatement (`x: T` without a value)"),
-            ))
+            let Expr::Identifier(id) = lhs.node else { // BLAZE PATCH 0030
+                // Java: Parser.java:1586.
+                return Err(self.error_at( // BLAZE PATCH 0030
+                    colon, // BLAZE PATCH 0030
+                    colon + 1, // BLAZE PATCH 0030
+                    "type annotations must have a single identifier on the left-hand side" // BLAZE PATCH 0030
+                        .to_owned(), // BLAZE PATCH 0030
+                )); // BLAZE PATCH 0030
+            }; // BLAZE PATCH 0030
+            let id_span = id.span; // BLAZE PATCH 0030
+            let zero = |span: Span| { // BLAZE PATCH 0030
+                Spanned { // BLAZE PATCH 0030
+                    span, // BLAZE PATCH 0030
+                    node: Expr::Literal(AstLiteral::Int(Spanned { // BLAZE PATCH 0030
+                        span, // BLAZE PATCH 0030
+                        node: TokenInt::I32(0), // BLAZE PATCH 0030
+                    })), // BLAZE PATCH 0030
+                } // BLAZE PATCH 0030
+            }; // BLAZE PATCH 0030
+            let target = Spanned { // BLAZE PATCH 0030
+                span: id_span, // BLAZE PATCH 0030
+                node: AssignTarget::Identifier(id.map(|s| AssignIdentP { // BLAZE PATCH 0030
+                    ident: s.ident, // BLAZE PATCH 0030
+                    payload: (), // BLAZE PATCH 0030
+                })), // BLAZE PATCH 0030
+            }; // BLAZE PATCH 0030
+            let assign = Stmt::Assign(AssignP { // BLAZE PATCH 0030
+                lhs: target, // BLAZE PATCH 0030
+                ty: None, // BLAZE PATCH 0030
+                rhs: zero(id_span), // BLAZE PATCH 0030
+            }); // BLAZE PATCH 0030
+            let body = Spanned { span: id_span, node: assign }; // BLAZE PATCH 0030
+            Ok(Stmt::If(zero(id_span), Box::new(body)).ast(l, r)) // BLAZE PATCH 0030
         } else if lhs_is_expr_list || ty.is_some() {
             Err(self.error_expected("assignment operator"))
         } else {

@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/dot_missing/dot_missing.bzl", line 1, column 10, in <toplevel>
+		x = "abc".nosuch
+Error: 'string' value has no field or method 'nosuch'

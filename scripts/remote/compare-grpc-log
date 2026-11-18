@@ -22,7 +22,7 @@ usage: scripts/remote/compare-grpc-log <reference.log> <candidate.log> [--verbos
 Both files are --remote_grpc_log outputs (length-delimited remote_logging.LogEntry); the
 reference is real Bazel's, the candidate Blaze's. Each is dumped with
 target/debug/blaze-remote-grpc-log (build it with
-`scripts/cargo-capped build -p blaze_remote --features wip --bins`) and every entry is
+`scripts/cargo-capped build -p blaze_remote --bins`) and every entry is
 normalised:
 
   dropped       startTime, endTime

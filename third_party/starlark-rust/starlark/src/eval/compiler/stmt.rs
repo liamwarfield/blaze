@@ -68,6 +68,8 @@ use crate::values::Heap;
 use crate::values::Value;
 use crate::values::ValueError;
 use crate::values::dict::Dict;
+use crate::values::types::set::methods::SetInplaceOp; // BLAZE PATCH 0007
+use crate::values::types::set::methods::set_inplace_op; // BLAZE PATCH 0007
 use crate::values::dict::DictMut;
 use crate::values::dict::DictRef;
 use crate::values::types::list::value::ListData;
@@ -75,7 +77,8 @@ use crate::values::typing::type_compiled::compiled::TypeCompiled;
 
 #[derive(Clone, Debug, StarlarkPagable)]
 pub(crate) enum AssignModifyLhs {
-    Dot(IrSpanned<ExprCompiled>, String),
+    // BLAZE PATCH 0028: the field name spans `object.field`, where Java locates errors (the `.`).
+    Dot(IrSpanned<ExprCompiled>, IrSpanned<String>), // BLAZE PATCH 0028
     Array(IrSpanned<ExprCompiled>, IrSpanned<ExprCompiled>),
     Local(IrSpanned<LocalSlotId>),
     LocalCaptured(IrSpanned<LocalCapturedSlotId>),
@@ -124,7 +127,7 @@ impl AssignModifyLhs {
     fn optimize(&self, ctx: &mut OptCtx) -> AssignModifyLhs {
         match self {
             AssignModifyLhs::Dot(expr, name) => {
-                AssignModifyLhs::Dot(expr.optimize(ctx), name.clone())
+                AssignModifyLhs::Dot(expr.optimize(ctx), name.clone()) // BLAZE PATCH 0028
             }
             AssignModifyLhs::Array(expr, index) => {
                 AssignModifyLhs::Array(expr.optimize(ctx), index.optimize(ctx))
@@ -298,6 +301,7 @@ impl StmtsCompiled {
         t: StmtsCompiled,
         f: StmtsCompiled,
     ) -> StmtsCompiled {
+        let cond_span = cond.span; // BLAZE PATCH 0028
         let cond = ExprCompiledBool::new(cond);
         match cond.node {
             ExprCompiledBool::Const(true) => t,
@@ -312,7 +316,9 @@ impl StmtsCompiled {
                     stmt
                 }
                 cond => {
-                    let cond = IrSpanned { span, node: cond };
+                    // BLAZE PATCH 0028: the condition keeps its own span, so its errors are
+                    // located in it (Java: the failing operator), not at the `if`.
+                    let cond = IrSpanned { span: cond_span, node: cond }; // BLAZE PATCH 0028
                     if t.is_empty() && f.is_empty() {
                         Self::expr(cond)
                     } else {
@@ -370,6 +376,21 @@ impl AssignCompiledValue {
 }
 
 impl IrSpanned<AssignCompiledValue> {
+    /// BLAZE PATCH 0028: index assignments and unpacking (at any depth) report their errors at
+    /// `span` (Java: the enclosing statement's location); `x.f = ...` keeps its own span.
+    pub(crate) fn located_at(self, span: FrameSpan) -> IrSpanned<AssignCompiledValue> { // BLAZE PATCH 0028
+        match self.node { // BLAZE PATCH 0028
+            AssignCompiledValue::Index(..) => IrSpanned { node: self.node, span }, // BLAZE PATCH 0028
+            AssignCompiledValue::Tuple(xs) => IrSpanned { // BLAZE PATCH 0028
+                node: AssignCompiledValue::Tuple( // BLAZE PATCH 0028
+                    xs.into_iter().map(|x| x.located_at(span)).collect(), // BLAZE PATCH 0028
+                ), // BLAZE PATCH 0028
+                span, // BLAZE PATCH 0028
+            }, // BLAZE PATCH 0028
+            node => IrSpanned { node, span: self.span }, // BLAZE PATCH 0028
+        } // BLAZE PATCH 0028
+    } // BLAZE PATCH 0028
+
     pub(crate) fn optimize(&self, ctx: &mut OptCtx) -> IrSpanned<AssignCompiledValue> {
         let span = self.span;
         let assign = match self.node {
@@ -457,7 +478,7 @@ impl Compiler<'_, '_, '_, '_> {
                 Ok(StmtsCompiled::one(IrSpanned {
                     span: span_stmt,
                     node: StmtCompiled::AssignModify(
-                        AssignModifyLhs::Dot(e, s.node.clone()),
+                        AssignModifyLhs::Dot(e, IrSpanned { node: s.node.clone(), span: span_lhs }), // BLAZE PATCH 0028
                         op,
                         rhs,
                     ),
@@ -568,6 +589,10 @@ pub(crate) fn bit_or_assign<'v>(
     // When mutating, be careful if they alias, so we don't have `lhs`
     // mutably borrowed when we iterate over `rhs`, as they might alias.
 
+    // Java Eval.inplaceBinaryOp: `set |= set` updates the left set.
+    if let Some(r) = set_inplace_op(lhs, rhs, SetInplaceOp::Or) { // BLAZE PATCH 0007
+        return r; // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
     let lhs_aref = lhs.get_ref();
     let lhs_ty = lhs_aref.vtable().static_type_of_value.get();
 
@@ -774,6 +799,8 @@ impl Compiler<'_, '_, '_, '_> {
             StmtP::For(ForP { var, over, body }) => {
                 let over = list_to_tuple(over);
                 let var = self.assign_target(var)?;
+                // Java Eval.execFor: an assignment error is located at the `for`.
+                let var = var.located_at(span); // BLAZE PATCH 0028
                 let over = self.expr(&over)?;
                 let st = self.stmt(body, false)?;
                 Ok(StmtsCompiled::for_stmt(span, var, over, st))
@@ -809,6 +836,9 @@ impl Compiler<'_, '_, '_, '_> {
                 let rhs = self.expr(rhs)?;
                 let ty = self.expr_for_type(ty.as_ref());
                 let lhs = self.assign_target(lhs)?;
+                // Java Eval.execAssignment: an error assigning to `x[i]` or unpacking is located
+                // at the `=` (the statement span; `x.f` keeps the `.`, Eval.assign).
+                let lhs = lhs.located_at(span); // BLAZE PATCH 0028
                 Ok(StmtsCompiled::one(IrSpanned {
                     span,
                     node: StmtCompiled::Assign(lhs, ty, rhs),

@@ -241,6 +241,10 @@ impl InProcessServer for ProbeServer {
                 .collect(),
         )
     }
+
+    fn canceller(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {
+        std::sync::Arc::new(|| {})
+    }
 }
 
 /// Whether some other open file description holds a lock on the byte range `AcquireLock` uses

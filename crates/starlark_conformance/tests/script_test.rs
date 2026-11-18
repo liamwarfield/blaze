@@ -18,13 +18,14 @@ fn bazel_script_tests_on_starlark_rust() {
     let chunks: usize = results.iter().map(|r| r.chunks.len()).sum();
     let asserts_passed: usize = results.iter().map(|r| r.asserts_passed()).sum();
     assert_eq!(chunks, 95);
-    // Baseline at starlark 0.14.2 (see docs/research/05-starlark-rust.md).
+    // Ratchet: patches through 0031 (docs/research/05-starlark-rust.md section 9; the stock
+    // starlark 0.14.2 baseline was 28 chunks and 2060 assertions).
     assert!(
-        chunks_passed >= 28,
+        chunks_passed >= 37,
         "chunks passed regressed: {chunks_passed}"
     );
     assert!(
-        asserts_passed >= 2060,
+        asserts_passed >= 2494,
         "asserts passed regressed: {asserts_passed}"
     );
 }

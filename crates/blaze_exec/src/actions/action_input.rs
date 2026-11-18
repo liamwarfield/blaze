@@ -85,6 +85,20 @@ pub trait Artifact: ActionInput {
     fn get_root_relative_path(&self) -> PathFragment;
     /// `getRoot().getExecPath()`.
     fn get_root_exec_path(&self) -> PathFragment;
+    /// `getRunfilesPath()`: the path relative to the runfiles tree root ("short path").
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:636 Artifact.getRunfilesPath
+    fn get_runfiles_path(&self) -> PathFragment {
+        blaze_util::unported!(
+            "Artifact.getRunfilesPath (an execution-layer Artifact that is not a blaze_actions artifact)"
+        )
+    }
+    /// `getRoot().isExternal()`.
+    // Java: com/google/devtools/build/lib/actions/ArtifactRoot.java:238 ArtifactRoot.isExternal
+    fn is_root_external(&self) -> bool {
+        blaze_util::unported!(
+            "ArtifactRoot.isExternal (an execution-layer Artifact that is not a blaze_actions artifact)"
+        )
+    }
 }
 
 /// A shared `ActionInput`, with Java's `equals`/`hashCode` (inputs are equal when their exec

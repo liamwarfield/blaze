@@ -58,10 +58,9 @@ impl LazyFileOutputStream {
     /// If the output stream is a `FileOutputStream`, call `FileDescriptor#sync` on it. Otherwise,
     /// do nothing.
     ///
-    /// PORT: `blaze_vfs::Path::get_output_stream` hands out an opaque `Box<dyn Write + Send>`
-    /// (missing hook: a `sync` on the stream of the file system). `fsync` acts on the file, not
-    /// on the descriptor, so the port syncs through a second descriptor of the same file; every
-    /// `blaze_vfs` file system is the host file system.
+    /// PORT: `blaze_vfs::Path::get_output_stream` hands out an opaque `Box<dyn Write + Send>`;
+    /// `fsync` acts on the file, not on the descriptor, so the file is synced with
+    /// `blaze_vfs::Path::fsync` after the stream is flushed.
     // Java: com/google/devtools/build/lib/remote/common/LazyFileOutputStream.java:73 LazyFileOutputStream.syncIfPossible
     pub fn sync_if_possible(&mut self) -> io::Result<()> {
         self.ensure_open()?;
@@ -70,7 +69,7 @@ impl LazyFileOutputStream {
             // Java: `FileDescriptor.sync()` on a closed stream.
             None => return Err(io_exception("java.io.SyncFailedException: sync failed")),
         }
-        std::fs::File::open(self.path.get_path_string())?.sync_all()
+        self.path.fsync()
     }
 
     // Java: com/google/devtools/build/lib/remote/common/LazyFileOutputStream.java:80 LazyFileOutputStream.ensureOpen

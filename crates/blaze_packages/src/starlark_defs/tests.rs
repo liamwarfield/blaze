@@ -737,3 +737,13 @@ fn allowlist_entry_compares_packages_by_segment() {
         "{err}"
     );
 }
+
+/// A def of a frozen .bzl module prints its module's client data: `BazelModuleContext.toString`
+/// is the label's canonical form (Java StarlarkFunction.java:222 `repr`, BazelModuleContext.java:133
+/// `toString`, Label.java:479 `toString`, RepositoryName.java:284: "" for the main repository).
+#[test]
+fn function_repr_names_its_bzl_label() {
+    let m = exec_bzl("defs.bzl", "def f():\n    pass\n");
+    let f = m.get("f").unwrap();
+    assert_eq!(f.value().to_string(), "<function f from //pkg:defs.bzl>");
+}

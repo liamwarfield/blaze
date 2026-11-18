@@ -86,13 +86,134 @@ fn interrupted_function() {
         // Signal the waiting test thread that the evaluator thread has really started.
         thread_started.count_down();
         // Simulate a SkyFunction that runs for 10 seconds. The main thread should interrupt it
-        // shortly after it got started. (Java: Thread.sleep throws InterruptedException.)
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while std::time::Instant::now() < deadline {
-            env.check_interrupted()?;
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        // shortly after it got started.
+        let _ = env;
+        java_sleep(Duration::from_secs(10))?;
         panic!("SkyFunction should have been interrupted");
+    });
+}
+
+/// Java: `Thread.sleep(duration)`: throws `InterruptedException` (and clears the status) when
+/// the thread is interrupted.
+fn java_sleep(duration: Duration) -> Result<(), Interrupted> {
+    let deadline = std::time::Instant::now() + duration;
+    while std::time::Instant::now() < deadline {
+        if blaze_shell::thread_interrupt::interrupted() {
+            return Err(Interrupted);
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+/// An evaluator whose `T` function runs `builder`.
+fn evaluator_with(
+    builder: impl Fn(&T, &mut Environment<'_>) -> ComputeResultT + Send + Sync + 'static,
+) -> Evaluator {
+    EvaluatorBuilder::new()
+        .function(
+            T::FUNCTION,
+            move |key: &SkyKey, env: &mut Environment<'_>| {
+                let t = key.downcast::<T>().expect("T");
+                Ok(builder(t, env)?.map(|v| Arc::new(v) as SkyValue))
+            },
+        )
+        .build()
+}
+
+// PORT: Blaze only. Java: AbstractQueueVisitor.awaitTermination(interruptWorkers = true) after a
+// fail-fast error: the threads still running functions are interrupted, so blocking work (a spawn
+// waiting for its child) stops instead of running to its end.
+#[test]
+fn in_flight_function_is_interrupted_when_another_fails_fast() {
+    let slow_started = Latch::new(1);
+    let started = slow_started.clone();
+    let slow_was_interrupted = Arc::new(AtomicBool::new(false));
+    let was_interrupted = slow_was_interrupted.clone();
+    let ev = evaluator_with(move |t, _env| match t.0 {
+        "slow" => {
+            started.count_down();
+            if java_sleep(Duration::from_secs(30)).is_err() {
+                was_interrupted.store(true, Ordering::SeqCst);
+                return Err(Interrupted.into());
+            }
+            Ok(Some("slow".into()))
+        }
+        _ => {
+            started.wait("slow did not start");
+            Err(SkyFunctionException::persistent(SomeErrorException("bad".into())).into())
+        }
+    });
+    let begin = std::time::Instant::now();
+    let r = ev.evaluate(&[k("slow"), k("bad")], &ctx(false, 2)).unwrap();
+    assert!(begin.elapsed() < Duration::from_secs(20));
+    assert!(slow_was_interrupted.load(Ordering::SeqCst));
+    assert!(r.has_error());
+    assert_eq!(exception_message(r.get_error(&k("bad")).unwrap()), "bad");
+    assert!(r.get(&T("slow")).is_none());
+}
+
+// PORT: Blaze only. With keep_going an ordinary error stops nothing.
+#[test]
+fn in_flight_function_is_not_interrupted_by_an_error_with_keep_going() {
+    let ev = evaluator_with(move |t, _env| match t.0 {
+        "slow" => {
+            java_sleep(Duration::from_millis(300))?;
+            Ok(Some("slow".into()))
+        }
+        _ => Err(SkyFunctionException::persistent(SomeErrorException("bad".into())).into()),
+    });
+    let r = ev.evaluate(&[k("slow"), k("bad")], &ctx(true, 2)).unwrap();
+    assert_eq!(*r.get(&T("slow")).unwrap(), "slow");
+    assert!(r.get_error(&k("bad")).is_some());
+}
+
+// PORT: Blaze only. The interrupt flag a signal handler sets (`Evaluator::interrupt_flag`) is
+// noticed by the evaluating thread, which interrupts the running functions.
+#[test]
+fn setting_the_interrupt_flag_interrupts_in_flight_functions() {
+    let slow_started = Latch::new(1);
+    let started = slow_started.clone();
+    let ev = evaluator_with(move |_, _env| {
+        started.count_down();
+        java_sleep(Duration::from_secs(30))?;
+        Ok(Some("slow".into()))
+    });
+    std::thread::scope(|scope| {
+        let begin = std::time::Instant::now();
+        let t = scope.spawn(|| ev.evaluate(&[k("slow")], &ctx(false, 2)));
+        slow_started.wait("evaluation did not start");
+        ev.interrupt_flag().store(true, Ordering::SeqCst);
+        assert!(matches!(t.join().unwrap(), Err(Interrupted)));
+        assert!(begin.elapsed() < Duration::from_secs(20));
+    });
+}
+
+// PORT: Blaze only. A function that computes a dependency inline is one job per function on
+// the same thread; the job of the outer function stays registered (and is interrupted) while
+// the inner one ran.
+#[test]
+fn a_function_waiting_on_an_inline_dependency_is_still_interrupted() {
+    let leaf_done = Latch::new(1);
+    let done = leaf_done.clone();
+    let ev = evaluator_with(move |t, env| match t.0 {
+        "parent" => {
+            let Some(v) = env.get_value(T("leaf"))? else {
+                return Ok(None);
+            };
+            done.count_down();
+            java_sleep(Duration::from_secs(30))?;
+            Ok(Some(format!("parent of {v}")))
+        }
+        _ => Ok(Some("leaf".into())),
+    });
+    std::thread::scope(|scope| {
+        let begin = std::time::Instant::now();
+        let t = scope.spawn(|| ev.evaluate(&[k("parent")], &ctx(false, 1)));
+        leaf_done.wait("parent did not resume");
+        ev.interrupt();
+        assert!(matches!(t.join().unwrap(), Err(Interrupted)));
+        assert!(begin.elapsed() < Duration::from_secs(20));
     });
 }
 

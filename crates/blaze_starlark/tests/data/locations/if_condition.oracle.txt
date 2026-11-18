@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/if_condition/if_condition.bzl", line 5, column 2, in <toplevel>
+		f()
+	File "<WS>/if_condition/if_condition.bzl", line 2, column 10, in f
+		if 1 + "a":
+Error: unsupported binary operation: int + string

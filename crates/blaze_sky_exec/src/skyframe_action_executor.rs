@@ -44,7 +44,7 @@ use blaze_exec::analysis::actions::to_action_input_set;
 use blaze_exec::analysis::test::test_action_context::TestActionContext;
 use blaze_exec::analysis::test::test_runner_action::TestRunnerAction;
 use blaze_exec::exec::action_execution_context::{
-    ActionContextRegistry, ActionExecutionContext, SpawnCache,
+    ActionContextRegistry, ActionExecutionContext, RemoteOutputTree, SpawnCache,
 };
 use blaze_exec::exec::evaluation_stack::on_evaluation_stack;
 use blaze_exec::exec::single_build_file_cache::SingleBuildFileCache;
@@ -498,11 +498,17 @@ impl SkyframeActionExecutor {
     /// creates it.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:713 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
     pub fn create_output_metadata_store(&self, action: &dyn Action) -> ActionOutputMetadataStore {
-        ActionOutputMetadataStore::create(
+        let mut store = ActionOutputMetadataStore::create(
             self.use_archived_tree_artifacts(action),
             self.output_permissions,
             action.get_outputs(),
-        )
+        );
+        // The remote output tree of the build (RemoteOutputService's action file system), when
+        // the remote module registered one.
+        store.remote_output_tree = RemoteOutputTree::for_output_metadata_store(
+            self.contexts.get_any(TypeId::of::<RemoteOutputTree>()),
+        );
+        store
     }
 
     /// Executes `action` (shared actions run once), returning its value; `Ok(None)` when Skyframe
@@ -708,6 +714,9 @@ impl SkyframeActionExecutor {
             .and_then(|()| on_evaluation_stack(|| executable.execute(context)))
         {
             Ok(r) => r,
+            // Java: InterruptedException is not caught here; it leaves Action.execute and this
+            // method unreported.
+            Err(e) if e.is_interrupted() => return Err(ExecutionFailure::Interrupted),
             Err(e) => {
                 let primary_output_path = context.get_input_path(&action.get_primary_output());
                 return Err(self
@@ -1234,6 +1243,8 @@ impl SkyframeActionExecutor {
         };
         match executable.discover_inputs(&context) {
             Ok(artifacts) => Ok(artifacts),
+            // Java: InterruptedException propagates unreported.
+            Err(e) if e.is_interrupted() => Err(ExecutionFailure::Interrupted),
             Err(e) => {
                 // PORT: lost inputs (action file system) are not ported.
                 let primary_output_path = context.get_input_path(&action.get_primary_output());
@@ -1558,6 +1569,9 @@ pub struct ActionOutputMetadataStore {
     omitted_outputs: Mutex<HashSet<Artifact>>,
     artifact_data: Mutex<HashMap<Artifact, FileArtifactValue>>,
     tree_artifact_data: Mutex<HashMap<Artifact, Option<Arc<TreeArtifactValue>>>>,
+    /// The outputs that exist only remotely (build without the bytes), see
+    /// `RemoteOutputTree`.
+    remote_output_tree: Option<Arc<RemoteOutputTree>>,
 }
 
 impl ActionOutputMetadataStore {
@@ -1575,6 +1589,7 @@ impl ActionOutputMetadataStore {
             omitted_outputs: Mutex::new(HashSet::new()),
             artifact_data: Mutex::new(HashMap::new()),
             tree_artifact_data: Mutex::new(HashMap::new()),
+            remote_output_tree: None,
         }
     }
 
@@ -1768,6 +1783,16 @@ impl ActionOutputMetadataStore {
             "{} is a tree artifact",
             artifact
         );
+
+        // With an action file system (RemoteActionFileSystem), the stat of an output finds the
+        // remote output tree first: the metadata of an output that was not downloaded, or of the
+        // remote file a symlink output points to.
+        // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:697 RemoteActionFileSystem.statInternal
+        if let Some(tree) = &self.remote_output_tree
+            && let Some(value) = tree.get_output_metadata(&artifact.get_path())?
+        {
+            return Ok(value);
+        }
 
         let stat_and_value = file_artifact_value_from_artifact(artifact)?;
         let value = stat_and_value.file_artifact_value;

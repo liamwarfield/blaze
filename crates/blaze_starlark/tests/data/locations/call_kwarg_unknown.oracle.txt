@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/call_kwarg_unknown/call_kwarg_unknown.bzl", line 4, column 6, in <toplevel>
+		x = g(b = 1)
+	File "<WS>/call_kwarg_unknown/call_kwarg_unknown.bzl", line 1, column 5, in g
+		def g(a):
+Error: g() got unexpected keyword argument: b

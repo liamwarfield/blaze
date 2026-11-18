@@ -1,0 +1,14 @@
+# Analysis review S2-7 (platforms API): enableOnlyWithFlag fields with and without
+# --experimental_platforms_api.
+run build //:inspect
+cat bazel-bin/inspect.txt
+run build //:platform_label
+run build //:setting_label
+run build //:value_constraint
+run build --experimental_platforms_api //:inspect
+cat bazel-bin/inspect.txt
+run build --experimental_platforms_api //:platform_label //:setting_label //:value_constraint //:constraints_get
+cat bazel-bin/platform_label.txt
+cat bazel-bin/setting_label.txt
+cat bazel-bin/value_constraint.txt
+cat bazel-bin/constraints_get.txt

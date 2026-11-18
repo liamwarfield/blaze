@@ -80,6 +80,12 @@ impl FileSymlinkLoopException {
         })
     }
 
+    /// The exception the native layer throws for `ELOOP`: `<path> (<strerror>)`.
+    // Java: (native) src/main/native/unix_jni.cc PostException
+    pub(crate) fn with_message(message: String) -> io::Error {
+        io::Error::other(FileSymlinkLoopException { message })
+    }
+
     /// Whether `e` is a `FileSymlinkLoopException` (or the native `ELOOP` error).
     pub fn is(e: &io::Error) -> bool {
         e.raw_os_error() == Some(ELOOP)

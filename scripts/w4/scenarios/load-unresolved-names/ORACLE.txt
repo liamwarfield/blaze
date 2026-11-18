@@ -1,0 +1,49 @@
+=== 1: run build //build_names:all
+exit 1
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/build_names/BUILD.bazel:3:5: name 'undefined_one' is not defined
+ERROR: <WS>/build_names/BUILD.bazel:3:21: name 'undefined_two' is not defined
+ERROR: <WS>/build_names/BUILD.bazel:5:1: name 'undefined_rule' is not defined
+ERROR: package contains errors: build_names: name 'undefined_one' is not defined
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//build_names:all': Error evaluating '//build_names:all': error loading package 'build_names': Package 'build_names' contains errors
+ERROR: Error evaluating '//build_names:all': error loading package 'build_names': Package 'build_names' contains errors
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 2: run build //bzl_names:t
+exit 1
+--- stdout
+--- stderr
+ERROR: <WS>/bzl_names/defs.bzl:1:5: name 'nope_one' is not defined
+ERROR: <WS>/bzl_names/defs.bzl:4:12: name 'nope_two' is not defined
+ERROR: <WS>/bzl_names/defs.bzl:4:23: name 'nope_three' is not defined
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//bzl_names:t': error loading package 'bzl_names': compilation of module 'bzl_names/defs.bzl' failed
+ERROR: error loading package 'bzl_names': compilation of module 'bzl_names/defs.bzl' failed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 3: run build //bzl_names_before_load:t
+exit 1
+--- stdout
+--- stderr
+ERROR: <WS>/bzl_names_before_load/defs.bzl:4:5: name 'nope_one' is not defined
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//bzl_names_before_load:t': error loading package 'bzl_names_before_load': compilation of module 'bzl_names_before_load/defs.bzl' failed
+ERROR: error loading package 'bzl_names_before_load': compilation of module 'bzl_names_before_load/defs.bzl' failed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run query //build_names:all
+exit 7
+--- stdout
+--- stderr
+ERROR: <WS>/build_names/BUILD.bazel:3:5: name 'undefined_one' is not defined
+ERROR: <WS>/build_names/BUILD.bazel:3:21: name 'undefined_two' is not defined
+ERROR: <WS>/build_names/BUILD.bazel:5:1: name 'undefined_rule' is not defined
+ERROR: package contains errors: build_names: name 'undefined_one' is not defined
+ERROR: Evaluation of query "//build_names:all" failed

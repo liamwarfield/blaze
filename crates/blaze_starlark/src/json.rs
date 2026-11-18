@@ -154,7 +154,7 @@ impl<'v> Encoder<'v> {
                     }
                 };
                 // Only struct_fields of NativeInfo are emitted, not methods.
-                if m.native_info && v.get_type() == "function" {
+                if m.native_info && v.get_type() == "builtin_function_or_method" {
                     continue;
                 }
                 if !first {
@@ -212,17 +212,10 @@ impl<'v> Encoder<'v> {
     }
 }
 
-/// Java `Starlark.type` for the "cannot encode" message: builtins are
-/// `builtin_function_or_method` in Bazel. starlark-rust reports "function" for both; a `def` or
-/// `lambda` reprs as `<file>.<name>`, a builtin as its bare name (until patch 0009 fixes types).
+/// Java `Starlark.type` for the "cannot encode" message (builtins are
+/// `builtin_function_or_method` since starlark-rust patch 0009).
 fn json_type_name(x: Value) -> String {
-    let t = x.get_type();
-    let r = x.to_repr();
-    if t == "function" && (r.starts_with("<built-in") || !r.contains('.')) {
-        "builtin_function_or_method".to_owned()
-    } else {
-        t.to_owned()
-    }
+    x.get_type().to_owned()
 }
 
 // Java: Json.java:271 Encoder.appendQuoted

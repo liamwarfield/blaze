@@ -693,16 +693,6 @@ pub fn refresh_if_unauthenticated<V>(
     }
 }
 
-/// `Spawns.mayBeCachedRemotely(Map<String, String> executionInfo)`.
-///
-/// PORT: `blaze_exec::actions::spawns` has this method for a `Spawn` only.
-// Java: com/google/devtools/build/lib/actions/Spawns.java:45 Spawns.mayBeCachedRemotely
-fn may_be_cached_remotely(execution_info: &IndexMap<String, String>) -> bool {
-    spawns::may_be_cached_info(execution_info)
-        && !execution_info.contains_key(execution_requirements::NO_REMOTE)
-        && !execution_info.contains_key(execution_requirements::NO_REMOTE_CACHE)
-}
-
 /// `shouldUploadLocalResultsToRemoteCache(remoteOptions, executionInfo)`.
 // Java: com/google/devtools/build/lib/remote/util/Utils.java:543 Utils.shouldUploadLocalResultsToRemoteCache
 pub fn should_upload_local_results_to_remote_cache(
@@ -710,7 +700,7 @@ pub fn should_upload_local_results_to_remote_cache(
     execution_info: &IndexMap<String, String>,
 ) -> bool {
     remote_options.remote_upload_local_results
-        && may_be_cached_remotely(execution_info)
+        && spawns::may_be_cached_remotely_info(execution_info)
         && !execution_info.contains_key(execution_requirements::NO_REMOTE_CACHE_UPLOAD)
 }
 

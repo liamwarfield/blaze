@@ -10,6 +10,7 @@ use crate::{
     SkyFunctionException, SkyFunctionName, SkyKey, SkyValue, typed,
 };
 use blaze_events::{Event, EventHandler, EventKind, ExtendedEventHandler, Postable};
+use blaze_shell::ThreadInterrupt;
 use blaze_util::{check_argument, check_state};
 use parking_lot::{Condvar, Mutex};
 use std::any::Any;
@@ -22,6 +23,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::thread::{Scope, ScopedJoinHandle, ThreadId};
+use std::time::Duration;
 
 thread_local! {
     /// Number of keys this thread is computing inline (its compute stack depth).
@@ -385,6 +387,10 @@ pub struct Evaluator {
     computed: AtomicU64,
     evaluating: AtomicBool,
     interrupted: Arc<AtomicBool>,
+    /// Java: `AbstractQueueVisitor.jobs`: the threads running a function, with the number of
+    /// functions each runs (a thread computes dependencies inline), for
+    /// [`Evaluator::interrupt_in_flight_tasks`].
+    jobs: Mutex<HashMap<ThreadId, (ThreadInterrupt, usize)>>,
     live_threads: AtomicUsize,
     peak_threads: AtomicUsize,
     pub(crate) emitted_event_state: EmittedEventState,
@@ -454,6 +460,7 @@ impl EvaluatorBuilder {
             computed: AtomicU64::new(0),
             evaluating: AtomicBool::new(false),
             interrupted: Arc::new(AtomicBool::new(false)),
+            jobs: Mutex::new(HashMap::new()),
             live_threads: AtomicUsize::new(0),
             peak_threads: AtomicUsize::new(0),
             emitted_event_state: EmittedEventState::default(),
@@ -479,9 +486,14 @@ impl Evaluator {
 
     /// Interrupts the current and every later evaluation until [`Evaluator::clear_interrupt`]:
     /// dependency requests return `Err(Interrupted)` and `evaluate` returns `Err(Interrupted)`.
-    /// Java: `Thread.interrupt()` of the thread calling `evaluate`.
+    /// The threads running functions are interrupted as well (their
+    /// `blaze_shell::ThreadInterrupt`), so blocking work such as a spawn waiting for its child
+    /// stops too.
+    /// Java: `Thread.interrupt()` of the thread calling `evaluate`, which then leaves
+    /// `awaitQuiescence` and interrupts the workers (`AbstractQueueVisitor.awaitTermination`).
     pub fn interrupt(&self) {
         self.interrupted.store(true, Ordering::SeqCst);
+        self.interrupt_in_flight_tasks();
     }
 
     /// Java: `Thread.interrupted()` (clears the interrupt status).
@@ -489,7 +501,9 @@ impl Evaluator {
         self.interrupted.store(false, Ordering::SeqCst);
     }
 
-    /// The interrupt flag, for a signal handler to set.
+    /// The interrupt flag, for a signal handler to set. Setting it has the effect of
+    /// [`Evaluator::interrupt`]: a running evaluation notices it within
+    /// [`IN_FLIGHT_INTERRUPT_POLL`] and interrupts its in-flight work.
     pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
         self.interrupted.clone()
     }
@@ -763,7 +777,63 @@ impl Evaluator {
         w.stacks.remove(&id);
         w.waiting.remove(&id);
     }
+
+    /// Records the current thread as running a function until the guard is dropped.
+    // Java: com/google/devtools/build/lib/concurrent/AbstractQueueVisitor.java:446 AbstractQueueVisitor.addJob
+    fn add_job(&self) -> JobGuard<'_> {
+        let id = std::thread::current().id();
+        self.jobs
+            .lock()
+            .entry(id)
+            .or_insert_with(|| (ThreadInterrupt::current(), 0))
+            .1 += 1;
+        JobGuard { ev: self, id }
+    }
+
+    /// Interrupts every thread that runs a function, except the current one.
+    // Java: com/google/devtools/build/lib/concurrent/AbstractQueueVisitor.java:643 AbstractQueueVisitor.interruptInFlightTasks
+    fn interrupt_in_flight_tasks(&self) {
+        let this_thread = std::thread::current().id();
+        let threads: Vec<ThreadInterrupt> = self
+            .jobs
+            .lock()
+            .iter()
+            .filter(|(id, _)| **id != this_thread)
+            .map(|(_, (thread, _))| thread.clone())
+            .collect();
+        // Outside the lock: an interrupt runs the thread's listeners.
+        for thread in threads {
+            thread.interrupt();
+        }
+    }
 }
+
+/// Removes a job recorded by [`Evaluator::add_job`].
+struct JobGuard<'e> {
+    ev: &'e Evaluator,
+    id: ThreadId,
+}
+
+impl Drop for JobGuard<'_> {
+    // Java: com/google/devtools/build/lib/concurrent/AbstractQueueVisitor.java:450 AbstractQueueVisitor.removeJob
+    fn drop(&mut self) {
+        let mut jobs = self.ev.jobs.lock();
+        if let Some(entry) = jobs.get_mut(&self.id) {
+            entry.1 -= 1;
+            if entry.1 == 0 {
+                jobs.remove(&self.id);
+            }
+        }
+    }
+}
+
+/// How often the thread that called [`Evaluator::evaluate`] checks the interrupt flag that
+/// [`Evaluator::interrupt_flag`] hands out while the evaluation runs.
+///
+/// PORT: Java's evaluating thread waits in `awaitQuiescence` and is woken by its own
+/// `Thread.interrupt()`; the flag here is a plain `AtomicBool` that a signal handler may set, so
+/// the waiting thread polls it.
+pub const IN_FLIGHT_INTERRUPT_POLL: Duration = Duration::from_millis(20);
 
 /// What a function returned, after interrupts are sorted out.
 enum Ret {
@@ -785,6 +855,14 @@ pub(crate) struct Run<'e> {
     /// catastrophe, or a crash).
     pub(crate) aborting: AtomicBool,
     saw_interrupt: AtomicBool,
+    /// The in-flight work was interrupted because the evaluation stops (first error without
+    /// keep_going, catastrophe, crash).
+    jobs_stopped: AtomicBool,
+    /// The in-flight work was interrupted because the evaluation was interrupted.
+    interrupt_delivered: AtomicBool,
+    /// Root workers still running, for the evaluating thread to wait on.
+    running_root_workers: Mutex<usize>,
+    root_workers_done: Condvar,
     uncommitted: Mutex<Vec<SkyKey>>,
     /// The deps that were not done when a node that asked for them committed (a function that
     /// threw although a dep was missing). See [`Run::never_evaluated`].
@@ -841,6 +919,10 @@ impl<'e> Run<'e> {
             },
             aborting: AtomicBool::new(false),
             saw_interrupt: AtomicBool::new(false),
+            jobs_stopped: AtomicBool::new(false),
+            interrupt_delivered: AtomicBool::new(false),
+            running_root_workers: Mutex::new(0),
+            root_workers_done: Condvar::new(),
             uncommitted: Mutex::new(vec![]),
             undone_deps_of_committed: Mutex::new(vec![]),
             crash: Mutex::new(None),
@@ -867,6 +949,19 @@ impl<'e> Run<'e> {
     fn note_crash(&self, payload: Box<dyn Any + Send>) {
         self.crash.lock().get_or_insert(payload);
         self.aborting.store(true, Ordering::SeqCst);
+        self.stop_in_flight_jobs();
+    }
+
+    /// The evaluation stops (`jobsMustBeStopped`): the evaluating thread leaves
+    /// `awaitQuiescence` and interrupts the threads that still run functions
+    /// (`awaitTermination(interruptWorkers = true)`). Called once `aborting` is set and the
+    /// failure is recorded; a function that starts later sees `aborting` (Java:
+    /// `blockNewActions`, checked after `addJob`).
+    // Java: com/google/devtools/build/lib/concurrent/AbstractQueueVisitor.java:593 AbstractQueueVisitor.reallyAwaitTermination
+    fn stop_in_flight_jobs(&self) {
+        if !self.jobs_stopped.swap(true, Ordering::SeqCst) {
+            self.ev.interrupt_in_flight_tasks();
+        }
     }
 
     /// Starts an evaluator thread. An error (the OS refuses another thread) is returned, never
@@ -901,11 +996,24 @@ impl<'e> Run<'e> {
         let workers = roots.len().min(self.parallelism()).max(1);
         self.ev.force_reserve_threads(workers);
         let queue = Mutex::new(roots.iter().cloned().collect::<VecDeque<_>>());
+        /// Counts a root worker as finished however it ends.
+        struct RootWorker<'a, 'e>(&'a Run<'e>);
+        impl Drop for RootWorker<'_, '_> {
+            fn drop(&mut self) {
+                let mut running = self.0.running_root_workers.lock();
+                *running -= 1;
+                if *running == 0 {
+                    self.0.root_workers_done.notify_all();
+                }
+            }
+        }
         std::thread::scope(|scope| {
             let mut handles = vec![];
             for _ in 0..workers {
                 let queue = &queue;
+                *self.running_root_workers.lock() += 1;
                 let spawned = self.spawn(scope, move || {
+                    let _done = RootWorker(self);
                     self.permits.acquire();
                     loop {
                         let Some(k) = queue.lock().pop_front() else {
@@ -919,6 +1027,7 @@ impl<'e> Run<'e> {
                 match spawned {
                     Ok(h) => handles.push(h),
                     Err(e) => {
+                        *self.running_root_workers.lock() -= 1;
                         // The workers that did start drain the queue. With none, nothing can be
                         // evaluated: crash, as Java does when it cannot create a thread.
                         if handles.is_empty() {
@@ -930,6 +1039,22 @@ impl<'e> Run<'e> {
                     }
                 }
             }
+            // Java: ParallelEvaluator waits in awaitQuiescence; its interrupt makes it interrupt
+            // the workers (AbstractQueueVisitor.awaitQuiescence / awaitTermination).
+            let mut running = self.running_root_workers.lock();
+            while *running > 0 {
+                self.root_workers_done
+                    .wait_for(&mut running, IN_FLIGHT_INTERRUPT_POLL);
+                if *running > 0
+                    && self.ev.interrupted.load(Ordering::SeqCst)
+                    && !self.interrupt_delivered.swap(true, Ordering::SeqCst)
+                {
+                    drop(running);
+                    self.ev.interrupt_in_flight_tasks();
+                    running = self.running_root_workers.lock();
+                }
+            }
+            drop(running);
             for h in handles {
                 if let Err(p) = h.join() {
                     resume_unwind(p);
@@ -1030,6 +1155,9 @@ impl<'e> Run<'e> {
             *node.state.lock() = NodeState::InProgress { owner: me };
             w.stacks.entry(me).or_default().push(key.clone());
         }
+        // Java: WrappedRunnable.run: addJob, then blockNewActions, so that a thread racing to
+        // interrupt the in-flight work either finds this job or this job sees the abort.
+        let job = self.ev.add_job();
         let entry: Resolved = if self.ev.interrupted.load(Ordering::SeqCst) {
             self.saw_interrupt.store(true, Ordering::SeqCst);
             DoneEntry::undone(DoneKind::Interrupted, GroupedDeps::new()).into()
@@ -1054,6 +1182,7 @@ impl<'e> Run<'e> {
                 }
             }
         };
+        drop(job);
         if let Some(s) = self.ev.waits.lock().stacks.get_mut(&me) {
             s.pop();
         }
@@ -1224,6 +1353,7 @@ impl<'e> Run<'e> {
                 failed_value: child_error_key.clone(),
                 rdeps_to_bubble_up_to: vec![key.clone()],
             });
+            self.stop_in_flight_jobs();
             return DoneEntry::awaiting_deps(DoneKind::Aborted, st.deps).into();
         }
 
@@ -1342,6 +1472,10 @@ impl<'e> Run<'e> {
                 failed_value: key.clone(),
                 rdeps_to_bubble_up_to,
             });
+            drop(failure);
+            node.done.notify_all();
+            self.stop_in_flight_jobs();
+            return entry;
         } else {
             set_value();
         }

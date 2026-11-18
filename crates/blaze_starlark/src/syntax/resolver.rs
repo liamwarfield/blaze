@@ -82,28 +82,37 @@ impl Run<'_> {
     fn create_bindings(&mut self, s: &AstStmt) {
         match &s.node {
             StmtP::Assign(a) => {
+                // Java: an annotated assignment binds its single identifier with hasType.
+                let has_type = a.ty.is_some();
                 let mut ids = Vec::new();
                 a.lhs
                     .visit_lvalue(|id| ids.push((id.node.ident.clone(), id.span)));
                 for (name, span) in ids {
-                    self.bind(&name, span, false);
+                    self.bind(&name, span, false, has_type);
                 }
             }
             StmtP::AssignModify(lhs, _, _) => {
                 let mut ids = Vec::new();
                 lhs.visit_lvalue(|id| ids.push((id.node.ident.clone(), id.span)));
                 for (name, span) in ids {
-                    self.bind(&name, span, false);
+                    self.bind(&name, span, false, false);
                 }
             }
             StmtP::Def(d) => {
                 let (name, span) = (d.name.node.ident.clone(), d.name.span);
-                self.bind(&name, span, false);
+                self.bind(&name, span, false, false);
             }
             StmtP::Load(l) => {
                 for arg in &l.args {
                     let (name, span) = (arg.local.node.ident.clone(), arg.local.span);
-                    self.bind(&name, span, true);
+                    self.bind(&name, span, true, false);
+                }
+            }
+            // A var statement `x: T` (starlark-rust patch 0030 parses it as a binding that never
+            // runs). Java: Resolver.java:562 createBindings, case VAR.
+            StmtP::If(..) if s.blaze_var_statement().is_some() => {
+                if let Some(id) = s.blaze_var_statement() {
+                    self.bind(&id.node.ident, id.span, false, true);
                 }
             }
             // `if`/`for` at top level are rejected elsewhere; their bindings are global in Java
@@ -115,7 +124,21 @@ impl Run<'_> {
     }
 
     // Java: Resolver.bind (top-level cases)
-    fn bind(&mut self, name: &str, span: Span, is_load: bool) {
+    fn bind(&mut self, name: &str, span: Span, is_load: bool, has_type: bool) {
+        let first = self.bind_scope(name, span, is_load);
+        // Java: Resolver.java:1228 (the binding is syntactic: it was declared in this file).
+        if has_type && let Some(first) = first {
+            self.error(
+                span,
+                format!("type annotation on '{name}' may only appear at its first declaration"),
+            );
+            self.error(first, format!("'{name}' first declared here"));
+        }
+    }
+
+    /// Binds `name`; returns the first declaration if the name was already bound (Java
+    /// `!isNew`).
+    fn bind_scope(&mut self, name: &str, span: Span, is_load: bool) -> Option<Span> {
         if !(is_load && !self.options.load_binds_globally) {
             // Global binding.
             match self.globals.get(name).map(|b| b.first) {
@@ -130,11 +153,15 @@ impl Run<'_> {
                     if let Some(prev) = self.locals.get(name).map(|b| (b.scope, b.first)) {
                         self.global_local_conflict(name, span, Scope::Global, prev);
                     }
+                    None
                 }
-                Some(first) => self.toplevel_rebinding(name, span, first),
+                Some(first) => {
+                    self.toplevel_rebinding(name, span, first);
+                    Some(first)
+                }
             }
         } else {
-            match self.locals.get(name).map(|b| b.first) {
+            let first = match self.locals.get(name).map(|b| b.first) {
                 None => {
                     self.locals.insert(
                         name.to_owned(),
@@ -143,12 +170,17 @@ impl Run<'_> {
                             first: span,
                         },
                     );
+                    None
                 }
-                Some(first) => self.toplevel_rebinding(name, span, first),
-            }
+                Some(first) => {
+                    self.toplevel_rebinding(name, span, first);
+                    Some(first)
+                }
+            };
             if let Some(prev) = self.globals.get(name).map(|b| (b.scope, b.first)) {
                 self.global_local_conflict(name, span, Scope::FileLocal, prev);
             }
+            first
         }
     }
 

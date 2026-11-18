@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/lambda_error/lambda_error.bzl", line 2, column 2, in <toplevel>
+		f(1)
+	File "<WS>/lambda_error/lambda_error.bzl", line 1, column 17, in lambda
+		f = lambda x: x + "a"
+Error: unsupported binary operation: int + string

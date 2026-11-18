@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+	File "<WS>/fail_in_def/fail_in_def.bzl", line 7, column 2, in <toplevel>
+		f()
+	File "<WS>/fail_in_def/fail_in_def.bzl", line 5, column 6, in f
+		g()
+	File "<WS>/fail_in_def/fail_in_def.bzl", line 2, column 9, in g
+		fail("boom")
+Error in fail: boom

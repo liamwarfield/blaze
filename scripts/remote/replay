@@ -67,7 +67,7 @@ project as scripts/w6/replay-spawns does), and
 
 Prints the counts, every mismatch, the events blaze_remote reported and its
 `N processes: ...` line; writes ~/.cache/blaze/work/remote/<NAME>/{spec,results,summary}.json.
-Prerequisite: scripts/cargo-capped build -p blaze_remote --features wip --bin blaze-remote-replay.
+Prerequisite: scripts/cargo-capped build -p blaze_remote --bin blaze-remote-replay.
 Exit code 0 iff every comparison (and every --expect) holds.
 """
 

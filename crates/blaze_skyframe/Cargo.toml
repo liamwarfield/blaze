@@ -7,5 +7,6 @@ publish.workspace = true
 
 [dependencies]
 blaze_events = { path = "../blaze_events" }
+blaze_shell = { path = "../blaze_shell" }
 blaze_util = { path = "../blaze_util" }
 parking_lot.workspace = true

@@ -128,6 +128,173 @@ fn patch_0005_elems_list() {
     );
 }
 
+/// Java StringModule.split/rsplit (StringModule.java:387, 426): `sep` required and nameable,
+/// `maxsplit` nameable (negative: no limit), "Empty separator"; replace (StringModule.java:338):
+/// a negative count means no limit.
+#[test]
+fn patch_0005_split_and_replace() {
+    assert_eq!(
+        eval(
+            "r = ('a.b.c'.split(sep = '.', maxsplit = 1), 'a.b.c'.rsplit(sep = '.', maxsplit = 1), 'a-b-c'.split('-', -1), 'a-b-c'.rsplit('-', 0))"
+        ),
+        Ok(r#"(["a", "b.c"], ["a.b", "c"], ["a", "b", "c"], ["a-b-c"])"#.into())
+    );
+    assert_eq!(eval("r = 'abc'.rsplit('')"), Err("Empty separator".into()));
+    assert_eq!(eval("r = 'abc'.split('')"), Err("Empty separator".into()));
+    // Java has no whitespace split: `sep` is mandatory.
+    assert!(eval("r = 'a b'.split()").is_err());
+    assert_eq!(
+        eval(
+            "r = ('banana'.replace('a', 'o', -2), 'banana'.replace('a', 'o', 2), 'abc'.replace('', '-', 2))"
+        ),
+        Ok(r#"("bonono", "bonona", "-a-bc")"#.into())
+    );
+}
+
+/// Java StarlarkSet (StarlarkSet.java:216 repr, 389-785 methods) and Eval.inplaceBinaryOp
+/// (Eval.java:498-536).
+#[test]
+fn patch_0007_set_semantics() {
+    assert_eq!(
+        eval("r = (repr(set()), str(set([1])))"),
+        Ok(r#"("set()", "set([1])")"#.into())
+    );
+    // Augmented assignment mutates the left set in place (aliases see it).
+    assert_eq!(
+        eval(
+            "s = set([1, 2])\nt = s\ns |= set([3])\ns &= set([1, 3])\ns ^= set([3, 4])\ns -= set([4])\nt.add(9)\nr = (t, s)"
+        ),
+        Ok("(set([1, 9]), set([1, 9]))".into())
+    );
+    assert_eq!(
+        eval("s = set([1])\nt = s\ns |= [2]\nr = t"),
+        Err("Operation `|` not supported for types `set` and `list`".into())
+    );
+    // Variadic methods; dicts contribute keys.
+    assert_eq!(
+        eval(
+            "s = set([1, 2, 3])\nr = (s.union([4], {5: 0}), s.intersection([1, 2], [2, 3]), s.difference([1], [3]), s.union())"
+        ),
+        Ok("(set([1, 2, 3, 4, 5]), set([2]), set([2]), set([1, 2, 3]))".into())
+    );
+    assert_eq!(
+        eval(
+            "s = set([1, 2, 3, 4])\ns.update([5], [6])\ns.intersection_update([1, 2, 3, 5, 6], [2, 3, 5, 6])\ns.difference_update([2], [6])\ns.symmetric_difference_update([3, 7])\nr = s"
+        ),
+        Ok("set([5, 7])".into())
+    );
+    assert_eq!(
+        eval(
+            "s = set([1, 2])\nr = (s.isdisjoint([3]), s.isdisjoint([2]), s.issubset(range(3)), s.issuperset((1,)))"
+        ),
+        Ok("(True, False, True, True)".into())
+    );
+    // pop removes the first element (insertion order).
+    assert_eq!(
+        eval("s = set([3, 1, 2])\nr = (s.pop(), s.pop(), s)"),
+        Ok("(3, 1, set([2]))".into())
+    );
+    assert_eq!(eval("r = set().pop()"), Err("set is empty".into()));
+    assert_eq!(
+        eval("r = set().remove(1)"),
+        Err("element 1 not found in set".into())
+    );
+    assert_eq!(
+        eval("r = set().update(1)"),
+        Err(
+            "for update argument got value of type 'int', want a collection of hashable elements"
+                .into()
+        )
+    );
+    assert_eq!(
+        eval("r = set().issubset('ab')"),
+        Err("for issubset argument got value of type 'string', want a collection of hashable elements".into())
+    );
+}
+
+/// Java StarlarkFloat.format (StarlarkFloat.java:120), Printer.formatWithList
+/// (Printer.java:353-400), StarlarkInt.compareIntAndDouble (StarlarkInt.java:756),
+/// StarlarkInt.toFiniteDouble (StarlarkInt.java:376), division texts (StarlarkFloat.java:213-229).
+#[test]
+fn patch_0008_floats() {
+    assert_eq!(
+        eval("r = [str(x) for x in (0.0, -0.0, 0.1, 1.0, 1e16, 1e17, 1.23e45, 1e-4, 1e-5, 1.5557538194652854e-61, 123456789.125)]"),
+        Ok(r#"["0.0", "-0.0", "0.1", "1.0", "10000000000000000.0", "1e+17", "1.23e+45", "0.0001", "1e-05", "1.5557538194652854e-61", "123456789.125"]"#.into())
+    );
+    assert_eq!(
+        eval("r = ('%e' % 123, '%e' % -1.23e-45, '%f' % 1.23e45, '%f' % -1.23e-45, '%g' % 1.110, '%E' % 0.000999999949, '%f' % 0.0000009)"),
+        Ok(r#"("1.230000e+02", "-1.230000e-45", "1230000000000000000000000000000000000000000000.000000", "-0.000000", "1.11", "9.999999E-04", "0.000001")"#.into())
+    );
+    assert_eq!(
+        eval("r = ('%d' % 1.23e45, '%x' % 123.0, '%o' % -8, '%x' % -1, '%X' % (-1 << 40), '%x' % (-1 << 128))"),
+        Ok(r#"("1229999999999999973814869011019624571608236032", "7b", "37777777770", "ffffffff", "FFFFFF0000000000", "-100000000000000000000000000000000")"#.into())
+    );
+    assert_eq!(
+        eval("r = '%d' % float('nan')"),
+        Err("got nan, want a finite number".into())
+    );
+    assert_eq!(
+        eval("r = '%x' % 'a'"),
+        Err("got string for '%x' format, want int or float".into())
+    );
+    // Exact int/float comparison.
+    assert_eq!(
+        eval(
+            "r = (1.23e45 == 1229999999999999973814869011019624571608236032, 1.23e45 != 1229999999999999973814869011019624571608236033, float((1 << 53) + 1) != (1 << 53) + 1, (1 << 53) + 1 > float((1 << 53) + 1))"
+        ),
+        Ok("(True, True, True, True)".into())
+    );
+    assert_eq!(
+        eval("r = float(1 << 500 << 500 << 100)"),
+        Err("int too large to convert to float".into())
+    );
+    assert_eq!(
+        eval("r = (1 << 500 << 500 << 100) + 0.0"),
+        Err("int too large to convert to float".into())
+    );
+    assert_eq!(
+        eval("r = 1.0 / (1 << 500 << 500 << 100)"),
+        Err("int too large to convert to float".into())
+    );
+    assert_eq!(
+        eval("r = 1.0 / 0"),
+        Err("floating-point division by zero".into())
+    );
+    assert_eq!(eval("r = 1.0 // 0"), Err("integer division by zero".into()));
+    assert_eq!(
+        eval("r = 1.0 % 0"),
+        Err("floating-point modulo by zero".into())
+    );
+    assert_eq!(eval("r = 1 // 0"), Err("integer division by zero".into()));
+    assert_eq!(eval("r = 1 % 0"), Err("integer modulo by zero".into()));
+    assert_eq!(
+        eval("r = int(float('-inf'))"),
+        Err("can't convert float -inf to int".into())
+    );
+}
+
+/// Java BuiltinFunction (type `builtin_function_or_method`, repr BuiltinFunction.java:192) and
+/// StarlarkFunction.repr (StarlarkFunction.java:222).
+#[test]
+fn patch_0009_function_type_and_repr() {
+    assert_eq!(
+        eval("def f():\n    pass\nr = (type(len), str(len), type([].clear), str([].clear), str({}.get), type(f), str(f), str(lambda: 0))"),
+        Ok(r#"("builtin_function_or_method", "<built-in function len>", "builtin_function_or_method", "<built-in method clear of list value>", "<built-in method get of dict value>", "function", "<function f>", "<function lambda>")"#.into())
+    );
+    // Builtins are unhashable (StarlarkValue.checkHashable: not immutable); defs are hashable.
+    assert!(eval("r = {len: 1}").is_err());
+    assert_eq!(eval("def f():\n    pass\nr = len({f: 1})"), Ok("1".into()));
+}
+
+/// Java Printer.repr (Printer.java:191): a value met again while printing is `...`.
+#[test]
+fn patch_0031_cycle_repr() {
+    assert_eq!(
+        eval("x = [1, 2]\nx.append(x)\nd = {1: 2}\nd[3] = d\nr = (repr(x), str(d))"),
+        Ok(r#"("[1, 2, ...]", "{1: 2, 3: ...}")"#.into())
+    );
+}
+
 #[test]
 fn patch_0006_list_pop_negative_index() {
     assert_eq!(
@@ -179,10 +346,88 @@ mod probe {
         }
     }
 
+    /// Patches 0026 and 0027: attributes, `[]` and `in` that fail or read the evaluator.
+    /// `ok` is 1, `bad` fails, `marker` is the executing module's global `marker`; `x[i]` is
+    /// `(i, marker)`; `v in x` fails for "bad", else is `v == marker`.
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
+    pub struct Fallible;
+
+    impl std::fmt::Display for Fallible {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "fallible")
+        }
+    }
+
+    starlark_simple_value!(Fallible);
+
+    fn marker<'v>(eval: &Evaluator<'v, '_, '_>) -> Value<'v> {
+        eval.module().get("marker").unwrap_or_else(Value::new_none)
+    }
+
+    #[starlark_value(type = "fallible")]
+    impl<'v> StarlarkValue<'v> for Fallible {
+        fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
+            (attribute == "ok").then(|| _heap.alloc(1))
+        }
+
+        fn get_attr_fallible(
+            &self,
+            attribute: starlark::collections::Hashed<&str>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Option<Value<'v>>> {
+            match *attribute.key() {
+                "bad" => Err(starlark::Error::new_other(anyhow::anyhow!(
+                    "computing 'bad' failed"
+                ))),
+                "marker" => Ok(Some(marker(eval))),
+                other => Ok(self.get_attr(other, eval.heap())),
+            }
+        }
+
+        fn has_attr_fallible(
+            &self,
+            attribute: &str,
+            _eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<bool> {
+            match attribute {
+                "bad" => Err(starlark::Error::new_other(anyhow::anyhow!(
+                    "computing 'bad' failed"
+                ))),
+                other => Ok(other == "ok" || other == "marker"),
+            }
+        }
+
+        fn at_with_eval(
+            &self,
+            index: Value<'v>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Value<'v>> {
+            let m = marker(eval);
+            Ok(eval.heap().alloc(AllocTuple([index, m])))
+        }
+
+        fn is_in_with_eval(
+            &self,
+            other: Value<'v>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<bool> {
+            if other.unpack_str() == Some("bad") {
+                return Err(starlark::Error::new_other(anyhow::anyhow!(
+                    "'bad' in fallible"
+                )));
+            }
+            other.equals(marker(eval))
+        }
+    }
+
     #[starlark_module]
     pub fn globals(builder: &mut GlobalsBuilder) {
         fn probe() -> anyhow::Result<Probe> {
             Ok(Probe)
+        }
+
+        fn fallible() -> anyhow::Result<Fallible> {
+            Ok(Fallible)
         }
 
         /// Patch 0016: Java `StarlarkList.immutableCopyOf(x)`.
@@ -641,12 +886,45 @@ fn patch_0020_bazel_type_syntax() {
         eval_with_type_syntax("def f[T, U](x: T) -> U:\n    return x\nr = f(7)"),
         Ok("7".into())
     );
-    // A var statement (`x: T` without a value) is not ported: a loud, recognizable error.
-    let err = eval_with_type_syntax("x: int\nr = 1").unwrap_err();
+    // A var statement (`x: T` without a value) binds `x` without a value (patch 0030).
+    assert_eq!(eval_with_type_syntax("x: int\nr = 1"), Ok("1".into()));
+}
+
+/// Java Parser.java:1582 (VarStatement), Resolver.java:562 (bound in the enclosing block),
+/// Eval.java:324 (executing it does nothing).
+#[test]
+fn patch_0030_var_statement() {
+    // A global declared but not assigned reads as unassigned; a later assignment sets it.
     assert!(
-        err.contains("BLAZE not ported yet: Bazel type syntax: VarStatement"),
-        "{err}"
+        eval_with_type_syntax("x: int\nr = x")
+            .unwrap_err()
+            .contains("referenced before assignment")
     );
+    assert_eq!(
+        eval_with_type_syntax("x: list[Undefined]\ndef f():\n    return x\nx = [1]\nr = f()"),
+        Ok("[1]".into())
+    );
+    // In a function it declares a local: the global of the same name is shadowed.
+    assert!(
+        eval_with_type_syntax("y = 1\ndef f():\n    y: int\n    return y\nr = f()")
+            .unwrap_err()
+            .contains("referenced before assignment")
+    );
+    assert_eq!(
+        eval_with_type_syntax("def f():\n    y: int\n    y = 2\n    return y\nr = f()"),
+        Ok("2".into())
+    );
+    // Only a single identifier may be annotated (Parser.java:1586).
+    assert_eq!(
+        eval_with_type_syntax("a, b: int\nr = 1"),
+        Err("type annotations must have a single identifier on the left-hand side".into())
+    );
+    assert_eq!(
+        eval_with_type_syntax("x = struct()\nx.f: int\nr = 1"),
+        Err("type annotations must have a single identifier on the left-hand side".into())
+    );
+    // Without type syntax it stays a syntax error.
+    assert!(eval("x: int\nr = 1").is_err());
 }
 
 /// Java Module.getGlobals(): every global binding, `_private` names included (and, in a file
@@ -1020,4 +1298,180 @@ fn patch_0024_def_declaration_span() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+/// Bazel: `Structure.getValue` may throw; `Starlark.getattr` (Starlark.java:978) returns the
+/// default only for a missing field and propagates the error otherwise; `Starlark.hasattr`
+/// (Starlark.java:967) propagates it too.
+#[test]
+fn patch_0026_fallible_attributes() {
+    assert_eq!(eval_with_probe("r = fallible().ok"), Ok("1".into()));
+    assert_eq!(
+        eval_with_probe("marker = 'm'\nr = fallible().marker"),
+        Ok(r#""m""#.into())
+    );
+    assert_eq!(
+        eval_with_probe("r = fallible().bad"),
+        Err("computing 'bad' failed".into())
+    );
+    assert_eq!(
+        eval_with_probe("r = getattr(fallible(), 'bad', None)"),
+        Err("computing 'bad' failed".into())
+    );
+    assert_eq!(
+        eval_with_probe("r = hasattr(fallible(), 'bad')"),
+        Err("computing 'bad' failed".into())
+    );
+    assert_eq!(
+        eval_with_probe(
+            "r = (getattr(fallible(), 'nosuch', 7), hasattr(fallible(), 'nosuch'), hasattr(fallible(), 'ok'))"
+        ),
+        Ok("(7, False, True)".into())
+    );
+    assert_eq!(
+        eval_with_probe("def f(x):\n    return x.bad\nr = f(fallible())"),
+        Err("computing 'bad' failed".into())
+    );
+    // A global's field is read when the function runs (fields are never folded at compile
+    // time; only methods are).
+    assert_eq!(
+        eval_with_probe("F = fallible()\ndef f():\n    return F.marker\nmarker = 'late'\nr = f()"),
+        Ok(r#""late""#.into())
+    );
+    // Methods are still found first.
+    assert_eq!(
+        eval_with_probe("r = getattr([], 'append', 1) != 1"),
+        Ok("True".into())
+    );
+}
+
+/// Bazel: `StarlarkIndexable.Threaded.getIndex` / `containsKey` receive the thread.
+#[test]
+fn patch_0027_index_and_in_with_evaluator() {
+    assert_eq!(
+        eval_with_probe("marker = 'm'\nr = fallible()[3]"),
+        Ok(r#"(3, "m")"#.into())
+    );
+    assert_eq!(
+        eval_with_probe(
+            "marker = 'm'\nr = ('m' in fallible(), 'x' in fallible(), 'x' not in fallible())"
+        ),
+        Ok("(True, False, True)".into())
+    );
+    assert_eq!(
+        eval_with_probe("r = 'bad' in fallible()"),
+        Err("'bad' in fallible".into())
+    );
+    assert_eq!(
+        eval_with_probe("r = (2 in [1, 2], [5, 6][1])"),
+        Ok("(True, 6)".into())
+    );
+}
+
+/// The error of `src` as (1-based line, 1-based column, source text of the error span, frame
+/// names outermost first).
+fn error_span(src: &'static str) -> (usize, usize, String, Vec<String>) {
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(move || {
+            let globals = dialect::bazel_universe();
+            let ast = AstModule::parse("t.bzl", src.to_owned(), &dialect::bzl_dialect()).unwrap();
+            Module::with_temp_heap(|module| {
+                let mut e = Evaluator::new(&module);
+                let err = e.eval_module(ast, &globals).unwrap_err();
+                assert!(
+                    !matches!(err.kind(), starlark::ErrorKind::Parser(_)),
+                    "{src}: parser kind"
+                );
+                let span = err.span().expect("error has a span");
+                let begin = span.resolve_span().begin;
+                let frames = err
+                    .call_stack()
+                    .frames
+                    .iter()
+                    .map(|f| f.name.clone())
+                    .collect();
+                (
+                    begin.line + 1,
+                    begin.column + 1,
+                    span.source_span().to_owned(),
+                    frames,
+                )
+            })
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+/// Java Eval's error locations (crates/blaze_starlark/tests/data/locations/*.oracle.txt): the
+/// failing node keeps its own span, which blaze_starlark maps to Java's token.
+#[test]
+fn patch_0028_error_locations() {
+    // `if` conditions keep their span (Java: the operator), not the statement's.
+    assert_eq!(
+        error_span("def f(a):\n    if a + 'x':\n        pass\nf(1)").2,
+        "a + 'x'"
+    );
+    // Index assignment and unpacking: the statement (Java: the `=`).
+    assert_eq!(error_span("x = (1, 2)\nx[0] = 3").2, "x[0] = 3");
+    assert_eq!(error_span("a, b = 1").2, "a, b = 1");
+    // `for` over a non-iterable: the collection's start (an empty span).
+    let (line, col, text, _) = error_span("def f():\n    for x in 1:\n        pass\nf()");
+    assert_eq!((line, col, text.as_str()), (2, 14, ""));
+    // `x.f op= y`: reading or setting the field is located at `x.f` (Java: the `.`).
+    assert_eq!(
+        error_span("def f():\n    s = 'abc'\n    s.a += 1\nf()").2,
+        "s.a"
+    );
+    // A failed method lookup: `object.method` (Java: the `.`), not the call.
+    assert_eq!(error_span("x = 'abc'.nosuch()").2, "'abc'.nosuch");
+    // ... while an error of the call itself keeps the call's span.
+    assert_eq!(error_span("x = 'abc'.index(1)").2, "'abc'.index(1)");
+    // Dict literal: the failing entry's `:`.
+    let (line, col, text, _) = error_span("k = 1\nx = {k: 1, 1: 2}");
+    assert_eq!((line, col, text.as_str()), (2, 13, ":"));
+    // Argument and recursion errors: the callee's declaration, in the callee's frame.
+    let (line, col, text, frames) = error_span("def g(a):\n    return a\n\ng(1, 2)");
+    assert_eq!((line, col, text.as_str()), (1, 5, "g"));
+    assert_eq!(frames.last().map(String::as_str), Some("g"));
+    // `int("x")` fails as a value error, not a syntax error (asserted in `error_span`).
+    error_span("x = int('x')");
+}
+
+/// Java's Resolver reports every undefined name (Resolver.java:941); `eval_module` stops at the
+/// first, `resolve_errors` lists them all in source order without executing.
+#[test]
+fn patch_0029_resolve_errors() {
+    let globals = dialect::bazel_universe();
+    let ast = AstModule::parse(
+        "t.bzl",
+        "x = y\ndef f():\n    return zz + w\nq = len(x)\n".to_owned(),
+        &dialect::bzl_dialect(),
+    )
+    .unwrap();
+    let errors = starlark::eval::resolve_errors(&ast, &globals);
+    let got: Vec<(usize, usize, String)> = errors
+        .iter()
+        .map(|e| {
+            let span = e.span().unwrap();
+            let begin = span.resolve_span().begin;
+            (
+                begin.line + 1,
+                begin.column + 1,
+                span.source_span().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (1, 5, "y".to_owned()),
+            (3, 12, "zz".to_owned()),
+            (3, 17, "w".to_owned())
+        ]
+    );
+    let ok =
+        AstModule::parse("t.bzl", "x = len([])\n".to_owned(), &dialect::bzl_dialect()).unwrap();
+    assert!(starlark::eval::resolve_errors(&ok, &globals).is_empty());
 }

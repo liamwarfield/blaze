@@ -637,6 +637,114 @@ mod spawn_action_test {
         assert_eq!(action.get_progress_message(None).as_deref(), Some("Test"));
     }
 
+    /// A `resource_set` callback (`StarlarkActionResourceSetBuilder`) stand-in: records the
+    /// arguments, returns `memory = 10 * inputsSize`, or fails like Java's `EvalException` path.
+    #[derive(Debug)]
+    struct FakeResourceSetBuilder {
+        fail: bool,
+        calls: std::sync::Mutex<Vec<(String, i32)>>,
+    }
+
+    impl blaze_actions::analysis::actions::spawn_action::ResourceSetBuilder for FakeResourceSetBuilder {
+        fn build_resource_set(
+            &self,
+            os: blaze_shell::util::os::OS,
+            inputs_size: i32,
+        ) -> Result<
+            blaze_actions::analysis::actions::spawn_action::ResourceSet,
+            blaze_actions::analysis::actions::spawn_action::ResourceSetBuildError,
+        > {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((os.get_canonical_name().to_string(), inputs_size));
+            if self.fail {
+                return Err(
+                    blaze_actions::analysis::actions::spawn_action::ResourceSetBuildError {
+                        message: "Could not build resources for Fake. Illegal resource keys: (gpu)"
+                            .to_string(),
+                    },
+                );
+            }
+            Ok(
+                blaze_actions::analysis::actions::spawn_action::ResourceSet {
+                    memory_mb: 10.0 * inputs_size as f64,
+                    cpu_usage: 2.0,
+                    extra_resource_usage: IndexMap::new(),
+                    local_test_count: 0,
+                },
+            )
+        }
+    }
+
+    fn action_with_resource_builder(
+        dirs: &TestDirs,
+        builder: Arc<FakeResourceSetBuilder>,
+    ) -> SpawnAction {
+        let mut b = SpawnActionBuilder::new();
+        b.add_input(dirs.source_artifact("in1"))
+            .add_input(dirs.source_artifact("in2"))
+            .add_input(dirs.source_artifact("in3"))
+            .add_output(dirs.bin_artifact("output"))
+            .set_executable_path(&blaze_vfs::PathFragment::create("/bin/xxx"))
+            .set_resources_builder(builder);
+        b.build(null_action_owner(), &TestConfiguration)
+    }
+
+    /// S2-10: the spawn's local resources come from the `resource_set` callback, called once with
+    /// the current OS and the number of the action's inputs (Java `BaseSpawn.getLocalResources`).
+    #[test]
+    fn starlark_resource_set_builder_is_honoured_for_local_resources() {
+        let dirs = TestDirs::new();
+        let builder = Arc::new(FakeResourceSetBuilder {
+            fail: false,
+            calls: Default::default(),
+        });
+        let action = action_with_resource_builder(&dirs, builder.clone());
+        let ctx = dirs.context();
+        let spawn = get_spawn_with_env(&action, &ctx, &IndexMap::new(), true).unwrap();
+        use blaze_exec::actions::Spawn;
+        let expected = ResourceSet::create_with_ram_cpu(30.0, 2.0);
+        assert_eq!(spawn.get_local_resources().unwrap(), expected);
+        // Cached: the callback runs once (BaseSpawn.localResourcesCached).
+        assert_eq!(spawn.get_local_resources().unwrap(), expected);
+        assert_eq!(
+            *builder.calls.lock().unwrap(),
+            vec![("linux".to_string(), 3)]
+        );
+    }
+
+    /// S2-10: a failing callback is a `UserExecException` with the callback's message and
+    /// `StarlarkAction.Code.STARLARK_ACTION_UNKNOWN`.
+    #[test]
+    fn starlark_resource_set_builder_failure_is_user_exec_exception() {
+        let dirs = TestDirs::new();
+        let builder = Arc::new(FakeResourceSetBuilder {
+            fail: true,
+            calls: Default::default(),
+        });
+        let action = action_with_resource_builder(&dirs, builder);
+        let ctx = dirs.context();
+        let spawn = get_spawn_with_env(&action, &ctx, &IndexMap::new(), true).unwrap();
+        use blaze_exec::actions::Spawn;
+        let err = spawn.get_local_resources().unwrap_err();
+        assert!(
+            matches!(err, ExecException::User(_)),
+            "expected UserExecException, got {err:?}"
+        );
+        assert_eq!(
+            err.get_message(),
+            "Could not build resources for Fake. Illegal resource keys: (gpu)"
+        );
+        let detail = err.get_failure_detail("ignored").unwrap();
+        assert_eq!(
+            detail.category,
+            Some(Category::StarlarkAction(failure_details::StarlarkAction {
+                code: failure_details::starlark_action::Code::StarlarkActionUnknown as i32,
+            }))
+        );
+    }
+
     #[test]
     #[ignore = "needs SpawnAction.Builder.setJarExecutable (not ported in blaze_actions)"]
     fn test_builder_with_jar_executable_and_parameter_file() {}

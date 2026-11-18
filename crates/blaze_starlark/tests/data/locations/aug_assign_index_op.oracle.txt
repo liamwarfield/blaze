@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/aug_assign_index_op/aug_assign_index_op.bzl", line 5, column 2, in <toplevel>
+		f()
+	File "<WS>/aug_assign_index_op/aug_assign_index_op.bzl", line 3, column 12, in f
+		d["a"] -= 1
+Error: unsupported binary operation: string - int

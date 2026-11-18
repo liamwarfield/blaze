@@ -91,75 +91,42 @@ pub fn replay_syntax_errors_on(handler: &dyn EventHandler, errors: &[blaze_starl
     );
 }
 
-/// Java's static error for a use of a predeclared name whose `GuardedValue` is not accessible
-/// (a symbol disabled by a flag, restricted to some repositories, or removed), if `ex` is
-/// starlark-rust's undefined-variable error for such a name of `compile_env` (the predeclared
-/// environment the file is compiled against).
+/// Resolves every name of `prog` against `globals` (Java `Program.compileFile`: the Resolver
+/// reports every undefined name of the file, in source order) and returns the syntax errors.
 ///
-/// Java's `Module.resolve` throws `Undefined(guard.getErrorFromAttemptingAccess(name))` and
-/// `Resolver.use` reports that message, as is, at the identifier. starlark-rust resolves
-/// against a `Globals` without the inaccessible names and reports its own "Variable `X` not
-/// found" when the module starts executing: an evaluation error raised before any statement
-/// runs, so its stack is the top level alone, at the identifier.
+/// A use of a predeclared name whose `GuardedValue` is not accessible (a symbol disabled by a
+/// flag, restricted to some repositories, or removed) is left out of `globals`; Java's
+/// `Module.resolve` throws `Undefined(guard.getErrorFromAttemptingAccess(name))` and
+/// `Resolver.use` reports that message, as is, at the identifier. `guarded_message` gives that
+/// message for a name, if it is such a symbol.
+/// PORT: the message for any other undefined name is starlark-rust's ("Variable `x` not found";
+/// Java: "name 'x' is not defined"), core-language text (decisions.md 2026-11-17).
+// Java: net/starlark/java/syntax/Program.java:101 Program.compileFile
+// Java: net/starlark/java/syntax/Resolver.java:941 Resolver.use
 // Java: net/starlark/java/eval/Module.java:237 Module.resolve
-// Java: net/starlark/java/syntax/Resolver.java:941 Resolver.use
-pub fn guarded_symbol_syntax_error(
-    ex: &blaze_starlark::EvalError,
-    compile_env: &blaze_packages::builtins::env::StarlarkEnv,
-    semantics: &blaze_starlark::StarlarkSemantics,
-    compile_label: Option<&blaze_cmdline::Label>,
-) -> Option<blaze_starlark::SyntaxError> {
-    if ex.kind != blaze_starlark::error::EvalErrorKind::Eval {
-        return None;
-    }
-    let [toplevel] = ex.callstack.as_slice() else {
-        return None;
+pub fn resolve_errors(
+    prog: &blaze_starlark::eval::CompiledFile,
+    globals: &starlark::environment::Globals,
+    guarded_message: impl Fn(&str) -> Option<String>,
+) -> Vec<blaze_starlark::SyntaxError> {
+    let Err(ex) = blaze_starlark::eval::resolve(prog, globals) else {
+        return Vec::new();
     };
-    if toplevel.name != "<toplevel>" {
-        return None;
-    }
-    let location = toplevel.location.clone()?;
-    let name = blaze_packages::builtins::env::undefined_variable_name(&ex.message)?;
-    let message = blaze_packages::builtins::env::guarded_symbol_error(
-        compile_env,
-        name,
-        semantics,
-        compile_label,
-    )?;
-    Some(blaze_starlark::SyntaxError { location, message })
-}
-
-/// The syntax error Java reports for a use of an undefined name, if `ex` is starlark-rust's
-/// error for one.
-///
-/// Java resolves names when the file is compiled (`Program.compileFile` in BzlCompileFunction):
-/// an undefined name is a syntax error at the identifier and the load fails with "compilation
-/// of module ... failed". starlark-rust resolves names when the module starts executing and
-/// reports an evaluation error before any statement runs: its stack is the top level alone, at
-/// the identifier (see [`guarded_symbol_syntax_error`]).
-/// PORT: the message is starlark-rust's ("Variable `x` not found"; Java: "name 'x' is not
-/// defined"), core-language text (decisions.md 2026-11-17), and only the first undefined name is
-/// reported.
-// Java: net/starlark/java/syntax/Resolver.java:941 Resolver.use
-// Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:236 BzlCompileFunction.computeInline
-pub fn undefined_name_syntax_error(
-    ex: &blaze_starlark::EvalError,
-) -> Option<blaze_starlark::SyntaxError> {
-    if ex.kind != blaze_starlark::error::EvalErrorKind::Eval {
-        return None;
-    }
-    let [toplevel] = ex.callstack.as_slice() else {
-        return None;
+    let blaze_starlark::error::EvalErrorKind::Syntax(errors) = ex.kind else {
+        unreachable!("resolve only fails with syntax errors")
     };
-    if toplevel.name != "<toplevel>" {
-        return None;
-    }
-    let location = toplevel.location.clone()?;
-    blaze_packages::builtins::env::undefined_variable_name(&ex.message)?;
-    Some(blaze_starlark::SyntaxError {
-        location,
-        message: ex.message.clone(),
-    })
+    errors
+        .into_iter()
+        .map(|mut error| {
+            if let Some(message) =
+                blaze_packages::builtins::env::undefined_variable_name(&error.message)
+                    .and_then(&guarded_message)
+            {
+                error.message = message;
+            }
+            error
+        })
+        .collect()
 }
 
 /// Replays the `print()` output and warnings a Starlark evaluation recorded, as Java's thread

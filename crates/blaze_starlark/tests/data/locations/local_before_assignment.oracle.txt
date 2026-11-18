@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/local_before_assignment/local_before_assignment.bzl", line 6, column 2, in <toplevel>
+		f()
+	File "<WS>/local_before_assignment/local_before_assignment.bzl", line 4, column 12, in f
+		return z
+Error: local variable 'z' is referenced before assignment.

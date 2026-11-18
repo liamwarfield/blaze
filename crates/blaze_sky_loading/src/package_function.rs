@@ -416,9 +416,6 @@ enum CompiledBuildFile {
         generator_map: IndexMap<Location, String>,
         /// The predeclared environment the program was compiled against.
         predeclared: Arc<Globals>,
-        /// The predeclared names left out of `predeclared` because their `GuardedValue` is not
-        /// accessible, each with Java's error for a use of it (`Module.resolve`).
-        guarded_symbol_errors: IndexMap<String, String>,
     },
 }
 
@@ -984,10 +981,7 @@ impl PackageFunction {
 
         match compiled {
             CompiledBuildFile::Ok {
-                prog,
-                predeclared,
-                guarded_symbol_errors,
-                ..
+                prog, predeclared, ..
             } => {
                 let (load_map, direct_loads) =
                     loaded_modules.expect("loads are computed for a compiled BUILD file");
@@ -1001,44 +995,6 @@ impl PackageFunction {
                     &repository_mapping,
                     &main_repository_mapping,
                 )?;
-                // Java resolves the BUILD file's names in compileBuildFile: a use of a
-                // predeclared symbol whose GuardedValue is not accessible is a static error with
-                // the guard's message (Module.resolve), reported as a SYNTAX_ERROR event at the
-                // identifier, and the file is not executed.
-                // PORT: starlark-rust resolves names when execution starts and PackageFactory
-                // (blaze_packages `handle_eval_error`) reports its "Variable `X` not found" as
-                // an evaluation error. Bazel 9.3.2 registers no guarded BUILD toplevel, so this
-                // cannot happen with Bazel's rule class provider; with one that does, fail
-                // loudly instead of showing the wrong error.
-                // Java: net/starlark/java/eval/Module.java:237 Module.resolve
-                // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1276 PackageFunction.compileBuildFile
-                if !guarded_symbol_errors.is_empty() {
-                    for event in pkg_builder.get_local_event_handler().get_events() {
-                        let message = event.get_message();
-                        let Some(error) = message
-                            .lines()
-                            .last()
-                            .and_then(|line| line.strip_prefix("Error: "))
-                        else {
-                            continue;
-                        };
-                        let Some(name) =
-                            blaze_packages::builtins::env::undefined_variable_name(error)
-                        else {
-                            continue;
-                        };
-                        if let Some(java_message) = guarded_symbol_errors.get(name) {
-                            blaze_util::unported!(
-                                "Module.resolve",
-                                "BUILD file of package '{}' uses the guarded symbol '{}'; Java \
-                                 reports the syntax error: {}",
-                                package_id,
-                                name,
-                                java_message
-                            );
-                        }
-                    }
-                }
                 // TODO: b/155396641 - Validate that transitive visibility groups are correctly
                 // declared and that this package is a member of all transitive visibility groups
                 // it declares, but probably not in this part of the code.
@@ -1252,12 +1208,23 @@ impl PackageFunction {
             }
         };
 
+        // Compile BUILD file: Java's Program.compileFile resolves every name against the
+        // predeclared environment and reports all static errors together; a use of a
+        // predeclared symbol whose GuardedValue is not accessible fails with the guard's message
+        // (Module.resolve).
+        // Java: net/starlark/java/eval/Module.java:237 Module.resolve
+        let errors = crate::starlark_util::resolve_errors(&prog, &predeclared, |name| {
+            guarded_symbol_errors.get(name).cloned()
+        });
+        if !errors.is_empty() {
+            return Ok(CompiledBuildFile::Errors(errors));
+        }
+
         // success
         Ok(CompiledBuildFile::Ok {
             prog,
             generator_map,
             predeclared,
-            guarded_symbol_errors,
         })
     }
 }

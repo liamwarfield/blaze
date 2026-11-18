@@ -70,6 +70,9 @@ use blaze_sky_top::skyframe_executor::{SkyframeExecutor, get_configuration_from_
 use blaze_sky_top::target_pattern_phase::TargetPatternPhaseValue;
 use blaze_vfs::{Path, PathFragment};
 
+#[path = "build_remote.rs"]
+mod build_remote;
+
 use crate::command::{BlazeCommand, BlazeCommandResult, CommandAnnotation};
 use crate::command_environment::CommandEnvironment;
 use crate::command_registry::{BUILD_COMMAND, TEST_COMMAND};
@@ -138,15 +141,41 @@ fn run_build(
     options: &OptionsParsingResult,
     run_tests: bool,
 ) -> BlazeCommandResult {
+    // RemoteModule.beforeCommand: the dispatcher runs the modules' beforeCommand in module order
+    // (RemoteModule before BuildEventServiceModule) and exits with the first module's
+    // AbruptExitException, reported as `ERROR: <message>`.
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:491 BlazeCommandDispatcher.execExclusively
+    let remote = match build_remote::before_command(env, options) {
+        Ok(remote) => remote.map(Arc::new),
+        Err(e) => {
+            env.get_reporter()
+                .handle(&Event::error(e.get_message().to_owned()));
+            return BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(e.failure_detail));
+        }
+    };
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
     let bep = BepCommandSupport::before_command(env, options);
-    let result = run_build_with_bep(env, options, run_tests, bep.as_ref());
+    let result = run_build_with_bep(env, options, run_tests, bep.as_ref(), remote.as_ref());
+    // BlazeRuntime.afterCommand: CommandPrecompleteEvent, then each module's afterCommand
+    // (RemoteModule before BuildEventServiceModule); an AbruptExitException of a module replaces
+    // the result unless that is an infrastructure failure.
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:750 BlazeRuntime.afterCommand
+    if let Some(bep) = &bep {
+        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:802 CommandEnvironment.precompleteCommand
+        bep.command_precomplete();
+    }
+    let remote_exit = remote
+        .as_ref()
+        .and_then(|remote| remote.after_command(env.get_reporter().as_ref()));
+    let result = match remote_exit {
+        Some(e) if !result.get_exit_code().is_infrastructure_failure() => {
+            BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(e.failure_detail))
+        }
+        _ => result,
+    };
     let Some(bep) = bep else {
         return result;
     };
-    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:802 CommandEnvironment.precompleteCommand
-    bep.command_precomplete();
-    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:750 BlazeRuntime.afterCommand
     match bep.after_command() {
         Ok(()) => result,
         Err(e) => {
@@ -167,6 +196,7 @@ fn run_build_with_bep(
     options: &OptionsParsingResult,
     run_tests: bool,
     bep: Option<&Arc<BepCommandSupport>>,
+    remote: Option<&Arc<build_remote::RemoteSupport>>,
 ) -> BlazeCommandResult {
     // BuildRequest.Builder.setStartTimeMillis(env.getCommandStartTime())
     let start_time_millis = env.get_command_start_time();
@@ -347,6 +377,16 @@ fn run_build_with_bep(
             .map(|o| o.experimental_writable_outputs)
             .unwrap_or(false),
         output_filter: reporter_output_filter.clone(),
+        // RemoteModule.registerSpawnStrategies / registerActionContexts / executorInit.
+        remote: remote
+            .map(|remote| {
+                remote.contributions(
+                    options
+                        .get_options::<blaze_optdefs::misc::remote_options::RemoteOptions>()
+                        .as_ref(),
+                )
+            })
+            .unwrap_or_default(),
     };
     let summary_for_contexts = Arc::new(test_summary_options.clone());
     let workspace_for_contexts = workspace.clone();
@@ -477,6 +517,7 @@ fn run_build_with_bep(
             out_err: env.get_reporter_out_err().clone(),
         },
         bep: bep.cloned(),
+        remote: remote.cloned(),
     };
     let post_processor = ExecutionToolConstruction {
         execution_phase: &execution_phase,
@@ -519,6 +560,10 @@ fn run_build_with_bep(
         blaze_events::EventBus::post(&**env.get_event_bus(), Arc::new(BuildInterruptedEvent));
         if let Some(test_support) = &test_support {
             test_support.listener().build_interrupted();
+        }
+        // RemoteExecutionService.onBuildInterrupted (an event-bus subscriber).
+        if let Some(remote) = remote {
+            remote.build_interrupted();
         }
     }
 
@@ -590,6 +635,10 @@ fn run_build_with_bep(
         .load(std::sync::atomic::Ordering::SeqCst);
     if let Some(test_support) = &test_support {
         test_support.build_complete_event(&build_result);
+    }
+    // RemoteExecutionService.onBuildComplete (a BuildCompleteEvent subscriber).
+    if let Some(remote) = remote {
+        remote.build_complete(build_result.get_success());
     }
     report_build_summary_stats(
         reporter.as_ref(),
@@ -1074,6 +1123,8 @@ struct RuntimeExecutionPhase {
     request_view: RuntimeBuildRequestView,
     /// The command's Build Event Protocol support (`None` without `--build_event_*_file`).
     bep: Option<Arc<BepCommandSupport>>,
+    /// The command's `RemoteModule` (`None` without any remote option).
+    remote: Option<Arc<build_remote::RemoteSupport>>,
 }
 
 impl RuntimeExecutionPhase {
@@ -1373,6 +1424,18 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         );
         let output_groups =
             top_level_output_groups(&self.build_request_options, request.should_run_tests());
+        // RemoteModule.afterAnalysis (or, with Skymeld, afterTopLevelTargetAnalysis for each
+        // top-level target): the outputs of the top-level targets are downloaded under
+        // --remote_download_outputs=toplevel.
+        // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:153 AnalysisPhaseRunner.execute
+        // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:324 AnalysisAndExecutionPhaseRunner.execute
+        if let Some(remote) = &self.remote {
+            remote.after_analysis(
+                analysis_result,
+                &output_groups,
+                request.with_merged_analysis_and_execution_source_of_truth(),
+            );
+        }
         let keys = build_driver_keys(
             &label_to_target_map,
             analysis_result.get_configuration(),

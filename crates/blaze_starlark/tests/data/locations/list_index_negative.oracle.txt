@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/list_index_negative/list_index_negative.bzl", line 1, column 7, in <toplevel>
+		x = [][-1]
+Error: index out of range (index is -1, but sequence has 0 elements)

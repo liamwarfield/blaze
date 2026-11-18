@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/string_mul_bad/string_mul_bad.bzl", line 1, column 9, in <toplevel>
+		x = "a" * "b"
+Error: unsupported binary operation: string * string

@@ -82,6 +82,14 @@ impl FrozenFileSpan {
         self.span
     }
 
+    /// An empty span at the start of this one (Java `Node.getStartLocation`).
+    pub(crate) fn begin_point(&self) -> FrozenFileSpan { // BLAZE PATCH 0028
+        FrozenFileSpan { // BLAZE PATCH 0028
+            file: self.file, // BLAZE PATCH 0028
+            span: Span::new(self.span.begin(), self.span.begin()), // BLAZE PATCH 0028
+        } // BLAZE PATCH 0028
+    } // BLAZE PATCH 0028
+
     pub(crate) fn end_span(&self) -> FrozenFileSpan {
         FrozenFileSpan {
             file: self.file,

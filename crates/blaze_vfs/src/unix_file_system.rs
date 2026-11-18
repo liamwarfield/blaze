@@ -30,6 +30,10 @@ pub(crate) fn posix_error(message: &str, e: io::Error) -> io::Error {
         Some(i) if e.raw_os_error().is_some() => text[..i].to_owned(),
         _ => text,
     };
+    // The native layer throws `FileSymlinkLoopException` for ELOOP.
+    if e.raw_os_error() == Some(crate::file_system::ELOOP) {
+        return FileSymlinkLoopException::with_message(format!("{} ({})", message, strerror));
+    }
     io::Error::new(e.kind(), format!("{} ({})", message, strerror))
 }
 
@@ -172,21 +176,36 @@ impl FileSystem for UnixFileSystem {
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:361 UnixFileSystem.setLastModifiedTime
     fn set_last_modified_time(&self, path: &PathFragment, new_time: i64) -> io::Result<()> {
-        // utimensat(path, {t, t}) on both atime and mtime, following symlinks. std only offers
-        // futimens on an open file, so open it (read, falling back to write).
+        // NativePosixFiles.utimensat(path, now, millis): utimensat(AT_FDCWD, path, {t, t}, 0),
+        // following symlinks; `now` is UTIME_NOW (the kernel's clock, and only write access is
+        // needed, not ownership).
+        // Java: (native) src/main/native/unix_jni.cc Java_com_google_devtools_build_lib_unix_NativePosixFiles_utimensat
         let name = path.get_path_string();
-        let file = fs::File::open(name)
-            .or_else(|_| fs::OpenOptions::new().write(true).open(name))
-            .map_err(|e| posix_error(name, e))?;
+        let c_name = std::ffi::CString::new(name).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{name} (Invalid argument)"),
+            )
+        })?;
         let t = if new_time == NOW_SENTINEL_TIME {
-            std::time::SystemTime::now()
-        } else if new_time >= 0 {
-            std::time::UNIX_EPOCH + std::time::Duration::from_millis(new_time as u64)
+            libc::timespec {
+                tv_sec: 0,
+                tv_nsec: libc::UTIME_NOW,
+            }
         } else {
-            std::time::UNIX_EPOCH - std::time::Duration::from_millis(new_time.unsigned_abs())
+            libc::timespec {
+                tv_sec: new_time.div_euclid(1000) as libc::time_t,
+                tv_nsec: (new_time.rem_euclid(1000) * 1_000_000) as libc::c_long,
+            }
         };
-        file.set_times(fs::FileTimes::new().set_accessed(t).set_modified(t))
-            .map_err(|e| posix_error(name, e))
+        let times = [t, t];
+        // SAFETY: `c_name` is a NUL-terminated string and `times` two valid timespecs, both
+        // alive for the call.
+        let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c_name.as_ptr(), times.as_ptr(), 0) };
+        if rc != 0 {
+            return Err(posix_error(name, io::Error::last_os_error()));
+        }
+        Ok(())
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:118 UnixFileSystem.stat

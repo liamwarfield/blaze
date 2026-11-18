@@ -575,6 +575,15 @@ impl<'v> Value<'v> {
         self.get_ref().at(index, heap)
     }
 
+    /// `x[index]` as Starlark evaluates it ([`StarlarkValue::at_with_eval`]).
+    pub fn at_with_eval( // BLAZE PATCH 0027
+        self, // BLAZE PATCH 0027
+        index: Value<'v>, // BLAZE PATCH 0027
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
+    ) -> crate::Result<Value<'v>> { // BLAZE PATCH 0027
+        self.get_ref().at_with_eval(index, eval) // BLAZE PATCH 0027
+    } // BLAZE PATCH 0027
+
     /// `x[start:stop:stride]`.
     pub fn slice(
         self,
@@ -595,6 +604,15 @@ impl<'v> Value<'v> {
     pub fn is_in(self, other: Value<'v>) -> crate::Result<bool> {
         self.get_ref().is_in(other)
     }
+
+    /// `other in x` as Starlark evaluates it ([`StarlarkValue::is_in_with_eval`]).
+    pub fn is_in_with_eval( // BLAZE PATCH 0027
+        self, // BLAZE PATCH 0027
+        other: Value<'v>, // BLAZE PATCH 0027
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0027
+    ) -> crate::Result<bool> { // BLAZE PATCH 0027
+        self.get_ref().is_in_with_eval(other, eval) // BLAZE PATCH 0027
+    } // BLAZE PATCH 0027
 
     /// `+x`.
     pub fn plus(self, heap: Heap<'v>) -> crate::Result<Value<'v>> {
@@ -1004,6 +1022,39 @@ impl<'v> Value<'v> {
     pub fn get_attr_error_message(self, attribute: &str) -> Option<String> { // BLAZE PATCH 0013
         self.get_ref().get_attr_error_message(attribute) // BLAZE PATCH 0013
     } // BLAZE PATCH 0013
+
+    /// `x.attribute` as Starlark evaluates it: the type's methods, then
+    /// [`StarlarkValue::get_attr_fallible`]. `Ok(None)`: no such attribute.
+    pub fn get_attr_fallible( // BLAZE PATCH 0026
+        self, // BLAZE PATCH 0026
+        attribute: &str, // BLAZE PATCH 0026
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
+    ) -> crate::Result<Option<Value<'v>>> { // BLAZE PATCH 0026
+        let aref = self.get_ref(); // BLAZE PATCH 0026
+        let attribute = Hashed::new(attribute); // BLAZE PATCH 0026
+        if let Some(methods) = aref.vtable().methods() { // BLAZE PATCH 0026
+            if let Some(v) = methods.get_hashed(attribute) { // BLAZE PATCH 0026
+                return Ok(Some(v.bind(self, eval.heap())?)); // BLAZE PATCH 0026
+            } // BLAZE PATCH 0026
+        } // BLAZE PATCH 0026
+        aref.get_attr_fallible(attribute, eval) // BLAZE PATCH 0026
+    } // BLAZE PATCH 0026
+
+    /// `hasattr(x, attribute)` as Starlark evaluates it: the type's methods, then
+    /// [`StarlarkValue::has_attr_fallible`].
+    pub fn has_attr_fallible( // BLAZE PATCH 0026
+        self, // BLAZE PATCH 0026
+        attribute: &str, // BLAZE PATCH 0026
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
+    ) -> crate::Result<bool> { // BLAZE PATCH 0026
+        let aref = self.get_ref(); // BLAZE PATCH 0026
+        if let Some(methods) = aref.vtable().methods() { // BLAZE PATCH 0026
+            if methods.get(attribute).is_some() { // BLAZE PATCH 0026
+                return Ok(true); // BLAZE PATCH 0026
+            } // BLAZE PATCH 0026
+        } // BLAZE PATCH 0026
+        aref.has_attr_fallible(attribute, eval) // BLAZE PATCH 0026
+    } // BLAZE PATCH 0026
 
     /// Query whether an attribute exists on a type. Should be equivalent to whether
     /// [`get_attr`](Value::get_attr) succeeds, but potentially more efficient.

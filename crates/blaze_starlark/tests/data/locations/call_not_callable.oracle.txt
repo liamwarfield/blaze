@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/call_not_callable/call_not_callable.bzl", line 1, column 3, in <toplevel>
+		x = 1(2)
+Error: 'int' object is not callable

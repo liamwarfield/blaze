@@ -81,11 +81,6 @@ pub fn compile(kind: FileKind, file_name: &str, source: String) -> Result<Compil
     compile_with_options(kind, kind.file_options(), file_name, source)
 }
 
-/// Prefix of the syntax error the vendored parser gives for Bazel type syntax that is not ported
-/// (starlark-rust patch 0020, `grammar_util::BLAZE_TYPE_SYNTAX_NOT_PORTED`).
-pub const TYPE_SYNTAX_NOT_PORTED_PREFIX: &str =
-    starlark_syntax::syntax::grammar_util::BLAZE_TYPE_SYNTAX_NOT_PORTED;
-
 /// [`compile`] with explicit [`crate::file_kind::FileOptions`] (Java `FileOptions` whose values
 /// depend on flags: `allowTypeSyntax`).
 pub fn compile_with_options(
@@ -120,6 +115,32 @@ pub fn compile_with_options(
         loads,
         build_facts,
     })
+}
+
+/// Resolves every name of `compiled` against `globals` without executing it and returns all
+/// resolution errors as one syntax error list (Java resolves when compiling and reports every
+/// undefined name: `Program.compileFile` → `Resolver.resolveFile`, Resolver.java:1313). `Ok` when every name
+/// resolves. Messages are starlark-rust's ("Variable `x` not found[, did you mean `y`?]"),
+/// located at the identifier. Execution (`exec_module`) still resolves too and stops at the
+/// first unresolved name, so callers that want Java's full list call this first.
+// Java: net/starlark/java/syntax/Resolver.java:941 Resolver.use
+// Java: net/starlark/java/syntax/Program.java:101 Program.compileFile
+pub fn resolve(compiled: &CompiledFile, globals: &Globals) -> Result<(), EvalError> {
+    let errors: Vec<SyntaxError> = starlark::eval::resolve_errors(&compiled.ast, globals)
+        .iter()
+        .map(|e| SyntaxError {
+            location: e
+                .span()
+                .map(Location::of_span_start)
+                .unwrap_or_else(Location::builtin),
+            message: crate::error::bare_message(e),
+        })
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(EvalError::syntax(errors))
+    }
 }
 
 fn panic_error(p: Box<dyn std::any::Any + Send>) -> EvalError {

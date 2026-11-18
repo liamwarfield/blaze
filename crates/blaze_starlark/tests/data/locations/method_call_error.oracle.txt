@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/method_call_error/method_call_error.bzl", line 4, column 2, in <toplevel>
+		f()
+	File "<WS>/method_call_error/method_call_error.bzl", line 2, column 23, in f
+		return "a,b".split(1)
+Error in split: in call to split(), parameter 'sep' got value of type 'int', want 'string'

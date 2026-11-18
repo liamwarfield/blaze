@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/slice_bad_type/slice_bad_type.bzl", line 1, column 10, in <toplevel>
+		x = "abc"["a":]
+Error: got string for start index, want int

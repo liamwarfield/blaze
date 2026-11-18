@@ -507,7 +507,7 @@ where
     }
 
     fn collect_repr_cycle(&self, collector: &mut String) {
-        collector.push_str("{...}");
+        collector.push_str("..."); // BLAZE PATCH 0031: Java Printer.repr (Printer.java:191)
     }
 
     fn to_bool(&self) -> bool {

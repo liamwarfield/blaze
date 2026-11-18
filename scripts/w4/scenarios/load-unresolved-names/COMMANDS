@@ -1,0 +1,6 @@
+# Name resolution: every unresolved name of a BUILD or .bzl file is reported (Java
+# Program.compileFile), before any load, and the file is not executed.
+run build //build_names:all
+run build //bzl_names:t
+run build //bzl_names_before_load:t
+run query //build_names:all

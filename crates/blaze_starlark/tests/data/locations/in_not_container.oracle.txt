@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/in_not_container/in_not_container.bzl", line 1, column 9, in <toplevel>
+		x = "a" in 1
+Error: unsupported binary operation: string in int

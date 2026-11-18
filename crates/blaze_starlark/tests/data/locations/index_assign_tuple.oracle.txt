@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/index_assign_tuple/index_assign_tuple.bzl", line 2, column 6, in <toplevel>
+		x[0] = 3
+Error: can only assign an element in a dictionary or a list, not in a 'tuple'

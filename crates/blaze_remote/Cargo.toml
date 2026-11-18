@@ -49,19 +49,12 @@ tonic-build.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 
-[features]
-# Modules and test files still being ported are behind this feature so that a half-made file
-# never breaks a workspace build (`scripts/cargo-capped check -p blaze_remote --features wip`).
-wip = []
-
 # Test harness of scripts/remote/replay (see docs/remote.md).
 [[bin]]
 name = "blaze-remote-replay"
 path = "src/bin/blaze-remote-replay.rs"
-required-features = ["wip"]
 
 # Dumps a --remote_grpc_log file as JSON lines (scripts/remote/compare-grpc-log).
 [[bin]]
 name = "blaze-remote-grpc-log"
 path = "src/bin/blaze-remote-grpc-log.rs"
-required-features = ["wip"]

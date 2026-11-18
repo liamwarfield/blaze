@@ -1,4 +1,3 @@
-#![cfg(feature = "wip")]
 // Options and protos are filled in field by field, as the Java tests set them.
 #![allow(clippy::field_reassign_with_default)]
 // The deprecated ActionResult fields are part of the messages the tests compare.

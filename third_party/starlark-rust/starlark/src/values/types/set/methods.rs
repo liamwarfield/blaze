@@ -19,6 +19,7 @@
 
 use std::mem;
 
+#[allow(unused_imports)] // BLAZE PATCH 0007
 use either::Either;
 use starlark_derive::starlark_module;
 use starlark_map::Hashed;
@@ -36,12 +37,20 @@ use crate::values::set::refs::SetMut;
 use crate::values::set::refs::SetRef;
 use crate::values::set::value::SetData;
 use crate::values::typing::StarlarkIter;
+use crate::values::dict::DictRef; // BLAZE PATCH 0007
+use crate::values::list::ListRef; // BLAZE PATCH 0007
+use crate::values::range::Range; // BLAZE PATCH 0007
+use crate::values::ValueLike; // BLAZE PATCH 0007
+use crate::values::tuple::TupleRef; // BLAZE PATCH 0007
+use crate::values::tuple::UnpackTuple; // BLAZE PATCH 0007
 
+#[allow(dead_code)] // BLAZE PATCH 0007: replaced by `hashable_collection`
 enum SetFromValue<'v> {
     Set(SmallSet<Value<'v>>),
     Ref(SetRef<'v>),
 }
 
+#[allow(dead_code)] // BLAZE PATCH 0007
 impl<'v> SetFromValue<'v> {
     fn from_value(
         value: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
@@ -82,6 +91,113 @@ impl<'v> SetFromValue<'v> {
     }
 }
 
+// BLAZE PATCH 0007: Java StarlarkSet.toHashableCollection (StarlarkSet.java:818): a set, a dict
+// (its keys), or a list, tuple or range whose elements are hashable; anything else fails with
+// "for <what> got value of type '<type>', want a collection of hashable elements".
+fn hashable_collection<'v>( // BLAZE PATCH 0007
+    other: Value<'v>, // BLAZE PATCH 0007
+    what: &str, // BLAZE PATCH 0007
+    heap: Heap<'v>, // BLAZE PATCH 0007
+) -> crate::Result<Vec<Hashed<Value<'v>>>> { // BLAZE PATCH 0007
+    if let Some(set) = SetRef::unpack_value_opt(other) { // BLAZE PATCH 0007
+        return Ok(set.aref.content.iter_hashed().map(|h| h.copied()).collect()); // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
+    if let Some(dict) = DictRef::from_value(other) { // BLAZE PATCH 0007
+        return Ok(dict.iter_hashed().map(|(k, _)| k).collect()); // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
+    let collection = ListRef::from_value(other).is_some() // BLAZE PATCH 0007
+        || TupleRef::from_value(other).is_some() // BLAZE PATCH 0007
+        || ValueLike::downcast_ref::<Range>(other).is_some(); // BLAZE PATCH 0007
+    if !collection { // BLAZE PATCH 0007
+        return Err(value_error!( // BLAZE PATCH 0007
+            "for {} got value of type '{}', want a collection of hashable elements", // BLAZE PATCH 0007
+            what, // BLAZE PATCH 0007
+            other.get_type() // BLAZE PATCH 0007
+        )); // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
+    other.iterate(heap)?.map(|v| v.get_hashed()).collect() // BLAZE PATCH 0007
+} // BLAZE PATCH 0007
+
+// BLAZE PATCH 0007
+fn retain_in<'v>(set: &SmallSet<Value<'v>>, keep: &SmallSet<Value<'v>>) -> SmallSet<Value<'v>> { // BLAZE PATCH 0007
+    let mut r = SmallSet::new(); // BLAZE PATCH 0007
+    for h in set.iter_hashed() { // BLAZE PATCH 0007
+        if keep.contains_hashed(h) { // BLAZE PATCH 0007
+            r.insert_hashed(h.copied()); // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
+    r // BLAZE PATCH 0007
+} // BLAZE PATCH 0007
+
+// BLAZE PATCH 0007
+fn to_small_set<'v>(elems: Vec<Hashed<Value<'v>>>) -> SmallSet<Value<'v>> { // BLAZE PATCH 0007
+    let mut set = SmallSet::with_capacity(elems.len()); // BLAZE PATCH 0007
+    for h in elems { // BLAZE PATCH 0007
+        set.insert_hashed(h); // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
+    set // BLAZE PATCH 0007
+} // BLAZE PATCH 0007
+
+/// BLAZE PATCH 0007: the augmented assignments that mutate a set in place. // BLAZE PATCH 0007
+#[derive(Clone, Copy)] // BLAZE PATCH 0007
+pub(crate) enum SetInplaceOp { // BLAZE PATCH 0007
+    /// `|=` (Java StarlarkSet.update). // BLAZE PATCH 0007
+    Or, // BLAZE PATCH 0007
+    /// `&=` (Java StarlarkSet.intersectionUpdate). // BLAZE PATCH 0007
+    And, // BLAZE PATCH 0007
+    /// `^=` (Java StarlarkSet.symmetricDifferenceUpdate). // BLAZE PATCH 0007
+    Xor, // BLAZE PATCH 0007
+    /// `-=` (Java StarlarkSet.differenceUpdate). // BLAZE PATCH 0007
+    Sub, // BLAZE PATCH 0007
+} // BLAZE PATCH 0007
+
+/// BLAZE PATCH 0007: Java Eval.inplaceBinaryOp (Eval.java:498-536): `set op= set` mutates the // BLAZE PATCH 0007
+/// left set and evaluates to it; `None` when either operand is not a set (a plain binary op). // BLAZE PATCH 0007
+pub(crate) fn set_inplace_op<'v>( // BLAZE PATCH 0007
+    lhs: Value<'v>, // BLAZE PATCH 0007
+    rhs: Value<'v>, // BLAZE PATCH 0007
+    op: SetInplaceOp, // BLAZE PATCH 0007
+) -> Option<crate::Result<Value<'v>>> { // BLAZE PATCH 0007
+    SetRef::unpack_value_opt(lhs)?; // BLAZE PATCH 0007
+    let other: Vec<Hashed<Value<'v>>> = SetRef::unpack_value_opt(rhs)? // BLAZE PATCH 0007
+        .aref // BLAZE PATCH 0007
+        .content // BLAZE PATCH 0007
+        .iter_hashed() // BLAZE PATCH 0007
+        .map(|h| h.copied()) // BLAZE PATCH 0007
+        .collect(); // BLAZE PATCH 0007
+    let run = || -> crate::Result<Value<'v>> { // BLAZE PATCH 0007
+        let mut set = SetMut::from_value(lhs)?; // BLAZE PATCH 0007
+        let content = &mut set.aref.content; // BLAZE PATCH 0007
+        match op { // BLAZE PATCH 0007
+            SetInplaceOp::Or => { // BLAZE PATCH 0007
+                for h in other { // BLAZE PATCH 0007
+                    content.insert_hashed(h); // BLAZE PATCH 0007
+                } // BLAZE PATCH 0007
+            } // BLAZE PATCH 0007
+            SetInplaceOp::And => { // BLAZE PATCH 0007
+                *content = retain_in(content, &to_small_set(other)); // BLAZE PATCH 0007
+            } // BLAZE PATCH 0007
+            SetInplaceOp::Xor => { // BLAZE PATCH 0007
+                let original = content.clone(); // BLAZE PATCH 0007
+                for h in other { // BLAZE PATCH 0007
+                    if original.contains_hashed(h.as_ref()) { // BLAZE PATCH 0007
+                        content.shift_remove_hashed(h.as_ref()); // BLAZE PATCH 0007
+                    } else { // BLAZE PATCH 0007
+                        content.insert_hashed(h); // BLAZE PATCH 0007
+                    } // BLAZE PATCH 0007
+                } // BLAZE PATCH 0007
+            } // BLAZE PATCH 0007
+            SetInplaceOp::Sub => { // BLAZE PATCH 0007
+                for h in other { // BLAZE PATCH 0007
+                    content.shift_remove_hashed(h.as_ref()); // BLAZE PATCH 0007
+                } // BLAZE PATCH 0007
+            } // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
+        Ok(lhs) // BLAZE PATCH 0007
+    }; // BLAZE PATCH 0007
+    Some(run()) // BLAZE PATCH 0007
+} // BLAZE PATCH 0007
+
 #[starlark_module]
 pub(crate) fn set_methods(builder: &mut MethodsBuilder) {
     fn clear(this: Value) -> anyhow::Result<NoneType> {
@@ -90,345 +206,212 @@ pub(crate) fn set_methods(builder: &mut MethodsBuilder) {
         Ok(NoneType)
     }
 
-    /// Return a new set with elements from the set and all others.
-    /// Unlike Python does not support variable number of arguments.
-    /// ```
-    /// # starlark::assert::is_true(r#"
-    /// x = set([1, 2, 3])
-    /// y = [3, 4, 5]
-    /// x.union(y) == set([1, 2, 3, 4, 5])
-    /// # "#);
-    /// ```
-    fn union<'v>(
-        this: SetRef<'v>,
-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
-        heap: Heap<'v>,
-    ) -> starlark::Result<SetData<'v>> {
-        if this.aref.content.is_empty() {
-            let other_set = SetFromValue::from_value(other, heap)?;
-            return Ok(SetData {
-                content: other_set.into_set(),
-            });
-        }
-        let mut data = this.aref.content.clone();
-        for elem in other.get().iterate(heap)? {
-            let hashed = elem.get_hashed()?;
-            data.insert_hashed(hashed);
-        }
-        Ok(SetData { content: data })
-    }
+    // Java StarlarkSet.union (StarlarkSet.java:586): any number of collections.
+    fn union<'v>( // BLAZE PATCH 0007
+        this: SetRef<'v>, // BLAZE PATCH 0007
+        #[starlark(args)] others: UnpackTuple<Value<'v>>, // BLAZE PATCH 0007
+        heap: Heap<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<SetData<'v>> { // BLAZE PATCH 0007
+        let mut data = this.aref.content.clone(); // BLAZE PATCH 0007
+        for other in others.items { // BLAZE PATCH 0007
+            for h in hashable_collection(other, "union argument", heap)? { // BLAZE PATCH 0007
+                data.insert_hashed(h); // BLAZE PATCH 0007
+            } // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
+        Ok(SetData { content: data }) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-    /// Return a new set with elements common to the set and all others.
-    /// Unlike Python does not support variable number of arguments.
-    /// ```
-    /// # starlark::assert::is_true(r#"
-    /// x = set([1, 2, 3])
-    /// y = [3, 4, 5]
-    /// x.intersection(y) == set([3])
-    /// # "#);
-    /// ```
-    fn intersection<'v>(
-        this: SetRef<'v>,
-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
-        heap: Heap<'v>,
-    ) -> starlark::Result<SetData<'v>> {
-        let other_set = SetFromValue::from_value(other, heap)?;
-        let mut data = SetData::default();
-        if other_set.is_empty() {
-            return Ok(data);
-        }
+    // Java StarlarkSet.intersection (StarlarkSet.java:615).
+    fn intersection<'v>( // BLAZE PATCH 0007
+        this: SetRef<'v>, // BLAZE PATCH 0007
+        #[starlark(args)] others: UnpackTuple<Value<'v>>, // BLAZE PATCH 0007
+        heap: Heap<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<SetData<'v>> { // BLAZE PATCH 0007
+        let mut data = this.aref.content.clone(); // BLAZE PATCH 0007
+        for other in others.items { // BLAZE PATCH 0007
+            let other = to_small_set(hashable_collection(other, "intersection argument", heap)?); // BLAZE PATCH 0007
+            data = retain_in(&data, &other); // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
+        Ok(SetData { content: data }) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-        for hashed in this.aref.content.iter_hashed() {
-            if other_set.contains_hashed(hashed.copied()) {
-                data.content.insert_hashed_unique_unchecked(hashed.copied());
-            }
-        }
-        Ok(data)
-    }
+    // Java StarlarkSet.intersectionUpdate (StarlarkSet.java:644).
+    fn intersection_update<'v>( // BLAZE PATCH 0007
+        this: Value<'v>, // BLAZE PATCH 0007
+        #[starlark(args)] others: UnpackTuple<Value<'v>>, // BLAZE PATCH 0007
+        heap: Heap<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
+        SetMut::from_value(this)?; // BLAZE PATCH 0007
+        for other in others.items { // BLAZE PATCH 0007
+            let other = to_small_set(hashable_collection(other, "intersection_update argument", heap)?); // BLAZE PATCH 0007
+            let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
+            set.aref.content = retain_in(&set.aref.content, &other); // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
+        Ok(NoneType) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-    /// Returns a new set with elements in either the set or the specified iterable but not both.
-    /// ```
-    /// # starlark::assert::is_true(r#"
-    /// x = set([1, 2, 3])
-    /// y = [3, 4, 5]
-    /// x.symmetric_difference(y) == set([1, 2, 4, 5])
-    /// # "#);
-    /// ```
-    fn symmetric_difference<'v>(
-        this: SetRef<'v>,
-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
-        heap: Heap<'v>,
-    ) -> starlark::Result<SetData<'v>> {
-        let other_set = SetFromValue::from_value(other, heap)?;
+    // Java StarlarkSet.symmetricDifference (StarlarkSet.java:730): one collection.
+    fn symmetric_difference<'v>( // BLAZE PATCH 0007
+        this: SetRef<'v>, // BLAZE PATCH 0007
+        #[starlark(require = pos)] other: Value<'v>, // BLAZE PATCH 0007
+        heap: Heap<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<SetData<'v>> { // BLAZE PATCH 0007
+        let other = hashable_collection(other, "symmetric_difference argument", heap)?; // BLAZE PATCH 0007
+        let mut data = this.aref.content.clone(); // BLAZE PATCH 0007
+        for h in other { // BLAZE PATCH 0007
+            if this.aref.content.contains_hashed(h.as_ref()) { // BLAZE PATCH 0007
+                data.shift_remove_hashed(h.as_ref()); // BLAZE PATCH 0007
+            } else { // BLAZE PATCH 0007
+                data.insert_hashed(h); // BLAZE PATCH 0007
+            } // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
+        Ok(SetData { content: data }) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-        if other_set.is_empty() {
-            return Ok(SetData {
-                content: this.aref.content.clone(),
-            });
-        }
+    // Java StarlarkSet.symmetricDifferenceUpdate (StarlarkSet.java:766).
+    fn symmetric_difference_update<'v>( // BLAZE PATCH 0007
+        this: Value<'v>, // BLAZE PATCH 0007
+        #[starlark(require = pos)] other: Value<'v>, // BLAZE PATCH 0007
+        heap: Heap<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
+        let original = SetMut::from_value(this)?.aref.content.clone(); // BLAZE PATCH 0007
+        let other = hashable_collection(other, "symmetric_difference_update argument", heap)?; // BLAZE PATCH 0007
+        let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
+        for h in other { // BLAZE PATCH 0007
+            if original.contains_hashed(h.as_ref()) { // BLAZE PATCH 0007
+                set.aref.content.shift_remove_hashed(h.as_ref()); // BLAZE PATCH 0007
+            } else { // BLAZE PATCH 0007
+                set.aref.content.insert_hashed(h); // BLAZE PATCH 0007
+            } // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
+        Ok(NoneType) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-        //TODO(romanp) add symmetric_difference to small set and use it here and in xor
-        if this.aref.content.is_empty() {
-            return Ok(SetData {
-                content: other_set.into_set(),
-            });
-        }
+    // Java StarlarkSet.addElement (StarlarkSet.java:482).
+    fn add<'v>( // BLAZE PATCH 0007
+        this: Value<'v>, // BLAZE PATCH 0007
+        #[starlark(require = pos)] element: Value<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
+        let mut this = SetMut::from_value(this)?; // BLAZE PATCH 0007
+        let hashed = element.get_hashed()?; // BLAZE PATCH 0007
+        this.aref.add_hashed(hashed); // BLAZE PATCH 0007
+        Ok(NoneType) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-        let mut data = SetData::default();
-        for elem in this.aref.content.iter_hashed() {
-            if !other_set.contains_hashed(elem.copied()) {
-                data.add_hashed(elem.copied());
-            }
-        }
+    // Java StarlarkSet.update (StarlarkSet.java:451): any number of collections.
+    fn update<'v>( // BLAZE PATCH 0007
+        this: Value<'v>, // BLAZE PATCH 0007
+        #[starlark(args)] others: UnpackTuple<Value<'v>>, // BLAZE PATCH 0007
+        heap: Heap<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
+        SetMut::from_value(this)?; // BLAZE PATCH 0007
+        for other in others.items { // BLAZE PATCH 0007
+            let elems = hashable_collection(other, "update argument", heap)?; // BLAZE PATCH 0007
+            let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
+            for h in elems { // BLAZE PATCH 0007
+                set.aref.add_hashed(h); // BLAZE PATCH 0007
+            } // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
+        Ok(NoneType) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-        for elem in other_set.get() {
-            let hashed = elem.get_hashed()?;
-            if !this.aref.content.contains_hashed(hashed.as_ref()) {
-                data.add_hashed(hashed);
-            }
-        }
-        Ok(data)
-    }
+    // Java StarlarkSet.removeElement (StarlarkSet.java:501).
+    fn remove<'v>( // BLAZE PATCH 0007
+        this: Value<'v>, // BLAZE PATCH 0007
+        #[starlark(require = pos)] element: Value<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
+        let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
+        let hashed = element.get_hashed()?; // BLAZE PATCH 0007
+        if set.aref.remove_hashed(hashed.as_ref()) { // BLAZE PATCH 0007
+            Ok(NoneType) // BLAZE PATCH 0007
+        } else { // BLAZE PATCH 0007
+            mem::drop(set); // BLAZE PATCH 0007
+            Err(value_error!("element {} not found in set", element.to_repr())) // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-    /// Add an item to the set.
-    /// ```
-    /// # starlark::assert::is_true(r#"
-    /// x = set([1, 2, 3])
-    /// x.add(4)
-    /// x == set([1, 2, 3, 4])
-    /// # "#);
-    /// ```
-    fn add<'v>(
-        this: Value<'v>,
-        #[starlark(require = pos)] value: Value<'v>,
-    ) -> starlark::Result<NoneType> {
-        let mut this = SetMut::from_value(this)?;
-        let hashed = value.get_hashed()?;
-        this.aref.add_hashed(hashed);
-        Ok(NoneType)
-    }
+    // Java StarlarkSet.discard (StarlarkSet.java:526).
+    fn discard<'v>( // BLAZE PATCH 0007
+        this: Value<'v>, // BLAZE PATCH 0007
+        #[starlark(require = pos)] element: Value<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
+        let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
+        let hashed = element.get_hashed()?; // BLAZE PATCH 0007
+        set.aref.remove_hashed(hashed.as_ref()); // BLAZE PATCH 0007
+        Ok(NoneType) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-    /// Update the set by adding items from an iterable.
-    /// ```
-    /// # starlark::assert::is_true(r#"
-    /// x = set([1, 3, 2])
-    /// x.update([4, 3])
-    /// list(x) == [1, 3, 2, 4]
-    /// # "#);
-    /// ```
-    fn update<'v>(
-        this: Value<'v>,
-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
-        heap: Heap<'v>,
-    ) -> starlark::Result<NoneType> {
-        let is_self_ptr = other.get().ptr_eq(this);
-        let mut this = SetMut::from_value(this)?;
-        if is_self_ptr {
-            return Ok(NoneType);
-        }
+    // Java StarlarkSet.pop (StarlarkSet.java:552): the first element in iteration order.
+    fn pop<'v>(this: Value<'v>) -> starlark::Result<Value<'v>> { // BLAZE PATCH 0007
+        let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
+        match set.aref.content.shift_remove_index(0) { // BLAZE PATCH 0007
+            Some(x) => Ok(x), // BLAZE PATCH 0007
+            None => Err(value_error!("set is empty")), // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-        if this.aref.content.is_empty() {
-            this.aref.content = SetFromValue::from_value(other, heap)?.into_set();
-        } else {
-            for elem in other.get().iterate(heap)? {
-                let hashed = elem.get_hashed()?;
-                this.aref.add_hashed(hashed);
-            }
-        }
+    // Java StarlarkSet.difference (StarlarkSet.java:673).
+    fn difference<'v>( // BLAZE PATCH 0007
+        this: SetRef<'v>, // BLAZE PATCH 0007
+        #[starlark(args)] others: UnpackTuple<Value<'v>>, // BLAZE PATCH 0007
+        heap: Heap<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<SetData<'v>> { // BLAZE PATCH 0007
+        let mut data = this.aref.content.clone(); // BLAZE PATCH 0007
+        for other in others.items { // BLAZE PATCH 0007
+            for h in hashable_collection(other, "difference argument", heap)? { // BLAZE PATCH 0007
+                data.shift_remove_hashed(h.as_ref()); // BLAZE PATCH 0007
+            } // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
+        Ok(SetData { content: data }) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-        Ok(NoneType)
-    }
+    // Java StarlarkSet.differenceUpdate (StarlarkSet.java:702; its error names
+    // "intersection_update argument").
+    fn difference_update<'v>( // BLAZE PATCH 0007
+        this: Value<'v>, // BLAZE PATCH 0007
+        #[starlark(args)] others: UnpackTuple<Value<'v>>, // BLAZE PATCH 0007
+        heap: Heap<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<NoneType> { // BLAZE PATCH 0007
+        SetMut::from_value(this)?; // BLAZE PATCH 0007
+        for other in others.items { // BLAZE PATCH 0007
+            let elems = hashable_collection(other, "intersection_update argument", heap)?; // BLAZE PATCH 0007
+            let mut set = SetMut::from_value(this)?; // BLAZE PATCH 0007
+            for h in elems { // BLAZE PATCH 0007
+                set.aref.content.shift_remove_hashed(h.as_ref()); // BLAZE PATCH 0007
+            } // BLAZE PATCH 0007
+        } // BLAZE PATCH 0007
+        Ok(NoneType) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-    /// Remove the item from the set. It raises an error if there is no such item.
-    ///
-    /// `remove` fails if the key is unhashable or if the dictionary is
-    /// frozen.
-    /// Time complexity of this operation is *O(N)* where *N* is the number of entries in the set.
-    ///
-    /// ```
-    /// # starlark::assert::is_true(r#"
-    /// x = set([1, 2, 3])
-    /// x.remove(2)
-    /// x == set([1, 3])
-    /// # "#)
-    /// ```
-    /// A subsequent call to `x.remove(2)` would yield an error because the
-    /// element won't be found.
-    /// ```
-    /// # starlark::assert::fail(r#"
-    /// x = set([1, 2, 3])
-    /// x.remove(2)
-    /// x.remove(2) # error: not found
-    /// # "#, "not found");
-    /// ```
-    fn remove<'v>(
-        this: Value<'v>,
-        #[starlark(require = pos)] value: Value<'v>,
-    ) -> starlark::Result<NoneType> {
-        let mut set = SetMut::from_value(this)?;
-        let hashed = value.get_hashed()?;
-        if set.aref.remove_hashed(hashed.as_ref()) {
-            Ok(NoneType)
-        } else {
-            mem::drop(set);
-            Err(value_error!("`{value}` not found in `{this}`"))
-        }
-    }
+    // Java StarlarkSet.isSuperset (StarlarkSet.java:409).
+    fn issuperset<'v>( // BLAZE PATCH 0007
+        this: SetRef<'v>, // BLAZE PATCH 0007
+        #[starlark(require = pos)] other: Value<'v>, // BLAZE PATCH 0007
+        heap: Heap<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<bool> { // BLAZE PATCH 0007
+        let other = hashable_collection(other, "issuperset argument", heap)?; // BLAZE PATCH 0007
+        Ok(other.iter().all(|h| this.aref.content.contains_hashed(h.as_ref()))) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-    /// Remove the item from the set. It does nothing if there is no such item.
-    ///
-    /// `discard` fails if the key is unhashable or if the dictionary is
-    /// frozen.
-    /// Time complexity of this operation is *O(N)* where *N* is the number of entries in the set.
-    ///
-    /// ```
-    /// # starlark::assert::is_true(r#"
-    /// x = set([1, 2, 3])
-    /// x.discard(2)
-    /// x == set([1, 3])
-    /// # "#)
-    /// ```
-    /// A subsequent call to `x.discard(2)` would do nothing.
-    /// ```
-    /// # starlark::assert::is_true(r#"
-    /// x = set([1, 2, 3])
-    /// x.discard(2)
-    /// x.discard(2)
-    /// x == set([1, 3])
-    /// # "#);
-    /// ```
-    fn discard<'v>(
-        this: Value<'v>,
-        #[starlark(require = pos)] value: Value<'v>,
-    ) -> starlark::Result<NoneType> {
-        let mut set = SetMut::from_value(this)?;
-        let hashed = value.get_hashed()?;
-        set.aref.remove_hashed(hashed.as_ref());
-        Ok(NoneType)
-    }
+    // Java StarlarkSet.isSubset (StarlarkSet.java:389).
+    fn issubset<'v>( // BLAZE PATCH 0007
+        this: SetRef<'v>, // BLAZE PATCH 0007
+        #[starlark(require = pos)] other: Value<'v>, // BLAZE PATCH 0007
+        heap: Heap<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<bool> { // BLAZE PATCH 0007
+        let other = to_small_set(hashable_collection(other, "issubset argument", heap)?); // BLAZE PATCH 0007
+        Ok(this.aref.content.iter_hashed().all(|h| other.contains_hashed(h))) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 
-    /// Removes and returns the **last** element of a set.
-    ///
-    /// `S.pop()` removes and returns the last element of the set S.
-    ///
-    /// `pop` fails if the set is empty, or if the set is frozen or has active iterators.
-    /// Time complexity of this operation is *O(1)*.
-    ///
-    /// ```
-    /// # starlark::assert::is_true(r#"
-    /// x = set([1, 2, 3])
-    /// # (
-    /// x.pop() == 3
-    /// # and
-    /// x.pop() == 2
-    /// # and
-    /// x == set([1])
-    /// # )"#);
-    /// ```
-    fn pop<'v>(this: Value<'v>) -> starlark::Result<Value<'v>> {
-        let mut set = SetMut::from_value(this)?;
-        match set.aref.content.pop() {
-            Some(x) => Ok(x),
-            None => Err(value_error!("pop from an empty set")),
-        }
-    }
-
-    /// Returns a new set with elements unique the set when compared to the specified iterable.
-    /// ```
-    /// # starlark::assert::is_true(r#"
-    /// x = set([1, 2, 3])
-    /// y = [3, 4, 5]
-    /// x.difference(y) == set([1, 2])
-    /// # "#);
-    /// ```
-    fn difference<'v>(
-        this: SetRef<'v>,
-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
-        heap: Heap<'v>,
-    ) -> starlark::Result<SetData<'v>> {
-        if this.aref.content.is_empty() {
-            other.get().iterate(heap)?;
-            return Ok(SetData::default());
-        }
-
-        let other_set = SetFromValue::from_value(other, heap)?;
-
-        if other_set.is_empty() {
-            return Ok(SetData {
-                content: this.aref.content.clone(),
-            });
-        }
-
-        let mut data = SetData::default();
-        for elem in this.aref.content.iter_hashed() {
-            if !other_set.contains_hashed(elem.copied()) {
-                data.add_hashed(elem.copied());
-            }
-        }
-        Ok(data)
-    }
-
-    /// Test whether every element other iterable is in the set.
-    /// ```
-    /// # starlark::assert::is_true(r#"
-    /// x = set([1, 2, 3])
-    /// y = [1, 3]
-    /// x.issuperset(y) == True
-    /// # "#);
-    /// ```
-    fn issuperset<'v>(
-        this: SetRef<'v>,
-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
-        heap: Heap<'v>,
-    ) -> starlark::Result<bool> {
-        let other_var;
-        let other = match SetRef::unpack_value_opt(other.get()) {
-            Some(other) => {
-                if this.aref.content.len() < other.aref.content.len() {
-                    return Ok(false);
-                }
-                other_var = other;
-                Either::Left(other_var.aref.content.iter_hashed().map(|v| Ok(v.copied())))
-            }
-            _ => Either::Right(other.get().iterate(heap)?.map(|v| v.get_hashed())),
-        };
-
-        for elem in other {
-            if !this.aref.contains_hashed(elem?) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    /// Test whether every element in the set is in other iterable.
-    /// ```
-    /// # starlark::assert::is_true(r#"
-    /// x = set([1, 2, 3])
-    /// y = [3, 1, 2]
-    /// x.issubset(y)
-    /// # "#);
-    /// ```
-    fn issubset<'v>(
-        this: SetRef<'v>,
-        #[starlark(require=pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
-        heap: Heap<'v>,
-    ) -> starlark::Result<bool> {
-        if this.aref.content.is_empty() {
-            other.get().iterate(heap)?;
-            return Ok(true);
-        }
-        let rhs = SetFromValue::from_value(other, heap)?;
-        if this.aref.content.len() > rhs.get().len() {
-            return Ok(false);
-        }
-        for elem in this.aref.content.iter_hashed() {
-            if !rhs.contains_hashed(elem.copied()) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
+    // Java StarlarkSet.isDisjoint (StarlarkSet.java:429).
+    fn isdisjoint<'v>( // BLAZE PATCH 0007
+        this: SetRef<'v>, // BLAZE PATCH 0007
+        #[starlark(require = pos)] other: Value<'v>, // BLAZE PATCH 0007
+        heap: Heap<'v>, // BLAZE PATCH 0007
+    ) -> starlark::Result<bool> { // BLAZE PATCH 0007
+        let other = hashable_collection(other, "isdisjoint argument", heap)?; // BLAZE PATCH 0007
+        Ok(!other.iter().any(|h| this.aref.content.contains_hashed(h.as_ref()))) // BLAZE PATCH 0007
+    } // BLAZE PATCH 0007
 }
 
 #[cfg(test)]

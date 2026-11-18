@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use blaze_actions::actions::action::{Action, InputMetadataProvider as KeyInputMetadataProvider};
 use blaze_actions::actions::artifact::Artifact as BlazeArtifact;
-use blaze_collect::{NestedSet, NestedSetBuilder, NestedSetNode};
+use blaze_collect::{NestedSet, NestedSetBuilder, NestedSetNode, Order};
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail};
 use blaze_vfs::Path;
 
@@ -250,29 +250,35 @@ impl KeyInputMetadataProvider for KeyMetadataAdapter<'_> {
 /// The conversion is memoized for the process: every spawn that holds a node of one
 /// `NestedSet<Artifact>` (for example the depset of headers shared by many compile actions) gets
 /// the same converted node, as every Java spawn holds the same object, so that
-/// `CompactSpawnLogContext` logs a shared set once and refers to it by its entry ID.
+/// `CompactSpawnLogContext` logs a shared set once and refers to it by its entry ID. The memo is
+/// keyed by node and order: sets that share a node but not an order (every empty set, equal
+/// singletons, a set that wraps a single transitive set of another order) are different Java
+/// objects with different orders.
 #[allow(clippy::mutable_key_type)]
 pub fn to_action_input_set(set: &NestedSet<BlazeArtifact>) -> NestedSet<ActionInputRef> {
-    let mut memo = ACTION_INPUT_SETS.lock();
-    convert_set(set, &mut memo)
+    convert_set(set)
 }
 
-/// The converted node of each `NestedSet<Artifact>` node (see [`to_action_input_set`]).
+/// The key of a converted set: Java's `NestedSet` object is its node and its order.
+type ConvertedSetKey = (NestedSetNode<BlazeArtifact>, Order);
+
+/// The converted set of each `NestedSet<Artifact>` (see [`to_action_input_set`]).
 #[allow(clippy::mutable_key_type)]
 static ACTION_INPUT_SETS: std::sync::LazyLock<
-    parking_lot::Mutex<HashMap<NestedSetNode<BlazeArtifact>, NestedSet<ActionInputRef>>>,
+    parking_lot::Mutex<HashMap<ConvertedSetKey, NestedSet<ActionInputRef>>>,
 > = std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
+/// Converts `set`, its sub-sets first. The memo's lock is held only to look up and to publish a
+/// converted set, not across a conversion, so conversions of different actions run in parallel.
+/// When two threads convert the same set at once, the first to publish wins and both return
+/// its result, so every holder still shares one converted node.
 #[allow(clippy::mutable_key_type)]
-fn convert_set(
-    set: &NestedSet<BlazeArtifact>,
-    memo: &mut HashMap<NestedSetNode<BlazeArtifact>, NestedSet<ActionInputRef>>,
-) -> NestedSet<ActionInputRef> {
-    let node = set.to_node();
-    if let Some(s) = memo.get(&node) {
+fn convert_set(set: &NestedSet<BlazeArtifact>) -> NestedSet<ActionInputRef> {
+    let order = set.get_order();
+    let key: ConvertedSetKey = (set.to_node(), order);
+    if let Some(s) = ACTION_INPUT_SETS.lock().get(&key) {
         return s.clone();
     }
-    let order = set.get_order();
     let converted = if set.is_empty() {
         NestedSetBuilder::empty_set(order)
     } else if set.is_singleton() {
@@ -283,7 +289,7 @@ fn convert_set(
         // builder rebuilds from the node's non-leaf and leaf successors.
         let mut b = NestedSetBuilder::new_builder(order);
         for child in set.get_non_leaves() {
-            let c = convert_set(&child, memo);
+            let c = convert_set(&child);
             b.add_transitive(&c);
         }
         for leaf in set.get_leaves() {
@@ -291,6 +297,9 @@ fn convert_set(
         }
         b.build()
     };
-    memo.insert(node, converted.clone());
-    converted
+    ACTION_INPUT_SETS
+        .lock()
+        .entry(key)
+        .or_insert(converted)
+        .clone()
 }

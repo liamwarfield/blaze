@@ -1,0 +1,8 @@
+load(":defs.bzl", "probe")
+
+probe(name = "mentions")
+
+probe(
+    name = "calls",
+    call = True,
+)

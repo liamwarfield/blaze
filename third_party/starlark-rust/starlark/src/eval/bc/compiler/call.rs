@@ -167,14 +167,20 @@ impl IrSpanned<CallCompiled> {
 
     fn write_call_method(
         target: BcSlotOut,
-        span: FrameSpan,
+        call_span: FrameSpan, // BLAZE PATCH 0028
+        getattr_span: FrameSpan, // BLAZE PATCH 0028
         this: &IrSpanned<ExprCompiled>,
         symbol: &Symbol,
         args: &ArgsCompiledValue,
         bc: &mut BcWriter,
     ) {
+        // BLAZE PATCH 0028: the instruction's own span (where errors without a location are
+        // reported) is `object.method`, so a failed method lookup is located at the `.` (Java
+        // Eval.evalCall evaluates the callee with Eval.evalDot); the call frame and errors of
+        // the call itself keep the call's span (`call_method_common`).
+        let span = getattr_span; // BLAZE PATCH 0028
         this.write_bc_cb(bc, |this, bc| {
-            let file_span = bc.alloc_file_span(span);
+            let file_span = bc.alloc_file_span(call_span); // BLAZE PATCH 0028
             let known_method = get_known_method(symbol.as_str());
             if let Some(pos) = args.pos_only() {
                 write_exprs(pos, bc, |pos, bc| {
@@ -256,7 +262,7 @@ impl IrSpanned<CallCompiled> {
                 }
             },
             Some((this, symbol, args)) => {
-                Self::write_call_method(target, span, this, symbol, args, bc)
+                Self::write_call_method(target, span, self.fun.span, this, symbol, args, bc) // BLAZE PATCH 0028
             }
         }
     }

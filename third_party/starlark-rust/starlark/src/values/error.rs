@@ -105,6 +105,7 @@ impl ValueError {
     }
 
     #[cold]
+    #[allow(dead_code)] // BLAZE PATCH 0008
     pub(crate) fn unsupported_type<T>(left: Value, op: &str) -> crate::Result<T> {
         Self::unsupported_owned(left.get_type(), op, None)
     }

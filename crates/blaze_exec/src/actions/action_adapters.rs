@@ -66,6 +66,12 @@ impl Artifact for BlazeArtifact {
     fn get_root_exec_path(&self) -> PathFragment {
         self.get_root().get_exec_path().clone()
     }
+    fn get_runfiles_path(&self) -> PathFragment {
+        BlazeArtifact::get_runfiles_path(self)
+    }
+    fn is_root_external(&self) -> bool {
+        self.get_root().is_external()
+    }
 }
 
 /// `blaze_actions::Artifact` as an [`ActionInputRef`].
@@ -110,6 +116,8 @@ pub fn convert_owner(owner: &blaze_actions::ActionOwner) -> ActionOwner {
         configuration_checksum: Some(owner.get_configuration_checksum().to_string()),
         description: owner.get_description(),
         exec_properties: owner.get_exec_properties().clone(),
+        target_kind: owner.get_target_kind().to_owned(),
+        is_build_configuration_for_tool: owner.is_build_configuration_for_tool(),
     }
 }
 
@@ -134,6 +142,7 @@ pub struct ActionMetadataSnapshot {
     platform: Option<PlatformInfo>,
     pretty_print: String,
     describe: String,
+    may_modify_spawn_outputs_after_execution: bool,
 }
 
 impl ActionMetadataSnapshot {
@@ -146,7 +155,24 @@ impl ActionMetadataSnapshot {
             platform: convert_platform(action),
             pretty_print: action.pretty_print(),
             describe: action.describe(),
+            may_modify_spawn_outputs_after_execution: may_modify_spawn_outputs_after_execution(
+                action,
+            ),
         })
+    }
+}
+
+/// `action.mayModifySpawnOutputsAfterExecution()`: `ActionExecutionMetadata`'s default (false),
+/// overridden by `TestRunnerAction` (true). `JavaCompileAction` and `JavaHeaderCompileAction`
+/// also override it in Java; they are not ported.
+// Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:125 ActionExecutionMetadata.mayModifySpawnOutputsAfterExecution
+fn may_modify_spawn_outputs_after_execution(action: &dyn Action) -> bool {
+    match action
+        .as_any()
+        .downcast_ref::<crate::analysis::test::test_runner_action::TestRunnerAction>()
+    {
+        Some(test_action) => test_action.may_modify_spawn_outputs_after_execution(),
+        None => false,
     }
 }
 
@@ -171,5 +197,8 @@ impl ActionExecutionMetadata for ActionMetadataSnapshot {
     }
     fn describe(&self) -> String {
         self.describe.clone()
+    }
+    fn may_modify_spawn_outputs_after_execution(&self) -> bool {
+        self.may_modify_spawn_outputs_after_execution
     }
 }

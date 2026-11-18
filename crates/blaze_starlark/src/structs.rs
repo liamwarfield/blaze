@@ -80,7 +80,10 @@ pub fn is_immutable(v: Value) -> bool {
         "dict" => return crate::dict::dict_is_immutable(v) == Some(true),
         // Java: StarlarkSet.isImmutable (StarlarkSet.immutableCopyOf / frozen sets).
         "set" => return crate::set::set_is_immutable(v) == Some(true),
-        "function" => return false,
+        // Java: StarlarkFunction.isImmutable is true (StarlarkFunction.java:273); a
+        // BuiltinFunction keeps StarlarkValue's default, false.
+        "function" => return true,
+        "builtin_function_or_method" => return false,
         _ => {}
     }
     if let Some(t) = TupleRef::from_value(v) {

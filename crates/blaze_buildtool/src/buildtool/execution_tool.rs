@@ -21,7 +21,9 @@ use blaze_exec::actions::cache::{
 use blaze_exec::actions::resource_manager::{ResourceManager, configure_resource_manager};
 use blaze_exec::exec::bin_tools::BinTools;
 use blaze_exec::exec::exec_command_environment::ExecCommandEnvironment;
-use blaze_exec::exec::executor_setup::build_spawn_strategy_registry;
+use blaze_exec::exec::executor_setup::{
+    RemoteModuleContributions, build_spawn_strategy_registry_with_remote,
+};
 use blaze_exec::exec::spawn_log_context::SpawnLogContext;
 use blaze_exec::exec::spawn_strategy_registry::AbruptExitException;
 use blaze_exec::runtime::spawn_stats::SpawnStats;
@@ -84,6 +86,10 @@ pub struct ExecutionToolConfig {
     /// The reporter's `OutputFilter` from `--output_filter` / `--auto_output_filter`
     /// (`Reporter.setOutputFilter`); `None` is `OutputFilter.OUTPUT_EVERYTHING`.
     pub output_filter: Option<Arc<dyn OutputFilter>>,
+    /// What the command's `RemoteModule` contributes (strategy "remote", spawn cache, input
+    /// prefetcher, remote output tree, action execution salt); the default is a command without
+    /// any remote option.
+    pub remote: RemoteModuleContributions,
 }
 
 /// `BuildSummaryStatsModule` + the `UiStateTracker` counters, as an event-bus subscriber.
@@ -371,12 +377,28 @@ pub fn prepare_for_execution_with_action_cache(
     sandbox_module.before_command(&env);
     let mut contexts = ActionContexts::default();
     let mut spawn_strategy_registry_error = None;
-    match build_spawn_strategy_registry(&env, &mut sandbox_module) {
+    match build_spawn_strategy_registry_with_remote(&env, &mut sandbox_module, &config.remote) {
         Ok(registry) => contexts.spawn_strategy_registry = Some(Arc::new(registry)),
         Err(e) => spawn_strategy_registry_error = Some(e),
     }
     contexts.spawn_log_context = spawn_log_context.clone();
+    // NoSpawnCacheModule.registerActionContexts, then RemoteModule.registerActionContexts (the
+    // last registered SpawnCache wins) and the contexts of RemoteModule.executorInit.
+    // Java: com/google/devtools/build/lib/runtime/NoSpawnCacheModule.java:26 NoSpawnCacheModule.registerActionContexts
     contexts.spawn_cache = Some(blaze_exec::exec::action_execution_context::no_cache());
+    {
+        let mut spawn_cache = contexts.spawn_cache.take();
+        let mut registered = Vec::new();
+        config
+            .remote
+            .register_action_contexts(&mut spawn_cache, &mut |type_id, ctx| {
+                registered.push((type_id, ctx))
+            });
+        contexts.spawn_cache = spawn_cache;
+        for (type_id, ctx) in registered {
+            contexts.register_raw(type_id, ctx);
+        }
+    }
     register_contexts(&mut contexts, &env);
     let mut executor = SkyframeActionExecutor::new(SkyframeActionExecutorConfig {
         exec_root: config.exec_root.clone(),
@@ -395,8 +417,17 @@ pub fn prepare_for_execution_with_action_cache(
     })
     .with_action_cache(ActionCacheSetup {
         action_cache_checker: action_cache_checker.clone(),
-        // ExecutorBuilder.getActionExecutionSalt(): no module sets a salt.
-        action_execution_salt: String::new(),
+        // ExecutorBuilder.getActionExecutionSalt(): RemoteModule.executorInit sets it.
+        // PORT: Java sets the salt of a command without remote options too
+        // (computeActionExecutionSalt(false, {})); Blaze keeps the empty salt there, which only
+        // changes the bytes of the local action cache (the salt is constant per remote setup
+        // either way, so the invalidation between builds with and without a remote cache is
+        // Java's).
+        action_execution_salt: config
+            .remote
+            .action_execution_salt
+            .clone()
+            .unwrap_or_default(),
         explain: action_cache_options.explain,
         containing_package_root_lookup: action_cache_options.containing_package_root_lookup,
     })

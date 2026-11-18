@@ -25,8 +25,9 @@ use crate::printer::debug_print;
 use crate::semantics::StarlarkSemantics;
 use crate::thread::ThreadContext;
 
-/// Names in Bazel's `Starlark.UNIVERSE` (MethodLibrary + True/False/None). `set` is present iff
-/// `--experimental_enable_starlark_set` (default true).
+/// Names in Bazel's `Starlark.UNIVERSE` (MethodLibrary + True/False/None). Under
+/// `--noexperimental_enable_starlark_set` (default: enabled) `set` is still defined and fails
+/// when called.
 pub const BAZEL_UNIVERSE: &[&str] = &[
     "False",
     "True",
@@ -73,11 +74,41 @@ pub fn universe_builder(semantics: &StarlarkSemantics) -> GlobalsBuilder {
             continue;
         }
         if name == "set" && !semantics.experimental_enable_starlark_set {
+            // Java keeps `set` defined and fails when it is called (below).
             continue;
         }
         builder.set(name, value);
     }
-    builder.with(register_print_fail)
+    let builder = builder.with(register_print_fail);
+    if semantics.experimental_enable_starlark_set {
+        builder
+    } else {
+        builder.with(register_disabled_set)
+    }
+}
+
+/// `set` under `--noexperimental_enable_starlark_set`: the name stays defined (so a file that
+/// mentions `set()` in a function it never calls loads) and a call fails.
+#[starlark_module]
+fn register_disabled_set(builder: &mut GlobalsBuilder) {
+    /// Java: "Ordinarily we would use StarlarkMethod#enableOnlyWithFlag, but this doesn't work
+    /// for top-level symbols, so enforce it here instead."
+    // Java: net/starlark/java/eval/MethodLibrary.java:686 MethodLibrary.set
+    fn set<'v>(
+        #[starlark(require = pos)] elements: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<NoneType> {
+        // Java converts the argument to `StarlarkIterable` before the method runs.
+        // PORT: a non-iterable fails with starlark-rust's text (core-language text,
+        // decisions.md 2026-11-17).
+        if let Some(elements) = elements {
+            elements.iterate(eval.heap())?;
+        }
+        // Java checks the thread's semantics; the Globals are built for the same semantics.
+        Err(starlark::Error::new_other(anyhow::anyhow!(
+            "Use of set() requires --experimental_enable_starlark_set"
+        )))
+    }
 }
 
 /// Marker in a `fail()` error for `stack_trace = False` (Java `EvalException` with

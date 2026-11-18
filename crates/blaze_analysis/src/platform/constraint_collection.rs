@@ -13,6 +13,7 @@ use starlark::environment::{Methods, MethodsBuilder, MethodsStatic};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::starlark_simple_value;
+use starlark::collections::Hashed;
 use starlark::values::ValueLike;
 use starlark::values::list::AllocList;
 use starlark::values::{Heap, NoSerialize, StarlarkValue, Value, starlark_value};
@@ -389,6 +390,46 @@ pub(crate) fn check_experimental_platforms_api(
     Ok(())
 }
 
+/// Whether the running thread's semantics enable `--experimental_platforms_api`. A field or
+/// method with `enableOnlyWithFlag = EXPERIMENTAL_PLATFORMS_API` is not among the annotated
+/// methods of its class otherwise, so `x.f` and `getattr` do not find it and `hasattr` is False
+/// (oracle: scripts/w4/scenarios/platforms-api).
+// Java: net/starlark/java/eval/CallUtils.java:137 CallUtils.getAnnotatedMethods
+// Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr
+pub(crate) fn experimental_platforms_api(eval: &Evaluator<'_, '_, '_>) -> starlark::Result<bool> {
+    Ok(ThreadContext::get(eval)
+        .map_err(starlark::Error::new_other)?
+        .semantics
+        .experimental_platforms_api)
+}
+
+/// `get_attr_fallible` of a value whose fields in `gated` are `enableOnlyWithFlag =
+/// EXPERIMENTAL_PLATFORMS_API`: `Ok(None)` (missing) for those when the flag is off.
+pub(crate) fn gated_get_attr<'v>(
+    value: &impl StarlarkValue<'v>,
+    gated: &[&str],
+    attribute: &str,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<Option<Value<'v>>> {
+    if gated.contains(&attribute) && !experimental_platforms_api(eval)? {
+        return Ok(None);
+    }
+    Ok(value.get_attr(attribute, eval.heap()))
+}
+
+/// `has_attr_fallible` for [`gated_get_attr`].
+pub(crate) fn gated_has_attr<'v>(
+    value: &impl StarlarkValue<'v>,
+    gated: &[&str],
+    attribute: &str,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<bool> {
+    if gated.contains(&attribute) && !experimental_platforms_api(eval)? {
+        return Ok(false);
+    }
+    Ok(value.has_attr(attribute, eval.heap()))
+}
+
 fn this_collection<'v>(this: Value<'v>) -> &'v ConstraintCollection {
     this.downcast_ref::<ConstraintCollection>()
         .expect("ConstraintCollection method on another value")
@@ -447,8 +488,8 @@ impl<'v> StarlarkValue<'v> for ConstraintCollection {
         Some(RES.methods())
     }
 
-    // PORT: `constraint_settings` is `enableOnlyWithFlag = EXPERIMENTAL_PLATFORMS_API`;
-    // starlark-rust attribute lookup has no access to the thread's semantics.
+    // `constraint_settings` is `enableOnlyWithFlag = EXPERIMENTAL_PLATFORMS_API` (see
+    // `get_attr_fallible`).
     // Java: com/google/devtools/build/lib/analysis/platform/ConstraintCollection.java:224 ConstraintCollection.constraintSettings
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
@@ -469,7 +510,26 @@ impl<'v> StarlarkValue<'v> for ConstraintCollection {
         attribute == "constraint_settings"
     }
 
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/platform/ConstraintCollectionApi.java:39 ConstraintCollectionApi.constraintSettings
+    fn get_attr_fallible(
+        &self,
+        attribute: Hashed<&str>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Option<Value<'v>>> {
+        gated_get_attr(self, &["constraint_settings"], attribute.key(), eval)
+    }
+
+    fn has_attr_fallible(
+        &self,
+        attribute: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<bool> {
+        gated_has_attr(self, &["constraint_settings"], attribute, eval)
+    }
+
     // The methods are listed by `get_methods`.
+    // PORT: Java's `dir` leaves out fields disabled by a flag (CallUtils.getAnnotatedMethods);
+    // `dir_attr` has no evaluator, so the gated field is listed whatever the flag.
     fn dir_attr(&self) -> Vec<String> {
         vec!["constraint_settings".to_owned()]
     }

@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/return_expr/return_expr.bzl", line 4, column 2, in <toplevel>
+		f()
+	File "<WS>/return_expr/return_expr.bzl", line 2, column 14, in f
+		return 1 // 0
+Error: integer division by zero

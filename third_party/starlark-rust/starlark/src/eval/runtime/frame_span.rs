@@ -50,6 +50,44 @@ impl FrameSpan {
         }
     }
 
+    /// The `:` between a dict entry's key (`self`) and its value (Java
+    /// `DictExpression.Entry.getColonLocation`); the key's span if it cannot be found.
+    pub(crate) fn dict_colon(&self, value: &FrameSpan) -> FrameSpan { // BLAZE PATCH 0028
+        let file = self.span.file(); // BLAZE PATCH 0028
+        let (from, to) = (self.span.span().end(), value.span.span().begin()); // BLAZE PATCH 0028
+        if value.span.file() != file || to < from { // BLAZE PATCH 0028
+            return *self; // BLAZE PATCH 0028
+        } // BLAZE PATCH 0028
+        let text = file.source_span(crate::codemap::Span::new(from, to)); // BLAZE PATCH 0028
+        let mut in_comment = false; // BLAZE PATCH 0028
+        for (i, c) in text.char_indices() { // BLAZE PATCH 0028
+            match c { // BLAZE PATCH 0028
+                '\n' => in_comment = false, // BLAZE PATCH 0028
+                _ if in_comment => {} // BLAZE PATCH 0028
+                '#' => in_comment = true, // BLAZE PATCH 0028
+                ':' => { // BLAZE PATCH 0028
+                    let at = from + i as u32; // BLAZE PATCH 0028
+                    let colon = crate::codemap::Span::new(at, at + 1); // BLAZE PATCH 0028
+                    return FrameSpan { // BLAZE PATCH 0028
+                        span: FrozenFileSpan::new_unchecked(file, colon), // BLAZE PATCH 0028
+                        inlined_frames: self.inlined_frames, // BLAZE PATCH 0028
+                    }; // BLAZE PATCH 0028
+                } // BLAZE PATCH 0028
+                _ => {} // BLAZE PATCH 0028
+            } // BLAZE PATCH 0028
+        } // BLAZE PATCH 0028
+        *self // BLAZE PATCH 0028
+    } // BLAZE PATCH 0028
+
+    /// An empty span at the start of this one, with the same inlined frames: errors located
+    /// there render at the node's start (Java `Node.getStartLocation`).
+    pub(crate) fn begin_point(&self) -> FrameSpan { // BLAZE PATCH 0028
+        FrameSpan { // BLAZE PATCH 0028
+            span: self.span.begin_point(), // BLAZE PATCH 0028
+            inlined_frames: self.inlined_frames, // BLAZE PATCH 0028
+        } // BLAZE PATCH 0028
+    } // BLAZE PATCH 0028
+
     pub(crate) fn end_span(&self) -> FrameSpan {
         FrameSpan {
             span: self.span.end_span(),

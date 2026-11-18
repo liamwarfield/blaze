@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/unpack_not_iterable/unpack_not_iterable.bzl", line 1, column 6, in <toplevel>
+		a, b = 1
+Error: got 'int' in sequence assignment (want 2-element sequence)

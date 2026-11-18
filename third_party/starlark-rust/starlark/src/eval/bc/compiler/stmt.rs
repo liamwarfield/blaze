@@ -47,12 +47,16 @@ pub(crate) fn write_for(
     body: impl FnOnce(&mut BcWriter),
 ) {
     let definitely_assigned = bc.save_definitely_assigned();
+    // BLAZE PATCH 0028: iteration errors are located at the collection's start (Java
+    // Eval.evalAsIterable); `span` (the statement) stays for the loop variable's assignment.
+    let iter_span = over.span.begin_point(); // BLAZE PATCH 0028
+    let _ = span; // BLAZE PATCH 0028
 
     over.write_bc_cb(bc, |over, bc| {
         if let Some(var) = var.as_local_non_captured() {
             // Typical case: `for x in ...: ...`,
             // compile loop assignment directly to a local variable.
-            bc.write_for(over, var.to_bc_slot().to_out(), span, |bc| {
+            bc.write_for(over, var.to_bc_slot().to_out(), iter_span, |bc| { // BLAZE PATCH 0028
                 bc.mark_definitely_assigned(var);
                 body(bc);
             })
@@ -61,7 +65,7 @@ pub(crate) fn write_for(
             // compile loop assignment to a temporary variable,
             // and reassign it in the loop body.
             bc.alloc_slot(|var_slot, bc| {
-                bc.write_for(over, var_slot.to_out(), span, |bc| {
+                bc.write_for(over, var_slot.to_out(), iter_span, |bc| { // BLAZE PATCH 0028
                     var.write_bc(var_slot.to_in(), bc);
                     var.mark_definitely_assigned_after(bc);
                     body(bc);

@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Real-binary remote matrix: Blaze and the oracle on one corpus project, against a disk cache
+# and Bazel's remote worker, in both interchange directions, with gRPC logs compared.
+#
+# usage: scripts/remote/matrix <project> <blaze-binary> <tag> [port-base]
+#        scripts/remote/matrix help
+#
+# Runs, each step through scripts/remote/oracle-run (fresh output base per step) and
+# scripts/remote/worker (fresh worker per scenario), and appends one line per step to
+# ~/.cache/blaze/work/remote/matrix-<tag>.txt (the `N processes:` line of the build, or the
+# RESULT line of scripts/remote/compare-grpc-log):
+#   disk cache      D1 Blaze cold, writing DIR         D2 oracle reading Blaze's DIR
+#                   D3 oracle cold, writing DIR2       D4 Blaze reading the oracle's DIR2
+#   remote cache    C1 oracle cold (log)  C2 oracle warm after clean (log)
+#                   C3 Blaze warm reading the oracle-populated worker (log; compared with C2)
+#                   C4 Blaze cold on a fresh worker (log; compared with C1)
+#                   C5 oracle reading the Blaze-populated worker
+#   remote exec     E1 oracle, `build` of the project's patterns (log)
+#                   E2 Blaze, same, fresh worker (log; compared with E1)
+#                   (the project's own command is `test` for re2; Bazel's worker drops
+#                   long-running test operations, NOT_FOUND, so execution uses `build`)
+# port-base defaults to 9100 (uses port-base .. port-base+3). Needs
+# target/debug/blaze-remote-grpc-log (scripts/cargo-capped build -p blaze_remote --bins).
+set -uo pipefail
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,22p' "$0"; exit 0; fi
+project="$1"; blaze="$2"; tag="$3"; port="${4:-9100}"
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+W="$HOME/.cache/blaze/work/remote"; out="$W/matrix-$tag.txt"; : > "$out"
+patterns="$(python3 -c "import json,sys; print(' '.join(json.load(open('$here/../../corpus/projects.json'))['projects']['$project']['commands'][0][1:]))")"
+line() { # <step-name> <run-dir>
+  local l; l="$(grep -a -E '^INFO: [0-9]+ processes' "$2/stderr" | tail -1)"
+  echo "$1: ${l:-NO PROCESSES LINE} [exit $(grep -o 'exit code: [0-9]*' "$2/../.exit" 2>/dev/null | tail -1)]" | tee -a "$out"
+}
+run() { # <step-name> <run-name> <args...>
+  local name="$1" rn="$2"; shift 2
+  "$here/oracle-run" "$rn" "$project" "$@" > "$W/$rn.matrix.log" 2>&1
+  mkdir -p "$W/$rn"; tail -1 "$W/$rn.matrix.log" > "$W/$rn/.exit"
+  local last; last="$(ls -d "$W/$rn"/run* | sort -V | tail -1)"
+  line "$name" "$last"
+}
+cmp() { # <name> <ref-log> <cand-log>
+  echo "$1: $("$here/compare-grpc-log" "$2" "$3" --max 3 | tail -2 | tr '\n' ' ')" | tee -a "$out"
+}
+t="mx-$tag"
+rm -rf "$W/$t-dc-blaze" "$W/$t-dc-oracle"
+run D1 "$t-d1" --fresh --binary "$blaze" -- "--disk_cache=$W/$t-dc-blaze"
+run D2 "$t-d2" --fresh -- "--disk_cache=$W/$t-dc-blaze"
+run D3 "$t-d3" --fresh -- "--disk_cache=$W/$t-dc-oracle"
+run D4 "$t-d4" --fresh --binary "$blaze" -- "--disk_cache=$W/$t-dc-oracle"
+"$here/worker" start "$t-a" "$port" >/dev/null
+run C1 "$t-c1" --fresh -- "--remote_cache=grpc://localhost:$port" '--remote_grpc_log={step}/grpc.log'
+run C2 "$t-c1" --clean -- "--remote_cache=grpc://localhost:$port" '--remote_grpc_log={step}/grpc.log'
+run C3 "$t-c3" --fresh --binary "$blaze" -- "--remote_cache=grpc://localhost:$port" '--remote_grpc_log={step}/grpc.log'
+cmp "C3 vs C2 gRPC log" "$W/$t-c1/run2/grpc.log" "$W/$t-c3/run1/grpc.log"
+"$here/worker" stop "$t-a" >/dev/null
+"$here/worker" start "$t-b" "$((port+1))" >/dev/null
+run C4 "$t-c4" --fresh --binary "$blaze" -- "--remote_cache=grpc://localhost:$((port+1))" '--remote_grpc_log={step}/grpc.log'
+cmp "C4 vs C1 gRPC log" "$W/$t-c1/run1/grpc.log" "$W/$t-c4/run1/grpc.log"
+run C5 "$t-c5" --fresh -- "--remote_cache=grpc://localhost:$((port+1))"
+"$here/worker" stop "$t-b" >/dev/null
+"$here/worker" start "$t-c" "$((port+2))" >/dev/null
+run E1 "$t-e1" --fresh --command "build $patterns" -- "--remote_executor=grpc://localhost:$((port+2))" '--remote_grpc_log={step}/grpc.log'
+"$here/worker" stop "$t-c" >/dev/null
+"$here/worker" start "$t-d" "$((port+3))" >/dev/null
+run E2 "$t-e2" --fresh --binary "$blaze" --command "build $patterns" -- "--remote_executor=grpc://localhost:$((port+3))" '--remote_grpc_log={step}/grpc.log'
+cmp "E2 vs E1 gRPC log" "$W/$t-e1/run1/grpc.log" "$W/$t-e2/run1/grpc.log"
+"$here/worker" stop "$t-d" >/dev/null
+echo "matrix $tag done" | tee -a "$out"

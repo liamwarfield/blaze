@@ -49,11 +49,12 @@ use crate::values::types::int::inline_int::InlineInt;
 
 #[derive(Debug, thiserror::Error)]
 enum StarlarkIntError {
-    #[error("Float `{0}` cannot be represented as exact integer")]
+    // Java MethodLibrary.int (MethodLibrary.java:634), with the float's Starlark repr.
+    #[error("can't convert float {} to int", crate::values::float::StarlarkFloat(*.0))] // BLAZE PATCH 0008
     CannotRepresentAsExact(f64),
-    #[error("Floor division by zero: {0} // {1}")]
+    #[error("integer division by zero")] // BLAZE PATCH 0008: Java EvalUtils.binaryOp
     FloorDivisionByZero(StarlarkInt, StarlarkInt),
-    #[error("Modulo by zero: {0} % {1}")]
+    #[error("integer modulo by zero")] // BLAZE PATCH 0008: Java EvalUtils.binaryOp
     ModuloByZero(StarlarkInt, StarlarkInt),
     #[error("Integer overflow computing left shift")]
     LeftShiftOverflow,
@@ -108,7 +109,11 @@ impl FromStr for StarlarkInt {
 
 impl StarlarkInt {
     pub(crate) fn from_str_radix(s: &str, base: u32) -> crate::Result<StarlarkInt> {
-        Ok(StarlarkInt::from(TokenInt::from_str_radix(s, base)?))
+        // BLAZE PATCH 0028: a value error, not the lexer's `Parser` kind (which reads as a syntax
+        // error of the file; Java: `int()` fails as an ordinary EvalException).
+        Ok(StarlarkInt::from(TokenInt::from_str_radix(s, base).map_err(|e| { // BLAZE PATCH 0028
+            crate::Error::new_value(anyhow::anyhow!("{}", e.without_diagnostic())) // BLAZE PATCH 0028
+        })?)) // BLAZE PATCH 0028
     }
 
     pub(crate) fn from_f64_exact(f: f64) -> anyhow::Result<StarlarkInt> {
@@ -165,7 +170,7 @@ impl<'v> StarlarkIntRef<'v> {
         }
     }
 
-    fn to_big(self) -> BigInt {
+    pub(crate) fn to_big(self) -> BigInt { // BLAZE PATCH 0008
         match self {
             StarlarkIntRef::Small(i) => i.to_bigint(),
             StarlarkIntRef::Big(i) => i.get().clone(),

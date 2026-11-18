@@ -17,11 +17,10 @@ use std::sync::{Arc, OnceLock};
 
 use blaze_actions::actions::command_lines::ParamFileActionInput;
 use blaze_events::{Event, ExtendedEventHandler};
-use blaze_exec::actions::action_adapters::as_blaze_artifact;
 use blaze_exec::actions::{
     ActionExecutionMetadata, ActionInput, ActionInputRef, ActionOwner, ExecException,
-    FileArtifactValue, FileContentsProxy, PlatformInfo, Spawn, SpawnResult,
-    Status as SpawnResultStatus, VirtualActionInput, execution_requirements, spawns,
+    FileArtifactValue, PlatformInfo, Spawn, SpawnResult, Status as SpawnResultStatus,
+    VirtualActionInput, execution_requirements, spawns,
 };
 use blaze_exec::exec::SpawnExecutionContext;
 use blaze_exec::exec::action_execution_context::SpawnCacheError;
@@ -903,89 +902,16 @@ fn pretty_print(action_input: &dyn ActionInput) -> String {
 /// `artifact.getRoot().isExternal()` for an input that is an `Artifact`.
 // Java: com/google/devtools/build/lib/actions/ArtifactRoot.java:238 ArtifactRoot.isExternal
 fn artifact_root_is_external(input: &ActionInputRef) -> bool {
-    match as_blaze_artifact(input) {
-        Some(artifact) => artifact.get_root().is_external(),
-        None => blaze_util::unported!(
-            "Artifact.getRoot().isExternal() (missing hook: blaze_exec::actions::Artifact has no root type; only blaze_actions artifacts can be asked)"
-        ),
-    }
+    input
+        .as_artifact()
+        .expect("ClassCastException: not an Artifact")
+        .is_root_external()
 }
 
 /// `metadata.wasModifiedSinceDigest(path)`.
-///
-/// PORT: missing hook `blaze_exec::actions::FileArtifactValue::was_modified_since_digest`. The
-/// method is ported here, over the variants of blaze_exec's value, because the default
-/// `--guard_against_concurrent_changes=lite` calls it for every upload; it belongs in blaze_exec.
 // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:228 FileArtifactValue.wasModifiedSinceDigest
 fn was_modified_since_digest(metadata: &FileArtifactValue, path: &Path) -> io::Result<bool> {
-    match metadata {
-        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:631 RegularFileArtifactValue.wasModifiedSinceDigest
-        FileArtifactValue::RegularFile { digest, proxy, .. } => {
-            let Some(proxy) = proxy else {
-                return Ok(false);
-            };
-            let stat = path.stat_if_found(Symlinks::Follow)?;
-            let Some(stat) = stat.filter(|stat| stat.is_file()) else {
-                // The file no longer exists or changed type, so it certainly has changed.
-                return Ok(true);
-            };
-            let new_proxy = FileContentsProxy::create(&stat);
-            if *proxy == new_proxy {
-                // If the proxy is the same, then the file certainly hasn't been modified. This is
-                // the common case, so we check it first.
-                return Ok(false);
-            }
-            if proxy.is_modified(&new_proxy) {
-                // If the non-ctime information in the proxy changed, the file has certainly been
-                // modified between the time the digest was computed and now.
-                return Ok(true);
-            }
-            // At this point the ctime changed, so some of the file's metadata has changed since
-            // we computed the digest. Returning true here would allow us to cautiously report
-            // modification even in complex ABA scenarios (file modified, then modified back with
-            // its mtime reset). However, we would also report modification in case a hardlink to
-            // the file was created or removed, such as by the hermetic Linux sandbox or certain
-            // optimized copy actions.
-            // As a compromise, we check whether the current state of the file differs from the
-            // previous one, ignoring any inbetween modifications that may have happened.
-            //
-            // Note that this path is always taken when using the hermetic Linux sandbox, but the
-            // associated cost should amortize over the next build as the digest will be cached
-            // under the new stat.
-            //
-            // Java: DigestUtils.getDigestWithManualFallback(path, SyscallCache.NO_CACHE, stat)
-            let new_digest = path.get_digest()?;
-            Ok(digest.as_deref() != Some(&new_digest[..]))
-        }
-        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:513 DirectoryArtifactValue.wasModifiedSinceDigest
-        FileArtifactValue::Directory { .. } => Ok(false),
-        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:567 HashedDirectoryArtifactValue.wasModifiedSinceDigest
-        //
-        // TODO(ulfjack): Ideally, we'd attempt to detect intra-build modifications here. I'm
-        // consciously deferring work here as this code will most likely change again, and we're
-        // already doing better than before by detecting inter-build modifications.
-        FileArtifactValue::HashedDirectory { .. } => Ok(false),
-        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1213 UnresolvedSymlinkArtifactValue.wasModifiedSinceDigest
-        FileArtifactValue::UnresolvedSymlink { .. } => blaze_util::unported!(
-            "FileArtifactValue.UnresolvedSymlinkArtifactValue.wasModifiedSinceDigest (missing hook: blaze_exec::actions::FileArtifactValue::create_for_unresolved_symlink)"
-        ),
-        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:801 RemoteFileArtifactValue.wasModifiedSinceDigest
-        FileArtifactValue::RemoteFile { .. } => Ok(false),
-        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1017 ResolvedSymlinkArtifactValue.wasModifiedSinceDigest
-        FileArtifactValue::ResolvedSymlink { delegate, .. } => {
-            was_modified_since_digest(delegate, path)
-        }
-        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:706 RunfilesProxyArtifactValue.wasModifiedSinceDigest
-        FileArtifactValue::RunfilesProxy { .. } => Ok(false),
-        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1461 ConstantMetadataValue.wasModifiedSinceDigest
-        FileArtifactValue::ConstantMetadata => panic!(
-            "UnsupportedOperationException: ConstantMetadataValue doesn't support wasModifiedSinceDigest {path}"
-        ),
-        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1377 ProxyFileArtifactValue.wasModifiedSinceDigest
-        FileArtifactValue::Proxy { delegate, .. } => was_modified_since_digest(delegate, path),
-        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1415 SingletonMarkerValue.wasModifiedSinceDigest
-        FileArtifactValue::RunfilesTreeMarker | FileArtifactValue::MissingFileMarker => Ok(false),
-    }
+    metadata.was_modified_since_digest(path)
 }
 
 impl RemoteExecutionService {
@@ -1781,9 +1707,10 @@ impl RemoteExecutionService {
         // not ported).
         let force = false;
         if self.remote_options.remote_cache_async
-            && !self
-                .hooks
-                .may_modify_spawn_outputs_after_execution(action.get_spawn().get_resource_owner())
+            && !action
+                .get_spawn()
+                .get_resource_owner()
+                .may_modify_spawn_outputs_after_execution()
         {
             OutputUploadTask::new(self, action, spawn_result, force, on_upload_complete).start();
             Ok(())

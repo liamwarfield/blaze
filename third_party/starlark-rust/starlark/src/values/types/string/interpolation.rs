@@ -21,18 +21,24 @@
 use std::fmt::Write;
 
 use dupe::Dupe;
+use num_traits::FromPrimitive; // BLAZE PATCH 0008
 use num_traits::Signed;
+use num_traits::ToPrimitive; // BLAZE PATCH 0008
 use thiserror::Error;
 
 use crate::values::Heap;
 use crate::values::StringValue;
+#[allow(unused_imports)] // BLAZE PATCH 0008
 use crate::values::UnpackValue;
 use crate::values::Value;
+#[allow(unused_imports)] // BLAZE PATCH 0008
 use crate::values::ValueError;
 use crate::values::ValueLike;
+#[allow(unused_imports)] // BLAZE PATCH 0008
 use crate::values::float::StarlarkFloat;
 use crate::values::float::float;
 use crate::values::string::dot_format::format_one;
+#[allow(unused_imports)] // BLAZE PATCH 0008
 use crate::values::types::int::int_or_big::StarlarkIntRef;
 use crate::values::types::num::value::NumRef;
 use crate::values::types::tuple::value::Tuple;
@@ -40,7 +46,9 @@ use crate::values::types::tuple::value::Tuple;
 // `i32::abs(i32::MIN)` panics as `i32::MIN` has no corresponding
 // positive value that fits inside `i32`. For this edge case,
 // let's just hardcode the results.
+#[allow(dead_code)] // BLAZE PATCH 0008
 const I32_MIN_OCTAL: &str = "-20000000000";
+#[allow(dead_code)] // BLAZE PATCH 0008
 const I32_MIN_HEX: &str = "-80000000";
 
 /// Operator `%` format or evaluation errors
@@ -190,6 +198,64 @@ impl<'a> Iterator for PercentFormatParser<'a> {
     }
 }
 
+
+// BLAZE PATCH 0008: Java Printer.formatWithList's numeric conversions.
+fn want_int_or_float(value: Value, conv: char) -> crate::Error { // BLAZE PATCH 0008
+    crate::Error::new_other(anyhow::anyhow!( // BLAZE PATCH 0008
+        "got {} for '%{}' format, want int or float", // BLAZE PATCH 0008
+        value.get_type(), // BLAZE PATCH 0008
+        conv // BLAZE PATCH 0008
+    )) // BLAZE PATCH 0008
+} // BLAZE PATCH 0008
+
+/// `%d`, `%o`, `%x`, `%X`: Java formats an int32 or int64 with java.util.Formatter, so negative
+/// values print in two's complement for `%o`/`%x`/`%X`; larger ints print sign and magnitude.
+fn java_int_conv(res: &mut String, value: Value, conv: char) -> crate::Result<()> { // BLAZE PATCH 0008
+    let i: num_bigint::BigInt = match value.unpack_num() { // BLAZE PATCH 0008
+        Some(NumRef::Int(i)) => i.to_big(), // BLAZE PATCH 0008
+        Some(NumRef::Float(f)) => { // BLAZE PATCH 0008
+            if !f.0.is_finite() { // BLAZE PATCH 0008
+                return Err(crate::Error::new_other(anyhow::anyhow!( // BLAZE PATCH 0008
+                    "got {}, want a finite number", // BLAZE PATCH 0008
+                    value.to_repr() // BLAZE PATCH 0008
+                ))); // BLAZE PATCH 0008
+            } // BLAZE PATCH 0008
+            num_bigint::BigInt::from_f64(f.0.trunc()).unwrap() // BLAZE PATCH 0008
+        } // BLAZE PATCH 0008
+        None => return Err(want_int_or_float(value, conv)), // BLAZE PATCH 0008
+    }; // BLAZE PATCH 0008
+    let radix = |u: &dyn Fn() -> String, x: &dyn Fn() -> String, ux: &dyn Fn() -> String| match conv { // BLAZE PATCH 0008
+        'o' => u(), // BLAZE PATCH 0008
+        'x' => x(), // BLAZE PATCH 0008
+        _ => ux(), // BLAZE PATCH 0008
+    }; // BLAZE PATCH 0008
+    if conv == 'd' { // BLAZE PATCH 0008
+        write!(res, "{i}").unwrap(); // BLAZE PATCH 0008
+    } else if let Some(v) = i.to_i32() { // BLAZE PATCH 0008
+        let v = v as u32; // BLAZE PATCH 0008
+        res.push_str(&radix(&|| format!("{v:o}"), &|| format!("{v:x}"), &|| format!("{v:X}"))); // BLAZE PATCH 0008
+    } else if let Some(v) = i.to_i64() { // BLAZE PATCH 0008
+        let v = v as u64; // BLAZE PATCH 0008
+        res.push_str(&radix(&|| format!("{v:o}"), &|| format!("{v:x}"), &|| format!("{v:X}"))); // BLAZE PATCH 0008
+    } else { // BLAZE PATCH 0008
+        if i.is_negative() { // BLAZE PATCH 0008
+            res.push('-'); // BLAZE PATCH 0008
+        } // BLAZE PATCH 0008
+        let m = i.magnitude(); // BLAZE PATCH 0008
+        res.push_str(&radix(&|| format!("{m:o}"), &|| format!("{m:x}"), &|| format!("{m:X}"))); // BLAZE PATCH 0008
+    } // BLAZE PATCH 0008
+    Ok(()) // BLAZE PATCH 0008
+} // BLAZE PATCH 0008
+
+/// `%e`, `%f`, `%g` and upper case: a float, or an int converted with
+/// StarlarkInt.toFiniteDouble.
+fn java_float_arg(value: Value, conv: char) -> crate::Result<f64> { // BLAZE PATCH 0008
+    match value.unpack_num() { // BLAZE PATCH 0008
+        Some(n) => Ok(n.as_finite_float()?), // BLAZE PATCH 0008
+        None => Err(want_int_or_float(value, conv)), // BLAZE PATCH 0008
+    } // BLAZE PATCH 0008
+} // BLAZE PATCH 0008
+
 pub(crate) fn percent(format: &str, value: Value) -> crate::Result<String> {
     // NOTE(nga): use could reuse `Evaluator::string_pool` here, but
     //   * we don't have access to `Evaluator` in `StarlarkValue::percent`
@@ -225,125 +291,33 @@ pub(crate) fn percent(format: &str, value: Value) -> crate::Result<String> {
                 }
             }
             Some(PercentSFormat::Repr) => next_value()?.collect_repr(&mut res),
-            Some(PercentSFormat::Dec) => {
-                let value = next_value()?;
-                match value.unpack_num() {
-                    Some(NumRef::Int(StarlarkIntRef::Small(v))) => {
-                        write!(res, "{}", v.to_i32()).unwrap()
-                    }
-                    Some(NumRef::Int(StarlarkIntRef::Big(v))) => {
-                        write!(res, "{}", v.get()).unwrap()
-                    }
-                    Some(NumRef::Float(v)) => {
-                        match NumRef::Float(StarlarkFloat(v.0.trunc())).as_int() {
-                            Some(v) => write!(res, "{v}").unwrap(),
-                            None => ValueError::unsupported_type(value, "format(%d)")?,
-                        }
-                    }
-                    None => ValueError::unsupported_type(value, "format(%d)")?,
-                }
-            }
-            Some(PercentSFormat::Oct) => {
-                let value = next_value()?;
-                match value.unpack_num() {
-                    Some(NumRef::Int(StarlarkIntRef::Small(v))) => {
-                        let v = v.to_i32();
-                        match v.checked_abs() {
-                            Some(vp) => {
-                                write!(res, "{}{:o}", if v < 0 { "-" } else { "" }, vp).unwrap()
-                            }
-                            None => write!(res, "{I32_MIN_OCTAL}").unwrap(),
-                        }
-                    }
-                    Some(NumRef::Int(StarlarkIntRef::Big(v))) => {
-                        let v = v.get();
-                        write!(
-                            res,
-                            "{}{:o}",
-                            if v.is_negative() { "-" } else { "" },
-                            v.abs()
-                        )
-                        .unwrap()
-                    }
-                    Some(NumRef::Float(_)) | None => {
-                        ValueError::unsupported_type(value, "format(%o)")?
-                    }
-                }
-            }
-            Some(PercentSFormat::Hex) => {
-                let value = next_value()?;
-                match value.unpack_num() {
-                    Some(NumRef::Int(StarlarkIntRef::Small(v))) => {
-                        let v = v.to_i32();
-                        match v.checked_abs() {
-                            Some(vp) => {
-                                write!(res, "{}{:x}", if v < 0 { "-" } else { "" }, vp).unwrap()
-                            }
-                            None => write!(res, "{I32_MIN_HEX}").unwrap(),
-                        }
-                    }
-                    Some(NumRef::Int(StarlarkIntRef::Big(v))) => {
-                        let v = v.get();
-                        write!(
-                            res,
-                            "{}{:x}",
-                            if v.is_negative() { "-" } else { "" },
-                            v.abs()
-                        )
-                        .unwrap()
-                    }
-                    Some(NumRef::Float(_)) | None => {
-                        ValueError::unsupported_type(value, "format(%x)")?
-                    }
-                }
-            }
-            Some(PercentSFormat::HexUpper) => {
-                let value = next_value()?;
-                match value.unpack_num() {
-                    Some(NumRef::Int(StarlarkIntRef::Small(v))) => {
-                        let v = v.to_i32();
-                        match v.checked_abs() {
-                            Some(vp) => {
-                                write!(res, "{}{:X}", if v < 0 { "-" } else { "" }, vp).unwrap()
-                            }
-                            None => write!(res, "{I32_MIN_HEX}").unwrap(),
-                        }
-                    }
-                    Some(NumRef::Int(StarlarkIntRef::Big(v))) => {
-                        let v = v.get();
-                        write!(
-                            res,
-                            "{}{:X}",
-                            if v.is_negative() { "-" } else { "" },
-                            v.abs()
-                        )
-                        .unwrap()
-                    }
-                    Some(NumRef::Float(_)) | None => {
-                        ValueError::unsupported_type(value, "format(%X)")?
-                    }
-                }
-            }
-            Some(PercentSFormat::Exp) => {
-                let v = NumRef::unpack_param(next_value()?)?.as_float();
-                float::write_scientific(&mut res, v, 'e', false).unwrap()
-            }
-            Some(PercentSFormat::ExpUpper) => {
-                let v = NumRef::unpack_param(next_value()?)?.as_float();
-                float::write_scientific(&mut res, v, 'E', false).unwrap()
-            }
-            Some(PercentSFormat::Float) => {
-                let v = NumRef::unpack_param(next_value()?)?.as_float();
-                float::write_decimal(&mut res, v).unwrap()
-            }
-            Some(PercentSFormat::FloatCompact) => {
-                let v = NumRef::unpack_param(next_value()?)?.as_float();
-                float::write_compact(&mut res, v, 'e').unwrap()
-            }
-            Some(PercentSFormat::FloatCompactUpper) => {
-                let v = NumRef::unpack_param(next_value()?)?.as_float();
-                float::write_compact(&mut res, v, 'E').unwrap()
-            }
+            // Java Printer.formatWithList (Printer.java:353-400): %d %o %x %X take an int or a
+            // finite float (truncated); %e %f %g (and upper case) take a float or an int that
+            // converts to a finite float.
+            Some(PercentSFormat::Dec) => java_int_conv(&mut res, next_value()?, 'd')?, // BLAZE PATCH 0008
+            Some(PercentSFormat::Oct) => java_int_conv(&mut res, next_value()?, 'o')?, // BLAZE PATCH 0008
+            Some(PercentSFormat::Hex) => java_int_conv(&mut res, next_value()?, 'x')?, // BLAZE PATCH 0008
+            Some(PercentSFormat::HexUpper) => java_int_conv(&mut res, next_value()?, 'X')?, // BLAZE PATCH 0008
+            Some(PercentSFormat::Exp) => { // BLAZE PATCH 0008
+                let v = java_float_arg(next_value()?, 'e')?; // BLAZE PATCH 0008
+                float::write_scientific(&mut res, v, 'e', false).unwrap() // BLAZE PATCH 0008
+            } // BLAZE PATCH 0008
+            Some(PercentSFormat::ExpUpper) => { // BLAZE PATCH 0008
+                let v = java_float_arg(next_value()?, 'E')?; // BLAZE PATCH 0008
+                float::write_scientific(&mut res, v, 'E', false).unwrap() // BLAZE PATCH 0008
+            } // BLAZE PATCH 0008
+            Some(PercentSFormat::Float) => { // BLAZE PATCH 0008
+                let v = java_float_arg(next_value()?, 'f')?; // BLAZE PATCH 0008
+                float::write_decimal(&mut res, v).unwrap() // BLAZE PATCH 0008
+            } // BLAZE PATCH 0008
+            Some(PercentSFormat::FloatCompact) => { // BLAZE PATCH 0008
+                let v = java_float_arg(next_value()?, 'g')?; // BLAZE PATCH 0008
+                float::write_compact(&mut res, v, 'e').unwrap() // BLAZE PATCH 0008
+            } // BLAZE PATCH 0008
+            Some(PercentSFormat::FloatCompactUpper) => { // BLAZE PATCH 0008
+                let v = java_float_arg(next_value()?, 'G')?; // BLAZE PATCH 0008
+                float::write_compact(&mut res, v, 'E').unwrap() // BLAZE PATCH 0008
+            } // BLAZE PATCH 0008
         }
     }
     if values.next().is_some() {

@@ -30,6 +30,7 @@ blaze_skyframe = { path = "../blaze_skyframe" }
 blaze_buildtool = { path = "../blaze_buildtool" }
 blaze_sky_exec = { path = "../blaze_sky_exec" }
 blaze_exec = { path = "../blaze_exec" }
+blaze_remote = { path = "../blaze_remote" }
 blaze_actions = { path = "../blaze_actions" }
 blaze_analysis = { path = "../blaze_analysis" }
 blaze_rules = { path = "../blaze_rules" }

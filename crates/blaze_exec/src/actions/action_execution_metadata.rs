@@ -32,6 +32,10 @@ pub struct ActionOwner {
     pub description: Option<String>,
     /// `getExecProperties()`.
     pub exec_properties: IndexMap<String, String>,
+    /// `getTargetKind()` (the rule class name).
+    pub target_kind: String,
+    /// `isBuildConfigurationForTool()`.
+    pub is_build_configuration_for_tool: bool,
 }
 
 impl ActionOwner {
@@ -50,6 +54,16 @@ impl ActionOwner {
     /// `getExecProperties()`.
     pub fn get_exec_properties(&self) -> &IndexMap<String, String> {
         &self.exec_properties
+    }
+    /// Returns the target kind (rule class name) for this `ActionOwner`.
+    // Java: com/google/devtools/build/lib/actions/ActionOwner.java:111 ActionOwner.getTargetKind
+    pub fn get_target_kind(&self) -> &str {
+        &self.target_kind
+    }
+    /// Returns whether the configuration for this `ActionOwner` is a tool configuration.
+    // Java: com/google/devtools/build/lib/actions/ActionOwner.java:169 ActionOwner.isBuildConfigurationForTool
+    pub fn is_build_configuration_for_tool(&self) -> bool {
+        self.is_build_configuration_for_tool
     }
 }
 
@@ -73,6 +87,14 @@ pub trait ActionExecutionMetadata: Send + Sync + fmt::Debug {
         self.get_progress_message()
             .unwrap_or_else(|| format!("Executing {}", self.get_mnemonic()))
     }
+    /// Returns true if the action may modify spawn outputs after the spawn has executed.
+    ///
+    /// If this returns true, any kind of spawn output caching or reuse needs to happen
+    /// synchronously directly after the spawn execution.
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:125 ActionExecutionMetadata.mayModifySpawnOutputsAfterExecution
+    fn may_modify_spawn_outputs_after_execution(&self) -> bool {
+        false
+    }
 }
 
 /// A fixed `ActionExecutionMetadata` (Java tests use `FakeOwner`; the replay harness uses it to
@@ -85,6 +107,9 @@ pub struct FakeOwner {
     pub owner: ActionOwner,
     pub primary_output: ActionInputRef,
     pub platform: Option<PlatformInfo>,
+    /// `mayModifySpawnOutputsAfterExecution()` (false, as `FakeOwner` does not override it;
+    /// harnesses standing in for a `TestRunnerAction` set it).
+    pub may_modify_spawn_outputs_after_execution: bool,
 }
 
 impl FakeOwner {
@@ -98,11 +123,13 @@ impl FakeOwner {
                 label: owner_label,
                 configuration_checksum: None,
                 exec_properties: IndexMap::new(),
+                ..ActionOwner::default()
             },
             primary_output: ActionInputRef::new(super::action_input::BasicActionInput::from_path(
                 "/dummy/output",
             )),
             platform: None,
+            may_modify_spawn_outputs_after_execution: false,
         }
     }
 }
@@ -125,5 +152,8 @@ impl ActionExecutionMetadata for FakeOwner {
     }
     fn pretty_print(&self) -> String {
         format!("action '{}'", self.describe())
+    }
+    fn may_modify_spawn_outputs_after_execution(&self) -> bool {
+        self.may_modify_spawn_outputs_after_execution
     }
 }

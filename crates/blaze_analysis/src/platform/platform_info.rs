@@ -14,6 +14,8 @@ use blaze_util::Fingerprint;
 use indexmap::IndexMap;
 use starlark::any::ProvidesStaticType;
 use starlark::starlark_simple_value;
+use starlark::collections::Hashed;
+use starlark::eval::Evaluator;
 use starlark::values::ValueLike;
 use starlark::values::{Demand, Heap, NoSerialize, StarlarkValue, Value, starlark_value};
 use starlark_map::StarlarkHasher;
@@ -21,6 +23,7 @@ use starlark_map::StarlarkHasher;
 use crate::config::config_matching_provider::ConfigMatchingProvider;
 use crate::info::InfoProviderKey;
 use crate::platform::constraint_collection::{
+    gated_get_attr, gated_has_attr,
     ConstraintCollection, ConstraintCollectionBuilder, DuplicateConstraintException,
 };
 use crate::platform::constraint_value_info::ConstraintValueInfo;
@@ -490,9 +493,10 @@ pub enum PlatformInfoBuildError {
 }
 
 // Java: com/google/devtools/build/lib/starlarkbuildapi/platform/PlatformInfoApi.java:37 PlatformInfoApi
-// PORT: both fields are `enableOnlyWithFlag = EXPERIMENTAL_PLATFORMS_API`; starlark-rust
-// attribute lookup has no access to the thread's semantics, so they are always readable here.
 const FIELDS: [&str; 2] = ["constraints", "label"];
+/// The fields with `enableOnlyWithFlag = EXPERIMENTAL_PLATFORMS_API` (PlatformInfoApi.java:42,
+/// :51): absent when the flag is off.
+const GATED: [&str; 2] = ["constraints", "label"];
 
 #[starlark_value(type = "PlatformInfo")]
 impl<'v> StarlarkValue<'v> for PlatformInfo {
@@ -510,6 +514,25 @@ impl<'v> StarlarkValue<'v> for PlatformInfo {
     fn has_attr(&self, attribute: &str, _heap: Heap<'v>) -> bool {
         FIELDS.contains(&attribute)
     }
+
+    fn get_attr_fallible(
+        &self,
+        attribute: Hashed<&str>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Option<Value<'v>>> {
+        gated_get_attr(self, &GATED, attribute.key(), eval)
+    }
+
+    fn has_attr_fallible(
+        &self,
+        attribute: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<bool> {
+        gated_has_attr(self, &GATED, attribute, eval)
+    }
+
+    // PORT: Java's `dir` leaves out the GATED fields when the flag is off
+    // (CallUtils.getAnnotatedMethods); `dir_attr` has no evaluator, so they are listed.
 
     fn dir_attr(&self) -> Vec<String> {
         FIELDS.iter().map(|s| (*s).to_owned()).collect()

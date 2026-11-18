@@ -1,6 +1,8 @@
 //! StarlarkSemantics (port in spirit of src/test/java/com/google/devtools/build/lib/packages/
 //! semantics/ConsistencyTest.java: defaults match the Java option defaults; flags round-trip).
 
+mod common;
+
 use std::collections::BTreeMap;
 
 use blaze_starlark::StarlarkSemantics;
@@ -85,5 +87,46 @@ fn bad_flags() {
         !StarlarkSemantics::from_flags(&flags)
             .unwrap()
             .check_bzl_visibility
+    );
+}
+
+/// Analysis review R3-1. Under `--noexperimental_enable_starlark_set` the name `set` stays
+/// defined (a function that mentions it loads) and a call fails with Java's message
+/// (MethodLibrary.java:691; oracle: scripts/w4/scenarios/starlark-set-flag steps 1 and 3:
+/// "Error in set: Use of set() requires --experimental_enable_starlark_set").
+#[test]
+fn disabled_set_is_defined_and_fails_when_called() {
+    let mut flags = BTreeMap::new();
+    flags.insert(
+        "experimental_enable_starlark_set".to_owned(),
+        "false".to_owned(),
+    );
+    let semantics = StarlarkSemantics::from_flags(&flags).unwrap();
+    let (r, _) = common::exec_with(
+        "def never_called():\n    return set([1])\n",
+        semantics.clone(),
+        Default::default(),
+    );
+    r.unwrap();
+    let (r, _) = common::exec_with(
+        "def f():\n    return str(set([1, 2]))\n\nf()\n",
+        semantics,
+        Default::default(),
+    );
+    let e = r.unwrap_err();
+    let s = e.message_with_stack();
+    assert_eq!(
+        s.rsplit_once('\n').unwrap().1,
+        "Error in set: Use of set() requires --experimental_enable_starlark_set"
+    );
+    // Enabled (the default): set() works (oracle step 5: `set([1, 2])`).
+    let (r, _) = common::exec_with(
+        "s = str(set([1, 2]))\n",
+        StarlarkSemantics::default(),
+        Default::default(),
+    );
+    assert_eq!(
+        r.unwrap().get("s").unwrap().value().unpack_str(),
+        Some("set([1, 2])")
     );
 }

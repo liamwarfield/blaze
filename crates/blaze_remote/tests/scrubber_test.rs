@@ -1,13 +1,7 @@
-#![cfg(feature = "wip")]
 // Options and protos are filled in field by field, as the Java tests set them.
 #![allow(clippy::field_reassign_with_default)]
 //! Port of `src/test/java/com/google/devtools/build/lib/remote/ScrubberTest.java`.
 //!
-//! PORT: `SpawnScrubber.matches` reads `ActionOwner.getTargetKind()` and
-//! `ActionOwner.isBuildConfigurationForTool()`, which `blaze_exec::actions::ActionOwner` does not
-//! carry (`Scrubber` fails with `unported!` there). Every test that matches a spawn against a
-//! rule is therefore ignored; its body is the Java test. Once the two hooks exist, set them in
-//! [`create_spawn_with_kind`] and remove the `#[ignore]`s.
 
 use std::sync::Arc;
 
@@ -110,18 +104,18 @@ fn create_spawn_with_label(label: &str, mnemonic: &str) -> SimpleSpawn {
 fn create_spawn_with_kind(
     label: &str,
     mnemonic: &str,
-    _rule_kind: &str,
-    _for_tool: bool,
+    rule_kind: &str,
+    for_tool: bool,
 ) -> SimpleSpawn {
     // Java: new SpawnBuilder("cmd").withOwnerLabel(label).withMnemonic(mnemonic)
     //     .withOwnerRuleKind(ruleKind).setBuiltForToolConfiguration(forTool).build()
-    // PORT: `blaze_exec::actions::ActionOwner` has no field for the rule kind or for the tool
-    // configuration bit, so `rule_kind` and `for_tool` cannot be set (see the module comment).
-    let owner = FakeOwner::new(
+    let mut owner = FakeOwner::new(
         mnemonic,
         Some("progress message"),
         Some(Label::parse_canonical_unchecked(label)),
     );
+    owner.owner.target_kind = rule_kind.to_owned();
+    owner.owner.is_build_configuration_for_tool = for_tool;
     SimpleSpawn::new_simple(
         Arc::new(owner),
         vec!["cmd".to_string()],
@@ -145,7 +139,6 @@ fn no_scrubbing() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn match_exact_mnemonic() {
     let scrubber = new_scrubber(config_with_matcher(mnemonic_matcher("Foo")));
 
@@ -162,7 +155,6 @@ fn match_exact_mnemonic() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn match_union_mnemonic() {
     let scrubber = new_scrubber(config_with_matcher(mnemonic_matcher("Foo|Bar")));
 
@@ -184,7 +176,6 @@ fn match_union_mnemonic() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn match_wildcard_mnemonic() {
     let scrubber = new_scrubber(config_with_matcher(mnemonic_matcher("Foo.*")));
 
@@ -206,7 +197,6 @@ fn match_wildcard_mnemonic() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn match_exact_label() {
     let scrubber = new_scrubber(config_with_matcher(label_matcher("//foo:bar")));
 
@@ -223,7 +213,6 @@ fn match_exact_label() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn match_union_label() {
     let scrubber = new_scrubber(config_with_matcher(label_matcher("//foo:bar|//spam:eggs")));
 
@@ -245,7 +234,6 @@ fn match_union_label() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn match_wildcard_label() {
     let scrubber = new_scrubber(config_with_matcher(label_matcher("//foo:.*")));
 
@@ -267,7 +255,6 @@ fn match_wildcard_label() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn match_exact_kind() {
     let scrubber = new_scrubber(config_with_matcher(kind_matcher("java_library")));
 
@@ -294,7 +281,6 @@ fn match_exact_kind() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn match_union_kind() {
     let scrubber = new_scrubber(config_with_matcher(kind_matcher("java_library|java_test")));
 
@@ -331,7 +317,6 @@ fn match_union_kind() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn match_wildcard_kind() {
     let scrubber = new_scrubber(config_with_matcher(kind_matcher("java_.*")));
 
@@ -368,7 +353,6 @@ fn match_wildcard_kind() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn reject_tool_action() {
     let scrubber = new_scrubber(config_with_matcher(config::Matcher {
         label: "//foo:bar".to_string(),
@@ -394,7 +378,6 @@ fn reject_tool_action() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn accept_tool_action() {
     let scrubber = new_scrubber(config_with_matcher(config::Matcher {
         label: "//foo:bar".to_string(),
@@ -421,7 +404,6 @@ fn accept_tool_action() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn no_omitted_inputs() {
     let scrubber = new_scrubber(Config {
         rules: vec![config::Rule::default()],
@@ -433,7 +415,6 @@ fn no_omitted_inputs() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn exact_omitted_input() {
     let scrubber = new_scrubber(config_with_transform(omitted_inputs(&["foo/bar"])));
     let spawn = create_spawn();
@@ -445,7 +426,6 @@ fn exact_omitted_input() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn wildcard_omitted_input() {
     let scrubber = new_scrubber(config_with_transform(omitted_inputs(&["foo/bar.*"])));
     let spawn = create_spawn();
@@ -457,7 +437,6 @@ fn wildcard_omitted_input() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn multiple_omitted_inputs() {
     let scrubber = new_scrubber(config_with_transform(omitted_inputs(&[
         "foo/bar",
@@ -475,7 +454,6 @@ fn multiple_omitted_inputs() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn simple_arg_replacement() {
     let scrubber = new_scrubber(config_with_transform(arg_replacements(vec![replacement(
         "foo", "bar",
@@ -490,7 +468,6 @@ fn simple_arg_replacement() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn anchored_arg_replacement() {
     let scrubber = new_scrubber(config_with_transform(arg_replacements(vec![replacement(
         "^foo$", "bar",
@@ -503,7 +480,6 @@ fn anchored_arg_replacement() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn wildcard_arg_replacement() {
     let scrubber = new_scrubber(config_with_transform(arg_replacements(vec![replacement(
         "foo[12]", "bar",
@@ -517,7 +493,6 @@ fn wildcard_arg_replacement() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn multiple_arg_replacements() {
     let scrubber = new_scrubber(config_with_transform(arg_replacements(vec![
         replacement("foo", "bar"),
@@ -536,7 +511,6 @@ fn multiple_arg_replacements() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn without_salt() {
     let scrubber = new_scrubber(Config {
         rules: vec![config::Rule::default()],
@@ -548,7 +522,6 @@ fn without_salt() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn with_salt() {
     let scrubber = new_scrubber(config_with_transform(config::Transform {
         salt: "NaCl".to_string(),
@@ -561,7 +534,6 @@ fn with_salt() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn orthogonal_rules() {
     let scrubber = new_scrubber(Config {
         rules: vec![
@@ -598,7 +570,6 @@ fn orthogonal_rules() {
 }
 
 #[test]
-#[ignore = "needs ActionOwner.getTargetKind and ActionOwner.isBuildConfigurationForTool (missing in blaze_exec::actions::ActionOwner)"]
 fn last_rule_wins() {
     let scrubber = new_scrubber(Config {
         rules: vec![

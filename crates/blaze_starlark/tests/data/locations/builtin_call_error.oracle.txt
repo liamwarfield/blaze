@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/builtin_call_error/builtin_call_error.bzl", line 4, column 2, in <toplevel>
+		f()
+	File "<WS>/builtin_call_error/builtin_call_error.bzl", line 2, column 15, in f
+		return len(1)
+Error in len: in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'

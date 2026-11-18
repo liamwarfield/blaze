@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/method_chain_multiline/method_chain_multiline.bzl", line 3, column 6, in <toplevel>
+		.nosuch())
+Error: 'string' value has no field or method 'nosuch'

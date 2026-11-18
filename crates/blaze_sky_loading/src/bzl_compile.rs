@@ -14,7 +14,7 @@ use blaze_events::{Event, ExtendedEventHandler, Location};
 use blaze_skyframe::{
     ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName, Transience,
 };
-use blaze_starlark::eval::{CompiledFile, TYPE_SYNTAX_NOT_PORTED_PREFIX, compile_with_options};
+use blaze_starlark::eval::{CompiledFile, compile_with_options};
 use blaze_starlark::file_kind::FileOptions;
 use blaze_starlark::{FileKind, StarlarkSemantics, SyntaxError};
 use blaze_util::unported;
@@ -497,18 +497,6 @@ impl BzlCompileFunction {
                     blaze_starlark::error::EvalErrorKind::Syntax(errors) => errors,
                     _ => unreachable!("compile only fails with syntax errors"),
                 };
-                // Type syntax Bazel accepts and the vendored parser does not have yet
-                // (starlark-rust patch 0020) fails loudly, not as a user syntax error.
-                for err in errors {
-                    if let Some(i) = err.message.find(TYPE_SYNTAX_NOT_PORTED_PREFIX) {
-                        unported!(
-                            "Parser (Bazel type syntax)",
-                            "{} at {}",
-                            &err.message[i + TYPE_SYNTAX_NOT_PORTED_PREFIX.len()..],
-                            err.location
-                        );
-                    }
-                }
                 Self::add_syntax_errors_to_listener(env.listener(), errors, key);
                 let label = key.label.as_ref().expect("the empty prelude compiles");
                 Ok(Ok(Some(BzlCompileValue::no_file(format!(

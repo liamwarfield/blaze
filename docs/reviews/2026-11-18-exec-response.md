@@ -195,3 +195,58 @@ full-transcript format (`scripts/w4/probe record`).
 - `--auto_output_filter=packages|subpackages`: `unported!` (needs the
   `TargetParsingCompleteEvent` labels at target parsing time).
 - Compact execution log bytes: equal entries, different ids/order (spawn completion order).
+
+# Round 3 response
+
+Execution fixer, 2026-11-18. Covers "Round 3" of docs/reviews/2026-11-18-exec.md (STOP, bound to
+2a85ea2). State described: HEAD `b3c53fc` plus the uncommitted working tree (dirty: another worker
+was integrating blaze_remote, and others edited blaze_analysis and the vendored starlark at the
+same time). Binary `target/debug/blaze` built from that tree. Not committed.
+
+## Findings
+
+| id | disposition | where | test / evidence |
+| --- | --- | --- | --- |
+| R1 (S1) running spawns never interrupted | FIXED | blaze_skyframe `evaluator.rs`: Java's `AbstractQueueVisitor.jobs` (`Evaluator::add_job`, counted per thread, registered before the `interrupted`/`aborting` check as `WrappedRunnable.run` does) and `interruptInFlightTasks` (every job thread except the current one gets `ThreadInterrupt::interrupt`). Called when the evaluation stops (fail-fast error committed, child error seen without keep_going, crash: `Run::stop_in_flight_jobs`, once), by `Evaluator::interrupt()`, and by the evaluating thread, which now waits for its root workers on a condvar and polls the `interrupt_flag()` every 20 ms (`IN_FLIGHT_INTERRUPT_POLL`; the flag is the `AtomicBool` blaze_runtime's `interrupt_command_thread` sets). blaze_shell `thread_interrupt`: `ThreadInterrupt::adopt` (a thread stands in for another's interrupt status); blaze_exec `evaluation_stack::on_evaluation_stack`: the 256 MB action thread adopts the evaluator thread's status, so the interrupt reaches `LocalSpawnRunner`/`AbstractSandboxSpawnRunner` waits, which already `destroyAndWait` (SIGTERM to process-wrapper / linux-sandbox, whose own kill delay applies) and clean the sandbox. blaze_exec `ActionExecutionException::is_interrupted` (set by `fromExecException` for `ExecException::Interrupted`) and blaze_sky_exec `SkyframeActionExecutor` (execute, discoverInputs): an interrupted action is rethrown as `InterruptedException`, not reported as `Executing genrule ... failed: interrupted`. | skyframe: `interrupted_function` now uses a thread-interruptible sleep (the Java test's `Thread.sleep`), plus `in_flight_function_is_interrupted_when_another_fails_fast`, `..._not_interrupted_by_an_error_with_keep_going`, `setting_the_interrupt_flag_interrupts_in_flight_functions`, `a_function_waiting_on_an_inline_dependency_is_still_interrupted`; blaze_shell 5 `thread_interrupt` tests; blaze_exec `an_interrupt_of_the_caller_reaches_a_wait_on_the_evaluation_stack`. End to end, new `scripts/w4/interrupt-probe` (oracle vs Blaze): `sigint`, `sigterm`, `sigint-twice`: exit 8 within 5 s, no `sleep` left, same lines as the oracle except the known global ones (`INFO: Found 1 target...` position under Skymeld, `Critical Path`); `fail-fast` (`//:bad` fails while `//:slow` sleeps 30 s): both stop in 5-25 s from a cold start, same lines; `fail-fast-keep`: both wait for `//:slow` (>= 25 s). |
+| R2 (S1) no SIGINT handler without --batch | FIXED | blaze_client `signal_handler.rs`: port of `SignalHandler::Install` / `handler` / `PropagateSignalOrExit` (blaze_util_posix.cc:144-229) and the `BlazeServer` cancel thread (blaze.cc:1842; `CancelThreadAction`), installed in `run_client_server_mode` before `Communicate` as blaze.cc:1254 does. SIGINT 1 and 2 and SIGTERM print Bazel's lines and cancel; SIGINT 3 prints the "third interrupt signal; server killed" line and `_exit(1)`s (the server is this process); SIGPIPE is recorded and re-raised at exit; SIGQUIT prints its line (no JVM to dump; not re-sent to ourselves). `InProcessServer::canceller` (crates/blaze/src/main.rs: `interrupt_command_thread`, i.e. `CommandManager.doCancel`). blaze_runtime `server_main_single_command` and blaze_shell `set_start_children_in_new_session`: the in-process server's children start with `setsid`, as the daemonized server's do (daemonize.cc:270), so a terminal Ctrl-C reaches only the client. `--batch` is unchanged (`captureSigint`; children share the terminal, as with Bazel's exec'd JVM). | blaze_client `signal_handler_test` (SIGINT and SIGTERM cancel; a panicking command does not hang the cancel thread); blaze_shell `children_start_in_a_new_session_only_when_asked`. interrupt-probe `sigint` (SIGINT to the client's process group, like a terminal): oracle and Blaze both print `Bazel caught interrupt signal; cancelling pending invocation.` and `ERROR: build interrupted`, exit 8; `sigint-batch`: both print `Bazel received an interrupt` and, because linux-sandbox shares the terminal's group in batch mode, the same `Executing genrule //:slow failed: (Interrupt): ...` line, exit 8. Third Ctrl-C not probed (the command stops after the first). |
+| R3 (S2) cquery/aquery do not check strategies | NOT DONE (files not mine) | Needs blaze_cquery and blaze_runtime `commands/{cquery,aquery}.rs`; change described in the report to root (below). | Oracle, `cquery`/`aquery --spawn_strategy=bogus //:g`: `INFO: Analyzed target`, `INFO: Found 1 target...`, `ERROR: 'bogus' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [...]`, `INFO: Elapsed time`, `INFO: 0 processes.`, `ERROR: Build did NOT complete successfully`, exit 2, no query output. Blaze: cquery prints the result, exit 0. |
+| R5 (S2) 256 MB action threads scale with --jobs | FIXED | blaze_shell `java_process.rs`: children start with glibc `posix_spawn` (`CLONE_VM | CLONE_VFORK`), like the JDK 21 default launch mechanism (`POSIX_SPAWN`), instead of std's `fork` + `pre_exec`. `childproc.c`'s steps are file actions (dup2 of stdin/stdout/stderr, `chdir`, `closefrom(3)`), the signal mask is emptied and SIGPIPE reset (what std did); `JDK_execvpe`'s PATH search and ENOEXEC `/bin/sh` fallback run in the parent, one spawn per candidate, so the same program and the same errno result. Reaping is `waitpid` on the pid (pidfd still used to wait). Why this and not a pool: a spawn no longer copies or accounts the parent's address space, so neither the 256 MB action threads nor the evaluator's 16 MB threads can make it fail, at any `--jobs`; a pool sized apart from `--jobs` would cap concurrent actions (also remote ones, which wait on the same thread). | Measured on this machine (C, 256 MB stacks): `fork` fails with ENOMEM at 200, 400 and 800 parked threads, `posix_spawn` succeeds at 800. blaze_shell `children_start_while_hundreds_of_large_stacks_are_reserved` (400 x 256 MB, then a spawn). interrupt-probe `jobs400` (`build --jobs=400` of 400 genrules): oracle and Blaze exit 0, `401 processes: 1 internal, 400 linux-sandbox.`, `Build completed successfully, 401 total actions`. All blaze_shell process tests (exec errors, PATH search, redirections, timeouts, signals) pass unchanged. |
+| R6 (S2) input-set memo ignores Order | FIXED | blaze_exec `analysis/actions/mod.rs`: the memo key is `(node, order)`; the lock is held only for the lookup and the publish (first publisher wins, so sharing is kept), not across the conversion (the S4). | `sets_that_share_a_node_keep_their_own_order` (empty sets of 4 orders, singletons of 3, a compile-order set wrapping a stable one) plus the existing sharing test. |
+| discover_inputs stack | CHECKED, no change | The only ported `discoverInputs` is `CppCompileAction`'s (blaze_rules): compiler options from the feature configuration, C++20 module files, include path checks. No Starlark callable runs there (no `call_frozen`/`map_each` in blaze_rules/src/cpp or blaze_cc_features). `StarlarkAction.discoverInputs` is not ported (the default panics loudly). | - |
+
+## Public interrupt API (for blaze_remote)
+
+On the thread that runs a spawn runner (the evaluation-stack thread of `Action.execute`; it
+stands in for the Skyframe worker):
+
+- `blaze_shell::thread_interrupt::is_current_interrupted()`: `Thread.currentThread().isInterrupted()`;
+  true once the action's evaluator thread was interrupted (Ctrl-C/cancel, or the build stopping on
+  a fail-fast error). `interrupted()` is Java's `Thread.interrupted()` (reads and clears).
+- `blaze_shell::ThreadInterrupt::current().add_interrupt_listener(Arc<dyn Fn() + Send + Sync>)`
+  returns an `InterruptRegistration` (unregisters on drop). The listener runs on the interrupting
+  thread right after the flag is set (and at once if the thread is already interrupted); it must
+  not block. `blaze_shell::thread_interrupt::with_interrupt_listener(listener, || ...)` scopes it.
+  Use it to cancel an in-flight gRPC call or wake a wait that is not blaze_shell's; then throw
+  `InterruptedException` (`ExecException::Interrupted`) as Java does.
+- A thread the runner starts itself can share the status with `ThreadInterrupt::adopt()`.
+
+## Evidence
+
+Unit tests (`scripts/cargo-capped test -p <crate>`, tree above): blaze_shell 97 passed, 0 failed,
+10 ignored; blaze_skyframe 204 / 0 / 124; blaze_client 146 / 0 / 13; blaze_exec 401 / 0 / 73;
+blaze_sky_exec 42 / 0 / 11. `clippy --no-deps --all-targets -D warnings` on blaze_shell,
+blaze_skyframe, blaze_client, blaze_exec, blaze_sky_exec, blaze: clean. `rustfmt --edition 2024`
+on every changed file. Probe: `scripts/w4/interrupt-probe both <scenario>` (help: `interrupt-probe
+help`), scenarios sigint, sigint-batch, sigterm, sigint-twice, fail-fast, fail-fast-keep, jobs400;
+every remaining difference is `INFO: Found N targets...` (Skymeld position) or `Critical Path`
+(not ported), plus the JVM's `-Xverify:none` warning in batch mode.
+
+## Open after round 3
+
+- R3 (needs blaze_cquery and blaze_runtime cquery/aquery owners).
+- R4 unchanged (strategy error after analysis; needs the blaze_sky_top hook).
+- Third Ctrl-C: Bazel's `KillServerProcess` kills the server's process group; in-process,
+  `_exit(1)` ends the server and linux-sandbox (PR_SET_PDEATHSIG), but a process-wrapper started in
+  its own session outlives the client until its child ends.
+- `INFO: Found N targets...` is printed before execution; with Skymeld Bazel prints it after the
+  evaluation (also absent when interrupted). blaze_sky_top.

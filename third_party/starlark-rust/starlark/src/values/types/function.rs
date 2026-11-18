@@ -67,6 +67,10 @@ enum FunctionError {
 /// Return value of `type(any function)`.
 pub const FUNCTION_TYPE: &str = "function";
 
+/// BLAZE PATCH 0009: Java `Starlark.type` of a built-in function or bound method
+/// (net/starlark/java/eval/BuiltinFunction.java:38).
+pub const BUILTIN_FUNCTION_TYPE: &str = "builtin_function_or_method"; // BLAZE PATCH 0009
+
 #[derive(Debug, Allocative, Clone, Copy, Dupe, pagable::Pagable)]
 #[doc(hidden)]
 pub enum SpecialBuiltinFunction {
@@ -116,7 +120,7 @@ impl NativeFunc {
     crate::StarlarkPagable
 )]
 #[derivative(Debug)]
-#[display("{}", name)]
+#[display("<built-in function {}>", name)] // BLAZE PATCH 0009: Java BuiltinFunction.repr
 pub(crate) struct NativeFunction {
     #[derivative(Debug = "ignore")]
     pub(crate) function: NativeFunc,
@@ -148,8 +152,12 @@ impl<'v> AllocValue<'v> for NativeFunction {
 }
 
 /// Define the function type
-#[starlark_value(type = FUNCTION_TYPE)]
+#[starlark_value(type = BUILTIN_FUNCTION_TYPE)] // BLAZE PATCH 0009
 impl<'v> StarlarkValue<'v> for NativeFunction {
+    fn name_for_call_stack(&self, _me: Value<'v>) -> String { // BLAZE PATCH 0009
+        self.name.clone() // BLAZE PATCH 0009
+    } // BLAZE PATCH 0009
+
     fn invoke(
         &self,
         _me: Value<'v>,
@@ -386,11 +394,22 @@ impl<'v, V: ValueLike<'v>> BoundMethodGen<V> {
     }
 }
 
-#[starlark_value(type = FUNCTION_TYPE)]
+#[starlark_value(type = BUILTIN_FUNCTION_TYPE)] // BLAZE PATCH 0009
 impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for BoundMethodGen<V>
 where
     Self: ProvidesStaticType<'v>,
 {
+    fn name_for_call_stack(&self, _me: Value<'v>) -> String { // BLAZE PATCH 0009
+        self.method.to_string() // BLAZE PATCH 0009
+    } // BLAZE PATCH 0009
+
+    // BLAZE PATCH 0009: Java BuiltinFunction.repr (BuiltinFunction.java:192).
+    fn collect_repr(&self, s: &mut String) { // BLAZE PATCH 0009
+        use std::fmt::Write as _; // BLAZE PATCH 0009
+        let ty = self.this.to_value().get_type(); // BLAZE PATCH 0009
+        write!(s, "<built-in method {} of {} value>", self.method, ty).unwrap() // BLAZE PATCH 0009
+    } // BLAZE PATCH 0009
+
     fn invoke(
         &self,
         _me: Value<'v>,

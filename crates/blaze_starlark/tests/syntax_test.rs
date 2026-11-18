@@ -145,3 +145,38 @@ fn bzl_rejects_toplevel_if_and_for() {
     assert!(!errors(FileKind::Bzl, "a.bzl", "if True:\n  pass\n").is_empty());
     assert!(!errors(FileKind::Bzl, "a.bzl", "for x in []:\n  pass\n").is_empty());
 }
+
+/// Errors of `src` compiled as a .bzl file with type syntax (BZL_COMPILE's `allowTypeSyntax`).
+fn typed_errors(src: &str) -> Vec<String> {
+    let mut options = FileKind::Bzl.file_options();
+    options.allow_type_syntax = true;
+    match blaze_starlark::eval::compile_with_options(FileKind::Bzl, options, "a.bzl", src.into()) {
+        Ok(_) => Vec::new(),
+        Err(e) => e.message_with_stack().lines().map(str::to_owned).collect(),
+    }
+}
+
+/// Java Resolver.java:562 (a var statement binds its name) and :1228 (an annotation only at the
+/// first declaration); toplevelRebinding as for any other binding.
+#[test]
+fn bzl_var_statement_bindings() {
+    assert!(typed_errors("x: int\ny: list[str] = []\n").is_empty());
+    assert_eq!(
+        typed_errors("x: int\nx = 1\n"),
+        [
+            "a.bzl:2:1: 'x' redeclared at top level",
+            "a.bzl:1:1: 'x' previously declared here",
+        ]
+    );
+    assert_eq!(
+        typed_errors("x = 1\nx: int\n"),
+        [
+            "a.bzl:2:1: 'x' redeclared at top level",
+            "a.bzl:1:1: 'x' previously declared here",
+            "a.bzl:2:1: type annotation on 'x' may only appear at its first declaration",
+            "a.bzl:1:1: 'x' first declared here",
+        ]
+    );
+    // Var statements inside a function are allowed and bind a local.
+    assert!(typed_errors("def f():\n    y: int\n    y = 1\n    return y\n").is_empty());
+}

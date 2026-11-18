@@ -49,12 +49,14 @@ pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &Opti
 
     // RemoteModule.beforeCommand: the remote cache, remote execution, the disk cache and the
     // remote output service act on the actions a command executes; the remote downloader on the
-    // repositories a command fetches.
+    // repositories a command fetches. `build` and `test` run the remote module
+    // (crate::commands::build); the other commands that execute actions do not yet.
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:403 RemoteModule.beforeCommand
     if let Some(remote_options) = options.get_options::<RemoteOptions>() {
         // Strings.isNullOrEmpty
         let set = |value: &Option<String>| value.as_ref().is_some_and(|v| !v.is_empty());
-        if command.build_phase.executes() {
+        let runs_remote_module = command_name == "build" || command_name == "test";
+        if command.build_phase.executes() && !runs_remote_module {
             if set(&remote_options.remote_cache) {
                 blaze_util::unported!("RemoteModule.beforeCommand", "--remote_cache");
             }
@@ -172,7 +174,7 @@ mod tests {
     use blaze_options::{OptionsClass, OptionsParser};
 
     use super::*;
-    use crate::command_registry::{BUILD_COMMAND, QUERY_COMMAND};
+    use crate::command_registry::{BUILD_COMMAND, QUERY_COMMAND, RUN_COMMAND, TEST_COMMAND};
 
     fn parser(args: &[&str]) -> OptionsParser {
         let mut parser = OptionsParser::builder()
@@ -221,7 +223,17 @@ mod tests {
     #[test]
     #[should_panic(expected = "RemoteModule.beforeCommand")]
     fn disk_cache_fails() {
-        check_unported_options(&BUILD_COMMAND, &parser(&["--disk_cache=/tmp/cache"]));
+        check_unported_options(&RUN_COMMAND, &parser(&["--disk_cache=/tmp/cache"]));
+    }
+
+    // build and test run the remote module.
+    #[test]
+    fn remote_flags_are_accepted_for_build_and_test() {
+        for command in [&BUILD_COMMAND, &TEST_COMMAND] {
+            check_unported_options(command, &parser(&["--disk_cache=/tmp/cache"]));
+            check_unported_options(command, &parser(&["--remote_cache=grpc://localhost:1"]));
+            check_unported_options(command, &parser(&["--remote_executor=grpc://localhost:1"]));
+        }
     }
 
     // RemoteModule treats an empty --disk_cache as no disk cache.
@@ -234,7 +246,7 @@ mod tests {
     #[should_panic(expected = "RemoteModule.beforeCommand")]
     fn remote_cache_fails() {
         check_unported_options(
-            &BUILD_COMMAND,
+            &RUN_COMMAND,
             &parser(&["--remote_cache=grpc://localhost:1"]),
         );
     }

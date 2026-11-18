@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/star_not_iterable/star_not_iterable.bzl", line 1, column 9, in <toplevel>
+		x = len(*1)
+Error: argument after * must be an iterable, not int

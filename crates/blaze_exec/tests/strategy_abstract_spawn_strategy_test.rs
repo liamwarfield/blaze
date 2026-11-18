@@ -293,11 +293,11 @@ impl CacheHandle for MockCacheHandle {
 }
 
 impl SpawnCache for MockSpawnCache {
-    fn lookup(
+    fn lookup<'a>(
         &self,
-        _spawn: &dyn Spawn,
-        _context: &dyn SpawnExecutionContext,
-    ) -> Result<Box<dyn CacheHandle>, SpawnCacheError> {
+        _spawn: &'a dyn Spawn,
+        _context: &'a dyn SpawnExecutionContext,
+    ) -> Result<Box<dyn CacheHandle + 'a>, SpawnCacheError> {
         self.lookups.fetch_add(1, Ordering::SeqCst);
         match &self.handle_result {
             Some(r) => Ok(success(r.clone())),

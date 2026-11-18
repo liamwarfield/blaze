@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/int_parse/int_parse.bzl", line 1, column 8, in <toplevel>
+		x = int("x")
+Error in int: invalid base-10 literal: "x"

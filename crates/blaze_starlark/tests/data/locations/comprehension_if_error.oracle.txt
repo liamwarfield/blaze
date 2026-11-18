@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/comprehension_if_error/comprehension_if_error.bzl", line 1, column 26, in <toplevel>
+		x = [y for y in [1] if y + "a"]
+Error: unsupported binary operation: int + string

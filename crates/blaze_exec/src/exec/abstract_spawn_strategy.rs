@@ -213,10 +213,20 @@ impl AbstractSpawnStrategy {
             let file_system = action_execution_context
                 .get_action_file_system()
                 .unwrap_or_else(|| {
-                    action_execution_context
+                    let local = action_execution_context
                         .get_exec_root()
                         .get_file_system()
-                        .clone()
+                        .clone();
+                    // The RemoteActionFileSystem of a build with a remote output tree (see
+                    // RemoteOutputTreeFileSystem).
+                    match crate::exec::action_execution_context::RemoteOutputTree::from_context(
+                        action_execution_context.get_context_any(std::any::TypeId::of::<
+                            crate::exec::action_execution_context::RemoteOutputTree,
+                        >()),
+                    ) {
+                        Some(tree) => crate::exec::action_execution_context::RemoteOutputTreeFileSystem::create(local, tree),
+                        None => local,
+                    }
                 });
             // PORT: Java wraps an IOException of logSpawn in an EnvironmentalExecException
             // ("IOException while logging spawn", SPAWN_LOG_IO_EXCEPTION); the seam's logSpawn
@@ -450,5 +460,12 @@ impl SpawnExecutionContext for SpawnExecutionContextImpl<'_> {
 
     fn get_client_env(&self) -> &IndexMap<String, String> {
         self.action_execution_context.get_client_env()
+    }
+
+    // Java: com/google/devtools/build/lib/exec/AbstractSpawnStrategy.java:309 SpawnExecutionContextImpl.getContext
+    fn get_remote_local_fallback_registry(
+        &self,
+    ) -> Option<Arc<crate::exec::spawn_strategy_registry::SpawnStrategyRegistry>> {
+        self.action_execution_context.get_spawn_strategy_registry()
     }
 }

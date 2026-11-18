@@ -187,15 +187,16 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// getattr("banana", "split")("a") == ["b", "n", "n", ""] # equivalent to "banana".split("a")
     /// # "#);
     /// ```
-    #[starlark(speculative_exec_safe)]
+    // BLAZE PATCH 0026: not `speculative_exec_safe`: a field may fail or read the evaluator.
     fn getattr<'v>(
         #[starlark(require = pos)] a: Value<'v>,
         #[starlark(require = pos)] attr: &str,
         #[starlark(require = pos)] default: Option<Value<'v>>,
-        heap: Heap<'v>,
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
     ) -> starlark::Result<Value<'v>> {
-        // TODO(nga): this doesn't cache string hash, so it is suboptimal.
-        match a.get_attr(attr, heap)? {
+        // Java: net/starlark/java/eval/Starlark.java:978 Starlark.getattr: an error computing a
+        // field propagates; the default only replaces a missing field.
+        match a.get_attr_fallible(attr, eval)? { // BLAZE PATCH 0026
             Some(v) => Ok(v),
             None => match default {
                 Some(x) => Ok(x),
@@ -215,13 +216,14 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     ///
     /// `hasattr(x, name)` reports whether x has an attribute (field or method)
     /// named `name`.
-    #[starlark(speculative_exec_safe)]
+    // BLAZE PATCH 0026: not `speculative_exec_safe`: a field may fail or read the evaluator.
     fn hasattr<'v>(
         #[starlark(require = pos)] a: Value<'v>,
         #[starlark(require = pos)] attr: &str,
-        heap: Heap<'v>,
-    ) -> anyhow::Result<bool> {
-        Ok(a.has_attr(attr, heap))
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
+    ) -> starlark::Result<bool> { // BLAZE PATCH 0026
+        // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr
+        a.has_attr_fallible(attr, eval) // BLAZE PATCH 0026
     }
 
     /// [hash](

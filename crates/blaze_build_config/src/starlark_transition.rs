@@ -1227,6 +1227,9 @@ impl StarlarkDefinedConfigTransition {
         let result = match result {
             Ok(r) => r,
             Err(e) => {
+                // Java: handler.handle(Event.error(null, ex.getMessageWithStack())). The
+                // implementation is called from native code, so the stack starts at its frame
+                // (oracle: scripts/w4/scenarios/flags-transitions step 23).
                 handler.handle(&Event::error(e.to_string()));
                 return None;
             }

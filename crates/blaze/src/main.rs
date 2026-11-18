@@ -33,6 +33,11 @@ impl InProcessServer for BazelServer {
             request,
         )
     }
+
+    // Java: com/google/devtools/build/lib/server/CommandManager.java:99 CommandManager.doCancel
+    fn canceller(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {
+        std::sync::Arc::new(blaze_runtime::interrupt::interrupt_command_thread)
+    }
 }
 
 fn main() {

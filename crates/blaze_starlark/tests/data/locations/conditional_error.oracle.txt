@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/conditional_error/conditional_error.bzl", line 1, column 12, in <toplevel>
+		x = 1 if 1 + "a" else 2
+Error: unsupported binary operation: int + string

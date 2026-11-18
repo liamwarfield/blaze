@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use super::exec_exception::ExecException;
 use indexmap::IndexMap;
 
 /// Resources needed to execute a spawn locally.
@@ -124,6 +125,16 @@ pub trait ResourceSetOrBuilder: Send + Sync + fmt::Debug {
     /// `buildResourceSet(OS os, int inputsSize)`.
     fn build_resource_set(&self, inputs_size: i32) -> ResourceSet;
 
+    /// `buildResourceSet(OS os, int inputsSize) throws ExecException`: the checked form.
+    ///
+    /// PORT: Java's `buildResourceSet` throws `ExecException`; the infallible
+    /// [`build_resource_set`](Self::build_resource_set) is kept for the implementations in other
+    /// crates, and a builder that can fail (the Starlark `resource_set` callback) overrides this.
+    // Java: com/google/devtools/build/lib/actions/ResourceSetOrBuilder.java:29 ResourceSetOrBuilder.buildResourceSet
+    fn try_build_resource_set(&self, inputs_size: i32) -> Result<ResourceSet, ExecException> {
+        Ok(self.build_resource_set(inputs_size))
+    }
+
     /// `buildLocalResources(OS, inputsSize, executionInfo, execProperties)`: the resource set with
     /// `resources:<name>` execution-info and exec-property overrides applied.
     // Java: com/google/devtools/build/lib/actions/ResourceSetOrBuilder.java:37 ResourceSetOrBuilder.buildLocalResources
@@ -132,7 +143,7 @@ pub trait ResourceSetOrBuilder: Send + Sync + fmt::Debug {
         inputs_size: i32,
         execution_info: &IndexMap<String, String>,
         exec_properties: &IndexMap<String, String>,
-    ) -> ResourceSet {
+    ) -> Result<ResourceSet, ExecException> {
         let _ = (execution_info, exec_properties);
         // PORT: the "resources:" override parsing of ResourceSetOrBuilder.buildLocalResources is
         // not ported; no corpus spawn sets it. A spawn that does is reported loudly.
@@ -141,7 +152,7 @@ pub trait ResourceSetOrBuilder: Send + Sync + fmt::Debug {
         {
             blaze_util::unported!("ResourceSetOrBuilder.buildLocalResources(resources: overrides)");
         }
-        self.build_resource_set(inputs_size)
+        self.try_build_resource_set(inputs_size)
     }
 }
 

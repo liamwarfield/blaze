@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+	File "<WS>/starstar_not_dict/starstar_not_dict.bzl", line 1, column 10, in <toplevel>
+		x = dict(**1)
+Error: argument after ** must be a dict, not int

@@ -44,4 +44,9 @@ pub trait InProcessServer {
     /// command, logging args, command arguments; cookie empty). Returns the exit code of the final
     /// `RunResponse`. The server shuts down when the command finishes.
     fn run_command(&self, startup: &ServerStartup, request: RunRequest) -> i32;
+
+    /// The server's cancel of the running command (`GrpcServerImpl.cancel` /
+    /// `CommandManager.doCancel`: interrupts the command thread), which the client's cancel
+    /// thread calls when the user presses Ctrl-C (`BlazeServer::SendCancelMessage`).
+    fn canceller(&self) -> std::sync::Arc<dyn Fn() + Send + Sync>;
 }

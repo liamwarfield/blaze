@@ -24,8 +24,13 @@ use crate::eval::bc::compiler::expr::write_n_exprs;
 use crate::eval::bc::instr_impl::InstrAddAssign;
 use crate::eval::bc::instr_impl::InstrArrayIndex;
 use crate::eval::bc::instr_impl::InstrArrayIndexSet;
+#[allow(unused_imports)] // BLAZE PATCH 0007
 use crate::eval::bc::instr_impl::InstrBitAnd;
 use crate::eval::bc::instr_impl::InstrBitOrAssign;
+use crate::eval::bc::instr_impl::InstrBitAndAssign; // BLAZE PATCH 0007
+use crate::eval::bc::instr_impl::InstrBitXorAssign; // BLAZE PATCH 0007
+use crate::eval::bc::instr_impl::InstrSubAssign; // BLAZE PATCH 0007
+#[allow(unused_imports)] // BLAZE PATCH 0007
 use crate::eval::bc::instr_impl::InstrBitXor;
 use crate::eval::bc::instr_impl::InstrDivide;
 use crate::eval::bc::instr_impl::InstrFloorDivide;
@@ -37,6 +42,7 @@ use crate::eval::bc::instr_impl::InstrPercent;
 use crate::eval::bc::instr_impl::InstrRightShift;
 use crate::eval::bc::instr_impl::InstrSetObjectField;
 use crate::eval::bc::instr_impl::InstrStoreModule;
+#[allow(unused_imports)] // BLAZE PATCH 0007
 use crate::eval::bc::instr_impl::InstrSub;
 use crate::eval::bc::stack_ptr::BcSlotIn;
 use crate::eval::bc::stack_ptr::BcSlotOut;
@@ -70,14 +76,14 @@ impl AssignOnWriteBc for AssignOp {
         let arg = (v0, v1, target);
         match self {
             AssignOp::Add => bc.write_instr::<InstrAddAssign>(span, arg),
-            AssignOp::Subtract => bc.write_instr::<InstrSub>(span, arg),
+            AssignOp::Subtract => bc.write_instr::<InstrSubAssign>(span, arg), // BLAZE PATCH 0007
             AssignOp::Multiply => bc.write_instr::<InstrMultiply>(span, arg),
             AssignOp::Divide => bc.write_instr::<InstrDivide>(span, arg),
             AssignOp::FloorDivide => bc.write_instr::<InstrFloorDivide>(span, arg),
             AssignOp::Percent => bc.write_instr::<InstrPercent>(span, arg),
-            AssignOp::BitAnd => bc.write_instr::<InstrBitAnd>(span, arg),
+            AssignOp::BitAnd => bc.write_instr::<InstrBitAndAssign>(span, arg), // BLAZE PATCH 0007
             AssignOp::BitOr => bc.write_instr::<InstrBitOrAssign>(span, arg),
-            AssignOp::BitXor => bc.write_instr::<InstrBitXor>(span, arg),
+            AssignOp::BitXor => bc.write_instr::<InstrBitXorAssign>(span, arg), // BLAZE PATCH 0007
             AssignOp::LeftShift => bc.write_instr::<InstrLeftShift>(span, arg),
             AssignOp::RightShift => bc.write_instr::<InstrRightShift>(span, arg),
         }
@@ -110,9 +116,12 @@ impl AssignModifyLhs {
             AssignModifyLhs::Dot(ref object, ref field) => {
                 object.write_bc_cb(bc, |object, bc| {
                     bc.alloc_slots_c(|lhs_rhs: BcSlotsN<2>, bc| {
-                        let field = Symbol::new(field.as_str());
+                        // BLAZE PATCH 0028: reading and setting the field fail at the `.`
+                        // (Java Eval.execAugmentedAssignment); the operator at the statement.
+                        let dot_span = field.span; // BLAZE PATCH 0028
+                        let field = Symbol::new(field.node.as_str()); // BLAZE PATCH 0028
                         bc.write_instr::<InstrObjectField>(
-                            span,
+                            dot_span, // BLAZE PATCH 0028
                             (object, field.clone(), lhs_rhs.get::<0>().to_out()),
                         );
                         rhs.write_bc(lhs_rhs.get::<1>().to_out(), bc);
@@ -124,7 +133,7 @@ impl AssignModifyLhs {
                             bc,
                         );
                         bc.write_instr::<InstrSetObjectField>(
-                            span,
+                            dot_span, // BLAZE PATCH 0028
                             (lhs_rhs.get::<1>().to_in(), object, field),
                         );
                     })

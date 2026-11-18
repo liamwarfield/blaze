@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+	File "<WS>/unpack_count/unpack_count.bzl", line 4, column 2, in <toplevel>
+		f()
+	File "<WS>/unpack_count/unpack_count.bzl", line 2, column 10, in f
+		a, b = [1, 2, 3]
+Error: too many values to unpack (got 3, want 2)

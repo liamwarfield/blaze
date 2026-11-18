@@ -125,17 +125,21 @@ fn bazel_raw_string_backslash_quote() {
 }
 
 #[test]
-fn deviation_float_str_not_shortest_roundtrip() {
-    // Oracle: str(1.23e-45 - 1e-61) == "1.2299999999999998e-45".
-    assert_eq!(eval("r = str(1.23e-45 - 1e-61)"), Ok("\"1.23e-45\"".into()));
+fn bazel_float_str_shortest_roundtrip() {
+    // Oracle: str(1.23e-45 - 1e-61) == "1.2299999999999998e-45". Blaze patch 0008.
+    assert_eq!(
+        eval("r = str(1.23e-45 - 1e-61)"),
+        Ok("\"1.2299999999999998e-45\"".into())
+    );
 }
 
 #[test]
-fn deviation_builtin_type_and_str() {
+fn bazel_builtin_type_and_str() {
     // Oracle: type(len) == "builtin_function_or_method", str(len) == "<built-in function len>".
+    // Blaze patch 0009.
     assert_eq!(
         eval("r = (type(len), str(len))"),
-        Ok("(\"function\", \"len\")".into())
+        Ok("(\"builtin_function_or_method\", \"<built-in function len>\")".into())
     );
 }
 
@@ -146,9 +150,12 @@ fn deviation_percent_format_width() {
 }
 
 #[test]
-fn deviation_string_method_named_args() {
-    // Bazel: "a.b.c".split(sep=".", maxsplit=1) == ["a", "b.c"].
-    assert!(eval("r = 'a.b.c'.split(sep = '.', maxsplit = 1)").is_err());
+fn bazel_string_method_named_args() {
+    // Bazel: "a.b.c".split(sep=".", maxsplit=1) == ["a", "b.c"]. Blaze patch 0005.
+    assert_eq!(
+        eval("r = 'a.b.c'.split(sep = '.', maxsplit = 1)"),
+        Ok("[\"a\", \"b.c\"]".into())
+    );
 }
 
 #[test]
@@ -161,7 +168,7 @@ fn bazel_list_pop_negative_index() {
 }
 
 #[test]
-fn deviation_set_repr() {
-    // Bazel: repr(set()) == "set()".
-    assert_eq!(eval("r = repr(set())"), Ok("\"set([])\"".into()));
+fn bazel_set_repr() {
+    // Bazel: repr(set()) == "set()". Blaze patch 0007.
+    assert_eq!(eval("r = repr(set())"), Ok("\"set()\"".into()));
 }

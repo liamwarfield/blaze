@@ -124,6 +124,10 @@ pub struct ActionExecutionException {
     already_reported: bool,
     /// `getCause() instanceof TestExecException`.
     cause_is_test_exec_exception: bool,
+    /// Made from [`ExecException::Interrupted`]: Java's `InterruptedException`, which Java's
+    /// `Action.execute` / `discoverInputs` throw apart from `ActionExecutionException` (see
+    /// [`ActionExecutionException::is_interrupted`]).
+    interrupted: bool,
 }
 
 impl ActionExecutionException {
@@ -157,6 +161,7 @@ impl ActionExecutionException {
             failure_detail,
             already_reported: false,
             cause_is_test_exec_exception: false,
+            interrupted: false,
         }
     }
 
@@ -192,6 +197,7 @@ impl ActionExecutionException {
             failure_detail,
             already_reported: false,
             cause_is_test_exec_exception: false,
+            interrupted: false,
         }
     }
 
@@ -238,7 +244,19 @@ impl ActionExecutionException {
             code,
         );
         e.cause_is_test_exec_exception = exception.is_test_exec_exception();
+        e.interrupted = matches!(exception, ExecException::Interrupted);
         e
+    }
+
+    /// The action was interrupted: this stands for the `InterruptedException` Java's
+    /// `Action.execute` / `discoverInputs` throw, not for a failure. The caller
+    /// (`SkyframeActionExecutor`) rethrows it as `InterruptedException`; nothing is reported.
+    ///
+    /// PORT: `ExecutableAction::execute` returns one `Result`, so an action that converts every
+    /// `ExecException` with [`ActionExecutionException::from_exec_exception`] (SpawnAction)
+    /// passes Java's `InterruptedException` through here.
+    pub fn is_interrupted(&self) -> bool {
+        self.interrupted
     }
 
     /// `getMessage()`.

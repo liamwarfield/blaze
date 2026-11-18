@@ -23,24 +23,24 @@ thread_local! {
 
 /// Runs `f` on a thread with an [`blaze_starlark::eval::EVAL_STACK_SIZE`] stack (or inline when
 /// the current thread already is one) and waits for it. A panic in `f` is resumed on the calling
-/// thread; a Java interrupt status that `f` leaves set (`Thread.currentThread().interrupt()`, to
-/// preserve it) is set on the calling thread too.
+/// thread.
+///
+/// The thread stands in for the calling one: it adopts the caller's Java interrupt status
+/// ([`blaze_shell::ThreadInterrupt::adopt`]). An interrupt of the caller (the evaluator
+/// interrupting its in-flight work: `AbstractQueueVisitor.interruptInFlightTasks`, or the command
+/// being interrupted) therefore reaches the waits of the spawn runners in `f`, which kill their
+/// child and throw `InterruptedException` as in Java; and a status `f` leaves set
+/// (`Thread.currentThread().interrupt()`, to preserve it) is the caller's.
 pub fn on_evaluation_stack<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     if ON_EVALUATION_STACK.with(Cell::get) {
         return f();
     }
-    let (result, interrupted) = blaze_starlark::eval::run_on_evaluation_thread(|| {
+    let caller = blaze_shell::ThreadInterrupt::current();
+    blaze_starlark::eval::run_on_evaluation_thread(move || {
         ON_EVALUATION_STACK.with(|c| c.set(true));
-        let result = f();
-        (
-            result,
-            blaze_shell::thread_interrupt::is_current_interrupted(),
-        )
-    });
-    if interrupted {
-        blaze_shell::thread_interrupt::interrupt_current();
-    }
-    result
+        let _adopted = caller.adopt();
+        f()
+    })
 }
 
 #[cfg(test)]
@@ -81,6 +81,32 @@ mod tests {
         assert!(!blaze_shell::thread_interrupt::interrupted());
         on_evaluation_stack(blaze_shell::thread_interrupt::interrupt_current);
         assert!(blaze_shell::thread_interrupt::interrupted());
+    }
+
+    #[test]
+    fn an_interrupt_of_the_caller_reaches_a_wait_on_the_evaluation_stack() {
+        use blaze_shell::{Command, ThreadInterrupt};
+        let caller = ThreadInterrupt::current();
+        let interrupter = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            caller.interrupt();
+        });
+        let started = std::time::Instant::now();
+        // Java: Command.execute() of a long child is interrupted: the child is killed and the
+        // call throws InterruptedException.
+        let result = on_evaluation_stack(|| {
+            Command::new(
+                vec!["/bin/sleep".to_owned(), "30".to_owned()],
+                &indexmap::IndexMap::new(),
+            )
+            .execute()
+        });
+        interrupter.join().unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert!(matches!(
+            result,
+            Err(blaze_shell::CommandExecutionError::Interrupted(_))
+        ));
     }
 
     #[test]

@@ -871,18 +871,16 @@ impl ExprCompiled {
         attr: &Symbol,
         ctx: &mut OptCtx,
     ) -> Option<FrozenValue> {
-        // We assume `getattr` has no side effects.
-        let v = get_attr_hashed_raw(left.to_value(), attr, ctx.heap()).ok()?;
-        match v {
-            MemberOrValue::Member(m) => match m {
-                UnboundValue::Method(m) => Some(
-                    ctx.frozen_heap()
-                        .alloc_simple(BoundMethodGen::new(left, *m)),
-                ),
-                UnboundValue::Attr(..) => None,
-            },
-            MemberOrValue::Value(v) => v.unpack_frozen(),
-        }
+        // Only methods are folded: a field may fail or read the evaluator
+        // (`StarlarkValue::get_attr_fallible`), so it is read at run time.
+        let methods = left.to_value().get_ref().vtable().methods()?; // BLAZE PATCH 0026
+        match methods.get_frozen_symbol(attr)? { // BLAZE PATCH 0026
+            UnboundValue::Method(m) => Some( // BLAZE PATCH 0026
+                ctx.frozen_heap() // BLAZE PATCH 0026
+                    .alloc_simple(BoundMethodGen::new(left, *m)), // BLAZE PATCH 0026
+            ), // BLAZE PATCH 0026
+            UnboundValue::Attr(..) => None, // BLAZE PATCH 0026
+        } // BLAZE PATCH 0026
     }
 
     pub(crate) fn dot(
@@ -1150,7 +1148,7 @@ impl<'v, 'a> MemberOrValue<'v, 'a> {
 pub(crate) fn get_attr_hashed_raw<'v>(
     x: Value<'v>,
     attribute: &Symbol,
-    heap: Heap<'v>,
+    eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
 ) -> crate::Result<MemberOrValue<'v, 'static>> {
     let aref = x.get_ref();
     if let Some(methods) = aref.vtable().methods() {
@@ -1158,7 +1156,7 @@ pub(crate) fn get_attr_hashed_raw<'v>(
             return Ok(MemberOrValue::Member(v));
         }
     }
-    match aref.get_attr_hashed(attribute.as_str_hashed(), heap) {
+    match aref.get_attr_fallible(attribute.as_str_hashed(), eval)? { // BLAZE PATCH 0026
         None => Err(get_attr_no_attr_error(x, attribute)),
         Some(x) => Ok(MemberOrValue::Value(x)),
     }
@@ -1167,15 +1165,15 @@ pub(crate) fn get_attr_hashed_raw<'v>(
 pub(crate) fn get_attr_hashed_bind<'v>(
     x: Value<'v>,
     attribute: &Symbol,
-    heap: Heap<'v>,
+    eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
 ) -> crate::Result<Value<'v>> {
     let aref = x.get_ref();
     if let Some(methods) = aref.vtable().methods() {
         if let Some(v) = methods.get_frozen_symbol(attribute) {
-            return v.bind(x, heap);
+            return v.bind(x, eval.heap()); // BLAZE PATCH 0026
         }
     }
-    match aref.get_attr_hashed(attribute.as_str_hashed(), heap) {
+    match aref.get_attr_fallible(attribute.as_str_hashed(), eval)? { // BLAZE PATCH 0026
         None => Err(get_attr_no_attr_error(x, attribute)),
         Some(x) => {
             // Only `get_methods` is allowed to return unbound methods or attributes.

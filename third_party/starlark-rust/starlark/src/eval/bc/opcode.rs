@@ -64,6 +64,7 @@ pub(crate) enum BcOpcode {
     Add,
     AddAssign,
     Sub,
+    SubAssign, // BLAZE PATCH 0007
     Multiply,
     Percent,
     PercentSOne,
@@ -71,9 +72,11 @@ pub(crate) enum BcOpcode {
     Divide,
     FloorDivide,
     BitAnd,
+    BitAndAssign, // BLAZE PATCH 0007
     BitOr,
     BitOrAssign,
     BitXor,
+    BitXorAssign, // BLAZE PATCH 0007
     LeftShift,
     RightShift,
     Len,

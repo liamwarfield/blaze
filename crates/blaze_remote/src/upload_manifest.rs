@@ -662,7 +662,7 @@ fn stat_follow_if_found(file: &Path) -> io::Result<Option<FileStatus>> {
     match file.stat_if_found(Symlinks::Follow) {
         Ok(stat_follow) => Ok(stat_follow),
         // Treat a looping symlink as a dangling symlink.
-        Err(e) if crate::common::errors::is_file_symlink_loop(&e) => Ok(None),
+        Err(e) if blaze_vfs::FileSymlinkLoopException::is(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }

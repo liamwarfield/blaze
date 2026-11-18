@@ -62,7 +62,8 @@ pub(crate) fn register_float(globals: &mut GlobalsBuilder) {
         }
         let a = a.unwrap();
         match a {
-            Either::Left(Either::Left(f)) => Ok(f.as_float()),
+            // Java MethodLibrary.float: StarlarkInt.toFiniteDouble.
+            Either::Left(Either::Left(f)) => Ok(f.as_finite_float()?), // BLAZE PATCH 0008
             Either::Left(Either::Right(b)) => Ok(if b { 1.0 } else { 0.0 }),
             Either::Right(s) => {
                 match s.parse::<f64>() {
