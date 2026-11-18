@@ -9,23 +9,51 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import oracle_common as oc  # noqa: E402
 import oracle_compare as ocmp  # noqa: E402
+import oracle_report as orep  # noqa: E402
 
 USAGE = """\
-usage: scripts/oracle/scoreboard <label> [--reference LABEL] [--project P]... [--json PATH]
+usage: scripts/oracle/scoreboard <label> [--reference LABEL] [--project P]...
+                                 [--markdown | --json] [--out PATH] [--write]
        scripts/oracle/scoreboard help
 
-Scores recording <label> against the reference recording (default %s), per project and surface:
+Scores recording <label> against the reference recording (default %s), per project and surface.
+Counts are reference items:
 
   total     items in the reference
-  compared  total minus excluded
+  allowed   reference items excused by an allow-list entry (scripts/oracle/allow.json, within
+            its max_items); the entries used are listed under the table
+  compared  reference items judged against the candidate: total - allowed where both sides
+            produced the surface, 0 elsewhere
   matching  reference items the candidate reproduces exactly (after normalisation)
-  excluded  reference items excused by an allow-list entry (scripts/oracle/allow.json); the
-            entries used are listed under the table
+  failed    reference items not reproduced: DIFF and MISSING items, and every item of a surface
+            that is FAILED or MISSING. total = matching + allowed + failed
   extra     items only the candidate has (not excused)
-  status    MATCH, DIFF, FAILED (the candidate could not produce the surface; stderr tail in
-            `compare`), NOT_COMPARED (surface not recorded on one side)
+  match%%    matching / (total - allowed): a surface or project the candidate did not record
+            lowers it
+  status    MATCH, DIFF, FAILED, MISSING (the candidate did not record what the reference has),
+            NO_REFERENCE, NOT_RECORDED (neither side; excluded and listed). `*`: under a declared
+            exception of a recording. `(empty)`: 0 items on both sides, verified genuine.
+            See `scripts/oracle/compare help`.
 
-Exit status 0 always (it is a report); use `compare` for a pass/fail verdict.
+The scope is every project of the reference or the candidate and every surface. --project
+restricts it; the restriction and what it leaves out are part of the output.
+
+Also prints both recordings' binary sha256, date, repository commit and dirty flag, declared
+exceptions, the totals over all projects, what was excluded and why, and the verdict.
+
+Options:
+  --reference LABEL  score against this label
+  --project P        restrict to project P (repeatable)
+  --markdown         print Markdown instead of the text table
+  --json             print the score document as JSON
+  --out PATH         write the chosen format to PATH instead of standard output
+  --write            write corpus/scores/<label>.json and corpus/scores/<label>.md (the files
+                     that are committed with an accepted score), and print the text table. Not
+                     allowed with --project or --reference: a committed score covers the whole
+                     scope against the reference.
+
+The JSON and Markdown depend only on the two recordings and the referee, not on when or where
+they are rendered. Exit status 0 always (it is a report); use `compare` for a pass/fail verdict.
 """ % oc.REFERENCE_LABEL
 
 
@@ -37,55 +65,41 @@ def main():
     ap.add_argument("label")
     ap.add_argument("--reference", default=oc.REFERENCE_LABEL)
     ap.add_argument("--project", action="append")
-    ap.add_argument("--json")
+    ap.add_argument("--markdown", action="store_true")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--out")
+    ap.add_argument("--write", action="store_true")
     args = ap.parse_args()
+    if args.markdown and args.json:
+        oc.die("--markdown and --json exclude each other")
+    if args.write and (args.project or args.reference != oc.REFERENCE_LABEL or args.out):
+        oc.die("--write scores the whole scope against %s; it takes no --project, --reference or --out"
+               % oc.REFERENCE_LABEL)
     for label in (args.reference, args.label):
         if not oc.projects_in(label):
             oc.die("no recordings for label %r (have: %s)" % (label, ", ".join(oc.labels_available()) or "none"))
-    results = ocmp.compare_labels(args.reference, args.label, args.project)
-    rows = []
-    reasons = {}
-    for r in results:
-        ia = r.get("_a", {})
-        excluded = sum(1 for d in r["details"] if "allowed_by" in d and d["key"] in ia)
-        matching = r["counts"]["MATCH"]
-        extra = sum(1 for d in r["details"] if d["kind"] == "EXTRA" and "allowed_by" not in d)
-        total = r["total_a"]
-        rows.append({"project": r["project"], "surface": r["surface"], "status": r["status"],
-                     "total": total, "compared": total - excluded, "matching": matching,
-                     "excluded": excluded, "extra": extra})
-        for d in r["details"]:
-            if "allowed_by" in d:
-                reasons[d["allowed_by"]] = reasons.get(d["allowed_by"], 0) + 1
-    print("scoreboard: %s vs reference %s\n" % (args.label, args.reference))
-    for project in sorted({r["project"] for r in rows}):
-        print("project %s" % project)
-        hdr = "  %-18s %-12s %7s %8s %8s %8s %6s %7s" % (
-            "surface", "status", "total", "compared", "matching", "excluded", "extra", "match%")
-        print(hdr)
-        print("  " + "-" * (len(hdr) - 2))
-        t = {"total": 0, "compared": 0, "matching": 0, "excluded": 0, "extra": 0}
-        for row in rows:
-            if row["project"] != project:
-                continue
-            pct = "%.1f" % (100.0 * row["matching"] / row["compared"]) if row["compared"] else "-"
-            print("  %-18s %-12s %7d %8d %8d %8d %6d %7s" % (
-                row["surface"], row["status"], row["total"], row["compared"], row["matching"],
-                row["excluded"], row["extra"], pct))
-            for k in t:
-                t[k] += row[k]
-        pct = "%.1f" % (100.0 * t["matching"] / t["compared"]) if t["compared"] else "-"
-        print("  %-18s %-12s %7d %8d %8d %8d %6d %7s\n" % (
-            "TOTAL", "", t["total"], t["compared"], t["matching"], t["excluded"], t["extra"], pct))
-    if reasons:
+    try:
         allow = ocmp.AllowList()
-        print("excluded by allow list:")
-        for eid, n in sorted(reasons.items()):
-            e = next((x for x in allow.entries if x["id"] == eid), {})
-            print("  %-28s %5d  %s" % (eid, n, e.get("reason", "")))
-    if args.json:
-        oc.write_json(args.json, {"label": args.label, "reference": args.reference, "rows": rows,
-                                  "excluded_by": reasons})
+    except ocmp.AllowListError as e:
+        oc.die(str(e))
+    cmp = ocmp.compare_labels(args.reference, args.label, args.project, None, allow)
+    doc = orep.score_document(cmp, allow)
+    if args.write:
+        os.makedirs(oc.CORPUS_SCORES, exist_ok=True)
+        base = os.path.join(oc.CORPUS_SCORES, args.label)
+        for path, text in ((base + ".json", orep.score_json(doc)), (base + ".md", orep.score_markdown(doc))):
+            with open(path, "w") as f:
+                f.write(text)
+        sys.stdout.write(orep.score_text(doc))
+        print("wrote %s.json and %s.md" % (base, base))
+        return 0
+    text = orep.score_json(doc) if args.json else orep.score_markdown(doc) if args.markdown else orep.score_text(doc)
+    if args.out:
+        with open(args.out, "w") as f:
+            f.write(text)
+        print("wrote %s" % args.out)
+    else:
+        sys.stdout.write(text)
     return 0
 
 

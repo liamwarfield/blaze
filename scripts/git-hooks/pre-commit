@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""pre-commit hook: reject a commit that touches a protected path without a named approval.
+
+The rule and the list: scripts/gate/protected-paths.txt. Install: scripts/git-hooks/install.
+Usage (by hand): scripts/git-hooks/pre-commit        check the staged changes
+                 scripts/git-hooks/pre-commit help
+"""
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT, "scripts", "gate"))
+
+import protected  # noqa: E402
+
+
+def main(argv):
+    if argv and argv[0] in ("help", "-h", "--help"):
+        print(__doc__)
+        print(protected.rule_text())
+        return 0
+    try:
+        rules = protected.committed_rules()
+        changes = protected.staged_changes()
+    except Exception as e:  # a broken list must not let a commit through
+        print("pre-commit: cannot check protected paths: %s\nCOMMIT REJECTED." % e, file=sys.stderr)
+        return 1
+    status, lines = protected.check(changes, rules)
+    for line in lines:
+        print(("pre-commit: " + line) if line else "", file=sys.stderr)
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

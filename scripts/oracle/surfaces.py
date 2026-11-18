@@ -202,17 +202,24 @@ def s_query_jsonproto(rd, manifest, ctx):
 def s_cquery_label_kind(rd, manifest, ctx):
     text = ctx.text(_stdout(rd, manifest, "cquery_deps_label_kind"))
     _write_norm(rd, "cquery_deps_label_kind.txt", text)
-    items = {}
+    items, order = {}, []
     for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
         m = re.match(r"^(.*) (\S+) \(([^()]*)\)$", line)
         if not m:
-            items[_unique_key(items, "unparsed " + line)] = line
+            key = _unique_key(items, "unparsed " + line)
+            items[key] = line
+            order.append(key)
             continue
         kind, label, cfg = m.groups()
-        items[_unique_key(items, "deps %s (%s)" % (label, cfg))] = kind
+        key = _unique_key(items, "deps %s (%s)" % (label, cfg))
+        items[key] = kind
+        order.append(key)
+    # Bazel prints cquery results in a deterministic order (identical in three oracle recordings
+    # of both projects), so the order is an item of its own, as for query.
+    items["__order__ deps"] = order
     return items
 
 
@@ -220,7 +227,7 @@ def s_cquery_jsonproto(rd, manifest, ctx):
     doc = ctx.deep(json.loads(_stdout(rd, manifest, "cquery_jsonproto")))
     _write_norm(rd, "cquery_jsonproto.json", doc)
     cfg_by_id = {c.get("id"): c.get("checksum") for c in doc.get("configurations", [])}
-    items = {}
+    items, order = {}, []
     for c in doc.get("configurations", []):
         c = {k: v for k, v in c.items() if k != "id"}
         items[_unique_key(items, "configuration %s" % c.get("checksum"))] = c
@@ -229,7 +236,13 @@ def s_cquery_jsonproto(rd, manifest, ctx):
         if "configurationId" in r:
             r["configurationId"] = cfg_by_id.get(r["configurationId"], r["configurationId"])
         cfg = (r.get("configuration") or {}).get("checksum") or r.get("configurationId")
-        items[_unique_key(items, "target %s (%s)" % (_target_name(r.get("target", {})), cfg))] = r
+        key = _unique_key(items, "target %s (%s)" % (_target_name(r.get("target", {})), cfg))
+        items[key] = r
+        order.append(key)
+    # The order of the results and the order and numbering of the configurations are deterministic
+    # in Bazel (the whole normalised document is identical in three oracle recordings).
+    items["__order__ results"] = order
+    items["__order__ configurations"] = [[c.get("id"), c.get("checksum")] for c in doc.get("configurations", [])]
     return items
 
 
@@ -304,12 +317,53 @@ def aquery_summary(doc):
     return out
 
 
+# The id-valued fields of an aquery action: which target, configuration, depsets, artifacts and
+# aspects it names, in the order it names them.
+AQUERY_ACTION_ID_FIELDS = ("targetId", "configurationId", "primaryOutputId", "inputDepSetIds", "outputIds",
+                           "aspectDescriptorIds")
+# The other top-level lists of the aquery container. Each entry is only ids, names and paths.
+AQUERY_ID_LISTS = ("targets", "artifacts", "depSetOfFiles", "pathFragments", "configuration", "ruleClasses",
+                   "aspectDescriptors")
+
+
+def aquery_order(doc, action_keys):
+    """`__order__` items for an aquery jsonproto container: what aquery_summary leaves out.
+
+    aquery_summary resolves ids and sorts, so that actions compare one by one whatever their order
+    and numbering. Bazel's order and numbering are deterministic, though: every list of the
+    normalised container, ids included, is identical in three oracle recordings of both projects
+    (the only field that varies is the actionKey of runfiles manifest actions, see allow.json). So
+    each list is also compared as printed:
+
+      __order__ actions     the action keys (primary output paths) in output order
+      __order__ action ids  per action, in output order: its key and its id-valued fields
+      __order__ <list>      targets, artifacts, depSetOfFiles, pathFragments, configuration,
+                            ruleClasses, aspectDescriptors: the list as printed, ids included
+
+    Together with the per-action items these decide the whole normalised container. Each value is
+    an object {"order": [...]}: every item of this surface stays an object, as readers of
+    items/aquery_actions.json expect.
+    """
+    actions = doc.get("actions", [])
+    items = {
+        "__order__ actions": {"order": list(action_keys)},
+        "__order__ action ids": {"order": [
+            [key] + [a.get(f) for f in AQUERY_ACTION_ID_FIELDS] for key, a in zip(action_keys, actions)
+        ]},
+    }
+    for name in AQUERY_ID_LISTS:
+        if name in doc:
+            items["__order__ " + name] = {"order": doc[name]}
+    return items
+
+
 def s_aquery_actions(rd, manifest, ctx):
     doc = ctx.deep(json.loads(_stdout(rd, manifest, "aquery_deps_jsonproto")))
     _write_norm(rd, "aquery_deps_jsonproto.json", doc)
     summary = aquery_summary(doc)
     _write_norm(rd, "aquery_actions.json", summary)
-    return summary
+    # aquery_summary adds one key per action, in the order of doc["actions"].
+    return {**summary, **aquery_order(doc, list(summary))}
 
 
 def s_build_stderr(rd, manifest, ctx):
@@ -632,7 +686,8 @@ def extract_all(rd, manifest, ctx):
                 for name in SURFACE_COMMANDS.get(surface, []):
                     p = os.path.join(rd, "raw", name + ".stderr")
                     if os.path.isfile(p):
-                        tails[name] = [ctx.text(l) for l in stderr_tail(open(p, errors="replace").read())]
+                        with open(p, errors="replace") as f:
+                            tails[name] = [ctx.text(l) for l in stderr_tail(f.read())]
                 res = {"surface": surface, "status": "FAILED", "items": {},
                        "error": "%s: %s" % (type(ex).__name__, ex), "stderr_tail": tails}
         oc.write_json(os.path.join(rd, "items", surface + ".json"), res, indent=None)

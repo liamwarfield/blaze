@@ -1,39 +1,79 @@
 #!/usr/bin/env python3
-"""Compare two per-name test result files (from scripts/gate/run-tests).
+"""Compare two per-name test results (from scripts/gate/run-tests) with the acceptance rule.
 
-Usage: scripts/gate/compare-tests <base.json> <new.json> [--name-map map.tsv]
+Usage: scripts/gate/compare-tests <base> <new> [--name-map map.tsv] [--list N]
+       scripts/gate/compare-tests help
 
-Rule: every name that passed in base must pass in new. Lost (pass -> fail/ignored) and absent
-(pass -> missing) names are regressions; new passes never compensate. Exit 1 on any regression.
---name-map: TSV of `old_name<TAB>new_name<TAB>reason` for renamed or moved tests.
+<base> and <new> are run-tests results or baselines, plain JSON or .json.gz. The accepted
+baseline is docs/state/tests-baseline.json.gz.
+
+Rule: every name that passed in <base> must pass in <new>.
+  LOST    passed in base, fails or is ignored in new
+  ABSENT  passed in base, not in new at all (deleted, renamed, its crate did not build, not run)
+Both are regressions; new passes never compensate for them.
+  --name-map  TSV of `old_name<TAB>new_name<TAB>reason` for tests that were renamed or moved
+  --list N    print at most N names per kind (default 50)
+
+Exit status: 0 when no name was lost or absent, 1 otherwise, 2 on usage errors.
 """
-import json, sys
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import gate_lib  # noqa: E402
+
+
+def describe(doc):
+    c = doc.get("counts", {})
+    return "commit %s%s; pass %s, fail %s, ignored %s" % (
+        doc.get("commit"), " (DIRTY tree)" if doc.get("tree_dirty") else "", c.get("pass"), c.get("fail"),
+        c.get("ignored"))
+
 
 def main(argv):
-    if len(argv) < 2 or argv[0] in ("help", "--help"):
-        print(__doc__); return 0
-    base = json.load(open(argv[0]))["results"]
-    new = json.load(open(argv[1]))["results"]
-    mapping = {}
-    if "--name-map" in argv:
-        for line in open(argv[argv.index("--name-map") + 1]):
-            if line.strip() and not line.startswith("#"):
-                old, newname, *_ = line.rstrip("\n").split("\t")
-                mapping[old] = newname
-    lost, absent, retained, recovered, added = [], [], 0, [], []
-    for name, st in base.items():
-        cur = new.get(mapping.get(name, name))
-        if st == "pass":
-            if cur is None: absent.append(name)
-            elif cur != "pass": lost.append((name, cur))
-            else: retained += 1
-        elif cur == "pass":
-            recovered.append(name)
-    mapped_new = set(mapping.get(n, n) for n in base)
-    added = [n for n, st in new.items() if n not in mapped_new and st == "pass"]
-    print(f"retained {retained}  recovered {len(recovered)}  new-pass {len(added)}  lost {len(lost)}  absent {len(absent)}")
-    for n, st in lost[:50]: print(f"  LOST   {n} -> {st}")
-    for n in absent[:50]: print(f"  ABSENT {n}")
-    return 1 if lost or absent else 0
+    if argv[:1] and argv[0] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    paths, mapping, limit = [], {}, 50
+    i = 0
+    try:
+        while i < len(argv):
+            if argv[i] == "--name-map":
+                mapping = gate_lib.read_name_map(argv[i + 1])
+                i += 2
+            elif argv[i] == "--list":
+                limit = int(argv[i + 1])
+                i += 2
+            elif argv[i].startswith("--"):
+                raise ValueError("unknown option %s" % argv[i])
+            else:
+                paths.append(argv[i])
+                i += 1
+        if len(paths) != 2:
+            raise ValueError("expected <base> and <new>")
+        base, new = gate_lib.load_results(paths[0]), gate_lib.load_results(paths[1])
+    except (ValueError, IndexError, OSError) as e:
+        print("error: %s\n\n%s" % (e, __doc__), file=sys.stderr)
+        return 2
+    print("base: %s" % describe(base))
+    print("new:  %s" % describe(new))
+    for p in new.get("problems") or []:
+        print("PROBLEM in new: %s" % p)
+    cmp = gate_lib.compare_tests(base["results"], new["results"], mapping)
+    print("retained %d  recovered %d  new-pass %d  lost %d  absent %d" % (
+        cmp["retained"], len(cmp["recovered"]), len(cmp["added"]), len(cmp["lost"]), len(cmp["absent"])))
+    for name, status in cmp["lost"][:limit]:
+        print("  LOST   %s -> %s" % (name, status))
+    for name in cmp["absent"][:limit]:
+        print("  ABSENT %s" % name)
+    hidden = max(0, len(cmp["lost"]) - limit) + max(0, len(cmp["absent"]) - limit)
+    if hidden:
+        print("  ... %d more (raise --list)" % hidden)
+    bad = gate_lib.regressions(cmp)
+    print("result: %s" % ("PASS (no name lost)" if not bad else "FAIL (%d names that passed no longer pass)" % bad))
+    return 1 if bad else 0
 
-sys.exit(main(sys.argv[1:]))
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

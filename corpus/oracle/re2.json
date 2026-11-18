@@ -1,7 +1,9 @@
 {
  "binary_sha256": "2e14c55c298752d71e8a0bbd762665ffce5966c9ad00ec5d1a8b82a58e7bfa06",
+ "blaze_repo": null,
  "checkout_commit": "2da0056814cf180480a19f5cf811e7e1c054bf6d",
  "created": "2026-11-18T02:06:36+00:00",
+ "exceptions": [],
  "exit_codes": {
   "aquery_deps_jsonproto": 0,
   "build": 0,
@@ -14,12 +16,13 @@
   "query_jsonproto": 0,
   "query_label_kind": 0
  },
+ "extractor_sha256": "cdf91c84cbdf3df31f2613a57843f84e3f89b659938d8c89e624cbeade512078",
  "files_sha256": {
-  "items/aquery_actions.json": "625403fcfaec4ac62f86e1011b99881994915fad07266a25b35f9630a0a3849e",
+  "items/aquery_actions.json": "8f36b55ab0cfe8e31ad9bf2d340cbe313fd4db95405be5a2d2127216948ce339",
   "items/bep.json": "9f4e55ea4155bbacd537fd92a93698b600b2326a4e6e40303edb946990786e68",
   "items/build_stderr.json": "22f5656ba5e3c745ebc7711a66aa77038195a7cfee93bf47fdd0a9f8fb41ef6c",
-  "items/cquery_jsonproto.json": "e0054dc4d737ed621ab910b248f66b30687af39b6096efed6cbc9e325105547f",
-  "items/cquery_label_kind.json": "573123c4414b2373c4b9cc60d085c86ace7d71c682a149a32b1feb12ddd06a35",
+  "items/cquery_jsonproto.json": "f9e482ccea87b89da68db16488d9b9125092ce60cb45b6cdfd7106d88d7256a9",
+  "items/cquery_label_kind.json": "1620f6a72096e5751a88bf72b76ada4ed6c28fb3c99c6877a68ada9af72a8429",
   "items/execlog.json": "ef532ce77a6c5ab68c046a75dffa3da16ab792c852511211b9883b0c9b286a05",
   "items/exit_codes.json": "284790ef6ec1d751ecdd59c71d1daca83065910cbedae0b864152345bb4074a0",
   "items/lockfile.json": "1ff3bccab084bd0c3a24f684708a2f32190f7b12cfd346011b1f0e63700c5fa4",
@@ -53,7 +56,7 @@
  ],
  "surfaces": {
   "aquery_actions": {
-   "items": 1420,
+   "items": 1428,
    "status": "OK"
   },
   "bep": {
@@ -65,11 +68,11 @@
    "status": "OK"
   },
   "cquery_jsonproto": {
-   "items": 37,
+   "items": 39,
    "status": "OK"
   },
   "cquery_label_kind": {
-   "items": 3295,
+   "items": 3296,
    "status": "OK"
   },
   "execlog": {

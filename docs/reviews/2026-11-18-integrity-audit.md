@@ -369,3 +369,109 @@ silently), S1-3 (HEAD does not build), S1-4 with claims rows 9, 13, 14, 18, 25, 
 claims that the evidence contradicts). The referee itself, its reference recordings and the
 absence of hardcoded answers are sound; the item-level results for query, cquery, aquery, mod
 graph and the lockfile are real.
+
+---
+
+# Round 2A: referee and gate (re-check of S1-1 referee part, S2-2, S2-3, S2-6, rec. 1-3)
+
+Date 2026-11-18, 10:00-10:30 MST. Same auditor role, read-only, no Cargo.
+Scope: the uncommitted changes under `scripts/oracle`, `scripts/gate`, `scripts/git-hooks`,
+`corpus/oracle`, `docs/state` on HEAD `88dbfa60f523aa6271a0f7407d5df20b980934f3`, as described in
+`2026-11-18-integrity-audit-response.md`. Reviewed state: sha256
+`40dc9a6724c1483bd8ae5c6dbbd810a639258871366f3c70b9bb0f4ce053a643` over
+`git diff HEAD --binary -- <the five paths>` followed by `<path> <sha256>` of the 18 untracked
+files in path order. Other agents were adding files elsewhere in `scripts/` meanwhile; those are
+not covered.
+
+**Verdict for this scope: PASS. Root may commit these paths.** The round-1 STOP stays in force for
+everything outside this scope (S1-1 in Rust, S1-2, S1-4, S2-5 and following). Follow-ups R2A-1
+to R2A-6 below belong in the next protected batch; R2A-1 first.
+
+## What was checked, and the result
+
+1. **Nothing loosened.** `normalise.py` and `test_normalise.py` are unchanged. `allow.json`: the
+   only change is `max_items` on both entries; `item`, `kinds`, `only_fields`, `projects` are
+   byte-identical. `surfaces.py`: only additions (order items) and one file-handle fix; no
+   existing item value or key changed. Proof on the data: for brotli, re2 and workerd, the three
+   changed item files of `oracle-9.3.2`, with the new `__order__` keys removed and re-serialised,
+   hash to exactly the values committed at HEAD in `corpus/oracle/*.json`; the other 25
+   `norm/`/`items/` hashes are unchanged; `corpus/oracle/*.json` differs from HEAD only in those
+   three hashes, the three item counts, `extractor_sha256`, `blaze_repo`, `exceptions`.
+2. **Raw recordings untouched.** Every `raw/` file of the reference matches its manifest; newest
+   raw mtime is the recording time (brotli 11-17 19:00, re2 19:06, workerd 11-18 08:13); the
+   25 unchanged derived files could not be reproduced from altered raw input. Running `compare`
+   six times left no file under `~/.cache/blaze/oracle-records` newer than my timestamp (reports
+   were directed to a scratch path with `--report`; the default still writes under `compare/`).
+3. **Oracle against itself, run by me:**
+   `compare oracle-9.3.2 oracle-9.3.2-rerun --project brotli --project re2` → exit 0,
+   `100% MATCH [restricted to projects brotli,re2]`, 26 of 26 surfaces, 13,916 = 13,858 matching
+   + 58 allowed; same for `-check`; `compare oracle-9.3.2-rerun oracle-9.3.2-check` (no
+   restriction) → exit 0, same numbers. `compare oracle-9.3.2 oracle-9.3.2-rerun` unrestricted →
+   exit 1, 8 workerd surfaces MISSING, 2 under the exception: the new rule working.
+4. **Order is deterministic for every sub-output added (brotli, re2), checked on raw files,**
+   not on items: `raw/cquery_deps_label_kind.stdout` byte-identical in the three recordings;
+   cquery jsonproto result order and configuration `(id, checksum)` identical; aquery `targets`,
+   `artifacts`, `depSetOfFiles`, `pathFragments`, `configuration`, `ruleClasses` identical
+   including ids; the id-valued fields of all 60 / 1,420 actions identical in order; the only
+   action fields that differ between raw recordings are `actionKey` and `fileContents` (paths).
+   Not verified: `__order__ aspectDescriptors` exists only for workerd, which has one recording.
+5. **Missing or failed evidence fails.** Confirmed by reading `compare_surface`,
+   `compare_labels`, `Comparison.failures` and by runs: `blaze-w4 --project brotli` → exit 1, 7
+   surfaces MISSING, 58.3% (was "MATCH" rows only); `blaze-int` brotli+re2 → exit 1, 7 DIFF,
+   13,834 + 58 + 24, among them `__order__ deps` and the seven aquery order items per project, so
+   S1-1 is now visible. Empty-vs-empty is MATCH only with equal, successful exit codes. Caps:
+   over the cap an entry excuses nothing and the run fails; an unnamed project has cap 0.
+   The reference must match `corpus/oracle/<project>.json` or the surface is FAILED.
+6. **Commit binding and labels.** `record` stores `blaze_repo` (commit, dirty flag, diff sha256)
+   and refuses an existing label or a second binary under one label unless `--force`
+   (`label_conflicts`, exercised by `test_record.py` with a stand-in binary in temp directories).
+7. **workerd splice** is declared in the manifest and the summary; `exit_codes` shows `DIFF*`
+   (0 vs 8) and `aquery_actions` `FAILED*` against `oracle-9.3.2-workerd`; a surface under an
+   exception never passes.
+8. **Gate.** `docs/state/tests-baseline.json.gz` (sha256 `7abd0509…4111c`, matches its `.sha256`
+   file and is reproducible from its own JSON): commit `88dbfa6`, clean tree, 6,066 names, 3,973
+   pass, 1 fail, 2,092 ignored, 322 executables, `cargo_exit` 101. It equals both stored results
+   `~/.cache/blaze/work/gate/tests-88dbfa6{,-run2}.json` name for name. Static cross-check at
+   HEAD: 26 of 34 crates have exactly as many `#[test]` as baseline names; the other 8 have more
+   names than attributes (macro-generated tests), none fewer. I could not rerun the tests and the
+   raw Cargo logs were not kept, so the baseline rests on those two result files.
+   `compare-tests`, `baseline`, `protected.py` and the hooks do what they say (list read from
+   HEAD; `append-only` honoured; approval text goes into the commit message).
+9. **Unit tests:** `python3 -I -B -m unittest discover -s scripts/oracle` 96 OK;
+   `-s scripts/gate` 40 OK; neither changes `git status`. Hooks are not installed
+   (`core.hooksPath` unset).
+
+## Follow-ups (not blocking this commit)
+
+- **R2A-1 (S2, pre-existing, missed by me in round 1): the allow-list check can be bypassed by
+  volume.** `diff_paths(limit=200)` stops after 200 differing leaves and `AllowList.match` judges
+  only the paths it got. Demonstrated on the re2 reference `buildMetrics` event: changing `count`
+  and `skyfunctionName` in the five allowed lists (244 allowed paths) and also `targetMetrics`
+  and `buildGraphMetrics.outputArtifactCount` gives `status MATCH, ALLOWED 1`; with fewer than
+  200 allowed paths the same edit is DIFF. `blaze-int` is not affected today (6 and 7 differing
+  paths, all allowed). Fix: never excuse a DIFF whose path list was truncated (or collect all
+  paths for allow-list decisions), with a test.
+- **R2A-2 (S2): the commit in a manifest is the recorder's checkout, not the binary's origin.**
+  `oc.repo_state()` reads `REPO_ROOT`; `--binary` may be any file. The procedure in
+  `docs/state/README.md` makes them agree, nothing checks it. Record at least whether the binary
+  lies inside that checkout and is newer than its HEAD commit, and warn otherwise; better, stamp
+  the commit into the binary at build time and compare.
+- **R2A-3 (S2): a dirty tree or an unrecorded commit is only a warning.** `compare` can print
+  `100% MATCH` and `scoreboard --write` can write `corpus/scores/` for such a label. An accepted
+  score should require a recorded, clean commit (`--allow-dirty` as the named exception).
+- **R2A-4 (S2): `compare-scores` is a ratchet on counts, not on names.** One item lost and one
+  gained in a surface passes. Store the non-matching item keys in the score document and require
+  the new set to be a subset of the old one.
+- **R2A-5 (S3):** the reference's `exceptions` are read from the manifest in `~/.cache`, which is
+  not hash-anchored; take them from `corpus/oracle/<project>.json` as well. "Committed summary"
+  is the working-tree file, not `HEAD:`. `--force` leaves `replaced` in the manifest but no
+  warning in `compare`/`scoreboard`. `compare-tests` prints a result's `problems` without failing,
+  and does not report names that were `ignored` in the baseline and are now gone ("never
+  deleted"). Keep the raw Cargo log (or its sha256) with a baseline.
+- **R2A-6 (S3): protected list.** Add `docs/reviews/` (append-only: verdicts), `docs/decisions.md`,
+  `scripts/w1`..`w7`, `w4a`, `w5r`, `scripts/workerd`, `scripts/cargo-capped`, `.gitignore`. The
+  hook code itself runs from the working tree, so install the hooks and review any diff to them.
+- Still open from round 1 and stated as such in the response: `shutdown` exit code,
+  `_STDERR_KEEP`, `paths_only` boundary; no Blaze label from a clean commit yet; the baseline
+  contains one failing test at HEAD (`blaze_sky_exec … file_write_then_symlink_builds_and_sets_output_permissions`),
+  so "tests green" is not true at `88dbfa6`.

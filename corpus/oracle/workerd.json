@@ -1,7 +1,31 @@
 {
  "binary_sha256": "2e14c55c298752d71e8a0bbd762665ffce5966c9ad00ec5d1a8b82a58e7bfa06",
+ "blaze_repo": null,
  "checkout_commit": "6ee5f1717a0a984d971672bc75dcdfda415fb842",
  "created": "2026-11-18T15:12:21+00:00",
+ "exceptions": [
+  {
+   "commands": [
+    "aquery_deps_jsonproto"
+   ],
+   "explanation": "Not a recording made by scripts/oracle/record's protocol. On a fresh output base the oracle's `aquery deps(//src/workerd/server:workerd) --output=jsonproto` exits 8 (build interrupted) and leaves no usable output; label oracle-9.3.2-workerd holds that recording unchanged (aquery_actions FAILED, exit code 8). In this record the exit code of aquery_deps_jsonproto was changed by hand from 8 to 0 and raw/aquery_deps_jsonproto.stdout was replaced by the output of the same command run on ~/.cache/blaze/oracle-out/ur-workerd after a full oracle build (scripts/workerd/run oracle aquery ...; docs/workerd.md). Absolute paths in it name that output base and are not normalised. A candidate that exits 0 and prints these actions matches something the oracle does not do under the protocol, so the two surfaces are compared for information and never count as a pass.",
+   "id": "workerd-aquery-spliced",
+   "items": {
+    "aquery_actions": "all",
+    "exit_codes": [
+     "aquery_deps_jsonproto"
+    ]
+   },
+   "kind": "spliced",
+   "protocol_exit_code": 8,
+   "protocol_recording": "oracle-9.3.2-workerd",
+   "stored_exit_code": 0,
+   "surfaces": [
+    "aquery_actions",
+    "exit_codes"
+   ]
+  }
+ ],
  "exit_codes": {
   "aquery_deps_jsonproto": 0,
   "cquery_deps_label_kind": 0,
@@ -13,12 +37,13 @@
   "query_jsonproto": 0,
   "query_label_kind": 0
  },
+ "extractor_sha256": "cdf91c84cbdf3df31f2613a57843f84e3f89b659938d8c89e624cbeade512078",
  "files_sha256": {
-  "items/aquery_actions.json": "b6ac166365b542f28b154c4406d67a0402bf8b096592609c98566e1be5f40b7a",
+  "items/aquery_actions.json": "66c5139a0a627682572997b75fdb18e2b8d9ab1fd4f1fe5074a305f74c377fa4",
   "items/bep.json": "8d1061f40304b1f3481c560b7e78b2dd070d7e6c94a9124e954b9767a870e436",
   "items/build_stderr.json": "000e48353060197c1b2ffe3972ec9c7c1ea0ad28d868a3a698e6ee2e091f3aa8",
-  "items/cquery_jsonproto.json": "7e65e006032e7a1d7aa0604f1cf82f815316d77f3dc4cb12d721c43883e75fd9",
-  "items/cquery_label_kind.json": "09c7c6445e4762105e263a3514eb43fdde54ad72a0912b67978e6dd2d80de54a",
+  "items/cquery_jsonproto.json": "3c6c872a003e0b3dccb9f142a2a4ac5e646c7f78956f9c61c435546f17378318",
+  "items/cquery_label_kind.json": "cfb2336072c52eb008ace7091574bcb9d35f552ffbb554e81c75f596eeae3cec",
   "items/execlog.json": "dae472471a682876e6588d29d9fa9881ac27c692a1a53950917b959b6c4a05da",
   "items/exit_codes.json": "ff273a82394224d5e351eb57f2f3773bf9cb920540b393e42765d2134cc71cfb",
   "items/lockfile.json": "5872e001fcab719b1fe2495b05bf27e3e767ed6367b67fd1dccf7bc249f525aa",
@@ -44,7 +69,7 @@
  ],
  "surfaces": {
   "aquery_actions": {
-   "items": 13416,
+   "items": 13425,
    "status": "OK"
   },
   "bep": {
@@ -56,11 +81,11 @@
    "status": "SKIPPED"
   },
   "cquery_jsonproto": {
-   "items": 2,
+   "items": 4,
    "status": "OK"
   },
   "cquery_label_kind": {
-   "items": 38891,
+   "items": 38892,
    "status": "OK"
   },
   "execlog": {

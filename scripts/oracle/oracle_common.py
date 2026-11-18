@@ -6,6 +6,7 @@ Standard library only. Imported by scripts/oracle/{record,compare,scoreboard}.
 import hashlib
 import json
 import os
+import subprocess
 import sys
 
 HOME = os.path.expanduser("~")
@@ -17,6 +18,7 @@ OUTPUT_ROOTS = os.path.join(CACHE, "oracle-out")
 REPO_CACHE = os.path.join(CACHE, "repo-cache")
 CORPUS_MANIFEST = os.path.join(REPO_ROOT, "corpus", "projects.json")
 CORPUS_SUMMARIES = os.path.join(REPO_ROOT, "corpus", "oracle")
+CORPUS_SCORES = os.path.join(REPO_ROOT, "corpus", "scores")
 ALLOW_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "allow.json")
 REFERENCE_LABEL = "oracle-9.3.2"
 
@@ -107,3 +109,64 @@ def die(msg, code=2):
 def canonical(obj):
     """Stable string form of a JSON value, used for keys and equality."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def load_manifest(label, project):
+    """manifest.json of one recording, or None when the project was not recorded under label."""
+    path = os.path.join(record_dir(label, project), "manifest.json")
+    if not os.path.isfile(path):
+        return None
+    return read_json(path)
+
+
+def _git(root, *args):
+    p = subprocess.run(["git", "--no-optional-locks", "-C", root] + list(args),
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return p.stdout if p.returncode == 0 else None
+
+
+def repo_state(root=None):
+    """The commit and cleanliness of the Blaze repository at `root` (default: this checkout).
+
+    {"commit": <git rev-parse HEAD>, "dirty": bool, "dirty_paths": N, "dirty_diff_sha256": hex}.
+    The tree is dirty when `git status --porcelain` lists anything (modified, staged or untracked,
+    ignored files excepted). dirty_diff_sha256 identifies the uncommitted state: sha256 over
+    `git diff HEAD --binary` followed by "<path>\0<sha256 of content>\n" for every untracked file
+    in path order; null for a clean tree. Every value is null outside a git checkout.
+    """
+    root = root or REPO_ROOT
+    head = _git(root, "rev-parse", "HEAD")
+    if head is None:
+        return {"commit": None, "dirty": None, "dirty_paths": None, "dirty_diff_sha256": None}
+    status = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all") or b""
+    entries = [e for e in status.split(b"\0") if e]
+    state = {"commit": head.decode().strip(), "dirty": bool(entries), "dirty_paths": len(entries),
+             "dirty_diff_sha256": None}
+    if entries:
+        h = hashlib.sha256()
+        h.update(_git(root, "diff", "HEAD", "--binary") or b"")
+        untracked = _git(root, "ls-files", "--others", "--exclude-standard", "-z") or b""
+        for path in sorted(p for p in untracked.split(b"\0") if p):
+            full = os.path.join(root.encode(), path)
+            digest = sha256_file(full) if os.path.isfile(full) and not os.path.islink(full) else "-"
+            h.update(path + b"\0" + digest.encode() + b"\n")
+        state["dirty_diff_sha256"] = h.hexdigest()
+    return state
+
+
+def referee_sha256():
+    """sha256 over the files that decide what a recording's items are and how they compare."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    h = hashlib.sha256()
+    for name in ("normalise.py", "surfaces.py", "oracle_compare.py", "allow.json"):
+        h.update(name.encode() + b"\0" + sha256_file(os.path.join(here, name)).encode() + b"\n")
+    return h.hexdigest()
+
+
+def extractor_sha256():
+    """sha256 over the files that turn raw/ into norm/ and items/ (normalise.py, surfaces.py)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    h = hashlib.sha256()
+    for name in ("normalise.py", "surfaces.py"):
+        h.update(name.encode() + b"\0" + sha256_file(os.path.join(here, name)).encode() + b"\n")
+    return h.hexdigest()

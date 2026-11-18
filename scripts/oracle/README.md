@@ -8,12 +8,51 @@ usage with `help`.
 
 ```
 scripts/oracle/record --binary ~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64 \
-    --label oracle-9.3.2 --project all
-scripts/oracle/record --binary <blaze> --label blaze-<rev> --project all
-scripts/oracle/compare oracle-9.3.2 blaze-<rev> [--project re2] [--surface aquery_actions]
-scripts/oracle/scoreboard blaze-<rev>
-python3 -I -m unittest discover -s scripts/oracle      # normaliser and comparer tests
+    --label oracle-9.3.2 --project all --force      # the reference exists; replacing it needs --force
+scripts/oracle/record --binary <blaze> --label blaze-<commit> --project all
+scripts/oracle/compare oracle-9.3.2 blaze-<commit> [--project re2] [--surface aquery_actions]
+scripts/oracle/scoreboard blaze-<commit> [--markdown | --json] [--write]
+python3 -I -m unittest discover -s scripts/oracle      # normaliser, comparer and recorder tests
 ```
+
+Modules: `normalise.py` and `surfaces.py` (raw output to items), `oracle_compare.py` (statuses,
+allow list, denominators), `oracle_report.py` (what the tools print, the score document),
+`oracle_common.py` (paths, provenance); `fixture_records.py` is test support.
+
+This directory, `corpus/` and `docs/state/` are protected paths
+(`scripts/gate/protected-paths.txt`): they change only in a batch that names them.
+
+## What counts as a pass
+
+Only `MATCH` is a pass. `compare` exits 0 only when every project/surface in scope is `MATCH`
+and at least one was compared.
+
+- The scope is every project recorded under either label and every surface. A project or
+  surface that the candidate did not record is `MISSING`, and each of its reference items counts
+  as failed; one that only the candidate has is `NO_REFERENCE`. Both fail. `--project` and
+  `--surface` restrict the scope explicitly; the result line then says `[restricted to ...]`, what
+  was left out is listed with its item count, and the report file gets its own name.
+- A surface recorded by neither side is `NOT_RECORDED`: excluded, and listed as excluded.
+- A surface that a side could not produce is `FAILED`. So is one whose `items/` file does not
+  match the sha256 in its `manifest.json`; for the reference, the file must also match the sha256
+  committed in `corpus/oracle/<project>.json`.
+- Zero items on both sides is `MATCH (empty)` only if the reference is genuinely empty and both
+  ran: the commands the surface comes from were run on both sides, succeeded on the reference and
+  exited with the same code on the candidate. Otherwise `FAILED`.
+- A surface named by a declared exception of a recording (below) is compared and marked `*`, and
+  never passes.
+- An allow-list entry that excuses more items than its `max_items` for the project excuses none.
+
+`compare` and `scoreboard` print, for both sides and each project, the binary's sha256 and path,
+the recording date and the Blaze repository commit with its dirty flag; then the denominators in
+reference items: `total = matching + allowed + failed`, `compared`, `extra`, the count of
+surfaces per status, and what was excluded and why. `match%` is `matching / (total - allowed)`,
+rounded down, so a missing surface lowers it and `100.0` means every item.
+
+`scoreboard <label> --write` writes `corpus/scores/<label>.json` and `.md`. They depend only on
+the two recordings and the referee (`referee_sha256`: `normalise.py`, `surfaces.py`,
+`oracle_compare.py`, `allow.json`), so they can be regenerated and diffed. A score is committed
+with the commit that accepts it; `scripts/gate/compare-scores` holds a later score against it.
 
 ## Recording
 
@@ -26,6 +65,8 @@ For each project, `record`:
 2. stops any server and deletes the per-label output user root
    `~/.cache/blaze/oracle-out/rec-<label>` (every recording starts from a fresh output base and
    install base; the repository cache `~/.cache/blaze/repo-cache` is shared);
+   Before any of this, `record` refuses a label that is already in use (see "Labels and commit
+   binding");
 3. runs the steps below with startup options `--output_user_root=<that root> --nohome_rc
    --nosystem_rc`, command options `--repository_cache=... --color=no --curses=no`, environment
    `HOME` and `PATH=/usr/bin:/bin` only, inside one `systemd-run --user --scope -p MemoryMax=12G
@@ -42,7 +83,8 @@ For each project, `record`:
 
 `P` is the project's target patterns joined with ` + `. The build runs right after `mod graph`,
 on a fresh server, so its counters do not depend on the query steps. `--surfaces` selects steps;
-skipped steps make their surfaces `SKIPPED` (not compared).
+skipped steps make their surfaces `SKIPPED`, which `compare` reports as `MISSING` (a failure)
+when the reference has them.
 
 A command that fails does not abort the run. Each surface whose output is missing or
 unparseable is stored as `FAILED` with the error and the stderr tail of its commands; every exit
@@ -51,9 +93,11 @@ on everything else.
 
 Layout of `~/.cache/blaze/oracle-records/<label>/<project>/`:
 
-- `manifest.json`: binary path and sha256, checkout commit, workspace fix-ups, the normaliser
-  context (paths, user, host), every command line with exit code and duration, item counts per
-  surface, and the sha256 of every file below.
+- `manifest.json`: binary path and sha256, the date, `blaze_repo` (commit and dirty state of the
+  Blaze checkout the recorder ran from), checkout commit of the project, workspace fix-ups, the
+  normaliser context (paths, user, host), every command line with exit code and duration, item
+  counts per surface, `extractor_sha256` (the `normalise.py` and `surfaces.py` that built `norm/`
+  and `items/`), and the sha256 of every file below.
 - `raw/`: outputs exactly as the binary wrote them (stdout/stderr per command, exec log, BEP,
   lockfile, output-tree walk, `testxml/`).
 - `norm/`: normalised outputs for people to read and diff: `mod_graph.json`, `MODULE.bazel.lock`,
@@ -63,10 +107,56 @@ Layout of `~/.cache/blaze/oracle-records/<label>/<project>/`:
 - `items/<surface>.json`: `{status, items: {key: value}}`, what `compare` reads.
 
 `record --renormalise --label L --project P` rebuilds `norm/` and `items/` from `raw/` without
-running anything; use it after changing the normaliser or the extractors.
+running anything; use it after changing the normaliser or the extractors. The new directories are
+built in `<record>/.stage` and renamed into place when complete (other tools and tests read the
+reference while it is rebuilt), and the manifest gets a `renormalised` entry. `compare` warns when
+a recording's `extractor_sha256` is not the current one.
 
 For label `oracle-9.3.2`, `record` also writes `corpus/oracle/<project>.json` (committed): item
-counts per surface, exit codes, timings and the sha256 of every `norm/` and `items/` file.
+counts per surface, exit codes, timings, declared exceptions and the sha256 of every `norm/` and
+`items/` file. `compare` checks the reference against these hashes on every run, so a change to
+the reference is a change to a committed, protected file.
+
+## Labels and commit binding
+
+A score names a label, and a label names one binary from one tree:
+
+- `manifest.json` records `blaze_repo`: `commit` (`git rev-parse HEAD`), `dirty` (anything in
+  `git status --porcelain`), `dirty_paths`, and `dirty_diff_sha256` (sha256 over `git diff HEAD
+  --binary` plus path and content hash of every untracked file; null for a clean tree). It is
+  the checkout `record` ran from: build the binary from that checkout. With `binary_sha256`,
+  `binary` and `created` this is what `compare` and `scoreboard` print for both sides.
+- `record` refuses to write to a label/project that exists (even an unfinished directory), and
+  refuses to add a project to a label whose other projects were recorded with another binary.
+  `--force` overrides both; the new manifest then has `replaced` (date, binary and tree of what
+  it replaced).
+- Label convention for Blaze: `blaze-<commit, 12 hex digits>`, with `-dirty-<first 8 of
+  dirty_diff_sha256>` for an uncommitted tree. An accepted score comes from a clean tree.
+- `compare` warns when a label mixes binaries or commits across projects, when the candidate
+  has no recorded commit (recordings older than this rule), and when it was recorded from a dirty
+  tree.
+
+## Declared exceptions
+
+A recording that was not produced by the protocol above says so in its manifest:
+
+```
+"exceptions": [{"id": "...", "kind": "spliced", "surfaces": ["aquery_actions", "exit_codes"],
+                "explanation": "...", ...}]
+```
+
+`id`, `kind`, `explanation` and a non-empty list of `surfaces` are required (`record` refuses a
+malformed entry; `compare` treats one as covering every surface). `compare` and `scoreboard`
+print every exception of both sides; the named surfaces are still compared, are marked `*`, and
+never count as a pass. `record --renormalise` keeps the field and copies it to the committed
+summary. To declare one, add it to the record's `manifest.json` and renormalise.
+
+The one exception today is `workerd-aquery-spliced` in `oracle-9.3.2/workerd`: on a fresh output
+base the oracle's `aquery deps(//src/workerd/server:workerd)` exits 8 (build interrupted), which
+is what label `oracle-9.3.2-workerd` holds. In `oracle-9.3.2/workerd` the exit code was changed
+by hand to 0 and the output replaced by one from a built output base (`protocol_exit_code: 8`,
+`stored_exit_code: 0`, `protocol_recording`). It is useful for comparing actions; it is not
+evidence that exit 0 is right.
 
 ## Surfaces and item keys
 
@@ -77,9 +167,9 @@ counts per surface, exit codes, timings and the sha256 of every `norm/` and `ite
 | `lockfile` | `__bytes_sha256__`; `topkey[subkey]` for object-valued top-level keys (`registryFileHashes[url]`, `moduleExtensions[ext]`, ...); `topkey` otherwise | the value |
 | `query_label_kind` | `pat <label>` / `deps <label>`; `__order__ pat|deps` | kind; the output order |
 | `query_jsonproto` | `pat <label>` / `deps <label>`; `__order__ ...` | the target message |
-| `cquery_label_kind` | `deps <label> (<config>)` | kind |
-| `cquery_jsonproto` | `target <label> (<checksum>)`, `configuration <checksum>` | result (with `configurationId` replaced by the checksum), configuration (without its ordinal id) |
-| `aquery_actions` | primary output exec path (` #2` on a collision) | mnemonic, target, rule class, configuration, aspects, actionKey, argv, env, executionInfo, sorted input and output path sets (depsets and path fragments resolved), param files, file-write and template contents |
+| `cquery_label_kind` | `deps <label> (<config>)`; `__order__ deps` | kind; the item keys in output order |
+| `cquery_jsonproto` | `target <label> (<checksum>)`, `configuration <checksum>`; `__order__ results`, `__order__ configurations` | result (with `configurationId` replaced by the checksum), configuration (without its ordinal id); the result keys in output order, `[id, checksum]` of the configurations in output order |
+| `aquery_actions` | primary output exec path (` #2` on a collision); `__order__ actions`, `__order__ action ids`, `__order__ <list>` | mnemonic, target, rule class, configuration, aspects, actionKey, argv, env, executionInfo, sorted input and output path sets (depsets and path fragments resolved), param files, file-write and template contents; order items below |
 | `build_stderr` | normalised summary line | count |
 | `execlog` | first listed output (spawns without outputs: mnemonic + argv); `__order__` | the SpawnExec without `metrics`/`walltime` |
 | `bep` | the canonical event id | the normalised event |
@@ -87,8 +177,37 @@ counts per surface, exit codes, timings and the sha256 of every `norm/` and `ite
 | `tests` | test label | BEP overall status, run/shard/attempt statuses, and `[suite, case, status]` from `test.xml` |
 
 Proto ids (aquery artifacts, depsets, path fragments, configurations; cquery configuration ids;
-BEP named sets) never appear in keys or values: they are resolved to the paths, files and
-checksums they stand for, so a binary that numbers them differently still matches.
+BEP named sets) never appear in the keys or values of the per-target, per-action and per-event
+items: they are resolved to the paths, files and checksums they stand for, so that each action
+is judged on its own whatever the numbering. Order and numbering are judged separately, by the
+`__order__` items.
+
+### Order items
+
+Where Bazel's output order is deterministic it is compared, as one item per list, so that a
+different order costs one item and does not hide which targets and actions are right:
+
+| item | value |
+|---|---|
+| `query_*`: `__order__ pat`, `__order__ deps` | labels in output order |
+| `cquery_label_kind`: `__order__ deps` | item keys in output order |
+| `cquery_jsonproto`: `__order__ results` | result keys in output order |
+| `cquery_jsonproto`: `__order__ configurations` | `[id, checksum]` per configuration, in output order |
+| `aquery_actions`: `__order__ actions` | `{"order": [action keys in output order]}` |
+| `aquery_actions`: `__order__ action ids` | `{"order": [[key, targetId, configurationId, primaryOutputId, inputDepSetIds, outputIds, aspectDescriptorIds], ...]}` |
+| `aquery_actions`: `__order__ targets`, `artifacts`, `depSetOfFiles`, `pathFragments`, `configuration`, `ruleClasses`, `aspectDescriptors` | `{"order": <the list as printed, ids included>}` (only lists the output has) |
+| `execlog`: `__order__` | spawn keys in (sorted) log order |
+
+aquery order values are objects, so that every item of that surface is an object. Evidence that
+the oracle is deterministic here, from `oracle-9.3.2`, `-rerun` and `-check`, both projects:
+`raw/cquery_deps_label_kind.stdout` is byte-identical in all three; `norm/cquery_jsonproto.json`
+is byte-identical (results, configurations and their ids); in `norm/aquery_deps_jsonproto.json`
+the lists `targets`, `artifacts`, `depSetOfFiles`, `pathFragments`, `configuration` and
+`ruleClasses` are identical with their ids, and `actions` is identical position by position
+except for the `actionKey` of the runfiles manifest actions (2 in brotli, 54 in re2: the
+allow-list entry). So the per-action items plus the order items decide the whole normalised
+aquery container. Not compared as order: the BEP event sequence and the build stderr line order
+(scheduling-dependent; counted or keyed instead).
 
 ## Normalisation
 
@@ -128,7 +247,7 @@ Per format (`surfaces.py`):
   test logs. Their meaning is compared by the `tests` surface (statuses from BEP; suite, case and
   result from `test.xml`, ignoring times and `system-out`).
 - order: items are compared as sets. Output order is compared only where it is deterministic
-  (`__order__` items for query and the sorted exec log).
+  (`__order__` items for query, cquery, aquery and the sorted exec log; see "Order items").
 
 ## Allow list
 
@@ -139,23 +258,26 @@ that normalisation cannot remove. An entry:
 {"id": "...", "projects": "*" | ["re2"], "surface": "aquery_actions",
  "item": "<regex searched in the item key>", "kinds": ["DIFF" | "MISSING" | "EXTRA"],
  "only_fields": ["<regex fully matching a differing JSON path>", ...],
- "max_items": <optional cap per project and surface>,
+ "max_items": {"brotli": 2, "re2": 54},
  "condition": "...", "reason": "..."}
 ```
 
 The condition is checked on every run: a DIFF is excused only if every differing leaf path
-matches one of `only_fields` (a DIFF entry must name them), and an entry that would excuse more
-than `max_items` items excuses none of them and fails the comparison. Excused items are
-`ALLOWED` in `compare` and `excluded` in `scoreboard`. They apply equally to Blaze recordings, so
-keep entries narrow. Current entries:
+matches one of `only_fields` (a DIFF entry must name them). `max_items` is required: per
+project, the number of items the entry excused when the oracle was compared with itself. A
+project that is not named has the cap 0 (there is no oracle-vs-oracle evidence for it; workerd
+today). An entry that would excuse more items than the cap excuses none of them and fails the
+comparison; an allow list with an entry that lacks `max_items` is refused. Excused items are
+`ALLOWED` in `compare` and `allowed` in `scoreboard`, never counted as matching. They apply
+equally to Blaze recordings, so keep entries narrow. Current entries:
 
-- `runfiles-manifest-action-key`: the action key of runfiles manifest actions fingerprints
-  manifest content that names absolute execroot paths, which differ per recording. Only
-  `actionKey` may differ.
-- `build-metrics-volatile-counters`: in BEP `buildMetrics`, the per-SkyFunction
-  evaluated/built/changed/cleaned/dirtied counts (and their order), the post-invocation Skyframe
-  node count and the action cache `sizeInBytes` vary between identical runs. The other counters in
-  the event are compared.
+- `runfiles-manifest-action-key` (max brotli 2, re2 54): the action key of runfiles manifest
+  actions fingerprints manifest content that names absolute execroot paths, which differ per
+  recording. Only `actionKey` may differ.
+- `build-metrics-volatile-counters` (max brotli 1, re2 1): in BEP `buildMetrics`, the
+  per-SkyFunction evaluated/built/changed/cleaned/dirtied counts (and their order), the
+  post-invocation Skyframe node count and the action cache `sizeInBytes` vary between identical
+  runs. The other counters in the event are compared.
 
 Normalisation and the allow list were derived from three oracle recordings (`oracle-9.3.2`,
 `oracle-9.3.2-rerun`, `oracle-9.3.2-check`); the third found the test-suite expansion order.
@@ -168,11 +290,21 @@ the repository cache with that archive would make the result complete (and chang
 
 ## Oracle against itself
 
-The oracle is recorded twice, as `oracle-9.3.2` (the reference) and `oracle-9.3.2-rerun`, each
-with a fresh output user root (the second reuses the repository cache), and
-`compare oracle-9.3.2 oracle-9.3.2-rerun` must print `100% MATCH`. Any new residual difference
-is normalised away (if it is identity, time or ordering) or added to the allow list with a
-checked condition.
+The oracle is recorded three times, as `oracle-9.3.2` (the reference), `oracle-9.3.2-rerun` and
+`oracle-9.3.2-check`, each with a fresh output user root (the later ones reuse the repository
+cache), and
+
+```
+scripts/oracle/compare oracle-9.3.2 oracle-9.3.2-rerun --project brotli --project re2
+scripts/oracle/compare oracle-9.3.2 oracle-9.3.2-check --project brotli --project re2
+scripts/oracle/compare oracle-9.3.2-rerun oracle-9.3.2-check
+```
+
+must each print `100% MATCH` (26 surfaces, 13,916 reference items, 58 allowed). The first two
+are restricted because the reference also holds workerd, which was recorded once; without the
+restriction they fail with workerd `MISSING`, as they should. Any new residual difference is
+normalised away (if it is identity, time or ordering) or added to the allow list with a checked
+condition and a `max_items` from these runs. Run all three after every change to this directory.
 
 ## Things that make surfaces hard to compare
 

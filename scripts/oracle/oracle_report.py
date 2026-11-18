@@ -1,0 +1,308 @@
+"""What compare and scoreboard print: where both recordings came from, declared exceptions, the
+denominators and the verdict; and the score document that is committed under corpus/scores/.
+
+Everything here is derived from an oracle_compare.Comparison. Nothing in a score document depends
+on when or where it was rendered, so the same recordings and referee always give the same bytes.
+"""
+
+import json
+import os
+
+import oracle_common as oc
+import oracle_compare as ocmp
+
+SCORE_SCHEMA = 1
+COUNT_KEYS = ("total", "compared", "matching", "allowed", "failed", "extra")
+
+
+def short(sha, n=12):
+    return sha[:n] if isinstance(sha, str) and sha else "not recorded"
+
+
+def home_relative(path):
+    """~/... for a path under $HOME (score documents are committed; keep them machine-neutral)."""
+    if isinstance(path, str) and (path == oc.HOME or path.startswith(oc.HOME + os.sep)):
+        return "~" + path[len(oc.HOME):]
+    return path
+
+
+def tree_text(p):
+    """'commit 0123456789ab clean' / '... DIRTY (diff 89abcdef0123, 4 paths)' / 'commit not recorded'."""
+    if not p.get("repo_commit"):
+        return "repo commit not recorded"
+    if p.get("repo_dirty"):
+        return "repo commit %s DIRTY (diff %s)" % (short(p["repo_commit"]), short(p.get("repo_dirty_diff_sha256")))
+    return "repo commit %s clean" % short(p["repo_commit"])
+
+
+def provenance_lines(cmp):
+    """Per side and project: binary, date, repository commit and whether the tree was dirty."""
+    lines = []
+    for side, label, role in (("a", cmp.a, "A, reference"), ("b", cmp.b, "B, candidate")):
+        lines.append("%s (%s)" % (label, role))
+        for project in cmp.projects:
+            p = cmp.provenance[project][side]
+            if not p["recorded"]:
+                lines.append("  %-8s NOT RECORDED under this label" % project)
+                continue
+            lines.append("  %-8s binary sha256 %s %s; recorded %s; %s" % (
+                project, short(p.get("binary_sha256")), home_relative(p.get("binary")), p.get("created"),
+                tree_text(p)))
+    return lines
+
+
+def warning_lines(cmp):
+    """Things that weaken a comparison without changing an item: mixed binaries, stale items."""
+    out = []
+    for side, label in (("a", cmp.a), ("b", cmp.b)):
+        recorded = [cmp.provenance[p][side] for p in cmp.projects if cmp.provenance[p][side]["recorded"]]
+        for field, what in (("binary_sha256", "binaries"), ("repo_commit", "repository commits"),
+                            ("repo_dirty_diff_sha256", "uncommitted states")):
+            values = sorted({str(p.get(field)) for p in recorded})
+            if len(values) > 1:
+                out.append("label %s mixes %s across projects: %s" % (
+                    label, what, ", ".join(short(v) for v in values)))
+        if side == "b":
+            if any(p.get("repo_commit") is None for p in recorded):
+                out.append("label %s does not say which commit it was recorded from" % label)
+            elif any(p.get("repo_dirty") for p in recorded):
+                out.append("label %s was recorded from a dirty tree: the commit alone does not reproduce it" % label)
+    current = oc.extractor_sha256()
+    for project in cmp.projects:
+        for side, label in (("a", cmp.a), ("b", cmp.b)):
+            p = cmp.provenance[project][side]
+            if p["recorded"] and p.get("extractor_sha256") != current:
+                out.append("%s/%s items were extracted by another version of surfaces.py/normalise.py "
+                           "(%s, now %s): run `record --renormalise --label %s --project %s`" % (
+                               label, project, short(p.get("extractor_sha256")), short(current), label, project))
+    return out
+
+
+def exception_lines(cmp):
+    out = []
+    for side, label, project, e in cmp.exceptions():
+        out.append("%s/%s exception %s (kind %s) affects surfaces %s: %s" % (
+            label, project, e["id"], e.get("kind", "unspecified"), ", ".join(e["surfaces"]),
+            e.get("explanation", "no explanation given")))
+    return out
+
+
+def excluded(cmp):
+    """[{project, surface, reason, reference_items}]: what the comparison did not judge, and why."""
+    out = []
+    for r in cmp.results:
+        if r["status"] == "NOT_RECORDED":
+            out.append({"project": r["project"], "surface": r["surface"], "reference_items": 0,
+                        "reason": "recorded by neither side"})
+    for o in cmp.out_of_scope:
+        out.append({"project": o["project"], "surface": o["surface"], "reference_items": o["reference_items"],
+                    "reason": "outside the requested restriction (%s)" % cmp.restriction_text()})
+    return out
+
+
+def _excluded_groups(excl):
+    """Excluded surfaces grouped by (reason, project): [(reason, project, [surfaces], items)]."""
+    groups = {}
+    for e in excl:
+        g = groups.setdefault((e["reason"], e["project"]), [[], 0])
+        g[0].append(e["surface"])
+        g[1] += e["reference_items"]
+    return [(reason, project, s, n) for (reason, project), (s, n) in sorted(groups.items())]
+
+
+def denominator_lines(cmp):
+    t = cmp.totals()
+    s = t["surfaces"]
+    judged = t["total"] - t["allowed"]
+    lines = [
+        "reference items: total %d = matching %d + allowed %d + failed/missing %d; compared %d; extra %d" % (
+            t["total"], t["matching"], t["allowed"], t["failed"], t["compared"], t["extra"]),
+        "matching %s%% of the %d reference items that are not allow-listed" % (ocmp.percent(t), judged),
+        "surfaces in scope: %d = MATCH %d + DIFF %d + FAILED %d + MISSING %d + NO_REFERENCE %d + NOT_RECORDED %d" % (
+            len(cmp.results), s["MATCH"], s["DIFF"], s["FAILED"], s["MISSING"], s["NO_REFERENCE"],
+            s["NOT_RECORDED"]),
+    ]
+    groups = _excluded_groups(excluded(cmp))
+    if groups:
+        lines.append("excluded from the comparison:")
+        for reason, project, surfaces, n in groups:
+            lines.append("  %s: %d surfaces (%d reference items), %s: %s" % (
+                project, len(surfaces), n, reason, ", ".join(surfaces)))
+    else:
+        lines.append("excluded from the comparison: nothing")
+    return lines
+
+
+def allow_usage(cmp, allow):
+    """{entry id: {"items": n, "reason": ...}} for the allow-list entries that excused something."""
+    used = {}
+    for r in cmp.results:
+        for eid, n in r["allow_used"].items():
+            used[eid] = used.get(eid, 0) + n
+    by_id = {e["id"]: e for e in allow.entries}
+    return {eid: {"items": n, "reason": by_id.get(eid, {}).get("reason", "")} for eid, n in sorted(used.items())}
+
+
+def status_text(row):
+    """The row's status with its marks: '*' under a declared exception, '(empty)' for 0 vs 0."""
+    return row["status"] + ("*" if row["exceptions"] else "") + (" (empty)" if row["empty"] else "")
+
+
+# ---------------------------------------------------------------------------------------------
+# the score document (corpus/scores/<label>.json and .md)
+
+
+def score_document(cmp, allow):
+    rows = cmp.rows()
+    prov = {}
+    for project in cmp.projects:
+        prov[project] = {}
+        for side, role in (("a", "reference"), ("b", "candidate")):
+            p = dict(cmp.provenance[project][side])
+            if "binary" in p:
+                p["binary"] = home_relative(p["binary"])
+            p.pop("steps", None)
+            p.pop("exceptions", None)
+            prov[project][role] = p
+    return {
+        "schema": SCORE_SCHEMA,
+        "label": cmp.b,
+        "reference": cmp.a,
+        "verdict": cmp.verdict(),
+        "clean": cmp.clean(),
+        "failures": cmp.failures(),
+        "restriction": cmp.restriction,
+        "referee_sha256": oc.referee_sha256(),
+        "provenance": prov,
+        "warnings": warning_lines(cmp),
+        "exceptions": [{"label": label, "project": project, "id": e["id"], "kind": e.get("kind"),
+                        "surfaces": e["surfaces"], "explanation": e.get("explanation")}
+                       for _, label, project, e in cmp.exceptions()],
+        "rows": rows,
+        "project_totals": {p: ocmp.totals([r for r in rows if r["project"] == p])
+                           for p in sorted({r["project"] for r in rows})},
+        "totals": cmp.totals(rows),
+        "allowed_by": allow_usage(cmp, allow),
+        "excluded": excluded(cmp),
+    }
+
+
+def score_json(doc):
+    return json.dumps(doc, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def _prov_text(p):
+    if not p["recorded"]:
+        return "NOT RECORDED"
+    return "binary sha256 `%s` `%s`; recorded %s; %s" % (
+        short(p.get("binary_sha256")), p.get("binary"), p.get("created"), tree_text(p))
+
+
+def score_text(doc):
+    out = ["scoreboard: %s vs reference %s" % (doc["label"], doc["reference"]), ""]
+    for role in ("reference", "candidate"):
+        out.append("%s %s" % (role, doc[role] if role == "reference" else doc["label"]))
+        for project, sides in doc["provenance"].items():
+            out.append("  %-8s %s" % (project, _prov_text(sides[role]).replace("`", "")))
+    out.append("")
+    for w in doc["warnings"]:
+        out.append("WARNING: " + w)
+    for e in doc["exceptions"]:
+        out.append("EXCEPTION: %s/%s %s (kind %s) affects surfaces %s: %s" % (
+            e["label"], e["project"], e["id"], e["kind"], ", ".join(e["surfaces"]), e["explanation"]))
+    if doc["warnings"] or doc["exceptions"]:
+        out.append("")
+    hdr = "  %-18s %-16s %7s %8s %8s %7s %7s %6s %7s" % (
+        "surface", "status", "total", "compared", "matching", "allowed", "failed", "extra", "match%")
+    for project, t in doc["project_totals"].items():
+        out += ["project %s" % project, hdr, "  " + "-" * (len(hdr) - 2)]
+        for row in doc["rows"]:
+            if row["project"] != project:
+                continue
+            out.append("  %-18s %-16s %7d %8d %8d %7d %7d %6d %7s" % (
+                row["surface"], status_text(row), row["total"], row["compared"], row["matching"],
+                row["allowed"], row["failed"], row["extra"], ocmp.percent(row)))
+        out.append("  %-18s %-16s %7d %8d %8d %7d %7d %6d %7s" % (
+            "TOTAL", "", t["total"], t["compared"], t["matching"], t["allowed"], t["failed"], t["extra"],
+            ocmp.percent(t)))
+        out.append("")
+    t = doc["totals"]
+    s = t["surfaces"]
+    out.append("all projects: total %d = matching %d + allowed %d + failed/missing %d; compared %d; extra %d; "
+               "matching %s%% of the %d items that are not allow-listed" % (
+                   t["total"], t["matching"], t["allowed"], t["failed"], t["compared"], t["extra"],
+                   ocmp.percent(t), t["total"] - t["allowed"]))
+    out.append("surfaces in scope: %d = MATCH %d + DIFF %d + FAILED %d + MISSING %d + NO_REFERENCE %d + "
+               "NOT_RECORDED %d" % (len(doc["rows"]), s["MATCH"], s["DIFF"], s["FAILED"], s["MISSING"],
+                                    s["NO_REFERENCE"], s["NOT_RECORDED"]))
+    if doc["allowed_by"]:
+        out.append("allowed (scripts/oracle/allow.json):")
+        for eid, u in doc["allowed_by"].items():
+            out.append("  %-32s %5d  %s" % (eid, u["items"], u["reason"]))
+    groups = _excluded_groups(doc["excluded"])
+    if groups:
+        out.append("excluded from the comparison:")
+        for reason, project, surfaces, n in groups:
+            out.append("  %s: %d surfaces (%d reference items), %s: %s" % (
+                project, len(surfaces), n, reason, ", ".join(surfaces)))
+    else:
+        out.append("excluded from the comparison: nothing")
+    out.append("referee sha256 %s" % short(doc["referee_sha256"]))
+    out.append("verdict: %s" % doc["verdict"])
+    return "\n".join(out) + "\n"
+
+
+def score_markdown(doc):
+    out = ["# Score: %s against %s" % (doc["label"], doc["reference"]), "",
+           "Verdict: **%s**" % doc["verdict"], "",
+           "Written by `scripts/oracle/scoreboard %s --write`; referee sha256 `%s`. Counts are reference "
+           "items: total = matching + allowed + failed; match%% is matching over total minus allowed." % (
+               doc["label"], short(doc["referee_sha256"])), "",
+           "## Recordings", "", "| side | project | recording |", "|---|---|---|"]
+    for role in ("reference", "candidate"):
+        for project, sides in doc["provenance"].items():
+            out.append("| %s `%s` | %s | %s |" % (
+                role, doc["reference"] if role == "reference" else doc["label"], project, _prov_text(sides[role])))
+    out.append("")
+    if doc["warnings"]:
+        out += ["## Warnings", ""] + ["- %s" % w for w in doc["warnings"]] + [""]
+    if doc["exceptions"]:
+        out += ["## Declared recording exceptions", ""]
+        for e in doc["exceptions"]:
+            out.append("- `%s/%s` **%s** (kind %s), surfaces %s: %s" % (
+                e["label"], e["project"], e["id"], e["kind"], ", ".join(e["surfaces"]), e["explanation"]))
+        out.append("")
+    out += ["## Surfaces", "",
+            "| project | surface | status | total | compared | matching | allowed | failed | extra | match% |",
+            "|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for project, t in doc["project_totals"].items():
+        for row in doc["rows"]:
+            if row["project"] != project:
+                continue
+            out.append("| %s | %s | %s | %d | %d | %d | %d | %d | %d | %s |" % (
+                project, row["surface"], status_text(row), row["total"], row["compared"], row["matching"],
+                row["allowed"], row["failed"], row["extra"], ocmp.percent(row)))
+        out.append("| %s | **total** | | %d | %d | %d | %d | %d | %d | %s |" % (
+            project, t["total"], t["compared"], t["matching"], t["allowed"], t["failed"], t["extra"],
+            ocmp.percent(t)))
+    t = doc["totals"]
+    s = t["surfaces"]
+    out.append("| all | **total** | | %d | %d | %d | %d | %d | %d | %s |" % (
+        t["total"], t["compared"], t["matching"], t["allowed"], t["failed"], t["extra"], ocmp.percent(t)))
+    out += ["",
+            "Surfaces in scope: %d = MATCH %d + DIFF %d + FAILED %d + MISSING %d + NO_REFERENCE %d + "
+            "NOT_RECORDED %d." % (len(doc["rows"]), s["MATCH"], s["DIFF"], s["FAILED"], s["MISSING"],
+                                  s["NO_REFERENCE"], s["NOT_RECORDED"]), ""]
+    out += ["## Allowed and excluded", ""]
+    if doc["allowed_by"]:
+        for eid, u in doc["allowed_by"].items():
+            out.append("- allowed by `%s`: %d items. %s" % (eid, u["items"], u["reason"]))
+    else:
+        out.append("- allowed: nothing")
+    groups = _excluded_groups(doc["excluded"])
+    for reason, project, surfaces, n in groups:
+        out.append("- excluded, %s, %s: %d surfaces (%d reference items): %s" % (
+            project, reason, len(surfaces), n, ", ".join(surfaces)))
+    if not groups:
+        out.append("- excluded: nothing")
+    return "\n".join(out) + "\n"

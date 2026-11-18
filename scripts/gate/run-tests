@@ -1,17 +1,34 @@
 #!/usr/bin/env bash
 # Run the whole workspace test suite and write per-name results as JSON.
-# Usage: scripts/gate/run-tests <out.json> [extra cargo test args...]
-# Output: {"commit": ..., "tree_dirty": bool, "results": {"<crate>::<test path>": "pass|fail|ignored"}}
-# A crate that fails to build makes every one of its tests absent; the compare step reports that.
+# Usage: scripts/gate/run-tests <out.json> [--checkout DIR] [extra cargo test args...]
+#        scripts/gate/run-tests help
+# Runs `scripts/cargo-capped test --workspace --no-fail-fast --message-format=json-render-diagnostics`
+# in this checkout, or in DIR (another checkout of this repository, for example a clean
+# `git worktree` of the commit to be accepted; DIR's own scripts/cargo-capped and target/ are used).
+# Output (see scripts/gate/parse_test_log.py): {"commit", "tree_dirty", "dirty_diff_sha256",
+#   "cargo_exit", "counts", "binaries", "problems",
+#   "results": {"<package>::<target>::<test path>": "pass|fail|ignored"}}
+# commit and tree_dirty describe the checkout that was tested. A crate that fails to build makes
+# every one of its tests absent; scripts/gate/compare-tests reports absent names as regressions.
+# Exit status: 0 when the results were written (whatever the tests did), 2 on usage errors.
 set -euo pipefail
-if [[ "${1:-}" == "help" || "${1:-}" == "--help" || $# -lt 1 ]]; then sed -n '2,5p' "$0"; exit 0; fi
-root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [[ $# -lt 1 || "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+  [[ $# -ge 1 ]] && exit 0 || exit 2
+fi
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+root="$(cd -- "$here/../.." && pwd)"
 out="$(realpath -m "$1")"; shift
-log="$(mktemp -p "${root}/target" gate-tests.XXXXXX.log 2>/dev/null || { mkdir -p "$root/target"; mktemp -p "${root}/target" gate-tests.XXXXXX.log; })"
+if [[ "${1:-}" == "--checkout" ]]; then
+  [[ $# -ge 2 && -x "$2/scripts/cargo-capped" ]] || { echo "error: --checkout needs a checkout with scripts/cargo-capped" >&2; exit 2; }
+  root="$(cd -- "$2" && pwd)"; shift 2
+fi
+mkdir -p "$root/target"
+log="$(mktemp -p "$root/target" gate-tests.XXXXXX.log)"
 cd "$root"
 set +e
-scripts/cargo-capped test --workspace --no-fail-fast "$@" 2>&1 | tee "$log" >/dev/null
-rc=${PIPESTATUS[0]}
+scripts/cargo-capped test --workspace --no-fail-fast --message-format=json-render-diagnostics "$@" >"$log" 2>&1
+rc=$?
 set -e
-python3 -I "$root/scripts/gate/parse_test_log.py" "$log" "$out" "$root"
-echo "cargo exit $rc; log $log; results $out"
+python3 -I "$here/parse_test_log.py" "$log" "$out" "$root" "$rc"
+echo "cargo exit $rc; checkout $root; log $log; results $out"

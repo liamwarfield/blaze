@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Install the repository's git hooks (protected paths).
+# Usage: scripts/git-hooks/install            point git at scripts/git-hooks (core.hooksPath)
+#        scripts/git-hooks/install status     say whether the hooks are active
+#        scripts/git-hooks/install uninstall  unset core.hooksPath
+#        scripts/git-hooks/install help
+# The setting lives in this clone's .git/config and covers all its worktrees. Hooks:
+#   pre-commit  rejects a commit that touches a protected path (scripts/gate/protected-paths.txt)
+#               unless BLAZE_PROTECTED_OK="<batch>: <why>" names the approved batch
+#   commit-msg  appends that approval to the commit message as a `Protected-Paths-OK:` trailer
+set -euo pipefail
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+want="scripts/git-hooks"
+case "${1:-install}" in
+  help|--help|-h) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  status)
+    have="$(git -C "$root" config --get core.hooksPath || true)"
+    if [[ "$have" == "$want" ]]; then echo "hooks active: core.hooksPath=$have"; exit 0; fi
+    echo "hooks NOT active (core.hooksPath=${have:-unset}); run scripts/git-hooks/install"; exit 1 ;;
+  uninstall) git -C "$root" config --unset core.hooksPath || true; echo "core.hooksPath unset" ;;
+  install)
+    chmod +x "$root/$want/pre-commit" "$root/$want/commit-msg"
+    git -C "$root" config core.hooksPath "$want"
+    echo "hooks active: core.hooksPath=$want (pre-commit, commit-msg)" ;;
+  *) echo "error: unknown argument $1 (see scripts/git-hooks/install help)" >&2; exit 2 ;;
+esac

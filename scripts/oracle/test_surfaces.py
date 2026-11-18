@@ -67,6 +67,51 @@ class AquerySummaryTest(unittest.TestCase):
         doc["actions"][0]["primaryOutputId"] = 20
         self.assertEqual(surfaces.aquery_summary(doc), surfaces.aquery_summary(self.DOC))
 
+    def test_order_items(self):
+        doc = json.loads(json.dumps(self.DOC))
+        doc["actions"].append(dict(doc["actions"][0], primaryOutputId=13, outputIds=[13, 10], inputDepSetIds=[2, 1]))
+        keys = list(surfaces.aquery_summary(doc))
+        order = surfaces.aquery_order(doc, keys)
+        self.assertEqual(order["__order__ actions"], {"order": ["bazel-out/k8/a.o", "bazel-out/k8/tree/"]})
+        # key, targetId, configurationId, primaryOutputId, inputDepSetIds, outputIds, aspectDescriptorIds
+        self.assertEqual(order["__order__ action ids"], {"order": [
+            ["bazel-out/k8/a.o", 1, 1, 10, [1], [10], None],
+            ["bazel-out/k8/tree/", 1, 1, 13, [2, 1], [13, 10], None]]})
+        for name in ("targets", "artifacts", "depSetOfFiles", "pathFragments", "configuration", "ruleClasses"):
+            self.assertEqual(order["__order__ " + name], {"order": doc[name]})
+        self.assertNotIn("__order__ aspectDescriptors", order)  # the document has none
+        # Every item of the surface is an object, action or order.
+        self.assertTrue(all(isinstance(v, dict) for v in order.values()))
+
+    def test_action_order_is_compared(self):
+        doc = json.loads(json.dumps(self.DOC))
+        doc["actions"].append(dict(doc["actions"][0], primaryOutputId=13, outputIds=[13]))
+        swapped = dict(doc, actions=doc["actions"][::-1])
+        a, b = surfaces.aquery_summary(doc), surfaces.aquery_summary(swapped)
+        self.assertEqual(a, b)  # as sets of actions they are equal
+        a.update(surfaces.aquery_order(doc, list(a)))
+        b.update(surfaces.aquery_order(swapped, list(b)))
+        r = ocmp.compare_surface("p", "aquery_actions", {"status": "OK", "items": a}, {"status": "OK", "items": b},
+                                 ocmp.AllowList(None))
+        self.assertEqual(r["status"], "DIFF")
+        self.assertEqual(sorted(d["key"] for d in r["details"]), ["__order__ action ids", "__order__ actions"])
+        self.assertEqual(r["counts"]["MATCH"], 2 + 6)
+
+    def test_renumbered_ids_are_an_order_difference(self):
+        doc = json.loads(json.dumps(self.DOC))
+        other = json.loads(json.dumps(self.DOC))
+        for a in other["artifacts"]:
+            a["id"] += 100
+        for d in other["depSetOfFiles"]:
+            d["directArtifactIds"] = [x + 100 for x in d["directArtifactIds"]]
+        other["actions"][0]["outputIds"] = [110]
+        other["actions"][0]["primaryOutputId"] = 110
+        a, b = surfaces.aquery_summary(doc), surfaces.aquery_summary(other)
+        self.assertEqual(a, b)
+        oa, ob = surfaces.aquery_order(doc, list(a)), surfaces.aquery_order(other, list(b))
+        differing = sorted(k for k in oa if oa[k] != ob[k])
+        self.assertEqual(differing, ["__order__ action ids", "__order__ artifacts", "__order__ depSetOfFiles"])
+
     def test_duplicate_primary_outputs_get_suffix(self):
         doc = json.loads(json.dumps(self.DOC))
         doc["actions"].append(dict(doc["actions"][0], mnemonic="Other"))
@@ -191,6 +236,51 @@ class LabelKindTest(unittest.TestCase):
                          [("//:a", "cc_library rule"), ("//:a.c", "source file")])
 
 
+class CqueryOrderTest(unittest.TestCase):
+    def write(self, tmp, name, text):
+        import os
+        os.makedirs(os.path.join(tmp, "raw"), exist_ok=True)
+        os.makedirs(os.path.join(tmp, "norm"), exist_ok=True)
+        with open(os.path.join(tmp, "raw", name + ".stdout"), "w") as f:
+            f.write(text)
+        return {"commands": [{"name": name, "exit_code": 0}]}
+
+    def extract(self, fn, name, text):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="oracle-test-")
+        self.addCleanup(shutil.rmtree, tmp)
+        return fn(tmp, self.write(tmp, name, text), CTX)
+
+    def test_label_kind_order_item(self):
+        text = "cc_library rule //:b (abc)\nsource file //:a.c (null)\ncc_library rule //:a (abc)\n"
+        items = self.extract(surfaces.s_cquery_label_kind, "cquery_deps_label_kind", text)
+        self.assertEqual(items["deps //:b (abc)"], "cc_library rule")
+        self.assertEqual(items["__order__ deps"], ["deps //:b (abc)", "deps //:a.c (null)", "deps //:a (abc)"])
+        lines = text.splitlines()
+        other = self.extract(surfaces.s_cquery_label_kind, "cquery_deps_label_kind",
+                             "\n".join([lines[2], lines[0], lines[1]]) + "\n")
+        r = ocmp.compare_surface("p", "cquery_label_kind", {"status": "OK", "items": items},
+                                 {"status": "OK", "items": other}, ocmp.AllowList(None))
+        self.assertEqual((r["status"], r["counts"]["MATCH"], r["counts"]["DIFF"]), ("DIFF", 3, 1))
+        self.assertEqual(r["details"][0]["key"], "__order__ deps")
+
+    def test_jsonproto_order_items(self):
+        doc = {"configurations": [{"id": 1, "checksum": "abc"}, {"id": 2, "checksum": "def"}],
+               "results": [{"target": {"rule": {"name": "//:b"}}, "configurationId": 2},
+                           {"target": {"rule": {"name": "//:a"}}, "configurationId": 1}]}
+        items = self.extract(surfaces.s_cquery_jsonproto, "cquery_jsonproto", json.dumps(doc))
+        self.assertEqual(items["__order__ results"], ["target //:b (def)", "target //:a (abc)"])
+        self.assertEqual(items["__order__ configurations"], [[1, "abc"], [2, "def"]])
+        # Same targets and configurations, printed in another order and numbered differently.
+        other = {"configurations": [{"id": 1, "checksum": "def"}, {"id": 2, "checksum": "abc"}],
+                 "results": [{"target": {"rule": {"name": "//:a"}}, "configurationId": 2},
+                             {"target": {"rule": {"name": "//:b"}}, "configurationId": 1}]}
+        b = self.extract(surfaces.s_cquery_jsonproto, "cquery_jsonproto", json.dumps(other))
+        differing = sorted(k for k in items if items[k] != b[k])
+        self.assertEqual(differing, ["__order__ configurations", "__order__ results"])
+
+
 class DiffAndAllowTest(unittest.TestCase):
     def test_diff_paths(self):
         a = {"x": 1, "y": [1, 2], "z": {"k": "v"}, "w": [1]}
@@ -200,15 +290,20 @@ class DiffAndAllowTest(unittest.TestCase):
 
     def allow(self, entries):
         al = ocmp.AllowList(None)
-        al.entries = entries
-        for e in entries:
-            e["_item_re"] = ocmp.re.compile(e.get("item", ".*"))
-            e["_field_res"] = [ocmp.re.compile(f) for f in e.get("only_fields", [])]
+        al.entries = [ocmp.AllowList.prepare(e) for e in entries]
         return al
+
+    def test_describe_diff_shows_where_two_lists_part(self):
+        lines = ocmp.describe_diff({"o": ["a", "b", "c"]}, {"o": ["a", "c", "b", "d"]}, ["o"])
+        self.assertEqual(lines[0], "  o: list of 3 vs 4")
+        self.assertIn("    first difference at index 1:", lines)
+        self.assertEqual(lines[-2:], ['    - "b"', '    + "c"'])
+        lines = ocmp.describe_diff(["a"], ["a", "b"], ["$"])
+        self.assertEqual(lines[-3:], ["    first difference at index 1:", "    - (end of list)", '    + "b"'])
 
     def test_only_fields_condition(self):
         al = self.allow([{"id": "ak", "surface": "aquery_actions", "projects": "*", "item": r"MANIFEST$",
-                          "kinds": ["DIFF"], "only_fields": ["actionKey"]}])
+                          "kinds": ["DIFF"], "only_fields": ["actionKey"], "max_items": {"p": 1}}])
         a = {"x/MANIFEST": {"actionKey": "1", "argv": []}}
         b_ok = {"x/MANIFEST": {"actionKey": "2", "argv": []}}
         b_bad = {"x/MANIFEST": {"actionKey": "2", "argv": ["z"]}}
@@ -218,7 +313,7 @@ class DiffAndAllowTest(unittest.TestCase):
         self.assertEqual((r["status"], r["counts"]["DIFF"]), ("DIFF", 1))
 
     def test_max_items_violation(self):
-        al = self.allow([{"id": "any", "surface": "s", "projects": "*", "kinds": ["EXTRA"], "max_items": 1}])
+        al = self.allow([{"id": "any", "surface": "s", "projects": "*", "kinds": ["EXTRA"], "max_items": {"p": 1}}])
         r = ocmp.compare_surface("p", "s", {"status": "OK", "items": {}},
                                  {"status": "OK", "items": {"a": 1, "b": 2}}, al)
         self.assertEqual(r["status"], "DIFF")
@@ -234,10 +329,16 @@ class DiffAndAllowTest(unittest.TestCase):
                                  {"status": "FAILED", "items": {}, "error": "boom"}, al)
         self.assertEqual((r["status"], r["counts"]["MISSING"]), ("FAILED", 1))
         r = ocmp.compare_surface("p", "s", {"status": "OK", "items": {"a": 1}}, {"status": "SKIPPED", "items": {}}, al)
-        self.assertEqual(r["status"], "NOT_COMPARED")
+        self.assertEqual(r["status"], "MISSING")
+        self.assertFalse(ocmp.is_clean(r))
+        r = ocmp.compare_surface("p", "s", {"status": "ABSENT", "items": {}}, {"status": "OK", "items": {"a": 1}}, al)
+        self.assertEqual(r["status"], "NO_REFERENCE")
+        r = ocmp.compare_surface("p", "s", {"status": "ABSENT", "items": {}}, {"status": "SKIPPED", "items": {}}, al)
+        self.assertEqual(r["status"], "NOT_RECORDED")
+        self.assertFalse(ocmp.is_clean(r))
 
     def test_project_filter(self):
-        al = self.allow([{"id": "x", "surface": "s", "projects": ["re2"], "kinds": ["DIFF"]}])
+        al = self.allow([{"id": "x", "surface": "s", "projects": ["re2"], "kinds": ["DIFF"], "max_items": {"re2": 1}}])
         self.assertIsNone(al.match("brotli", "s", "k", "DIFF", ["a"]))
         self.assertIsNotNone(al.match("re2", "s", "k", "DIFF", ["a"]))
 
@@ -246,7 +347,7 @@ class DiffAndAllowTest(unittest.TestCase):
         ids = [e["id"] for e in al.entries]
         self.assertEqual(len(ids), len(set(ids)))
         for e in al.entries:
-            for field in ("id", "surface", "projects", "item", "kinds", "condition", "reason"):
+            for field in ("id", "surface", "projects", "item", "kinds", "max_items", "condition", "reason"):
                 self.assertIn(field, e, "%s lacks %s" % (e.get("id"), field))
             self.assertTrue(set(e["kinds"]) <= {"DIFF", "MISSING", "EXTRA"})
             if "DIFF" in e["kinds"]:

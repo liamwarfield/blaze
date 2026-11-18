@@ -20,14 +20,17 @@ from normalise import Context  # noqa: E402
 
 USAGE = """\
 usage: scripts/oracle/record --binary <path> --label <name> --project <name|all>
-                             [--surfaces mod,build,query,cquery,aquery]
+                             [--surfaces mod,build,query,cquery,aquery] [--force]
                              [--renormalise] [--no-scope] [--summary|--no-summary]
        scripts/oracle/record help
 
 Runs <binary> (real Bazel or Blaze) on corpus projects (corpus/projects.json) and records
 structured outputs, normalised, under ~/.cache/blaze/oracle-records/<label>/<project>/:
 
-  manifest.json        sha256 of every file, binary sha256, command lines, exit codes, durations
+  manifest.json        sha256 of every file; the binary's path and sha256; the date; the Blaze
+                       repository's commit (`git rev-parse HEAD` of this checkout), whether its
+                       tree was dirty and, if so, a sha256 of the uncommitted state; command
+                       lines, exit codes, durations
   raw/                 unnormalised outputs exactly as the binary wrote them
   norm/                normalised outputs (what humans read and diff)
   items/<surface>.json the comparable items of each surface (what `compare` reads)
@@ -49,13 +52,22 @@ bazel-* and .git, then restored to the checkout's git HEAD), wipes the per-label
 A command that fails does not stop the run: its surfaces are recorded as FAILED with the stderr
 tail, and the exit code is itself compared (surface exit_codes).
 
+A label is never reused. `record` refuses a label that already has a directory for the project
+(even an unfinished one), and refuses to add a project to a label whose other projects were
+recorded with a different binary: a label names one binary, and a score names a label. Use a new
+label (for Blaze: blaze-<commit, 12 hex digits>, plus -dirty-<first 8 of the diff sha256> for an
+uncommitted tree) or pass --force, which the new manifest then says (`replaced`).
+
 Options:
   --binary PATH     the bazel-compatible client binary
   --label NAME      record label, e.g. oracle-9.3.2 (the reference) or blaze-<rev>
   --project NAME    a project from corpus/projects.json, or `all`
   --surfaces LIST   comma-separated steps (default: all five)
+  --force           record over an existing label/project, or with another binary than the
+                    label's other projects
   --renormalise     do not run anything; rebuild norm/ and items/ from raw/ (after a normaliser
-                    change)
+                    change). The new directories replace the old ones only when the rebuild
+                    is complete; the manifest keeps a `renormalised` history.
   --no-scope        do not wrap the run in `systemd-run --user --scope -p MemoryMax=12G
                     -p MemorySwapMax=0` (the default wraps it; Bazel servers live in that scope)
   --summary         write corpus/oracle/<project>.json (default only for label oracle-9.3.2)
@@ -238,6 +250,51 @@ def parse_info(text):
     return out
 
 
+def existing_recording(label, project):
+    """What is already recorded for label/project: None, or a short description of it."""
+    rd = oc.record_dir(label, project)
+    if not os.path.lexists(rd):
+        return None
+    m = oc.load_manifest(label, project)
+    if m is None:
+        return "%s exists without a manifest (an interrupted or running recording)" % rd
+    return "%s was recorded %s with binary sha256 %s" % (rd, m.get("created"), m.get("binary_sha256"))
+
+
+def label_conflicts(label, names, binary_sha256):
+    """Reasons why recording projects `names` under `label` with this binary would reuse the label."""
+    out = []
+    for n in names:
+        have = existing_recording(label, n)
+        if have:
+            out.append(have)
+    for other in oc.projects_in(label):
+        if other in names:
+            continue
+        m = oc.load_manifest(label, other)
+        if m.get("binary_sha256") != binary_sha256:
+            out.append("label %s already holds %s recorded with another binary (sha256 %s, this one %s)" % (
+                label, other, m.get("binary_sha256"), binary_sha256))
+    return out
+
+
+def validate_exceptions(manifest):
+    """The manifest's declared exceptions (see README "Declared exceptions"), checked."""
+    excs = manifest.get("exceptions", [])
+    if not isinstance(excs, list):
+        oc.die("manifest field `exceptions` must be a list")
+    for e in excs:
+        ok = (isinstance(e, dict) and isinstance(e.get("id"), str) and e["id"]
+              and isinstance(e.get("kind"), str) and e["kind"]
+              and isinstance(e.get("explanation"), str) and e["explanation"].strip()
+              and isinstance(e.get("surfaces"), list) and e["surfaces"]
+              and all(s in oc.SURFACES for s in e["surfaces"]))
+        if not ok:
+            oc.die("malformed manifest exception %r: it needs id, kind, explanation and a non-empty "
+                   "list `surfaces` of known surfaces" % (e,))
+    return excs
+
+
 def record_project(args, project, spec, steps):
     label = args.label
     rd = oc.record_dir(label, project)
@@ -251,6 +308,12 @@ def record_project(args, project, spec, steps):
     expr = " + ".join(patterns)
 
     print("[record] %s/%s: preparing" % (label, project), flush=True)
+    replaced = None
+    if os.path.lexists(rd):
+        # Only reachable with --force (main refuses otherwise). The new manifest says so.
+        old = oc.load_manifest(label, project) or {}
+        replaced = {"created": old.get("created"), "binary_sha256": old.get("binary_sha256"),
+                    "blaze_repo": old.get("blaze_repo")}
     make_writable_and_remove(rd)
     os.makedirs(raw)
     kill_servers(root)
@@ -340,9 +403,11 @@ def record_project(args, project, spec, steps):
     manifest = {
         "label": label,
         "project": project,
-        "created": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "created": now(),
         "binary": binary,
         "binary_sha256": oc.sha256_file(binary),
+        # The Blaze repository this recorder ran from, read before the first command.
+        "blaze_repo": args.repo_state,
         "checkout": checkout,
         "checkout_commit": spec.get("commit"),
         "workspace_fixups": fixed,
@@ -352,32 +417,63 @@ def record_project(args, project, spec, steps):
         "commands": commands,
         "total_duration_s": total,
     }
+    if replaced is not None:
+        manifest["replaced"] = replaced
     oc.write_json(os.path.join(rd, "manifest.json"), manifest)
     finish(rd)
 
 
-def finish(rd):
-    """(Re)build norm/ and items/ from raw/ and refresh the manifest's file hashes."""
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def remove_stage(stage):
+    """Delete a staging directory without touching raw/, which it only links to."""
+    link = os.path.join(stage, "raw")
+    if os.path.islink(link):
+        os.unlink(link)
+    make_writable_and_remove(stage)
+
+
+def finish(rd, renormalise=False):
+    """(Re)build norm/ and items/ from raw/ and refresh the manifest's file hashes.
+
+    The new norm/ and items/ are built in rd/.stage and renamed into place when complete, so a
+    reader of the recording (a comparison, a test that reads the reference) never sees a
+    half-built directory, and a rebuild that fails leaves the old ones as they were.
+    """
     import surfaces
 
     manifest = oc.read_json(os.path.join(rd, "manifest.json"))
+    validate_exceptions(manifest)
     ctx = Context.from_dict(manifest["context"])
+    stage = os.path.join(rd, ".stage")
+    remove_stage(stage)
     for sub in ("norm", "items"):
-        make_writable_and_remove(os.path.join(rd, sub))
-        os.makedirs(os.path.join(rd, sub))
-    results = surfaces.extract_all(rd, manifest, ctx)
+        os.makedirs(os.path.join(stage, sub))
+    os.symlink(os.path.join(rd, "raw"), os.path.join(stage, "raw"))
+    results = surfaces.extract_all(stage, manifest, ctx)
     manifest["surfaces"] = {
         s: {"status": r["status"], "items": len(r.get("items", {}))} for s, r in results.items()
     }
+    manifest["extractor_sha256"] = oc.extractor_sha256()
+    if renormalise:
+        manifest.setdefault("renormalised", []).append(
+            {"date": now(), "extractor_sha256": manifest["extractor_sha256"]})
     files = {}
-    for sub in ("raw", "norm", "items"):
-        base = os.path.join(rd, sub)
+    for base in (os.path.join(rd, "raw"), os.path.join(stage, "norm"), os.path.join(stage, "items")):
         for dirpath, _, filenames in os.walk(base):
             for fn in filenames:
                 full = os.path.join(dirpath, fn)
-                files[os.path.relpath(full, rd)] = oc.sha256_file(full)
+                files[os.path.join(os.path.basename(base), os.path.relpath(full, base))] = oc.sha256_file(full)
     manifest["files"] = dict(sorted(files.items()))
+    for sub in ("norm", "items"):
+        live, old = os.path.join(rd, sub), os.path.join(stage, sub + ".old")
+        if os.path.lexists(live):
+            os.rename(live, old)
+        os.rename(os.path.join(stage, sub), live)
     oc.write_json(os.path.join(rd, "manifest.json"), manifest)
+    remove_stage(stage)
     for s, r in results.items():
         extra = ""
         if r["status"] != "OK":
@@ -394,6 +490,9 @@ def write_summary(label, project):
         "project": project,
         "created": m["created"],
         "binary_sha256": m["binary_sha256"],
+        "blaze_repo": m.get("blaze_repo"),
+        "extractor_sha256": m.get("extractor_sha256"),
+        "exceptions": m.get("exceptions", []),
         "checkout_commit": m.get("checkout_commit"),
         "project_command": m["project_command"],
         "surfaces": m.get("surfaces", {}),
@@ -416,6 +515,7 @@ def main():
     ap.add_argument("--project", required=True)
     ap.add_argument("--surfaces", default=",".join(oc.STEP_ORDER))
     ap.add_argument("--renormalise", action="store_true")
+    ap.add_argument("--force", action="store_true")
     ap.add_argument("--no-scope", action="store_true")
     ap.add_argument("--summary", dest="summary", action="store_true", default=None)
     ap.add_argument("--no-summary", dest="summary", action="store_false")
@@ -438,7 +538,7 @@ def main():
             if not os.path.isfile(os.path.join(rd, "manifest.json")):
                 oc.die("no record at " + rd)
             print("[record] %s/%s: renormalising" % (args.label, n))
-            finish(rd)
+            finish(rd, renormalise=True)
             if summary:
                 write_summary(args.label, n)
         return 0
@@ -447,7 +547,13 @@ def main():
         oc.die("--binary is required")
     if not os.access(oc.expand(args.binary), os.X_OK):
         oc.die("binary not executable: " + args.binary)
+    conflicts = label_conflicts(args.label, names, oc.sha256_file(os.path.abspath(oc.expand(args.binary))))
+    if conflicts and not args.force:
+        oc.die("label %r is already in use, and labels are never reused:\n  %s\n"
+               "Record under a new label (for Blaze: blaze-<commit>, see `record help`), or pass --force "
+               "to replace it." % (args.label, "\n  ".join(conflicts)))
     maybe_reexec_in_scope(args)
+    args.repo_state = oc.repo_state()
     for n in names:
         record_project(args, n, projects[n], steps)
         if summary:

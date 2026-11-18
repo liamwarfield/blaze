@@ -1,0 +1,36 @@
+# Protected paths: the judge, the baselines, the pin, the contract.
+#
+# A commit that adds, changes, deletes or renames a file under one of these paths is rejected by
+# scripts/git-hooks/pre-commit unless the committer names the approved batch:
+#
+#     BLAZE_PROTECTED_OK="<batch or task>: <why the judge or a baseline changes>" git commit ...
+#
+# The commit-msg hook writes that text into the commit message as a `Protected-Paths-OK:` trailer.
+# Only root sets the variable, for a batch that named the path and was approved; an agent whose
+# task does not name a protected path does not edit it (AGENTS.md).
+#
+# Format: one path per line, relative to the repository root. A path ending in `/` covers
+# everything below it; any other path is one file. `append-only <dir>/` means: new files may be
+# added without approval, existing files may not be changed, deleted or renamed. The longest
+# matching path decides. Lines starting with `#` and blank lines are ignored.
+
+# The referee and the gate (the judge scripts, the allow list, these hooks and this list).
+scripts/oracle/
+scripts/gate/
+scripts/git-hooks/
+scripts/upstream-tests/
+scripts/bep-compare
+
+# Corpus definition, oracle summaries and recorded baselines.
+corpus/
+# Scores of accepted labels: a label is never reused, so a score file is written once.
+append-only corpus/scores/
+
+# Accepted per-name test baseline.
+docs/state/
+
+# The pin, the contract, and the record of patches to the vendored interpreter.
+UPSTREAM.json
+AGENTS.md
+PORTING.md
+third_party/starlark-rust/PATCHES.md

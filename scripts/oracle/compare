@@ -9,24 +9,42 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import oracle_common as oc  # noqa: E402
 import oracle_compare as ocmp  # noqa: E402
+import oracle_report as orep  # noqa: E402
 
 USAGE = """\
 usage: scripts/oracle/compare <labelA> <labelB> [--project P]... [--surface S]...
                               [--show N] [--report PATH] [--no-allow]
        scripts/oracle/compare help
 
-Compares the items/ files of two recordings (scripts/oracle/record) per project and surface.
-Each item is MATCH (equal after normalisation), DIFF (both have it, values differ), MISSING (only
-in A), EXTRA (only in B) or ALLOWED (a difference excused by scripts/oracle/allow.json, whose
-condition was checked on this run). A surface that FAILED on either side is reported FAILED.
+Compares recording B (the candidate) with recording A (the reference) per project and surface,
+from the items/ files that scripts/oracle/record wrote. Each item is MATCH (equal after
+normalisation), DIFF (both have it, values differ), MISSING (only in A), EXTRA (only in B) or
+ALLOWED (a difference excused by scripts/oracle/allow.json, whose condition and max_items were
+checked on this run).
 
-Prints one table row per project/surface and the first N non-allowed differences with context
-(differing JSON paths, '-' value in A, '+' value in B). Writes a JSON report, by default to
-~/.cache/blaze/oracle-records/compare/<A>__vs__<B>.json.
+Each project/surface gets a status; only MATCH is a pass:
+  MATCH         both sides produced the surface and every item is equal or allowed
+  DIFF          both produced it; some item is DIFF, MISSING or EXTRA
+  FAILED        a side ran the commands but could not produce the surface; or an items file does
+                not match its recorded sha256; or both sides have 0 items and that is not
+                verified as genuine (same commands run on both, successful on A, same exit code)
+  MISSING       A has the surface and B did not record it (project absent, step skipped)
+  NO_REFERENCE  B has the surface and A did not record it
+  NOT_RECORDED  neither side recorded it: excluded, listed under the table
+A status with `*` is under a declared exception of a recording (manifest field `exceptions`,
+printed above the table); such a surface is compared but never counts as a pass.
 
-Exit status: 0 when every compared surface matches (allowed differences included), 1 when any
-item is DIFF/MISSING/EXTRA, a surface FAILED, or an allow-list entry exceeded its max_items;
-2 on usage errors.
+The scope is every project of either label and every surface, unless --project/--surface restrict
+it; a restriction is printed with the result and with what it left out.
+
+Prints where both recordings came from (binary sha256, date, repository commit, dirty flag), one
+table row per project/surface, the denominators, and the first N non-allowed differences with
+context (differing JSON paths, '-' value in A, '+' value in B). Writes a JSON report, by default
+to ~/.cache/blaze/oracle-records/compare/<A>__vs__<B>[__only-<restriction>].json.
+
+Exit status: 0 only when every surface in scope is MATCH and at least one was compared;
+1 when any surface is DIFF, FAILED, MISSING or NO_REFERENCE, an allow-list entry exceeded its
+max_items, a surface is under a declared exception, or nothing was compared; 2 on usage errors.
 
 Options:
   --project P   restrict to project P (repeatable; default: every project in either label)
@@ -38,21 +56,30 @@ Options:
 """ % ", ".join(oc.SURFACES)
 
 
-def print_table(results):
-    hdr = "%-8s %-18s %-12s %7s %7s %6s %7s %6s %7s" % (
+def print_table(cmp):
+    hdr = "%-8s %-18s %-16s %7s %7s %6s %7s %6s %7s" % (
         "project", "surface", "status", "total", "MATCH", "DIFF", "MISSING", "EXTRA", "ALLOWED")
     print(hdr)
     print("-" * len(hdr))
-    for r in results:
+    for r, row in zip(cmp.results, cmp.rows()):
         c = r["counts"]
-        total = len(set(r.get("_a", {})) | set(r.get("_b", {}))) if "_a" in r else max(r["total_a"], r["total_b"])
-        print("%-8s %-18s %-12s %7d %7d %6d %7d %6d %7d" % (
-            r["project"], r["surface"], r["status"], total, c["MATCH"], c["DIFF"], c["MISSING"],
+        total = len(set(r["_a"]) | set(r["_b"])) if "_a" in r else max(r["total_a"], r["total_b"])
+        print("%-8s %-18s %-16s %7d %7d %6d %7d %6d %7d" % (
+            r["project"], r["surface"], orep.status_text(row), total, c["MATCH"], c["DIFF"], c["MISSING"],
             c["EXTRA"], c["ALLOWED"]))
 
 
 def print_diffs(results, show):
     shown = 0
+    unrecorded = {}
+    for r in results:
+        if r["status"] in ("MISSING", "NO_REFERENCE"):
+            g = unrecorded.setdefault((r["project"], r["status"]), [[], 0])
+            g[0].append(r["surface"])
+            g[1] += max(r["total_a"], r["total_b"])
+    for (project, status), (names, n) in sorted(unrecorded.items()):
+        print("\n== %s %s: %s did not record %d surfaces (%d items on the other side): %s" % (
+            project, status, "B" if status == "MISSING" else "A", len(names), n, ", ".join(names)))
     for r in results:
         if r["status"] == "FAILED":
             print("\n== %s/%s FAILED" % (r["project"], r["surface"]))
@@ -66,7 +93,7 @@ def print_diffs(results, show):
         for v in r["allow_violations"]:
             print("\n== %s/%s allow-list violation: %s" % (r["project"], r["surface"], v))
         for d in r["details"]:
-            if "allowed_by" in d:
+            if "allowed_by" in d or "_a" not in r:
                 continue
             if shown >= show:
                 continue
@@ -103,23 +130,38 @@ def main():
     for s in args.surface or []:
         if s not in oc.SURFACES:
             oc.die("unknown surface %r" % s)
-    allow = ocmp.AllowList(None if args.no_allow else oc.ALLOW_FILE)
-    results = ocmp.compare_labels(args.a, args.b, args.project, args.surface, allow)
+    try:
+        allow = ocmp.AllowList(None if args.no_allow else oc.ALLOW_FILE)
+    except ocmp.AllowListError as e:
+        oc.die(str(e))
+    cmp = ocmp.compare_labels(args.a, args.b, args.project, args.surface, allow)
+    results = cmp.results
     print("compare %s (A) vs %s (B)\n" % (args.a, args.b))
-    print_table(results)
+    for line in orep.provenance_lines(cmp):
+        print(line)
+    for line in orep.warning_lines(cmp):
+        print("WARNING: " + line)
+    for line in orep.exception_lines(cmp):
+        print("EXCEPTION: " + line)
+    print()
+    print_table(cmp)
     print_diffs(results, args.show)
-    report = args.report or os.path.join(oc.RECORDS, "compare", "%s__vs__%s.json" % (args.a, args.b))
+    report = args.report
+    if not report:
+        name = "%s__vs__%s" % (args.a, args.b)
+        if cmp.restricted():
+            name += "__only-" + "-".join((cmp.restriction["projects"] or []) + (cmp.restriction["surfaces"] or []))
+        report = os.path.join(oc.RECORDS, "compare", name + ".json")
     os.makedirs(os.path.dirname(report), exist_ok=True)
-    oc.write_json(report, ocmp.report_json(args.a, args.b, results))
-    clean = all(ocmp.is_clean(r) for r in results)
-    used = {}
-    for r in results:
-        for eid, n in r["allow_used"].items():
-            used[eid] = used.get(eid, 0) + n
+    oc.write_json(report, ocmp.report_json(args.a, args.b, cmp))
+    print()
+    for line in orep.denominator_lines(cmp):
+        print(line)
+    used = orep.allow_usage(cmp, allow)
     if used:
-        print("\nallow-list entries used: " + ", ".join("%s (%d)" % kv for kv in sorted(used.items())))
-    print("\nreport: %s\nresult: %s" % (report, "100% MATCH" if clean else "DIFFERENCES"))
-    return 0 if clean else 1
+        print("allow-list entries used: " + ", ".join("%s (%d)" % (eid, u["items"]) for eid, u in used.items()))
+    print("\nreport: %s\nresult: %s" % (report, cmp.verdict()))
+    return 0 if cmp.clean() else 1
 
 
 if __name__ == "__main__":

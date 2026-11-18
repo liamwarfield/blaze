@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Compare two committed scores (corpus/scores/<label>.json) with the acceptance rule.
+
+Usage: scripts/gate/compare-scores <base.json> <new.json>
+       scripts/gate/compare-scores help
+
+Both files come from `scripts/oracle/scoreboard <label> --write`. Rule, per project and surface
+of <base>:
+  * the row exists in <new> and counts the same reference items (`total`);
+  * a surface that was MATCH is still MATCH;
+  * `matching` did not decrease, and neither did the surface get a worse kind of status
+    (MATCH > DIFF > FAILED, MISSING, NO_REFERENCE).
+A gain elsewhere never compensates. Rows are compared by count: an item that stopped matching
+while another started is not seen here; use `scripts/oracle/compare` on the two recordings for
+items.
+
+The two scores must come from the same referee (`referee_sha256`) and the same reference
+recording: otherwise the totals mean different things and the tool exits 2. After a referee
+change, score the base label again (`scoreboard <base label> --write`, a protected-path commit)
+and compare with that.
+
+Exit status: 0 no regression, 1 regression, 2 not comparable or usage error.
+"""
+import json
+import sys
+
+# MATCH > DIFF > everything else (FAILED, MISSING, NO_REFERENCE, NOT_RECORDED).
+RANK = {"MATCH": 3, "DIFF": 2}
+
+
+def load(path):
+    with open(path) as f:
+        doc = json.load(f)
+    if not isinstance(doc, dict) or "rows" not in doc or "referee_sha256" not in doc:
+        raise ValueError("%s is not a score written by scripts/oracle/scoreboard" % path)
+    return doc
+
+
+def reference_binaries(doc):
+    return {p: s["reference"].get("binary_sha256") for p, s in doc.get("provenance", {}).items()
+            if s["reference"].get("recorded")}
+
+
+def compare(base, new):
+    """(not-comparable reasons, regressions) for two score documents."""
+    blockers, bad = [], []
+    if base.get("referee_sha256") != new.get("referee_sha256"):
+        blockers.append("different referees: %s vs %s" % (base.get("referee_sha256"), new.get("referee_sha256")))
+    if base.get("reference") != new.get("reference"):
+        blockers.append("different reference labels: %s vs %s" % (base.get("reference"), new.get("reference")))
+    if base.get("restriction") != new.get("restriction"):
+        blockers.append("different restrictions: %s vs %s" % (base.get("restriction"), new.get("restriction")))
+    rows = {(r["project"], r["surface"]): r for r in new["rows"]}
+    for b in base["rows"]:
+        key = (b["project"], b["surface"])
+        where = "%s/%s" % key
+        n = rows.get(key)
+        if n is None:
+            bad.append("%s: row is gone (was %s, matching %d of %d)" % (where, b["status"], b["matching"], b["total"]))
+            continue
+        if n["total"] != b["total"]:
+            blockers.append("%s: reference total changed %d -> %d" % (where, b["total"], n["total"]))
+            continue
+        if RANK.get(n["status"], 1) < RANK.get(b["status"], 1):
+            bad.append("%s: status %s -> %s" % (where, b["status"], n["status"]))
+        elif n["matching"] < b["matching"]:
+            bad.append("%s: matching %d -> %d of %d" % (where, b["matching"], n["matching"], b["total"]))
+        elif b["status"] == "MATCH" and (n.get("exceptions") or n.get("allow_violations")) and not (
+                b.get("exceptions") or b.get("allow_violations")):
+            bad.append("%s: was a clean MATCH, now under an exception or over an allow-list cap" % where)
+    return blockers, bad
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0 if argv else 2
+    try:
+        if len(argv) != 2:
+            raise ValueError("expected <base.json> <new.json>")
+        base, new = load(argv[0]), load(argv[1])
+    except (ValueError, OSError) as e:
+        print("error: %s (see `scripts/gate/compare-scores help`)" % e, file=sys.stderr)
+        return 2
+    for name, doc in (("base", base), ("new", new)):
+        t = doc["totals"]
+        print("%s: %s vs %s: matching %d of %d (allowed %d, failed %d); %s" % (
+            name, doc["label"], doc["reference"], t["matching"], t["total"], t["allowed"], t["failed"], doc["verdict"]))
+    blockers, bad = compare(base, new)
+    if blockers:
+        for b in blockers:
+            print("NOT COMPARABLE: %s" % b)
+        return 2
+    gained = sum(1 for b in base["rows"] for n in new["rows"]
+                 if (b["project"], b["surface"]) == (n["project"], n["surface"]) and n["matching"] > b["matching"])
+    for line in bad:
+        print("  REGRESSION %s" % line)
+    print("rows %d  gained %d  regressed %d" % (len(base["rows"]), gained, len(bad)))
+    print("result: %s" % ("PASS (no surface lost ground)" if not bad else "FAIL"))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
