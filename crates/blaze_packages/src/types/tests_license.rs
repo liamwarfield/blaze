@@ -43,18 +43,26 @@ fn strings(s: &[&str]) -> Vec<String> {
     s.iter().map(|s| (*s).to_owned()).collect()
 }
 
+/// Java `Starlark.repr(license)`: the repr of the License as a Starlark value.
+fn starlark_repr(l: &License) -> String {
+    starlark::values::Heap::temp(|heap| heap.alloc(l.clone()).to_repr())
+}
+
 #[test]
 fn repr() {
-    assert_eq!(License::no_license().repr(), "[\"none\"]");
+    assert_eq!(starlark_repr(&License::no_license()), "[\"none\"]");
     assert_eq!(
-        License::parse_license(&eval_as_sequence(&License::no_license().repr())).unwrap(),
+        License::parse_license(&eval_as_sequence(&starlark_repr(&License::no_license()))).unwrap(),
         License::no_license()
     );
     let without_exceptions = License::parse_license(&strings(&["notice", "restricted"])).unwrap();
     // License types sorted by LicenseType enum order.
-    assert_eq!(without_exceptions.repr(), "[\"restricted\", \"notice\"]");
     assert_eq!(
-        License::parse_license(&eval_as_sequence(&without_exceptions.repr())).unwrap(),
+        starlark_repr(&without_exceptions),
+        "[\"restricted\", \"notice\"]"
+    );
+    assert_eq!(
+        License::parse_license(&eval_as_sequence(&starlark_repr(&without_exceptions))).unwrap(),
         without_exceptions
     );
     let with_exceptions = License::parse_license(&strings(&[
@@ -66,11 +74,11 @@ fn repr() {
     .unwrap();
     // Exceptions sorted alphabetically.
     assert_eq!(
-        with_exceptions.repr(),
+        starlark_repr(&with_exceptions),
         "[\"restricted\", \"notice\", \"exception=//baz:qux\", \"exception=//foo:bar\"]"
     );
     assert_eq!(
-        License::parse_license(&eval_as_sequence(&with_exceptions.repr())).unwrap(),
+        License::parse_license(&eval_as_sequence(&starlark_repr(&with_exceptions))).unwrap(),
         with_exceptions
     );
 }

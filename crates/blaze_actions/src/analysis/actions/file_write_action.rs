@@ -377,6 +377,13 @@ impl Action for FileWriteAction {
     fn as_file_contents_provider(&self) -> Option<&dyn FileContentsProvider> {
         Some(self)
     }
+
+    // Java: com/google/devtools/build/lib/analysis/actions/FileWriteAction.java:245 FileWriteAction.getStarlarkContent
+    fn get_starlark_content(
+        &self,
+    ) -> Result<Option<String>, crate::actions::action::ActionApiError> {
+        Ok(Some(FileWriteAction::get_starlark_content(self)))
+    }
 }
 
 impl AbstractFileWriteAction for FileWriteAction {

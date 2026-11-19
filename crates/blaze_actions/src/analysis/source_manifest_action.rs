@@ -504,6 +504,16 @@ impl Action for SourceManifestAction {
     fn as_file_contents_provider(&self) -> Option<&dyn FileContentsProvider> {
         Some(self)
     }
+
+    // Java: com/google/devtools/build/lib/analysis/SourceManifestAction.java:228 SourceManifestAction.getStarlarkContent
+    fn get_starlark_content(
+        &self,
+    ) -> Result<Option<String>, crate::actions::action::ActionApiError> {
+        // Java: the IOException is reported to Starlark as `new EvalException(e)`.
+        SourceManifestAction::get_starlark_content(self)
+            .map(Some)
+            .map_err(|e| crate::actions::action::ActionApiError::Eval(e.to_string()))
+    }
 }
 
 impl AbstractFileWriteAction for SourceManifestAction {

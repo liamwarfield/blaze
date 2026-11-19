@@ -119,7 +119,7 @@ impl PlatformFunction {
 }
 
 /// The PLATFORM value the configuration code reads (see `blaze_build_config::platform`).
-fn platform_value_of(platform_info: &PlatformInfo, has_parsed_flags: bool) -> PlatformValue {
+fn platform_value_of(platform_info: &Arc<PlatformInfo>, has_parsed_flags: bool) -> PlatformValue {
     // PORT: the seam's PlatformValue (blaze_build_config cannot name PlatformInfo) keeps
     // `constraints().get(setting)` for every setting the platform (or a parent) sets. Java's
     // `ConstraintCollection.get` also answers with a setting's default_constraint_value for a
@@ -137,6 +137,9 @@ fn platform_value_of(platform_info: &PlatformInfo, has_parsed_flags: bool) -> Pl
         label: platform_info.label().clone(),
         constraints,
         has_parsed_flags,
+        platform_info: Some(blaze_build_config::platform::OpaquePlatformInfo(
+            platform_info.clone(),
+        )),
     }
 }
 
@@ -159,6 +162,7 @@ impl PlatformValueProvider for PlatformFunction {
             return Ok(None);
         };
 
+        let platform_info = Arc::new(platform_info);
         if platform_info.flags().is_empty() {
             return Ok(Some(platform_value_of(&platform_info, false)));
         }

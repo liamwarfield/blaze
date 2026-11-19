@@ -1,0 +1,26 @@
+load(":defs.bzl", "consume", "consume_bad", "consume_dup", "consume_gen", "consume_top", "lib", "lib_plain")
+
+exports_files(["tool.txt"])
+
+lib(name = "c", srcs = ["c.txt"])
+lib(name = "b", deps = [":c"])
+lib(name = "a", deps = [":b", ":c"])
+
+lib_plain(name = "p", deps = [":c"])
+
+alias(name = "b_alias", actual = ":b")
+
+genrule(
+    name = "g",
+    outs = ["g.txt"],
+    cmd = "echo g > $@",
+)
+
+filegroup(name = "fg", srcs = ["c.txt"])
+
+consume(name = "consume", deps = [":a", ":b_alias", ":fg", "c.txt", ":p"])
+consume_top(name = "consume_top", deps = [":a"])
+consume_top(name = "consume_top_plain", deps = [":p"])
+consume_gen(name = "consume_gen", deps = ["g.txt", ":c"])
+consume_bad(name = "consume_bad", deps = [":c"])
+consume_dup(name = "consume_dup", deps = [":c"])

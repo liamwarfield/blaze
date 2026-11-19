@@ -313,4 +313,23 @@ impl Action for TemplateExpansionAction {
         }
         Some(Ok((content, substitutions)))
     }
+
+    // Java: com/google/devtools/build/lib/analysis/actions/TemplateExpansionAction.java:178 TemplateExpansionAction.getStarlarkContent
+    fn get_starlark_content(
+        &self,
+    ) -> Result<Option<String>, crate::actions::action::ActionApiError> {
+        // Java: the IOException is reported to Starlark as `new EvalException(e)`.
+        TemplateExpansionAction::get_starlark_content(self)
+            .map(Some)
+            .map_err(|e| crate::actions::action::ActionApiError::Eval(e.to_string()))
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/actions/TemplateExpansionAction.java:228 TemplateExpansionAction.getStarlarkSubstitutions
+    fn get_starlark_substitutions(
+        &self,
+    ) -> Result<Option<IndexMap<String, String>>, crate::actions::action::ActionApiError> {
+        TemplateExpansionAction::get_starlark_substitutions(self)
+            .map(Some)
+            .map_err(crate::actions::action::ActionApiError::Eval)
+    }
 }

@@ -25,6 +25,17 @@ pub trait PlatformInfo: Send + Sync + fmt::Debug {
 
     /// `execProperties().properties()`.
     fn exec_properties(&self) -> IndexMap<String, String>;
+
+    /// `constraints().get(setting)` for the constraint setting with this label: the label of the
+    /// constraint value the platform, or one of its parents, sets for it.
+    ///
+    /// PORT: Java's `ConstraintCollection.get(ConstraintSettingInfo)` falls back to the setting's
+    /// `default_constraint_value` when no platform in the chain sets it. The setting's default is
+    /// not known from its label, so this returns `None` there: only ask about settings that are
+    /// declared without a default (`ConstraintConstants.OS_CONSTRAINT_SETTING`,
+    /// `CPU_CONSTRAINT_SETTING`).
+    // Java: com/google/devtools/build/lib/analysis/platform/ConstraintCollection.java:208 ConstraintCollection.get
+    fn constraint_value(&self, setting: &Label) -> Option<Label>;
 }
 
 /// Shared handle.
@@ -117,6 +128,23 @@ impl PlatformInfo for PlatformInfoData {
 
     fn exec_properties(&self) -> IndexMap<String, String> {
         self.exec_properties.clone()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/platform/ConstraintCollection.java:208 ConstraintCollection.get
+    fn constraint_value(&self, setting: &Label) -> Option<Label> {
+        // First, check locally.
+        if let Some(c) = self.constraints.iter().find(|c| &c.setting == setting) {
+            return Some(c.value.clone());
+        }
+        // Then, check the parent, directly to ignore defaults.
+        let mut parent = self.constraints_parent.as_deref();
+        while let Some(p) = parent {
+            if let Some(c) = p.constraints.iter().find(|c| &c.setting == setting) {
+                return Some(c.value.clone());
+            }
+            parent = p.parent.as_deref();
+        }
+        None
     }
 }
 

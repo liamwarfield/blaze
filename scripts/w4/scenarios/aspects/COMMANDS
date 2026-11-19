@@ -1,0 +1,26 @@
+# Aspects (aspects wave): attribute aspects along `deps` and through an alias, required_providers
+# filtering (filegroup, source file), aspect-on-aspect (required_aspect_providers; two aspect
+# descriptors on the upper aspect's actions), apply_to_generating_rules on an output file,
+# top-level --aspects with --aspects_parameters and --output_groups, and three analysis errors
+# (an upper aspect on a target the lower aspect skipped, a wrong return type, a duplicate provider).
+run cquery "deps(//:consume)" --output=label_kind
+run cquery "deps(//:consume_top)" --output=label_kind
+aquery "deps(//:consume)"
+aquery "deps(//:consume_top)"
+run aquery //:a --aspects=//:defs.bzl%collect --output=jsonproto
+run build //:consume //:consume_top //:consume_gen
+cat bazel-bin/consume.txt
+cat bazel-bin/consume_top.txt
+cat bazel-bin/consume_gen.txt
+cat bazel-bin/a.collect.txt
+cat bazel-bin/a.top.txt
+run build --nobuild //:a --aspects=//:defs.bzl%param_aspect --aspects_parameters=mode=b
+run build --nobuild //:a --aspects=//:defs.bzl%param_aspect --aspects_parameters=mode=c
+run build --nobuild //:a --aspects=//:defs.bzl%nonexistent
+run build --nobuild //:a --aspects=//:missing.bzl%x
+run build //:a --aspects=//:defs.bzl%param_aspect --aspects_parameters=mode=b --output_groups=param
+cat bazel-bin/a.param.b.txt
+run build //:a --aspects=//:defs.bzl%collect,//:defs.bzl%top --output_groups=collect
+run build --nobuild //:consume_top_plain
+run build --nobuild //:consume_bad
+run build --nobuild //:consume_dup

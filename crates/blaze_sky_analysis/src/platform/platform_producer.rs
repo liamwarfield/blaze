@@ -3,14 +3,12 @@
 
 use std::sync::Arc;
 
-use blaze_analysis::platform::{PlatformInfo, platform_provider_utils};
+use blaze_analysis::platform::PlatformInfo;
 use blaze_analysis::toolchains::{ToolchainException, ToolchainExceptionKind};
 use blaze_build_config::platform::PlatformValueKey;
 use blaze_cmdline::Label;
 use blaze_options::OptionsParsingException;
 use blaze_skyframe::{Environment, Interrupted};
-
-use crate::platform::platform_function::PlatformFunction;
 
 /// The errors of the producer's `ResultSink`.
 #[derive(Clone, Debug, thiserror::Error)]
@@ -32,9 +30,10 @@ enum Caught {
 /// `PlatformInfo` (Java `acceptPlatformValue(value)` then `value.platformInfo()`). `Ok(None)`
 /// when the value is missing (another error).
 ///
-/// PORT: the configuration seam's `PlatformValue` (`blaze_build_config::platform`) does not
-/// carry the `PlatformInfo`; it is read from the platform's configured target, which
-/// PLATFORM already requested (the same memoized `CONFIGURED_TARGET` node).
+/// PORT: the configuration seam's `PlatformValue` (`blaze_build_config::platform`) carries the
+/// `PlatformInfo` as an opaque value (the type is defined in blaze_analysis); it is downcast
+/// here. No other Skyframe request is made: the requesting node depends on PLATFORM only, as
+/// in Java.
 // Java: com/google/devtools/build/lib/analysis/producers/PlatformProducer.java:61 PlatformProducer.step
 pub fn produce_platform(
     env: &mut Environment<'_>,
@@ -56,8 +55,8 @@ pub fn produce_platform(
         e.downcast_ref::<OptionsParsingException>()
             .map(|o| Caught::Options(o.clone()))
     })?;
-    match result {
-        Ok(Some(_platform_value)) => {}
+    let platform_value = match result {
+        Ok(Some(platform_value)) => platform_value,
         Ok(None) => return Ok(None),
         Err(Caught::Platform(e)) => {
             return Ok(Some(Err(PlatformProducerError::InvalidPlatform(e))));
@@ -67,13 +66,21 @@ pub fn produce_platform(
                 e.to_string(),
             ))));
         }
-    }
+    };
 
     // Java: PlatformValue.platformInfo().
-    let Some(ctv) = env.get_value(PlatformFunction::configured_target_dep(platform_label))? else {
-        return Ok(None);
-    };
-    let platform_info = platform_provider_utils::platform(Some(ctv.get_configured_target()))
-        .expect("PLATFORM succeeded, so the platform provides PlatformInfo");
-    Ok(Some(Ok(Arc::new(platform_info))))
+    let platform_info = platform_value
+        .platform_info
+        .as_ref()
+        .and_then(|info| info.0.clone().downcast::<PlatformInfo>().ok())
+        .unwrap_or_else(|| {
+            // A PlatformValue recorded from the oracle (BLAZE_W4_ORACLE_PLATFORMS) has no
+            // PlatformInfo.
+            blaze_util::unported!(
+                "PlatformValue.platformInfo",
+                "platform {} comes from recorded oracle platforms",
+                platform_label
+            )
+        });
+    Ok(Some(Ok(platform_info)))
 }

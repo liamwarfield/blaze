@@ -70,42 +70,4 @@ fn invalid_exec_group_exception_message() {
     );
 }
 
-// Java: com/google/devtools/build/lib/analysis/ResolvedToolchainContextTest.java load
-#[test]
-#[ignore = "needs configured targets from a BuildViewTestCase harness"]
-fn load() {}
-
-// Java: com/google/devtools/build/lib/analysis/ResolvedToolchainContextTest.java load_mandatory_missing
-#[test]
-#[ignore = "needs configured targets from a BuildViewTestCase harness"]
-fn load_mandatory_missing() {}
-
-// Java: com/google/devtools/build/lib/analysis/ResolvedToolchainContextTest.java load_optional_present
-#[test]
-#[ignore = "needs configured targets from a BuildViewTestCase harness"]
-fn load_optional_present() {}
-
-// Java: com/google/devtools/build/lib/analysis/ResolvedToolchainContextTest.java load_optional_missing
-#[test]
-#[ignore = "needs configured targets from a BuildViewTestCase harness"]
-fn load_optional_missing() {}
-
-// Java: com/google/devtools/build/lib/analysis/ResolvedToolchainContextTest.java load_mixed
-#[test]
-#[ignore = "needs configured targets from a BuildViewTestCase harness"]
-fn load_mixed() {}
-
-// Java: com/google/devtools/build/lib/analysis/ResolvedToolchainContextTest.java load_aliasedToolchain
-#[test]
-#[ignore = "needs configured targets from a BuildViewTestCase harness"]
-fn load_aliased_toolchain() {}
-
-// Java: com/google/devtools/build/lib/analysis/ResolvedToolchainContextTest.java load_notToolchain
-#[test]
-#[ignore = "needs configured targets from a BuildViewTestCase harness"]
-fn load_not_toolchain() {}
-
-// Java: com/google/devtools/build/lib/analysis/ResolvedToolchainContextTest.java load_withTemplateVariables
-#[test]
-#[ignore = "needs configured targets from a BuildViewTestCase harness"]
-fn load_with_template_variables() {}
+// ResolvedToolchainContextTest now lives in crates/blaze_sky_top/src/tests/resolved_toolchain_context_test.rs.

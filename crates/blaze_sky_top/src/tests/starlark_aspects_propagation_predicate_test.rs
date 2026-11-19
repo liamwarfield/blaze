@@ -206,7 +206,8 @@ rule_with_aspect_on_deps = rule(
 fn create_test_packages(t: &mut AnalysisTestCase) {
     t.scratch.file(
         "pkg1/BUILD",
-        &[r#"load('//test:defs.bzl', 'rule_1', 'rule_2', 'out_rule', 'rule_with_aspect_on_deps')
+        &[
+            r#"load('//test:defs.bzl', 'rule_1', 'rule_2', 'out_rule', 'rule_with_aspect_on_deps')
 rule_1(name = 't1', deps = [':t2', '//pkg2:t2'], tags = ['no-aspect'])
 rule_2(name = 't2', tags = ['another-tag'])
 out_rule(name = 'target_with_output', out = 'my_out.txt', deps = [':t2'])
@@ -214,15 +215,18 @@ rule_with_aspect_on_deps(name = 'target_with_aspect_on_deps', deps = [':t2', '//
 alias(name = 'alias_1', actual = ':alias_2')
 alias(name = 'alias_2', actual = ':actual')
 rule_1(name = 'actual')
-"#],
+"#,
+        ],
     );
     t.scratch.file(
         "pkg2/BUILD",
-        &[r#"load('//test:defs.bzl', 'rule_1', 'rule_2', 'rule_with_provider')
+        &[
+            r#"load('//test:defs.bzl', 'rule_1', 'rule_2', 'rule_with_provider')
 rule_2(name = 't1', deps = [':t2', '//pkg1:t2'])
 rule_1(name = 't2', tags = ['no-aspect', 'another-tag'])
 rule_with_provider(name = 'target_with_provider', deps = [':t2'])
-"#],
+"#,
+        ],
     );
 }
 

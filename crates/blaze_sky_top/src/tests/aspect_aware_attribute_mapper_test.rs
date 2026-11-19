@@ -205,7 +205,10 @@ fn get_attribute_type() {
 fn get_attribute_definition() {
     let f = create_mapper();
     assert_eq!(
-        f.mapper.get_attribute_definition("srcs").unwrap().get_name(),
+        f.mapper
+            .get_attribute_definition("srcs")
+            .unwrap()
+            .get_name(),
         "srcs"
     );
     assert_eq!(

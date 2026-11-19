@@ -918,9 +918,7 @@ mod tests {
         );
     }
 
-    #[test]
-    #[ignore = "needs BuildViewTestCase (ConfigSettingTest matching tests)"]
-    fn match_on_native_flag_values() {}
+    // ConfigSettingTest's analysis tests are in crates/blaze_sky_top/src/tests/config_setting_test.rs.
 
     // Expected values: the oracle's transcript of scripts/w4/scenarios/flags-transitions
     // (steps 27 to 32): `flag_values = {":level": "0x10"}` matches `--//:level=16`; "010", " 5"

@@ -957,7 +957,6 @@ fn toolchain_propagation_based_on_aspect_required_providers_auto_exec_groups_fal
 
 // Java: StarlarkAspectsToolchainPropagationTest.aspectPropagatesToToolchainDeps
 #[test]
-#[ignore = "BLAZE GAP: unported License as a Starlark value: building ctx.rule.attr of the filegroup //toolchain:toolchain_dep converts its `licenses` attribute (Java Attribute.valueToStarlark returns the License StarlarkValue; blaze_packages attribute.rs Attribute::value_to_starlark panics)"]
 fn aspect_propagates_to_toolchain_deps() {
     let mut t = new_test();
     t.scratch.file(
@@ -1958,7 +1957,6 @@ r1(name = 't1')
 
 // Java: StarlarkAspectsToolchainPropagationTest.aspectPropagatesToToolchainFromRule_providersCollected
 #[test]
-#[ignore = "BLAZE GAP: unported License as a Starlark value: building ctx.rule.attr of the filegroup //toolchain:toolchain_dep converts its `licenses` attribute (Java Attribute.valueToStarlark returns the License StarlarkValue; blaze_packages attribute.rs Attribute::value_to_starlark panics)"]
 fn aspect_propagates_to_toolchain_from_rule_providers_collected() {
     let mut t = new_test();
     t.scratch.file(

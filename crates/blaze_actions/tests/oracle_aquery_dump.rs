@@ -140,6 +140,9 @@ impl blaze_actions::PlatformInfo for LabelOnlyPlatform {
     fn exec_properties(&self) -> IndexMap<String, String> {
         IndexMap::new()
     }
+    fn constraint_value(&self, _setting: &Label) -> Option<Label> {
+        unreachable!()
+    }
 }
 
 fn recorded_action(rec: &Recording, a: &Value) -> RecordedAction {

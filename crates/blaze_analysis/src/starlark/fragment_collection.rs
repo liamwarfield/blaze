@@ -94,7 +94,7 @@ fn get_starlark_fragment(rule_context: &RuleContext, name: &str) -> Option<Fragm
         return Some(FragmentLookup::Illegal(format!(
             "{} has to declare '{}' as a required fragment in order to access it. Please update \
              the 'fragments' argument of the rule definition (for example: fragments = [\"{}\"])",
-            rule_context.get_rule().get_rule_class(),
+            rule_context.get_rule_class_name_for_logging(),
             name,
             name
         )));

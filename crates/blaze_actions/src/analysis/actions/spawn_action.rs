@@ -585,6 +585,36 @@ impl Action for SpawnAction {
     fn as_command_action(&self) -> Option<&dyn CommandAction> {
         Some(self)
     }
+
+    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:217 SpawnAction.getStarlarkArgs
+    fn get_starlark_args(&self) -> Option<Vec<crate::analysis::starlark::args::RegisteredArgs>> {
+        let mut result = Vec::new();
+        // PORT: Java ImmutableSet (first occurrence order, no duplicates).
+        let mut directory_inputs: IndexSet<Artifact> = IndexSet::new();
+        for a in self.get_inputs().to_list().iter() {
+            if a.is_directory() {
+                directory_inputs.insert(a.clone());
+            }
+        }
+        for command_line in self.command_lines.unpack() {
+            result.push(
+                crate::analysis::starlark::args::RegisteredArgs::for_registered_action(
+                    command_line.command_line,
+                    command_line.param_file_info,
+                    directory_inputs.iter().cloned().collect(),
+                ),
+            );
+        }
+        Some(result)
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:229 SpawnAction.getStarlarkArgv
+    fn get_starlark_argv(
+        &self,
+    ) -> Result<Option<Vec<String>>, crate::actions::action::ActionApiError> {
+        // Java: a CommandLineExpansionException becomes `new EvalException(ex)`.
+        Ok(Some(self.get_arguments()?))
+    }
 }
 
 impl CommandAction for SpawnAction {

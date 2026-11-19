@@ -59,6 +59,29 @@ pub struct PlatformValue {
     pub constraints: BTreeMap<Label, Label>,
     /// Whether `parsedFlags()` is present (the platform has `flags`).
     pub has_parsed_flags: bool,
+    /// `platformInfo()` itself, for the readers that need more than the two fields above
+    /// (`PlatformProducer`). `None` for a value recorded from the oracle (`OraclePlatforms`).
+    pub platform_info: Option<OpaquePlatformInfo>,
+}
+
+/// Java `PlatformValue.platformInfo()`: the `PlatformInfo`, which is defined downstream
+/// (`blaze_analysis::platform::PlatformInfo`) and therefore held here as `dyn Any`; the analysis
+/// crates downcast it. Two values are equal when they are the same object.
+#[derive(Clone)]
+pub struct OpaquePlatformInfo(pub std::sync::Arc<dyn std::any::Any + Send + Sync>);
+
+impl PartialEq for OpaquePlatformInfo {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for OpaquePlatformInfo {}
+
+impl fmt::Debug for OpaquePlatformInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PlatformInfo")
+    }
 }
 
 /// `PlatformInfo` CPU constraint setting (`PlatformValue` users read
@@ -151,6 +174,7 @@ impl OraclePlatforms {
                         .map_err(|e| e.get_message().to_string())?,
                     constraints,
                     has_parsed_flags,
+                    platform_info: None,
                 },
             );
         }

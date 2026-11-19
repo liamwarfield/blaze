@@ -161,11 +161,6 @@ c = platform_common.ToolchainInfo(foo = "val1", bar = "val3")
         );
     }
 
-    // Java: com/google/devtools/build/lib/analysis/platform/ToolchainInfoTest.java toolchainInfoConstructor
-    #[test]
-    #[ignore = "needs rule analysis (agents R, S) and a BUILD-file test harness"]
-    fn toolchain_info_constructor() {}
-
     // Java: com/google/devtools/build/lib/analysis/platform/TemplateVariableInfoTest.java templateVariableInfoConstructor
     #[test]
     fn template_variable_info_constructor() {
@@ -187,13 +182,6 @@ u = platform_common.TemplateVariableInfo(vars = {"cherry": "ontop"})
         );
     }
 
-    // Java: com/google/devtools/build/lib/analysis/platform/TemplateVariableInfoTest.java proxyTemplateVariableInfo
-    #[test]
-    #[ignore = "needs rule analysis (agents R, S) and a BUILD-file test harness"]
-    fn proxy_template_variable_info() {}
-
-    // Java: com/google/devtools/build/lib/analysis/platform/TemplateVariableInfoTest.java templateVariableInfo
-    #[test]
-    #[ignore = "needs rule analysis (agents R, S) and a BUILD-file test harness"]
-    fn template_variable_info() {}
+    // The BuildViewTestCase tests of ToolchainInfoTest and TemplateVariableInfoTest live in
+    // crates/blaze_sky_top/src/tests/{toolchain_info_test,template_variable_info_test}.rs.
 }

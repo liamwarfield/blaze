@@ -188,6 +188,19 @@ impl blaze_actions::PlatformInfo for PlatformInfo {
     fn exec_properties(&self) -> IndexMap<String, String> {
         PlatformInfo::exec_properties(self).clone()
     }
+
+    // Java: com/google/devtools/build/lib/analysis/platform/ConstraintCollection.java:208 ConstraintCollection.get
+    fn constraint_value(&self, setting: &Label) -> Option<Label> {
+        // `all_constraint_settings` is every setting this platform or a parent sets; for those
+        // `ConstraintCollection.get` never reaches the default (see the trait's PORT note).
+        let constraints = self.constraints();
+        constraints
+            .all_constraint_settings()
+            .into_iter()
+            .find(|s| s.label() == setting)
+            .and_then(|s| constraints.get(&s))
+            .map(|value| value.label().clone())
+    }
 }
 
 /// Java `String.valueOf(label)`.

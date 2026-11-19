@@ -1,0 +1,134 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /tmp/claude-1000/-home-liamwarfield--t3-projects-blaze/abde8c99-e1f9-44bd-a633-c36e4e7e2b2e/scratchpad/blaze-a5
+# sha256 21ecf14a395b08b04ac7b826ab48ec3e2157eb91b6e1dff87c1d1e10b7ee59be
+# tree c74f4870286a275dc5373d8f6cbad549a5186917 (dirty)
+# date 2026-11-18T18:49:58
+=== 1: run build //:inspect
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:inspect (5 packages loaded, 10 targets configured).
+INFO: Found 1 target...
+Target //:inspect up-to-date:
+  bazel-bin/inspect.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 2: cat bazel-bin/inspect.txt
+platform dir ["constraints", "label"]
+setting dir ["default_constraint_value", "has_default_constraint_value", "label"]
+value dir ["constraint", "label"]
+platform hasattr label False
+platform getattr label <default>
+platform hasattr constraints False
+platform getattr constraints <default>
+setting hasattr label False
+setting getattr label <default>
+setting hasattr default_constraint_value False
+setting getattr default_constraint_value <default>
+setting hasattr has_default_constraint_value True
+setting getattr has_default_constraint_value True
+value hasattr label False
+value getattr label <default>
+value hasattr constraint False
+value getattr constraint <default>
+=== 3: run build //:platform_label
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:18:7: in probe rule //:platform_label:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 25, column 27, in _impl
+		lines.append(str(p.label))
+Error: 'PlatformInfo' value has no field or method 'label'
+ERROR: <WS>/BUILD.bazel:18:7: Analysis of target '//:platform_label' (config: a7a71fd) failed
+ERROR: Analysis of target '//:platform_label' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run build //:setting_label
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:18:7: in probe rule //:setting_label:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 27, column 27, in _impl
+		lines.append(str(s.label))
+Error: 'ConstraintSettingInfo' value has no field or method 'label'
+ERROR: <WS>/BUILD.bazel:18:7: Analysis of target '//:setting_label' (config: a7a71fd) failed
+ERROR: Analysis of target '//:setting_label' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 5: run build //:value_constraint
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:18:7: in probe rule //:value_constraint:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 29, column 27, in _impl
+		lines.append(str(v.constraint))
+Error: 'ConstraintValueInfo' value has no field or method 'constraint'
+ERROR: <WS>/BUILD.bazel:18:7: Analysis of target '//:value_constraint' (config: a7a71fd) failed
+ERROR: Analysis of target '//:value_constraint' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 6: run build --experimental_platforms_api //:inspect
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:inspect (5 packages loaded, 10 targets configured).
+INFO: Found 1 target...
+Target //:inspect up-to-date:
+  bazel-bin/inspect.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 7: cat bazel-bin/inspect.txt
+platform dir ["constraints", "label"]
+setting dir ["default_constraint_value", "has_default_constraint_value", "label"]
+value dir ["constraint", "label"]
+platform hasattr label True
+platform getattr label @@//:plat
+platform hasattr constraints True
+platform getattr constraints <[//:red]>
+setting hasattr label True
+setting getattr label @@//:color
+setting hasattr default_constraint_value True
+setting getattr default_constraint_value ConstraintValueInfo(setting=//:color, //:red)
+setting hasattr has_default_constraint_value True
+setting getattr has_default_constraint_value True
+value hasattr label True
+value getattr label @@//:red
+value hasattr constraint True
+value getattr constraint ConstraintSettingInfo(//:color, default_constraint_value=//:red)
+=== 8: run build --experimental_platforms_api //:platform_label //:setting_label //:value_constraint //:constraints_get
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 4 targets (5 packages loaded, 13 targets configured).
+INFO: Found 4 targets...
+INFO: Elapsed time: <DUR>
+INFO: 5 processes: 5 internal.
+INFO: Build completed successfully, 5 total actions
+=== 9: cat bazel-bin/platform_label.txt
+@@//:plat
+=== 10: cat bazel-bin/setting_label.txt
+@@//:color
+=== 11: cat bazel-bin/value_constraint.txt
+ConstraintSettingInfo(//:color, default_constraint_value=//:red)
+=== 12: cat bazel-bin/constraints_get.txt
+ConstraintValueInfo(setting=//:color, //:red)
+True
+True
+[ConstraintSettingInfo(//:color, default_constraint_value=//:red)]
+True
+ConstraintValueInfo(setting=//:color, //:red)

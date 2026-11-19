@@ -33,6 +33,8 @@ use crate::configured_target::ConfiguredTarget;
 use crate::configuredtargets::{get_default_info, get_info, get_legacy, get_rule_class_string};
 use crate::providers::default_info::DefaultInfo;
 use crate::rule::depsets::{artifacts_to_depset, depset_value};
+use crate::starlark::starlark_action::actions_to_starlark;
+use blaze_actions::ActionRef;
 
 fn errorf(msg: impl fmt::Display) -> starlark::Error {
     starlark::Error::new_other(anyhow::anyhow!("{msg}"))
@@ -163,13 +165,39 @@ impl StarlarkTarget {
             ))));
         }
         if name == ACTIONS_FIELD_NAME {
-            // PORT: the Starlark `Action` objects (ActionApi) are not ported.
-            if let ConfiguredTarget::Merged(_) = &self.target {
-                blaze_util::unported!("MergedConfiguredTarget.rawGetStarlarkProvider(actions)");
-            }
-            blaze_util::unported!("RuleConfiguredTarget.rawGetStarlarkProvider(actions)");
+            // Depending on subclass, the 'actions' field will either be unsupported or of type
+            // java.util.List, which needs to be converted to Sequence before being returned.
+            return Self::raw_get_actions(&self.target)
+                .map(|actions| actions_to_starlark(&actions, heap));
         }
         self.get_by_string(name, heap)
+    }
+
+    /// Java `rawGetStarlarkProvider(ACTIONS_FIELD_NAME)` of each configured target class:
+    /// `None` where Java returns null (the classes without "actions").
+    fn raw_get_actions(target: &ConfiguredTarget) -> Option<Vec<ActionRef>> {
+        match target {
+            // Java: com/google/devtools/build/lib/analysis/configuredtargets/RuleConfiguredTarget.java:271 RuleConfiguredTarget.rawGetStarlarkProvider
+            // Only expose actions which are legitimate Starlark values, otherwise they will
+            // later cause a Bazel crash. (PORT: every Blaze action is one; see
+            // `actions_to_starlark`.)
+            ConfiguredTarget::Rule(r) => Some(r.get_actions().to_vec()),
+            // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:172 MergedConfiguredTarget.rawGetStarlarkProvider
+            ConfiguredTarget::Merged(m) => {
+                let mut actions: Vec<ActionRef> = Vec::new();
+                // Only expose actions which are StarlarkValues.
+                for aspect in m.get_aspects() {
+                    actions.extend(aspect.get_actions().iter().cloned());
+                }
+                if let ConfiguredTarget::Rule(base) = &m.base_configured_target {
+                    actions.extend(base.get_actions().iter().cloned());
+                }
+                Some(actions)
+            }
+            // Java: AliasConfiguredTarget.getValue delegates to the actual target.
+            ConfiguredTarget::Alias(a) => Self::raw_get_actions(&a.actual),
+            _ => None,
+        }
     }
 
     /// Java `get(String providerKey)`.
@@ -377,16 +405,18 @@ impl<'v> StarlarkValue<'v> for StarlarkTarget {
         if attribute == ACTIONS_FIELD_NAME {
             // Java: RuleConfiguredTarget and MergedConfiguredTarget answer "actions" with a
             // (possibly empty) list.
-            return matches!(
-                self.target,
-                ConfiguredTarget::Rule(_) | ConfiguredTarget::Merged(_)
-            );
+            return Self::raw_get_actions(&self.target).is_some();
         }
         self.get_value(attribute, heap).is_some()
     }
 
+    // Java: net/starlark/java/eval/Starlark.java:1024 Starlark.dir collects
+    // `Structure.getFieldNames()` into a TreeSet: sorted, without duplicates (a merged target
+    // over a rule lists "actions" twice in MergedConfiguredTarget.addExtraStarlarkKeys).
     fn dir_attr(&self) -> Vec<String> {
-        self.get_field_names()
+        let fields: std::collections::BTreeSet<String> =
+            self.get_field_names().into_iter().collect();
+        fields.into_iter().collect()
     }
 
     // Java: AbstractConfiguredTarget.isImmutable (immutable and Starlark-hashable, by identity).

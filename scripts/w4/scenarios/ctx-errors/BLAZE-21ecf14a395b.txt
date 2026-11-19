@@ -1,0 +1,418 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /tmp/claude-1000/-home-liamwarfield--t3-projects-blaze/abde8c99-e1f9-44bd-a633-c36e4e7e2b2e/scratchpad/blaze-a5
+# sha256 21ecf14a395b08b04ac7b826ab48ec3e2157eb91b6e1dff87c1d1e10b7ee59be
+# tree c74f4870286a275dc5373d8f6cbad549a5186917 (dirty)
+# date 2026-11-18T18:42:15
+=== 1: run build //:frag_undeclared
+exit 1
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:frag_undeclared:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 12, column 30, in _err_impl
+		r = str(ctx.fragments.cpp)
+Error: err has to declare 'cpp' as a required fragment in order to access it. Please update the 'fragments' argument of the rule definition (for example: fragments = ["cpp"])
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:frag_undeclared' (config: a7a71fd) failed
+ERROR: Analysis of target '//:frag_undeclared' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 2: run build //:frag_undeclared_getattr_default
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:frag_undeclared_getattr_default:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 24, in _err_impl
+		r = str(getattr(ctx.fragments, "cpp", None))
+Error in getattr: err has to declare 'cpp' as a required fragment in order to access it. Please update the 'fragments' argument of the rule definition (for example: fragments = ["cpp"])
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:frag_undeclared_getattr_default' (config: a7a71fd) failed
+ERROR: Analysis of target '//:frag_undeclared_getattr_default' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 3: run build //:frag_undeclared_hasattr
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:frag_undeclared_hasattr:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 16, column 24, in _err_impl
+		r = str(hasattr(ctx.fragments, "cpp"))
+Error in hasattr: err has to declare 'cpp' as a required fragment in order to access it. Please update the 'fragments' argument of the rule definition (for example: fragments = ["cpp"])
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:frag_undeclared_hasattr' (config: a7a71fd) failed
+ERROR: Analysis of target '//:frag_undeclared_hasattr' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run build //:frag_unknown
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:frag_unknown:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 18, column 30, in _err_impl
+		r = str(ctx.fragments.nosuch)
+Error: There is no configuration fragment named 'nosuch'. Available fragments: 'platform', 'coverage', 'android', 'bazel_android', 'apple', 'cpp', 'java', 'j2objc', 'objc', 'proto'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:frag_unknown' (config: a7a71fd) failed
+ERROR: Analysis of target '//:frag_unknown' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 5: run build //:frag_unknown_getattr_default
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:frag_unknown_getattr_default (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:frag_unknown_getattr_default up-to-date:
+  bazel-bin/frag_unknown_getattr_default.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 6: run build //:frag_declared
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:frag_declared (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:frag_declared up-to-date:
+  bazel-bin/frag_declared.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 7: run build //:outputs_unknown
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:outputs_unknown:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 24, column 28, in _err_impl
+		r = str(ctx.outputs.nosuch)
+Error: No attribute 'nosuch' in outputs. Make sure you declared a rule output with this name.
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:outputs_unknown' (config: a7a71fd) failed
+ERROR: Analysis of target '//:outputs_unknown' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 8: run build //:outputs_unknown_getattr_default
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:outputs_unknown_getattr_default (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:outputs_unknown_getattr_default up-to-date:
+  bazel-bin/outputs_unknown_getattr_default.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 9: run build //:attr_unknown
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:attr_unknown:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 28, column 25, in _err_impl
+		r = str(ctx.attr.nosuch)
+Error: No attribute 'nosuch' in attr. Make sure you declared a rule attribute with this name.
+Available attributes: _action_listener, _config_dependencies, compatible_with, deprecation, exec_compatible_with, exec_properties, expect_failure, features, generator_function, generator_location, generator_name, name, op, package_metadata, restricted_to, tags, target_compatible_with, testonly, toolchains, transitive_configs, visibility
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:attr_unknown' (config: a7a71fd) failed
+ERROR: Analysis of target '//:attr_unknown' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 10: run build //:attr_unknown_getattr_default
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:attr_unknown_getattr_default (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:attr_unknown_getattr_default up-to-date:
+  bazel-bin/attr_unknown_getattr_default.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 11: run build //:runfiles_symlinks_list
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:runfiles_symlinks_list:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 34, column 29, in _err_impl
+		r = str(ctx.runfiles(symlinks = []))
+Error in runfiles: in call to runfiles(), parameter 'symlinks' got value of type 'list', want 'dict or depset'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:runfiles_symlinks_list' (config: a7a71fd) failed
+ERROR: Analysis of target '//:runfiles_symlinks_list' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 12: run build //:runfiles_root_symlinks_list
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:runfiles_root_symlinks_list:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 36, column 29, in _err_impl
+		r = str(ctx.runfiles(root_symlinks = ["x"]))
+Error in runfiles: in call to runfiles(), parameter 'root_symlinks' got value of type 'list', want 'dict or depset'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:runfiles_root_symlinks_list' (config: a7a71fd) failed
+ERROR: Analysis of target '//:runfiles_root_symlinks_list' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 13: run build //:runfiles_collect_data_int
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:runfiles_collect_data_int:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 38, column 29, in _err_impl
+		r = str(ctx.runfiles(collect_data = 1))
+Error in runfiles: in call to runfiles(), parameter 'collect_data' got value of type 'int', want 'bool'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:runfiles_collect_data_int' (config: a7a71fd) failed
+ERROR: Analysis of target '//:runfiles_collect_data_int' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 14: run build //:runfiles_collect_default_none
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:runfiles_collect_default_none:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 40, column 29, in _err_impl
+		r = str(ctx.runfiles(collect_default = None))
+Error in runfiles: in call to runfiles(), parameter 'collect_default' got value of type 'NoneType', want 'bool'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:runfiles_collect_default_none' (config: a7a71fd) failed
+ERROR: Analysis of target '//:runfiles_collect_default_none' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 15: run build //:runfiles_ok
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:runfiles_ok (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:runfiles_ok up-to-date:
+  bazel-bin/runfiles_ok.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 16: run build //:run_use_default_shell_env_int
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:run_use_default_shell_env_int:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 47, column 24, in _err_impl
+		ctx.actions.run(outputs = [tmp], executable = "/bin/true", use_default_shell_env = 1)
+Error in run: in call to run(), parameter 'use_default_shell_env' got value of type 'int', want 'bool'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:run_use_default_shell_env_int' (config: a7a71fd) failed
+ERROR: Analysis of target '//:run_use_default_shell_env_int' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 17: run build //:run_shell_use_default_shell_env_none
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:run_shell_use_default_shell_env_none:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 50, column 30, in _err_impl
+		ctx.actions.run_shell(outputs = [tmp], command = "true", use_default_shell_env = None)
+Error in run_shell: in call to run_shell(), parameter 'use_default_shell_env' got value of type 'NoneType', want 'bool'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:run_shell_use_default_shell_env_none' (config: a7a71fd) failed
+ERROR: Analysis of target '//:run_shell_use_default_shell_env_none' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 18: run build //:run_toolchain_int
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:run_toolchain_int:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 53, column 24, in _err_impl
+		ctx.actions.run(outputs = [tmp], executable = "/bin/true", toolchain = 1)
+Error in run: in call to run(), parameter 'toolchain' got value of type 'int', want 'Label, string, or NoneType'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:run_toolchain_int' (config: a7a71fd) failed
+ERROR: Analysis of target '//:run_toolchain_int' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 19: run build //:run_shell_toolchain_list
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:run_shell_toolchain_list:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 56, column 30, in _err_impl
+		ctx.actions.run_shell(outputs = [tmp], command = "true", toolchain = [])
+Error in run_shell: in call to run_shell(), parameter 'toolchain' got value of type 'list', want 'Label, string, or NoneType'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:run_shell_toolchain_list' (config: a7a71fd) failed
+ERROR: Analysis of target '//:run_shell_toolchain_list' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 20: run build //:run_outputs_depset
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:run_outputs_depset:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 59, column 24, in _err_impl
+		ctx.actions.run(outputs = depset([tmp]), executable = "/bin/true")
+Error in run: in call to run(), parameter 'outputs' got value of type 'depset', want 'sequence'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:run_outputs_depset' (config: a7a71fd) failed
+ERROR: Analysis of target '//:run_outputs_depset' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 21: run build //:run_inputs_string
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:run_inputs_string:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 62, column 24, in _err_impl
+		ctx.actions.run(outputs = [tmp], inputs = "x", executable = "/bin/true")
+Error in run: in call to run(), parameter 'inputs' got value of type 'string', want 'sequence or depset'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:run_inputs_string' (config: a7a71fd) failed
+ERROR: Analysis of target '//:run_inputs_string' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 22: run build //:run_env_list
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:run_env_list:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 65, column 24, in _err_impl
+		ctx.actions.run(outputs = [tmp], executable = "/bin/true", env = [])
+Error in run: in call to run(), parameter 'env' got value of type 'list', want 'dict or NoneType'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:run_env_list' (config: a7a71fd) failed
+ERROR: Analysis of target '//:run_env_list' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 23: run build //:run_tools_string
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:run_tools_string:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 68, column 24, in _err_impl
+		ctx.actions.run(outputs = [tmp], executable = "/bin/true", tools = "x")
+Error in run: in call to run(), parameter 'tools' got value of type 'string', want 'sequence or depset'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:run_tools_string' (config: a7a71fd) failed
+ERROR: Analysis of target '//:run_tools_string' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 24: run build //:run_unused_inputs_list_string
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:run_unused_inputs_list_string:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 71, column 24, in _err_impl
+		ctx.actions.run(outputs = [tmp], executable = "/bin/true", unused_inputs_list = "x")
+Error in run: in call to run(), parameter 'unused_inputs_list' got value of type 'string', want 'File or NoneType'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:run_unused_inputs_list_string' (config: a7a71fd) failed
+ERROR: Analysis of target '//:run_unused_inputs_list_string' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 25: run build //:run_resource_set_int
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:run_resource_set_int:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 74, column 24, in _err_impl
+		ctx.actions.run(outputs = [tmp], executable = "/bin/true", resource_set = 1)
+Error in run: in call to run(), parameter 'resource_set' got value of type 'int', want 'callable, dict, or NoneType'
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:run_resource_set_int' (config: a7a71fd) failed
+ERROR: Analysis of target '//:run_resource_set_int' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 26: run build //:run_outputs_strings
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in err rule //:run_outputs_strings:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 77, column 24, in _err_impl
+		ctx.actions.run(outputs = ["x"], executable = "/bin/true")
+Error in run: at index 0 of outputs, got element of type string, want File
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:run_outputs_strings' (config: a7a71fd) failed
+ERROR: Analysis of target '//:run_outputs_strings' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 27: run build //:run_ok
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:run_ok (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:run_ok up-to-date:
+  bazel-bin/run_ok.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 28: cat bazel-bin/frag_unknown_getattr_default.txt
+default
+=== 29: cat bazel-bin/frag_declared.txt
+platform
+=== 30: cat bazel-bin/outputs_unknown_getattr_default.txt
+default
+=== 31: cat bazel-bin/attr_unknown_getattr_default.txt
+default
+=== 32: cat bazel-bin/runfiles_ok.txt
+0
+=== 33: cat bazel-bin/run_ok.txt
+ok
+=== 34: aquery //:run_ok
+exit 0
+--- stdout
+{"actionKey": "dedc58840e88788ad5eb50a029933f5e1b085f341aa2068a50ff6000528714d0", "argv": ["/bin/true"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {"A": "b", "PATH": "/bin:/usr/bin:/usr/local/bin"}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "Action", "outputs": ["bazel-out/k8-fastbuild/bin/run_ok.tmp"], "primaryOutput": "bazel-out/k8-fastbuild/bin/run_ok.tmp", "ruleClass": "err", "target": "//:run_ok"}
+{"actionKey": "15b0d218140cb370610c831a5abe08c9663dbb2b53395c407acd82480185a13e", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "ok\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/run_ok.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/run_ok.txt", "ruleClass": "err", "target": "//:run_ok"}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:run_ok (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions

@@ -1,0 +1,67 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /tmp/claude-1000/-home-liamwarfield--t3-projects-blaze/abde8c99-e1f9-44bd-a633-c36e4e7e2b2e/scratchpad/blaze-a5
+# sha256 21ecf14a395b08b04ac7b826ab48ec3e2157eb91b6e1dff87c1d1e10b7ee59be
+# tree c74f4870286a275dc5373d8f6cbad549a5186917 (dirty)
+# date 2026-11-18T18:44:10
+=== 1: run build //:merge_shared_rules
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:merge_shared_rules (6 packages loaded, 14 targets configured).
+INFO: Found 1 target...
+Target //:merge_shared_rules up-to-date:
+  bazel-bin/merge_shared_rules.out
+INFO: Elapsed time: <DUR>
+INFO: 7 processes: 1 internal, 6 linux-sandbox.
+INFO: Build completed successfully, 7 total actions
+=== 2: cat bazel-bin/merge_shared_rules.out
+hi i am a shared input
+TREE:
+d
+x.txt
+
+TREE/d:
+copy.txt
+hi i am a shared input
+TREE:
+d
+x.txt
+
+TREE/d:
+copy.txt
+=== 3: stat bazel-bin/shared-tree
+dir 555
+=== 4: stat bazel-bin/shared-tree/d/copy.txt
+file 555
+=== 5: run build //:shared_2
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:shared_2 (6 packages loaded, 10 targets configured).
+INFO: Found 1 target...
+Target //:shared_2 up-to-date:
+  bazel-bin/shared_2.out
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 4 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 6: cat bazel-bin/shared_2.out
+hi i am a shared input
+TREE:
+d
+x.txt
+
+TREE/d:
+copy.txt
+=== 7: run build //:shared_1 //:shared_2 --keep_going
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (6 packages loaded, 11 targets configured).
+INFO: Found 2 targets...
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 7 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action

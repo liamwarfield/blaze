@@ -588,6 +588,75 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     fn aquery_parameter_file_arguments(&self) -> Option<Result<Vec<String>, CommandLineError>> {
         None
     }
+
+    // ---------------------------------------------------------------------------------------
+    // ActionApi (the Starlark `Action` value): the getters action classes override. The other
+    // ActionApi getters (`mnemonic`, `inputs`, `outputs`, `env`, `execution_info`) are
+    // AbstractAction's final implementations over the methods above.
+    // PORT: every override at the pin is listed with its class; a class that is ported but whose
+    // override is not must override these methods (CppCompileAction.getStarlarkArgv/Args,
+    // JavaCompileAction.getStarlarkArgv/Args).
+    // ---------------------------------------------------------------------------------------
+
+    /// The `argv` of the action, `None` where Java returns null.
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:624 AbstractAction.getStarlarkArgv
+    fn get_starlark_argv(&self) -> Result<Option<Vec<String>>, ActionApiError> {
+        Ok(None)
+    }
+
+    /// The frozen `Args` objects of the action, `None` where Java returns null ("Not all action
+    /// types support returning Args").
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:630 AbstractAction.getStarlarkArgs
+    fn get_starlark_args(&self) -> Option<Vec<crate::analysis::starlark::args::RegisteredArgs>> {
+        // Not all action types support returning Args.
+        None
+    }
+
+    /// The contents of the file the action writes, `None` where Java returns null.
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:637 AbstractAction.getStarlarkContent
+    fn get_starlark_content(&self) -> Result<Option<String>, ActionApiError> {
+        Ok(None)
+    }
+
+    /// The substitution mapping of a template expansion, `None` where Java returns null.
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:643 AbstractAction.getStarlarkSubstitutions
+    fn get_starlark_substitutions(
+        &self,
+    ) -> Result<Option<IndexMap<String, String>>, ActionApiError> {
+        Ok(None)
+    }
+}
+
+/// The exceptions the `ActionApi` getters throw to Starlark: `EvalException` (Java wraps every
+/// other checked exception, such as `IOException` or `CommandLineExpansionException`, in an
+/// `EvalException` carrying its message) and `InterruptedException`.
+// Java: net/starlark/java/eval/MethodDescriptor.java:282 MethodDescriptor.call
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActionApiError {
+    /// The `EvalException` message.
+    Eval(String),
+    Interrupted(InterruptedException),
+}
+
+impl fmt::Display for ActionApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ActionApiError::Eval(e) => f.write_str(e),
+            ActionApiError::Interrupted(e) => fmt::Display::fmt(e, f),
+        }
+    }
+}
+
+impl std::error::Error for ActionApiError {}
+
+impl From<CommandLineError> for ActionApiError {
+    // Java: `new EvalException(commandLineExpansionException)` (message of the cause).
+    fn from(e: CommandLineError) -> Self {
+        match e {
+            MapFnError::CommandLineExpansion(e) => ActionApiError::Eval(e.message),
+            MapFnError::Interrupted(e) => ActionApiError::Interrupted(e),
+        }
+    }
 }
 
 // Java: com/google/devtools/build/lib/actions/AbstractAction.java:300 AbstractAction.getFirstOrNull

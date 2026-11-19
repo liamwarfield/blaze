@@ -1,0 +1,85 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /tmp/claude-1000/-home-liamwarfield--t3-projects-blaze/abde8c99-e1f9-44bd-a633-c36e4e7e2b2e/scratchpad/blaze-a5
+# sha256 21ecf14a395b08b04ac7b826ab48ec3e2157eb91b6e1dff87c1d1e10b7ee59be
+# tree c74f4870286a275dc5373d8f6cbad549a5186917 (dirty)
+# date 2026-11-18T18:44:58
+=== 1: run build --spawn_strategy=bogus //:one
+exit 2
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: 'bogus' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local, linux-sandbox]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 2: run build --strategy=Genrule=bogus //:one
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: 'bogus' was requested for mnemonic Genrule but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local, linux-sandbox]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 3: run build --strategy_regexp=one=bogus //:one
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: 'bogus' was requested for filter (?:(?>one)) but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local, linux-sandbox]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run build --spawn_strategy=local,bogus //:one
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: 'bogus' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local, linux-sandbox]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 5: run build --spawn_strategy=bogus //:nosuchtarget
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//:nosuchtarget': no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 6: run test --spawn_strategy=bogus //:one
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (6 packages loaded, 8 targets configured).
+INFO: Found 1 target and 0 test targets...
+ERROR: 'bogus' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local, linux-sandbox]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+ERROR: Couldn't start the build. Unable to run tests
+=== 7: run build --spawn_strategy=local //:one
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:one up-to-date:
+  bazel-bin/one.out
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 1 internal, 1 local.
+INFO: Build completed successfully, 2 total actions

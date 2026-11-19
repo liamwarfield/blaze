@@ -898,6 +898,32 @@ impl Action for CppCompileAction {
     fn as_command_action(&self) -> Option<&dyn CommandAction> {
         Some(self)
     }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1037 CppCompileAction.getStarlarkArgv
+    fn get_starlark_argv(
+        &self,
+    ) -> Result<Option<Vec<String>>, blaze_actions::actions::action::ActionApiError> {
+        match CppCompileAction::get_starlark_argv(self) {
+            Ok(argv) => Ok(Some(argv)),
+            // Java: catch (CommandLineExpansionException ex) { throw new EvalException(ex); }
+            Err(CommandLineError::CommandLineExpansion(e)) => Err(
+                blaze_actions::actions::action::ActionApiError::Eval(e.message),
+            ),
+            Err(CommandLineError::Interrupted(e)) => Err(
+                blaze_actions::actions::action::ActionApiError::Interrupted(e),
+            ),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1049 CppCompileAction.getStarlarkArgs
+    fn get_starlark_args(
+        &self,
+    ) -> Option<Vec<blaze_actions::analysis::starlark::args::RegisteredArgs>> {
+        // Java: Args.forRegisteredAction over
+        // compileCommandLine.getFilteredFeatureConfigurationCommandLine(this), with a GCC_QUOTED
+        // always-used params file when cppConfiguration().useArgsParamsFile().
+        blaze_util::unported!("CppCompileAction.getStarlarkArgs")
+    }
 }
 
 impl CommandAction for CppCompileAction {

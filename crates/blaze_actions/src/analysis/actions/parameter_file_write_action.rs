@@ -278,6 +278,18 @@ impl Action for ParameterFileWriteAction {
     fn aquery_parameter_file_arguments(&self) -> Option<Result<Vec<String>, CommandLineError>> {
         Some(self.get_arguments())
     }
+
+    // Java: com/google/devtools/build/lib/analysis/actions/ParameterFileWriteAction.java:183 ParameterFileWriteAction.getStarlarkContent
+    fn get_starlark_content(
+        &self,
+    ) -> Result<Option<String>, crate::actions::action::ActionApiError> {
+        ParameterFileWriteAction::get_starlark_content(self).map_err(|e| match e {
+            ComputeKeyError::Interrupted(e) => {
+                crate::actions::action::ActionApiError::Interrupted(e)
+            }
+            e => crate::actions::action::ActionApiError::Eval(e.to_string()),
+        })
+    }
 }
 
 impl AbstractFileWriteAction for ParameterFileWriteAction {

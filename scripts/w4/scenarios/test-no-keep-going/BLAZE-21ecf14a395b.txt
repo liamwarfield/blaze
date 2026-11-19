@@ -1,0 +1,58 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /tmp/claude-1000/-home-liamwarfield--t3-projects-blaze/abde8c99-e1f9-44bd-a633-c36e4e7e2b2e/scratchpad/blaze-a5
+# sha256 21ecf14a395b08b04ac7b826ab48ec3e2157eb91b6e1dff87c1d1e10b7ee59be
+# tree c74f4870286a275dc5373d8f6cbad549a5186917 (dirty)
+# date 2026-11-18T18:53:05
+=== 1: run test --notest_keep_going //:fail_test
+exit 3
+--- stdout
+//:fail_test                                                             FAILED in <DUR>
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log
+
+Executed 1 out of 1 test: 1 fails locally.
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:fail_test (80 packages loaded, 835 targets configured).
+INFO: Found 1 test target...
+FAIL: //:fail_test (Exit 1) (see <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log)
+ERROR: <WS>/BUILD.bazel:9:12: Testing //:fail_test failed: Test failed, aborting
+Target //:fail_test up-to-date:
+  bazel-bin/fail_test.sh
+ERROR: Test failed, aborting
+INFO: Elapsed time: <DUR>
+INFO: 7 processes: 7 internal.
+INFO: Build completed, 1 test FAILED, 7 total actions
+=== 2: run test --notest_keep_going //:pass_test
+exit 0
+--- stdout
+//:pass_test                                                             PASSED in <DUR>
+
+Executed 1 out of 1 test: 1 test passes.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:pass_test (80 packages loaded, 835 targets configured).
+INFO: Found 1 test target...
+Target //:pass_test up-to-date:
+  bazel-bin/pass_test.sh
+INFO: Elapsed time: <DUR>
+INFO: 7 processes: 6 internal, 2 linux-sandbox.
+INFO: Build completed successfully, 7 total actions
+=== 3: run test --notest_keep_going --keep_going //:fail_test
+exit 3
+--- stdout
+//:fail_test                                                             FAILED in <DUR>
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log
+
+Executed 1 out of 1 test: 1 fails locally.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:fail_test (80 packages loaded, 835 targets configured).
+INFO: Found 1 test target...
+FAIL: //:fail_test (Exit 1) (see <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log)
+ERROR: <WS>/BUILD.bazel:9:12: Testing //:fail_test failed: Test failed, aborting
+Target //:fail_test up-to-date:
+  bazel-bin/fail_test.sh
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 5 action cache hit, 2 internal.
+INFO: Build completed, 1 test FAILED, 2 total actions

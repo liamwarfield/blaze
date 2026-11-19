@@ -164,31 +164,5 @@ mod tests {
         );
     }
 
-    #[test]
-    #[ignore = "needs analysis of BUILD files (FilegroupConfiguredTargetTest.testGroup)"]
-    fn test_group() {}
-
-    #[test]
-    #[ignore = "needs analysis of BUILD files (FilegroupConfiguredTargetTest.testDependencyGraph)"]
-    fn test_dependency_graph() {}
-
-    #[test]
-    #[ignore = "needs analysis of BUILD files (FilegroupConfiguredTargetTest.testEmptyGroupInGenrule)"]
-    fn test_empty_group_in_genrule() {}
-
-    #[test]
-    #[ignore = "needs analysis of BUILD files (FilegroupConfiguredTargetTest.testIsNotExecutable)"]
-    fn test_is_not_executable() {}
-
-    #[test]
-    #[ignore = "needs analysis of BUILD files (FilegroupConfiguredTargetTest.testIsExecutable)"]
-    fn test_is_executable() {}
-
-    #[test]
-    #[ignore = "needs analysis of BUILD files (FilegroupConfiguredTargetTest.testOutputGroupExtractsFilesFromDependencies)"]
-    fn test_output_group_extracts_files_from_dependencies() {}
-
-    #[test]
-    #[ignore = "needs analysis of BUILD files (FilegroupConfiguredTargetTest.testErrorForIllegalOutputGroup)"]
-    fn test_error_for_illegal_output_group() {}
+    // The BuildViewTestCase tests live in crates/blaze_sky_top/src/tests/filegroup_configured_target_test.rs.
 }

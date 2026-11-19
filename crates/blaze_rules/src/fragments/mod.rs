@@ -8,10 +8,11 @@
 //!
 //! Ported: `py` (PythonConfiguration), `bazel_py` (BazelPythonConfiguration), `apple`
 //! (AppleConfiguration), `objc` (ObjcConfiguration), `j2objc` (J2ObjcConfiguration), `platform`
-//! (PlatformConfiguration), `coverage` (CoverageConfiguration), `proto` (ProtoConfiguration).
+//! (PlatformConfiguration), `coverage` (CoverageConfiguration), `proto` (ProtoConfiguration),
+//! `java` (JavaConfiguration).
 //! Not registered (no analyzed rule of the corpus reads them, so `ctx.fragments.<name>` fails
-//! loudly in `FragmentCollection`): `java` (JavaConfiguration), `android`
-//! (AndroidConfiguration), `bazel_android` (BazelAndroidConfiguration).
+//! loudly in `FragmentCollection`): `android` (AndroidConfiguration), `bazel_android`
+//! (BazelAndroidConfiguration).
 
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ use starlark::values::{Heap, Value};
 
 pub mod apple_configuration;
 pub mod coverage_configuration;
+pub mod java_configuration;
 pub mod objc_configuration;
 pub mod platform_configuration;
 pub mod proto_configuration;
@@ -59,6 +61,7 @@ pub fn register_fragments() {
     platform_configuration::register();
     coverage_configuration::register();
     proto_configuration::register();
+    java_configuration::register();
 }
 
 /// The identity of a fragment: the address of its shared allocation (Java: the `Fragment`

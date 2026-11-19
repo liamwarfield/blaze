@@ -589,45 +589,8 @@ impl AttributeMap for ConfiguredAttributeMapper {
 
 #[cfg(test)]
 mod tests {
-    // Java: com/google/devtools/build/lib/analysis/select/ConfiguredAttributeMapperTest.java
-    // These tests analyze BUILD files with BuildViewTestCase; they need the analysis test
-    // harness (configured targets end to end).
-
-    #[test]
-    #[ignore = "needs BuildViewTestCase (analysis test harness)"]
-    fn test_get_attribute() {}
-
-    #[test]
-    #[ignore = "needs BuildViewTestCase (analysis test harness)"]
-    fn test_label_visitation() {}
-
-    #[test]
-    #[ignore = "needs BuildViewTestCase (analysis test harness)"]
-    fn test_configuration_transitions() {}
-
-    #[test]
-    #[ignore = "needs BuildViewTestCase (analysis test harness)"]
-    fn test_concatenated_selects() {}
-
-    #[test]
-    #[ignore = "needs BuildViewTestCase (analysis test harness)"]
-    fn test_none_values_means_attribute_is_not_explicitly_set() {}
-
-    #[test]
-    #[ignore = "needs BuildViewTestCase (analysis test harness)"]
-    fn test_none_values_with_multiple_selects_all_none() {}
-
-    #[test]
-    #[ignore = "needs BuildViewTestCase (analysis test harness)"]
-    fn test_none_value_on_default_condition_with_null_default() {}
-
-    #[test]
-    #[ignore = "needs BuildViewTestCase (analysis test harness)"]
-    fn test_none_value_on_mandatory_attribute() {}
-
-    #[test]
-    #[ignore = "needs BuildViewTestCase (analysis test harness)"]
-    fn test_aliased_config_setting() {}
+    // The BuildViewTestCase tests of ConfiguredAttributeMapperTest live in
+    // crates/blaze_sky_top/src/tests/configured_attribute_mapper_test.rs.
 
     // Java: ConfiguredAttributeMapperTest.noMatchErrorFormat (the message format itself).
     #[test]

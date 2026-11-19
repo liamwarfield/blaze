@@ -1403,7 +1403,8 @@ impl Attribute {
                     })
                     .collect(),
             ),
-            AttrValue::License(_) => blaze_util::unported!("License as a Starlark value"),
+            // Java: License is a StarlarkValue (LicenseApi), returned as it is.
+            AttrValue::License(l) => heap.alloc(l.clone()),
             AttrValue::ComputedDefault(_)
             | AttrValue::StarlarkComputedDefaultTemplate(_)
             | AttrValue::LateBound(_)

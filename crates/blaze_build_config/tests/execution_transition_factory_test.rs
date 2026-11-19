@@ -193,7 +193,7 @@ fn execution_transition_conf_dist_off() {
 /// same message; this port calls the loader directly. The other three cases
 /// (`//test:defs.bzl%symbol_doesnt_exist`, `//test:file_doesnt_exist.bzl%symbol`,
 /// `//test:defs.bzl%not_a_transition`) need scratch files and `BzlLoadFunction` outside
-/// `@_builtins`: see `starlark_exec_flag_bad_references_loaded_bzl`.
+/// `@_builtins`: see `starlark_exec_flag_bad_references_loaded_bzl` in blaze_sky_top.
 #[test]
 fn starlark_exec_flag_bad_references() {
     let cases = [
@@ -227,10 +227,8 @@ fn starlark_exec_flag_bad_references() {
     }
 }
 
-/// The remaining `@TestParameters` cases of `starlarkExecFlagBadReferences`.
-#[test]
-#[ignore = "needs BuildViewTestCase (scratch //test:defs.bzl, useConfiguration) and BzlLoadFunction outside @_builtins"]
-fn starlark_exec_flag_bad_references_loaded_bzl() {}
+// The remaining `@TestParameters` cases of `starlarkExecFlagBadReferences` and
+// `platformInOutputPathWorksInExecMode` live in crates/blaze_sky_top/src/tests/execution_transition_factory_test.rs.
 
 /// Shared body of `incompatibleOptionsPreservedInExec` and `experimentalOptionsPreservedInExec`:
 /// flips every selected boolean option, applies the exec transition and returns the options whose
@@ -361,7 +359,3 @@ fn experimental_options_preserved_in_exec() {
     let unpreserved_options = unpreserved_options_after_flip(&experimental_options);
     assert_eq!(unpreserved_options, Vec::<String>::new());
 }
-
-#[test]
-#[ignore = "needs BuildViewTestCase (scratch files, useConfiguration, getConfiguredTarget, getDirectPrerequisite)"]
-fn platform_in_output_path_works_in_exec_mode() {}

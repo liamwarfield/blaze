@@ -132,6 +132,7 @@
 //! installs).
 
 pub mod fragment_collection;
+pub mod starlark_action;
 pub mod starlark_action_factory;
 pub mod starlark_aspect_factory;
 pub mod starlark_aspect_propagation_context;

@@ -962,7 +962,6 @@ rule_with_prov_c = rule(
 
 // Java: src/test/java/com/google/devtools/build/lib/starlark/StarlarkDefinedAspectsTest.java:7228 StarlarkDefinedAspectsTest.testTopLevelAspectRequiresAspect_inspectRequiredAspectActions
 #[test]
-#[ignore = "BLAZE GAP: unported MergedConfiguredTarget.rawGetStarlarkProvider(actions) (`target.actions` in an aspect; blaze_analysis configuredtargets/target_value.rs get_value)"]
 fn test_top_level_aspect_requires_aspect_inspect_required_aspect_actions() {
     let mut f = StarlarkDefinedAspectsTest::new();
     f.scratch.file(
@@ -3952,7 +3951,6 @@ filegroup(name = 'tool')
 
 // Java: src/test/java/com/google/devtools/build/lib/starlark/StarlarkDefinedAspectsTest.java:9972 StarlarkDefinedAspectsTest.testTopLevelAspectNotDependsOnConfigeredTopLevelTarget
 #[test]
-#[ignore = "BLAZE BUG: TOP_LEVEL_ASPECTS node has a direct dep on ConfiguredTargetKey @@platforms//host:host; Rust PlatformProducer (blaze_sky_analysis platform/platform_producer.rs produce_platform) requests the platform's configured target in the caller's environment, Java reads PlatformValue.platformInfo()"]
 fn test_top_level_aspect_not_depends_on_configered_top_level_target() {
     let mut f = StarlarkDefinedAspectsTest::new();
     f.scratch.file(
@@ -4062,7 +4060,6 @@ r1(name = 't2')
 
 // Java: src/test/java/com/google/devtools/build/lib/starlark/StarlarkDefinedAspectsTest.java:10122 StarlarkDefinedAspectsTest.aspectOnAliasForConfiguredTarget_forwardsProvidersButNotActions
 #[test]
-#[ignore = "BLAZE GAP: unported License as a Starlark value (ctx.rule.attr of the genrule: Java StarlarkAttributesCollection.java:286 -> Attribute.valueToStarlark returns the License; blaze_packages attribute.rs Attribute::value_to_starlark)"]
 fn aspect_on_alias_for_configured_target_forwards_providers_but_not_actions() {
     let mut f = StarlarkDefinedAspectsTest::new();
     f.scratch.file(

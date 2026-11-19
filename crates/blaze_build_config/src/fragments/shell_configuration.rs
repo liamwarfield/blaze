@@ -80,9 +80,4 @@ impl Fragment for ShellConfiguration {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    #[ignore = "needs analysis (AnalysisTestUtil.execOptions)"]
-    fn options_also_apply_to_host() {}
-}
+// ShellConfigurationTest lives in crates/blaze_sky_top/src/tests/shell_configuration_test.rs.

@@ -412,7 +412,7 @@ fn count_toolchains_on_platform(
 
 /// Exception used when a toolchain type is required but no matching toolchain is found.
 // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionFunction.java:383 ToolchainResolutionFunction.UnresolvedToolchainsException.<init>
-fn unresolved_toolchains_exception(
+pub fn unresolved_toolchains_exception(
     target_platform_info: &PlatformInfo,
     missing_toolchain_types: &IndexSet<ToolchainTypeInfo>,
 ) -> ToolchainException {

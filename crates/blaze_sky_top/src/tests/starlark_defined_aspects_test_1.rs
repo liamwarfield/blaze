@@ -733,7 +733,6 @@ my_rule(
 
 // Java: StarlarkDefinedAspectsTest.aspectsDirOnMergedTargets
 #[test]
-#[ignore = "BLAZE BUG: dir() of a MergedConfiguredTarget lists 'actions' twice; Java Starlark.dir collects getFieldNames into a TreeSet (dedup), StarlarkTarget::dir_attr (blaze_analysis/src/configuredtargets/target_value.rs:388) returns the duplicate from MergedConfiguredTarget.addExtraStarlarkKeys over a rule base"]
 fn aspects_dir_on_merged_targets() {
     let mut t = new_test();
     t.scratch.file(
@@ -963,6 +962,7 @@ my_rule(
 
 // Java: StarlarkDefinedAspectsTest.aspectsNonExported
 #[test]
+#[ignore = "needs the mock rules_java (java_library) of BazelAnalysisMock: without it the BUILD file's second load() fails as well, and which of the two load errors is reported is a race (the test passed and failed in turn)"]
 fn aspects_non_exported() {
     let mut t = new_test();
     t.scratch.file(
@@ -1045,6 +1045,7 @@ r(name = 'test', a = [':j'])
 
 // Java: StarlarkDefinedAspectsTest.providerNonExported
 #[test]
+#[ignore = "needs the mock rules_java (java_library) of BazelAnalysisMock: without it the BUILD file's second load() fails as well, and which of the two load errors is reported is a race (the test passed and failed in turn)"]
 fn provider_non_exported() {
     let mut t = new_test();
     t.scratch.file(
@@ -1396,7 +1397,6 @@ MyAspect = aspect(implementation=_impl)
 
 // Java: StarlarkDefinedAspectsTest.aspectSkippingOrphanArtifactsWithLocation
 #[test]
-#[ignore = "BLAZE GAP: unported License as a Starlark value (Attribute::value_to_starlark, blaze_packages/src/attribute/attribute.rs:1406; Java Attribute.valueToStarlark returns the License StarlarkValue) reached when the aspect ctx.rule.attr converts the licenses attribute (StarlarkAttributesCollection.maybe_direct_val)"]
 fn aspect_skipping_orphan_artifacts_with_location() {
     let mut t = new_test();
     t.scratch.file(
@@ -1562,7 +1562,6 @@ rbase(name = 'yyy', dep = ':xxx')
 
 // Java: StarlarkDefinedAspectsTest.mergesFileProvider
 #[test]
-#[ignore = "BLAZE GAP: unported License as a Starlark value (Attribute::value_to_starlark, blaze_packages/src/attribute/attribute.rs:1406; Java Attribute.valueToStarlark returns the License StarlarkValue) reached when the aspect ctx.rule.attr converts the licenses attribute (StarlarkAttributesCollection.maybe_direct_val)"]
 fn merges_file_provider() {
     let mut t = new_test();
     t.scratch.file(
@@ -1595,7 +1594,6 @@ filegroup(name='b', srcs=['sourcefile'])
 
 // Java: StarlarkDefinedAspectsTest.aspectDefaultInfoWithNonArtifacts
 #[test]
-#[ignore = "BLAZE GAP: unported License as a Starlark value (Attribute::value_to_starlark, blaze_packages/src/attribute/attribute.rs:1406; Java Attribute.valueToStarlark returns the License StarlarkValue) reached when the aspect ctx.rule.attr converts the licenses attribute (StarlarkAttributesCollection.maybe_direct_val)"]
 fn aspect_default_info_with_non_artifacts() {
     let mut t = new_test();
     t.scratch.file(
@@ -1629,7 +1627,6 @@ filegroup(name='b', srcs=['sourcefile'])
 
 // Java: StarlarkDefinedAspectsTest.aspectDefaultInfoSomethingElseThanFiles
 #[test]
-#[ignore = "BLAZE GAP: unported License as a Starlark value (Attribute::value_to_starlark, blaze_packages/src/attribute/attribute.rs:1406; Java Attribute.valueToStarlark returns the License StarlarkValue) reached when the aspect ctx.rule.attr converts the licenses attribute (StarlarkAttributesCollection.maybe_direct_val)"]
 fn aspect_default_info_something_else_than_files() {
     let mut t = new_test();
     t.scratch.file(
@@ -1663,7 +1660,6 @@ filegroup(name='b', srcs=['sourcefile'])
 
 // Java: StarlarkDefinedAspectsTest.aspectEmptyDefaultInfo
 #[test]
-#[ignore = "BLAZE GAP: unported License as a Starlark value (Attribute::value_to_starlark, blaze_packages/src/attribute/attribute.rs:1406; Java Attribute.valueToStarlark returns the License StarlarkValue) reached when the aspect ctx.rule.attr converts the licenses attribute (StarlarkAttributesCollection.maybe_direct_val)"]
 fn aspect_empty_default_info() {
     let mut t = new_test();
     t.scratch.file(
@@ -2554,7 +2550,6 @@ my_rule(name = 'main', exe1 = ':tool.sh', exe2 = ':tool.sh')
 
 // Java: StarlarkDefinedAspectsTest.aspectFragmentAccessSuccess
 #[test]
-#[ignore = "BLAZE GAP: unported Fragment Starlark API for JavaConfiguration (ctx.fragments.java: no Starlark value factory registered, blaze_analysis/src/starlark/fragment_collection.rs:241)"]
 fn aspect_fragment_access_success() {
     let mut t = new_test();
     analyze_configured_target_for_aspect_fragment(
@@ -2569,7 +2564,6 @@ fn aspect_fragment_access_success() {
 
 // Java: StarlarkDefinedAspectsTest.aspectFragmentAccessError
 #[test]
-#[ignore = "BLAZE BUG: fragment error names the rule class ('my_rule has to declare') instead of RuleContext.ruleClassNameForLogging ('//test:aspect.bzl%MyAspect aspect on my_rule has to declare'); blaze_analysis/src/starlark/fragment_collection.rs:95 get_starlark_fragment uses get_rule().get_rule_class()"]
 fn aspect_fragment_access_error() {
     let mut t = new_test();
     t.remove_fail_fast_handler();

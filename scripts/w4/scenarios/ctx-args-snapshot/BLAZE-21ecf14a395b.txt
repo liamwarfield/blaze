@@ -1,0 +1,64 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /tmp/claude-1000/-home-liamwarfield--t3-projects-blaze/abde8c99-e1f9-44bd-a633-c36e4e7e2b2e/scratchpad/blaze-a5
+# sha256 21ecf14a395b08b04ac7b826ab48ec3e2157eb91b6e1dff87c1d1e10b7ee59be
+# tree c74f4870286a275dc5373d8f6cbad549a5186917 (dirty)
+# date 2026-11-18T18:41:27
+=== 1: aquery //:snap
+exit 0
+--- stdout
+{"actionKey": "4c541b63671229e040a8bf9165d9e93c27360d78489733e87382952e298f633c", "argv": ["/bin/true", "x"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "First", "outputs": ["bazel-out/k8-fastbuild/bin/snap.o1"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.o1", "ruleClass": "snap", "target": "//:snap"}
+{"actionKey": "02e5ee2372ffdbfbc6d02369d616d2e8258b157c49826cbad2842a49480c69cf", "argv": ["/bin/true", "s", "x", "y"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "Second", "outputs": ["bazel-out/k8-fastbuild/bin/snap.o2"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.o2", "ruleClass": "snap", "target": "//:snap"}
+{"actionKey": "fecd0685a013ce67ff764513fadf24f6c7826d496d9336e23ce94cc097149c50", "argv": ["/bin/bash", "-c", "true", "", "x", "y", "p", "q"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "Third", "outputs": ["bazel-out/k8-fastbuild/bin/snap.o3"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.o3", "ruleClass": "snap", "target": "//:snap"}
+{"actionKey": "2bd397f4152402a836cfcc0d19af45aeb91535ce12d2aa768272ec1d9804dd6e", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/snap.w1"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.w1", "ruleClass": "snap", "target": "//:snap"}
+{"actionKey": "f527f9bde2165cf3cddfb638673a87014c73e5d1292c4160ceb3874be2e105ab", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/snap.w2"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.w2", "ruleClass": "snap", "target": "//:snap"}
+{"actionKey": "f1766b195354281093194662393423b80475632afb84466e7c18926270d93604", "argv": ["/bin/true", "--flag", "v w"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "NoParamFile", "outputs": ["bazel-out/k8-fastbuild/bin/snap.p1"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.p1", "ruleClass": "snap", "target": "//:snap"}
+{"actionKey": "2f98d88219a2d5f3191eeff2919ca31f301d9966cddee68ccb13b75f6de5e7e8", "argv": ["/bin/true", "--flag", "v w"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "ParamFileShell", "outputs": ["bazel-out/k8-fastbuild/bin/snap.p2"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.p2", "ruleClass": "snap", "target": "//:snap"}
+{"actionKey": "10f3f60c5554f575fd764a4c3f33b9c33edd6566f8cb92fde312d8d0fc1f5a8a", "argv": ["/bin/true", "--flag", "v w"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "ParamFileMultiline", "outputs": ["bazel-out/k8-fastbuild/bin/snap.p3"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.p3", "ruleClass": "snap", "target": "//:snap"}
+{"actionKey": "128a70cf34d8a92f9b7304e23ecbb271394df64631b388eeebd91263c493dd3d", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/snap.f1"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.f1", "ruleClass": "snap", "target": "//:snap"}
+{"actionKey": "814f7c7a20b7f858ccf6ff4afe8cba5d67782c43b3a91957b49cfb7b694ab9a6", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/snap.f2"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.f2", "ruleClass": "snap", "target": "//:snap"}
+{"actionKey": "d85fd3589714e67685775c2b8d492ae7e77220ce7987339f4f900edc3770b3e4", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["tmpl.txt"], "mnemonic": "TemplateExpand", "outputs": ["bazel-out/k8-fastbuild/bin/snap.t1"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.t1", "ruleClass": "snap", "substitutions": [{"key": "%A%", "value": "one"}], "target": "//:snap", "templateContent": "A=%A% B=%B%\n"}
+{"actionKey": "b3e5647f69dce2f4907e0bd404c55915265e109fbcdb5ffd11a3c4292190d9bb", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["tmpl.txt"], "mnemonic": "TemplateExpand", "outputs": ["bazel-out/k8-fastbuild/bin/snap.t2"], "primaryOutput": "bazel-out/k8-fastbuild/bin/snap.t2", "ruleClass": "snap", "substitutions": [{"key": "%A%", "value": "one"}, {"key": "%B%", "value": "two"}], "target": "//:snap", "templateContent": "A=%A% B=%B%\n"}
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:snap (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 2: run build //:snap
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:snap (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:snap up-to-date:
+  bazel-bin/snap.w1
+  bazel-bin/snap.w2
+  bazel-bin/snap.f1
+  bazel-bin/snap.f2
+  bazel-bin/snap.t1
+  bazel-bin/snap.t2
+INFO: Elapsed time: <DUR>
+INFO: 7 processes: 7 internal.
+INFO: Build completed successfully, 7 total actions
+=== 3: cat bazel-bin/snap.w1
+x
+y
+p
+q
+=== 4: cat bazel-bin/snap.w2
+x
+y
+p
+q
+z
+=== 5: cat bazel-bin/snap.f1
+'a b'
+=== 6: cat bazel-bin/snap.f2
+a b
+=== 7: cat bazel-bin/snap.t1
+A=one B=%B%
+=== 8: cat bazel-bin/snap.t2
+A=one B=two

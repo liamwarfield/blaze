@@ -18,6 +18,7 @@ use blaze_analysis::aspect_key_creator::AspectKey;
 use blaze_analysis::aspect_value::AspectValue;
 use blaze_analysis::configured_aspect::ConfiguredAspect;
 use blaze_analysis::configured_target::ConfiguredTarget;
+use blaze_analysis::starlark::starlark_action::StarlarkAction;
 use blaze_cmdline::Label;
 use blaze_packages::rule_class::ProviderKey;
 use blaze_starlark::depset::Depset;
@@ -1449,7 +1450,6 @@ r(name = 'baz', dep = ':bar')
 
 // Java: StarlarkDefinedAspectsTest.testAspectActionProvider
 #[test]
-#[ignore = "BLAZE GAP: unported MergedConfiguredTarget.rawGetStarlarkProvider(actions) (`target.actions` in an aspect, blaze_analysis configuredtargets/target_value.rs StarlarkTarget.get_value); reading the actions back also needs a Starlark Action (ActionApi) value type"]
 fn test_aspect_action_provider() {
     let mut t = new_test();
     t.scratch.file(
@@ -1496,17 +1496,27 @@ r2(name = 'r2', dep = ':r1')
     let analysis_result = update(&mut t, &["//test:r2"]);
     let target = analysis_result.only_target_to_build();
     let info = get_starlark_provider(&mut t, &target, "RuleInfo");
-    let result = get_sequence(&info, "result");
+    // Java: ((Action) a).getPrimaryOutput().getExecPath().getBaseName() of each element of
+    // `result` (the Starlark `Action` values, blaze_analysis StarlarkAction).
+    let result: Vec<String> = with_value(&info, "result", |v| {
+        let v = v.expect("NullPointerException: no field result");
+        ListRef::from_value(v)
+            .unwrap_or_else(|| panic!("ClassCastException: result is not a Sequence: {v}"))
+            .iter()
+            .map(|a| {
+                StarlarkAction::action_of(a)
+                    .unwrap_or_else(|| panic!("ClassCastException: not an Action: {a}"))
+                    .get_primary_output()
+                    .get_exec_path()
+                    .get_base_name()
+                    .to_string()
+            })
+            .collect()
+    });
 
     // We should see both the action from the 'r0' rule, and the action from the 'a1' aspect
     assert_eq!(result.len(), 2);
-    // Java: ((Action) a).getPrimaryOutput().getExecPath().getBaseName()
-    // PORT: the Starlark `Action` values (ActionApi) are not ported (target.actions fails with
-    // `unported!` in StarlarkTarget.get_value), so there is no Rust type to read them back as.
-    let base_names: Vec<String> = result
-        .iter()
-        .map(|a| -> String { panic!("ClassCastException: not an Action: {a:?}") })
-        .collect();
+    let base_names: Vec<String> = result;
     assert_contains_exactly(&base_names, &["r0".to_string(), "a1".to_string()]);
 }
 
@@ -3178,7 +3188,6 @@ fn test_aspect_requires_aspect_inherit_required_providers() {
 
 // Java: StarlarkDefinedAspectsTest.testAspectRequiresAspect_inspectRequiredAspectActions
 #[test]
-#[ignore = "BLAZE GAP: unported MergedConfiguredTarget.rawGetStarlarkProvider(actions) (`target.actions` in an aspect, blaze_analysis configuredtargets/target_value.rs StarlarkTarget.get_value)"]
 fn test_aspect_requires_aspect_inspect_required_aspect_actions() {
     let mut t = new_test();
     t.scratch.file(

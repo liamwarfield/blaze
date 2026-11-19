@@ -2,8 +2,19 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::hash::Hash;
 
+use allocative::Allocative;
 use blaze_cmdline::Label;
+use starlark::any::ProvidesStaticType;
+use starlark::starlark_simple_value;
+use starlark::values::Demand;
+use starlark::values::NoSerialize;
+use starlark::values::StarlarkValue;
+use starlark::values::Value;
+use starlark::values::ValueLike;
+use starlark::values::starlark_value;
+use starlark_map::StarlarkHasher;
 
 /// Java `License.LicenseParsingException`.
 // Java: com/google/devtools/build/lib/packages/License.java:47 License.LicenseParsingException
@@ -60,13 +71,48 @@ impl LicenseType {
     }
 }
 
-/// The license of a target: license types plus exception labels (Java `License`).
+/// The license of a target: license types plus exception labels (Java `License`). It is also
+/// the Starlark value of type `License` (Java `License implements LicenseApi`).
 // Java: com/google/devtools/build/lib/packages/License.java:39 License
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, ProvidesStaticType, NoSerialize, Allocative)]
 pub struct License {
     // PORT: Java ImmutableSet built from an EnumSet: iteration in enum order, so a BTreeSet.
+    #[allocative(skip)]
     license_types: BTreeSet<LicenseType>,
+    #[allocative(skip)]
     exceptions: Vec<Label>,
+}
+
+starlark_simple_value!(License);
+
+// Java: com/google/devtools/build/lib/starlarkbuildapi/LicenseApi.java:22 LicenseApi
+// (`@StarlarkBuiltin(name = "License")`, no fields or methods).
+#[starlark_value(type = "License")]
+impl<'v> StarlarkValue<'v> for License {
+    // Java: com/google/devtools/build/lib/packages/License.java:210 License.repr. Java's `str`
+    // defaults to `repr` (StarlarkValue.str), which is starlark-rust's default `collect_str`.
+    fn collect_repr(&self, collector: &mut String) {
+        collector.push_str(&self.repr());
+    }
+
+    // Java: com/google/devtools/build/lib/packages/License.java:185 License.equals (Starlark `==`
+    // on a non-core value is Java `equals`).
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        Ok(other.downcast_ref::<License>().is_some_and(|o| o == self))
+    }
+
+    // Java: com/google/devtools/build/lib/packages/License.java:201 License.isImmutable
+    // ("licences are Starlark-hashable"); the hash is License.hashCode, whose exact value is not
+    // observable from Starlark.
+    fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        self.hash(hasher);
+        Ok(())
+    }
+
+    // Java: License.isImmutable returns true.
+    fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
+        demand.provide_value(blaze_starlark::structs::DeeplyImmutable);
+    }
 }
 
 impl License {

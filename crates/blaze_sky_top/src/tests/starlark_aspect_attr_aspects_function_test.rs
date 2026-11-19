@@ -280,10 +280,7 @@ fn selected_attrs_returned_aspect_propagates_along_returned_attrs() {
 #[test]
 fn wild_card_attr_returned_build_fails() {
     let mut t = new_test();
-    create_test_defs(
-        &mut t,
-        "def _propagation_attrs(ctx):\n    return ['*']\n",
-    );
+    create_test_defs(&mut t, "def _propagation_attrs(ctx):\n    return ['*']\n");
     create_test_packages(&mut t);
 
     t.remove_fail_fast_handler();
@@ -334,7 +331,10 @@ fn with_propagation_predicate_aspect_propagated_to_satisfying_targets() {
 
     assert_contains_exactly(
         &get_formatted_aspect_keys(&mut t, "cmdline_aspect"),
-        &["cmdline_aspect on //pkg1:t2", "cmdline_aspect on //pkg1:d11"],
+        &[
+            "cmdline_aspect on //pkg1:t2",
+            "cmdline_aspect on //pkg1:d11",
+        ],
     );
 
     let aspect_a_result = get_aspect_result_default(&t, "cmdline_aspect");
@@ -515,11 +515,13 @@ simple_rule = rule(
     );
     t.scratch.file(
         "pkg1/BUILD",
-        &[r#"load('//test:defs.bzl', 'computed_default_rule', 'simple_rule')
+        &[
+            r#"load('//test:defs.bzl', 'computed_default_rule', 'simple_rule')
 computed_default_rule(name = 'computed_default_target', prefix = 'my_prefix')
 simple_rule(name = 'my_prefix01')
 simple_rule(name = 'my_prefix02')
-"#],
+"#,
+        ],
     );
 
     t.update_with_aspects(
@@ -690,11 +692,8 @@ simple_rule(name = 'non_tool')
 "#],
     );
 
-    t.update_with_aspects(
-        &["//test:defs.bzl%cmdline_aspect"],
-        &["//pkg1:main_target"],
-    )
-    .unwrap();
+    t.update_with_aspects(&["//test:defs.bzl%cmdline_aspect"], &["//pkg1:main_target"])
+        .unwrap();
 
     assert_contains_exactly(
         &get_formatted_aspect_keys(&mut t, "cmdline_aspect"),
@@ -767,19 +766,18 @@ simple_rule = rule(
     );
     t.scratch.file(
         "pkg1/BUILD",
-        &[r#"load('//test:defs.bzl', 'rule_with_initializer', 'simple_rule')
+        &[
+            r#"load('//test:defs.bzl', 'rule_with_initializer', 'simple_rule')
 rule_with_initializer(name = 'main_target', deps = [":initial"])
 simple_rule(name = 'initial')
 simple_rule(name = 'added')
-"#],
+"#,
+        ],
     );
     t.use_configuration(&["--experimental_rule_extension_api"]);
 
-    t.update_with_aspects(
-        &["//test:defs.bzl%cmdline_aspect"],
-        &["//pkg1:main_target"],
-    )
-    .unwrap();
+    t.update_with_aspects(&["//test:defs.bzl%cmdline_aspect"], &["//pkg1:main_target"])
+        .unwrap();
 
     assert_contains_exactly(
         &get_formatted_aspect_keys(&mut t, "cmdline_aspect"),
@@ -1085,7 +1083,8 @@ simple_rule = rule(
 
     t.scratch.file(
         "pkg1/BUILD",
-        &[r#"load("//test:defs.bzl", "component", "binary", "simple_rule")
+        &[
+            r#"load("//test:defs.bzl", "component", "binary", "simple_rule")
 
 component(name="a_yes", impl=":a_impl")
 component(name="b_no", deps = [":c_yes", ":d_no"], impl=":b_impl")
@@ -1096,7 +1095,8 @@ binary(name="bin", components=[":a_yes", ":b_no"], regular_deps = [":dep_1"])
 [filegroup(name=x + "_impl", srcs=[x]) for x in ["a", "b", "c", "d"]]
 
 simple_rule(name = 'dep_1')
-"#],
+"#,
+        ],
     );
 }
 
@@ -1363,11 +1363,8 @@ my_rule(name = 'dep_1')
 my_rule(name = 'dep_2')
 "#],
     );
-    t.update_with_aspects(
-        &["//test:defs.bzl%cmdline_aspect"],
-        &["//pkg1:main_target"],
-    )
-    .unwrap();
+    t.update_with_aspects(&["//test:defs.bzl%cmdline_aspect"], &["//pkg1:main_target"])
+        .unwrap();
 
     assert_contains_exactly(
         &get_formatted_aspect_keys(&mut t, "cmdline_aspect"),
@@ -1438,11 +1435,8 @@ my_rule(name = 'dep_1')
     // Java: useRuleClassProvider(TestRuleClassProvider.addStandardRules + DummyTestFragment).
 
     t.use_configuration(&["--foo=default"]);
-    t.update_with_aspects(
-        &["//test:defs.bzl%cmdline_aspect"],
-        &["//pkg1:main_target"],
-    )
-    .unwrap();
+    t.update_with_aspects(&["//test:defs.bzl%cmdline_aspect"], &["//pkg1:main_target"])
+        .unwrap();
 
     // Java: k.getLabel() + " with foo = " +
     //     k.getConfigurationKey().getOptions().get(DummyTestOptions.class).foo
