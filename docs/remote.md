@@ -378,3 +378,29 @@ build with `--remote_download_outputs=all` (whose `RemoteOutputChecker` does not
 metadata), restores the outputs. `RemoteActionInputFetcher.doDownloadFile` turns only errors of
 the download itself into `CacheNotFoundException`: creating the temporary file's directory or an
 empty file, and an interruption, are reported as they are.
+
+### Evidence on a real RBE, final binary (2026-11-19)
+
+Binary: `target/release/blaze` built from 3a091e6, against the oracle, both through
+`scripts/remote/rbe-bench run <tool> <project> --cold|--warm --remote_download_outputs=<mode>`
+on Stairwell's RBE (flags as in the earlier real-RBE table). For every pair: exit code 0, the
+same process summary line, the same set of files under `bazel-out/*/bin` with equal sha256
+(the `*.runfiles_manifest` files differ only in the output base path), and equal gRPC call
+counts by method and status (`scripts/remote/grpc-log-methods`).
+
+| project, mode | summary (both tools) | `all`: files, Reads | `toplevel` | `minimal` |
+|---|---|---|---|---|
+| brotli `build //...`, cold | 53 processes: 10 internal, 43 remote | 45, 115 | 9, 79 | 2, 72 |
+| brotli, warm | 43 remote cache hit, 10 internal | 45, 115 | 9, 79 | 2, 72 |
+| re2 `test //:all //python:all`, warm | 550 remote cache hit, 165 internal, 1 processwrapper-sandbox; 21 tests pass | 599, 782 | 76, 485 | 71, 459 |
+
+Cold runs also have 43 Execute, 43 FindMissingBlobs, 43 GetActionResult (NOT_FOUND) and 86
+Write in both tools. The re2 cold run was measured once per tool with `all` (table above, at
+3353c77). The first `minimal` re2 run with e7451bb showed 21 extra remote spawns (the
+test.xml generator); fixed in 3a091e6 ("Fix after the RBE run" above).
+
+Reviews: remote wiring PASS at 3bb3adf, credential helper PASS at 3bb3adf, build without the
+bytes PASS at 3a091e6 (docs/reviews/2026-11-19-*.md). Rust tests at 3a091e6
+(`scripts/cargo-capped test -p blaze_remote -p blaze_exec -p blaze_sky_exec -p blaze_buildtool
+-p blaze_runtime -p blaze_repo_fetch -p blaze_repo_rules -p blaze_vfs -p blaze_optdefs
+--no-fail-fast`): 2,109 pass, 0 fail, 476 ignored.

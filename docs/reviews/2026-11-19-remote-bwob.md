@@ -217,3 +217,109 @@ the oracle, and the Java test ported.
 - "The prefetcher creates directories with `createDirectoryAndParents` (Java's branch for a null
   `ActionOutputDirectoryHelper`)": the helper is not null in a Bazel build (N3).
 - Wiring paragraph, test counts and the other gaps match the code.
+
+# Round 2
+
+- Commit reviewed: `3a091e6` against `e7451bb` (`git diff e7451bb 3a091e6`, `git show
+  3a091e6:<path>`), with the response `docs/reviews/2026-11-19-remote-bwob-response.md`. All
+  `file:line` references in this section are at `3a091e6`.
+- Same rules: read-only, no Cargo, no build, no oracle run. The oracle rows the response and
+  `docs/remote.md` cite (runs `m6`, `m7`) were read, not re-measured.
+
+## Verdict
+
+**PASS**, bound to `3a091e6`. B1 and B2 are resolved. No blocking finding in the fixes or in the
+test-strategy change. Five non-blocking findings (R2-1 to R2-5) below.
+
+## B1, B2
+
+- **B1: resolved.** `skyframe_action_executor.rs:1959-1971` compares each listed child's
+  parent-relative path with the remote entry's for equality, which is Java's per-directory merge
+  by name (`remote/RemoteActionFileSystem.java:835`). The bench now has a tree with a repeated
+  base name, the regex row matches, and the response reproduces the old failure.
+  `prefetchFiles_downloadRemoteTrees_partial` is ported.
+- **B2: resolved.** `skyframe_action_executor.rs:1891-1996`: the root is resolved through its
+  symlink chain, the remote children are taken from under the canonical root, the root counts as
+  a directory when the local stat, the remote children or the action's input tree at the
+  canonical path say so, and the value gets `metadata.getResolvedPath()` or the canonical path
+  when the root is a symlink and the target is an input
+  (`skyframe/ActionOutputMetadataStore.java:300-312`). `finalize_action` and the prefetcher then
+  see the resolved path (`maybeGetTreeRoot`, `getSymlinks`). On an action cache check the input
+  metadata is not set, so the filesystem value has no resolved path; the merged value Java
+  builds there has none either (`actions/ActionCacheChecker.java:370-378`), and the prefetcher
+  falls back to the symlink on disk (`maybeResolveSymlink`), so this is parity.
+  `..._withResolvedPath` is ported. The four bench rows (remote exec, warm remote cache,
+  `toplevel`, `all`) are the cases I asked for.
+
+## N1 to N3
+
+- **N1:** documented as asked (sticky, both ways out). Recovery itself stays open.
+- **N2: resolved.** `remote_action_input_fetcher.rs:157-196`: the directory creation and the
+  empty file run first and return their errors unchanged, an interruption is returned unchanged,
+  the Java comment is back. One direct throw is still converted: R2-4.
+- **N3:** comment and `docs/remote.md` now say what Java does. The deviation stays open.
+
+## New code
+
+- **`RemoteActionFileSystem::canonicalize`** (`remote_output_tree.rs:165-197`) against
+  `remote/PathCanonicalizer.java:99-150`. Component by component, relative targets resolved
+  against the canonical parent, uplevel references removed by normalization, at most 32 links
+  for the whole path, then `Too many levels of symbolic links`. It cannot loop. It can leave the
+  exec root, as Java's can (neither restricts the target); the result is only used as a key into
+  the remote output tree, and `download_if_remote` still refuses a canonical path outside the
+  exec root (`:228`). A component that does not exist is kept where Java throws
+  `FileNotFoundException`; every caller then misses the lookup, which is the same outcome.
+  Java's resolver also consults the inputs and the remote tree for symlinks; Blaze creates every
+  symlink on the local file system, so the local stat is enough.
+- **Resolved path with `--remote_download_outputs=all`.** Follows Java: with any cache the
+  output service is the remote one and a symlinked tree whose target is an input gets the
+  resolved path. The digest does not change (it is over the children), the action cache stores
+  it as Java does, and the `all` rows match the oracle for both cache kinds.
+- **Test strategy** (`exec/action_execution_context.rs:65-81`,
+  `exec/standalone_test_strategy.rs:472-479, 1139-1144`, `analysis/test/test_runner_action.rs:504-522`)
+  against `actions/ActionExecutionContext.java:369`, `exec/StandaloneTestStrategy.java` and
+  `analysis/test/TestRunnerAction.java:429-480, 685-709`. Java's `getExecRoot()` is the action
+  file system's, and `prepareFileSystem`, `resolve(execRoot)` and `getTestOutputsMapping` use
+  it; the Rust now does. The spawn's environment is still computed from the local exec root
+  (`:1052`), which matters because `Path::relative_to` panics across file systems. Before this
+  commit `rename_outputs` mixed a test root on the action file system with outputs on the local
+  one, so a flaky retry with a cache would have hit that panic; the paths now agree.
+  `action_cache_hit` keeping the local exec root is right in effect: Java passes the local exec
+  root there (`skyframe/SkyframeActionExecutor.java:810-812`) and an action file system whose
+  remote output tree is still empty, so `resolver.toPath(testLog).exists()` is the local answer.
+- **`delete` and `renameTo`** (`remote_output_tree.rs:66-85, 357-362, 447-454`) against
+  `remote/RemoteActionFileSystem.java:357-378, 773-808`: local and remote both acted on, a
+  rename fails only when neither side had the source. They do not canonicalize the parent as
+  Java does; the test paths they serve have no symlinked parent.
+
+## Non-blocking findings
+
+- **R2-1 (S3) Under a symlinked tree a child that exists both on disk and in the remote output
+  tree gets its local metadata.** `skyframe_action_executor.rs:1932-1951` visits the local
+  target directory first and the merge at `:1959` then skips the remote entry. Java's
+  `statInternal` asks the input metadata first, so the child is remote
+  (`remote/RemoteActionFileSystem.java:667-700`). Same digest, so no key changes. The visible
+  difference: the tree is no longer "entirely remote", so `finalize_action` skips it
+  (`canDownloadFile`), and a top-level symlinked tree whose target was partly prefetched by a
+  concurrent local consumer has its remaining children downloaded by that consumer rather than
+  by its own action. I found no scenario where a file ends up missing, since the consumer needs
+  every child. Prefer the input or remote metadata for the visited children, as the file branch
+  (`remote_symlink_target_metadata`) already does.
+- **R2-2 (S3) `stat` without following, and `get_digest`/`get_fast_digest`/`get_file_size`, do
+  not canonicalize the parent** (`remote_output_tree.rs:277-336`). A remote file reached through
+  a symlinked directory is found by a following `stat` and by `readdir`, not by these. Java
+  canonicalizes first in each (`RemoteActionFileSystem.java:464-553`). No current caller reads
+  such a path that way (the tree value is built in the store, not through this view).
+- **R2-3 (S4) `canonicalize` has no cache and runs on hot paths:** one `lstat` per component for
+  every following `stat` of a path that is not in the tree, again on a miss, and for every
+  `readdir`, each followed by the whole-map scan of N7. Java caches in a trie. Tests now go
+  through this view for every existence check.
+- **R2-4 (S4) The symlink-template branch of `downloadFile` is still converted**
+  (`combined_cache.rs:856-868` throws directly in Java, `remote/CombinedCache.java:765-774`);
+  only the first two direct throws were lifted out.
+- **R2-5 (S3) Two tests remain "port pending"** (`tests/remote_action_input_fetcher_test.rs:616,
+  667`: `..._forActionTemplateExpansion`, `..._ignoreNonRemoteFiles_tree`); 14 ported, 17
+  ignored of 31. Still no `RemoteActionFileSystemTest` port for a view that now also
+  canonicalizes, deletes and renames.
+
+Round 1's N1 (recovery), N3, N5 to N10 stand as written.

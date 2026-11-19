@@ -51,8 +51,10 @@ message). Opus fixers are on both. Integrity audit: open outside the referee.
 
 ## In flight
 - Fixers (Opus): analysis round 2; execution round 2 (+ no_proxy split found by the gate).
-- Remote: phase 1 wiring and credential helper reviews PASS at 3bb3adf (round 2); phase 2
-  review pending.
+- Remote: reviews PASS (wiring and credential helper at 3bb3adf, build without the bytes at
+  3a091e6). Next gaps: `--bes_backend` (BuildEventService upload), the ByteStream BEP uploader,
+  recovery from a lost remote blob (action rewinding), gRPC connection pool. The gate baseline
+  and the corpus score were not re-recorded for these commits.
 - Gate: name map covers 30 of 31 absent names; the last is the no_proxy divergence (being fixed).
 
 ## Next
