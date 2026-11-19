@@ -134,7 +134,9 @@ in, not re-reviewed). Missing:
 
 - Critical-path line and `Elapsed time` details; `--profile` / `command.profile.gz`.
 - The cursor-control progress bar (`--curses=yes`).
-- Text-format build event file (`--build_event_text_file`; 13 upstream tests).
+- Text-format output: `--build_event_text_file` and `cquery --output=textproto` ported after
+  v0.1.0 (printer byte-identical on brotli and re2); `aquery --output=proto` / `textproto` /
+  `streamed_proto` still missing (only `jsonproto` works).
 - Build event stream for commands other than `build` and `test`, and for a command that stops
   before it runs.
 - `--build_event_publish_all_actions`, target summary events, build tool logs.
