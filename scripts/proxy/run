@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Run one proxy scenario: a repository rule downloads one URL through scripts/proxy/fake-proxy.
+#
+# usage: scripts/proxy/run <oracle|BLAZE-BINARY> <out-dir> <url> <proxy-var>=<proxy-url> <responses>
+#                          [<extra startup option>...]
+#        scripts/proxy/run help
+#
+#   <url>         what `repository_ctx.download` fetches, for example https://origin.example/f
+#   <proxy-var>   HTTPS_PROXY, HTTP_PROXY, https_proxy or http_proxy; in <proxy-url> the word PORT
+#                 is replaced by the fake proxy's port (http://user:pw@127.0.0.1:PORT)
+#   <responses>   the fake proxy's answer list (scripts/proxy/fake-proxy help)
+#
+# Workspace: ~/.cache/blaze/work/proxy/ws (MODULE.bazel, defs.bzl, BUILD.bazel written each run;
+# the module has no bazel_dep, its lockfile is resolved once without a proxy).
+# Runs `query @r//:all` with startup options --output_user_root=~/.cache/blaze/oracle-out/ur-proxy
+# --nohome_rc --nosystem_rc and command options --repository_cache= --color=no --curses=no, inside
+# `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0` (the server dies with
+# the unit: every run is a fresh JVM, so ProxyHelper's one-time Authenticator setup happens anew).
+# Environment: HOME, PATH=/usr/bin:/bin, the proxy variable, NO_PROXY=bcr.bazel.build.
+# Results in <out-dir>: the proxy log (NN-cC.req, NN-cC.tunnel, events.txt), stderr, exit-code.
+set -euo pipefail
+if [[ $# -lt 5 || $1 == help ]]; then sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+here=$(cd "$(dirname "$0")" && pwd)
+bin=$1; out=$2; url=$3; pvar=${4%%=*}; purl=${4#*=}; responses=$5
+shift 5; extra=("$@")
+[[ $bin == oracle ]] && bin=~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64
+ws=~/.cache/blaze/work/proxy/ws
+ur=~/.cache/blaze/oracle-out/ur-proxy
+mkdir -p "$ws" "$ur"
+rm -rf "$out"; mkdir -p "$out"
+echo 'module(name = "proxy_probe")
+dl = use_repo_rule("//:defs.bzl", "dl")
+dl(name = "r", url = "'"$url"'")' > "$ws/MODULE.bazel"
+cat > "$ws/defs.bzl" <<'EOF'
+def _impl(rctx):
+    rctx.download(url = rctx.attr.url, output = "f")
+    rctx.file("BUILD.bazel", "exports_files(['f'])\n")
+
+dl = repository_rule(implementation = _impl, attrs = {"url": attr.string()})
+EOF
+: > "$ws/BUILD.bazel"
+common=(--output_user_root="$ur" --nohome_rc --nosystem_rc)
+if [[ ! -f $ws/MODULE.bazel.lock ]]; then
+  (cd "$ws" && systemd-run --user --collect --wait --quiet --pipe -p MemoryMax=12G -p MemorySwapMax=0 \
+    --working-directory="$ws" env -i HOME="$HOME" PATH=/usr/bin:/bin \
+    "$bin" "${common[@]}" mod deps --repository_cache=$HOME/.cache/blaze/repo-cache >/dev/null 2>&1) || true
+fi
+log=$out/proxy
+"$here/fake-proxy" 0 "$log" "$responses" > "$out/proxy.port" &
+ppid_=$!
+trap 'kill $ppid_ 2>/dev/null || true' EXIT
+for _ in $(seq 50); do [[ -s $out/proxy.port ]] && break; read -rt 0.1 <> <(:) || true; done
+port=$(head -1 "$out/proxy.port")
+purl=${purl//PORT/$port}
+set +e
+systemd-run --user --collect --wait --quiet --pipe -p MemoryMax=12G -p MemorySwapMax=0 \
+  --working-directory="$ws" env -i HOME="$HOME" PATH=/usr/bin:/bin "$pvar=$purl" \
+  NO_PROXY=bcr.bazel.build \
+  "$bin" "${common[@]}" "${extra[@]}" query @r//:all --repository_cache= --color=no --curses=no \
+  > "$out/stdout" 2> "$out/stderr"
+code=$?
+set -e
+echo "$code" > "$out/exit-code"
+echo "$out exit=$code"

@@ -18,6 +18,7 @@ use blaze_optdefs::command::test_summary_options::TestSummaryOptions;
 use blaze_optdefs::fragment::run_under::RunUnder;
 use blaze_protos::blaze::{BlazeTestStatus, TestCase, TestResultData};
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail};
+use blaze_shell::ThreadInterrupt;
 use blaze_shell::termination_status::TerminationStatus;
 use blaze_util::Fingerprint;
 use blaze_vfs::os_path_policy::HOST_POLICY;
@@ -30,6 +31,7 @@ use super::test_result::TestResult;
 use super::test_runner_action::TestRunnerAction;
 use crate::actions::{ExecException, UserExecException};
 use crate::exec::action_execution_context::ActionExecutionContext;
+use crate::exec::streamed_test_output::StreamedTestOutput;
 use crate::exec::test_log_helper;
 
 /// `TestStrategy.TEST_TMP_ROOT`.
@@ -42,20 +44,22 @@ struct AttemptGroupImpl {
     inner: Mutex<AttemptGroupState>,
 }
 
+/// PORT: `Set<Thread>` holds each thread's interrupt status (`blaze_shell::ThreadInterrupt`),
+/// compared with `same_thread` (Java's `Thread` identity), in insertion order.
 #[derive(Default)]
 struct AttemptGroupState {
     cancelled: bool,
-    running_threads: Vec<std::thread::ThreadId>,
+    running_threads: Vec<ThreadInterrupt>,
 }
 
 impl AttemptGroup for AttemptGroupImpl {
     // Java: com/google/devtools/build/lib/analysis/test/TestStrategy.java:82 TestStrategy.AttemptGroupImpl.register
     fn register(&self) -> Result<(), ExecException> {
         let mut s = self.inner.lock();
-        let me = std::thread::current().id();
+        let me = ThreadInterrupt::current();
         // Verify.verify(runningThreads.add(Thread.currentThread()))
         assert!(
-            !s.running_threads.contains(&me),
+            !s.running_threads.iter().any(|t| t.same_thread(&me)),
             "VerifyException: runningThreads.add"
         );
         s.running_threads.push(me);
@@ -69,8 +73,8 @@ impl AttemptGroup for AttemptGroupImpl {
     // Java: com/google/devtools/build/lib/analysis/test/TestStrategy.java:91 TestStrategy.AttemptGroupImpl.unregister
     fn unregister(&self) {
         let mut s = self.inner.lock();
-        let me = std::thread::current().id();
-        let pos = s.running_threads.iter().position(|t| *t == me);
+        let me = ThreadInterrupt::current();
+        let pos = s.running_threads.iter().position(|t| t.same_thread(&me));
         // Verify.verify(runningThreads.remove(Thread.currentThread()))
         let pos = pos.expect("VerifyException: runningThreads.remove");
         s.running_threads.remove(pos);
@@ -90,11 +94,11 @@ impl AttemptGroup for AttemptGroupImpl {
 
         s.cancelled = true;
 
-        let me = std::thread::current().id();
-        if s.running_threads.iter().any(|t| *t != me) {
-            // Java interrupts the other threads (thread.interrupt()); Blaze has no thread
-            // interruption for running spawns.
-            blaze_util::unported!("TestStrategy.AttemptGroupImpl.cancelOthers (Thread.interrupt)");
+        let me = ThreadInterrupt::current();
+        for thread in &s.running_threads {
+            if !thread.same_thread(&me) {
+                thread.interrupt();
+            }
         }
     }
 }
@@ -473,9 +477,17 @@ impl TestStrategy {
     }
 
     /// `createStreamedTestOutput(outErr, testLogPath)` (`--test_output=streamed`).
+    ///
+    /// PORT: `outErr` is `Reporter.outErrForReporter(eventHandler)`, given as the event handler;
+    /// the watcher thread runs in `scope`.
     // Java: com/google/devtools/build/lib/analysis/test/TestStrategy.java:477 TestStrategy.createStreamedTestOutput
-    pub fn create_streamed_test_output(&self, _test_log_path: &Path) {
-        blaze_util::unported!("TestStrategy.createStreamedTestOutput (StreamedTestOutput)")
+    pub fn create_streamed_test_output<'scope, 'env>(
+        &self,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+        out_err: &'scope dyn blaze_events::EventHandler,
+        test_log_path: Path,
+    ) -> io::Result<StreamedTestOutput<'scope>> {
+        StreamedTestOutput::new(scope, out_err, test_log_path)
     }
 }
 

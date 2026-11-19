@@ -15,19 +15,18 @@ Limits of this list:
   Cap'n Proto) have been built. Rule sets no project exercises (Java, Android, Apple, Go) have
   never been run, and their gaps are mostly unknown.
 - Each item fails with `blaze: not ported yet: <Class.method>` unless it says otherwise.
+- A crash (panic) exits 101; Bazel prints "FATAL: bazel crashed" and exits 37.
+- Sizes per feature cluster: `docs/coverage/README.md`.
 
 ## Commands
 
 Not ported at all (registered, so `help` lists them, but they do not run):
 
 - `coverage`
-- `fetch`
 - `vendor`
 - `dump`
 - `config`
-- `canonicalize-flags`
 - `print_action`
-- `license`
 - `mobile-install`
 
 Partly ported:
@@ -35,7 +34,7 @@ Partly ported:
 | Command | Missing |
 | --- | --- |
 | `mod` | `dump_repo_mapping` (33 upstream tests need it), `show_repo`, `tidy` |
-| `help` | `help <command>`, `help startup_options`, `help target-syntax`, `--help_verbosity`/HTML output, flags as proto, shell completion |
+| `help`, `fetch`, `canonicalize-flags`, `license` | ported after v0.1.0 (132 of 137 oracle invocations byte-identical; 35 of 38 upstream functions); missing: `canonicalize-flags --invocation_policy`, `fetch --force` with target patterns |
 | `info` | 15 of 57 compared cases: `info` with no key, JVM-only keys (heap sizes, `java-home`), `build-language`, `peak-heap-size`, `starlark-semantics` |
 | `query` | `--output=graph` and other formatters that need the dependency graph, `--query_file`, SkyQuery (`--universe_scope`), definition and instantiation stacks in proto output, rule class info, native aspects |
 | `cquery` | `--show_config_fragments`, some output formats' start/process hooks |

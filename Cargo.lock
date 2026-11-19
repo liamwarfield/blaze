@@ -801,6 +801,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_server"
+version = "0.1.0"
+
+[[package]]
 name = "blaze_shell"
 version = "0.1.0"
 dependencies = [

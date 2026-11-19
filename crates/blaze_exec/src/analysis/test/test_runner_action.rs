@@ -1280,16 +1280,24 @@ impl TestRunnerAction {
             };
             let result = (|| {
                 attempt_group.register()?;
-                // PORT: Java then checks `Thread.interrupted()` for an attempt cancelled after it
-                // finished; Blaze has no thread interruption.
-                self.execute_all_attempts(
+                let result = self.execute_all_attempts(
                     &*test_runner_spawn,
                     test_action_context.is_test_keep_going(),
                     cancel_on_result,
                     &*attempt_group,
                     &mut spawn_results,
                     &mut failed_attempts,
-                )
+                )?;
+
+                // If the current test attempt is requested to be cancelled after it has finished,
+                // we need to handle the interruption here and clear the interrupted status.
+                // Otherwise, the interrupted status will be propagated to skyframe and the whole
+                // invocation will be cancelled.
+                if blaze_shell::thread_interrupt::interrupted() {
+                    return Err(TestRunnerSpawnError::Exec(ExecException::Interrupted));
+                }
+
+                Ok(result)
             })();
             attempt_group.unregister();
             match result {

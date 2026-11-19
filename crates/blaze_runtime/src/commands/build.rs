@@ -57,7 +57,9 @@ use blaze_sky_exec::artifact_function::ArtifactNestedSetEvalException;
 use blaze_sky_exec::build_driver_function::TopLevelSkyValue;
 use blaze_sky_exec::completion_function::InputFileErrorException;
 use blaze_sky_exec::events::TestAnalyzedEvent;
-use blaze_sky_exec::keys::{AspectCompletionKey, BuildDriverKey, TargetCompletionKey, TestType};
+use blaze_sky_exec::keys::{
+    AspectCompletionKey, BuildDriverKey, TargetCompletionKey, TestCompletionKey, TestType,
+};
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use blaze_sky_top::build_tool::{
     AnalysisPostProcessor, BuildRequest, BuildTool, BuildToolError, ExecutionPhase,
@@ -115,6 +117,29 @@ pub struct TestCommand;
 impl BlazeCommand for TestCommand {
     fn annotation(&self) -> &'static CommandAnnotation {
         &TEST_COMMAND
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/commands/TestCommand.java:83 TestCommand.editOptions
+    fn edit_options(&self, options_parser: &mut blaze_options::OptionsParser) {
+        let test_output = options_parser
+            .get_options::<ExecutionOptions>()
+            .expect("ExecutionOptions")
+            .test_output;
+        if test_output == blaze_optdefs::command::execution_options::TestOutputFormat::STREAMED
+            && let Err(e) = options_parser.parse_with_priority(
+                blaze_options::PriorityCategory::SOFTWARE_REQUIREMENT,
+                Some("streamed output requires locally run tests, without sharding"),
+                vec![
+                    "--test_sharding_strategy=disabled".to_string(),
+                    "--test_strategy=exclusive".to_string(),
+                ],
+            )
+        {
+            panic!(
+                "IllegalStateException: Known options failed to parse: {}",
+                e.get_message()
+            );
+        }
     }
 
     // Java: com/google/devtools/build/lib/runtime/commands/TestCommand.java:98 TestCommand.exec
@@ -1306,6 +1331,109 @@ struct RuntimeExecutionPhase {
     remote: Option<Arc<build_remote::RemoteSupport>>,
 }
 
+/// What the exclusive-test phase leaves to the error processing of the build.
+#[derive(Default)]
+struct ExclusiveTestsOutcome {
+    /// The `executionDetailedExitCode()` of each exclusive test evaluation in error
+    /// (`--keep_going`), in run order.
+    detailed_exit_codes: Vec<Option<blaze_util::DetailedExitCode>>,
+    /// The exception `SkyframeErrorProcessor.processErrors` threw for the first exclusive test in
+    /// error (no `--keep_going`); no exclusive test runs after it.
+    rethrown: Option<RethrownException>,
+}
+
+impl RuntimeExecutionPhase {
+    /// Runs the exclusive tests sequentially, one Skyframe evaluation of its
+    /// `TestCompletionKey(exclusiveTesting = true)` each, after the main evaluation.
+    ///
+    /// Skymeld (`merged`): the exclusive tests are the `ExclusiveTestBuildDriverValue`s of the
+    /// main evaluation (those whose analysis and build succeeded), run when the main evaluation
+    /// has no error or with `--keep_going`. The other path (SkyframeBuilder.buildArtifacts) runs
+    /// `analysisResult.getExclusiveTests()` and then `getExclusiveIfLocalTests()` (the
+    /// `Sets.union` ExecutionTool passes) without the skipped targets, after the main evaluation's
+    /// errors were processed (which throws without `--keep_going`).
+    ///
+    /// PORT: `isBuildingExclusiveArtifacts` only silences the inactivity watchdog
+    /// (`ExecutionProgressReceiver.createInactivityReporter`), which is not ported; the coverage
+    /// report artifacts that Java evaluates after the exclusive tests are not ported either.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:758 SkyframeBuildView.analyzeAndExecuteTargets
+    // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:203 SkyframeBuilder.buildArtifacts
+    #[allow(clippy::too_many_arguments)]
+    fn run_exclusive_tests(
+        &self,
+        skyframe_executor: &SkyframeExecutor,
+        config: &blaze_buildtool::buildtool::execution_tool::ExecutionToolConfig,
+        reporter: Arc<dyn ExtendedEventHandler>,
+        merged: bool,
+        keep_going: bool,
+        keys_to_execute: &[BuildDriverKey],
+        main_evaluation_result: &blaze_skyframe::EvaluationResult,
+    ) -> Result<ExclusiveTestsOutcome, blaze_skyframe::Interrupted> {
+        let mut outcome = ExclusiveTestsOutcome::default();
+        let exclusive_tests_to_run: indexmap::IndexSet<&BuildDriverKey> = if merged {
+            // The exclusive tests whose analysis succeeded i.e. those that can be run.
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1103 SkyframeBuildView.getExclusiveTests
+            keys_to_execute
+                .iter()
+                .filter(|key| {
+                    main_evaluation_result
+                        .get(*key)
+                        .is_some_and(|value| value.exclusive_test)
+                })
+                .collect()
+        } else {
+            let of_type = |test_type: TestType| {
+                keys_to_execute
+                    .iter()
+                    .filter(move |key| key.test_type == test_type)
+            };
+            of_type(TestType::EXCLUSIVE)
+                .chain(of_type(TestType::EXCLUSIVE_IF_LOCAL))
+                .collect()
+        };
+        let continue_with_exclusive_tests = !main_evaluation_result.has_error() || keep_going;
+        if !continue_with_exclusive_tests || exclusive_tests_to_run.is_empty() {
+            return Ok(outcome);
+        }
+        // Run exclusive tests sequentially.
+        // TestCompletionValue.keys(exclusiveTestsToRun, topLevelArtifactContext,
+        // /* exclusiveTesting= */ true)
+        for key in exclusive_tests_to_run {
+            let test_completion_key = TestCompletionKey {
+                configured_target_key: key.action_lookup_key.clone(),
+                output_groups: key.output_groups.clone(),
+                exclusive_testing: true,
+            };
+            let test_run_result =
+                blaze_buildtool::buildtool::execution_tool::run_exclusive_test_skymeld(
+                    skyframe_executor.get_evaluator(),
+                    &test_completion_key,
+                    config,
+                    reporter.clone(),
+                )?;
+            if !merged {
+                // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:228 SkyframeBuilder.buildArtifacts
+                blaze_util::check_state!(
+                    test_run_result.has_error() || !test_run_result.values.is_empty(),
+                    "Build reported as successful but test {:?} not executed: {:?}",
+                    key.action_lookup_key,
+                    test_run_result
+                );
+            }
+            if test_run_result.has_error() {
+                match process_execution_errors(&test_run_result, keep_going) {
+                    Ok(code) => outcome.detailed_exit_codes.push(code),
+                    Err(rethrown) => {
+                        outcome.rethrown = Some(rethrown);
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(outcome)
+    }
+}
+
 impl RuntimeExecutionPhase {
     /// Handles what action to perform on the convenience symlinks. If the mode is
     /// `ConvenienceSymlinksMode::IGNORE`, then skip any creating or cleaning of convenience
@@ -1645,15 +1773,6 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             request.skip_incompatible_explicit_targets,
             self.extra_action_top_level_only,
         ));
-        if keys.iter().any(|k| {
-            matches!(
-                k.test_type,
-                TestType::EXCLUSIVE | TestType::EXCLUSIVE_IF_LOCAL
-            )
-        }) {
-            blaze_util::unported!("BuildTool.runExclusiveTests");
-        }
-
         // PORT: Blaze analyzed every top-level target before this point, and BuildView.update ran
         // the compatibility check of BuildDriverFunction for the Skymeld path (see
         // blaze_sky_top::build_view). What is left of a BuildDriverKey is the execution it
@@ -1771,7 +1890,7 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // finally block below, with buildCompleted false: the action cache is not saved and the
         // targets built so far are shown.
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:620 BuildTool.buildTargetsWithMergedAnalysisExecution
-        let interrupted = evaluated.is_err();
+        let mut interrupted = evaluated.is_err();
         let evaluation = match evaluated {
             Ok(result) => result.evaluation,
             Err(blaze_skyframe::Interrupted) => blaze_skyframe::EvaluationResult {
@@ -1779,6 +1898,27 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                 errors: Vec::new(),
                 catastrophe: None,
             },
+        };
+
+        // The exclusive tests, each in a sequential Skyframe evaluation of its own.
+        let exclusive_tests = if interrupted {
+            ExclusiveTestsOutcome::default()
+        } else {
+            match self.run_exclusive_tests(
+                skyframe_executor,
+                &state.config,
+                reporter.clone(),
+                request.with_merged_analysis_and_execution_source_of_truth(),
+                request.keep_going,
+                &keys_to_execute,
+                &evaluation,
+            ) {
+                Ok(outcome) => outcome,
+                Err(blaze_skyframe::Interrupted) => {
+                    interrupted = true;
+                    ExclusiveTestsOutcome::default()
+                }
+            }
         };
         // ExecutionTool.nonCatastrophicFinalizations: `if (buildCompleted)
         // saveActionCache(actionCache)`.
@@ -1800,7 +1940,28 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         let execution_error: Option<BuildToolError> = if interrupted {
             Some(BuildToolError::Interrupted)
         } else {
-            match process_execution_errors(&evaluation, request.keep_going) {
+            // Without --keep_going the first exclusive test in error threw; with it, its
+            // DetailedExitCode joins the main evaluation's: Skymeld lists the exclusive tests'
+            // codes first (SkyframeBuildView.analyzeAndExecuteTargets), the other path the main
+            // evaluation's (SkyframeBuilder.buildArtifacts); Collections.max keeps the first of
+            // the most important.
+            let processed = match exclusive_tests.rethrown {
+                Some(rethrown) => Err(rethrown),
+                None => process_execution_errors(&evaluation, request.keep_going).map(|main| {
+                    let mut codes = exclusive_tests.detailed_exit_codes;
+                    if request.with_merged_analysis_and_execution_source_of_truth() {
+                        codes.push(main);
+                    } else {
+                        codes.insert(0, main);
+                    }
+                    codes.into_iter().fold(None, |max, code| {
+                        blaze_util::DetailedExitCode::choose_more_important_with_first_if_tie(
+                            max, code,
+                        )
+                    })
+                }),
+            };
+            match processed {
                 Ok(None) => None,
                 // This is the --keep_going code path: Time to throw the delayed exceptions.
                 // Keeping legacy behavior: for execution errors, keep the message of the

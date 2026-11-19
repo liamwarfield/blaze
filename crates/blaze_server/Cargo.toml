@@ -1,0 +1,9 @@
+[package]
+name = "blaze_server"
+description = "Port of Bazel's lib/server (the gRPC command server, command manager, idle and pid-file watchers) plus lib/runtime's CommandDispatcher and BlazeCommandResult (decision D3)."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

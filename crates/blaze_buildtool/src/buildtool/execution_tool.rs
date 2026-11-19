@@ -39,7 +39,7 @@ use blaze_sky_exec::action_execution_function::SkyframeContainingPackageRootLook
 use blaze_sky_exec::events::{
     ActionCompletionEvent, ActionResultReceivedEvent, TargetCompleteEvent, downcast_event,
 };
-use blaze_sky_exec::keys::{BuildDriverKey, artifact_key};
+use blaze_sky_exec::keys::{BuildDriverKey, TestCompletionKey, artifact_key};
 use blaze_sky_exec::skyframe_action_executor::{
     ActionCacheSetup, ActionContexts, ArtifactFactoryResolver, ContainingPackageRootLookup,
     OutputPermissions, SkyframeActionExecutor, SkyframeActionExecutorConfig,
@@ -628,6 +628,29 @@ pub fn evaluate_build_driver_keys(
         start,
         stop: Instant::now(),
     })
+}
+
+/// Asks the Skyframe evaluator to run a single exclusive test (the `TestCompletionKey` of one
+/// exclusive test, `exclusiveTesting = true`).
+///
+/// PORT: `resourceManager.resetResourceUsage()` before and after is not needed: Blaze's resource
+/// manager holds no resources between evaluations.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2033 SkyframeExecutor.runExclusiveTestSkymeld
+pub fn run_exclusive_test_skymeld(
+    evaluator: &Evaluator,
+    test_completion_key: &TestCompletionKey,
+    config: &ExecutionToolConfig,
+    reporter: Arc<dyn ExtendedEventHandler>,
+) -> Result<EvaluationResult, Interrupted> {
+    let ctx = EvaluationContext {
+        keep_going: config.keep_going,
+        parallelism: config.jobs,
+        event_handler: reporter,
+        // As in evaluate_build_driver_keys.
+        thread_stack_size: 16 << 20,
+        ..EvaluationContext::default()
+    };
+    evaluator.evaluate(&[SkyKey::new(test_completion_key.clone())], &ctx)
 }
 
 /// The `BuildSummaryStatsModule.buildComplete` lines: `Elapsed time: ...` and the process

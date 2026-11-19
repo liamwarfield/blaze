@@ -56,6 +56,7 @@ use crate::exec::spawn_log_context::SpawnLogContext;
 use crate::exec::spawn_runner::ProgressStatus;
 use crate::exec::spawn_strategy_registry::SpawnStrategyRegistry;
 use crate::exec::spawn_strategy_resolver::SpawnStrategyResolver;
+use crate::exec::streamed_test_output::StreamedTestOutput;
 use crate::exec::test_policy::{self, TestPolicy};
 use crate::util::FileOutErr;
 
@@ -561,23 +562,33 @@ impl StandaloneTestStrategy {
         let out = action_execution_context.get_input_path(test_action.get_test_log());
         let err = resolved_paths.get_test_stderr();
         let test_out_err = FileOutErr::new(out.clone(), err);
-        if self.base.execution_options.test_output == TestOutputFormat::STREAMED {
-            self.base.create_streamed_test_output(&out);
-        }
+        // PORT: the watcher thread of the streamed output borrows the event handler, so it runs
+        // in a scope around the attempt.
+        std::thread::scope(|scope| {
+            let mut streamed: Option<StreamedTestOutput<'_>> = None;
+            if self.base.execution_options.test_output == TestOutputFormat::STREAMED {
+                streamed = Some(self.base.create_streamed_test_output(
+                    scope,
+                    action_execution_context.get_event_handler(),
+                    out.clone(),
+                )?);
+            }
 
-        let start_time_millis = action_execution_context.get_clock().current_time_millis();
-        let resolver = SpawnStrategyResolver::new();
+            let start_time_millis = action_execution_context.get_clock().current_time_millis();
+            let resolver = SpawnStrategyResolver::new();
 
-        self.run_test_attempt(
-            test_action,
-            action_execution_context,
-            spawn,
-            &resolver,
-            &resolved_paths,
-            test_out_err,
-            start_time_millis,
-            child_out_err_count,
-        )
+            self.run_test_attempt(
+                test_action,
+                action_execution_context,
+                spawn,
+                &resolver,
+                &resolved_paths,
+                test_out_err,
+                streamed,
+                start_time_millis,
+                child_out_err_count,
+            )
+        })
     }
 
     // Java: com/google/devtools/build/lib/exec/StandaloneTestStrategy.java:634 StandaloneTestStrategy.runTestAttempt
@@ -589,6 +600,8 @@ impl StandaloneTestStrategy {
         resolver: &SpawnStrategyResolver,
         resolved_paths: &crate::analysis::test::test_runner_action::ResolvedPaths<'_>,
         file_out_err: FileOutErr,
+        // PORT: closed on every early return by its Drop (Java's closeSuppressed).
+        streamed: Option<StreamedTestOutput<'_>>,
         start_time_millis: i64,
         child_out_err_count: &AtomicI32,
     ) -> Result<StandaloneTestResult, TestRunnerSpawnError> {
@@ -729,7 +742,11 @@ impl StandaloneTestStrategy {
             write_out_file(
                 file_out_err.get_error_path(),
                 file_out_err.get_output_path(),
-            )
+            )?;
+            if let Some(streamed) = streamed {
+                streamed.close()?;
+            }
+            Ok(())
         })();
         if let Err(e) = finish {
             return Err(ExecException::Environmental(environmental_exec_exception(

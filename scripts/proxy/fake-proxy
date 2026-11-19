@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""A scripted HTTP proxy that records every byte it receives.
+
+See `fake-proxy help`.
+"""
+
+import os
+import socket
+import sys
+import threading
+
+USAGE = """\
+usage: scripts/proxy/fake-proxy <port> <log-dir> <response>[,<response>...]
+       scripts/proxy/fake-proxy help
+
+Listens on 127.0.0.1:<port> (0 picks a free port; the chosen port is printed on the first line
+of stdout, then the proxy runs until killed). Every request head it receives (up to and
+including the empty line) is written byte for byte to <log-dir>/NN-cC.req, NN the request
+number (01, 02, ...) over all connections, C the connection number. The answer to request NN is
+the NN-th <response> of the list; the last one repeats. A <response> is one of:
+
+  ok            CONNECT: "HTTP/1.1 200 Connection established", then everything the client sends
+                in the tunnel is written to <log-dir>/NN-cC.tunnel (the TLS ClientHello) and the
+                connection is closed when the client stops sending (2 s).
+                Other methods: "HTTP/1.1 200 OK" with the 6-byte body "hello\\n".
+  407:<schemes> "HTTP/1.1 407 Proxy Authentication Required" with one Proxy-Authenticate header
+                per scheme; <schemes> is a '+'-separated list of the names basic, digest,
+                digest256, negotiate, ntlm (for example 407:digest+basic). Content-Length: 0, the connection
+                stays open (Connection/Proxy-Connection: keep-alive) for the client's next try.
+  407close:<schemes>  the same with "Connection: close"; the proxy closes after the answer.
+
+The Proxy-Authenticate values are:
+  basic      Basic realm="blaze-proxy"
+  digest     Digest realm="blaze-proxy", nonce="0123456789abcdef", qop="auth", algorithm=MD5
+  digest256  Digest realm="blaze-proxy", nonce="0123456789abcdef", qop="auth", algorithm=SHA-256
+  negotiate  Negotiate
+  ntlm       NTLM
+
+<log-dir>/events.txt gets one line per event (accept, request, response, close) in order.
+"""
+
+SCHEMES = {
+    "basic": 'Basic realm="blaze-proxy"',
+    "digest": 'Digest realm="blaze-proxy", nonce="0123456789abcdef", qop="auth", algorithm=MD5',
+    "digest256": 'Digest realm="blaze-proxy", nonce="0123456789abcdef", qop="auth", algorithm=SHA-256',
+    "negotiate": "Negotiate",
+    "ntlm": "NTLM",
+}
+
+lock = threading.Lock()
+counter = {"request": 0, "conn": 0}
+
+
+def event(log_dir, text):
+    with lock:
+        with open(os.path.join(log_dir, "events.txt"), "a", encoding="ascii") as f:
+            f.write(text + "\n")
+
+
+def read_head(sock, buf):
+    while b"\r\n\r\n" not in buf:
+        data = sock.recv(65536)
+        if not data:
+            return None, buf
+        buf += data
+    i = buf.index(b"\r\n\r\n") + 4
+    return buf[:i], buf[i:]
+
+
+def answer(spec, method):
+    if spec == "ok":
+        if method == b"CONNECT":
+            return b"HTTP/1.1 200 Connection established\r\n\r\n", "tunnel"
+        return (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\n\r\nhello\n",
+            "keep",
+        )
+    kind, _, schemes = spec.partition(":")
+    if kind not in ("407", "407close"):
+        raise SystemExit("unknown response: " + spec)
+    lines = [b"HTTP/1.1 407 Proxy Authentication Required"]
+    for s in schemes.split("+"):
+        lines.append(b"Proxy-Authenticate: " + SCHEMES[s].encode("ascii"))
+    lines.append(b"Content-Length: 0")
+    if kind == "407close":
+        lines.append(b"Connection: close")
+        return b"\r\n".join(lines) + b"\r\n\r\n", "close"
+    lines.append(b"Connection: keep-alive")
+    lines.append(b"Proxy-Connection: keep-alive")
+    return b"\r\n".join(lines) + b"\r\n\r\n", "keep"
+
+
+def serve(sock, log_dir, responses):
+    with lock:
+        counter["conn"] += 1
+        conn = counter["conn"]
+    event(log_dir, f"accept c{conn}")
+    buf = b""
+    try:
+        while True:
+            head, buf = read_head(sock, buf)
+            if head is None:
+                event(log_dir, f"close c{conn} by client" + (f" ({len(buf)} stray bytes)" if buf else ""))
+                return
+            with lock:
+                counter["request"] += 1
+                n = counter["request"]
+            name = f"{n:02d}-c{conn}"
+            with open(os.path.join(log_dir, name + ".req"), "wb") as f:
+                f.write(head)
+            spec = responses[min(n, len(responses)) - 1]
+            method = head.split(b" ", 1)[0]
+            event(log_dir, f"request {name} {head.splitlines()[0].decode('latin-1')}")
+            data, then = answer(spec, method)
+            sock.sendall(data)
+            event(log_dir, f"response {name} {data.splitlines()[0].decode('ascii')}")
+            if then == "close":
+                event(log_dir, f"close c{conn} by proxy")
+                return
+            if then == "tunnel":
+                sock.settimeout(2.0)
+                tunnel = buf
+                try:
+                    while True:
+                        data = sock.recv(65536)
+                        if not data:
+                            break
+                        tunnel += data
+                except socket.timeout:
+                    pass
+                with open(os.path.join(log_dir, name + ".tunnel"), "wb") as f:
+                    f.write(tunnel)
+                event(log_dir, f"close c{conn} by proxy after {len(tunnel)} tunnel bytes")
+                return
+    finally:
+        sock.close()
+
+
+def main():
+    if len(sys.argv) != 4 or sys.argv[1] == "help":
+        sys.stdout.write(USAGE)
+        return 0
+    port, log_dir, responses = int(sys.argv[1]), sys.argv[2], sys.argv[3].split(",")
+    os.makedirs(log_dir, exist_ok=True)
+    for r in responses:
+        answer(r, b"GET")  # validate
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(16)
+    print(srv.getsockname()[1], flush=True)
+    while True:
+        sock, _ = srv.accept()
+        threading.Thread(target=serve, args=(sock, log_dir, responses), daemon=True).start()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -38,6 +38,7 @@ pub mod action_execution;
 pub mod action_execution_metadata;
 pub mod action_input;
 pub mod action_output_directory_helper;
+pub mod action_template;
 pub mod cache;
 pub mod exec_exception;
 pub mod execution_requirements;
@@ -54,6 +55,9 @@ pub mod spawn_strategy;
 pub mod spawns;
 pub mod virtual_action_input;
 
+pub use action_template::{
+    ActionTemplate, ActionTemplateError, as_action_template, register_action_template,
+};
 pub use action_cache_checker::{ActionCacheChecker, CacheCheckAction, OutputChecker};
 pub use action_execution::{
     ActionExecutionException, ActionResult, ExecutableAction, as_executable,

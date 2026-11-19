@@ -16,7 +16,6 @@
 //!   `TestEmptyMessage`.
 
 use blaze_protos::JavaMessage;
-use prost::Message as _;
 use blaze_protos::analysis::CqueryResult;
 use blaze_protos::build::bazel::remote::execution::v2::{Digest, OutputFile};
 use blaze_protos::build_event_stream::BuildEvent;
@@ -27,6 +26,7 @@ use blaze_protos::text_format::{
     escape_double_quotes_and_backslashes, escape_text, get_parser, parse_int32, parse_int64,
     parse_uint32, parse_uint64, printer, unescape_bytes, unescape_text,
 };
+use prost::Message as _;
 
 const DATA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/text");
 

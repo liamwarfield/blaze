@@ -7,7 +7,7 @@
 //! hashable, so these functions keep `ResolvedTargets<Label>` and a label → target map (a label
 //! names exactly one target of a loaded package).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -20,6 +20,8 @@ use blaze_cmdline::{
 };
 use blaze_events::Event;
 use blaze_optdefs::command::loading_options::LoadingOptions;
+use blaze_optdefs::common::test_size::TestSize;
+use blaze_optdefs::common::test_timeout::TestTimeout;
 use blaze_options::OptionScalar;
 use blaze_packages::attribute::nonconfigurable_attribute_mapper::NonconfigurableAttributeMapper;
 use blaze_packages::attribute::{AggregatingAttributeMapper, AttributeMap};
@@ -56,8 +58,8 @@ pub const TARGET_PATTERN_ERROR: SkyFunctionName = SkyFunctionName("TARGET_PATTER
 /// Predicate that implements test filtering using the command-line options in `LoadingOptions`.
 /// Implements `Hash` and `Eq` so it can be used as a Skyframe key.
 ///
-/// PORT: the size and timeout filter sets are kept in their option string form (what Java's
-/// `equals` compares); their predicates are not ported.
+/// PORT: the size and timeout filter sets are also kept in their option string form, which is
+/// what `toString` prints (`ImmutableSet.copyOf` of an `EnumSet`: enum order).
 // Java: com/google/devtools/build/lib/pkgcache/TestFilter.java:37 TestFilter
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct TestFilter {
@@ -65,6 +67,8 @@ pub struct TestFilter {
     test_timeout_filter_set: String,
     test_tag_filter_list: Vec<String>,
     test_lang_filter_list: Vec<String>,
+    test_sizes: BTreeSet<TestSize>,
+    test_timeouts: BTreeSet<TestTimeout>,
 }
 
 impl TestFilter {
@@ -84,26 +88,91 @@ impl TestFilter {
             },
             test_tag_filter_list: options.test_tag_filter_list.clone(),
             test_lang_filter_list: options.test_lang_filter_list.clone(),
+            test_sizes: options.test_size_filter_set.0.clone(),
+            test_timeouts: options.test_timeout_filter_set.0.clone(),
         }
     }
 
     // Java: com/google/devtools/build/lib/pkgcache/TestFilter.java:85 TestFilter.apply
     pub fn apply(&self, input: &Target) -> bool {
-        if !self.test_size_filter_set.is_empty() {
-            blaze_util::unported!("TestFilter.testSizeFilter");
+        // The predicates are and-ed in the order the constructor composes them.
+        // Java: com/google/devtools/build/lib/pkgcache/TestFilter.java:58 TestFilter.<init>
+        if !self.test_sizes.is_empty() && !test_size_filter(&self.test_sizes)(input) {
+            return false;
         }
-        if !self.test_timeout_filter_set.is_empty() {
-            blaze_util::unported!("TestFilter.testTimeoutFilter");
+        if !self.test_timeouts.is_empty() && !test_timeout_filter(&self.test_timeouts)(input) {
+            return false;
         }
         if !self.test_tag_filter_list.is_empty()
             && !target_utils::tag_filter(&self.test_tag_filter_list)(input)
         {
             return false;
         }
-        if !self.test_lang_filter_list.is_empty() {
-            blaze_util::unported!("TestFilter.testLangFilter");
+        if !self.test_lang_filter_list.is_empty()
+            && !test_lang_filter(&self.test_lang_filter_list)(input)
+        {
+            return false;
         }
         true
+    }
+}
+
+/// Returns a predicate to be used for test size filtering, i.e., that only accepts tests of the
+/// given size.
+// Java: com/google/devtools/build/lib/pkgcache/TestFilter.java:122 TestFilter.testSizeFilter
+pub fn test_size_filter(allowed_sizes: &BTreeSet<TestSize>) -> impl Fn(&Target) -> bool + '_ {
+    move |target| match target.as_rule() {
+        Some(rule) => test_size(rule).is_some_and(|size| allowed_sizes.contains(&size)),
+        None => false,
+    }
+}
+
+/// `TestSize.getTestSize(Rule)`.
+// Java: com/google/devtools/build/lib/packages/TestSize.java:70 TestSize.getTestSize
+fn test_size(test_target: &blaze_packages::target::rule::Rule) -> Option<TestSize> {
+    match NonconfigurableAttributeMapper::of(test_target).get("size", Type::String) {
+        Some(AttrValue::String(attr)) => TestSize::get_test_size(&attr),
+        _ => panic!("NullPointerException: size of {}", test_target.get_label()),
+    }
+}
+
+/// Returns a predicate to be used for test timeout filtering, i.e., that only accepts tests of
+/// the given timeout.
+// Java: com/google/devtools/build/lib/pkgcache/TestFilter.java:131 TestFilter.testTimeoutFilter
+pub fn test_timeout_filter(
+    allowed_timeouts: &BTreeSet<TestTimeout>,
+) -> impl Fn(&Target) -> bool + '_ {
+    move |target| match target.as_rule() {
+        Some(rule) => rule
+            .get_test_timeout()
+            .is_some_and(|timeout| allowed_timeouts.contains(&timeout)),
+        None => false,
+    }
+}
+
+/// Returns a predicate to be used for test language filtering, i.e., that only accepts tests of
+/// the specified languages.
+// Java: com/google/devtools/build/lib/pkgcache/TestFilter.java:140 TestFilter.testLangFilter
+fn test_lang_filter(lang_filter_list: &[String]) -> impl Fn(&Target) -> bool + use<> {
+    let mut required_langs: HashSet<String> = HashSet::new();
+    let mut excluded_langs: HashSet<String> = HashSet::new();
+
+    for lang in lang_filter_list {
+        if let Some(lang) = lang.strip_prefix('-') {
+            excluded_langs.insert(lang.to_owned());
+        } else {
+            required_langs.insert(lang.clone());
+        }
+    }
+
+    move |rule| {
+        // TargetUtils.getRuleLanguage(Target): `((Rule) target).getRuleClass()`.
+        let rule = rule.as_rule().unwrap_or_else(|| {
+            panic!("ClassCastException: {} is not a Rule", rule.get_label())
+        });
+        let rule_lang = target_utils::get_rule_language(rule.get_rule_class());
+        (required_langs.is_empty() || required_langs.contains(rule_lang))
+            && !excluded_langs.contains(rule_lang)
     }
 }
 

@@ -46,6 +46,11 @@ pub struct BuildDriverValue {
     /// `getLastEvaluatedTopLevelSkyValue()`.
     pub top_level_sky_value: TopLevelSkyValue,
     pub skipped: bool,
+    /// Whether this is an `ExclusiveTestBuildDriverValue` (Java's subclass, meant to represent
+    /// an exclusive test); its `getExclusiveTestConfiguredTarget()` is the configured target of
+    /// `top_level_sky_value`.
+    // Java: com/google/devtools/build/lib/skyframe/ExclusiveTestBuildDriverValue.java:20 ExclusiveTestBuildDriverValue
+    pub exclusive_test: bool,
 }
 
 /// The types of the `TopLevelStatusEvents` this function posts.
@@ -179,10 +184,23 @@ impl BuildDriverFunction {
         }
 
         // If we get to this point, the execution of this target/aspect succeeded.
+
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:381 BuildDriverFunction.compute
+        if test_type == TestType::EXCLUSIVE || test_type == TestType::EXCLUSIVE_IF_LOCAL {
+            self.remove_states_for_key(key);
+            // If an exclusive test was run at all, it wasn't skipped.
+            return Ok(Some(BuildDriverValue {
+                top_level_sky_value: TopLevelSkyValue::ConfiguredTarget(configured_target),
+                skipped: false,
+                exclusive_test: true,
+            }));
+        }
+
         self.remove_states_for_key(key);
         Ok(Some(BuildDriverValue {
             top_level_sky_value: TopLevelSkyValue::ConfiguredTarget(configured_target),
             skipped: false,
+            exclusive_test: false,
         }))
     }
 
@@ -241,6 +259,7 @@ impl BuildDriverFunction {
         Ok(Some(BuildDriverValue {
             top_level_sky_value: TopLevelSkyValue::TopLevelAspects(top_level_aspects),
             skipped: false,
+            exclusive_test: false,
         }))
     }
 }
