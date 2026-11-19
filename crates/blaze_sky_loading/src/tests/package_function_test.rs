@@ -587,7 +587,6 @@ fn test_bzl_visibility_violation_demoted_to_warning_when_break_glass_flag_is_set
 
 // Java: PackageFunctionTest.testVisibilityCallableNotAvailableInBUILD
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java \"name 'visibility' is not defined\""]
 fn test_visibility_callable_not_available_in_build() {
     let mut t = PackageLoadingTestCase::new();
     t.set_build_language_options(&["--experimental_bzl_visibility=true"]);
@@ -1185,7 +1184,6 @@ fn test_prelude_need_not_be_present_even_when_package_is() {
 
 // Java: PackageFunctionTest.PreludeTest.testPreludeFileNotRecognizedWithoutPackage
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java \"name 'foo' is not defined\""]
 fn test_prelude_file_not_recognized_without_package() {
     let t = PackageLoadingTestCase::new();
     t.scratch_file("tools/build_rules/prelude_bazel", &["foo = 'FOO'"]);
@@ -1199,7 +1197,6 @@ fn test_prelude_file_not_recognized_without_package() {
 
 // Java: PackageFunctionTest.PreludeTest.testPreludeFailsWhenErrorInPreludeFile
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'Error: integer division by zero'"]
 fn test_prelude_fails_when_error_in_prelude_file() {
     let t = PackageLoadingTestCase::new();
     t.scratch_file("tools/build_rules/BUILD", &[]);

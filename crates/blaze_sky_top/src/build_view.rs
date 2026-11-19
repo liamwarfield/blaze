@@ -205,6 +205,50 @@ pub struct TopLevelConfigurationEvent {
 
 impl blaze_events::Postable for TopLevelConfigurationEvent {}
 
+/// `new TargetConfiguredEvent(target, configuration)` as `BuildDriverFunction
+/// .announceTopLevelConfiguredTargetAnalyzed` posts it (the merged analysis and execution path):
+/// the target of the configured target's original label and the configuration of its key.
+///
+/// PORT: the event's class lives in blaze_bep, which this crate does not depend on; the build
+/// event stream converts this one (blaze_runtime commands/bep.rs).
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:415 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
+#[derive(Clone, Debug)]
+pub struct TopLevelTargetConfiguredEvent {
+    pub target: Target,
+    pub configuration: Option<Arc<BuildConfigurationValue>>,
+}
+
+impl blaze_events::Postable for TopLevelTargetConfiguredEvent {}
+
+/// `announceTopLevelConfiguredTargetAnalyzed`'s `TargetConfiguredEvent` (once per key: the
+/// function posts it when `TOP_LEVEL_TARGET_CONFIGURED` is first added to its posted types).
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:415 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
+fn announce_top_level_target_configured(
+    graph: &dyn blaze_skyframe::WalkableGraph,
+    configured_target: &ConfiguredTarget,
+    target_lookup: &dyn TargetLookup,
+    event_handler: &dyn ExtendedEventHandler,
+) {
+    let label = configured_target.get_original_label();
+    // ((PackageValue) env.getValue(label.getPackageIdentifier())).getPackage()
+    // .getTarget(label.getName())
+    let target = match target_lookup.get_target(&label) {
+        Ok(Some((target, _))) => target,
+        _ => panic!(
+            "IllegalStateException: Target should already be verified and available for top level ConfiguredTarget: {}",
+            label
+        ),
+    };
+    event_handler.post(Arc::new(TopLevelTargetConfiguredEvent {
+        target,
+        // getConfigurationValue(env, configuredTarget.getConfigurationKey())
+        configuration: crate::skyframe_executor::get_configuration_from_graph(
+            graph,
+            configured_target.get_configuration_key().as_ref(),
+        ),
+    }));
+}
+
 pub fn update(
     skyframe_executor: &SkyframeExecutor,
     loading_result: &TargetPatternPhaseValue,
@@ -328,17 +372,24 @@ pub fn update_with_aspects_parameters(
         // PORT: a target dropped for an action conflict was analyzed too: Java's
         // BuildDriverFunction announces it before the conflict check of the merged phase.
         // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:415 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
-        for configured_target in
-            skyframe_analysis_result.get_configured_targets_with_action_conflicts()
-        {
-            event_handler.post(Arc::new(TopLevelTargetAnalyzedEvent::create(
-                configured_target.clone(),
-            )));
-        }
         let target_lookup = SkyframeTargetLookup {
             skyframe_executor,
             event_handler: event_handler.clone(),
         };
+        let graph = skyframe_executor.get_walkable_graph();
+        for configured_target in
+            skyframe_analysis_result.get_configured_targets_with_action_conflicts()
+        {
+            announce_top_level_target_configured(
+                &*graph,
+                configured_target,
+                &target_lookup,
+                event_handler.as_ref(),
+            );
+            event_handler.post(Arc::new(TopLevelTargetAnalyzedEvent::create(
+                configured_target.clone(),
+            )));
+        }
         let (result, skipped) = check_target_compatibility_of_build_driver_keys(
             skyframe_executor,
             skyframe_analysis_result,
@@ -492,6 +543,7 @@ fn check_target_compatibility_of_build_driver_keys(
     for configured_target in skyframe_analysis_result.get_configured_targets() {
         // At this point, the target is considered "analyzed".
         // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:415 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
+        announce_top_level_target_configured(&*graph, configured_target, target_lookup, event_handler);
         event_handler.post(Arc::new(TopLevelTargetAnalyzedEvent::create(
             configured_target.clone(),
         )));

@@ -67,6 +67,12 @@ pub struct ActionExecutedEvent {
     pub stdout: Option<Path>,
     pub stderr: Option<Path>,
     pub error_timing: ErrorTiming,
+    /// `getPrimaryOutputMetadata()`: set exactly when there is no exception.
+    pub primary_output_metadata: Option<FileArtifactValue>,
+    /// The first start time of the action's spawns (`null` without a timed spawn).
+    pub start_time: Option<std::time::SystemTime>,
+    /// The last end time of the action's spawns (start time plus wall time).
+    pub end_time: Option<std::time::SystemTime>,
 }
 
 /// This event is fired after a top-level target is completed (all its requested outputs built).

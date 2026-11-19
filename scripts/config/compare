@@ -141,12 +141,75 @@ CASES = [
       "--noenforce_constraints"], {}),
     ("scope-transition-lk", "project-scoped flags set by a transition (label_kind)",
      ["cquery", "deps(//scope/user:top)"] + LK, {}),
+    # Starlark transitions (StarlarkDefinedConfigTransition, FunctionTransitionUtil): value types
+    # as inputs and outputs, feature flags, composed rule transitions, analysis-test transitions,
+    # mnemonics.
+    ("tr-set", "string_set build setting as transition input and output",
+     ["cquery", "deps(//trans:set)"] + JP, {}),
+    ("tr-set-list", "a list given to a string_set build setting",
+     ["cquery", "deps(//trans:set_list)"] + JP, {}),
+    ("tr-set-bad", "a string given to a string_set build setting",
+     ["cquery", "deps(//trans:set_bad)"] + LK, {}),
+    ("tr-tuple", "tuples given to a native list option and a string_list build setting",
+     ["cquery", "deps(//trans:tuple)"] + JP, {}),
+    ("tr-nested-tuple", "a tuple nested in a list given to native options",
+     ["cquery", "deps(//trans:nested_tuple)"] + JP, {}),
+    ("tr-dict", "a dict given to a native option",
+     ["cquery", "deps(//trans:dict)"] + LK, {}),
+    ("tr-read", "a native list option as a transition input",
+     ["cquery", "deps(//trans:read)", "--copt=-DX", "--copt=-DY"] + JP, {}),
+    ("tr-ff-input", "a feature flag as a transition input",
+     ["cquery", "deps(//trans/ff:ff_input)"] + LK, {}),
+    ("tr-ff-output", "a feature flag as a transition output",
+     ["cquery", "deps(//trans/ff:ff_output)"] + LK, {}),
+    ("tr-ff-setter", "config_common.config_feature_flag_transition",
+     ["cquery", "deps(//trans/ff:ff_setter)"] + JP, {}),
+    ("tr-child", "rule extension: child and parent rule transitions composed",
+     ["cquery", "deps(//trans/ext:child)"] + JP, {}),
+    ("tr-bad-cpu", "an invalid output directory mnemonic from a transition",
+     ["build", "--nobuild", "//trans:bad_cpu"], {}),
+    ("tr-at", "analysis_test_transition",
+     ["cquery", "deps(//trans/at:at)"] + JP, {}),
+    ("tr-at-build", "analysis_test_transition, build",
+     ["build", "--nobuild", "//trans/at:at"], {}),
+    ("tr-exec", "the exec transition of an attribute",
+     ["cquery", "deps(//trans:exec_user)"] + LK, {}),
+    ("tr-exec-full-hash", "--experimental_exec_configuration_distinguisher=full_hash",
+     ["cquery", "deps(//trans:exec_user)",
+      "--experimental_exec_configuration_distinguisher=full_hash"] + LK, {}),
+    ("tr-exec-off", "--experimental_exec_configuration_distinguisher=off",
+     ["cquery", "deps(//trans:exec_user)",
+      "--experimental_exec_configuration_distinguisher=off"] + LK, {}),
+    ("tr-exec-config", "--experimental_exec_config outside @_builtins",
+     ["cquery", "deps(//trans:exec_user)",
+      "--experimental_exec_config=//trans:exec_config.bzl%my_exec"] + LK, {}),
 ]
 
 
 # Cases whose non-zero exit is the behaviour under test: {case id: the oracle's exit code}.
 # Equal failures of a case not listed here are BOTH-FAILED. Left to the case list's owner.
-DECLARED_EXIT = {}
+DECLARED_EXIT = {
+    # The failure under test (oracle exit codes, 2026-11-19).
+    "tr-set-bad": 1,
+    "tr-dict": 1,
+    "tr-bad-cpu": 1,
+    "tr-ff-input": 1,
+    "tr-ff-output": 1,
+    "pm-explicit-missing": 2,
+    "pm-dir": 2,
+    "pm-bad-header": 2,
+    "pm-bad-label": 2,
+    "pm-no-flags": 2,
+    "pm-dup-platform": 2,
+    "pm-bad-flag": 2,
+    "pm-bad-starlark-flag": 2,
+    "pm-trailing": 2,
+    "pf-bad-flag": 2,
+    "env-missing": 1,
+    "env-missing-two": 1,
+    "env-invalid": 1,
+    "env-no-target": 1,
+}
 
 
 def clean_env():

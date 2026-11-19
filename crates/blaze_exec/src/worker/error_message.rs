@@ -190,9 +190,19 @@ impl ErrorMessageBuilder {
             }
             Err(e) => {
                 self = self.log_size_limit(i32::MAX);
+                // FileSystemUtils.readContent opens a FileInputStream: a missing file is its
+                // FileNotFoundException, "<path> (No such file or directory)".
+                let exception = if e.kind() == std::io::ErrorKind::NotFound {
+                    JavaException::new(
+                        "java.io.FileNotFoundException",
+                        format!("{} (No such file or directory)", log_file.get_path_string()),
+                    )
+                } else {
+                    JavaException::from_io_error(&e)
+                };
                 let text = format!(
                     "ERROR: IOException while trying to read log file:\n{}",
-                    JavaException::from_io_error(&e).stack_trace_as_string()
+                    exception.stack_trace_as_string()
                 );
                 self.log_text(&text)
             }

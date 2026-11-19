@@ -25,12 +25,14 @@ pub mod blaze_command_utils;
 pub mod bugreport;
 pub mod command;
 pub mod command_environment;
+pub mod custom_exit_code_publisher;
 mod command_name_cache_impl;
 pub mod directories;
 pub mod dispatcher;
 pub mod exit_code;
 pub mod info_item;
 pub mod interrupt;
+pub mod jvm_signals;
 pub mod module;
 pub mod options_result;
 pub mod runtime;
@@ -45,3 +47,6 @@ pub mod server_log;
 pub mod starlark_options_parser;
 mod unported_options;
 pub mod version_info;
+
+#[cfg(test)]
+mod dispatcher_tests;

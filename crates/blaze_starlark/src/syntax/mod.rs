@@ -9,6 +9,7 @@
 //! [`check_file`] runs whichever of these Bazel runs for a [`FileKind`](crate::FileKind).
 
 pub mod dot_bazel;
+pub mod java;
 pub mod resolver;
 
 use starlark::syntax::AstModule;

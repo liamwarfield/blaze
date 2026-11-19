@@ -94,7 +94,7 @@ struct DownloadActionResultCall {
     request_metadata: RequestMetadata,
     action_key: ActionKey,
     inline_out_err: bool,
-    inline_output_files: HashSet<String>,
+    inline_output_files: IndexSet<String>,
 }
 
 /// The answer of a `downloadActionResult` stub: `thenReturn` / `thenAnswer` / `doThrow`.
@@ -173,7 +173,7 @@ impl RemoteCacheClient for SpyRemoteCacheClient {
         context: &RemoteActionExecutionContext<'_>,
         action_key: &ActionKey,
         inline_out_err: bool,
-        inline_output_files: &HashSet<String>,
+        inline_output_files: &IndexSet<String>,
     ) -> io::Result<Option<ActionResult>> {
         self.interact();
         self.download_action_result_calls

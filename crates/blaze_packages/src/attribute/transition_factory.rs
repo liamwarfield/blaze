@@ -42,6 +42,11 @@ pub enum TransitionFactory {
         first: Box<TransitionFactory>,
         second: Box<TransitionFactory>,
     },
+    /// Java `ConfigFeatureFlagTransitionFactory(attributeName)`
+    /// (`config_common.config_feature_flag_transition(attribute)`): a rule transition that sets
+    /// exactly the feature flag values of the rule's `attribute_name` attribute.
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:42 ConfigFeatureFlagTransitionFactory
+    ConfigFeatureFlag { attribute_name: String },
     /// A native transition factory, named by its Java class simple name.
     Native {
         name: String,

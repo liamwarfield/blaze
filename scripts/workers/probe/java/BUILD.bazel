@@ -1,0 +1,12 @@
+load("@rules_java//java:java_library.bzl", "java_library")
+
+java_library(
+    name = "greeter",
+    srcs = ["src/probe/Greeter.java"],
+)
+
+java_library(
+    name = "shout",
+    srcs = ["src/probe/Shout.java"],
+    deps = [":greeter"],
+)

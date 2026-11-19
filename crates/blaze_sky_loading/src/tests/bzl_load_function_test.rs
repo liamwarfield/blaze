@@ -504,7 +504,6 @@ fn test_scl_does_not_support_other_bazel_symbols() {
 // Java: BzlLoadFunctionTest.testSclDoesNotSupportOtherBazelSymbols (its last line,
 // BzlLoadFunctionTest.java:333 `assertContainsEvent("name 'depset' is not defined")`).
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java \"name 'depset' is not defined\""]
 fn test_scl_does_not_support_other_bazel_symbols_interpreter_text() {
     let events = scl_does_not_support_other_bazel_symbols_events();
     assert_contains_event(&events, "name 'depset' is not defined");
@@ -1378,7 +1377,6 @@ fn test_builtins_injection_failure() {
 // Java: BzlLoadFunctionTest.testBuiltinsInjectionFailure (BzlLoadFunctionTest.java:1116
 // `assertContainsEvent("Error: integer division by zero")`).
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'Error: integer division by zero'"]
 fn test_builtins_injection_failure_interpreter_text() {
     let (_t, _result, events) = builtins_injection_failure();
     assert_contains_event(&events, "Error: integer division by zero");

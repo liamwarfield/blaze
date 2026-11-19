@@ -383,6 +383,11 @@ fn run_build_with_bep(
     // CommandEnvironment.<init>: eventBus.register(buildResultListener)
     let build_result_listener = Arc::new(BuildResultListener::default());
     env.get_event_bus().register(build_result_listener.clone());
+    // AnalysisAndExecutionPhaseRunner's buildConfigurationCreatedCallback
+    // (`result::setBuildConfiguration`).
+    let build_configuration_created = Arc::new(BuildConfigurationCreatedCallback::default());
+    env.get_event_bus()
+        .register(build_configuration_created.clone());
     let test_support = run_tests.then(|| {
         TestCommandSupport::new(
             Arc::new(execution_options.clone()),
@@ -714,6 +719,19 @@ fn run_build_with_bep(
             blaze_sky_top::skyframe_executor::short_host_name(),
         );
     }
+    // WorkerModule.buildStarting (a BuildStartingEvent subscriber): the worker factory, pool and
+    // lifecycle manager of the build.
+    // Java: com/google/devtools/build/lib/worker/WorkerModule.java:92 WorkerModule.buildStarting
+    blaze_exec::worker::worker_module::WorkerModule::build_starting(
+        blaze_exec::worker::worker_module::WorkerBuildStarting {
+            worker_options: Arc::new(options_or_default::<
+                blaze_optdefs::misc::worker_options::WorkerOptions,
+            >(options)),
+            sandbox_options: Some(&options_or_default::<SandboxOptions>(options)),
+            output_base: env.get_output_base(),
+            reporter: env.get_reporter().clone() as Arc<dyn EventHandler>,
+        },
+    );
     let detailed_exit_code = to_runtime_detailed_exit_code(build_tool.process_request(&request));
     // BuildTool.processRequest, `catch (InterruptedException e)`:
     // `env.getEventBus().post(new BuildInterruptedEvent())`.
@@ -758,13 +776,21 @@ fn run_build_with_bep(
         // ExecutionTool.nonCatastrophicFinalizations shows them as failed. The sets are empty,
         // not null, when nothing was analyzed, which is how TestCommand.doTest tells this from a
         // build that never started.
-        // PORT: Java also creates the convenience symlinks there when the top-level
-        // configuration exists (result.getBuildConfiguration() != null); blaze_sky_top's
-        // BuildTool does not hand the configuration of a failed analysis to the command.
         // PORT: a failure of the PROJECT.scl evaluation, which Java raises before this method,
         // is not told apart (blaze_sky_top::project fails loudly for project files).
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:664 BuildTool.buildTargetsWithMergedAnalysisExecution
         let analyzed_targets = build_result_listener.get_analyzed_targets();
+        if let Some(configuration) = build_configuration_created.get() {
+            // We still need to do this even in case of an exception.
+            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:668 BuildTool.buildTargetsWithMergedAnalysisExecution
+            build_result.set_build_configuration(configuration.clone());
+            let symlinks = execution_phase.handle_convenience_symlinks(
+                &skyframe_executor,
+                &analyzed_targets,
+                &configuration,
+            );
+            build_result.set_convenience_symlinks(symlinks.get_created_symlinks().clone());
+        }
         let views = configured_target_views(&analyzed_targets);
         let skipped_targets = configured_target_views(&build_result_listener.get_skipped_targets());
         build_result.set_actual_targets(Some(views.clone()));
@@ -833,6 +859,9 @@ fn run_build_with_bep(
     if let Some(remote) = remote {
         remote.build_complete(build_result.get_success());
     }
+    // WorkerModule.buildComplete (a BuildCompleteEvent subscriber).
+    // Java: com/google/devtools/build/lib/worker/WorkerModule.java:246 WorkerModule.buildComplete
+    blaze_exec::worker::worker_module::WorkerModule::build_complete();
     report_build_summary_stats(
         reporter.as_ref(),
         &collector,
@@ -923,10 +952,7 @@ fn run_build_with_bep(
     let exit_code = get_exit_code(&code);
     let detailed = match code.get_failure_detail() {
         None => DetailedExitCode::success(),
-        Some(failure_detail) => DetailedExitCode::of_exit_code(
-            ExitCode::for_code(exit_code.get_numeric_exit_code()).expect("a registered exit code"),
-            failure_detail.clone(),
-        ),
+        Some(failure_detail) => DetailedExitCode::of_exit_code(exit_code, failure_detail.clone()),
     };
     BlazeCommandResult::detailed_exit_code(detailed)
 }
@@ -973,11 +999,9 @@ pub(crate) fn stop_request_without_execution(
 fn to_util_detailed_exit_code(code: &DetailedExitCode) -> blaze_util::DetailedExitCode {
     match code.get_failure_detail() {
         None => blaze_util::DetailedExitCode::success(),
-        Some(failure_detail) => blaze_util::DetailedExitCode::of_exit_code(
-            blaze_util::ExitCode::for_code(code.get_exit_code().get_numeric_exit_code())
-                .expect("a registered exit code"),
-            failure_detail.clone(),
-        ),
+        // The same type (crate::exit_code re-exports blaze_util's): the ExitCode is kept, an
+        // unregistered one (PARSING_FAILURE) included.
+        Some(_) => code.clone(),
     }
 }
 
@@ -1206,6 +1230,35 @@ impl BuildResultListener {
     // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:101 BuildResultListener.getSkippedTargets
     fn get_skipped_targets(&self) -> Vec<ConfiguredTarget> {
         self.skipped_targets.lock().clone()
+    }
+}
+
+/// The `buildConfigurationCreatedCallback` that `BuildTool.buildTargetsWithMergedAnalysisExecution`
+/// hands to `AnalysisAndExecutionPhaseRunner.execute` (`result::setBuildConfiguration`), called
+/// when `BuildView.update` created the top-level configuration.
+///
+/// PORT: blaze_sky_top's `BuildView.update` takes no callback; it posts the configuration's build
+/// event (`TopLevelConfigurationEvent`) at that point, which this subscriber records.
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:627 BuildTool.buildTargetsWithMergedAnalysisExecution
+#[derive(Default)]
+struct BuildConfigurationCreatedCallback {
+    configuration: parking_lot::Mutex<Option<Arc<BuildConfigurationValue>>>,
+}
+
+impl BuildConfigurationCreatedCallback {
+    fn get(&self) -> Option<Arc<BuildConfigurationValue>> {
+        self.configuration.lock().clone()
+    }
+}
+
+impl blaze_events::EventBus for BuildConfigurationCreatedCallback {
+    fn post(&self, event: Arc<dyn blaze_events::Postable>) {
+        if let Some(event) = blaze_sky_exec::events::downcast_event::<
+            blaze_sky_top::build_view::TopLevelConfigurationEvent,
+        >(&event)
+        {
+            *self.configuration.lock() = Some(event.configuration.clone());
+        }
     }
 }
 
@@ -1829,26 +1882,19 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             ));
         }
 
-        // The convenience symlinks.
-        // PORT: Java's Skymeld path does this in the finally block of
-        // buildTargetsWithMergedAnalysisExecution with `buildResultListener.getAnalyzedTargets()`,
-        // the other path at the start of ExecutionTool.executeBuild with
-        // `analysisResult.getTargetsToBuild()`. Every top-level target is analyzed by now.
-        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:668 BuildTool.buildTargetsWithMergedAnalysisExecution
+        // The convenience symlinks of the path without merged analysis and execution, at the
+        // start of ExecutionTool.executeBuild with `analysisResult.getTargetsToBuild()`. The
+        // Skymeld path creates them in the finally block of
+        // buildTargetsWithMergedAnalysisExecution (below, after the execution).
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:393 ExecutionTool.executeBuild
-        let symlinks = if request.with_merged_analysis_and_execution_source_of_truth() {
-            self.handle_convenience_symlinks(
-                skyframe_executor,
-                &self.build_result_listener.get_analyzed_targets(),
-                analysis_result.get_configuration(),
-            )
-        } else {
-            self.handle_convenience_symlinks(
-                skyframe_executor,
-                analysis_result.get_targets_to_build(),
-                analysis_result.get_configuration(),
-            )
-        };
+        let early_symlinks =
+            (!request.with_merged_analysis_and_execution_source_of_truth()).then(|| {
+                self.handle_convenience_symlinks(
+                    skyframe_executor,
+                    analysis_result.get_targets_to_build(),
+                    analysis_result.get_configuration(),
+                )
+            });
 
         // The top-level BuildDriverKeys.
         let label_to_target_map = construct_label_to_target_map(skyframe_executor, loading_result);
@@ -1965,14 +2011,6 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                 keys_to_execute.push(key.clone());
             }
         }
-        if self.bep.is_some() && !skipped_keys.is_empty() {
-            // The AbortedEvent (AbortReason.SKIPPED) of each skipped target in the build event
-            // stream.
-            blaze_util::unported!(
-                "AnalysisPhaseRunner.postAbortedEventsForSkippedTargets",
-                "build event stream of a build with skipped (incompatible) top-level targets"
-            );
-        }
         if request.with_merged_analysis_and_execution_source_of_truth() {
             // We still record analyzed but skipped tests, as this information is needed for the
             // result summary.
@@ -2071,6 +2109,9 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // reaches the finally block below ("Show results") with the exception pending.
         // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:853 SkyframeBuildView.analyzeAndExecuteTargets
         let mut test_exec_exception: Option<String> = None;
+        // Whether analyzeAndExecuteTargets threw (an interrupt or a rethrown error), as opposed
+        // to returning a delayed --keep_going failure.
+        let mut analyze_and_execute_threw = interrupted;
         let execution_error: Option<BuildToolError> = if interrupted {
             Some(BuildToolError::Interrupted)
         } else {
@@ -2117,11 +2158,13 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                     if catastrophic {
                         self.build_result.borrow_mut().set_catastrophe();
                     }
+                    analyze_and_execute_threw = true;
                     Some(error)
                 }
                 // Non-catastrophic: the results are shown below, then BuildTool.processRequest
                 // reports it.
                 Err(RethrownException::TestExec(message)) => {
+                    analyze_and_execute_threw = true;
                     test_exec_exception = Some(message);
                     None
                 }
@@ -2157,9 +2200,35 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             }
         }
 
-        // The finally block of BuildTool.buildTargetsWithMergedAnalysisExecution: the build
+        // AnalysisAndExecutionPhaseRunner.execute after analyzeAndExecuteTargets returned (it
+        // does not when processErrors threw; a delayed --keep_going failure is thrown after the
+        // finally block): the AbortedEvents of the skipped targets.
+        // PORT: the other path posts them right after its analysis (the build event hooks'
+        // `analysis_complete`, crate::commands::bep).
+        // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:143 AnalysisAndExecutionPhaseRunner.execute
+        if request.with_merged_analysis_and_execution_source_of_truth()
+            && !analyze_and_execute_threw
+            && let Some(bep) = &self.bep
+        {
+            bep.post_aborted_events_for_skipped_targets(
+                &self.build_result_listener.get_skipped_targets(),
+            );
+        }
+
+        // The finally block of BuildTool.buildTargetsWithMergedAnalysisExecution: the convenience
+        // symlinks (result.getBuildConfiguration() is set: the analysis created it), the build
         // result's targets, then ExecutionTool.nonCatastrophicFinalizations ("Show results").
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:664 BuildTool.buildTargetsWithMergedAnalysisExecution
+        let symlinks = match early_symlinks {
+            Some(symlinks) => symlinks,
+            // We still need to do this even in case of an exception.
+            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:668 BuildTool.buildTargetsWithMergedAnalysisExecution
+            None => self.handle_convenience_symlinks(
+                skyframe_executor,
+                &self.build_result_listener.get_analyzed_targets(),
+                analysis_result.get_configuration(),
+            ),
+        };
         self.results_shown.set(true);
         // buildResultListener.getAnalyzedTargets(): also the targets whose compatibility check
         // failed after they were analyzed, which the analysis result leaves out.

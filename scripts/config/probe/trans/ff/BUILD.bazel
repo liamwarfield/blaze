@@ -1,0 +1,16 @@
+load("//pkg:defs.bzl", "leaf")
+load(":defs.bzl", "ff_input_rule", "ff_output_rule", "ff_setter_rule")
+
+leaf(name = "leaf")
+
+config_feature_flag(
+    name = "ff",
+    allowed_values = ["on", "off"],
+    default_value = "off",
+)
+
+ff_input_rule(name = "ff_input", deps = [":leaf"])
+
+ff_output_rule(name = "ff_output", deps = [":leaf"])
+
+ff_setter_rule(name = "ff_setter", flag_values = {":ff": "on"}, deps = [":leaf"])

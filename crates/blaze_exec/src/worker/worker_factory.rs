@@ -205,7 +205,11 @@ impl WorkerFactory {
     }
 
     // Java: com/google/devtools/build/lib/worker/WorkerFactory.java:155 WorkerFactory.getMultiplexSandboxedWorkerPath
-    pub fn get_multiplex_sandboxed_worker_path(&self, key: &WorkerKey, multiplexer_id: i32) -> Path {
+    pub fn get_multiplex_sandboxed_worker_path(
+        &self,
+        key: &WorkerKey,
+        multiplexer_id: i32,
+    ) -> Path {
         let workspace_name = key.get_exec_root().get_base_name().to_string();
         self.worker_base_dir
             .get_relative_str(&format!(
@@ -246,7 +250,9 @@ impl WorkerFactory {
         if let Some(exit_value) = worker.get_exit_value() {
             // At this point, the worker factory has no idea what caused the process to be killed -
             // so we set the status to be KILLED_UNKNOWN.
-            worker.get_status().maybe_update_status(Status::KilledUnknown);
+            worker
+                .get_status()
+                .maybe_update_status(Status::KilledUnknown);
             if worker.died_unexpectedly() {
                 let msg = format!(
                     "{} {} (id {}) has unexpectedly died with exit code {}.",

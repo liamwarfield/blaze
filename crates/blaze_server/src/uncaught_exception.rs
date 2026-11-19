@@ -1,12 +1,19 @@
 //! What happens when a panic escapes one of the server's threads: Java's default uncaught
 //! exception handler.
 //!
-//! PORT: Bazel installs `BugReport`'s handler (`BlazeRuntime.setupUncaughtHandler`), whose
-//! `handleCrash` logs, notifies the modules (`blazeShutdownOnCrash`), writes the exit code for
-//! the client and halts the JVM. `lib/bugreport` is not ported, so the default handler here
-//! prints the panic to stderr (the server's `jvm.out`) and halts with `BLAZE_INTERNAL_ERROR`
-//! (37), never leaving a server whose command died behind; `blaze_runtime` replaces it with
-//! [`set_uncaught_exception_handler`] once the crash path is ported.
+//! PORT: Bazel installs `BugReport`'s handler (`BlazeRuntime.setupUncaughtHandlerAtStartup`,
+//! then `newRuntime`), whose `handleCrash` logs, notifies the modules (`blazeShutdownOnCrash`),
+//! writes the exit code for the client and halts the JVM. `blaze_runtime` installs that handler
+//! with [`set_uncaught_exception_handler`]; until it does (and in this crate's own tests and
+//! probe), the default handler prints the panic to stderr (the server's `jvm.out`) and halts
+//! with `BLAZE_INTERNAL_ERROR` (37), never leaving a server whose command died behind.
+//!
+//! A Rust thread has no uncaught-exception handler: the threads of this crate whose Java
+//! counterparts are plain threads or a `ThreadPoolExecutor` (whose `execute`d tasks' exceptions
+//! reach the thread's handler) run their body through [`run_catching`]: the `grpc-command-N`
+//! threads, `grpc-timeout-and-memory` and `interrupt-watcher-N`. The threads Java runs on a
+//! `ScheduledExecutorService` (`pid-file-watcher-N`, `idle-server-tasks-N`) keep an exception in
+//! their future instead, so they are not wrapped.
 
 use std::any::Any;
 use std::sync::{Arc, LazyLock};
@@ -34,6 +41,14 @@ pub fn panic_message(payload: &(dyn Any + Send)) -> String {
         s.clone()
     } else {
         "<non-string panic payload>".to_string()
+    }
+}
+
+/// Runs `body`, the whole body of a thread; a panic that escapes it is an uncaught exception
+/// ([`handle_uncaught_exception`]).
+pub fn run_catching(body: impl FnOnce()) {
+    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        handle_uncaught_exception(&*payload);
     }
 }
 

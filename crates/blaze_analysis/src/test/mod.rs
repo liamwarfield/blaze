@@ -3,6 +3,7 @@
 //! `testing.TestEnvironment`, `InstrumentedFilesInfo` with `coverage_common`, and
 //! `AnalysisTestResultInfo`.
 
+pub mod analysis_test_action_builder;
 pub mod execution_info;
 pub mod instrumented_files_collector;
 pub mod instrumented_files_info;

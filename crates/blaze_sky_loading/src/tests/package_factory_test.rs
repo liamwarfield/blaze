@@ -798,7 +798,6 @@ fn test_glob_directory_exclusion() {
 
 // Java: PackageFactoryTest.testTooManyArgumentsGlobErrors
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'glob() accepts no more than 4 positional arguments but got 5' (argument binding)"]
 fn test_too_many_arguments_glob_errors() {
     assert_glob_fails(
         "glob(['incl'],['excl'],3,True,'extraarg')",
@@ -1063,7 +1062,6 @@ fn test_package_groups_with_same_name() {
 
 // Java: PackageFactoryTest.testPackageGroupNamedArguments
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'package_group() got unexpected positional argument' (argument binding)"]
 fn test_package_group_named_arguments() {
     let t = new_test_case();
     expect_eval_error(
@@ -1368,7 +1366,6 @@ fn test_valid_environment_group() {
 
 // Java: PackageFactoryTest.testIncompleteEnvironmentGroup
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'environment_group() missing 1 required named argument: defaults' (argument binding)"]
 fn test_incomplete_environment_group() {
     let t = new_test_case();
     expect_eval_error(

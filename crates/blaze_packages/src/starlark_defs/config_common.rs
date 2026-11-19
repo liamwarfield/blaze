@@ -22,7 +22,6 @@ use starlark::values::NoSerialize;
 use starlark::values::StarlarkValue;
 use starlark::values::Value;
 use starlark::values::ValueLike;
-use starlark::values::none::NoneType;
 use starlark::values::starlark_value;
 use starlark_map::StarlarkHasher;
 
@@ -179,10 +178,11 @@ fn config_common_methods(builder: &mut MethodsBuilder) {
     fn config_feature_flag_transition<'v>(
         this: Value<'v>,
         #[starlark(require = pos)] attribute: &str,
-    ) -> starlark::Result<NoneType> {
-        let _ = (this, attribute);
-        // PORT: ConfigFeatureFlagTransitionFactory (a configuration transition) is not ported.
-        blaze_util::unported!("ConfigStarlarkCommon.createConfigFeatureFlagTransitionFactory")
+    ) -> starlark::Result<ConfigFeatureFlagTransitionFactoryValue> {
+        let _ = this;
+        Ok(ConfigFeatureFlagTransitionFactoryValue {
+            attribute_name: attribute.to_owned(),
+        })
     }
 
     // Java: com/google/devtools/build/lib/rules/config/ConfigStarlarkCommon.java:41 ConfigStarlarkCommon.toolchainType
@@ -333,3 +333,26 @@ result = "|".join([
         );
     }
 }
+
+/// The value of `config_common.config_feature_flag_transition(attribute)` (Java
+/// `ConfigFeatureFlagTransitionFactory`, a `ConfigurationTransitionApi`); `rule(cfg = ...)` turns
+/// it into `TransitionFactory::ConfigFeatureFlag`.
+// Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:42 ConfigFeatureFlagTransitionFactory
+#[derive(Debug, Clone, ProvidesStaticType, NoSerialize, Allocative)]
+pub struct ConfigFeatureFlagTransitionFactoryValue {
+    pub attribute_name: String,
+}
+
+starlark_simple_value!(ConfigFeatureFlagTransitionFactoryValue);
+
+impl fmt::Display for ConfigFeatureFlagTransitionFactoryValue {
+    // Java: net/starlark/java/eval/StarlarkValue.java:50 StarlarkValue.repr (the default).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "<unknown object com.google.devtools.build.lib.rules.config.ConfigFeatureFlagTransitionFactory>",
+        )
+    }
+}
+
+#[starlark_value(type = "transition")]
+impl<'v> StarlarkValue<'v> for ConfigFeatureFlagTransitionFactoryValue {}

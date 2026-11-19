@@ -26,14 +26,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use blaze_events::io::{OutErr, OutputStream};
 use blaze_events::ui::Clock;
 use blaze_protos::JavaMessage;
-use blaze_protos::blaze::invocation_policy::InvocationPolicy;
 use blaze_protos::command_server::{
     CancelRequest, CancelResponse, PingRequest, PingResponse, RunRequest, RunResponse, ServerInfo,
     TerminalSizeRequest, TerminalSizeResponse,
 };
 use blaze_protos::failure_details::failure_detail::Category;
+use blaze_options::invocation_policy::InvocationPolicyParser;
 use blaze_protos::failure_details::{
-    FailureDetail, Filesystem, GrpcServer, Interrupted, filesystem, grpc_server, interrupted,
+    Command, FailureDetail, Filesystem, GrpcServer, Interrupted, command, filesystem, grpc_server,
+    interrupted,
 };
 use blaze_protos::google::protobuf::Any;
 use blaze_shell::thread_interrupt;
@@ -374,13 +375,7 @@ impl GrpcServerImpl {
         std::thread::Builder::new()
             .name(format!("grpc-command-{n}"))
             .stack_size(command_thread_stack_size())
-            .spawn(move || {
-                if let Err(payload) =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(runnable))
-                {
-                    uncaught_exception::handle_uncaught_exception(&*payload);
-                }
-            })
+            .spawn(move || uncaught_exception::run_catching(runnable))
             .expect("failed to start a grpc-command thread");
     }
 
@@ -465,7 +460,7 @@ impl GrpcServerImpl {
             );
             std::thread::Builder::new()
                 .name("grpc-timeout-and-memory".to_string())
-                .spawn(move || watcher.run())
+                .spawn(move || uncaught_exception::run_catching(move || watcher.run()))
                 .expect("failed to start the grpc-timeout-and-memory thread");
         }
         self.serving.store(true, Ordering::SeqCst);
@@ -622,40 +617,56 @@ impl GrpcServerImpl {
                 .map(|a| platform_bytes_to_internal_string(a))
                 .collect();
 
-            let policy = parse_policy(&request.invocation_policy);
             // PORT: skipped, logging (SafeRequestLogging.getRequestLogString(args)).
             let command_manager = self.command_manager.clone();
             let idle_task_results_supplier: IdleTaskResultsSupplier =
                 Arc::new(move || command_manager.get_idle_task_results());
-            let exec_result = self.dispatcher.exec_with_terminal_size_monitor(
-                policy,
-                args,
-                rpc_out_err,
-                if request.block_for_lock {
-                    LockingMode::WAIT
-                } else {
-                    LockingMode::ERROR_OUT
-                },
-                if request.quiet {
-                    UiVerbosity::QUIET
-                } else {
-                    UiVerbosity::NORMAL
-                },
-                request.client_description.clone(),
-                self.clock.current_time_millis(),
-                Some(startup_options),
-                idle_task_results_supplier,
-                request.command_extensions.clone(),
-                Arc::new(RpcCommandExtensionReporter {
-                    command_id: command_id.clone(),
-                    response_cookie: self.response_cookie.clone(),
-                    observer: observer.clone(),
-                    lock: Mutex::new(()),
-                }),
-                command.get_terminal_size_monitor(),
-            );
-            // PORT: the OptionsParsingException branch ("Invocation policy parsing failed: ")
-            // belongs to InvocationPolicyParser, which is not ported (see `parse_policy`).
+            let exec_result = match InvocationPolicyParser::parse_policy(Some(
+                &request.invocation_policy,
+            )) {
+                Ok(policy) => self.dispatcher.exec_with_terminal_size_monitor(
+                    policy,
+                    args,
+                    rpc_out_err.clone(),
+                    if request.block_for_lock {
+                        LockingMode::WAIT
+                    } else {
+                        LockingMode::ERROR_OUT
+                    },
+                    if request.quiet {
+                        UiVerbosity::QUIET
+                    } else {
+                        UiVerbosity::NORMAL
+                    },
+                    request.client_description.clone(),
+                    self.clock.current_time_millis(),
+                    Some(startup_options),
+                    idle_task_results_supplier,
+                    request.command_extensions.clone(),
+                    Arc::new(RpcCommandExtensionReporter {
+                        command_id: command_id.clone(),
+                        response_cookie: self.response_cookie.clone(),
+                        observer: observer.clone(),
+                        lock: Mutex::new(()),
+                    }),
+                    command.get_terminal_size_monitor(),
+                ),
+                // Java: com/google/devtools/build/lib/server/GrpcServerImpl.java:622 GrpcServerImpl.executeCommand
+                Err(e) => {
+                    rpc_out_err.print_err_ln(e.get_message());
+                    Ok(BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(
+                        FailureDetail {
+                            message: format!(
+                                "Invocation policy parsing failed: {}",
+                                e.get_message()
+                            ),
+                            category: Some(Category::Command(Command {
+                                code: command::Code::InvocationPolicyParseFailure as i32,
+                            })),
+                        },
+                    )))
+                }
+            };
             match exec_result {
                 Ok(r) => {
                     // Record tasks to be run by IdleTaskManager. This is triggered when the
@@ -895,18 +906,6 @@ fn message_digest_is_equal(digesta: &[u8], digestb: &[u8]) -> bool {
         result |= a ^ b;
     }
     result == 0
-}
-
-/// `InvocationPolicyParser.parsePolicy(policy)`.
-///
-/// PORT: `InvocationPolicyParser` is not ported (decision D14, later package). An empty string
-/// is the default policy, as Java returns for it; anything else fails loudly.
-// Java: com/google/devtools/common/options/InvocationPolicyParser.java:36 InvocationPolicyParser.parsePolicy
-fn parse_policy(policy: &str) -> InvocationPolicy {
-    if policy.is_empty() {
-        return InvocationPolicy::default();
-    }
-    blaze_util::unported!("InvocationPolicyParser.parsePolicy")
 }
 
 // Java: com/google/devtools/build/lib/util/InterruptedFailureDetails.java:30 InterruptedFailureDetails.detailedExitCode

@@ -3,8 +3,8 @@
 use blaze_actions::skyframe::actiongraph::v2::action_graph_dump::{
     AqueryActionFilter as AqueryActionFilterTrait, AqueryFilterFunction,
 };
-use indexmap::IndexMap;
 use blaze_util::java_regex::Pattern;
+use indexmap::IndexMap;
 
 /// Represents the filters (inputs, outputs, mnemonic) of an aquery expression.
 // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:28 AqueryActionFilter

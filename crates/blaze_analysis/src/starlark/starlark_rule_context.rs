@@ -1336,8 +1336,10 @@ fn starlark_option_to_value<'v>(v: &StarlarkOptionValue, heap: Heap<'v>) -> Valu
                 JavaCollectionClass::Tuple => {
                     heap.alloc(starlark::values::tuple::AllocTuple(elems))
                 }
-                JavaCollectionClass::Set => starlark::values::set::alloc_set(heap, elems)
-                    .expect("build setting values are hashable"),
+                JavaCollectionClass::Set | JavaCollectionClass::StarlarkSet => {
+                    starlark::values::set::alloc_set(heap, elems)
+                        .expect("build setting values are hashable")
+                }
             }
         }
     }

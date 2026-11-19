@@ -1,0 +1,743 @@
+#!/usr/bin/env python3
+"""Command sequences on one server per side, on the corpus projects. See `seq help`."""
+
+import datetime
+import difflib
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import common as C  # noqa: E402
+
+TOOL = "seq"
+WORK = os.path.join(C.TOOLS_WORK, "seq")
+PROJECTS = ("brotli", "re2")  # AGENTS.md: only these two until the user asks for more
+REF_FLAGS = ["--notrack_incremental_state", "--nokeep_state_after_build"]
+BUILD_LIKE = ("build", "test", "query", "cquery", "aquery")
+COMMON = ["--color=no", "--curses=no"]  # plus --repository_cache, as scripts/oracle/record
+INFO_KEYS = ["release", "workspace", "output_base", "execution_root", "bazel-bin", "server_pid",
+             "command_log"]
+STEP_TIMEOUT = {"build": 3 * 3600, "test": 3 * 3600}
+DEFAULT_TIMEOUT = 3600
+
+# Per project: the C/C++ file the edit steps change and the BUILD file whose comment changes.
+EDIT_FILES = {
+    "brotli": {"source": "c/common/constants.c", "build": "BUILD.bazel"},
+    "re2": {"source": "re2/testing/charclass_test.cc", "build": "BUILD.bazel"},
+}
+
+# The sequence. Each step: name, file actions done before the command (on the side's own
+# workspace copy), the command. `CMD` is the project's command from corpus/projects.json
+# (build //... for brotli, test //:all //python:all for re2); `EXPR` its patterns joined by " + ".
+SEQUENCE = [
+    ("cold", [], ["CMD"]),
+    ("again", [], ["CMD"]),
+    ("query", [], ["query", "EXPR", "--output=label_kind", "--keep_going"]),
+    ("cquery", [], ["cquery", "EXPR", "--output=label_kind"]),
+    ("aquery", [], ["aquery", "EXPR", "--output=jsonproto", "--include_param_files",
+                    "--include_file_write_contents"]),
+    # The oracle refuses cquery and aquery with --notrack_incremental_state ("Queries based on
+    # analysis results are not allowed if incrementality state is not being kept", exit 2:
+    # PostAnalysisQueryProcessor.java:93-101), so the two steps above are expected SAME-FAILUREs
+    # in the cold reference. These two (NOKEEP) get only --nokeep_state_after_build there: the
+    # graph is still reset at the end of every command (BlazeRuntime.java:789-791), and the
+    # previous command left none, so they are cold too.
+    ("cquery-tracked", [], ["NOKEEP", "cquery", "EXPR", "--output=label_kind"]),
+    ("aquery-tracked", [], ["NOKEEP", "aquery", "EXPR", "--output=jsonproto",
+                            "--include_param_files", "--include_file_write_contents"]),
+    ("info", [], ["info"] + INFO_KEYS),
+    ("touch-source", [("touch", "source")], ["CMD"]),
+    ("edit-source", [("append", "source", "// blaze-seq: comment line appended\n")], ["CMD"]),
+    ("edit-build-comment", [("append", "build", "# blaze-seq: comment line appended\n")], ["CMD"]),
+    ("compile-error", [("save", "source"),
+                       ("append", "source", "#error blaze-seq deliberate compile error\n")],
+     ["CMD"]),
+    ("repair", [("restore", "source")], ["CMD"]),
+    ("clean", [], ["clean"]),
+    ("after-clean", [], ["CMD"]),
+    ("shutdown", [], ["shutdown"]),
+    ("after-shutdown", [], ["CMD"]),
+]
+STEP_NAMES = [s[0] for s in SEQUENCE]
+
+USAGE = """\
+usage: scripts/server/seq help
+       scripts/server/seq list [--project P]
+       scripts/server/seq run --project brotli|re2 [--control] [--reference cold|default]
+                              [--steps a,b,...] [--fresh-reference] [--keep-raw]
+       scripts/server/seq clean
+
+Runs one sequence of commands (below) on a corpus project (corpus/projects.json; brotli and
+re2 only), on ONE server per side, and compares the two sides step by step.
+
+  side A, the reference (expected output): the oracle (accepted only with the sha256 pinned
+          in UPSTREAM.json), with --notrack_incremental_state --nokeep_state_after_build on
+          every build-like command (%s): Bazel discards its graph between commands, as the
+          first Blaze server does. With --reference default: no such flags (Bazel's kept graph;
+          the reference of the later incremental track).
+  side B: Blaze ($BLAZE, default target/debug/blaze; a private copy under
+          ~/.cache/blaze/work/server/tools/bin runs) with BLAZE_SERVER_MODE=daemon and the same
+          command lines as A (the two flags included: if Blaze rejects them, that is the
+          finding, they are not dropped).
+  --control: the oracle on both sides, side B with A's flags (the noise floor: two oracle runs).
+
+Each side runs inside its own `systemd-run --user --collect --wait --pipe -p MemoryMax=12G
+-p MemorySwapMax=0` unit (a daemonized server is in the unit's cgroup and dies with it) whose
+main process is scripts/remote/unit-supervisor (the side runner's own status), and the runner
+records inside the unit, per step: the client's argv, its true termination (`exit N` or
+`signal N NAME`; a timeout is a separate flag), the unit's oom_kill count before and after, the
+server pid before and after (server.pid.txt, checked alive), stdout, stderr, and for build and
+test steps the spawns of --execution_log_json_file (with --execution_log_sort), the
+buildMetrics of --build_event_json_file, and sha256 plus exec bit of every file under
+bazel-bin. At the end it shuts the server down with its own client and kills, through
+<output_user_root>/*/server/server.pid.txt, what is left.
+
+Workspace: each side gets its own copy of the project's checkout, prepared exactly as
+scripts/oracle/record does it (its prepare_workspace, imported: rsync without bazel-* and .git,
+then restored to the checkout's git HEAD), at ~/.cache/blaze/work/server/tools/seq/<project>/ws,
+output user root <project>/ur next to it. The two sides run one after the other at the SAME
+paths (the workspace re-prepared and the output user root deleted in between), so no output,
+action key or message differs by path; a lock file <project>/lock refuses a second run of the
+same project. Startup options:
+--output_user_root=<ur> --nohome_rc --nosystem_rc; command options --repository_cache=
+~/.cache/blaze/repo-cache --color=no --curses=no (as record). Environment exactly HOME, PATH=
+/usr/bin:/bin and BLAZE_SERVER_MODE=daemon, on both sides (the oracle ignores the variable;
+equal --client_env). Output user roots and workspace copies are deleted when the run ends;
+reports and extracted items are kept in runs/<timestamp>-<project>-<mode>/.
+
+Compared per step (each a field; any difference makes the step DIFFERENT):
+  status    `exit N` / `signal N NAME` / timed out.
+  stderr    scripts/oracle/normalise.py stderr_summary (imported: INFO/WARNING/ERROR lines and
+            the test summary, as a multiset; path placeholders, <DUR>, <PID>; "INFO: N
+            processes: ..." and "INFO: Analyzed ... (P packages loaded, T targets configured)"
+            are kept verbatim), plus the client's own lines that summary drops (`Starting local
+            Bazel server`, `Extracting Bazel installation`, `Server ...`, `Another command ...`,
+            `Waiting for ...`), normalised the same way.
+  stdout    query, cquery, aquery and info: the normalised text (record's path placeholders;
+            `server_pid` -> <PID>).
+  spawns    build/test: the multiset of spawns in the execution log: mnemonic, target label,
+            listed outputs, runner, cacheHit, exit code, status.
+  metrics   build/test: BEP buildMetrics actionSummary (actionsCreated, actionsExecuted,
+            per-mnemonic counts, runnerCount, actionCacheStatistics hits/misses/missDetails;
+            timing keys dropped as in scripts/oracle/surfaces.py; sizeInBytes dropped),
+            packageMetrics, targetMetrics, buildGraphMetrics without the per-SkyFunction
+            evaluated/built/changed/cleaned/dirtiedValues lists and
+            postInvocationSkyframeNodeCount (they differ between two oracle runs; the referee's
+            allow.json drops the same counters).
+  outputs   build/test: every file under bazel-bin: path, size, sha256 (contents
+            path-normalised as record does), exec bit; symlinks by target.
+  server    the server relation of the step: before/after as S1, S2, ... (distinct server pids
+            of the side in order of appearance) or `none`.
+Step classes: IDENTICAL; SAME-FAILURE (equal, but a side failed: the compile-error step is
+expected to be one; never counted as a match); DIFFERENT; NOT-RUN (a side's runner died before
+the step). Totals with the denominator (steps selected, run, per class) are printed, with the
+oracle's sha256, the Blaze binary's sha256, the checkout's commit and dirty state.
+Exit status: 0 when no step is DIFFERENT or NOT-RUN and both units recorded a clean end;
+1 otherwise; 2 for usage errors, an empty selection or a refused binary.
+
+Side A is cached: under refcache/<key>/, where <key> is the sha256 of the oracle sha256, the
+project (commit, command), a digest of the prepared workspace, the resolved sequence (step
+names, file actions, command lines), the reference mode and the sha256 of these tools
+(scripts/server/*, the imported scripts/oracle files, unit-supervisor). A cached side is used
+only when it is complete; --fresh-reference re-runs it. --control never uses the cache for B.
+
+Options:
+  --project P          brotli or re2 (required)
+  --control            the oracle on both sides
+  --reference MODE     cold (default: the two flags) or default (no flags)
+  --steps a,b,...      run only these steps, in sequence order (unknown names and an empty
+                       list are errors; the steps' file actions still apply)
+  --fresh-reference    do not use a cached side A
+  --keep-raw           keep each step's raw execution log and BEP file (large for re2)
+`clean` deletes <project>/ws, <project>/ur and stale private binary copies under the tool's own root
+(~/.cache/blaze/work/server/tools); runs/ and refcache/ are kept unless named:
+`clean --runs`, `clean --refcache`.
+
+The sequence (`list` prints it with the project's command lines). CMD is the project's
+command, EXPR its patterns joined by " + ", NOKEEP a step that gets only
+--nokeep_state_after_build in the cold reference (the oracle refuses cquery and aquery with
+--notrack_incremental_state: "Queries based on analysis results are not allowed if
+incrementality state is not being kept", exit 2, so the cquery and aquery steps, which keep both
+flags, are expected SAME-FAILUREs there; --nokeep_state_after_build alone still resets the graph
+at the end of every command, so the NOKEEP steps are cold as well):
+""" % ", ".join(BUILD_LIKE)
+
+
+def die(msg):
+    C.die(TOOL, msg)
+
+
+def load_record():
+    """scripts/oracle/record, imported (not edited) for prepare_workspace and walk_outputs."""
+    path = os.path.join(C.REPO, "scripts/oracle/record")
+    loader = importlib.machinery.SourceFileLoader("oracle_record", path)
+    spec = importlib.util.spec_from_loader("oracle_record", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def projects():
+    with open(os.path.join(C.REPO, "corpus/projects.json")) as f:
+        return json.load(f)["projects"]
+
+
+def resolve(project, steps):
+    """The sequence with the project's command lines filled in."""
+    spec = projects()[project]
+    command = spec["commands"][0]
+    expr = " + ".join(command[1:])
+    out = []
+    for name, actions, argv in SEQUENCE:
+        if name not in steps:
+            continue
+        nokeep = argv[:1] == ["NOKEEP"]
+        if nokeep:
+            argv = argv[1:]
+        if argv == ["CMD"]:
+            argv = list(command)
+        argv = [expr if a == "EXPR" else a for a in argv]
+        acts = []
+        for act in actions:
+            act = list(act)
+            act[1] = EDIT_FILES[project][act[1]]
+            acts.append(act)
+        out.append({"name": name, "actions": acts, "argv": argv, "nokeep": nokeep})
+    return out
+
+
+def command_line(step, reference, out_dir):
+    """Command and options of a step after the startup options."""
+    verb = step["argv"][0]
+    argv = [verb, "--repository_cache=" + C.REPO_CACHE] + COMMON if verb != "shutdown" else [verb]
+    if verb == "clean":
+        argv = [verb]
+    if verb in BUILD_LIKE and reference == "cold":
+        argv += ["--nokeep_state_after_build"] if step.get("nokeep") else REF_FLAGS
+    if verb in ("build", "test"):
+        argv += ["--execution_log_json_file=" + os.path.join(out_dir, step["name"] + ".execlog.json"),
+                 "--execution_log_sort",
+                 "--build_event_json_file=" + os.path.join(out_dir, step["name"] + ".bep.json")]
+    return argv + step["argv"][1:]
+
+
+# ---------------------------------------------------------------------------------------------
+# The side runner (inside the unit).
+
+def side_main(spec_path):
+    spec = json.load(open(spec_path))
+    record = load_record()
+    ws, ur, out = spec["ws"], spec["ur"], spec["out"]
+    binary = spec["binary"]
+    env = dict(spec["env"])
+    startup = [binary, "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc"]
+    output_base = os.path.join(ur, hashlib.md5(os.path.realpath(ws).encode()).hexdigest())
+    paths = {"execroot": os.path.join(output_base, "execroot", "_main"),
+             "output_base": output_base, "install_base": None, "output_user_root": ur,
+             "workspace": os.path.realpath(ws), "record_dir": out, "binary": binary,
+             "binary_dir": os.path.dirname(binary), "home": C.HOME}
+    user = os.environ.get("USER") or os.path.basename(C.HOME)
+    host = socket.gethostname().split(".")[0]
+    saved = {}
+    log = open(os.path.join(out, "steps.jsonl"), "a")
+    servers = []  # distinct server pids in order of appearance
+
+    def server_label():
+        pid = C.server_pid(ur)
+        if pid is None or not C.alive(pid):
+            return "none", None
+        if pid not in servers:
+            servers.append(pid)
+        return "S%d" % (servers.index(pid) + 1), pid
+
+    def on_signal(signum, _frame):
+        raise KeyboardInterrupt("signal %d" % signum)
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGHUP, on_signal)
+
+    try:
+        for step in spec["steps"]:
+            name = step["name"]
+            for act in step["actions"]:
+                path = os.path.join(ws, act[1])
+                if act[0] == "touch":
+                    os.utime(path, None)
+                elif act[0] == "append":
+                    with open(path, "a") as f:
+                        f.write(act[2])
+                elif act[0] == "save":
+                    saved[act[1]] = open(path, "rb").read()
+                elif act[0] == "restore":
+                    with open(path, "wb") as f:
+                        f.write(saved[act[1]])
+                else:
+                    raise RuntimeError("unknown action %r" % (act,))
+            argv = startup + command_line(step, spec["reference"], out)
+            before, before_pid = server_label()
+            oom0 = C.oom_kills()
+            t0 = time.monotonic()
+            timeout = STEP_TIMEOUT.get(step["argv"][0], DEFAULT_TIMEOUT)
+            with open(os.path.join(out, name + ".stdout"), "wb") as so, \
+                    open(os.path.join(out, name + ".stderr"), "wb") as se:
+                p = subprocess.Popen(argv, cwd=ws, env=env, stdin=subprocess.DEVNULL,
+                                     stdout=so, stderr=se)
+                timed_out = False
+                try:
+                    p.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait()
+                    timed_out = True
+            dur = round(time.monotonic() - t0, 2)
+            after, after_pid = server_label()
+            if paths["install_base"] is None:
+                paths["install_base"] = record.find_install_base(ur)
+            rec = {"name": name, "argv": argv, "returncode": p.returncode, "timed_out": timed_out,
+                   "status": str(C.Status(p.returncode, timed_out)), "duration_s": dur,
+                   "oom_kill_before": oom0, "oom_kill_after": C.oom_kills(),
+                   "server_before": before, "server_after": after,
+                   "server_pid_before": before_pid, "server_pid_after": after_pid}
+            if step["argv"][0] in ("build", "test"):
+                ctx = onorm_context(paths, user, host)
+                rec["outputs"] = record.walk_outputs(ctx, ws)
+                rec["spawns"] = extract_spawns(ctx, os.path.join(out, name + ".execlog.json"))
+                rec["metrics"] = extract_metrics(os.path.join(out, name + ".bep.json"))
+                if not spec.get("keep_raw"):
+                    for suffix in (".execlog.json", ".bep.json"):
+                        if os.path.exists(os.path.join(out, name + suffix)):
+                            os.remove(os.path.join(out, name + suffix))
+            log.write(json.dumps(rec, sort_keys=True) + "\n")
+            log.flush()
+            print("[seq %s] %s: %s in %.1fs, server %s -> %s" % (
+                spec["side"], name, rec["status"], dur, before, after), flush=True)
+    finally:
+        with open(os.path.join(out, "context.json"), "w") as f:
+            json.dump({"paths": paths, "user": user, "host": host}, f, indent=1, sort_keys=True)
+
+        def shutdown(out_base):
+            subprocess.run(startup + ["--output_base=" + out_base, "shutdown"], cwd=ws, env=env,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=120)
+        left = C.kill_root_servers(ur, shutdown,
+                                   log=lambda m: print("[seq %s] cleanup: %s" % (spec["side"], m)))
+        with open(os.path.join(out, "done.json"), "w") as f:
+            json.dump({"servers_left": left, "servers_seen": servers}, f)
+    return 0
+
+
+def onorm_context(paths, user, host):
+    return C.onorm.Context(paths, user, host)
+
+
+def extract_spawns(ctx, path):
+    if not os.path.exists(path):
+        return None
+    out = []
+    for s in C.osurf._concat_json(open(path, encoding="utf-8", errors="replace").read()):
+        item = {"mnemonic": s.get("mnemonic"), "targetLabel": s.get("targetLabel"),
+                "outputs": [ctx.text(o) for o in s.get("listedOutputs") or []],
+                "runner": s.get("runner"), "cacheHit": s.get("cacheHit", False),
+                "exitCode": s.get("exitCode", 0), "status": s.get("status", "")}
+        out.append(C.oc.canonical(item))
+    return sorted(out)
+
+
+def drop_timing(obj):
+    if isinstance(obj, dict):
+        return {k: drop_timing(v) for k, v in obj.items()
+                if not C.osurf.BEP_TIMING_KEY_RE.search(k)}
+    if isinstance(obj, list):
+        return [drop_timing(x) for x in obj]
+    return obj
+
+
+# Dropped from buildMetrics, as scripts/oracle/allow.json "build-metrics-volatile-counters" does
+# for the referee: they differ between two oracle runs of the same command (seq --control).
+VOLATILE_GRAPH = ("evaluatedValues", "builtValues", "changedValues", "cleanedValues",
+                  "dirtiedValues", "postInvocationSkyframeNodeCount")
+
+
+def extract_metrics(path):
+    if not os.path.exists(path):
+        return None
+    for line in open(path, encoding="utf-8", errors="replace"):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if "buildMetrics" in e:
+            m = e["buildMetrics"]
+            m = drop_timing({k: m[k] for k in ("actionSummary", "packageMetrics",
+                                               "targetMetrics", "buildGraphMetrics") if k in m})
+            for k in VOLATILE_GRAPH:
+                m.get("buildGraphMetrics", {}).pop(k, None)
+            m.get("actionSummary", {}).get("actionCacheStatistics", {}).pop("sizeInBytes", None)
+            return m
+    return {"buildMetrics": "absent"}
+
+
+# ---------------------------------------------------------------------------------------------
+# The outer driver.
+
+def run_side(side, binary, ws, ur, out, steps, reference, keep_raw):
+    """Runs one side in its own unit; returns the unit status line."""
+    os.makedirs(out, exist_ok=True)
+    spec = {"side": side, "binary": binary, "ws": ws, "ur": ur, "out": out, "steps": steps,
+            "reference": reference, "keep_raw": keep_raw,
+            "env": {"HOME": C.HOME, "PATH": "/usr/bin:/bin", "BLAZE_SERVER_MODE": "daemon"}}
+    spec_path = os.path.join(out, "spec.json")
+    with open(spec_path, "w") as f:
+        json.dump(spec, f, indent=1)
+    status = os.path.join(out, "unit-status")
+    if os.path.lexists(status):
+        os.remove(status)
+    cmd = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
+           "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0",
+           "/usr/bin/python3", "-I", C.SUPERVISOR, status,
+           "env", "-i", "HOME=" + C.HOME, "PATH=/usr/bin:/bin",
+           "/usr/bin/python3", "-I", os.path.abspath(__file__), "_side", spec_path]
+    print("%s: side %s: %s in a unit (12G), output %s" % (TOOL, side, binary, out), flush=True)
+    rc = subprocess.call(cmd, stdin=subprocess.DEVNULL, cwd=ws)
+    try:
+        line = open(status).read().strip()
+    except OSError:
+        line = "no status recorded inside the unit (systemd-run returned %d)" % rc
+    with open(os.path.join(out, "unit-status.txt"), "w") as f:
+        f.write(line + "\n")
+    return line
+
+
+def workspace_digest(ws):
+    h = hashlib.sha256()
+    for dirpath, dirnames, filenames in os.walk(ws):
+        dirnames.sort()
+        for n in sorted(filenames):
+            p = os.path.join(dirpath, n)
+            rel = os.path.relpath(p, ws)
+            if os.path.islink(p):
+                h.update(b"L" + rel.encode() + b"\0" + os.readlink(p).encode() + b"\n")
+            elif os.path.isfile(p):
+                h.update(b"F" + rel.encode() + b"\0" + C.oc.sha256_file(p).encode()
+                         + (b" x" if os.access(p, os.X_OK) else b"") + b"\n")
+    return h.hexdigest()
+
+
+def load_side(out):
+    steps = {}
+    path = os.path.join(out, "steps.jsonl")
+    if os.path.exists(path):
+        for line in open(path):
+            if line.strip():
+                r = json.loads(line)
+                steps[r["name"]] = r
+    ctx_path = os.path.join(out, "context.json")
+    ctx = C.onorm.Context.from_dict(json.load(open(ctx_path))) if os.path.exists(ctx_path) else None
+    return steps, ctx
+
+
+EXTRA_STDERR = ("Starting local ", "Extracting Bazel installation", "Server ", "Another command ",
+                "Waiting for ", "Killed non-responsive")
+
+
+def views(rec, out, ctx):
+    """The compared fields of one step (see help)."""
+    v = {"status": rec["status"]}
+    err = open(os.path.join(out, rec["name"] + ".stderr"), "rb").read().decode("utf-8", "replace")
+    summary = C.onorm.stderr_summary(ctx, err)
+    for raw in err.splitlines():
+        line = raw.split("\r")[-1].rstrip()
+        if line.startswith(EXTRA_STDERR):
+            line = C.Norm("\0no-root\0").text(ctx.text(line)).rstrip("\n")
+            summary[line] = summary.get(line, 0) + 1
+    v["stderr"] = "".join("%s%s\n" % (k, "" if n == 1 else "  [x%d]" % n)
+                          for k, n in sorted(summary.items()))
+    verb = rec["argv"][rec["argv"].index("--nosystem_rc") + 1]
+    if verb in ("query", "cquery", "aquery", "info"):
+        text = open(os.path.join(out, rec["name"] + ".stdout"), "rb").read().decode("utf-8", "replace")
+        v["stdout"] = C.Norm("\0no-root\0").text(ctx.text(text))
+    if verb in ("build", "test"):
+        v["spawns"] = "".join(s + "\n" for s in rec["spawns"]) if rec.get("spawns") is not None \
+            else "no execution log\n"
+        v["metrics"] = json.dumps(rec.get("metrics"), indent=1, sort_keys=True) + "\n"
+        v["outputs"] = "".join(C.oc.canonical(e) + "\n" for e in rec["outputs"]["entries"]) \
+            if rec.get("outputs") else "no outputs walk\n"
+    v["server"] = "%s -> %s\n" % (rec["server_before"], rec["server_after"])
+    return v
+
+
+def compare(steps, a_out, b_out, report):
+    a_steps, a_ctx = load_side(a_out)
+    b_steps, b_ctx = load_side(b_out)
+    counts = {C.IDENTICAL: 0, C.SAME_FAILURE: 0, C.DIFFERENT: 0, C.NOT_RUN: 0}
+    rows = []
+    for step in steps:
+        name = step["name"]
+        a, b = a_steps.get(name), b_steps.get(name)
+        if a is None or b is None:
+            counts[C.NOT_RUN] += 1
+            rows.append((name, C.NOT_RUN, "side %s has no record" % ("A" if a is None else "B"), []))
+            continue
+        va, vb = views(a, a_out, a_ctx), views(b, b_out, b_ctx)
+        diffs = []
+        for field in va:
+            if va[field] != vb.get(field):
+                d = list(difflib.unified_diff(va[field].splitlines(), vb.get(field, "").splitlines(),
+                                              "A " + field, "B " + field, lineterm="", n=1))
+                diffs.append((field, d))
+        failed_a = a["returncode"] != 0 or a["timed_out"]
+        failed_b = b["returncode"] != 0 or b["timed_out"]
+        if diffs:
+            cls = C.DIFFERENT
+        else:
+            cls = C.SAME_FAILURE if (failed_a or failed_b) else C.IDENTICAL
+        counts[cls] += 1
+        note = "A %s %.0fs, B %s %.0fs; server %s" % (a["status"], a["duration_s"], b["status"],
+                                                      b["duration_s"], va["server"].strip())
+        if a.get("oom_kill_after") != a.get("oom_kill_before") or \
+                b.get("oom_kill_after") != b.get("oom_kill_before"):
+            note += "; OOM KILL in the unit"
+        rows.append((name, cls, note, diffs))
+    for name, cls, note, diffs in rows:
+        report("  %-13s %-19s %s" % (cls, name, note))
+        for field, d in diffs:
+            report("      field %s differs (%d diff lines)" % (field, len(d)))
+            for l in d[:60]:
+                report("        " + l)
+            if len(d) > 60:
+                report("        [... %d more diff lines in the transcripts]" % (len(d) - 60))
+    return counts
+
+
+def side_ok(out, status_line):
+    done = os.path.join(out, "done.json")
+    problems = []
+    if status_line != "exit 0":
+        problems.append("side runner ended with: %s" % status_line)
+    if not os.path.exists(done):
+        problems.append("side runner did not finish its cleanup")
+    else:
+        left = json.load(open(done)).get("servers_left")
+        if left:
+            problems.append("servers left alive after cleanup: %s" % left)
+    return problems
+
+
+def cmd_run(args):
+    project, control, reference = None, False, "cold"
+    steps_sel, fresh_ref, keep_raw = None, False, False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("--project", "--reference", "--steps"):
+            if i + 1 >= len(args):
+                die("%s needs a value" % a)
+            val = args[i + 1]
+            i += 1
+            if a == "--project":
+                project = val
+            elif a == "--reference":
+                reference = val
+            else:
+                steps_sel = [s for s in val.split(",") if s]
+        elif a == "--control":
+            control = True
+        elif a == "--fresh-reference":
+            fresh_ref = True
+        elif a == "--keep-raw":
+            keep_raw = True
+        else:
+            die("unknown argument %r (see `seq help`)" % a)
+        i += 1
+    if project not in PROJECTS:
+        die("--project must be one of %s" % ", ".join(PROJECTS))
+    if reference not in ("cold", "default"):
+        die("--reference must be cold or default")
+    if steps_sel is not None:
+        unknown = [s for s in steps_sel if s not in STEP_NAMES]
+        if unknown:
+            die("unknown step(s): %s" % ", ".join(unknown))
+        if not steps_sel:
+            die("--steps selects no step")
+    selected = steps_sel or STEP_NAMES
+    steps = resolve(project, selected)
+    if not steps:
+        die("empty selection")
+    oracle = C.verified_oracle(TOOL)
+    free = os.statvfs(C.HOME)
+    if free.f_bavail * free.f_frsize < 120 * 1024 ** 3:
+        die("less than 120 GB free on /home: not running")
+
+    spec = projects()[project]
+    record = load_record()
+    pdir = os.path.join(WORK, project)
+    os.makedirs(pdir, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+    mode = "control" if control else "daemon"
+    run_dir = os.path.join(WORK, "runs", "%s-%s-%s-%s" % (stamp, project, mode, reference))
+    os.makedirs(run_dir)
+    report_lines = []
+
+    def report(line):
+        print(line, flush=True)
+        report_lines.append(line)
+
+    staged = None
+    blaze_src = C.blaze_binary()
+    if control:
+        b_binary, b_sha, b_role = oracle, C.ORACLE_SHA256, "B (--control: the oracle again)"
+    else:
+        if not os.path.exists(blaze_src):
+            die("no Blaze binary at %s (set BLAZE)" % blaze_src)
+        staged, b_sha = C.stage_binary(TOOL, blaze_src)
+        b_binary, b_role = staged, "B (blaze %s, run from a private copy)" % blaze_src
+    for l in C.header(TOOL, [("A (oracle, pinned)", oracle, C.ORACLE_SHA256),
+                             (b_role, blaze_src if not control else oracle, b_sha)],
+                      blaze=None if control else blaze_src):
+        report(l)
+    report("%s: project %s (commit %s, command %s); reference %s (side A%s); side B %s" % (
+        TOOL, project, spec.get("commit"), " ".join(spec["commands"][0]), reference,
+        " with " + " ".join(REF_FLAGS) if reference == "cold" else " without extra flags",
+        "the oracle with A's flags" if control else "Blaze, BLAZE_SERVER_MODE=daemon, A's flags"))
+    report("%s: steps selected: %d of %d (%s)" % (TOOL, len(steps), len(SEQUENCE),
+                                                  ", ".join(s["name"] for s in steps)))
+    status = {}
+    ws = os.path.join(pdir, "ws")
+    ur = os.path.join(pdir, "ur")
+    checkout = C.oc.expand(spec["checkout"])
+    lock = open(os.path.join(pdir, "lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        die("another seq run holds %s" % os.path.join(pdir, "lock"))
+
+    def fresh_side():
+        """Both sides run at the same paths (ws, ur), one after the other: nothing in the
+        outputs differs by path. The workspace is re-prepared from the checkout for each."""
+        C.kill_root_servers(ur)
+        if os.path.lexists(ur):
+            C.safe_rmtree(ur, C.TOOLS_WORK)
+        return record.prepare_workspace(checkout, ws)
+
+    try:
+        fixed = fresh_side()
+        ws_digest = workspace_digest(ws)
+        key_obj = {"oracle_sha256": C.ORACLE_SHA256, "project": project,
+                   "commit": spec.get("commit"), "command": spec["commands"][0],
+                   "workspace": os.path.realpath(ws), "workspace_digest": ws_digest,
+                   "workspace_fixups": fixed, "steps": steps, "reference": reference,
+                   "ref_flags": REF_FLAGS, "common": COMMON, "tools_sha256": C.tools_sha256()}
+        key = hashlib.sha256(C.oc.canonical(key_obj).encode()).hexdigest()
+        ref_dir = os.path.join(WORK, "refcache", key)
+        report("%s: reference key %s (workspace digest %s)" % (TOOL, key, ws_digest))
+        a_out = ref_dir
+        cached = (not fresh_ref and os.path.exists(os.path.join(ref_dir, "complete.json")))
+        if cached:
+            meta = json.load(open(os.path.join(ref_dir, "complete.json")))
+            report("%s: side A from the cache %s (recorded %s, status %s)" % (
+                TOOL, ref_dir, meta.get("recorded"), meta.get("unit_status")))
+            status["A"] = meta.get("unit_status")
+        else:
+            if os.path.lexists(ref_dir):
+                C.safe_rmtree(ref_dir, C.TOOLS_WORK)
+            os.makedirs(ref_dir)
+            with open(os.path.join(ref_dir, "key.json"), "w") as f:
+                json.dump(key_obj, f, indent=1, sort_keys=True)
+            status["A"] = run_side("A", oracle, os.path.realpath(ws), ur, ref_dir, steps,
+                                   reference, keep_raw)
+            if not side_ok(ref_dir, status["A"]) and len(load_side(ref_dir)[0]) == len(steps):
+                with open(os.path.join(ref_dir, "complete.json"), "w") as f:
+                    json.dump({"recorded": stamp, "unit_status": status["A"]}, f)
+            fresh_side()
+        b_out = os.path.join(run_dir, "B")
+        status["B"] = run_side("B", b_binary, os.path.realpath(ws), ur, b_out, steps,
+                               reference, keep_raw)
+        report("%s: side A unit: %s; side B unit: %s" % (TOOL, status["A"], status["B"]))
+        problems = ["A: " + p for p in (side_ok(a_out, status["A"]) if not cached else [])]
+        problems += ["B: " + p for p in side_ok(b_out, status["B"])]
+        for p in problems:
+            report("%s: PROBLEM %s" % (TOOL, p))
+        report("%s: per step (A = %s, B = %s):" % (TOOL, a_out, b_out))
+        counts = compare(steps, a_out, b_out, report)
+        report("%s: denominator: %d steps selected (%d in the sequence); %d identical, "
+               "%d same-failure (equal, a side failed; not matches), %d different, %d not run"
+               % (TOOL, len(steps), len(SEQUENCE), counts[C.IDENTICAL], counts[C.SAME_FAILURE],
+                  counts[C.DIFFERENT], counts[C.NOT_RUN]))
+        rc = 0 if not problems and counts[C.DIFFERENT] == 0 and counts[C.NOT_RUN] == 0 else 1
+    finally:
+        left = C.kill_root_servers(ur)
+        if left:
+            report("%s: PROBLEM servers %s of %s still alive" % (TOOL, left, ur))
+        for d in (ws, ur):
+            if os.path.lexists(d):
+                C.safe_rmtree(d, C.TOOLS_WORK)
+        lock.close()
+        if staged:
+            C.unstage_binary(staged)
+        with open(os.path.join(run_dir, "report.txt"), "w") as f:
+            f.write("\n".join(report_lines) + "\n")
+    report("%s: report %s" % (TOOL, os.path.join(run_dir, "report.txt")))
+    return rc
+
+
+def cmd_clean(args):
+    pdirs = [os.path.join(WORK, p) for p in PROJECTS]
+    for p in pdirs:
+        ur = os.path.join(p, "ur")
+        C.kill_root_servers(ur, log=print)
+        for d in (os.path.join(p, "ws"), ur):
+            if os.path.lexists(d):
+                print("removing %s" % d)
+                C.safe_rmtree(d, C.TOOLS_WORK)
+    bindir = os.path.join(C.TOOLS_WORK, "bin")
+    if os.path.isdir(bindir):
+        for n in sorted(os.listdir(bindir)):
+            pid = n.rsplit("-", 1)[-1]
+            if pid.isdigit() and not C.alive(int(pid)):
+                print("removing %s" % os.path.join(bindir, n))
+                C.safe_rmtree(os.path.join(bindir, n), C.TOOLS_WORK)
+    for flag, sub in (("--runs", "runs"), ("--refcache", "refcache")):
+        if flag in args and os.path.isdir(os.path.join(WORK, sub)):
+            print("removing %s" % os.path.join(WORK, sub))
+            C.safe_rmtree(os.path.join(WORK, sub), C.TOOLS_WORK)
+    return 0
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("help", "--help", "-h"):
+        sys.stdout.write(USAGE)
+        for name, actions, cmd in SEQUENCE:
+            print("  %-19s %s%s" % (name, "".join("%s %s; " % (a[0], a[1]) for a in actions),
+                                    " ".join(cmd)))
+        print("  (source: %s; build: BUILD.bazel)" % ", ".join(
+            "%s %s" % (p, EDIT_FILES[p]["source"]) for p in PROJECTS))
+        return 0
+    if argv[1] == "_side":
+        return side_main(argv[2])
+    if argv[1] == "list":
+        project = argv[argv.index("--project") + 1] if "--project" in argv else "brotli"
+        if project not in PROJECTS:
+            die("--project must be one of %s" % ", ".join(PROJECTS))
+        for s in resolve(project, STEP_NAMES):
+            print("%-19s %s%s" % (s["name"], "".join("%s %s; " % tuple(a[:2]) for a in s["actions"]),
+                                  " ".join(command_line(s, "cold", "<out>"))))
+        return 0
+    if argv[1] == "run":
+        return cmd_run(argv[2:])
+    if argv[1] == "clean":
+        return cmd_clean(argv[2:])
+    die("unknown command %r; see `seq help`" % argv[1])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

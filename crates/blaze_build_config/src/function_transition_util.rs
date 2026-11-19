@@ -584,15 +584,13 @@ fn starlark_option_to_java(v: &StarlarkOptionValue) -> JavaObject {
             let items = l.iter().map(starlark_option_to_java).collect();
             match l.class() {
                 JavaCollectionClass::Tuple => JavaObject::Tuple(items),
-                JavaCollectionClass::List | JavaCollectionClass::StarlarkList => {
-                    JavaObject::List(items)
+                JavaCollectionClass::List => JavaObject::List(items),
+                JavaCollectionClass::StarlarkList => JavaObject::StarlarkList(items),
+                // Starlark.fromJava turns a java.util.Set into a StarlarkSet (a StarlarkSet is
+                // passed through).
+                JavaCollectionClass::Set | JavaCollectionClass::StarlarkSet => {
+                    JavaObject::Set(items)
                 }
-                // PORT: Starlark.fromJava turns a java.util.Set into a StarlarkSet; Starlark
-                // sets are not carried through JavaObject.
-                JavaCollectionClass::Set => blaze_util::unported!(
-                    "FunctionTransitionUtil.findStarlarkOptionValue",
-                    "string_set build setting as a transition input"
-                ),
             }
         }
     }
@@ -606,12 +604,17 @@ fn java_to_starlark_option(v: &JavaObject) -> Result<StarlarkOptionValue, Valida
         JavaObject::Int(i) => StarlarkOptionValue::Int(*i),
         JavaObject::Str(s) => StarlarkOptionValue::Str(s.clone()),
         JavaObject::Label(l) => StarlarkOptionValue::Label(l.clone()),
-        JavaObject::List(l) => StarlarkOptionValue::starlark_list(
+        JavaObject::List(l) | JavaObject::StarlarkList(l) => StarlarkOptionValue::starlark_list(
             l.iter()
                 .map(java_to_starlark_option)
                 .collect::<Result<_, _>>()?,
         ),
         JavaObject::Tuple(l) => StarlarkOptionValue::tuple(
+            l.iter()
+                .map(java_to_starlark_option)
+                .collect::<Result<_, _>>()?,
+        ),
+        JavaObject::Set(l) => StarlarkOptionValue::starlark_set(
             l.iter()
                 .map(java_to_starlark_option)
                 .collect::<Result<_, _>>()?,
@@ -676,7 +679,7 @@ fn apply_transition(
             }
             let mut new_value = java_to_starlark_option(&option_value)?;
             if let Some(StarlarkOptionValue::List(old_list)) = old_value
-                && old_list.class() == JavaCollectionClass::Set
+                && old_list.is_java_set()
             {
                 // If this is a set-typed build setting, for backwards compatibility, if the
                 // provided value is a List, we need to convert it to a Set.
@@ -721,8 +724,14 @@ fn apply_transition(
                 ))
             };
             // Java: optionValue instanceof List (a Starlark tuple is a java.util.List too).
-            if field.is_list && matches!(option_value, JavaObject::List(_) | JavaObject::Tuple(_)) {
+            if field.is_list
+                && matches!(
+                    option_value,
+                    JavaObject::List(_) | JavaObject::StarlarkList(_) | JavaObject::Tuple(_)
+                )
+            {
                 let (JavaObject::List(option_value_as_list)
+                | JavaObject::StarlarkList(option_value_as_list)
                 | JavaObject::Tuple(option_value_as_list)) = &option_value
                 else {
                     unreachable!()
@@ -871,9 +880,12 @@ impl JavaObject {
     /// checks).
     fn to_option_value_if_typed(&self) -> Option<OptionValue> {
         match self {
-            JavaObject::Null | JavaObject::List(_) | JavaObject::Tuple(_) | JavaObject::Map(_) => {
-                None
-            }
+            JavaObject::Null
+            | JavaObject::List(_)
+            | JavaObject::StarlarkList(_)
+            | JavaObject::Tuple(_)
+            | JavaObject::Map(_)
+            | JavaObject::Set(_) => None,
             other => other.to_option_value(),
         }
     }
@@ -1058,12 +1070,21 @@ pub fn exec_transition_patch(
             ));
         }
         CoreOptionsExecConfigurationDistinguisherScheme::FULL_HASH => {
-            // PORT: needs BuildOptions.hashCode() (31 + checksum().hashCode()) of the mutated
-            // options; not used by the default scheme.
-            blaze_util::unported!(
-                "ExecTransitionFinalizer.patch",
-                "--experimental_exec_configuration_distinguisher=full_hash"
-            );
+            // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:235 ExecutionTransitionFactory.ExecTransitionFinalizer.patch
+            result.get_mut::<CoreOptions>().unwrap().platform_suffix = Some(String::new());
+            // execOptions creation above made a clone, which will have a fresh hashCode.
+            // PORT: the checksum is computed on a clone, which has no cached checksum
+            // (Java: `result` is a fresh clone at this point).
+            // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:284 BuildOptions.hashCode
+            let full_hash =
+                31i32.wrapping_add(crate::output_path_mnemonic_computer::java_string_hash_code(
+                    result.clone().checksum(),
+                ));
+            result.get_mut::<CoreOptions>().unwrap().platform_suffix =
+                Some(format!("exec-{:X}", full_hash as u32));
+            // Previous call to hashCode irreparably locked in state so must clone to refresh
+            // since options mutated after that.
+            result = result.clone();
         }
         CoreOptionsExecConfigurationDistinguisherScheme::DIFF_TO_AFFECTED => {
             // Setting platform_suffix here should not be necessary for correctness but done for

@@ -258,12 +258,7 @@ pub(crate) fn to_runtime_detailed_exit_code(
             detailed_exit_code.get_exit_code()
         ),
         Some(failure_detail) => DetailedExitCode::of_exit_code(
-            ExitCode::for_code(detailed_exit_code.get_exit_code()).unwrap_or_else(|| {
-                panic!(
-                    "No ExitCode for numericExitCode {}",
-                    detailed_exit_code.get_exit_code()
-                )
-            }),
+            detailed_exit_code.get_exit_code_value(),
             failure_detail.clone(),
         ),
     }

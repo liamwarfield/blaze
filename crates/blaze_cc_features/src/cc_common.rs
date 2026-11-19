@@ -1,26 +1,26 @@
 //! Port of the parts of `com.google.devtools.build.lib.rules.cpp.CcCommon` that do not need
 //! analysis: `CoptsFilter`.
 
-use regex::Regex;
+use blaze_util::java_regex::Pattern;
 
 /// A filter that removes copts from a c++ compile action according to a nocopts regex.
 // Java: com/google/devtools/build/lib/rules/cpp/CcCommon.java:101 CcCommon.CoptsFilter
-// PORT: Java's `java.util.regex` syntax is evaluated with the `regex` crate; the two agree on the
-// common subset (no backreferences or lookaround).
+// `java.util.regex.Pattern` is `blaze_util::java_regex::Pattern` (Java's dialect on the `regex`
+// crate; its module docs list what is `unported!`).
 #[derive(Clone, Debug)]
 pub struct CoptsFilter {
     no_copts_pattern: Option<String>,
-    /// The pattern anchored at both ends, for Java's `Matcher.matches()`.
-    anchored: Option<Regex>,
+    /// `Pattern.compile(noCoptsPattern)`.
+    anchored: Option<Pattern>,
     all_passes: bool,
 }
 
 impl CoptsFilter {
-    /// Creates a filter that filters all matches to a regex; `Err` with the regex error where
-    /// `Pattern.compile` throws `PatternSyntaxException`.
+    /// Creates a filter that filters all matches to a regex; `Err` with
+    /// `PatternSyntaxException.getMessage()` where `Pattern.compile` throws.
     // Java: com/google/devtools/build/lib/rules/cpp/CcCommon.java:111 CcCommon.CoptsFilter.fromRegex
-    pub fn from_regex(no_copts_pattern: &str) -> Result<CoptsFilter, regex::Error> {
-        let anchored = Regex::new(&format!("^(?:{no_copts_pattern})$"))?;
+    pub fn from_regex(no_copts_pattern: &str) -> Result<CoptsFilter, String> {
+        let anchored = Pattern::compile(no_copts_pattern, 0)?;
         Ok(CoptsFilter {
             no_copts_pattern: Some(no_copts_pattern.to_string()),
             anchored: Some(anchored),
@@ -45,7 +45,7 @@ impl CoptsFilter {
         if self.all_passes {
             true
         } else {
-            !self.anchored.as_ref().unwrap().is_match(flag)
+            !self.anchored.as_ref().unwrap().matches(flag)
         }
     }
 

@@ -80,7 +80,7 @@ use blaze_options::definition::OptionsClassRef;
 use blaze_options::{Options, OptionsClass, OptionsParser};
 use blaze_packages::target::Target;
 use blaze_sky_loading::package_manager::{NoSuchThingOrInterrupted, TargetProvider};
-use blaze_skyframe::{EvaluationResult, Key, SkyKey};
+use blaze_skyframe::{EvaluationResult, EvaluatorBuilder, Key, SkyKey};
 use blaze_vfs::{Path, PathFragment};
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::Mutex;
@@ -98,6 +98,18 @@ use crate::testing::scratch::{Scratch, TestDirectory};
 
 /// `BuildViewTestCase.LOADING_PHASE_THREADS`.
 pub const LOADING_PHASE_THREADS: usize = 20;
+
+/// Test SkyFunctions added to the harness's executor ([`BuildViewTestCase::set_extra_sky_functions`]).
+pub type ExtraSkyFunctions = Arc<dyn Fn(EvaluatorBuilder) -> EvaluatorBuilder + Send + Sync>;
+
+/// A `PrecomputedValue.injected(...)` of `injectExtraPrecomputedValues` (the values tests inject).
+#[derive(Clone, Debug)]
+pub enum InjectedPrecomputedValue {
+    /// `ModuleFileFunction.IGNORE_DEV_DEPS`.
+    IgnoreDevDeps(bool),
+    /// `RepoMetadataRequirements.REQUIRE_REPO_EXTENSION_METADATA`.
+    RequireRepoExtensionMetadata(blaze_repo_rules::precomputed::RequireRepoExtensionMetadataMode),
+}
 
 /// Java `FoundationTestCase.failFastHandler`: fails the test on an error event.
 ///
@@ -254,6 +266,12 @@ pub struct BuildViewTestCase {
     package_options: Vec<String>,
     /// `useLoadingOptions` arguments.
     loading_options: Vec<String>,
+    /// `injectExtraPrecomputedValues`: the repository precomputed values of the next executor.
+    repo_precomputed: blaze_repo_rules::registration::RepoPrecomputedValues,
+    /// `injectExtraPrecomputedValues`: precomputed values Blaze's executor takes from options.
+    precomputed_args: Vec<String>,
+    /// `AnalysisMock.getSkyFunctions`: test SkyFunctions registered in the executor.
+    extra_sky_functions: Option<ExtraSkyFunctions>,
     /// `BuildViewTestCase.getDefaultVisibility()` (overridable with
     /// [`Self::set_default_visibility`]).
     default_visibility: String,
@@ -293,6 +311,7 @@ impl BuildViewTestCase {
             root_directory.get_child("MODULE.bazel").get_path_string(),
             &[],
         );
+        install_source_reader(&directory.fs);
 
         // Java: FoundationTestCase.initializeLogging
         let event_collector = Arc::new(EventCollector::with_mask(
@@ -333,6 +352,9 @@ impl BuildViewTestCase {
             starlark_options: Default::default(),
             package_options: Vec::new(),
             loading_options: Vec::new(),
+            repo_precomputed: Default::default(),
+            precomputed_args: Vec::new(),
+            extra_sky_functions: None,
             default_visibility: "public".to_string(),
             default_flags: FlagBuilder::default()
                 .with(Flag::PublicVisibility)
@@ -609,6 +631,41 @@ impl BuildViewTestCase {
         parser
     }
 
+    /// Registers test SkyFunctions in the executor (Java: a test's `AnalysisMock.Delegate`
+    /// overriding `getSkyFunctions`, used by the executor of `initializeSkyframeExecutor`). The
+    /// next executor is built with them.
+    // Java: com/google/devtools/build/lib/analysis/util/AnalysisMock.java AnalysisMock.getSkyFunctions
+    pub fn set_extra_sky_functions(
+        &mut self,
+        f: impl Fn(EvaluatorBuilder) -> EvaluatorBuilder + Send + Sync + 'static,
+    ) {
+        self.extra_sky_functions = Some(Arc::new(f));
+        self.invalidate_executor();
+    }
+
+    /// `skyframeExecutor.injectExtraPrecomputedValues(values)`.
+    ///
+    /// PORT: Blaze's executor is built with its precomputed values (one command per process), so
+    /// the values apply to the next executor, and the current one is dropped. A value the executor
+    /// computes from an option (`ModuleFileFunction.IGNORE_DEV_DEPS` from
+    /// `--ignore_dev_dependency`, as `BazelRepositoryModule.beforeCommand` does) is injected as
+    /// that option.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java SkyframeExecutor.injectExtraPrecomputedValues
+    pub fn inject_extra_precomputed_values(&mut self, values: &[InjectedPrecomputedValue]) {
+        for value in values {
+            match value {
+                InjectedPrecomputedValue::IgnoreDevDeps(ignore) => {
+                    self.precomputed_args
+                        .push(format!("--ignore_dev_dependency={ignore}"));
+                }
+                InjectedPrecomputedValue::RequireRepoExtensionMetadata(mode) => {
+                    self.repo_precomputed.require_repo_extension_metadata = *mode;
+                }
+            }
+        }
+        self.invalidate_executor();
+    }
+
     /// `setBuildLanguageOptions`.
     // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:534 BuildViewTestCase.setBuildLanguageOptions
     pub fn set_build_language_options(&mut self, options: &[&str]) {
@@ -712,6 +769,7 @@ impl BuildViewTestCase {
             );
         }
         parse(&mut parser, &self.package_options);
+        parse(&mut parser, &self.precomputed_args);
         // getDefaultBuildLanguageOptions
         parse(
             &mut parser,
@@ -762,15 +820,18 @@ impl BuildViewTestCase {
             client_env: IndexMap::new(),
             repo_env: IndexMap::new(),
             nonstrict_repo_env: IndexMap::new(),
-            repo_precomputed: Default::default(),
+            repo_precomputed: self.repo_precomputed.clone(),
             keep_going: false,
             top_level_build_options: Some((**build_options).clone()),
             execution: None,
         };
-        let executor = SkyframeExecutor::create_with_builtin_modules(
+        let executor = SkyframeExecutor::create_with_extra_sky_functions(
             inputs,
             None,
             Some(self.analysis_mock.get_builtin_modules(&self.root_directory)),
+            self.extra_sky_functions
+                .as_ref()
+                .map(|f| f.as_ref() as &dyn Fn(EvaluatorBuilder) -> EvaluatorBuilder),
         )
         .unwrap_or_else(|e| panic!("cannot create the SkyframeExecutor: {e}"));
         // Java: createBuildOptionsForTesting evaluates the main repository mapping.
@@ -1728,6 +1789,32 @@ impl BuildViewTestCase {
         };
         target.get(&key)
     }
+}
+
+/// Lets the Starlark interpreter know how to read source files (the source line printed under
+/// each frame of an error's call stack), as `FoundationTestCase` does.
+///
+/// PORT: the reader is process-wide (Java: a static of `EvalException`); every test's files are
+/// at absolute paths of the one real file system, so the readers of concurrent tests agree.
+// Java: com/google/devtools/build/lib/testutil/FoundationTestCase.java:88 FoundationTestCase.initializeFileSystemAndDirectories
+fn install_source_reader(fs: &blaze_vfs::FileSystemRef) {
+    let fs = fs.clone();
+    blaze_starlark::error::set_source_reader_supplier(Arc::new(move |loc| {
+        let fragment = PathFragment::create(&loc.file);
+        if !fragment.is_absolute() {
+            // fileSystem.getPath throws for a relative path; the exception is ignored.
+            return None;
+        }
+        let path = Path::create(fragment, &fs);
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut path.get_input_stream().ok()?, &mut bytes).ok()?;
+        // FileSystemUtils.readContent(path, UTF_8).
+        // PORT: decoded as Java's UTF-8 decoder does (malformed input becomes U+FFFD).
+        let content = String::from_utf8_lossy(&bytes);
+        // Iterables.get(Splitter.on("\n").split(content), loc.line() - 1, null).
+        let line = loc.line.checked_sub(1)?;
+        content.split('\n').nth(line).map(str::to_string)
+    }));
 }
 
 /// `AnalysisTestUtil.execOptions(targetOptions, skyframeExecutor, handler)`.

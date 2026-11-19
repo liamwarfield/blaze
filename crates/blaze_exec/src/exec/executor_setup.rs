@@ -24,7 +24,7 @@ use blaze_protos::failure_details::{
 use indexmap::IndexMap;
 
 use crate::actions::spawn_strategy::SpawnStrategy;
-use crate::actions::{ExecException, Spawn, SpawnResult, spawns};
+use crate::actions::{ExecException, Spawn, SpawnResult};
 use crate::exec::abstract_spawn_strategy::AbstractSpawnStrategy;
 use crate::exec::action_execution_context::{
     ActionContextRegistry, ActionExecutionContext, ActionInputPrefetcher, RemoteOutputTree,
@@ -208,7 +208,11 @@ pub fn build_spawn_strategy_registry_with_policy(
     // com.google.devtools.build.lib.remote.RemoteModule
     remote_module_register_spawn_strategies(&mut spawn_strategy_registry_builder, env, remote);
     // com.google.devtools.build.lib.worker.WorkerModule
-    worker_module_register_spawn_strategies(&mut spawn_strategy_registry_builder, env);
+    // Java: com/google/devtools/build/lib/worker/WorkerModule.java:221 WorkerModule.registerSpawnStrategies
+    crate::worker::worker_module::WorkerModule::register_spawn_strategies(
+        &mut spawn_strategy_registry_builder,
+        env,
+    );
     // com.google.devtools.build.lib.standalone.StandaloneModule
     StandaloneModule::new().register_spawn_strategies(&mut spawn_strategy_registry_builder, env);
     // com.google.devtools.build.lib.sandbox.SandboxModule
@@ -323,74 +327,6 @@ impl SpawnRunner for PlaceholderRemoteSpawnRunner {
     // Java: com/google/devtools/build/lib/remote/RemoteSpawnRunner.java:135 RemoteSpawnRunner.getName
     fn get_name(&self) -> String {
         "remote".to_string()
-    }
-}
-
-/// `WorkerModule.registerSpawnStrategies`.
-// Java: com/google/devtools/build/lib/worker/WorkerModule.java:234 WorkerModule.registerSpawnStrategies
-fn worker_module_register_spawn_strategies(
-    registry_builder: &mut SpawnStrategyRegistryBuilder,
-    env: &ExecCommandEnvironment,
-) {
-    // Java: com/google/devtools/build/lib/worker/WorkerSpawnStrategy.java:30 WorkerSpawnStrategy.toString
-    registry_builder.register_strategy(
-        Arc::new(
-            AbstractSpawnStrategy::new(
-                env.exec_root.clone(),
-                Arc::new(WorkerSpawnRunner {
-                    allowlist: env.worker_options.allowlist.clone(),
-                }),
-                env.execution_options.clone(),
-                "worker",
-            )
-            .with_simple_class_name("WorkerSpawnStrategy"),
-        ),
-        &["worker"],
-    );
-}
-
-/// `WorkerSpawnRunner`: `canExec` is ported; executing with persistent workers is not.
-// Java: com/google/devtools/build/lib/worker/WorkerSpawnRunner.java:83 WorkerSpawnRunner
-struct WorkerSpawnRunner {
-    /// `WorkerOptions.allowlist`.
-    allowlist: Option<Vec<String>>,
-}
-
-impl SpawnRunner for WorkerSpawnRunner {
-    fn exec(
-        &self,
-        _spawn: &dyn Spawn,
-        _context: &dyn SpawnExecutionContext,
-    ) -> Result<SpawnResult, ExecException> {
-        blaze_util::unported!("WorkerSpawnRunner.exec")
-    }
-
-    // Java: com/google/devtools/build/lib/worker/WorkerSpawnRunner.java:135 WorkerSpawnRunner.canExec
-    fn can_exec(&self, spawn: &dyn Spawn) -> bool {
-        if !spawns::supports_workers(spawn) && !spawns::supports_multiplex_workers(spawn) {
-            return false;
-        }
-        // Note: `allowlist` is sorted, we could binary search.
-        if let Some(allowlist) = &self.allowlist
-            && !allowlist.is_empty()
-            && !allowlist.contains(&spawns::get_worker_key_mnemonic(spawn))
-        {
-            return false;
-        }
-        if spawn.get_tool_files().is_empty() {
-            return false;
-        }
-        true
-    }
-
-    // Java: com/google/devtools/build/lib/worker/WorkerSpawnRunner.java:152 WorkerSpawnRunner.handlesCaching
-    fn handles_caching(&self) -> bool {
-        false
-    }
-
-    // Java: com/google/devtools/build/lib/worker/WorkerSpawnRunner.java:130 WorkerSpawnRunner.getName
-    fn get_name(&self) -> String {
-        "worker".to_string()
     }
 }
 

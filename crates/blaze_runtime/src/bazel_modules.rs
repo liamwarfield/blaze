@@ -527,11 +527,10 @@ impl BlazeModule for OutputFilteringModule {
 }
 
 /// A module that adds the WorkerActionContextProvider to the available action context providers.
-/// PORT: registerSpawnStrategies is ported with the command's execution setup
-/// (`blaze_exec::exec::executor_setup` registers the `worker` strategy with the command's
-/// `WorkerOptions`; running a spawn with a persistent worker fails loudly there). PORT: skipped,
-/// incremental: beforeCommand, afterCommand manage the worker pool the server keeps between
-/// commands.
+/// The module's state (worker factory, pool, lifecycle manager) is
+/// `blaze_exec::worker::worker_module::WorkerModule`; `registerSpawnStrategies` runs in the
+/// command's execution setup (`blaze_exec::exec::executor_setup`), `buildStarting` and
+/// `buildComplete` in the build command (`commands/build.rs`).
 // Java: com/google/devtools/build/lib/worker/WorkerModule.java:49 WorkerModule
 pub struct WorkerModule;
 
@@ -547,6 +546,21 @@ impl BlazeModule for WorkerModule {
         } else {
             vec![]
         }
+    }
+
+    // Java: com/google/devtools/build/lib/worker/WorkerModule.java:67 WorkerModule.beforeCommand
+    fn before_command(&self, env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
+        blaze_exec::worker::worker_module::WorkerModule::before_command(
+            env.get_reporter().clone() as Arc<dyn blaze_events::EventHandler>,
+            None,
+        );
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/worker/WorkerModule.java:278 WorkerModule.afterCommand
+    fn after_command(&self) -> Result<(), AbruptExitException> {
+        blaze_exec::worker::worker_module::WorkerModule::after_command();
+        Ok(())
     }
 }
 

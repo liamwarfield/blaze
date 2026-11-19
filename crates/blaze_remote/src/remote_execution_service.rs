@@ -1579,7 +1579,8 @@ impl RemoteExecutionService {
         // PORT: `wasRewound.test(action.getSpawn().getResourceOwner())` is false (rewinding is
         // not ported).
 
-        let mut inline_output_files: HashSet<String> = HashSet::new();
+        // Java: `ImmutableSet` (insertion order).
+        let mut inline_output_files: IndexSet<String> = IndexSet::new();
         let in_memory_output_path = get_in_memory_output_path(action.get_spawn());
         if let Some(in_memory_output_path) = &in_memory_output_path {
             // Java puts the internal string into the request as it is (no

@@ -2,6 +2,7 @@
 //! options (rc files, `--config`) and setting up the event handler.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use blaze_events::ui::{UiEventHandler, UiEventHandlerOptions};
 use blaze_events::{Event, EventHandler, EventKind, EventKindSet, OutErr};
@@ -16,6 +17,12 @@ use blaze_options::{OptionsParser, OptionsParsingException, PriorityCategory};
 use blaze_protos::blaze::invocation_policy::InvocationPolicy;
 use blaze_protos::failure_details::{self, FailureDetail};
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
+use blaze_protos::google::protobuf::Any;
+use blaze_server::command_dispatcher::{
+    CommandDispatcher, CommandExtensionReporter, IdleTaskResultsSupplier,
+};
+use blaze_server::interruptible::Monitor;
+use blaze_shell::thread_interrupt::InterruptedException;
 use parking_lot::Mutex;
 
 use crate::command::{BlazeCommand, BlazeCommandResult};
@@ -26,21 +33,15 @@ use crate::starlark_options_parser::{
     SkyframeExecutorTargetLoader, StarlarkOptionsParser, StarlarkOptionsParsingError,
 };
 
-/// What to do if the command lock is not available.
-// Java: com/google/devtools/build/lib/runtime/CommandDispatcher.java:35 LockingMode
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LockingMode {
-    WAIT,
-    ERROR_OUT,
-}
-
-/// How much output to emit on the console.
-// Java: com/google/devtools/build/lib/runtime/CommandDispatcher.java:41 UiVerbosity
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UiVerbosity {
-    QUIET,
-    NORMAL,
-}
+/// What to do if the command lock is not available, and how much output to emit on the
+/// console: `blaze_server`'s ports of `CommandDispatcher.LockingMode` and
+/// `CommandDispatcher.UiVerbosity`.
+///
+/// PORT: Java's `CommandDispatcher` is in `lib/runtime`; it lives in `blaze_server`, below this
+/// crate (decision D3), and its enums are re-exported here so that no caller changes.
+// Java: com/google/devtools/build/lib/runtime/CommandDispatcher.java:35 CommandDispatcher.LockingMode
+// Java: com/google/devtools/build/lib/runtime/CommandDispatcher.java:41 CommandDispatcher.UiVerbosity
+pub use blaze_server::{LockingMode, UiVerbosity};
 
 /// Dispatches to the Blaze commands; that is, given a command line, this abstraction looks up
 /// the appropriate command object, parses the options required by the object, and calls its
@@ -48,10 +49,14 @@ pub enum UiVerbosity {
 // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:106 BlazeCommandDispatcher
 pub struct BlazeCommandDispatcher {
     runtime: Arc<BlazeRuntime>,
-    #[allow(dead_code)]
     server_pid: i32,
-    current_client_description: Mutex<Option<String>>,
-    shutdown_reason: Mutex<Option<String>>,
+    /// `commandLock` guarding `currentClientDescription`: the description of the client whose
+    /// command holds the command lock.
+    current_client_description: Monitor<Option<String>>,
+    /// `shutdownReason` (an `AtomicReference`), shared with the running command's crash
+    /// handling (`CommandEnvironment.shutdownReasonConsumer`, see
+    /// [`BlazeRuntime::before_command`]).
+    shutdown_reason: Arc<Mutex<Option<String>>>,
     /// Set by [`Self::exec_exclusively`] when the command ended with `REMOTE_CACHE_EVICTED` and
     /// may be retried: Java's `RemoteCacheTransientErrorException`.
     remote_cache_transient_error: Mutex<bool>,
@@ -72,19 +77,17 @@ impl BlazeCommandDispatcher {
         BlazeCommandDispatcher {
             runtime,
             server_pid,
-            current_client_description: Mutex::new(None),
-            shutdown_reason: Mutex::new(None),
+            current_client_description: Monitor::new(None),
+            shutdown_reason: Arc::new(Mutex::new(None)),
             remote_cache_transient_error: Mutex::new(false),
         }
     }
 
-    /// Executes a single command.
+    /// Executes a single command: the `exec` that batch mode and the in-process server call,
+    /// with no idle task results (Java's batch mode passes `() -> ImmutableList.of()`).
     ///
-    /// PORT: skipped, incremental:
-    /// the idle tasks run between the commands of a server. Command extensions belong to the
-    /// gRPC request, which the in-process server does not have. The terminal size monitor only
-    /// serves the cursor-control UI. `firstContactTimeMillis` is the time the environment is
-    /// created (see `CommandEnvironment::get_command_start_time`).
+    /// `Err` is Java's `InterruptedException`: the command was interrupted while it waited for
+    /// the command lock ([`LockingMode::WAIT`]).
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:192 BlazeCommandDispatcher.exec
     pub fn exec(
         &self,
@@ -95,7 +98,40 @@ impl BlazeCommandDispatcher {
         ui_verbosity: UiVerbosity,
         client_description: &str,
         startup_options_tagged_with_bazel_rc: Option<Vec<(String, String)>>,
-    ) -> BlazeCommandResult {
+    ) -> Result<BlazeCommandResult, InterruptedException> {
+        self.exec_internal(
+            invocation_policy,
+            args,
+            out_err,
+            locking_mode,
+            ui_verbosity,
+            client_description,
+            startup_options_tagged_with_bazel_rc,
+            &|| Some(Vec::new()),
+        )
+    }
+
+    /// Executes a single command.
+    ///
+    /// PORT: the idle task results of the previous idle period are taken from
+    /// `idle_task_results_supplier` after the lock, as in Java, and dropped: Java hands them to
+    /// the `CommandEnvironment` (`getIdleTaskResultsFromPreviousIdlePeriod`), which nothing
+    /// ported reads. Command extensions and their reporter belong to the gRPC request; no ported
+    /// command reads or reports any. The terminal size monitor only serves the cursor-control
+    /// UI. `firstContactTimeMillis` is the time the environment is created (see
+    /// `CommandEnvironment::get_command_start_time`).
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:192 BlazeCommandDispatcher.exec
+    fn exec_internal(
+        &self,
+        invocation_policy: InvocationPolicy,
+        args: Vec<String>,
+        out_err: OutErr,
+        locking_mode: LockingMode,
+        ui_verbosity: UiVerbosity,
+        client_description: &str,
+        startup_options_tagged_with_bazel_rc: Option<Vec<(String, String)>>,
+        idle_task_results_supplier: &(dyn Fn() -> Option<Vec<blaze_server::IdleTaskResult>> + Sync),
+    ) -> Result<BlazeCommandResult, InterruptedException> {
         // Default to help command if no arguments specified.
         let args: Vec<String> = if args.is_empty() {
             HELP_COMMAND.iter().map(|s| s.to_string()).collect()
@@ -116,28 +152,47 @@ impl BlazeCommandDispatcher {
                 command_name,
                 self.runtime.get_product_name()
             ));
-            return create_detailed_command_result(
+            return Ok(create_detailed_command_result(
                 &format!("Command '{}' not found.", command_name),
                 failure_details::command::Code::CommandNotFound,
-            );
+            ));
         };
 
-        // Take the exclusive server lock.
-        // PORT: Blaze runs one command per (in-process) server, so this lock is always free here.
-        // What excludes a second Blaze process on the same output base is the client: it holds
-        // the exclusive output base lock (and the shared install base lock) for the whole
-        // in-process command (blaze_client `BlazeServer::communicate`), so a second client waits
-        // or exits in `AcquireLock` with Bazel's `--batch` messages, never with the server's
-        // "Another command (...) is running" below.
+        // Take the exclusive server lock.  If we fail, we busy-wait until the lock becomes
+        // available.
+        //
+        // We used to rely on commandLock.wait() to lazy-wait for the lock to become available,
+        // which is theoretically fine, but doing so prevents us from determining if the PID of
+        // the server holding the lock has changed under the hood.  There have been multiple bug
+        // reports where users (especially macOS ones) mention that the Blaze invocation hangs on
+        // a non-existent PID. This should help troubleshoot those scenarios in case there really
+        // is a bug somewhere.
+        let mut multiple_attempts = false;
+        let clock_before = Instant::now();
+        let mut other_client_description = String::new();
         {
-            let current = self.current_client_description.lock();
-            if let Some(current) = current.as_ref() {
+            let mut current_client_description = self.current_client_description.lock();
+            while let Some(current) = current_client_description.clone() {
                 match locking_mode {
                     LockingMode::WAIT => {
-                        blaze_util::unported!(
-                            "BlazeCommandDispatcher.exec",
-                            "waiting for the command lock"
-                        )
+                        if other_client_description != current {
+                            let server_description =
+                                if self.server_pid == Self::UNKNOWN_SERVER_PID {
+                                    String::new()
+                                } else {
+                                    format!(" (server_pid={})", self.server_pid)
+                                };
+                            out_err.print_err_ln(&format!(
+                                "Another command ({}) is running. Waiting for it to complete on \
+                                 the server{}...",
+                                current, server_description
+                            ));
+                            other_client_description = current;
+                        }
+                        // commandLock.wait(500): an interrupt of this thread (a Cancel of this
+                        // command) ends the wait with InterruptedException.
+                        self.current_client_description
+                            .wait(&mut current_client_description, Some(Duration::from_millis(500)))?;
                     }
                     LockingMode::ERROR_OUT => {
                         let message = format!(
@@ -145,16 +200,34 @@ impl BlazeCommandDispatcher {
                             current
                         );
                         out_err.print_err_ln(&message);
-                        return create_detailed_command_result(
+                        return Ok(create_detailed_command_result(
                             &message,
                             failure_details::command::Code::AnotherCommandRunning,
-                        );
+                        ));
                     }
                 }
+
+                multiple_attempts = true;
             }
+            *current_client_description = Some(client_description.to_string());
         }
-        *self.current_client_description.lock() = Some(client_description.to_string());
-        let wait_time_in_ms = 0;
+        // finally { synchronized (commandLock) { currentClientDescription = null;
+        // commandLock.notify(); } }: also when a panic unwinds out of this method, so that a
+        // crash never leaves the lock held.
+        let _command_lock = CommandLockRelease(&self.current_client_description);
+        // If we took the lock on the first try, force the reported wait time to 0 to avoid
+        // unnecessary noise in the logs.  In this metric, we are only interested in knowing how
+        // long it took for other commands to complete, not how fast acquiring a lock is.
+        let wait_time_in_ms: i64 = if !multiple_attempts {
+            0
+        } else {
+            clock_before.elapsed().as_millis() as i64
+        };
+
+        // Retrieve information about idle tasks that ran during a previous idle period.
+        // We do this after obtaining the lock so that a non-blocking command doesn't cause this
+        // information to be lost (instead, it will be forwarded to the next command).
+        let _idle_task_results_from_previous_idle_period = idle_task_results_supplier();
 
         let result = (|| {
             if let Some(reason) = self.shutdown_reason.lock().clone() {
@@ -232,9 +305,16 @@ impl BlazeCommandDispatcher {
             }
             result
         })();
-        *self.current_client_description.lock() = None;
-        result
+        Ok(result)
     }
+
+    /// Shuts down all the registered commands to give them a chance to cleanup or close
+    /// resources. Should be called by the owner of this command dispatcher in all termination
+    /// cases.
+    ///
+    /// PORT: Java closes `logOutputStream`, which nothing assigns at the pin (always null).
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:1059 BlazeCommandDispatcher.shutdown
+    pub fn shutdown(&self) {}
 
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:363 BlazeCommandDispatcher.execExclusively
     fn exec_exclusively(
@@ -245,6 +325,8 @@ impl BlazeCommandDispatcher {
         quiet: bool,
         _command_name: &str,
         command: Arc<dyn BlazeCommand>,
+        // PORT: Java adds it to `--wait_time` in `CommandEnvironment.waitTime`, which nothing
+        // reads at the pin (`getWaitTime` has no caller).
         _wait_time_in_ms: i64,
         startup_options_tagged_with_bazel_rc: Option<Vec<(String, String)>>,
         attempt_number: i32,
@@ -707,7 +789,13 @@ impl BlazeCommandDispatcher {
         if let Some(e) = env.take_pending_exception() {
             return Err(e);
         }
-        self.runtime.before_command(env);
+        // CommandEnvironment's shutdownReasonConsumer (this::setShutdownReason) and command
+        // thread, for notifyOnCrash.
+        let shutdown_reason = self.shutdown_reason.clone();
+        self.runtime.before_command(
+            env,
+            Arc::new(move |reason: String| set_shutdown_reason(&shutdown_reason, reason)),
+        );
         // RemoteModule.beforeCommand for the commands that do not set the remote module up
         // themselves (crate::commands::build::build_remote::dispatcher_before_command).
         crate::commands::build::build_remote::dispatcher_before_command(env)?;
@@ -752,7 +840,7 @@ impl BlazeCommandDispatcher {
             }
         }
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:795 BlazeRuntime.afterCommand
-        let final_command_result = match module_exit_code {
+        let mut final_command_result = match module_exit_code {
             Some(code) if !command_result.get_exit_code().is_infrastructure_failure() => {
                 match command_result.get_exec_request() {
                     Some(exec_request) => BlazeCommandResult::execute_with_detailed_exit_code(
@@ -764,6 +852,14 @@ impl BlazeCommandDispatcher {
             }
             _ => command_result,
         };
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:809 BlazeRuntime.afterCommand
+        if let Some(other_thread_won_exit_code) = self
+            .runtime
+            .notify_command_complete(final_command_result.get_detailed_exit_code())
+        {
+            final_command_result =
+                BlazeCommandResult::detailed_exit_code(other_thread_won_exit_code);
+        }
         if let Some(handler) = env.get_ui_event_handler() {
             // UiEventHandler is subscribed to AfterCommandEvent / BuildComplete; it flushes its
             // buffers there.
@@ -775,6 +871,8 @@ impl BlazeCommandDispatcher {
         // Swallow IOException, as we are already in a finally clause
         let _ = out_err.get_output_stream().flush();
         let _ = out_err.get_error_stream().flush();
+        // storedExitCode.set(null)
+        self.runtime.clear_stored_exit_code();
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:836 BlazeRuntime.afterCommand
         BlazeCommandResult::with_response_extensions(
             final_command_result,
@@ -877,12 +975,60 @@ impl BlazeCommandDispatcher {
         )
     }
 
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:323 BlazeCommandDispatcher.setShutdownReason
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:1063 BlazeCommandDispatcher.setShutdownReason
     fn set_shutdown_reason(&self, shutdown_reason: String) {
-        let mut reason = self.shutdown_reason.lock();
-        if reason.is_none() {
-            *reason = Some(shutdown_reason);
-        }
+        set_shutdown_reason(&self.shutdown_reason, shutdown_reason);
+    }
+}
+
+/// `this.shutdownReason.compareAndSet(null, shutdownReason)`.
+// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:1063 BlazeCommandDispatcher.setShutdownReason
+fn set_shutdown_reason(reason: &Mutex<Option<String>>, shutdown_reason: String) {
+    let mut reason = reason.lock();
+    if reason.is_none() {
+        *reason = Some(shutdown_reason);
+    }
+}
+
+/// The `finally` of `exec`: releases the command lock and wakes a waiting command.
+struct CommandLockRelease<'a>(&'a Monitor<Option<String>>);
+
+impl Drop for CommandLockRelease<'_> {
+    fn drop(&mut self) {
+        let mut current_client_description = self.0.lock();
+        *current_client_description = None;
+        // commandLock.notify()
+        self.0.notify_all();
+    }
+}
+
+/// The dispatcher the gRPC server calls (`GrpcServerImpl.executeCommand`).
+// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:192 BlazeCommandDispatcher.exec
+impl CommandDispatcher for BlazeCommandDispatcher {
+    fn exec(
+        &self,
+        invocation_policy: InvocationPolicy,
+        args: Vec<String>,
+        out_err: OutErr,
+        locking_mode: LockingMode,
+        ui_verbosity: UiVerbosity,
+        client_description: String,
+        _first_contact_time_millis: i64,
+        startup_options_tagged_with_bazel_rc: Option<Vec<(String, String)>>,
+        idle_task_results_supplier: IdleTaskResultsSupplier,
+        _command_extensions: Vec<Any>,
+        _command_extension_reporter: Arc<dyn CommandExtensionReporter>,
+    ) -> Result<BlazeCommandResult, InterruptedException> {
+        self.exec_internal(
+            invocation_policy,
+            args,
+            out_err,
+            locking_mode,
+            ui_verbosity,
+            &client_description,
+            startup_options_tagged_with_bazel_rc,
+            &*idle_task_results_supplier,
+        )
     }
 }
 

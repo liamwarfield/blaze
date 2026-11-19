@@ -153,7 +153,8 @@ impl BulkTransferException {
         // when reporting the returned aggregated message.
         let mut unique_sorted_messages: Vec<String> =
             self.suppressed.iter().map(|e| e.to_string()).collect();
-        unique_sorted_messages.sort();
+        // `sorted()`: `String.compareTo`, the order of UTF-16 code units.
+        unique_sorted_messages.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
         unique_sorted_messages.dedup();
         match unique_sorted_messages.len() {
             0 => "Unknown error during bulk transfer".to_string(),

@@ -281,7 +281,11 @@ impl PsInfoCollector {
     /// If ps snapshot was outdated will update it, and then returns resource consumption
     /// snapshot of processes subtrees based on collected ps snapshot.
     // Java: com/google/devtools/build/lib/metrics/PsInfoCollector.java:57 PsInfoCollector.collectResourceUsage
-    pub fn collect_resource_usage(&self, process_ids: &[i64], clock: &dyn Clock) -> ResourceSnapshot {
+    pub fn collect_resource_usage(
+        &self,
+        process_ids: &[i64],
+        clock: &dyn Clock,
+    ) -> ResourceSnapshot {
         let now = clock.current_time_millis();
         let mut current = self.current_ps_snapshot.lock();
         let pids_hash = java_long_set_hash(process_ids);
@@ -406,7 +410,11 @@ impl PsInfoCollector {
                     continue;
                 }
                 current_memory_in_kb = current_memory_in_kb.wrapping_add(
-                    PsInfoCollector::collect_memory_usage_of_descendants(child, ps_snapshot, depth + 1),
+                    PsInfoCollector::collect_memory_usage_of_descendants(
+                        child,
+                        ps_snapshot,
+                        depth + 1,
+                    ),
                 );
             }
         }
@@ -563,7 +571,11 @@ impl WorkerProcessMetricsCollector {
 
     // Java: com/google/devtools/build/lib/worker/WorkerProcessMetricsCollector.java:177 WorkerProcessMetricsCollector.onWorkerFinishExecution
     pub fn on_worker_finish_execution(&self, process_id: i64) {
-        let wpm = self.pid_to_worker_process_metrics.lock().get(&process_id).cloned();
+        let wpm = self
+            .pid_to_worker_process_metrics
+            .lock()
+            .get(&process_id)
+            .cloned();
         let Some(wpm) = wpm else {
             return;
         };
@@ -667,7 +679,10 @@ impl WorkerProcessMetricsCollector {
 /// worker statuses. (2) Then prioritize by decreasing memory usage and (3) limit to a fixed
 /// number.
 // Java: com/google/devtools/build/lib/worker/WorkerProcessMetricsCollector.java:206 WorkerProcessMetricsCollector.WorkerMetricsPublishComparator
-pub fn worker_metrics_publish_comparator(m1: &WorkerMetrics, m2: &WorkerMetrics) -> std::cmp::Ordering {
+pub fn worker_metrics_publish_comparator(
+    m1: &WorkerMetrics,
+    m2: &WorkerMetrics,
+) -> std::cmp::Ordering {
     // Java: com/google/devtools/build/lib/worker/WorkerProcessMetricsCollector.java:208 WorkerProcessMetricsCollector.WorkerMetricsPublishComparator.getWorkerStatusPriority
     fn get_worker_status_priority(status: i32) -> i32 {
         // Lower value is prioritized.

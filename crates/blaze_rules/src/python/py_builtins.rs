@@ -701,124 +701,36 @@ impl blaze_exec::actions::ExecutableAction for CopyWithoutCachingAction {
 // -------------------------------------------------------------------------------------------
 // java.lang.String.matches
 
-/// Translates a `java.util.regex` pattern into an equivalent whole-input pattern of the `regex`
-/// crate, for the constructs whose meaning is known to be equal; `Err` names the first construct
-/// that is not ported.
-///
-/// Ported (each checked against `java.util.regex` of the JDK Bazel 9.3.2 embeds, 25.0.2, over
-/// every code point):
-/// - a leading `(?U)` (`UNICODE_CHARACTER_CLASS`; rules_python's `is_importable_name` passes
-///   `(?U)\w+`);
-/// - `\w`, `\d`, `\s`: without `(?U)` the ASCII classes `[0-9A-Z_a-z]`, `[0-9]`, `[\t-\r ]`;
-///   with it the Unicode classes of UTS #18 Annex C, which are the `regex` crate's Unicode `\w`,
-///   `\d`, `\s` (regex-syntax 0.8.11 tables, Unicode 16.0.0, the Unicode version of that JDK);
-/// - `.`: any character but the line terminators `\n`, `\r`, U+0085, U+2028, U+2029;
-/// - literal ASCII letters, digits, `_`, `-`, `/`, and `\` followed by an ASCII punctuation
-///   character;
-/// - the greedy quantifiers `*`, `+`, `?` (for a whole-input match the result does not depend on
-///   greediness).
-// Java: java/util/regex/Pattern.java Pattern.compile
-fn translate_java_pattern(pattern: &str) -> Result<String, String> {
-    let (unicode_character_class, body) = match pattern.strip_prefix("(?U)") {
-        Some(body) => (true, body),
-        None => (false, pattern),
-    };
-    let chars: Vec<char> = body.chars().collect();
-    let mut out = String::from("^(?:");
-    // Whether the previous item can take a quantifier.
-    let mut quantifiable = false;
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        match c {
-            '\\' => {
-                i += 1;
-                let Some(&escaped) = chars.get(i) else {
-                    return Err("a trailing '\\'".to_owned());
-                };
-                match escaped {
-                    'w' => out.push_str(if unicode_character_class {
-                        r"\w"
-                    } else {
-                        "[0-9A-Z_a-z]"
-                    }),
-                    'd' => out.push_str(if unicode_character_class {
-                        r"\d"
-                    } else {
-                        "[0-9]"
-                    }),
-                    's' => out.push_str(if unicode_character_class {
-                        r"\s"
-                    } else {
-                        r"[\t-\r ]"
-                    }),
-                    // Java: a backslash may be used prior to a non-alphabetic character
-                    // regardless of whether that character is part of an unescaped construct.
-                    e if e.is_ascii_punctuation() => out.push_str(&regex::escape(&e.to_string())),
-                    e => return Err(format!("the escape '\\{e}'")),
-                }
-                quantifiable = true;
-            }
-            '.' => {
-                out.push_str(r"[^\n\r\u{85}\u{2028}\u{2029}]");
-                quantifiable = true;
-            }
-            c if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/') => {
-                out.push_str(&regex::escape(&c.to_string()));
-                quantifiable = true;
-            }
-            '*' | '+' | '?' => {
-                if !quantifiable {
-                    return Err(format!("a dangling '{c}'"));
-                }
-                // `X*?` (reluctant) and `X*+` (possessive) are not ported.
-                if matches!(chars.get(i + 1), Some('?') | Some('+')) {
-                    return Err(format!("the quantifier '{c}{}'", chars[i + 1]));
-                }
-                out.push(c);
-                quantifiable = false;
-            }
-            c => return Err(format!("'{c}'")),
-        }
-        i += 1;
-    }
-    out.push_str(")$");
-    Ok(out)
-}
-
-/// Java `subject.matches(pattern)` (`Pattern.matches`: the whole input must match).
+/// Java `subject.matches(pattern)` (`Pattern.matches`: the whole input must match), with
+/// `blaze_util::java_regex` (Java's dialect on the `regex` crate; its module docs list what is
+/// `unported!`).
 ///
 /// The subject is an internal string (one Latin-1 char per byte, lib/util/StringEncoding.java),
 /// and `java.util.regex` matches those chars: `(?U)\w+` rejects "café" (its chars are `c`, `a`,
 /// `f`, U+00C3, U+00A9, and U+00A9 is not a word character) as Bazel does.
 ///
-/// A pattern outside the ported subset (see [`translate_java_pattern`]) fails with `unported!`.
+/// PORT: a pattern Java rejects throws the unchecked `PatternSyntaxException` out of the builtin,
+/// which Bazel reports as a crash; here it panics with Java's message.
 // Java: java/lang/String.java String.matches
 fn java_string_matches(subject: &str, pattern: &str) -> bool {
-    static CACHE: LazyLock<parking_lot::Mutex<std::collections::HashMap<String, regex::Regex>>> =
-        LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
-    let regex = {
+    static CACHE: LazyLock<
+        parking_lot::Mutex<std::collections::HashMap<String, blaze_util::java_regex::Pattern>>,
+    > = LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+    let compiled = {
         let mut cache = CACHE.lock();
         match cache.get(pattern) {
-            Some(regex) => regex.clone(),
+            Some(compiled) => compiled.clone(),
             None => {
-                let translated = match translate_java_pattern(pattern) {
-                    Ok(translated) => translated,
-                    Err(construct) => blaze_util::unported!(
-                        "String.matches (java.util.regex)",
-                        "pattern {pattern:?}: {construct} is not ported"
-                    ),
-                };
-                let regex = regex::Regex::new(&translated).unwrap_or_else(|e| {
-                    panic!("translated pattern {translated:?} of {pattern:?} does not compile: {e}")
-                });
-                cache.insert(pattern.to_owned(), regex.clone());
-                regex
+                let compiled = blaze_util::java_regex::Pattern::compile(pattern, 0).unwrap_or_else(
+                    |message| panic!("java.util.regex.PatternSyntaxException: {message}"),
+                );
+                cache.insert(pattern.to_owned(), compiled.clone());
+                compiled
             }
         }
     };
     // The subject is an internal string: Java matches its Latin-1 chars.
-    regex.is_match(subject)
+    compiled.matches(subject)
 }
 
 #[cfg(test)]
@@ -878,9 +790,11 @@ mod tests {
         }
     }
 
-    /// Constructs outside the ported subset are named, not guessed.
+    /// The constructs the former subset translator refused all compile now (expectations of
+    /// `java.util.regex.Pattern.compile`, JDK 25: only `a\` and `*a` are syntax errors; see
+    /// blaze_util's `tests/java_regex_test.rs` for the matching rows).
     #[test]
-    fn translate_java_pattern_rejects_unported_constructs() {
+    fn java_pattern_constructs_compile_as_in_java() {
         for pattern in [
             "[a-z]+",
             "a|b",
@@ -893,21 +807,20 @@ mod tests {
             "a+?",
             "a*+",
             "(?i)a",
-            r"a\",
-            "*a",
             "caf\u{e9}",
             "a b",
         ] {
             assert!(
-                translate_java_pattern(pattern).is_err(),
-                "{pattern:?} must not be translated"
+                blaze_util::java_regex::Pattern::compile(pattern, 0).is_ok(),
+                "{pattern:?}"
             );
         }
-        assert_eq!(translate_java_pattern(r"(?U)\w+").unwrap(), r"^(?:\w+)$");
-        assert_eq!(
-            translate_java_pattern(r"\w+").unwrap(),
-            "^(?:[0-9A-Z_a-z]+)$"
-        );
+        for pattern in [r"a\", "*a"] {
+            assert!(
+                blaze_util::java_regex::Pattern::compile(pattern, 0).is_err(),
+                "{pattern:?}"
+            );
+        }
     }
 
     #[test]

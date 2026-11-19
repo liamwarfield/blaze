@@ -706,12 +706,14 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tokio-stream",
  "tonic",
  "tonic-build",
  "tonic-prost",
  "tower",
  "uuid",
+ "webpki-roots 1.0.12",
  "zstd",
 ]
 
@@ -844,8 +846,10 @@ dependencies = [
  "blaze_query",
  "blaze_query_engine",
  "blaze_remote",
+ "blaze_repo_fetch",
  "blaze_repo_rules",
  "blaze_rules",
+ "blaze_server",
  "blaze_shell",
  "blaze_sky_analysis",
  "blaze_sky_exec",
@@ -867,6 +871,7 @@ name = "blaze_server"
 version = "0.1.0"
 dependencies = [
  "blaze_events",
+ "blaze_options",
  "blaze_protos",
  "blaze_shell",
  "blaze_util",

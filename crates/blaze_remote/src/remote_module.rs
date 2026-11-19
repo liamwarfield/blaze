@@ -1204,7 +1204,8 @@ fn create_channel(
         managed.interceptors,
         managed.max_inbound_message_size,
         Some(fetcher),
-    );
+    )
+    .with_transport_lifecycle(managed.transport_lifecycle.clone());
     let channel = match &managed.service_config {
         Some(config) => match channel.with_service_config(config) {
             Ok(channel) => channel,

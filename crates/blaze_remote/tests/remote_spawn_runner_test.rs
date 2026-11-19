@@ -209,7 +209,7 @@ impl RemoteCacheClient for SpyCacheClient {
         context: &RemoteActionExecutionContext<'_>,
         action_key: &ActionKey,
         inline_out_err: bool,
-        inline_output_files: &HashSet<String>,
+        inline_output_files: &IndexSet<String>,
     ) -> io::Result<Option<ActionResult>> {
         self.download_action_result_calls
             .fetch_add(1, Ordering::SeqCst);

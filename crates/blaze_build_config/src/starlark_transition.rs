@@ -61,12 +61,18 @@ pub enum JavaObject {
     Float(f64),
     Str(String),
     Label(Label),
-    /// A Java `List` (`ImmutableList` from an option, `StarlarkList` from Starlark).
+    /// A Java `List` that is not a Starlark value (`ImmutableList` from an option).
     List(Vec<JavaObject>),
+    /// A `StarlarkList` (a list from Starlark): `toString()` is its repr, and it only equals
+    /// another `StarlarkList`.
+    StarlarkList(Vec<JavaObject>),
     /// A Starlark `Tuple` (also a `java.util.List`, but never equal to a list).
     Tuple(Vec<JavaObject>),
     /// A Java `Map` (`Dict` from Starlark).
     Map(Vec<(JavaObject, JavaObject)>),
+    /// A `StarlarkSet` (a `set` from Starlark, or a `string_set` setting's value, which
+    /// `Starlark.fromJava` turns into a `StarlarkSet`): elements in insertion order.
+    Set(Vec<JavaObject>),
     /// An option value whose Java class implements `StarlarkValue` (enums such as
     /// `CompilationMode` and `TriState`): Starlark sees the object itself.
     StarlarkValue(OptionValue),
@@ -86,8 +92,13 @@ impl PartialEq for JavaObject {
             (Str(a), Str(b)) => a == b,
             (Label(a), Label(b)) => a == b,
             (List(a), List(b)) => a == b,
+            // ImmutableList.equals accepts any java.util.List; StarlarkList.equals only another
+            // StarlarkList (net/starlark/java/eval/StarlarkList.java:244).
+            (List(a), StarlarkList(b)) => a == b,
+            (StarlarkList(a), StarlarkList(b)) => a == b,
             (Tuple(a), Tuple(b)) => a == b,
             (Map(a), Map(b)) => a.len() == b.len() && a.iter().all(|e| b.contains(e)),
+            (Set(a), Set(b)) => a.len() == b.len() && a.iter().all(|e| b.contains(e)),
             (StarlarkValue(a), StarlarkValue(b)) => a == b,
             (Other(a), Other(b)) => a == b,
             _ => false,
@@ -109,9 +120,10 @@ impl JavaObject {
                 blaze_options::value::java_list_to_string(l.iter().map(|e| e.java_to_string()))
             }
             // Java: net/starlark/java/eval/Tuple.java:139 Tuple.toString (the Starlark repr).
-            // PORT: only reached for a tuple nested in a value given to a native list option.
-            JavaObject::Tuple(_) => {
-                blaze_util::unported!("Tuple.toString", "tuple as an element of an option value")
+            // Java: net/starlark/java/eval/StarlarkSet.java:225 StarlarkSet.toString
+            // Java: net/starlark/java/eval/StarlarkList.java:272 StarlarkList.toString
+            JavaObject::StarlarkList(_) | JavaObject::Tuple(_) | JavaObject::Set(_) => {
+                self.starlark_repr()
             }
             JavaObject::Map(m) => {
                 let entries: Vec<String> = m
@@ -120,6 +132,68 @@ impl JavaObject {
                     .collect();
                 format!("{{{}}}", entries.join(", "))
             }
+            JavaObject::StarlarkValue(v) | JavaObject::Other(v) => v.java_to_string(),
+        }
+    }
+
+    /// Java `Starlark.repr(x)`.
+    // Java: net/starlark/java/eval/Printer.java:160 Printer.repr
+    pub fn starlark_repr(&self) -> String {
+        match self {
+            JavaObject::Null => "None".to_string(),
+            JavaObject::Bool(b) => if *b { "True" } else { "False" }.to_string(),
+            JavaObject::Int(i) => i.to_string(),
+            // Java: net/starlark/java/eval/StarlarkFloat.java StarlarkFloat.repr
+            JavaObject::Float(f) => starlark::values::float::StarlarkFloat(*f).to_string(),
+            JavaObject::Str(s) => blaze_starlark::printer::quote(s),
+            // Java: com/google/devtools/build/lib/cmdline/Label.java:718 Label.repr
+            JavaObject::Label(l) => format!(
+                "Label({})",
+                blaze_starlark::printer::quote(&l.get_canonical_form())
+            ),
+            // Java: net/starlark/java/eval/StarlarkList.java:266 StarlarkList.repr (a
+            // non-Starlark `List` prints the same way, Printer.java:203).
+            JavaObject::List(l) | JavaObject::StarlarkList(l) => format!(
+                "[{}]",
+                l.iter()
+                    .map(JavaObject::starlark_repr)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            // Java: net/starlark/java/eval/RegularTuple.java:108 RegularTuple.repr and
+            // SingletonTuple.repr (`(x,)`).
+            JavaObject::Tuple(l) => {
+                let elems: Vec<String> = l.iter().map(JavaObject::starlark_repr).collect();
+                if elems.len() == 1 {
+                    format!("({},)", elems[0])
+                } else {
+                    format!("({})", elems.join(", "))
+                }
+            }
+            // Java: net/starlark/java/eval/Dict.java Dict.repr
+            JavaObject::Map(m) => format!(
+                "{{{}}}",
+                m.iter()
+                    .map(|(k, v)| format!("{}: {}", k.starlark_repr(), v.starlark_repr()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            // Java: net/starlark/java/eval/StarlarkSet.java:216 StarlarkSet.repr
+            JavaObject::Set(l) => {
+                if l.is_empty() {
+                    "set()".to_string()
+                } else {
+                    format!(
+                        "set([{}])",
+                        l.iter()
+                            .map(JavaObject::starlark_repr)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            }
+            // Java: net/starlark/java/eval/Printer.java:216 Printer.repr (a value whose class
+            // is not a Starlark value prints its `toString()`).
             JavaObject::StarlarkValue(v) | JavaObject::Other(v) => v.java_to_string(),
         }
     }
@@ -133,9 +207,10 @@ impl JavaObject {
             JavaObject::Float(_) => "float",
             JavaObject::Str(_) => "string",
             JavaObject::Label(_) => "Label",
-            JavaObject::List(_) => "list",
+            JavaObject::List(_) | JavaObject::StarlarkList(_) => "list",
             JavaObject::Tuple(_) => "tuple",
             JavaObject::Map(_) => "dict",
+            JavaObject::Set(_) => "set",
             JavaObject::StarlarkValue(_) | JavaObject::Other(_) => "unknown",
         }
     }
@@ -187,11 +262,17 @@ impl JavaObject {
             JavaObject::Float(f) => Some(OptionValue::new(*f)),
             JavaObject::Str(s) => Some(OptionValue::new(s.clone())),
             JavaObject::Label(l) => Some(OptionValue::new(blaze_options::Foreign(l.clone()))),
-            JavaObject::List(l) | JavaObject::Tuple(l) => Some(OptionValue::list(
-                l.iter().filter_map(|e| e.to_option_value()).collect(),
-            )),
-            JavaObject::Map(_) => {
-                blaze_util::unported!("FunctionTransitionUtil.applyTransition", "Map option value")
+            JavaObject::List(l) | JavaObject::StarlarkList(l) | JavaObject::Tuple(l) => Some(
+                OptionValue::list(l.iter().filter_map(|e| e.to_option_value()).collect()),
+            ),
+            // PORT: a Map or Set object is only set on an option whose Java type is a Map or a Set
+            // (`def.getType().isInstance(optionValue)`); no option of Bazel 9.3.2's fragments has
+            // such a type, so `isInstance` is false for these and they are never set.
+            JavaObject::Map(_) | JavaObject::Set(_) => {
+                blaze_util::unported!(
+                    "FunctionTransitionUtil.applyTransition",
+                    "Map or Set option value"
+                )
             }
             JavaObject::StarlarkValue(v) | JavaObject::Other(v) => Some(v.clone()),
         }
@@ -285,6 +366,14 @@ fn from_java<'v>(x: &JavaObject, heap: starlark::values::Heap<'v>) -> Option<Val
             }
             Some(heap.alloc(AllocList(elems)))
         }
+        // A StarlarkList is a StarlarkValue: Starlark.fromJava returns it unchanged.
+        JavaObject::StarlarkList(l) => {
+            let mut elems = Vec::with_capacity(l.len());
+            for e in l {
+                elems.push(from_java(e, heap)?);
+            }
+            Some(heap.alloc(AllocList(elems)))
+        }
         // A Tuple is a StarlarkValue: Starlark.fromJava returns it unchanged.
         JavaObject::Tuple(l) => {
             let mut elems = Vec::with_capacity(l.len());
@@ -299,6 +388,15 @@ fn from_java<'v>(x: &JavaObject, heap: starlark::values::Heap<'v>) -> Option<Val
                 entries.push((check_valid(k, heap)?, check_valid(v, heap)?));
             }
             Some(heap.alloc(AllocDict(entries)))
+        }
+        // Java: net/starlark/java/eval/Starlark.java:217 Starlark.fromJava
+        // (StarlarkSet.copyOf(mutability, set)).
+        JavaObject::Set(l) => {
+            let mut elems = Vec::with_capacity(l.len());
+            for e in l {
+                elems.push(check_valid(e, heap)?);
+            }
+            starlark::values::set::alloc_set(heap, elems).ok()
         }
         JavaObject::Other(_) => None,
     }
@@ -315,8 +413,11 @@ fn is_from_java_convertible(x: &JavaObject) -> bool {
         | JavaObject::Int(_)
         | JavaObject::Float(_) => true,
         JavaObject::List(l) => l.iter().all(is_valid),
-        JavaObject::Tuple(l) => l.iter().all(is_from_java_convertible),
+        JavaObject::Tuple(l) | JavaObject::StarlarkList(l) => {
+            l.iter().all(is_from_java_convertible)
+        }
         JavaObject::Map(m) => m.iter().all(|(k, v)| is_valid(k) && is_valid(v)),
+        JavaObject::Set(l) => l.iter().all(is_valid),
         JavaObject::Other(_) => false,
     }
 }
@@ -330,6 +431,8 @@ fn is_valid(x: &JavaObject) -> bool {
             | JavaObject::Label(_)
             | JavaObject::StarlarkValue(_)
             | JavaObject::Tuple(_)
+            | JavaObject::StarlarkList(_)
+            | JavaObject::Set(_)
     )
 }
 
@@ -341,6 +444,8 @@ fn check_valid<'v>(x: &JavaObject, heap: starlark::values::Heap<'v>) -> Option<V
         | JavaObject::Label(_)
         | JavaObject::StarlarkValue(_)
         | JavaObject::Tuple(_)
+        | JavaObject::StarlarkList(_)
+        | JavaObject::Set(_)
         | JavaObject::Null => {
             if matches!(x, JavaObject::Null) {
                 return None;
@@ -352,7 +457,7 @@ fn check_valid<'v>(x: &JavaObject, heap: starlark::values::Heap<'v>) -> Option<V
 }
 
 /// Converts a Starlark value returned by a transition function to the Java object Bazel sees.
-fn to_java_object(v: Value) -> Result<JavaObject, String> {
+pub fn to_java_object(v: Value) -> Result<JavaObject, String> {
     if v.is_none() {
         return Ok(JavaObject::Null);
     }
@@ -372,7 +477,7 @@ fn to_java_object(v: Value) -> Result<JavaObject, String> {
         return Ok(JavaObject::StarlarkValue(o.0.clone()));
     }
     if let Some(list) = ListRef::from_value(v) {
-        return Ok(JavaObject::List(
+        return Ok(JavaObject::StarlarkList(
             list.iter().map(to_java_object).collect::<Result<_, _>>()?,
         ));
     }
@@ -392,6 +497,11 @@ fn to_java_object(v: Value) -> Result<JavaObject, String> {
         }
         return Ok(JavaObject::Map(entries));
     }
+    if let Some(set) = starlark::values::set::SetRef::from_value(v) {
+        return Ok(JavaObject::Set(
+            set.iter().map(to_java_object).collect::<Result<_, _>>()?,
+        ));
+    }
     Err(v.get_type().to_string())
 }
 
@@ -405,6 +515,8 @@ pub enum TransitionKind {
     Regular,
     /// `ExecTransition` (`exec_transition()`).
     Exec,
+    /// `AnalysisTestTransition` (`analysis_test_transition()`).
+    AnalysisTest,
 }
 
 /// The data of a Starlark transition that is not a Starlark value.
@@ -423,6 +535,9 @@ pub struct TransitionData {
     pub package_context: LabelPackageContext,
     #[allocative(skip)]
     pub repo_mapping: RepositoryMapping,
+    /// `AnalysisTestTransition.changedSettings` (given setting -> value); empty for other kinds.
+    #[allocative(skip)]
+    pub changed_settings: Vec<(String, JavaObject)>,
 }
 
 /// The Starlark value `transition()`/`exec_transition()` return (Java
@@ -686,6 +801,7 @@ fn new_transition<'v>(
             location,
             package_context,
             repo_mapping,
+            changed_settings: Vec::new(),
         }),
     }))
 }
@@ -829,6 +945,17 @@ pub trait BzlFileLoader {
         bzl_file: &Label,
         for_builtins: bool,
     ) -> Result<Option<FrozenModule>, String>;
+
+    /// `transition instanceof StarlarkDefinedConfigTransition` for a global of a file loaded
+    /// with `keyForBuild`: such a file's `transition()` objects are the loading phase's
+    /// (`blaze_config`), which this crate cannot name, so the loader converts them. `None` when
+    /// the value is not a Starlark transition.
+    fn convert_transition(
+        &self,
+        _value: &OwnedFrozenValue,
+    ) -> Option<Arc<StarlarkDefinedConfigTransition>> {
+        None
+    }
 }
 
 /// The loader of [`load_starlark_exec_transition`]: the bundled `@_builtins` files only.
@@ -924,8 +1051,12 @@ pub fn load_starlark_exec_transition_with_loader(
             &format!("{} not found in {}", symbol, bzl_file),
         )
     })?;
-    match StarlarkDefinedConfigTransition::from_frozen(transition) {
-        Some(t) => Ok(Some(Some(Arc::new(t)))),
+    let converted = match StarlarkDefinedConfigTransition::from_frozen(transition.clone()) {
+        Some(t) => Some(Arc::new(t)),
+        None => bzl_file_loader.convert_transition(&transition),
+    };
+    match converted {
+        Some(t) => Ok(Some(Some(t))),
         None => Err(StarlarkExecTransitionLoadingException::with_context(
             flag_name,
             &user_ref,
@@ -935,7 +1066,7 @@ pub fn load_starlark_exec_transition_with_loader(
 }
 
 /// Loads one of the bundled `@_builtins` files (and its loads).
-fn load_builtins_bzl(
+pub fn load_builtins_bzl(
     label: &Label,
     semantics: &Arc<StarlarkSemantics>,
 ) -> Result<FrozenModule, String> {
@@ -1085,7 +1216,8 @@ impl StarlarkDefinedConfigTransition {
 
     // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:192 StarlarkDefinedConfigTransition.isForAnalysisTesting
     pub fn is_for_analysis_testing(&self) -> bool {
-        false
+        // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:334 AnalysisTestTransition.isForAnalysisTesting
+        self.data.kind == TransitionKind::AnalysisTest
     }
 
     // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:198 StarlarkDefinedConfigTransition.getInputs
@@ -1223,6 +1355,24 @@ impl StarlarkDefinedConfigTransition {
         semantics: &Arc<StarlarkSemantics>,
         handler: &dyn EventHandler,
     ) -> Option<IndexMap<String, IndexMap<Label, JavaObject>>> {
+        if self.data.kind == TransitionKind::AnalysisTest {
+            // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:344 AnalysisTestTransition.evaluate
+            // Maps.transformValues(getOutputsCanonicalizedToGiven(), changedSettings::get)
+            let mut changed: IndexMap<Label, JavaObject> = IndexMap::new();
+            for (canonical, given) in &self.data.outputs_canonicalized_to_given {
+                let value = self
+                    .data
+                    .changed_settings
+                    .iter()
+                    .find(|(k, _)| k == given)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or(JavaObject::Null);
+                changed.insert(canonical.clone(), value);
+            }
+            let mut result = IndexMap::new();
+            result.insert(PATCH_TRANSITION_KEY.to_string(), changed);
+            return Some(result);
+        }
         // createBuildSettingsDict: values Starlark#fromJava can't read are converted first.
         let mut settings: Vec<(String, JavaObject, bool)> = Vec::new();
         for (key, value) in previous_settings {
@@ -1472,7 +1622,7 @@ impl StarlarkDefinedConfigTransition {
         }
         if ListRef::from_value(res).is_some() || TupleRef::from_value(res).is_some() {
             return match to_java_object(res) {
-                Ok(JavaObject::List(items)) | Ok(JavaObject::Tuple(items)) => {
+                Ok(JavaObject::StarlarkList(items)) | Ok(JavaObject::Tuple(items)) => {
                     ExtractedResult::List(items)
                 }
                 Ok(_) => unreachable!(),

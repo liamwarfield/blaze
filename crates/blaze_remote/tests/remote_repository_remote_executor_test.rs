@@ -9,7 +9,7 @@
 //! do-nothing answer of the mocked `ensureInputsPresent`). `RemoteExecutionClient` is an
 //! interface and is mocked directly.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::sync::Arc;
 
@@ -44,7 +44,7 @@ fn digest_util() -> DigestUtil {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DownloadActionResultCall {
     inline_out_err: bool,
-    inline_output_files: HashSet<String>,
+    inline_output_files: IndexSet<String>,
 }
 
 /// `@Mock RemoteExecutionCache remoteCache`, as the client under a real cache.
@@ -96,7 +96,7 @@ impl RemoteCacheClient for MockRemoteCacheClient {
         _context: &RemoteActionExecutionContext<'_>,
         _action_key: &ActionKey,
         inline_out_err: bool,
-        inline_output_files: &HashSet<String>,
+        inline_output_files: &IndexSet<String>,
     ) -> io::Result<Option<ActionResult>> {
         self.download_action_result_calls
             .lock()

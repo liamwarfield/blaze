@@ -1,36 +1,61 @@
 #!/usr/bin/env python3
-"""Drives Blaze's command server (crates/blaze_server) with the real Bazel 9.3.2 client.
+"""Drives a server with the real Bazel 9.3.2 client (the pinned oracle's C++ client).
 
 Usage:
   scripts/server/interop-server help
   scripts/server/interop-server list
   scripts/server/interop-server run [CASE...] [--probe PATH] [--bazel PATH] [--scratch DIR]
+  scripts/server/interop-server run --server-binary PATH [--control] [--bazel PATH]
   scripts/server/interop-server clean [--scratch DIR]
 
-The fixture is `command_server_probe` (crates/blaze_server/src/bin/command_server_probe.rs): a
-GrpcServerImpl with a fake dispatcher. The oracle's C++ client starts whatever is at
-`<server_javabase>/bin/java`, so the tool makes a directory whose bin/java is a symlink to a
-copy of the probe and runs
-  bazel --output_user_root=<scratch>/<case> --nohome_rc --nosystem_rc --server_javabase=<dir> CMD
-in a scratch workspace (an empty MODULE.bazel). The client extracts its own install base,
-writes server/cmdline, runs daemonize, waits for server_info.rawproto, verifies the pid, pings,
-sends the RunRequest, streams, cancels on SIGINT and waits for the process on shutdown.
+The oracle's C++ client starts whatever is at `<server_javabase>/bin/java`, so the tool makes a
+directory whose bin/java is a symlink to a copy of the server under test and runs
+  bazel --output_user_root=<root> --nohome_rc --nosystem_rc --server_javabase=<dir> CMD
+in a scratch workspace. The client extracts its own install base, writes server/cmdline, runs
+daemonize, waits for server_info.rawproto, verifies the pid, pings, sends the RunRequest,
+streams, cancels on SIGINT and waits for the process on shutdown. --bazel must be the pinned
+oracle (its sha256 is checked against UPSTREAM.json; anything else is refused).
 
-Each case prints the commands it ran and what the client printed, then PASS or FAIL. The tool
-always shuts down, and failing that kills (SIGKILL), every server it started (found through
-<scratch>/*/*/server/server.pid.txt), also when a case fails. Exit status: 0 if every case
-passed, 1 otherwise.
-
-Defaults: --probe target/debug/command_server_probe (build it with
-`scripts/cargo-capped build -p blaze_server --bin command_server_probe`),
---bazel ~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64,
---scratch ~/.cache/blaze/work/server/s3/interop (wiped at the start of `run`).
-Never point --scratch at the oracle's own output_user_root.
-Run it under systemd-run, e.g.
+Mode 1, probe (default): the server is `command_server_probe`
+(crates/blaze_server/src/bin/command_server_probe.rs), a GrpcServerImpl with a fake dispatcher
+(commands echo, exit N, big N, sleep N, exec, crash). Each case runs fixed checks and prints
+PASS or FAIL; this mode is a check list, not a comparison. Defaults: --probe
+target/debug/command_server_probe (build it with
+`scripts/cargo-capped build -p blaze_server --bin command_server_probe`), --scratch
+~/.cache/blaze/work/server/s3/interop (wiped at the start of `run`; it must lie inside
+~/.cache/blaze/work/server/). Run it under systemd-run, e.g.
   systemd-run --user --collect --wait --pipe -p MemoryMax=12G -p MemorySwapMax=0 \\
     scripts/server/interop-server run
+
+Mode 2, --server-binary PATH: the server is a real server binary (Blaze: target/debug/blaze;
+a private copy under ~/.cache/blaze/work/server/tools/bin runs, so a rebuild cannot change a
+run). One sequence of real commands runs twice, each side on a fresh output user root and a
+fresh copy of the interop workspace (scripts/server/common.py INTEROP_TEMPLATE, the same as
+interop-client's), one after the other, at ~/.cache/blaze/work/server/s3/real:
+  A  the expected side: the real client with its own real server (no --server_javabase);
+  B  the real client with --server_javabase=<dir>, <dir>/bin/java -> the server binary.
+  --control: B is A again (the real server; the noise floor).
+Steps: version; info release workspace server_pid; build //:ok twice; query //...;
+build //:fail; SIGINT to the client 10 s into build //:sleep (a 60 s genrule); info release;
+shutdown; --max_idle_secs=5 info release, then the idle server must exit within 30 s; with
+facts (same server across the commands, server alive after the cancel, gone after shutdown, new
+server afterwards). Environment exactly HOME and PATH=/usr/bin:/bin; build, query and info get
+--repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no. Each step records the
+client's true termination (`exit N` / `signal N NAME`, a timeout separately).
+Normalisation: as interop-client (scripts/server/common.py Norm.RULES; the server_javabase
+directory -> <SERVER_JAVABASE>). Per step: IDENTICAL, SAME-FAILURE (equal, but non-zero: never
+a match), DIFFERENT (unified diff), NOT-RUN; the report starts with the client's and the
+server binary's sha256, the checkout's commit and dirty state, and ends with the denominator.
+The mode runs itself in a `systemd-run --user --collect --wait --pipe -p MemoryMax=12G
+-p MemorySwapMax=0` unit under scripts/remote/unit-supervisor (status recorded inside).
+Exit 0 only when no step is DIFFERENT or NOT-RUN, nothing timed out and no side failed.
+
+Both modes always shut down, and failing that kill (SIGKILL), every server they started (pid
+from <root>/*/server/server.pid.txt, only when alive and its command line names that root),
+also when a case fails or the tool is interrupted.
 """
 
+import difflib
 import glob
 import hashlib
 import os
@@ -39,6 +64,10 @@ import signal
 import subprocess
 import sys
 import time
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import common as C  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_PROBE = os.path.join(REPO, "target/debug/command_server_probe")
@@ -414,14 +443,233 @@ def cleanup(env):
         print("cleanup: server %d of %s %s" % (pid, case, "gone" if not alive(pid) else "STILL ALIVE"))
 
 
+# ---------------------------------------------------------------------------------------------
+# --server-binary: the real Bazel client with a real server binary, compared with the real
+# client and its real server.
+
+REAL_WORK = os.path.join(C.SERVER_WORK, "s3", "real")
+
+
+class RealSide:
+    """One side of the --server-binary comparison: the oracle client, on its own output user
+    root; with `javabase`, the server is whatever <javabase>/bin/java is."""
+
+    def __init__(self, name, client, javabase):
+        self.name = name
+        self.client = client
+        self.javabase = javabase
+        self.ur = os.path.join(REAL_WORK, "ur-" + name)
+        self.ws = os.path.join(REAL_WORK, "ws")
+        self.env = {"HOME": C.HOME, "PATH": "/usr/bin:/bin"}
+        paths = [(javabase, "<SERVER_JAVABASE>")] if javabase else []
+        self.norm = C.Norm(self.ur, paths)
+        self.steps = []  # (title, text, failed)
+        self.timed_out = False
+
+    def startup(self, extra=()):
+        argv = [self.client, "--output_user_root=" + self.ur, "--nohome_rc", "--nosystem_rc"]
+        if self.javabase:
+            argv.append("--server_javabase=" + self.javabase)
+        return argv + list(extra)
+
+    def argv(self, command, args, startup=()):
+        argv = self.startup(startup) + [command]
+        if command in ("build", "query", "info", "test"):
+            argv += ["--repository_cache=" + C.REPO_CACHE, "--color=no", "--curses=no"]
+        return argv + list(args)
+
+    def spawn(self, command, args=(), startup=()):
+        return subprocess.Popen(self.argv(command, args, startup), cwd=self.ws, env=self.env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+
+    def finish(self, title, p, timeout=600):
+        timed_out = False
+        try:
+            out, err = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out, err = p.communicate()
+            timed_out = True
+        status = C.Status(p.returncode, timed_out)
+        self.timed_out |= timed_out
+        self.steps.append((title, "%s\n--- stdout\n%s--- stderr\n%s" % (
+            status, self.norm.text(out or b""), self.norm.stderr(err or b"")), not status.ok))
+        return out or b""
+
+    def run(self, title, command, args=(), startup=(), timeout=600):
+        return self.finish(title, self.spawn(command, args, startup), timeout)
+
+    def fact(self, title, value):
+        self.steps.append((title, "%s\n" % value, False))
+
+    def pid(self):
+        return C.server_pid(self.ur)
+
+    def is_server(self, pid):
+        return C.owned_by_root(pid, self.ur)
+
+    def cleanup(self):
+        def shutdown(out_base):
+            subprocess.run(self.startup() + ["--output_base=" + out_base, "shutdown"],
+                           cwd=REAL_WORK, env=self.env, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
+        left = C.kill_root_servers(self.ur, shutdown)
+        if left:
+            raise RuntimeError("servers %s of %s survived SIGKILL" % (left, self.ur))
+
+
+def real_sequence(s):
+    """The steps of --server-binary mode, run once per side on one fresh root and workspace."""
+    s.cleanup()
+    for d in (s.ur, s.ws):
+        if os.path.lexists(d):
+            C.safe_rmtree(d, REAL_WORK)
+    C.write_template(s.ws)
+    s.run("version", "version")
+    pid = s.pid()
+    s.fact("a server is running", s.is_server(pid))
+    s.run("info release workspace server_pid", "info", ["release", "workspace", "server_pid"])
+    s.run("build //:ok", "build", ["//:ok"])
+    s.run("build //:ok (again)", "build", ["//:ok"])
+    s.run("query //...", "query", ["//..."])
+    s.run("build //:fail", "build", ["//:fail"])
+    s.fact("same server for every command so far", pid is not None and s.pid() == pid
+           and s.is_server(pid))
+    p = s.spawn("build", ["//:sleep"])
+    time.sleep(10)
+    p.send_signal(signal.SIGINT)
+    s.finish("build //:sleep, SIGINT to the client after 10s", p)
+    s.fact("server still up after the cancel", s.is_server(pid) and s.pid() == pid)
+    s.run("info release (after the cancel)", "info", ["release"])
+    s.run("shutdown", "shutdown")
+    s.fact("server gone after shutdown", pid is not None and C.wait_gone(pid, 10))
+    s.run("--max_idle_secs=5 info release (new server)", "info", ["release"],
+          startup=["--max_idle_secs=5"])
+    pid2 = s.pid()
+    s.fact("new server", pid2 not in (None, pid))
+    s.fact("idle server gone within 30s", pid2 is not None and C.wait_gone(pid2, 30))
+
+
+def real_main(opts, args):
+    tool = "interop-server"
+    control = "--control" in args
+    no_unit = "--no-unit" in args
+    extra = [a for a in args if a not in ("--control", "--no-unit")]
+    if extra:
+        sys.exit("--server-binary mode takes no case names (%s); see help" % " ".join(extra))
+    oracle = C.verified_oracle(tool, opts["bazel"])
+    server = os.path.abspath(opts["server_binary"])
+    if not control and not os.access(server, os.X_OK):
+        sys.exit("not an executable: %s" % server)
+    if not no_unit:
+        rc = C.in_unit(tool, [os.path.abspath(__file__), "run", "--server-binary", server,
+                              "--bazel", oracle] + args + ["--no-unit"],
+                       os.path.join(REAL_WORK, "unit"))
+        if rc is not None:
+            return rc
+    os.makedirs(REAL_WORK, exist_ok=True)
+    staged = None
+    javabase = os.path.join(REAL_WORK, "javabase")
+    if os.path.lexists(javabase):
+        C.safe_rmtree(javabase, REAL_WORK)
+    if control:
+        bins = [("client, both sides (pinned oracle)", oracle, C.ORACLE_SHA256),
+                ("server B (--control: the oracle's own server, no --server_javabase)", oracle,
+                 C.ORACLE_SHA256)]
+        b_javabase = None
+    else:
+        staged, sha = C.stage_binary(tool, server)
+        os.makedirs(os.path.join(javabase, "bin"))
+        os.symlink(staged, os.path.join(javabase, "bin", "java"))
+        bins = [("client, both sides (pinned oracle)", oracle, C.ORACLE_SHA256),
+                ("server B (%s as <server_javabase>/bin/java, run from %s)" % (server, staged),
+                 server, sha)]
+        b_javabase = javabase
+    for line in C.header(tool, bins, blaze=None if control else server):
+        print(line)
+    print("%s: A = oracle client and its real server; B = oracle client with %s" % (
+        tool, "--server_javabase=<SERVER_JAVABASE> (bin/java -> the server binary)"
+        if b_javabase else "its real server again (--control)"))
+    sys.stdout.flush()
+
+    def on_signal(signum, _frame):
+        raise KeyboardInterrupt("signal %d" % signum)
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGHUP, on_signal)
+
+    sides = {"A": RealSide("A", oracle, None), "B": RealSide("B", oracle, b_javabase)}
+    errors = []
+    tdir = os.path.join(REAL_WORK, "transcripts-control" if control else "transcripts")
+    os.makedirs(tdir, exist_ok=True)
+    try:
+        for n in ("A", "B"):
+            try:
+                real_sequence(sides[n])
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:  # noqa: BLE001 - recorded as an ERROR
+                errors.append("side %s: %s: %s" % (n, type(e).__name__, e))
+            finally:
+                sides[n].cleanup()
+                if os.path.lexists(sides[n].ur):
+                    C.safe_rmtree(sides[n].ur, REAL_WORK)
+            with open(os.path.join(tdir, "%s.txt" % n), "w", encoding="latin-1") as fh:
+                for title, text, _ in sides[n].steps:
+                    fh.write("=== %s\n%s" % (title, text))
+            if errors:
+                break
+    finally:
+        for s in sides.values():
+            try:
+                s.cleanup()
+            except Exception as e:  # noqa: BLE001
+                print("cleanup of side %s: %s" % (s.name, e))
+        for d in (javabase, os.path.join(REAL_WORK, "ws")):
+            if os.path.lexists(d):
+                C.safe_rmtree(d, REAL_WORK)
+        if staged:
+            C.unstage_binary(staged)
+    counts = {C.IDENTICAL: 0, C.SAME_FAILURE: 0, C.DIFFERENT: 0, C.NOT_RUN: 0}
+    a, b = sides["A"].steps, sides["B"].steps
+    for k in range(max(len(a), len(b))):
+        ta = a[k] if k < len(a) else None
+        tb = b[k] if k < len(b) else None
+        title = (ta or tb)[0]
+        if ta and tb and ta[0] != tb[0]:
+            cls = C.DIFFERENT
+        else:
+            cls = C.classify(ta and ta[1], tb and tb[1], ta and ta[2], tb and tb[2])
+        counts[cls] += 1
+        print("  %-12s %s" % (cls, title))
+        if cls == C.DIFFERENT:
+            sys.stdout.writelines("    " + l + "\n" for l in difflib.unified_diff(
+                ta[1].splitlines(), tb[1].splitlines(), "A (real server)", "B (server binary)",
+                lineterm=""))
+    for e in errors:
+        print("%s: ERROR %s" % (tool, e))
+    timed = [n for n in sides if sides[n].timed_out]
+    if timed:
+        print("%s: a step timed out on side %s" % (tool, ",".join(timed)))
+    print("%s: denominator: %d steps (A %d, B %d); %d identical, %d same-failure (equal "
+          "non-zero exits; not matches), %d different, %d not run; transcripts in %s" % (
+              tool, max(len(a), len(b)), len(a), len(b), counts[C.IDENTICAL],
+              counts[C.SAME_FAILURE], counts[C.DIFFERENT], counts[C.NOT_RUN], tdir))
+    ok = not errors and not timed and counts[C.DIFFERENT] == 0 and counts[C.NOT_RUN] == 0
+    return 0 if ok else 1
+
+
 def parse(argv):
-    opts = {"probe": DEFAULT_PROBE, "bazel": DEFAULT_BAZEL, "scratch": DEFAULT_SCRATCH}
+    opts = {"probe": DEFAULT_PROBE, "bazel": DEFAULT_BAZEL, "scratch": DEFAULT_SCRATCH,
+            "server_binary": None}
     rest = []
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a in ("--probe", "--bazel", "--scratch"):
-            opts[a[2:]] = os.path.abspath(os.path.expanduser(argv[i + 1]))
+        if a in ("--probe", "--bazel", "--scratch", "--server-binary"):
+            if i + 1 >= len(argv):
+                sys.exit("%s needs a value" % a)
+            opts[a[2:].replace("-", "_")] = os.path.abspath(os.path.expanduser(argv[i + 1]))
             i += 2
         else:
             rest.append(a)
@@ -441,6 +689,10 @@ def main(argv):
         for name, fn in CASES:
             print("%-11s %s" % (name, fn.__doc__))
         return 0
+    if action == "run" and opts["server_binary"]:
+        return real_main(opts, names)
+    if action == "run" and "--control" in names:
+        sys.exit("--control needs --server-binary mode (see help)")
     env = Env(opts["probe"], opts["bazel"], opts["scratch"])
     if action == "clean":
         cleanup(env)
@@ -452,18 +704,25 @@ def main(argv):
     unknown = set(names) - {c[0] for c in CASES}
     if unknown:
         sys.exit("unknown cases: %s" % sorted(unknown))
+    if not selected:
+        sys.exit("empty selection")
+    C.verified_oracle("interop-server", env.bazel)
     if os.path.isdir(env.scratch):
         cleanup(env)
-        shutil.rmtree(env.scratch)
+        C.safe_rmtree(env.scratch, os.path.dirname(env.scratch))
     os.makedirs(os.path.join(env.javabase, "bin"))
     os.makedirs(env.workspace)
     open(os.path.join(env.workspace, "MODULE.bazel"), "w").close()
     probe_copy = os.path.join(env.scratch, "probe")
     shutil.copy2(env.probe, probe_copy)
     os.symlink(probe_copy, os.path.join(env.javabase, "bin", "java"))
-    print("probe: %s (copied to %s), sha256 %s" % (
-        env.probe, probe_copy, hashlib.sha256(open(probe_copy, "rb").read()).hexdigest()[:16]))
-    print("client: %s" % env.bazel)
+    for line in C.header("interop-server", [
+            ("client (pinned oracle)", env.bazel, C.ORACLE_SHA256),
+            ("server (probe %s, copied to %s)" % (env.probe, probe_copy), env.probe,
+             C.sha256_file(probe_copy))], blaze=env.probe):
+        print(line)
+    print("interop-server: probe mode: %d cases selected (%s); checks, not a comparison"
+          % (len(selected), ", ".join(n for n, _ in selected)))
     results = []
     try:
         for name, fn in selected:

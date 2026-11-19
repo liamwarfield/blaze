@@ -11,6 +11,8 @@ use blaze_options::{OptionsParser, OptionsParsingException, PriorityCategory};
 use blaze_protos::blaze::invocation_policy::InvocationPolicy;
 use blaze_protos::command_server::{ExecRequest, RunRequest, RunResponse};
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail};
+use blaze_server::{GrpcServerImpl, PidFileWatcher, ShutdownHooks};
+use blaze_shell::thread_interrupt::ThreadInterrupt;
 use blaze_vfs::{FileSystemRef, Path, PathFragment, UnixFileSystem};
 use indexmap::IndexMap;
 
@@ -18,8 +20,10 @@ use crate::command::{BlazeCommand, BlazeCommandResult};
 use crate::command_name_cache_impl::CommandNameCacheImpl;
 use crate::directories::{BlazeDirectories, ServerDirectories};
 use crate::dispatcher::{BlazeCommandDispatcher, LockingMode, UiVerbosity};
+use crate::custom_exit_code_publisher::{CustomExitCodePublisher, CustomFailureDetailPublisher};
 use crate::exit_code::{DetailedExitCode, ExitCode};
 use crate::info_item::InfoItem;
+use crate::interrupt::InterruptSignalHandler;
 use crate::module::{AbruptExitException, BlazeModule, ServerBuilder};
 use crate::options_result::OptionsParsingResult;
 use crate::workspace::BlazeWorkspace;
@@ -55,6 +59,9 @@ pub struct BlazeRuntime {
     env: parking_lot::Mutex<Option<CrashEnv>>,
     /// The exit code declared by the first crash (Java `storedExitCode`).
     stored_exit_code: parking_lot::Mutex<Option<crate::exit_code::DetailedExitCode>>,
+    /// `abruptShutdownHandler`: the gRPC server's `prepareForAbruptShutdown` (null in batch
+    /// mode).
+    abrupt_shutdown_handler: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// What the crash handling uses of the command's `CommandEnvironment`.
@@ -62,6 +69,24 @@ pub struct BlazeRuntime {
 pub(crate) struct CrashEnv {
     pub(crate) reporter: Arc<blaze_events::Reporter>,
     pub(crate) event_bus: Arc<crate::command_environment::CommandEventBus>,
+    /// `CommandEnvironment.shutdownReasonConsumer` (the dispatcher's `setShutdownReason`).
+    /// PORT: kept here, with the command thread, because `CommandEnvironment` has no such
+    /// fields yet.
+    pub(crate) shutdown_reason_consumer: Arc<dyn Fn(String) + Send + Sync>,
+    /// `CommandEnvironment.commandThread`: the thread that created the environment.
+    pub(crate) command_thread: ThreadInterrupt,
+}
+
+impl CrashEnv {
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:476 CommandEnvironment.notifyOnCrash
+    fn notify_on_crash(&self, message: String) {
+        (self.shutdown_reason_consumer)(message);
+        if !ThreadInterrupt::current().same_thread(&self.command_thread) {
+            // Give shutdown hooks priority in JVM and stop generating more data for modules to
+            // consume.
+            self.command_thread.interrupt();
+        }
+    }
 }
 
 impl BlazeRuntime {
@@ -139,11 +164,52 @@ impl BlazeRuntime {
     /// PORT: skipped, incremental: the idle tasks of the server between commands (GC and interner
     /// shrinking, install base and action cache garbage collection).
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:636 BlazeRuntime.beforeCommand
-    pub(crate) fn before_command(&self, env: &crate::command_environment::CommandEnvironment) {
+    pub(crate) fn before_command(
+        &self,
+        env: &crate::command_environment::CommandEnvironment,
+        shutdown_reason_consumer: Arc<dyn Fn(String) + Send + Sync>,
+    ) {
         *self.env.lock() = Some(CrashEnv {
             reporter: env.get_reporter().clone(),
             event_bus: env.get_event_bus().clone(),
+            shutdown_reason_consumer,
+            // The CommandEnvironment is created on the command thread, which calls this.
+            command_thread: ThreadInterrupt::current(),
         });
+    }
+
+    /// `afterCommand`'s `notifyCommandComplete(finalCommandResult.getDetailedExitCode())`:
+    /// declares `exit_code` as the command's; returns the exit code to use instead if another
+    /// thread declared one first (a crash).
+    ///
+    /// PORT: the `CommandCompleteEvent` is not posted here: no ported subscriber reads it on a
+    /// normal command end (the crash path posts it, see `clean_up_for_crash`).
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:728 BlazeRuntime.notifyCommandComplete
+    pub(crate) fn notify_command_complete(
+        &self,
+        exit_code: &crate::exit_code::DetailedExitCode,
+    ) -> Option<crate::exit_code::DetailedExitCode> {
+        if !self.declare_exit_code(exit_code) {
+            // This command has already been called, presumably because there is a race between
+            // the main thread and a worker thread that crashed. Don't try to arbitrate the
+            // dispute. If the main thread won the race (unlikely, but possible), this may be
+            // incorrectly logged as a success.
+            return self.stored_exit_code.lock().clone();
+        }
+        None
+    }
+
+    /// The end of `afterCommand`: `storedExitCode.set(null)`.
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:835 BlazeRuntime.afterCommand
+    pub(crate) fn clear_stored_exit_code(&self) {
+        *self.stored_exit_code.lock() = None;
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:881 BlazeRuntime.prepareForAbruptShutdown
+    pub fn prepare_for_abrupt_shutdown(&self) {
+        if let Some(abrupt_shutdown_handler) = &self.abrupt_shutdown_handler {
+            abrupt_shutdown_handler();
+        }
     }
 
     /// The part of `afterCommand` that ends the command for the crash handling.
@@ -197,20 +263,168 @@ impl BlazeRuntime {
         seen.into_iter().map(|k| k.0).collect()
     }
 
-    /// Main method for the Blaze server startup.
+    /// Main method for the Blaze server startup: the process the client starts as its server
+    /// (`daemonize`, or `exec` in `--batch` mode). `args` are internal strings (Java transforms
+    /// them with `StringEncoding.platformToInternal` first; the `blaze` binary's argv already
+    /// is).
     ///
-    /// In-process seam: Java's `main` either runs `batchMain` (args start with `--batch`) or
-    /// `serverMain` and serves gRPC requests. Blaze's client calls [`BlazeRuntime::batch_main`]
-    /// or [`BlazeRuntime::server_main_single_command`] directly.
+    /// The in-process server of Blaze's own client calls [`BlazeRuntime::batch_main`] or
+    /// [`BlazeRuntime::server_main_single_command`] directly instead.
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:911 BlazeRuntime.main
-    pub fn main(modules: Vec<Arc<dyn BlazeModule>>, args: Vec<String>) -> i32 {
-        Self::setup_uncaught_handler_at_startup();
+    pub fn main(modules: Vec<Arc<dyn BlazeModule>>, args: Vec<String>) -> ! {
+        // PORT: the dispositions the JVM installs before main (see crate::jvm_signals).
+        crate::jvm_signals::install();
+        Self::setup_uncaught_handler_at_startup_with_args(&args);
         // blaze.cc will put --batch first if the user set it.
         if args.first().map(String::as_str) == Some("--batch") {
             // Run Blaze in batch mode.
-            return Self::batch_main(modules, args);
+            let code = Self::batch_main(modules, args);
+            Self::exit(code);
         }
-        blaze_util::unported!("BlazeRuntime.serverMain", "gRPC server mode (wave W8)")
+        // PORT: skipped, logging ("Starting Bazel server with pid %d, args %s").
+        let code = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Run Blaze in server mode.
+            Self::server_main(modules, OutErr::system_out_err().clone(), &args)
+        })) {
+            Ok(code) => code,
+            // catch (RuntimeException | Error e) { // A definite bug...
+            Err(payload) => {
+                let crash = crate::bugreport::Crash::from_panic(payload.as_ref());
+                crate::bugreport::BugReport::handle_crash(
+                    &crash,
+                    crate::bugreport::CrashContext::keep_alive().with_args(&args),
+                );
+                crash
+                    .get_detailed_exit_code()
+                    .get_exit_code()
+                    .get_numeric_exit_code()
+            }
+        };
+        Self::exit(code)
+    }
+
+    /// `ProcessHandle.current().children().forEach(ProcessHandle::destroyForcibly)`, then
+    /// `System.exit(exitCode)`, which runs the shutdown hooks.
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:937 BlazeRuntime.exit
+    fn exit(exit_code: i32) -> ! {
+        // b/177077523: Best effort to kill all child processes. If there is any child process
+        // running, System.exit will block forever.
+        for child in child_processes() {
+            // SAFETY: plain syscall.
+            unsafe {
+                libc::kill(child, libc::SIGKILL);
+            }
+        }
+        // PORT: Rust has no shutdown hooks; the registered ShutdownHooks run here, as the JVM
+        // runs them in System.exit.
+        blaze_server::shutdown_hooks::run_registered_shutdown_hooks();
+        let _ = OutErr::system_out_err().get_error_stream().flush();
+        let _ = OutErr::system_out_err().get_output_stream().flush();
+        std::process::exit(exit_code)
+    }
+
+    /// The JVM's slow-interrupt message suffix the modules contribute.
+    ///
+    /// PORT: no Bazel module overrides `getSlowThreadInterruptMessageSuffix` at the pin, and the
+    /// hook is not in the Rust `BlazeModule` trait; the result is always null.
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1028 BlazeRuntime.getSlowInterruptMessageSuffix
+    fn get_slow_interrupt_message_suffix(_modules: &[Arc<dyn BlazeModule>]) -> Option<String> {
+        None
+    }
+
+    /// A main method that does not send email. The return value indicates the desired exit
+    /// status of the program.
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1200 BlazeRuntime.serverMain
+    fn server_main(
+        blaze_modules: Vec<Arc<dyn BlazeModule>>,
+        out_err: OutErr,
+        args: &[String],
+    ) -> i32 {
+        let mut sigint_handler: Option<InterruptSignalHandler> = None;
+        let result = (|| -> Result<i32, NewRuntimeError> {
+            let rpc_server_ref: Arc<OnceLock<Arc<GrpcServerImpl>>> = Arc::new(OnceLock::new());
+            let prepare_for_abrupt_shutdown: Arc<dyn Fn() + Send + Sync> = {
+                let rpc_server_ref = rpc_server_ref.clone();
+                Arc::new(move || {
+                    rpc_server_ref
+                        .get()
+                        .expect("NullPointerException: rpcServerRef")
+                        .prepare_for_abrupt_shutdown()
+                })
+            };
+            let runtime =
+                Self::new_runtime(blaze_modules, args, Some(prepare_for_abrupt_shutdown))?;
+
+            // server.pid was written in the C++ launcher after fork() but before exec(). The
+            // client only accesses the pid file after connecting to the socket which ensures that
+            // it gets the correct pid value.
+            let pid_file = runtime.get_server_directory().get_child("server.pid.txt");
+            let server_pid = read_pid_file(&pid_file).map_err(NewRuntimeError::Abrupt)?;
+            let pid_file_watcher = Arc::new(PidFileWatcher::new(pid_file.clone(), server_pid));
+            pid_file_watcher.start();
+
+            let shutdown_hooks = ShutdownHooks::create_and_register();
+            shutdown_hooks.cleanup_pid_file(pid_file, pid_file_watcher.clone());
+
+            let dispatcher = Arc::new(BlazeCommandDispatcher::new(runtime.clone(), server_pid));
+            let startup_options = runtime
+                .startup_options_provider
+                .get_options::<BlazeServerStartupOptions>()
+                .expect("BlazeServerStartupOptions");
+            let rpc_server = GrpcServerImpl::create(
+                dispatcher.clone(),
+                shutdown_hooks,
+                pid_file_watcher,
+                // runtime.clock
+                Arc::new(blaze_events::ui::JavaClock),
+                startup_options.command_port,
+                runtime.get_server_directory(),
+                server_pid,
+                startup_options.max_idle_seconds,
+                startup_options.shutdown_on_low_sys_mem,
+                startup_options.idle_server_tasks,
+                Self::get_slow_interrupt_message_suffix(runtime.get_blaze_modules()),
+            );
+            let _ = rpc_server_ref.set(rpc_server.clone());
+
+            // Register the signal handler.
+            let interrupted_server = rpc_server.clone();
+            sigint_handler = Some(InterruptSignalHandler::new(move |_| {
+                // PORT: skipped, logging ("User interrupt").
+                interrupted_server.interrupt();
+            }));
+
+            rpc_server.serve().map_err(|e| {
+                NewRuntimeError::Abrupt(AbruptExitException::new(
+                    e.get_detailed_exit_code().clone(),
+                ))
+            })?;
+            runtime.shutdown();
+            dispatcher.shutdown();
+            Ok(ExitCode::SUCCESS.get_numeric_exit_code())
+        })();
+        let code = match result {
+            Ok(code) => code,
+            Err(NewRuntimeError::Options(e)) => {
+                out_err.print_err_ln(e.get_message());
+                ExitCode::COMMAND_LINE_ERROR.get_numeric_exit_code()
+            }
+            Err(NewRuntimeError::Abrupt(e)) => {
+                out_err.print_err_ln(e.get_message());
+                // PORT: e.printStackTrace(...): a Java stack trace has no Rust counterpart.
+                if let Some(failure_detail) = e.get_detailed_exit_code().get_failure_detail() {
+                    CustomFailureDetailPublisher::maybe_write_failure_detail_file(failure_detail);
+                }
+                e.get_detailed_exit_code()
+                    .get_exit_code()
+                    .get_numeric_exit_code()
+            }
+        };
+        // finally
+        if let Some(sigint_handler) = sigint_handler {
+            sigint_handler.uninstall();
+        }
+        code
     }
 
     /// Splits given options into two lists: arguments matching startup options and everything
@@ -274,7 +488,7 @@ impl BlazeRuntime {
     /// escapes the dispatcher reaches the default uncaught exception handler, which halts with
     /// the crash's exit code; the catch here is that handler.
     pub fn batch_main(modules: Vec<Arc<dyn BlazeModule>>, args: Vec<String>) -> i32 {
-        Self::setup_uncaught_handler_at_startup();
+        Self::setup_uncaught_handler_at_startup_with_args(&args);
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             Self::batch_main_internal(modules, args.clone())
         })) {
@@ -286,11 +500,29 @@ impl BlazeRuntime {
     /// Make sure async threads cannot be orphaned at startup. This method makes sure bugs are
     /// reported and the proper exit code is reported.
     ///
-    /// PORT: the panic hook records panics for the crash handling (crate::bugreport); it is
-    /// installed once and also stands for the handler newRuntime installs.
+    /// PORT: the panic hook records panics for the crash handling (crate::bugreport); the
+    /// handler of the server's threads (`blaze_server::uncaught_exception`) is Java's default
+    /// uncaught exception handler: `BugReport.handleCrash(throwable, args)`, which halts.
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1610 BlazeRuntime.setupUncaughtHandlerAtStartup
     fn setup_uncaught_handler_at_startup() {
+        Self::setup_uncaught_handler_at_startup_with_args(&[]);
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1610 BlazeRuntime.setupUncaughtHandlerAtStartup
+    fn setup_uncaught_handler_at_startup_with_args(args: &[String]) {
         crate::bugreport::install_panic_hook();
+        let args = args.to_vec();
+        blaze_server::uncaught_exception::set_uncaught_exception_handler(Arc::new(
+            move |message: &str| {
+                // Java: com/google/devtools/build/lib/bugreport/BugReport.java:244 BugReport.handleCrash
+                let crash = crate::bugreport::Crash::from_message(message.to_owned());
+                crate::bugreport::BugReport::handle_crash(
+                    &crash,
+                    crate::bugreport::CrashContext::halt().with_args(&args),
+                );
+                unreachable!("Should have halted")
+            },
+        ));
     }
 
     /// The default uncaught exception handler: `BugReport.handleCrash(throwable, args)`, which
@@ -311,7 +543,7 @@ impl BlazeRuntime {
         let _signal_handler = crate::interrupt::capture_sigint();
         let (startup_args, other_args) = Self::split_startup_options(&modules, &args);
 
-        let runtime = match Self::new_runtime(modules, &startup_args) {
+        let runtime = match Self::new_runtime(modules, &startup_args, None) {
             Ok(r) => r,
             Err(NewRuntimeError::Options(e)) => {
                 OutErr::system_out_err().print_err_ln(e.get_message());
@@ -349,7 +581,7 @@ impl BlazeRuntime {
             runtime.clone(),
             BlazeCommandDispatcher::UNKNOWN_SERVER_PID,
         );
-        let result = dispatcher.exec(
+        let result = match dispatcher.exec(
             policy,
             other_args,
             OutErr::system_out_err().clone(),
@@ -361,10 +593,19 @@ impl BlazeRuntime {
             },
             "batch client",
             Some(startup_options_from_command_line),
-        );
+        ) {
+            Ok(result) => result,
+            // This is almost main(), so it's okay to just swallow it. We are exiting soon.
+            Err(_interrupted) => {
+                runtime.shutdown();
+                dispatcher.shutdown();
+                return ExitCode::INTERRUPTED.get_numeric_exit_code();
+            }
+        };
         let Some(request) = result.get_exec_request() else {
             // Simple case: we are given an exit code
             runtime.shutdown();
+            dispatcher.shutdown();
             return result.get_exit_code().get_numeric_exit_code();
         };
 
@@ -375,10 +616,11 @@ impl BlazeRuntime {
         // client before it executes any command and the server lock is handled by
         // BlazeCommandDispatcher, whose job is done by the time we get here.
         // PORT: in-process, the client's locks are still held (O_CLOEXEC does not apply to a
-        // child process that is not exec'd from this one); dispatcher.shutdown() and
-        // signalHandler.uninstall() have nothing to release.
+        // child process that is not exec'd from this one).
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1137 BlazeRuntime.batchMain
         runtime.shutdown();
+        dispatcher.shutdown();
+        _signal_handler.uninstall();
         run_exec_request_in_batch_mode(request)
     }
 
@@ -433,7 +675,7 @@ impl BlazeRuntime {
             exit_code,
             ..Default::default()
         };
-        let runtime = match Self::new_runtime(modules, &startup_args) {
+        let runtime = match Self::new_runtime(modules, &startup_args, None) {
             Ok(r) => r,
             Err(NewRuntimeError::Options(e)) => {
                 OutErr::system_out_err().print_err_ln(e.get_message());
@@ -482,7 +724,7 @@ impl BlazeRuntime {
             .collect();
         // Java: com/google/devtools/build/lib/server/GrpcServerImpl.java:607 GrpcServerImpl.executeCommand
         let result = match InvocationPolicyParser::parse_policy(Some(&request.invocation_policy)) {
-            Ok(policy) => dispatcher.exec(
+            Ok(policy) => match dispatcher.exec(
                 policy,
                 args,
                 OutErr::system_out_err().clone(),
@@ -498,7 +740,22 @@ impl BlazeRuntime {
                 },
                 &request.client_description,
                 Some(startup_options_tagged_with_bazel_rc),
-            ),
+            ) {
+                Ok(result) => result,
+                // Java: com/google/devtools/build/lib/server/GrpcServerImpl.java:637 GrpcServerImpl.executeCommand
+                // PORT: Java also clears the command id ("the client will ignore it"); the
+                // in-process response has none.
+                Err(_interrupted) => {
+                    BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(FailureDetail {
+                        message: "Command dispatch interrupted".to_string(),
+                        category: Some(failure_detail::Category::Interrupted(
+                            failure_details::Interrupted {
+                                code: failure_details::interrupted::Code::Interrupted as i32,
+                            },
+                        )),
+                    }))
+                }
+            },
             Err(e) => {
                 // Java: com/google/devtools/build/lib/server/GrpcServerImpl.java:623 GrpcServerImpl.executeCommand
                 OutErr::system_out_err().print_err_ln(e.get_message());
@@ -514,6 +771,7 @@ impl BlazeRuntime {
             }
         };
         runtime.shutdown();
+        dispatcher.shutdown();
         // Java: com/google/devtools/build/lib/server/GrpcServerImpl.java:644 GrpcServerImpl.executeCommand
         // PORT: no cookie or command id (the in-process server has no gRPC request ids).
         RunResponse {
@@ -577,9 +835,10 @@ impl BlazeRuntime {
 
     /// Creates a new blaze runtime, given the install and output base directories.
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1318 BlazeRuntime.newRuntime
-    fn new_runtime(
+    pub(crate) fn new_runtime(
         blaze_modules: Vec<Arc<dyn BlazeModule>>,
         args: &[String],
+        abrupt_shutdown_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<Arc<BlazeRuntime>, NewRuntimeError> {
         let options =
             Self::parse_startup_options(&blaze_modules, args).map_err(NewRuntimeError::Options)?;
@@ -603,9 +862,12 @@ impl BlazeRuntime {
                     .unwrap_or_else(|| "null".to_string())
             ),
         }
-        // PORT: CustomFailureDetailPublisher.setFailureDetailFilePath: the failure detail file
-        // carries the detail of an abrupt server exit to a client whose gRPC connection died;
-        // the in-process server hands its exit code to the client directly.
+        CustomFailureDetailPublisher::set_failure_detail_file_path(
+            failure_detail_out
+                .as_ref()
+                .expect("checked above")
+                .get_path_string(),
+        );
 
         for module in &blaze_modules {
             module
@@ -683,12 +945,38 @@ impl BlazeRuntime {
         let fs: FileSystemRef =
             Arc::new(UnixFileSystem::new(blaze_vfs::DigestHashFunction::Sha256));
 
-        // PORT: the shared install base lock (--lock_install_base,
-        // FileSystemLock.tryGet(<install_base>.lock, SHARED)) is not taken again here: the client
-        // holds both file locks, the shared install base lock and the exclusive output base lock,
-        // from `AcquireLock` until the process exits (blaze_client `BlazeServer::communicate`
-        // runs the command in-process without releasing them), and those client locks are what
-        // excludes a second Blaze process.
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1396 BlazeRuntime.newRuntime
+        if startup_options.lock_install_base {
+            // Acquire a shared lock on the install base to prevent it from being garbage
+            // collected by another server while this server is running. Note that the client
+            // must already hold a shared lock on the install base at this time (which it will
+            // release once it successfully connects to the server), so failure to obtain the lock
+            // is not expected.
+            // The lock is never released explicitly, so as not to risk releasing it while the
+            // install base is still in use. It goes away when the server process dies.
+            // PORT: in-process, this process is also the client that holds the shared lock; a
+            // second shared lock of the same process on the same file succeeds, and neither is
+            // released before the process exits.
+            let install_base_path = Path::create(install_base.clone(), &fs);
+            let lock_path = install_base_path
+                .replace_name(&format!("{}.lock", install_base_path.get_base_name()))
+                .expect("the install base is not the root directory");
+            match blaze_repo_fetch::file_system_lock::FileSystemLock::try_get(
+                &lock_path,
+                blaze_repo_fetch::file_system_lock::LockMode::SHARED,
+            ) {
+                Ok(install_base_lock) => std::mem::forget(install_base_lock),
+                Err(e) => {
+                    return Err(NewRuntimeError::Abrupt(create_filesystem_exit_exception(
+                        &format!(
+                            "Failed to acquire shared lock on install base: {}",
+                            e.get_message()
+                        ),
+                        failure_details::filesystem::Code::FailedToLockInstallBase,
+                    )));
+                }
+            }
+        }
         // PORT: the event bus exception handlers (--fatal_event_bus_exceptions) serve Guava's
         // EventBus, whose subscribers' exceptions are caught; a panicking subscriber of Blaze's
         // event bus ends the command. Thread.setDefaultUncaughtExceptionHandler: the panic hook
@@ -757,6 +1045,7 @@ impl BlazeRuntime {
             workspace: OnceLock::new(),
             env: parking_lot::Mutex::new(None),
             stored_exit_code: parking_lot::Mutex::new(None),
+            abrupt_shutdown_handler,
         };
         for command in server_builder.get_commands() {
             runtime.add_command(command.clone());
@@ -769,8 +1058,13 @@ impl BlazeRuntime {
                 .map(|(name, command)| (name.clone(), command.annotation())),
         )));
 
-        // PORT: CustomExitCodePublisher (the abrupt exit status file) tells a client whose gRPC
-        // connection died which exit code to use; the in-process server returns it directly.
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1516 BlazeRuntime.newRuntime
+        CustomExitCodePublisher::set_abrupt_exit_status_file_dir(
+            server_directories.get_output_base().get_path_string(),
+        );
+        // Delete the previous file, if any, in case this server is reusing an existing output
+        // base from a previous server that had an abrupt exit.
+        CustomExitCodePublisher::maybe_delete_abrupt_exit_status_file();
 
         let directories = BlazeDirectories::new(
             server_directories,
@@ -800,7 +1094,7 @@ impl BlazeRuntime {
 }
 
 /// Exceptions `newRuntime` throws.
-enum NewRuntimeError {
+pub(crate) enum NewRuntimeError {
     Options(OptionsParsingException),
     Abrupt(AbruptExitException),
 }
@@ -842,17 +1136,24 @@ impl crate::bugreport::BlazeRuntimeInterface for BlazeRuntime {
         ctx.reporting_to(local_env.reporter);
     }
 
-    /// PORT: `localEnv.notifyOnCrash` sets the shutdown reason the next command of this server
-    /// prints and interrupts the command thread from another thread; the in-process server
-    /// runs no next command, and the dispatcher's catch ends the command. Blaze's
-    /// `SkyframeExecutor` lives in the command, so the crash events go to the command's event
-    /// bus (`postLoggingStatsWhenCrashing` only posts statistics for logging).
+    /// PORT: Blaze's `SkyframeExecutor` lives in the command, so the crash events go to the
+    /// command's event bus (`postLoggingStatsWhenCrashing` only posts statistics for logging).
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:675 BlazeRuntime.cleanUpForCrash
     fn clean_up_for_crash(&self, exit_code: &crate::exit_code::DetailedExitCode) {
         if self.declare_exit_code(exit_code) {
+            let local_env = self.env.lock().clone();
+            if let Some(local_env) = &local_env {
+                local_env.notify_on_crash(format!(
+                    "{} is crashing: {}",
+                    self.product_name,
+                    exit_code
+                        .get_failure_detail()
+                        .map(|f| f.message.as_str())
+                        .unwrap_or("")
+                ));
+            }
             // Only try to publish events if we won the exit code race. Otherwise someone else is
             // already exiting for us.
-            let local_env = self.env.lock().clone();
             if let Some(local_env) = local_env {
                 use blaze_events::EventBus;
                 local_env
@@ -871,6 +1172,71 @@ impl crate::bugreport::BlazeRuntimeInterface for BlazeRuntime {
         // best-effort operation.
         self.shut_down_modules_on_crash(exit_code);
     }
+}
+
+// Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1928 BlazeRuntime.readPidFile
+fn read_pid_file(pid_file: &Path) -> Result<i32, AbruptExitException> {
+    // FileSystemUtils.readContentAsLatin1
+    let mut bytes = Vec::new();
+    let read = pid_file
+        .get_input_stream()
+        .and_then(|mut input| std::io::Read::read_to_end(&mut input, &mut bytes));
+    if let Err(e) = read {
+        // PORT: the message of Rust's io::Error stands for the IOException's.
+        return Err(create_filesystem_exit_exception(
+            &format!("Server pid file read failed: {}", e),
+            failure_details::filesystem::Code::ServerPidTxtFileReadFailure,
+        ));
+    }
+    let contents = blaze_util::string_encoding::latin1_decode(&bytes);
+    // Integer.parseInt: an optional sign and ASCII digits.
+    match contents.parse::<i32>() {
+        Ok(pid) => Ok(pid),
+        // Invalid contents (not a number) is more likely than not a filesystem issue.
+        Err(_) => Err(create_filesystem_exit_exception(
+            // NumberFormatException.forInputString(s, 10).getMessage()
+            &format!(
+                "Server pid file corrupted: For input string: \"{}\"",
+                contents
+            ),
+            failure_details::filesystem::Code::ServerPidTxtFileReadFailure,
+        )),
+    }
+}
+
+// Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1539 BlazeRuntime.createFilesystemExitException
+fn create_filesystem_exit_exception(
+    message: &str,
+    detailed_code: failure_details::filesystem::Code,
+) -> AbruptExitException {
+    AbruptExitException::new(DetailedExitCode::of(FailureDetail {
+        message: message.to_string(),
+        category: Some(failure_detail::Category::Filesystem(
+            failure_details::Filesystem {
+                code: detailed_code as i32,
+            },
+        )),
+    }))
+}
+
+/// The pids of this process's children (`ProcessHandle.current().children()`), from
+/// `/proc/self/task/<tid>/children`.
+fn child_processes() -> Vec<libc::pid_t> {
+    let mut children = Vec::new();
+    let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+        return children;
+    };
+    for task in tasks.flatten() {
+        let Ok(list) = std::fs::read(task.path().join("children")) else {
+            continue;
+        };
+        for pid in list.split(|b| b.is_ascii_whitespace()) {
+            if let Ok(pid) = std::str::from_utf8(pid).unwrap_or("").parse::<libc::pid_t>() {
+                children.push(pid);
+            }
+        }
+    }
+    children
 }
 
 fn run_exec_request_in_batch_mode(request: &ExecRequest) -> i32 {

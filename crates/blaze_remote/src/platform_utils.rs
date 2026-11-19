@@ -6,7 +6,7 @@
 //! crate); the two must stay in step.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use blaze_exec::actions::{ExecException, Spawn, UserExecException};
 use blaze_optdefs::misc::remote_options::RemoteOptions;
@@ -99,10 +99,184 @@ fn text_format_merge_platform(text: &str) -> Result<Platform, ParseException> {
     Ok(platform_builder)
 }
 
+/// A `java.util.HashMap<String, String>`, as far as its iteration order goes.
+///
+/// PORT: java-hash-order. `getPlatformProto` iterates its `properties` map before a stable sort
+/// by the Unicode name: two internal names that are both invalid UTF-8 become the same name
+/// (U+FFFD) after `internalToUnicode` and keep the map's order. The order of a `HashMap` is
+/// deterministic: `String.hashCode()` (`31 * h + c` over the UTF-16 units) spread by
+/// `h ^ (h >>> 16)`, a power-of-two table that doubles when the size exceeds 3/4 of the
+/// capacity (or pre-sizes for `putAll` / `new HashMap<>(map)`), and per-bin insertion order
+/// (which `resize` preserves). A bin that Java would treeify (more than 8 entries in a table of
+/// 64 or more slots) is `unported!`.
+// Java: java/util/HashMap.java HashMap (JDK 25)
+struct JavaHashMap {
+    /// `table`; empty until allocated.
+    table: Vec<Vec<(u32, String, String)>>,
+    size: usize,
+    /// `threshold` (before allocation: the initial capacity, or 0 for the default).
+    threshold: usize,
+}
+
+impl JavaHashMap {
+    /// `HashMap.DEFAULT_INITIAL_CAPACITY`.
+    const DEFAULT_INITIAL_CAPACITY: usize = 16;
+    /// `HashMap.TREEIFY_THRESHOLD`.
+    const TREEIFY_THRESHOLD: usize = 8;
+    /// `HashMap.MIN_TREEIFY_CAPACITY`.
+    const MIN_TREEIFY_CAPACITY: usize = 64;
+
+    // Java: java/util/HashMap.java HashMap.<init>()
+    fn new() -> JavaHashMap {
+        JavaHashMap {
+            table: Vec::new(),
+            size: 0,
+            threshold: 0,
+        }
+    }
+
+    // Java: java/util/HashMap.java HashMap.<init>(Map)
+    fn from_entries(entries: &[(String, String)]) -> JavaHashMap {
+        let mut map = JavaHashMap::new();
+        map.put_map_entries(entries);
+        map
+    }
+
+    // Java: java/util/HashMap.java HashMap.hash
+    fn hash(key: &str) -> u32 {
+        // Java: java/lang/String.java String.hashCode
+        let mut h: i32 = 0;
+        for unit in key.encode_utf16() {
+            h = h.wrapping_mul(31).wrapping_add(i32::from(unit));
+        }
+        let h = h as u32;
+        h ^ (h >> 16)
+    }
+
+    // Java: java/util/HashMap.java HashMap.tableSizeFor
+    fn table_size_for(cap: usize) -> usize {
+        cap.max(1).next_power_of_two()
+    }
+
+    // Java: java/util/HashMap.java HashMap.resize
+    fn resize(&mut self) {
+        let old_cap = self.table.len();
+        let old_thr = self.threshold;
+        let (new_cap, mut new_thr) = if old_cap > 0 {
+            let new_cap = old_cap << 1;
+            let new_thr = if old_cap >= Self::DEFAULT_INITIAL_CAPACITY {
+                old_thr << 1
+            } else {
+                0
+            };
+            (new_cap, new_thr)
+        } else if old_thr > 0 {
+            // initial capacity was placed in threshold
+            (old_thr, 0)
+        } else {
+            // zero initial threshold signifies using defaults
+            (
+                Self::DEFAULT_INITIAL_CAPACITY,
+                Self::DEFAULT_INITIAL_CAPACITY * 3 / 4,
+            )
+        };
+        if new_thr == 0 {
+            // `(int) (newCap * 0.75f)`
+            new_thr = new_cap * 3 / 4;
+        }
+        self.threshold = new_thr;
+        let mut new_table: Vec<Vec<(u32, String, String)>> = Vec::with_capacity(new_cap);
+        new_table.resize_with(new_cap, Vec::new);
+        // Each old bin is split into two new bins; the nodes keep their relative order.
+        for bin in self.table.drain(..) {
+            for node in bin {
+                let index = (node.0 as usize) & (new_cap - 1);
+                new_table[index].push(node);
+            }
+        }
+        self.table = new_table;
+    }
+
+    /// `put(key, value)`.
+    // Java: java/util/HashMap.java HashMap.putVal
+    fn put(&mut self, key: String, value: String) {
+        if self.table.is_empty() {
+            self.resize();
+        }
+        let hash = JavaHashMap::hash(&key);
+        let index = (hash as usize) & (self.table.len() - 1);
+        if let Some(node) = self.table[index]
+            .iter_mut()
+            .find(|node| node.0 == hash && node.1 == key)
+        {
+            // An existing mapping keeps its place.
+            node.2 = value;
+            return;
+        }
+        let bin_count = self.table[index].len();
+        self.table[index].push((hash, key, value));
+        // `if (binCount >= TREEIFY_THRESHOLD - 1) treeifyBin(tab, hash)`, where Java's `binCount`
+        // is one less than the number of nodes that were in the bin.
+        if bin_count >= Self::TREEIFY_THRESHOLD {
+            if self.table.len() < Self::MIN_TREEIFY_CAPACITY {
+                // `treeifyBin` resizes a small table instead of treeifying the bin.
+                self.resize();
+            } else {
+                blaze_util::unported!("java.util.HashMap.treeifyBin (platform properties)");
+            }
+        }
+        self.size += 1;
+        if self.size > self.threshold {
+            self.resize();
+        }
+    }
+
+    /// `putAll(map)`, `map` given in its own iteration order.
+    // Java: java/util/HashMap.java HashMap.putMapEntries
+    fn put_map_entries(&mut self, entries: &[(String, String)]) {
+        let s = entries.len();
+        if s > 0 {
+            if self.table.is_empty() {
+                // pre-size: `Math.ceil(s / (double) loadFactor)`
+                let t = (s as f64 / 0.75).ceil() as usize;
+                if t > self.threshold {
+                    self.threshold = JavaHashMap::table_size_for(t);
+                }
+            } else {
+                while s > self.threshold {
+                    self.resize();
+                }
+            }
+            for (key, value) in entries {
+                self.put(key.clone(), value.clone());
+            }
+        }
+    }
+
+    /// `entrySet()`, in Java's iteration order.
+    // Java: java/util/HashMap.java HashMap.HashIterator
+    fn into_entries(self) -> Vec<(String, String)> {
+        self.table
+            .into_iter()
+            .flatten()
+            .map(|(_, key, value)| (key, value))
+            .collect()
+    }
+}
+
+fn entries_of<'a>(
+    map: impl IntoIterator<Item = (&'a String, &'a String)>,
+) -> Vec<(String, String)> {
+    map.into_iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
 /// `getPlatformProto(spawn, remoteOptions, additionalProperties)`.
 ///
-/// PORT: Java's `HashMap` of properties never reaches the output unsorted (the properties are
-/// sorted by name, and names are unique), so its iteration order is not replicated.
+/// `properties` holds the entries of Java's `properties` map in that map's iteration order: a
+/// `HashMap` (see [`JavaHashMap`]), the spawn's `ImmutableMap`, the `SortedMap` of default exec
+/// properties, or the caller's additional properties.
 // Java: com/google/devtools/build/lib/analysis/platform/PlatformUtils.java:102 PlatformUtils.getPlatformProto
 pub fn get_platform_proto_with_additional_properties(
     spawn: &dyn Spawn,
@@ -119,7 +293,7 @@ pub fn get_platform_proto_with_additional_properties(
         return Ok(None);
     }
 
-    let mut properties: HashMap<String, String> = HashMap::new();
+    let mut properties: Vec<(String, String)> = Vec::new();
     let combined_exec_properties = spawn.get_combined_exec_properties();
     if !combined_exec_properties.is_empty() {
         // Apply default exec properties if the execution platform does not already set
@@ -128,14 +302,12 @@ pub fn get_platform_proto_with_additional_properties(
             .get_execution_platform()
             .is_none_or(|p| p.exec_properties.is_empty())
         {
-            properties.extend(
-                default_exec_properties
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone())),
-            );
-            properties.extend(combined_exec_properties);
+            let mut map = JavaHashMap::new();
+            map.put_map_entries(&entries_of(&default_exec_properties));
+            map.put_map_entries(&entries_of(&combined_exec_properties));
+            properties = map.into_entries();
         } else {
-            properties = combined_exec_properties.into_iter().collect();
+            properties = entries_of(&combined_exec_properties);
         }
     } else if let Some(execution_platform) = spawn.get_execution_platform() {
         let remote_execution_properties = &execution_platform.remote_execution_properties;
@@ -161,39 +333,33 @@ pub fn get_platform_proto_with_additional_properties(
                 }
             };
 
+            let mut map = JavaHashMap::new();
             for property in &platform_builder.properties {
-                properties.insert(
+                map.put(
                     unicode_to_internal(&property.name).into_owned(),
                     unicode_to_internal(&property.value).into_owned(),
                 );
             }
+            properties = map.into_entries();
         } else {
-            properties.extend(
-                execution_platform
-                    .exec_properties
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone())),
-            );
+            let mut map = JavaHashMap::new();
+            map.put_map_entries(&entries_of(&execution_platform.exec_properties));
+            properties = map.into_entries();
         }
     }
 
     if properties.is_empty() {
-        properties = default_exec_properties.into_iter().collect();
+        properties = entries_of(&default_exec_properties);
     }
 
     if !additional_properties.is_empty() {
         if properties.is_empty() {
-            properties = additional_properties
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+            properties = entries_of(additional_properties);
         } else {
             // Merge the two maps.
-            properties.extend(
-                additional_properties
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone())),
-            );
+            let mut map = JavaHashMap::from_entries(&properties);
+            map.put_map_entries(&entries_of(additional_properties));
+            properties = map.into_entries();
         }
     }
 

@@ -1,10 +1,10 @@
-//! `@Command` annotations, the `BlazeCommand` interface and `BlazeCommandResult`.
+//! `@Command` annotations, the `BlazeCommand` interface and `BlazeCommandResult` (re-exported
+//! from `blaze_server`).
 
 use blaze_options::definition::OptionsClassRef;
 use blaze_options::rc::handler::Command as RcCommand;
 
 use crate::command_environment::CommandEnvironment;
-use crate::exit_code::{DetailedExitCode, ExitCode};
 use crate::options_result::OptionsParsingResult;
 
 // Java: com/google/devtools/build/lib/runtime/Command.java:71 Command.BuildPhase
@@ -100,132 +100,10 @@ pub trait BlazeCommand: Send + Sync {
     fn edit_options(&self, _options_parser: &mut blaze_options::OptionsParser) {}
 }
 
-/// The result of a command, an exit code plus whether the server should shut down, and the
-/// `run` command's `ExecRequest`.
-/// PORT: idle tasks are not ported yet.
+/// The result of a command: `blaze_server`'s port of `BlazeCommandResult`.
+///
+/// PORT: Java's `BlazeCommandResult` is in `lib/runtime`; it lives in `blaze_server`, below this
+/// crate, because `GrpcServerImpl` needs it (decision D3), and is re-exported here so that no
+/// caller changes. `createShutdown(Crash)` there takes the crash's `DetailedExitCode`.
 // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:36 BlazeCommandResult
-#[derive(Clone, Debug, PartialEq)]
-pub struct BlazeCommandResult {
-    detailed_exit_code: DetailedExitCode,
-    /// `execDescription`.
-    exec_description: Option<blaze_protos::command_server::ExecRequest>,
-    shutdown: bool,
-    /// `responseExtensions`.
-    response_extensions: Vec<blaze_protos::google::protobuf::Any>,
-}
-
-impl BlazeCommandResult {
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:62 BlazeCommandResult.getExitCode
-    pub fn get_exit_code(&self) -> ExitCode {
-        self.detailed_exit_code.get_exit_code()
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:66 BlazeCommandResult.getDetailedExitCode
-    pub fn get_detailed_exit_code(&self) -> &DetailedExitCode {
-        &self.detailed_exit_code
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:71 BlazeCommandResult.getFailureDetail
-    pub fn get_failure_detail(&self) -> Option<&blaze_protos::failure_details::FailureDetail> {
-        self.detailed_exit_code.get_failure_detail()
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:75 BlazeCommandResult.shutdown
-    pub fn shutdown(&self) -> bool {
-        self.shutdown
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:88 BlazeCommandResult.getResponseExtensions
-    pub fn get_response_extensions(&self) -> &[blaze_protos::google::protobuf::Any] {
-        &self.response_extensions
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:127 BlazeCommandResult.withResponseExtensions
-    pub fn with_response_extensions(
-        result: BlazeCommandResult,
-        response_extensions: Vec<blaze_protos::google::protobuf::Any>,
-    ) -> BlazeCommandResult {
-        BlazeCommandResult {
-            response_extensions,
-            ..result
-        }
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:111 BlazeCommandResult.createShutdown
-    pub fn create_shutdown(crash: &crate::bugreport::Crash) -> Self {
-        BlazeCommandResult {
-            detailed_exit_code: crash.get_detailed_exit_code().clone(),
-            exec_description: None,
-            shutdown: true,
-            response_extensions: Vec::new(),
-        }
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:107 BlazeCommandResult.shutdownOnSuccess
-    pub fn shutdown_on_success() -> Self {
-        BlazeCommandResult {
-            detailed_exit_code: DetailedExitCode::success(),
-            exec_description: None,
-            shutdown: true,
-            response_extensions: Vec::new(),
-        }
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:115 BlazeCommandResult.success
-    pub fn success() -> Self {
-        BlazeCommandResult {
-            detailed_exit_code: DetailedExitCode::success(),
-            exec_description: None,
-            shutdown: false,
-            response_extensions: Vec::new(),
-        }
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:119 BlazeCommandResult.failureDetail
-    pub fn failure_detail(failure_detail: blaze_protos::failure_details::FailureDetail) -> Self {
-        BlazeCommandResult {
-            detailed_exit_code: DetailedExitCode::of(failure_detail),
-            exec_description: None,
-            shutdown: false,
-            response_extensions: Vec::new(),
-        }
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:123 BlazeCommandResult.detailedExitCode
-    pub fn detailed_exit_code(detailed_exit_code: DetailedExitCode) -> Self {
-        BlazeCommandResult {
-            detailed_exit_code,
-            exec_description: None,
-            shutdown: false,
-            response_extensions: Vec::new(),
-        }
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:80 BlazeCommandResult.getExecRequest
-    pub fn get_exec_request(&self) -> Option<&blaze_protos::command_server::ExecRequest> {
-        self.exec_description.as_ref()
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:147 BlazeCommandResult.execute
-    pub fn execute(exec_description: blaze_protos::command_server::ExecRequest) -> Self {
-        BlazeCommandResult {
-            detailed_exit_code: DetailedExitCode::success(),
-            exec_description: Some(exec_description),
-            shutdown: false,
-            response_extensions: Vec::new(),
-        }
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:152 BlazeCommandResult.execute
-    pub fn execute_with_detailed_exit_code(
-        exec_description: blaze_protos::command_server::ExecRequest,
-        detailed_exit_code: DetailedExitCode,
-    ) -> Self {
-        BlazeCommandResult {
-            detailed_exit_code,
-            exec_description: Some(exec_description),
-            shutdown: false,
-            response_extensions: Vec::new(),
-        }
-    }
-}
+pub use blaze_server::BlazeCommandResult;

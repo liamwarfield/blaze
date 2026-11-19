@@ -163,7 +163,11 @@ pub struct WorkerMultiplexer {
 
 impl WorkerMultiplexer {
     // Java: com/google/devtools/build/lib/worker/WorkerMultiplexer.java:143 WorkerMultiplexer.<init>
-    pub fn new(log_file: Path, worker_key: Arc<WorkerKey>, multiplexer_id: i32) -> Arc<WorkerMultiplexer> {
+    pub fn new(
+        log_file: Path,
+        worker_key: Arc<WorkerKey>,
+        multiplexer_id: i32,
+    ) -> Arc<WorkerMultiplexer> {
         Arc::new_cyclic(|this| WorkerMultiplexer {
             multiplexer_id,
             pending_requests: RequestQueue {
@@ -246,7 +250,11 @@ impl WorkerMultiplexer {
                 work_dir,
                 tree_deleter,
             )?;
-            sandbox_helpers::create_directories(&dirs_to_create, work_dir, /* strict= */ false)?;
+            sandbox_helpers::create_directories(
+                &dirs_to_create,
+                work_dir,
+                /* strict= */ false,
+            )?;
             let allowed: HashSet<PathFragment> = worker_files.iter().cloned().collect();
             WorkerExecRoot::create_inputs(
                 &inputs_to_create,
@@ -292,8 +300,9 @@ impl WorkerMultiplexer {
             let mut args: Vec<String> = self.worker_key.get_args().to_vec();
             let executable = JavaFile::new(&args[0]);
             if !executable.is_absolute() && executable.get_parent().is_some() {
-                args[0] = JavaFile::new_child(Some(&JavaFile::new(work_dir.get_path_string())), &args[0])
-                    .get_absolute_path();
+                args[0] =
+                    JavaFile::new_child(Some(&JavaFile::new(work_dir.get_path_string())), &args[0])
+                        .get_absolute_path();
             }
             let mut process_builder = match &st.subprocess_factory {
                 Some(f) => SubprocessBuilder::with_factory(client_env, f.clone()),
@@ -311,7 +320,10 @@ impl WorkerMultiplexer {
                 .get_input_stream()
                 .unwrap_or_else(|| Box::new(io::empty()));
             let recording_stream = Arc::new(Mutex::new(RecordingInputStream::new(Box::new(
-                PipeInputStream::new(stdout, &format!("multiplexer-stdout-{}", self.multiplexer_id)),
+                PipeInputStream::new(
+                    stdout,
+                    &format!("multiplexer-stdout-{}", self.multiplexer_id),
+                ),
             ))));
             recording_stream.lock().start_recording(4096);
             st.recording_stream = Some(recording_stream.clone());
@@ -385,20 +397,17 @@ impl WorkerMultiplexer {
     /// `destroyMultiplexer()` run by the shutdown hook. PORT: does not wait for the monitor a
     /// blocked caller may hold (see `SingleplexShared::destroy_from_shutdown_hook`).
     fn destroy_from_shutdown_hook(&self) {
-        match self.state.try_lock_for(Duration::from_millis(100)) {
+        // destroyProcess() without the thread-local interrupt state, which may be gone at exit.
+        let process = match self.state.try_lock_for(Duration::from_millis(100)) {
             Some(mut st) => {
                 st.shutdown_hook = None;
-                if st.process.is_some() {
-                    self.destroy_process(&mut st);
-                }
+                st.process.clone()
             }
-            None => {
-                if let Some(st) = self.state.try_lock() {
-                    if let Some(p) = &st.process {
-                        p.destroy_and_wait();
-                    }
-                }
-            }
+            None => None,
+        };
+        if let Some(p) = process {
+            shutdown_hooks::destroy_and_wait_at_exit(&*p);
+            self.pending_requests.interrupt();
         }
     }
 
@@ -429,7 +438,12 @@ impl WorkerMultiplexer {
     // Java: com/google/devtools/build/lib/worker/WorkerMultiplexer.java:345 WorkerMultiplexer.putRequest
     pub fn put_request(&self, request: WorkRequest) -> io::Result<()> {
         let st = self.state.lock();
-        if !st.process.as_ref().expect("NullPointerException: process").is_alive() {
+        if !st
+            .process
+            .as_ref()
+            .expect("NullPointerException: process")
+            .is_alive()
+        {
             return Err(JavaException::io(format!(
                 "Attempting to send request {} to dead process",
                 request.request_id
@@ -449,12 +463,24 @@ impl WorkerMultiplexer {
     /// called on the thread of a `WorkerProxy`, and so is subject to interrupts by dynamic
     /// execution.
     // Java: com/google/devtools/build/lib/worker/WorkerMultiplexer.java:361 WorkerMultiplexer.getResponse
-    pub fn get_response(&self, request_id: i32) -> Result<Option<WorkResponse>, super::worker::WorkerError> {
-        let process = self.state.lock().process.clone().expect("NullPointerException: process");
+    pub fn get_response(
+        &self,
+        request_id: i32,
+    ) -> Result<Option<WorkResponse>, super::worker::WorkerError> {
+        let process = self
+            .state
+            .lock()
+            .process
+            .clone()
+            .expect("NullPointerException: process");
         if !process.is_alive() {
             // If the process has died, all we can do is return what may already have been
             // returned.
-            return Ok(self.worker_process_response.lock().get(&request_id).cloned());
+            return Ok(self
+                .worker_process_response
+                .lock()
+                .get(&request_id)
+                .cloned());
         }
 
         let wait_for_response = self.response_checker.lock().get(&request_id).cloned();
@@ -463,7 +489,11 @@ impl WorkerMultiplexer {
             self.report(&format!("Null response semaphore for {request_id}"));
             // If there is no semaphore for this request, it probably failed to send, so we just
             // return what we got, probably nothing.
-            return Ok(self.worker_process_response.lock().get(&request_id).cloned());
+            return Ok(self
+                .worker_process_response
+                .lock()
+                .get(&request_id)
+                .cloned());
         };
 
         if wait_for_response.acquire().is_err() {

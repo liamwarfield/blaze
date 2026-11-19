@@ -69,7 +69,9 @@ pub struct WorkerParser {
     exec_root: Path,
     worker_options: Arc<WorkerOptions>,
     local_env_provider: Arc<dyn LocalEnvProvider>,
-    bin_tools: Arc<BinTools>,
+    /// `null` where Java passes null (`RemoteExecutionService.computePersistentWorkerSignature`,
+    /// with `LocalEnvProvider.NOOP`, which does not read it).
+    bin_tools: Option<Arc<BinTools>>,
 }
 
 impl WorkerParser {
@@ -78,7 +80,7 @@ impl WorkerParser {
         exec_root: Path,
         worker_options: Arc<WorkerOptions>,
         local_env_provider: Arc<dyn LocalEnvProvider>,
-        bin_tools: Arc<BinTools>,
+        bin_tools: Option<Arc<BinTools>>,
     ) -> WorkerParser {
         WorkerParser {
             exec_root,
@@ -102,10 +104,21 @@ impl WorkerParser {
         // (as opposed to start-up options for the executed tool). Thus, we can extract those
         // elements from its args and put them into the WorkRequest instead.
         let mut flag_files: Vec<String> = Vec::new();
-        let worker_args = self.split_spawn_args_into_worker_args_and_flag_files(spawn, &mut flag_files)?;
+        let worker_args =
+            self.split_spawn_args_into_worker_args_and_flag_files(spawn, &mut flag_files)?;
+        // PORT: the provider takes a `&BinTools`; for Java's null an empty set stands in (the
+        // providers on Linux do not read it).
+        let empty_bin_tools;
+        let bin_tools = match &self.bin_tools {
+            Some(b) => &**b,
+            None => {
+                empty_bin_tools = BinTools::for_embedded_bin(self.exec_root.clone(), Vec::new());
+                &empty_bin_tools
+            }
+        };
         let env = self.local_env_provider.rewrite_local_env(
             spawn.get_environment(),
-            &self.bin_tools,
+            bin_tools,
             "/tmp",
         )?;
 
@@ -116,9 +129,8 @@ impl WorkerParser {
 
         let worker_files_combined_hash = WorkerFilesHash::get_combined_hash(&worker_files);
 
-        let protocol_format = spawns::get_worker_protocol_format(spawn).map_err(|m| {
-            super::error_message::JavaException::io(m).into_io_error()
-        })?;
+        let protocol_format = spawns::get_worker_protocol_format(spawn)
+            .map_err(|m| super::error_message::JavaException::io(m).into_io_error())?;
         let key = WorkerParser::create_worker_key(
             spawn,
             worker_args,
@@ -149,7 +161,8 @@ impl WorkerParser {
     ) -> WorkerKey {
         let worker_key_mnemonic = spawns::get_worker_key_mnemonic(spawn);
         let must_sandbox = dynamic || spawns::uses_path_mapping(spawn);
-        let should_multiplex = options.worker_multiplex && spawns::supports_multiplex_workers(spawn);
+        let should_multiplex =
+            options.worker_multiplex && spawns::supports_multiplex_workers(spawn);
         let can_sandbox_multiplex =
             options.multiplex_sandboxing && spawns::supports_multiplex_sandboxing(spawn);
         let sandboxed;

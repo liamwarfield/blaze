@@ -81,9 +81,140 @@ pub fn compile(kind: FileKind, file_name: &str, source: String) -> Result<Compil
     compile_with_options(kind, kind.file_options(), file_name, source)
 }
 
+/// Java's static errors of a file before the resolver: the scanner's and parser's errors (every
+/// one, with Java's recovery) and, for BUILD and the other `.bazel` files,
+/// `DotBazelFileSyntaxChecker`'s. Also returns the parsed Java tree.
+fn java_static_errors(
+    kind: FileKind,
+    options: crate::file_kind::FileOptions,
+    file_name: &str,
+    source: &str,
+) -> (crate::syntax::java::ParsedFile, Vec<SyntaxError>) {
+    use crate::syntax::java;
+    let jopts = java::JavaOptions::from_file_options(options);
+    let parsed = java::parse_file(file_name, source, jopts);
+    if !parsed.errors.is_empty() {
+        let errors = parsed.errors.clone();
+        return (parsed, errors);
+    }
+    // Java: PackageFunction.java:1380 checkBuildSyntax (and the module/repo file checkers) run
+    // after parsing, before compileFile.
+    if let Some((where_, can_load_bzl, allow_literal_star_star_args)) =
+        kind.dot_bazel_checker_config()
+    {
+        let checker = crate::syntax::dot_bazel::Checker {
+            where_,
+            can_load_bzl,
+            allow_literal_star_star_args,
+        };
+        let errors: Vec<SyntaxError> = java::dot_bazel::check(&checker, &parsed.statements)
+            .into_iter()
+            .map(|e| SyntaxError {
+                location: parsed.locs.location(e.offset),
+                message: e.message,
+            })
+            .collect();
+        if !errors.is_empty() {
+            return (parsed, errors);
+        }
+    }
+    (parsed, Vec::new())
+}
+
+/// The Java resolver's errors of `parsed` (Program.compileFile after parsing).
+fn java_resolver_errors(
+    parsed: &crate::syntax::java::ParsedFile,
+    module: &dyn crate::syntax::java::resolver::ResolverModule,
+    options: crate::file_kind::FileOptions,
+) -> Vec<SyntaxError> {
+    use crate::syntax::java;
+    java::resolver::resolve_file(
+        &parsed.statements,
+        module,
+        java::JavaOptions::from_file_options(options),
+    )
+    .into_iter()
+    .map(|e| SyntaxError {
+        location: parsed.locs.location(e.offset),
+        message: e.message,
+    })
+    .collect()
+}
+
+/// A resolver module in which every name is predeclared: the resolver's errors that do not
+/// depend on the predeclared names.
+struct EveryNamePredeclared;
+
+impl crate::syntax::java::resolver::ResolverModule for EveryNamePredeclared {
+    fn resolve(
+        &self,
+        _name: &str,
+    ) -> Result<crate::syntax::java::resolver::Scope, crate::syntax::java::resolver::Undefined>
+    {
+        Ok(crate::syntax::java::resolver::Scope::Predeclared)
+    }
+}
+
 /// [`compile`] with explicit [`crate::file_kind::FileOptions`] (Java `FileOptions` whose values
 /// depend on flags: `allowTypeSyntax`).
+///
+/// The errors are Bazel's, from Java's front end (`crate::syntax::java`): every scanner and
+/// parser error of the file; for BUILD and the other `.bazel` files then
+/// `DotBazelFileSyntaxChecker`'s; then the resolver's errors that do not depend on the
+/// predeclared names. PORT: for a file with parse or resolver errors, Java's list also has the
+/// resolver's undefined-name errors (for a .bzl file, also after parse errors); they need the
+/// predeclared names, which [`compile_and_resolve`] takes. Callers that have them should use it.
+// Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:216 compileInternal
+// Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1366 compileBuildFile
 pub fn compile_with_options(
+    kind: FileKind,
+    options: crate::file_kind::FileOptions,
+    file_name: &str,
+    source: String,
+) -> Result<CompiledFile, EvalError> {
+    let (parsed, errors) = java_static_errors(kind, options, file_name, &source);
+    if !errors.is_empty() {
+        return Err(EvalError::syntax(errors));
+    }
+    let errors = java_resolver_errors(&parsed, &EveryNamePredeclared, options);
+    if !errors.is_empty() {
+        return Err(EvalError::syntax(errors));
+    }
+    compile_starlark_rust(kind, options, file_name, source)
+}
+
+/// Java's compile of a file against its predeclared names: every static error Bazel reports
+/// for it, in Bazel's order (BzlCompileFunction / PackageFunction.compileBuildFile:
+/// `StarlarkFile.parse`, for BUILD files `checkBuildSyntax`, `Program.compileFile`). `names` are
+/// the predeclared and universal names; `guarded` gives the message of a predeclared name whose
+/// `GuardedValue` is not accessible (Java `Module.resolve`).
+// Java: net/starlark/java/syntax/Program.java:101 Program.compileFile
+pub fn compile_and_resolve(
+    kind: FileKind,
+    options: crate::file_kind::FileOptions,
+    file_name: &str,
+    source: String,
+    names: Vec<String>,
+    guarded: &dyn Fn(&str) -> Option<String>,
+) -> Result<CompiledFile, EvalError> {
+    let module = crate::syntax::java::PredeclaredModule { names, guarded };
+    let (parsed, mut errors) = java_static_errors(kind, options, file_name, &source);
+    // Java: PackageFunction.java:1367 returns a BUILD file's parse errors alone; for a .bzl
+    // file, compileFile resolves the partial tree and adds the resolver's errors
+    // (BzlCompileFunction.java:234).
+    let parse_failed = !parsed.errors.is_empty();
+    if !errors.is_empty() && (kind.dot_bazel_checker_config().is_some() || !parse_failed) {
+        return Err(EvalError::syntax(errors));
+    }
+    errors.extend(java_resolver_errors(&parsed, &module, options));
+    if !errors.is_empty() {
+        return Err(EvalError::syntax(errors));
+    }
+    compile_starlark_rust(kind, options, file_name, source)
+}
+
+/// starlark-rust's parse and Blaze's remaining checks of a file Java's front end accepts.
+fn compile_starlark_rust(
     kind: FileKind,
     options: crate::file_kind::FileOptions,
     file_name: &str,
@@ -118,24 +249,36 @@ pub fn compile_with_options(
 }
 
 /// Resolves every name of `compiled` against `globals` without executing it and returns all
-/// resolution errors as one syntax error list (Java resolves when compiling and reports every
-/// undefined name: `Program.compileFile` → `Resolver.resolveFile`, Resolver.java:1313). `Ok` when every name
-/// resolves. Messages are Java's ("name 'x' is not defined[ (did you mean 'y'?)]", vendored patch 0050),
-/// located at the identifier. Execution (`exec_module`) still resolves too and stops at the
-/// first unresolved name, so callers that want Java's full list call this first.
-// Java: net/starlark/java/syntax/Resolver.java:941 Resolver.use
+/// resolution errors as one syntax error list, in Java's order (Java resolves when compiling:
+/// `Program.compileFile` → `Resolver.resolveFile`). `Ok` when every name resolves. Uses Java's
+/// resolver (`crate::syntax::java::resolver`) on the file's source; [`compile`] has already
+/// reported every error that does not depend on the names, so these are the undefined names
+/// ("name 'x' is not defined[ (did you mean 'y'?)]"), located at the identifier.
+// Java: net/starlark/java/syntax/Resolver.java:922 Resolver.use
 // Java: net/starlark/java/syntax/Program.java:101 Program.compileFile
 pub fn resolve(compiled: &CompiledFile, globals: &Globals) -> Result<(), EvalError> {
-    let errors: Vec<SyntaxError> = starlark::eval::resolve_errors(&compiled.ast, globals)
-        .iter()
-        .map(|e| SyntaxError {
-            location: e
-                .span()
-                .map(Location::of_span_start)
-                .unwrap_or_else(Location::builtin),
-            message: crate::error::bare_message(e),
-        })
-        .collect();
+    let ast = &compiled.ast;
+    let span = ast.file_span(ast.statement().span);
+    let source = span.file.source().to_owned();
+    let file_name = span.filename().to_owned();
+    let mut options = compiled.kind.file_options();
+    // The type syntax setting the file was compiled with (`compile_with_options`).
+    {
+        use starlark_syntax::syntax::module::AstModuleFields;
+        options.allow_type_syntax =
+            ast.dialect().enable_types == starlark::syntax::DialectTypes::ParseOnly;
+    }
+    let parsed = crate::syntax::java::parse_file(
+        &file_name,
+        &source,
+        crate::syntax::java::JavaOptions::from_file_options(options),
+    );
+    let no_guard = |_: &str| None;
+    let module = crate::syntax::java::PredeclaredModule {
+        names: globals.names().map(|n| n.as_str().to_owned()).collect(),
+        guarded: &no_guard,
+    };
+    let errors = java_resolver_errors(&parsed, &module, options);
     if errors.is_empty() {
         Ok(())
     } else {

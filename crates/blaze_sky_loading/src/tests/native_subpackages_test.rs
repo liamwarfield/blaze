@@ -277,7 +277,6 @@ fn subpackages_incremental_convert_sub_dir_to_pkg() {
 
 // Java: NativeSubpackagesTest.invalidPositionalParams
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'got unexpected positional argument' (argument binding)"]
 fn invalid_positional_params() {
     let t = PackageLoadingTestCase::new();
     t.scratch_file("foo/subdir/BUILD", &[]);
@@ -291,7 +290,6 @@ fn invalid_positional_params() {
 
 // Java: NativeSubpackagesTest.invalidMissingInclude
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'missing 1 required named argument: include' (argument binding)"]
 fn invalid_missing_include() {
     let t = PackageLoadingTestCase::new();
     t.scratch_file("foo/subdir/BUILD", &[]);

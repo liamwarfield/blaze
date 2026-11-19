@@ -66,8 +66,12 @@ impl ImportantInputMap {
 /// `CompletionContext` contains an `ArtifactExpander` and `ArtifactPathResolver` used to
 /// resolve output files during a `TargetCompletionFunction` evaluation.
 ///
-/// PORT: the path resolver is always `ArtifactPathResolver.IDENTITY` (Blaze has no action file
-/// system), so `pathResolver().toPath(artifact)` is `artifact.getPath()`.
+/// PORT: the path resolver is always `ArtifactPathResolver.IDENTITY`, so
+/// `pathResolver().toPath(artifact)` is `artifact.getPath()` (the host path). Java's
+/// `PathResolverFactoryImpl` (`SkyframeExecutor.java:659`) uses the output service's resolver
+/// when its action file system is enabled: with the remote output service that is a
+/// `RemoteActionFileSystem` over the important inputs (`RemoteOutputService.java:220`), through
+/// which an output that exists only remotely is found. Not ported.
 // Java: com/google/devtools/build/lib/actions/CompletionContext.java:32 CompletionContext
 #[derive(Clone, Debug, Default)]
 pub struct CompletionContext {

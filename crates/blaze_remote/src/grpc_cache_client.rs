@@ -1,6 +1,5 @@
 //! Port of `lib/remote/GrpcCacheClient.java`.
 
-use std::collections::HashSet;
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -732,7 +731,7 @@ impl RemoteCacheClient for GrpcCacheClient {
         context: &RemoteActionExecutionContext<'_>,
         action_key: &ActionKey,
         inline_out_err: bool,
-        inline_output_files: &HashSet<String>,
+        inline_output_files: &IndexSet<String>,
     ) -> io::Result<Option<ActionResult>> {
         // `addAllInlineOutputFiles(inlineOutputFiles)`, in the iteration order of the caller's
         // set. PORT: the only production caller passes at most one name

@@ -9,7 +9,7 @@
 
 mod util;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::io::{self, Write};
 use std::pin::Pin;
@@ -196,7 +196,7 @@ impl RemoteCacheClient for SpyCacheClient {
         context: &RemoteActionExecutionContext<'_>,
         action_key: &ActionKey,
         inline_out_err: bool,
-        inline_output_files: &HashSet<String>,
+        inline_output_files: &IndexSet<String>,
     ) -> io::Result<Option<ActionResult>> {
         self.delegate
             .download_action_result(context, action_key, inline_out_err, inline_output_files)
@@ -437,7 +437,7 @@ fn download_action_result_reports_spawn_checking_cache_event() {
         &f.digest_util
             .as_action_key(f.digest_util.compute_as_utf8("key")),
         /* inlineOutErr= */ false,
-        /* inlineOutputFiles= */ &HashSet::new(),
+        /* inlineOutputFiles= */ &indexmap::IndexSet::new(),
     );
 
     let reported = f.spawn_execution_context.reported.lock();

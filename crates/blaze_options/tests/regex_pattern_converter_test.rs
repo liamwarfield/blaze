@@ -113,8 +113,9 @@ fn matcher_on_internal_strings() {
 
 // Java: RegexPatternConverterTest.unicodeClass
 #[test]
-#[ignore = "needs Java regex syntax: \\p{IsEmoji} is not supported by the regex crate"]
 fn unicode_class() {
-    let regex = convert("\\p{L}{7}\\p{IsEmoji}").unwrap();
-    assert!(regex.matches("äöüÄÖÜß🌱"));
+    // Options passed on the command line are passed to convertes in the internal encoding.
+    let regex = convert(&internal("\\p{L}{7}\\p{IsEmoji}")).unwrap();
+    assert!(regex.pattern_matches("äöüÄÖÜß🌱"));
+    assert!(regex.matches(&internal("äöüÄÖÜß🌱")));
 }

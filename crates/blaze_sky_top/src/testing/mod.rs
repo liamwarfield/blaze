@@ -16,8 +16,8 @@ pub use configuration_test_case::ConfigurationTestCase;
 pub use fake_registry::{FakeRegistry, create_module_key};
 
 pub use build_view_test_case::{
-    AnalysisTestCase, BuildViewTestCase, Flag, FlagBuilder, assert_contains_exactly,
-    assert_contains_exactly_in_order, base_artifact_names, exec_paths, get_data_runfiles,
-    get_default_runfiles, get_executable, get_files_to_build, get_files_to_run, get_output_group,
-    has_error, pretty_artifact_names,
+    AnalysisTestCase, BuildViewTestCase, Flag, FlagBuilder, InjectedPrecomputedValue,
+    assert_contains_exactly, assert_contains_exactly_in_order, base_artifact_names, exec_paths,
+    get_data_runfiles, get_default_runfiles, get_executable, get_files_to_build, get_files_to_run,
+    get_output_group, has_error, pretty_artifact_names,
 };

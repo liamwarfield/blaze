@@ -56,8 +56,11 @@ const INVALID_END_TAG: &str = "Protocol message end-group tag did not match expe
 const INVALID_UTF8: &str = "Protocol message had invalid UTF-8.";
 
 fn invalid_protocol_buffer(message: &str) -> io::Error {
-    JavaException::new("com.google.protobuf.InvalidProtocolBufferException", message)
-        .into_io_error()
+    JavaException::new(
+        "com.google.protobuf.InvalidProtocolBufferException",
+        message,
+    )
+    .into_io_error()
 }
 
 /// A reader of one delimited message, byte by byte (`LimitedInputStream`).
@@ -235,8 +238,8 @@ pub fn parse_delimited_work_response(
                 let len = limited.read_varint64()? as i32;
                 let bytes = limited.read_bytes(len as i64)?;
                 // proto3 string: readStringRequireUtf8.
-                response.output = String::from_utf8(bytes)
-                    .map_err(|_| invalid_protocol_buffer(INVALID_UTF8))?;
+                response.output =
+                    String::from_utf8(bytes).map_err(|_| invalid_protocol_buffer(INVALID_UTF8))?;
             }
             24 => response.request_id = limited.read_varint64()? as i32,
             32 => response.was_cancelled = limited.read_varint64()? != 0,
@@ -506,6 +509,14 @@ mod tests {
             java.to_string(),
             "java.io.IOException: Could not parse json work request correctly"
         );
-        assert_eq!(java.cause.unwrap().class_name, "java.io.EOFException");
+        // After a first value Gson's doPeek gives PEEKED_EOF (not an EOFException), and
+        // beginObject throws unexpectedTokenError.
+        let cause = java.cause.unwrap();
+        assert_eq!(cause.class_name, "java.lang.IllegalStateException");
+        assert!(
+            cause.get_message().starts_with(
+                "Expected BEGIN_OBJECT but was END_DOCUMENT at line 2 column 1 path $"
+            )
+        );
     }
 }

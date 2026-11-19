@@ -1,0 +1,4 @@
+module(name = "workers_probe")
+
+# The real thing: Javac in a (multiplex) persistent worker, as with Bazel's defaults.
+bazel_dep(name = "rules_java", version = "9.1.0")

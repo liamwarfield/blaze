@@ -1,0 +1,33 @@
+load("//pkg:defs.bzl", "leaf")
+load(
+    ":defs.bzl",
+    "bad_cpu_rule",
+    "dict_rule",
+    "exec_user_rule",
+    "nested_tuple_rule",
+    "read_rule",
+    "set_bad_rule",
+    "set_list_rule",
+    "set_rule",
+    "tuple_rule",
+)
+
+leaf(name = "leaf")
+
+set_rule(name = "set", deps = [":leaf"])
+
+set_list_rule(name = "set_list", deps = [":leaf"])
+
+set_bad_rule(name = "set_bad", deps = [":leaf"])
+
+tuple_rule(name = "tuple", deps = [":leaf"])
+
+nested_tuple_rule(name = "nested_tuple", deps = [":leaf"])
+
+dict_rule(name = "dict", deps = [":leaf"])
+
+read_rule(name = "read", deps = [":leaf"])
+
+bad_cpu_rule(name = "bad_cpu")
+
+exec_user_rule(name = "exec_user", tool = ":leaf")

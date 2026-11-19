@@ -11,9 +11,13 @@
 //! (for example `blaze: not ported yet: Class.method`), and the backtrace. The text of a stack
 //! trace cannot match Java's.
 //!
-//! A panic is caught only where it reaches a command boundary. Rust has no counterpart of an
-//! exception that escapes a thread nobody joins (Java halts with the crash there); such a panic
-//! stays recorded and ends only its thread.
+//! A panic is caught where it reaches a command boundary, and, in the server, where it escapes
+//! a thread the server starts: `blaze_server::uncaught_exception` (the `grpc-command-N`,
+//! `grpc-timeout-and-memory` and `interrupt-watcher-N` threads) hands it to the handler that
+//! `BlazeRuntime` installs (Java's default uncaught exception handler), which halts with the
+//! crash ([`BugReport::handle_crash`] with [`CrashContext::halt`]). Rust has no process-wide
+//! counterpart for an exception that escapes any other thread nobody joins (Java halts there
+//! too); such a panic stays recorded and ends only its thread.
 
 use std::any::Any;
 use std::backtrace::Backtrace;
@@ -385,7 +389,7 @@ impl BugReport {
             crash_msg.push_str(&crash.get_stack_trace_as_string());
             ctx.event_handler.handle(&Event::fatal(crash_msg));
 
-            Self::emit_exit_data(crash, runtime.as_deref());
+            Self::emit_exit_data(crash, &ctx, numeric_exit_code, runtime.as_deref());
         }));
         if let Err(t) = reported {
             let product_name = Self::get_product_name();
@@ -414,13 +418,31 @@ impl BugReport {
         unsafe { libc::_exit(numeric_exit_code) }
     }
 
-    /// Calls [`BlazeRuntimeInterface::clean_up_for_crash`].
+    /// Writes exit status files and calls [`BlazeRuntimeInterface::clean_up_for_crash`].
     ///
-    /// PORT: the exit status file (CustomExitCodePublisher) and the failure detail file
-    /// (CustomFailureDetailPublisher) tell a client whose gRPC connection died which exit code
-    /// to use; the in-process server hands its exit code to the client directly. No heap dump.
+    /// PORT: no heap dump (no `--heap_dump_on_oom` crash, see [`BugReport::handle_crash`]);
+    /// skipped, logging.
     // Java: com/google/devtools/build/lib/bugreport/BugReport.java:363 BugReport.emitExitData
-    fn emit_exit_data(crash: &Crash, runtime: Option<&dyn BlazeRuntimeInterface>) {
+    fn emit_exit_data(
+        crash: &Crash,
+        ctx: &CrashContext,
+        numeric_exit_code: i32,
+        runtime: Option<&dyn BlazeRuntimeInterface>,
+    ) {
+        // Writing the exit code status file is only necessary if we are halting. Otherwise, the
+        // caller is responsible for an orderly shutdown with the proper exit code.
+        if ctx.halt_jvm {
+            crate::custom_exit_code_publisher::CustomExitCodePublisher::maybe_write_exit_status_file(
+                numeric_exit_code,
+            );
+        }
+
+        if let Some(failure_detail) = crash.get_detailed_exit_code().get_failure_detail() {
+            crate::custom_exit_code_publisher::CustomFailureDetailPublisher::maybe_write_failure_detail_file(
+                failure_detail,
+            );
+        }
+
         if let Some(runtime) = runtime {
             runtime.clean_up_for_crash(crash.get_detailed_exit_code());
         }
@@ -533,7 +555,7 @@ pub(crate) fn catch_crash(
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(exec)).map_err(|payload| {
         let crash = Crash::from_panic(payload.as_ref());
         BugReport::handle_crash(&crash, CrashContext::keep_alive().with_args(args));
-        crate::command::BlazeCommandResult::create_shutdown(&crash)
+        crate::command::BlazeCommandResult::create_shutdown(crash.get_detailed_exit_code().clone())
     })
 }
 
@@ -695,7 +717,7 @@ mod tests {
     }
 
     /// The tests that set the process-wide runtime run one at a time.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    use crate::custom_exit_code_publisher::TEST_SERIAL as SERIAL;
 
     /// Java's mock runtime: product name "myProductName", no crash context.
     struct MockRuntime {

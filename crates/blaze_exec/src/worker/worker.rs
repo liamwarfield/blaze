@@ -152,7 +152,11 @@ pub trait Worker: Send + Sync + fmt::Display {
 
     /// Does whatever cleanup may be required after execution is done.
     // Java: com/google/devtools/build/lib/worker/Worker.java:139 Worker.finishExecution
-    fn finish_execution(&self, _exec_root: &Path, _outputs: &SandboxOutputs) -> Result<(), WorkerError> {
+    fn finish_execution(
+        &self,
+        _exec_root: &Path,
+        _outputs: &SandboxOutputs,
+    ) -> Result<(), WorkerError> {
         self.get_status().maybe_update_status(Status::Alive);
         Ok(())
     }

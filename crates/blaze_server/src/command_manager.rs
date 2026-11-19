@@ -219,7 +219,7 @@ impl CommandManager {
         let n = self.interrupt_counter.fetch_add(1, Ordering::SeqCst) + 1;
         std::thread::Builder::new()
             .name(format!("interrupt-watcher-{n}"))
-            .spawn(interrupt_watcher)
+            .spawn(move || crate::uncaught_exception::run_catching(interrupt_watcher))
             .expect("failed to start an interrupt watcher thread");
     }
 

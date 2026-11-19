@@ -12,11 +12,10 @@ use blaze_protos::failure_details::{
 
 /// An `ExitCode` that has a `FailureDetail` unless it's `ExitCode.SUCCESS`.
 ///
-/// PORT: Java's `ExitCode` is kept as its numeric code.
 // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:31 DetailedExitCode
 #[derive(Debug, Clone, PartialEq)]
 pub struct DetailedExitCode {
-    exit_code: i32,
+    exit_code: blaze_util::ExitCode,
     failure_detail: Option<FailureDetail>,
 }
 
@@ -24,6 +23,13 @@ impl DetailedExitCode {
     /// Java `getExitCode().getNumericExitCode()`.
     // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:40 DetailedExitCode.getExitCode
     pub fn get_exit_code(&self) -> i32 {
+        self.exit_code.get_numeric_exit_code()
+    }
+
+    /// Java `getExitCode()`: the `ExitCode` itself (unregistered ones such as
+    /// `PARSING_FAILURE` keep their name).
+    // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:40 DetailedExitCode.getExitCode
+    pub fn get_exit_code_value(&self) -> blaze_util::ExitCode {
         self.exit_code
     }
 
@@ -40,21 +46,31 @@ impl DetailedExitCode {
 
     // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:58 DetailedExitCode.isSuccess
     pub fn is_success(&self) -> bool {
-        self.exit_code == 0
+        self.exit_code.get_numeric_exit_code() == 0
     }
 
     /// Returns a `DetailedExitCode` specifying success (i.e. exit code 0).
     // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:63 DetailedExitCode.success
     pub fn success() -> DetailedExitCode {
         DetailedExitCode {
-            exit_code: 0,
+            exit_code: blaze_util::ExitCode::SUCCESS,
             failure_detail: None,
         }
     }
 
     /// Returns a `DetailedExitCode` combining the provided `FailureDetail` and exit code.
     // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:78 DetailedExitCode.of
+    ///
+    /// PORT: the numeric form, for the callers that hold the code as a number: the registered
+    /// `ExitCode` of that number (`ExitCode.forCode`). Use [`DetailedExitCode::of_code`] for an
+    /// unregistered code such as `PARSING_FAILURE`.
     pub fn of_exit_code(exit_code: i32, failure_detail: FailureDetail) -> DetailedExitCode {
+        DetailedExitCode::of_code(registered_exit_code(exit_code), failure_detail)
+    }
+
+    /// Returns a `DetailedExitCode` combining the provided `FailureDetail` and `ExitCode`.
+    // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:78 DetailedExitCode.of
+    pub fn of_code(exit_code: blaze_util::ExitCode, failure_detail: FailureDetail) -> DetailedExitCode {
         DetailedExitCode {
             exit_code,
             failure_detail: Some(failure_detail),
@@ -66,10 +82,18 @@ impl DetailedExitCode {
     // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:86 DetailedExitCode.of
     pub fn of(failure_detail: FailureDetail) -> DetailedExitCode {
         DetailedExitCode {
-            exit_code: get_numeric_exit_code(&failure_detail),
+            exit_code: registered_exit_code(get_numeric_exit_code(&failure_detail)),
             failure_detail: Some(failure_detail),
         }
     }
+}
+
+/// `ExitCode.forCode(numericExitCode)`, which Java's `DetailedExitCode.of(FailureDetail)` checks
+/// to be registered.
+// Java: com/google/devtools/build/lib/util/DetailedExitCode.java:86 DetailedExitCode.of
+fn registered_exit_code(code: i32) -> blaze_util::ExitCode {
+    blaze_util::ExitCode::for_code(code)
+        .unwrap_or_else(|| panic!("NullPointerException: no registered exit code {code}"))
 }
 
 /// Java `DetailedExitCode.getNumericExitCode` for the query categories.

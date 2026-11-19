@@ -1,0 +1,6 @@
+load("//pkg:defs.bzl", "leaf")
+load(":defs.bzl", "at_test")
+
+leaf(name = "leaf")
+
+at_test(name = "at", dep = ":leaf")

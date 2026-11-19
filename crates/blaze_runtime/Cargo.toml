@@ -38,6 +38,10 @@ blaze_actions = { path = "../blaze_actions" }
 blaze_analysis = { path = "../blaze_analysis" }
 blaze_rules = { path = "../blaze_rules" }
 blaze_cmdline = { path = "../blaze_cmdline" }
+# lib/server (decision D3): GrpcServerImpl, CommandDispatcher, BlazeCommandResult.
+blaze_server = { path = "../blaze_server" }
+# FileSystemLock (BlazeRuntime.newRuntime's install base lock).
+blaze_repo_fetch = { path = "../blaze_repo_fetch" }
 indexmap.workspace = true
 parking_lot.workspace = true
 libc.workspace = true

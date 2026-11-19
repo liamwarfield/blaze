@@ -1,0 +1,6 @@
+load("//pkg:defs.bzl", "leaf")
+load(":defs.bzl", "child_rule")
+
+leaf(name = "leaf")
+
+child_rule(name = "child", deps = [":leaf"])

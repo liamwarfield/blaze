@@ -20,11 +20,14 @@
 //!   U+0085, U+2028, U+2029) and with it; `^ $ \A \z \Z` and `\b \B` (ASCII word chars);
 //!   character classes with Java's union, intersection, negation and range rules; the POSIX
 //!   classes `\p{Alpha}` etc. (ASCII in Java), the general categories `\p{L}`, `\p{IsLu}`,
-//!   `\p{gc=Nd}` (both sides use Unicode 16.0), `\p{L1}`, `\p{all}`, `\p{IsAlphabetic}`,
-//!   `\p{IsLowercase}`, `\p{IsUppercase}`, `\p{IsWhite_Space}`; `CASE_INSENSITIVE` (`(?i)`,
-//!   ASCII letters only, as Java without `UNICODE_CASE`), `DOTALL`, `MULTILINE`, `LITERAL`;
-//!   flag groups with Java's scoping (a `(?i)` lasts to the end of the enclosing group, across
-//!   `|`); capturing, named and non-capturing groups; greedy and lazy quantifiers.
+//!   `\p{gc=Nd}` (both sides use Unicode 16.0), `\p{L1}`, `\p{all}`, the binary properties of
+//!   `\p{IsX}` (`IsAlphabetic`, `IsEmoji`, `IsWhite_Space`, ...) and the Unicode POSIX classes
+//!   (`\p{IsAlpha}`); `CASE_INSENSITIVE` (`(?i)`, ASCII letters only) and with `UNICODE_CASE`
+//!   (`(?iu)`: Java's `toLowerCase(toUpperCase(c))` comparisons over JDK 25's case table,
+//!   `case_table.rs`); `UNICODE_CHARACTER_CLASS` (`(?U)`: Unicode `\w \d \s \b` and POSIX
+//!   classes, as `CharPredicates`); `DOTALL`, `MULTILINE`, `LITERAL`; flag groups with Java's
+//!   scoping (a `(?i)` lasts to the end of the enclosing group, across `|`); capturing, named and
+//!   non-capturing groups; greedy and lazy quantifiers.
 //! - Atomic groups `(?>..)` and possessive quantifiers (`*+ ++ ?+ {n,m}+`) change which matches
 //!   are found only when something after them can still fail. They are translated (to `(?:..)`
 //!   and the greedy quantifier) exactly when nothing can follow them: they end the pattern
@@ -35,10 +38,9 @@
 //!   the input after them) they are `unported!`.
 //! - `unported!`: backreferences (`\1`, `\k<name>`), lookahead and lookbehind, `\G`, `\X`,
 //!   `\b{g}`, `\N{name}`, Unicode blocks and scripts (`\p{InGreek}`, `\p{IsLatin}`,
-//!   `\p{sc=..}`), the `java*` properties and the Unicode binary properties not listed above,
-//!   surrogate code units on their own, and the flags `UNIX_LINES` (`(?d)`), `COMMENTS`
-//!   (`(?x)`), `UNICODE_CHARACTER_CLASS` (`(?U)`), `CANON_EQ` (`(?c)`), and `UNICODE_CASE`
-//!   (`(?u)`) together with `CASE_INSENSITIVE`.
+//!   `\p{sc=..}`), the `java*` properties, surrogate code units on their own, a class whose
+//!   members follow an intersection's left operand (Java mutates that operand), and the flags
+//!   `UNIX_LINES` (`(?d)`), `COMMENTS` (`(?x)`) and `CANON_EQ` (`(?c)`).
 //! - Anchors whose Java meaning depends on line terminators near the input's end are exact
 //!   unless the input has such a terminator; [`Pattern`] then fails loudly at match time:
 //!   `$` and `\Z` (Java also before a final line terminator) on an input ending in `\n`, `\r`,
@@ -61,6 +63,8 @@ use std::fmt;
 use std::sync::LazyLock;
 
 use regex::Regex;
+
+mod case_table;
 
 // Java: java/util/regex/Pattern.java Pattern.UNIX_LINES and the other flag constants.
 /// `Pattern.UNIX_LINES` (`(?d)`).
@@ -486,6 +490,107 @@ const ALL: &str = r"(?s:.)";
 /// `Pattern.LineEnding` (`\R`): `\r\n` first, then one terminator (Java backtracks from
 /// `\r\n` to `\r`).
 const LINE_ENDING: &str = r"(?:\r\n|[\n\x0B\x0C\r\x{85}\x{2028}\x{2029}])";
+
+/// `CharPredicates.WORD()` (`\w` with `UNICODE_CHARACTER_CLASS`): Alphabetic, the marks,
+/// decimal digits, connector punctuation and Join_Control.
+const WORD: &str = r"[\p{Alphabetic}\p{Mn}\p{Me}\p{Mc}\p{Nd}\p{Pc}\x{200C}\x{200D}]";
+const NON_WORD: &str = r"[^\p{Alphabetic}\p{Mn}\p{Me}\p{Mc}\p{Nd}\p{Pc}\x{200C}\x{200D}]";
+/// `CharPredicates.DIGIT()` (`Character::isDigit`: Nd).
+const DIGIT: &str = r"[\p{Nd}]";
+const NON_DIGIT: &str = r"[^\p{Nd}]";
+/// `CharPredicates.WHITE_SPACE()`: Zs, Zl, Zp, `\t`..`\r` and U+0085.
+const WHITE_SPACE: &str = r"[\p{Z}\x09-\x0D\x{85}]";
+const NON_WHITE_SPACE: &str = r"[^\p{Z}\x09-\x0D\x{85}]";
+
+// Java: java/util/regex/CharPredicates.java CharPredicates.getUnicodePredicate
+/// The binary properties of `\p{IsX}`, as crate classes; both sides use Unicode 16.0.
+fn get_unicode_predicate(name: &str, case_ins: bool) -> Option<&'static str> {
+    Some(match name {
+        "ALPHABETIC" => r"[\p{Alphabetic}]",
+        // Character.getType(ch) != Character.UNASSIGNED
+        "ASSIGNED" => r"[^\p{Cn}]",
+        "CONTROL" => r"[\p{Cc}]",
+        "EMOJI" => r"[\p{Emoji}]",
+        "EMOJI_PRESENTATION" => r"[\p{Emoji_Presentation}]",
+        "EMOJI_MODIFIER" => r"[\p{Emoji_Modifier}]",
+        "EMOJI_MODIFIER_BASE" => r"[\p{Emoji_Modifier_Base}]",
+        "EMOJI_COMPONENT" => r"[\p{Emoji_Component}]",
+        "EXTENDED_PICTOGRAPHIC" => r"[\p{Extended_Pictographic}]",
+        "HEXDIGIT" | "HEX_DIGIT" => {
+            r"[\p{Nd}0-9A-Fa-f\x{FF10}-\x{FF19}\x{FF21}-\x{FF26}\x{FF41}-\x{FF46}]"
+        }
+        "IDEOGRAPHIC" => r"[\p{Ideographic}]",
+        "JOINCONTROL" | "JOIN_CONTROL" => r"[\x{200C}\x{200D}]",
+        // Character::isLetter
+        "LETTER" => r"[\p{L}]",
+        // Character::isLowerCase (Ll or Other_Lowercase), ::isUpperCase, ::isTitleCase (Lt)
+        "LOWERCASE" | "UPPERCASE" | "TITLECASE" if case_ins => {
+            r"[\p{Lowercase}\p{Uppercase}\p{Lt}]"
+        }
+        "LOWERCASE" => r"[\p{Lowercase}]",
+        "NONCHARACTERCODEPOINT" | "NONCHARACTER_CODE_POINT" => r"[\p{Noncharacter_Code_Point}]",
+        "TITLECASE" => r"[\p{Lt}]",
+        "PUNCTUATION" => r"[\p{P}]",
+        "UPPERCASE" => r"[\p{Uppercase}]",
+        "WHITESPACE" | "WHITE_SPACE" => WHITE_SPACE,
+        "WORD" => WORD,
+        _ => return None,
+    })
+}
+
+// Java: java/util/regex/CharPredicates.java CharPredicates.getPosixPredicate
+/// The Unicode variants of the POSIX classes (`\p{IsAlpha}`, or `\p{Alpha}` with
+/// `UNICODE_CHARACTER_CLASS`).
+fn get_posix_predicate(name: &str, case_ins: bool) -> Option<&'static str> {
+    Some(match name {
+        "ALPHA" => r"[\p{Alphabetic}]",
+        "LOWER" | "UPPER" if case_ins => r"[\p{Lowercase}\p{Uppercase}\p{Lt}]",
+        "LOWER" => r"[\p{Lowercase}]",
+        "UPPER" => r"[\p{Uppercase}]",
+        "SPACE" => WHITE_SPACE,
+        "PUNCT" => r"[\p{P}]",
+        "XDIGIT" => r"[\p{Nd}0-9A-Fa-f\x{FF10}-\x{FF19}\x{FF21}-\x{FF26}\x{FF41}-\x{FF46}]",
+        "ALNUM" => r"[\p{Alphabetic}\p{Nd}]",
+        "CNTRL" => r"[\p{Cc}]",
+        "DIGIT" => DIGIT,
+        // Character.getType(ch) == SPACE_SEPARATOR || ch == '\t'
+        "BLANK" => r"[\p{Zs}\t]",
+        // not Z, Cc, Cs, Cn
+        "GRAPH" => r"[^\p{Z}\p{Cc}\p{Cn}]",
+        // (GRAPH | BLANK) & !CONTROL
+        "PRINT" => r"[[[^\p{Z}\p{Cc}\p{Cn}][\p{Zs}\t]]&&[^\p{Cc}]]",
+        _ => return None,
+    })
+}
+
+/// `Character.toUpperCase(int)` (JDK 25).
+fn java_to_upper(c: u32) -> u32 {
+    match case_table::JAVA_CASE.binary_search_by_key(&c, |&(x, _, _)| x) {
+        Ok(i) => case_table::JAVA_CASE[i].1,
+        Err(_) => c,
+    }
+}
+
+/// `Character.toLowerCase(int)` (JDK 25).
+fn java_to_lower(c: u32) -> u32 {
+    match case_table::JAVA_CASE.binary_search_by_key(&c, |&(x, _, _)| x) {
+        Ok(i) => case_table::JAVA_CASE[i].2,
+        Err(_) => c,
+    }
+}
+
+/// The inside of a crate class for `SingleU(lower)`: `lower`, and every char whose
+/// `toLowerCase(toUpperCase(ch))` is `lower` (only the chars of the case table can differ from
+/// their own fold).
+fn single_u(lower: u32) -> String {
+    let mut s = hex(lower);
+    for &(x, up, _) in case_table::JAVA_CASE {
+        if x != lower && java_to_lower(up) == lower {
+            s.push_str(&hex(x));
+        }
+    }
+    s
+}
 
 /// A code point in the crate's syntax.
 fn hex(c: u32) -> String {
@@ -950,28 +1055,37 @@ impl Parser {
 
     /// `newCharProperty(single(ch))` outside a class.
     fn single_node(&mut self, c: u32) -> String {
-        self.literal(c)
+        self.literal(c, false)
     }
 
-    /// `newSlice(buf, count, hasSupplementary)`: `SliceI` folds ASCII letters only.
+    // Java: java/util/regex/Pattern.java:3690 Pattern.newSlice
+    /// `newSlice(buf, count, hasSupplementary)`: `SliceI` folds ASCII letters only, `SliceU`
+    /// compares `toLowerCase(toUpperCase(..))` of each char.
     fn new_slice(&mut self, chars: &[u32]) -> String {
         let mut s = String::new();
         for &c in chars {
-            s.push_str(&self.literal(c));
+            s.push_str(&self.literal(c, true));
         }
         s
     }
 
-    /// One literal char with the current flags (`Single`, `SingleI`, a char of a `Slice`).
-    fn literal(&mut self, c: u32) -> String {
+    /// One literal char with the current flags: `single(ch)` (`Single`, `SingleI`, `SingleU`)
+    /// or, with `slice`, one char of `newSlice` (`Slice`, `SliceI`, `SliceU`).
+    fn literal(&mut self, c: u32, slice: bool) -> String {
         if is_surrogate(c) || char::from_u32(c).is_none() {
             self.mark_unported(format!("surrogate code unit U+{c:04X} on its own"));
             return String::new();
         }
         if self.has(CASE_INSENSITIVE) {
             if self.has(UNICODE_CASE) {
-                self.mark_unported("UNICODE_CASE ((?u)) with CASE_INSENSITIVE");
-                return String::new();
+                let upper = java_to_upper(c);
+                let lower = java_to_lower(upper);
+                // single(): SingleU(lower) when upper != lower, else Single(ch); SliceU always
+                // compares the folded char.
+                if slice || upper != lower {
+                    return format!("[{}]", single_u(lower));
+                }
+                return hex(c);
             }
             let lower = ascii_to_lower(c);
             let upper = ascii_to_upper(c);
@@ -1033,9 +1147,19 @@ impl Parser {
                 if create {
                     self.guards.bound = true;
                 }
-                return Ok(Esc::Node(Node::Raw(r"(?-u:\B)".into())));
+                return Ok(Esc::Node(Node::Raw(if self.has(UNICODE_CHARACTER_CLASS) {
+                    r"\B".into()
+                } else {
+                    r"(?-u:\B)".into()
+                })));
             }
-            'D' => return Ok(Esc::Pred(ASCII_NON_DIGIT)),
+            'D' => {
+                return Ok(Esc::Pred(if self.has(UNICODE_CHARACTER_CLASS) {
+                    NON_DIGIT
+                } else {
+                    ASCII_NON_DIGIT
+                }));
+            }
             'G' => {
                 if inclass {
                     return illegal(self);
@@ -1056,9 +1180,21 @@ impl Parser {
                 }
                 return Ok(Esc::Node(Node::Raw(LINE_ENDING.into())));
             }
-            'S' => return Ok(Esc::Pred(ASCII_NON_SPACE)),
+            'S' => {
+                return Ok(Esc::Pred(if self.has(UNICODE_CHARACTER_CLASS) {
+                    NON_WHITE_SPACE
+                } else {
+                    ASCII_NON_SPACE
+                }));
+            }
             'V' => return Ok(Esc::Pred(NON_VERT_WS)),
-            'W' => return Ok(Esc::Pred(ASCII_NON_WORD)),
+            'W' => {
+                return Ok(Esc::Pred(if self.has(UNICODE_CHARACTER_CLASS) {
+                    NON_WORD
+                } else {
+                    ASCII_NON_WORD
+                }));
+            }
             'X' => {
                 if inclass {
                     return illegal(self);
@@ -1097,10 +1233,20 @@ impl Parser {
                     }
                     self.guards.bound = true;
                 }
-                return Ok(Esc::Node(Node::Raw(r"(?-u:\b)".into())));
+                return Ok(Esc::Node(Node::Raw(if self.has(UNICODE_CHARACTER_CLASS) {
+                    r"\b".into()
+                } else {
+                    r"(?-u:\b)".into()
+                })));
             }
             'c' => return Ok(Esc::Char(self.c()?)),
-            'd' => return Ok(Esc::Pred(ASCII_DIGIT)),
+            'd' => {
+                return Ok(Esc::Pred(if self.has(UNICODE_CHARACTER_CLASS) {
+                    DIGIT
+                } else {
+                    ASCII_DIGIT
+                }));
+            }
             'e' => return Ok(Esc::Char(0x1B)),
             'f' => return Ok(Esc::Char(0x0C)),
             'h' => return Ok(Esc::Pred(HORIZ_WS)),
@@ -1125,7 +1271,13 @@ impl Parser {
             }
             'n' => return Ok(Esc::Char(ch('\n'))),
             'r' => return Ok(Esc::Char(ch('\r'))),
-            's' => return Ok(Esc::Pred(ASCII_SPACE)),
+            's' => {
+                return Ok(Esc::Pred(if self.has(UNICODE_CHARACTER_CLASS) {
+                    WHITE_SPACE
+                } else {
+                    ASCII_SPACE
+                }));
+            }
             't' => return Ok(Esc::Char(ch('\t'))),
             'u' => return Ok(Esc::Char(self.u()?)),
             'v' => {
@@ -1135,7 +1287,13 @@ impl Parser {
                 }
                 return Ok(Esc::Pred(VERT_WS));
             }
-            'w' => return Ok(Esc::Pred(ASCII_WORD)),
+            'w' => {
+                return Ok(Esc::Pred(if self.has(UNICODE_CHARACTER_CLASS) {
+                    WORD
+                } else {
+                    ASCII_WORD
+                }));
+            }
             'x' => return Ok(Esc::Char(self.x()?)),
             'z' => {
                 if inclass {
@@ -1266,7 +1424,8 @@ impl Parser {
                     bits.bits.push(ascii_to_upper(c));
                     bits.bits.push(ascii_to_lower(c));
                 } else if self.has(UNICODE_CASE) {
-                    self.mark_unported("UNICODE_CASE ((?u)) with CASE_INSENSITIVE");
+                    bits.bits.push(java_to_lower(c));
+                    bits.bits.push(java_to_upper(c));
                 }
             }
             bits.bits.push(c);
@@ -1284,7 +1443,12 @@ impl Parser {
         }
         if self.has(CASE_INSENSITIVE) {
             if self.has(UNICODE_CASE) {
-                self.mark_unported("UNICODE_CASE ((?u)) with CASE_INSENSITIVE");
+                let upper = java_to_upper(c);
+                let lower = java_to_lower(upper);
+                // Unicode case insensitive matches
+                if upper != lower {
+                    return single_u(lower);
+                }
             } else if c < 0x80 {
                 let lower = ascii_to_lower(c);
                 let upper = ascii_to_upper(c);
@@ -1349,10 +1513,17 @@ impl Parser {
                     self.mark_unported("surrogate code unit in a class range");
                 }
                 let mut s = format!("[{}-{}", hex(c), hex(m));
-                if self.has(CASE_INSENSITIVE) {
-                    if self.has(UNICODE_CASE) {
-                        self.mark_unported("UNICODE_CASE ((?u)) with CASE_INSENSITIVE");
+                if self.has(CASE_INSENSITIVE) && self.has(UNICODE_CASE) {
+                    // CIRangeU: a char also matches when its upper case, or the lower case of
+                    // that, is in range; only the chars of the case table change.
+                    for &(x, up, _) in case_table::JAVA_CASE {
+                        if !(c..=m).contains(&x)
+                            && ((c..=m).contains(&up) || (c..=m).contains(&java_to_lower(up)))
+                        {
+                            s.push_str(&hex(x));
+                        }
                     }
+                } else if self.has(CASE_INSENSITIVE) {
                     // CIRange: an ASCII input char also matches when its other case is in range.
                     for letter in (ch('A')..=ch('Z')).chain(ch('a')..=ch('z')) {
                         let other = if letter < ch('a') {
@@ -1440,7 +1611,13 @@ impl Parser {
                 },
             }
         } else {
-            match self.for_property(&name, ci) {
+            let posix = if self.has(UNICODE_CHARACTER_CLASS) {
+                // CharPredicates.forPOSIXName
+                get_posix_predicate(&name.to_uppercase(), ci).map(str::to_string)
+            } else {
+                None
+            };
+            match posix.or_else(|| self.for_property(&name, ci)) {
                 Some(p) => Some(p),
                 None => {
                     return Err(self.error(&format!("Unknown character property name {{{name}}}")));
@@ -1453,54 +1630,10 @@ impl Parser {
 
     // Java: java/util/regex/CharPredicates.java:225 CharPredicates.forUnicodeProperty
     fn for_unicode_property(&mut self, name: &str, ci: bool) -> Option<String> {
-        // getUnicodePredicate
-        let unicode = match name {
-            "ALPHABETIC" => Some(r"\p{Alphabetic}"),
-            "LOWERCASE" if !ci => Some(r"\p{Lowercase}"),
-            "UPPERCASE" if !ci => Some(r"\p{Uppercase}"),
-            "WHITESPACE" | "WHITE_SPACE" => Some(r"\p{White_Space}"),
-            "ASSIGNED"
-            | "CONTROL"
-            | "EMOJI"
-            | "EMOJI_PRESENTATION"
-            | "EMOJI_MODIFIER"
-            | "EMOJI_MODIFIER_BASE"
-            | "EMOJI_COMPONENT"
-            | "EXTENDED_PICTOGRAPHIC"
-            | "HEXDIGIT"
-            | "HEX_DIGIT"
-            | "IDEOGRAPHIC"
-            | "JOINCONTROL"
-            | "JOIN_CONTROL"
-            | "LETTER"
-            | "LOWERCASE"
-            | "NONCHARACTERCODEPOINT"
-            | "NONCHARACTER_CODE_POINT"
-            | "TITLECASE"
-            | "PUNCTUATION"
-            | "UPPERCASE"
-            | "WORD" => {
-                self.mark_unported(format!("Unicode property \\p{{Is{name}}}"));
-                Some("")
-            }
-            _ => None,
-        };
-        if let Some(p) = unicode {
-            return Some(if p.is_empty() {
-                hex(0)
-            } else {
-                format!("[{p}]")
-            });
+        if let Some(p) = get_unicode_predicate(name, ci) {
+            return Some(p.to_string());
         }
-        // getPosixPredicate: the Unicode variants of the POSIX classes.
-        match name {
-            "ALPHA" | "LOWER" | "UPPER" | "SPACE" | "PUNCT" | "XDIGIT" | "ALNUM" | "CNTRL"
-            | "DIGIT" | "BLANK" | "GRAPH" | "PRINT" => {
-                self.mark_unported(format!("Unicode POSIX property \\p{{Is{name}}}"));
-                Some(hex(0))
-            }
-            _ => None,
-        }
+        get_posix_predicate(name, ci).map(str::to_string)
     }
 
     // Java: java/util/regex/CharPredicates.java:268 CharPredicates.forProperty
@@ -1645,9 +1778,6 @@ impl Parser {
                     }
                     if self.has(CANON_EQ) {
                         self.mark_unported("CANON_EQ ((?c))");
-                    }
-                    if self.has(UNICODE_CHARACTER_CLASS) {
-                        self.mark_unported("UNICODE_CHARACTER_CLASS ((?U))");
                     }
                     c = self.read();
                     if c == ch(')') {

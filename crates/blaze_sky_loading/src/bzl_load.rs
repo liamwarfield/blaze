@@ -1066,6 +1066,43 @@ impl BzlLoadFunction {
         // Ensure the .bzl exists and passes static checks (parsing, resolving).
         // (A missing prelude file still returns a valid but empty BzlCompileValue.)
         if !compile_value.lookup_successful() {
+            // Java: BzlCompileFunction.java:234 Program.compileFile and :240
+            // addSyntaxErrorsToListener: every static error of the file, with the predeclared
+            // names (see `BzlCompileValue::Failure`'s `deferred`).
+            if let Some(d) = compile_value.deferred() {
+                let globals = self.get_and_digest_predeclared_environment(
+                    key,
+                    builtins,
+                    &mut Fingerprint::new(),
+                );
+                let compile_env = self.compile_environment(key);
+                let semantics = &builtins.starlark_semantics;
+                let label = key.get_label();
+                let names = globals.names().map(|n| n.as_str().to_owned()).collect();
+                let guarded = |name: &str| {
+                    blaze_packages::builtins::env::guarded_symbol_error(
+                        compile_env,
+                        name,
+                        semantics,
+                        Some(label),
+                    )
+                };
+                if let Err(e) = blaze_starlark::eval::compile_and_resolve(
+                    d.kind,
+                    d.options,
+                    &d.input_name,
+                    d.source.clone(),
+                    names,
+                    &guarded,
+                ) && let blaze_starlark::error::EvalErrorKind::Syntax(errors) = &e.kind
+                {
+                    BzlCompileFunction::add_syntax_errors_to_listener(
+                        env.listener(),
+                        errors,
+                        &d.key,
+                    );
+                }
+            }
             return Ok(Err(BzlLoadFailedException::new(
                 compile_value.get_error(),
                 StarlarkLoadingCode::CompileError,

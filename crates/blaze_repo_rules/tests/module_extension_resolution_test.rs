@@ -14,11 +14,13 @@ use blaze_bzlmod_model::ModuleExtensionId;
 use blaze_bzlmod_model::ModuleExtensionUsage;
 use blaze_bzlmod_model::ModuleExtensionUsageProxy;
 use blaze_bzlmod_model::UseAllRepos;
+use blaze_bzlmod_model::{IsolationKey, ModuleKey};
 use blaze_cmdline::Label;
 use blaze_events::{EventKind, EventKindSet, Location};
 use blaze_repo_rules::bzlmod::module_extension_metadata::generate_fixup;
+use blaze_repo_rules::precomputed::RequireRepoExtensionMetadataMode;
 use blaze_sky_loading::bzl_load::BzlLoadKey;
-use blaze_sky_top::testing::{BuildViewTestCase, create_module_key};
+use blaze_sky_top::testing::{BuildViewTestCase, InjectedPrecomputedValue, create_module_key};
 use blaze_skyframe::{EvaluationResult, Key, SkyKey};
 use blaze_vfs::PathFragment;
 use indexmap::IndexMap;
@@ -128,6 +130,14 @@ impl Evaluated<BzlLoadKey> {
             .unpack_str()
             .unwrap_or_else(|| panic!("global {name} is not a string: {}", global.value()))
             .to_string()
+    }
+
+    /// `result.get(skyKey).getModule().getGlobal(name)`.
+    fn global_value(&self, name: &str) -> starlark::values::OwnedFrozenValue {
+        self.get()
+            .get_module()
+            .get(name)
+            .unwrap_or_else(|e| panic!("no global {name}: {e}"))
     }
 
     /// `(List<?>) result.get(skyKey).getModule().getGlobal(name)` of strings.
@@ -265,6 +275,83 @@ fn assert_contains(actual: &str, expected: &str) {
 
 fn warning_kinds() -> EventKindSet {
     EventKindSet::of(&[EventKind::Warning])
+}
+
+// Java: ModuleExtensionResolutionTest#setRequireRepoExtensionMetadataMode
+fn set_require_repo_extension_metadata_mode(
+    t: &mut BuildViewTestCase,
+    mode: RequireRepoExtensionMetadataMode,
+) {
+    t.inject_extra_precomputed_values(&[InjectedPrecomputedValue::RequireRepoExtensionMetadata(
+        mode,
+    )]);
+}
+
+// Java: ModuleExtensionResolutionTest#setupRootUseRepoRuleReturning
+fn setup_root_use_repo_rule_returning(t: &mut BuildViewTestCase, return_statement: &str) {
+    t.scratch.overwrite_file(
+        "MODULE.bazel",
+        &[
+            "repo = use_repo_rule('//:repo.bzl', 'repo')",
+            "repo(name = 'foo')",
+        ],
+    );
+    t.scratch.overwrite_file("BUILD", &[]);
+    t.scratch.file(
+        "data.bzl",
+        &[
+            "load('@foo//:data.bzl', repo_data = 'data')",
+            "data = repo_data",
+        ],
+    );
+    t.scratch.file(
+        "repo.bzl",
+        &[
+            "def _repo_impl(ctx):",
+            "  ctx.file('BUILD')",
+            "  ctx.file('data.bzl', \"data = 'ok'\")",
+            &indent(return_statement, 2),
+            "repo = repository_rule(implementation = _repo_impl)",
+        ],
+    );
+    t.invalidate_packages();
+}
+
+/// `SkyframeExecutorTestUtils.evaluate(skyframeExecutor, SingleExtensionValue.key(
+/// ModuleExtensionId.create(Label.parseCanonical(label), name, Optional.empty())), false,
+/// reporter)`.
+fn evaluate_extension(
+    t: &mut BuildViewTestCase,
+    label: &str,
+    name: &str,
+) -> Evaluated<SingleExtensionKey> {
+    let key = SingleExtensionValue::key(ModuleExtensionId::create(
+        Label::parse_canonical(label).unwrap_or_else(|e| panic!("{e:?}")),
+        name,
+        None,
+    ));
+    let result = t.evaluate(&[SkyKey::new(key.clone())], false);
+    Evaluated { result, key }
+}
+
+/// [`done_eval_value`] with `Optional.of(ModuleExtensionId.IsolationKey.create(ModuleKey.ROOT,
+/// usage_exported_name))`.
+fn done_isolated_eval_value(
+    t: &mut BuildViewTestCase,
+    label: &str,
+    name: &str,
+    usage_exported_name: &str,
+) -> Arc<SingleExtensionValue> {
+    let key = SingleExtensionValue::eval_key(ModuleExtensionId::create(
+        Label::parse_canonical(label).unwrap_or_else(|e| panic!("{e:?}")),
+        name,
+        Some(IsolationKey::create(ModuleKey::root(), usage_exported_name)),
+    ));
+    t.get_evaluator()
+        .get_existing_value(&SkyKey::new(key))
+        .expect("a done SINGLE_EXTENSION_EVAL value")
+        .downcast::<SingleExtensionValue>()
+        .unwrap_or_else(|_| panic!("not a SingleExtensionValue"))
 }
 
 // Java: ModuleExtensionResolutionTest.simpleExtension
@@ -625,8 +712,66 @@ fn multiple_modules_dev_dependency() {
 
 // Java: ModuleExtensionResolutionTest.multipleModules_ignoreDevDependency
 #[test]
-#[ignore = "needs skyframeExecutor.injectExtraPrecomputedValues in the harness (Blaze's SkyframeExecutor takes the precomputed values from the options it is built with)"]
-fn multiple_modules_ignore_dev_dependency() {}
+fn multiple_modules_ignore_dev_dependency() {
+    let mut t = new_test();
+    t.scratch.overwrite_file(
+        "MODULE.bazel",
+        &[
+            "bazel_dep(name='ext',version='1.0')",
+            "bazel_dep(name='foo',version='1.0')",
+            "bazel_dep(name='bar',version='2.0')",
+            "ext = use_extension('@ext//:defs.bzl','ext',dev_dependency=True)",
+            "ext.tag(data='root')",
+            "use_repo(ext,'ext_repo')",
+        ],
+    );
+    t.registry().add_module(
+        &create_module_key("foo", "1.0"),
+        &[
+            "module(name='foo',version='1.0')",
+            "bazel_dep(name='ext',version='1.0')",
+            "ext = use_extension('@ext//:defs.bzl','ext',dev_dependency=True)",
+            "ext.tag(data='foo@1.0')",
+        ],
+    );
+    t.registry().add_module(
+        &create_module_key("bar", "2.0"),
+        &[
+            "module(name='bar',version='2.0')",
+            "bazel_dep(name='ext',version='1.0')",
+            "ext = use_extension('@ext//:defs.bzl','ext')",
+            "ext.tag(data='bar@2.0')",
+        ],
+    );
+    t.registry().add_module(
+        &create_module_key("ext", "1.0"),
+        &[
+            "module(name='ext',version='1.0')",
+            "bazel_dep(name='data_repo',version='1.0')",
+        ],
+    );
+    t.scratch.file(&module_path(&t, "ext+1.0/REPO.bazel"), &[]);
+    t.scratch.file(&module_path(&t, "ext+1.0/BUILD"), &[]);
+    t.scratch.file(
+        &module_path(&t, "ext+1.0/defs.bzl"),
+        &[
+            "load('@data_repo//:defs.bzl','data_repo')",
+            "def _ext_impl(ctx):",
+            "  data_str = 'modules:'",
+            "  for mod in ctx.modules:",
+            "    for tag in mod.tags.tag:",
+            "      data_str += ' ' + tag.data + ' ' + str(ctx.is_dev_dependency(tag))",
+            "  data_repo(name='ext_repo',data=data_str)",
+            "tag=tag_class(attrs={'data':attr.string()})",
+            "ext=module_extension(implementation=_ext_impl,tag_classes={'tag':tag})",
+        ],
+    );
+    t.inject_extra_precomputed_values(&[InjectedPrecomputedValue::IgnoreDevDeps(true)]);
+    t.invalidate_packages();
+    let result = evaluate_bzl(&mut t, "@@ext++ext+ext_repo//:data.bzl");
+    result.throw_if_error();
+    assert_eq!(result.global_str("data"), "modules: bar@2.0 False");
+}
 
 // Java: ModuleExtensionResolutionTest.multipleModules_isolatedUsages
 #[test]
@@ -796,7 +941,7 @@ fn labels_read_in_module_extension() {
 
 // Java: ModuleExtensionResolutionTest.labels_passedOnToRepoRule
 #[test]
-#[ignore = "not ported yet: Java statement not transcribed: `SkyKey extensionSkyKey = SingleExtensionValue.key(ModuleExtensionId.create(Label.parseCanonicalUnche`"]
+#[ignore = "not ported yet: asserts the lockfile's recorded inputs (RepoRecordedInput.WithValue of a RecordedRepoMapping)"]
 fn labels_passed_on_to_repo_rule() {}
 
 // Java: ModuleExtensionResolutionTest.labels_fromExtensionGeneratedRepo
@@ -1507,8 +1652,49 @@ Error: in call to 'data_repo' repo rule with name 'ext', no repository visible a
 
 // Java: ModuleExtensionResolutionTest.nonVisibleLabelInLabelAttrForwardedFromTag
 #[test]
-#[ignore = "not ported yet: Java statement not transcribed: `assertThat(result.getError().getException()) .hasMessageThat() .isEqualTo(''' Traceback`"]
-fn non_visible_label_in_label_attr_forwarded_from_tag() {}
+#[ignore = "BLAZE GAP (finding): the Starlark traceback of a repository rule call error lacks the source line of each frame; Bazel prints the line text under every File line (expected event text is the Java test's)"]
+fn non_visible_label_in_label_attr_forwarded_from_tag() {
+    let mut t = new_test();
+    t.scratch.overwrite_file(
+        "MODULE.bazel",
+        &[
+            "ext = use_extension('//:defs.bzl','ext')",
+            "ext.label(label = '@other_repo//:foo')",
+            "use_repo(ext,'ext')",
+        ],
+    );
+    t.scratch.file(
+        "defs.bzl",
+        &[
+            "def _data_repo_impl(ctx):",
+            "  ctx.file('BUILD')",
+            "data_repo = repository_rule(",
+            "  implementation=_data_repo_impl,",
+            "  attrs={'data':attr.label()})",
+            "def _ext_impl(ctx):",
+            "  data_repo(name='other_repo')",
+            "  data_repo(name='ext',data=ctx.modules[0].tags.label[0].label)",
+            "label=tag_class(attrs={'label':attr.label()})",
+            "ext = module_extension(",
+            "  implementation=_ext_impl,",
+            "  tag_classes={'label':label},",
+            ")",
+        ],
+    );
+    t.scratch.overwrite_file("BUILD", &[]);
+    t.scratch.file(
+        "data.bzl",
+        &["load('@ext//:data.bzl', ext_data='data')", "data=ext_data"],
+    );
+    t.invalidate_packages();
+    t.remove_fail_fast_handler();
+    let result = evaluate_bzl(&mut t, "//:data.bzl");
+    assert!(result.has_error());
+    assert_eq!(result.error_message(), t.ws(r#"Traceback (most recent call last):
+	File "/workspace/MODULE.bazel", line 2, column 10, in <toplevel>
+		ext.label(label = '@other_repo//:foo')
+Error: in 'label' tag, no repository visible as '@other_repo' to the root module, but referenced by label '@other_repo//:foo' in attribute 'label'"#));
+}
 
 // Java: ModuleExtensionResolutionTest.nonVisibleLabelInLabelListAttr
 #[test]
@@ -2470,17 +2656,219 @@ fn extension_metadata_no_root_usage() {
 
 // Java: ModuleExtensionResolutionTest.extensionMetadata_isolated
 #[test]
-#[ignore = "not ported yet: Java statement not transcribed: `SingleExtensionValue ext1Value = (SingleExtensionValue) skyframeExecutor .getEvaluator() .getDoneVal`"]
-fn extension_metadata_isolated() {}
+fn extension_metadata_isolated() {
+    let mut t = new_test();
+    t.scratch.overwrite_file(
+        "MODULE.bazel",
+        &[
+            "bazel_dep(name='ext', version='1.0')",
+            "bazel_dep(name='data_repo',version='1.0')",
+            "ext1 = use_extension('@ext//:defs.bzl', 'ext', isolate = True)",
+            "use_repo(",
+            "  ext1,",
+            "  'indirect_dep',",
+            ")",
+            "ext2 = use_extension('@ext//:defs.bzl', 'ext', isolate = True)",
+            "use_repo(",
+            "  ext2,",
+            "  'direct_dep',",
+            ")",
+        ],
+    );
+    t.scratch.overwrite_file("BUILD", &[]);
+    t.scratch.file(
+        "data.bzl",
+        &[
+            "load('@direct_dep//:data.bzl', data_1='data')",
+            "load('@indirect_dep//:data.bzl', data_2='data')",
+        ],
+    );
+    t.registry().add_module(
+        &create_module_key("ext", "1.0"),
+        &[
+            "module(name='ext',version='1.0')",
+            "bazel_dep(name='data_repo',version='1.0')",
+            "ext = use_extension('//:defs.bzl', 'ext')",
+            "use_repo(ext, 'indirect_dep')",
+        ],
+    );
+    t.scratch.file(&module_path(&t, "ext+1.0/REPO.bazel"), &[]);
+    t.scratch.file(&module_path(&t, "ext+1.0/BUILD"), &[]);
+    t.scratch.file(
+        &module_path(&t, "ext+1.0/defs.bzl"),
+        &[
+            "load('@data_repo//:defs.bzl','data_repo')",
+            "def _ext_impl(ctx):",
+            "  data_repo(name='direct_dep')",
+            "  data_repo(name='missing_direct_dep')",
+            "  data_repo(name='indirect_dep')",
+            "  return ctx.extension_metadata(",
+            "    root_module_direct_deps=['direct_dep', 'missing_direct_dep'],",
+            "    root_module_direct_dev_deps=[],",
+            "  )",
+            "ext=module_extension(implementation=_ext_impl)",
+        ],
+    );
+    t.set_build_language_options(&["--experimental_isolated_extension_usages"]);
+    t.invalidate_packages();
+    // Evaluation fails due to the import of a repository not generated by the extension, but we
+    // only want to assert that the warning is emitted.
+    t.remove_fail_fast_handler();
+    let result = evaluate_bzl(&mut t, "//:data.bzl");
+    result.throw_if_error();
+    assert_event_count(&t, 2);
+    t.assert_contains_event_of_kinds(&t.ws("WARNING /workspace/MODULE.bazel:3:21: The module extension ext defined in @ext//:defs.bzl reported incorrect imports of repositories via use_repo():
+
+Not imported, but reported as direct dependencies by the extension (may cause the build to fail):
+    direct_dep, missing_direct_dep
+
+Imported, but reported as indirect dependencies by the extension:
+    indirect_dep
+
+Fix the use_repo calls by running 'bazel mod tidy'."), warning_kinds());
+    t.assert_contains_event_of_kinds(&t.ws("WARNING /workspace/MODULE.bazel:8:21: The module extension ext defined in @ext//:defs.bzl reported incorrect imports of repositories via use_repo():
+
+Not imported, but reported as direct dependencies by the extension (may cause the build to fail):
+    missing_direct_dep
+
+Fix the use_repo calls by running 'bazel mod tidy'."), warning_kinds());
+    let ext1_value = done_isolated_eval_value(&mut t, "@@ext+//:defs.bzl", "ext", "ext1");
+    assert!(ext1_value.fixup.is_some());
+    assert_buildozer_commands(
+        &ext1_value,
+        &[
+            (
+                "MODULE.bazel",
+                "use_repo_add ext1 direct_dep missing_direct_dep",
+            ),
+            ("MODULE.bazel", "use_repo_remove ext1 indirect_dep"),
+        ],
+    );
+    assert_eq!(
+        ext1_value.fixup.as_ref().unwrap().get_success_message(),
+        "Updated use_repo calls for isolated usage 'ext1' of @ext//:defs.bzl%ext"
+    );
+    let ext2_value = done_isolated_eval_value(&mut t, "@@ext+//:defs.bzl", "ext", "ext2");
+    assert!(ext2_value.fixup.is_some());
+    assert_buildozer_commands(
+        &ext2_value,
+        &[("MODULE.bazel", "use_repo_add ext2 missing_direct_dep")],
+    );
+    assert_eq!(
+        ext2_value.fixup.as_ref().unwrap().get_success_message(),
+        "Updated use_repo calls for isolated usage 'ext2' of @ext//:defs.bzl%ext"
+    );
+}
 
 // Java: ModuleExtensionResolutionTest.extensionMetadata_isolatedDev
 #[test]
-#[ignore = "not ported yet: Java statement not transcribed: `SingleExtensionValue ext1Value = (SingleExtensionValue) skyframeExecutor .getEvaluator() .getDoneVal`"]
-fn extension_metadata_isolated_dev() {}
+fn extension_metadata_isolated_dev() {
+    let mut t = new_test();
+    t.scratch.overwrite_file(
+        "MODULE.bazel",
+        &[
+            "bazel_dep(name='ext', version='1.0')",
+            "bazel_dep(name='data_repo',version='1.0')",
+            "ext1 = use_extension('@ext//:defs.bzl', 'ext', isolate = True, dev_dependency = True)",
+            "use_repo(",
+            "  ext1,",
+            "  'indirect_dep',",
+            ")",
+            "ext2 = use_extension('@ext//:defs.bzl', 'ext', isolate = True, dev_dependency = True)",
+            "use_repo(",
+            "  ext2,",
+            "  'direct_dep',",
+            ")",
+        ],
+    );
+    t.scratch.overwrite_file("BUILD", &[]);
+    t.scratch.file(
+        "data.bzl",
+        &[
+            "load('@direct_dep//:data.bzl', data_1='data')",
+            "load('@indirect_dep//:data.bzl', data_2='data')",
+        ],
+    );
+    t.registry().add_module(
+        &create_module_key("ext", "1.0"),
+        &[
+            "module(name='ext',version='1.0')",
+            "bazel_dep(name='data_repo',version='1.0')",
+            "ext = use_extension('//:defs.bzl', 'ext')",
+            "use_repo(ext, 'indirect_dep')",
+        ],
+    );
+    t.scratch.file(&module_path(&t, "ext+1.0/REPO.bazel"), &[]);
+    t.scratch.file(&module_path(&t, "ext+1.0/BUILD"), &[]);
+    t.scratch.file(
+        &module_path(&t, "ext+1.0/defs.bzl"),
+        &[
+            "load('@data_repo//:defs.bzl','data_repo')",
+            "def _ext_impl(ctx):",
+            "  data_repo(name='direct_dep')",
+            "  data_repo(name='missing_direct_dep')",
+            "  data_repo(name='indirect_dep')",
+            "  return ctx.extension_metadata(",
+            "    root_module_direct_deps=[],",
+            "    root_module_direct_dev_deps=['direct_dep', 'missing_direct_dep'],",
+            "  )",
+            "ext=module_extension(implementation=_ext_impl)",
+        ],
+    );
+    t.set_build_language_options(&["--experimental_isolated_extension_usages"]);
+    t.invalidate_packages();
+    // Evaluation fails due to the import of a repository not generated by the extension, but we
+    // only want to assert that the warning is emitted.
+    t.remove_fail_fast_handler();
+    let result = evaluate_bzl(&mut t, "//:data.bzl");
+    result.throw_if_error();
+    assert_event_count(&t, 2);
+    t.assert_contains_event_of_kinds(&t.ws("WARNING /workspace/MODULE.bazel:3:21: The module extension ext defined in @ext//:defs.bzl reported incorrect imports of repositories via use_repo():
+
+Not imported, but reported as direct dependencies by the extension (may cause the build to fail):
+    direct_dep, missing_direct_dep
+
+Imported, but reported as indirect dependencies by the extension:
+    indirect_dep
+
+Fix the use_repo calls by running 'bazel mod tidy'."), warning_kinds());
+    t.assert_contains_event_of_kinds(&t.ws("WARNING /workspace/MODULE.bazel:8:21: The module extension ext defined in @ext//:defs.bzl reported incorrect imports of repositories via use_repo():
+
+Not imported, but reported as direct dependencies by the extension (may cause the build to fail):
+    missing_direct_dep
+
+Fix the use_repo calls by running 'bazel mod tidy'."), warning_kinds());
+    let ext1_value = done_isolated_eval_value(&mut t, "@@ext+//:defs.bzl", "ext", "ext1");
+    assert!(ext1_value.fixup.is_some());
+    assert_buildozer_commands(
+        &ext1_value,
+        &[
+            (
+                "MODULE.bazel",
+                "use_repo_add ext1 direct_dep missing_direct_dep",
+            ),
+            ("MODULE.bazel", "use_repo_remove ext1 indirect_dep"),
+        ],
+    );
+    assert_eq!(
+        ext1_value.fixup.as_ref().unwrap().get_success_message(),
+        "Updated use_repo calls for isolated usage 'ext1' of @ext//:defs.bzl%ext"
+    );
+    let ext2_value = done_isolated_eval_value(&mut t, "@@ext+//:defs.bzl", "ext", "ext2");
+    assert!(ext2_value.fixup.is_some());
+    assert_buildozer_commands(
+        &ext2_value,
+        &[("MODULE.bazel", "use_repo_add ext2 missing_direct_dep")],
+    );
+    assert_eq!(
+        ext2_value.fixup.as_ref().unwrap().get_success_message(),
+        "Updated use_repo calls for isolated usage 'ext2' of @ext//:defs.bzl%ext"
+    );
+}
 
 // Java: ModuleExtensionResolutionTest.facts_supportedTypes
 #[test]
-#[ignore = "not ported yet: Java statement not transcribed: `var facts = Iterables.getOnlyElement(result.values()).facts().value();`"]
+#[ignore = "not ported yet: compares the facts Dict with a Java map of Starlark values (StarlarkInt, StarlarkFloat, StarlarkList, Dict)"]
 fn facts_supported_types() {}
 
 // Java: ModuleExtensionResolutionTest.facts_unsupportedType
@@ -2558,48 +2946,167 @@ fn require_repo_extension_metadata_default_allows_module_extension_default() {
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_allErrorsForModuleExtensionDefault
 #[test]
-#[ignore = "needs skyframeExecutor.injectExtraPrecomputedValues in the harness (Blaze's SkyframeExecutor takes the precomputed values from the options it is built with)"]
-fn require_repo_extension_metadata_all_errors_for_module_extension_default() {}
+#[ignore = "BLAZE GAP: unported!(\"StarlarkFunction.getLocation\") in production (runnable_extension.rs / repository_fetch_function.rs) on the --incompatible_require_repo_extension_metadata error path"]
+fn require_repo_extension_metadata_all_errors_for_module_extension_default() {
+    let mut t = new_test();
+    set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::All);
+    t.remove_fail_fast_handler();
+    let result = evaluate_simple_module_extension(&mut t, "", false);
+    assert!(result.has_error());
+    assert_contains(&result.error_message(), "did not return extension_metadata");
+    assert_contains(
+        &result.error_message(),
+        "--incompatible_require_repo_extension_metadata=all requires it",
+    );
+}
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_rootErrorsForRootModuleExtensionDefault
 #[test]
-#[ignore = "needs skyframeExecutor.injectExtraPrecomputedValues in the harness (Blaze's SkyframeExecutor takes the precomputed values from the options it is built with)"]
-fn require_repo_extension_metadata_root_errors_for_root_module_extension_default() {}
+#[ignore = "BLAZE GAP: unported!(\"StarlarkFunction.getLocation\") in production (runnable_extension.rs / repository_fetch_function.rs) on the --incompatible_require_repo_extension_metadata error path"]
+fn require_repo_extension_metadata_root_errors_for_root_module_extension_default() {
+    let mut t = new_test();
+    set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::Root);
+    t.remove_fail_fast_handler();
+    let result = evaluate_simple_module_extension(&mut t, "", false);
+    assert!(result.has_error());
+    assert_contains(&result.error_message(), "did not return extension_metadata");
+    assert_contains(
+        &result.error_message(),
+        "--incompatible_require_repo_extension_metadata=root requires it",
+    );
+}
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_rootAllowsDepDefinedModuleExtensionUsedByRootModule
 #[test]
-#[ignore = "needs skyframeExecutor.injectExtraPrecomputedValues in the harness (Blaze's SkyframeExecutor takes the precomputed values from the options it is built with)"]
-fn require_repo_extension_metadata_root_allows_dep_defined_module_extension_used_by_root_module() {}
+fn require_repo_extension_metadata_root_allows_dep_defined_module_extension_used_by_root_module() {
+    let mut t = new_test();
+    set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::Root);
+    t.scratch.overwrite_file(
+        "MODULE.bazel",
+        &[
+            "module(name='root')",
+            "bazel_dep(name='foo', version='1.0')",
+            "ext = use_extension('@foo//:defs.bzl', 'ext')",
+        ],
+    );
+    t.registry().add_module(
+        &create_module_key("foo", "1.0"),
+        &["module(name='foo', version='1.0')"],
+    );
+    t.scratch.file(&module_path(&t, "foo+1.0/REPO.bazel"), &[]);
+    t.scratch.file(&module_path(&t, "foo+1.0/BUILD"), &[]);
+    t.scratch.file(
+        &module_path(&t, "foo+1.0/defs.bzl"),
+        &[
+            "def _ext_impl(ctx):",
+            "  pass",
+            "ext = module_extension(implementation=_ext_impl)",
+        ],
+    );
+    t.scratch.overwrite_file("BUILD", &[]);
+    t.invalidate_packages();
+    let result = evaluate_extension(&mut t, "@@foo+//:defs.bzl", "ext");
+    result.throw_if_error();
+}
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_allAllowsExplicitModuleExtensionMetadata
 #[test]
-#[ignore = "needs skyframeExecutor.injectExtraPrecomputedValues in the harness (Blaze's SkyframeExecutor takes the precomputed values from the options it is built with)"]
-fn require_repo_extension_metadata_all_allows_explicit_module_extension_metadata() {}
+fn require_repo_extension_metadata_all_allows_explicit_module_extension_metadata() {
+    let mut t = new_test();
+    set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::All);
+    let result = evaluate_simple_module_extension(&mut t, "return ctx.extension_metadata()", false);
+    result.throw_if_error();
+}
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_allErrorsForRepoRuleDefault
 #[test]
-#[ignore = "needs skyframeExecutor.injectExtraPrecomputedValues in the harness (Blaze's SkyframeExecutor takes the precomputed values from the options it is built with)"]
-fn require_repo_extension_metadata_all_errors_for_repo_rule_default() {}
+#[ignore = "BLAZE GAP: unported!(\"StarlarkFunction.getLocation\") in production (runnable_extension.rs / repository_fetch_function.rs) on the --incompatible_require_repo_extension_metadata error path"]
+fn require_repo_extension_metadata_all_errors_for_repo_rule_default() {
+    let mut t = new_test();
+    set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::All);
+    setup_root_use_repo_rule_returning(&mut t, "");
+    t.remove_fail_fast_handler();
+    let result = evaluate_bzl(&mut t, "//:data.bzl");
+    assert!(result.has_error());
+    t.assert_contains_event("did not return repo_metadata");
+    t.assert_contains_event("--incompatible_require_repo_extension_metadata=all requires it");
+}
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_rootErrorsForRootRepoRuleDefault
 #[test]
-#[ignore = "needs skyframeExecutor.injectExtraPrecomputedValues in the harness (Blaze's SkyframeExecutor takes the precomputed values from the options it is built with)"]
-fn require_repo_extension_metadata_root_errors_for_root_repo_rule_default() {}
+#[ignore = "BLAZE GAP: unported!(\"StarlarkFunction.getLocation\") in production (runnable_extension.rs / repository_fetch_function.rs) on the --incompatible_require_repo_extension_metadata error path"]
+fn require_repo_extension_metadata_root_errors_for_root_repo_rule_default() {
+    let mut t = new_test();
+    set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::Root);
+    setup_root_use_repo_rule_returning(&mut t, "");
+    t.remove_fail_fast_handler();
+    let result = evaluate_bzl(&mut t, "//:data.bzl");
+    assert!(result.has_error());
+    t.assert_contains_event("did not return repo_metadata");
+    t.assert_contains_event("--incompatible_require_repo_extension_metadata=root requires it");
+}
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_rootAllowsDepDefinedRepoRuleUsedByRootModule
 #[test]
-#[ignore = "needs skyframeExecutor.injectExtraPrecomputedValues in the harness (Blaze's SkyframeExecutor takes the precomputed values from the options it is built with)"]
-fn require_repo_extension_metadata_root_allows_dep_defined_repo_rule_used_by_root_module() {}
+fn require_repo_extension_metadata_root_allows_dep_defined_repo_rule_used_by_root_module() {
+    let mut t = new_test();
+    set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::Root);
+    t.scratch.overwrite_file(
+        "MODULE.bazel",
+        &[
+            "module(name='root')",
+            "bazel_dep(name='foo', version='1.0')",
+            "repo = use_repo_rule('@foo//:repo.bzl', 'repo')",
+            "repo(name = 'gen')",
+        ],
+    );
+    t.scratch.overwrite_file("BUILD", &[]);
+    t.scratch.file(
+        "data.bzl",
+        &[
+            "load('@gen//:data.bzl', repo_data = 'data')",
+            "data = repo_data",
+        ],
+    );
+    t.registry().add_module(
+        &create_module_key("foo", "1.0"),
+        &["module(name='foo', version='1.0')"],
+    );
+    t.scratch.file(&module_path(&t, "foo+1.0/REPO.bazel"), &[]);
+    t.scratch.file(&module_path(&t, "foo+1.0/BUILD"), &[]);
+    t.scratch.file(
+        &module_path(&t, "foo+1.0/repo.bzl"),
+        &[
+            "def _repo_impl(ctx):",
+            "  ctx.file('BUILD')",
+            r#"  ctx.file('data.bzl', "data = 'ok'")"#,
+            "repo = repository_rule(implementation = _repo_impl)",
+        ],
+    );
+    t.invalidate_packages();
+    let result = evaluate_bzl(&mut t, "//:data.bzl");
+    result.throw_if_error();
+}
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_allAllowsExplicitRepoMetadata
 #[test]
-#[ignore = "needs skyframeExecutor.injectExtraPrecomputedValues in the harness (Blaze's SkyframeExecutor takes the precomputed values from the options it is built with)"]
-fn require_repo_extension_metadata_all_allows_explicit_repo_metadata() {}
+fn require_repo_extension_metadata_all_allows_explicit_repo_metadata() {
+    let mut t = new_test();
+    set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::All);
+    setup_root_use_repo_rule_returning(&mut t, "return ctx.repo_metadata(reproducible = True)");
+    let result = evaluate_bzl(&mut t, "//:data.bzl");
+    result.throw_if_error();
+}
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_allAllowsLegacyRepoMetadataDict
 #[test]
-#[ignore = "needs skyframeExecutor.injectExtraPrecomputedValues in the harness (Blaze's SkyframeExecutor takes the precomputed values from the options it is built with)"]
-fn require_repo_extension_metadata_all_allows_legacy_repo_metadata_dict() {}
+fn require_repo_extension_metadata_all_allows_legacy_repo_metadata_dict() {
+    let mut t = new_test();
+    set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::All);
+    setup_root_use_repo_rule_returning(&mut t, "return {}");
+    let result = evaluate_bzl(&mut t, "//:data.bzl");
+    result.throw_if_error();
+}
 
 // Java: ModuleExtensionResolutionTest.isDevDependency_usages
 #[test]
@@ -2653,8 +3160,37 @@ fn is_dev_dependency_usages() {
 
 // Java: ModuleExtensionResolutionTest.printAndFailOnTag
 #[test]
-#[ignore = "not ported yet: Java statement not transcribed: `ModuleExtensionId extensionId = ModuleExtensionId.create(Label.parseCanonical('//:defs.bzl'), 'ext',`"]
-fn print_and_fail_on_tag() {}
+fn print_and_fail_on_tag() {
+    let mut t = new_test();
+    t.scratch.overwrite_file(
+        "MODULE.bazel",
+        &[
+            "ext = use_extension('//:defs.bzl', 'ext')",
+            "ext.foo()",
+            "ext.foo()",
+        ],
+    );
+    t.scratch.file(
+        "defs.bzl",
+        &[
+            "repo = repository_rule(lambda ctx: True)",
+            "def _ext_impl(ctx):",
+            "  tag1 = ctx.modules[0].tags.foo[0]",
+            "  tag2 = ctx.modules[0].tags.foo[1]",
+            "  print('Conflict between', tag1, 'and', tag2)",
+            "  fail('Fatal conflict between', tag1, 'and', tag2)",
+            "foo = tag_class()",
+            "ext = module_extension(implementation=_ext_impl,tag_classes={'foo':foo})",
+        ],
+    );
+    t.scratch.overwrite_file("BUILD", &[]);
+    t.invalidate_packages();
+    t.remove_fail_fast_handler();
+    let result = evaluate_extension(&mut t, "//:defs.bzl", "ext");
+    assert!(result.has_error());
+    t.assert_contains_event_of_kinds(&t.ws("Fatal conflict between 'foo' tag at /workspace/MODULE.bazel:2:8 and 'foo' tag at /workspace/MODULE.bazel:3:8"), EventKindSet::of(&[EventKind::Error]));
+    t.assert_contains_event_of_kinds(&t.ws("Conflict between 'foo' tag at /workspace/MODULE.bazel:2:8 and 'foo' tag at /workspace/MODULE.bazel:3:8"), EventKindSet::of(&[EventKind::Debug]));
+}
 
 // Java: ModuleExtensionResolutionTest.tagSortOrder
 #[test]
@@ -2785,8 +3321,49 @@ fn innate() {
 
 // Java: ModuleExtensionResolutionTest.innate_repoRuleDependencies
 #[test]
-#[ignore = "not ported yet: Java statement not transcribed: `if (result.hasError()) { if (result.getError().getException() != null) { throw result.getError().get`"]
-fn innate_repo_rule_dependencies() {}
+fn innate_repo_rule_dependencies() {
+    let mut t = new_test();
+    t.scratch.overwrite_file(
+        "MODULE.bazel",
+        &[
+            "bazel_dep(name='foo',version='1.0')",
+            "gen_data_repo = use_repo_rule('@foo//:repo.bzl', 'gen_data_repo')",
+            "gen_data_repo(name='gen_data_repo')",
+            "data_repo = use_repo_rule('@gen_data_repo//:repo.bzl', 'data_repo')",
+            "data_repo(name='data', data='get up at 6am.')",
+        ],
+    );
+    t.scratch.overwrite_file("BUILD", &[]);
+    t.scratch.file(
+        "data.bzl",
+        &["load('@data//:data.bzl', _data='data')", "data=_data"],
+    );
+    t.registry().add_module(
+        &create_module_key("foo", "1.0"),
+        &[
+            "module(name='foo',version='1.0')",
+            "bazel_dep(name='data_repo', version='1.0')",
+        ],
+    );
+    t.scratch.file(&module_path(&t, "foo+1.0/REPO.bazel"), &[]);
+    t.scratch.file(&module_path(&t, "foo+1.0/BUILD"), &[]);
+    t.scratch.file(
+        &module_path(&t, "foo+1.0/repo.bzl"),
+        &[
+            "def _gen_data_repo_impl(ctx):",
+            "  ctx.file('BUILD.bazel')",
+            "  ctx.file('repo.bzl', '''",
+            "load('{data_repo_defs}', _data_repo='data_repo')",
+            "data_repo=_data_repo",
+            "'''.format(data_repo_defs = Label('@data_repo//:defs.bzl')))",
+            "gen_data_repo = repository_rule(implementation=_gen_data_repo_impl)",
+        ],
+    );
+    t.invalidate_packages();
+    let result = evaluate_bzl(&mut t, "//:data.bzl");
+    result.throw_if_error();
+    assert_eq!(result.global_str("data"), "get up at 6am.");
+}
 
 // Java: ModuleExtensionResolutionTest.innate_noSuchRepoRule
 #[test]
@@ -3037,8 +3614,78 @@ other_ext=module_extension(implementation=_other_ext_impl)
 
 // Java: ModuleExtensionResolutionTest.overrideRepo_override
 #[test]
-#[ignore = "not ported yet: Java statement not transcribed: `Object overrideData = result.get(skyKey).getModule().getGlobal('override_data');`"]
-fn override_repo_override() {}
+fn override_repo_override() {
+    let mut t = new_test();
+    t.scratch.overwrite_file(
+        "MODULE.bazel",
+        &[r#"bazel_dep(name = "data_repo", version = "1.0")
+ext = use_extension("//:defs.bzl","ext")
+use_repo(ext, "bar", module_foo = "foo")
+data_repo = use_repo_rule("@data_repo//:defs.bzl", "data_repo")
+data_repo(name = "override", data = "overridden_data")
+override_repo(ext, foo = "override")
+"#],
+    );
+    t.scratch.overwrite_file("BUILD", &[]);
+    t.scratch.file(
+        "data.bzl",
+        &[r#"load("@bar//:list.bzl", _bar_list = "list")
+load("@override//:data.bzl", _override_data = "data")
+load("@module_foo//:data.bzl", _foo_data = "data")
+bar_list = _bar_list
+foo_data = _foo_data
+override_data = _override_data
+"#],
+    );
+    t.scratch.file(
+        "defs.bzl",
+        &[r#"load("@data_repo//:defs.bzl", "data_repo")
+def _list_repo_impl(ctx):
+  ctx.file("BUILD")
+  labels = [str(Label(l)) for l in ctx.attr.labels]
+  labels += [str(Label("@module_foo//:target3"))]
+  ctx.file("list.bzl", "list = " + repr(labels) + " + [str(Label('@foo//:target4'))]")
+list_repo = repository_rule(
+  implementation = _list_repo_impl,
+  attrs = {
+    "labels": attr.label_list(),
+  },
+)
+def _fail_repo_impl(ctx):
+  fail("This rule should not be evaluated")
+fail_repo = repository_rule(implementation = _fail_repo_impl)
+def _ext_impl(ctx):
+  fail_repo(name = "foo")
+  list_repo(
+    name = "bar",
+    labels = [
+      # lazy extension implementation function repository mapping
+      "@foo//:target1",
+      # module repo repository mapping
+      "@module_foo//:target2",
+    ],
+  )
+ext = module_extension(implementation = _ext_impl)
+"#],
+    );
+    t.invalidate_packages();
+    let result = evaluate_bzl(&mut t, "//:data.bzl");
+    result.throw_if_error();
+    assert_eq!(
+        result.global_str_list("bar_list"),
+        vec![
+            "@@+data_repo+override//:target1",
+            "@@+data_repo+override//:target2",
+            "@@+data_repo+override//:target3",
+            "@@+data_repo+override//:target4"
+        ]
+    );
+    let override_data = result.global_value("override_data");
+    assert!(override_data.value().unpack_str().is_some());
+    assert_eq!(override_data.value().unpack_str(), Some("overridden_data"));
+    let foo_data = result.global_value("foo_data");
+    assert!(foo_data.value().ptr_eq(override_data.value()));
+}
 
 // Java: ModuleExtensionResolutionTest.overrideRepo_override_onNonExistentRepoFails
 #[test]
@@ -3099,8 +3746,70 @@ ext = module_extension(implementation = _ext_impl)
 
 // Java: ModuleExtensionResolutionTest.overrideRepo_inject
 #[test]
-#[ignore = "not ported yet: Java statement not transcribed: `Object fooData = result.get(skyKey).getModule().getGlobal('foo_data');`"]
-fn override_repo_inject() {}
+fn override_repo_inject() {
+    let mut t = new_test();
+    t.scratch.overwrite_file(
+        "MODULE.bazel",
+        &[r#"bazel_dep(name = "data_repo", version = "1.0")
+ext = use_extension("//:defs.bzl","ext")
+use_repo(ext, "bar")
+data_repo = use_repo_rule("@data_repo//:defs.bzl", "data_repo")
+data_repo(name = "foo", data = "overridden_data")
+inject_repo(ext, "foo")
+"#],
+    );
+    t.scratch.overwrite_file("BUILD", &[]);
+    t.scratch.file(
+        "data.bzl",
+        &[r#"load("@bar//:list.bzl", _bar_list = "list")
+load("@foo//:data.bzl", _foo_data = "data")
+bar_list = _bar_list
+foo_data = _foo_data
+"#],
+    );
+    t.scratch.file(
+        "defs.bzl",
+        &[r#"load("@data_repo//:defs.bzl", "data_repo")
+def _list_repo_impl(ctx):
+  ctx.file("BUILD")
+  labels = [str(Label(l)) for l in ctx.attr.labels]
+  labels += [str(Label("@foo//:target3"))]
+  ctx.file("list.bzl", "list = " + repr(labels) + " + [str(Label('@foo//:target4'))]")
+list_repo = repository_rule(
+  implementation = _list_repo_impl,
+  attrs = {
+    "labels": attr.label_list(),
+  },
+)
+def _ext_impl(ctx):
+  list_repo(
+    name = "bar",
+    labels = [
+      # lazy extension implementation function repository mapping
+      "@foo//:target1",
+      # module repo repository mapping
+      Label("@foo//:target2"),
+    ],
+  )
+ext = module_extension(implementation = _ext_impl)
+"#],
+    );
+    t.invalidate_packages();
+    let result = evaluate_bzl(&mut t, "//:data.bzl");
+    result.throw_if_error();
+    assert_eq!(
+        result.global_str_list("bar_list"),
+        vec![
+            "@@+data_repo+foo//:target1",
+            "@@+data_repo+foo//:target2",
+            "@@+data_repo+foo//:target3",
+            "@@+data_repo+foo//:target4"
+        ]
+    );
+    let foo_data = result.global_value("foo_data");
+    assert!(foo_data.value().unpack_str().is_some());
+    assert_eq!(foo_data.value().unpack_str(), Some("overridden_data"));
+}
 
 // Java: ModuleExtensionResolutionTest.useRepo_placeholders
 #[test]

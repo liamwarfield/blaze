@@ -219,6 +219,19 @@ impl SkyframeExecutor {
         output_user_root: Option<&Path>,
         builtin_modules: Option<IndexMap<String, blaze_bzlmod_model::module::NonRegistryOverride>>,
     ) -> Result<SkyframeExecutor, SkyframeExecutorCreationError> {
+        Self::create_with_extra_sky_functions(inputs, output_user_root, builtin_modules, None)
+    }
+
+    /// [`SkyframeExecutor::create_with_builtin_modules`] with test SkyFunctions registered after
+    /// the executor's own (Java tests: `AnalysisMock.getSkyFunctions`, handed to the test
+    /// executor's `setExtraSkyFunctions`).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:760 SkyframeExecutor.skyFunctions
+    pub fn create_with_extra_sky_functions(
+        inputs: SkyframeExecutorInputs,
+        output_user_root: Option<&Path>,
+        builtin_modules: Option<IndexMap<String, blaze_bzlmod_model::module::NonRegistryOverride>>,
+        extra_sky_functions: Option<&dyn Fn(EvaluatorBuilder) -> EvaluatorBuilder>,
+    ) -> Result<SkyframeExecutor, SkyframeExecutorCreationError> {
         let options = &inputs.options;
         // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1722 SkyframeExecutor.sync
         // getEffectiveStarlarkSemantics(buildLanguageOptions): the full
@@ -384,12 +397,19 @@ impl SkyframeExecutor {
                 blaze_sky_analysis::platform::PlatformFunction::new(services.clone()),
             );
             let baseline = Arc::new(build_options);
-            let baseline_exec = Self::adjust_for_exec(
-                &baseline,
-                &Arc::new(starlark_semantics.clone()),
-                inputs.reporter.as_ref(),
-            )
-            .map_err(SkyframeExecutorCreationError::InvalidConfiguration)?;
+            // Java: SkyframeExecutor.getStarlarkExecTransition loads the exec transition's .bzl
+            // with BZL_LOAD. A file in @_builtins is evaluated by the bundled loader now; another
+            // file is loaded through the evaluator once it is built (below).
+            let baseline_exec_configuration = std::sync::OnceLock::new();
+            if !exec_config_needs_bzl_load(&baseline) {
+                let baseline_exec = Self::adjust_for_exec(
+                    &baseline,
+                    &Arc::new(starlark_semantics.clone()),
+                    inputs.reporter.as_ref(),
+                )
+                .map_err(SkyframeExecutorCreationError::InvalidConfiguration)?;
+                let _ = baseline_exec_configuration.set(Arc::new(baseline_exec));
+            }
             let client = Arc::new(ConfigurationEnvironment {
                 directories: config_directories,
                 rule_class_provider: Arc::new(BazelRuleClassProvider::create()),
@@ -400,7 +420,7 @@ impl SkyframeExecutor {
                     .filter_map(|r| r.as_path().cloned())
                     .collect(),
                 baseline_configuration: baseline.clone(),
-                baseline_exec_configuration: Arc::new(baseline_exec),
+                baseline_exec_configuration,
                 platforms,
                 main_repository_mapping: Arc::new(MainRepositoryMappingFromSkyframe),
             });
@@ -467,7 +487,26 @@ impl SkyframeExecutor {
             configuration = Some(ConfigurationState { client, baseline });
         }
 
+        if let Some(extra_sky_functions) = extra_sky_functions {
+            builder = extra_sky_functions(builder);
+        }
         let evaluator = Arc::new(builder.build());
+        if let Some(state) = &configuration
+            && state.client.baseline_exec_configuration.get().is_none()
+        {
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1544 SkyframeExecutor.adjustForExec
+            let baseline_exec = adjust_for_exec_with_evaluator(
+                &evaluator,
+                &state.baseline,
+                &state.client.starlark_semantics,
+                inputs.reporter.clone(),
+            )
+            .map_err(SkyframeExecutorCreationError::InvalidConfiguration)?;
+            let _ = state
+                .client
+                .baseline_exec_configuration
+                .set(Arc::new(baseline_exec));
+        }
         if let Some(services) = &analysis_services {
             // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4598 SkyframeExecutor.BaseTargetPrerequisitesSupplierImpl
             // (`memoizingEvaluator.getExistingValue(key)`). The functions of the evaluator hold
@@ -1668,5 +1707,129 @@ impl blaze_build_config::skyframe::MainRepositoryMappingLookup
                 .expect("NullPointerException: repositoryMapping()")
                 .clone()
         }))
+    }
+}
+
+/// Whether `--experimental_exec_config` names a .bzl outside `@_builtins` (loaded through
+/// BZL_LOAD rather than the bundled loader).
+fn exec_config_needs_bzl_load(options: &BuildOptions) -> bool {
+    let Some(core) = options.get::<blaze_optdefs::fragment::core_options::CoreOptions>() else {
+        return false;
+    };
+    // TransitionReference.create: `<label>%<symbol>`; the label's repository decides the key.
+    let Some((bzl, _)) = core.starlark_exec_config.split_once('%') else {
+        return false;
+    };
+    match blaze_cmdline::Label::parse_canonical(bzl) {
+        Ok(label) => label.get_repository() != &*blaze_cmdline::repository_name::BUILTINS,
+        // A malformed reference fails in StarlarkExecTransitionLoader with its own message.
+        Err(_) => false,
+    }
+}
+
+/// `SkyframeExecutor.adjustForExec` with the exec transition's .bzl loaded through the evaluator
+/// (`getStarlarkExecTransition`'s BzlFileLoader).
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2168 SkyframeExecutor.getStarlarkExecTransition
+fn adjust_for_exec_with_evaluator(
+    evaluator: &Arc<blaze_skyframe::Evaluator>,
+    build_options: &BuildOptions,
+    semantics: &Arc<StarlarkSemantics>,
+    event_handler: Arc<dyn ExtendedEventHandler>,
+) -> Result<BuildOptions, InvalidConfigurationException> {
+    struct EvaluatorLoader<'a> {
+        evaluator: &'a Arc<blaze_skyframe::Evaluator>,
+        semantics: &'a Arc<StarlarkSemantics>,
+        event_handler: Arc<dyn ExtendedEventHandler>,
+    }
+    impl blaze_build_config::starlark_transition::BzlFileLoader for EvaluatorLoader<'_> {
+        fn convert_transition(
+            &self,
+            value: &starlark::values::OwnedFrozenValue,
+        ) -> Option<Arc<blaze_build_config::starlark_transition::StarlarkDefinedConfigTransition>>
+        {
+            let frozen = value.value().unpack_frozen()?;
+            blaze_config::transitions::StarlarkDefinedConfigTransition::from_value(
+                frozen.to_value(),
+            )?;
+            // The module's heap stays alive with the BZL_LOAD value (PORT: keep-alive), as
+            // StarlarkCallable requires.
+            Some(
+                blaze_analysis::config::transitions::starlark_defined_config_transition_of(
+                    &blaze_packages::rule_class::StarlarkCallable::new(frozen),
+                ),
+            )
+        }
+        fn get_value(
+            &self,
+            bzl_file: &blaze_cmdline::Label,
+            for_builtins: bool,
+        ) -> Result<Option<starlark::environment::FrozenModule>, String> {
+            if for_builtins {
+                return blaze_build_config::starlark_transition::load_builtins_bzl(
+                    bzl_file,
+                    self.semantics,
+                )
+                .map(Some);
+            }
+            let key = blaze_sky_loading::bzl_load::BzlLoadKey::key_for_build(bzl_file.clone());
+            let ctx = blaze_skyframe::EvaluationContext {
+                keep_going: false,
+                event_handler: self.event_handler.clone(),
+                ..blaze_skyframe::EvaluationContext::default()
+            };
+            let result = self
+                .evaluator
+                .evaluate(&[SkyKey::new(key.clone())], &ctx)
+                .unwrap_or_else(|_| {
+                    blaze_util::unported!(
+                        "SkyframeExecutor.getStarlarkExecTransition",
+                        "interrupted while loading {}",
+                        bzl_file
+                    )
+                });
+            if let Some(value) = result.get(&key) {
+                return Ok(Some(value.get_module().clone()));
+            }
+            let (_, error) = &result.error_map()[0];
+            match error.get_exception() {
+                // If it's a BzlLoadFailedException, rethrow it directly; otherwise, wrap it.
+                Some(e) => Err(e.to_string()),
+                None => blaze_util::unported!(
+                    "SkyframeExecutor.getStarlarkExecTransition",
+                    "cycle while loading {} (CyclesReporter)",
+                    bzl_file
+                ),
+            }
+        }
+    }
+    let loader = EvaluatorLoader {
+        evaluator,
+        semantics,
+        event_handler: event_handler.clone(),
+    };
+    let exec_transition =
+        blaze_build_config::starlark_transition::load_starlark_exec_transition_with_loader(
+            Some(build_options),
+            &loader,
+        )
+        .map_err(|e| InvalidConfigurationException::new(e.0))?
+        .expect("evaluated, not missing");
+    let host_platform = build_options
+        .get::<blaze_optdefs::fragment::platform_options::PlatformOptions>()
+        .map(|p| p.host_platform.0.clone());
+    match exec_transition {
+        Some(t) => Ok(
+            blaze_build_config::function_transition_util::adjust_for_exec(
+                build_options,
+                &t,
+                host_platform.as_ref(),
+                semantics,
+                event_handler.as_ref(),
+            ),
+        ),
+        None => blaze_util::unported!(
+            "ExecutionTransitionFactory.create",
+            "no Starlark exec transition (native exec transition is not in Bazel 9)"
+        ),
     }
 }

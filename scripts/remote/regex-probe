@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""--remote_download_regex with Java regex constructs: which outputs are materialized.
+See `regex-probe help`."""
+
+import os
+import shutil
+import subprocess
+import sys
+
+import unitstatus
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CACHE = os.path.expanduser("~/.cache/blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+
+USAGE = """\
+usage: scripts/remote/regex-probe <oracle|BINARY> <tag> [--cache-from <tag>]
+       scripts/remote/regex-probe compare <tag-a> <tag-b>
+       scripts/remote/regex-probe help
+
+--remote_download_regex (RemoteOutputChecker, RegexPatternConverter: Java's
+java.util.regex.Pattern with DOTALL, matched by RegexUtil.asOptimizedMatchingPredicate on the
+internalToUnicode form of each output's exec path) with patterns whose Java meaning differs
+from the regex crate's: which outputs of one action end up in bazel-bin.
+
+The workspace (<WORK>/src, written on first use) has //:gen, one action with the outputs
+  out_a.txt  out_A.txt  out_ê.txt  out_<b>.txt  out_é.txt
+(ê is C3 AA: after internalToUnicode one Unicode letter; <b> is literal).
+
+Steps, each with its own fresh output user root (<OUT_ROOT>/<tag>/<step>):
+  seed    only for the oracle without --cache-from: --disk_cache=<WORK>/<tag>/dc (fresh), build
+          //:gen (all outputs downloaded); this disk cache serves every other step
+  p1..pN  --disk_cache=<the seeded dc> --remote_download_outputs=minimal
+          --remote_download_regex=<pattern N>, build //:gen; records the files under bazel-bin
+          (patterns below)
+--cache-from <tag>: use <tag>'s seeded disk cache (a Blaze run normally uses the oracle's, so
+both binaries get the same cache hits). Without it, a Blaze run seeds with Blaze.
+
+Patterns (each step's `pattern` file holds it):
+""" + "".join("  p%d  %s\n" % (i + 1, p) for i, p in enumerate([
+    r".*out_\w+\.txt",
+    r"(?i).*OUT_Ê\.TXT",
+    r".*_\<b\>\.txt",
+    r".*out_.\.txt",
+    r".*out_a\.txt|.*out_A\.txt",
+    r"(?i).*OUT_[a-z]\.TXT",
+    r".*out_[^a-z]\.txt",
+    r".*\.txt",
+])) + """
+Each step directory <WORK>/<tag>/<step> holds stdout, stderr, exit and files.txt (the regular
+files under bazel-bin/, sorted, as escaped UTF-8 bytes).
+
+`compare <a> <b>`: per step the exits and files.txt; exit 0 iff all equal.
+
+Every call runs in `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`
+under scripts/remote/unit-supervisor (the exit code is recorded inside the unit), with HOME and
+PATH=/usr/bin:/bin only, startup options --output_user_root --nohome_rc --nosystem_rc, and
+--repository_cache, --color=no --curses=no. WORK is ~/.cache/blaze/work/remote/r3-regex,
+OUT_ROOT ~/.cache/blaze/oracle-out/ur-remote/r3-regex.
+"""
+
+PATTERNS = [
+    r".*out_\w+\.txt",
+    r"(?i).*OUT_Ê\.TXT",
+    r".*_\<b\>\.txt",
+    r".*out_.\.txt",
+    r".*out_a\.txt|.*out_A\.txt",
+    r"(?i).*OUT_[a-z]\.TXT",
+    r".*out_[^a-z]\.txt",
+    r".*\.txt",
+]
+
+WORK = os.path.join(CACHE, "work", "remote", "r3-regex")
+TEMPLATE = os.path.join(WORK, "src")
+OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-remote", "r3-regex")
+
+OUTPUTS = ["out_a.txt", "out_A.txt", "out_ê.txt", "out_<b>.txt", "out_é.txt"]
+
+DEFS = """\
+def _gen_impl(ctx):
+    outs = [ctx.actions.declare_file(n) for n in %r]
+    ctx.actions.run_shell(
+        outputs = outs,
+        command = 'for f in "$@"; do echo "$f" > "$f"; done',
+        arguments = [o.path for o in outs],
+        mnemonic = "Gen",
+    )
+    return [DefaultInfo(files = depset(outs))]
+
+gen = rule(implementation = _gen_impl)
+""" % OUTPUTS
+
+BUILD = 'load(":defs.bzl", "gen")\n\ngen(name = "gen")\n'
+
+
+def init():
+    if os.path.isdir(TEMPLATE):
+        return
+    os.makedirs(TEMPLATE)
+    for name, data in {"MODULE.bazel": "", "defs.bzl": DEFS, "BUILD": BUILD}.items():
+        with open(os.path.join(TEMPLATE, name), "w", encoding="utf-8") as f:
+            f.write(data)
+
+
+def esc(b):
+    return "".join(chr(c) if 0x20 <= c < 0x7f and c != 0x5c else "\\x%02x" % c for c in b)
+
+
+def files_under_bin(ws):
+    bin_ = os.path.join(os.fsencode(ws), b"bazel-bin")
+    out = []
+    if os.path.isdir(bin_):
+        for dirpath, dirnames, filenames in os.walk(bin_):
+            dirnames.sort()
+            for name in filenames:
+                p = os.path.join(dirpath, name)
+                if os.path.isfile(p) and not os.path.islink(p):
+                    out.append(esc(os.path.relpath(p, bin_)))
+    return sorted(out)
+
+
+def rm_owned(p):
+    # Only paths this tool created (<WORK>/<tag>/..., <OUT_ROOT>/<tag>/...), named in full.
+    if os.path.lexists(p):
+        subprocess.run(["chmod", "-R", "u+w", p])
+        shutil.rmtree(p)
+
+
+def run_step(binary, tag, step, dc, extra):
+    sdir = os.path.join(WORK, tag, step)
+    rm_owned(sdir)
+    os.makedirs(sdir)
+    ws = os.path.join(sdir, "ws")
+    shutil.copytree(TEMPLATE, ws)
+    our = os.path.join(OUT_ROOT, tag, step)
+    if os.path.isdir(our):
+        subprocess.run([binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc",
+                        "shutdown"], cwd=ws, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        rm_owned(our)
+    cmd = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc", "build",
+           "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no",
+           "--disk_cache=" + dc] + extra + ["//:gen"]
+    code, _ = unitstatus.run(os.path.join(sdir, ".unit-status"), cmd, ws,
+                             os.path.join(sdir, "stdout"), os.path.join(sdir, "stderr"), sdir)
+    files = files_under_bin(ws)
+    with open(os.path.join(sdir, "files.txt"), "w") as f:
+        f.write("".join(x + "\n" for x in files))
+    subprocess.run([binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc",
+                    "shutdown"], cwd=ws, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print("%s: exit %d, %s" % (step, code, " ".join(files) or "(no files)"))
+    return code
+
+
+def probe(binary, tag, cache_from):
+    init()
+    os.makedirs(os.path.join(WORK, tag), exist_ok=True)
+    if cache_from:
+        dc = os.path.join(WORK, cache_from, "dc")
+        if not os.path.isdir(dc):
+            sys.exit("no seeded disk cache at " + dc)
+    else:
+        dc = os.path.join(WORK, tag, "dc")
+        rm_owned(dc)
+        run_step(binary, tag, "seed", dc, [])
+    for i, pattern in enumerate(PATTERNS):
+        step = "p%d" % (i + 1)
+        run_step(binary, tag, step, dc,
+                 ["--remote_download_outputs=minimal", "--remote_download_regex=" + pattern])
+        with open(os.path.join(WORK, tag, step, "pattern"), "w", encoding="utf-8") as f:
+            f.write(pattern + "\n")
+
+
+def compare(a, b):
+    same = True
+    for i in range(len(PATTERNS)):
+        step = "p%d" % (i + 1)
+        res = []
+        for tag in (a, b):
+            d = os.path.join(WORK, tag, step)
+            try:
+                res.append((open(os.path.join(d, "exit")).read().strip(),
+                            open(os.path.join(d, "files.txt")).read().split()))
+            except FileNotFoundError:
+                res.append(("missing", []))
+        ok = res[0] == res[1]
+        same &= ok
+        print("%s %-28s %s  exit %s/%s  %s" % (step, PATTERNS[i], "same" if ok else "DIFF",
+                                               res[0][0], res[1][0],
+                                               " ".join(res[0][1]) if ok else
+                                               "%s | %s" % (" ".join(res[0][1]),
+                                                            " ".join(res[1][1]))))
+    return 0 if same else 1
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    if argv[1] == "compare":
+        if len(argv) != 4:
+            sys.exit(USAGE)
+        return compare(argv[2], argv[3])
+    if len(argv) < 3:
+        sys.exit(USAGE)
+    binary = ORACLE if argv[1] == "oracle" else os.path.abspath(argv[1])
+    tag = argv[2]
+    cache_from = None
+    rest = argv[3:]
+    if rest[:1] == ["--cache-from"] and len(rest) == 2:
+        cache_from = rest[1]
+    elif rest:
+        sys.exit(USAGE)
+    probe(binary, tag, cache_from)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

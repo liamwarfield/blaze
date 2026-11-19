@@ -248,7 +248,11 @@ impl RecordingInputStream {
             let lines: Vec<String> = chunks.iter().map(|c| format_hex_line(c)).collect();
             format!(
                 "Not UTF-8, printing {}as hex\n{}\n",
-                if is_truncated { "first 1024 bytes " } else { "" },
+                if is_truncated {
+                    "first 1024 bytes "
+                } else {
+                    ""
+                },
                 lines.join("\n")
             )
         }

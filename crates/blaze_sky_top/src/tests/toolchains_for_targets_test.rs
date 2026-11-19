@@ -17,9 +17,9 @@ use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use crate::testing::{AnalysisTestCase, BuildViewTestCase, has_error};
 use crate::tests::toolchain_test_case::label;
 
-const NEEDS_FUNCTION: &str = "needs an extra SkyFunction in the harness's SkyframeExecutor \
-                              (ComputeUnloadedToolchainContextsFunction calling \
-                              DependencyResolver.getDependencyContext)";
+const NEEDS_FUNCTION: &str = "needs DependencyResolver.getDependencyContext and \
+                              DependencyResolver.State.createForTesting, private to \
+                              blaze_sky_analysis (ComputeUnloadedToolchainContextsFunction)";
 
 const NEEDS_EXPLICIT_TARGET_PATTERNS: &str =
     "needs AnalysisTestCase.update with explicitTargetPatterns in the harness";
@@ -155,8 +155,10 @@ fn update_explicit_target(_t: &mut AnalysisTestCase, _label: &str) -> ! {
 
 // Java: ToolchainsForTargetsTest.basicToolchains
 #[test]
-#[ignore = "needs an extra SkyFunction in the harness's SkyframeExecutor \
-            (ComputeUnloadedToolchainContextsFunction calling DependencyResolver.getDependencyContext)"]
+#[ignore = "the test SkyFunction (ComputeUnloadedToolchainContextsFunction) can be registered \
+            (BuildViewTestCase::set_extra_sky_functions) but calls DependencyResolver.getDependencyContext \
+            with a DependencyResolver.State.createForTesting, both private to blaze_sky_analysis \
+            (dependency_resolver.rs get_dependency_context, DependencyResolverState)"]
 fn basic_toolchains() {
     let mut t = new_test();
     t.scratch.file(
@@ -277,8 +279,10 @@ my_exec_group_rule(name = "a")
 
 // Java: ToolchainsForTargetsTest.execPlatform
 #[test]
-#[ignore = "needs an extra SkyFunction in the harness's SkyframeExecutor \
-            (ComputeUnloadedToolchainContextsFunction calling DependencyResolver.getDependencyContext)"]
+#[ignore = "the test SkyFunction (ComputeUnloadedToolchainContextsFunction) can be registered \
+            (BuildViewTestCase::set_extra_sky_functions) but calls DependencyResolver.getDependencyContext \
+            with a DependencyResolver.State.createForTesting, both private to blaze_sky_analysis \
+            (dependency_resolver.rs get_dependency_context, DependencyResolverState)"]
 fn exec_platform() {
     let mut t = new_test();
     // Add some platforms and custom constraints.
@@ -329,8 +333,10 @@ platform(
 
 // Java: ToolchainsForTargetsTest.execPlatform_withExecConstraint
 #[test]
-#[ignore = "needs an extra SkyFunction in the harness's SkyframeExecutor \
-            (ComputeUnloadedToolchainContextsFunction calling DependencyResolver.getDependencyContext)"]
+#[ignore = "the test SkyFunction (ComputeUnloadedToolchainContextsFunction) can be registered \
+            (BuildViewTestCase::set_extra_sky_functions) but calls DependencyResolver.getDependencyContext \
+            with a DependencyResolver.State.createForTesting, both private to blaze_sky_analysis \
+            (dependency_resolver.rs get_dependency_context, DependencyResolverState)"]
 fn exec_platform_with_exec_constraint() {
     let mut t = new_test();
     // Add some platforms and custom constraints.
@@ -362,8 +368,10 @@ my_rule(
 
 // Java: ToolchainsForTargetsTest.execGroups_named
 #[test]
-#[ignore = "needs an extra SkyFunction in the harness's SkyframeExecutor \
-            (ComputeUnloadedToolchainContextsFunction calling DependencyResolver.getDependencyContext)"]
+#[ignore = "the test SkyFunction (ComputeUnloadedToolchainContextsFunction) can be registered \
+            (BuildViewTestCase::set_extra_sky_functions) but calls DependencyResolver.getDependencyContext \
+            with a DependencyResolver.State.createForTesting, both private to blaze_sky_analysis \
+            (dependency_resolver.rs get_dependency_context, DependencyResolverState)"]
 fn exec_groups_named() {
     let mut t = new_test();
     // Write a rule with exec groups.
@@ -411,8 +419,10 @@ my_exec_group_rule(name = "a")
 
 // Java: ToolchainsForTargetsTest.execGroups_defaultAndNamed
 #[test]
-#[ignore = "needs an extra SkyFunction in the harness's SkyframeExecutor \
-            (ComputeUnloadedToolchainContextsFunction calling DependencyResolver.getDependencyContext)"]
+#[ignore = "the test SkyFunction (ComputeUnloadedToolchainContextsFunction) can be registered \
+            (BuildViewTestCase::set_extra_sky_functions) but calls DependencyResolver.getDependencyContext \
+            with a DependencyResolver.State.createForTesting, both private to blaze_sky_analysis \
+            (dependency_resolver.rs get_dependency_context, DependencyResolverState)"]
 fn exec_groups_default_and_named() {
     let mut t = new_test();
     // Add another toolchain type.
@@ -482,8 +492,10 @@ my_exec_group_rule(name = "a")
 
 // Java: ToolchainsForTargetsTest.keepParentToolchainContext
 #[test]
-#[ignore = "needs an extra SkyFunction in the harness's SkyframeExecutor \
-            (ComputeUnloadedToolchainContextsFunction calling DependencyResolver.getDependencyContext)"]
+#[ignore = "the test SkyFunction (ComputeUnloadedToolchainContextsFunction) can be registered \
+            (BuildViewTestCase::set_extra_sky_functions) but calls DependencyResolver.getDependencyContext \
+            with a DependencyResolver.State.createForTesting, both private to blaze_sky_analysis \
+            (dependency_resolver.rs get_dependency_context, DependencyResolverState)"]
 fn keep_parent_toolchain_context() {
     let mut t = new_test();
     // Add some platforms and custom constraints.
@@ -519,8 +531,10 @@ my_rule(name = "a")
 /// Regression test for b/214105142, https://github.com/bazelbuild/bazel/issues/14521
 // Java: ToolchainsForTargetsTest.toolchainWithDifferentExecutionPlatforms_doesNotGenerateConflictingCoverageAction
 #[test]
-#[ignore = "needs an extra SkyFunction in the harness's SkyframeExecutor \
-            (ComputeUnloadedToolchainContextsFunction calling DependencyResolver.getDependencyContext)"]
+#[ignore = "the test SkyFunction (ComputeUnloadedToolchainContextsFunction) can be registered \
+            (BuildViewTestCase::set_extra_sky_functions) but calls DependencyResolver.getDependencyContext \
+            with a DependencyResolver.State.createForTesting, both private to blaze_sky_analysis \
+            (dependency_resolver.rs get_dependency_context, DependencyResolverState)"]
 fn toolchain_with_different_execution_platforms_does_not_generate_conflicting_coverage_action() {
     let mut t = new_test();
     t.scratch.file("platforms/BUILD", &[LOCAL_PLATFORMS_BUILD]);

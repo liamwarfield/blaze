@@ -396,18 +396,14 @@ fn py_builtins_loading_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = pos)] pattern: &str,
     ) -> anyhow::Result<bool> {
         let _ = this;
-        // Java `subject.matches(pattern)` (java.util.regex, whole-input match).
-        // PORT: the regex crate implements the common subset of java.util.regex. Java's `(?U)`
-        // (UNICODE_CHARACTER_CLASS) is the regex crate's default for `\w` etc., while the regex
-        // crate's `(?U)` swaps greediness, which cannot change whether the whole input matches;
-        // so `(?U)` is dropped. A pattern the crate cannot compile is not ported.
-        let translated = pattern.replace("(?U)", "");
-        match regex::Regex::new(&format!("^(?:{translated})$")) {
-            Ok(re) => Ok(re.is_match(subject)),
-            Err(e) => blaze_util::unported!(
-                "String.matches",
-                "pattern {pattern:?} is not supported by the regex crate: {e}"
-            ),
+        // Java `subject.matches(pattern)` (java.util.regex, whole-input match), through
+        // `blaze_util::java_regex` (its module docs list what is `unported!`). The subject is an
+        // internal string, matched by its Latin-1 chars as in Java.
+        // PORT: a pattern Java rejects throws the unchecked `PatternSyntaxException` out of the
+        // builtin (a crash in Bazel); here it panics with Java's message.
+        match blaze_util::java_regex::Pattern::compile(pattern, 0) {
+            Ok(compiled) => Ok(compiled.matches(subject)),
+            Err(message) => panic!("java.util.regex.PatternSyntaxException: {message}"),
         }
     }
 }

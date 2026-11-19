@@ -541,8 +541,6 @@ fn run_bad_command_test(mut run_request: RunRequest, failure_detail: FailureDeta
 }
 
 #[test]
-#[ignore = "needs InvocationPolicyParser (not ported, decision D14): parse_policy calls unported!, \
-            which on a command thread halts the process"]
 fn unparseable_invocation_policy() {
     let fixture = create_server(throwing_dispatcher());
     let mut stub = fixture.client();

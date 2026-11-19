@@ -42,7 +42,13 @@ async-trait.workspace = true
 http.workspace = true
 bytes.workspace = true
 tower.workspace = true
-hyper-util.workspace = true
+# client-legacy: `HttpConnector`, the TCP connector tonic uses, for the channel's own connector
+# (grpc::channel: the transport lifecycle).
+hyper-util = { workspace = true, features = ["client-legacy"] }
+# TLS of the channel's own connector, configured as tonic configures it (same versions and
+# features as tonic's `tls-ring` and `tls-webpki-roots`: no new crates).
+tokio-rustls = { version = "0.26.1", default-features = false, features = ["logging", "tls12", "ring"] }
+webpki-roots = "1.0.10"
 
 [build-dependencies]
 tonic-build.workspace = true

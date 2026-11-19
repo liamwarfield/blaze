@@ -1,7 +1,7 @@
 //! Port of `lib/remote/RemoteRepositoryRemoteExecutor.java`, with the interface it implements,
 //! `lib/runtime/RepositoryRemoteExecutor.java`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use blaze_optdefs::fragment::fragment_options::java_string_compare;
 use blaze_protos::JavaMessage;
 use blaze_vfs::{Path, PathFragment};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 use crate::combined_cache::CachedActionResult;
 use crate::common::{
@@ -241,7 +241,7 @@ impl RepositoryRemoteExecutor for RemoteRepositoryRemoteExecutor {
                 &context,
                 &action_key,
                 /* inline_out_err= */ true,
-                /* inline_output_files= */ &HashSet::new(),
+                /* inline_output_files= */ &IndexSet::new(),
             )?;
         let mut action_result: Option<ActionResult> = None;
         if let Some(cached_action_result) = &cached_action_result {

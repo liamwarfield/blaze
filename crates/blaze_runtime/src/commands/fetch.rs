@@ -260,8 +260,7 @@ fn post_no_build_request_finished_event(
 ) -> BlazeCommandResult {
     if let Some(bep) = env.get_bep() {
         bep.post_no_build_request_finished_event(
-            blaze_util::ExitCode::for_code(result.get_exit_code().get_numeric_exit_code())
-                .unwrap_or_else(|| panic!("unknown exit code {:?}", result.get_exit_code())),
+            result.get_exit_code(),
             {
                 use blaze_events::Clock as _;
                 blaze_events::JavaClock.current_time_millis()

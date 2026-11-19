@@ -120,12 +120,41 @@ fn stat_from_metadata(m: &FileArtifactValue, permissions: u32) -> FileStatus {
         // FileStateType.NONEXISTENT: every is* is false.
         0
     };
-    // Not every FileArtifactValue supports getModifiedTime.
-    let mtime = match m {
-        FileArtifactValue::Directory { mtime } => *mtime,
-        _ => 0,
-    };
+    // Not every FileArtifactValue supports getModifiedTime: an UnsupportedOperationException
+    // gives 0.
+    let mtime = modified_time_or_zero(m);
     FileStatus::new(kind | permissions, mtime, mtime, m.get_size(), 0)
+}
+
+/// `m.getModifiedTime()`, with the `UnsupportedOperationException` that `statFromMetadata`
+/// catches as 0.
+// Java: com/google/devtools/build/lib/actions/FileArtifactValue.java FileArtifactValue.getModifiedTime
+fn modified_time_or_zero(m: &FileArtifactValue) -> i64 {
+    match m {
+        // DirectoryArtifactValue.getModifiedTime: mtime.
+        FileArtifactValue::Directory { mtime } => *mtime,
+        // HashedDirectoryArtifactValue, SingletonMarkerValue: 0.
+        FileArtifactValue::HashedDirectory { .. }
+        | FileArtifactValue::RunfilesTreeMarker
+        | FileArtifactValue::MissingFileMarker => 0,
+        // ConstantMetadataValue.getModifiedTime: -1.
+        FileArtifactValue::ConstantMetadata => -1,
+        // ResolvedSymlinkArtifactValue, ProxyFileArtifactValue: the delegate's.
+        FileArtifactValue::ResolvedSymlink { delegate, .. }
+        | FileArtifactValue::Proxy { delegate, .. } => modified_time_or_zero(delegate),
+        // UnresolvedSymlinkArtifactValue.getModifiedTime throws IllegalStateException, which
+        // statFromMetadata does not catch.
+        // PORT: Java's FileStatus calls getModifiedTime only when its mtime is read (and then
+        // crashes); this FileStatus is built eagerly, so the value is 0 and reading it does not
+        // crash.
+        FileArtifactValue::UnresolvedSymlink { .. } => 0,
+        // RegularFileArtifactValue, RunfilesProxyArtifactValue, RemoteFileArtifactValue and
+        // TreeArtifactCompositeFileArtifactValue throw UnsupportedOperationException.
+        FileArtifactValue::RegularFile { .. }
+        | FileArtifactValue::RunfilesProxy { .. }
+        | FileArtifactValue::RemoteFile { .. }
+        | FileArtifactValue::TreeArtifactComposite { .. } => 0,
+    }
 }
 
 const S_IFLNK: u32 = 0o120_000;
@@ -1076,7 +1105,13 @@ impl FileSystem for RemoteActionFileSystem {
         link_path: &PathFragment,
         original_path: &PathFragment,
     ) -> io::Result<()> {
-        self.local_fs.create_hard_link(link_path, original_path)
+        // `localFs.getPath(linkPath).createHardLink(getPath(originalPath))`. `Path.createHardLink(
+        // link)` is `fileSystem.createHardLink(link.asFragment(), asFragment())` on the receiver's
+        // file system, so Java asks the local file system for a link at `originalPath` to
+        // `linkPath` (the arguments end up swapped): it fails with "File ... does not exist"
+        // unless `linkPath` exists. Ported as written.
+        // Java: com/google/devtools/build/lib/vfs/Path.java:599 Path.createHardLink
+        self.local_fs.create_hard_link(original_path, link_path)
     }
 }
 

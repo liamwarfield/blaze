@@ -31,8 +31,6 @@ use crate::analysis_phase_runner;
 use crate::build_view::AnalysisResult;
 use crate::skyframe_executor::{SkyframeExecutor, TargetPatternPhaseDetailedError};
 
-/// `ExitCode.PARSING_FAILURE`.
-const PARSING_FAILURE: i32 = 1;
 /// `Interrupted.Code.INTERRUPTED` exit code.
 const INTERRUPTED_EXIT_CODE: i32 = 8;
 
@@ -391,6 +389,16 @@ pub trait BuildEventHooks {
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:343 BuildTool.buildTargets
     fn project_evaluated(&self) {}
 
+    /// The finally block of `BuildTool.buildTargets` when there was no catastrophe:
+    /// `env.ensureBuildInfoPosted()`. The workspace status actions will not run with certain
+    /// flags, or if an error occurs early in the build; build info is posted on every build.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:450 BuildTool.buildTargets
+    fn ensure_build_info_posted(&self) {}
+
+    /// A request that analyzes but does not execute: `NoExecutionEvent`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:560 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+    fn no_execution(&self) {}
+
     /// After a successful analysis: the analysis metrics (`AnalysisPhaseRunner`) and a
     /// `TargetConfiguredEvent` per top-level target.
     // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:431 AnalysisPhaseRunner.execute
@@ -515,7 +523,7 @@ impl<'a> BuildTool<'a> {
                 failure_detail,
             }) => {
                 self.report_exception_error(&message);
-                DetailedExitCode::of_exit_code(PARSING_FAILURE, failure_detail)
+                DetailedExitCode::of_code(blaze_util::ExitCode::PARSING_FAILURE, failure_detail)
             }
             Err(BuildToolError::Exit(detailed_exit_code)) => {
                 if let Some(failure_detail) = detailed_exit_code.get_failure_detail() {
@@ -542,6 +550,20 @@ impl<'a> BuildTool<'a> {
         for issue in request.validate_options() {
             self.reporter.handle(&Event::warn(issue));
         }
+        // try { ... } finally { if (!catastrophe) { ... env.ensureBuildInfoPosted(); } }
+        // PORT: a catastrophe (Error | RuntimeException) is a panic that unwinds past this
+        // point, so the finally block runs on every return.
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:436 BuildTool.buildTargets
+        let result = self.build_targets_try(request);
+        if let Some(hooks) = self.build_event_hooks {
+            hooks.ensure_build_info_posted();
+        }
+        result
+    }
+
+    /// The `try` block of `BuildTool.buildTargets`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:286 BuildTool.buildTargets
+    fn build_targets_try(&self, request: &BuildRequest) -> Result<(), BuildToolError> {
         // buildOptions = runtime.createBuildOptions(request): the executor was created with
         // the request's build options as its baseline (see skyframe_executor.rs).
         let build_options = self
@@ -651,9 +673,11 @@ impl<'a> BuildTool<'a> {
                     )?,
                     None => blaze_util::unported!("ExecutionTool.executeBuild"),
                 }
+            } else if let Some(hooks) = self.build_event_hooks {
+                // env.getReporter().post(new NoExecutionEvent())
+                // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:560 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+                hooks.no_execution();
             }
-            // PORT: NoExecutionEvent (the build event of a build without execution) is the
-            // command's (blaze_bep bep_module.rs).
             if let Some(delayed_failure_detail) = analysis_result.get_failure_detail() {
                 return Err(BuildToolError::BuildFailed {
                     message: delayed_failure_detail.message.clone(),

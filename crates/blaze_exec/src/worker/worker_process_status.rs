@@ -220,25 +220,3 @@ impl WorkerProcessStatus {
         self.get().to_worker_status()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Java tests: src/test/java/com/google/devtools/build/lib/worker/WorkerProcessStatusTest.java
-
-    #[test]
-    fn test_status_transitions_by_priority() {
-        let status = WorkerProcessStatus::new();
-        assert_eq!(status.get(), Status::NotStarted);
-        assert!(status.maybe_update_status(Status::Alive));
-        assert!(status.maybe_update_status(Status::PendingKillDueToUserExecException));
-        // Same priority: no update.
-        assert!(!status.maybe_update_status(Status::PendingKillDueToIoException));
-        assert!(status.set_killed());
-        assert_eq!(status.get(), Status::KilledDueToUserExecException);
-        assert!(status.is_killed());
-        assert!(!status.set_killed());
-        assert!(status.maybe_update_status(Status::KilledDueToMemoryPressure));
-    }
-}

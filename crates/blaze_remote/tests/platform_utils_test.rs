@@ -294,3 +294,109 @@ fn oracle_empty_remote_execution_properties_give_no_platform() {
     let s = spawn(Some(platform_p("", &[])), &[]);
     assert_eq!(platform_utils::get_platform_proto(&s, None).unwrap(), None);
 }
+
+// Internal property names that are invalid UTF-8 all become "x\u{FFFD}" after
+// `internalToUnicode`, so the stable sort by name keeps the order of Java's `properties` map
+// (a `HashMap`, the spawn's `ImmutableMap`, the `SortedMap` of defaults, or the additional
+// properties). Expected orders: `tests/data/PlatformPropertyOrder.java` (JDK 25), which runs
+// `getPlatformProto`'s map logic on the same keys.
+const K1: &str = "x\u{ff}";
+const K2: &str = "x\u{fe}";
+const K3: &str = "x\u{80}";
+const K4: &str = "x\u{c3}";
+const K5: &str = "x\u{e9}";
+const K6: &str = "x\u{bf}";
+
+#[allow(clippy::field_reassign_with_default)]
+fn remote_options_with_defaults(defaults: &[(&str, &str)]) -> RemoteOptions {
+    let mut remote_options = RemoteOptions::default();
+    remote_options.remote_default_exec_properties = defaults
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    remote_options
+}
+
+fn values_in_order(
+    spawn: &SimpleSpawn,
+    remote_options: Option<&RemoteOptions>,
+    additional: &[(&str, &str)],
+) -> Vec<String> {
+    let additional: IndexMap<String, String> = additional
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let platform = platform_utils::get_platform_proto_with_additional_properties(
+        spawn,
+        remote_options,
+        &additional,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(platform.properties.iter().all(|p| p.name == "x\u{fffd}"));
+    platform.properties.into_iter().map(|p| p.value).collect()
+}
+
+#[test]
+fn combined_without_platform_keep_java_map_order() {
+    let options = remote_options_with_defaults(&[(K1, "d1"), (K2, "d2")]);
+    let spawn = spawn(None, &[(K3, "c3"), (K4, "c4"), (K5, "c5")]);
+    assert_eq!(
+        values_in_order(&spawn, Some(&options), &[]),
+        ["c3", "c5", "c4", "d2", "d1"]
+    );
+}
+
+#[test]
+fn combined_with_platform_keep_java_map_order() {
+    let spawn = spawn(
+        Some(platform_p("", &[("p", "1")])),
+        &[(K5, "c5"), (K3, "c3"), (K1, "c1")],
+    );
+    assert_eq!(values_in_order(&spawn, None, &[]), ["c5", "c3", "c1"]);
+}
+
+#[test]
+fn platform_exec_properties_keep_java_map_order() {
+    let spawn = spawn(
+        Some(platform_p(
+            "",
+            &[(K6, "p6"), (K1, "p1"), (K4, "p4"), (K2, "p2")],
+        )),
+        &[],
+    );
+    assert_eq!(values_in_order(&spawn, None, &[]), ["p4", "p2", "p6", "p1"]);
+}
+
+#[test]
+fn defaults_only_keep_java_map_order() {
+    let options = remote_options_with_defaults(&[(K4, "d4"), (K1, "d1"), (K3, "d3")]);
+    let spawn = spawn(None, &[]);
+    assert_eq!(
+        values_in_order(&spawn, Some(&options), &[]),
+        ["d3", "d4", "d1"]
+    );
+}
+
+#[test]
+fn additional_only_keep_java_map_order() {
+    let spawn = spawn(None, &[]);
+    assert_eq!(
+        values_in_order(&spawn, None, &[(K2, "a2"), (K6, "a6"), (K1, "a1")]),
+        ["a2", "a6", "a1"]
+    );
+}
+
+#[test]
+fn merged_additional_keep_java_map_order() {
+    let options = remote_options_with_defaults(&[(K1, "d1"), (K3, "d3")]);
+    let spawn = spawn(None, &[]);
+    assert_eq!(
+        values_in_order(
+            &spawn,
+            Some(&options),
+            &[(K5, "a5"), (K2, "a2"), (K1, "a1x")]
+        ),
+        ["d3", "a5", "a2", "a1x"]
+    );
+}

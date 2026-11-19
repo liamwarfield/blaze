@@ -36,7 +36,7 @@ use blaze_skyframe::{
     Transience,
 };
 use blaze_starlark::error::EvalErrorKind;
-use blaze_starlark::eval::{CompiledFile, EvalOptions, compile};
+use blaze_starlark::eval::{CompiledFile, EvalOptions};
 use blaze_starlark::loader::{LoadMap, LoadRequest};
 use blaze_starlark::{FileKind, Location, Phase, StarlarkSemantics, SyntaxError, ThreadContext};
 use blaze_util::Fingerprint;
@@ -1404,23 +1404,6 @@ impl PackageFunction {
         };
         handler.replay_on(reporter);
 
-        // Parse, check BUILD syntax (PackageFactory.checkBuildSyntax: forbidden syntax, literal
-        // glob patterns, generator names) and resolve: blaze_starlark::eval::compile with the
-        // BUILD file options (loads bind globally, top-level rebinding allowed).
-        let prog = match compile(FileKind::Build, input_file.get_path_string(), input) {
-            Ok(prog) => prog,
-            Err(e) => {
-                let EvalErrorKind::Syntax(errors) = e.kind else {
-                    unreachable!("compile only fails with syntax errors")
-                };
-                return Ok(CompiledBuildFile::Errors(errors));
-            }
-        };
-        let mut generator_map = IndexMap::new();
-        for (location, name) in &prog.build_facts.generator_name_by_location {
-            generator_map.insert(location.clone(), name.clone());
-        }
-
         // Construct static environment for resolution/compilation.
         // TODO(#11437): Remove conditional once disabling injection is no longer allowed.
         let predeclared_env: &StarlarkEnv = if semantics.experimental_builtins_bzl_path.is_empty() {
@@ -1460,16 +1443,34 @@ impl PackageFunction {
             }
         };
 
-        // Compile BUILD file: Java's Program.compileFile resolves every name against the
-        // predeclared environment and reports all static errors together; a use of a
-        // predeclared symbol whose GuardedValue is not accessible fails with the guard's message
-        // (Module.resolve).
+        // Parse (StarlarkFile.parse: a file with parse errors fails with them alone), check
+        // BUILD syntax (PackageFactory.checkBuildSyntax: forbidden syntax, literal glob patterns,
+        // generator names) and compile (Program.compileFile: every resolver error, a use of a
+        // predeclared symbol whose GuardedValue is not accessible failing with the guard's
+        // message, Module.resolve): blaze_starlark::eval::compile_and_resolve, Java's front end.
+        // PORT: Java builds the predeclared environment after checkBuildSyntax; building it
+        // first requests nothing.
         // Java: net/starlark/java/eval/Module.java:237 Module.resolve
-        let errors = crate::starlark_util::resolve_errors(&prog, &predeclared, |name| {
-            guarded_symbol_errors.get(name).cloned()
-        });
-        if !errors.is_empty() {
-            return Ok(CompiledBuildFile::Errors(errors));
+        let names = predeclared.names().map(|n| n.as_str().to_owned()).collect();
+        let prog = match blaze_starlark::eval::compile_and_resolve(
+            FileKind::Build,
+            FileKind::Build.file_options(),
+            input_file.get_path_string(),
+            input,
+            names,
+            &|name: &str| guarded_symbol_errors.get(name).cloned(),
+        ) {
+            Ok(prog) => prog,
+            Err(e) => {
+                let EvalErrorKind::Syntax(errors) = e.kind else {
+                    unreachable!("compile only fails with syntax errors")
+                };
+                return Ok(CompiledBuildFile::Errors(errors));
+            }
+        };
+        let mut generator_map = IndexMap::new();
+        for (location, name) in &prog.build_facts.generator_name_by_location {
+            generator_map.insert(location.clone(), name.clone());
         }
 
         // success

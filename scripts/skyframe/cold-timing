@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Times cold commands of two blaze binaries on a workspace, alternating the binaries so that
+# machine noise falls on both. Each run uses a fresh output user root.
+#
+# Usage: scripts/skyframe/cold-timing <binary A> <binary B> <workspace dir> <rounds> <mode> <targets...>
+#        scripts/skyframe/cold-timing help
+#   mode: analysis  = `build --nobuild <targets>` (loading and analysis only)
+#         build     = `build <targets>` (loading, analysis and execution, cold action cache)
+# Output: one line per run "A|B <round> <seconds> exit=<code>", then min and median per binary.
+# Run it under `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0` (AGENTS.md).
+set -euo pipefail
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || $# -lt 6 ]]; then sed -n '2,10p' "$0"; exit 0; fi
+bin_a="$1"; bin_b="$2"; ws="$3"; rounds="$4"; mode="$5"; shift 5
+case "$mode" in
+  analysis) extra=(--nobuild) ;;
+  build) extra=() ;;
+  *) echo "unknown mode: $mode" >&2; exit 2 ;;
+esac
+root="${HOME}/.cache/blaze/oracle-out/cold-timing-$$"
+trap 'chmod -R u+w "$root" 2>/dev/null || true; rm -rf "$root"' EXIT
+declare -A times
+for ((r = 1; r <= rounds; r++)); do
+  for which in A B; do
+    if [[ $which == A ]]; then bin="$bin_a"; else bin="$bin_b"; fi
+    chmod -R u+w "$root" 2>/dev/null || true
+    rm -rf "$root"
+    start=$(date +%s.%N)
+    code=0
+    (cd "$ws" && "$bin" --output_user_root="$root" --nohome_rc --nosystem_rc build \
+      --repository_cache="${HOME}/.cache/blaze/repo-cache" --color=no --curses=no \
+      "${extra[@]}" "$@" >/dev/null 2>&1) || code=$?
+    end=$(date +%s.%N)
+    t=$(echo "$end - $start" | bc)
+    echo "$which $r $t exit=$code"
+    times[$which]+="$t "
+  done
+done
+for which in A B; do
+  sorted=$(echo ${times[$which]} | tr ' ' '\n' | sort -n)
+  min=$(echo "$sorted" | head -1)
+  med=$(echo "$sorted" | sed -n "$(((rounds + 1) / 2))p")
+  echo "$which min=$min median=$med ($mode, $rounds rounds)"
+done

@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""Materialises the repositories that Bazel's analysis test mocks copy from their runfiles.
+
+Usage: scripts/test-deps/prepare [help] [--dest DIR] [--force]
+
+Bazel's analysis tests (BuildViewTestCase with BazelAnalysisMock) copy the real rules_cc,
+rules_java, rules_python, bazel_skylib, platforms and protobuf sources from the test's runfiles
+into the test workspace (BazelMockCcSupport, AbstractMockJavaSupport.setupRulesJava,
+BazelMockPythonSupport, MockProtoSupport.setupWorkspace, BazelAnalysisMock.setupMockClient).
+Blaze's harness (crates/blaze_sky_top/src/testing) does the same from a prepared directory,
+found through the environment variable BLAZE_TEST_DEPS (default ~/.cache/blaze/test-deps).
+
+This script:
+  1. reads the versions Bazel's own build selects from the pinned source's MODULE.bazel.lock
+     (~/.cache/blaze/src/bazel-9.3.2): the source.json of each module that the lockfile records
+     is the selected version's;
+  2. has the oracle (real Bazel at the pin) fetch exactly those versions, with the overrides
+     the pinned MODULE.bazel applies to them (protobuf: third_party/protobuf.patch), through the
+     shared repository cache (~/.cache/blaze/repo-cache), so the trees are Bazel's own (registry
+     patches applied);
+  3. copies each fetched repository to DEST/<name>-<version>/;
+  4. copies the files of the pinned source that the mocks read from the test's resources
+     (cc_toolchain_config.bzl, tools/jdk and tools/python files) to DEST/bazel-resources/;
+  5. writes DEST/manifest.json: per repository its version, the archive URLs, the archive's
+     sha256 (hex, from the registry's integrity) and the patches applied, and the sha256 of each
+     resource file, so a test run can be tied to its inputs.
+
+The heavy oracle run goes through systemd-run with a memory cap, as AGENTS.md requires.
+"""
+
+import base64
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+HOME = Path.home()
+BAZEL_SRC = HOME / ".cache/blaze/src/bazel-9.3.2"
+ORACLE = HOME / ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+REPO_CACHE = HOME / ".cache/blaze/repo-cache"
+DEFAULT_DEST = HOME / ".cache/blaze/test-deps"
+
+# The modules the analysis mocks copy from runfiles, by their Bazel module name; the second
+# field is the repo name the pinned MODULE.bazel gives them (the runfiles directory name).
+MODULES = [
+    ("rules_cc", "rules_cc"),
+    ("rules_java", "rules_java"),
+    ("rules_python", "rules_python"),
+    ("bazel_skylib", "bazel_skylib"),
+    ("platforms", "platforms"),
+    ("protobuf", "com_google_protobuf"),
+]
+
+# Files of the pinned Bazel source that the mocks read from the test's resources or the io_bazel
+# runfiles (ResourceLoader.readFromResources; BazelAnalysisMock's io_bazel/tools/jdk files);
+# copied to DEST/bazel-resources/<same path>.
+RESOURCES = [
+    "src/test/java/com/google/devtools/build/lib/analysis/mock/cc_toolchain_config.bzl",
+    "tools/jdk/java_toolchain_alias.bzl",
+    "tools/python/python_version.bzl",
+    "tools/python/srcs_version.bzl",
+    "tools/python/toolchain.bzl",
+    "tools/python/utils.bzl",
+    "tools/python/python_bootstrap_template.txt",
+]
+
+# Overrides of the pinned MODULE.bazel that apply to these modules (patches relative to the
+# Bazel source tree).
+PATCHES = {"protobuf": (["third_party/protobuf.patch"], 1)}
+
+
+def usage():
+    print(__doc__.strip())
+
+
+def selected_versions():
+    lock = (BAZEL_SRC / "MODULE.bazel.lock").read_text()
+    versions = {}
+    for name, _ in MODULES:
+        found = sorted(
+            set(
+                re.findall(
+                    r'"https://bcr\.bazel\.build/modules/%s/([^/]+)/source\.json"' % re.escape(name),
+                    lock,
+                )
+            )
+        )
+        if len(found) != 1:
+            sys.exit(f"prepare: expected one selected version of {name} in the lockfile, got {found}")
+        versions[name] = found[0]
+    return versions
+
+
+def run(cmd, cwd):
+    capped = [
+        "systemd-run", "--user", "--collect", "--wait", "--quiet", "--pipe",
+        "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0",
+        f"--working-directory={cwd}",
+    ] + cmd
+    result = subprocess.run(capped, capture_output=True, text=True)
+    if result.returncode != 0:
+        sys.stderr.write(result.stdout + result.stderr)
+        sys.exit(f"prepare: command failed: {' '.join(cmd)}")
+    return result.stdout
+
+
+def integrity_to_sha256(integrity):
+    algo, _, b64 = integrity.partition("-")
+    if algo != "sha256":
+        return None
+    return base64.b64decode(b64).hex()
+
+
+def main(argv):
+    if argv and argv[0] in ("help", "-h", "--help"):
+        usage()
+        return 0
+    dest = Path(os.environ.get("BLAZE_TEST_DEPS", DEFAULT_DEST))
+    force = False
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--dest":
+            dest = Path(argv[i + 1]).expanduser()
+            i += 2
+        elif argv[i] == "--force":
+            force = True
+            i += 1
+        else:
+            usage()
+            return 2
+    versions = selected_versions()
+
+    work = dest / ".work"
+    ws = work / "ws"
+    out_root = work / "oracle-out"
+    ws.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for name, repo_name in MODULES:
+        lines.append(f'bazel_dep(name = "{name}", version = "{versions[name]}", repo_name = "{repo_name}")')
+    for name, _ in MODULES:
+        patches, strip = PATCHES.get(name, ([], 0))
+        copied = []
+        for p in patches:
+            target = ws / "patches" / Path(p).name
+            target.parent.mkdir(exist_ok=True)
+            shutil.copyfile(BAZEL_SRC / p, target)
+            copied.append(f'"//patches:{Path(p).name}"')
+        extra = f", patches = [{', '.join(copied)}], patch_strip = {strip}" if copied else ""
+        lines.append(
+            f'single_version_override(module_name = "{name}", version = "{versions[name]}"{extra})'
+        )
+    (ws / "MODULE.bazel").write_text("\n".join(lines) + "\n")
+    (ws / "BUILD").write_text("")
+    (ws / "patches").mkdir(exist_ok=True)
+    (ws / "patches" / "BUILD").write_text("")
+
+    startup = [str(ORACLE), f"--output_user_root={out_root}"]
+    common = [f"--repository_cache={REPO_CACHE}", "--lockfile_mode=off"]
+    repos = [f"@{repo_name}" for _, repo_name in MODULES]
+    run(startup + ["fetch"] + common + [f"--repo={r}" for r in repos], ws)
+    output_base = Path(run(startup + ["info", "output_base"] + common, ws).strip())
+
+    manifest = {"bazel_source": str(BAZEL_SRC), "repositories": {}}
+    for name, repo_name in MODULES:
+        version = versions[name]
+        show = run(startup + ["mod", "show_repo", f"@{repo_name}"] + common, ws)
+        canonical = re.search(r'^  name = "([^"]+)"', show, re.M)
+        if not canonical:
+            sys.exit(f"prepare: no repository name in `mod show_repo @{repo_name}`:\n{show}")
+        canonical_name = canonical.group(1)
+        integrity = re.search(r'integrity = "([^"]+)"', show)
+        urls = re.search(r"urls = \[([^\]]*)\]", show)
+        patch_list = re.findall(r'"(//patches:[^"]+|@@//patches:[^"]+|https://[^"]+\.patch)"', show)
+        # The oracle's repo contents cache makes external/<name> a symlink into the cache.
+        src = (output_base / "external" / canonical_name).resolve()
+        if not src.is_dir():
+            sys.exit(f"prepare: {src} was not fetched")
+        target = dest / f"{name}-{version}"
+        if target.exists():
+            if not force:
+                sys.exit(f"prepare: {target} exists; pass --force to replace it")
+            shutil.rmtree(target)
+        shutil.copytree(src, target, symlinks=True)
+        manifest["repositories"][name] = {
+            "version": version,
+            "repo_name": repo_name,
+            "directory": target.name,
+            "urls": re.findall(r'"([^"]+)"', urls.group(1)) if urls else [],
+            "integrity": integrity.group(1) if integrity else None,
+            "sha256": integrity_to_sha256(integrity.group(1)) if integrity else None,
+            "patches": patch_list,
+            "show_repo": show,
+        }
+    resources = dest / "bazel-resources"
+    if resources.exists():
+        shutil.rmtree(resources)
+    manifest["resources"] = {}
+    for r in RESOURCES:
+        target = resources / r
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(BAZEL_SRC / r, target)
+        manifest["resources"][r] = hashlib.sha256(target.read_bytes()).hexdigest()
+    (dest / "manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
+    print(f"prepare: wrote {dest}/manifest.json")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -61,7 +61,9 @@ impl AcquireResourcesError {
     fn into_exec(self) -> ExecException {
         match self {
             AcquireResourcesError::Exec(e) => e,
-            AcquireResourcesError::Io(e) => crate::exec::abstract_spawn_strategy::exec_io_exception(&e),
+            AcquireResourcesError::Io(e) => {
+                crate::exec::abstract_spawn_strategy::exec_io_exception(&e)
+            }
         }
     }
 }
@@ -310,7 +312,9 @@ impl ResourceHandle {
     pub fn close(mut self) -> Result<(), ExecException> {
         let worker = self.worker.take();
         match (self.manager.take(), self.request.take()) {
-            (Some(manager), Some(request)) => manager.release_resources_with_worker(&request, worker),
+            (Some(manager), Some(request)) => {
+                manager.release_resources_with_worker(&request, worker)
+            }
             _ => Ok(()),
         }
         // PORT: skipped, profiling.

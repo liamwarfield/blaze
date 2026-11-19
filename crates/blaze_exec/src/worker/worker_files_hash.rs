@@ -60,7 +60,8 @@ impl WorkerFilesHash {
                 blaze_util::check_state!(!root.is_absolute(), "{}", root);
                 for (key, local_artifact) in runfiles_tree.get_mapping() {
                     if let Some(local_artifact) = local_artifact {
-                        let metadata = action_input_file_cache.get_input_metadata(&local_artifact)?;
+                        let metadata =
+                            action_input_file_cache.get_input_metadata(&local_artifact)?;
                         let Some(metadata) = metadata else {
                             missing_input_exception(&local_artifact.get_exec_path_string());
                         };
@@ -92,7 +93,10 @@ impl WorkerFilesHash {
             // Java puts `metadata.getDigest()` (possibly null) into the TreeMap.
             worker_files_map.insert(
                 spawn.get_path_mapper().map(tool.get_exec_path()),
-                metadata.get_digest().map(<[u8]>::to_vec).unwrap_or_default(),
+                metadata
+                    .get_digest()
+                    .map(<[u8]>::to_vec)
+                    .unwrap_or_default(),
             );
         }
 

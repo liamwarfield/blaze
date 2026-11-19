@@ -11,7 +11,7 @@
 //! [`ConfigurationTransition`] by [`create_attribute_transition`] /
 //! [`create_rule_transition`] (Java `TransitionFactory.create(data)`).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Arc, LazyLock};
 
@@ -356,6 +356,11 @@ pub enum ConfigurationTransition {
     TestTrimming { testonly: bool },
     /// Java `ConfigFeatureFlagTaggedTrimmingTransitionFactory.ConfigFeatureFlagTaggedTrimmingTransition`.
     ConfigFeatureFlagTaggedTrimming { flags: BTreeSet<Label> },
+    /// Java `ConfigFeatureFlagTransitionFactory.ConfigFeatureFlagValuesTransition`: the flag
+    /// values (an `ImmutableSortedMap`, natural label order).
+    ConfigFeatureFlagValues {
+        flag_values: BTreeMap<Label, String>,
+    },
     /// Java `StarlarkTransition` subclasses.
     Starlark(StarlarkTransition),
 }
@@ -375,6 +380,10 @@ impl ConfigurationTransition {
             ConfigurationTransition::TestTrimming { .. } => test_trimming_required_fragments(),
             ConfigurationTransition::ConfigFeatureFlagTaggedTrimming { .. } => {
                 vec![&CONFIG_FEATURE_FLAG_OPTIONS, &CORE_OPTIONS]
+            }
+            // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:84 ConfigFeatureFlagValuesTransition.requiresOptionFragments
+            ConfigurationTransition::ConfigFeatureFlagValues { .. } => {
+                vec![&CONFIG_FEATURE_FLAG_OPTIONS]
             }
             ConfigurationTransition::NoTransition
             | ConfigurationTransition::Composing(..)
@@ -401,6 +410,10 @@ impl ConfigurationTransition {
             ConfigurationTransition::TestTrimming { .. } => "TestTrimmingTransition".to_owned(),
             ConfigurationTransition::ConfigFeatureFlagTaggedTrimming { .. } => {
                 "ConfigFeatureFlagTaggedTrimmingTransition".to_owned()
+            }
+            // ConfigurationTransition.getName: getClass().getSimpleName().
+            ConfigurationTransition::ConfigFeatureFlagValues { .. } => {
+                "ConfigFeatureFlagValuesTransition".to_owned()
             }
             ConfigurationTransition::Starlark(t) => t.get_name(),
         }
@@ -455,6 +468,15 @@ impl ConfigurationTransition {
             ConfigurationTransition::ConfigFeatureFlagTaggedTrimming { flags } => {
                 format!("ConfigFeatureFlagTaggedTrimmingTransition{{flags={flags:?}}}")
             }
+            // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:120 ConfigFeatureFlagValuesTransition.toString
+            ConfigurationTransition::ConfigFeatureFlagValues { flag_values } => format!(
+                "ConfigFeatureFlagValuesTransition{{flagValues={{{}}}}}",
+                flag_values
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             ConfigurationTransition::Starlark(t) => t.cache_key(),
         }
     }
@@ -572,6 +594,36 @@ impl ConfigurationTransition {
                     return options.underlying().clone();
                 }
                 test_trimming_trim_view(options)
+            }
+            // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:89 ConfigFeatureFlagValuesTransition.patch
+            ConfigurationTransition::ConfigFeatureFlagValues { flag_values } => {
+                if !options.contains(&CONFIG_FEATURE_FLAG_OPTIONS) {
+                    return options.underlying().clone();
+                }
+                let values: IndexMap<Label, String> = flag_values
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let mut to_options =
+                    FeatureFlagValue::replace_flag_values(options.underlying(), &values);
+                // In legacy mode, need to update `affected by Starlark transition` to include
+                // changed flags.
+                if to_options
+                    .get::<CoreOptions>()
+                    .expect("CoreOptions")
+                    .output_directory_naming_scheme
+                    == CoreOptionsOutputDirectoryNamingScheme::LEGACY
+                {
+                    let changed = get_affected_by_starlark_transition_via_diff(
+                        &to_options,
+                        options.underlying(),
+                    );
+                    update_affected_by_starlark_transition(
+                        to_options.get_mut::<CoreOptions>().expect("CoreOptions"),
+                        &changed,
+                    );
+                }
+                to_options
             }
             // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTaggedTrimmingTransitionFactory.java:62 ConfigFeatureFlagTaggedTrimmingTransition.patch
             ConfigurationTransition::ConfigFeatureFlagTaggedTrimming { flags } => {
@@ -919,19 +971,39 @@ pub fn starlark_defined_config_transition_of(
     let kind = match data.kind {
         LoadingTransitionKind::Regular => TransitionKind::Regular,
         LoadingTransitionKind::Exec => TransitionKind::Exec,
-        LoadingTransitionKind::AnalysisTest => blaze_util::unported!(
-            "StarlarkDefinedConfigTransition.AnalysisTestTransition.evaluate",
-            "analysis_test_transition {}",
-            value
-        ),
+        LoadingTransitionKind::AnalysisTest => TransitionKind::AnalysisTest,
     };
-    let implementation = loading
-        .get_impl()
-        .and_then(|v| v.unpack_frozen())
-        .expect("a regular transition has a frozen implementation");
+    // An AnalysisTestTransition has no implementation function; its object stands in (never
+    // called).
+    let implementation = match kind {
+        TransitionKind::AnalysisTest => frozen.to_value().unpack_frozen().expect("frozen"),
+        _ => loading
+            .get_impl()
+            .and_then(|v| v.unpack_frozen())
+            .expect("a regular transition has a frozen implementation"),
+    };
     // SAFETY: both values live on frozen .bzl heaps that BZL_LOAD keeps alive for the life of
     // the process (PORT: keep-alive), as `StarlarkCallable::to_owned_frozen_value` relies on.
     let implementation = unsafe { OwnedFrozenValue::new(FrozenHeapRef::default(), implementation) };
+    // AnalysisTestTransition.changedSettings: the dict values are Starlark objects.
+    let changed_settings: Vec<(String, blaze_build_config::starlark_transition::JavaObject)> =
+        loading
+            .changed_settings()
+            .map(|(k, v)| {
+                (
+                    k.to_owned(),
+                    blaze_build_config::starlark_transition::to_java_object(v).unwrap_or_else(
+                        |t| {
+                            blaze_util::unported!(
+                                "StarlarkDefinedConfigTransition.AnalysisTestTransition",
+                                "changed setting value of type {}",
+                                t
+                            )
+                        },
+                    ),
+                )
+            })
+            .collect();
     let converted = Arc::new(StarlarkDefinedConfigTransition::from_parts(
         transition.to_owned_frozen_value(),
         implementation,
@@ -951,6 +1023,7 @@ pub fn starlark_defined_config_transition_of(
             location: Some(data.location.clone()),
             package_context: data.package_context.clone(),
             repo_mapping: data.package_context.repo_mapping().clone(),
+            changed_settings,
         },
     ));
     let mut converted_list = CONVERTED.lock();
@@ -990,6 +1063,9 @@ pub fn create_attribute_transition(
             ConfigurationTransition::Composing(Box::new(transition1), Box::new(transition2))
         }
         TransitionFactory::Native { name, .. } => create_native(name),
+        TransitionFactory::ConfigFeatureFlag { .. } => {
+            panic!("IllegalStateException: ConfigFeatureFlagTransitionFactory is a rule transition")
+        }
     })
 }
 
@@ -1017,9 +1093,34 @@ pub fn create_rule_transition(
             Box::new(create_rule_transition(second, data)),
         ),
         TransitionFactory::Native { name, .. } => create_native(name),
+        TransitionFactory::ConfigFeatureFlag { attribute_name } => {
+            config_feature_flag_transition_factory_create(attribute_name, data)
+        }
         TransitionFactory::Exec { .. } => {
             panic!("IllegalStateException: ExecutionTransitionFactory is not a rule transition")
         }
+    }
+}
+
+// Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:137 ConfigFeatureFlagTransitionFactory.create
+fn config_feature_flag_transition_factory_create(
+    attribute_name: &str,
+    rule_data: &RuleTransitionData,
+) -> ConfigurationTransition {
+    let attrs = NonconfiguredAttributeMapper::of(&rule_data.rule);
+    if attrs.is_attribute_value_explicitly_specified(attribute_name) {
+        let flag_values = match attrs.get(attribute_name, Type::LabelKeyedStringDict) {
+            Some(AttrValue::LabelKeyedStringDict(m)) => m.into_iter().collect(),
+            other => panic!(
+                "ClassCastException: {} of {} is {:?}, not a label-keyed string dict",
+                attribute_name,
+                rule_data.rule.get_label(),
+                other
+            ),
+        };
+        ConfigurationTransition::ConfigFeatureFlagValues { flag_values }
+    } else {
+        ConfigurationTransition::NoTransition
     }
 }
 
@@ -1251,13 +1352,17 @@ fn config_feature_flag_tagged_trimming_transition_factory_create(
             }
         }
     }
-    if let TransitionFactory::Native { name, .. } = rule_class.get_transition_factory() {
-        if name == "ConfigFeatureFlagTransitionFactory" {
-            blaze_util::unported!(
-                "ConfigFeatureFlagTransitionFactory.getAttributeName",
-                "rule {}",
-                rule.get_label()
-            );
+    if let TransitionFactory::ConfigFeatureFlag { attribute_name } =
+        rule_class.get_transition_factory()
+    {
+        let setting_attribute = attribute_name;
+        // Because the process of setting a flag also creates a dependency on that flag, we need
+        // to include all the set flags, even if they aren't actually declared as used by this
+        // rule.
+        if let Some(AttrValue::LabelKeyedStringDict(m)) =
+            attrs.get(setting_attribute, Type::LabelKeyedStringDict)
+        {
+            required_labels.extend(m.into_keys());
         }
     }
 

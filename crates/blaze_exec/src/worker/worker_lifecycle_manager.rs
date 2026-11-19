@@ -145,7 +145,11 @@ impl WorkerLifecycleManager {
 
     /// Kills any worker that uses more than `limit_kb` KB of memory.
     // Java: com/google/devtools/build/lib/worker/WorkerLifecycleManager.java:117 WorkerLifecycleManager.killLargeWorkers
-    pub fn kill_large_workers(&self, worker_process_metrics: &[Arc<WorkerProcessMetrics>], limit_kb: i32) {
+    pub fn kill_large_workers(
+        &self,
+        worker_process_metrics: &[Arc<WorkerProcessMetrics>],
+        limit_kb: i32,
+    ) {
         let large: Vec<&Arc<WorkerProcessMetrics>> = worker_process_metrics
             .iter()
             .filter(|m| m.get_used_memory_in_kb() > limit_kb)
@@ -344,7 +348,10 @@ impl WorkerLifecycleManager {
 
 /// Applies eviction police for candidates. Returns the worker ids of evicted workers.
 // Java: com/google/devtools/build/lib/worker/WorkerLifecycleManager.java:276 WorkerLifecycleManager.evictCandidates
-fn evict_candidates(pool: &dyn WorkerPool, candidates: &[Arc<WorkerProcessMetrics>]) -> IndexSet<i32> {
+fn evict_candidates(
+    pool: &dyn WorkerPool,
+    candidates: &[Arc<WorkerProcessMetrics>],
+) -> IndexSet<i32> {
     pool.evict_workers(&candidates.iter().flat_map(|w| w.get_worker_ids()).collect())
 }
 
@@ -359,7 +366,9 @@ fn get_candidates(
 ) -> Vec<Arc<WorkerProcessMetrics>> {
     // MemoryComparator: descending memory (List.sort is stable).
     worker_process_metrics.sort_by(|m1, m2| {
-        (m2.get_used_memory_in_kb().wrapping_sub(m1.get_used_memory_in_kb())).cmp(&0)
+        (m2.get_used_memory_in_kb()
+            .wrapping_sub(m1.get_used_memory_in_kb()))
+        .cmp(&0)
     });
     let mut candidates = Vec::new();
     let mut free_memory_kb: i32 = 0;

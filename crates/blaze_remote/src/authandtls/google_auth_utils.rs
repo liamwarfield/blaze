@@ -29,6 +29,7 @@ use super::call_credentials_provider::{
     CallCredentialsProvider, GoogleAuthCallCredentialsProvider, NO_CREDENTIALS,
 };
 use crate::common::errors::io_exception;
+use crate::grpc::channel::{ConnectorTls, LifecycleConnector, TransportLifecycle};
 use crate::grpc::{CallCredentials, ClientInterceptor};
 
 /// What `GoogleAuthUtils.newChannel` hands to its caller (`io.grpc.ManagedChannel`), as the
@@ -50,6 +51,10 @@ pub struct ManagedChannel {
     pub interceptors: Vec<Arc<dyn ClientInterceptor>>,
     /// `maxInboundMessageSize(Integer.MAX_VALUE)`.
     pub max_inbound_message_size: usize,
+    /// The lifecycle of the transport's connections, recorded by the channel's connector
+    /// (`crate::grpc::channel::TransportLifecycle`; `None` for a channel whose connections all
+    /// fail at once).
+    pub transport_lifecycle: Option<Arc<TransportLifecycle>>,
     /// `builder.disableServiceConfigLookUp(); builder.defaultServiceConfig(serviceConfig)`.
     ///
     /// NEEDS(channel): at the pin no remote stub calls `withDeadlineAfter`; the only call
@@ -123,6 +128,12 @@ pub fn new_channel(
     // PORT: `.negotiationType(isTlsEnabled(target) ? TLS : PLAINTEXT)` is the scheme of the
     // endpoint URI (see the module comment), so it is decided where the builder is created.
     let mut builder = new_netty_channel_builder(&target_url, proxy, is_tls_enabled(target))?;
+    // The authority of the target, before the endpoint is rewritten for the channel's own TLS
+    // (below).
+    let target_authority = builder.uri().authority().map(|a| a.as_str().to_string());
+    if ssl_context.is_some() {
+        builder = endpoint_for_own_tls(builder, &target_url)?;
+    }
     // .executor(executor): see above.
     // The server is trusted, so the default limit of 4 MiB on inbound messages only
     // breaks legitimately large messages such as the ActionResult of an action with
@@ -194,15 +205,20 @@ pub fn new_channel(
     let tls = ssl_context.is_some();
     // PORT: the authority of `NettyChannelBuilder.forTarget(targetUrl)` is the authority of the
     // target; `Endpoint::uri` is `<scheme>://<targetUrl>`.
-    let mut authority = match builder.uri().authority() {
-        Some(authority) => authority.as_str().to_string(),
+    let mut authority = match target_authority {
+        Some(authority) => authority,
         None => {
             return Err(failed_to_connect(&target_url, "target has no authority"));
         }
     };
     // The client certificate rustls refused when the TLS configuration was built (see below).
     let mut rejected_client_certificate: Option<String> = None;
+    // The TLS of the channel's own connector (see `endpoint_for_own_tls`).
+    let mut connector_tls: Option<ConnectorTls> = None;
     if let Some(mut ssl_context) = ssl_context {
+        // The name the server certificate is verified against: the host of the target, or of
+        // the `--tls_authority_override` (tonic's `ClientTlsConfig::domain_name`).
+        let mut tls_domain = endpoint_host(&builder);
         // builder.sslContext(sslContext);
         if let Some(tls_authority_override) = &options.tls_authority_override {
             // builder.overrideAuthority(options.tlsAuthorityOverride): the authority is the
@@ -225,6 +241,7 @@ pub fn new_channel(
                 .and_then(|h| h.strip_suffix(']'))
                 .unwrap_or(host);
             ssl_context = ssl_context.domain_name(host);
+            tls_domain = host.to_string();
             builder = builder.origin(origin);
             authority = tls_authority_override.clone();
         }
@@ -233,8 +250,37 @@ pub fn new_channel(
         // here, so its failures carry the text of that `catch`.
         let has_client_certificate =
             options.tls_client_certificate.is_some() && options.tls_client_key.is_some();
+        // PORT: the configuration is validated as tonic builds it (`Endpoint::tls_config`), for
+        // its failures; the connections use the channel's own connector with the same
+        // configuration (`rustls_client_config`, tonic's `TlsConnector::new`).
         builder = match builder.clone().tls_config(ssl_context) {
-            Ok(builder) => builder,
+            Ok(_) => {
+                let config = rustls_client_config(
+                    options.tls_certificate.as_deref(),
+                    options.tls_client_certificate.as_deref(),
+                    options.tls_client_key.as_deref(),
+                )
+                .map_err(|e| {
+                    io_exception(format!(
+                        "Failed to init TLS infrastructure: {}",
+                        error_chain(&*e)
+                    ))
+                })?;
+                let server_name =
+                    tokio_rustls::rustls::pki_types::ServerName::try_from(tls_domain.as_str())
+                        .map_err(|e| {
+                            io_exception(format!(
+                                "Failed to init TLS infrastructure: {}",
+                                error_chain(&e)
+                            ))
+                        })?
+                        .to_owned();
+                connector_tls = Some(ConnectorTls {
+                    config: Arc::new(config),
+                    server_name,
+                });
+                builder
+            }
             Err(e)
                 if has_client_certificate
                     && create_ssl_context(options.tls_certificate.as_deref(), None, None)
@@ -266,6 +312,7 @@ pub fn new_channel(
     }
     // return builder.build();
     // PORT: `connect_lazy` needs a runtime context for the channel's background task.
+    let mut transport_lifecycle = None;
     let channel = {
         let _guard = crate::runtime::runtime().enter();
         match rejected_client_certificate {
@@ -279,7 +326,13 @@ pub fn new_channel(
                     }
                 }))
             }
-            None => builder.connect_lazy(),
+            None => {
+                let lifecycle = TransportLifecycle::new();
+                transport_lifecycle = Some(lifecycle.clone());
+                let connector =
+                    LifecycleConnector::new(http_connector(&builder), connector_tls, lifecycle);
+                builder.connect_with_connector_lazy(connector)
+            }
         }
     };
     Ok(ManagedChannel {
@@ -288,8 +341,98 @@ pub fn new_channel(
         tls,
         interceptors,
         max_inbound_message_size,
+        transport_lifecycle,
         service_config,
     })
+}
+
+/// The endpoint of a TLS channel whose connector does the TLS handshake itself
+/// (`crate::grpc::channel::LifecycleConnector`): tonic's connector applies TLS to an `https`
+/// endpoint itself, so the endpoint's URI is `http://host:port` (the port of the target, or
+/// 443, the default port of `https` and `GrpcUtil.DEFAULT_PORT_SSL`) and its origin, which
+/// gives the `:scheme` and `:authority` of every call, is `https://<authority of the target>`.
+fn endpoint_for_own_tls(builder: Endpoint, target_url: &str) -> io::Result<Endpoint> {
+    let uri = builder.uri();
+    let Some(authority) = uri.authority() else {
+        return Err(failed_to_connect(target_url, "target has no authority"));
+    };
+    let port = authority.port_u16().unwrap_or(443);
+    let connect = format!("http://{}:{port}", authority.host());
+    let origin = http::Uri::builder()
+        .scheme("https")
+        .authority(authority.clone())
+        .path_and_query("/")
+        .build()
+        .map_err(|e| failed_to_connect(target_url, e))?;
+    Ok(Endpoint::from_shared(connect)
+        .map_err(|e| failed_to_connect(target_url, error_chain(&e)))?
+        .origin(origin))
+}
+
+/// The host of an endpoint's URI, without the brackets of an IPv6 literal (tonic's default
+/// TLS domain name, `ClientTlsConfig::build_tls_connector`).
+fn endpoint_host(builder: &Endpoint) -> String {
+    let host = builder.uri().host().unwrap_or("");
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
+        .to_string()
+}
+
+/// tonic's `Endpoint::http_connector`: the TCP connector with the endpoint's settings.
+fn http_connector(builder: &Endpoint) -> hyper_util::client::legacy::connect::HttpConnector {
+    let mut http = hyper_util::client::legacy::connect::HttpConnector::new();
+    http.enforce_http(false);
+    http.set_nodelay(builder.get_tcp_nodelay());
+    http.set_keepalive(builder.get_tcp_keepalive());
+    http.set_keepalive_interval(builder.get_tcp_keepalive_interval());
+    http.set_keepalive_retries(builder.get_tcp_keepalive_retries());
+    http.set_connect_timeout(builder.get_connect_timeout());
+    http
+}
+
+/// The rustls configuration tonic's `TlsConnector::new` builds from the `ClientTlsConfig` of
+/// [`create_ssl_context`] (same inputs; called after tonic accepted them): the process's
+/// default crypto provider or ring, the safe default protocol versions, the given root
+/// certificate or the webpki roots, the client certificate, and ALPN `h2`.
+fn rustls_client_config(
+    root_cert: Option<&str>,
+    client_cert: Option<&str>,
+    client_key: Option<&str>,
+) -> Result<tokio_rustls::rustls::ClientConfig, Box<dyn std::error::Error + Send + Sync>> {
+    use tokio_rustls::rustls::pki_types::pem::PemObject;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    use tokio_rustls::rustls::{ClientConfig, RootCertStore, crypto};
+    let provider = crypto::CryptoProvider::get_default()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(crypto::ring::default_provider()));
+    let builder =
+        ClientConfig::builder_with_provider(provider).with_safe_default_protocol_versions()?;
+    let invalid = |what: &str| -> Box<dyn std::error::Error + Send + Sync> {
+        format!("invalid {what}").into()
+    };
+    let mut roots = RootCertStore::empty();
+    match root_cert {
+        Some(root_cert) => {
+            let pem = to_x509_certificates(root_cert).map_err(|()| invalid("root certificate"))?;
+            let certs = CertificateDer::pem_slice_iter(&pem).collect::<Result<Vec<_>, _>>()?;
+            roots.add_parsable_certificates(certs);
+        }
+        None => roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
+    }
+    let builder = builder.with_root_certificates(roots);
+    let mut config = match (client_cert, client_key) {
+        (Some(client_cert), Some(client_key)) => {
+            let pem =
+                to_x509_certificates(client_cert).map_err(|()| invalid("client certificate"))?;
+            let certs = CertificateDer::pem_slice_iter(&pem).collect::<Result<Vec<_>, _>>()?;
+            let key = to_private_key(client_key).map_err(|()| invalid("client key"))?;
+            builder.with_client_auth_cert(certs, PrivateKeyDer::from_pem_slice(&key)?)?
+        }
+        _ => builder.with_no_client_auth(),
+    };
+    config.alpn_protocols.push(b"h2".to_vec());
+    Ok(config)
 }
 
 /// `Math.toIntExact(seconds)`, whose `ArithmeticException` reaches the

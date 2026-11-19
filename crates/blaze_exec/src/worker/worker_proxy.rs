@@ -129,7 +129,8 @@ impl Worker for WorkerProxy {
         client_env: &IndexMap<String, String>,
     ) -> Result<(), WorkerError> {
         let Some(sandboxed) = &self.sandboxed else {
-            self.worker_multiplexer.create_process(&self.work_dir, client_env)?;
+            self.worker_multiplexer
+                .create_process(&self.work_dir, client_env)?;
             return Ok(());
         };
         self.worker_multiplexer.create_sandboxed_process(
@@ -200,7 +201,11 @@ impl Worker for WorkerProxy {
     }
 
     // Java: com/google/devtools/build/lib/worker/SandboxedWorkerProxy.java:113 SandboxedWorkerProxy.finishExecution
-    fn finish_execution(&self, exec_root: &Path, outputs: &SandboxOutputs) -> Result<(), WorkerError> {
+    fn finish_execution(
+        &self,
+        exec_root: &Path,
+        outputs: &SandboxOutputs,
+    ) -> Result<(), WorkerError> {
         self.base.status.maybe_update_status(Status::Alive);
         if let Some(sandboxed) = &self.sandboxed {
             sandbox_helpers::move_outputs(outputs, &sandboxed.sandbox_dir, exec_root)?;

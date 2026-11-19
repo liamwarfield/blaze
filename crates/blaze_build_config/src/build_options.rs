@@ -139,6 +139,10 @@ pub enum JavaCollectionClass {
     /// A `java.util.Set` (`ImmutableSet` of a `string_set` setting, `LinkedHashSet` of a
     /// repeatable one). `toString()` is `[a, b]`; `equals` only with another `Set`.
     Set,
+    /// `net.starlark.java.eval.StarlarkSet` (a set a transition returned; also a
+    /// `java.util.Set`). `toString()` is the Starlark `repr` (`set(["a", "b"])`); `equals` with any
+    /// `Set` of the same elements.
+    StarlarkSet,
 }
 
 /// A collection-valued Starlark option: its Java class and elements (in iteration order).
@@ -168,7 +172,15 @@ impl StarlarkOptionList {
 
     /// `value instanceof java.util.List` (`StarlarkList` and `Tuple` implement `List`).
     pub fn is_java_list(&self) -> bool {
-        self.class != JavaCollectionClass::Set
+        !self.is_java_set()
+    }
+
+    /// `value instanceof java.util.Set` (`StarlarkSet` implements `Set`).
+    pub fn is_java_set(&self) -> bool {
+        matches!(
+            self.class,
+            JavaCollectionClass::Set | JavaCollectionClass::StarlarkSet
+        )
     }
 }
 
@@ -253,6 +265,20 @@ impl StarlarkOptionValue {
         StarlarkOptionValue::List(StarlarkOptionList::new(JavaCollectionClass::Set, distinct))
     }
 
+    /// A `StarlarkSet`: `items` without duplicates, in insertion order.
+    pub fn starlark_set(items: Vec<StarlarkOptionValue>) -> StarlarkOptionValue {
+        let mut distinct: Vec<StarlarkOptionValue> = Vec::with_capacity(items.len());
+        for item in items {
+            if !distinct.contains(&item) {
+                distinct.push(item);
+            }
+        }
+        StarlarkOptionValue::List(StarlarkOptionList::new(
+            JavaCollectionClass::StarlarkSet,
+            distinct,
+        ))
+    }
+
     /// Java `String.valueOf(value)` (`value.toString()`).
     pub fn java_to_string(&self) -> String {
         match self {
@@ -268,9 +294,10 @@ impl StarlarkOptionValue {
                 }
                 // Java: net/starlark/java/eval/StarlarkList.java:272 StarlarkList.toString
                 // Java: net/starlark/java/eval/Tuple.java:139 Tuple.toString
-                JavaCollectionClass::StarlarkList | JavaCollectionClass::Tuple => {
-                    self.starlark_repr()
-                }
+                // Java: net/starlark/java/eval/StarlarkSet.java:225 StarlarkSet.toString
+                JavaCollectionClass::StarlarkList
+                | JavaCollectionClass::Tuple
+                | JavaCollectionClass::StarlarkSet => self.starlark_repr(),
             },
         }
     }
@@ -310,6 +337,14 @@ impl StarlarkOptionValue {
                     // Java: net/starlark/java/eval/Printer.java:216 Printer.repr (other
                     // non-Starlark values print their `toString()`).
                     JavaCollectionClass::Set => self.java_to_string(),
+                    // Java: net/starlark/java/eval/StarlarkSet.java:216 StarlarkSet.repr
+                    JavaCollectionClass::StarlarkSet => {
+                        if elems.is_empty() {
+                            "set()".to_string()
+                        } else {
+                            format!("set([{}])", elems.join(", "))
+                        }
+                    }
                 }
             }
         }
@@ -340,8 +375,9 @@ impl StarlarkOptionValue {
                         b.class() == JavaCollectionClass::Tuple && same_elems()
                     }
                     // Java: java/util/AbstractSet.java AbstractSet.equals
-                    JavaCollectionClass::Set => {
-                        b.class() == JavaCollectionClass::Set
+                    // Java: net/starlark/java/eval/StarlarkSet.java:230 StarlarkSet.equals
+                    JavaCollectionClass::Set | JavaCollectionClass::StarlarkSet => {
+                        b.is_java_set()
                             && a.len() == b.len()
                             && b.iter().all(|y| a.iter().any(|x| y.java_equals(x)))
                     }

@@ -21,7 +21,6 @@
 
 mod util;
 
-use std::collections::HashSet;
 use std::io::{self, Read};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
@@ -1072,7 +1071,7 @@ fn extra_headers() {
             &f.context,
             &digest_util().as_action_key(digest_util().compute_as_utf8("key")),
             /* inlineOutErr= */ false,
-            /* inlineOutputFiles= */ &HashSet::new(),
+            /* inlineOutputFiles= */ &indexmap::IndexSet::new(),
         )
         .unwrap();
     assert!(intercepted.load(Ordering::SeqCst));
@@ -1408,7 +1407,7 @@ fn test_get_cached_action_result_with_retries() {
             &f.context,
             &action_key,
             /* inlineOutErr= */ false,
-            /* inlineOutputFiles= */ &HashSet::new(),
+            /* inlineOutputFiles= */ &indexmap::IndexSet::new(),
         ))
         .unwrap()
         .is_none()

@@ -106,6 +106,23 @@ pub fn run(name: &str, bytes: &[u8], mode: ScriptMode) -> Vec<String> {
             builder.set("_utf8_byte_strings", mode.utf8_byte_strings());
             let globals = builder.build();
             let out = Collect::default();
+            // Bazel's static errors (every one, in Java's order): Java's front end
+            // (blaze_starlark::syntax::java), Program.compileFile with FileOptions.DEFAULT.
+            let java_options = blaze_starlark::syntax::java::JavaOptions::DEFAULT;
+            let parsed = blaze_starlark::syntax::java::parse_file(&name, &source, java_options);
+            let no_guard = |_: &str| None;
+            let module = blaze_starlark::syntax::java::PredeclaredModule {
+                names: globals.names().map(|n| n.as_str().to_owned()).collect(),
+                guarded: &no_guard,
+            };
+            let static_errors =
+                blaze_starlark::syntax::java::compile_errors(&parsed, &module, java_options);
+            if !static_errors.is_empty() {
+                return static_errors
+                    .iter()
+                    .map(|e| escape(&format!("SYNTAX {e}")))
+                    .collect();
+            }
             let ast = match AstModule::parse(&name, source, &dialect::bzl_dialect()) {
                 Ok(ast) => ast,
                 Err(e) => return vec![syntax_line(&e)],

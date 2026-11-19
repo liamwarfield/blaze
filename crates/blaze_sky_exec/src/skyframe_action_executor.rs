@@ -1173,7 +1173,9 @@ impl SkyframeActionExecutor {
             self.report_action_execution(
                 listener,
                 &primary_output_path,
+                /* primaryOutputMetadata= */ None,
                 action,
+                Some(&action_result),
                 Some(e.clone()),
                 out_err_buffer,
                 ErrorTiming::AFTER_EXECUTION,
@@ -1245,7 +1247,9 @@ impl SkyframeActionExecutor {
                 self.report_action_execution(
                     listener,
                     &primary_output_path,
+                    /* primaryOutputMetadata= */ None,
                     action,
+                    Some(&action_result),
                     Some(e.clone()),
                     out_err_buffer,
                     ErrorTiming::AFTER_EXECUTION,
@@ -1253,10 +1257,26 @@ impl SkyframeActionExecutor {
                 return Err(e.into());
             }
         }
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1389 ActionRunner.actuallyCompleteAction
+        let primary_output_metadata = match output_metadata_store
+            .get_output_metadata(&artifact_input(&primary_output))
+        {
+            Ok(Some(metadata)) => metadata,
+            Ok(None) => panic!(
+                "IllegalStateException: Metadata already obtained for {}",
+                primary_output
+            ),
+            Err(e) => panic!(
+                "IllegalStateException: Metadata already obtained for {}: {:?}",
+                primary_output, e
+            ),
+        };
         self.report_action_execution(
             listener,
             &primary_output_path,
+            Some(primary_output_metadata),
             action,
+            Some(&action_result),
             None,
             out_err_buffer,
             ErrorTiming::NO_ERROR,
@@ -1849,7 +1869,9 @@ impl SkyframeActionExecutor {
         self.report_action_execution(
             listener,
             primary_output_path,
+            /* primaryOutputMetadata= */ None,
             action,
+            None,
             Some(e.clone()),
             out_err_buffer,
             error_timing,
@@ -1942,11 +1964,14 @@ impl SkyframeActionExecutor {
     }
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1923 SkyframeActionExecutor.reportActionExecution
+    #[allow(clippy::too_many_arguments)]
     fn report_action_execution(
         &self,
         listener: &dyn ExtendedEventHandler,
         primary_output_path: &Path,
+        primary_output_metadata: Option<FileArtifactValue>,
         action: &ActionRef,
+        action_result: Option<&ActionResult>,
         exception: Option<ActionExecutionException>,
         out_err: &FileOutErr,
         error_timing: ErrorTiming,
@@ -1957,6 +1982,41 @@ impl SkyframeActionExecutor {
         let stderr = out_err
             .has_recorded_stderr()
             .then(|| out_err.get_error_path().clone());
+        // Collect MetadataLogs and spawn start times/end times from the Action's SpawnResults.
+        // PORT: `findSpawnResultsInActionResultAndException`'s second case (the SpawnResult of a
+        // SpawnActionExecutionException) has no counterpart: blaze_exec's
+        // ActionExecutionException does not keep the failed spawn's result, so a failed spawn
+        // action reports no times (Java reports the failed spawn's).
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1976 SkyframeActionExecutor.findSpawnResultsInActionResultAndException
+        let spawn_results: &[blaze_exec::actions::spawn_result::SpawnResult] = match action_result {
+            Some(action_result) => action_result.spawn_results(),
+            None => &[],
+        };
+        let mut first_start_time: Option<std::time::SystemTime> = None;
+        let mut last_end_time: Option<std::time::SystemTime> = None;
+        for spawn_result in spawn_results {
+            // Not all SpawnResults have a start time, and some use Instant.MIN/MAX instead of
+            // null.
+            // PORT: Blaze's SpawnResult keeps no Instant.MIN/MAX sentinel (`None` instead).
+            if let Some(start_time) = spawn_result.get_start_time() {
+                // startTime.plusMillis(wallTimeInMs)
+                let wall_time_in_ms = spawn_result.get_wall_time_in_ms();
+                let wall_time = std::time::Duration::from_millis(wall_time_in_ms.unsigned_abs() as u64);
+                let end_time = if wall_time_in_ms >= 0 {
+                    start_time + wall_time
+                } else {
+                    start_time - wall_time
+                };
+                first_start_time = Some(match first_start_time {
+                    Some(t) => t.min(start_time),
+                    None => start_time,
+                });
+                last_end_time = Some(match last_end_time {
+                    Some(t) => t.max(end_time),
+                    None => end_time,
+                });
+            }
+        }
         listener.post(Arc::new(ActionExecutedEvent {
             action_id: action.get_primary_output().get_exec_path().clone(),
             action: action.clone(),
@@ -1966,6 +2026,9 @@ impl SkyframeActionExecutor {
             stdout,
             stderr,
             error_timing,
+            primary_output_metadata,
+            start_time: first_start_time,
+            end_time: last_end_time,
         }));
     }
 

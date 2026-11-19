@@ -191,7 +191,23 @@ pub enum BzlCompileValue {
     },
     /// The file isn't found or has errors; `error_msg` is the reason.
     // Java: com/google/devtools/build/lib/skyframe/BzlCompileValue.java:96 BzlCompileValue.Failure
-    Failure { error_msg: String },
+    Failure {
+        error_msg: String,
+        /// A file with static errors, whose error list needs the predeclared names (Java's
+        /// BzlCompileFunction has them; Blaze's BzlLoad does): BzlLoad reports Java's errors
+        /// (`blaze_starlark::eval::compile_and_resolve`) with this.
+        deferred: Option<Arc<DeferredCompile>>,
+    },
+}
+
+/// The input of a compile whose errors BzlLoad reports (see `BzlCompileValue::Failure`).
+#[derive(Debug)]
+pub struct DeferredCompile {
+    pub key: BzlCompileKey,
+    pub kind: FileKind,
+    pub options: FileOptions,
+    pub input_name: String,
+    pub source: String,
 }
 
 impl BzlCompileValue {
@@ -228,7 +244,7 @@ impl BzlCompileValue {
     // Java: com/google/devtools/build/lib/skyframe/BzlCompileValue.java:58 BzlCompileValue.getError
     pub fn get_error(&self) -> &str {
         match self {
-            BzlCompileValue::Failure { error_msg } => error_msg,
+            BzlCompileValue::Failure { error_msg, .. } => error_msg,
             BzlCompileValue::Success { .. } => panic!(
                 "IllegalStateException: attempted to retrieve unsuccessful lookup reason for \
                  successful lookup"
@@ -239,7 +255,18 @@ impl BzlCompileValue {
     /// Constructs a value from a failure before parsing a file.
     // Java: com/google/devtools/build/lib/skyframe/BzlCompileValue.java:118 BzlCompileValue.noFile
     pub fn no_file(error_msg: String) -> BzlCompileValue {
-        BzlCompileValue::Failure { error_msg }
+        BzlCompileValue::Failure {
+            error_msg,
+            deferred: None,
+        }
+    }
+
+    /// The compile BzlLoad reports the errors of, if any.
+    pub fn deferred(&self) -> Option<&Arc<DeferredCompile>> {
+        match self {
+            BzlCompileValue::Failure { deferred, .. } => deferred.as_ref(),
+            BzlCompileValue::Success { .. } => None,
+        }
     }
 
     /// Constructs a value from a compiled .bzl program.
@@ -488,26 +515,37 @@ impl BzlCompileFunction {
             ..file_kind.file_options()
         };
 
-        match compile_with_options(file_kind, options, &input_name.clone(), source) {
+        match compile_with_options(file_kind, options, &input_name.clone(), source.clone()) {
             Ok(program) => Ok(Ok(Some(BzlCompileValue::with_program(
                 program, digest, input_name,
             )))),
             Err(e) => {
-                let errors: &[SyntaxError] = match &e.kind {
+                let _: &[SyntaxError] = match &e.kind {
                     blaze_starlark::error::EvalErrorKind::Syntax(errors) => errors,
                     _ => unreachable!("compile only fails with syntax errors"),
                 };
-                Self::add_syntax_errors_to_listener(env.listener(), errors, key);
+                // PORT: Java's error list (Program.compileFile: the parse errors and every
+                // resolver error) needs the predeclared names, which Blaze's BzlLoad picks; it
+                // reports the errors (addSyntaxErrorsToListener) from `deferred`.
                 let label = key.label.as_ref().expect("the empty prelude compiles");
-                Ok(Ok(Some(BzlCompileValue::no_file(format!(
-                    "compilation of module '{}'{} failed",
-                    label.to_path_fragment(),
-                    if is_builtins_repo(label.get_repository()) {
-                        " (internal)"
-                    } else {
-                        ""
-                    }
-                )))))
+                Ok(Ok(Some(BzlCompileValue::Failure {
+                    error_msg: format!(
+                        "compilation of module '{}'{} failed",
+                        label.to_path_fragment(),
+                        if is_builtins_repo(label.get_repository()) {
+                            " (internal)"
+                        } else {
+                            ""
+                        }
+                    ),
+                    deferred: Some(Arc::new(DeferredCompile {
+                        key: key.clone(),
+                        kind: file_kind,
+                        options,
+                        input_name,
+                        source,
+                    })),
+                })))
             }
         }
     }
@@ -541,7 +579,7 @@ impl BzlCompileFunction {
     /// Replays the syntax errors from a file onto an event handler, adding more context if
     /// necessary.
     // Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:268 BzlCompileFunction.addSyntaxErrorsToListener
-    fn add_syntax_errors_to_listener(
+    pub(crate) fn add_syntax_errors_to_listener(
         handler: &dyn ExtendedEventHandler,
         errors: &[SyntaxError],
         key: &BzlCompileKey,

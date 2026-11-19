@@ -20,7 +20,32 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn run_hooks_at_exit() {
-    run_shutdown_hooks();
+    // A panic must not unwind out of an `atexit` handler.
+    let _ = std::panic::catch_unwind(run_shutdown_hooks);
+}
+
+/// `process.destroyAndWait()` as a hook may run it: during `exit`, after the thread-local
+/// interrupt state of the calling thread may be gone, so the wait polls `isAlive()` instead of
+/// using the interruptible `waitFor()`.
+///
+/// PORT: Java waits without a limit; after 10s the process is killed with SIGKILL so that a
+/// worker ignoring SIGTERM cannot keep Blaze from exiting.
+pub fn destroy_and_wait_at_exit(process: &dyn blaze_shell::Subprocess) {
+    process.destroy();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while process.is_alive() {
+        if std::time::Instant::now() >= deadline {
+            let pid = process.get_process_id() as libc::pid_t;
+            if pid > 0 {
+                // SAFETY: plain kill(2).
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 /// A registered hook; [`remove_shutdown_hook`] takes it back.

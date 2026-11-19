@@ -206,7 +206,10 @@ impl WorkerPoolImpl {
             return *v;
         }
         // Empty-string contains the user-specified worker maximum instances.
-        max_instances.get("").copied().unwrap_or(default_max_instances)
+        max_instances
+            .get("")
+            .copied()
+            .unwrap_or(default_max_instances)
     }
 
     fn all_pools(&self) -> Vec<Arc<WorkerKeyPool>> {
@@ -387,7 +390,9 @@ impl WorkerKeyPool {
                 worker
                     .get_status()
                     .maybe_update_status(Status::PendingKillDueToMemoryPressure);
-                self.invalidate_worker_locked(&mut st, &worker, /* should_shrink_pool= */ true);
+                self.invalidate_worker_locked(
+                    &mut st, &worker, /* should_shrink_pool= */ true,
+                );
                 st.idle_workers
                     .retain(|w| w.get_worker_id() != worker.get_worker_id());
                 // Evicted %s worker (id %d, key hash %d). (logged)
@@ -446,7 +451,9 @@ impl WorkerKeyPool {
                     worker = Some(candidate);
                     break;
                 }
-                self.invalidate_worker_locked(&mut st, &candidate, /* should_shrink_pool= */ false);
+                self.invalidate_worker_locked(
+                    &mut st, &candidate, /* should_shrink_pool= */ false,
+                );
             }
 
             if worker.is_none() {
@@ -519,8 +526,7 @@ impl WorkerKeyPool {
         worker: &Arc<dyn Worker>,
         should_shrink_pool: bool,
     ) {
-        self.factory
-            .destroy_worker(worker.get_worker_key(), worker);
+        self.factory.destroy_worker(worker.get_worker_key(), worker);
 
         let id = worker.get_worker_id();
         if st.idle_workers.iter().any(|w| w.get_worker_id() == id) {

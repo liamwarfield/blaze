@@ -605,8 +605,7 @@ static LITERAL_PATTERN_WITH_DOT_UNESCAPED: std::sync::LazyLock<java_regex::Patte
 // Java: com/google/devtools/build/lib/util/regex/RegexUtil.java:33 RegexUtil.EXTRACT_SUFFIX_MATCH
 // `Matcher.matches()` with the named group `suffix`: the translation anchored at both ends.
 static EXTRACT_SUFFIX_MATCH: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-    let translated =
-        java_regex::translate("(?:\\^|\\\\A)*\\.\\*(?<suffix>[^?+].*)?", 0).unwrap();
+    let translated = java_regex::translate("(?:\\^|\\\\A)*\\.\\*(?<suffix>[^?+].*)?", 0).unwrap();
     Regex::new(&format!(r"\A(?:{translated})\z")).unwrap()
 });
 

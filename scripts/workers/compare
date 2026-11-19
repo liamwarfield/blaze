@@ -1,0 +1,489 @@
+#!/usr/bin/python3 -I
+"""Compare persistent workers between the oracle (Bazel 9.3.2) and Blaze. See `compare help`."""
+
+import glob
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+USAGE = """\
+usage: scripts/workers/compare --binary <blaze> [--oracle <bazel>] [--label NAME]
+                               [--case ID]... [--skip-oracle]
+       scripts/workers/compare list
+       scripts/workers/compare selftest
+       scripts/workers/compare help
+
+Runs a fixed list of cases (see `list`) on the probe workspace scripts/workers/probe, with the
+oracle and with Blaze. The probe's worker is tools/worker.py (standard library Python), which
+speaks the proto and the JSON worker protocol, singleplex or multiplex, honours sandbox_dir, and
+misbehaves on request (exit code, crash, garbage on stdout, no answer, a huge log, a cancel
+response); //java holds two java_library targets for Javac in its default (multiplex) worker.
+
+Each side has its own copy of the probe (~/.cache/blaze/work/workers-compare/<label>/<side>, rsync)
+and its own output user root (~/.cache/blaze/oracle-out/workers-compare-<side>), a clean
+environment (HOME, PATH=/usr/bin:/bin), --nohome_rc --nosystem_rc, the shared repository cache,
+--color=no --curses=no. A case is `clean`, then one `build` (with --jobs=1, --worker_verbose and
+--execution_log_json_file, plus the case's flags and targets), then `info output_base`, then
+`shutdown`: every case starts from a fresh server on both sides (Blaze has no persistent server
+yet, so its workers live as long as one command; shutting the oracle's server down gives the same
+start: no worker, worker ids from 1).
+
+Compared per case (after replacing the workspace copy, output base, execroot, output user root,
+install base and $HOME by placeholders, scripts/oracle/normalise.py):
+  termination  how the build ended (exit code, signal, OOM kill, timeout)
+  summary      the "INFO: N processes: ..." and "Build completed ..." / "did NOT complete" lines
+  messages     every ERROR:, WARNING: and INFO: line about workers and the action's output
+               ("INFO: From ...:" blocks, "Created new ...", "Destroying ...", pool messages),
+               with the line that follows them, in order. Normalised: the worker key hash
+               (it hashes the execroot path, which differs between the two output roots; that it
+               equals Bazel's for equal paths is checked by the `samehash` case), and the Java stack
+               frames ("\\tat ..." and "\\t... N more" lines) of the oracle's "Exception details",
+               which Blaze cannot print (declared normalisation: blaze_exec::worker::error_message).
+  outputs      sha256 of every bazel-bin/*.out and bazel-bin/java/*.jar
+  logs         the names of <output_base>/bazel-workers/*.log and the contents of each
+  execlog      every spawn of --execution_log_json_file, normalised as the referee does
+               (scripts/oracle/surfaces.py normalise_spawn: no metrics, no walltime), keyed by
+               its first listed output: mnemonic, runner, exit code, status, arguments, inputs,
+               outputs, execution info
+The `samehash` case runs both binaries one after the other in one workspace and one output user
+root (oracle, shutdown, then a fresh action cache for Blaze), so that the execroot and thus the key
+hashes are equal; it compares the raw "Created new ..." lines.
+
+Guards (scripts/lib/compare_common.py): every command runs under a supervisor in a memory-capped
+systemd scope that records how it really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout`).
+--oracle must be the pinned oracle (UPSTREAM.json). Each case is one row: IDENTICAL (termination
+and every compared aspect equal; the oracle exited 0, or the case declares its non-zero exit),
+DIFFERENT, BOTH-FAILED (equal failures not declared), NOT-PORTED (Blaze stopped at unported!),
+ORACLE-UNEXPECTED, SKIPPED. An empty selection is an error.
+
+Output: a header (repository HEAD and dirty flag, both binaries' paths and sha256), one row per case
+with the differing aspects, and the denominator; raw outputs under
+~/.cache/blaze/workers-compare/<label>/<side>/<case>.* and results.json there. Exit 0 only when at
+least one case was compared and every selected case is IDENTICAL; 1 otherwise; 2 on a usage error
+or a refusal. --skip-oracle reuses the oracle outputs of an earlier run with the same --label only
+when <label>/oracle/oracle.key (oracle sha256, this tool's sha256, every argv, the environment,
+the digest of the probe, the selected cases) equals this run's key; otherwise it refuses.
+"""
+
+HOME = os.path.expanduser("~")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts", "oracle"))
+import normalise  # noqa: E402
+import surfaces  # noqa: E402
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts", "lib"))
+import compare_common as cc  # noqa: E402
+
+THIS = os.path.abspath(__file__)
+CACHE = os.path.join(HOME, ".cache", "blaze")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+PROBE_DIR = os.path.join(os.path.dirname(THIS), "probe")
+TIMEOUT = 1800
+TOOL = "scripts/workers/compare"
+
+# (id, build arguments (flags and targets), declared exit code of the build or None).
+CASES = [
+    ("proto", ["//:ok_proto"], None),
+    ("proto-reuse", ["//:ok_proto", "//:ok_proto_again"], None),
+    ("proto-explicit", ["//:ok_proto_explicit"], None),
+    ("json", ["//:ok_json"], None),
+    ("flagfile-eq", ["//:ok_flagfile_eq"], None),
+    ("multiplex", ["//:ok_mx", "//:ok_mx_again"], None),
+    ("multiplex-json", ["//:ok_mx_json"], None),
+    ("noworker-multiplex", ["--noworker_multiplex", "//:ok_mx"], None),
+    ("sandboxed", ["--worker_sandboxing", "//:ok_proto", "//:ok_proto_again"], None),
+    ("multiplex-sandboxed", ["--experimental_worker_multiplex_sandboxing", "//:ok_mx_sandbox"], None),
+    ("multiplex-sandbox-off", ["//:ok_mx_sandbox"], None),
+    ("strategy-local", ["--strategy=ProbeWork=local", "//:ok_proto"], None),
+    ("spawn-strategy-local", ["--spawn_strategy=local", "//:ok_proto", "//:ok_mx"], None),
+    ("spawn-strategy-worker", ["--spawn_strategy=worker", "//:ok_proto"], None),
+    ("max-instances", ["--worker_max_instances=ProbeWork=1", "//:ok_proto", "//:ok_proto_again"], None),
+    ("max-multiplex-instances", ["--worker_max_multiplex_instances=ProbeMx=1", "//:ok_mx", "//:ok_mx_again"], None),
+    ("extra-flag", ["--worker_extra_flag=ProbeWork=--probe_extra", "//:ok_proto"], None),
+    ("quit-after-build", ["--worker_quit_after_build", "//:ok_proto"], None),
+    ("cancellation", ["--experimental_worker_cancellation", "//:ok_cancellable"], None),
+    ("strict-flagfiles", ["--experimental_worker_strict_flagfiles", "//:ok_proto"], None),
+    ("allowlist", ["--experimental_worker_allowlist=Other", "//:ok_proto"], None),
+    ("memory-limit", ["--experimental_total_worker_memory_limit_mb=100000", "//:ok_proto"], None),
+    ("fail", ["//:fail_proto"], 1),
+    ("fail-json", ["//:fail_json"], 1),
+    ("crash", ["//:crash_proto"], 1),
+    ("crash-multiplex", ["//:crash_mx"], 1),
+    ("garbage", ["//:garbage_proto"], 1),
+    ("garbage-json", ["//:garbage_json"], 1),
+    ("empty-response", ["//:empty_proto"], 1),
+    ("huge-stderr", ["//:huge_stderr"], 1),
+    ("cancel-response", ["//:cancelled_proto"], 1),
+    ("bad-protocol", ["//:bad_protocol"], 1),
+    ("java", ["//java:shout"], None),
+]
+CASE_IDS = [c[0] for c in CASES] + ["samehash"]
+SAMEHASH_TARGETS = ["//:ok_proto", "//:ok_json", "//:ok_mx"]
+# Flags every build gets.
+BUILD_FLAGS = ["--jobs=1", "--worker_verbose"]
+
+SUMMARY_RE = re.compile(r"^(INFO: \d+ process(es)?:.*|INFO: Build completed.*|"
+                        r"(ERROR: )?Build did NOT complete.*)$")
+# The messages compared: errors, warnings and the worker-related INFO lines, with the text up to
+# the next message line.
+MESSAGE_START_RE = re.compile(r"^(ERROR|WARNING|INFO): ")
+INFO_KEPT_RE = re.compile(r"^INFO: (From |Created new |Destroying |Worker |Clean command|"
+                          r"Build completed, shutting|Could not)")
+PROGRESS_RE = re.compile(r"^(Loading|Analyzing|Computing|INFO: Analyzed|INFO: Found|"
+                         r"INFO: Elapsed|INFO: Invocation|INFO: Streaming|Target |  bazel-bin|"
+                         r"\[\d+ / \d+\]|Extracting Bazel|Starting local Bazel|INFO: Reading|"
+                         r"Another command|INFO: Starting clean)")
+KEY_HASH_RE = re.compile(r"key hash -?\d+")
+JAVA_FRAME_RE = re.compile(r"^\t(at |\.\.\. \d+ more)")
+ELAPSED_RE = re.compile(r"\b\d+\.\d+s\b")
+
+
+def make_writable_and_remove(path):
+    if not os.path.lexists(path):
+        return
+    subprocess.run(["chmod", "-R", "u+w", path], stderr=subprocess.DEVNULL)
+    shutil.rmtree(path, ignore_errors=True)
+    if os.path.lexists(path):
+        subprocess.run(["rm", "-rf", path])
+
+
+def argv_of(binary, our, args):
+    return [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc"] + args[:1] + (
+        ["--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"]
+        if args[0] in ("build", "clean", "info") else []) + args[1:]
+
+
+def build_args(case_args, execlog):
+    return ["build"] + BUILD_FLAGS + ["--execution_log_json_file=" + execlog] + case_args
+
+
+def run_cmd(binary, ws, our, args, tag):
+    r = cc.run(argv_of(binary, our, args), ws, timeout=TIMEOUT, mode="scope", tag=tag)
+    return r.term, r.out, r.err
+
+
+def selected(cases):
+    return [c for c in CASES if not cases or c[0] in cases]
+
+
+def sha_file(p):
+    with open(p, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def side_paths(side, label):
+    ws = os.path.join(CACHE, "work", "workers-compare", label, side)
+    our = os.path.join(CACHE, "oracle-out", "workers-compare-" + side)
+    outdir = os.path.join(CACHE, "workers-compare", label, side)
+    return ws, our, outdir
+
+
+def oracle_key(label, cases):
+    ws, our, outdir = side_paths("oracle", label)
+    argvs = []
+    for cid, args, _ in selected(cases):
+        argvs.append(argv_of(cc.PINNED_ORACLE, our,
+                             build_args(args, os.path.join(outdir, cid + ".execlog.json"))))
+    return cc.cache_key(cc.tool_sha256(THIS), cc.pinned_sha256(), argvs, cc.clean_env(),
+                        cc.tree_digest(PROBE_DIR),
+                        extra={"workspace": ws, "cases": sorted(cases)})
+
+
+def collect(ws, output_base, outdir, cid):
+    """Outputs, worker logs (names and contents) after a case."""
+    res = {"outputs": {}, "logs": {}}
+    bin_dir = os.path.join(ws, "bazel-bin")
+    for p in sorted(glob.glob(os.path.join(bin_dir, "*.out")) +
+                    glob.glob(os.path.join(bin_dir, "java", "*.jar"))):
+        res["outputs"][os.path.relpath(p, bin_dir)] = sha_file(p)
+    wdir = os.path.join(output_base, "bazel-workers") if output_base else None
+    if wdir and os.path.isdir(wdir):
+        for p in sorted(glob.glob(os.path.join(wdir, "*.log"))):
+            with open(p, "rb") as f:
+                res["logs"][os.path.basename(p)] = f.read().decode("latin-1")
+    return res
+
+
+def side_run(side, binary, label, cases):
+    ws, our, outdir = side_paths(side, label)
+    make_writable_and_remove(ws)
+    make_writable_and_remove(our)
+    make_writable_and_remove(outdir)
+    os.makedirs(ws)
+    os.makedirs(outdir)
+    subprocess.run(["rsync", "-a", "--delete", PROBE_DIR + "/", ws + "/"], check=True)
+    results = {"cases": {}}
+    tag = "workers-" + side
+    paths = None
+    for cid, args, _ in selected(cases):
+        run_cmd(binary, ws, our, ["clean"], tag)
+        execlog = os.path.join(outdir, cid + ".execlog.json")
+        term, out, err = run_cmd(binary, ws, our, build_args(args, execlog), tag)
+        with open(os.path.join(outdir, cid + ".stderr"), "wb") as f:
+            f.write(err)
+        with open(os.path.join(outdir, cid + ".stdout"), "wb") as f:
+            f.write(out)
+        _t, ob, _e = run_cmd(binary, ws, our, ["info", "output_base"], tag)
+        output_base = ob.decode("latin-1").strip()
+        if paths is None and output_base:
+            _t, er, _e = run_cmd(binary, ws, our, ["info", "execution_root"], tag)
+            _t, ib, _e = run_cmd(binary, ws, our, ["info", "install_base"], tag)
+            paths = {"workspace": ws, "output_user_root": our, "output_base": output_base,
+                     "execroot": er.decode("latin-1").strip(),
+                     "install_base": ib.decode("latin-1").strip(), "home": HOME}
+        entry = {"termination": term.to_dict(), "unported": cc.unported_message(err)}
+        entry.update(collect(ws, output_base, outdir, cid))
+        results["cases"][cid] = entry
+        run_cmd(binary, ws, our, ["shutdown"], tag)
+    results["paths"] = paths or {"workspace": ws, "output_user_root": our, "home": HOME}
+    with open(os.path.join(outdir, "results.json"), "w") as f:
+        json.dump(results, f, indent=1, sort_keys=True)
+    if side == "oracle":
+        cc.write_key(os.path.join(outdir, "oracle.key"), oracle_key(label, cases))
+    return results
+
+
+def samehash_run(blaze, oracle, label):
+    """Both binaries in one workspace and output user root; the raw "Created new" lines."""
+    ws = os.path.join(CACHE, "work", "workers-compare", label, "samehash")
+    our = os.path.join(CACHE, "oracle-out", "workers-compare-samehash")
+    make_writable_and_remove(ws)
+    make_writable_and_remove(our)
+    os.makedirs(ws)
+    subprocess.run(["rsync", "-a", "--delete", PROBE_DIR + "/", ws + "/"], check=True)
+    lines = {}
+    terms = {}
+    for side, binary in (("oracle", oracle), ("blaze", blaze)):
+        if side == "blaze":
+            # A fresh action cache and output tree: the oracle's must not satisfy Blaze's build.
+            for ob in glob.glob(os.path.join(our, "*", "action_cache")) + \
+                    glob.glob(os.path.join(our, "*", "execroot", "_main", "bazel-out")):
+                make_writable_and_remove(ob)
+        term, _out, err = run_cmd(binary, ws, our,
+                                  ["build"] + BUILD_FLAGS + SAMEHASH_TARGETS, "workers-samehash")
+        run_cmd(binary, ws, our, ["shutdown"], "workers-samehash")
+        text = err.decode("latin-1")
+        # The scheduling order of the three actions is not a worker property: compare the set.
+        lines[side] = sorted(re.sub(r"\(id \d+, ", "(id N, ", re.sub(r"-\d+-Probe", "-N-Probe", l))
+                             for l in text.splitlines() if l.startswith("INFO: Created new "))
+        terms[side] = term
+    return lines, terms
+
+
+def message_blocks(text):
+    """The compared message lines (see USAGE), each with its continuation lines."""
+    out = []
+    cur = None
+    for line in text.splitlines():
+        if JAVA_FRAME_RE.match(line):
+            continue
+        if MESSAGE_START_RE.match(line) or PROGRESS_RE.match(line):
+            if cur is not None:
+                out.append("\n".join(cur))
+                cur = None
+            if PROGRESS_RE.match(line) or SUMMARY_RE.match(line):
+                continue
+            if line.startswith("INFO: ") and not INFO_KEPT_RE.match(line):
+                continue
+            cur = [line]
+        elif cur is not None:
+            cur.append(line)
+    if cur is not None:
+        out.append("\n".join(cur))
+    return out
+
+
+def norm(ctx, s):
+    return KEY_HASH_RE.sub("key hash <H>", ctx.text(s))
+
+
+def execlog_items(ctx, path):
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        text = f.read().decode("utf-8", "replace")
+    try:
+        spawns = surfaces._concat_json(text)  # noqa: SLF001 (the referee's own reader)
+    except Exception:  # noqa: BLE001
+        return None
+    items = {}
+    for s in spawns:
+        s = surfaces.normalise_spawn(ctx, s)
+        outs = s.get("listedOutputs") or []
+        key = outs[0] if outs else "%s %s" % (s.get("mnemonic"), s.get("commandArgs"))
+        items[key] = s
+    return items
+
+
+def compare_case(cid, declared, o, b, odir, bdir, octx, bctx):
+    oc, bc = o["cases"][cid], b["cases"][cid]
+    ot = cc.Termination.from_dict(oc["termination"])
+    bt = cc.Termination.from_dict(bc["termination"])
+    differing = []
+    oerr = open(os.path.join(odir, cid + ".stderr"), "rb").read().decode("latin-1")
+    berr = open(os.path.join(bdir, cid + ".stderr"), "rb").read().decode("latin-1")
+    osum = [ELAPSED_RE.sub("<T>s", norm(octx, l)) for l in oerr.splitlines() if SUMMARY_RE.match(l)]
+    bsum = [ELAPSED_RE.sub("<T>s", norm(bctx, l)) for l in berr.splitlines() if SUMMARY_RE.match(l)]
+    details = []
+    if osum != bsum:
+        differing.append("summary")
+        details.append("summary: oracle %s | blaze %s" % (osum, bsum))
+    om = [norm(octx, m) for m in message_blocks(oerr)]
+    bm = [norm(bctx, m) for m in message_blocks(berr)]
+    if om != bm:
+        differing.append("messages")
+        with open(os.path.join(bdir, cid + ".messages.diff.json"), "w") as f:
+            json.dump({"oracle": om, "blaze": bm}, f, indent=1)
+    if oc["outputs"] != bc["outputs"]:
+        differing.append("outputs")
+        details.append("outputs: oracle %s | blaze %s" % (
+            {k: v[:12] for k, v in oc["outputs"].items()},
+            {k: v[:12] for k, v in bc["outputs"].items()}))
+    ol = {k: norm(octx, v) for k, v in oc["logs"].items()}
+    bl = {k: norm(bctx, v) for k, v in bc["logs"].items()}
+    if sorted(ol) != sorted(bl):
+        differing.append("log names")
+        details.append("logs: oracle %s | blaze %s" % (sorted(ol), sorted(bl)))
+    elif ol != bl:
+        differing.append("log contents")
+    oe = execlog_items(octx, os.path.join(odir, cid + ".execlog.json"))
+    be = execlog_items(bctx, os.path.join(bdir, cid + ".execlog.json"))
+    if (oe is None) != (be is None):
+        differing.append("execlog presence")
+    elif oe is not None and oe != be:
+        keys = sorted(set(oe) | set(be))
+        fields = set()
+        for k in keys:
+            a, c = oe.get(k), be.get(k)
+            if a != c:
+                if a is None or c is None:
+                    fields.add("spawn " + k)
+                else:
+                    fields.update(f for f in set(a) | set(c) if a.get(f) != c.get(f))
+        differing.append("execlog (%s)" % ", ".join(sorted(fields)))
+    cls, detail = cc.judge(ot, bt, differing, declared_exit=declared,
+                           blaze_unported=bc.get("unported"))
+    return cls, detail, details
+
+
+def compare(label, cases, report, samehash=None):
+    _ws, _our, odir = side_paths("oracle", label)
+    _ws, _our, bdir = side_paths("blaze", label)
+    with open(os.path.join(odir, "results.json")) as f:
+        o = json.load(f)
+    with open(os.path.join(bdir, "results.json")) as f:
+        b = json.load(f)
+    octx = normalise.Context(o["paths"])
+    bctx = normalise.Context(b["paths"])
+    for cid, _args, declared in selected(cases):
+        if cid not in o["cases"] or cid not in b["cases"]:
+            report.add(cid, cc.SKIPPED, "not run on the %s side" % (
+                "oracle" if cid not in o["cases"] else "blaze"))
+            continue
+        cls, detail, details = compare_case(cid, declared, o, b, odir, bdir, octx, bctx)
+        report.add(cid, cls, detail, details=details)
+    if samehash is not None:
+        lines, terms = samehash
+        differing = [] if lines["oracle"] == lines["blaze"] else ["key hash lines"]
+        cls, detail = cc.judge(terms["oracle"], terms["blaze"], differing)
+        report.add("samehash", cls, detail, details=[lines])
+
+
+def selftest():
+    def run_pair(fake_oracle, fake_blaze, workdir):
+        return None
+    return cc.selftest(TOOL, run_pair=None, empty_selection=lambda: main(
+        ["--binary", "/bin/true", "--case", "no-such-case"]) == 1)
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    if argv[0] == "list":
+        for cid, args, declared in CASES:
+            print("%-24s %s%s" % (cid, " ".join(args),
+                                  "" if declared is None else "  (declared exit %d)" % declared))
+        print("%-24s %s" % ("samehash", " ".join(SAMEHASH_TARGETS) + "  (one output root)"))
+        return 0
+    if argv[0] == "selftest":
+        return selftest()
+    binary, oracle, label, skip_oracle, cases = None, None, "workers-compare", False, []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--binary" and i + 1 < len(argv):
+            binary = argv[i + 1]
+            i += 2
+        elif a == "--oracle" and i + 1 < len(argv):
+            oracle = argv[i + 1]
+            i += 2
+        elif a == "--label" and i + 1 < len(argv):
+            label = argv[i + 1]
+            i += 2
+        elif a == "--case" and i + 1 < len(argv):
+            cases.append(argv[i + 1])
+            i += 2
+        elif a == "--skip-oracle":
+            skip_oracle = True
+            i += 1
+        else:
+            print("%s: unknown argument %s\n%s" % (TOOL, a, USAGE), file=sys.stderr, end="")
+            return 2
+    if not binary:
+        print(USAGE, file=sys.stderr, end="")
+        return 2
+    unknown = [c for c in cases if c not in CASE_IDS]
+    if unknown:
+        return cc.empty_selection_error(TOOL, "cases (unknown: %s)" % ", ".join(unknown))
+    try:
+        oracle_path, oracle_sha = cc.require_oracle(oracle)
+        blaze = cc.blaze_identity(binary)
+    except cc.Refusal as e:
+        return cc.refuse(TOOL, e)
+    want_samehash = not cases or "samehash" in cases
+    cases = [c for c in cases if c != "samehash"]
+    if not selected(cases) and not want_samehash:
+        return cc.empty_selection_error(TOOL)
+    if "samehash" in argv and not cases:
+        cases = ["-none-"]
+    report = cc.Report(TOOL, blaze=blaze, oracle={"path": oracle_path, "sha256": oracle_sha},
+                       selection=" ".join(argv), tool_files=[THIS])
+    report.print_header()
+    run_cases = [c for c in cases if c != "-none-"] if cases != ["-none-"] else None
+    if run_cases is None:
+        sel = []
+    else:
+        sel = run_cases
+    if cases != ["-none-"]:
+        _ws, _our, odir = side_paths("oracle", label)
+        if skip_oracle:
+            try:
+                cc.require_fresh(os.path.join(odir, "oracle.key"), oracle_key(label, sel))
+            except cc.Refusal as e:
+                return cc.refuse(TOOL, e)
+        else:
+            side_run("oracle", oracle_path, label, sel)
+        side_run("blaze", blaze["path"], label, sel)
+    samehash = samehash_run(blaze["path"], oracle_path, label) if want_samehash else None
+    if cases != ["-none-"]:
+        compare(label, sel, report, samehash)
+    elif samehash is not None:
+        lines, terms = samehash
+        differing = [] if lines["oracle"] == lines["blaze"] else ["key hash lines"]
+        cls, detail = cc.judge(terms["oracle"], terms["blaze"], differing)
+        report.add("samehash", cls, detail, details=[lines])
+    report.print_rows()
+    report.print_footer()
+    out = os.path.join(CACHE, "workers-compare", label, "results.json")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    report.write_json(out)
+    return report.exit_code()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

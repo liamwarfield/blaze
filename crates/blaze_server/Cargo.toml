@@ -12,6 +12,9 @@ blaze_vfs = { path = "../blaze_vfs" }
 blaze_events = { path = "../blaze_events" }
 blaze_protos = { path = "../blaze_protos" }
 blaze_shell = { path = "../blaze_shell" }
+# InvocationPolicyParser (GrpcServerImpl.executeCommand); blaze_options does not depend on this
+# crate.
+blaze_options = { path = "../blaze_options" }
 parking_lot.workspace = true
 libc.workspace = true
 uuid.workspace = true

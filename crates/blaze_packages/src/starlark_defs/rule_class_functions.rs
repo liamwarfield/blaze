@@ -1916,7 +1916,19 @@ fn create_rule<'v>(
     let converted = convert_config(eval, a.cfg)?;
     let mut transition_factory = converted.factory;
     pending.extend(converted.pending);
-    // PORT: StarlarkExposedRuleTransitionFactory (native Android transitions) is not exposed.
+    // Check if the rule definition needs to be updated.
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1094 StarlarkRuleClassFunctions.createRule
+    // (transitionFactory.visit: a StarlarkExposedRuleTransitionFactory adds to the rule).
+    // PORT: of the StarlarkExposedRuleTransitionFactory classes only
+    // ConfigFeatureFlagTransitionFactory is exposed (the native Android platforms transition is
+    // not).
+    visit_config_feature_flag_factories(&transition_factory, &mut |attribute_name| {
+        crate::native_rules::config_rule_classes::config_feature_flag_transition_add_to_rule_from_starlark(
+            env,
+            &mut builder,
+            attribute_name,
+        );
+    });
     if let Some(parent) = &parent {
         transition_factory = compose_transition_factories(
             transition_factory,
@@ -2021,26 +2033,38 @@ fn create_rule<'v>(
 }
 
 /// Java `ComposingTransitionFactory.ofUnchecked(transitionFactory, parentFactory)`.
-// PORT: A1's TransitionFactory has no composition variant (requested); composition with no
-// transition yields the other factory, as Java's ComposingTransitionFactory.of does.
-// Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java ComposingTransitionFactory.ofUnchecked
+// Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:81 ComposingTransitionFactory.ofUnchecked
 fn compose_transition_factories(
     transition_factory1: TransitionFactory,
     transition_factory2: TransitionFactory,
 ) -> TransitionFactory {
-    if transition_factory1.is_no_transition() {
-        return transition_factory2;
+    TransitionFactory::compose_unchecked(transition_factory1, transition_factory2)
+}
+
+/// Calls `f` with the attribute name of every ConfigFeatureFlagTransitionFactory in `factory`
+/// (Java `TransitionFactory.visit`).
+fn visit_config_feature_flag_factories(factory: &TransitionFactory, f: &mut dyn FnMut(&str)) {
+    match factory {
+        TransitionFactory::ConfigFeatureFlag { attribute_name } => f(attribute_name),
+        TransitionFactory::Composing { first, second } => {
+            visit_config_feature_flag_factories(first, f);
+            visit_config_feature_flag_factories(second, f);
+        }
+        _ => {}
     }
-    if transition_factory2.is_no_transition() {
-        return transition_factory1;
-    }
-    blaze_util::unported!("ComposingTransitionFactory.ofUnchecked (two real transitions)")
 }
 
 /// Java `StarlarkTransitionCheckingVisitor`.
 // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:2263 StarlarkRuleClassFunctions.StarlarkTransitionCheckingVisitor
 fn transition_has_starlark(factory: &TransitionFactory) -> bool {
-    matches!(factory, TransitionFactory::Starlark { .. })
+    // TransitionFactory.visit: a ComposingTransitionFactory visits both of its factories.
+    match factory {
+        TransitionFactory::Starlark { .. } => true,
+        TransitionFactory::Composing { first, second } => {
+            transition_has_starlark(first) || transition_has_starlark(second)
+        }
+        _ => false,
+    }
 }
 
 /// A view of a rule function value's rule class, for `rule(parent=...)` and

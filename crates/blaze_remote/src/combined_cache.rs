@@ -1,6 +1,5 @@
 //! Port of `lib/remote/CombinedCache.java`.
 
-use std::collections::HashSet;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -236,7 +235,7 @@ impl CombinedCache {
         context: &RemoteActionExecutionContext<'_>,
         action_key: &ActionKey,
         inline_out_err: bool,
-        inline_output_files: &HashSet<String>,
+        inline_output_files: &IndexSet<String>,
     ) -> io::Result<Option<CachedActionResult>> {
         get_from_future(self.download_action_result_async(
             context,
@@ -253,7 +252,7 @@ impl CombinedCache {
         context: &RemoteActionExecutionContext<'_>,
         action_key: &ActionKey,
         inline_out_err: bool,
-        inline_output_files: &HashSet<String>,
+        inline_output_files: &IndexSet<String>,
     ) -> io::Result<Option<CachedActionResult>> {
         let spawn_execution_context = context.get_spawn_execution_context();
 
@@ -297,7 +296,7 @@ impl CombinedCache {
         context: &RemoteActionExecutionContext<'_>,
         action_key: &ActionKey,
         inline_out_err: bool,
-        inline_output_files: &HashSet<String>,
+        inline_output_files: &IndexSet<String>,
     ) -> io::Result<Option<ActionResult>> {
         blaze_util::check_state!(
             self.remote_cache_client.is_some()

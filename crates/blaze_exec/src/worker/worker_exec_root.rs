@@ -73,7 +73,11 @@ impl WorkerExecRoot {
         // below.
         // TODO(tjgq): Consider doing this asynchronously in between worker invocations.
         if let Some(contents) = self.sandbox_contents.as_mut() {
-            sandbox_helpers::update_content_map(&parent, self.sandbox_contents_timestamp, contents)?;
+            sandbox_helpers::update_content_map(
+                &parent,
+                self.sandbox_contents_timestamp,
+                contents,
+            )?;
         }
 
         // Then do a full traversal of the parent directory of `workDir`. This will use what we
@@ -94,7 +98,11 @@ impl WorkerExecRoot {
 
         // Finally, create anything that is still missing. This is non-strict only for historical
         // reasons, we haven't seen what would break if we make it strict.
-        sandbox_helpers::create_directories(&dirs_to_create, &self.work_dir, /* strict= */ false)?;
+        sandbox_helpers::create_directories(
+            &dirs_to_create,
+            &self.work_dir,
+            /* strict= */ false,
+        )?;
         WorkerExecRoot::create_inputs(&inputs_to_create, inputs, &self.work_dir)?;
 
         // Track the sandbox contents in memory. This makes the cleanup faster in subsequent runs.

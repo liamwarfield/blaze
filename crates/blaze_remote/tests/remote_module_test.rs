@@ -47,7 +47,6 @@ use blaze_remote::util::tracing_metadata_utils;
 use blaze_repo_fetch::uri::JavaUri;
 use blaze_vfs::{DigestHashFunction, FileSystemRef, Path, UnixFileSystem};
 use indexmap::IndexMap;
-use std::collections::HashSet;
 use util::grpc_server::{FakeCapabilities, FakeServer};
 
 fn cache_only_caps() -> ServerCapabilities {
@@ -788,7 +787,7 @@ fn verify_capabilities_not_found_fails_download_action_result() {
         &context,
         &action_key,
         false,
-        &HashSet::new(),
+        &indexmap::IndexSet::new(),
     ));
 
     assert_not_found_capabilities_exception(&result.unwrap_err());
@@ -1064,7 +1063,7 @@ fn disk_cache_checks_action_result_integrity_with_rewind_lost_inputs() {
     .unwrap();
 
     let cached = combined_cache
-        .download_action_result(&context, &action_key, false, &HashSet::new())
+        .download_action_result(&context, &action_key, false, &indexmap::IndexSet::new())
         .unwrap();
 
     assert!(cached.is_none());

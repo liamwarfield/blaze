@@ -1,9 +1,9 @@
 //! Port of `packages/util/MockToolsConfig.java` (src/test/java): creates the files of the mock
 //! client.
 //!
-//! PORT: Java's `realFileSystem` mode (runfiles links and copies: `linkTool`, `copyTool`,
-//! `copyDirectory`) is not ported: the mock workspace of these tests is written from the
-//! literal contents in `analysis_mock.rs` only (see its module documentation).
+//! PORT: `copyTool` / `copyDirectory` read from the prepared test dependencies
+//! (`test_deps.rs`) where Java reads from the runfiles. Java's tests run on an in-memory file
+//! system, so `isRealFileSystem()` is false and `linkTool` is not ported.
 
 use blaze_vfs::{Path, PathFragment};
 
@@ -91,6 +91,76 @@ impl MockToolsConfig {
         path
     }
 
+    /// `isRealFileSystem()`: Java's analysis tests run on an in-memory file system.
+    // Java: com/google/devtools/build/lib/packages/util/MockToolsConfig.java:62 MockToolsConfig.isRealFileSystem
+    pub fn is_real_file_system(&self) -> bool {
+        false
+    }
+
+    /// `copyTool(rlocationPath, dest)`: overwrites `dest` with the lines of `source` (read as
+    /// Latin-1).
+    // Java: com/google/devtools/build/lib/packages/util/MockToolsConfig.java:171 MockToolsConfig.copyTool
+    pub fn copy_tool(&self, source: &std::path::Path, dest: &str) {
+        let bytes = std::fs::read(source)
+            .unwrap_or_else(|e| panic!("IOException: {}: {e}", source.display()));
+        let content = latin1_decode(&bytes);
+        let lines = guava_read_lines(&content);
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        self.overwrite(dest, &lines);
+    }
+
+    /// `copyDirectory(path, to, depth, useEmptyBuildFiles)`: copies every file under `source`
+    /// (up to `depth` levels) to `to`; a file whose name ends in `BUILD` is created empty when
+    /// `use_empty_build_files`.
+    // Java: com/google/devtools/build/lib/packages/util/MockToolsConfig.java:214 MockToolsConfig.copyDirectory
+    pub fn copy_directory(
+        &self,
+        source: &std::path::Path,
+        to: &str,
+        depth: usize,
+        use_empty_build_files: bool,
+    ) {
+        // Files.walk(source, depth).filter(isFile): directories are followed to `depth`;
+        // Files.walk does not follow symbolic links, and File.isFile follows them.
+        fn walk(dir: &std::path::Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
+            if depth == 0 {
+                return;
+            }
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .unwrap_or_else(|e| panic!("IOException: {}: {e}", dir.display()))
+                .map(|e| e.expect("directory entry").path())
+                .collect();
+            entries.sort();
+            for entry in entries {
+                let meta = std::fs::symlink_metadata(&entry).expect("metadata");
+                if meta.is_dir() {
+                    walk(&entry, depth - 1, out);
+                } else if entry.is_file() {
+                    out.push(entry);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(source, depth, &mut files);
+        for file in files {
+            let relative = file
+                .strip_prefix(source)
+                .expect("under the source")
+                .to_str()
+                .expect("an ASCII path of the prepared test dependencies")
+                .to_string();
+            if relative.is_empty() {
+                continue;
+            }
+            let dest = format!("{to}/{relative}");
+            if relative.ends_with("BUILD") && use_empty_build_files {
+                self.create(&dest, &[]);
+            } else {
+                self.copy_tool(&file, &dest);
+            }
+        }
+    }
+
     /// `create(...).chmod(mode)`.
     pub fn chmod(&self, relative_path: &str, mode: u32) {
         use std::os::unix::fs::PermissionsExt;
@@ -111,4 +181,36 @@ fn write_lines(path: &Path, lines: &[&str]) {
     std::fs::create_dir_all(os(&parent)).expect("create mock directories");
     std::fs::write(os(path), latin1_encode_lossy(&lines_as_string(lines)))
         .expect("write mock file");
+}
+
+/// Guava `CharSource.readLines()`: the lines without their terminators (`\r\n`, `\n` or `\r`);
+/// a final terminator does not start another line.
+fn guava_read_lines(content: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut chars = content.chars().peekable();
+    let mut pending = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                lines.push(std::mem::take(&mut current));
+                pending = false;
+            }
+            '\n' => {
+                lines.push(std::mem::take(&mut current));
+                pending = false;
+            }
+            _ => {
+                current.push(c);
+                pending = true;
+            }
+        }
+    }
+    if pending {
+        lines.push(current);
+    }
+    lines
 }

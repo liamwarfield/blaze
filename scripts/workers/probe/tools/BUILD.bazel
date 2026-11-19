@@ -1,0 +1,5 @@
+# The worker is a plain executable source file: no rule set needed to run it.
+exports_files(
+    ["worker.py"],
+    visibility = ["//visibility:public"],
+)

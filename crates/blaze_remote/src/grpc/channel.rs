@@ -277,6 +277,9 @@ struct Inner {
     server_capabilities: tokio::sync::OnceCell<Result<ServerCapabilities, Arc<io::Error>>>,
     ref_cnt: AtomicI32,
     shutdown: AtomicBool,
+    /// The lifecycle of the channel's connections, when the channel was built by
+    /// `google_auth_utils::new_channel` (see [`ReferenceCountedChannel::with_transport_lifecycle`]).
+    transport_lifecycle: Option<Arc<TransportLifecycle>>,
 }
 
 /// A wrapper around a gRPC channel adding reference counting, the channel-level interceptors
@@ -330,6 +333,7 @@ impl ReferenceCountedChannel {
                 server_capabilities: tokio::sync::OnceCell::new(),
                 ref_cnt: AtomicI32::new(1),
                 shutdown: AtomicBool::new(false),
+                transport_lifecycle: None,
             }),
         }
     }
@@ -356,6 +360,7 @@ impl ReferenceCountedChannel {
                 server_capabilities: tokio::sync::OnceCell::new(),
                 ref_cnt: AtomicI32::new(1),
                 shutdown: AtomicBool::new(false),
+                transport_lifecycle: None,
             }),
         }
     }
@@ -397,6 +402,25 @@ impl ReferenceCountedChannel {
     pub async fn get_authority_async(&self) -> io::Result<String> {
         self.connection().await?;
         Ok(self.inner.authority.clone())
+    }
+
+    /// The lifecycle of the transport's connections ([`TransportLifecycle`], recorded by the
+    /// connector of `google_auth_utils::new_channel`), which gives a call that failed because
+    /// its connection went away the connection's shutdown status. Must be called before the
+    /// channel is shared.
+    pub fn with_transport_lifecycle(
+        mut self,
+        lifecycle: Option<Arc<TransportLifecycle>>,
+    ) -> ReferenceCountedChannel {
+        match Arc::get_mut(&mut self.inner) {
+            Some(inner) => inner.transport_lifecycle = lifecycle,
+            None => panic!("IllegalStateException: the channel is already shared"),
+        }
+        self
+    }
+
+    fn lifecycle(&self) -> Option<&TransportLifecycle> {
+        self.inner.transport_lifecycle.as_deref()
     }
 
     /// `builder.defaultServiceConfig(serviceConfig)`: applies the `methodConfig[].timeout`
@@ -655,7 +679,7 @@ impl ReferenceCountedChannel {
             let mut grpc = self.grpc();
             grpc.ready()
                 .await
-                .map_err(|e| not_ready(e, &self.inner.authority))?;
+                .map_err(|e| not_ready(e, &self.inner.authority, self.lifecycle()))?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
             grpc.unary(
                 Self::request(request, headers, deadline),
@@ -666,7 +690,7 @@ impl ReferenceCountedChannel {
         };
         let result = with_deadline(deadline, call)
             .await
-            .map_err(|status| transport_status(status, &self.inner.authority));
+            .map_err(|status| transport_status(status, &self.inner.authority, self.lifecycle()));
         match result {
             Ok(response) => {
                 let message = response.into_inner();
@@ -702,7 +726,7 @@ impl ReferenceCountedChannel {
             let mut grpc = self.grpc();
             grpc.ready()
                 .await
-                .map_err(|e| not_ready(e, &self.inner.authority))?;
+                .map_err(|e| not_ready(e, &self.inner.authority, self.lifecycle()))?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
             grpc.server_streaming(
                 Self::request(request, headers, deadline),
@@ -719,10 +743,11 @@ impl ReferenceCountedChannel {
         let started = with_idle_timeout(idle_timeout, &method, with_deadline_at(deadline_at, call));
         match started
             .await
-            .map_err(|status| transport_status(status, &self.inner.authority))
+            .map_err(|status| transport_status(status, &self.inner.authority, self.lifecycle()))
         {
             Ok(response) => Ok(ResponseStream {
                 authority: self.inner.authority.clone(),
+                lifecycle: self.inner.transport_lifecycle.clone(),
                 inner: response.into_inner(),
                 listeners,
                 deadline: deadline_at,
@@ -761,7 +786,7 @@ impl ReferenceCountedChannel {
             let mut grpc = self.grpc();
             grpc.ready()
                 .await
-                .map_err(|e| not_ready(e, &self.inner.authority))?;
+                .map_err(|e| not_ready(e, &self.inner.authority, self.lifecycle()))?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
             grpc.client_streaming(
                 Self::request(observed, headers, deadline),
@@ -772,7 +797,7 @@ impl ReferenceCountedChannel {
         };
         let result = with_deadline(deadline, call)
             .await
-            .map_err(|status| transport_status(status, &self.inner.authority));
+            .map_err(|status| transport_status(status, &self.inner.authority, self.lifecycle()));
         let mut listeners = listeners.lock();
         match result {
             Ok(response) => {
@@ -894,10 +919,14 @@ fn effective_deadline(options: &CallOptions) -> Option<Duration> {
 }
 
 /// The status of a call whose connection could not be made ready (`grpc.ready()` failed).
-fn not_ready(e: tonic::transport::Error, authority: &str) -> tonic::Status {
+fn not_ready(
+    e: tonic::transport::Error,
+    authority: &str,
+    lifecycle: Option<&TransportLifecycle>,
+) -> tonic::Status {
     let mut status = tonic::Status::unavailable(e.to_string());
     status.set_source(Arc::new(e));
-    transport_status(status, authority)
+    transport_status(status, authority, lifecycle)
 }
 
 /// What a transport error of the port stands for among the exceptions grpc-java's transport
@@ -1015,6 +1044,417 @@ fn is_tls_alert(text: &str) -> bool {
     text.starts_with("received fatal alert: ")
 }
 
+/// The first failure of a connection: what grpc-netty's `ClientTransportLifecycleManager`
+/// keeps as the transport's shutdown status (`notifyShutdown`: the first status wins).
+#[derive(Debug, Clone)]
+enum ShutdownCause {
+    /// An `IOException` of the connection (a read error, a TLS alert, or a write the peer
+    /// refused that no read-side failure preceded).
+    Io(Arc<io::Error>),
+    /// Netty's `Http2Exception` for a peer whose first frame is not SETTINGS (a server that
+    /// does not speak HTTP/2), with its message.
+    Http2(String),
+}
+
+impl std::fmt::Display for ShutdownCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ShutdownCause::Io(e) => std::fmt::Display::fmt(e, f),
+            ShutdownCause::Http2(message) => f.write_str(message),
+        }
+    }
+}
+
+impl ShutdownCause {
+    /// `Utils.statusFromThrowable(cause)`, with the rules of [`classify_transport_error`].
+    // Java: io/grpc/netty/Utils.java:327 Utils.statusFromThrowable
+    fn to_throwable(&self) -> TransportThrowable {
+        match self {
+            ShutdownCause::Io(e) if is_tls_alert(&e.to_string()) => TransportThrowable::Ssl,
+            ShutdownCause::Io(e) => TransportThrowable::Io(io::Error::new(e.kind(), e.to_string())),
+            ShutdownCause::Http2(_) => TransportThrowable::Http2,
+        }
+    }
+}
+
+/// The state of one connection (one `NettyClientHandler` with its lifecycle manager).
+#[derive(Debug, Default)]
+struct ConnectionLifecycle {
+    /// `lifecycleManager.getShutdownStatus()`: the first failure.
+    shutdown: Mutex<Option<ShutdownCause>>,
+    /// The first write the peer refused (EPIPE, ECONNRESET); later writes are dropped.
+    write_error: Mutex<Option<Arc<io::Error>>>,
+    /// The first bytes received (up to 5), until the first frame is verified.
+    first_bytes: Mutex<Vec<u8>>,
+    first_frame_verified: AtomicBool,
+}
+
+impl ConnectionLifecycle {
+    /// `lifecycleManager.notifyShutdown(status)`: keeps the first cause.
+    // Java: io/grpc/netty/ClientTransportLifecycleManager.java:73 ClientTransportLifecycleManager.notifyShutdown
+    fn notify_shutdown(&self, cause: ShutdownCause) {
+        let mut shutdown = self.shutdown.lock();
+        if shutdown.is_none() {
+            *shutdown = Some(cause);
+        }
+    }
+
+    /// Netty's `PrefaceDecoder.verifyFirstFrameIsSettings` on the client: the first frame of
+    /// the server must be a SETTINGS frame without the ACK flag; otherwise the connection fails
+    /// with a PROTOCOL_ERROR `Http2Exception` (`onConnectionError`).
+    // Java: io/netty/handler/codec/http2/Http2ConnectionHandler.java PrefaceDecoder.verifyFirstFrameIsSettings
+    fn on_bytes(&self, bytes: &[u8]) {
+        if bytes.is_empty() || self.first_frame_verified.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut first = self.first_bytes.lock();
+        let take = (5 - first.len()).min(bytes.len());
+        first.extend_from_slice(&bytes[..take]);
+        if first.len() < 5 {
+            return;
+        }
+        self.first_frame_verified.store(true, Ordering::SeqCst);
+        // Http2FrameTypes.SETTINGS = 0x4, Http2Flags.ACK = 0x1.
+        let (frame_type, flags) = (first[3], first[4]);
+        if frame_type != 0x4 || (flags & 0x1) != 0 {
+            let hex: String = first.iter().map(|b| format!("{b:02x}")).collect();
+            self.notify_shutdown(ShutdownCause::Http2(format!(
+                "First received frame was not SETTINGS. Hex dump for first 5 bytes: {hex}"
+            )));
+        }
+    }
+
+    /// A read error, or the end of the stream: an `IOException` of the connection
+    /// (`exceptionCaught` -> `onConnectionError`). At the end of the stream the connection
+    /// fails with the write the peer refused, if any (Netty notices a closed peer at a write
+    /// as well); a clean end of the stream alone records nothing.
+    fn on_read_end(&self, error: Option<&io::Error>) {
+        match error {
+            Some(e) => self.notify_shutdown(ShutdownCause::Io(Arc::new(io::Error::new(
+                e.kind(),
+                e.to_string(),
+            )))),
+            None => {
+                let write_error = self.write_error.lock().clone();
+                if let Some(e) = write_error {
+                    self.notify_shutdown(ShutdownCause::Io(e));
+                }
+            }
+        }
+    }
+}
+
+/// The lifecycle of the connections of one channel: the shutdown status of its latest
+/// connection, for the calls that fail because their connection went away.
+///
+/// PORT: grpc-netty fails every stream of a connection, and every stream started on it after
+/// its failure, with the connection's shutdown status: the status of its *first* failure
+/// (`NettyClientHandler.onConnectionError` -> `ClientTransportLifecycleManager.notifyShutdown`,
+/// then `channelInactive` / `createStream` report `getShutdownStatus()`). hyper and h2 give the
+/// calls of a failed connection whatever they saw last: the I/O error of the connection, or
+/// `Canceled("connection closed")` for a call that was still waiting for it, and the
+/// connection's own error is lost. The channel's connector therefore records the first failure
+/// of each connection here, on the connection's byte stream (above TLS): a read error (a TLS
+/// alert included), a first frame that is not SETTINGS, or a write the peer refused. A write
+/// the peer refused (EPIPE, ECONNRESET) does not end the connection at once: the write is
+/// dropped and the failure is the read side's, if the peer sent anything before it went away.
+/// Netty writes the connection preface, the SETTINGS and the first request in one flush right
+/// after the TLS handshake (`WriteBufferingAndExceptionHandler`), before the server can have
+/// answered, so its first failure is what it then reads (the alert, the HTTP/1 reply); h2
+/// writes the request later, after the server may have closed, and would otherwise fail with
+/// EPIPE first. The connection whose failure applies is the channel's latest one (one
+/// connection per channel: `crate::grpc::channel`, no pool).
+// Java: io/grpc/netty/ClientTransportLifecycleManager.java:26 ClientTransportLifecycleManager
+#[derive(Debug, Default)]
+pub struct TransportLifecycle {
+    latest: Mutex<Option<Arc<ConnectionLifecycle>>>,
+}
+
+impl TransportLifecycle {
+    pub fn new() -> Arc<TransportLifecycle> {
+        Arc::new(TransportLifecycle::default())
+    }
+
+    fn adopt(&self, connection: Arc<ConnectionLifecycle>) {
+        *self.latest.lock() = Some(connection);
+    }
+
+    /// The shutdown status of the latest connection, if it failed.
+    fn shutdown_cause(&self) -> Option<ShutdownCause> {
+        let latest = self.latest.lock().clone()?;
+        latest.shutdown.lock().clone()
+    }
+}
+
+/// Below TLS: a write the peer refused (EPIPE, ECONNRESET) is recorded and dropped, and so is
+/// every later write, so that the connection ends with what its read side sees (see
+/// [`TransportLifecycle`]).
+struct DroppingRefusedWrites<I> {
+    inner: I,
+    connection: Arc<ConnectionLifecycle>,
+    refused: bool,
+}
+
+impl<I> DroppingRefusedWrites<I> {
+    fn refused(&mut self, e: &io::Error) -> bool {
+        if matches!(
+            e.kind(),
+            io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+        ) {
+            let mut write_error = self.connection.write_error.lock();
+            if write_error.is_none() {
+                *write_error = Some(Arc::new(io::Error::new(e.kind(), e.to_string())));
+            }
+            self.refused = true;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl<I: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for DroppingRefusedWrites<I> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<I: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for DroppingRefusedWrites<I> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        use std::task::Poll;
+        if self.refused {
+            return Poll::Ready(Ok(buf.len()));
+        }
+        match Pin::new(&mut self.inner).poll_write(cx, buf) {
+            Poll::Ready(Err(e)) if self.refused(&e) => Poll::Ready(Ok(buf.len())),
+            other => other,
+        }
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> std::task::Poll<io::Result<usize>> {
+        use std::task::Poll;
+        let len = bufs.iter().map(|b| b.len()).sum();
+        if self.refused {
+            return Poll::Ready(Ok(len));
+        }
+        match Pin::new(&mut self.inner).poll_write_vectored(cx, bufs) {
+            Poll::Ready(Err(e)) if self.refused(&e) => Poll::Ready(Ok(len)),
+            other => other,
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        use std::task::Poll;
+        if self.refused {
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        use std::task::Poll;
+        if self.refused {
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// Above TLS: records the read side of the connection (its first bytes, a read error, the end
+/// of the stream) in its [`ConnectionLifecycle`] (see [`TransportLifecycle`]).
+pub struct RecordingReads<I> {
+    inner: I,
+    connection: Arc<ConnectionLifecycle>,
+}
+
+impl<I: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for RecordingReads<I> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        use std::task::Poll;
+        let before = buf.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        match &result {
+            Poll::Ready(Ok(())) => {
+                let read = &buf.filled()[before..];
+                if read.is_empty() && buf.remaining() > 0 {
+                    self.connection.on_read_end(None);
+                } else {
+                    self.connection.on_bytes(read);
+                }
+            }
+            Poll::Ready(Err(e)) => self.connection.on_read_end(Some(e)),
+            Poll::Pending => {}
+        }
+        result
+    }
+}
+
+impl<I: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for RecordingReads<I> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> std::task::Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// The byte stream of a connection: plain TCP or TLS over TCP, below the recording layer.
+pub trait ConnectionIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
+
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> ConnectionIo for T {}
+
+/// The connection of a channel built by `google_auth_utils::new_channel`.
+pub type LifecycleIo = hyper_util::rt::TokioIo<RecordingReads<Box<dyn ConnectionIo>>>;
+
+/// TLS as tonic's `TlsConnector` does it (rustls with ALPN `h2`, which the server must
+/// select); the configuration is built by `google_auth_utils::new_channel`.
+#[derive(Clone)]
+pub struct ConnectorTls {
+    pub config: Arc<tokio_rustls::rustls::ClientConfig>,
+    pub server_name: tokio_rustls::rustls::pki_types::ServerName<'static>,
+}
+
+/// tonic's `TlsError::H2NotNegotiated`, with its text.
+#[derive(Debug)]
+struct H2NotNegotiated;
+
+impl std::fmt::Display for H2NotNegotiated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HTTP/2 was not negotiated.")
+    }
+}
+
+impl std::error::Error for H2NotNegotiated {}
+
+/// The connector of a channel built by `google_auth_utils::new_channel`: tonic's own
+/// (`Endpoint::http_connector` and, for TLS, `TlsConnector::connect`), with the connection's
+/// byte stream recorded in the channel's [`TransportLifecycle`].
+///
+/// PORT: tonic applies its TLS to a connector's stream itself, out of reach of a recording
+/// layer above it; this connector therefore does the TLS handshake (the endpoint's URI is
+/// `http://`, its origin `https://`).
+#[derive(Clone)]
+pub struct LifecycleConnector {
+    http: hyper_util::client::legacy::connect::HttpConnector,
+    tls: Option<ConnectorTls>,
+    lifecycle: Arc<TransportLifecycle>,
+}
+
+impl LifecycleConnector {
+    /// `http` is configured as tonic's `Endpoint::http_connector` configures it.
+    pub fn new(
+        http: hyper_util::client::legacy::connect::HttpConnector,
+        tls: Option<ConnectorTls>,
+        lifecycle: Arc<TransportLifecycle>,
+    ) -> LifecycleConnector {
+        LifecycleConnector {
+            http,
+            tls,
+            lifecycle,
+        }
+    }
+}
+
+impl tower::Service<http::Uri> for LifecycleConnector {
+    type Response = LifecycleIo;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+    type Future = Pin<Box<dyn Future<Output = Result<LifecycleIo, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        tower::Service::<http::Uri>::poll_ready(&mut self.http, cx).map_err(Into::into)
+    }
+
+    fn call(&mut self, uri: http::Uri) -> Self::Future {
+        let connect = tower::Service::call(&mut self.http, uri);
+        let tls = self.tls.clone();
+        let lifecycle = self.lifecycle.clone();
+        Box::pin(async move {
+            let tcp = connect.await?.into_inner();
+            let connection = Arc::new(ConnectionLifecycle::default());
+            let raw = DroppingRefusedWrites {
+                inner: tcp,
+                connection: connection.clone(),
+                refused: false,
+            };
+            let io: Box<dyn ConnectionIo> = match tls {
+                None => Box::new(raw),
+                Some(tls) => {
+                    let stream = tokio_rustls::TlsConnector::from(tls.config)
+                        .connect(tls.server_name, raw)
+                        .await?;
+                    let (_, session) = stream.get_ref();
+                    if session.alpn_protocol() != Some(b"h2") {
+                        return Err(H2NotNegotiated.into());
+                    }
+                    Box::new(stream)
+                }
+            };
+            // The connection exists once it is established (`NettyClientHandler` is created
+            // for a connected channel).
+            lifecycle.adopt(connection.clone());
+            Ok(hyper_util::rt::TokioIo::new(RecordingReads {
+                inner: io,
+                connection,
+            }))
+        })
+    }
+}
+
 /// The address field of hyper-util's `ConnectError` `Debug` text
 /// (`ConnectError("tcp connect error", 127.0.0.1:9499, Os { .. })`).
 fn connect_error_address(debug: &str) -> Option<std::net::SocketAddr> {
@@ -1113,15 +1553,43 @@ fn authority_host(authority: &str) -> &str {
 /// `--tls_authority_override` Java prints the target's host instead).
 // Java: io/grpc/netty/Utils.java:327 Utils.statusFromThrowable
 // Java: io/grpc/internal/DnsNameResolver.java:285 DnsNameResolver.doResolve
-fn transport_status(status: tonic::Status, authority: &str) -> tonic::Status {
+///
+/// A call that failed because its connection went away (an error of the established
+/// connection, or hyper's "connection closed" for a call that was waiting for it) gets the
+/// connection's shutdown status instead, when `lifecycle` recorded one: the status of the
+/// connection's first failure ([`TransportLifecycle`]), as grpc-netty fails every stream of a
+/// connection with `lifecycleManager.getShutdownStatus()`.
+// Java: io/grpc/netty/NettyClientHandler.java:478 NettyClientHandler.channelInactive
+// Java: io/grpc/netty/NettyClientHandler.java:581 NettyClientHandler.createStream
+fn transport_status(
+    status: tonic::Status,
+    authority: &str,
+    lifecycle: Option<&TransportLifecycle>,
+) -> tonic::Status {
     let host = authority_host(authority);
-    let Some(throwable) = classify_transport_error(&status, host) else {
-        return status;
+    let throwable = classify_transport_error(&status, host);
+    let connection_level = match &throwable {
+        Some(TransportThrowable::Io(_) | TransportThrowable::Ssl | TransportThrowable::Http2) => {
+            !from_connector(&status)
+        }
+        None => is_connection_closed_cancel(&status),
+        _ => false,
+    };
+    let mut cause_text = status.to_string();
+    let throwable = match lifecycle.and_then(|l| l.shutdown_cause()) {
+        Some(cause) if connection_level => {
+            cause_text = cause.to_string();
+            cause.to_throwable()
+        }
+        _ => match throwable {
+            Some(throwable) => throwable,
+            None => return status,
+        },
     };
     match throwable {
         TransportThrowable::UnresolvedHost => {
             let mut mapped = tonic::Status::unavailable(format!("Unable to resolve host {host}"));
-            mapped.set_source(Arc::new(TransportException(status.to_string())));
+            mapped.set_source(Arc::new(TransportException(cause_text)));
             mapped
         }
         TransportThrowable::Connect(cause) | TransportThrowable::Io(cause) => {
@@ -1131,15 +1599,55 @@ fn transport_status(status: tonic::Status, authority: &str) -> tonic::Status {
         }
         TransportThrowable::Ssl => {
             let mut mapped = tonic::Status::unavailable("ssl exception");
-            mapped.set_source(Arc::new(TransportException(status.to_string())));
+            mapped.set_source(Arc::new(TransportException(cause_text)));
             mapped
         }
         TransportThrowable::Http2 => {
             let mut mapped = tonic::Status::internal("http2 exception");
-            mapped.set_source(Arc::new(TransportException(status.to_string())));
+            mapped.set_source(Arc::new(TransportException(cause_text)));
             mapped
         }
     }
+}
+
+/// Whether the error of a status comes from the connector (the connection was never
+/// established: TCP connect or TLS handshake), whose failure belongs to no connection.
+fn from_connector(status: &tonic::Status) -> bool {
+    let mut source = std::error::Error::source(status);
+    while let Some(e) = source {
+        if e.downcast_ref::<tonic::ConnectError>().is_some() {
+            return true;
+        }
+        source = e.source();
+    }
+    false
+}
+
+/// Whether a status is hyper's cancellation of a call because its connection ended before the
+/// call was handed to it ("operation was canceled" caused by "connection closed" or
+/// "connection was not ready"). A call cancelled by Blaze (a deadline, an interrupt, a dropped
+/// future) has no such source.
+///
+/// PORT: hyper is not a dependency of this crate; its error is recognised by its `Display`
+/// texts, fixed in the pinned hyper 1.x (`client/dispatch.rs` `Envelope::drop`,
+/// `client/conn/http2.rs` `SendRequest::send_request`).
+fn is_connection_closed_cancel(status: &tonic::Status) -> bool {
+    let mut source = std::error::Error::source(status);
+    while let Some(e) = source {
+        if e.downcast_ref::<TransportIoException>().is_some()
+            || e.downcast_ref::<TransportException>().is_some()
+        {
+            return false;
+        }
+        if e.to_string() == "operation was canceled"
+            && let Some(cause) = e.source()
+        {
+            let cause = cause.to_string();
+            return cause == "connection closed" || cause == "connection was not ready";
+        }
+        source = e.source();
+    }
+    false
 }
 
 /// The cause of a mapped transport status that is not an `IOException` (an `Http2Exception`,
@@ -1354,6 +1862,8 @@ impl Drop for Listeners {
 pub struct ResponseStream<Resp> {
     /// The channel's authority (see [`transport_status`]).
     authority: String,
+    /// The channel's transport lifecycle (see [`transport_status`]).
+    lifecycle: Option<Arc<TransportLifecycle>>,
     inner: tonic::Streaming<Resp>,
     listeners: Listeners,
     deadline: Option<tokio::time::Instant>,
@@ -1381,7 +1891,7 @@ impl<Resp: Send + Sync + 'static> ResponseStream<Resp> {
             }
         })
         .await
-        .map_err(|status| transport_status(status, &self.authority));
+        .map_err(|status| transport_status(status, &self.authority, self.lifecycle.as_deref()));
         match next {
             Ok(Some(message)) => {
                 self.listeners.on_response(&message);
@@ -1549,8 +2059,38 @@ mod tests {
         );
     }
 
+    /// A channel made by `google_auth_utils::new_channel` (with the transport lifecycle) for
+    /// `target`, and the status of a `GetCapabilities` call on it.
+    fn new_channel_get_capabilities_status(
+        target: &str,
+        options: &blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions,
+    ) -> tonic::Status {
+        let managed =
+            crate::authandtls::google_auth_utils::new_channel(target, None, options, None, None)
+                .expect("new_channel");
+        assert!(managed.transport_lifecycle.is_some());
+        let channel = ReferenceCountedChannel::new(
+            managed.channel,
+            &managed.authority,
+            managed.tls,
+            managed.interceptors,
+            managed.max_inbound_message_size,
+            None,
+        )
+        .with_transport_lifecycle(managed.transport_lifecycle);
+        crate::runtime::block_on(channel.unary::<GetCapabilitiesRequest, ServerCapabilities>(
+            methods::GET_CAPABILITIES,
+            GetCapabilitiesRequest::default(),
+            CallOptions::new(),
+        ))
+        .unwrap_err()
+    }
+
     /// Oracle: "Failed to query remote execution capabilities: INTERNAL: http2 exception" for a
     /// gRPC call to an HTTP/1 server (row http-cache); the cause is not an `IOException`.
+    /// Netty's first failure is the first frame, which is not SETTINGS
+    /// (`PrefaceDecoder.verifyFirstFrameIsSettings`), whether the request's write or the read of
+    /// the reply comes first here (review 2026-11-19 round 3, P5).
     #[test]
     fn http1_server_is_internal_http2_exception() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1564,13 +2104,180 @@ mod tests {
                 b"HTTP/1.0 400 Bad request version\r\nContent-Type: text/html\r\n\r\n<html></html>\n",
             );
         });
-        let status = get_capabilities_status(
-            &format!("localhost:{port}"),
-            &format!("http://127.0.0.1:{port}"),
+        let status = new_channel_get_capabilities_status(
+            &format!("grpc://127.0.0.1:{port}"),
+            &Default::default(),
         );
-        assert_eq!(status.code(), tonic::Code::Internal);
+        assert_eq!(status.code(), tonic::Code::Internal, "{status:?}");
         assert_eq!(status.message(), "http2 exception");
         assert!(transport_io_cause(&status).is_none());
+        server.join().unwrap();
+    }
+
+    /// A peer that resets the connection after reading the client's preface, without sending
+    /// anything: the connection's first failure is an `IOException` (the read's
+    /// ECONNRESET, or the refused write when the reset is noticed there first), so the call is
+    /// UNAVAILABLE "io exception" with that cause.
+    // Java: io/grpc/netty/Utils.java:354 Utils.statusFromThrowable
+    #[test]
+    fn plain_peer_reset_is_unavailable_io_exception() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            use std::io::Read;
+            use std::os::fd::AsRawFd;
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 24];
+            let _ = socket.read_exact(&mut buf);
+            let linger = libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            };
+            // SAFETY: setsockopt on a valid socket with a valid `linger`.
+            unsafe {
+                libc::setsockopt(
+                    socket.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_LINGER,
+                    (&raw const linger).cast(),
+                    std::mem::size_of::<libc::linger>() as libc::socklen_t,
+                );
+            }
+        });
+        let status = new_channel_get_capabilities_status(
+            &format!("grpc://127.0.0.1:{port}"),
+            &Default::default(),
+        );
+        server.join().unwrap();
+        assert_eq!(status.code(), tonic::Code::Unavailable, "{status:?}");
+        assert_eq!(status.message(), "io exception", "{status:?}");
+        assert!(transport_io_cause(&status).is_some(), "{status:?}");
+    }
+
+    /// An error with a fixed text and an optional source (hyper's and tonic's errors, which are
+    /// recognised by their texts).
+    #[derive(Debug)]
+    struct TextError(&'static str, Option<Box<TextError>>);
+
+    impl std::fmt::Display for TextError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for TextError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1.as_deref().map(|e| e as _)
+        }
+    }
+
+    /// A call that hyper cancelled because its connection closed gets the connection's
+    /// shutdown status; a call cancelled by Blaze (or by anything else than its connection)
+    /// keeps its CANCELLED status, even when the connection failed.
+    #[test]
+    fn only_a_call_cancelled_by_its_connection_gets_the_shutdown_status() {
+        let lifecycle = TransportLifecycle::new();
+        let connection = Arc::new(ConnectionLifecycle::default());
+        lifecycle.adopt(connection.clone());
+        connection.notify_shutdown(ShutdownCause::Io(Arc::new(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "received fatal alert: CertificateRequired",
+        ))));
+        // The first failure wins.
+        connection.notify_shutdown(ShutdownCause::Io(Arc::new(io::Error::from(
+            io::ErrorKind::BrokenPipe,
+        ))));
+
+        let canceled = |cause: &'static str| {
+            let mut status = tonic::Status::cancelled("operation was canceled");
+            status.set_source(Arc::new(TextError(
+                "transport error",
+                Some(Box::new(TextError(
+                    "operation was canceled",
+                    Some(Box::new(TextError(cause, None))),
+                ))),
+            )));
+            status
+        };
+        let mapped = transport_status(
+            canceled("connection closed"),
+            "localhost:1",
+            Some(&lifecycle),
+        );
+        assert_eq!(mapped.code(), tonic::Code::Unavailable);
+        assert_eq!(mapped.message(), "ssl exception");
+        let mapped = transport_status(
+            canceled("connection was not ready"),
+            "localhost:1",
+            Some(&lifecycle),
+        );
+        assert_eq!(mapped.message(), "ssl exception");
+
+        // Cancelled for another reason, or by the caller (no transport source at all).
+        let other = transport_status(canceled("user dropped"), "localhost:1", Some(&lifecycle));
+        assert_eq!(other.code(), tonic::Code::Cancelled);
+        assert_eq!(other.message(), "operation was canceled");
+        let by_caller = transport_status(
+            tonic::Status::cancelled("Timeout expired"),
+            "localhost:1",
+            Some(&lifecycle),
+        );
+        assert_eq!(by_caller.code(), tonic::Code::Cancelled);
+        assert_eq!(by_caller.message(), "Timeout expired");
+        // Without a recorded failure the cancellation is kept.
+        let no_failure = TransportLifecycle::new();
+        let kept = transport_status(
+            canceled("connection closed"),
+            "localhost:1",
+            Some(&no_failure),
+        );
+        assert_eq!(kept.code(), tonic::Code::Cancelled);
+    }
+
+    /// A call cancelled by Blaze itself (its deadline) while the server does not answer keeps
+    /// its own status (CANCELLED from tonic's timeout, or DEADLINE_EXCEEDED).
+    #[test]
+    fn call_cancelled_by_its_deadline_keeps_its_status() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_millis(1500));
+            drop(socket);
+        });
+        let managed = crate::authandtls::google_auth_utils::new_channel(
+            &format!("grpc://127.0.0.1:{port}"),
+            None,
+            &Default::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        let channel = ReferenceCountedChannel::new(
+            managed.channel,
+            &managed.authority,
+            managed.tls,
+            managed.interceptors,
+            managed.max_inbound_message_size,
+            None,
+        )
+        .with_transport_lifecycle(managed.transport_lifecycle);
+        let status =
+            crate::runtime::block_on(channel.unary::<GetCapabilitiesRequest, ServerCapabilities>(
+                methods::GET_CAPABILITIES,
+                GetCapabilitiesRequest::default(),
+                CallOptions::new().with_deadline_after(Duration::from_millis(300)),
+            ))
+            .unwrap_err();
+        // The deadline fires either in tonic (its `grpc-timeout` layer: CANCELLED "Timeout
+        // expired") or in `with_deadline` (DEADLINE_EXCEEDED); neither is the connection's.
+        assert!(
+            matches!(
+                (status.code(), status.message()),
+                (tonic::Code::Cancelled, "Timeout expired") | (tonic::Code::DeadlineExceeded, _)
+            ),
+            "{status:?}"
+        );
         server.join().unwrap();
     }
 
@@ -1596,11 +2303,13 @@ mod tests {
     /// certificate after the client's Finished: the client's handshake has succeeded and the
     /// server's `certificate_required` alert arrives on the established connection, as an I/O
     /// error of the HTTP/2 connection (review 2026-11-19 round 3, P5). The certificates are
-    /// tests/testdata/mtls (a CA and a server certificate for localhost signed by it).
+    /// tests/testdata/mtls (a CA and a server certificate for localhost and 127.0.0.1 signed by
+    /// it). The target is 127.0.0.1: `localhost` would try ::1 first, where another process may
+    /// listen on the same port number.
     #[test]
     fn tls_alert_after_the_handshake_is_unavailable_ssl_exception() {
         use crate::grpc::stubs::capabilities_server::{Capabilities, CapabilitiesServer};
-        use tonic::transport::{Certificate, ClientTlsConfig, Identity, ServerTlsConfig};
+        use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 
         struct NoCapabilities;
         #[tonic::async_trait]
@@ -1615,47 +2324,12 @@ mod tests {
 
         let data = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/testdata/mtls");
         let read = |name: &str| std::fs::read(format!("{data}/{name}")).unwrap();
-        let ca = Certificate::from_pem(read("ca.crt"));
         let server_tls = ServerTlsConfig::new()
             .identity(Identity::from_pem(read("server.crt"), read("server.key")))
-            .client_ca_root(ca.clone());
+            .client_ca_root(Certificate::from_pem(read("ca.crt")));
         let listener =
             crate::runtime::block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).expect("bind");
-        let server_port = listener.local_addr().unwrap().port();
-        // A relay in front of the server that keeps the client's side open for a moment after
-        // the server has closed, draining what the client writes: the client then reads the
-        // alert before any of its writes can fail. Without it the client's first request may
-        // race the server's close and fail with EPIPE ("broken pipe", an I/O error) first.
-        let relay = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = relay.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            let (client, _) = relay.accept().unwrap();
-            let upstream = std::net::TcpStream::connect(("127.0.0.1", server_port)).unwrap();
-            let (mut from_client, mut to_upstream) = (client.try_clone().unwrap(), upstream);
-            let mut from_upstream = to_upstream.try_clone().unwrap();
-            let mut to_client = client;
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 16384];
-                while let Ok(n) = from_client.read(&mut buf) {
-                    if n == 0 {
-                        break;
-                    }
-                    let _ = to_upstream.write_all(&buf[..n]);
-                }
-            });
-            let mut buf = [0u8; 16384];
-            while let Ok(n) = from_upstream.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                if to_client.write_all(&buf[..n]).is_err() {
-                    break;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            let _ = to_client.shutdown(std::net::Shutdown::Both);
-        });
+        let port = listener.local_addr().unwrap().port();
         let server = crate::runtime::runtime().spawn(async move {
             tonic::transport::Server::builder()
                 .tls_config(server_tls)
@@ -1667,33 +2341,12 @@ mod tests {
                 .await
         });
 
-        let endpoint = tonic::transport::Endpoint::from_shared(format!("https://localhost:{port}"))
-            .unwrap()
-            .tls_config(
-                ClientTlsConfig::new()
-                    .ca_certificate(ca)
-                    .domain_name("localhost"),
-            )
-            .unwrap();
-        let lazy = {
-            let _guard = crate::runtime::runtime().enter();
-            endpoint.connect_lazy()
+        let options = blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions {
+            tls_certificate: Some(format!("{data}/ca.crt")),
+            ..Default::default()
         };
-        let channel = ReferenceCountedChannel::new(
-            lazy,
-            &format!("localhost:{port}"),
-            true,
-            Vec::new(),
-            usize::MAX,
-            None,
-        );
         let status =
-            crate::runtime::block_on(channel.unary::<GetCapabilitiesRequest, ServerCapabilities>(
-                methods::GET_CAPABILITIES,
-                GetCapabilitiesRequest::default(),
-                CallOptions::new(),
-            ))
-            .unwrap_err();
+            new_channel_get_capabilities_status(&format!("grpcs://127.0.0.1:{port}"), &options);
         server.abort();
         assert_eq!(status.code(), tonic::Code::Unavailable, "{status:?}");
         assert_eq!(status.message(), "ssl exception", "{status:?}");

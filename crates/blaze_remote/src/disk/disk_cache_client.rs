@@ -410,7 +410,15 @@ impl DiskCacheClient {
             Store::Ac => &self.ac_root,
             Store::Cas => &self.cas_root,
         };
-        store_root.get_child(&hash[0..2]).get_child(hash)
+        // `hash.substring(0, 2)`: Java counts chars (UTF-16 units) and throws
+        // `StringIndexOutOfBoundsException` for a shorter string.
+        // PORT: the prefix is taken by chars; a hash is ASCII hex in practice, where the two agree.
+        let length = hash.encode_utf16().count();
+        if length < 2 {
+            panic!("begin 0, end 2, length {length}");
+        }
+        let prefix: String = hash.chars().take(2).collect();
+        store_root.get_child(&prefix).get_child(hash)
     }
 
     /// `saveFile(Digest digest, Store store, InputStream in)`.

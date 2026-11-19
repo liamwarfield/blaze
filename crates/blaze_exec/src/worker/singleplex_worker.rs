@@ -133,8 +133,13 @@ impl SingleplexWorker {
         tree_deleter: Arc<dyn TreeDeleter>,
         use_in_memory_tracking: bool,
     ) -> SingleplexWorker {
-        let mut worker =
-            SingleplexWorker::new(worker_key, worker_id, work_dir.clone(), log_file, worker_options);
+        let mut worker = SingleplexWorker::new(
+            worker_key,
+            worker_id,
+            work_dir.clone(),
+            log_file,
+            worker_options,
+        );
         let tmp_dir_path = sandbox_helpers::get_tmp_dir_path(&work_dir);
         worker.sandboxed = Some(SandboxedParts {
             worker_exec_root: Mutex::new(WorkerExecRoot::new(
@@ -157,7 +162,10 @@ impl SingleplexWorker {
     /// `createProcess(clientEnv)` (and `SandboxedWorker.createProcess`).
     // Java: com/google/devtools/build/lib/worker/SingleplexWorker.java:96 SingleplexWorker.createProcess
     // Java: com/google/devtools/build/lib/worker/SandboxedWorker.java:146 SandboxedWorker.createProcess
-    fn create_process(&self, client_env: &IndexMap<String, String>) -> io::Result<Arc<dyn Subprocess>> {
+    fn create_process(
+        &self,
+        client_env: &IndexMap<String, String>,
+    ) -> io::Result<Arc<dyn Subprocess>> {
         let args = self.make_exec_path_absolute(self.base.worker_key.get_args());
         if self.sandboxed.is_some() {
             // We put the sandbox inside a unique subdirectory using the worker's ID.
@@ -209,8 +217,11 @@ impl SingleplexWorker {
         if !executable.is_absolute() && executable.get_parent().is_some() {
             let mut v = Vec::with_capacity(args.len());
             v.push(
-                JavaFile::new_child(Some(&JavaFile::new(self.work_dir.get_path_string())), &args[0])
-                    .get_absolute_path(),
+                JavaFile::new_child(
+                    Some(&JavaFile::new(self.work_dir.get_path_string())),
+                    &args[0],
+                )
+                .get_absolute_path(),
             );
             v.extend(args[1..].iter().cloned());
             v
@@ -232,7 +243,9 @@ impl SingleplexShared {
     /// in `getResponse` holding that lock, so the hook closes the protocol only if the lock is
     /// free and always destroys the process.
     fn destroy_from_shutdown_hook(&self) {
-        if let Some(mut protocol) = self.worker_protocol.try_lock_for(Duration::from_millis(100))
+        if let Some(mut protocol) = self
+            .worker_protocol
+            .try_lock_for(Duration::from_millis(100))
             && let Some(p) = protocol.take()
         {
             let _ = p.close();
@@ -244,7 +257,7 @@ impl SingleplexShared {
             st.process.clone()
         };
         if let Some(process) = process {
-            process.destroy_and_wait();
+            shutdown_hooks::destroy_and_wait_at_exit(&*process);
         }
     }
 }
@@ -285,9 +298,7 @@ impl Worker for SingleplexWorker {
                 let process = self.create_process(client_env)?;
                 // Created worker process %s for worker id %d (logged).
                 self.base.status.maybe_update_status(Status::Alive);
-                let stdout = process
-                    .get_input_stream()
-                    .expect("worker stdout is a pipe");
+                let stdout = process.get_input_stream().expect("worker stdout is a pipe");
                 st.recording_input_stream = Some(Arc::new(Mutex::new(RecordingInputStream::new(
                     Box::new(PipeInputStream::new(
                         stdout,
@@ -366,10 +377,17 @@ impl Worker for SingleplexWorker {
     }
 
     // Java: com/google/devtools/build/lib/worker/SandboxedWorker.java:213 SandboxedWorker.finishExecution
-    fn finish_execution(&self, exec_root: &Path, outputs: &SandboxOutputs) -> Result<(), WorkerError> {
+    fn finish_execution(
+        &self,
+        exec_root: &Path,
+        outputs: &SandboxOutputs,
+    ) -> Result<(), WorkerError> {
         self.base.status.maybe_update_status(Status::Alive);
         if let Some(sandboxed) = &self.sandboxed {
-            sandboxed.worker_exec_root.lock().copy_outputs(exec_root, outputs)?;
+            sandboxed
+                .worker_exec_root
+                .lock()
+                .copy_outputs(exec_root, outputs)?;
         }
         Ok(())
     }

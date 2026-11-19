@@ -473,15 +473,16 @@ impl AspectFunction {
             }
         }
 
-        // PORT: Java requests the exec transition's .bzl through BZL_LOAD and returns null for a
-        // restart; the bundled loader evaluates it directly (see
-        // `load_starlark_exec_transition_provider`).
+        // Java requests the exec transition's .bzl through BZL_LOAD and returns null for a
+        // restart (see `load_starlark_exec_transition_provider`).
         let starlark_exec_transition: Option<Arc<StarlarkAttributeTransitionProvider>> =
             match load_starlark_exec_transition_provider(
                 configuration.map(|c| &**c.get_options()),
                 &self.services,
+                env,
             ) {
-                Ok(t) => t,
+                Ok(Some(t)) => t,
+                Ok(None) => return Ok(None),
                 Err(e) => {
                     return Err(Caught::AspectCreation(AspectCreationException::for_target(
                         e.0.clone(),

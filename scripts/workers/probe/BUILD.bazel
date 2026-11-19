@@ -1,0 +1,57 @@
+load("//:defs.bzl", "worker_action")
+
+# Singleplex, proto protocol (the default when requires-worker-protocol is absent).
+worker_action(name = "ok_proto", src = "data/a.txt")
+
+# A second action with the same worker key: the same worker process serves it.
+worker_action(name = "ok_proto_again", src = "data/b.txt")
+
+# requires-worker-protocol = proto, explicitly.
+worker_action(name = "ok_proto_explicit", src = "data/c.txt", protocol = "proto", action_mnemonic = "ProbeExplicit")
+
+# JSON protocol.
+worker_action(name = "ok_json", src = "data/a.txt", protocol = "json", action_mnemonic = "ProbeJson")
+
+# --flagfile= instead of @flagfile.
+worker_action(name = "ok_flagfile_eq", src = "data/b.txt", flagfile_format = "--flagfile=%s", action_mnemonic = "ProbeFlagfileEq")
+
+# Multiplex, proto and JSON.
+worker_action(name = "ok_mx", src = "data/a.txt", multiplex = True, action_mnemonic = "ProbeMx")
+worker_action(name = "ok_mx_again", src = "data/b.txt", multiplex = True, action_mnemonic = "ProbeMx")
+worker_action(name = "ok_mx_json", src = "data/c.txt", multiplex = True, protocol = "json", action_mnemonic = "ProbeMxJson")
+
+# Multiplex with sandboxing support (sandbox_dir in the request with
+# --experimental_worker_multiplex_sandboxing).
+worker_action(name = "ok_mx_sandbox", src = "data/a.txt", multiplex = True, multiplex_sandboxing = True, action_mnemonic = "ProbeMxSandbox")
+
+# Cancellable (supports-worker-cancellation).
+worker_action(name = "ok_cancellable", src = "data/b.txt", cancellable = True, action_mnemonic = "ProbeCancel")
+
+# Failures.
+worker_action(name = "fail_proto", src = "data/a.txt", mode = "fail", action_mnemonic = "ProbeFail")
+worker_action(name = "fail_json", src = "data/a.txt", mode = "fail", protocol = "json", action_mnemonic = "ProbeFailJson")
+worker_action(name = "crash_proto", src = "data/a.txt", mode = "crash", action_mnemonic = "ProbeCrash")
+worker_action(name = "crash_mx", src = "data/a.txt", mode = "crash", multiplex = True, action_mnemonic = "ProbeCrashMx")
+worker_action(name = "garbage_proto", src = "data/a.txt", mode = "garbage", action_mnemonic = "ProbeGarbage")
+worker_action(name = "garbage_json", src = "data/a.txt", mode = "garbage", protocol = "json", action_mnemonic = "ProbeGarbageJson")
+worker_action(name = "empty_proto", src = "data/a.txt", mode = "empty", action_mnemonic = "ProbeEmpty")
+worker_action(name = "huge_stderr", src = "data/a.txt", mode = "huge-stderr", action_mnemonic = "ProbeHuge")
+worker_action(name = "cancelled_proto", src = "data/a.txt", mode = "cancelled", action_mnemonic = "ProbeCancelled")
+worker_action(name = "bad_protocol", src = "data/a.txt", protocol = "xml", action_mnemonic = "ProbeBadProtocol")
+
+# Slow (for --worker_cancellation with an interrupted build; not in the default case list).
+worker_action(name = "slow_mx", src = "data/a.txt", mode = "slow", multiplex = True, cancellable = True, action_mnemonic = "ProbeSlow")
+
+filegroup(
+    name = "all_ok",
+    srcs = [
+        ":ok_flagfile_eq",
+        ":ok_json",
+        ":ok_mx",
+        ":ok_mx_again",
+        ":ok_mx_json",
+        ":ok_proto",
+        ":ok_proto_again",
+        ":ok_proto_explicit",
+    ],
+)

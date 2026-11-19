@@ -254,7 +254,7 @@ fn convert_starlark_option(
         // Java: com/google/devtools/build/lib/packages/Type.java:812 Type.SetType.convert
         Type::StringSet => {
             let set = match value {
-                StarlarkOptionValue::List(l) if l.class() == JavaCollectionClass::Set => l,
+                StarlarkOptionValue::List(l) if l.is_java_set() => l,
                 _ => return Err(type_conversion_exception(type_, value, what)),
             };
             let elem_type = type_.get_list_element_type().expect("set element type");
@@ -298,6 +298,8 @@ fn starlark_type_of(value: &StarlarkOptionValue) -> &'static str {
             JavaCollectionClass::List => "List",
             // PORT: Starlark.classType prints the simple name of the concrete Set class
             // (RegularImmutableSet, LinkedHashSet, ...), which is not tracked.
+            // Java: net/starlark/java/eval/StarlarkSet.java StarlarkSet (`set`).
+            JavaCollectionClass::StarlarkSet => "set",
             JavaCollectionClass::Set => {
                 blaze_util::unported!("Starlark.classType", "java.util.Set")
             }

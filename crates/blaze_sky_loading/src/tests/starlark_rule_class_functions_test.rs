@@ -361,7 +361,6 @@ fn test_attr_with_aspect_requiring_aspects_require_existing_aspect_failed() {
 
 // Java: StarlarkRuleClassFunctionsTest.testNonLabelAttrWithProviders
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java \"unexpected keyword argument 'providers'\" (argument binding)"]
 fn test_non_label_attr_with_providers() {
     let ev = Ev::new();
     ev.check_eval_error_contains(
@@ -398,7 +397,6 @@ fn test_label_attr_default_value_as_string_bad_value() {
 
 // Java: StarlarkRuleClassFunctionsTest.testAttrBadKeywordArguments
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java \"string() got unexpected keyword argument 'bad_keyword'\" (argument binding)"]
 fn test_attr_bad_keyword_arguments() {
     let ev = Ev::new();
     ev.check_eval_error_contains(
@@ -419,7 +417,6 @@ fn incompatible_data_transition() {
 
 // Java: StarlarkRuleClassFunctionsTest.testNoAttrLicense
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java \"'attr' value has no field or method 'license'\""]
 fn test_no_attr_license() {
     let ev = Ev::new();
     ev.check_eval_error_contains(
@@ -451,7 +448,6 @@ fn unknown_rule_attribute_flags_forbidden() {
 
 // Java: StarlarkRuleClassFunctionsTest.testRuleUnknownKeyword
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java \"unexpected keyword argument 'bad_keyword'\" (argument binding)"]
 fn test_rule_unknown_keyword() {
     let ev = Ev::new();
     register_dummy_starlark_function(&ev);
@@ -463,7 +459,6 @@ fn test_rule_unknown_keyword() {
 
 // Java: StarlarkRuleClassFunctionsTest.testRuleImplementationMissing
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'rule() missing 1 required positional argument: implementation' (argument binding)"]
 fn test_rule_implementation_missing() {
     let ev = Ev::new();
     ev.check_eval_error_contains(
@@ -548,7 +543,7 @@ fn test_label_get_relative_syntax_error() {
 // Java: StarlarkRuleClassFunctionsTest.testStructFields
 // (`x.getValue("a")` is `StarlarkInt.of(1)`: here `repr(x.a)`.)
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'struct value does not support field assignment'"]
+#[ignore = "starlark-rust core-language error text still differs after patches 0049-0055: Blaze 'cannot set .a field of struct value', Java 'struct value does not support field assignment'"]
 fn test_struct_fields() {
     let ev = Ev::new();
     ev.exec(&["x = struct(a = 1, b = 2)"]);
@@ -652,7 +647,6 @@ fn test_struct_accessing_unknown_field_with_args() {
 
 // Java: StarlarkRuleClassFunctionsTest.testStructAccessingNonFunctionFieldWithArgs
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java \"'int' object is not callable\""]
 fn test_struct_accessing_non_function_field_with_args() {
     let ev = Ev::new();
     ev.check_eval_error_contains(
@@ -676,7 +670,7 @@ fn test_struct_accessing_function_field_with_args() {
 
 // Java: StarlarkRuleClassFunctionsTest.testStructPosArgs
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'struct() got unexpected positional argument' (argument binding)"]
+#[ignore = "starlark-rust core-language error text still differs after patches 0049-0055: Blaze 'Error in <function struct>: Wrong number of positional arguments, expected 0, got 1', Java 'struct() got unexpected positional argument'"]
 fn test_struct_pos_args() {
     let ev = Ev::new();
     ev.check_eval_error_contains(
@@ -1489,7 +1483,6 @@ fn initializer_pass_through() {
 
 // Java: StarlarkRuleClassFunctionsTest.initializer_omittedValueIsNotPassed
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'initializer() missing 1 required positional argument: srcs' (argument binding)"]
 fn initializer_omitted_value_is_not_passed() {
     let t = PackageLoadingTestCase::new();
     t.scratch_file(
@@ -1526,7 +1519,6 @@ fn initializer_omitted_value_is_not_passed() {
 
 // Java: StarlarkRuleClassFunctionsTest.initializer_noneValueIsNotPassed
 #[test]
-#[ignore = "starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): Java 'initializer() missing 1 required positional argument: srcs' (argument binding)"]
 fn initializer_none_value_is_not_passed() {
     let t = PackageLoadingTestCase::new();
     t.scratch_file(

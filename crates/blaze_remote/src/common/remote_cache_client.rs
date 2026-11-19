@@ -1,6 +1,5 @@
 //! Port of `lib/remote/common/RemoteCacheClient.java` and `MissingDigestsFinder.java`.
 
-use std::collections::HashSet;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
@@ -123,7 +122,7 @@ pub trait RemoteCacheClient: MissingDigestsFinder {
         context: &RemoteActionExecutionContext<'_>,
         action_key: &ActionKey,
         inline_out_err: bool,
-        inline_output_files: &HashSet<String>,
+        inline_output_files: &IndexSet<String>,
     ) -> io::Result<Option<ActionResult>>;
 
     /// Uploads an action result for the `actionKey`.

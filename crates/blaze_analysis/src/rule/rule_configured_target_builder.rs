@@ -294,13 +294,20 @@ impl<'a> RuleConfiguredTargetBuilder<'a> {
         if rule_context.get_rule().is_analysis_test() {
             // If the target is an analysis test that returned AnalysisTestResultInfo, register a
             // test pass/fail action on behalf of the target.
-            if providers.get(&ANALYSIS_TEST_RESULT_INFO.key()).is_none() {
+            let Some(test_result_info) = providers.get(&ANALYSIS_TEST_RESULT_INFO.key()) else {
                 rule_context.rule_error(
                     "rules with analysis_test=true must return an instance of AnalysisTestResultInfo",
                 );
                 return Ok(None);
-            }
-            blaze_util::unported!("AnalysisTestActionBuilder.writeAnalysisTestAction");
+            };
+            let test_result_info = crate::info::downcast_info::<
+                crate::test::execution_info::AnalysisTestResultInfo,
+            >(test_result_info)
+            .expect("AnalysisTestResultInfo");
+            crate::test::analysis_test_action_builder::AnalysisTestActionBuilder::write_analysis_test_action(
+                rule_context,
+                test_result_info,
+            );
         }
 
         let analysis_environment = rule_context.get_analysis_environment();

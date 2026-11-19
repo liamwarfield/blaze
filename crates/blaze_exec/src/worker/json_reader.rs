@@ -533,7 +533,10 @@ impl JsonReader {
 
     /// `nextNonWhitespace(throwOnEof)`: the next non-whitespace char, consumed; comments are
     /// skipped (lenient).
-    fn next_non_whitespace_opt(&mut self, throw_on_eof: bool) -> Result<Option<char>, JsonReaderError> {
+    fn next_non_whitespace_opt(
+        &mut self,
+        throw_on_eof: bool,
+    ) -> Result<Option<char>, JsonReaderError> {
         loop {
             let Some(c) = self.read_char()? else {
                 if throw_on_eof {
@@ -803,7 +806,9 @@ impl JsonReader {
                 match u32::from_str_radix(&hex, 16) {
                     Ok(v) => char::from_u32(v).unwrap_or('\u{FFFD}'),
                     Err(_) => {
-                        return Err(self.syntax_error(&format!("Malformed Unicode escape \\u{hex}")));
+                        return Err(
+                            self.syntax_error(&format!("Malformed Unicode escape \\u{hex}"))
+                        );
                     }
                 }
             }
@@ -829,8 +834,21 @@ impl JsonReader {
 fn is_literal(c: char) -> bool {
     !matches!(
         c,
-        '/' | '\\' | ';' | '#' | '=' | '{' | '}' | '[' | ']' | ':' | ',' | ' ' | '\t' | '\u{c}'
-            | '\r' | '\n'
+        '/' | '\\'
+            | ';'
+            | '#'
+            | '='
+            | '{'
+            | '}'
+            | '['
+            | ']'
+            | ':'
+            | ','
+            | ' '
+            | '\t'
+            | '\u{c}'
+            | '\r'
+            | '\n'
     )
 }
 

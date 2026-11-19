@@ -120,7 +120,8 @@ use blaze_sky_exec::events::{
 use blaze_sky_top::analysis_failure_event::{AnalysisFailureEvent, AnalysisRootCause};
 use blaze_sky_top::build_tool::{BuildEventHooks, BuildRequest};
 use blaze_sky_top::build_view::{
-    AnalysisResult, TopLevelConfigurationEvent, construct_label_to_target_map,
+    AnalysisResult, TopLevelConfigurationEvent, TopLevelTargetConfiguredEvent,
+    construct_label_to_target_map,
 };
 use blaze_sky_top::execution_seam::configured_target_views;
 use blaze_sky_top::pattern_expanding_error::PatternExpandingError;
@@ -202,6 +203,8 @@ struct Shared {
     /// `BuildEventStreamOptions.publishAllActions`.
     publish_all_actions: bool,
     clock: Arc<dyn Clock>,
+    /// `CommandEnvironment.buildInfoPosted` (set by its `gotBuildInfo` subscription).
+    build_info_posted: AtomicBool,
 }
 
 /// The subscriber of the command's event bus: the `@Subscribe` methods of the
@@ -289,6 +292,8 @@ impl EventBus for BepSubscriber {
             return;
         }
         if let Some(e) = downcast_event::<ExecBuildInfoEvent>(&event) {
+            // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1126 CommandEnvironment.gotBuildInfo
+            shared.build_info_posted.store(true, Ordering::SeqCst);
             // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:203 BazelWorkspaceStatusAction.execute
             let map: IndexMap<String, String> = e
                 .get_build_info_map()
@@ -333,6 +338,16 @@ impl EventBus for BepSubscriber {
                     vec![build_event_id_util::build_metrics()],
                 ),
             ));
+            return;
+        }
+        if let Some(e) = downcast_event::<TopLevelTargetConfiguredEvent>(&event) {
+            // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:438 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
+            let configuration = e.configuration.as_deref();
+            shared.streamer.build_event(Arc::new(TargetConfiguredEvent::new(
+                configured_target_info(&e.target),
+                configuration.map(configuration_event),
+                configuration.map(|c| c.checksum().to_string()),
+            )));
             return;
         }
         if let Some(e) = downcast_event::<TopLevelConfigurationEvent>(&event) {
@@ -698,18 +713,28 @@ fn convert_action_executed(
     shared: &Shared,
     e: &SkyActionExecutedEvent,
 ) -> Option<ActionExecutedEvent> {
-    let Some(exception) = &e.exception else {
-        if shared.publish_all_actions {
-            blaze_util::unported!(
-                "ActionExecutedEvent (successful actions with --build_event_publish_all_actions: primary output metadata)"
-            );
-        }
+    // BuildEventStreamer: a successful action is published only with
+    // --build_event_publish_all_actions.
+    if e.exception.is_none() && !shared.publish_all_actions {
         return None;
-    };
-    let failure_detail = exception.get_failure_detail().cloned();
-    let numeric_exit_code = match &failure_detail {
-        Some(failure_detail) => blaze_util::DetailedExitCode::get_numeric_exit_code(failure_detail),
-        None => blaze_util::unported!("ActionExecutionException.getExitCode (no failure detail)"),
+    }
+    let failure = match &e.exception {
+        None => None,
+        Some(exception) => {
+            let failure_detail = exception.get_failure_detail().cloned();
+            let numeric_exit_code = match &failure_detail {
+                Some(failure_detail) => {
+                    blaze_util::DetailedExitCode::get_numeric_exit_code(failure_detail)
+                }
+                None => blaze_util::unported!(
+                    "ActionExecutionException.getExitCode (no failure detail)"
+                ),
+            };
+            Some(ActionFailure {
+                numeric_exit_code,
+                failure_detail,
+            })
+        }
     };
     let owner = e.action.get_owner();
     let action = ExecutedActionInfo {
@@ -729,13 +754,10 @@ fn convert_action_executed(
     Some(ActionExecutedEvent::new(
         e.action_id.clone(),
         action,
-        Some(ActionFailure {
-            numeric_exit_code,
-            failure_detail,
-        }),
+        failure,
         e.primary_output_path.clone(),
         e.output_artifact.clone(),
-        None,
+        e.primary_output_metadata.clone(),
         e.stdout.clone(),
         e.stderr.clone(),
         match e.error_timing {
@@ -743,11 +765,29 @@ fn convert_action_executed(
             SkyErrorTiming::BEFORE_EXECUTION => ErrorTiming::BeforeExecution,
             SkyErrorTiming::AFTER_EXECUTION => ErrorTiming::AfterExecution,
         },
-        // PORT: the execution phase does not record the action's start and end times on the
-        // event (wall-clock values).
-        None,
-        None,
+        e.start_time.map(timestamp_proto),
+        e.end_time.map(timestamp_proto),
     ))
+}
+
+/// `Timestamp` of an `Instant`: its epoch second and nano of second.
+// Java: com/google/devtools/build/lib/actions/ActionExecutedEvent.java:266 ActionExecutedEvent.timestampProto
+fn timestamp_proto(time: std::time::SystemTime) -> blaze_protos::google::protobuf::Timestamp {
+    // Instant.getEpochSecond() floors; getNano() is the non-negative remainder.
+    let (seconds, nanos) = match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => (d.as_secs() as i64, d.subsec_nanos() as i32),
+        Err(e) => {
+            let d = e.duration();
+            let mut seconds = -(d.as_secs() as i64);
+            let mut nanos = d.subsec_nanos() as i32;
+            if nanos > 0 {
+                seconds -= 1;
+                nanos = 1_000_000_000 - nanos;
+            }
+            (seconds, nanos)
+        }
+    };
+    blaze_protos::google::protobuf::Timestamp { seconds, nanos }
 }
 
 /// What the UI reads to draw its progress bar after the build completed.
@@ -1116,6 +1156,7 @@ impl BepCommandSupport {
             expand_filesets: bep_options.expand_filesets,
             publish_all_actions: bes_stream_options.publish_all_actions,
             clock,
+            build_info_posted: AtomicBool::new(false),
         });
         // cmdEnv.getEventBus().register(streamer) (and the MetricsCollector's registration).
         env.get_event_bus().register(Arc::new(BepSubscriber {
@@ -1446,12 +1487,15 @@ impl BepCommandSupport {
     }
 
     /// `SkyframeExecutor.configureTargets`: a `TargetConfiguredEvent` per configured top-level
-    /// target; also records what the target's `TargetCompleteEvent` reads of it.
+    /// target (the path without merged analysis and execution; with it, `BuildDriverFunction`
+    /// posts them, see `blaze_sky_top::build_view::TopLevelTargetConfiguredEvent`); also records
+    /// what the target's `TargetCompleteEvent` reads of it.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2317 SkyframeExecutor.configureTargets
     fn post_targets_configured(
         &self,
         skyframe_executor: &SkyframeExecutor,
         analysis_result: &AnalysisResult,
+        post_events: bool,
     ) {
         let mut by_label: IndexMap<Label, (Target, Option<Arc<BuildConfigurationValue>>)> =
             IndexMap::new();
@@ -1459,11 +1503,13 @@ impl BepCommandSupport {
             let target = target_and_configuration.get_target();
             let configuration = target_and_configuration.get_configuration().cloned();
             let checksum = configuration.as_ref().map(|c| c.checksum().to_string());
-            self.post(Arc::new(TargetConfiguredEvent::new(
-                configured_target_info(target),
-                configuration.as_deref().map(configuration_event),
-                checksum,
-            )));
+            if post_events {
+                self.post(Arc::new(TargetConfiguredEvent::new(
+                    configured_target_info(target),
+                    configuration.as_deref().map(configuration_event),
+                    checksum,
+                )));
+            }
             by_label.insert(target.get_label().clone(), (target.clone(), configuration));
         }
 
@@ -1493,6 +1539,34 @@ impl BepCommandSupport {
                     test_runs_and_shards: view.get_test_params().map(|p| (p.runs, p.shards)),
                 },
             );
+        }
+    }
+
+    /// `AnalysisPhaseRunner.postAbortedEventsForSkippedTargets`: an `AbortedEvent`
+    /// (`AbortReason.SKIPPED`) with the `targetCompleted` id of each skipped top-level target.
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:343 AnalysisPhaseRunner.postAbortedEventsForSkippedTargets
+    pub(crate) fn post_aborted_events_for_skipped_targets(
+        &self,
+        targets_to_skip: &[blaze_analysis::configured_target::ConfiguredTarget],
+    ) {
+        for target in targets_to_skip {
+            // configurationId(skyframeExecutor.getConfiguration(reporter, configurationKey)):
+            // the configuration's event id is its options checksum, the key's.
+            let checksum = target
+                .get_configuration_key()
+                .map(|k| k.get_options_checksum().to_string());
+            let label = target.get_original_label();
+            self.post_build_event(Arc::new(
+                blaze_bep::buildeventstream::generic_build_event::AbortedEvent::with_label(
+                    build_event_id_util::target_completed(
+                        &label,
+                        &build_event_id_util::configuration_id_for_key(checksum.as_deref()),
+                    ),
+                    AbortReason::Skipped,
+                    format!("Target {} build was skipped.", label),
+                    Some(label.clone()),
+                ),
+            ));
         }
     }
 
@@ -1799,17 +1873,54 @@ impl BuildEventHooks for BepCommandSupport {
         )));
     }
 
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1113 CommandEnvironment.ensureBuildInfoPosted
+    fn ensure_build_info_posted(&self) {
+        if self.shared.build_info_posted.load(Ordering::SeqCst) {
+            return;
+        }
+        // workspace.getWorkspaceStatusActionFactory().createDummyWorkspaceStatus(
+        // workspaceInfoFromDiff): Bazel's factory (BazelWorkspaceStatusModule).
+        use blaze_actions::analysis::workspace_status_action::WorkspaceStatusActionFactory as _;
+        let factory = blaze_actions::bazel::bazel_workspace_status_module::BazelStatusActionFactory {
+            username: user_name(),
+            hostname: blaze_sky_top::skyframe_executor::short_host_name(),
+        };
+        let workspace_status: IndexMap<String, String> =
+            factory.create_dummy_workspace_status().into_iter().collect();
+        self.post(Arc::new(BuildEventPost(Arc::new(BuildInfoEvent::new(
+            workspace_status,
+        )))));
+        // gotBuildInfo(BuildInfoEvent)
+        self.shared.build_info_posted.store(true, Ordering::SeqCst);
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:560 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+    fn no_execution(&self) {
+        self.post(Arc::new(
+            blaze_bep::events::buildtool_events::NoExecutionEvent,
+        ));
+    }
+
     /// The analysis metrics (`AnalysisPhaseRunner`) and a `TargetConfiguredEvent` per top-level
     /// target (`SkyframeExecutor.configureTargets`).
     fn analysis_complete(
         &self,
-        _request: &BuildRequest,
+        request: &BuildRequest,
         skyframe_executor: &SkyframeExecutor,
         _target_pattern_phase_value: &TargetPatternPhaseValue,
         analysis_result: &AnalysisResult,
     ) {
         self.analysis_metrics(analysis_result);
-        self.post_targets_configured(skyframe_executor, analysis_result);
+        self.post_targets_configured(
+            skyframe_executor,
+            analysis_result,
+            !request.with_merged_analysis_and_execution_source_of_truth(),
+        );
+        // The path without merged analysis and execution: after reportTargets.
+        // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:165 AnalysisPhaseRunner.execute
+        if !request.with_merged_analysis_and_execution_source_of_truth() {
+            self.post_aborted_events_for_skipped_targets(analysis_result.get_targets_to_skip());
+        }
     }
 }
 
@@ -1846,8 +1957,7 @@ pub(crate) fn exec_with_no_build_events(
     // PORT: skipped, profiling: Profiler.markPhase(ProfilePhase.FINISH).
     if let Some(bep) = env.get_bep() {
         bep.post_no_build_request_finished_event(
-            blaze_util::ExitCode::for_code(result.get_exit_code().get_numeric_exit_code())
-                .unwrap_or_else(|| panic!("unknown exit code")),
+            result.get_exit_code(),
             JavaClock.current_time_millis(),
         );
     }

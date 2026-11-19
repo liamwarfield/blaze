@@ -126,7 +126,9 @@ fn bzl_load_global_conflict() {
         errors(FileKind::Bzl, "a.bzl", "load(':b.bzl', 'x')\nx = 1\n"),
         [
             "a.bzl:2:1: conflicting global declaration of 'x'",
-            "a.bzl:1:16: 'x' previously declared as file-local here",
+            // Java Parser.parseLoadSymbol: a quoted name's identifier starts after the quote
+            // (Parser.java:1441 `token.start + 1`); interp case err_res_conflict_load_global.
+            "a.bzl:1:17: 'x' previously declared as file-local here",
         ]
     );
 }
@@ -179,4 +181,37 @@ fn bzl_var_statement_bindings() {
     );
     // Var statements inside a function are allowed and bind a local.
     assert!(typed_errors("def f():\n    y: int\n    y = 1\n    return y\n").is_empty());
+}
+
+/// Bazel 9.3.2 accepts `cast` expressions in .bzl files (type syntax on for BZL_COMPILE;
+/// oracle: interp case lex_cast_argument, accepted with print output `3 [1] [4]`).
+#[test]
+fn bzl_cast_expressions_with_type_syntax() {
+    let mut options = FileKind::Bzl.file_options();
+    options.allow_type_syntax = true;
+    let r = blaze_starlark::eval::compile_with_options(
+        FileKind::Bzl,
+        options,
+        "case.bzl",
+        "probe_ok = 1\nprint(cast(int, 3), str(cast(list[int], [1])), [cast(int, 4)])\n".to_owned(),
+    );
+    assert!(r.is_ok(), "{}", r.err().unwrap());
+}
+
+/// `resolve` reads the file with the type syntax setting it was compiled with: `cast` is a
+/// keyword there, not an undefined name.
+#[test]
+fn resolve_uses_the_compiled_type_syntax() {
+    let mut options = FileKind::Bzl.file_options();
+    options.allow_type_syntax = true;
+    let compiled = blaze_starlark::eval::compile_with_options(
+        FileKind::Bzl,
+        options,
+        "case.bzl",
+        "x = cast(int, 3)\n".to_owned(),
+    )
+    .unwrap();
+    let globals = blaze_starlark::env::NativeRegistry::with_blaze_starlark_builtins()
+        .build(FileKind::Bzl, &blaze_starlark::StarlarkSemantics::default());
+    assert!(blaze_starlark::eval::resolve(&compiled, &globals).is_ok());
 }

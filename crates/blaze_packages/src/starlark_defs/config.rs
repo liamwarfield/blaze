@@ -462,6 +462,17 @@ fn native_transition_value(v: Value) -> Option<(TransitionFactory, TransitionTyp
         };
         return Some((factory, e.transition_type()));
     }
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:148 ConfigFeatureFlagTransitionFactory.transitionType
+    if let Some(f) =
+        v.downcast_ref::<crate::starlark_defs::config_common::ConfigFeatureFlagTransitionFactoryValue>()
+    {
+        return Some((
+            TransitionFactory::ConfigFeatureFlag {
+                attribute_name: f.attribute_name.clone(),
+            },
+            TransitionType::Rule,
+        ));
+    }
     if let Some(n) = v.downcast_ref::<NativeTransitionFactory>() {
         let f = match n.kind {
             NativeTransitionKind::NoTransition => TransitionFactory::NoTransition,

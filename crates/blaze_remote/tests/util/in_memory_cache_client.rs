@@ -2,7 +2,7 @@
 //! `lib/remote/InMemoryCombinedCache.java`.
 #![allow(dead_code)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::ops::Deref;
 use std::sync::Arc;
@@ -163,7 +163,7 @@ impl RemoteCacheClient for InMemoryCacheClient {
         _context: &RemoteActionExecutionContext<'_>,
         action_key: &ActionKey,
         _inline_out_err: bool,
-        _inline_output_files: &HashSet<String>,
+        _inline_output_files: &IndexSet<String>,
     ) -> io::Result<Option<ActionResult>> {
         let action_result = self.ac.lock().get(action_key).cloned();
         Ok(action_result)

@@ -27,9 +27,7 @@ use blaze_analysis::toolchains::{
 };
 use blaze_build_config::build_options::BuildOptions;
 use blaze_build_config::fragments::platform_configuration::PlatformConfiguration;
-use blaze_build_config::starlark_transition::{
-    StarlarkExecTransitionLoadingException, load_starlark_exec_transition,
-};
+use blaze_build_config::starlark_transition::StarlarkExecTransitionLoadingException;
 use blaze_build_config::transitions::EMPTY_OPTIONS;
 use blaze_cmdline::Label;
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
@@ -302,13 +300,17 @@ impl DependencyResolver {
             ));
         }
 
-        let starlark_exec_transition = load_starlark_exec_transition_provider(
+        let Some(starlark_exec_transition) = load_starlark_exec_transition_provider(
             self.target_and_configuration
                 .get_configuration()
                 .map(|c| &**c.get_options()),
             services,
+            env,
         )
-        .map_err(CaughtException::StarlarkExecTransitionLoading)?;
+        .map_err(CaughtException::StarlarkExecTransitionLoading)?
+        else {
+            return Ok(false);
+        };
 
         let mut load_exec_aspects_key: Option<LoadAspectsKey> = None;
         if let Some(configuration_key) = configured_target_key.get_configuration_key() {
@@ -652,25 +654,32 @@ fn get_dependency_context(
     }
 }
 
-/// The Starlark exec transition (as a `StarlarkAttributeTransitionProvider`), loaded once per
-/// `--experimental_exec_config` value.
+/// The Starlark exec transition (as a `StarlarkAttributeTransitionProvider`).
 ///
-/// PORT: Java loads the .bzl through BZL_LOAD (memoized by Skyframe); the bundled loader in
-/// `blaze_build_config` evaluates the file on each call, so its result is memoized here.
+/// Returns `Ok(None)` where Java returns null (Skyframe deps missing), `Ok(Some(None))` when the
+/// build has no Starlark exec transition.
+///
+/// PORT: a file in `@_builtins` is evaluated by the bundled loader of `blaze_build_config`
+/// (Java: BZL_LOAD with `keyForBuiltins`), whose result is memoized here per
+/// `--experimental_exec_config` value; another file is requested through BZL_LOAD
+/// (`keyForBuild`), as in Java.
 // Java: com/google/devtools/build/lib/analysis/config/StarlarkExecTransitionLoader.java:78 StarlarkExecTransitionLoader.loadStarlarkExecTransition
 pub fn load_starlark_exec_transition_provider(
     options: Option<&BuildOptions>,
     services: &AnalysisServices,
-) -> Result<Option<Arc<StarlarkAttributeTransitionProvider>>, StarlarkExecTransitionLoadingException>
-{
+    env: &mut Environment<'_>,
+) -> Result<
+    Option<Option<Arc<StarlarkAttributeTransitionProvider>>>,
+    StarlarkExecTransitionLoadingException,
+> {
     static LOADED: LazyLock<
         Mutex<HashMap<String, Option<Arc<StarlarkAttributeTransitionProvider>>>>,
     > = LazyLock::new(|| Mutex::new(HashMap::new()));
     let Some(options) = options else {
-        return Ok(None);
+        return Ok(Some(None));
     };
     if *options == *EMPTY_OPTIONS {
-        return Ok(None);
+        return Ok(Some(None));
     }
     let user_ref = options
         .get::<CoreOptions>()
@@ -678,11 +687,87 @@ pub fn load_starlark_exec_transition_provider(
         .starlark_exec_config
         .clone();
     if let Some(p) = LOADED.lock().get(&user_ref) {
-        return Ok(p.clone());
+        return Ok(Some(p.clone()));
     }
-    let provider = load_starlark_exec_transition(Some(options), &services.starlark_semantics)?
-        .map(|t| Arc::new(StarlarkAttributeTransitionProvider::new_exec(t)));
-    Ok(LOADED.lock().entry(user_ref).or_insert(provider).clone())
+    let loader = EnvironmentBzlFileLoader {
+        env: std::cell::RefCell::new(env),
+        semantics: &services.starlark_semantics,
+        loaded_user_file: std::cell::Cell::new(false),
+    };
+    let Some(transition) =
+        blaze_build_config::starlark_transition::load_starlark_exec_transition_with_loader(
+            Some(options),
+            &loader,
+        )?
+    else {
+        return Ok(None);
+    };
+    let provider = transition.map(|t| Arc::new(StarlarkAttributeTransitionProvider::new_exec(t)));
+    if loader.loaded_user_file.get() {
+        return Ok(Some(provider));
+    }
+    Ok(Some(
+        LOADED.lock().entry(user_ref).or_insert(provider).clone(),
+    ))
+}
+
+/// `(bzlKey) -> (BzlLoadValue) env.getValueOrThrow(bzlKey, BzlLoadFailedException.class)`.
+// Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:404 DependencyResolver.evaluate
+struct EnvironmentBzlFileLoader<'e, 'a, 's> {
+    env: std::cell::RefCell<&'e mut Environment<'a>>,
+    semantics: &'s Arc<blaze_starlark::StarlarkSemantics>,
+    loaded_user_file: std::cell::Cell<bool>,
+}
+
+impl blaze_build_config::starlark_transition::BzlFileLoader
+    for EnvironmentBzlFileLoader<'_, '_, '_>
+{
+    fn convert_transition(
+        &self,
+        value: &starlark::values::OwnedFrozenValue,
+    ) -> Option<Arc<blaze_build_config::starlark_transition::StarlarkDefinedConfigTransition>> {
+        let frozen = value.value().unpack_frozen()?;
+        blaze_config::transitions::StarlarkDefinedConfigTransition::from_value(frozen.to_value())?;
+        // The module's heap stays alive with the BZL_LOAD value (PORT: keep-alive), as
+        // StarlarkCallable requires.
+        Some(
+            blaze_analysis::config::transitions::starlark_defined_config_transition_of(
+                &blaze_packages::rule_class::StarlarkCallable::new(frozen),
+            ),
+        )
+    }
+    fn get_value(
+        &self,
+        bzl_file: &blaze_cmdline::Label,
+        for_builtins: bool,
+    ) -> Result<Option<starlark::environment::FrozenModule>, String> {
+        if for_builtins {
+            return blaze_build_config::starlark_transition::load_builtins_bzl(
+                bzl_file,
+                self.semantics,
+            )
+            .map(Some);
+        }
+        self.loaded_user_file.set(true);
+        let key = blaze_sky_loading::bzl_load::BzlLoadKey::key_for_build(bzl_file.clone());
+        let mut env = self.env.borrow_mut();
+        match env.get_value_or_throw::<
+            blaze_sky_loading::bzl_load::BzlLoadKey,
+            blaze_sky_loading::bzl_load::BzlLoadFailedException,
+        >(key)
+        {
+            Ok(Ok(Some(value))) => Ok(Some(value.get_module().clone())),
+            Ok(Ok(None)) => Ok(None),
+            Ok(Err(e)) => Err(e.to_string()),
+            // PORT: an interrupt while loading the exec transition's .bzl; the loader interface
+            // has no interrupted result.
+            Err(_) => blaze_util::unported!(
+                "StarlarkExecTransitionLoader.loadStarlarkExecTransition",
+                "interrupted while loading {}",
+                bzl_file
+            ),
+        }
+    }
 }
 
 /// Computes the direct dependencies of a node in the configured target graph (a configured

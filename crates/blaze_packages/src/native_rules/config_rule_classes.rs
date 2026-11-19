@@ -218,6 +218,81 @@ fn config_feature_flag_allowlist_attribute(
     b
 }
 
+/// Java `ConfigFeatureFlag.getAllowlistAttribute(env, attributeToInspect)`: the allowlist is
+/// only reached if `attribute_to_inspect` has a value explicitly specified.
+// Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlag.java:71 ConfigFeatureFlag.getAllowlistAttribute
+fn config_feature_flag_allowlist_attribute_for(
+    env: &dyn RuleDefinitionEnvironment,
+    attribute_to_inspect: &str,
+) -> AttributeBuilder {
+    let label = env.get_tools_label(CONFIG_FEATURE_FLAG_ALLOWLIST_LABEL);
+    let attribute_to_inspect = attribute_to_inspect.to_owned();
+    let mut b = get_attribute_from_allowlist_name(CONFIG_FEATURE_FLAG_ALLOWLIST_NAME);
+    // Critically, get is never actually called on attributeToInspect and thus it is not
+    // necessary to declare whether it is configurable, for this context.
+    b.value_computed_default(Arc::new(crate::attribute::ComputedDefault::new_native(
+        Vec::new(),
+        Arc::new(move |rule: &dyn AttributeMap| {
+            if rule.is_attribute_value_explicitly_specified(&attribute_to_inspect) {
+                Some(AttrValue::Label(label.clone()))
+            } else {
+                None
+            }
+        }),
+    )));
+    b
+}
+
+// Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlag.java:95 ConfigFeatureFlag.SETTER_ALLOWLIST_NAME
+const CONFIG_FEATURE_FLAG_SETTER_ALLOWLIST_NAME: &str = "config_feature_flag_setter";
+
+// Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlag.java:98 ConfigFeatureFlag.SETTER_ALLOWLIST_LABEL
+const CONFIG_FEATURE_FLAG_SETTER_ALLOWLIST_LABEL: &str =
+    "//tools/allowlists/config_feature_flag:config_feature_flag_setter";
+
+/// Java `ConfigFeatureFlag.getSetterAllowlistAttribute(env)`.
+// Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlag.java:102 ConfigFeatureFlag.getSetterAllowlistAttribute
+fn config_feature_flag_setter_allowlist_attribute(
+    env: &dyn RuleDefinitionEnvironment,
+) -> AttributeBuilder {
+    let mut b = get_attribute_from_allowlist_name(CONFIG_FEATURE_FLAG_SETTER_ALLOWLIST_NAME);
+    b.value(Some(AttrValue::Label(
+        env.get_tools_label(CONFIG_FEATURE_FLAG_SETTER_ALLOWLIST_LABEL),
+    )));
+    b
+}
+
+/// Java `ConfigFeatureFlagTransitionFactory.addToRuleFromStarlark(ctx, builder)`: the allowlist
+/// attributes and checkers a rule using `config_common.config_feature_flag_transition` gets.
+// Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:46 ConfigFeatureFlagTransitionFactory.addToRuleFromStarlark
+pub fn config_feature_flag_transition_add_to_rule_from_starlark(
+    ctx: &dyn RuleDefinitionEnvironment,
+    builder: &mut RuleClassBuilder,
+    attribute_name: &str,
+) {
+    builder.add(&config_feature_flag_allowlist_attribute_for(
+        ctx,
+        attribute_name,
+    ));
+    builder.add_allowlist_checker(AllowlistChecker {
+        allowlist_attr: CONFIG_FEATURE_FLAG_ALLOWLIST_NAME.to_owned(),
+        error_message: format!(
+            "the attribute {} is not available in this package",
+            attribute_name
+        ),
+        location_check: LocationCheck::Instance,
+        attribute_set_trigger: Some(attribute_name.to_owned()),
+    });
+    builder.add(&config_feature_flag_setter_allowlist_attribute(ctx));
+    builder.add_allowlist_checker(AllowlistChecker {
+        allowlist_attr: CONFIG_FEATURE_FLAG_SETTER_ALLOWLIST_NAME.to_owned(),
+        error_message: "the rule class is not allowed access to feature flags setter transition"
+            .to_owned(),
+        location_check: LocationCheck::Definition,
+        attribute_set_trigger: Some(attribute_name.to_owned()),
+    });
+}
+
 impl RuleDefinition for ConfigFeatureFlagRule {
     // Java: com/google/devtools/build/lib/rules/config/ConfigRuleClasses.java:469 ConfigRuleClasses.ConfigFeatureFlagRule.build
     fn build(
