@@ -7,6 +7,14 @@
 //! - an evaluation error must match one expectation; every expectation must be matched;
 //! - assert_ / assert_eq / assert_fails report without stopping the chunk.
 //!
+//! - two modes, as Bazel's two test targets (BUILD `ScriptTest` and `ScriptTest_Latin1`,
+//!   ScriptTest.java:244-259): [`ScriptMode::Unicode`] parses the chunk text as is
+//!   (`ParserInput.fromString`, semantics flag off, `_utf8_byte_strings = False`);
+//!   [`ScriptMode::Latin1`] parses the UTF-8 bytes of the chunk one char per byte
+//!   (`ParserInput.fromLatin1`, `-internal_bazel_only_utf_8_byte_strings` on,
+//!   `_utf8_byte_strings = True`), which is how Blaze reads every Starlark file. Expectations
+//!   (`###`) are taken from the chunk text in both modes, as in Java.
+//!
 //! Difference: Java fails a chunk on any static (parse/resolve) error. starlark-rust resolves
 //! some things statically that Java does dynamically, so a static error that matches an
 //! expectation is accepted here and flagged `static` in the detail.
@@ -136,6 +144,33 @@ impl FileResult {
     }
 }
 
+/// Which of Bazel's two ScriptTest targets to imitate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptMode {
+    /// `ScriptTest`: the chunk text is the source, the byte-strings flag is off.
+    Unicode,
+    /// `ScriptTest_Latin1` (`-Dnet.starlark.java.eval.ScriptTest.utf8ByteStrings=true`).
+    Latin1,
+}
+
+impl ScriptMode {
+    /// Java `utf8ByteStrings` in ScriptTest.main.
+    pub fn utf8_byte_strings(self) -> bool {
+        self == ScriptMode::Latin1
+    }
+
+    /// The parser input for a chunk (ScriptTest.java:246-251).
+    pub fn source(self, text: &str) -> String {
+        match self {
+            ScriptMode::Unicode => text.to_owned(),
+            // Java: ParserInput.fromLatin1(buf.toString().getBytes(UTF_8), file)
+            ScriptMode::Latin1 => {
+                blaze_util::string_encoding::latin1_decode(text.as_bytes()).into_owned()
+            }
+        }
+    }
+}
+
 /// Default location of Bazel's testdata at the pin.
 pub fn default_testdata_dir() -> PathBuf {
     let home = std::env::var_os("HOME")
@@ -146,13 +181,16 @@ pub fn default_testdata_dir() -> PathBuf {
 
 /// Globals predeclared for a ScriptTest chunk: Bazel's universe (blaze_starlark: starlark-rust
 /// builtins restricted to Starlark.UNIVERSE, Bazel's `fail`), the harness builtins, Blaze's
-/// `json` port, and a `print` that discards its output.
-pub fn script_test_globals() -> Globals {
-    blaze_starlark::env::universe_builder(&blaze_starlark::StarlarkSemantics::default())
-        .with(harness::script_test_builtins)
-        .with(blaze_starlark::json::register_json)
-        .with(harness::discard_print)
-        .build()
+/// `json` port, `_utf8_byte_strings`, and a `print` that discards its output.
+pub fn script_test_globals(mode: ScriptMode) -> Globals {
+    let mut builder =
+        blaze_starlark::env::universe_builder(&blaze_starlark::StarlarkSemantics::default())
+            .with(harness::script_test_builtins)
+            .with(blaze_starlark::json::register_json)
+            .with(harness::discard_print);
+    // Java: predeclared.put("_utf8_byte_strings", utf8ByteStrings) (ScriptTest.java:254)
+    builder.set("_utf8_byte_strings", mode.utf8_byte_strings());
+    builder.build()
 }
 
 struct DiscardPrint;
@@ -270,13 +308,14 @@ pub fn run_chunk_resilient(
     linenum: usize,
     globals: &Globals,
     expectations: &[Expectation],
+    mode: ScriptMode,
 ) -> Resilient {
     let mut failures = Vec::new();
     let mut asserts_passed = 0;
     let mut asserts_run = 0;
     let mut padded = "\n".repeat(linenum - 1);
     padded.push_str(chunk);
-    let ast = match AstModule::parse(file_name, padded, &dialect::bzl_dialect()) {
+    let ast = match AstModule::parse(file_name, mode.source(&padded), &dialect::bzl_dialect()) {
         Ok(a) => a,
         Err(e) => {
             failures.push(Failure {
@@ -331,6 +370,7 @@ pub fn run_chunk_resilient(
                 eval.set_forbid_recursion(true);
                 eval.extra = Some(&reporter);
                 eval.set_print_handler(&DiscardPrint);
+                eval.set_utf8_byte_strings(mode.utf8_byte_strings());
                 eval.eval_module(ast, globals).map(|_| ())
             }));
             let (p, r) = record_events(&reporter, &mut failures);
@@ -381,7 +421,13 @@ pub fn run_chunk_resilient(
 }
 
 /// Runs one chunk (already padded with leading newlines).
-pub fn run_chunk(file_name: &str, chunk: &str, linenum: usize, globals: &Globals) -> ChunkResult {
+pub fn run_chunk(
+    file_name: &str,
+    chunk: &str,
+    linenum: usize,
+    globals: &Globals,
+    mode: ScriptMode,
+) -> ChunkResult {
     let mut failures = Vec::new();
 
     let mut lines: Vec<&str> = chunk.split('\n').collect();
@@ -452,7 +498,7 @@ pub fn run_chunk(file_name: &str, chunk: &str, linenum: usize, globals: &Globals
         }
     };
 
-    match AstModule::parse(file_name, padded, &dialect::bzl_dialect()) {
+    match AstModule::parse(file_name, mode.source(&padded), &dialect::bzl_dialect()) {
         Err(e) => {
             let msg = harness::bare_message(&e);
             if !match_expectation(&msg) {
@@ -477,6 +523,7 @@ pub fn run_chunk(file_name: &str, chunk: &str, linenum: usize, globals: &Globals
                     eval.set_forbid_recursion(true);
                     eval.extra = Some(&reporter);
                     eval.set_print_handler(&DiscardPrint);
+                    eval.set_utf8_byte_strings(mode.utf8_byte_strings());
                     eval.eval_module(ast, globals).map(|_| ())
                 })
             }));
@@ -534,7 +581,8 @@ pub fn run_chunk(file_name: &str, chunk: &str, linenum: usize, globals: &Globals
     }
 
     let resilient = aborted.then(|| {
-        let mut r = run_chunk_resilient(file_name, chunk, linenum, globals, &all_expectations);
+        let mut r =
+            run_chunk_resilient(file_name, chunk, linenum, globals, &all_expectations, mode);
         let mut f = hazard_failures;
         f.append(&mut r.failures);
         r.failures = f;
@@ -553,7 +601,7 @@ pub fn run_chunk(file_name: &str, chunk: &str, linenum: usize, globals: &Globals
 }
 
 /// Runs one testdata file.
-pub fn run_file(path: &Path, globals: &Globals) -> anyhow::Result<FileResult> {
+pub fn run_file(path: &Path, globals: &Globals, mode: ScriptMode) -> anyhow::Result<FileResult> {
     let content = std::fs::read_to_string(path)?;
     let name = path
         .file_name()
@@ -562,7 +610,7 @@ pub fn run_file(path: &Path, globals: &Globals) -> anyhow::Result<FileResult> {
     let mut linenum = 1;
     let mut chunks = Vec::new();
     for chunk in content.split("\n---\n") {
-        chunks.push(run_chunk(&name, chunk, linenum, globals));
+        chunks.push(run_chunk(&name, chunk, linenum, globals, mode));
         linenum += chunk.matches('\n').count() + 2;
     }
     Ok(FileResult { name, chunks })
@@ -571,18 +619,18 @@ pub fn run_file(path: &Path, globals: &Globals) -> anyhow::Result<FileResult> {
 /// Runs every `*.star` file in `dir`, sorted by name, on a thread with a 1 GiB stack (Starlark
 /// evaluation, repr, json and GC tracing recurse on the native stack; json.star builds a
 /// 100000-deep list).
-pub fn run_dir(dir: &Path) -> anyhow::Result<Vec<FileResult>> {
+pub fn run_dir(dir: &Path, mode: ScriptMode) -> anyhow::Result<Vec<FileResult>> {
     let dir = dir.to_owned();
     std::thread::Builder::new()
         .stack_size(1 << 30)
         .spawn(move || {
-            let globals = script_test_globals();
+            let globals = script_test_globals(mode);
             let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)?
                 .filter_map(|e| e.ok().map(|e| e.path()))
                 .filter(|p| p.extension().is_some_and(|x| x == "star"))
                 .collect();
             paths.sort();
-            paths.iter().map(|p| run_file(p, &globals)).collect()
+            paths.iter().map(|p| run_file(p, &globals, mode)).collect()
         })?
         .join()
         .map_err(|_| anyhow::anyhow!("conformance thread panicked"))?

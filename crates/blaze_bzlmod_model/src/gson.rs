@@ -118,7 +118,9 @@ impl<'a> LenientReader<'a> {
     fn location(&self) -> String {
         let before = &self.input[..self.pos];
         let line = before.matches('\n').count() + 1;
-        let column = before.len() - before.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
+        // Gson counts chars (UTF-16 units) of the text, not UTF-8 bytes.
+        let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let column = before[line_start..].encode_utf16().count() + 1;
         let mut path = String::from("$");
         for p in &self.path {
             path.push_str(p);

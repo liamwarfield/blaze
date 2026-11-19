@@ -1,0 +1,1 @@
+SYNTAX escape_n.star:2:2: invalid escape sequence: \\N. Use '\\\\' to insert '\\'.

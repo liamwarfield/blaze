@@ -427,8 +427,8 @@ pub struct Package {
     failure_detail: Option<DetailedExitCode>,
     computation_steps: i64,
     /// Java `ImmutableSortedMap<String, Target>`.
-    // PORT: Java orders by String.compareTo (UTF-16 units); BTreeMap orders by UTF-8 bytes, the
-    // same order for the BMP (and for every corpus name).
+    // Java orders by String.compareTo (UTF-16 units). Target names are internal strings (chars
+    // <= U+00FF), for which `str` order (UTF-8 bytes) is the same order.
     targets: BTreeMap<String, Target>,
     // Java: Package fields.
     build_file: Arc<InputFile>,
@@ -741,6 +741,16 @@ impl Package {
     /// Prints a human-readable dump of the package (tests).
     // Java: com/google/devtools/build/lib/packages/Package.java:479 Package.dump
     pub fn dump(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        // A `PrintStream` with the server's default charset (ISO-8859-1): one byte per char of
+        // the internal strings.
+        let mut text = String::new();
+        self.dump_text(&mut text).expect("writing to a String");
+        out.write_all(&blaze_util::string_encoding::latin1_encode_lossy(&text))
+    }
+
+    fn dump_text(&self, out: &mut String) -> std::fmt::Result {
+        use std::fmt::Write as _;
+
         use crate::attribute::AggregatingAttributeMapper;
         use crate::target::RuleOrMacroInstance;
         writeln!(

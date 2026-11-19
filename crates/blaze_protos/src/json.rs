@@ -20,12 +20,13 @@
 //! - `mod show_repo --output=streamed_jsonproto` (`RepoOutputFormatter`):
 //!   `omittingInsignificantWhitespace()`.
 //!
-//! The printer returns a Rust `String`; the bytes a surface writes depend on how Java holds the
-//! strings and on the output stream (see `java::{encode_latin1, unicode_to_internal}`), as the
-//! oracle goldens show: query `streamed_jsonproto` writes `getBytes(UTF_8)` of Unicode strings;
-//! cquery `jsonproto` prints Unicode strings through a Latin-1 `PrintStream` ('é' -> 0xE9);
-//! aquery `jsonproto` prints internal strings through a Latin-1 `PrintStream` (UTF-8 bytes
-//! survive); the execution log writes `getBytes(UTF_8)` of internal strings (double-encoded).
+//! The printer returns a Rust `String`; the bytes a surface writes depend on which kind of
+//! string the messages hold (internal or Unicode, `blaze_util::string_encoding`) and on the output
+//! stream (see `java::encode_latin1`), as the oracle goldens show: query `streamed_jsonproto`
+//! writes `getBytes(UTF_8)` of Unicode strings; cquery `jsonproto` prints Unicode strings through
+//! a Latin-1 `PrintStream` ('é' -> 0xE9); aquery `jsonproto` prints internal strings through a
+//! Latin-1 `PrintStream` (each comes out as the bytes it stands for); the execution log writes
+//! `getBytes(UTF_8)` of internal strings (double-encoded).
 //!
 //! Verified against the protobuf-java-util bytecode in the oracle's `A-server.jar`
 //! (`JsonFormat$PrinterImpl`, `JsonFormat$ParserImpl`, `Timestamps`, `Durations`) and against

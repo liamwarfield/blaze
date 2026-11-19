@@ -11,7 +11,7 @@
 # here when missing). Servers used (started here, stopped at the end):
 #   worker ry-caps   on localhost:9401 (Bazel's remote worker; reports no ZSTD compressor)
 #   worker ry-auth   on localhost:9402 (--expected_authorization_token=ry-token)
-#   python http.server on localhost:9403 (answers HTTP/1, not gRPC)
+#   python http.server on localhost:9403, IPv4 and IPv6 (answers HTTP/1, not gRPC)
 #   blaze-remote-fake-caps on localhost:9620 (GetCapabilities fails with NOT_FOUND
 #                    "instance not found", every other method UNIMPLEMENTED; the binary is
 #                    $BLAZE_FAKE_CAPS, default target/debug/blaze-remote-fake-caps of this
@@ -91,7 +91,7 @@ trap cleanup EXIT
 [[ $need_auth == 1 ]] && "$here/worker" start ry-auth 9402 --expected_authorization_token=ry-token >/dev/null
 if [[ $need_http == 1 ]]; then
   mkdir -p "$HOME/.cache/blaze/work/remote/ry-http"
-  (cd "$HOME/.cache/blaze/work/remote/ry-http" && exec python3 -I -m http.server 9403 --bind 127.0.0.1) \
+  (cd "$HOME/.cache/blaze/work/remote/ry-http" && exec python3 -I -m http.server 9403 --bind ::) \
     >/dev/null 2>&1 &
   http_pid=$!
   sleep 1
@@ -99,7 +99,7 @@ fi
 if [[ $need_fake == 1 ]]; then
   # A private copy, so that a rebuild of the checkout during the run does not matter.
   fake_copy="$HOME/.cache/blaze/work/remote/caps-matrix-fake-caps-$tag"
-  cp "$fake_caps" "$fake_copy"
+  cp "$fake_caps" "$fake_copy.tmp" && mv -f "$fake_copy.tmp" "$fake_copy"
   "$fake_copy" --port 9620 --code NOT_FOUND --message "instance not found" \
     >"$HOME/.cache/blaze/work/remote/caps-matrix-fake-caps-$tag.log" 2>&1 &
   fake_pid=$!

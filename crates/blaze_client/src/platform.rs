@@ -3,7 +3,9 @@
 //!
 //! The module is not called `blaze_util` to avoid clashing with the `blaze_util` crate.
 
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
+
+use blaze_util::string_encoding::{internal_to_platform, latin1_encode};
 
 use crate::util::errors::{errno, get_last_error_string, strerror};
 use crate::util::exit_code;
@@ -12,15 +14,12 @@ use crate::util::logging::{self, LogLevel, LoggingDetail, bazel_die, bazel_log};
 use crate::util::md5::Md5Digest;
 use crate::util::numbers::strto32;
 use crate::util::path::{Path, dirname, join_path, make_absolute};
+use crate::util::strings::{cstr, from_platform_bytes};
 
 const BLAZE_UTIL_H: &str = "src/main/cpp/blaze_util.h";
 const BLAZE_UTIL_POSIX_CC: &str = "src/main/cpp/blaze_util_posix.cc";
 const BLAZE_UTIL_LINUX_CC: &str = "src/main/cpp/blaze_util_linux.cc";
 const GET_SELF_PATH_LINUX_CC: &str = "src/main/cpp/get_self_path_linux.cc";
-
-fn cstr(s: &str) -> CString {
-    CString::new(s).unwrap_or_default()
-}
 
 // ---------------------------------------------------------------------------------------------
 // blaze_util.cc / blaze_util.h
@@ -188,7 +187,8 @@ pub fn symlink_directories(target: &Path, link: &Path) -> bool {
 // Java: src/main/cpp/blaze_util_posix.cc:509 GetHashedBaseDir
 pub fn get_hashed_base_dir(root: &Path, hashable: &str) -> Path {
     let mut digest = Md5Digest::new();
-    digest.update(hashable.as_bytes());
+    // The C++ hashes the raw bytes of the path.
+    digest.update(&latin1_encode(hashable));
     digest.finish();
     root.get_relative(&digest.string())
 }
@@ -280,8 +280,7 @@ pub fn get_env(name: &str) -> String {
         if result.is_null() {
             String::new()
         } else {
-            // PORT: byte-strings (C++ GetEnv returns the value's raw bytes).
-            CStr::from_ptr(result).to_string_lossy().into_owned()
+            from_platform_bytes(CStr::from_ptr(result).to_bytes())
         }
     }
 }
@@ -303,7 +302,7 @@ pub fn exists_env(name: &str) -> bool {
 /// Mutates the process environment: no other thread may read or write it concurrently.
 pub unsafe fn set_env(name: &str, value: &str) {
     // SAFETY: forwarded to the caller.
-    unsafe { std::env::set_var(name, value) }
+    unsafe { std::env::set_var(internal_to_platform(name), internal_to_platform(value)) }
 }
 
 // Java: src/main/cpp/blaze_util_posix.cc:578 UnsetEnv
@@ -311,7 +310,7 @@ pub unsafe fn set_env(name: &str, value: &str) {
 /// Mutates the process environment: no other thread may read or write it concurrently.
 pub unsafe fn unset_env(name: &str) {
     // SAFETY: forwarded to the caller.
-    unsafe { std::env::remove_var(name) }
+    unsafe { std::env::remove_var(internal_to_platform(name)) }
 }
 
 // Java: src/main/cpp/blaze_util_posix.cc:580 WarnIfStartedFromDesktop
@@ -479,7 +478,7 @@ fn write_owner_information(fd: libc::c_int) {
         format!("pid={}\nowner=client\n", std::process::id()).as_bytes(),
     );
     let cwd = get_cwd();
-    fd_write(fd, format!("cwd={}\n", cwd).as_bytes());
+    fd_write(fd, &latin1_encode(&format!("cwd={}\n", cwd)));
     // SAFETY: ttyname returns NULL or a NUL-terminated static buffer.
     let tty = unsafe { libc::ttyname(libc::STDIN_FILENO) };
     if !tty.is_null() {
@@ -556,7 +555,6 @@ pub fn acquire_lock(
         let new_owner = read_owner_information(fd, name);
         if new_owner != owner {
             owner = new_owner;
-            // PORT: byte-strings (C++ prints the lock file's owner bytes unchanged).
             bazel_log(
                 LogLevel::User,
                 BLAZE_UTIL_POSIX_CC,
@@ -564,7 +562,7 @@ pub fn acquire_lock(
                 format!(
                     "Another command holds the {} lock: \n{}",
                     name,
-                    String::from_utf8_lossy(&owner)
+                    from_platform_bytes(&owner)
                 ),
             );
             if block {
@@ -639,10 +637,7 @@ pub fn get_user_name() -> String {
                 ),
             );
         }
-        // PORT: byte-strings (C++ returns pw_name's raw bytes).
-        CStr::from_ptr((*pwent).pw_name)
-            .to_string_lossy()
-            .into_owned()
+        from_platform_bytes(CStr::from_ptr((*pwent).pw_name).to_bytes())
     }
 }
 
@@ -794,8 +789,7 @@ pub fn get_cache_dir() -> String {
                 let uid = libc::getuid();
                 let r = libc::getpwuid_r(uid, &mut pwbuf, buf.as_mut_ptr(), 2048, &mut pw);
                 if r == 0 && !pw.is_null() {
-                    // PORT: byte-strings (C++ keeps pw_dir's raw bytes).
-                    home = CStr::from_ptr((*pw).pw_dir).to_string_lossy().into_owned();
+                    home = from_platform_bytes(CStr::from_ptr((*pw).pw_dir).to_bytes());
                 } else {
                     return "/tmp".to_string();
                 }
@@ -950,8 +944,7 @@ pub fn get_system_javabase() -> String {
 fn get_start_time(pid: &str) -> Option<String> {
     let statfile = format!("/proc/{}/stat", pid);
     let statline = read_file(&statfile, 0)?;
-    // PORT: byte-strings (C++ splits the raw bytes of /proc/<pid>/stat; comm may not be UTF-8).
-    let statline = String::from_utf8_lossy(&statline).into_owned();
+    let statline = from_platform_bytes(&statline);
     let stat_entries: Vec<&str> = statline.split(' ').collect();
     if stat_entries.len() < 22 {
         bazel_die(
@@ -987,7 +980,7 @@ pub fn verify_server_process(pid: i32, output_base: &Path) -> bool {
     // process that doesn't know how to write start time files yet.
     match recorded_start_time {
         None => true,
-        Some(r) => r == start_time.as_bytes(),
+        Some(r) => r == *latin1_encode(&start_time),
     }
 }
 
@@ -1026,8 +1019,7 @@ pub fn get_self_path(_argv0: &str) -> String {
         );
     }
     buffer.truncate(bytes as usize);
-    // PORT: byte-strings (C++ returns the readlink result's raw bytes).
-    String::from_utf8_lossy(&buffer).into_owned()
+    from_platform_bytes(&buffer)
 }
 
 // Java: src/main/cpp/option_processor_unix.cc:31 GetProcessedEnv
@@ -1041,8 +1033,7 @@ pub fn get_processed_env() -> Vec<String> {
     unsafe {
         let mut env = environ;
         while !env.is_null() && !(*env).is_null() {
-            // PORT: byte-strings (C++ keeps each environ entry's raw bytes).
-            processed_env.push(CStr::from_ptr(*env).to_string_lossy().into_owned());
+            processed_env.push(from_platform_bytes(CStr::from_ptr(*env).to_bytes()));
             env = env.add(1);
         }
     }

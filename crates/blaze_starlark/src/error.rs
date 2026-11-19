@@ -94,7 +94,7 @@ fn operator_offset(text: &str) -> Option<usize> {
         if let Some(from) = lhs_end {
             return text[from..]
                 .char_indices()
-                .find(|(_, c)| !c.is_whitespace() && *c != '\\')
+                .find(|(_, c)| !c.is_ascii_whitespace() && *c != '\\')
                 .map(|(i, _)| from + i);
         }
     }
@@ -118,7 +118,7 @@ fn operator_offset(text: &str) -> Option<usize> {
                 in_comment = true;
             } else if c == want {
                 return Some(from + i);
-            } else if !c.is_whitespace() && c != '\\' {
+            } else if !c.is_ascii_whitespace() && c != '\\' {
                 return None;
             }
         }
@@ -131,7 +131,7 @@ fn operator_offset(text: &str) -> Option<usize> {
             let first = |from: usize| {
                 src[from..]
                     .char_indices()
-                    .find(|(_, c)| !c.is_whitespace() && *c != '\\' && *c != ')')
+                    .find(|(_, c)| !c.is_ascii_whitespace() && *c != '\\' && *c != ')')
                     .map(|(i, _)| from + i)
             };
             match (first(from), op) {
@@ -250,7 +250,14 @@ fn source_line(span: &FileSpan, line: usize) -> Option<String> {
     if line == 0 {
         return None;
     }
-    Some(span.file.source_line(line - 1).trim().to_owned())
+    // Java: EvalException.java:229 `line.trim()` (String.trim: chars <= U+0020 only; a line of
+    // an internal string may end in U+0085 or U+00A0, which are UTF-8 continuation bytes).
+    Some(
+        span.file
+            .source_line(line - 1)
+            .trim_matches(|c: char| c <= ' ')
+            .to_owned(),
+    )
 }
 
 impl EvalError {

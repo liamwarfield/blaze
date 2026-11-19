@@ -71,36 +71,42 @@ impl TemplateExpansionContext for LocalTemplateExpansionStrategy {
         ctx: &dyn ActionExecutionContext,
         template_metadata: &TemplateExpansionContextTemplateMetadata,
     ) -> Result<Vec<SpawnResult>, ExpandTemplateError> {
-        // Java passes `ctx.getPathResolver()`: `ArtifactTemplate.getContent` reads
-        // `resolver.toPath(templateArtifact)`. With the action file system that path's
-        // `getInputStream` (RemoteActionFileSystem.getInputStream) first downloads a template that
-        // exists only remotely; the bytes are then those of the local file, which is what
-        // `Template::get_content` reads.
-        // PORT: `Template::get_content` (blaze_actions) takes no resolver; the download step of
-        // the action file system's `getInputStream` is done here, with `getContent`'s message for
-        // its failure.
-        // Java: com/google/devtools/build/lib/analysis/actions/Template.java:103 ArtifactTemplate.getContent
-        if let blaze_actions::analysis::actions::template::Template::Artifact(template_artifact) =
-            &template_metadata.template
-        {
-            let template_path = super::get_input_path(ctx, template_artifact);
-            if let Some(file_system) = ctx.get_remote_action_file_system()
-                && let Err(e) = file_system.download_if_remote(template_path.as_fragment())
-            {
-                let cause = format!(
-                    "failed to load template file '{}' due to I/O error: {}",
-                    template_path.get_path_string(),
-                    e
-                );
-                return Err(ExecException::from(EnvironmentalExecException::with_cause(
-                    &cause,
-                    failure_detail("", execution_category(Code::LocalTemplateExpansionFailure)),
-                ))
-                .into());
+        // getExpandedTemplateUnsafe(template, substitutions, ctx.getPathResolver()): an
+        // artifact template is read at `resolver.toPath(templateArtifact)`, on the action file
+        // system when there is one, whose `getInputStream` downloads a remote-only template
+        // first and records it as a lost input when its blob is gone
+        // (RemoteActionFileSystem.java:380-393).
+        // PORT: `Template::get_content` (blaze_actions) takes no resolver; the artifact template
+        // is read here through the resolved path and expanded as a string template.
+        // Java: com/google/devtools/build/lib/analysis/actions/LocalTemplateExpansionStrategy.java:77 LocalTemplateExpansionStrategy.getExpandedTemplateUnsafe
+        let resolved_template = match &template_metadata.template {
+            blaze_actions::analysis::actions::template::Template::Artifact(template_artifact) => {
+                match get_artifact_template_content(&super::get_input_path(ctx, template_artifact))
+                {
+                    Ok(content) => {
+                        Some(blaze_actions::analysis::actions::template::Template::String(content))
+                    }
+                    Err(e) => {
+                        // catch (IOException | EvalException e): new
+                        // EnvironmentalExecException(e, FailureDetail(Execution
+                        // .LOCAL_TEMPLATE_EXPANSION_FAILURE))
+                        return Err(ExecException::from(EnvironmentalExecException::with_cause(
+                            &e.to_string(),
+                            failure_detail(
+                                "",
+                                execution_category(Code::LocalTemplateExpansionFailure),
+                            ),
+                        ))
+                        .into());
+                    }
+                }
             }
-        }
+            _ => None,
+        };
         let expanded_template = match get_expanded_template_unsafe(
-            &template_metadata.template,
+            resolved_template
+                .as_ref()
+                .unwrap_or(&template_metadata.template),
             &template_metadata.substitutions,
         ) {
             Ok(s) => s,
@@ -134,5 +140,40 @@ impl TemplateExpansionContext for LocalTemplateExpansionStrategy {
             template_metadata.make_executable,
             /* is_remotable= */ true,
         )?)
+    }
+}
+
+/// `ArtifactTemplate.getContent(resolver)` with the template's resolved path: its content read as
+/// Latin-1 (`FileSystemUtils.readContent(templatePath, ISO_8859_1)`, through the path's
+/// `getInputStream`), or the `IOException` "failed to load template file '<path>' due to I/O
+/// error: <message>".
+// Java: com/google/devtools/build/lib/analysis/actions/Template.java:103 ArtifactTemplate.getContent
+fn get_artifact_template_content(template_path: &blaze_vfs::Path) -> io::Result<String> {
+    let read = || -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        io::Read::read_to_end(&mut template_path.get_input_stream()?, &mut bytes)?;
+        Ok(bytes)
+    };
+    match read() {
+        // Bazel's internal encoding for strings is raw bytes as Latin-1.
+        // PORT: as `Template::get_content`: until the decoding switch
+        // (`string_encoding::STRINGS_ARE_INTERNAL`) a template that is not valid UTF-8 has no
+        // string.
+        Ok(bytes) => match blaze_util::string_encoding::internal_string_from_bytes(&bytes) {
+            Ok(s) => Ok(s.into_owned()),
+            Err(_) => blaze_util::unported!(
+                "ArtifactTemplate.getContent",
+                "template '{}' is not valid UTF-8",
+                template_path.get_path_string()
+            ),
+        },
+        Err(e) => Err(io::Error::new(
+            e.kind(),
+            format!(
+                "failed to load template file '{}' due to I/O error: {}",
+                template_path.get_path_string(),
+                e
+            ),
+        )),
     }
 }

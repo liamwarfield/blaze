@@ -1062,7 +1062,7 @@ mod java_hash_order_tests {
         // null.
         assert_eq!(hash(vec![None]), 31);
         // An internal-form (Latin-1 holding UTF-8) string: the bytes C3 A9.
-        assert_eq!(hash(vec![s("\u{e9}")]), 6245);
+        assert_eq!(hash(vec![s("\u{c3}\u{a9}")]), 6245);
     }
 
     #[test]

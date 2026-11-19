@@ -107,7 +107,14 @@ pub(crate) fn decompress(
             // filename should be the simple basename + ext, but convert to a PathFragment and
             // run getBaseName to ensure that any path separators and uplevel references are
             // dropped.
-            Some(f) if !f.trim().is_empty() => PathFragment::create(&f).get_base_name().to_string(),
+            // Java `!fileName.isBlank()` (Character.isWhitespace on the Latin-1 chars).
+            Some(f)
+                if !f
+                    .chars()
+                    .all(|c| matches!(c, '\t'..='\r' | '\u{1c}'..='\u{1f}' | ' ')) =>
+            {
+                PathFragment::create(&f).get_base_name().to_string()
+            }
             _ => file_name_util_uncompressed(base_name, GZIP_SUFFIXES),
         },
         // Java: com/google/devtools/build/lib/bazel/repository/decompressor/XzFunction.java:46 XzFunction.getUncompressedFileName

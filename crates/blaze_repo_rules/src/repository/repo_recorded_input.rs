@@ -664,21 +664,10 @@ fn directory_listing_value_to_marker_value(
         .iter()
         .map(|d| d.get_name())
         .collect();
-    // PORT: Java sorts the internal (Latin-1-of-UTF-8) strings by UTF-16 code unit, which is byte
-    // order of the UTF-8 names.
+    // Java sorts the internal strings by UTF-16 code unit: `str` order for chars <= U+00FF.
     names.sort();
-    add_internal_strings(&mut fp, &names);
+    fp.add_strings(&names);
     fp.hex_digest_and_reset()
-}
-
-/// Java `Fingerprint.addStrings` over strings in Bazel's internal encoding (file names).
-// Java: com/google/devtools/build/lib/util/Fingerprint.java:276 Fingerprint.addStrings
-pub(crate) fn add_internal_strings<S: AsRef<str>>(fp: &mut Fingerprint, inputs: &[S]) {
-    fp.add_int(inputs.len() as i32);
-    for input in inputs {
-        // PORT: StringEncoding; dirent names are internal strings in Java.
-        fp.add_internal_string(input.as_ref());
-    }
 }
 
 /// Represents a filesystem path stored in a way that is repo-cache-friendly. That is, if the path

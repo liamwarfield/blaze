@@ -1,19 +1,21 @@
 //! Port of `query2/aquery/ActionGraphTextOutputFormatterCallback.java` (`--output=text`, the
 //! default of aquery, and `--output=commands`).
 //!
-//! PORT: `processOutput` and `writeAction` are ported: the walk over the actions of the result,
-//! the contents of parameter files and the action filters. The text of one action (`writeText`,
-//! `writeCommand`) is not: the first action that passes the filters fails loudly there. A result
-//! without actions (source files, filegroups, incompatible targets) prints nothing, as in Java.
+//! The text is built in a `StringBuilder` of internal strings (labels, exec paths, file
+//! contents) and written with `getBytes(UTF_8)`: an internal string's non-ASCII bytes leave
+//! double encoded, as in Bazel. Arguments, environment and artifact paths go through
+//! `internalToEscapedUnicode` first and are ASCII.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use base64::Engine;
 use blaze_actions::actions::action::Action;
+use blaze_actions::actions::action_key_context::ActionKeyContext;
 use blaze_actions::actions::action_owner::AspectDescriptor;
 use blaze_actions::skyframe::actiongraph::v2::action_graph_dump::{
-    ActionGraphDumpError, matches_aquery_filters,
+    ActionGraphDumpError, get_action_inputs, matches_aquery_filters,
 };
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_events::ExtendedEventHandler;
@@ -26,6 +28,11 @@ use blaze_query_engine::{
     Callback, InterruptedException, OutputFormatterCallback, QueryError,
     ThreadSafeOutputFormatterCallback,
 };
+use blaze_shell::util::command_description_form::CommandDescriptionForm;
+use blaze_shell::util::command_failure_utils::CommandFailureUtils;
+use blaze_shell::util::script_util::ScriptUtil;
+use blaze_shell::util::shell_escaper::ShellEscaper;
+use blaze_util::string_encoding::internal_to_unicode;
 
 use crate::aquery::action_graph_query_environment::{
     ActionGraphQueryEnvironment, KeyedConfiguredTargetValue,
@@ -59,11 +66,11 @@ pub struct ActionGraphTextOutputFormatterCallback<'a> {
     #[allow(dead_code)]
     event_handler: Arc<dyn ExtendedEventHandler>,
     options: &'a AqueryOptions,
-    /// `printStream`: read by `writeAction` once `writeText` and `writeCommand` are ported.
-    #[allow(dead_code)]
+    /// `printStream` (`new PrintStream(out)`); `writeAction` writes bytes to it.
     print_stream: OutputStream,
     accessor: &'a ActionGraphQueryEnvironment,
     // ActionGraphTextOutputFormatterCallback
+    action_key_context: ActionKeyContext,
     output_type: OutputType,
     action_filters: &'a AqueryActionFilter,
     /// `paramFileNameToContentMap` (lazily created in Java).
@@ -81,12 +88,13 @@ impl<'a> ActionGraphTextOutputFormatterCallback<'a> {
         output_type: OutputType,
         action_filters: &'a AqueryActionFilter,
     ) -> Self {
-        // PORT: the LabelPrinter argument is read only by `writeText`.
+        // PORT: Java's LabelPrinter argument is the environment's (`accessor.get_label_printer()`).
         ActionGraphTextOutputFormatterCallback {
             event_handler,
             options,
             print_stream: out,
             accessor,
+            action_key_context: ActionKeyContext::new(),
             output_type,
             action_filters,
             param_file_name_to_content_map: RefCell::new(HashMap::new()),
@@ -133,19 +141,282 @@ impl<'a> ActionGraphTextOutputFormatterCallback<'a> {
             return Ok(());
         }
 
+        let mut string_builder = String::new();
         match self.output_type {
-            OutputType::TEXT => blaze_util::unported!(
-                "ActionGraphTextOutputFormatterCallback.writeText",
-                "aquery --output=text of a {} action (use --output=jsonproto)",
-                action.get_mnemonic()
-            ),
-            OutputType::COMMANDS => blaze_util::unported!(
-                "ActionGraphTextOutputFormatterCallback.writeCommand",
-                "aquery --output=commands of a {} action (use --output=jsonproto)",
-                action.get_mnemonic()
-            ),
+            OutputType::TEXT => self.write_text(action, &mut string_builder)?,
+            OutputType::COMMANDS => write_command(action, &mut string_builder)?,
+        }
+        // printStream.write(stringBuilder.toString().getBytes(UTF_8))
+        self.print_stream
+            .borrow_mut()
+            .write_all(string_builder.as_bytes())?;
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:153 ActionGraphTextOutputFormatterCallback.writeText
+    fn write_text(
+        &self,
+        action: &dyn Action,
+        string_builder: &mut String,
+    ) -> Result<(), ActionGraphDumpError> {
+        let label_printer = self.accessor.get_label_printer();
+        // Enabling includeParamFiles should enable includeCommandline by default
+        // (processOutput: options.includeCommandline |= options.includeParamFiles).
+        let include_commandline =
+            self.options.include_commandline || self.options.include_param_files;
+        let action_owner = action.get_owner();
+        string_builder.push_str(&action.pretty_print());
+        string_builder.push('\n');
+        string_builder.push_str("  Mnemonic: ");
+        string_builder.push_str(&action.get_mnemonic());
+        string_builder.push('\n');
+
+        // PORT: every Rust action has an owner (Java: actionOwner != null).
+        {
+            let configuration = action_owner
+                .get_build_configuration_event()
+                .expect("NullPointerException: action owner has no BuildConfigurationEvent");
+            string_builder.push_str("  Target: ");
+            string_builder.push_str(
+                &action_owner
+                    .get_label()
+                    .map(|l| label_printer.to_string(l))
+                    .unwrap_or_else(|| "null".to_owned()),
+            );
+            string_builder.push('\n');
+            string_builder.push_str("  Configuration: ");
+            string_builder.push_str(&configuration.configuration.mnemonic);
+            string_builder.push('\n');
+            if let Some(platform) = action_owner.get_execution_platform() {
+                string_builder.push_str("  Execution platform: ");
+                string_builder.push_str(&label_printer.to_string(platform.label()));
+                string_builder.push('\n');
+            }
+
+            // In the case of aspect-on-aspect, AspectDescriptors are listed in
+            // topological order of the dependency graph.
+            // e.g. [A -> B] would imply that aspect A is applied on top of aspect B.
+            write_aspect_descriptors(action_owner.get_aspect_descriptors(), string_builder);
+        }
+
+        // PORT: every Rust action is an ActionExecutionMetadata.
+        string_builder.push_str("  ActionKey: ");
+        string_builder.push_str(&action.get_key(&self.action_key_context, None)?);
+        string_builder.push('\n');
+
+        if self.options.include_artifacts {
+            let inputs = get_action_inputs(action, self.options.include_pruned_inputs);
+            let mut input_paths: Vec<String> = inputs
+                .to_list()
+                .iter()
+                .map(|input| internal_to_escaped_unicode(input.get_exec_path_string()))
+                .collect();
+            input_paths.sort();
+            string_builder.push_str("  Inputs: [");
+            string_builder.push_str(&input_paths.join(", "));
+            string_builder.push_str("]\n");
+
+            let mut output_paths: Vec<String> = action
+                .get_outputs()
+                .iter()
+                .map(|output| {
+                    internal_to_escaped_unicode(&if output.is_tree_artifact() {
+                        format!("{} (TreeArtifact)", output.get_exec_path_string())
+                    } else {
+                        output.get_exec_path_string().to_owned()
+                    })
+                })
+                .collect();
+            output_paths.sort();
+            string_builder.push_str("  Outputs: [");
+            string_builder.push_str(&output_paths.join(", "));
+            string_builder.push_str("]\n");
+        }
+
+        // PORT: every Rust action is an AbstractAction.
+        {
+            // TODO(twerth): This handles the fixed environment. We probably want to output the
+            // inherited environment as well.
+            let fixed_environment = action.get_environment().get_fixed_env();
+            if !fixed_environment.is_empty() {
+                let mut entries: Vec<String> = fixed_environment
+                    .iter()
+                    .map(|(key, value)| internal_to_escaped_unicode(&format!("{key}={value}")))
+                    .collect();
+                entries.sort();
+                string_builder.push_str("  Environment: [");
+                string_builder.push_str(&entries.join(", "));
+                string_builder.push_str("]\n");
+            }
+        }
+        if include_commandline && let Some(command_action) = action.as_command_action() {
+            let arguments: Vec<String> = command_action
+                .get_arguments()?
+                .iter()
+                .map(|a| internal_to_escaped_unicode(a))
+                .collect();
+            let configuration_checksum = action_owner.get_configuration_checksum();
+            string_builder.push_str("  Command Line: ");
+            string_builder.push_str(&CommandFailureUtils::describe_command(
+                CommandDescriptionForm::Complete,
+                /* pretty_print_args= */ true,
+                &arguments,
+                /* environment= */ None,
+                /* environment_variables_to_clear= */ None,
+                /* cwd= */ None,
+                Some(configuration_checksum),
+                action
+                    .get_owner()
+                    .get_execution_platform()
+                    .map(|platform| platform.label()),
+                /* spawn_runner= */ None,
+            ));
+            string_builder.push('\n');
+        }
+
+        if self.options.include_param_files {
+            // Assumption: if an Action takes a param file as an input, it will be used
+            // to provide params to the command.
+            let map = self.param_file_name_to_content_map.borrow();
+            for input in get_action_inputs(action, self.options.include_pruned_inputs)
+                .to_list()
+                .iter()
+            {
+                let input_file_name = input.get_exec_path_string();
+                if let Some(content) = map.get(input_file_name) {
+                    string_builder.push_str("  Params File Content (");
+                    string_builder.push_str(input_file_name);
+                    string_builder.push_str("):\n    ");
+                    string_builder.push_str(content);
+                    string_builder.push('\n');
+                }
+            }
+        }
+        let execution_info = action.get_execution_info();
+        if !execution_info.is_empty() {
+            // Map.Entry.comparingByKey(): String.compareTo on internal strings is str order.
+            let mut entries: Vec<(&String, &String)> = execution_info.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            string_builder.push_str("  ExecutionInfo: {");
+            string_builder.push_str(
+                &entries
+                    .iter()
+                    .map(|(key, value)| {
+                        format!(
+                            "{}: {}",
+                            ShellEscaper::escape_string(key),
+                            ShellEscaper::escape_string(value)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            string_builder.push_str("}\n");
+        }
+
+        // `action instanceof TemplateExpansionAction`
+        match action.aquery_template_expansion() {
+            None => {}
+            Some(Err(e)) => return Err(ActionGraphDumpError::TemplateExpansion(e)),
+            Some(Ok((template_content, substitutions))) => {
+                string_builder.push_str("  Template: ");
+                string_builder.push_str(&template_content);
+                string_builder.push('\n');
+
+                string_builder.push_str("  Substitutions: [\n");
+                for (key, value) in substitutions {
+                    string_builder.push_str("    {");
+                    string_builder.push_str(&key);
+                    string_builder.push_str(": ");
+                    string_builder.push_str(&value);
+                    string_builder.push_str("}\n");
+                }
+                string_builder.push_str("  ]\n");
+            }
+        }
+
+        if let Some(file_action) = action.as_file_contents_provider() {
+            string_builder.push_str(&format!(
+                "  IsExecutable: {}\n",
+                file_action.make_executable()
+            ));
+            if self.options.include_file_write_contents {
+                let contents = file_action.get_file_contents()?;
+                string_builder.push_str("  FileWriteContents: [");
+                // Base64.getEncoder().encodeToString(contents.getBytes(UTF_8)): the UTF-8 bytes
+                // of the internal string (double encoded for non-ASCII).
+                string_builder.push_str(
+                    &base64::engine::general_purpose::STANDARD.encode(contents.as_bytes()),
+                );
+                string_builder.push_str("]\n");
+            }
+        }
+
+        if let Some(target) = action.aquery_unresolved_symlink_target() {
+            string_builder.push_str("  UnresolvedSymlinkTarget: ");
+            string_builder.push_str(&target);
+            string_builder.push('\n');
+        }
+
+        string_builder.push('\n');
+        Ok(())
+    }
+}
+
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:368 ActionGraphTextOutputFormatterCallback.writeCommand
+fn write_command(
+    action: &dyn Action,
+    string_builder: &mut String,
+) -> Result<(), ActionGraphDumpError> {
+    let Some(command_action) = action.as_command_action() else {
+        return Ok(());
+    };
+
+    let mut first = true;
+    for arg in command_action
+        .get_arguments()?
+        .iter()
+        .map(|a| internal_to_escaped_unicode(a))
+    {
+        if !first {
+            string_builder.push(' ');
+        }
+        ScriptUtil::emit_command_element(
+            /* message= */ string_builder,
+            /* command_element= */ &arg,
+            /* is_binary= */ first,
+        );
+        first = false;
+    }
+    string_builder.push('\n');
+    Ok(())
+}
+
+/// Convert an internal string (see `StringEncoding`) to a Unicode string with any character
+/// outside the basic printable ASCII range escaped.
+///
+/// Characters other than printable ASCII but within the Basic Multilingual Plane are formatted
+/// with `\\uXXXX`. Characters outside the BMP are formatted as `\\UXXXXXXXX`.
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:405 ActionGraphTextOutputFormatterCallback.internalToEscapedUnicode
+pub fn internal_to_escaped_unicode(internal: &str) -> String {
+    // internal.chars(): UTF-16 units; an internal string's chars are all <= U+00FF.
+    if internal.chars().all(|c| ('\u{20}'..'\u{7f}').contains(&c)) {
+        return internal.to_owned();
+    }
+
+    let unicode = internal_to_unicode(internal);
+    let mut sb = String::with_capacity(unicode.len() * 8);
+    for c in unicode.chars() {
+        let c = c as u32;
+        if (0x20..0x7F).contains(&c) {
+            sb.push(char::from_u32(c).expect("ASCII"));
+        } else if c <= 0xFFFF {
+            sb.push_str(&format!("\\u{c:04X}"));
+        } else {
+            sb.push_str(&format!("\\U{c:08X}"));
         }
     }
+    sb
 }
 
 /// The `  AspectDescriptors: [...]` lines `writeText` appends for an action whose owner has
@@ -154,8 +425,7 @@ impl<'a> ActionGraphTextOutputFormatterCallback<'a> {
 /// In the case of aspect-on-aspect, AspectDescriptors are listed in topological order of the
 /// dependency graph. e.g. [A -> B] would imply that aspect A is applied on top of aspect B.
 ///
-/// PORT: `writeText` itself is not ported (see the module documentation); this is its aspect
-/// part, for it to call.
+/// PORT: the aspect part of `writeText`, separate so that it can be tested alone.
 // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:182 ActionGraphTextOutputFormatterCallback.writeText
 pub fn write_aspect_descriptors(
     owner_aspect_descriptors: &[AspectDescriptor],
@@ -220,7 +490,7 @@ impl OutputFormatterCallback<KeyedConfiguredTargetValue>
     ) -> Result<(), OutputFormatterError> {
         // Enabling includeParamFiles should enable includeCommandline by default.
         // PORT: `options.includeCommandline |= options.includeParamFiles` is read only by
-        // `writeText`, which is not ported.
+        // `writeText`, which computes it there (the options are shared and immutable here).
 
         for configured_target_value in partial_result {
             if !matches!(
@@ -302,6 +572,43 @@ mod tests {
             "  AspectDescriptors: [\
              @@protobuf+//upb/bazel:upb_c_proto_library.bzl%upb_c_proto_library_aspect(p='v1', p='v2', q='x')\n    \
              -> @@protobuf+//upb/bazel:upb_minitable_proto_library.bzl%upb_minitable_proto_library_aspect()]\n"
+        );
+    }
+
+    // The oracle's `aquery //:all --include_file_write_contents` on the byte-strings workspace
+    // (~/.cache/blaze/work/bytes-out/aquery_text.txt): the genrule argument `'é🐷'` prints as
+    // `\u00E9\U0001F437`, the run_shell argument `"é\377"` as `\u00E9\uFFFD` and the
+    // environment entry `ENV_E=é` as `ENV_E=\u00E9`.
+    #[test]
+    fn internal_to_escaped_unicode_matches_the_oracle() {
+        assert_eq!(
+            internal_to_escaped_unicode("printf '%s' '\u{c3}\u{a9}\u{f0}\u{9f}\u{90}\u{b7}'"),
+            "printf '%s' '\\u00E9\\U0001F437'"
+        );
+        assert_eq!(
+            internal_to_escaped_unicode("\u{c3}\u{a9}\u{ff}"),
+            "\\u00E9\\uFFFD"
+        );
+        assert_eq!(
+            internal_to_escaped_unicode("ENV_E=\u{c3}\u{a9}"),
+            "ENV_E=\\u00E9"
+        );
+        // Printable ASCII is returned as is; other ASCII is escaped.
+        assert_eq!(internal_to_escaped_unicode("a b~"), "a b~");
+        assert_eq!(
+            internal_to_escaped_unicode("a\nb\u{7f}"),
+            "a\\u000Ab\\u007F"
+        );
+    }
+
+    // FileWriteContents of `ctx.actions.write(content = "é🐷\377\n")`: base64 of
+    // `contents.getBytes(UTF_8)` of the internal string (oracle: `w4PCqcOwwp/CkMK3w78K`).
+    #[test]
+    fn file_write_contents_are_base64_of_the_internal_strings_utf8() {
+        let contents = "\u{c3}\u{a9}\u{f0}\u{9f}\u{90}\u{b7}\u{ff}\n";
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.encode(contents.as_bytes()),
+            "w4PCqcOwwp/CkMK3w78K"
         );
     }
 

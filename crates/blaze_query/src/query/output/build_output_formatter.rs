@@ -288,15 +288,15 @@ impl TargetOutputter {
         // For readability, ensure columns line up.
         let mut max_loc_len = 0;
         for fr in stack {
-            // Java String.length of an internal-form string: its UTF-8 byte count.
-            max_loc_len = max_loc_len.max(location_string(fr).len());
+            // Java String.length: chars (of an internal string, one per byte).
+            max_loc_len = max_loc_len.max(location_string(fr).chars().count());
         }
         if max_loc_len > 0 {
             self.writer.append(title).append(self.line_term);
             for fr in stack {
                 let loc = location_string(fr); // TODO(b/151151653): display root-relative
                 self.writer.append("#   ").append(&loc);
-                for _ in loc.len()..max_loc_len {
+                for _ in loc.chars().count()..max_loc_len {
                     self.writer.append(" ");
                 }
                 self.writer

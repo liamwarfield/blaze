@@ -530,9 +530,11 @@ fn user_name() -> String {
         if rc != 0 || result.is_null() || pwd.pw_name.is_null() {
             return "?".to_string();
         }
-        std::ffi::CStr::from_ptr(pwd.pw_name)
-            .to_string_lossy()
-            .into_owned()
+        // A JVM property from the platform: an internal string in the server's Latin-1 locale.
+        blaze_util::string_encoding::platform_to_internal(std::os::unix::ffi::OsStrExt::from_bytes(
+            std::ffi::CStr::from_ptr(pwd.pw_name).to_bytes(),
+        ))
+        .into_owned()
     }
 }
 
@@ -710,7 +712,10 @@ impl BepCommandSupport {
         // BuildEventOutputStreamFactoryImpl.create: DestinationRelativeTo.WORKSPACE_OR_HOME.
         // Java: com/google/devtools/build/lib/runtime/InstrumentationOutputFactory.java:164 InstrumentationOutputFactory.createInstrumentationOutput
         let workspace_or_home = match env.get_workspace() {
-            Some(workspace) => std::path::PathBuf::from(workspace.get_path_string()),
+            Some(workspace) => std::path::PathBuf::from(
+                blaze_util::string_encoding::internal_to_platform(workspace.get_path_string())
+                    .into_owned(),
+            ),
             None => blaze_util::unported!(
                 "InstrumentationOutputFactory.createInstrumentationOutput (no workspace: home directory)"
             ),

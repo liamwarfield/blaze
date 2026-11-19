@@ -33,6 +33,37 @@ use crate::cursors::CursorChars;
 use crate::dialect::Dialect;
 use crate::eval_exception::EvalException;
 
+/// BLAZE PATCH 0032: whether the single-quoted raw literal whose contents start `rest` contains a
+/// backslash followed by CRLF (Java then lexes it with `escapedStringLiteral`, which turns every
+/// backslash-CR into backslash-LF; Lexer.java:463-474).
+fn raw_literal_has_backslash_crlf(rest: &str, quote: char) -> bool { // BLAZE PATCH 0032
+    let mut it = rest.chars(); // BLAZE PATCH 0032
+    while let Some(c) = it.next() { // BLAZE PATCH 0032
+        match c { // BLAZE PATCH 0032
+            '\\' => { // BLAZE PATCH 0032
+                if it.as_str().starts_with("\r\n") { // BLAZE PATCH 0032
+                    return true; // BLAZE PATCH 0032
+                } // BLAZE PATCH 0032
+                it.next(); // BLAZE PATCH 0032
+            } // BLAZE PATCH 0032
+            '\n' => return false, // BLAZE PATCH 0032
+            c if c == quote => return false, // BLAZE PATCH 0032
+            _ => {} // BLAZE PATCH 0032
+        } // BLAZE PATCH 0032
+    } // BLAZE PATCH 0032
+    false // BLAZE PATCH 0032
+} // BLAZE PATCH 0032
+
+/// BLAZE PATCH 0032: how an escape sequence failed (offsets are into the lexer's remainder).
+enum BazelEscapeError { // BLAZE PATCH 0032
+    /// The input ended after the backslash.
+    Eof, // BLAZE PATCH 0032
+    /// An unknown escape character, and its offset.
+    Invalid(char, usize), // BLAZE PATCH 0032
+    /// An octal escape above `\377`, and the offset of its last digit.
+    OctalOutOfRange(usize), // BLAZE PATCH 0032
+} // BLAZE PATCH 0032
+
 #[derive(Error, Debug)]
 pub enum LexemeError {
     #[error("Parse error: incorrect indentation")]
@@ -41,12 +72,17 @@ pub enum LexemeError {
     InvalidInput(String),
     #[error("Parse error: tabs are not allowed")]
     InvalidTab,
-    #[error("Parse error: unfinished string literal")]
+    #[error("unclosed string literal")] // BLAZE PATCH 0032: Java's text (Lexer.java:301)
     UnfinishedStringLiteral,
     #[error("Parse error: invalid string escape sequence `{0}`")]
     InvalidEscapeSequence(String),
     #[error("Parse error: missing string escape sequence, only saw `\\`")]
     EmptyEscapeSequence,
+    // BLAZE PATCH 0032: Java's texts (net/starlark/java/syntax/Lexer.java:402, :390).
+    #[error("invalid escape sequence: \\{0}. Use '\\\\' to insert '\\'.")] // BLAZE PATCH 0032
+    BlazeInvalidEscape(char), // BLAZE PATCH 0032
+    #[error("octal escape sequence out of range (maximum is \\377)")] // BLAZE PATCH 0032
+    BlazeOctalOutOfRange, // BLAZE PATCH 0032
     #[error("Parse error: cannot use reserved keyword `{0}`")]
     ReservedKeyword(String),
     #[error("Parse error: integer cannot have leading 0, got `{0}`")]
@@ -332,6 +368,52 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
+    /// BLAZE PATCH 0032: an escape sequence of a (non-raw) string literal as Bazel's lexer reads
+    /// it (net/starlark/java/syntax/Lexer.java:322-404 escapedStringLiteral); `it` is just after
+    /// the backslash. Octal escapes give one char 0..=0xFF; `\x`, `\u`, `\U`, `\N` and every
+    /// other unknown escape are errors; a backslash before CR, LF or CRLF continues the line.
+    fn escape_bazel(it: &mut CursorChars, res: &mut String) -> Result<(), BazelEscapeError> { // BLAZE PATCH 0032
+        let start = it.pos(); // BLAZE PATCH 0032
+        let c = it.next().ok_or(BazelEscapeError::Eof)?; // BLAZE PATCH 0032
+        match c { // BLAZE PATCH 0032
+            '\r' => { // BLAZE PATCH 0032
+                if it.peek() == Some('\n') { // BLAZE PATCH 0032
+                    it.next(); // BLAZE PATCH 0032
+                } // BLAZE PATCH 0032
+            } // BLAZE PATCH 0032
+            '\n' => {} // BLAZE PATCH 0032
+            'a' => res.push('\u{7}'), // BLAZE PATCH 0032
+            'b' => res.push('\u{8}'), // BLAZE PATCH 0032
+            'f' => res.push('\u{c}'), // BLAZE PATCH 0032
+            'n' => res.push('\n'), // BLAZE PATCH 0032
+            'r' => res.push('\r'), // BLAZE PATCH 0032
+            't' => res.push('\t'), // BLAZE PATCH 0032
+            'v' => res.push('\u{b}'), // BLAZE PATCH 0032
+            '\\' | '\'' | '"' => res.push(c), // BLAZE PATCH 0032
+            '0'..='7' => { // BLAZE PATCH 0032
+                let mut octal = c as u32 - '0' as u32; // BLAZE PATCH 0032
+                for _ in 0..2 { // BLAZE PATCH 0032
+                    match it.peek() { // BLAZE PATCH 0032
+                        Some(d @ '0'..='7') => { // BLAZE PATCH 0032
+                            it.next(); // BLAZE PATCH 0032
+                            octal = (octal << 3) | (d as u32 - '0' as u32); // BLAZE PATCH 0032
+                        } // BLAZE PATCH 0032
+                        _ => break, // BLAZE PATCH 0032
+                    } // BLAZE PATCH 0032
+                } // BLAZE PATCH 0032
+                if octal > 0xff { // BLAZE PATCH 0032
+                    // Java reports it at the last digit (`pos - 1`).
+                    return Err(BazelEscapeError::OctalOutOfRange(it.pos() - 1)); // BLAZE PATCH 0032
+                } // BLAZE PATCH 0032
+                res.push(char::from_u32(octal).unwrap()); // BLAZE PATCH 0032
+            } // BLAZE PATCH 0032
+            // Java: case 'N', 'u', 'U', default: "invalid escape sequence", at the char after
+            // the backslash.
+            c => return Err(BazelEscapeError::Invalid(c, start)), // BLAZE PATCH 0032
+        } // BLAZE PATCH 0032
+        Ok(()) // BLAZE PATCH 0032
+    } // BLAZE PATCH 0032
+
     /// Parse a String. Return the String, and the offset where it starts.
     // String parsing is a hot-spot, so parameterise by a `stop` function which gets
     // specialised for each variant
@@ -412,12 +494,30 @@ impl<'a> Lexer<'a> {
                     string_end -= 1;
                     break;
                 }
-                '\r' => {
-                    // We just ignore these in all modes
-                }
+                // BLAZE PATCH 0032: a carriage return is kept, in every kind of string literal
+                // (Java Lexer.escapedStringLiteral appends it; only a backslash before it is a
+                // line continuation).
+                '\r' => res.push('\r'), // BLAZE PATCH 0032
                 '\\' => {
                     if raw {
                         match it.next() {
+                            // BLAZE PATCH 0032: Java Lexer.java:306-317: a backslash before CRLF,
+                            // CR or LF is kept, followed by a single LF.
+                            // Java's quick scan of a single-quoted raw literal
+                            // (Lexer.java:463-474) keeps a backslash-CR as it is unless the
+                            // literal has a backslash-CRLF somewhere.
+                            Some('\r') => { // BLAZE PATCH 0032
+                                let crlf = it.peek() == Some('\n'); // BLAZE PATCH 0032
+                                if crlf { // BLAZE PATCH 0032
+                                    it.next(); // BLAZE PATCH 0032
+                                } // BLAZE PATCH 0032
+                                let quote = self.lexer.slice().chars().last().unwrap_or('"'); // BLAZE PATCH 0032
+                                let slow = crlf // BLAZE PATCH 0032
+                                    || triple // BLAZE PATCH 0032
+                                    || raw_literal_has_backslash_crlf(self.lexer.remainder(), quote); // BLAZE PATCH 0032
+                                res.push('\\'); // BLAZE PATCH 0032
+                                res.push(if slow { '\n' } else { '\r' }); // BLAZE PATCH 0032
+                            } // BLAZE PATCH 0032
                             Some(c) => {
                                 // BLAZE PATCH 0003: in a raw string a backslash is always kept,
                                 // also before a quote: r"\"" is two characters, as in Bazel
@@ -428,19 +528,25 @@ impl<'a> Lexer<'a> {
                             _ => break, // Out of chars
                         }
                     } else {
-                        let pos = it.pos();
-                        if Self::escape(&mut it, &mut res).is_err() {
-                            let bad = self.lexer.remainder()[pos..it.pos()].to_owned();
-                            return self.err_span(
-                                if bad.is_empty() {
-                                    LexemeError::EmptyEscapeSequence
-                                } else {
-                                    LexemeError::InvalidEscapeSequence(bad)
-                                },
-                                string_end + pos - 1,
-                                string_end + it.pos(),
-                            );
-                        }
+                        // BLAZE PATCH 0032: Bazel's escapes and error texts and positions.
+                        match Self::escape_bazel(&mut it, &mut res) { // BLAZE PATCH 0032
+                            Ok(()) => {} // BLAZE PATCH 0032
+                            Err(BazelEscapeError::Eof) => break, // BLAZE PATCH 0032
+                            Err(BazelEscapeError::Invalid(c, at)) => { // BLAZE PATCH 0032
+                                return self.err_span( // BLAZE PATCH 0032
+                                    LexemeError::BlazeInvalidEscape(c), // BLAZE PATCH 0032
+                                    string_end + at, // BLAZE PATCH 0032
+                                    string_end + at + c.len_utf8(), // BLAZE PATCH 0032
+                                ); // BLAZE PATCH 0032
+                            } // BLAZE PATCH 0032
+                            Err(BazelEscapeError::OctalOutOfRange(at)) => { // BLAZE PATCH 0032
+                                return self.err_span( // BLAZE PATCH 0032
+                                    LexemeError::BlazeOctalOutOfRange, // BLAZE PATCH 0032
+                                    string_end + at, // BLAZE PATCH 0032
+                                    string_end + at + 1, // BLAZE PATCH 0032
+                                ); // BLAZE PATCH 0032
+                            } // BLAZE PATCH 0032
+                        } // BLAZE PATCH 0032
                     }
                 }
                 c => res.push(c),

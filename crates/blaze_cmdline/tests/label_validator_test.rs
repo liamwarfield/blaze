@@ -185,3 +185,37 @@ fn test_slashless_label_infers_target_name_from_repo_name() {
         "//:foo"
     );
 }
+
+// Blaze: names are internal strings (one char per byte). `é` is C3 A9, `🐷` is F0 9F 90 B7, FF is
+// a byte that is not UTF-8. Java accepts every char >= 128 in a target name and none in a
+// package name.
+#[test]
+fn test_validate_names_with_non_ascii_internal_chars() {
+    for ok in [
+        "fg_\u{c3}\u{a9}",
+        "\u{f0}\u{9f}\u{90}\u{b7}",
+        "\u{ff}",
+        "a/\u{c3}\u{a9}.",
+        "\u{c3}\u{a9}/.",
+    ] {
+        assert_eq!(validate_target_name(ok), None, "{ok:?}");
+    }
+    assert_eq!(
+        validate_target_name("\u{c3}\u{a9}/"),
+        Some("target names may not end with '/'".to_owned())
+    );
+    assert_eq!(
+        validate_target_name("\u{ff}/../x"),
+        Some("target names may not contain up-level references '..'".to_owned())
+    );
+    assert_eq!(
+        validate_target_name("\u{c3}\u{a9}:x"),
+        Some("target names may not contain ':'".to_owned())
+    );
+    for bad in ["\u{c3}\u{a9}", "a/\u{ff}"] {
+        assert_eq!(
+            validate_package_name(bad),
+            Some(PACKAGE_NAME_ERROR.to_owned())
+        );
+    }
+}

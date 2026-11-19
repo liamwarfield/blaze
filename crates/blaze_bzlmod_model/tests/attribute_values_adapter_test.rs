@@ -73,3 +73,37 @@ fn test_attribute_values_adapter() {
 #[ignore = "needs Starlark values: Tuple is normalized to a list by the Starlark bridge, \
             AttributeValue has no tuple kind"]
 fn test_tuple() {}
+
+/// Not in the Java test class. Internal strings (`é`, `🐷`, the byte FF, a label-like string)
+/// are written as Unicode JSON (`internalToUnicode`) and read back as internal strings
+/// (`unicodeToInternal`). The JSON forms are those of the oracle's lockfile
+/// (`tests/data/bytes-B1.MODULE.bazel.lock`, attributes of `ext_repo`).
+#[test]
+fn test_attribute_values_adapter_non_ascii() {
+    let internal = |t: &str| blaze_util::string_encoding::latin1_decode(t.as_bytes()).into_owned();
+    let e = internal("é");
+    let pig = internal("🐷");
+    let built = AttributeValues::create([
+        ("s", s(&format!("{e}{pig}"))),
+        (
+            "l",
+            AttributeValue::List(vec![s(&e), s(&pig), s(&format!("@@not_a_label_{e}"))]),
+        ),
+        ("d", AttributeValue::Dict(vec![(s(&e), s(&pig))])),
+        ("x", s("\u{ff}")),
+    ]);
+    let mut writer = JsonWriter::new(false);
+    AttributeValuesAdapter::write(&mut writer, &built);
+    let json_string = writer.into_string();
+    assert_eq!(
+        json_string,
+        "{\"s\":\"é🐷\",\"l\":[\"é\",\"🐷\",\"'@@not_a_label_é'\"],\"d\":{\"é\":\"🐷\"},\"x\":\"\u{fffd}\"}"
+    );
+    let read =
+        AttributeValuesAdapter::read(&parse_lenient(&json_string).unwrap().unwrap()).unwrap();
+    assert_eq!(read.get("s"), built.get("s"));
+    assert_eq!(read.get("l"), built.get("l"));
+    assert_eq!(read.get("d"), built.get("d"));
+    // FF is not UTF-8: it was written as U+FFFD and reads back as that char's UTF-8 bytes.
+    assert_eq!(read.get("x"), Some(&s("\u{ef}\u{bf}\u{bd}")));
+}

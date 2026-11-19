@@ -1,7 +1,8 @@
 //! Predeclared names of Bazel's ScriptTest harness, ported onto starlark-rust.
 //!
 //! Java: src/test/java/net/starlark/java/eval/ScriptTest.java (assert_, assert_eq, assert_fails,
-//! struct, mutablestruct, freeze, int_mul_slow, json, _utf8_byte_strings).
+//! struct, mutablestruct, freeze, int_mul_slow, json; `_utf8_byte_strings` depends on the mode and
+//! is set by `script_test::script_test_globals`).
 //!
 //! Per-chunk state (the Java `Reporter` thread-local) travels in `Evaluator::extra`.
 
@@ -230,8 +231,6 @@ pub fn script_test_builtins(builder: &mut GlobalsBuilder) {
     fn int_mul_slow<'v>(x: BigInt, y: BigInt, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
         Ok(heap.alloc(x * y))
     }
-
-    const _utf8_byte_strings: bool = false;
 }
 
 /// `print` for the harness: ScriptTest output is not checked.

@@ -1,5 +1,6 @@
 //! Port of `analysis/config/ExecutionInfoModifier.java`.
 
+use blaze_util::string_encoding::internal_to_unicode;
 use std::collections::HashMap;
 
 use blaze_options::{
@@ -164,10 +165,9 @@ impl ExecutionInfoModifier {
     // Java: com/google/devtools/build/lib/analysis/config/ExecutionInfoModifier.java:106 ExecutionInfoModifier.matches
     /// Determines whether the given `mnemonic` (e.g. "CppCompile") matches any of the patterns.
     pub fn matches(&self, mnemonic: &str) -> bool {
-        // PORT: StringEncoding identity (internalToUnicode).
         self.expressions
             .iter()
-            .any(|expr| expr.pattern().matches(mnemonic))
+            .any(|expr| expr.pattern().matches(&internal_to_unicode(mnemonic)))
     }
 
     // Java: com/google/devtools/build/lib/analysis/config/ExecutionInfoModifier.java:112 ExecutionInfoModifier.matches
@@ -194,7 +194,7 @@ impl ExecutionInfoModifier {
     // from modifying every action's execution info map.
     pub fn would_change(&self, mnemonic: &str, execution_info: &HashMap<String, String>) -> bool {
         for expr in &self.expressions {
-            if !expr.pattern().matches(mnemonic) {
+            if !expr.pattern().matches(&internal_to_unicode(mnemonic)) {
                 continue;
             }
             if expr.remove {
@@ -265,7 +265,7 @@ impl ExecutionInfoModifier {
     /// Modifies the given map of `execution_info` to add or remove the keys for this option.
     pub fn apply(&self, mnemonic: &str, execution_info: &mut HashMap<String, String>) {
         for expr in &self.expressions {
-            if expr.pattern().matches(mnemonic) {
+            if expr.pattern().matches(&internal_to_unicode(mnemonic)) {
                 if expr.remove {
                     execution_info.remove(&expr.key);
                 } else {
@@ -350,6 +350,21 @@ mod tests {
         let modifier = convert("Genrule=+x").unwrap();
         assert!(!modifier.matches("SomethingElse"));
         assert_single(&modifier, "Genrule", &["x"]);
+    }
+
+    // Blaze: the option value and the mnemonic are internal strings; the pattern is compiled
+    // from internalToUnicode of the value and matched against internalToUnicode of the mnemonic,
+    // so `.` matches the one char `é` (C3 A9) but not a byte that is not UTF-8 twice.
+    #[test]
+    fn execution_info_modifier_matches_unicode_of_internal_strings() {
+        let modifier = convert("Gen.=+x").unwrap();
+        assert_single(&modifier, "Gen\u{c3}\u{a9}", &["x"]);
+        assert!(modifier.matches("Gen\u{ff}"));
+        assert!(!modifier.matches("Gen\u{ff}\u{ff}"));
+        let literal = convert("Gen\u{c3}\u{a9}=+y").unwrap();
+        assert_eq!(literal.expressions()[0].regex(), "Gen\u{e9}");
+        assert_single(&literal, "Gen\u{c3}\u{a9}", &["y"]);
+        assert!(!literal.matches("Gen\u{e9}"));
     }
 
     #[test]

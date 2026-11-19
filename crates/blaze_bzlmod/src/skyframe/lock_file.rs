@@ -16,7 +16,7 @@ use super::keys::{
     BazelDepGraphKey, BazelLockFileKey, BazelModuleResolutionKey, SingleExtensionValue,
 };
 use super::precomputed::LOCKFILE_MODE;
-use super::{java_io_message, throw};
+use super::{java_io_message, platform_path, throw};
 
 /// Reads the contents of the lockfiles into [`BazelLockFileValue`]s.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileFunction.java:69 BazelLockFileFunction.compute
@@ -37,16 +37,18 @@ pub fn compute(
     } else {
         root_directory
     }
-    .join(MODULE_LOCKFILE_NAME.get_path_string());
+    .join(platform_path(MODULE_LOCKFILE_NAME.get_path_string()));
 
     // PORT: Java requests FileValue.key(lockfilePath) to recognize changes to the lockfile; FILE
     // is not ported here and a single build per process needs no invalidation.
 
     // PORT: profiling ("parse lockfile") skipped.
-    // FileSystemUtils.readContent(path, UTF_8): malformed input is replaced.
+    // FileSystemUtils.readContent(path, UTF_8): the lockfile is Unicode text (malformed input is
+    // replaced); the Gson adapters convert its strings to internal strings.
     let contents = match std::fs::read(&lockfile_path) {
-        // PORT: byte-strings (Java also replaces malformed input here (readContent(path, UTF_8)))
-        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+        Ok(bytes) => Ok(Some(blaze_util::string_encoding::java_new_string_utf8(
+            &bytes,
+        ))),
         // FileNotFoundException: the lockfile does not exist.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(std::io::Error::new(

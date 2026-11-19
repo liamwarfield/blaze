@@ -35,7 +35,6 @@ use blaze_skyframe::{
     ComputeError, Environment, EvaluationContext, Evaluator, EvaluatorBuilder, SkyKey,
 };
 use blaze_starlark::StarlarkSemantics;
-use blaze_util::fingerprint::Fingerprint;
 use blaze_vfs::{
     DigestHashFunction, FileSystemExt, Path, PathFragment, Root, RootedPath, UnixFileSystem,
 };
@@ -253,6 +252,15 @@ fn directory(path: RootedPath) -> ResolvedFile {
     ResolvedFile::Directory { path }
 }
 
+fn symlink_to_file(target: RootedPath, link: RootedPath, value: &str) -> ResolvedFile {
+    ResolvedFile::SymlinkToFile {
+        target_path: target,
+        link_name: link,
+        unresolved_link_target: PathFragment::create(value),
+        metadata: HasDigest::empty(),
+    }
+}
+
 fn symlink_to_directory(target: RootedPath, link: RootedPath, value: &str) -> ResolvedFile {
     ResolvedFile::SymlinkToDirectory {
         target_path: target,
@@ -293,13 +301,70 @@ fn test_traversal_of_generated_file() {}
 #[ignore = "generated roots (BasicFileTraversalRequest with isRootGenerated) are not ported"]
 fn test_traversal_of_generated_file_with_strict_output() {}
 
+// Java: src/test/java/com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunctionTest.java:509 RecursiveFilesystemTraversalFunctionTest.testTraversalOfSymlinkToFile
+// PORT: Java's fileLikeRoot(artifact) is a BasicTraversalRequest (skipTestingForSubpackage
+// false); the request here is the DirectoryArtifactTraversalRequest ArtifactFunction creates for
+// the source artifact, whose root is the same (subpackage testing does not apply to a file root).
+// The progress receiver's invalidation/evaluation assertions have no counterpart (one evaluator
+// per evaluation, no incremental state).
 #[test]
-#[ignore = "BasicFileTraversalRequest for a file root; Bazel only traverses directories"]
-fn test_traversal_of_symlink_to_file() {}
+fn test_traversal_of_symlink_to_file() {
+    let f = Fixture::new();
+    let link_name_artifact = f.source_artifact("foo/baz/qux.sym");
+    let link_target_artifact = f.source_artifact("foo/bar/baz.txt");
+    let link_value = "../bar/baz.txt";
+    let traversal_root = f.request(&link_name_artifact);
+    let target = f.create_file(&f.rooted_path(&link_target_artifact), "");
+    f.symlink(&f.rooted_path(&link_name_artifact), link_value);
 
+    // Assert that the SkyValue is built and looks right.
+    let symlink_name_path = f.rooted_path(&link_name_artifact);
+    let symlink_target_path = f.rooted_path(&link_target_artifact);
+    let expected = symlink_to_file(symlink_target_path, symlink_name_path, link_value);
+    let v1 = f.traverse_and_assert_files(&traversal_root, std::slice::from_ref(&expected));
+
+    // Edit the target of the symlink and verify that the value is rebuilt.
+    // appendToFile(linkTargetArtifact, "bar")
+    std::fs::write(target.as_path().get_path_string(), "bar").unwrap();
+    let v2 = f.traverse_and_assert_files(&traversal_root, &[expected]);
+    // assertTraversalRootHashesAreNotEqual(v1, v2)
+    assert_ne!(root_digest(&v1), root_digest(&v2));
+}
+
+// Java: src/test/java/com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunctionTest.java:538 RecursiveFilesystemTraversalFunctionTest.testTraversalOfTransitiveSymlinkToFile
+// PORT: fileLikeRoot as in test_traversal_of_symlink_to_file.
 #[test]
-#[ignore = "BasicFileTraversalRequest for a file root; Bazel only traverses directories"]
-fn test_traversal_of_transitive_symlink_to_file() {}
+fn test_traversal_of_transitive_symlink_to_file() {
+    let f = Fixture::new();
+    let direct_link_artifact = f.source_artifact("direct/file.sym");
+    let transitive_link_artifact = f.source_artifact("transitive/sym.sym");
+    let file_a = f.create_file(&f.rooted_path(&f.source_artifact("a/file.a")), "");
+    let direct_link = f.rooted_path(&direct_link_artifact);
+    let transitive_link = f.rooted_path(&transitive_link_artifact);
+    let direct_link_path = "../a/file.a";
+    let transitive_link_path = "../direct/file.sym";
+
+    f.symlink(&direct_link, direct_link_path);
+    f.symlink(&transitive_link, transitive_link_path);
+
+    f.traverse_and_assert_files(
+        &f.request(&direct_link_artifact),
+        &[symlink_to_file(
+            file_a.clone(),
+            direct_link,
+            direct_link_path,
+        )],
+    );
+
+    f.traverse_and_assert_files(
+        &f.request(&transitive_link_artifact),
+        &[symlink_to_file(
+            file_a,
+            transitive_link,
+            transitive_link_path,
+        )],
+    );
+}
 
 #[test]
 fn test_traversal_of_source_directory() {
@@ -594,33 +659,59 @@ fn test_file_mtime_change_does_not_cause_rebuild_if_digest_is_unchanged() {
 #[ignore = "generated roots (BasicFileTraversalRequest with isRootGenerated) are not ported"]
 fn test_generated_directory_conflicts_with_package() {}
 
+// Java: src/test/java/com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunctionTest.java:917 RecursiveFilesystemTraversalFunctionTest.unboundedSymlinkExpansionError
 #[test]
 fn unbounded_symlink_expansion_error() {
     let f = Fixture::new();
-    let dir = f.source_artifact("dir");
-    f.create_file(&f.child_of(&dir, "file.txt"), "");
-    // dir/loop -> ../dir: an unbounded ancestor expansion (dir/loop/loop/...).
-    f.symlink(&f.child_of(&dir, "loop"), "../dir");
-    let e = f.eval(&f.request(&dir)).unwrap_err();
+    let baz_link = f.source_artifact("foo/baz.sym");
+    // scratch.dir("foo")
+    let parent_dir = f.workspace.get_child("foo");
+    parent_dir.create_directory_and_parents().unwrap();
+    // bazLink.getPath().createSymbolicLink(parentDir)
+    f.symlink(&f.rooted_path(&baz_link), parent_dir.get_path_string());
+    // pkgRoot(parentOf(rootedPath(bazLink)))
+    let e = f.eval(&f.request(&f.source_artifact("foo"))).unwrap_err();
     assert_eq!(
         e.get_type(),
         RecursiveFilesystemTraversalExceptionType::SymlinkCycleOrInfiniteExpansion,
         "{e}"
     );
+    assert!(e.to_string().contains("Infinite symlink expansion"), "{e}");
 }
 
+// Java: src/test/java/com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunctionTest.java:932 RecursiveFilesystemTraversalFunctionTest.symlinkChainError
 #[test]
 fn symlink_chain_error() {
     let f = Fixture::new();
-    let dir = f.source_artifact("dir");
-    f.symlink(&f.child_of(&dir, "a"), "b");
-    f.symlink(&f.child_of(&dir, "b"), "a");
-    let e = f.eval(&f.request(&dir)).unwrap_err();
+    // scratch.dir("a")
+    f.workspace
+        .get_child("a")
+        .create_directory_and_parents()
+        .unwrap();
+    let foo_link = f.source_artifact("a/foo.sym");
+    let bar_link = f.source_artifact("a/bar.sym");
+    let baz_link = f.source_artifact("a/baz.sym");
+    f.symlink(
+        &f.rooted_path(&foo_link),
+        bar_link.get_path().get_path_string(),
+    );
+    f.symlink(
+        &f.rooted_path(&bar_link),
+        baz_link.get_path().get_path_string(),
+    );
+    f.symlink(
+        &f.rooted_path(&baz_link),
+        foo_link.get_path().get_path_string(),
+    );
+
+    // pkgRoot(parentOf(rootedPath(bazLink)))
+    let e = f.eval(&f.request(&f.source_artifact("a"))).unwrap_err();
     assert_eq!(
         e.get_type(),
         RecursiveFilesystemTraversalExceptionType::SymlinkCycleOrInfiniteExpansion,
         "{e}"
     );
+    assert!(e.to_string().contains("Symlink cycle"), "{e}");
 }
 
 #[test]
@@ -703,18 +794,24 @@ fn source_directory_artifact_value_is_hash_of_contents() {
     let ArtifactValue::File(value) = &*value else {
         panic!("not a file value");
     };
-    // Java: ArtifactFunction.createSourceValue, `fp.addString(nameInSymlinkTree);
-    // fp.addBytes(digest)` per file, in traversal order (sorted dirents).
-    let mut fp = Fingerprint::new();
+    // Java: ArtifactFunction.createSourceValue (ArtifactFunction.java:364-369):
+    // `new Fingerprint()` (SHA-256), then per file in traversal order (sorted dirents)
+    // `fp.addString(file.getNameInSymlinkTree().getPathString())` (Fingerprint.java:235 addString:
+    // CodedOutputStream.writeStringNoTag, a varint length and the UTF-8 bytes) and
+    // `fp.addBytes(file.getMetadata().getDigest())` (Fingerprint.java:159, raw bytes, no
+    // framing). The expected digest is computed here from that byte layout, not with Blaze's
+    // Fingerprint. (No Java test asserts this value.)
+    use sha2::Digest;
+    let mut message: Vec<u8> = Vec::new();
     for (name, contents) in [("data/a.txt", "a\n"), ("data/sub/b.txt", "b\n")] {
-        use sha2::Digest;
-        fp.add_string(name);
-        fp.add_bytes(&sha2::Sha256::digest(contents.as_bytes()));
+        assert!(name.len() < 0x80, "one-byte varint");
+        message.push(name.len() as u8);
+        message.extend_from_slice(name.as_bytes());
+        message.extend_from_slice(&sha2::Sha256::digest(contents.as_bytes()));
     }
+    let expected_digest = sha2::Sha256::digest(&message).to_vec();
     assert_eq!(
         *value,
-        blaze_exec::actions::FileArtifactValue::create_for_directory_with_hash(
-            fp.digest_and_reset()
-        )
+        blaze_exec::actions::FileArtifactValue::create_for_directory_with_hash(expected_digest)
     );
 }

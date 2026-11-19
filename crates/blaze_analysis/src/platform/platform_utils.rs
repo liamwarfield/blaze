@@ -3,6 +3,7 @@
 //! PORT: `getPlatformProto(Spawn, RemoteOptions, ...)` is ported in
 //! `blaze_exec::exec::spawn_log_context` next to its only caller.
 
+use blaze_util::string_encoding::internal_to_unicode;
 use indexmap::IndexMap;
 
 /// Java `Platform` proto (`build.bazel.remote.execution.v2.Platform`): its sorted properties.
@@ -10,8 +11,9 @@ pub type PlatformProto = Vec<(String, String)>;
 
 // Java: com/google/devtools/build/lib/analysis/platform/PlatformUtils.java:43 PlatformUtils.sortPlatformProperties
 fn sort_platform_properties(properties: &mut PlatformProto) {
-    // Java: Ordering.from(Comparator.comparing(Platform.Property::getName)), a stable sort.
-    properties.sort_by(|a, b| a.0.cmp(&b.0));
+    // Java: Ordering.from(Comparator.comparing(Platform.Property::getName)), a stable sort by
+    // `String.compareTo` of the (Unicode) names: UTF-16 code unit order.
+    properties.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
 }
 
 // Java: com/google/devtools/build/lib/analysis/platform/PlatformUtils.java:52 PlatformUtils.buildPlatformProto
@@ -23,8 +25,10 @@ pub fn build_platform_proto(
     }
     let mut builder: PlatformProto = Vec::new();
     for (key, value) in execution_properties {
-        // PORT: StringEncoding identity (internalToUnicode).
-        builder.push((key.clone(), value.clone()));
+        builder.push((
+            internal_to_unicode(key).into_owned(),
+            internal_to_unicode(value).into_owned(),
+        ));
     }
     sort_platform_properties(&mut builder);
     Some(builder)
@@ -44,6 +48,24 @@ mod tests {
             vec![
                 ("aa".to_owned(), "2".to_owned()),
                 ("zz".to_owned(), "1".to_owned())
+            ]
+        );
+    }
+
+    /// The proto holds Unicode (`internalToUnicode`): the internal string of "é🐷" becomes "é🐷",
+    /// a raw byte FF becomes U+FFFD; names sort by UTF-16 units (U+FFFD after U+1F437's high
+    /// surrogate D83D).
+    #[test]
+    fn build_platform_proto_converts_to_unicode() {
+        let i = |s: &[u8]| blaze_util::string_encoding::latin1_decode(s).into_owned();
+        let mut props = IndexMap::new();
+        props.insert(i(b"k\xff"), i("\u{e9}\u{1F437}".as_bytes()));
+        props.insert(i("k\u{1F437}".as_bytes()), i(b"\xff"));
+        assert_eq!(
+            build_platform_proto(&props).unwrap(),
+            vec![
+                ("k\u{1F437}".to_owned(), "\u{FFFD}".to_owned()),
+                ("k\u{FFFD}".to_owned(), "\u{e9}\u{1F437}".to_owned()),
             ]
         );
     }

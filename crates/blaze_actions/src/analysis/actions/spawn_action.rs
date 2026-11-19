@@ -48,10 +48,7 @@ const GUID: &str = "ebd6fce3-093e-45ee-adb6-bf513b602f0d";
 /// (`tests/data/map_each_probe/expected.txt`).
 // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:1258 SpawnAction.Builder.setMnemonic
 pub fn is_valid_mnemonic(mnemonic: &str) -> bool {
-    !mnemonic.is_empty()
-        && blaze_util::string_encoding::to_internal(mnemonic)
-            .chars()
-            .all(java_is_letter_or_digit_latin1)
+    !mnemonic.is_empty() && mnemonic.chars().all(java_is_letter_or_digit_latin1)
 }
 
 /// Java `Character.isLetterOrDigit(char)` for a char of an internal string (`<= U+00FF`): the
@@ -65,7 +62,7 @@ fn java_is_letter_or_digit_latin1(c: char) -> bool {
         '\u{aa}' | '\u{b5}' | '\u{ba}' => true,
         '\u{c0}'..='\u{d6}' | '\u{d8}'..='\u{f6}' | '\u{f8}'..='\u{ff}' => true,
         '\u{0}'..='\u{ff}' => false,
-        // Not a char of an internal string (`string_encoding::to_internal` never gives one).
+        // Not a char of an internal string.
         _ => blaze_util::unported!(
             "Character.isLetterOrDigit",
             "char U+{:04X} is not a char of an internal string",

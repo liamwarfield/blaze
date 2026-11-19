@@ -129,9 +129,7 @@ where
 {
     for line in arguments {
         // Java: `out.write(StringUnsafe.getInternalStringBytes(line))`.
-        out.write_all(&blaze_util::string_encoding::internal_string_bytes(
-            line.as_ref(),
-        ))?;
+        out.write_all(&blaze_util::string_encoding::latin1_encode(line.as_ref()))?;
         out.write_all(b"\n")?;
     }
     out.flush()

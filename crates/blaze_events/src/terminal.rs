@@ -134,15 +134,22 @@ impl AnsiTerminal {
     /// Set the terminal title.
     // Java: com/google/devtools/build/lib/util/io/AnsiTerminal.java:143 AnsiTerminal.setTitle
     pub fn set_title(&self, title: &str) -> io::Result<()> {
-        self.write_all(&[SET_TERM_TITLE, title.as_bytes(), &[BEL]])
+        // `title.getBytes()`: the default charset, ISO-8859-1.
+        self.write_all(&[
+            SET_TERM_TITLE,
+            &blaze_util::string_encoding::latin1_encode_lossy(title),
+            &[BEL],
+        ])
     }
 
     /// Writes a string to the terminal using the current font, color and cursor position
     /// settings.
     // Java: com/google/devtools/build/lib/util/io/AnsiTerminal.java:153 AnsiTerminal.writeString
     pub fn write_string(&self, text: &str) -> io::Result<()> {
-        // PORT: StringEncoding identity (Java's getBytes() of an internal Latin-1 string).
-        self.out.write(text.as_bytes())
+        // `text.getBytes()`: the default charset, ISO-8859-1 (one byte per char of an internal
+        // string; `?` for a char above U+00FF).
+        self.out
+            .write(&blaze_util::string_encoding::latin1_encode_lossy(text))
     }
 
     /// Writes a byte sequence to the terminal using the current font, color and cursor position
@@ -337,8 +344,11 @@ impl AnsiTerminalPrinter {
                     }
                 }
             }
-            // PORT: PrintWriter swallows IOExceptions; so do we. StringEncoding identity.
-            let _ = self.stream.write(part.as_bytes());
+            // PORT: PrintWriter swallows IOExceptions; so do we. `new PrintWriter(out, true)`
+            // encodes with the default charset, ISO-8859-1.
+            let _ = self
+                .stream
+                .write(&blaze_util::string_encoding::latin1_encode_lossy(part));
             let _ = self.stream.flush();
         }
     }

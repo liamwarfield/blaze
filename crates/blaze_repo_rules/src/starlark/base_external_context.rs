@@ -50,6 +50,8 @@ use blaze_starlark::StarlarkSemantics;
 use blaze_starlark::label::LabelValue;
 use blaze_starlark::structs::StarlarkInfo;
 use blaze_starlark::structs::StructProvider;
+use blaze_util::string_encoding::latin1_decode;
+use blaze_util::string_encoding::latin1_encode;
 use blaze_vfs::Path;
 use blaze_vfs::PathFragment;
 use blaze_vfs::RootedPath;
@@ -78,7 +80,6 @@ use super::context::ExternalContext;
 use super::context::ModuleCtx;
 use super::context::RepositoryCtx;
 use super::execution_result::StarlarkExecutionResult;
-use super::execution_result::latin1_internal_string;
 use super::os::StarlarkOS;
 use super::path::StarlarkPath;
 use crate::env_handle::SkyEnv;
@@ -1197,21 +1198,15 @@ fn java_to_string(v: Value<'_>) -> String {
     v.to_repr()
 }
 
-/// Java `String.getBytes(UTF_8)` of a string in Bazel's internal form (each char is one byte of
-/// the UTF-8 encoding): every byte >= 0x80 becomes a two-byte UTF-8 sequence.
-// PORT: StringEncoding. Java encodes the internal (Latin-1) form, which double-encodes
-// non-ASCII text; Blaze reproduces the bytes.
-fn internal_string_get_bytes_utf8(s: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        if b < 0x80 {
-            out.push(b);
-        } else {
-            out.push(0xC0 | (b >> 6));
-            out.push(0x80 | (b & 0x3F));
-        }
-    }
-    out
+/// The `Authorization` value of a `basic` auth entry: `"Basic " +
+/// Base64.getEncoder().encodeToString(credentials.getBytes(UTF_8))`. `credentials` is an
+/// internal string, so non-ASCII bytes are encoded twice, as in Java.
+// Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:372 StarlarkBaseExternalContext.getAuthHeaders
+fn basic_auth_value(credentials: &str) -> String {
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes())
+    )
 }
 
 /// Java `s.replaceAll(regex, replacement)` for a `regex` without metacharacters: replaces every
@@ -1288,11 +1283,7 @@ fn get_auth_headers(
                 let mut h = Headers::new();
                 h.insert(
                     "Authorization".to_owned(),
-                    vec![format!(
-                        "Basic {}",
-                        base64::engine::general_purpose::STANDARD
-                            .encode(internal_string_get_bytes_utf8(&credentials))
-                    )],
+                    vec![basic_auth_value(&credentials)],
                 );
                 headers.insert(url, h);
             } else if type_.unpack_str() == Some("pattern") {
@@ -2030,9 +2021,8 @@ impl ExternalContext {
                     .get_output_stream()
                     .map_err(|e| JavaThrowable::from_stream_open(&e))?;
                 // Java: StringUnsafe.getInternalStringBytes(content).
-                // PORT: StringEncoding identity.
                 stream
-                    .write_all(content.as_bytes())
+                    .write_all(&latin1_encode(content))
                     .map_err(|e| JavaThrowable::from_stream_io(&e))?;
                 stream
                     .flush()
@@ -2079,10 +2069,8 @@ impl ExternalContext {
             Ok(bytes)
         })();
         match r {
-            // PORT: byte-strings. Java decodes the file as ISO-8859-1, so every byte becomes one
-            // char of the internal string and nothing is lost; `latin1_internal_string` replaces
-            // bytes that are not valid UTF-8 with U+FFFD.
-            Ok(bytes) => Ok(latin1_internal_string(&bytes)),
+            // Java: ISO-8859-1, one char per byte.
+            Ok(bytes) => Ok(latin1_decode(&bytes).into_owned()),
             // Java: RepositoryFunctionException(e, Transience.TRANSIENT)
             Err(e) => Err(repository_function_exception(e)),
         }
@@ -2766,12 +2754,20 @@ mod tests {
         assert_eq!(java_replace_all("a<x>", "<x>", "[$0]"), "a[<x>]");
     }
 
+    /// `credentials.getBytes(UTF_8)` of the internal string: each non-ASCII byte is encoded
+    /// twice (`é` = C3 A9 becomes C3 83 C2 A9), a lone FF becomes C3 BF.
     #[test]
-    fn internal_string_bytes_double_encode() {
-        assert_eq!(internal_string_get_bytes_utf8("a"), b"a");
-        assert_eq!(
-            internal_string_get_bytes_utf8("\u{e9}"),
-            vec![0xC3, 0x83, 0xC2, 0xA9]
+    fn basic_auth_value_encodes_internal_string_as_utf8() {
+        assert_eq!(basic_auth_value("a:b"), "Basic YTpi");
+        let credentials = format!(
+            "{}:{}\u{ff}",
+            latin1_decode("é".as_bytes()),
+            latin1_decode("🐷".as_bytes())
         );
+        let expected = base64::engine::general_purpose::STANDARD.encode([
+            0xC3, 0x83, 0xC2, 0xA9, b':', 0xC3, 0xB0, 0xC2, 0x9F, 0xC2, 0x90, 0xC2, 0xB7, 0xC3,
+            0xBF,
+        ]);
+        assert_eq!(basic_auth_value(&credentials), format!("Basic {expected}"));
     }
 }

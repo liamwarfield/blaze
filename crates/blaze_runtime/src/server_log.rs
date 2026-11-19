@@ -11,8 +11,13 @@
 //! PORT: only the file naming, opening and symlink creation are ported; Blaze writes no log
 //! records yet (there is no `java.util.logging` equivalent), so the file stays empty.
 
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::path::{Path as StdPath, PathBuf};
+
+use blaze_util::string_encoding::{
+    internal_to_platform, internal_to_unicode, platform_to_internal, unicode_to_internal,
+};
 
 use parking_lot::Mutex;
 
@@ -173,8 +178,8 @@ impl SimpleLogHandler {
                 name.truncate(first_dot);
             }
         }
-        // PORT: StringEncoding identity; Locale.ROOT lowercasing.
-        name.to_lowercase()
+        // Unicode-aware lowercase conversion requires strings to be in Java's regular encoding.
+        unicode_to_internal(&internal_to_unicode(&name).to_lowercase()).into_owned()
     }
 
     // Java: com/google/devtools/build/lib/util/SimpleLogHandler.java:363 SimpleLogHandler.getBaseFilePath
@@ -207,8 +212,8 @@ impl SimpleLogHandler {
             }
         }
 
-        // Path.of(...).toAbsolutePath()
-        let p = PathBuf::from(sb);
+        // Path.of(StringEncoding.internalToPlatform(sb.toString())).toAbsolutePath()
+        let p = PathBuf::from(internal_to_platform(&sb).into_owned());
         if p.is_absolute() {
             p
         } else {
@@ -219,7 +224,7 @@ impl SimpleLogHandler {
     // Java: com/google/devtools/build/lib/util/SimpleLogHandler.java:378 SimpleLogHandler.getSymlinkAbsolutePath
     fn get_symlink_absolute_path(log_dir: &StdPath, symlink: &str) -> PathBuf {
         blaze_util::check_argument!(!symlink.is_empty());
-        let mut symlink_path = PathBuf::from(symlink);
+        let mut symlink_path = PathBuf::from(internal_to_platform(symlink).into_owned());
         if !symlink_path.is_absolute() {
             symlink_path = log_dir.join(symlink_path);
         }
@@ -243,12 +248,14 @@ impl SimpleLogHandler {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        let path = PathBuf::from(format!(
-            "{}{}{}",
-            self.base_file_path.display(),
+        // Path.of(baseFilePath + timestamp + extension), on the platform strings.
+        let mut path = OsString::from(self.base_file_path.as_os_str());
+        path.push(&*internal_to_platform(&format!(
+            "{}{}",
             format_timestamp(self.clock),
             self.extension
-        ));
+        )));
+        let path = PathBuf::from(path);
         match OpenOptions::new().create(true).append(true).open(&path) {
             Ok(file) => self.output = Some((path.clone(), file)),
             Err(e) => {
@@ -333,9 +340,11 @@ fn user_name() -> String {
         if rc != 0 || result.is_null() || pwd.pw_name.is_null() {
             return "?".to_string();
         }
-        std::ffi::CStr::from_ptr(pwd.pw_name)
-            .to_string_lossy()
-            .into_owned()
+        // StringEncoding.platformToInternal(System.getProperty("user.name")).
+        platform_to_internal(std::os::unix::ffi::OsStrExt::from_bytes(
+            std::ffi::CStr::from_ptr(pwd.pw_name).to_bytes(),
+        ))
+        .into_owned()
     }
 }
 
@@ -356,14 +365,21 @@ fn compute_short_host_name() -> String {
         return "unknown".to_string();
     }
     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    let local = String::from_utf8_lossy(&buf[..len]).into_owned();
+    // StringEncoding.platformToInternal(InetAddress.getLocalHost().getHostName()).
+    let local =
+        platform_to_internal(std::os::unix::ffi::OsStrExt::from_bytes(&buf[..len])).into_owned();
     // InetAddress.getLocalHost() resolves the name and throws UnknownHostException when it
     // cannot ("localhost" is special-cased to the loopback address).
     if local == "localhost" {
         return local;
     }
     use std::net::ToSocketAddrs;
-    match (local.as_str(), 0u16).to_socket_addrs() {
+    // The resolver takes the platform string (bytes); a name that is not UTF-8 cannot be
+    // resolved here and is "unknown", as an unresolvable name is in Java.
+    let Ok(platform_name) = std::str::from_utf8(&buf[..len]) else {
+        return "unknown".to_string();
+    };
+    match (platform_name, 0u16).to_socket_addrs() {
         Ok(_) => local,
         Err(_) => "unknown".to_string(),
     }
@@ -400,7 +416,7 @@ pub fn get_server_log_path() -> std::io::Result<Option<String>> {
         .lock()
         .as_ref()
         .and_then(|h| h.get_current_log_file_path())
-        .map(|p| p.display().to_string()))
+        .map(|p| platform_to_internal(p.as_os_str()).into_owned()))
 }
 
 #[cfg(test)]

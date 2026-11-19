@@ -104,9 +104,10 @@ impl<'v> StarlarkValue<'v> for LabelValue {
     }
 }
 
-/// Starlark `repr` of a string (Java Printer.appendQuoted; label strings need no other escapes).
+/// Starlark `repr` of a string (Java `Printer.repr` → `Printer.appendQuoted`).
+// Java: com/google/devtools/build/lib/cmdline/Label.java:718 Label.repr
 fn starlark_repr_str(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    crate::printer::quote(s)
 }
 
 #[starlark_module]

@@ -42,15 +42,13 @@ pub fn compute_registry(
         .registry_factory
         .create_registry(
             &key.url()
-                // PORT: byte-strings (the workspace / vendor path is converted lossily; Java keeps the bytes)
-                .replace("%workspace%", &config.workspace_root.to_string_lossy()),
+                .replace("%workspace%", &super::path_string(&config.workspace_root)),
             lockfile_mode,
             &lockfile.registry_file_hashes,
             &lockfile.selected_yanked_versions,
             (*vendor_dir)
                 .as_ref()
-                // PORT: byte-strings (the workspace / vendor path is converted lossily; Java keeps the bytes)
-                .map(|p| PathFragment::create(&p.to_string_lossy())),
+                .map(|p| PathFragment::create(&super::path_string(p))),
             module_mirrors.get(key.url()).unwrap_or(&empty),
         )
         .map(Some)

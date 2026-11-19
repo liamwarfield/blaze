@@ -75,11 +75,14 @@ impl io::Write for ByteArrayOutputStream {
 }
 
 impl fmt::Display for ByteArrayOutputStream {
-    /// `ByteArrayOutputStream.toString()`: the bytes decoded with the platform charset (UTF-8).
+    /// `ByteArrayOutputStream.toString()`: the bytes decoded with the default charset
+    /// (ISO-8859-1 for Bazel's server).
     /// The sentinels override only `toByteArray`, so their `toString()` is empty.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ByteArrayOutputStream::Buffer(b) => f.write_str(&String::from_utf8_lossy(&b.lock())),
+            ByteArrayOutputStream::Buffer(b) => {
+                f.write_str(&blaze_util::string_encoding::latin1_decode(&b.lock()))
+            }
             _ => Ok(()),
         }
     }

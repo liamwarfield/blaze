@@ -25,6 +25,8 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use super::http_connector::{HttpTransport, UrlConnection};
 use super::proxy_helper::{ProxyInfo, ProxyType};
 use super::streams::InputStream;
+use blaze_util::string_encoding::{latin1_decode, latin1_encode_lossy};
+
 use crate::authandtls::basic_http_authentication_encode;
 use crate::errors::{IoException, IoExceptionKind};
 use crate::uri::JavaUri;
@@ -525,8 +527,9 @@ fn connect_tunnel(
         request.push_str(&format!("Proxy-Authorization: {auth}\r\n"));
     }
     request.push_str("\r\n");
+    // The JDK writes requests through a `PrintStream` with the default charset (ISO-8859-1).
     (&stream)
-        .write_all(request.as_bytes())
+        .write_all(&latin1_encode_lossy(&request))
         .map_err(|e| map_io_error(&e, false))?;
     // Read the proxy's answer byte by byte so that nothing of the tunnelled stream is consumed.
     let mut head = Vec::new();
@@ -547,7 +550,8 @@ fn connect_tunnel(
             return Err(IoException::new("HTTP header line is too long"));
         }
     }
-    let status_line = String::from_utf8_lossy(&head);
+    // Response header bytes are read one char per byte (`MessageHeader.parseHeader`).
+    let status_line = latin1_decode(&head);
     let status_line = status_line.lines().next().unwrap_or("");
     let code = status_line.split(' ').nth(1).unwrap_or("");
     if code != "200" {
@@ -751,8 +755,11 @@ fn open_connection(
         Connection::Plain(tcp)
     };
 
+    // sun.net.www.http.HttpClient writes the request through a `PrintStream` with
+    // `NetworkClient.encoding`, the default charset (ISO-8859-1): header values are internal
+    // strings and leave as their bytes.
     connection
-        .write_all(request.as_bytes())
+        .write_all(&latin1_encode_lossy(&request))
         .and_then(|()| connection.flush())
         .map_err(|e| map_io_error(&e, false))?;
 

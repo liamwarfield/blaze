@@ -24,6 +24,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::sync::Mutex;
 
+use blaze_util::string_encoding::internal_to_platform;
 use blaze_vfs::Path;
 
 use crate::errors::IoException;
@@ -80,7 +81,7 @@ fn prepare_channel(path: &Path) -> Result<File, IoException> {
         .write(true)
         .create(true)
         .truncate(false)
-        .open(path.get_path_string())?)
+        .open(internal_to_platform(path.get_path_string()))?)
 }
 
 fn fcntl_lock(file: &File, mode: LockMode, wait: bool) -> std::io::Result<bool> {
@@ -143,7 +144,7 @@ impl FileSystemLock {
         let shared = mode == LockMode::SHARED;
         // Look the file up without opening it: closing a descriptor of a file this process has
         // locked would release that lock.
-        if let Ok(metadata) = std::fs::metadata(path.get_path_string()) {
+        if let Ok(metadata) = std::fs::metadata(internal_to_platform(path.get_path_string())) {
             let key = (metadata.dev(), metadata.ino());
             if let Some(entry) = table.get_mut(&key) {
                 if entry.shared && shared {

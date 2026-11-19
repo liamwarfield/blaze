@@ -77,10 +77,12 @@ pub fn get_default_path_from_options(options: &ShellConfigurationOptions) -> Opt
     }
 
     // Honor BAZEL_SH env variable for backwards compatibility.
-    // PORT: Java reads System.getenv (the server's environment); a value that is not valid
-    // UTF-8 is converted lossily. `platformToInternal` is the identity (StringEncoding identity).
+    // Java reads System.getenv (the server's environment): a platform string, which is the
+    // internal string of its bytes in the server's Latin-1 locale.
     if let Some(path) = std::env::var_os("BAZEL_SH") {
-        return Some(PathFragment::create(&path.to_string_lossy()));
+        return Some(PathFragment::create(
+            &blaze_util::string_encoding::platform_to_internal(&path),
+        ));
     }
     None
 }

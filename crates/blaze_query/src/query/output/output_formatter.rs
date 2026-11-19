@@ -12,6 +12,7 @@ use blaze_packages::target::{LabelPrinter, Target};
 use blaze_query_engine::{
     OutputFormatterCallback, QueryException, QueryExpression, ThreadSafeOutputFormatterCallback,
 };
+use blaze_util::string_encoding::latin1_encode_lossy;
 use blaze_vfs::DigestHashFunction;
 
 use crate::common::abstract_blaze_query_environment::AbstractBlazeQueryEnvironment;
@@ -109,9 +110,9 @@ pub trait StreamedFormatter {
 /// Java `TextOutputFormatterCallback`'s writer: a `BufferedWriter(OutputStreamWriter(out))`
 /// flushed by `close`.
 ///
-/// PORT: Bazel's server runs with `file.encoding=ISO-8859-1`, so the writer turns Bazel's
-/// internal (Latin-1 holding UTF-8) strings back into their UTF-8 bytes; Rust strings are those
-/// bytes already (StringEncoding identity).
+/// The `OutputStreamWriter` has the default charset, ISO-8859-1 on Bazel's server
+/// (`-Dfile.encoding=ISO-8859-1`): an internal string leaves as its raw bytes, a char above
+/// U+00FF as `?`.
 // Java: com/google/devtools/build/lib/query2/query/output/TextOutputFormatterCallback.java:26 TextOutputFormatterCallback
 pub struct TextWriter {
     out: OutputStream,
@@ -129,7 +130,9 @@ impl TextWriter {
 
     /// Java `writer.append(s)`.
     pub fn append(&self, s: &str) -> &Self {
-        self.buffer.borrow_mut().extend_from_slice(s.as_bytes());
+        self.buffer
+            .borrow_mut()
+            .extend_from_slice(&latin1_encode_lossy(s));
         self
     }
 
@@ -140,5 +143,41 @@ impl TextWriter {
         let mut out = self.out.borrow_mut();
         out.write_all(&bytes)?;
         out.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The oracle's `query //:all --output=label_kind` on the byte-strings workspace
+    // (~/.cache/blaze/work/bytes-out/query_label_kind.txt) prints `//:fg_é` as its raw bytes
+    // 66 67 5F C3 A9, and `--output=build` prints the byte FF of `"é\377"` as FF: the writer
+    // encodes the internal string's chars as Latin-1.
+    #[test]
+    fn text_writer_writes_internal_strings_as_raw_bytes() {
+        let buffer = Rc::new(RefCell::new(Vec::<u8>::new()));
+        let out: OutputStream = buffer.clone();
+        let writer = TextWriter::new(out);
+        writer
+            .append("//:fg_\u{c3}\u{a9}")
+            .append(" \u{c3}\u{a9}\u{f0}\u{9f}\u{90}\u{b7}\u{ff}\n");
+        writer.flush().unwrap();
+        assert_eq!(
+            &*buffer.borrow(),
+            b"//:fg_\xc3\xa9 \xc3\xa9\xf0\x9f\x90\xb7\xff\n"
+        );
+    }
+
+    // A Unicode char above U+00FF (only a Java literal can hold one) becomes '?' in the
+    // default-charset writer.
+    #[test]
+    fn text_writer_replaces_chars_above_latin1() {
+        let buffer = Rc::new(RefCell::new(Vec::<u8>::new()));
+        let out: OutputStream = buffer.clone();
+        let writer = TextWriter::new(out);
+        writer.append("a\u{1f437}b");
+        writer.flush().unwrap();
+        assert_eq!(&*buffer.borrow(), b"a?b");
     }
 }

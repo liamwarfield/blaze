@@ -765,15 +765,26 @@ struct ResourceSetCallbackEvents;
 
 impl blaze_starlark::thread::StarlarkEvents for ResourceSetCallbackEvents {
     fn debug(&self, location: Option<&blaze_starlark::Location>, message: &str) {
-        match location {
-            Some(l) => eprintln!("{l}: {message}"),
-            None => eprintln!(": {message}"),
-        }
+        let line = match location {
+            Some(l) => format!("{l}: {message}"),
+            None => format!(": {message}"),
+        };
+        system_err_println(&line);
     }
 
     fn warn(&self, location: Option<&blaze_starlark::Location>, message: &str) {
         self.debug(location, message);
     }
+}
+
+/// `System.err.println(s)`: the server's default-charset (ISO-8859-1) `PrintStream`, so an
+/// internal string leaves as its bytes.
+// TODO(byte-strings lead): move to blaze_util
+fn system_err_println(s: &str) {
+    use std::io::Write;
+    let mut bytes = blaze_util::string_encoding::latin1_encode_lossy(s).into_owned();
+    bytes.push(b'\n');
+    let _ = std::io::stderr().lock().write_all(&bytes);
 }
 
 /// The `resource_set` callback of `ctx.actions.run` / `run_shell`: called at execution with the

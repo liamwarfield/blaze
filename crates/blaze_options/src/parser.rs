@@ -349,8 +349,15 @@ impl OptionsParser {
             Some(source),
             args.iter().map(|s| s.to_string()).collect(),
         ) {
-            eprintln!("Error parsing command line: {}", e.get_message());
-            eprintln!("Try --help.");
+            // System.err: a PrintStream with the default charset (ISO-8859-1).
+            let message = format!(
+                "Error parsing command line: {}\nTry --help.\n",
+                e.get_message()
+            );
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                &blaze_util::string_encoding::latin1_encode_lossy(&message),
+            );
             std::process::exit(2);
         }
     }

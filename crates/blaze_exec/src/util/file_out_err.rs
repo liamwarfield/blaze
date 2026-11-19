@@ -115,11 +115,11 @@ impl FileOutErr {
     }
     /// `outAsLatin1()`.
     pub fn out_as_latin1(&self) -> String {
-        blaze_protos::java::decode_latin1(&self.out_as_bytes())
+        blaze_util::string_encoding::latin1_decode(&self.out_as_bytes()).into_owned()
     }
     /// `errAsLatin1()`.
     pub fn err_as_latin1(&self) -> String {
-        blaze_protos::java::decode_latin1(&self.err_as_bytes())
+        blaze_util::string_encoding::latin1_decode(&self.err_as_bytes()).into_owned()
     }
 
     /// `getErrorStream().write(bytes)`: appends to the stderr file.
@@ -136,10 +136,9 @@ impl FileOutErr {
         if let Some(parent) = p.get_parent_directory() {
             parent.create_directory_and_parents()?;
         }
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(p.get_path_string())?;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(
+            blaze_util::string_encoding::internal_to_platform(p.get_path_string()),
+        )?;
         f.write_all(bytes)?;
         f.flush()
     }

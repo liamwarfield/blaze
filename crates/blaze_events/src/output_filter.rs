@@ -59,8 +59,8 @@ impl RegexOutputFilter {
 impl OutputFilter for RegexOutputFilter {
     // Java: com/google/devtools/build/lib/events/OutputFilter.java:51 RegexOutputFilter.showOutput
     fn show_output(&self, tag: &str) -> bool {
-        // PORT: StringEncoding identity (internalToUnicode).
-        self.pattern.is_match(tag)
+        self.pattern
+            .is_match(&blaze_util::string_encoding::internal_to_unicode(tag))
     }
 }
 

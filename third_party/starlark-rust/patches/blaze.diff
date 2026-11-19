@@ -935,7 +935,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          self.stack[1..self.count].map(|x| x.function)
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/evaluator.rs starlark/src/eval/runtime/evaluator.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/evaluator.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/evaluator.rs	2026-11-18 07:02:46.444796918 -0700
++++ starlark/src/eval/runtime/evaluator.rs	2026-11-18 21:28:43.907432230 -0700
 @@ -47,6 +47,7 @@
  use crate::eval::compiler::def::CopySlotFromParent;
  use crate::eval::compiler::def::Def;
@@ -944,24 +944,29 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  use crate::eval::compiler::def::FrozenDef;
  use crate::eval::runtime::before_stmt::BeforeStmt;
  use crate::eval::runtime::before_stmt::BeforeStmtFunc;
-@@ -185,6 +186,8 @@
+@@ -185,6 +186,10 @@
      pub(crate) soft_error_handler: &'a (dyn SoftErrorHandler + 'a),
      /// Max size of starlark stack
      pub(crate) max_callstack_size: Option<usize>,
 +    /// BLAZE PATCH 0004: reject recursive calls of `def`/`lambda` functions, as Bazel does.
 +    pub(crate) forbid_recursion: bool,
++    /// BLAZE PATCH 0034: Java `StarlarkSemantics.INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS`.
++    pub(crate) utf8_byte_strings: bool, // BLAZE PATCH 0034
      /// Max size of heap memory in bytes
      pub(crate) max_heap_size: Option<usize>,
      /// Max number of ticks to execute
-@@ -294,6 +297,7 @@
+@@ -294,6 +299,10 @@
              verbose_gc: false,
              static_typechecking: false,
              max_callstack_size: None,
 +            forbid_recursion: false,
++            // BLAZE PATCH 0034: Bazel's default (BuildLanguageOptions.java:801
++            // --internal_starlark_utf_8_byte_strings, default true).
++            utf8_byte_strings: true, // BLAZE PATCH 0034
              max_heap_size: None,
              max_tick_count: None,
              frame_stack: Vec::with_capacity(DEFAULT_STACK_SIZE),
-@@ -955,6 +959,55 @@
+@@ -955,6 +964,69 @@
          }
      }
  
@@ -1013,6 +1018,20 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    pub fn set_forbid_recursion(&mut self, forbid: bool) {
 +        self.forbid_recursion = forbid;
 +    }
++
++    /// BLAZE PATCH 0034: the semantics flag `-internal_bazel_only_utf_8_byte_strings`
++    /// (net/starlark/java/eval/StarlarkSemantics.java:267 INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS;
++    /// Bazel sets it from `--internal_starlark_utf_8_byte_strings`, default true, so the default
++    /// here is true). Java reads it in `StringModule.matcher` (the whitespace stripped by
++    /// `strip`/`lstrip`/`rstrip`) and `Json.decode` (how `\uXXXX` escapes are appended).
++    pub fn set_utf8_byte_strings(&mut self, utf8_byte_strings: bool) { // BLAZE PATCH 0034
++        self.utf8_byte_strings = utf8_byte_strings; // BLAZE PATCH 0034
++    } // BLAZE PATCH 0034
++
++    /// BLAZE PATCH 0034: see [`Evaluator::set_utf8_byte_strings`].
++    pub fn utf8_byte_strings(&self) -> bool { // BLAZE PATCH 0034
++        self.utf8_byte_strings // BLAZE PATCH 0034
++    } // BLAZE PATCH 0034
 +
      /// Sets max call stack size.
      /// Stack allocation will happen on entry point of evaluation if not allocated yet.
@@ -3883,7 +3902,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      heap: Heap<'v>,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/methods.rs starlark/src/values/types/string/methods.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/methods.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/string/methods.rs	2026-11-18 16:14:11.696618192 -0700
++++ starlark/src/values/types/string/methods.rs	2026-11-18 21:32:30.947042751 -0700
 @@ -39,12 +39,12 @@
  use crate::values::string::dot_format;
  use crate::values::tuple::UnpackTuple;
@@ -3906,7 +3925,149 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  fn rsplitn_whitespace(s: &str, maxsplit: usize) -> Vec<String> {
      let mut v = Vec::new();
      let mut cur = String::new();
-@@ -121,11 +122,16 @@
+@@ -104,6 +105,141 @@
+     Tuple(UnpackTuple<&'v str>),
+ }
+ 
++// BLAZE PATCH 0033: java.lang.Character, as net/starlark/java/eval/StringModule.java applies it to
++// each UTF-16 char of a string. Blaze's strings are "internal" (every char <= U+00FF, one per
++// byte), for which these are exact (JDK CharacterDataLatin1; checked against the JDK of Bazel
++// 9.3.2's install base). Chars above U+00FF never occur in Blaze; for them the nearest Rust
++// property stands in (U+0100..=U+FFFF), and a char above U+FFFF is a surrogate pair in Java,
++// which is neither a letter nor cased and maps to itself.
++
++/// BLAZE PATCH 0033: Java `Character.isLetter(char)`.
++fn java_is_letter(c: char) -> bool { // BLAZE PATCH 0033
++    match c as u32 { // BLAZE PATCH 0033
++        0..=0xff => matches!( // BLAZE PATCH 0033
++            c as u32, // BLAZE PATCH 0033
++            0x41..=0x5a | 0x61..=0x7a | 0xaa | 0xb5 | 0xba | 0xc0..=0xd6 | 0xd8..=0xf6 | 0xf8..=0xff // BLAZE PATCH 0033
++        ), // BLAZE PATCH 0033
++        0x100..=0xffff => c.is_alphabetic(), // BLAZE PATCH 0033
++        _ => false, // BLAZE PATCH 0033
++    } // BLAZE PATCH 0033
++} // BLAZE PATCH 0033
++
++/// BLAZE PATCH 0033: Java `Character.isUpperCase(char)`.
++fn java_is_upper_case(c: char) -> bool { // BLAZE PATCH 0033
++    match c as u32 { // BLAZE PATCH 0033
++        0..=0xff => matches!(c as u32, 0x41..=0x5a | 0xc0..=0xd6 | 0xd8..=0xde), // BLAZE PATCH 0033
++        0x100..=0xffff => c.is_uppercase(), // BLAZE PATCH 0033
++        _ => false, // BLAZE PATCH 0033
++    } // BLAZE PATCH 0033
++} // BLAZE PATCH 0033
++
++/// BLAZE PATCH 0033: Java `Character.isLowerCase(char)` (`ª`, `µ`, `º` and `ß` are lower case).
++fn java_is_lower_case(c: char) -> bool { // BLAZE PATCH 0033
++    match c as u32 { // BLAZE PATCH 0033
++        0..=0xff => matches!( // BLAZE PATCH 0033
++            c as u32, // BLAZE PATCH 0033
++            0x61..=0x7a | 0xaa | 0xb5 | 0xba | 0xdf..=0xf6 | 0xf8..=0xff // BLAZE PATCH 0033
++        ), // BLAZE PATCH 0033
++        0x100..=0xffff => c.is_lowercase(), // BLAZE PATCH 0033
++        _ => false, // BLAZE PATCH 0033
++    } // BLAZE PATCH 0033
++} // BLAZE PATCH 0033
++
++/// BLAZE PATCH 0033: Java `Character.toUpperCase(char)`: one char, so `ß` stays `ß`; `µ` becomes
++/// U+039C and `ÿ` U+0178, leaving Latin-1 exactly as in Java.
++fn java_to_upper_case(c: char) -> char { // BLAZE PATCH 0033
++    match c as u32 { // BLAZE PATCH 0033
++        0x61..=0x7a | 0xe0..=0xf6 | 0xf8..=0xfe => char::from_u32(c as u32 - 0x20).unwrap(), // BLAZE PATCH 0033
++        0xb5 => '\u{39c}', // BLAZE PATCH 0033
++        0xff => '\u{178}', // BLAZE PATCH 0033
++        0..=0xff => c, // BLAZE PATCH 0033
++        0x100..=0xffff => single_char(c.to_uppercase()).unwrap_or(c), // BLAZE PATCH 0033
++        _ => c, // BLAZE PATCH 0033
++    } // BLAZE PATCH 0033
++} // BLAZE PATCH 0033
++
++/// BLAZE PATCH 0033: Java `Character.toLowerCase(char)`.
++fn java_to_lower_case(c: char) -> char { // BLAZE PATCH 0033
++    match c as u32 { // BLAZE PATCH 0033
++        0x41..=0x5a | 0xc0..=0xd6 | 0xd8..=0xde => char::from_u32(c as u32 + 0x20).unwrap(), // BLAZE PATCH 0033
++        0..=0xff => c, // BLAZE PATCH 0033
++        0x100..=0xffff => single_char(c.to_lowercase()).unwrap_or(c), // BLAZE PATCH 0033
++        _ => c, // BLAZE PATCH 0033
++    } // BLAZE PATCH 0033
++} // BLAZE PATCH 0033
++
++/// BLAZE PATCH 0033: the mapping when it is a single char (Java's simple case mapping).
++fn single_char(mut it: impl Iterator<Item = char>) -> Option<char> { // BLAZE PATCH 0033
++    let c = it.next()?; // BLAZE PATCH 0033
++    if it.next().is_some() { None } else { Some(c) } // BLAZE PATCH 0033
++} // BLAZE PATCH 0033
++
++/// BLAZE PATCH 0033: Guava `CharMatcher.javaDigit()` (`Character.isDigit`; only `0`-`9` in Latin-1).
++fn java_is_digit(c: char) -> bool { // BLAZE PATCH 0033
++    match c as u32 { // BLAZE PATCH 0033
++        0..=0xff => c.is_ascii_digit(), // BLAZE PATCH 0033
++        0x100..=0xffff => c.is_numeric(), // BLAZE PATCH 0033
++        _ => false, // BLAZE PATCH 0033
++    } // BLAZE PATCH 0033
++} // BLAZE PATCH 0033
++
++/// BLAZE PATCH 0033: Guava `CharMatcher.whitespace()` (StringModule.java:878 `SPACE`): Unicode
++/// White_Space; in Latin-1 TAB..CR, space, U+0085 and U+00A0, not U+001C..U+001F.
++fn guava_is_whitespace(c: char) -> bool { // BLAZE PATCH 0033
++    matches!( // BLAZE PATCH 0033
++        c as u32, // BLAZE PATCH 0033
++        0x09..=0x0d // BLAZE PATCH 0033
++            | 0x20 // BLAZE PATCH 0033
++            | 0x85 // BLAZE PATCH 0033
++            | 0xa0 // BLAZE PATCH 0033
++            | 0x1680 // BLAZE PATCH 0033
++            | 0x2000..=0x200a // BLAZE PATCH 0033
++            | 0x2028 // BLAZE PATCH 0033
++            | 0x2029 // BLAZE PATCH 0033
++            | 0x202f // BLAZE PATCH 0033
++            | 0x205f // BLAZE PATCH 0033
++            | 0x3000 // BLAZE PATCH 0033
++    ) // BLAZE PATCH 0033
++} // BLAZE PATCH 0033
++
++/// BLAZE PATCH 0033: StringModule.java:854 `matches(str, matcher, requiresAtLeastOneCasedLetter)`
++/// (`CASED` is `[a-zA-Z]`).
++fn java_matches(s: &str, matcher: impl Fn(char) -> bool, requires_cased: bool) -> bool { // BLAZE PATCH 0033
++    if s.is_empty() { // BLAZE PATCH 0033
++        return false; // BLAZE PATCH 0033
++    } // BLAZE PATCH 0033
++    let mut cased = false; // BLAZE PATCH 0033
++    for c in s.chars() { // BLAZE PATCH 0033
++        if !matcher(c) { // BLAZE PATCH 0033
++            return false; // BLAZE PATCH 0033
++        } // BLAZE PATCH 0033
++        cased |= c.is_ascii_alphabetic(); // BLAZE PATCH 0033
++    } // BLAZE PATCH 0033
++    !requires_cased || cased // BLAZE PATCH 0033
++} // BLAZE PATCH 0033
++
++/// BLAZE PATCH 0034: StringModule.java:196 `LATIN1_WHITESPACE` (the flag off) and :206
++/// `ASCII_WHITESPACE` (the flag on): what `strip`/`lstrip`/`rstrip` remove without `chars`.
++fn java_strip_whitespace(c: char, utf8_byte_strings: bool) -> bool { // BLAZE PATCH 0034
++    match c as u32 { // BLAZE PATCH 0034
++        0x09..=0x0d | 0x1c..=0x1f | 0x20 => true, // BLAZE PATCH 0034
++        0x85 | 0xa0 => !utf8_byte_strings, // BLAZE PATCH 0034
++        _ => false, // BLAZE PATCH 0034
++    } // BLAZE PATCH 0034
++} // BLAZE PATCH 0034
++
++/// BLAZE PATCH 0034: StringModule.java:326 `matcher(charsOrNone, semantics)`.
++fn java_strip_matcher<'a>( // BLAZE PATCH 0034
++    chars: Option<&'a str>, // BLAZE PATCH 0034
++    eval: &Evaluator, // BLAZE PATCH 0034
++) -> impl Fn(char) -> bool + 'a { // BLAZE PATCH 0034
++    let utf8_byte_strings = eval.utf8_byte_strings(); // BLAZE PATCH 0034
++    move |c| match chars { // BLAZE PATCH 0034
++        Some(s) => s.contains(c), // BLAZE PATCH 0034
++        None => java_strip_whitespace(c, utf8_byte_strings), // BLAZE PATCH 0034
++    } // BLAZE PATCH 0034
++} // BLAZE PATCH 0034
++
+ #[starlark_module]
+ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
+     /// [string.elems](
+@@ -121,11 +257,16 @@
      /// list("Hello, 世界".elems()) == ["H", "e", "l", "l", "o", ",", " ", "世", "界"]
      /// # "#);
      /// ```
@@ -3928,7 +4089,250 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.capitalize](
-@@ -772,15 +778,13 @@
+@@ -140,16 +281,16 @@
+     /// "".capitalize() == ""
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0033: Java StringModule.java:526 capitalize:
++    // `Character.toUpperCase(self.charAt(0)) + Ascii.toLowerCase(self.substring(1))`.
+     #[starlark(speculative_exec_safe)]
+     fn capitalize(this: &str) -> anyhow::Result<String> {
+-        let mut result = String::with_capacity(this.len());
+-        for (i, c) in this.chars().enumerate() {
+-            if i == 0 {
+-                result.extend(c.to_uppercase())
+-            } else {
+-                result.extend(c.to_lowercase())
+-            }
+-        }
++        let mut chars = this.chars(); // BLAZE PATCH 0033
++        let mut result = String::with_capacity(this.len()); // BLAZE PATCH 0033
++        if let Some(first) = chars.next() { // BLAZE PATCH 0033
++            result.push(java_to_upper_case(first)); // BLAZE PATCH 0033
++            result.push_str(&chars.as_str().to_ascii_lowercase()); // BLAZE PATCH 0033
++        } // BLAZE PATCH 0033
+         Ok(result)
+     }
+ 
+@@ -405,17 +546,10 @@
+     /// "Catch-22".isalnum() == False
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0033: Java StringModule.java:767 isAlnum: `[a-zA-Z]` or javaDigit.
+     #[starlark(speculative_exec_safe)]
+     fn isalnum(this: &str) -> anyhow::Result<bool> {
+-        if this.is_empty() {
+-            return Ok(false);
+-        }
+-        for c in this.chars() {
+-            if !c.is_alphanumeric() {
+-                return Ok(false);
+-            }
+-        }
+-        Ok(true)
++        Ok(java_matches(this, |c| c.is_ascii_alphabetic() || java_is_digit(c), false)) // BLAZE PATCH 0033
+     }
+ 
+     /// [string.isalpha](
+@@ -432,17 +566,10 @@
+     /// "".isalpha() == False
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0033: Java StringModule.java:757 isAlpha: `[a-zA-Z]`.
+     #[starlark(speculative_exec_safe)]
+     fn isalpha(this: &str) -> anyhow::Result<bool> {
+-        if this.is_empty() {
+-            return Ok(false);
+-        }
+-        for c in this.chars() {
+-            if !c.is_alphabetic() {
+-                return Ok(false);
+-            }
+-        }
+-        Ok(true)
++        Ok(java_matches(this, |c| c.is_ascii_alphabetic(), false)) // BLAZE PATCH 0033
+     }
+ 
+     /// [string.isdigit](
+@@ -459,17 +586,10 @@
+     /// "".isdigit() == False
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0033: Java StringModule.java:777 isDigit: javaDigit.
+     #[starlark(speculative_exec_safe)]
+     fn isdigit(this: &str) -> anyhow::Result<bool> {
+-        if this.is_empty() {
+-            return Ok(false);
+-        }
+-        for c in this.chars() {
+-            if !c.is_numeric() {
+-                return Ok(false);
+-            }
+-        }
+-        Ok(true)
++        Ok(java_matches(this, java_is_digit, false)) // BLAZE PATCH 0033
+     }
+ 
+     /// [string.islower](
+@@ -486,17 +606,10 @@
+     /// "123".islower() == False
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0033: Java StringModule.java:797 isLower: no `[A-Z]`, at least one `[a-zA-Z]`.
+     #[starlark(speculative_exec_safe)]
+     fn islower(this: &str) -> anyhow::Result<bool> {
+-        let mut result = false;
+-        for c in this.chars() {
+-            if c.is_uppercase() {
+-                return Ok(false);
+-            } else if c.is_lowercase() {
+-                result = true;
+-            }
+-        }
+-        Ok(result)
++        Ok(java_matches(this, |c| !c.is_ascii_uppercase(), true)) // BLAZE PATCH 0033
+     }
+ 
+     /// [string.isspace](
+@@ -513,17 +626,10 @@
+     /// "".isspace() == False
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0033: Java StringModule.java:787 isSpace: Guava `CharMatcher.whitespace()`.
+     #[starlark(speculative_exec_safe)]
+     fn isspace(this: &str) -> anyhow::Result<bool> {
+-        if this.is_empty() {
+-            return Ok(false);
+-        }
+-        for c in this.chars() {
+-            if !c.is_whitespace() {
+-                return Ok(false);
+-            }
+-        }
+-        Ok(true)
++        Ok(java_matches(this, guava_is_whitespace, false)) // BLAZE PATCH 0033
+     }
+ 
+     /// [string.istitle](
+@@ -542,29 +648,37 @@
+     /// "123".istitle() == False
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0033: Java StringModule.java:821 isTitle, right to left with the `[a-z]` /
++    // `[A-Z]` matchers.
+     #[starlark(speculative_exec_safe)]
+     fn istitle(this: &str) -> anyhow::Result<bool> {
+-        let mut last_space = true;
+-        let mut result = false;
+-
+-        for c in this.chars() {
+-            if !c.is_alphabetic() {
+-                last_space = true;
+-            } else {
+-                if last_space {
+-                    if c.is_lowercase() {
+-                        return Ok(false);
+-                    }
+-                } else if c.is_uppercase() {
+-                    return Ok(false);
+-                }
+-                if c.is_alphabetic() {
+-                    result = true;
+-                }
+-                last_space = false;
+-            }
+-        }
+-        Ok(result)
++        if this.is_empty() { // BLAZE PATCH 0033
++            return Ok(false); // BLAZE PATCH 0033
++        } // BLAZE PATCH 0033
++        // 0: any char; 1: CASED (`[a-zA-Z]`); 2: not CASED.
++        let mut matcher = 0; // BLAZE PATCH 0033
++        let mut left_most_cased = ' '; // BLAZE PATCH 0033
++        for c in this.chars().rev() { // BLAZE PATCH 0033
++            let ok = match matcher { // BLAZE PATCH 0033
++                1 => c.is_ascii_alphabetic(), // BLAZE PATCH 0033
++                2 => !c.is_ascii_alphabetic(), // BLAZE PATCH 0033
++                _ => true, // BLAZE PATCH 0033
++            }; // BLAZE PATCH 0033
++            if !ok { // BLAZE PATCH 0033
++                return Ok(false); // BLAZE PATCH 0033
++            } // BLAZE PATCH 0033
++            matcher = if c.is_ascii_lowercase() { // BLAZE PATCH 0033
++                1 // BLAZE PATCH 0033
++            } else if c.is_ascii_uppercase() { // BLAZE PATCH 0033
++                2 // BLAZE PATCH 0033
++            } else { // BLAZE PATCH 0033
++                0 // BLAZE PATCH 0033
++            }; // BLAZE PATCH 0033
++            if c.is_ascii_alphabetic() { // BLAZE PATCH 0033
++                left_most_cased = c; // BLAZE PATCH 0033
++            } // BLAZE PATCH 0033
++        } // BLAZE PATCH 0033
++        Ok(left_most_cased.is_ascii_uppercase()) // BLAZE PATCH 0033
+     }
+ 
+     /// [string.isupper](
+@@ -581,17 +695,10 @@
+     /// "123".isupper() == False
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0033: Java StringModule.java:808 isUpper: no `[a-z]`, at least one `[a-zA-Z]`.
+     #[starlark(speculative_exec_safe)]
+     fn isupper(this: &str) -> anyhow::Result<bool> {
+-        let mut result = false;
+-        for c in this.chars() {
+-            if c.is_lowercase() {
+-                return Ok(false);
+-            } else if c.is_uppercase() {
+-                result = true;
+-            }
+-        }
+-        Ok(result)
++        Ok(java_matches(this, |c| !c.is_ascii_lowercase(), true)) // BLAZE PATCH 0033
+     }
+ 
+     /// [string.lower](
+@@ -606,9 +713,10 @@
+     /// "Hello, World!".lower() == "hello, world!"
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0033: Java StringModule.java:174 lower: Guava `Ascii.toLowerCase`.
+     #[starlark(speculative_exec_safe)]
+     fn lower(this: &str) -> anyhow::Result<String> {
+-        Ok(this.to_lowercase())
++        Ok(this.to_ascii_lowercase()) // BLAZE PATCH 0033
+     }
+ 
+     /// [string.join](
+@@ -684,20 +792,19 @@
+     /// "x!hello  ".lstrip("!x ") == "hello  "
+     /// # "#);
+     /// ```
+-    #[starlark(speculative_exec_safe)]
++    // BLAZE PATCH 0034: Java StringModule.java:256 lstrip: without `chars`, the whitespace of
++    // `StringModule.matcher` (ASCII when the byte-strings flag is on, Latin-1 when off). Not
++    // speculative: the result depends on the evaluator's flag.
+     fn lstrip<'v>(
+         this: StringValue<'v>,
+         #[starlark(require = pos)] chars: Option<&str>,
+-        heap: Heap<'v>,
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0034
+     ) -> anyhow::Result<StringValue<'v>> {
+-        let res = match chars {
+-            None => this.trim_start(),
+-            Some(s) => this.trim_start_matches(|c| s.contains(c)),
+-        };
++        let res = this.trim_start_matches(java_strip_matcher(chars, eval)); // BLAZE PATCH 0034
+         if res.len() == this.len() {
+             Ok(this)
+         } else {
+-            Ok(heap.alloc_str(res))
++            Ok(eval.heap().alloc_str(res)) // BLAZE PATCH 0034
+         }
+     }
+ 
+@@ -772,15 +879,13 @@
          #[starlark(require = pos)] count: Option<i32>,
          heap: Heap<'v>,
      ) -> anyhow::Result<StringValue<'v>> {
@@ -3947,7 +4351,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                  // Optimise `replace` using the Rust standard library definition,
                  // but avoiding redundant allocation in the last step
                  let x = this.as_str();
-@@ -925,41 +929,29 @@
+@@ -925,41 +1030,29 @@
      /// "one two  three".rsplit(None, 1) == ["one two", "three"]
      /// # "#);
      /// ```
@@ -4007,7 +4411,34 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.rstrip](
-@@ -1024,54 +1016,48 @@
+@@ -975,20 +1068,19 @@
+     /// "  hello!x".rstrip(" x!") == "  hello"
+     /// # "#);
+     /// ```
+-    #[starlark(speculative_exec_safe)]
++    // BLAZE PATCH 0034: Java StringModule.java:286 rstrip: without `chars`, the whitespace of
++    // `StringModule.matcher` (ASCII when the byte-strings flag is on, Latin-1 when off). Not
++    // speculative: the result depends on the evaluator's flag.
+     fn rstrip<'v>(
+         this: StringValue<'v>,
+         #[starlark(require = pos)] chars: Option<&str>,
+-        heap: Heap<'v>,
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0034
+     ) -> anyhow::Result<StringValue<'v>> {
+-        let res = match chars {
+-            None => this.trim_end(),
+-            Some(s) => this.trim_end_matches(|c| s.contains(c)),
+-        };
++        let res = this.trim_end_matches(java_strip_matcher(chars, eval)); // BLAZE PATCH 0034
+         if res.len() == this.len() {
+             Ok(this)
+         } else {
+-            Ok(heap.alloc_str(res))
++            Ok(eval.heap().alloc_str(res)) // BLAZE PATCH 0034
+         }
+     }
+ 
+@@ -1024,54 +1116,48 @@
      /// "banana".split("n", 1) == ["ba", "ana"]
      /// # "#);
      /// ```
@@ -4097,19 +4528,155 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  
      /// [string.splitlines](
      /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·splitlines
+@@ -1175,20 +1261,19 @@
+     /// "xxhello!!".strip("x!") == "hello"
+     /// # "#);
+     /// ```
+-    #[starlark(speculative_exec_safe)]
++    // BLAZE PATCH 0034: Java StringModule.java:317 strip: without `chars`, the whitespace of
++    // `StringModule.matcher` (ASCII when the byte-strings flag is on, Latin-1 when off). Not
++    // speculative: the result depends on the evaluator's flag.
+     fn strip<'v>(
+         this: StringValue<'v>,
+         #[starlark(require = pos)] chars: Option<&str>,
+-        heap: Heap<'v>,
++        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0034
+     ) -> anyhow::Result<StringValue<'v>> {
+-        let res = match chars {
+-            None => this.trim(),
+-            Some(s) => this.trim_matches(|c| s.contains(c)),
+-        };
++        let res = this.trim_matches(java_strip_matcher(chars, eval)); // BLAZE PATCH 0034
+         if res.len() == this.len() {
+             Ok(this)
+         } else {
+-            Ok(heap.alloc_str(res))
++            Ok(eval.heap().alloc_str(res)) // BLAZE PATCH 0034
+         }
+     }
+ 
+@@ -1207,22 +1292,23 @@
+     /// "hElLo, WoRlD!".title() == "Hello, World!"
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0033: Java StringModule.java:542 title, with `Character` per char.
+     #[starlark(speculative_exec_safe)]
+     fn title(this: &str) -> anyhow::Result<String> {
+-        let mut last_space = true;
++        let mut previous_was_letter = false; // BLAZE PATCH 0033
+         let mut result = String::with_capacity(this.len());
+         for c in this.chars() {
+-            if !c.is_alphabetic() {
+-                last_space = true;
+-                result.extend(c.to_lowercase());
+-            } else {
+-                if last_space {
+-                    result.extend(c.to_uppercase())
+-                } else {
+-                    result.extend(c.to_lowercase())
+-                }
+-                last_space = false;
+-            }
++            let current_is_letter = java_is_letter(c); // BLAZE PATCH 0033
++            let mut d = c; // BLAZE PATCH 0033
++            if current_is_letter { // BLAZE PATCH 0033
++                if previous_was_letter && java_is_upper_case(c) { // BLAZE PATCH 0033
++                    d = java_to_lower_case(c); // BLAZE PATCH 0033
++                } else if !previous_was_letter && java_is_lower_case(c) { // BLAZE PATCH 0033
++                    d = java_to_upper_case(c); // BLAZE PATCH 0033
++                } // BLAZE PATCH 0033
++            } // BLAZE PATCH 0033
++            result.push(d); // BLAZE PATCH 0033
++            previous_was_letter = current_is_letter; // BLAZE PATCH 0033
+         }
+         Ok(result)
+     }
+@@ -1239,9 +1325,10 @@
+     /// "Hello, World!".upper() == "HELLO, WORLD!"
+     /// # "#);
+     /// ```
++    // BLAZE PATCH 0033: Java StringModule.java:182 upper: Guava `Ascii.toUpperCase`.
+     #[starlark(speculative_exec_safe)]
+     fn upper(this: &str) -> anyhow::Result<String> {
+-        Ok(this.to_uppercase())
++        Ok(this.to_ascii_uppercase()) // BLAZE PATCH 0033
+     }
+ 
+     /// [string.removeprefix](
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/repr.rs starlark/src/values/types/string/repr.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/repr.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/string/repr.rs	2026-11-18 21:32:43.475241984 -0700
+@@ -67,27 +67,21 @@
+         '\\' => buffer.push_str("\\\\"),
+         '"' => buffer.push_str("\\\""),
+         // `write!` is slow, but these branches are rare.
+-        c if (c as u32) < 0x100 => write!(buffer, "\\x{:02x}", c as u32).unwrap(),
+-        c if (c as u32) < 0x10000 => write!(buffer, "\\u{:04x}", c as u32).unwrap(),
+-        c => write!(buffer, "\\U{:08x}", c as u32).unwrap(),
++        // BLAZE PATCH 0035: Java `String.format("\\x%02x", c)`; `need_escape` admits nothing else.
++        c => write!(buffer, "\\x{:02x}", c as u32).unwrap(), // BLAZE PATCH 0035
+     }
+ }
+ 
++// BLAZE PATCH 0035: Java net/starlark/java/eval/Printer.java:239 escapeCharacter: only `"`, `\`
++// and chars below 0x20 are escaped; DEL, U+0080..U+00FF (the bytes of Blaze's internal strings)
++// and everything above are written as they are.
+ #[inline(always)]
+ fn need_escape(c: char) -> bool {
+     match c {
+         c if (c as u32) < 0x20 => true,
+         '"' => true,
+         '\\' => true,
+-        // Note 0x7f needs to be escaped.
+-        c if (c as u32) < 0x7f => false,
+-        // Now all 8bit characters are covered:
+-        c if (c as u32) <= 0xff => true,
+-        // Rust does not expose `is_printable`.
+-        // PEP-3138 goes long way defining precisely the Unicode groups which need escaping.
+-        // We could pick more character groups here,
+-        // but `is_alphanumeric` is practically enough for now.
+-        c => !c.is_alphanumeric(),
++        _ => false, // BLAZE PATCH 0035
+     }
+ }
+ 
+@@ -262,17 +256,18 @@
+             assert_eq!(expected, &repr);
+         }
+         test(r#""\x12""#, "\x12");
+-        test(r#""\x7f""#, "\x7f");
++        test("\"\x7f\"", "\x7f"); // BLAZE PATCH 0035
+         test(r#""\n""#, "\n");
+         // Do not escape single quotes because repr in Starlark uses double quotes.
+         test(r#""'""#, "'");
+         test(r#""\"""#, "\"");
+         test(r#""\\""#, "\\");
+         // Non-printable whitespace.
+-        test(r#""\u200b""#, "\u{200b}");
++        test("\"\u{200b}\"", "\u{200b}"); // BLAZE PATCH 0035
++        test("\"\u{80}\u{e9}\u{ff}\"", "\u{80}\u{e9}\u{ff}"); // BLAZE PATCH 0035
+         test(r#""Hello, 世界""#, "Hello, 世界");
+         // Largest unicode number.
+-        test(r#""\U0010ffff""#, "\u{10ffff}");
++        test("\"\u{10ffff}\"", "\u{10ffff}"); // BLAZE PATCH 0035
+     }
+ 
+     #[test]
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/str_type.rs starlark/src/values/types/string/str_type.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/str_type.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/string/str_type.rs	2026-11-17 22:49:07.484514763 -0700
-@@ -361,6 +361,15 @@
++++ starlark/src/values/types/string/str_type.rs	2026-11-18 21:32:59.512670930 -0700
+@@ -361,6 +361,17 @@
              Ok(None) => return None,
              Err(e) => return Some(Err(e)),
          };
-+        // BLAZE PATCH 0002: EvalUtils.repeatString limit (length counted in UTF-8 bytes, as Bazel
-+        // 9.3.2 stores strings).
-+        if l > 0 && (self.len() as i64) * (l as i64) > i32::MAX as i64 {
++        // BLAZE PATCH 0002: EvalUtils.repeatString limit.
++        // BLAZE PATCH 0036: Java's `s.length()` counts chars (EvalUtils.java:433); Blaze's strings
++        // are internal (one char per byte), so this is the byte length Bazel sees.
++        let chars = fast_string::len(self).0; // BLAZE PATCH 0036
++        if l > 0 && (chars as i64) * (l as i64) > i32::MAX as i64 { // BLAZE PATCH 0036
 +            return Some(Err(crate::Error::new_other(anyhow::anyhow!(
 +                "excessive repeat ({} * {} characters)",
-+                self.len(),
++                chars, // BLAZE PATCH 0036
 +                l
 +            ))));
 +        }
@@ -4135,10 +4702,148 @@ Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2: .cargo_vcs_info.json
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer.rs starlark_syntax/src/lexer.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark_syntax/src/lexer.rs	2026-11-17 22:47:27.756996601 -0700
-@@ -419,9 +419,10 @@
++++ starlark_syntax/src/lexer.rs	2026-11-18 21:37:50.734599343 -0700
+@@ -33,6 +33,37 @@
+ use crate::dialect::Dialect;
+ use crate::eval_exception::EvalException;
+ 
++/// BLAZE PATCH 0032: whether the single-quoted raw literal whose contents start `rest` contains a
++/// backslash followed by CRLF (Java then lexes it with `escapedStringLiteral`, which turns every
++/// backslash-CR into backslash-LF; Lexer.java:463-474).
++fn raw_literal_has_backslash_crlf(rest: &str, quote: char) -> bool { // BLAZE PATCH 0032
++    let mut it = rest.chars(); // BLAZE PATCH 0032
++    while let Some(c) = it.next() { // BLAZE PATCH 0032
++        match c { // BLAZE PATCH 0032
++            '\\' => { // BLAZE PATCH 0032
++                if it.as_str().starts_with("\r\n") { // BLAZE PATCH 0032
++                    return true; // BLAZE PATCH 0032
++                } // BLAZE PATCH 0032
++                it.next(); // BLAZE PATCH 0032
++            } // BLAZE PATCH 0032
++            '\n' => return false, // BLAZE PATCH 0032
++            c if c == quote => return false, // BLAZE PATCH 0032
++            _ => {} // BLAZE PATCH 0032
++        } // BLAZE PATCH 0032
++    } // BLAZE PATCH 0032
++    false // BLAZE PATCH 0032
++} // BLAZE PATCH 0032
++
++/// BLAZE PATCH 0032: how an escape sequence failed (offsets are into the lexer's remainder).
++enum BazelEscapeError { // BLAZE PATCH 0032
++    /// The input ended after the backslash.
++    Eof, // BLAZE PATCH 0032
++    /// An unknown escape character, and its offset.
++    Invalid(char, usize), // BLAZE PATCH 0032
++    /// An octal escape above `\377`, and the offset of its last digit.
++    OctalOutOfRange(usize), // BLAZE PATCH 0032
++} // BLAZE PATCH 0032
++
+ #[derive(Error, Debug)]
+ pub enum LexemeError {
+     #[error("Parse error: incorrect indentation")]
+@@ -41,12 +72,17 @@
+     InvalidInput(String),
+     #[error("Parse error: tabs are not allowed")]
+     InvalidTab,
+-    #[error("Parse error: unfinished string literal")]
++    #[error("unclosed string literal")] // BLAZE PATCH 0032: Java's text (Lexer.java:301)
+     UnfinishedStringLiteral,
+     #[error("Parse error: invalid string escape sequence `{0}`")]
+     InvalidEscapeSequence(String),
+     #[error("Parse error: missing string escape sequence, only saw `\\`")]
+     EmptyEscapeSequence,
++    // BLAZE PATCH 0032: Java's texts (net/starlark/java/syntax/Lexer.java:402, :390).
++    #[error("invalid escape sequence: \\{0}. Use '\\\\' to insert '\\'.")] // BLAZE PATCH 0032
++    BlazeInvalidEscape(char), // BLAZE PATCH 0032
++    #[error("octal escape sequence out of range (maximum is \\377)")] // BLAZE PATCH 0032
++    BlazeOctalOutOfRange, // BLAZE PATCH 0032
+     #[error("Parse error: cannot use reserved keyword `{0}`")]
+     ReservedKeyword(String),
+     #[error("Parse error: integer cannot have leading 0, got `{0}`")]
+@@ -332,6 +368,52 @@
+         Ok(())
+     }
+ 
++    /// BLAZE PATCH 0032: an escape sequence of a (non-raw) string literal as Bazel's lexer reads
++    /// it (net/starlark/java/syntax/Lexer.java:322-404 escapedStringLiteral); `it` is just after
++    /// the backslash. Octal escapes give one char 0..=0xFF; `\x`, `\u`, `\U`, `\N` and every
++    /// other unknown escape are errors; a backslash before CR, LF or CRLF continues the line.
++    fn escape_bazel(it: &mut CursorChars, res: &mut String) -> Result<(), BazelEscapeError> { // BLAZE PATCH 0032
++        let start = it.pos(); // BLAZE PATCH 0032
++        let c = it.next().ok_or(BazelEscapeError::Eof)?; // BLAZE PATCH 0032
++        match c { // BLAZE PATCH 0032
++            '\r' => { // BLAZE PATCH 0032
++                if it.peek() == Some('\n') { // BLAZE PATCH 0032
++                    it.next(); // BLAZE PATCH 0032
++                } // BLAZE PATCH 0032
++            } // BLAZE PATCH 0032
++            '\n' => {} // BLAZE PATCH 0032
++            'a' => res.push('\u{7}'), // BLAZE PATCH 0032
++            'b' => res.push('\u{8}'), // BLAZE PATCH 0032
++            'f' => res.push('\u{c}'), // BLAZE PATCH 0032
++            'n' => res.push('\n'), // BLAZE PATCH 0032
++            'r' => res.push('\r'), // BLAZE PATCH 0032
++            't' => res.push('\t'), // BLAZE PATCH 0032
++            'v' => res.push('\u{b}'), // BLAZE PATCH 0032
++            '\\' | '\'' | '"' => res.push(c), // BLAZE PATCH 0032
++            '0'..='7' => { // BLAZE PATCH 0032
++                let mut octal = c as u32 - '0' as u32; // BLAZE PATCH 0032
++                for _ in 0..2 { // BLAZE PATCH 0032
++                    match it.peek() { // BLAZE PATCH 0032
++                        Some(d @ '0'..='7') => { // BLAZE PATCH 0032
++                            it.next(); // BLAZE PATCH 0032
++                            octal = (octal << 3) | (d as u32 - '0' as u32); // BLAZE PATCH 0032
++                        } // BLAZE PATCH 0032
++                        _ => break, // BLAZE PATCH 0032
++                    } // BLAZE PATCH 0032
++                } // BLAZE PATCH 0032
++                if octal > 0xff { // BLAZE PATCH 0032
++                    // Java reports it at the last digit (`pos - 1`).
++                    return Err(BazelEscapeError::OctalOutOfRange(it.pos() - 1)); // BLAZE PATCH 0032
++                } // BLAZE PATCH 0032
++                res.push(char::from_u32(octal).unwrap()); // BLAZE PATCH 0032
++            } // BLAZE PATCH 0032
++            // Java: case 'N', 'u', 'U', default: "invalid escape sequence", at the char after
++            // the backslash.
++            c => return Err(BazelEscapeError::Invalid(c, start)), // BLAZE PATCH 0032
++        } // BLAZE PATCH 0032
++        Ok(()) // BLAZE PATCH 0032
++    } // BLAZE PATCH 0032
++
+     /// Parse a String. Return the String, and the offset where it starts.
+     // String parsing is a hot-spot, so parameterise by a `stop` function which gets
+     // specialised for each variant
+@@ -412,34 +494,59 @@
+                     string_end -= 1;
+                     break;
+                 }
+-                '\r' => {
+-                    // We just ignore these in all modes
+-                }
++                // BLAZE PATCH 0032: a carriage return is kept, in every kind of string literal
++                // (Java Lexer.escapedStringLiteral appends it; only a backslash before it is a
++                // line continuation).
++                '\r' => res.push('\r'), // BLAZE PATCH 0032
+                 '\\' => {
                      if raw {
                          match it.next() {
++                            // BLAZE PATCH 0032: Java Lexer.java:306-317: a backslash before CRLF,
++                            // CR or LF is kept, followed by a single LF.
++                            // Java's quick scan of a single-quoted raw literal
++                            // (Lexer.java:463-474) keeps a backslash-CR as it is unless the
++                            // literal has a backslash-CRLF somewhere.
++                            Some('\r') => { // BLAZE PATCH 0032
++                                let crlf = it.peek() == Some('\n'); // BLAZE PATCH 0032
++                                if crlf { // BLAZE PATCH 0032
++                                    it.next(); // BLAZE PATCH 0032
++                                } // BLAZE PATCH 0032
++                                let quote = self.lexer.slice().chars().last().unwrap_or('"'); // BLAZE PATCH 0032
++                                let slow = crlf // BLAZE PATCH 0032
++                                    || triple // BLAZE PATCH 0032
++                                    || raw_literal_has_backslash_crlf(self.lexer.remainder(), quote); // BLAZE PATCH 0032
++                                res.push('\\'); // BLAZE PATCH 0032
++                                res.push(if slow { '\n' } else { '\r' }); // BLAZE PATCH 0032
++                            } // BLAZE PATCH 0032
                              Some(c) => {
 -                                if c != '\'' && c != '"' {
 -                                    res.push('\\');
@@ -4150,6 +4855,43 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                                  res.push(c);
                              }
                              _ => break, // Out of chars
+                         }
+                     } else {
+-                        let pos = it.pos();
+-                        if Self::escape(&mut it, &mut res).is_err() {
+-                            let bad = self.lexer.remainder()[pos..it.pos()].to_owned();
+-                            return self.err_span(
+-                                if bad.is_empty() {
+-                                    LexemeError::EmptyEscapeSequence
+-                                } else {
+-                                    LexemeError::InvalidEscapeSequence(bad)
+-                                },
+-                                string_end + pos - 1,
+-                                string_end + it.pos(),
+-                            );
+-                        }
++                        // BLAZE PATCH 0032: Bazel's escapes and error texts and positions.
++                        match Self::escape_bazel(&mut it, &mut res) { // BLAZE PATCH 0032
++                            Ok(()) => {} // BLAZE PATCH 0032
++                            Err(BazelEscapeError::Eof) => break, // BLAZE PATCH 0032
++                            Err(BazelEscapeError::Invalid(c, at)) => { // BLAZE PATCH 0032
++                                return self.err_span( // BLAZE PATCH 0032
++                                    LexemeError::BlazeInvalidEscape(c), // BLAZE PATCH 0032
++                                    string_end + at, // BLAZE PATCH 0032
++                                    string_end + at + c.len_utf8(), // BLAZE PATCH 0032
++                                ); // BLAZE PATCH 0032
++                            } // BLAZE PATCH 0032
++                            Err(BazelEscapeError::OctalOutOfRange(at)) => { // BLAZE PATCH 0032
++                                return self.err_span( // BLAZE PATCH 0032
++                                    LexemeError::BlazeOctalOutOfRange, // BLAZE PATCH 0032
++                                    string_end + at, // BLAZE PATCH 0032
++                                    string_end + at + 1, // BLAZE PATCH 0032
++                                ); // BLAZE PATCH 0032
++                            } // BLAZE PATCH 0032
++                        } // BLAZE PATCH 0032
+                     }
+                 }
+                 c => res.push(c),
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/ast.rs starlark_syntax/src/syntax/ast.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/ast.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark_syntax/src/syntax/ast.rs	2026-11-18 15:53:55.966247222 -0700

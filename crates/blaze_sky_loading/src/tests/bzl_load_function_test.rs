@@ -188,12 +188,12 @@ const BAZEL_TOOLS_REPO: Repo<'static> = Repo {
 fn make_unreadable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(
-        path.get_path_string(),
+        crate::test_util::platform(path),
         std::fs::Permissions::from_mode(0o000),
     )
     .unwrap();
     assert!(
-        std::fs::read(path.get_path_string()).is_err(),
+        std::fs::read(crate::test_util::platform(path)).is_err(),
         "{} is still readable (is the test running as root?)",
         path.get_path_string()
     );
@@ -514,7 +514,6 @@ fn test_scl_does_not_support_other_bazel_symbols_interpreter_text() {
 // Java's `scratch.file` writes ISO-8859-1 (Scratch.DEFAULT_CHARSET), so `'x\377z'` is the bytes
 // `'x`, 0xFF, `z'`.
 #[test]
-#[ignore = "non-UTF-8 Starlark files are not ported (ParserInput.fromLatin1 in starlark_util::create_parser_input is unported!; review S3 item 2, byte-string migration of decisions.md 2026-11-18): Java's scratch file holds the byte 0xFF"]
 fn test_scl_disallows_non_ascii_string_literals() {
     let mut t = PackageLoadingTestCase::new();
     t.set_build_language_options(&["--experimental_enable_scl_dialect=true"]);

@@ -984,14 +984,21 @@ impl StartupOptions {
         let java_log = self.output_base.get_relative("java.log");
         let logging_props = get_simple_log_handler_props(&java_log, &self.java_logging_formatter);
 
-        if !write_file_path(logging_props.as_bytes(), &prop_file, 0o644) {
+        if !write_file_path(
+            &blaze_util::string_encoding::latin1_encode(&logging_props),
+            &prop_file,
+            0o644,
+        ) {
             // perror(...)
             let err = strerror(errno());
-            eprintln!(
+            let mut line = crate::util::strings::console_bytes(&format!(
                 "Couldn't write logging file {}: {}",
                 prop_file.as_printable_path(),
                 err
-            );
+            ))
+            .into_owned();
+            line.push(b'\n');
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), &line);
         } else {
             result.push(format!(
                 "-Djava.util.logging.config.file={}",

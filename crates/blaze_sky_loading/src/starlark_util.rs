@@ -21,10 +21,10 @@ pub struct InvalidUtf8Exception(pub String);
 /// Creates the parser input for `bytes` read from `file`, enforcing UTF-8 per
 /// `--incompatible_enforce_starlark_utf8`.
 ///
-/// PORT: Java parses Latin-1 "internal" strings (UTF-8 bytes in a Latin-1 String,
-/// `ParserInput.fromLatin1`); starlark-rust parses `String`s, which for UTF-8 input is the same
-/// text. Non-UTF-8 input that Java would accept (enforcement OFF or WARNING) is not supported yet
-/// and fails loudly.
+/// The text is Bazel's internal string form (`ParserInput.fromLatin1`: one char per byte), so a
+/// file that is not UTF-8 parses too (with a warning at the default enforcement mode).
+// This method is the only one that is supposed to use the deprecated ParserInput.fromLatin1
+// method.
 // Java: com/google/devtools/build/lib/skyframe/StarlarkUtil.java:43 StarlarkUtil.createParserInput
 pub fn create_parser_input(
     bytes: Vec<u8>,
@@ -32,28 +32,19 @@ pub fn create_parser_input(
     utf8_enforcement_mode: Utf8EnforcementMode,
     reporter: &dyn EventHandler,
 ) -> Result<String, InvalidUtf8Exception> {
-    match String::from_utf8(bytes) {
-        Ok(s) => Ok(s),
-        Err(_) => match utf8_enforcement_mode {
-            Utf8EnforcementMode::Off => {
-                blaze_util::unported!(
-                    "ParserInput.fromLatin1 (non-UTF-8 Starlark file)",
-                    "{}",
-                    file
-                )
-            }
-            Utf8EnforcementMode::Warning => {
+    match utf8_enforcement_mode {
+        Utf8EnforcementMode::Off => {}
+        Utf8EnforcementMode::Warning => {
+            // Guava `Utf8.isWellFormed`: the same notion as Rust's UTF-8 validity.
+            if std::str::from_utf8(&bytes).is_err() {
                 reporter.handle(&Event::warn_at(
                     Some(Location::new(file, 0, 0)),
                     INVALID_UTF_8_MESSAGE,
                 ));
-                blaze_util::unported!(
-                    "ParserInput.fromLatin1 (non-UTF-8 Starlark file)",
-                    "{}",
-                    file
-                )
             }
-            Utf8EnforcementMode::Error => {
+        }
+        Utf8EnforcementMode::Error => {
+            if std::str::from_utf8(&bytes).is_err() {
                 reporter.handle(&Event::error_at(
                     Some(Location::new(file, 0, 0)),
                     format!(
@@ -61,12 +52,26 @@ pub fn create_parser_input(
                         INVALID_UTF_8_MESSAGE, "incompatible_enforce_starlark_utf8"
                     ),
                 ));
-                Err(InvalidUtf8Exception(format!(
+                return Err(InvalidUtf8Exception(format!(
                     "{}: {}",
                     file, INVALID_UTF_8_MESSAGE
-                )))
+                )));
             }
-        },
+        }
+    }
+    match blaze_util::string_encoding::parser_input_from_latin1(&bytes) {
+        Ok(std::borrow::Cow::Borrowed(_)) => {
+            // ASCII: the bytes are the text.
+            Ok(String::from_utf8(bytes).expect("ASCII"))
+        }
+        Ok(std::borrow::Cow::Owned(s)) => Ok(s),
+        // PORT: only while `STRINGS_ARE_INTERNAL` is false (the seam of
+        // blaze_util::string_encoding): a file that is not UTF-8 has no text then.
+        Err(_) => blaze_util::unported!(
+            "ParserInput.fromLatin1 (non-UTF-8 Starlark file)",
+            "{}",
+            file
+        ),
     }
 }
 

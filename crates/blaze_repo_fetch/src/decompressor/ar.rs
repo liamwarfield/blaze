@@ -9,6 +9,7 @@ use blaze_vfs::Path;
 use super::DecompressorDescriptor;
 use super::finish_file;
 use crate::errors::{DecompressorError, IoException, IoExceptionKind};
+use crate::fs_utils;
 
 const BUFFER_SIZE: usize = 32 * 1024;
 const HEADER: &[u8] = b"!<arch>\n";
@@ -43,8 +44,12 @@ pub struct ArArchiveInputStream<R: Read> {
     namebuffer: Option<Vec<u8>>,
 }
 
+/// Commons Compress `ArchiveUtils.toAsciiString`: `new String(bytes, US_ASCII)`, a Unicode
+/// string in which every byte >= 0x80 is U+FFFD.
 fn ascii(b: &[u8]) -> String {
-    b.iter().map(|&c| c as char).collect()
+    b.iter()
+        .map(|&c| if c < 0x80 { c as char } else { '\u{fffd}' })
+        .collect()
 }
 
 fn read_range<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<u8>> {
@@ -53,8 +58,13 @@ fn read_range<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Java `String.trim()`: strips chars `<= ' '`.
+fn java_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| c <= ' ')
+}
+
 fn parse_long(s: &str, what: &str) -> Result<i64, IoException> {
-    s.trim().parse::<i64>().map_err(|_| {
+    java_trim(s).parse::<i64>().map_err(|_| {
         IoException::new(format!(
             "Broken archive, unable to parse {} as a number",
             what
@@ -132,7 +142,7 @@ impl<R: Read> ArArchiveInputStream<R> {
         }
         self.entry_offset = self.offset;
 
-        let mut temp = ascii(&meta[..NAME_LEN]).trim().to_string();
+        let mut temp = java_trim(&ascii(&meta[..NAME_LEN])).to_string();
         let length_str = ascii(&meta[LENGTH_OFFSET..LENGTH_OFFSET + LENGTH_LEN]);
         if temp == "//" {
             // GNU extended file names entry
@@ -175,14 +185,15 @@ impl<R: Read> ArArchiveInputStream<R> {
             temp = ascii(&name);
             // entry length contained the length of the file name in addition to the real
             // length of the entry.
-            len -= temp.len() as i64;
-            self.entry_offset += temp.len() as u64;
+            // Java: temp.length(), one char per byte.
+            len -= name_len as i64;
+            self.entry_offset += name_len as u64;
         }
         if len < 0 {
             return Err(IoException::new("broken archive, entry with negative size"));
         }
         let mode_str = ascii(&meta[FILE_MODE_OFFSET..FILE_MODE_OFFSET + FILE_MODE_LEN]);
-        let mode = u32::from_str_radix(mode_str.trim(), 8).map_err(|_| {
+        let mode = u32::from_str_radix(java_trim(&mode_str), 8).map_err(|_| {
             IoException::new("Broken archive, unable to parse entry metadata fields as numbers")
         })?;
         let last_modified = parse_long(
@@ -256,7 +267,11 @@ pub(crate) fn decompress(descriptor: &DecompressorDescriptor) -> Result<Path, De
             .get(&entry.name)
             .cloned()
             .unwrap_or(entry.name.clone());
-        let file_path = descriptor.destination_path.get_relative_str(&entry_name);
+        // `entry_name` is Unicode (or an internal string from `rename_files`); Java puts it into
+        // the path unconverted.
+        let file_path = descriptor
+            .destination_path
+            .get_relative_str(&fs_utils::unicode_path_as_seen_by_file_system(&entry_name));
         if let Some(parent) = file_path.get_parent_directory() {
             parent.create_directory_and_parents()?;
         }

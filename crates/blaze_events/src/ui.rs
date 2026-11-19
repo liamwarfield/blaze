@@ -141,7 +141,7 @@ pub fn write_event_text(
             location_printer.get_location_string(location)
         ))?;
     }
-    // PORT: StringEncoding identity. Java's message is never null.
+    // Java's message is never null.
     let message = event.get_message();
     terminal.write_string(&message)?;
     let incomplete_line = !message.ends_with('\n');
@@ -583,8 +583,10 @@ impl UiEventHandler {
         self.clear_progress_bar(st)?;
         self.terminal.flush()?;
         let stream = self.out_err.get_output_stream();
-        // PORT: Java encodes these strings as ISO-8859-1; StringEncoding identity.
-        stream.write(format!("{event}\n").as_bytes())?;
+        // `(event + "\n").getBytes(StandardCharsets.ISO_8859_1)`
+        stream.write(&blaze_util::string_encoding::latin1_encode_lossy(&format!(
+            "{event}\n"
+        )))?;
         if let Some(stdout) = stdout {
             stream.write(b"... with STDOUT: ")?;
             stream.write(stdout)?;
@@ -718,17 +720,17 @@ impl UiEventHandler {
         if size <= self.max_stdout_err_bytes as i64 {
             Some(get_content())
         } else {
-            // PORT: Java encodes as ISO-8859-1; StringEncoding identity.
+            // `String.format(...).getBytes(StandardCharsets.ISO_8859_1)`
             Some(
-                format!(
+                blaze_util::string_encoding::latin1_encode_lossy(&format!(
                     "{} ({}) {} exceeds maximum size of \
                      --experimental_ui_max_stdouterr_bytes={} bytes; skipping\n",
                     name,
                     get_path(),
                     size,
                     self.max_stdout_err_bytes
-                )
-                .into_bytes(),
+                ))
+                .into_owned(),
             )
         }
     }

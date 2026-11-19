@@ -1009,7 +1009,12 @@ fn non_skyframe_globbing_io_exception_and_label_crossing_subpackage_boundaries_w
         .scratch
         .symlink(&t.setup.ws("pkg/globcycle"), &pkg_globcycle_path);
     // Java: `assertThrows(IOException.class, () -> pkgGlobcyclePath.statIfFound(FOLLOW))`.
-    assert!(std::fs::metadata(&pkg_globcycle_path).is_err());
+    assert!(
+        std::fs::metadata(&*blaze_util::string_encoding::internal_to_platform(
+            &pkg_globcycle_path
+        ))
+        .is_err()
+    );
 
     // ... and we evaluate the package with keepGoing == true, we expect the evaluation to fail with
     // the non-Skyframe globbing error, but for the label crossing event to *not* get added (because

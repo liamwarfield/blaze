@@ -106,8 +106,14 @@ pub(crate) const ELOOP: i32 = 40;
 pub(crate) const ENOTDIR: i32 = 20;
 
 /// Whether `e` means "not found" (ENOENT or ENOTDIR), as the native stat treats it.
+///
+/// PORT: `posix_error` rebuilds the error with Bazel's message and keeps only its kind (the raw
+/// errno is gone), so ENOTDIR is also recognised by its kind.
+// Java: src/main/native/unix_jni.cc:659 (stat: ENOENT and ENOTDIR are "not found")
 pub(crate) fn is_not_found(e: &io::Error) -> bool {
-    e.kind() == io::ErrorKind::NotFound || e.raw_os_error() == Some(ENOTDIR)
+    e.kind() == io::ErrorKind::NotFound
+        || e.kind() == io::ErrorKind::NotADirectory
+        || e.raw_os_error() == Some(ENOTDIR)
 }
 
 /// The abstract file system (Java `FileSystem`). Methods take absolute [`PathFragment`]s; use
@@ -119,6 +125,18 @@ pub trait FileSystem: std::any::Any + Send + Sync + fmt::Debug {
     /// The digest function used for file contents.
     // Java: com/google/devtools/build/lib/vfs/FileSystem.java:71 FileSystem.getDigestFunction
     fn get_digest_function(&self) -> DigestHashFunction;
+
+    /// Returns the file system that the current file system is based on, if any.
+    ///
+    /// For an action file system, this should return the on-disk component (or the result of
+    /// `get_host_file_system()` on that component if it is itself a composite file system).
+    ///
+    /// PORT: Java returns `this` by default; a trait method has no shared handle to itself, so
+    /// `None` means "this file system" (see [`Path::for_host_file_system`]).
+    // Java: com/google/devtools/build/lib/vfs/FileSystem.java:117 FileSystem.getHostFileSystem
+    fn get_host_file_system(&self) -> Option<FileSystemRef> {
+        None
+    }
 
     /// Whether the file system supports modifications (setWritable, setExecutable).
     // Java: com/google/devtools/build/lib/vfs/FileSystem.java:134 FileSystem.supportsModifications

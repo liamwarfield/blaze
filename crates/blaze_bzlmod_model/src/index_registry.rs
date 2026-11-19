@@ -325,7 +325,7 @@ impl IndexRegistry {
     }
 
     /// Grabs a JSON file; `None` if it doesn't exist.
-    // Java: com/google/devtools/build/lib/bazel/bzlmod/IndexRegistry.java:322 IndexRegistry.grabJsonFile
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/IndexRegistry.java:303 IndexRegistry.grabJsonFile
     fn grab_json_file(
         &self,
         url: &str,
@@ -334,16 +334,18 @@ impl IndexRegistry {
         use_checksum: bool,
     ) -> Result<Option<String>, RegistryException> {
         match self.grab_file(url, event_handler, download_manager, use_checksum) {
-            // PORT: new String(bytes, UTF_8) replaces malformed input with U+FFFD.
-            // PORT: byte-strings (Java also replaces malformed input here (new String(bytes, UTF_8)))
-            Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+            // `new String(bytes, UTF_8)`: registry JSON is Unicode text, and Java keeps its
+            // strings Unicode (no `unicodeToInternal` on the parsed fields).
+            Ok(bytes) => Ok(Some(blaze_util::string_encoding::java_new_string_utf8(
+                &bytes,
+            ))),
             Err(RegistryException::NotFound(_)) => Ok(None),
             Err(e) => Err(e),
         }
     }
 
     /// Grabs and parses a JSON file; `None` if it doesn't exist or is blank.
-    // Java: com/google/devtools/build/lib/bazel/bzlmod/IndexRegistry.java:339 IndexRegistry.grabJson
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/IndexRegistry.java:321 IndexRegistry.grabJson
     fn grab_json(
         &self,
         url: &str,
@@ -355,7 +357,7 @@ impl IndexRegistry {
             self.grab_json_file(url, event_handler, download_manager, use_checksum)?;
         match json_string {
             None => Ok(None),
-            Some(s) if s.trim().is_empty() => Ok(None),
+            Some(s) if java_is_blank(&s) => Ok(None),
             Some(s) => Ok(Some(Self::parse_json(&s, url)?)),
         }
     }
@@ -853,5 +855,46 @@ impl RegistryFactory for RegistryFactoryImpl {
             vendor_dir,
             module_mirror_uris,
         )))
+    }
+}
+
+/// Java `String.isBlank()`: every code point is `Character.isWhitespace`.
+// TODO(byte-strings lead): move to blaze_util (a `java_is_whitespace(char)` predicate).
+fn java_is_blank(s: &str) -> bool {
+    s.chars().all(java_is_whitespace)
+}
+
+/// Java `Character.isWhitespace(int)`: a Unicode space separator, line or paragraph separator
+/// that is not a non-breaking space (U+00A0, U+2007, U+202F), or one of U+0009–U+000D and
+/// U+001C–U+001F. Not Rust's `char::is_whitespace` (which accepts U+0085 and the non-breaking
+/// spaces and rejects U+001C–U+001F).
+// Java (JDK): java.base/java/lang/Character.java Character.isWhitespace
+fn java_is_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\u{9}'..='\u{d}'
+            | '\u{1c}'..='\u{20}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{2006}'
+            | '\u{2008}'..='\u{200a}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{205f}'
+            | '\u{3000}'
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Expected values: JDK 21 `Character.isWhitespace` / `String.isBlank` (probe run on
+    // 2026-11-18).
+    #[test]
+    fn java_is_blank_follows_character_is_whitespace() {
+        assert!(java_is_blank("\u{1c} \u{2028}\t\n"));
+        assert!(!java_is_blank("\u{85}"));
+        assert!(!java_is_blank("\u{a0}"));
+        assert!(java_is_blank(""));
     }
 }

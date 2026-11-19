@@ -178,7 +178,7 @@ fn unfetched_repository_fails_loudly() {
 #[test]
 #[ignore = "reads ~/.cache/blaze/w3/brotli.repos.json (scripts/w3/oracle-repos); run with --ignored"]
 fn brotli_recording_loads() {
-    let home = std::env::var("HOME").unwrap();
+    let home = std::env::var_os("HOME").unwrap();
     let path = std::path::PathBuf::from(home).join(".cache/blaze/w3/brotli.repos.json");
     let setup = TestSetup::new(FakeRepos::default());
     let repos = OracleRepos::load(&path, setup.config.directories.clone()).unwrap();

@@ -788,11 +788,9 @@ fn translate_java_pattern(pattern: &str) -> Result<String, String> {
 
 /// Java `subject.matches(pattern)` (`Pattern.matches`: the whole input must match).
 ///
-/// Bazel's strings are "internal" strings: the UTF-8 bytes of the text, each stored as one
-/// Latin-1 character (lib/util/StringEncoding.java), and `java.util.regex` matches those
-/// characters. So the subject is matched byte by byte, each byte as the character U+0000 to
-/// U+00FF: `(?U)\w+` rejects "café" (its bytes are `c`, `a`, `f`, U+00C3, U+00A9, and U+00A9 is
-/// not a word character) as Bazel does.
+/// The subject is an internal string (one Latin-1 char per byte, lib/util/StringEncoding.java),
+/// and `java.util.regex` matches those chars: `(?U)\w+` rejects "café" (its chars are `c`, `a`,
+/// `f`, U+00C3, U+00A9, and U+00A9 is not a word character) as Bazel does.
 ///
 /// A pattern outside the ported subset (see [`translate_java_pattern`]) fails with `unported!`.
 // Java: java/lang/String.java String.matches
@@ -819,9 +817,8 @@ fn java_string_matches(subject: &str, pattern: &str) -> bool {
             }
         }
     };
-    // The internal string: one character per byte.
-    let internal_subject: String = subject.bytes().map(char::from).collect();
-    regex.is_match(&internal_subject)
+    // The subject is an internal string: Java matches its Latin-1 chars.
+    regex.is_match(subject)
 }
 
 #[cfg(test)]
@@ -839,7 +836,7 @@ mod tests {
             ("a-b", r"(?U)\w+", false),
             ("", r"(?U)\w+", false),
             ("a.b", r"(?U)\w+", false),
-            // Non-ASCII text is matched byte by byte.
+            // Non-ASCII text is matched by the chars of its internal string.
             ("caf\u{e9}", r"(?U)\w+", false),
             ("\u{e4}", r"(?U)\w+", false),
             ("\u{aa}", r"(?U)\w+", true),
@@ -865,10 +862,16 @@ mod tests {
             ("7", r"\d", true),
             ("aaa", r"a*", true),
             ("b", r"a*b?", true),
+            // 🐷 is F0 9F 90 B7 (U+009F is a control); "ð" is C3 B0 (U+00B0 is a symbol);
+            // "ê" is C3 AA, two letters.
+            ("\u{1F437}", r"(?U)\w+", false),
+            ("\u{f0}", r"(?U)\w+", false),
+            ("\u{ea}", r"(?U)\w+", true),
         ];
         for (subject, pattern, expected) in cases {
+            let internal = blaze_util::string_encoding::latin1_decode(subject.as_bytes());
             assert_eq!(
-                java_string_matches(subject, pattern),
+                java_string_matches(&internal, pattern),
                 *expected,
                 "{subject:?}.matches({pattern:?})"
             );

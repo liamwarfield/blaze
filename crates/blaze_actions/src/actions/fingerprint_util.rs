@@ -10,13 +10,12 @@
 //! strings at the same sites are. A caller that holds real Unicode (text from a proto or JSON)
 //! converts with `string_encoding::unicode_to_internal` where Java does, not here.
 //!
-//! Until the decoding switch (`string_encoding::STRINGS_ARE_INTERNAL`) the strings are still
-//! Unicode, and `Fingerprint::add_string` itself bridges that through the migration seam; no key
-//! site in this crate converts or chooses an encoding. Where Java takes the bytes or the length of
-//! an internal string (file contents, the compression threshold, name length limits), the sites
-//! call the other seam functions (`internal_string_bytes`, `internal_string_from_bytes`,
-//! `internal_length`). `tests/non_ascii_action_keys.rs` checks every site class against keys
-//! recorded from the oracle, on both sides of the switch.
+//! `add_string` hashes the UTF-8 of the internal string, which is what Java's `addString` does
+//! (the "double encoding" of each byte >= 0x80). Where Java takes the bytes or the length of an
+//! internal string (file contents, the compression threshold, name length limits), the sites use
+//! `string_encoding::latin1_encode` / `latin1_decode` and count `chars()`.
+//! `tests/non_ascii_action_keys.rs` checks every site class against keys recorded from the
+//! oracle.
 //!
 //! PORT: `Fingerprint` lives in blaze_util, below blaze_vfs (docs/research/06 §5.3: "Path methods
 //! become an extension trait"). The extension lives here, where the action keys use it.

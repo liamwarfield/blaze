@@ -1,0 +1,26 @@
+# Non-ASCII text end to end (docs/research/07-byte-strings.md): file names, flags, genrule cmd,
+# print, query/cquery/aquery output. Bazel holds every string as bytes (one Latin-1 char per
+# UTF-8 byte); what each surface prints is the oracle's quirk, reproduced by Blaze.
+run query //:all --output=label_kind
+run query "//:fg_é" --output=build
+run query "kind('source file', //:*)"
+run query "attr(cmd, 'é', //:all)"
+run query "attr(tags, 'tagé', //:all)"
+run query "filter('fg_é', //:all)"
+run query "//:é.txt" --output=location
+run query //:write --output=streamed_jsonproto
+run query "//:nosuch_é"
+run cquery "//:fg_é + //:é.txt" --output=label_kind
+run cquery //:write --output=jsonproto
+aquery "//:gen + //:write + //:shell + //:define" --define=x=é
+run aquery "//:gen + //:write + //:shell" --include_file_write_contents
+run build //:gen //:write //:shell //:define "//:fg_é" --define=x=é
+cat bazel-bin/gen.txt
+cat bazel-bin/write.txt
+cat bazel-bin/shell.txt
+cat bazel-bin/define.txt
+run build //:fails
+run build "//:nosuch_é"
+run build //:gen --define=é=1 --announce_rc
+run query //:all --output_file=out_é.txt
+cat out_é.txt

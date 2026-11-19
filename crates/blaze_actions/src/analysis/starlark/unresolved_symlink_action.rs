@@ -89,6 +89,11 @@ impl UnresolvedSymlinkAction {
             .to_string()
     }
 
+    /// The `target` field as given (Java's private field, which `execute` prints in its error).
+    pub fn get_raw_target(&self) -> &str {
+        &self.target
+    }
+
     /// The symlink target type.
     pub fn get_target_type(&self) -> SymlinkTargetType {
         self.target_type

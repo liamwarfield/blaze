@@ -1,0 +1,19 @@
+module(name = "bytes_b1", version = "1.0")
+
+ext = use_extension("//:ext.bzl", "ext")
+ext.tag(
+    s = "é🐷",
+    l = ["é", "🐷", "@@not_a_label_é"],
+    d = {"é": "🐷"},
+    x = "\377",
+)
+use_repo(ext, "ext_repo")
+
+my_rule = use_repo_rule("//:ext.bzl", "repo")
+my_rule(
+    name = "rule_repo",
+    s = "é🐷",
+    l = ["é"],
+    d = {"🐷": "é"},
+    x = "\377",
+)

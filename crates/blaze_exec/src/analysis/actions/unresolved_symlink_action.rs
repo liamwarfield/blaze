@@ -17,13 +17,11 @@ impl ExecutableAction for UnresolvedSymlinkAction {
         ctx: &dyn ActionExecutionContext,
     ) -> Result<ActionResult, ActionExecutionException> {
         let output_path = get_input_path(ctx, &self.get_primary_output());
-        // getTargetPathFragment(): PathFragment.create(target) (getTarget() is its string form).
-        let target = self.get_target();
+        // getTargetPathFragment(): PathFragment.create(target).
+        let target = self.get_raw_target();
         // PORT: skipped, Windows only (the SymlinkTargetType argument of createSymbolicLink).
-        if let Err(e) = output_path.create_symbolic_link_to_fragment(&PathFragment::create(&target))
+        if let Err(e) = output_path.create_symbolic_link_to_fragment(&PathFragment::create(target))
         {
-            // PORT: Java prints the raw `target` field; `blaze_actions` exposes only its
-            // normalized form (`getTarget()`), which differs only for non-normalized targets.
             let message = format!(
                 "failed to create symbolic link '{}' with target '{}' due to I/O error: {}",
                 self.get_primary_output().get_exec_path_string(),

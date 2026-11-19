@@ -42,8 +42,10 @@ pub struct WorkspaceStatusInputs {
     pub client_env: IndexMap<String, String>,
     /// `System.currentTimeMillis()`.
     pub current_time_millis: i64,
-    /// The standard output of `--workspace_status_command` (decoded as UTF-8), or `""` when no
-    /// command is set.
+    /// The standard output of `--workspace_status_command`, or `""` when no command is set. A
+    /// Unicode string, not an internal one: Java decodes it with `stdoutStream.toString(UTF_8)`
+    /// (`blaze_util::string_encoding::java_new_string_utf8`), and the status files write it back
+    /// with `getBytes(UTF_8)`, so its non-ASCII text round-trips unchanged.
     pub workspace_status_command_output: String,
 }
 
@@ -222,6 +224,9 @@ fn print_status_map(map: &BTreeMap<String, String>) -> Vec<u8> {
         .collect::<Vec<_>>()
         .join("\n");
     s.push('\n');
+    // Java: `s.getBytes(UTF_8)`. The keys and values from the command are Unicode; the host and
+    // user names are internal strings (platform strings), so their non-ASCII bytes come out
+    // encoded twice, as in Java.
     s.into_bytes()
 }
 

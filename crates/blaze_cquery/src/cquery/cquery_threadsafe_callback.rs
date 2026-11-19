@@ -12,6 +12,7 @@ use blaze_optdefs::command::cquery_options::CqueryOptions;
 use blaze_query::query::output::output_formatter::OutputStream;
 use blaze_query_engine::callback::IoExceptionSlot;
 use blaze_sky_top::skyframe_executor::SkyframeExecutor;
+use blaze_util::string_encoding::latin1_encode_lossy;
 use indexmap::IndexSet;
 
 use crate::cquery::configured_target_query_environment::ConfiguredTargetQueryEnvironment;
@@ -26,7 +27,9 @@ use crate::cquery::cquery_options::CommonQueryOptionsView;
 pub struct CqueryThreadsafeCallback<'a> {
     pub event_handler: Arc<dyn ExtendedEventHandler>,
     pub options: &'a CqueryOptions,
-    /// Java `outputStream` / `printStream` (a `BufferedWriter` over it; the same bytes).
+    /// Java `outputStream`. Java's `printStream` is a `BufferedWriter(OutputStreamWriter(out))`
+    /// with the default charset, ISO-8859-1 on Bazel's server: text written through it is
+    /// encoded with [`print_stream_bytes`].
     pub out: Option<OutputStream>,
     // Skyframe calls incur a performance cost, even on cache hits. Consider this before exposing
     // direct executor access to child classes.
@@ -85,8 +88,8 @@ impl<'a> CqueryThreadsafeCallback<'a> {
                 let mut print_stream = out.borrow_mut();
                 let line_terminator = self.options.get_line_terminator();
                 for s in results_to_print {
-                    print_stream.write_all(s.as_bytes())?;
-                    print_stream.write_all(line_terminator.as_bytes())?;
+                    print_stream.write_all(&print_stream_bytes(s))?;
+                    print_stream.write_all(&print_stream_bytes(line_terminator))?;
                 }
                 print_stream.flush()?;
             }
@@ -118,11 +121,39 @@ impl<'a> CqueryThreadsafeCallback<'a> {
     }
 }
 
+/// The bytes Java's `printStream` (`new BufferedWriter(new OutputStreamWriter(out))`, default
+/// charset ISO-8859-1) writes for `s`: an internal string leaves as its raw bytes, a Unicode
+/// char above U+00FF (from `internalToUnicode` or a proto printer) as `?`.
+// Java: com/google/devtools/build/lib/query2/cquery/CqueryThreadsafeCallback.java:74 CqueryThreadsafeCallback.<init>
+pub fn print_stream_bytes(s: &str) -> std::borrow::Cow<'_, [u8]> {
+    latin1_encode_lossy(s)
+}
+
 /// Returns a user-friendly configuration identifier, using special IDs for null configurations.
 // Java: com/google/devtools/build/lib/query2/cquery/CqueryThreadsafeCallback.java:117 CqueryThreadsafeCallback.shortId
 pub fn short_id(config: Option<&Arc<BuildConfigurationValue>>) -> String {
     match config {
         None => "null".to_owned(),
         Some(config) => config.short_id(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The oracle's `cquery //:all --output=jsonproto` on the byte-strings workspace
+    // (~/.cache/blaze/work/bytes-out/cquery_jsonproto.txt): the JSON holds
+    // `internalToUnicode("//:fg_é")` = "//:fg_é" (U+00E9), which the default-charset writer
+    // prints as the one byte E9; 🐷 (U+1F437) becomes '?'. Label output prints an internal
+    // string's chars as its raw bytes.
+    #[test]
+    fn print_stream_bytes_is_latin1() {
+        assert_eq!(&*print_stream_bytes("//:fg_\u{e9}"), b"//:fg_\xe9");
+        assert_eq!(&*print_stream_bytes("\u{e9}\u{1f437}\u{fffd}"), b"\xe9??");
+        assert_eq!(
+            &*print_stream_bytes("//:fg_\u{c3}\u{a9} (a7a71fd)"),
+            b"//:fg_\xc3\xa9 (a7a71fd)"
+        );
     }
 }

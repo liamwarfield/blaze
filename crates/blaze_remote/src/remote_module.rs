@@ -433,7 +433,9 @@ impl RemoteModule {
             mut remote_options,
             auth_and_tls_options,
             execution_options,
-            rewind_lost_inputs,
+            // Read by Java for the disk cache integrity check only (see below; root ruling
+            // 2026-11-19); `executor_init` gets it from the integrator.
+            rewind_lost_inputs: _,
             experimental_sibling_repository_layout,
             reporter,
             file_system,
@@ -710,7 +712,12 @@ impl RemoteModule {
         // rewinding, a blob that is missing after all is cheap to recover from, so the check can
         // be skipped. This allows disk cache AC checks to be entirely local, reducing server
         // load and avoiding a network round trip.
-        let check_disk_cache_action_result_integrity = !rewind_lost_inputs.unwrap_or(false);
+        // PORT: Java skips the check under --rewind_lost_inputs (RemoteModule.java:700-706)
+        // because rewinding recovers a missing blob cheaply; action rewinding is not ported, so
+        // Blaze keeps the check as with --norewind_lost_inputs (root ruling 2026-11-19,
+        // docs/decisions.md). Restore Java's expression when rewinding is ported:
+        // `buildRequestOptions == null || !buildRequestOptions.rewindLostInputs`.
+        let check_disk_cache_action_result_integrity = true;
 
         if (enable_http_cache || enable_disk_cache) && !enable_grpc_cache {
             // Java: com/google/devtools/build/lib/remote/RemoteModule.java:287 RemoteModule.initHttpAndDiskCache

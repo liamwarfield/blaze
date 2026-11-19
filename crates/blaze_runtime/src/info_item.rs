@@ -58,8 +58,7 @@ pub trait InfoItem: Send + Sync {
 /// newline.
 // Java: com/google/devtools/build/lib/runtime/InfoItem.java:75 InfoItem.print
 pub fn print(value: impl std::fmt::Display) -> Vec<u8> {
-    // PORT: StringEncoding identity (StringUnsafe.getInternalStringBytes).
-    let mut bytes = value.to_string().into_bytes();
+    let mut bytes = blaze_util::string_encoding::latin1_encode(&value.to_string()).into_owned();
     bytes.push(b'\n');
     bytes
 }

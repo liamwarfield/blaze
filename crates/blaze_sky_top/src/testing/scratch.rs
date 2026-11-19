@@ -8,9 +8,18 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use blaze_util::string_encoding::{
+    internal_to_platform, latin1_decode, latin1_encode_lossy, platform_to_internal,
+};
 use blaze_vfs::{
     DigestHashFunction, FileSystemExt, FileSystemRef, Path, PathFragment, UnixFileSystem,
 };
+
+/// The platform form of a path (`internal_to_platform`), for the `std::fs` calls of the test
+/// harness.
+pub(crate) fn os(path: &Path) -> std::ffi::OsString {
+    internal_to_platform(path.get_path_string()).into_owned()
+}
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -35,14 +44,14 @@ impl TestDirectory {
         std::fs::create_dir_all(&base).expect("create the test directory");
         // The real path, so that paths compare equal to what the file system reports.
         let base = std::fs::canonicalize(&base).expect("canonicalize the test directory");
-        let root = fs.get_path(base.to_str().expect("UTF-8 temporary directory"));
+        let root = fs.get_path(&platform_to_internal(base.as_os_str()));
         TestDirectory { fs, root }
     }
 }
 
 impl Drop for TestDirectory {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(self.root.get_path_string());
+        let _ = std::fs::remove_dir_all(os(&self.root));
     }
 }
 
@@ -95,21 +104,23 @@ impl Scratch {
     // Java: com/google/devtools/build/lib/testutil/Scratch.java:110 Scratch.dir
     pub fn dir(&self, path_name: &str) -> Path {
         let dir = self.resolve(path_name);
-        std::fs::create_dir_all(dir.get_path_string()).expect("create scratch directory");
+        std::fs::create_dir_all(os(&dir)).expect("create scratch directory");
         dir
     }
 
-    /// `Scratch.file(pathName, lines...)`: fails if the file exists.
+    /// `Scratch.file(pathName, lines...)`: fails if the file exists. Written with
+    /// `DEFAULT_CHARSET` (ISO-8859-1): a test literal "é" (U+00E9) is the byte E9; pass the
+    /// internal form (`latin1_decode("é".as_bytes())`) for the UTF-8 bytes.
     // Java: com/google/devtools/build/lib/testutil/Scratch.java:121 Scratch.file
     pub fn file(&self, path_name: &str, lines: &[&str]) -> Path {
-        self.file_bytes(path_name, lines_as_string(lines).as_bytes())
+        self.file_bytes(path_name, &latin1_encode_lossy(&lines_as_string(lines)))
     }
 
     /// `Scratch.file(pathName, byte[] content)`.
     // Java: com/google/devtools/build/lib/testutil/Scratch.java:140 Scratch.file
     pub fn file_bytes(&self, path_name: &str, content: &[u8]) -> Path {
         let file = self.new_file(path_name);
-        std::fs::write(file.get_path_string(), content).expect("write scratch file");
+        std::fs::write(os(&file), content).expect("write scratch file");
         self.modified.store(true, Ordering::SeqCst);
         file
     }
@@ -119,7 +130,7 @@ impl Scratch {
     // Java: com/google/devtools/build/lib/testutil/Scratch.java:188 Scratch.overwriteFile
     pub fn overwrite_file(&self, path_name: &str, lines: &[&str]) -> Path {
         let old_file = self.resolve(path_name);
-        let _ = std::fs::remove_file(old_file.get_path_string());
+        let _ = std::fs::remove_file(os(&old_file));
         self.file(path_name, lines)
     }
 
@@ -139,16 +150,16 @@ impl Scratch {
     /// `Scratch.deleteFile`.
     // Java: com/google/devtools/build/lib/testutil/Scratch.java:208 Scratch.deleteFile
     pub fn delete_file(&self, path_name: &str) -> bool {
-        let deleted = std::fs::remove_file(self.resolve(path_name).get_path_string()).is_ok();
+        let deleted = std::fs::remove_file(os(&self.resolve(path_name))).is_ok();
         self.modified.store(true, Ordering::SeqCst);
         deleted
     }
 
-    /// `Scratch.readFile`.
+    /// `Scratch.readFile`: decoded with `DEFAULT_CHARSET` (ISO-8859-1).
     // Java: com/google/devtools/build/lib/testutil/Scratch.java:146 Scratch.readFile
     pub fn read_file(&self, path_name: &str) -> String {
-        std::fs::read_to_string(self.resolve(path_name).get_path_string())
-            .expect("read scratch file")
+        let bytes = std::fs::read(os(&self.resolve(path_name))).expect("read scratch file");
+        latin1_decode(&bytes).into_owned()
     }
 
     /// Creates a new scratch file, ensuring parents exist.
@@ -158,7 +169,7 @@ impl Scratch {
         let parent = file
             .get_parent_directory()
             .expect("a scratch file has a parent");
-        std::fs::create_dir_all(parent.get_path_string()).expect("create parent directories");
+        std::fs::create_dir_all(os(&parent)).expect("create parent directories");
         if file.exists() {
             panic!("IOException: Could not create scratch file (file exists) {path_name}");
         }
@@ -169,7 +180,7 @@ impl Scratch {
     pub fn chmod(&self, path_name: &str, mode: u32) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(
-            self.resolve(path_name).get_path_string(),
+            os(&self.resolve(path_name)),
             std::fs::Permissions::from_mode(mode),
         )
         .expect("chmod scratch file");

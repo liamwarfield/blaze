@@ -365,3 +365,22 @@ fn fatal_before_logging_detail_dumps_debug_format() {
     assert!(b[2] == b':' && b[5] == b':' && b[8] == b'.', "{}", ts);
     assert!(out.ends_with(&format!(" src/main/cpp/blaze.cc:1275] {}\n", msg)));
 }
+
+// Blaze: messages are internal strings; the C++ writes their raw bytes. `é` (C3 A9), `🐷`
+// (F0 9F 90 B7) and a byte FF reach the stream as those bytes, with and without a handler.
+#[test]
+fn non_ascii_messages_are_written_as_raw_bytes() {
+    let message = "\u{c3}\u{a9} \u{f0}\u{9f}\u{90}\u{b7} \u{ff}";
+    let mut buf = Vec::new();
+    print_without_handler(&mut buf, LogLevel::User, message);
+    assert_eq!(buf, b"\xc3\xa9 \xf0\x9f\x90\xb7 \xff\n");
+
+    let (mut h, stderr) = handler();
+    h.set_logging_detail(LoggingDetail::User, None);
+    log(&mut h, LogLevel::Warning, message);
+    assert_eq!(
+        *stderr.0.lock().unwrap(),
+        b"WARNING: \xc3\xa9 \xf0\x9f\x90\xb7 \xff\n"
+    );
+    assert_eq!(stderr.contents(), format!("WARNING: {message}\n"));
+}

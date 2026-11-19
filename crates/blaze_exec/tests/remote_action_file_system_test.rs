@@ -8,13 +8,10 @@
 //! | Java test methods (124)                          | ported | ignored |
 //! |--------------------------------------------------|--------|---------|
 //! | `RemoteActionFileSystemTestBase` (72)            | 72     | 0       |
-//! | `RemoteActionFileSystemTest` (52)                | 50     | 2       |
-//! | total                                            | 122    | 2       |
+//! | `RemoteActionFileSystemTest` (52)                | 52     | 0       |
+//! | total                                            | 124    | 0       |
 //!
-//! Ignored, by reason: `createOutputDirectories_afterMissingParentDelete` needs
-//! `ActionOutputDirectoryHelper.createActionFsOutputDirectories` and `ArtifactPathResolver`, which
-//! are not ported; `statAndExists_isNotDirectory` fails in the local file system, not in the
-//! overlay: `blaze_vfs::UnixFileSystem::stat_if_found` throws for ENOTDIR where Java returns null. `@TestParameter` methods are one Rust test each, looping over the Java
+//! `@TestParameter` methods are one Rust test each, looping over the Java
 //! parameter values. Two assertions cannot be expressed as in Java and are noted at the test:
 //! `testGetInputStream_forRemoteOutputFile` (the prefetch priority, which the blocking prefetcher
 //! seam does not carry) and the `FileStatusWithDigest` checks (the digest is read through
@@ -1826,7 +1823,6 @@ fn stat_and_exists_not_found() {
 }
 
 #[test]
-#[ignore = "blaze_vfs defect: UnixFileSystem.stat_if_found throws for ENOTDIR (posix_error drops the raw errno, so is_not_found misses it); Java's statIfFound returns null for ENOENT and ENOTDIR (unix_jni.cc:659)"]
 fn stat_and_exists_is_not_directory() {
     let f = Fixture::new();
     let action_fs = f.create_action_file_system();
@@ -3075,49 +3071,6 @@ fn inject_remote_file_outside_the_output_base_is_ignored() {
         .clone();
     inject_remote_file(&action_fs, &path, "remote contents");
     assert!(!action_fs.exists(&path, true));
-}
-
-/// The flat copy of the injected files ([`RemoteActionFileSystem::get_remote_output_tree`])
-/// follows an injection, a rename of a directory and a delete.
-#[test]
-fn remote_output_tree_files_follow_injection_rename_and_delete() {
-    let f = Fixture::new();
-    let action_fs = f.create_action_file_system();
-    let file = f.get_output_path("dir/sub/file");
-    inject_remote_file(&action_fs, &file, "remote contents");
-    assert!(
-        action_fs
-            .get_remote_output_tree()
-            .get_metadata(&file)
-            .is_some()
-    );
-
-    let renamed_dir = f.get_output_path("renamed");
-    action_fs
-        .rename_to(&f.get_output_path("dir"), &renamed_dir)
-        .unwrap();
-    let renamed = f.get_output_path("renamed/sub/file");
-    assert!(
-        action_fs
-            .get_remote_output_tree()
-            .get_metadata(&file)
-            .is_none()
-    );
-    assert!(
-        action_fs
-            .get_remote_output_tree()
-            .get_metadata(&renamed)
-            .is_some()
-    );
-    assert!(action_fs.exists(&renamed, true));
-
-    assert!(action_fs.delete(&renamed).unwrap());
-    assert!(
-        action_fs
-            .get_remote_output_tree()
-            .get_metadata(&renamed)
-            .is_none()
-    );
 }
 
 /// `ActionOutputMetadataStore.constructTreeArtifactValueFromFilesystem` on the action file

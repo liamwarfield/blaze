@@ -5,6 +5,8 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use blaze_util::string_encoding::internal_to_platform;
+
 use super::rc_file::{ParseError, RcFile, make_canonical, read_file_default};
 use super::sem_ver::SemVer;
 use super::tokenize::{join_path, split};
@@ -371,7 +373,9 @@ fn can_access(path: &str, mode: std::ffi::c_int) -> bool {
     }
     // PORT: C++ passes path.c_str(), which stops at an embedded NUL; such a path is reported as
     // not accessible here.
-    let Ok(c_path) = std::ffi::CString::new(path) else {
+    let Ok(c_path) = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(
+        &*internal_to_platform(path),
+    )) else {
         return false;
     };
     // SAFETY: c_path is NUL-terminated and outlives the call.
@@ -382,7 +386,7 @@ fn can_access(path: &str, mode: std::ffi::c_int) -> bool {
 pub fn can_read_file(path: &str) -> bool {
     // Java: src/main/cpp/util/file_posix.cc:427 blaze_util::IsDirectory
     // `Path::is_dir` is stat(2) and S_ISDIR, false when stat fails.
-    !std::path::Path::new(path).is_dir() && can_access(path, R_OK)
+    !std::path::Path::new(&*internal_to_platform(path)).is_dir() && can_access(path, R_OK)
 }
 
 // Java: src/main/cpp/option_processor.cc:245 internal::DedupeBlazercPaths

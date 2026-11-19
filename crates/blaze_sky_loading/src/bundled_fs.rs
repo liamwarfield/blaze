@@ -279,9 +279,12 @@ impl FileSystem for BundledFileSystem {
 
     // Java: com/google/devtools/build/lib/analysis/ConfiguredRuleClassProvider.java:131 ConfiguredRuleClassProvider.BundledFileSystem.getDigest
     fn get_digest(&self, path: &PathFragment) -> io::Result<Vec<u8>> {
-        // StringUnsafe.getInternalStringBytes: the path's internal (UTF-8) bytes.
+        // `hashBytes(StringUnsafe.getInternalStringBytes(path.getPathString()))`: one byte per
+        // char of the internal path string.
         self.get_digest_function()
-            .hash_reader(&mut path.get_path_string().as_bytes())
+            .hash_reader(&mut &*blaze_util::string_encoding::latin1_encode(
+                path.get_path_string(),
+            ))
     }
 
     fn stat(&self, path: &PathFragment, _follow_symlinks: bool) -> io::Result<FileStatus> {

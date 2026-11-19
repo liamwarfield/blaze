@@ -126,3 +126,73 @@ fn nodep_label_list_is_a_string_list_with_nodep() {
         r#"{"name":"visibility","type":"STRING_LIST","stringListValue":["//visibility:public"],"explicitlySpecified":false,"nodep":true}"#
     );
 }
+
+// Non-ASCII attribute values: the oracle's `query //:all --output=streamed_jsonproto` on the
+// byte-strings workspace (scripts/bytes/workspace, saved in ~/.cache/blaze/work/bytes-out/
+// query_jsonproto.txt). The values are internal strings (BUILD files are decoded Latin-1); the
+// proto holds `internalToUnicode` of them: real Unicode, and U+FFFD for the byte FF.
+
+/// The internal string of UTF-8 text: one char per byte.
+fn internal(s: &str) -> String {
+    s.bytes().map(char::from).collect()
+}
+
+#[test]
+fn string_with_utf8_bytes_is_unicode_in_the_proto() {
+    assert_eq!(
+        json(
+            "cmd",
+            Type::String,
+            Some(AttrValue::String(internal("printf '%s' 'é🐷' > $@"))),
+            true
+        ),
+        "{\"name\":\"cmd\",\"type\":\"STRING\",\"stringValue\":\"printf \\u0027%s\\u0027 \\u0027é🐷\\u0027 \\u003e $@\",\"explicitlySpecified\":true,\"nodep\":false}"
+    );
+}
+
+#[test]
+fn string_with_invalid_utf8_byte_has_replacement_character() {
+    // BUILD: arg = "é\377"
+    let value = format!("{}\u{ff}", internal("é"));
+    assert_eq!(
+        json("arg", Type::String, Some(AttrValue::String(value)), true),
+        "{\"name\":\"arg\",\"type\":\"STRING\",\"stringValue\":\"é\u{fffd}\",\"explicitlySpecified\":true,\"nodep\":false}"
+    );
+    let content = format!("{}\u{ff}\n", internal("é🐷"));
+    assert_eq!(
+        json(
+            "content",
+            Type::String,
+            Some(AttrValue::String(content)),
+            true
+        ),
+        "{\"name\":\"content\",\"type\":\"STRING\",\"stringValue\":\"é🐷\u{fffd}\\n\",\"explicitlySpecified\":true,\"nodep\":false}"
+    );
+}
+
+#[test]
+fn string_list_with_utf8_bytes_is_unicode_in_the_proto() {
+    assert_eq!(
+        json(
+            "tags",
+            Type::StringList,
+            Some(AttrValue::StringList(vec![internal("tagé")])),
+            true
+        ),
+        "{\"name\":\"tags\",\"type\":\"STRING_LIST\",\"stringListValue\":[\"tagé\"],\"explicitlySpecified\":true,\"nodep\":false}"
+    );
+}
+
+#[test]
+fn label_with_utf8_bytes_is_unicode_in_the_proto() {
+    // `//:fg_é` as a label value (`internalToUnicode(labelPrinter.toString(label))`).
+    assert_eq!(
+        json(
+            "srcs",
+            Type::LabelList,
+            Some(AttrValue::LabelList(vec![label(&internal("//:fg_é"))])),
+            true
+        ),
+        "{\"name\":\"srcs\",\"type\":\"LABEL_LIST\",\"stringListValue\":[\"//:fg_é\"],\"explicitlySpecified\":true,\"nodep\":false}"
+    );
+}

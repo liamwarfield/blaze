@@ -65,3 +65,12 @@ fn multiple_let_statements_different_variable() {
 fn variable_inside_set_expression() {
     assert_eq!(calculate_query_weight("$x + set($x)"), 4);
 }
+
+// Not in the Java test: Java `String.length()` of an internal string counts its bytes, so
+// `//:fg_é` (the internal form of a UTF-8 argument) weighs 8, and `'é'` in a word weighs 2.
+#[test]
+fn internal_string_weight_counts_chars() {
+    assert_eq!(calculate_query_weight("//:fg_\u{c3}\u{a9}"), 8);
+    assert_eq!(calculate_query_weight("attr(cmd, '\u{c3}\u{a9}', //:x)"), 9);
+    assert_eq!(calculate_query_weight("//:\u{ff}"), 4);
+}

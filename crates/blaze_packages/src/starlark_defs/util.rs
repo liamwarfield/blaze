@@ -234,10 +234,27 @@ fn java_lines(s: &str) -> Vec<&str> {
     out
 }
 
-// Java: net/starlark/java/eval/StringModule.java StringModule.strip (whitespace per
-// Character.isWhitespace, as Starlark's default `chars`).
+/// `StringModule.LATIN1_WHITESPACE`, the default `chars` of `strip` under
+/// `StarlarkSemantics.DEFAULT` (`trimDocString` passes DEFAULT, where
+/// `-internal_bazel_only_utf_8_byte_strings` is false). Unlike `char::is_whitespace` it holds
+/// U+001C..U+001F.
+// Java: net/starlark/java/eval/StringModule.java:196 StringModule.LATIN1_WHITESPACE
 fn is_starlark_whitespace(c: char) -> bool {
-    c.is_whitespace()
+    matches!(
+        c,
+        '\u{0009}'
+            | '\n'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\r'
+            | '\u{001C}'
+            | '\u{001D}'
+            | '\u{001E}'
+            | '\u{001F}'
+            | ' '
+            | '\u{0085}'
+            | '\u{00A0}'
+    )
 }
 
 /// Java `Starlark.trimDocString`.
@@ -373,6 +390,21 @@ mod tests {
             "Heading\n\nDetails paragraph"
         );
         assert_eq!(trim_doc_string(""), "");
+    }
+
+    // Not a Java test: Starlark.trimDocString strips StringModule.LATIN1_WHITESPACE, which holds
+    // U+001C..U+001F, U+0085 and U+00A0 (bytes of internal strings) but not U+2000.
+    #[test]
+    fn trim_doc_string_strips_latin1_whitespace() {
+        assert_eq!(
+            trim_doc_string("\u{1c}Heading\u{1f}\n\n  \u{a0}Details\u{85}"),
+            "Heading\n\nDetails"
+        );
+        // `é` is C3 A9 and `Å` is C3 85: only the trailing 85 is whitespace.
+        assert_eq!(
+            trim_doc_string("\u{c3}\u{a9} \u{c3}\u{85}"),
+            "\u{c3}\u{a9} \u{c3}"
+        );
     }
 
     #[test]

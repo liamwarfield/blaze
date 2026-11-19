@@ -464,7 +464,14 @@ fn oracle_compressed_executable_file_write_key() {
 #[test]
 fn oracle_non_ascii_file_write_key() {
     assert_eq!(
-        oracle_key("h\u{e9}llo w\u{f6}rld \u{2603}\n".to_string(), false),
+        // The Starlark string `"héllo wörld ☃\n"`: an internal string (one char per UTF-8 byte).
+        oracle_key(
+            blaze_util::string_encoding::latin1_decode(
+                "h\u{e9}llo w\u{f6}rld \u{2603}\n".as_bytes()
+            )
+            .into_owned(),
+            false
+        ),
         (
             "4ec2facf79da645c562d11098894960e3d241760c39e539c4a68f032c22d0c41".to_string(),
             false
@@ -499,4 +506,33 @@ fn progress_message_and_mnemonic() {
         "Writing script x.sh"
     );
     assert!(action.as_file_contents_provider().is_some());
+}
+
+/// Not in the Java test: the file holds `StringUnsafe.getInternalStringBytes` of the contents,
+/// one byte per char, plain or compressed (`getFileContents` of a compressed action is
+/// `StringUnsafe.newInstance(bytes, LATIN1)` again). `é` (c3 a9), `🐷` (f0 9f 90 b7) and the
+/// byte ff, as Starlark holds them.
+#[test]
+fn file_contents_are_internal_string_bytes() {
+    use blaze_util::string_encoding::latin1_decode;
+    let line: &[u8] = b"\xc3\xa9\xf0\x9f\x90\xb7\xff\n";
+    for (repeat, compressed) in [(1, false), (2000, true)] {
+        let bytes = line.repeat(repeat);
+        let contents = latin1_decode(&bytes).into_owned();
+        let action = FileWriteAction::create(
+            null_action_owner(),
+            get_bin_artifact_with_no_owner("out.txt"),
+            contents.clone(),
+            false,
+            Compression::ALLOW,
+        );
+        assert_eq!(action.is_compressed(), compressed);
+        assert_eq!(action.get_file_contents(), contents);
+        let out = action
+            .new_deterministic_writer()
+            .unwrap()
+            .get_bytes()
+            .unwrap();
+        assert_eq!(out, bytes);
+    }
 }

@@ -172,8 +172,8 @@ impl BlazeVersionInfo {
             return build_label.clone();
         }
         // PORT: System.getenv reads the server's environment; Blaze's is the process environment.
-        if let Ok(over) = std::env::var(Self::BAZEL_DEV_VERSION_OVERRIDE_ENV_VAR) {
-            return over;
+        if let Some(over) = std::env::var_os(Self::BAZEL_DEV_VERSION_OVERRIDE_ENV_VAR) {
+            return blaze_util::string_encoding::platform_to_internal(&over).into_owned();
         }
         String::new()
     }

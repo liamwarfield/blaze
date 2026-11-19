@@ -12,7 +12,10 @@ use crate::query_task_future::{QueryEnvironmentFutures, QueryTaskFuture};
 /// Java `Pattern.compile(pattern)`.
 ///
 /// PORT: `java.util.regex` is emulated with the `regex` crate (as blaze_options'
-/// `RegexPatternOption` does). Known differences: Java-only constructs (backreferences,
+/// `RegexPatternOption` does). Pattern and inputs are internal strings, as in Java: `é` in a
+/// pattern is the two chars U+00C3 U+00A9 and matches the same two chars of a label. Known
+/// differences, which now also reach the Latin-1 chars U+0080..U+00FF of internal strings:
+/// Java-only constructs (backreferences,
 /// lookaround, possessive quantifiers) fail to compile here; `\w`, `\d`, `\s` and `\b` are
 /// Unicode-aware here but ASCII-only in Java; Java's `.` also excludes `\r`, `\u0085`, ` `
 /// and ` `; syntax errors carry the `regex` crate's text, not

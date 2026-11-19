@@ -120,7 +120,11 @@ pub fn parse_delimited_from<M: JavaMessage>(
 
 /// `String.getBytes(ISO_8859_1)` / a Latin-1 `PrintStream` (Bazel's default `file.encoding`):
 /// chars up to U+00FF become one byte, others `'?'`. Surfaces that print JSON through a
-/// `PrintStream` (cquery and aquery `--output=jsonproto`) encode the printer's text this way.
+/// `PrintStream` (cquery and aquery `--output=jsonproto`) encode the printer's text this way: an
+/// internal string comes out as the bytes it stands for, a Unicode string as Latin-1.
+///
+/// The same function as `blaze_util::string_encoding::latin1_encode_lossy`, which code above
+/// this crate calls; blaze_protos is below blaze_util and keeps its own copy.
 pub fn encode_latin1(s: &str) -> Vec<u8> {
     s.chars()
         .map(|c| {
@@ -133,15 +137,10 @@ pub fn encode_latin1(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// `new String(bytes, ISO_8859_1)`: one char per byte.
+/// `new String(bytes, ISO_8859_1)`: one char per byte. The result is an internal string.
+///
+/// The same function as `blaze_util::string_encoding::latin1_decode`, which code above this
+/// crate calls; blaze_protos is below blaze_util and keeps its own copy.
 pub fn decode_latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| b as char).collect()
-}
-
-/// `StringEncoding.unicodeToInternal`: the Java string whose chars are the UTF-8 bytes of `s`,
-/// as a Rust string. Proto string fields that Java fills with internal strings (aquery, the
-/// execution log) hold this form, so their UTF-8 bytes on the wire are "double encoded".
-// Java: com/google/devtools/build/lib/util/StringEncoding.java StringEncoding.unicodeToInternal
-pub fn unicode_to_internal(s: &str) -> String {
-    decode_latin1(s.as_bytes())
 }

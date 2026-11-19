@@ -232,11 +232,13 @@ mod template_expansion_action_test {
         let f = fixture(&format!("{SPECIAL_CHARS}%key%"));
         // scratch.overwriteFile appends a newline, so we need an additional \n here
         let expected = format!("{SPECIAL_CHARS}{SPECIAL_CHARS}\n");
-        // PORT: StringEncoding.unicodeToInternal is the identity on Rust strings.
         execute_template_expansion(
             &f,
             &expected,
-            vec![Substitution::of("%key%", SPECIAL_CHARS)],
+            vec![Substitution::of(
+                "%key%",
+                &*blaze_util::string_encoding::unicode_to_internal(SPECIAL_CHARS),
+            )],
         );
     }
 

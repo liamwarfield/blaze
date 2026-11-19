@@ -570,7 +570,10 @@ mod tests {
             std::fs::write(p, content).unwrap();
         }
         let fs: FileSystemRef = Arc::new(UnixFileSystem::new(DigestHashFunction::Sha256));
-        let workspace = Path::create_from_str(ws.to_str().unwrap(), &fs);
+        let workspace = Path::create_from_str(
+            &blaze_util::string_encoding::platform_to_internal(ws.as_os_str()),
+            &fs,
+        );
         let package_directory = workspace.get_relative_str("isolated");
         let cache = Arc::new(GlobCache::new(
             package_directory.clone(),

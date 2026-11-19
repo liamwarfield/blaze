@@ -7,3 +7,4 @@ pub mod logging;
 pub mod md5;
 pub mod numbers;
 pub mod path;
+pub(crate) mod strings;

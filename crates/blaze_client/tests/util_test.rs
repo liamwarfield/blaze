@@ -808,3 +808,65 @@ fn test_creat_sibling_temp_dir_doesnt_clobber_parent_perms() {
         .mode();
     assert_eq!(0o700, mode & 0o777);
 }
+
+// Blaze: the client's strings are internal strings (one char per byte of the C++ std::string).
+// File names with `é` (C3 A9), `🐷` (F0 9F 90 B7) and a byte that is not UTF-8 (FF) reach the
+// system calls as those bytes, come back from readdir, getcwd and realpath as the same internal
+// strings, and file contents are read as raw bytes.
+#[test]
+fn non_ascii_file_names_are_bytes_at_the_syscall() {
+    let _l = lock();
+    let tmp = tmpdir();
+    let root = Path::new(&make_canonical(&s(tmp.path())));
+    let names = ["\u{c3}\u{a9}", "\u{f0}\u{9f}\u{90}\u{b7}", "\u{ff}"];
+    for name in names {
+        assert!(write_file_path(b"x\xff", &root.get_relative(name), 0o644));
+    }
+    // The bytes on disk.
+    let mut on_disk: Vec<Vec<u8>> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|e| {
+            std::os::unix::ffi::OsStrExt::as_bytes(e.unwrap().file_name().as_os_str()).to_vec()
+        })
+        .collect();
+    on_disk.sort();
+    assert_eq!(
+        on_disk,
+        vec![
+            b"\xc3\xa9".to_vec(),
+            b"\xf0\x9f\x90\xb7".to_vec(),
+            b"\xff".to_vec()
+        ]
+    );
+    // readdir.
+    let mut entries = Vec::new();
+    blaze_client::util::file::for_each_directory_entry(&root, &mut |p: &Path, _| {
+        entries.push(p.get_base_name())
+    });
+    entries.sort();
+    let mut expected: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    expected.sort();
+    assert_eq!(entries, expected);
+    // realpath, chdir, getcwd and read.
+    let dir = root.get_relative("d\u{c3}\u{a9}");
+    assert!(make_directories_path(&dir, 0o755));
+    assert_eq!(make_canonical(&dir.as_native_path()), dir.as_native_path());
+    let old = get_cwd();
+    assert!(change_directory(&dir.as_native_path()));
+    assert_eq!(get_cwd(), dir.as_native_path());
+    assert!(change_directory(&old));
+    assert_eq!(
+        read_file_path(&root.get_relative("\u{ff}"), 0),
+        Some(b"x\xff".to_vec())
+    );
+}
+
+// Blaze: GetHashedBaseDir hashes the raw bytes of the path (`printf '/ws/\xc3\xa9/x' | md5sum`).
+#[test]
+fn hashed_base_dir_hashes_the_bytes() {
+    let root = Path::new("/root");
+    assert_eq!(
+        blaze_client::platform::get_hashed_base_dir(&root, "/ws/\u{c3}\u{a9}/x").as_native_path(),
+        "/root/a9401edda2a53403a7020429dc473ce3"
+    );
+}

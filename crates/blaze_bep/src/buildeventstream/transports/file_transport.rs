@@ -23,7 +23,7 @@ use crate::buildeventstream::build_event::BuildEvent;
 use crate::buildeventstream::build_event_context::{
     ArtifactGroupNamer, BuildEventContext, PathConverter,
 };
-use crate::buildeventstream::transport::{BuildEventTransport, TransportCloseError};
+use crate::buildeventstream::transport::{BuildEventTransport, CloseFuture, TransportCloseError};
 
 /// How a file transport serializes one event.
 pub trait SerializeEvent: Send + Sync {
@@ -56,7 +56,8 @@ type PendingWrite = Option<(Arc<dyn BuildEvent>, PathConverterFuture)>;
 // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:93 FileTransport.SequentialWriter
 struct SequentialWriter {
     pending_writes: mpsc::Sender<PendingWrite>,
-    writer_thread: Option<std::thread::JoinHandle<()>>,
+    /// `closeFuture`: completed by the writer thread when it ends.
+    close_future: CloseFuture,
 }
 
 /// Non-blocking file transport.
@@ -80,6 +81,8 @@ pub struct FileTransport<S: SerializeEvent + 'static> {
     is_closed: AtomicBool,
     /// The writer thread, once one is needed. The lock also orders the sends.
     sequential_writer: Mutex<Option<SequentialWriter>>,
+    /// The close future of a transport that never needed a writer thread.
+    close_future: Mutex<Option<CloseFuture>>,
     bes_upload_mode: BesUploadMode,
     name: &'static str,
 }
@@ -109,6 +112,7 @@ impl<S: SerializeEvent + 'static> FileTransport<S> {
             shared,
             is_closed: AtomicBool::new(false),
             sequential_writer: Mutex::new(None),
+            close_future: Mutex::new(None),
             bes_upload_mode,
             name,
         }
@@ -119,13 +123,25 @@ impl<S: SerializeEvent + 'static> FileTransport<S> {
     fn start_sequential_writer(shared: &Arc<Shared<S>>) -> SequentialWriter {
         let (sender, receiver) = mpsc::channel::<PendingWrite>();
         let thread_shared = shared.clone();
-        let handle = std::thread::Builder::new()
+        let close_future = CloseFuture::create();
+        let thread_close_future = close_future.clone();
+        // The thread is not joined: callers wait for the close future (Java's `closeFuture`),
+        // which the thread completes when it ends (`finally { ... closeFuture.set(null) }`, or
+        // `closeFuture.setException(e.getCause())` for a RuntimeException or Error).
+        std::thread::Builder::new()
             .name("bep-local-writer".to_string())
-            .spawn(move || Self::run(&thread_shared, &receiver))
+            .spawn(move || {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Self::run(&thread_shared, &receiver)
+                })) {
+                    Ok(()) => thread_close_future.set(Self::close_result(&thread_shared)),
+                    Err(payload) => thread_close_future.set_panicked(payload),
+                }
+            })
             .expect("failed to start the bep-local-writer thread");
         SequentialWriter {
             pending_writes: sender,
-            writer_thread: Some(handle),
+            close_future,
         }
     }
 
@@ -193,6 +209,14 @@ impl<S: SerializeEvent + 'static> FileTransport<S> {
             Self::write_event(shared, event.as_ref(), converter.get());
         }
         Self::close_output(shared);
+    }
+
+    /// What the close future completes with: the failure `exitFailure` recorded, if any.
+    fn close_result(shared: &Shared<S>) -> Result<(), TransportCloseError> {
+        match &shared.writer.lock().failure {
+            Some(f) => Err(f.clone()),
+            None => Ok(()),
+        }
     }
 
     /// The `finally` of `SequentialWriter.run`: flush and close the stream, release the
@@ -276,32 +300,30 @@ impl<S: SerializeEvent + 'static> BuildEventTransport for FileTransport<S> {
             .send(Some((event.clone(), converter)));
     }
 
-    // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:225 FileTransport.close
-    fn close(&self) -> Result<(), TransportCloseError> {
+    // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:274 FileTransport.close
+    // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:225 SequentialWriter.close
+    fn close(&self) -> CloseFuture {
         let already_closed = self.is_closed.swap(true, Ordering::SeqCst);
-        let mut sequential_writer = self.sequential_writer.lock();
-        match sequential_writer.as_mut() {
+        let sequential_writer = self.sequential_writer.lock();
+        match sequential_writer.as_ref() {
             Some(sequential_writer) => {
                 if !already_closed {
+                    // pendingWrites.put(CLOSE_EVENT_FUTURE); the writer thread completes the
+                    // close future once the events before it are written.
                     let _ = sequential_writer.pending_writes.send(None);
                 }
-                if let Some(handle) = sequential_writer.writer_thread.take()
-                    && let Err(panic) = handle.join()
-                {
-                    // closeFuture.setException(e.getCause()) for a RuntimeException or Error.
-                    std::panic::resume_unwind(panic);
-                }
+                sequential_writer.close_future.clone()
             }
             None => {
-                if !already_closed {
+                // PORT: without a writer thread (see the type's comment) the events are already
+                // written; the stream is closed here and the future is complete.
+                let mut close_future = self.close_future.lock();
+                if close_future.is_none() {
                     Self::close_output(&self.shared);
+                    *close_future = Some(CloseFuture::immediate(Self::close_result(&self.shared)));
                 }
+                close_future.clone().expect("set above")
             }
-        }
-        drop(sequential_writer);
-        match &self.shared.writer.lock().failure {
-            Some(f) => Err(f.clone()),
-            None => Ok(()),
         }
     }
 
@@ -376,7 +398,8 @@ impl SerializeEvent for JsonFormatSerializer {
             // Logged in Java: "Failed to serialize to JSON due to Any type resolution failure".
             Err(_) => UNKNOWN_ANY_TYPE_ERROR_EVENT.to_string(),
         };
-        // PORT: StringEncoding identity; getBytes(UTF_8) of the printed string.
+        // getBytes(UTF_8) of the printed string: proto strings that hold internal strings come
+        // out double encoded, as in Bazel.
         format!("{proto_json_representation}\n").into_bytes()
     }
 }

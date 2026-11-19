@@ -102,8 +102,7 @@ impl InfoItemHandler for StdoutInfoItemHandler {
     fn add_info_item(&mut self, key: &str, value: &[u8]) -> Result<(), InfoItemHandlerException> {
         let out = self.out_err.get_output_stream();
         if self.print_keys {
-            // PORT: StringUnsafe.getInternalStringBytes is the identity on Rust strings.
-            out.write(key.as_bytes())?;
+            out.write(&blaze_util::string_encoding::latin1_encode(key))?;
             out.write(b":")?;
             out.write(b" ")?;
         }

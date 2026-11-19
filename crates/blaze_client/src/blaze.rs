@@ -12,6 +12,7 @@ use blaze_options::rc::option_processor::{
     BAZEL_SYSTEM_BAZELRC_PATH, OptionProcessor, RcStartupFlag, StartupFlagRegistry,
 };
 use blaze_protos::command_server::{RunRequest, StartupOption};
+use blaze_util::string_encoding::latin1_encode;
 
 use crate::archive_utils::{
     EmbeddedArchive, LoggingInfo, RestartReason, determine_archive_contents, extract_build_label,
@@ -359,7 +360,8 @@ pub fn build_run_request(
     request.preemptible = preemptible;
     request.client_description = format!("pid={}", get_process_id_as_string());
     for arg in arg_vector {
-        request.arg.push(arg.as_bytes().to_vec());
+        // The C++ sends the raw bytes of the argument.
+        request.arg.push(latin1_encode(arg).into_owned());
     }
     if !invocation_policy.is_empty() {
         request.invocation_policy = invocation_policy.to_string();
@@ -368,8 +370,8 @@ pub fn build_run_request(
 
     for startup_option in original_startup_options {
         let proto_option_field = StartupOption {
-            source: startup_option.source.as_bytes().to_vec(),
-            option: startup_option.value.as_bytes().to_vec(),
+            source: latin1_encode(&startup_option.source).into_owned(),
+            option: latin1_encode(&startup_option.value).into_owned(),
         };
         request.startup_options.push(proto_option_field);
         // The C++ calls request.add_startup_options() a second time for each option
@@ -723,7 +725,7 @@ pub fn add_logging_args(
 /// Joins the elements of the specified array with NUL's (\0's), akin to the format of
 /// /proc/$PID/cmdline.
 pub fn get_argument_string(argument_array: &[String]) -> Vec<u8> {
-    argument_array.join("\0").into_bytes()
+    latin1_encode(&argument_array.join("\0")).into_owned()
 }
 
 // Java: src/main/cpp/blaze.cc:678 EnsureServerDir
@@ -913,8 +915,7 @@ fn get_server_pid(server_dir: &Path) -> i32 {
     let Some(bufstr) = read_file_path(&pid_file, 32) else {
         return -1;
     };
-    // PORT: byte-strings (C++ parses the pid file's raw bytes; a non-digit fails either way).
-    let (ok, result) = safe_strto32(&String::from_utf8_lossy(&bufstr));
+    let (ok, result) = safe_strto32(&crate::util::strings::from_platform_bytes(&bufstr));
     if !ok {
         return -1;
     }
@@ -1492,14 +1493,22 @@ pub fn print_bazel_leaf() {
         "                                      `.----------------..`           \n",
         "                                         ```.........```             \n",
     );
-    println!("{}", leaf);
+    print_stdout(&format!("{}\n", leaf));
+}
+
+/// `std::cout << s`: the raw bytes of the internal string.
+fn print_stdout(s: &str) {
+    let _ = std::io::Write::write_all(
+        &mut std::io::stdout(),
+        &crate::util::strings::console_bytes(s),
+    );
 }
 
 // Java: src/main/cpp/blaze.cc:1512 PrintVersionInfo
 /// Prints client version information to standard output, e.g. when invoking the client with
 /// "--version".
 pub fn print_version_info(build_label: &str, product_name: &str) {
-    println!("{} {}", product_name, build_label);
+    print_stdout(&format!("{} {}\n", product_name, build_label));
 }
 
 // Java: src/main/cpp/blaze.cc:1516 RunLauncher
@@ -1782,8 +1791,17 @@ fn blaze_main(
     )
 }
 
+/// The process's `argv` as the C++ `main` gets it: the raw bytes of each argument, held as
+/// internal strings (one char per byte). Pass it to [`main`].
+pub fn argv_from_os() -> Vec<String> {
+    std::env::args_os()
+        .map(|a| blaze_util::string_encoding::platform_to_internal(&a).into_owned())
+        .collect()
+}
+
 // Java: src/main/cpp/main.cc:24 main_impl
-/// The client's `main`: runs Bazel's client logic for `argv` (`argv[0]` is the program name)
+/// The client's `main`: runs Bazel's client logic for `argv` (internal strings, as
+/// [`argv_from_os`] returns them; `argv[0]` is the program name)
 /// with the in-process `server` and the embedded install `archive`. Returns the exit code.
 /// Fatal errors (`BAZEL_DIE`) exit the process directly, as the C++ does.
 pub fn main(argv: Vec<String>, server: &dyn InProcessServer, archive: &EmbeddedArchive) -> i32 {

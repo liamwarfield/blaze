@@ -221,7 +221,7 @@ fn get_additional_workspace_status(
     }
     let bytes = stdout_stream.lock().to_byte_array();
     // stdoutStream.toString(UTF_8)
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(blaze_util::string_encoding::java_new_string_utf8(&bytes))
 }
 
 impl ExecutableAction for BazelWorkspaceStatusAction {

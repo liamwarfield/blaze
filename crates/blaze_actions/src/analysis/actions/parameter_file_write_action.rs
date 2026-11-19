@@ -144,13 +144,8 @@ impl ParameterFileWriteAction {
         let mut out: Vec<u8> = Vec::new();
         parameter_file::write_parameter_file(&mut out, self.get_arguments()?, self.type_)
             .expect("writing to a byte array cannot fail");
-        // Java: `new String(out.toByteArray(), ISO_8859_1)`. The bytes are
-        // `internal_string_bytes` of the arguments, so this cannot fail.
-        Ok(
-            blaze_util::string_encoding::internal_string_from_bytes(&out)
-                .expect("parameter file contents came from strings")
-                .into_owned(),
-        )
+        // Java: `out.toString(ISO_8859_1)`.
+        Ok(blaze_util::string_encoding::latin1_decode(&out).into_owned())
     }
 
     /// Returns `None` where Java returns null; an error carries the `EvalException` message.

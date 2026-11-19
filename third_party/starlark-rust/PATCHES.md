@@ -42,6 +42,11 @@ by adding.
 | 0029 | applied | every unresolved name of a file (`starlark::eval::resolve_errors`) |
 | 0030 | applied | var statements `x: T` under type syntax (bound, never assigned) |
 | 0031 | applied | a cycle in repr/str prints `...` |
+| 0032 | applied | string literal escapes as Bazel's lexer: octal `\0`-`\377` one char, `\x` `\u` `\U` `\N` and unknown escapes are errors (Java's texts and positions), carriage returns kept |
+| 0033 | applied | `upper`/`lower` ASCII only; `capitalize`/`title` with Java's `Character` per char; `is*` predicates with Java's matchers |
+| 0034 | applied | the byte-strings semantics flag on the evaluator (`Evaluator::set_utf8_byte_strings`, default true); `strip`/`lstrip`/`rstrip` whitespace by the flag |
+| 0035 | applied | string repr escapes only `"`, `\` and chars below 0x20 (`\xNN`) |
+| 0036 | applied | the string repeat limit counts chars |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -52,6 +57,19 @@ resilient = aborted chunks re-run statement by statement):
 | + patches 0001–0004, 0006 | 30/95 | 2077 | 2379/2725 | 0 |
 | + blaze_starlark universe and `json` port | 30/95 | 2180 | 2443/2744 | 0 |
 | + 0005, 0007–0009, 0026–0031 (tree of 2026-11-18, before commit) | 37/95 | 2494 | 2567/2773 | 0 |
+
+Both of Bazel's ScriptTest targets (`starlark_conformance run` and `run --latin1`; columns as
+above). `ScriptTest_Latin1` (ScriptTest.java:244-259: the chunk's UTF-8 bytes decoded one char per
+byte, `-internal_bazel_only_utf_8_byte_strings` on, `_utf8_byte_strings = True`) is how Blaze
+reads every Starlark file since the byte-strings switch (docs/research/07-byte-strings-rules.md),
+so it is the column that matters; `ScriptTest` runs with the flag off.
+
+| tree | mode | chunks | strict asserts | resilient asserts | unsafe-to-run asserts |
+|---|---|---|---|---|---|
+| through 0031 (working tree of 2026-11-18, `e98c83c` + uncommitted) | ScriptTest | 37/95 | 2494 | 2567/2773 | 0 |
+| through 0031 (same) | ScriptTest_Latin1 | 37/95 | 2487 | 2561/2773 | 0 |
+| + 0032–0036, blaze_starlark `json.decode` bytes (same tree + this work) | ScriptTest | 37/95 | 2494 | 2567/2773 | 0 |
+| + 0032–0036, blaze_starlark `json.decode` bytes (same) | ScriptTest_Latin1 | 38/95 | 2495 | 2569/2773 | 0 |
 
 Known gap left by 0002: GC tracing, freezing and equality of very deep values still recurse on
 the native stack; Blaze runs evaluation on threads with large stacks
@@ -544,3 +562,96 @@ the native stack; Blaze runs evaluation on threads with large stacks
 - Fix: `types/list/value.rs`, `types/dict/value.rs` and the default
   `StarlarkValue::collect_repr_cycle` (`values/traits.rs`).
 - Test: `patch_0031_cycle_repr`.
+
+## 0032 — string literal escapes
+
+- Gap: Bazel's lexer (net/starlark/java/syntax/Lexer.java:322-404 `escapedStringLiteral`) reads
+  `\0`..`\377` as one char 0..=0xFF ("octal escape sequence out of range (maximum is \377)" at
+  the last digit above that) and rejects `\x`, `\u`, `\U`, `\N` and every other unknown escape
+  ("invalid escape sequence: \q. Use '\\' to insert '\'.", at the char after the backslash,
+  :402). starlark-rust accepted `\x41`, `\u0041`, `\U...`, octal escapes up to `\777`, and kept
+  the backslash of an unknown escape (`"\q"` was two chars). It also dropped carriage returns
+  inside string literals (Java keeps them), rejected a backslash before a lone CR (Java: line
+  continuation), and read a raw literal's backslash-CRLF as backslash, CR, LF (an error in a
+  single-quoted literal; Java: backslash-LF; a backslash-CR alone stays only on Java's quick scan
+  of a single-quoted raw literal without backslash-CRLF, :463-474). An unclosed literal said "Parse error: unfinished string literal"
+  (Java: "unclosed string literal", :301, at the opening quote). Non-ASCII chars of a literal
+  (Latin-1 decoded source) were and are passed through unchanged.
+- Fix: `starlark_syntax/src/lexer.rs`: `escape_bazel` (Java's switch, used by `string()` for
+  non-raw literals; `escape` stays for f-strings, which Bazel's dialect disables),
+  `BazelEscapeError`, `LexemeError::BlazeInvalidEscape` / `BlazeOctalOutOfRange` (Java's texts;
+  spans at Java's positions), the raw-literal CR handling (`raw_literal_has_backslash_crlf`), CR
+  kept in the slow path, `UnfinishedStringLiteral` text.
+- Limitation: Java reports every lexer error of a file; starlark-rust stops at the first.
+- Users: every BUILD/.bzl file; blaze_starlark `syntax::resolver` keeps the
+  `stringLiteralsAreAsciiOnly` check (.scl).
+- Tests: `patch_0032_lexer_escapes`; `java_recorded_latin1` (tests/data/escape_*.star against
+  Bazel's interpreter, recorded with crates/starlark_conformance/java/StarlarkProbe.java);
+  dialect `bazel_string_escapes`; blaze_starlark `traceback_test::non_ascii_columns_and_source_lines`
+  (oracle).
+
+## 0033 — case mapping and character predicates
+
+- Gap: Bazel's string methods (net/starlark/java/eval/StringModule.java) are defined on the
+  UTF-16 chars of the string, which in Blaze's internal strings are the bytes of the UTF-8:
+  `upper`/`lower` are Guava `Ascii.toUpperCase/toLowerCase` (:174, :182); `capitalize` (:526) is
+  `Character.toUpperCase(first) + Ascii.toLowerCase(rest)`; `title` (:542) uses
+  `Character.isLetter/isUpperCase/isLowerCase/toLowerCase/toUpperCase` per char; `isalpha`,
+  `isalnum`, `isdigit`, `islower`, `isupper`, `istitle` use the matchers `[a-zA-Z]`, javaDigit,
+  `[a-z]`, `[A-Z]` (:757-878); `isspace` Guava `CharMatcher.whitespace()`. starlark-rust used
+  Rust's Unicode case mapping and properties (`"aé".upper()` changed the bytes of `é`,
+  `"aé".islower()` differed; oracle values in docs/research/07-byte-strings.md 2.3).
+- Fix: `values/types/string/methods.rs`: the methods above follow Java; helpers `java_is_letter`,
+  `java_is_upper_case`, `java_is_lower_case`, `java_to_upper_case`, `java_to_lower_case`,
+  `java_is_digit`, `guava_is_whitespace`, `java_matches` (StringModule.matches). For
+  U+0000..U+00FF (every char of an internal string) they are Java's `Character` table, checked
+  against the JDK of Bazel's install base: `ÿ` U+00FF upper-cases to U+0178 and `µ` U+00B5 to
+  U+039C, leaving Latin-1 as in Java; `ß` U+00DF stays `ß` (no one-char upper case); `ª`, `º`,
+  `µ`, `ß` are lower case. Above U+00FF (not reachable from Blaze) the nearest Rust property
+  stands in, and chars above U+FFFF (a surrogate pair in Java) are uncased non-letters.
+- Tests: `patch_0033_case_mapping_and_predicates`; `java_recorded_latin1` (tests/data/
+  latin1_chars.star: every Latin-1 char through 31 operations, against Bazel's interpreter);
+  starlark_conformance `byte_strings::byte_string_cases_match_oracle` (oracle cases
+  `upper_zh`, `lower_E`, `islower_ae`, `capitalize_zh`, `title_ete`).
+
+## 0034 — the byte-strings flag; `strip` whitespace
+
+- Gap: Java reads the semantics flag `-internal_bazel_only_utf_8_byte_strings`
+  (StarlarkSemantics.java:267; Bazel sets it from `--internal_starlark_utf_8_byte_strings`,
+  default true, BuildLanguageOptions.java:801) in two places: `StringModule.matcher` (:326; `strip`,
+  `lstrip`, `rstrip` without `chars` remove ASCII whitespace, :206, when on and Latin-1
+  whitespace, :196, when off) and `Json.decode`. starlark-rust has no semantics and stripped Rust
+  whitespace (U+0085 and U+00A0, UTF-8 continuation bytes, were stripped; U+001C..U+001F were
+  not).
+- Fix: `eval/runtime/evaluator.rs`: `Evaluator::set_utf8_byte_strings(bool)` /
+  `utf8_byte_strings()` (default true, Bazel's default). `values/types/string/methods.rs`:
+  `strip`/`lstrip`/`rstrip` take the evaluator (no longer `speculative_exec_safe`: the result
+  depends on the flag) and use `java_strip_matcher` / `java_strip_whitespace`.
+- Users: blaze_starlark `eval` sets the flag from `StarlarkSemantics::utf8_byte_strings()` on
+  every evaluator it creates; blaze_starlark `json.decode` reads it; starlark_conformance sets it
+  per ScriptTest mode. Evaluators created elsewhere get Bazel's default.
+- Tests: `patch_0034_strip_whitespace_flag`; `java_recorded_unicode_latin1_chars` (flag off,
+  against Bazel's interpreter); ScriptTest_Latin1 string_misc.star:220-222.
+
+## 0035 — string repr
+
+- Gap: Java `Printer.escapeCharacter` (net/starlark/java/eval/Printer.java:239) escapes `"`,
+  `\`, `\r`, `\n`, `\t` and other chars below 0x20 (as `\xNN`) and writes every other char
+  as it is. starlark-rust also escaped DEL, U+0080..U+00FF (the non-ASCII bytes of every internal
+  string: `repr("é")` came out as `"\xc3\xa9"`) and non-alphanumeric chars above (`\uNNNN`,
+  `\UNNNNNNNN`). Affects `repr`, `str` of containers, `%r`, error messages that quote a string.
+- Fix: `values/types/string/repr.rs` `need_escape` / `push_escape` (the vendored unit tests
+  updated to Java's output).
+- Users: blaze_starlark `printer::quote` already did the same for Blaze values (Label repr now
+  calls it).
+- Tests: `patch_0035_repr_escapes`; dialect `bazel_string_repr_escapes_only_control_chars`;
+  `byte_string_cases_match_oracle` (`repr_e_ctl`, `str_list`, `pct_s_r`).
+
+## 0036 — string repeat limit counts chars
+
+- Gap: 0002 checked `"s" * n` against `i32::MAX` UTF-8 bytes; Java checks `s.length()` chars
+  (EvalUtils.java:433 repeatString), which for an internal string is its byte count. Each
+  non-ASCII char of an internal string is two UTF-8 bytes, so the limit and the message's
+  length differed.
+- Fix: `values/types/string/str_type.rs` `mul` counts chars (`fast_string::len`).
+- Test: `patch_0036_repeat_limit_counts_chars`.

@@ -30,9 +30,9 @@ pub fn strerror(errnum: i32) -> String {
         return format!("Unknown error {errnum}");
     }
     // SAFETY: NUL-terminated by strerror_r.
-    unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
-        .to_string_lossy()
-        .into_owned()
+    let message = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
+    // A platform string (the JVM decodes it with `sun.jnu.encoding`, ISO-8859-1).
+    blaze_util::string_encoding::latin1_decode(message.to_bytes()).into_owned()
 }
 
 /// The message Java would carry in an `IOException` for this error (`getMessage()`), or `None`
@@ -200,7 +200,7 @@ impl JavaProcessBuilder {
         let dir = self
             .directory
             .as_ref()
-            .map(|d| cstring(d.get_path().as_bytes()));
+            .map(|d| cstring(&platform_bytes(d.get_path())));
         let spawned = exec.spawn(
             dir.as_deref(),
             [
@@ -286,7 +286,9 @@ fn open_redirect(f: &JavaFile, append: bool) -> Result<OwnedFd, String> {
     } else {
         options.truncate(true);
     }
-    match options.open(f.get_path()) {
+    match options.open(blaze_util::string_encoding::internal_to_platform(
+        f.get_path(),
+    )) {
         Ok(file) => Ok(OwnedFd::from(file)),
         Err(e) => Err(format!(
             "{} ({})",
@@ -361,15 +363,25 @@ fn cstring(s: &[u8]) -> CString {
     CString::new(s).expect("NUL checked by caller")
 }
 
+/// The bytes the JVM passes to the system for a Java `String` (argv, environment, a directory):
+/// encoded with `sun.jnu.encoding`, which is ISO-8859-1 for Bazel's server (`blaze.cc` starts it
+/// in the `en_US.ISO-8859-1` locale), so that an internal string reaches the system as its bytes.
+// Java: com/google/devtools/build/lib/util/StringEncoding.java:104 StringEncoding.internalToPlatform
+// (the identity in that locale; the encoding itself is the JDK's, here)
+fn platform_bytes(s: &str) -> std::borrow::Cow<'_, [u8]> {
+    blaze_util::string_encoding::latin1_encode_lossy(s)
+}
+
 impl ExecPlan {
     fn new(argv: &[String], env: &IndexMap<String, String>) -> ExecPlan {
-        let argv_c: Vec<CString> = argv.iter().map(|a| cstring(a.as_bytes())).collect();
+        let argv_c: Vec<CString> = argv.iter().map(|a| cstring(&platform_bytes(a))).collect();
         // PORT: the JDK builds envp from a HashMap (unspecified order); we keep insertion order.
         let envp_c: Vec<CString> = env
             .iter()
-            .map(|(k, v)| cstring(format!("{k}={v}").as_bytes()))
+            .map(|(k, v)| cstring(&platform_bytes(&format!("{k}={v}"))))
             .collect();
-        let file = argv[0].as_bytes();
+        let file = platform_bytes(&argv[0]);
+        let file: &[u8] = &file;
         let empty_file = file.is_empty();
         let search = !file.contains(&b'/');
         let mut candidates = Vec::new();

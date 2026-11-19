@@ -44,18 +44,55 @@ impl Entry {
     }
 }
 
-/// The source artifact cache, keyed ASCII-case-insensitively on the exec path.
+/// The source artifact cache, keyed case-insensitively on the exec path.
 // Java: com/google/devtools/build/lib/actions/ArtifactFactory.java:60 ArtifactFactory.SourceArtifactCache
-// PORT: Java's ConcurrentSkipListMap with String.CASE_INSENSITIVE_ORDER holds an Entry or a list
-// of Entries per case-folded key; a map from the ASCII-lowercased path string to a Vec of entries
-// has the same lookups (paths are internal-encoded strings; non-ASCII bytes compare exactly).
+// PORT: Java's ConcurrentSkipListMap with its case-insensitive comparator holds an Entry or a list
+// of Entries per equivalence class of the comparator; a map from the class's key
+// ([`case_insensitive_key`]) to a Vec of entries has the same lookups.
 struct SourceArtifactCache {
     path_to_source_artifact: BTreeMap<String, Vec<Entry>>,
     build_id: i32,
 }
 
+/// The key of `exec_path`'s equivalence class under the map's comparator,
+/// `comparing(p -> StringEncoding.internalToUnicode(p.getPathString()),
+/// String.CASE_INSENSITIVE_ORDER)`: two paths compare equal exactly when their Unicode forms have
+/// the same length in UTF-16 units and, unit by unit,
+/// `Character.toLowerCase(Character.toUpperCase(c))` agrees. So `É` and `é` are one class, and so
+/// are two different byte sequences that are not UTF-8 (both become U+FFFD).
+// Java: com/google/devtools/build/lib/actions/ArtifactFactory.java:81 SourceArtifactCache.pathToSourceArtifact
 fn case_insensitive_key(exec_path: &PathFragment) -> String {
-    exec_path.get_path_string().to_ascii_lowercase()
+    blaze_util::string_encoding::internal_to_unicode(exec_path.get_path_string())
+        .chars()
+        .map(java_case_insensitive_fold)
+        .collect()
+}
+
+/// `Character.toLowerCase(Character.toUpperCase(c))` for one UTF-16 unit of
+/// `String.CASE_INSENSITIVE_ORDER` (JDK `String.CaseInsensitiveComparator`).
+///
+/// PORT: Java uses the simple case mappings (one char to one char); Rust's `char` methods give
+/// the full ones. They agree where the full mapping is one char. Where it is several, the simple
+/// upper-case mapping is the char itself for every char whose lower-case mapping then decides
+/// (ß, ŉ, the Greek ypogegrammeni letters fold to the same char either way), and the one
+/// multi-char lower-case mapping, U+0130, is written out. A supplementary char is two surrogates
+/// for Java, which no case mapping changes.
+fn java_case_insensitive_fold(c: char) -> char {
+    fn single(mut it: impl Iterator<Item = char>) -> Option<char> {
+        let first = it.next()?;
+        it.next().is_none().then_some(first)
+    }
+    if c.is_ascii() {
+        return c.to_ascii_lowercase();
+    }
+    if c as u32 > 0xFFFF {
+        return c;
+    }
+    let upper = single(c.to_uppercase()).unwrap_or(c);
+    if upper == '\u{130}' {
+        return 'i';
+    }
+    single(upper.to_lowercase()).unwrap_or(upper)
 }
 
 impl SourceArtifactCache {
@@ -747,5 +784,44 @@ fn create_artifact(
             }
         }
         Some(t) => Artifact::create_special_artifact(root, exec_path, action_lookup_key(owner), t),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(s: &str) -> String {
+        case_insensitive_key(&PathFragment::create(s))
+    }
+
+    #[test]
+    fn case_insensitive_key_follows_java_comparator() {
+        use blaze_util::string_encoding::unicode_to_internal;
+        assert_eq!(key("Foo/BAR.h"), key("foo/bar.h"));
+        // `É` (c3 89) and `é` (c3 a9): one class for Java, which compares the Unicode forms.
+        assert_eq!(
+            key(&unicode_to_internal("dir/\u{c9}.h")),
+            key(&unicode_to_internal("dir/\u{e9}.h"))
+        );
+        assert_ne!(
+            key(&unicode_to_internal("dir/\u{e9}.h")),
+            key(&unicode_to_internal("dir/e.h"))
+        );
+        // `🐷` (f0 9f 90 b7): no case.
+        assert_eq!(
+            key(&unicode_to_internal("\u{1f437}")),
+            "\u{1f437}".to_string()
+        );
+        // Bytes that are not UTF-8 all become U+FFFD.
+        assert_eq!(key("a\u{ff}"), key("A\u{fe}"));
+        // `ß` has no one-char upper case; `SS` is longer.
+        assert_ne!(
+            key(&unicode_to_internal("\u{df}")),
+            key(&unicode_to_internal("SS"))
+        );
+        assert_eq!(java_case_insensitive_fold('\u{130}'), 'i');
+        assert_eq!(java_case_insensitive_fold('\u{1f88}'), '\u{1f80}');
+        assert_eq!(java_case_insensitive_fold('\u{1f80}'), '\u{1f80}');
     }
 }

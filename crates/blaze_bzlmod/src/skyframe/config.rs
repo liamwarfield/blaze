@@ -95,7 +95,7 @@ impl RepositoryDirectoryLookup for BuiltinRepositoryDirectoryLookup {
             );
         };
         // local_repository: a relative path is relative to the main repository's root.
-        Ok(Some(self.workspace_root.join(path)))
+        Ok(Some(self.workspace_root.join(super::platform_path(path))))
     }
 }
 
@@ -213,11 +213,10 @@ fn normalize_base_urls(base_urls: &[String]) -> IndexSet<String> {
 /// working directory. If it starts with `%workspace%`, it is relative to the workspace root.
 // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:700 BazelRepositoryModule.getAbsolutePath
 fn get_absolute_path(path: &str, workspace_root: &Path, working_directory: &Path) -> String {
-    // PORT: byte-strings (workspace and working directory paths are converted lossily; Java keeps the bytes)
-    let mut path = path.replace("%workspace%", &workspace_root.to_string_lossy());
+    // `Path.getPathString()`: the internal string of the platform path.
+    let mut path = path.replace("%workspace%", &super::path_string(workspace_root));
     if !PathFragment::is_absolute_str(&path) {
-        // PORT: byte-strings (workspace and working directory paths are converted lossily; Java keeps the bytes)
-        path = PathFragment::create(&working_directory.to_string_lossy())
+        path = PathFragment::create(&super::path_string(working_directory))
             .get_relative_str(&path)
             .get_path_string()
             .to_string();
@@ -276,7 +275,7 @@ impl BzlmodConfig {
         let vendor_directory = repo_options
             .vendor_directory
             .as_ref()
-            .map(|v| workspace_root.join(v.get().get_path_string()));
+            .map(|v| workspace_root.join(super::platform_path(v.get().get_path_string())));
         // PORT: the external/vendor symlinks beforeCommand creates belong to repository fetching
         // and vendoring (not ported).
 

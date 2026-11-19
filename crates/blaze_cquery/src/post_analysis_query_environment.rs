@@ -427,7 +427,7 @@ pub fn starlark_aspect_class_java_hash_code(
             aspect_class.get_extension_label(),
             class_identity_hash_code,
         ),
-        // PORT: StringEncoding identity (the exported name is a Java internal-form string).
+        // The exported name is an internal string.
         java_internal_string_hash_code(aspect_class.get_exported_name()),
     )
 }
@@ -454,8 +454,8 @@ pub fn aspect_class_java_hash_code(
 /// `AspectParameters.hashCode()`: `Objects.hashCode(attributes)`, the hash code of an
 /// `ImmutableListMultimap<String, String>`, which is `asMap().hashCode()`: the sum over the keys
 /// of `key.hashCode() ^ values.hashCode()` (`Map.Entry.hashCode()`), the values being an
-/// `ImmutableList<String>` (`List.hashCode()`). The strings are Java internal-form strings
-/// (attribute names and values), so `String.hashCode()` runs over their UTF-8 bytes.
+/// `ImmutableList<String>` (`List.hashCode()`). The strings are internal strings (attribute
+/// names and values), so `String.hashCode()` runs over their Latin-1 chars, one per byte.
 // Java: com/google/devtools/build/lib/packages/AspectParameters.java:118 AspectParameters.hashCode
 pub fn aspect_parameters_java_hash_code(parameters: &AspectParameters) -> i32 {
     let mut hash_code: i32 = 0;
@@ -2700,7 +2700,7 @@ mod tests {
                 [765386214, 1897800103, -2137181366, -1897800104, 2137181365],
             ),
             (
-                "//pkg:\u{e4}",
+                "//pkg:\u{c3}\u{a4}",
                 [1181073805, -1981479602, -1721493775, 1981479601, 1721493774],
             ),
         ];

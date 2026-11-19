@@ -5,6 +5,7 @@
 
 use std::io::{self, Read, Write as _};
 
+use blaze_util::string_encoding::internal_to_platform;
 use blaze_vfs::{Path, PathFragment};
 
 use super::{
@@ -27,7 +28,10 @@ pub(crate) fn decompress(descriptor: &DecompressorDescriptor) -> Result<Path, De
     let rename_files = &descriptor.rename_files;
     let mut found_prefix = false;
 
-    let file = std::fs::File::open(descriptor.archive_path.get_path_string())?;
+    // Java: descriptor.archivePath().getPathFile()
+    let file = std::fs::File::open(internal_to_platform(
+        descriptor.archive_path.get_path_string(),
+    ))?;
     let mut reader = sevenz_rust2::ArchiveReader::new(file, sevenz_rust2::Password::empty())
         .map_err(sevenz_error)?;
     let names: Vec<String> = reader

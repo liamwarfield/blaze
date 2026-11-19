@@ -633,3 +633,34 @@ rc_test!(
         ]
     )]
 );
+
+// Blaze: the C++ client keeps the rc file's raw bytes; Blaze holds them as an internal string
+// (one char per byte). A non-ASCII comment is skipped, a value keeps its bytes (`é` is C3 A9,
+// `🐷` is F0 9F 90 B7, FF is not UTF-8), a quoted value keeps its spaces, and a byte A0 (which
+// Rust's `char::is_whitespace` would take for U+00A0) is not a separator.
+#[test]
+fn non_ascii_bytes_are_kept_one_char_per_byte() {
+    let t = RcOptionsTest::new("non_ascii_bytes_are_kept_one_char_per_byte");
+    let path = join(&t.test_file_dir, "non_ascii.bazelrc");
+    std::fs::write(
+        &path,
+        b"# comment \xc3\xa9 \xf0\x9f\x90\xb7 \xff\n\
+          build --define=x=\xc3\xa9 # trailing \xc3\xa9\n\
+          build '--define=y=a \xf0\x9f\x90\xb7'\n\
+          build --z=\xff\xa0w\n",
+    )
+    .unwrap();
+    let rc = t.parse("non_ascii.bazelrc").unwrap();
+    let got: Vec<&str> = rc.options()["build"]
+        .iter()
+        .map(|o| o.option.as_str())
+        .collect();
+    assert_eq!(
+        got,
+        [
+            "--define=x=\u{c3}\u{a9}",
+            "--define=y=a \u{f0}\u{9f}\u{90}\u{b7}",
+            "--z=\u{ff}\u{a0}w",
+        ]
+    );
+}

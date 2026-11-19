@@ -72,8 +72,7 @@ const INVALID_UTF_8_MESSAGE: &str = "not a valid UTF-8 encoded file; this can le
 struct InvalidUtf8Exception;
 
 /// Checks the file's encoding per `--incompatible_enforce_starlark_utf8` and returns its text.
-// PORT: Java decodes the bytes as Latin-1 (Bazel's internal string form); valid UTF-8 is
-// the same text in Rust (StringEncoding identity). Non-UTF-8 content is not ported.
+// The text is Bazel's internal string form: one char per byte (`ParserInput.fromLatin1`).
 // Java: com/google/devtools/build/lib/skyframe/StarlarkUtil.java:43 StarlarkUtil.createParserInput
 fn create_parser_input(
     bytes: &[u8],
@@ -105,12 +104,13 @@ fn create_parser_input(
             }
         }
     }
-    // PORT: byte-strings: Java keeps the file's raw bytes whatever they are
-    // (`ParserInput.fromLatin1(bytes, file)`: one char per byte), so a MODULE.bazel that is not
-    // UTF-8 still evaluates (with the warning above at the default enforcement mode); here it
-    // fails loudly.
-    match String::from_utf8(bytes.to_vec()) {
-        Ok(s) => Ok(s),
+    // `ParserInput.fromLatin1(bytes, file)`: one char per byte (Bazel's internal string form), so
+    // a MODULE.bazel that is not UTF-8 still evaluates (with the warning above at the default
+    // enforcement mode).
+    match blaze_util::string_encoding::parser_input_from_latin1(bytes) {
+        Ok(s) => Ok(s.into_owned()),
+        // PORT: only while `STRINGS_ARE_INTERNAL` is false (the seam of
+        // blaze_util::string_encoding).
         Err(_) => blaze_util::unported!("ParserInput.fromLatin1", "non-UTF-8 file {file}"),
     }
 }

@@ -1955,7 +1955,7 @@ enum PreprocessedArg {
 
 /// Java `String.length()` for command line strings, which are internal strings.
 fn len(s: &str) -> i32 {
-    blaze_util::string_encoding::internal_length(s) as i32
+    s.chars().count() as i32
 }
 
 impl PreprocessedArg {

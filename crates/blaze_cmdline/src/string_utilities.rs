@@ -16,21 +16,26 @@ pub(crate) fn sanitize_control_chars(message: &str) -> String {
     out
 }
 
-// Java String.toLowerCase on a Bazel internal (Latin-1 coded) string: lowercases ASCII letters
-// and the Latin-1 letters 0xC0-0xDE except 0xD7, byte by byte.
-fn latin1_to_lower(s: &[u8]) -> Vec<u8> {
-    s.iter()
-        .map(|&b| match b {
-            b'A'..=b'Z' => b + 0x20,
-            0xC0..=0xDE if b != 0xD7 => b + 0x20,
-            _ => b,
+// Java String.toLowerCase, as the chars it yields: `Character.toLowerCase` per char. On an
+// internal string (every char <= U+00FF) that lowercases ASCII letters and the Latin-1 letters
+// U+00C0-U+00DE except U+00D7; other chars are kept (the callers only compare the result).
+fn java_to_lower_chars(s: &str) -> Vec<char> {
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' => c.to_ascii_lowercase(),
+            '\u{c0}'..='\u{de}' if c != '\u{d7}' => {
+                char::from_u32(c as u32 + 0x20).expect("Latin-1")
+            }
+            '\u{100}'.. => c.to_lowercase().next().unwrap_or(c),
+            _ => c,
         })
         .collect()
 }
 
 /// Levenshtein distance capped at `max_edit_distance`; returns -1 if greater.
 // Java: net/starlark/java/spelling/SpellChecker.java:33 SpellChecker.editDistance
-pub(crate) fn edit_distance(s1: &[u8], s2: &[u8], max_edit_distance: i32) -> i32 {
+// Java's strings are sequences of chars; an internal string's chars are the `char`s here.
+pub(crate) fn edit_distance(s1: &[char], s2: &[char], max_edit_distance: i32) -> i32 {
     // This is the Levenshtein distance, as described here:
     // http://en.wikipedia.org/wiki/Levenshtein_distance
     if s1 == s2 {
@@ -74,14 +79,11 @@ pub(crate) fn suggest<'a>(
 ) -> Option<&'a str> {
     let mut best = None;
     // Heuristic: the expected number of typos depends on the length of the word.
-    let mut best_distance = std::cmp::min(5, (input.len() as i32 + 1) / 2);
-    let input = latin1_to_lower(input.as_bytes());
+    // `input.length()`: chars.
+    let mut best_distance = std::cmp::min(5, (input.chars().count() as i32 + 1) / 2);
+    let input = java_to_lower_chars(input);
     for candidate in words {
-        let d = edit_distance(
-            &input,
-            &latin1_to_lower(candidate.as_bytes()),
-            best_distance,
-        );
+        let d = edit_distance(&input, &java_to_lower_chars(candidate), best_distance);
         if d >= 0 && d < best_distance {
             best_distance = d;
             best = Some(candidate);
@@ -112,5 +114,22 @@ mod tests {
     fn spelling() {
         assert_eq!(did_you_mean("boo", ["foo"]), " (did you mean 'foo'?)");
         assert_eq!(did_you_mean("xyzzy", ["foo"]), "");
+    }
+
+    #[test]
+    fn spelling_counts_and_lowercases_chars_of_internal_strings() {
+        // "é" as an internal string is two chars (C3 A9): `input.length()` is 2, so the
+        // allowed distance is 1 and a one-char difference is not a suggestion.
+        assert_eq!(did_you_mean("\u{c3}\u{a9}", ["\u{c3}\u{a8}"]), "");
+        // Character.toLowerCase on each Latin-1 char: U+00C3 lowers to U+00E3.
+        assert_eq!(
+            did_you_mean("\u{c3}\u{a9}XY", ["\u{e3}\u{a9}xy"]),
+            " (did you mean '\u{e3}\u{a9}xy'?)"
+        );
+        // A byte that is not UTF-8 (FF) is one char.
+        assert_eq!(
+            did_you_mean("\u{ff}abc", ["\u{ff}abd"]),
+            " (did you mean '\u{ff}abd'?)"
+        );
     }
 }

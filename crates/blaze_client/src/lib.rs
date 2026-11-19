@@ -23,4 +23,4 @@ pub mod util;
 pub mod workspace_layout;
 
 pub use archive_utils::EmbeddedArchive;
-pub use blaze::main;
+pub use blaze::{argv_from_os, main};

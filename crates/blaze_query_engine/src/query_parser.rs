@@ -44,8 +44,8 @@ pub struct QueryParser<'a, T> {
 
 /// Java `Integer.parseInt(s)`.
 ///
-/// PORT: Java's `Character.digit` also accepts non-ASCII Unicode decimal digits; this accepts
-/// ASCII digits only.
+/// Java's `Character.digit` also accepts non-ASCII Unicode decimal digits, but none is a Latin-1
+/// char, and the query text is an internal string: ASCII digits are the whole set.
 fn java_parse_int(s: &str) -> Option<i32> {
     let (negative, digits) = match s.as_bytes().first()? {
         b'-' => (true, &s[1..]),

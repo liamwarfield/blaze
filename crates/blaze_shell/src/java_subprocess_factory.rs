@@ -273,7 +273,9 @@ impl SubprocessFactory for JavaSubprocessFactory {
     // Java: com/google/devtools/build/lib/shell/JavaSubprocessFactory.java:213 JavaSubprocessFactory.create
     fn create(&self, params: &SubprocessBuilder) -> io::Result<Box<dyn Subprocess>> {
         let mut builder = JavaProcessBuilder::new();
-        // PORT: StringEncoding identity (internalToPlatform).
+        // PORT: `StringEncoding.internalToPlatform` is the identity in the Latin-1 locale Bazel's
+        // server runs in (platform strings are internal strings); `java_process` encodes them
+        // one byte per char where the JDK would.
         builder.command(params.get_argv().to_vec());
         let env = match params.get_env() {
             Some(env) => env,

@@ -315,43 +315,12 @@ fn non_ascii_recording(json: Value) -> Recording {
     )
 }
 
-/// After the decoding switch Blaze holds Bazel's strings (the file read as Latin-1), and the
-/// dump is the oracle's file, byte for byte.
+/// Blaze holds Bazel's strings (the file read as Latin-1: internal strings), and the dump is the
+/// oracle's file, byte for byte, the `ff` of the raw-byte probes included.
 #[test]
-fn non_ascii_aquery_jsonproto_bytes_match_oracle_after_the_decoding_switch() {
-    use blaze_util::string_encoding::{latin1_decode, with_strings_are_internal_for_testing};
-    with_strings_are_internal_for_testing(true, || {
-        let json: Value = serde_json::from_str(&latin1_decode(NON_ASCII_AQUERY)).unwrap();
-        let rec = non_ascii_recording(json);
-        assert_same_bytes("after the switch", &dump_jsonproto(&rec), NON_ASCII_AQUERY);
-    });
-}
-
-/// Before the switch (today) Blaze holds the Unicode strings (the file read as UTF-8). The dump
-/// is again the oracle's file, except for the strings of the four probes that are not UTF-8
-/// text, which Blaze cannot hold: there the reading replaces the stray byte by U+FFFD. Everything
-/// that is UTF-8 text is byte for byte the oracle's.
-#[test]
-fn non_ascii_aquery_jsonproto_bytes_match_oracle_before_the_decoding_switch() {
-    use blaze_util::string_encoding::{
-        java_new_string_utf8, with_strings_are_internal_for_testing,
-    };
-    with_strings_are_internal_for_testing(false, || {
-        let as_unicode = java_new_string_utf8(NON_ASCII_AQUERY);
-        // The stray bytes are the `"\\377"` and `"\\351"` of the raw-byte probes; nothing else is lost.
-        let replaced = as_unicode.matches('\u{fffd}').count();
-        assert!(replaced > 0);
-        assert_eq!(
-            as_unicode.len(),
-            NON_ASCII_AQUERY.len() + 2 * replaced,
-            "only single stray bytes are replaced"
-        );
-        let json: Value = serde_json::from_str(&as_unicode).unwrap();
-        let rec = non_ascii_recording(json);
-        assert_same_bytes(
-            "before the switch",
-            &dump_jsonproto(&rec),
-            as_unicode.as_bytes(),
-        );
-    });
+fn non_ascii_aquery_jsonproto_bytes_match_oracle() {
+    use blaze_util::string_encoding::latin1_decode;
+    let json: Value = serde_json::from_str(&latin1_decode(NON_ASCII_AQUERY)).unwrap();
+    let rec = non_ascii_recording(json);
+    assert_same_bytes("non-ASCII probe", &dump_jsonproto(&rec), NON_ASCII_AQUERY);
 }

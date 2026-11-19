@@ -188,6 +188,8 @@ pub struct Evaluator<'v, 'a, 'e> {
     pub(crate) max_callstack_size: Option<usize>,
     /// BLAZE PATCH 0004: reject recursive calls of `def`/`lambda` functions, as Bazel does.
     pub(crate) forbid_recursion: bool,
+    /// BLAZE PATCH 0034: Java `StarlarkSemantics.INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS`.
+    pub(crate) utf8_byte_strings: bool, // BLAZE PATCH 0034
     /// Max size of heap memory in bytes
     pub(crate) max_heap_size: Option<usize>,
     /// Max number of ticks to execute
@@ -298,6 +300,9 @@ impl<'v, 'a, 'e: 'a> Evaluator<'v, 'a, 'e> {
             static_typechecking: false,
             max_callstack_size: None,
             forbid_recursion: false,
+            // BLAZE PATCH 0034: Bazel's default (BuildLanguageOptions.java:801
+            // --internal_starlark_utf_8_byte_strings, default true).
+            utf8_byte_strings: true, // BLAZE PATCH 0034
             max_heap_size: None,
             max_tick_count: None,
             frame_stack: Vec::with_capacity(DEFAULT_STACK_SIZE),
@@ -1007,6 +1012,20 @@ impl<'v, 'a, 'e: 'a> Evaluator<'v, 'a, 'e> {
     pub fn set_forbid_recursion(&mut self, forbid: bool) {
         self.forbid_recursion = forbid;
     }
+
+    /// BLAZE PATCH 0034: the semantics flag `-internal_bazel_only_utf_8_byte_strings`
+    /// (net/starlark/java/eval/StarlarkSemantics.java:267 INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS;
+    /// Bazel sets it from `--internal_starlark_utf_8_byte_strings`, default true, so the default
+    /// here is true). Java reads it in `StringModule.matcher` (the whitespace stripped by
+    /// `strip`/`lstrip`/`rstrip`) and `Json.decode` (how `\uXXXX` escapes are appended).
+    pub fn set_utf8_byte_strings(&mut self, utf8_byte_strings: bool) { // BLAZE PATCH 0034
+        self.utf8_byte_strings = utf8_byte_strings; // BLAZE PATCH 0034
+    } // BLAZE PATCH 0034
+
+    /// BLAZE PATCH 0034: see [`Evaluator::set_utf8_byte_strings`].
+    pub fn utf8_byte_strings(&self) -> bool { // BLAZE PATCH 0034
+        self.utf8_byte_strings // BLAZE PATCH 0034
+    } // BLAZE PATCH 0034
 
     /// Sets max call stack size.
     /// Stack allocation will happen on entry point of evaluation if not allocated yet.

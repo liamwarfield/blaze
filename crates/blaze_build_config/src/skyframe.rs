@@ -218,18 +218,10 @@ fn compute_platform_mapping(
         // `isDirectory()` from it. Here the path is stat'ed directly, following symbolic links as
         // FileValue does. An I/O error, which FILE would fail with, is `unported!`.
         let path = root.get_relative(&workspace_relative_mapping_path);
-        let std_path = std::path::Path::new(path.get_path_string());
-        let metadata = match std::fs::metadata(std_path) {
-            Ok(metadata) => metadata,
+        let metadata = match path.stat_if_found(blaze_vfs::Symlinks::Follow) {
+            Ok(Some(metadata)) => metadata,
             // if (!fileValue.exists()) continue;
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                ) =>
-            {
-                continue;
-            }
+            Ok(None) => continue,
             Err(e) => blaze_util::unported!(
                 "FileFunction.compute",
                 "stat of the platform mappings file {}: {}",
@@ -237,7 +229,7 @@ fn compute_platform_mapping(
                 e
             ),
         };
-        if metadata.is_dir() {
+        if metadata.is_directory() {
             return Err(platform_mapping_function_exception_missing_input_file(
                 format!(
                     "--platform_mappings was set to '{}' relative to the top-level workspace '{}' but that path refers to a directory, not a file",
@@ -247,7 +239,10 @@ fn compute_platform_mapping(
         }
 
         // Java: FileSystemUtils.readLines(path, UTF_8); malformed input is replaced.
-        let bytes = match std::fs::read(std_path) {
+        let bytes = match path.get_input_stream().and_then(|mut stream| {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut stream, &mut bytes).map(|_| bytes)
+        }) {
             Ok(bytes) => bytes,
             // Java: catch (IOException e) { throw new PlatformMappingFunctionException(e); }
             // (Transience.TRANSIENT). The message is the toString() of the Java IOException,
@@ -259,7 +254,7 @@ fn compute_platform_mapping(
                 e
             ),
         };
-        let text = String::from_utf8_lossy(&bytes);
+        let text = blaze_util::string_encoding::java_new_string_utf8(&bytes);
         // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:158 PlatformMappingFunction.parse
         // `String::trim` removes the characters up to U+0020.
         let has_entries = text

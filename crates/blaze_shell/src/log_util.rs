@@ -17,14 +17,15 @@ impl LogUtil {
             Some(b) => b,
         };
         // Yes, we'll use the platform encoding here, and this is one of the rare cases where it
-        // makes sense. (The platform encoding is UTF-8.)
+        // makes sense. (The platform encoding of Bazel's server is ISO-8859-1:
+        // `-Dfile.encoding=ISO-8859-1`.)
         if bytes.len() > TRUNCATE_STRINGS_AT {
             return format!(
                 "{}[... truncated. original size was {} bytes.]",
-                String::from_utf8_lossy(&bytes[..TRUNCATE_STRINGS_AT]),
+                blaze_util::string_encoding::latin1_decode(&bytes[..TRUNCATE_STRINGS_AT]),
                 bytes.len()
             );
         }
-        String::from_utf8_lossy(bytes).into_owned()
+        blaze_util::string_encoding::latin1_decode(bytes).into_owned()
     }
 }

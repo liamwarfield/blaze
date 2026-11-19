@@ -274,7 +274,7 @@ impl RunfilesConflictReceiver for NoOpRunfilesConflictReceiver {
 /// `getRunfilesInputs` (an external `../repo/x` and a workspace `x` when the workspace is named
 /// `repo`), and the order of the key set handed to `EmptyFilesSupplier.getExtraPaths`. This
 /// reproduces `HashMap`'s bucket layout: `PathFragment.hashCode` (`String.hashCode` of the
-/// internal Latin-1 string, i.e. of the UTF-8 bytes), spread by `h ^ (h >>> 16)`; the table
+/// internal string, i.e. of its chars, one per byte), spread by `h ^ (h >>> 16)`; the table
 /// size `tableSizeFor(Maps.capacity(expectedSize))` (Guava 33.5:
 /// `expectedSize < 3 ? expectedSize + 1 : ceil(expectedSize / 0.75)`), doubled when the size
 /// exceeds 3/4 of the capacity or a bin of a table smaller than 64 grows past 8 entries; and
@@ -300,7 +300,7 @@ const MIN_TREEIFY_CAPACITY: usize = 64;
 fn java_path_fragment_hash_code(path: &PathFragment) -> i32 {
     let mut h: i32 = 0;
     // `String.hashCode()` over the chars of the internal string.
-    for c in blaze_util::string_encoding::to_internal(path.get_path_string()).chars() {
+    for c in path.get_path_string().chars() {
         h = h.wrapping_mul(31).wrapping_add(c as i32);
     }
     h

@@ -18,7 +18,7 @@ use crate::buildeventstream::build_event_id_util;
 use crate::buildeventstream::generic_build_event::{
     AbortedEvent, LastBuildEvent, NullConfiguration, ProgressEvent,
 };
-use crate::buildeventstream::transport::{BuildEventTransport, TransportCloseError};
+use crate::buildeventstream::transport::{BuildEventTransport, CloseFuture, TransportCloseError};
 use crate::events::completion_context::CompletionContext;
 use crate::runtime::counting_artifact_group_namer::CountingArtifactGroupNamer;
 use crate::runtime::named_artifact_group::{ArtifactSet, NamedArtifactGroup};
@@ -118,7 +118,7 @@ struct State {
     final_events_to_come: Option<HashSet<BuildEventId>>,
     closed: bool,
     out_err_provider: Option<Arc<dyn OutErrProvider>>,
-    close_results: Vec<(String, Result<(), TransportCloseError>)>,
+    close_results: Vec<(String, CloseFuture)>,
 }
 
 /// Streamer in charge of listening to build events and post them to each of the transports.
@@ -464,11 +464,22 @@ impl BuildEventStreamer {
         drop(guard);
     }
 
-    /// The results of closing each transport (`getCloseFuturesMap`); empty before `close`.
+    /// The close futures of the transports (`getCloseFuturesMap`); empty before `close`.
     // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:992 BuildEventStreamer.getCloseFuturesMap
-    pub fn get_close_futures_map(&self) -> Vec<(String, Result<(), TransportCloseError>)> {
+    pub fn get_close_futures(&self) -> Vec<(String, CloseFuture)> {
         let guard = self.state.lock();
         guard.borrow().close_results.clone()
+    }
+
+    /// The results of closing each transport: `getCloseFuturesMap()`, each future waited for,
+    /// as `BuildEventServiceModule.waitForBuildEventTransportsToClose` does (its only caller).
+    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:992 BuildEventStreamer.getCloseFuturesMap
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:533 BuildEventServiceModule.waitForBuildEventTransportsToClose
+    pub fn get_close_futures_map(&self) -> Vec<(String, Result<(), TransportCloseError>)> {
+        self.get_close_futures()
+            .into_iter()
+            .map(|(name, future)| (name, future.get()))
+            .collect()
     }
 
     // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:488 BuildEventStreamer.maybeReportArtifactSet

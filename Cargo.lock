@@ -434,6 +434,7 @@ version = "0.1.0"
 dependencies = [
  "allocative",
  "anyhow",
+ "base64",
  "blaze_actions",
  "blaze_analysis",
  "blaze_build_config",
@@ -448,6 +449,7 @@ dependencies = [
  "blaze_query",
  "blaze_query_engine",
  "blaze_rules",
+ "blaze_shell",
  "blaze_sky_analysis",
  "blaze_sky_loading",
  "blaze_sky_top",
@@ -963,6 +965,7 @@ dependencies = [
  "anyhow",
  "blaze_cmdline",
  "blaze_collect",
+ "blaze_util",
  "num-bigint",
  "rayon",
  "starlark",
@@ -986,6 +989,7 @@ dependencies = [
 name = "blaze_vfs"
 version = "0.1.0"
 dependencies = [
+ "blaze_util",
  "libc",
  "sha2",
 ]
@@ -2898,6 +2902,7 @@ dependencies = [
  "allocative",
  "anyhow",
  "blaze_starlark",
+ "blaze_util",
  "num-bigint",
  "rayon",
  "regex",

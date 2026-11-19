@@ -13,6 +13,9 @@ use blaze_skyframe::Interrupted;
 use blaze_skyframe::Transience;
 use blaze_starlark::StarlarkSemantics;
 use blaze_util::fingerprint::Fingerprint;
+use blaze_util::string_encoding::internal_to_unicode;
+use blaze_util::string_encoding::latin1_decode;
+use blaze_util::string_encoding::latin1_encode_lossy;
 use blaze_vfs::Path;
 
 use super::exceptions::RepositoryFunctionException;
@@ -114,9 +117,8 @@ impl DigestWriter {
             builder.push_str(&recorded_input_value.to_string());
             builder.push('\n');
         }
-        // PORT: StringEncoding identity (Java writes the internal-form string as ISO-8859-1,
-        // i.e. its UTF-8 bytes).
-        fs_utils::write_content(&self.marker_path, builder.as_bytes())
+        // Java: FileSystemUtils.writeContent(markerPath, ISO_8859_1, content)
+        fs_utils::write_content(&self.marker_path, &latin1_encode_lossy(&builder))
             .map_err(|e| RepositoryFunctionException::from_io_error(&e, Transience::Transient))
     }
 
@@ -152,13 +154,8 @@ impl DigestWriter {
                 );
             }
         };
-        // PORT: StringEncoding identity. Java decodes the file as ISO-8859-1 (bytes as internal
-        // chars); a file that is not UTF-8 was not written by Blaze and is treated as outdated
-        // through a lossy decode that cannot match the hash or parse as written.
-        // PORT: byte-strings. Java's `readContent(markerPath, ISO_8859_1)` keeps every byte of
-        // the marker file as one char (recorded input values hold raw path and environment
-        // bytes); here bytes that are not valid UTF-8 become U+FFFD.
-        let content = String::from_utf8_lossy(&content);
+        // Java: FileSystemUtils.readContent(markerPath, ISO_8859_1)
+        let content = latin1_decode(&content);
         let Some(recorded_input_values) =
             Self::read_marker_file(&content, &self.predeclared_input_hash)
         else {
@@ -213,8 +210,6 @@ impl DigestWriter {
         Some(recorded_input_values)
     }
 
-    /// PORT: strings reach Java's `Fingerprint.addString` in Bazel's internal (Latin-1 of UTF-8)
-    /// form, so they are added with `add_internal_string` (identical for ASCII).
     // Java: com/google/devtools/build/lib/bazel/repository/DigestWriter.java:170 DigestWriter.computePredeclaredInputHash
     pub(crate) fn compute_predeclared_input_hash(
         env: &mut Environment<'_>,
@@ -234,34 +229,34 @@ impl DigestWriter {
         let mut fp = Fingerprint::new();
         fp.add_int(MARKER_FILE_VERSION)
             .add_bytes(&stable_fingerprint(starlark_semantics))
-            .add_internal_string(&bzl_file_label.to_string())
-            .add_internal_string(repo_rule.id.rule_name())
+            .add_string(&bzl_file_label.to_string())
+            .add_string(repo_rule.id.rule_name())
             .add_bytes(&repo_rule.transitive_bzl_digest)
-            .add_internal_string(&repo_definition.name)
-            .add_internal_string(&attr_values_json)
+            .add_string(&repo_definition.name)
+            .add_string(&attr_values_json)
             // This info is accessible via rctx.os.{name,arch} and can also influence the result
             // of a repo rule in subtle ways (e.g. behavior of host tools, line breaks, etc).
             // PORT: both values come from the functions `repository_os` uses, so that
             // `rctx.os.{name,arch}` and this hash cannot disagree (Blaze is Linux x86-64 only).
-            .add_internal_string(&java_os_name_lower_case())
-            .add_internal_string(&java_os_arch_lower_case());
+            .add_string(&java_os_name_lower_case())
+            .add_string(&java_os_arch_lower_case());
         fp.add_int(environ_inputs.len() as i32);
         for (key, value) in &environ_inputs {
-            fp.add_internal_string(&key.to_string());
+            fp.add_string(&key.to_string());
             match value {
                 None => {
                     fp.add_boolean(false);
                 }
                 Some(v) => {
-                    fp.add_boolean(true).add_internal_string(v);
+                    fp.add_boolean(true).add_string(v);
                 }
             }
         }
         fp.add_int(repo_rule.recorded_repo_mapping_entries.len() as i32);
         for (row, column, value) in &repo_rule.recorded_repo_mapping_entries {
-            fp.add_internal_string(row.get_name());
-            fp.add_internal_string(column);
-            fp.add_internal_string(value.get_name());
+            fp.add_string(row.get_name());
+            fp.add_string(column);
+            fp.add_string(value.get_name());
         }
         Ok(Some(fp.hex_digest_and_reset()))
     }
@@ -308,11 +303,14 @@ pub fn attribute_values_to_gson_json(attr_values: &AttributeValues) -> String {
                     .value_number(&i.to_string())
                     .end_object();
             }
+            // GsonTypeAdapterUtil.STRING_ADAPTER: internalToUnicode(s).
             AttributeValue::String(s) => {
-                w.value_str(s);
+                w.value_str(&internal_to_unicode(s));
             }
+            // GsonTypeAdapterUtil.LABEL_TYPE_ADAPTER:
+            // internalToUnicode(label.getUnambiguousCanonicalForm()).
             AttributeValue::Label(l) => {
-                w.value_str(&l.get_unambiguous_canonical_form());
+                w.value_str(&internal_to_unicode(&l.get_unambiguous_canonical_form()));
             }
             AttributeValue::List(items) => {
                 w.begin_array();
@@ -325,8 +323,12 @@ pub fn attribute_values_to_gson_json(attr_values: &AttributeValues) -> String {
                 w.begin_object();
                 for (k, v) in entries {
                     let key = match k {
-                        AttributeValue::String(s) => s.clone(),
-                        AttributeValue::Label(l) => l.get_unambiguous_canonical_form(),
+                        // Keys go through the same adapters (complex map key serialization
+                        // writes a key's JSON primitive as its string).
+                        AttributeValue::String(s) => internal_to_unicode(s).into_owned(),
+                        AttributeValue::Label(l) => {
+                            internal_to_unicode(&l.get_unambiguous_canonical_form()).into_owned()
+                        }
                         AttributeValue::Bool(b) => b.to_string(),
                         AttributeValue::Int(i) => i.to_string(),
                         other => blaze_util::unported!(

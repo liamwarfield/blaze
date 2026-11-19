@@ -191,17 +191,9 @@ impl TemplateExpander {
             '@' | '<' | '^' => Ok(c.to_string()),
             _ => {
                 let start = self.offset;
-                // Java scans the internal string: one `char` per byte of the UTF-8 text
-                // (lib/util/StringEncoding.java). `buffer[offset]` is the first byte of `c`;
-                // the scan then goes on byte by byte.
-                check_not_split(c, 1 + leading_java_identifier_parts(c, 1));
-                while self.offset + 1 < self.length {
-                    let next = self.buffer[self.offset + 1];
-                    let parts = leading_java_identifier_parts(next, 0);
-                    if parts == 0 {
-                        break;
-                    }
-                    check_not_split(next, parts);
+                while self.offset + 1 < self.length
+                    && is_java_identifier_part(self.buffer[self.offset + 1])
+                {
                     self.offset += 1;
                 }
                 let expr: String = self.buffer[start..self.offset + 1].iter().collect();
@@ -232,10 +224,18 @@ fn java_trim_char(c: char) -> bool {
 }
 
 /// Java `Character.isJavaIdentifierPart(char)` for a `char` of an internal string (U+0000 to
-/// U+00FF: one byte of the UTF-8 text). The set is the one the JDK Bazel 9.3.2 embeds (25.0.2)
-/// reports for these 256 characters.
+/// U+00FF). The set is the one the JDK Bazel 9.3.2 embeds (25.0.2) reports for these 256
+/// characters.
 // Java: java/lang/Character.java Character.isJavaIdentifierPart
-fn is_java_identifier_part(b: u8) -> bool {
+fn is_java_identifier_part(c: char) -> bool {
+    let Ok(b) = u8::try_from(u32::from(c)) else {
+        // An internal string holds no char above U+00FF.
+        blaze_util::unported!(
+            "Character.isJavaIdentifierPart (a char above U+00FF)",
+            "{:?}",
+            c
+        );
+    };
     matches!(
         b,
         0x00..=0x08
@@ -255,28 +255,6 @@ fn is_java_identifier_part(b: u8) -> bool {
             | 0xd8..=0xf6
             | 0xf8..=0xff
     )
-}
-
-/// How many of the UTF-8 bytes of `c`, from the byte at index `from` on, are consecutive Java
-/// identifier parts.
-fn leading_java_identifier_parts(c: char, from: usize) -> usize {
-    let mut utf8 = [0u8; 4];
-    c.encode_utf8(&mut utf8).as_bytes()[from..]
-        .iter()
-        .take_while(|b| is_java_identifier_part(**b))
-        .count()
-}
-
-/// Java's scan stopped after `consumed` bytes of `c`. If that is inside the character, Java's
-/// message holds a part of its UTF-8 sequence, which a Rust string cannot.
-fn check_not_split(c: char, consumed: usize) {
-    if consumed != c.len_utf8() {
-        blaze_util::unported!(
-            "TemplateExpander.scanVariable (a '$name' that ends inside a UTF-8 sequence)",
-            "{:?}",
-            c
-        );
-    }
 }
 
 #[cfg(test)]
@@ -404,16 +382,33 @@ mod tests {
         assert_eq!(expand("$a_b$c-d", &c).unwrap_err().0, message("a_b$c"));
         // U+0001 is an ignorable identifier character.
         assert_eq!(expand("$a\u{1}b c", &c).unwrap_err().0, message("a\u{1}b"));
-        // U+00B5 is the bytes C2 B5, both identifier parts as Latin-1 characters; U+2192 is
-        // E2 86 92, likewise.
+        // The internal string of "µ" (U+00B5) is the chars C2 B5, both identifier parts; of
+        // "→" (U+2192) E2 86 92, likewise. "é🐷" is C3 A9 F0 9F 90 B7: U+00A9 is not a part, so
+        // only the first char is named; "êà" is C3 AA C3 A0 (U+00A0 is not a part). A raw byte
+        // FF is a part; U+00D7 (×) and U+00A0 are not. Expected values from the JDK (25.0.5).
+        let i = |s: &str| blaze_util::string_encoding::latin1_decode(s.as_bytes()).into_owned();
         assert_eq!(
-            expand("$x\u{b5}y z", &c).unwrap_err().0,
-            message("x\u{b5}y")
+            expand(&i("$x\u{b5}y z"), &c).unwrap_err().0,
+            message(&i("x\u{b5}y"))
         );
         assert_eq!(
-            expand("$x\u{2192} z", &c).unwrap_err().0,
-            message("x\u{2192}")
+            expand(&i("$x\u{2192} z"), &c).unwrap_err().0,
+            message(&i("x\u{2192}"))
         );
+        assert_eq!(
+            expand(&i("$\u{e9}\u{1F437} z"), &c).unwrap_err().0,
+            message("\u{c3}")
+        );
+        assert_eq!(
+            expand(&i("$\u{ea}\u{e0} z"), &c).unwrap_err().0,
+            message("\u{c3}\u{aa}\u{c3}")
+        );
+        assert_eq!(
+            expand("$x\u{ff}y z", &c).unwrap_err().0,
+            message("x\u{ff}y")
+        );
+        assert_eq!(expand("$x\u{d7}y", &c).unwrap_err().0, message("x"));
+        assert_eq!(expand("$x\u{a0}y", &c).unwrap_err().0, message("x"));
         // A non-identifier first character is still named.
         assert_eq!(expand("$-x", &c).unwrap_err().0, message("-x"));
     }

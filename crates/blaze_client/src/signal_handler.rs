@@ -18,6 +18,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::util::path::Path;
+use crate::util::strings::console_bytes;
 
 /// The messages the handler writes, formatted before the handler is installed (a signal
 /// handler may not format or allocate).
@@ -122,27 +123,28 @@ extern "C" fn handler(signum: libc::c_int) {
 /// PORT: SIGWINCH is not handled: the client forwards terminal size changes to the server only
 /// because the JVM is not attached to a terminal; the in-process server is.
 // Java: src/main/cpp/blaze_util_posix.cc:195 SignalHandler::Install
+// The C++ writes the raw bytes of these strings.
 pub fn install(product_name: &str, _output_base: &Path, server_pid: i32, jvm_log_file: &Path) {
     let _ = MESSAGES.set(Messages {
-        third_interrupt: format!(
+        third_interrupt: console_bytes(&format!(
             "\n{product_name} caught third interrupt signal; server killed. (This may be \
              expensive, see https://bazel.build/advanced/performance/\
              iteration-speed#avoid-ctrl-c.)\n\n"
-        )
-        .into_bytes(),
-        interrupt: format!(
+        ))
+        .into_owned(),
+        interrupt: console_bytes(&format!(
             "\n{product_name} caught interrupt signal; cancelling pending invocation.\n\n"
-        )
-        .into_bytes(),
-        terminate: format!(
+        ))
+        .into_owned(),
+        terminate: console_bytes(&format!(
             "\n{product_name} caught terminate signal; cancelling pending invocation.\n\n"
-        )
-        .into_bytes(),
-        quit: format!(
+        ))
+        .into_owned(),
+        quit: console_bytes(&format!(
             "\nSending SIGQUIT to JVM process {server_pid} (see {}).\n\n",
             jvm_log_file.as_native_path()
-        )
-        .into_bytes(),
+        ))
+        .into_owned(),
     });
 
     // SAFETY: plain libc calls with valid arguments; `handler` is async-signal-safe.

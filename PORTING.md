@@ -64,12 +64,42 @@ All shared values are `Send + Sync`. Anything Skyframe stores is immutable after
 
 ## Strings
 
-Bazel stores many strings in an "internal" form: Latin-1 Java strings holding UTF-8 bytes
-(`lib/util/StringEncoding.java`). Rust `String` is already UTF-8, so the internal form is the
-natural form in Rust. Where Java converts between internal and Unicode forms
-(`StringEncoding.internalToUnicode` etc.), the Rust port is usually the identity; mark it
-`// PORT: StringEncoding identity`. File contents and paths that may not be valid UTF-8 use
-`Vec<u8>` / `OsString`, not lossy conversion.
+Blaze's strings mean what Bazel's strings mean (docs/decisions.md 2026-11-18;
+docs/research/07-byte-strings.md, rules in 07-byte-strings-rules.md). As in
+`lib/util/StringEncoding.java` there are three kinds, and a value never changes kind without a
+call that says so:
+
+- **Internal strings**: almost every string Blaze holds (Starlark strings, labels, paths, option
+  values, environment, file names, action arguments). A Rust `String` whose chars are all
+  `<= U+00FF`, one char per byte of the original byte sequence (Java: a Latin-1 `String` holding
+  raw bytes). `len("é") == 2`; a byte that is not UTF-8 is an ordinary char.
+- **Unicode strings**: ordinary text (received proto `string` fields, parsed JSON, URLs, Rust
+  literals).
+- **Platform strings**: bytes for the operating system (`OsStr`): file names, argv, environment.
+
+Rules:
+
+- Starlark sources and everything Java reads as `ISO_8859_1` (or with the server's default
+  charset, which is ISO-8859-1) are decoded one char per byte:
+  `blaze_util::string_encoding::latin1_decode`. Source files go through
+  `string_encoding::parser_input_from_latin1` only.
+- Bytes leave through the encoder Java uses at that site: `latin1_encode`
+  (`StringUnsafe.getInternalStringBytes`), `latin1_encode_lossy` (`getBytes(ISO_8859_1)`, the
+  console, any default-charset `PrintStream`/`Writer`), `internal_to_platform` /
+  `platform_to_internal` (system calls). Where Java applies a UTF-8 encoder to an internal
+  string (`Fingerprint.addString`, `getBytes(UTF_8)`, a proto string field) the Rust is
+  `as_bytes()`: the "double encoding" that results is Bazel's behaviour.
+- Convert between internal and Unicode exactly where Java calls `StringEncoding.internalToUnicode`
+  / `unicodeToInternal`, with the functions of the same name. Text handed to a crate that
+  interprets characters (regex, JSON, URL) is whatever Java hands to its counterpart.
+- Never use `String::from_utf8*`, `to_string_lossy`, `std::env::var`/`args` or a `&str` path
+  with `std::fs` on data that is an internal or platform string. File system access goes through
+  `blaze_vfs` (which converts) or `internal_to_platform`.
+- Java `length()`, `charAt`, `substring` and columns count chars: use `chars()`, not byte
+  offsets, when the number is visible or compared with a constant. Java `Character` predicates
+  and case mappings are applied to the Latin-1 chars; port the predicate, do not assume Rust's
+  `char` method agrees.
+- Every conversion is the identity on ASCII.
 
 ## Options
 

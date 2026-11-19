@@ -24,8 +24,6 @@ use blaze_util::fingerprint::Fingerprint;
 use blaze_vfs::RootedPath;
 use indexmap::IndexSet;
 
-use super::repo_recorded_input::add_internal_strings;
-
 // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:36 SkyFunctions.DIRECTORY_TREE_DIGEST
 pub const DIRECTORY_TREE_DIGEST: SkyFunctionName = SkyFunctionName("DIRECTORY_TREE_DIGEST");
 
@@ -112,8 +110,7 @@ pub fn compute(
 
     // Get the names of entries directly in this directory, and sort them. This sets the basis for
     // subsequent digests.
-    // PORT: Java sorts the internal (Latin-1-of-UTF-8) names by UTF-16 code unit, which is the
-    // byte order of the UTF-8 names.
+    // Java sorts the internal names by UTF-16 code unit: `str` order for chars <= U+00FF.
     let mut sorted_dirents: Vec<String> = dir_listing_value
         .get_dirents()
         .iter()
@@ -135,8 +132,8 @@ pub fn compute(
 
     // Finally, we're ready to digest everything together!
     let mut fp = Fingerprint::new();
-    add_internal_strings(&mut fp, &sorted_dirents);
-    add_internal_strings(&mut fp, &sub_dir_tree_digests);
+    fp.add_strings(&sorted_dirents);
+    fp.add_strings(&sub_dir_tree_digests);
     for (dirent_rooted_path, file_value) in &file_values {
         fp.add_int(file_state_type_ordinal(
             file_value.real_file_state_value().get_type(),

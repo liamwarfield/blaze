@@ -166,7 +166,7 @@ impl AbstractFileWriteAction for LazyWriteNestedSetOfTupleAction {
     ) -> Result<Box<dyn DeterministicWriter + '_>, NewDeterministicWriterError> {
         Ok(Box::new(FnDeterministicWriter(|out: &mut dyn Write| {
             // Java: `out.write(StringUnsafe.getInternalStringBytes(getContents(delimiter)))`.
-            out.write_all(&blaze_util::string_encoding::internal_string_bytes(
+            out.write_all(&blaze_util::string_encoding::latin1_encode(
                 self.get_contents(&self.delimiter),
             ))
         })))

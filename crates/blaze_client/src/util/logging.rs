@@ -105,15 +105,23 @@ pub fn exit_process(code: i32) -> ! {
     std::process::exit(code)
 }
 
+/// `stream << line << std::endl`: the C++ writes the raw bytes of its strings, which are the
+/// Latin-1 encoding of the internal strings Blaze holds.
+fn write_line(stream: &mut dyn Write, line: &str) {
+    let mut bytes = crate::util::strings::console_bytes(line).into_owned();
+    bytes.push(b'\n');
+    let _ = stream.write_all(&bytes);
+}
+
 // Java: src/main/cpp/util/logging.cc:68 LogMessage::Finish
 /// Writes the message for the no-handler case; returns whether the process must exit.
 pub fn print_without_handler(stream: &mut dyn Write, level: LogLevel, message: &str) {
     // If no custom handler was provided, never print INFO messages, but USER should always be
     // printed, as should warnings and errors.
     if level == LogLevel::User {
-        let _ = writeln!(stream, "{}", message);
+        write_line(stream, message);
     } else if level > LogLevel::User {
-        let _ = writeln!(stream, "{}: {}", log_level_name(level), message);
+        write_line(stream, &format!("{}: {}", log_level_name(level), message));
     }
 }
 
@@ -163,9 +171,9 @@ pub fn bazel_die(exit_code: i32, filename: &str, line: u32, message: impl AsRef<
 /// even if debug level logging was not requested.
 pub fn print_user_level_message_to_stream(stream: &mut dyn Write, level: LogLevel, message: &str) {
     if level == LogLevel::User {
-        let _ = writeln!(stream, "{}", message);
+        write_line(stream, message);
     } else if level > LogLevel::User {
-        let _ = writeln!(stream, "{}: {}", log_level_name(level), message);
+        write_line(stream, &format!("{}: {}", log_level_name(level), message));
     }
     // If level < USER, this is an INFO message. It's useful for debugging but should not be
     // printed to the user unless the user has asked for debugging output. We ignore it here.
@@ -200,14 +208,16 @@ pub fn print_debug_level_message_to_stream(
     level: LogLevel,
     message: &str,
 ) {
-    let _ = writeln!(
+    write_line(
         stream,
-        "[{} {} {}:{}] {}",
-        log_level_name(level),
-        timestamp(),
-        filename,
-        line,
-        message
+        &format!(
+            "[{} {} {}:{}] {}",
+            log_level_name(level),
+            timestamp(),
+            filename,
+            line,
+            message
+        ),
     );
 }
 
@@ -402,8 +412,12 @@ impl SharedBuffer {
         Self::default()
     }
 
+    /// The bytes written, as an internal string (one char per byte).
     pub fn contents(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap_or_else(|e| e.into_inner())).into_owned()
+        blaze_util::string_encoding::latin1_decode(
+            &self.0.lock().unwrap_or_else(|e| e.into_inner()),
+        )
+        .into_owned()
     }
 }
 

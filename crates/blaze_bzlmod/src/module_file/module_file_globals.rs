@@ -122,7 +122,15 @@ fn stack_entry(name: &str, span: Option<&FileSpan>) -> StackEntry {
             let source_line = if location.line == 0 {
                 None
             } else {
-                Some(span.file.source_line(location.line - 1).trim().to_owned())
+                // Java `String.trim()` (chars <= U+0020; not Rust's Unicode whitespace, which
+                // includes the Latin-1 chars U+0085 and U+00A0).
+                // Java: net/starlark/java/eval/EvalException.java:230 EvalException.formatCallStack
+                Some(
+                    span.file
+                        .source_line(location.line - 1)
+                        .trim_matches(|c: char| c <= ' ')
+                        .to_owned(),
+                )
             };
             StackEntry {
                 name: name.to_owned(),

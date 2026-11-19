@@ -62,7 +62,8 @@ pub fn create(
     }
     // Java: com/google/devtools/build/lib/runtime/QueryRuntimeHelper.java:99 FileQueryRuntimeHelper.create
     let path = working_directory.get_relative_str(output_file);
-    match std::fs::File::create(path.get_path_string()) {
+    // Java: com/google/devtools/build/lib/runtime/QueryRuntimeHelper.java:116 FileQueryRuntimeHelper.<init>
+    match path.get_output_stream() {
         Ok(file) => Ok(Rc::new(RefCell::new(file))),
         Err(_) => Err(QueryRuntimeHelperException {
             message: format!(
@@ -112,6 +113,23 @@ mod tests {
                 dir.display()
             )
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // `--output_file=é.txt` reaches the server as the internal string "\u{c3}\u{a9}.txt";
+    // `Path.getOutputStream` creates the file whose name is the raw bytes C3 A9.
+    #[test]
+    fn output_file_with_non_ascii_name_is_created_with_its_bytes() {
+        let dir = std::env::temp_dir().join(format!("blaze-qrh-na-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+        let wd = fs.get_path(dir.to_str().unwrap());
+        let out = create(&stdout(), &wd, "\u{c3}\u{a9}\u{ff}.txt").unwrap();
+        std::io::Write::write_all(&mut *out.borrow_mut(), b"x\n").unwrap();
+        drop(out);
+        use std::os::unix::ffi::OsStrExt;
+        let name = std::ffi::OsStr::from_bytes(b"\xc3\xa9\xff.txt");
+        assert_eq!(std::fs::read(dir.join(name)).unwrap(), b"x\n");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

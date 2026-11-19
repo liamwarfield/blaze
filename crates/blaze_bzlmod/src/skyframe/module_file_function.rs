@@ -27,7 +27,7 @@ use super::precomputed::{
     ClientEnvironmentKey, IGNORE_DEV_DEPS, INJECTED_REPOSITORIES, MODULE_OVERRIDES, REGISTRIES,
     STARLARK_SEMANTICS,
 };
-use super::{java_io_message, throw};
+use super::{java_io_message, path_string, platform_path, throw};
 use crate::module_file::{
     CompiledModuleFile, IncludeStatement, ModuleThreadContext, exec_module_file,
 };
@@ -239,12 +239,7 @@ fn compute_for_root_module(
         contents
     };
     let compiled_module_file = CompiledModuleFile::parse_and_compile(
-        ModuleFile::create(
-            module_file_contents,
-            // PORT: byte-strings: Java keeps the path's raw bytes (`Path.getPathString()` is
-            // the internal Latin-1 form); a path that is not UTF-8 gets U+FFFD here.
-            module_file_path.to_string_lossy().into_owned(),
-        ),
+        ModuleFile::create(module_file_contents, path_string(&module_file_path)),
         &ModuleKey::root(),
         starlark_semantics,
         env.listener(),
@@ -460,11 +455,9 @@ fn advance_horizon(
             ));
         }
         // RootedPath.toRootedPath(pkgLookupValue.getRoot(), includeLabel.toPathFragment())
-        rooted_paths.push(
-            pkg_lookup_value
-                .get_root()
-                .join(include_label.to_path_fragment().get_path_string()),
-        );
+        rooted_paths.push(pkg_lookup_value.get_root().join(platform_path(
+            include_label.to_path_fragment().get_path_string(),
+        )));
     }
     // PORT: Java requests FileValue keys for the include files here (a dependency for
     // invalidation); the stand-in checks the file system directly below.
@@ -494,9 +487,8 @@ fn advance_horizon(
             }
         };
         let compiled_module_file = CompiledModuleFile::parse_and_compile(
-            // PORT: byte-strings: Java keeps the path's raw bytes
-            // (`RootedPath.asPath().getPathString()`); a path that is not UTF-8 gets U+FFFD.
-            ModuleFile::create(bytes, rooted_path.to_string_lossy().into_owned()),
+            // `RootedPath.asPath().getPathString()`.
+            ModuleFile::create(bytes, path_string(rooted_path)),
             &ModuleKey::root(),
             starlark_semantics,
             env.listener(),
@@ -685,26 +677,29 @@ impl BuiltinPackageLookup {
                 "IgnoredSubdirectoriesFunction.compute",
                 "{} exists; the PACKAGE_LOOKUP stand-in of ModuleFileFunction cannot tell \
                  whether package '{}' is ignored",
-                bazelignore.display(),
+                path_string(&bazelignore),
                 package_id
             );
         }
         let repo_file = root.join("REPO.bazel");
+        // REPO.bazel is Starlark source: one char per byte (`ParserInput.fromLatin1`).
         if let Ok(content) = std::fs::read(&repo_file)
-            && String::from_utf8_lossy(&content).contains("ignore_directories")
+            && blaze_util::string_encoding::latin1_decode(&content).contains("ignore_directories")
         {
             blaze_util::unported!(
                 "IgnoredSubdirectoriesFunction.compute",
                 "{} uses ignore_directories(); the PACKAGE_LOOKUP stand-in of \
                  ModuleFileFunction cannot tell whether package '{}' is ignored",
-                repo_file.display(),
+                path_string(&repo_file),
                 package_id
             );
         }
 
         // findPackageByBuildFile with a single package path entry (--package_path is not known
         // here; see the type's documentation).
-        let package_dir = root.join(package_id.get_package_fragment().get_path_string());
+        let package_dir = root.join(platform_path(
+            package_id.get_package_fragment().get_path_string(),
+        ));
         for build_file_name in BUILD_FILES_BY_PRIORITY {
             let build_file = package_dir.join(build_file_name);
             // fileValue.isFile(), following symbolic links.
@@ -722,7 +717,7 @@ impl BuiltinPackageLookup {
                 Err(e) => blaze_util::unported!(
                     "PackageLookupFunction.getFileValue",
                     "{}: {}",
-                    build_file.display(),
+                    path_string(&build_file),
                     e
                 ),
             }
@@ -785,7 +780,7 @@ impl PackageLookup for BuiltinPackageLookup {
 
 // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunction.java:555 ModuleFileFunction.getModuleFilePath
 pub fn get_module_file_path(workspace_root: &Path) -> PathBuf {
-    workspace_root.join(MODULE_DOT_BAZEL_FILE_NAME.get_path_string())
+    workspace_root.join(platform_path(MODULE_DOT_BAZEL_FILE_NAME.get_path_string()))
 }
 
 /// The Java record `toString` of a `ModuleOverride` (used in error messages).
@@ -1021,7 +1016,8 @@ fn get_module_file(
         };
         // This repo _definitely_ exists, since it has a non-registry override, which directly gets
         // "translated" into a repo spec.
-        let module_file_path = repo_dir.join(MODULE_DOT_BAZEL_FILE_NAME.get_path_string());
+        let module_file_path =
+            repo_dir.join(platform_path(MODULE_DOT_BAZEL_FILE_NAME.get_path_string()));
         // PORT: FileValue.key(moduleFilePath) dependency skipped (FILE is not ported here).
         let module_file_label = Label::create_unvalidated(
             PackageIdentifier::create(canonical_repo_name, PathFragment::create("")),
@@ -1218,15 +1214,17 @@ fn maybe_patch_module_file(
 
     // Register dependencies on the patch files and ensure that they exist.
     for (root, relative) in &patch_paths {
-        if !root.join(relative.get_path_string()).is_file() {
+        if !root
+            .join(platform_path(relative.get_path_string()))
+            .is_file()
+        {
             return Err(errorf(
                 ExternalDepsCode::BadModule,
                 format!(
                     "error reading single_version_override patch [{}]/[{}]: is a directory or \
                      doesn't exist",
-                    // PORT: byte-strings: Java prints the root's raw path bytes
-                    // (RootedPath.toString); a path that is not UTF-8 gets U+FFFD here.
-                    root.display(),
+                    // RootedPath.toString
+                    path_string(root),
                     relative
                 ),
             ));
@@ -1270,20 +1268,18 @@ fn apply_patches_to_module_file(
     // PORT: Java's copy is `/module/MODULE.bazel` in an InMemoryFileSystem, and PatchUtil's
     // messages name that path ("Renaming /module/MODULE.bazel while applying patches ..."). The
     // copy here is in a temporary directory, whose path is replaced by Java's in the messages.
-    let module_root_string = module_root.to_string_lossy().into_owned();
+    let module_root_string = path_string(module_root);
     let java_paths = |message: &str| message.replace(&module_root_string, "/module");
     std::fs::create_dir_all(module_root).map_err(io_error)?;
     let module_file_path = module_root.join("MODULE.bazel");
     std::fs::write(&module_file_path, &module_file.content).map_err(io_error)?;
     for (root, relative) in patch_paths {
-        let patch_path = root.join(relative.get_path_string());
+        let patch_path = root.join(platform_path(relative.get_path_string()));
         use blaze_repo_fetch::decompressor::patch_util::{PatchError, apply_to_single_file};
         let fs: blaze_vfs::FileSystemRef = Arc::new(blaze_vfs::UnixFileSystem::new(
             blaze_vfs::DigestHashFunction::Sha256,
         ));
-        // PORT: byte-strings: Java passes `Path` objects holding the raw bytes of the patch
-        // and module file paths; a path that is not UTF-8 gets U+FFFD here.
-        let vfs_path = |p: &Path| blaze_vfs::Path::create_from_str(&p.to_string_lossy(), &fs);
+        let vfs_path = |p: &Path| blaze_vfs::Path::create_from_str(&path_string(p), &fs);
         match apply_to_single_file(
             &vfs_path(&patch_path),
             patch_strip,
@@ -1296,9 +1292,7 @@ fn apply_patches_to_module_file(
                     ExternalDepsCode::BadModule,
                     format!(
                         "error applying single_version_override patch {} to module file: {}",
-                        // PORT: byte-strings: Java prints the path's raw bytes
-                        // (Path.toString); a path that is not UTF-8 gets U+FFFD here.
-                        patch_path.display(),
+                        path_string(&patch_path),
                         java_paths(&e.message)
                     ),
                 ));
@@ -1325,9 +1319,7 @@ fn read_module_file(path: &Path) -> Result<Vec<u8>, ComputeError> {
             ExternalDepsCode::ModuleNotFound,
             format!(
                 "MODULE.bazel expected but not found at {}: {}",
-                // PORT: byte-strings: Java prints the path's raw bytes (Path.toString); a
-                // path that is not UTF-8 gets U+FFFD here.
-                path.display(),
+                path_string(path),
                 java_io_message(path, &e)
             ),
         )
@@ -1341,9 +1333,7 @@ fn create_module_file(path: &Path, bytes: &[u8]) -> Result<(), ComputeError> {
             ExternalDepsCode::ExternalDepsUnknown,
             format!(
                 "MODULE.bazel cannot be created at {}: {}",
-                // PORT: byte-strings: Java prints the path's raw bytes (Path.toString); a
-                // path that is not UTF-8 gets U+FFFD here.
-                path.display(),
+                path_string(path),
                 java_io_message(path, &e)
             ),
         )

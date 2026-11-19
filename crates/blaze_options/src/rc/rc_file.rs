@@ -5,6 +5,8 @@ use std::sync::LazyLock;
 use indexmap::IndexMap;
 use regex::Regex;
 
+use blaze_util::string_encoding::{internal_to_platform, latin1_decode, platform_to_internal};
+
 use super::sem_ver::SemVer;
 use super::tokenize::{join_path, replace, strip_whitespace, tokenize};
 
@@ -16,8 +18,10 @@ const COMMAND_TRY_IMPORT: &str = "try-import";
 const COMMAND_TRY_IMPORT_IF_BAZEL_VERSION: &str = "try-import-if-bazel-version";
 
 // Java: src/main/cpp/rc_file.cc:60 kBazelVersionCmpOp
+// RE2's `\S` is `[^\t\n\f\r ]` (ASCII whitespace only); Rust's is Unicode, which would
+// reject U+0085 and U+00A0, chars of an internal string.
 static BAZEL_VERSION_CMP_OP: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(<=?|>=?|==|!=|~)(\S+)$").unwrap());
+    LazyLock::new(|| Regex::new(r"^(<=?|>=?|==|!=|~)([^\t\n\x0C\r ]+)$").unwrap());
 
 // Java: src/main/cpp/workspace_layout.h:60 WorkspaceLayout::kWorkspacePrefix
 pub const WORKSPACE_PREFIX: &str = "%workspace%/";
@@ -62,9 +66,9 @@ pub type CanonicalizePathFn<'a> = &'a dyn Fn(&str) -> String;
 
 // Java: src/main/cpp/rc_file.cc:261 RcFile::ReadFileDefault
 pub fn read_file_default(filename: &str) -> Result<String, String> {
-    // PORT: byte-strings (C++ ReadFile keeps the rc file's raw bytes in a std::string).
-    std::fs::read(filename)
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
+    // The C++ ReadFile keeps the rc file's raw bytes in a std::string: one char per byte.
+    std::fs::read(std::path::Path::new(&*internal_to_platform(filename)))
+        .map(|b| latin1_decode(&b).into_owned())
         .map_err(|e| {
             // Java: src/main/cpp/util/errors_posix.cc:31 blaze_util::GetLastErrorString
             // "(error: <errno>): <strerror(errno)>".
@@ -86,9 +90,9 @@ pub fn read_file_default(filename: &str) -> Result<String, String> {
 // Java: src/main/cpp/util/file_posix.cc:378 blaze_util::MakeCanonical
 /// `realpath`, or "" on failure.
 pub fn make_canonical(path: &str) -> String {
-    // PORT: byte-strings (C++ MakeCanonical returns realpath's raw bytes).
-    std::fs::canonicalize(path)
-        .map(|p| p.to_string_lossy().into_owned())
+    // The C++ MakeCanonical returns realpath's raw bytes.
+    std::fs::canonicalize(std::path::Path::new(&*internal_to_platform(path)))
+        .map(|p| platform_to_internal(p.as_os_str()).into_owned())
         .unwrap_or_default()
 }
 

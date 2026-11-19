@@ -361,12 +361,14 @@ impl<'v> StarlarkValue<'v> for StarlarkStr {
             Ok(None) => return None,
             Err(e) => return Some(Err(e)),
         };
-        // BLAZE PATCH 0002: EvalUtils.repeatString limit (length counted in UTF-8 bytes, as Bazel
-        // 9.3.2 stores strings).
-        if l > 0 && (self.len() as i64) * (l as i64) > i32::MAX as i64 {
+        // BLAZE PATCH 0002: EvalUtils.repeatString limit.
+        // BLAZE PATCH 0036: Java's `s.length()` counts chars (EvalUtils.java:433); Blaze's strings
+        // are internal (one char per byte), so this is the byte length Bazel sees.
+        let chars = fast_string::len(self).0; // BLAZE PATCH 0036
+        if l > 0 && (chars as i64) * (l as i64) > i32::MAX as i64 { // BLAZE PATCH 0036
             return Some(Err(crate::Error::new_other(anyhow::anyhow!(
                 "excessive repeat ({} * {} characters)",
-                self.len(),
+                chars, // BLAZE PATCH 0036
                 l
             ))));
         }

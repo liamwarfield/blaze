@@ -44,8 +44,7 @@ impl ArgChunk for SimpleArgChunk {
         let mut total: i32 = 0;
         for arg in &self.args {
             // Java `String.length()` of an internal string.
-            total =
-                total.wrapping_add(blaze_util::string_encoding::internal_length(arg) as i32 + 1);
+            total = total.wrapping_add(arg.chars().count() as i32 + 1);
         }
         total
     }

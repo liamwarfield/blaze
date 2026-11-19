@@ -25,6 +25,7 @@ use blaze_skyframe::ComputeError;
 use blaze_skyframe::Environment;
 use blaze_skyframe::Key;
 use blaze_skyframe::SkyFunctionName;
+use blaze_util::string_encoding::internal_to_unicode;
 use indexmap::IndexMap;
 use sha2::Digest;
 use sha2::Sha256;
@@ -231,6 +232,10 @@ pub fn compute(
 // Values without an adapter (`Location`) use Gson's reflective adapter (fields in declaration
 // order).
 
+// Strings are written through GsonTypeAdapterUtil.STRING_ADAPTER and the other string adapters
+// (MODULE_KEY, ISOLATION_KEY), which write `internalToUnicode(s)` (REPOSITORY_NAME and VERSION
+// write theirs unconverted); map keys go through the same adapters (complex map key serialization).
+
 /// The generated adapter of `@AutoValue @GenerateTypeAdapter SingleExtensionUsagesValue`.
 fn write_single_extension_usages_value(out: &mut JsonWriter, value: &SingleExtensionUsagesValue) {
     out.begin_object();
@@ -239,12 +244,12 @@ fn write_single_extension_usages_value(out: &mut JsonWriter, value: &SingleExten
     // serialization: MODULE_KEY_TYPE_ADAPTER writes a string, so the map is a JSON object.
     out.begin_object();
     for (key, usage) in &value.extension_usages {
-        out.name(&key.to_string());
+        out.name(&internal_to_unicode(&key.to_string()));
         write_module_extension_usage(out, usage);
     }
     out.end_object();
     out.name("extensionUniqueName");
-    out.value_str(&value.extension_unique_name);
+    out.value_str(&internal_to_unicode(&value.extension_unique_name));
     out.name("abridgedModules");
     out.begin_array();
     for module in &value.abridged_modules {
@@ -254,7 +259,7 @@ fn write_single_extension_usages_value(out: &mut JsonWriter, value: &SingleExten
     out.name("repoMappings");
     out.begin_object();
     if let Some((key, _mapping)) = value.repo_mappings.iter().next() {
-        out.name(&key.to_string());
+        out.name(&internal_to_unicode(&key.to_string()));
         // PORT: RepositoryMapping has no type adapter (Gson's reflective adapter would apply);
         // only trimmed values, whose repo mappings are empty, are serialized.
         blaze_util::unported!(
@@ -266,7 +271,7 @@ fn write_single_extension_usages_value(out: &mut JsonWriter, value: &SingleExten
     out.name("repoOverrides");
     out.begin_object();
     for (name, repo) in &value.repo_overrides {
-        out.name(name);
+        out.name(&internal_to_unicode(name));
         // REPOSITORY_NAME_TYPE_ADAPTER
         out.value_str(repo.get_name());
     }
@@ -278,14 +283,14 @@ fn write_single_extension_usages_value(out: &mut JsonWriter, value: &SingleExten
 fn write_module_extension_usage(out: &mut JsonWriter, usage: &ModuleExtensionUsage) {
     out.begin_object();
     out.name("extensionBzlFile");
-    out.value_str(&usage.extension_bzl_file);
+    out.value_str(&internal_to_unicode(&usage.extension_bzl_file));
     out.name("extensionName");
-    out.value_str(&usage.extension_name);
+    out.value_str(&internal_to_unicode(&usage.extension_name));
     out.name("isolationKey");
     match &usage.isolation_key {
         // ISOLATION_KEY_TYPE_ADAPTER
         Some(key) => {
-            out.value_str(&key.to_string());
+            out.value_str(&internal_to_unicode(&key.to_string()));
         }
         // OPTIONAL: an empty Optional of a non-String type writes a null with serializeNulls
         // false, which drops the name.
@@ -311,7 +316,7 @@ fn write_module_extension_usage(out: &mut JsonWriter, usage: &ModuleExtensionUsa
     out.name("repoOverrides");
     out.begin_object();
     for (name, repo_override) in &usage.repo_overrides {
-        out.name(name);
+        out.name(&internal_to_unicode(name));
         write_repo_override(out, repo_override);
     }
     out.end_object();
@@ -332,7 +337,7 @@ fn write_proxy(_out: &mut JsonWriter, _proxy: &ModuleExtensionUsageProxy) {
 fn write_repo_override(out: &mut JsonWriter, repo_override: &RepoOverride) {
     out.begin_object();
     out.name("overridingRepoName");
-    out.value_str(&repo_override.overriding_repo_name);
+    out.value_str(&internal_to_unicode(&repo_override.overriding_repo_name));
     out.name("mustExist");
     out.value_bool(repo_override.must_exist);
     out.name("location");
@@ -344,7 +349,7 @@ fn write_repo_override(out: &mut JsonWriter, repo_override: &RepoOverride) {
 fn write_tag(out: &mut JsonWriter, tag: &Tag) {
     out.begin_object();
     out.name("tagName");
-    out.value_str(&tag.tag_name);
+    out.value_str(&internal_to_unicode(&tag.tag_name));
     out.name("attributeValues");
     AttributeValuesAdapter::write(out, &tag.attribute_values);
     out.name("devDependency");
@@ -359,11 +364,12 @@ fn write_tag(out: &mut JsonWriter, tag: &Tag) {
 fn write_abridged_module(out: &mut JsonWriter, module: &AbridgedModule) {
     out.begin_object();
     out.name("name");
-    out.value_str(&module.name);
+    out.value_str(&internal_to_unicode(&module.name));
     out.name("version");
+    // VERSION_TYPE_ADAPTER writes `version.toString()` unconverted.
     out.value_str(&module.version.to_string());
     out.name("key");
-    out.value_str(&module.key.to_string());
+    out.value_str(&internal_to_unicode(&module.key.to_string()));
     out.end_object();
 }
 
@@ -372,7 +378,7 @@ fn write_abridged_module(out: &mut JsonWriter, module: &AbridgedModule) {
 fn write_location(out: &mut JsonWriter, location: &Location) {
     out.begin_object();
     out.name("file");
-    out.value_str(location.file());
+    out.value_str(&internal_to_unicode(location.file()));
     out.name("line");
     out.value_number(&location.line().to_string());
     out.name("column");

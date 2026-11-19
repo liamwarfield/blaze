@@ -229,11 +229,13 @@ fn get_line_type(line: &str, is_reading_chunk: bool, is_git_diff: bool) -> LineT
     LineType::Unknown
 }
 
+/// The lines of `file` decoded as UTF-8 (Unicode strings; malformed input is replaced).
 // Java: com/google/devtools/build/lib/bazel/repository/decompressor/PatchUtil.java:166 PatchUtil.readFile
 fn read_file(file: &Path) -> Result<Vec<String>, IoException> {
     Ok(fs_utils::read_lines(file)?)
 }
 
+/// Writes Unicode lines encoded as UTF-8.
 // Java: com/google/devtools/build/lib/bazel/repository/decompressor/PatchUtil.java:170 PatchUtil.writeFile
 fn write_file(file: &Path, content: &[String]) -> Result<(), IoException> {
     Ok(fs_utils::write_lines_as(file, content)?)
@@ -731,7 +733,9 @@ fn get_file_path(
     let Some(path) = path else {
         return Ok(None);
     };
-    let file_path = output_directory.get_relative_str(path);
+    // `path` is Unicode (the patch is read as UTF-8); Java puts it into the path unconverted.
+    let file_path =
+        output_directory.get_relative_str(&fs_utils::unicode_path_as_seen_by_file_system(path));
     if !file_path.starts_with(output_directory) {
         return Err(pfe(format!(
             "Cannot patch file outside of external repository ({}), file path = \"{}\" at line {}",
@@ -943,21 +947,22 @@ fn apply_internal(
                 // The line should look like: "new mode 100755" or "new file mode 100755"
                 // 7 is the file permission for owner, which is at index 12 or 17
                 let index = if type_ == LineType::NewMode { 12 } else { 17 };
-                let c = line.as_bytes().get(index).copied().unwrap_or_else(|| {
+                // Java `line.charAt(index)`: a UTF-16 unit of the Unicode line.
+                let c = line.encode_utf16().nth(index).unwrap_or_else(|| {
                     panic!(
                         "StringIndexOutOfBoundsException: index {}, length {}",
                         index,
-                        line.len()
+                        line.encode_utf16().count()
                     )
                 });
-                if !(b'0'..=b'7').contains(&c) {
+                if !(u16::from(b'0')..=u16::from(b'7')).contains(&c) {
                     return Err(pfe(format!(
                         "Wrong file mode format at line {}: {}",
                         i + 1,
                         line
                     )));
                 }
-                file_permission = (c - b'0') as i32;
+                file_permission = (c - u16::from(b'0')) as i32;
             }
             LineType::ChunkHead => {
                 let header_str = chunk_header_substring(line).to_string();

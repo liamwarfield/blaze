@@ -346,8 +346,15 @@ impl Inner {
 
     // Java: com/google/devtools/build/lib/remote/ByteStreamBuildEventArtifactUploader.java:325 ByteStreamBuildEventArtifactUploader.reportUploadError
     fn report_upload_error(&self, error: &io::Error, path: Option<&Path>, digest: Option<&Digest>) {
-        // PORT: `if (error instanceof CancellationException) return;`: the port's uploads are
-        // never cancelled.
+        // `if (error instanceof CancellationException) return;`
+        // PORT: the crate carries a `CancellationException` (an upload cancelled by
+        // `CombinedCache.shutdownNow()` after an interrupted build, `AsyncTaskCache`) as an error
+        // of kind `Interrupted`, the same kind as an `InterruptedException`; these uploads run
+        // on the transport's writer, which is never the interrupted command thread, so the kind
+        // means the cancellation here.
+        if crate::common::errors::is_interrupted(error) {
+            return;
+        }
 
         let mut error_message = "Uploading BEP referenced local file".to_string();
         if let Some(path) = path {

@@ -10,6 +10,7 @@ use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 
 use blaze_events::location::Location;
+use blaze_util::string_encoding::java_new_string_utf8;
 use blaze_vfs::{Path, PathFragment};
 
 use crate::authandtls::{Credentials, Headers, NetrcCredentials, netrc_parser};
@@ -167,9 +168,27 @@ const ALL_BLOCKED_MESSAGE_DIRECTIVE: &str = "all_blocked_message";
 /// Guava `Splitter.onPattern("\\s+").omitEmptyStrings().trimResults()`.
 fn split_whitespace_java(line: &str) -> Vec<&str> {
     line.split([' ', '\t', '\n', '\x0B', '\x0C', '\r'])
-        .map(|s| s.trim_matches(|c: char| c.is_whitespace() || c.is_control()))
+        .map(|s| s.trim_matches(is_guava_whitespace))
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+/// Guava `CharMatcher.whitespace()` (what `trimResults()` trims).
+// Java: com/google/common/base/CharMatcher.java Whitespace.TABLE (Guava)
+fn is_guava_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\t' | '\n'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\r'
+            | ' '
+            | '\u{0085}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'
+            ..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+    )
 }
 
 impl UrlRewriterConfig {
@@ -378,8 +397,8 @@ impl UrlRewriter {
         })?;
         UrlRewriter::new(
             &[config_path.get_path_string().to_string()],
-            // PORT: byte-strings (Java reads the config with a UTF-8 reader, which also replaces malformed input)
-            &[String::from_utf8_lossy(&content).into_owned()],
+            // Java: new InputStreamReader(actualConfigPath.getInputStream(), UTF_8): Unicode text.
+            &[java_new_string_utf8(&content)],
         )
     }
 

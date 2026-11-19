@@ -1,0 +1,1 @@
+SYNTAX escape_octal_777.star:1:9: octal escape sequence out of range (maximum is \\377)

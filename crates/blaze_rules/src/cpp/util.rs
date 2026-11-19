@@ -400,15 +400,13 @@ pub fn allowlist_entry_allows(
 // -------------------------------------------------------------------------------------------
 // Java HashMap iteration order
 
-/// Java `String.hashCode()` of a Bazel internal string (a Latin-1 Java string holding the UTF-8
-/// bytes, `StringEncoding`; tags and other BUILD-file strings are internal): one char per byte
-/// (analysis review R2-5).
-// PORT: StringEncoding identity
+/// Java `String.hashCode()`: the polynomial over the UTF-16 units; for an internal string (tags
+/// and other BUILD-file strings) over its Latin-1 chars (analysis review R2-5).
 // Java: java/lang/String.java String.hashCode
 pub fn java_string_hash_code(s: &str) -> i32 {
     let mut h: i32 = 0;
-    for byte in s.bytes() {
-        h = h.wrapping_mul(31).wrapping_add(byte as i32);
+    for unit in s.encode_utf16() {
+        h = h.wrapping_mul(31).wrapping_add(i32::from(unit));
     }
     h
 }
@@ -519,7 +517,17 @@ mod tests {
         // "no-remote".hashCode() (Java) == -724727342.
         assert_eq!(java_string_hash_code("no-remote"), -724727342);
         // The internal string of "é" is "\u00c3\u00a9": 0xC3 * 31 + 0xA9 (Java String.hashCode).
-        assert_eq!(java_string_hash_code("\u{e9}"), 195 * 31 + 169);
+        let i = |s: &[u8]| blaze_util::string_encoding::latin1_decode(s).into_owned();
+        assert_eq!(
+            java_string_hash_code(&i("\u{e9}".as_bytes())),
+            195 * 31 + 169
+        );
+        // "🐷" is F0 9F 90 B7; a raw byte FF is one char.
+        assert_eq!(
+            java_string_hash_code(&i("\u{1F437}".as_bytes())),
+            ((0xF0 * 31 + 0x9F) * 31 + 0x90) * 31 + 0xB7
+        );
+        assert_eq!(java_string_hash_code(&i(b"\xff")), 0xFF);
     }
 
     #[test]

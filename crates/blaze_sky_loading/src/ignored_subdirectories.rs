@@ -307,8 +307,10 @@ fn get_ignored_prefixes(
         let mut input = path.get_input_stream()?;
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut input, &mut bytes)?;
-        // PORT: Java decodes with an InputStreamReader (UTF-8, malformed input replaced).
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        // `new InputStreamReader(..., UTF_8)`: the lines are Unicode strings (malformed input
+        // replaced), not internal ones, so a non-ASCII entry names the Latin-1 encoding of its
+        // characters and never matches a directory whose name is its UTF-8 bytes (oracle).
+        Ok(blaze_util::string_encoding::java_new_string_utf8(&bytes))
     })();
     let contents = match read {
         Ok(c) => c,
@@ -329,14 +331,10 @@ fn get_ignored_prefixes(
     for line in read_lines(&contents) {
         if !line.is_empty() && !line.starts_with('#') {
             fragments.insert(PathFragment::create(line));
-            // Java also validates the line with java.nio.file.Path.of(line), which only rejects
-            // NUL on Unix.
-            if line.contains('\0') {
+            // Java also validates the line with java.nio.file.Path.of(line).
+            if let Err(message) = check_nio_unix_path(line) {
                 return Err(IgnoredSubdirectoriesFunctionException::InvalidIgnorePath(
-                    InvalidIgnorePathException::new(
-                        path.to_string(),
-                        format!("Nul character not allowed: {}", line),
-                    ),
+                    InvalidIgnorePathException::new(path.to_string(), message),
                 ));
             }
         }
@@ -351,6 +349,45 @@ fn get_ignored_prefixes(
             ));
         }
         ignored_directories_builder.insert(ignored);
+    }
+    Ok(())
+}
+
+/// `java.nio.file.Path.of(input)` on the server's Unix file system, which only validates:
+/// returns `InvalidPathException.getMessage()` when it throws.
+///
+/// Java (JDK): sun/nio/fs/UnixPath.java `UnixPath(UnixFileSystem, String)`:
+/// `normalizeAndCheck` rejects NUL ("Nul character not allowed", with the input as given), then
+/// `encode` encodes the normalized input with `sun.jnu.encoding`, which is ISO-8859-1 for Bazel's
+/// server (`blaze.cc` starts it in the `en_US.ISO-8859-1` locale): a char above U+00FF (any
+/// non-Latin-1 character of the UTF-8-decoded line, including U+FFFD for malformed input) is
+/// unmappable ("Malformed input or input contains unmappable characters", with the normalized
+/// input). The oracle prints `Invalid path in <file>: Malformed input or input contains
+/// unmappable characters: pig?` for a line `pig🐷`.
+fn check_nio_unix_path(input: &str) -> Result<(), String> {
+    // InvalidPathException.getMessage(): `reason + ": " + input` (no index is given).
+    if input.contains('\0') {
+        return Err(format!("Nul character not allowed: {}", input));
+    }
+    // UnixPath.normalizeAndCheck / normalize: runs of '/' collapse to one, a trailing '/' is
+    // dropped (except for the root).
+    let mut normalized = String::with_capacity(input.len());
+    let mut prev_slash = false;
+    for c in input.chars() {
+        if c == '/' && prev_slash {
+            continue;
+        }
+        prev_slash = c == '/';
+        normalized.push(c);
+    }
+    if normalized.len() > 1 && normalized.ends_with('/') {
+        normalized.pop();
+    }
+    if normalized.chars().any(|c| c as u32 > 0xff) {
+        return Err(format!(
+            "Malformed input or input contains unmappable characters: {}",
+            normalized
+        ));
     }
     Ok(())
 }

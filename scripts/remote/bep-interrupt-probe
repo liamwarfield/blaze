@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Ctrl-C while build event artifacts are being uploaded (review round 2, N8): oracle vs Blaze.
+#
+# usage: scripts/remote/bep-interrupt-probe <oracle|BLAZE-BINARY> <label> <port>
+#        scripts/remote/bep-interrupt-probe help
+#
+# Workspace: ~/.cache/blaze/work/remote/bep-interrupt-probe/src (written when missing):
+#   //:big1 //:big2 //:big3  genrules writing 400 MB of random bytes each, tagged
+#                            no-remote-cache (so the build event uploader has to upload them)
+#   //:slow                  a `local` genrule depending on the three; it touches $MARKER, then
+#                            sleeps 30 s
+# Starts a fresh Bazel remote worker (scripts/remote/worker, name bip-<label>, <port>) and runs
+# in a fresh output base (run name bip-<label>, through scripts/remote/ws-run):
+#   build //:big1 //:big2 //:big3 //:slow --remote_cache=grpc://localhost:<port>
+#     --remote_build_event_upload=all --build_event_json_file=<step>/bep.json
+#     --remote_grpc_log=<step>/grpc.log --action_env=MARKER=<W>/bip-<label>/marker
+# with --sigint-on-glob <marker>: SIGINT as soon as the slow action has started (the three big
+# outputs are built and their build events posted by then). Prints the seconds from SIGINT to
+# exit, the exit code, the ERROR and summary lines, every BEP `uri` (event id kind, file name,
+# scheme), the count of uris per scheme, and the ByteStream/Write calls of the gRPC log with
+# their status codes. Saved as <W>/bip-<label>/summary.txt. <W> is ~/.cache/blaze/work/remote.
+# The gRPC log is dumped with ~/.cache/blaze/work/remote/tb-tools/blaze-remote-grpc-log (a copy
+# of target/debug/blaze-remote-grpc-log; `scripts/cargo-capped build -p blaze_remote --bins`).
+set -euo pipefail
+if [[ $# -lt 3 || $1 == help ]]; then sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+here=$(cd "$(dirname "$0")" && pwd)
+W=~/.cache/blaze/work/remote
+src=$W/bep-interrupt-probe/src
+dump=$W/tb-tools/blaze-remote-grpc-log
+bin=$1; label=$2; port=$3
+if [[ ! -f $src/BUILD.bazel ]]; then
+  mkdir -p "$src"
+  echo 'module(name = "bep_interrupt_probe")' > "$src/MODULE.bazel"
+  {
+    for i in 1 2 3; do
+      printf 'genrule(\n    name = "big%s",\n    outs = ["big%s.bin"],\n    cmd = "head -c 400000000 /dev/urandom > $@",\n    tags = ["no-remote-cache"],\n)\n\n' "$i" "$i"
+    done
+    printf 'genrule(\n    name = "slow",\n    srcs = [":big1", ":big2", ":big3"],\n    outs = ["slow.txt"],\n    cmd = "touch $$MARKER; sleep 30; echo done > $@",\n    tags = ["local"],\n)\n'
+  } > "$src/BUILD.bazel"
+fi
+run=bip-$label
+mkdir -p "$W/$run"
+marker=$W/$run/marker
+rm -f "$marker"
+"$here/worker" start "$run" "$port" >/dev/null
+trap '"$here/worker" stop "$run" >/dev/null 2>&1 || true' EXIT
+out=$("$here/ws-run" "$run" "$src" "$bin" --fresh --sigint-on-glob "$marker" -- build \
+  "--remote_cache=grpc://localhost:$port" --remote_build_event_upload=all \
+  '--build_event_json_file={step}/bep.json' '--remote_grpc_log={step}/grpc.log' \
+  "--action_env=MARKER=$marker" //:big1 //:big2 //:big3 //:slow) || true
+s=$(echo "$out" | sed -n 's/^step: //p')
+{
+  echo "$out" | grep -E '^seconds from SIGINT|^the client exited' || true
+  echo "exit code: $(echo "$out" | sed -n 's/^exit code: //p')"
+  echo "ERROR/summary lines:"
+  grep -E '^ERROR|^INFO: [0-9]+ process|^INFO: Build|interrupt|Interrupt|^Target|^FAILED' "$s/stderr" \
+    | sed 's#/[^ ]*/execroot/#<execroot>/#g; s/ in [0-9.]*s/ in <t>s/g; s/time: [0-9.]*s/time: <t>s/; s/Critical Path: [0-9.]*s/Critical Path: <t>s/' | sed 's/^/  /' || true
+  echo "BEP uris:"
+  python3 -I - "$s/bep.json" <<'PY' || echo "  (no BEP file)"
+import collections, json, sys
+counts = collections.Counter()
+rows = []
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    ev = json.loads(line)
+    kind = next(iter(ev.get("id", {})), "?")
+    def walk(node):
+        if isinstance(node, dict):
+            if isinstance(node.get("uri"), str):
+                scheme = node["uri"].split(":", 1)[0]
+                counts[scheme] += 1
+                rows.append("  %s %s %s" % (kind, node.get("name", ""), scheme))
+            for k, v in node.items():
+                if k != "id":
+                    walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    walk(ev)
+print("\n".join(sorted(rows)))
+print("  per scheme: " + ", ".join("%s=%d" % kv for kv in sorted(counts.items())))
+PY
+  echo "ByteStream/Write calls (status code: count):"
+  if [[ -f $s/grpc.log ]]; then
+    "$dump" "$s/grpc.log" | python3 -I -c '
+import collections, json, sys
+c = collections.Counter()
+for line in sys.stdin:
+    e = json.loads(line)
+    if e.get("methodName", "").endswith("ByteStream/Write"):
+        c[e.get("status", {}).get("code", 0)] += 1
+print("  total=%d " % sum(c.values()) + " ".join("code%s=%d" % kv for kv in sorted(c.items())))
+'
+  else
+    echo "  (no gRPC log)"
+  fi
+} > "$W/$run/summary.txt"
+cat "$W/$run/summary.txt"

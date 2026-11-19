@@ -51,7 +51,7 @@ impl JavaPattern {
 
     /// `pattern.matcher(s).matches()`.
     pub fn matches(&self, s: &str) -> bool {
-        self.compiled.matches(s)
+        self.compiled.pattern_matches(s)
     }
 }
 

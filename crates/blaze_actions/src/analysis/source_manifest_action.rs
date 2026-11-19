@@ -7,7 +7,7 @@ use std::sync::{Arc, OnceLock};
 
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
 use blaze_events::{Event, EventKind};
-use blaze_util::string_encoding::internal_string_bytes;
+use blaze_util::string_encoding::latin1_encode_lossy;
 use blaze_util::{Fingerprint, unported};
 use blaze_vfs::PathFragment;
 use indexmap::IndexMap;
@@ -66,8 +66,8 @@ fn escape_target_path(s: &str) -> String {
 /// Interface for defining manifest formatting and reporting specifics. Implementations must be
 /// immutable.
 ///
-/// PORT: Java's `Writer` over ISO-8859-1 becomes a byte sink that is given the internal
-/// strings' bytes (`string_encoding::internal_string_bytes`).
+/// PORT: Java's `Writer` over ISO-8859-1 becomes a byte sink that is given what that writer
+/// encodes (`string_encoding::latin1_encode_lossy`: the internal strings' bytes).
 // Java: com/google/devtools/build/lib/analysis/SourceManifestAction.java:92 SourceManifestAction.ManifestWriter
 pub trait ManifestWriter: Send + Sync + fmt::Debug {
     /// Writes a single line of manifest output.
@@ -153,23 +153,23 @@ impl ManifestWriter for ManifestType {
                     || symlink_target.is_some_and(|t| t.get_path_string().contains('\n'));
                 if needs_escaping {
                     manifest_writer.write_all(b" ")?;
-                    manifest_writer.write_all(&internal_string_bytes(
-                        &escape_root_relative_path(root_relative_path_string),
-                    ))?;
+                    manifest_writer.write_all(&latin1_encode_lossy(&escape_root_relative_path(
+                        root_relative_path_string,
+                    )))?;
                 } else {
-                    manifest_writer.write_all(&internal_string_bytes(root_relative_path_string))?;
+                    manifest_writer.write_all(&latin1_encode_lossy(root_relative_path_string))?;
                 }
                 // This trailing whitespace is REQUIRED to process the single entry line
                 // correctly.
                 manifest_writer.write_all(b" ")?;
                 if let Some(symlink_target) = symlink_target {
                     if needs_escaping {
-                        manifest_writer.write_all(&internal_string_bytes(&escape_target_path(
+                        manifest_writer.write_all(&latin1_encode_lossy(&escape_target_path(
                             symlink_target.get_path_string(),
                         )))?;
                     } else {
                         manifest_writer
-                            .write_all(&internal_string_bytes(symlink_target.get_path_string()))?;
+                            .write_all(&latin1_encode_lossy(symlink_target.get_path_string()))?;
                     }
                 }
                 manifest_writer.write_all(b"\n")?;
@@ -178,7 +178,7 @@ impl ManifestWriter for ManifestType {
             // Java: com/google/devtools/build/lib/analysis/SourceManifestAction.java:441 SOURCES_ONLY.writeEntry
             ManifestType::SOURCES_ONLY => {
                 manifest_writer
-                    .write_all(&internal_string_bytes(root_relative_path.get_path_string()))?;
+                    .write_all(&latin1_encode_lossy(root_relative_path.get_path_string()))?;
                 manifest_writer.write_all(b"\n")?;
                 manifest_writer.flush()?;
                 Ok(())
@@ -539,9 +539,7 @@ impl FileContentsProvider for SourceManifestAction {
         let mut stream: Vec<u8> = Vec::new();
         self.write_to(&mut stream)?;
         // Java: `stream.toString(ISO_8859_1)`.
-        blaze_util::string_encoding::internal_string_from_bytes(&stream)
-            .map(|s| s.into_owned())
-            .map_err(io::Error::other)
+        Ok(blaze_util::string_encoding::latin1_decode(&stream).into_owned())
     }
 
     // Java: com/google/devtools/build/lib/analysis/actions/AbstractFileWriteAction.java:55 AbstractFileWriteAction.makeExecutable

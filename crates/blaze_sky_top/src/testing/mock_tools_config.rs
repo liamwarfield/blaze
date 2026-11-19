@@ -7,7 +7,14 @@
 
 use blaze_vfs::{Path, PathFragment};
 
-use crate::testing::scratch::lines_as_string;
+use blaze_util::string_encoding::{latin1_decode, latin1_encode_lossy};
+
+use crate::testing::scratch::{lines_as_string, os};
+
+/// Java `String.trim()`: strips the chars `<= ' '`.
+fn java_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| c <= ' ')
+}
 
 /// Java `MockToolsConfig`.
 // Java: com/google/devtools/build/lib/packages/util/MockToolsConfig.java:31 MockToolsConfig
@@ -34,10 +41,11 @@ impl MockToolsConfig {
         if !path.exists() {
             write_lines(&path, lines);
         } else if !lines.is_empty() {
+            // new String(FileSystemUtils.readContentAsLatin1(path))
             let existing_content =
-                std::fs::read_to_string(path.get_path_string()).expect("read mock file");
+                latin1_decode(&std::fs::read(os(&path)).expect("read mock file")).into_owned();
             let new_content = lines_as_string(lines);
-            if new_content.trim() != existing_content.trim() {
+            if java_trim(&new_content) != java_trim(&existing_content) {
                 panic!(
                     "IOException: Conflict: '{relative_path}':\n'{new_content}'\n vs \n'{existing_content}'"
                 );
@@ -50,8 +58,8 @@ impl MockToolsConfig {
     pub fn overwrite(&self, relative_path: &str, lines: &[&str]) -> Path {
         let path = self.get_path(relative_path);
         if path.exists() {
-            let p = std::path::Path::new(path.get_path_string());
-            if p.is_dir() {
+            let p = os(&path);
+            if std::path::Path::new(&p).is_dir() {
                 std::fs::remove_dir_all(p).expect("delete mock tree");
             } else {
                 std::fs::remove_file(p).expect("delete mock file");
@@ -75,9 +83,10 @@ impl MockToolsConfig {
         use std::io::Write;
         let mut f = std::fs::OpenOptions::new()
             .append(true)
-            .open(path.get_path_string())
+            .open(os(&path))
             .expect("open mock file");
-        f.write_all(lines_as_string(lines).as_bytes())
+        // FileSystemUtils.appendIsoLatin1
+        f.write_all(&latin1_encode_lossy(&lines_as_string(lines)))
             .expect("append to mock file");
         path
     }
@@ -86,7 +95,7 @@ impl MockToolsConfig {
     pub fn chmod(&self, relative_path: &str, mode: u32) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(
-            self.get_path(relative_path).get_path_string(),
+            os(&self.get_path(relative_path)),
             std::fs::Permissions::from_mode(mode),
         )
         .expect("chmod mock file");
@@ -99,6 +108,7 @@ fn write_lines(path: &Path, lines: &[&str]) {
     let parent = path
         .get_parent_directory()
         .expect("a mock file has a parent");
-    std::fs::create_dir_all(parent.get_path_string()).expect("create mock directories");
-    std::fs::write(path.get_path_string(), lines_as_string(lines)).expect("write mock file");
+    std::fs::create_dir_all(os(&parent)).expect("create mock directories");
+    std::fs::write(os(path), latin1_encode_lossy(&lines_as_string(lines)))
+        .expect("write mock file");
 }

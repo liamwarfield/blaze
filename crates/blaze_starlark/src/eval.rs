@@ -159,6 +159,7 @@ fn panic_error(p: Box<dyn std::any::Any + Send>) -> EvalError {
 
 /// Runs `f` with a fresh module and an evaluator configured for Blaze: `ctx` in
 /// `Evaluator::extra`, `loads` as the loader, recursion forbidden unless the semantics allow it,
+/// the byte-strings flag from the semantics (`-internal_bazel_only_utf_8_byte_strings`),
 /// the call-depth limit and cancellation hook from `opts`. Panics inside starlark-rust become
 /// [`EvalErrorKind::Panic`].
 pub fn with_evaluator<R>(
@@ -175,6 +176,7 @@ pub fn with_evaluator<R>(
                 eval.set_loader(l);
             }
             eval.set_forbid_recursion(!ctx.semantics.allow_recursion);
+            eval.set_utf8_byte_strings(ctx.semantics.utf8_byte_strings());
             eval.set_max_callstack_size(opts.max_callstack_size.max(1))
                 .expect("fresh evaluator");
             if let Some(c) = &opts.cancelled {
@@ -213,6 +215,7 @@ pub fn exec_module(
                 eval.extra = Some(ctx);
                 eval.set_loader(loads);
                 eval.set_forbid_recursion(!ctx.semantics.allow_recursion);
+                eval.set_utf8_byte_strings(ctx.semantics.utf8_byte_strings());
                 eval.set_max_callstack_size(opts.max_callstack_size.max(1))
                     .expect("fresh evaluator");
                 if let Some(c) = &opts.cancelled {
@@ -249,6 +252,7 @@ pub fn exec_module_with_extra_value(
                 eval.extra = Some(ctx);
                 eval.set_loader(loads);
                 eval.set_forbid_recursion(!ctx.semantics.allow_recursion);
+                eval.set_utf8_byte_strings(ctx.semantics.utf8_byte_strings());
                 eval.set_max_callstack_size(opts.max_callstack_size.max(1))
                     .expect("fresh evaluator");
                 if let Some(c) = &opts.cancelled {
@@ -315,6 +319,7 @@ pub fn call_frozen_and_freeze(
                 let mut eval = Evaluator::new(&module);
                 eval.extra = Some(ctx);
                 eval.set_forbid_recursion(!ctx.semantics.allow_recursion);
+                eval.set_utf8_byte_strings(ctx.semantics.utf8_byte_strings());
                 eval.set_max_callstack_size(opts.max_callstack_size.max(1))
                     .expect("fresh evaluator");
                 if let Some(c) = &opts.cancelled {

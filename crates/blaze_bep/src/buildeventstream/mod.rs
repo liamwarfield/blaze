@@ -26,4 +26,4 @@ pub use generic_build_event::{
     AbortedEvent, GenericBuildEvent, LastBuildEvent, NullConfiguration, ProgressEvent,
     proto_chaining, proto_chaining_with,
 };
-pub use transport::{BuildEventTransport, TransportCloseError};
+pub use transport::{BuildEventTransport, CloseFuture, TransportCloseError};

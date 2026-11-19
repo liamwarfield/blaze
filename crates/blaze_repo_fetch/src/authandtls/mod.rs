@@ -7,6 +7,7 @@ pub use netrc::{Netrc, NetrcCredential, NetrcCredentials};
 
 use std::collections::HashMap;
 
+use blaze_util::string_encoding::latin1_encode;
 use indexmap::IndexMap;
 
 use crate::errors::IoException;
@@ -50,9 +51,10 @@ impl Credentials for StaticCredentials {
 // Java: com/google/devtools/build/lib/authandtls/BasicHttpAuthenticationEncoder.java:37 BasicHttpAuthenticationEncoder.encode
 pub fn basic_http_authentication_encode(username: &str, password: &str) -> String {
     use base64::Engine as _;
-    // PORT: StringEncoding identity (internal strings are UTF-8 bytes).
+    // Java: StringUnsafe.getInternalStringBytes(username + ":" + password)
     format!(
         "Basic {}",
-        base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", username, password))
+        base64::engine::general_purpose::STANDARD
+            .encode(latin1_encode(&format!("{}:{}", username, password)))
     )
 }

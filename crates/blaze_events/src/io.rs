@@ -137,8 +137,11 @@ impl OutErr {
     /// Writes the specified string to the output stream, and flushes.
     // Java: com/google/devtools/build/lib/util/io/OutErr.java:123 OutErr.printOut
     pub fn print_out(&self, s: &str) {
-        // PORT: PrintWriter swallows IOExceptions; so do we. StringEncoding identity.
-        let _ = self.out.write(s.as_bytes());
+        // PORT: PrintWriter swallows IOExceptions; so do we. `new PrintWriter(out, true)` encodes
+        // with the default charset, ISO-8859-1.
+        let _ = self
+            .out
+            .write(&blaze_util::string_encoding::latin1_encode_lossy(s));
         let _ = self.out.flush();
     }
 
@@ -150,7 +153,9 @@ impl OutErr {
     /// Writes the specified string to the error stream, and flushes.
     // Java: com/google/devtools/build/lib/util/io/OutErr.java:134 OutErr.printErr
     pub fn print_err(&self, s: &str) {
-        let _ = self.err.write(s.as_bytes());
+        let _ = self
+            .err
+            .write(&blaze_util::string_encoding::latin1_encode_lossy(s));
         let _ = self.err.flush();
     }
 
@@ -178,7 +183,7 @@ impl Default for RecordingOutErr {
 }
 
 fn latin1(bytes: &[u8]) -> String {
-    bytes.iter().map(|&b| b as char).collect()
+    blaze_util::string_encoding::latin1_decode(bytes).into_owned()
 }
 
 impl RecordingOutErr {

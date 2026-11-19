@@ -188,6 +188,28 @@ fn credential_should_not_leak_password() {
     assert!(!format!("{:?}", foo_credential()).contains(&foo_credential().password));
 }
 
+/// Blaze-only: `.netrc` is read as ISO-8859-1 (NetrcParser.java:80), so non-ASCII bytes become
+/// one char each, and the `Authorization` header carries the internal string's bytes
+/// (`StringUnsafe.getInternalStringBytes`, BasicHttpAuthenticationEncoder.java:39).
+#[test]
+fn parse_and_close_non_ascii_credentials_keep_their_bytes() {
+    let netrc = parse_and_close(
+        b"machine foo.example.org login l\xc3\xa9 password p\xf0\x9f\x90\xb7\xff\n".as_slice(),
+    )
+    .unwrap();
+    let c = &netrc.credentials[FOO_MACHINE];
+    assert_eq!(c.login, "l\u{c3}\u{a9}");
+    assert_eq!(c.password, "p\u{f0}\u{9f}\u{90}\u{b7}\u{ff}");
+    use base64::Engine as _;
+    assert_eq!(
+        blaze_repo_fetch::authandtls::basic_http_authentication_encode(&c.login, &c.password),
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(b"l\xc3\xa9:p\xf0\x9f\x90\xb7\xff")
+        )
+    );
+}
+
 // Java: src/test/java/com/google/devtools/build/lib/authandtls/NetrcCredentialsTest.java
 mod netrc_credentials_test {
     use super::*;

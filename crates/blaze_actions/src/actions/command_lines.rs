@@ -184,9 +184,8 @@ impl CommandLines {
                             path_mapper.map(&param_file_exec_path).get_path_string(),
                         );
                         // Java `String.length()` of an internal string.
-                        cmd_line_length = cmd_line_length.wrapping_add(
-                            blaze_util::string_encoding::internal_length(&param_arg) as i32 + 1,
-                        );
+                        cmd_line_length =
+                            cmd_line_length.wrapping_add(param_arg.chars().count() as i32 + 1);
                         arguments.push(param_arg);
 
                         if param_file_info.flags_only() {
@@ -200,11 +199,8 @@ impl CommandLines {
                             for positional_arg in
                                 parameter_file::non_flags(chunk.arguments(path_mapper))
                             {
-                                cmd_line_length = cmd_line_length.wrapping_add(
-                                    blaze_util::string_encoding::internal_length(&positional_arg)
-                                        as i32
-                                        + 1,
-                                );
+                                cmd_line_length = cmd_line_length
+                                    .wrapping_add(positional_arg.chars().count() as i32 + 1);
                                 arguments.push(positional_arg);
                             }
                         } else {

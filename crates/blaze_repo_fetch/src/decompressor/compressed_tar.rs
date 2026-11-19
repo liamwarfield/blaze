@@ -10,6 +10,7 @@ use std::io::{self, BufReader, Read, Write as _};
 
 use indexmap::IndexMap;
 
+use blaze_util::string_encoding::{latin1_decode, latin1_encode_lossy};
 use blaze_vfs::{Path, PathFragment};
 
 use super::{
@@ -294,14 +295,17 @@ pub(crate) fn decompress(
             continue;
         }
         let raw_name = entry.path_bytes().into_owned();
-        // PORT: byte-strings: Java keeps the raw header bytes of the entry name
-        // (toRawBytesString: one Latin-1 char per byte, CompressedTarFunction.java:88-91); here
-        // bytes that are not UTF-8 are replaced by U+FFFD, so such names change and can collide.
-        let mut entry_name = String::from_utf8_lossy(&raw_name).into_owned();
+        // Java: toRawBytesString(entry.getName()): the raw header bytes, one char per byte.
+        // PORT: Commons Compress decodes a PAX `path` record as UTF-8 and Java re-encodes it
+        // with `unicodeToInternal`, which replaces malformed UTF-8 in such a record; the `tar`
+        // crate hands over the record's raw bytes.
+        let mut entry_name = latin1_decode(&raw_name).into_owned();
         if let Some(renamed) = rename_files.get(&entry_name) {
             entry_name = renamed.clone();
         }
-        let entry_path = StripPrefixedPath::maybe_deprefix(entry_name.as_bytes(), prefix);
+        // Java: entryName.getBytes(ISO_8859_1)
+        let entry_path =
+            StripPrefixedPath::maybe_deprefix(&latin1_encode_lossy(&entry_name), prefix);
         found_prefix = found_prefix || entry_path.found_prefix();
 
         if prefix.is_some()

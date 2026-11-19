@@ -1,0 +1,22 @@
+## @ext_repo:
+load("@@//:ext.bzl", "repo")
+repo(
+  name = "+ext+ext_repo",
+  _original_name = "ext_repo",
+  s = "Ã©ð·",
+  l = ["Ã©", "ð·", "@@not_a_label_Ã©"],
+  d = {"Ã©": "ð·"},
+  x = "ï¿½",
+)
+
+## @rule_repo:
+load("@@//:ext.bzl", "repo")
+repo(
+  name = "+repo+rule_repo",
+  _original_name = "rule_repo",
+  s = "Ã©ð·",
+  l = ["Ã©"],
+  d = {"ð·": "Ã©"},
+  x = "ÿ",
+)
+

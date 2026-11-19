@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Compare a scripts/bytes/run recording with the saved oracle outputs. See `compare help`."""
+
+import os
+import re
+import sys
+
+USAGE = """\
+usage: scripts/bytes/compare [--oracle <dir>] [--candidate <dir>] [--verbose]
+       scripts/bytes/compare help
+
+Compares the recording of `scripts/bytes/run --binary <blaze>` (default
+~/.cache/blaze/work/bytes-out-blaze) with the oracle's (default ~/.cache/blaze/work/bytes-out),
+byte for byte, and prints `matching / total` plus every item that differs. Items:
+
+  case:<file>:<KIND> <name>   one per CASE / RCASE / LCASE / RAWPRINT line of build.stderr and
+                              labels.stderr (the whole DEBUG line, bytes)
+  output:<name>               one per file under outputs/
+  stdout:<name>               query_build.txt, query_label_kind.txt, query_jsonproto.txt,
+                              cquery_jsonproto.txt, aquery_text.txt, aquery_jsonproto.txt
+  exit:<command>              one per line of exit_codes.txt
+
+An item missing on either side differs. Exit status 0 only when everything matches.
+--verbose prints both values of each differing item (repr of the bytes, cut at 400).
+"""
+
+HOME = os.path.expanduser("~")
+CASE = re.compile(rb"\b(CASE|RCASE|LCASE|RAWPRINT)\b(?: ([A-Za-z0-9_]+))?")
+STDOUT = [
+    "query_build.txt",
+    "query_label_kind.txt",
+    "query_jsonproto.txt",
+    "cquery_jsonproto.txt",
+    "aquery_text.txt",
+    "aquery_jsonproto.txt",
+]
+
+
+def read(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def items(d):
+    out = {}
+    for name in ("build.stderr", "labels.stderr"):
+        data = read(os.path.join(d, name)) or b""
+        seen = {}
+        for line in data.split(b"\n"):
+            m = CASE.search(line)
+            if not m or not line.startswith(b"DEBUG: "):
+                continue
+            kind = m.group(1).decode()
+            key = kind if kind == "RAWPRINT" else f"{kind} {(m.group(2) or b'').decode()}"
+            n = seen.get(key, 0)
+            seen[key] = n + 1
+            if n:
+                key = f"{key}#{n + 1}"
+            out[f"case:{name}:{key}"] = line
+    od = os.path.join(d, "outputs")
+    if os.path.isdir(od):
+        for name in sorted(os.listdir(od)):
+            out[f"output:{name}"] = read(os.path.join(od, name))
+    for name in STDOUT:
+        data = read(os.path.join(d, name))
+        if data is not None:
+            out[f"stdout:{name}"] = data
+    codes = read(os.path.join(d, "exit_codes.txt")) or b""
+    for line in codes.decode().splitlines():
+        cmd, _, code = line.partition(" ")
+        out[f"exit:{cmd}"] = code.encode()
+    return out
+
+
+def main(argv):
+    if argv[:1] == ["help"]:
+        print(USAGE)
+        return 0
+    oracle = f"{HOME}/.cache/blaze/work/bytes-out"
+    candidate = f"{HOME}/.cache/blaze/work/bytes-out-blaze"
+    verbose = False
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == "--oracle" and args:
+            oracle = args.pop(0)
+        elif a == "--candidate" and args:
+            candidate = args.pop(0)
+        elif a == "--verbose":
+            verbose = True
+        else:
+            print(USAGE)
+            return 2
+    want, got = items(oracle), items(candidate)
+    if not want:
+        sys.exit(f"no oracle recording in {oracle} (run scripts/bytes/run first)")
+    keys = list(want) + [k for k in got if k not in want]
+    bad = []
+    for k in keys:
+        if want.get(k) != got.get(k) or k not in want:
+            bad.append(k)
+    for k in bad:
+        state = "MISSING" if k not in got else ("EXTRA" if k not in want else "DIFF")
+        print(f"{state} {k}")
+        if verbose:
+            for side, v in (("oracle", want.get(k)), ("blaze ", got.get(k))):
+                print(f"    {side}: {repr(v)[:400]}")
+    groups = {}
+    for k in keys:
+        g = k.split(":", 1)[0]
+        t = groups.setdefault(g, [0, 0])
+        t[1] += 1
+        if k not in bad:
+            t[0] += 1
+    detail = ", ".join(f"{g} {m}/{t}" for g, (m, t) in groups.items())
+    print(f"matching {len(keys) - len(bad)} / {len(keys)} ({detail})")
+    return 0 if not bad else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

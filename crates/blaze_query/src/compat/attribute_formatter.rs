@@ -2,8 +2,8 @@
 //! values.
 //!
 //! PORT: move to blaze_packages (needs blaze_protos' `build.proto` types). Java's `Object` value
-//! is an [`AttrValue`]; Java's `null` is `None`. `internalToUnicode` is the identity (PORT:
-//! StringEncoding identity).
+//! is an [`AttrValue`]; Java's `null` is `None`. Every string field is set from
+//! `StringEncoding.internalToUnicode` of an internal string, as in Java.
 
 use blaze_packages::target::LabelPrinter;
 use blaze_packages::types::{AttrValue, BuildTypeSelectorList, TriState, Type};
@@ -15,6 +15,12 @@ use blaze_protos::blaze_query::{
 
 use crate::compat::proto_utils::get_discriminator_from_type;
 use blaze_protos::blaze_query::attribute::Discriminator;
+use blaze_util::string_encoding::internal_to_unicode;
+
+/// Java `StringEncoding.internalToUnicode(s)`, owned for a proto field.
+fn u(s: &str) -> String {
+    internal_to_unicode(s).into_owned()
+}
 
 /// Java `AttributeFormatter.depTypes`.
 // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:73 AttributeFormatter.depTypes
@@ -61,7 +67,7 @@ pub fn get_attribute_proto(
     label_printer: &LabelPrinter,
 ) -> AttributePb {
     let mut attr_pb = AttributePb {
-        name: name.to_owned(),
+        name: u(name),
         ..Default::default()
     };
     attr_pb.explicitly_specified = Some(explicitly_specified);
@@ -82,7 +88,7 @@ pub fn get_attribute_proto(
     }
 
     if include_attribute_source_aspects {
-        attr_pb.source_aspect_name = Some(source_aspect.unwrap_or("").to_owned());
+        attr_pb.source_aspect_name = Some(source_aspect.map(u).unwrap_or_default());
     }
 
     attr_pb
@@ -108,13 +114,13 @@ fn write_selector_list_to_builder(
     selector_list_builder.set_type(get_discriminator_from_type(type_));
     for selector in selector_list.get_selectors() {
         let mut selector_builder = Selector {
-            no_match_error: Some(selector.get_no_match_error().to_owned()),
+            no_match_error: Some(u(selector.get_no_match_error())),
             has_default_value: Some(selector.has_default()),
             ..Default::default()
         };
         selector.for_each(|condition, condition_value| {
             let mut selector_entry_builder = SelectorEntry {
-                label: Some(label_printer.to_string(condition)),
+                label: Some(u(&label_printer.to_string(condition))),
                 is_default_value: Some(!selector.is_value_set(condition)),
                 ..Default::default()
             };
@@ -154,7 +160,7 @@ fn write_attribute_value_to_builder(
             _ => unexpected(type_, value),
         },
         Type::String | Type::StringNoIntern => match value {
-            AttrValue::String(s) => builder.set_string_value(s.clone()),
+            AttrValue::String(s) => builder.set_string_value(u(s)),
             _ => unexpected(type_, value),
         },
         Type::Label
@@ -162,18 +168,18 @@ fn write_attribute_value_to_builder(
         | Type::Output
         | Type::GenqueryScopeType
         | Type::DormantLabel => match value {
-            AttrValue::Label(l) => builder.set_string_value(label_printer.to_string(l)),
+            AttrValue::Label(l) => builder.set_string_value(u(&label_printer.to_string(l))),
             _ => unexpected(type_, value),
         },
         Type::StringList | Type::StringSet => match value {
             AttrValue::StringList(list) => {
                 for entry in list {
-                    builder.add_string_list_value(entry.clone());
+                    builder.add_string_list_value(u(entry));
                 }
             }
             AttrValue::StringSet(set) => {
                 for entry in set {
-                    builder.add_string_list_value(entry.clone());
+                    builder.add_string_list_value(u(entry));
                 }
             }
             _ => unexpected(type_, value),
@@ -185,7 +191,7 @@ fn write_attribute_value_to_builder(
         | Type::DormantLabelList => match value {
             AttrValue::LabelList(list) => {
                 for entry in list {
-                    builder.add_string_list_value(label_printer.to_string(entry));
+                    builder.add_string_list_value(u(&label_printer.to_string(entry)));
                 }
             }
             _ => unexpected(type_, value),
@@ -210,10 +216,10 @@ fn write_attribute_value_to_builder(
             AttrValue::License(license) => {
                 let mut license_pb = LicensePb::default();
                 for license_type in license.get_license_types() {
-                    license_pb.license_type.push(license_type.name().to_owned());
+                    license_pb.license_type.push(u(license_type.name()));
                 }
                 for exception in license.get_exceptions() {
-                    license_pb.exception.push(exception.to_string());
+                    license_pb.exception.push(u(&exception.to_string()));
                 }
                 builder.set_license(license_pb);
             }
@@ -223,8 +229,8 @@ fn write_attribute_value_to_builder(
             AttrValue::StringDict(dict) => {
                 for (key, value) in dict {
                     builder.add_string_dict_value(StringDictEntry {
-                        key: key.clone(),
-                        value: value.clone(),
+                        key: u(key),
+                        value: u(value),
                     });
                 }
             }
@@ -234,8 +240,8 @@ fn write_attribute_value_to_builder(
             AttrValue::StringListDict(dict) => {
                 for (key, values) in dict {
                     builder.add_string_list_dict_value(StringListDictEntry {
-                        key: key.clone(),
-                        value: values.clone(),
+                        key: u(key),
+                        value: values.iter().map(|v| u(v)).collect(),
                     });
                 }
             }
@@ -246,8 +252,8 @@ fn write_attribute_value_to_builder(
                 for (key, values) in dict {
                     // Java: dictEntryValue.toString() (Label.toString, the canonical form).
                     builder.add_string_list_dict_value(StringListDictEntry {
-                        key: key.clone(),
-                        value: values.iter().map(|l| l.to_string()).collect(),
+                        key: u(key),
+                        value: values.iter().map(|l| u(&l.to_string())).collect(),
                     });
                 }
             }
@@ -257,8 +263,8 @@ fn write_attribute_value_to_builder(
             AttrValue::LabelDictUnary(dict) => {
                 for (key, label) in dict {
                     builder.add_label_dict_unary_value(LabelDictUnaryEntry {
-                        key: key.clone(),
-                        value: label_printer.to_string(label),
+                        key: u(key),
+                        value: u(&label_printer.to_string(label)),
                     });
                 }
             }
@@ -268,8 +274,8 @@ fn write_attribute_value_to_builder(
             AttrValue::LabelKeyedStringDict(dict) => {
                 for (label, value) in dict {
                     builder.add_label_keyed_string_dict_value(LabelKeyedStringDictEntry {
-                        key: label_printer.to_string(label),
-                        value: value.clone(),
+                        key: u(&label_printer.to_string(label)),
+                        value: u(value),
                     });
                 }
             }

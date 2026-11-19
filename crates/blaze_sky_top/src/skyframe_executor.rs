@@ -167,8 +167,12 @@ pub struct SkyframeExecutor {
     top_level_artifact_context_for_conflict_pruning: parking_lot::Mutex<Option<Vec<String>>>,
 }
 
+/// A `Path` as the platform path an API that takes `std::path` wants: the bytes of the internal
+/// string (`StringEncoding.internalToPlatform`).
 fn to_std_path(p: &Path) -> PathBuf {
-    PathBuf::from(p.get_path_string())
+    PathBuf::from(
+        blaze_util::string_encoding::internal_to_platform(p.get_path_string()).into_owned(),
+    )
 }
 
 impl SkyframeExecutor {
@@ -367,7 +371,7 @@ impl SkyframeExecutor {
                 workspace_status: std::sync::OnceLock::new(),
                 // Java: StandardSystemProperty.USER_NAME (the server's user.name) and
                 // NetUtil.getCachedShortHostName().
-                workspace_status_user_name: std::env::var("USER").unwrap_or_default(),
+                workspace_status_user_name: blaze_exec::exec::test_policy::get_user_name(),
                 workspace_status_host_name: short_host_name(),
                 base_target_prerequisites_supplier: std::sync::OnceLock::new(),
             });
@@ -1624,9 +1628,9 @@ pub fn analysis_evaluation_context(
     }
 }
 
-/// `NetUtil.getCachedShortHostName()`: the host name up to its first dot.
+/// `NetUtil.getCachedShortHostName()`: `InetAddress.getLocalHost().getHostName()` (the whole
+/// name, not cut at a dot), an internal string (`platformToInternal`), or "unknown".
 // Java: com/google/devtools/build/lib/util/NetUtil.java:39 NetUtil.getCachedShortHostName
 pub fn short_host_name() -> String {
-    let host = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
-    host.trim().split('.').next().unwrap_or("").to_owned()
+    blaze_exec::exec::local::local_spawn_runner::get_cached_short_host_name()
 }

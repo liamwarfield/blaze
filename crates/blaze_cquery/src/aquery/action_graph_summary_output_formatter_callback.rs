@@ -17,6 +17,7 @@ use blaze_query_engine::java_concurrent_hash_map::java_hash_map_order;
 use blaze_query_engine::{
     Callback, OutputFormatterCallback, QueryError, ThreadSafeOutputFormatterCallback,
 };
+use blaze_util::string_encoding::latin1_encode_lossy;
 
 use crate::aquery::action_graph_query_environment::{
     ActionGraphQueryEnvironment, KeyedConfiguredTargetValue,
@@ -156,7 +157,9 @@ impl<'a> ActionGraphSummaryOutputFormatterCallback<'a> {
             let mut entries = actions_count.entry_set();
             entries.sort_by_key(|(_, count)| *count);
             for (key, count) in entries {
-                writeln!(print_stream, "  {key}: {count}")?;
+                // printStream (`new PrintStream(out)`, default charset ISO-8859-1): the internal
+                // key leaves as its raw bytes.
+                print_stream.write_all(&latin1_encode_lossy(&format!("  {key}: {count}\n")))?;
             }
         }
         Ok(())

@@ -5,6 +5,9 @@
 
 use std::io::{self, Read, Write};
 
+use blaze_util::string_encoding::java_new_string_utf8;
+use blaze_util::string_encoding::latin1_decode;
+use blaze_util::string_encoding::latin1_encode_lossy;
 use blaze_vfs::{NOW_SENTINEL_TIME, Path, PathFragment, Symlinks};
 
 use crate::errors::IoException;
@@ -136,7 +139,8 @@ pub fn write_content(output_file: &Path, content: &[u8]) -> io::Result<()> {
     out.flush()
 }
 
-/// Writes lines, each terminated by `\n`, creating parent directories.
+/// Writes lines, each terminated by `\n`, encoded as UTF-8 (`writeLinesAs(file, UTF_8, lines)`),
+/// creating parent directories.
 // Java: com/google/devtools/build/lib/vfs/FileSystemUtils.java:723 FileSystemUtils.writeLinesAs
 pub fn write_lines_as(file: &Path, lines: &[String]) -> io::Result<()> {
     if let Some(parent) = file.get_parent_directory() {
@@ -158,14 +162,14 @@ pub fn read_content(input_file: &Path) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Reads the file as UTF-8 lines (Guava `CharSource.readLines`): lines end at `\n`, `\r\n` or
-/// `\r`, terminators are dropped, and a trailing terminator does not add an empty line.
+/// Reads the file as UTF-8 lines (`readLines(file, UTF_8)`, Guava `CharSource.readLines`):
+/// lines end at `\n`, `\r\n` or `\r`, terminators are dropped, and a trailing terminator does
+/// not add an empty line. The lines are Unicode strings; malformed UTF-8 is replaced with U+FFFD
+/// as the JDK's decoder does.
 // Java: com/google/devtools/build/lib/vfs/FileSystemUtils.java:804 FileSystemUtils.readLines
 pub fn read_lines(input_file: &Path) -> io::Result<Vec<String>> {
     let content = read_content(input_file)?;
-    // PORT: Java decodes with REPLACE for malformed UTF-8.
-    // PORT: byte-strings (Java also replaces malformed input here)
-    let text = String::from_utf8_lossy(&content);
+    let text = java_new_string_utf8(&content);
     Ok(split_lines(&text))
 }
 
@@ -217,6 +221,15 @@ pub fn create_hard_link(link_path: &Path, original_path: &Path) -> io::Result<()
         original_path.create_hard_link(link_path)?;
     }
     Ok(())
+}
+
+/// The internal string under which the file system sees `path` when Java hands it a string
+/// that is not internal (a Unicode string, e.g. a name decoded from UTF-8 or US-ASCII) without
+/// converting it: the JNI (`GetStringLatin1Chars`) passes a char <= U+00FF as that byte and any
+/// other char as `?`. So a Unicode `é` (U+00E9) names a file with the single byte E9.
+// Java: src/main/native/latin1_jni_path.cc GetStringLatin1Chars
+pub fn unicode_path_as_seen_by_file_system(path: &str) -> String {
+    latin1_decode(&latin1_encode_lossy(path)).into_owned()
 }
 
 /// Converts a VFS result into the Java exception type.

@@ -20,6 +20,7 @@ use blaze_query::query::output::output_formatter::OutputStream;
 use blaze_query_engine::{DetailedExitCode, QueryException};
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use blaze_sky_top::skyframe_executor::SkyframeExecutor;
+use blaze_util::string_encoding::latin1_decode;
 use blaze_vfs::{Path, PathFragment};
 
 use crate::cquery::cquery_options::CommonQueryOptionsView;
@@ -188,19 +189,14 @@ pub(crate) fn read_query(
             .get_relative(&PathFragment::create(query_options.query_file()));
         // PORT: skipped, Google-internal: InputFileEvent ("query_file", size) has no subscriber
         // in Bazel.
-        match std::fs::read(residue_path.get_path_string()) {
-            // new String(bytes, ISO_8859_1): the internal string form (Latin-1 characters holding
-            // the file's bytes). PORT: StringEncoding identity for UTF-8 content. A Rust String
-            // cannot hold other bytes, and replacing them would change the query silently.
-            Ok(bytes) => match String::from_utf8(bytes) {
-                Ok(content) => query = content,
-                Err(e) => blaze_util::unported!(
-                    "QueryOptionHelper.readQuery",
-                    "--query_file {} is not valid UTF-8 ({})",
-                    residue_path.get_path_string(),
-                    e.utf8_error()
-                ),
-            },
+        // FileSystemUtils.readContent(residuePath): the whole file through the VFS.
+        let content = residue_path.get_input_stream().and_then(|mut stream| {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut stream, &mut bytes).map(|_| bytes)
+        });
+        match content {
+            // new String(bytes, ISO_8859_1): the internal string, one char per byte.
+            Ok(bytes) => query = latin1_decode(&bytes).into_owned(),
             Err(_) => {
                 return Err(QueryException::new(
                     None,

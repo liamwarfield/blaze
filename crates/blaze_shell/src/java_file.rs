@@ -134,23 +134,29 @@ impl JavaFile {
         }
         // PORT: `user.dir` is the JVM's startup working directory; Blaze never changes its working
         // directory, so the current one is the same.
-        let user_dir = std::env::current_dir()
-            .expect("user.dir")
-            .to_string_lossy()
-            .into_owned();
+        let user_dir = std::env::current_dir().expect("user.dir");
+        // A platform string, decoded with `sun.jnu.encoding` (ISO-8859-1).
+        let user_dir =
+            blaze_util::string_encoding::platform_to_internal(user_dir.as_os_str()).into_owned();
         resolve(&normalize(&user_dir), &self.path)
+    }
+
+    /// The path as the JVM passes it to the system: encoded with `sun.jnu.encoding`
+    /// (ISO-8859-1 for Bazel's server), one byte per char.
+    fn os_path(&self) -> std::borrow::Cow<'_, std::ffi::OsStr> {
+        blaze_util::string_encoding::internal_to_platform(&self.path)
     }
 
     /// `File.exists()`.
     pub fn exists(&self) -> bool {
-        std::fs::metadata(&self.path).is_ok()
+        std::fs::metadata(self.os_path()).is_ok()
     }
 
     /// `File.delete()`.
     pub fn delete(&self) -> bool {
-        match std::fs::symlink_metadata(&self.path) {
-            Ok(m) if m.is_dir() => std::fs::remove_dir(&self.path).is_ok(),
-            Ok(_) => std::fs::remove_file(&self.path).is_ok(),
+        match std::fs::symlink_metadata(self.os_path()) {
+            Ok(m) if m.is_dir() => std::fs::remove_dir(self.os_path()).is_ok(),
+            Ok(_) => std::fs::remove_file(self.os_path()).is_ok(),
             Err(_) => false,
         }
     }

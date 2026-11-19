@@ -1,0 +1,1 @@
+SYNTAX escape_nonascii.star:1:7: invalid escape sequence: \\\xe9. Use '\\\\' to insert '\\'.

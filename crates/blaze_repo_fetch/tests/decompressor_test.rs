@@ -980,3 +980,69 @@ mod decompressor_value_errors {
         assert!(e.get_message().starts_with("Error extracting "));
     }
 }
+
+/// Blaze-only: non-ASCII entry names. The archives are those of
+/// crates/blaze_repo_rules/tests/data/bytes_b2; the expected names are the oracle's (Bazel 9.3.2,
+/// `download_and_extract` / `extract` in that workspace), written as internal strings (one char
+/// per byte of the file name).
+mod non_ascii_entry_names {
+    use super::*;
+
+    /// `t\xf4p/é.txt` renamed to `t\xf4p/renamed-é.txt` (keys are internal strings).
+    fn rename() -> IndexMap<String, String> {
+        rename_map(
+            "t\u{f4}p/\u{c3}\u{a9}.txt",
+            "t\u{f4}p/renamed-\u{c3}\u{a9}.txt",
+        )
+    }
+
+    fn extract(archive: &str, prefix: Option<&str>) -> (tempfile::TempDir, Path) {
+        let tmp = tempfile::tempdir().unwrap();
+        let fs = fs();
+        let out = path_of(&fs, tmp.path()).get_child("out");
+        let mut builder = DecompressorDescriptor::builder()
+            .set_archive_path(path_of(&fs, &data_file(&format!("bytes_b2/{archive}"))))
+            .set_destination_path(out.clone())
+            .set_rename_files(rename());
+        if let Some(prefix) = prefix {
+            builder = builder.set_prefix(prefix);
+        }
+        decompressor::decompress(&builder.build(), None).unwrap();
+        (tmp, out)
+    }
+
+    /// Tar names are the raw header bytes (`toRawBytesString`), the prefix is matched on its
+    /// ISO-8859-1 bytes, and `rename_files` keys match the internal names.
+    #[test]
+    fn tar_keeps_raw_name_bytes() {
+        let (_tmp, out) = extract("archive.tar", Some("t\u{f4}p"));
+        assert_eq!(
+            readdir_names(&out),
+            vec!["l\u{c3}\u{a9}", "raw\u{ff}.txt", "renamed-\u{c3}\u{a9}.txt"]
+        );
+        assert_eq!(
+            out.get_child("l\u{c3}\u{a9}").read_symbolic_link().unwrap(),
+            PathFragment::create("\u{c3}\u{a9}.txt")
+        );
+    }
+
+    /// Zip names are decoded as UTF-8 (a Unicode string that no internal `rename_files` key with
+    /// a non-ASCII char matches) and passed on as their UTF-8 bytes.
+    #[test]
+    fn zip_names_are_utf8() {
+        let (_tmp, out) = extract("archive.zip", None);
+        assert_eq!(readdir_names(&out), vec!["t\u{c3}\u{b4}p"]);
+        assert_eq!(
+            readdir_names(&out.get_child("t\u{c3}\u{b4}p")),
+            vec!["plain.txt", "\u{c3}\u{a9}.txt"]
+        );
+    }
+
+    /// Ar names are decoded as US-ASCII (each byte >= 0x80 is U+FFFD), which the file system
+    /// sees as `?`.
+    #[test]
+    fn ar_non_ascii_bytes_become_question_marks() {
+        let (_tmp, out) = extract("archive.ar", None);
+        assert_eq!(readdir_names(&out), vec!["??.txt", "plain.txt"]);
+    }
+}

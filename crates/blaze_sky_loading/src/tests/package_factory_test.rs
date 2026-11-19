@@ -955,7 +955,10 @@ struct RestoreReadable(String);
 
 impl Drop for RestoreReadable {
     fn drop(&mut self) {
-        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::set_permissions(
+            &*blaze_util::string_encoding::internal_to_platform(&self.0),
+            std::fs::Permissions::from_mode(0o755),
+        );
     }
 }
 
@@ -969,7 +972,11 @@ fn test_glob_with_io_errors() {
     t.scratch_file("pkg/BUILD", &["glob(['globs/**'])"]);
     t.scratch_dir("pkg/globs/unreadable");
     let dir = t.workspace_path("pkg/globs/unreadable");
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o300)).unwrap();
+    std::fs::set_permissions(
+        &*blaze_util::string_encoding::internal_to_platform(&dir),
+        std::fs::Permissions::from_mode(0o300),
+    )
+    .unwrap();
     let _restore = RestoreReadable(dir.clone());
 
     let ex = t.get_package_exception("pkg");

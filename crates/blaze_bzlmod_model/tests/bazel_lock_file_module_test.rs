@@ -169,7 +169,12 @@ fn attribute_values_serialization() {
                 ),
                 ("at_string", AttributeValue::string("@@not_a_label")),
                 ("quoted", AttributeValue::string("'q'")),
-                ("ctl", AttributeValue::string("a\u{1}b\t\"<>&='\u{2028}")),
+                // An internal string (from Starlark): U+2028 is its UTF-8 bytes E2 80 A8, which
+                // internalToUnicode turns back into U+2028 and Gson escapes.
+                (
+                    "ctl",
+                    AttributeValue::string("a\u{1}b\t\"<>&='\u{e2}\u{80}\u{a8}"),
+                ),
                 (
                     "list",
                     AttributeValue::List(vec![AttributeValue::None, AttributeValue::Int(-3)]),

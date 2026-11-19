@@ -1,5 +1,7 @@
 //! Port of `StripPrefixedPath`.
 
+use blaze_util::string_encoding::latin1_decode;
+use blaze_util::string_encoding::latin1_encode_lossy;
 use blaze_vfs::{Path, PathFragment};
 
 /// Utility class for removing a prefix from an archive's path.
@@ -31,8 +33,7 @@ impl StripPrefixedPath {
             };
         };
         // Bazel parses Starlark files, which are the ultimate source of prefixes, as Latin-1.
-        // PORT: StringEncoding identity.
-        let prefix_path = relativize(prefix.as_bytes());
+        let prefix_path = relativize(&latin1_encode_lossy(prefix));
         let mut found = false;
         let skip;
         if entry_path.starts_with(&prefix_path) {
@@ -90,12 +91,9 @@ fn relativize(path: &[u8]) -> PathFragment {
     }
 }
 
-/// PORT: Java decodes the raw bytes as Latin-1 (Bazel's internal string form); Rust paths are
-/// UTF-8, so valid UTF-8 is taken as is and invalid sequences are replaced.
+/// The path of raw entry or link name bytes: one char per byte (Bazel's internal string form).
 // Java: com/google/devtools/build/lib/bazel/repository/decompressor/StripPrefixedPath.java:111 StripPrefixedPath.createPathFragment
 pub fn create_path_fragment(raw_bytes: &[u8]) -> PathFragment {
-    // PORT: byte-strings: Java keeps every raw byte of the entry or link name
-    // (`new String(rawBytes, ISO_8859_1)`, one char per byte); here bytes that are not UTF-8
-    // become U+FFFD.
-    PathFragment::create(&String::from_utf8_lossy(raw_bytes))
+    // Java: new String(rawBytes, ISO_8859_1)
+    PathFragment::create(&latin1_decode(raw_bytes))
 }

@@ -1408,17 +1408,16 @@ impl ExplanationHandler {
         let handler = ExplanationHandler {
             log: parking_lot::Mutex::new(Some(log)),
         };
-        handler.println(format!("Build options: {options_description}").as_bytes());
+        handler.println(&format!("Build options: {options_description}"));
         handler
     }
 
-    /// `log.println(s)` of a `PrintWriter` over `OutputStreamWriter(log, UTF_8)`: Bazel's strings
-    /// are in the internal form (one character per byte), so the writer encodes every byte of
-    /// the string as its own character. `PrintWriter` swallows `IOException`s.
-    fn println(&self, internal: &[u8]) {
+    /// `log.println(s)` of a `PrintWriter` over `OutputStreamWriter(log, UTF_8)`: the UTF-8 of
+    /// the string (for an internal string, each byte >= 0x80 becomes two bytes, as in Java).
+    /// `PrintWriter` swallows `IOException`s.
+    fn println(&self, s: &str) {
         if let Some(log) = self.log.lock().as_mut() {
-            let line: String = internal.iter().map(|&b| b as char).collect();
-            let _ = log.write_all(line.as_bytes());
+            let _ = log.write_all(s.as_bytes());
             let _ = log.write_all(b"\n");
         }
     }
@@ -1435,7 +1434,7 @@ impl EventHandler for ExplanationHandler {
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:864 ExplanationHandler.handle
     fn handle(&self, event: &Event) {
         if event.get_kind() == blaze_events::EventKind::Depchecker {
-            self.println(event.get_message_bytes());
+            self.println(&event.get_message());
         }
     }
 }

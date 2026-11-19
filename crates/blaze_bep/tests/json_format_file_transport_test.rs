@@ -142,7 +142,7 @@ fn test_creates_file_and_writes_proto_json_format() {
 
     // Act: Send the simple BuildStarted event.
     under_test.send_build_event(&build_event);
-    under_test.close().unwrap();
+    under_test.close().get().unwrap();
 
     // Assert: Read back the BEP event and confirm it round-tripped.
     let parser = JsonFormat::parser();
@@ -167,7 +167,7 @@ fn expands_known_any_type() {
 
     // Act: Write the event and close the transport to force flushing.
     under_test.send_build_event(&build_event);
-    under_test.close().unwrap();
+    under_test.close().get().unwrap();
 
     // Assert: Confirm we get the SpawnExec back.
     let parser = JsonFormat::parser().using_type_registry(spawn_exec_type_registry());
@@ -193,7 +193,7 @@ fn rejects_unknown_any_type() {
 
     // Act: Send the event with a bogus Any value.
     under_test.send_build_event(&build_event);
-    under_test.close().unwrap();
+    under_test.close().get().unwrap();
 
     // Assert: Special invalid event message is written in JSON.
     let output = fixture.read_output();
@@ -264,5 +264,5 @@ fn test_flushes_stream_after_small_writes() {
         assert!(counts.byte_count > 0);
     }
 
-    under_test.close().unwrap();
+    under_test.close().get().unwrap();
 }

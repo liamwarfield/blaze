@@ -8,14 +8,17 @@ import subprocess
 import sys
 
 USAGE = """\
-usage: scripts/bytes/run [--binary <path>] [--out <dir>]
+usage: scripts/bytes/run [--binary <path>] [--out <dir>] [--output-user-root <dir>]
        scripts/bytes/run help
 
 Copies scripts/bytes/workspace to ~/.cache/blaze/work/bytes (plus aspect_tools_telemetry's
 sha1.bzl and bazel_lib's lib/private/strings.bzl from the repository cache / workerd fetch
-outputs), then runs <binary> (default: the oracle) with
---output_user_root=~/.cache/blaze/oracle-out/ur-bytes and records, under <out>
-(default ~/.cache/blaze/work/bytes-out):
+outputs), then runs <binary> (default: the oracle) and records its outputs under <out>.
+Defaults: the oracle uses --output_user_root=~/.cache/blaze/oracle-out/ur-bytes and
+<out> = ~/.cache/blaze/work/bytes-out (the saved oracle outputs); any other binary uses
+~/.cache/blaze/oracle-out/ur-bytes-blaze and ~/.cache/blaze/work/bytes-out-blaze, so that a run
+of Blaze never overwrites the oracle's outputs or shares its output base. The output user root
+is deleted first, so that every run fetches @bytes_repo and prints its RCASE lines. Recorded:
 
   build.stderr      `build //... @bytes_repo//:all` stderr (CASE/RCASE/RAWPRINT lines)
   labels.stderr     `build //labels:all` stderr (LCASE lines)
@@ -24,6 +27,8 @@ outputs), then runs <binary> (default: the oracle) with
   query_label_kind.txt, query_jsonproto.txt, cquery_jsonproto.txt
   aquery_text.txt, aquery_jsonproto.txt (--include_file_write_contents)
   exit_codes.txt
+
+Compare a Blaze run with the oracle's: scripts/bytes/compare.
 
 Run it inside `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`
 (AGENTS.md). Expected values for docs/research/07-byte-strings.md and the starlark_conformance
@@ -66,23 +71,39 @@ def main(argv):
     if argv[:1] == ["help"]:
         print(USAGE)
         return 0
-    binary, out = ORACLE, f"{HOME}/.cache/blaze/work/bytes-out"
+    binary, out, ur = ORACLE, None, None
     args = list(argv)
     while args:
         a = args.pop(0)
-        if a == "--binary":
-            binary = args.pop(0)
-        elif a == "--out":
+        if a == "--binary" and args:
+            binary = os.path.abspath(args.pop(0))
+        elif a == "--out" and args:
             out = args.pop(0)
+        elif a == "--output-user-root" and args:
+            ur = args.pop(0)
         else:
             print(USAGE)
             return 2
+    is_oracle = os.path.realpath(binary) == os.path.realpath(ORACLE)
+    if out is None:
+        out = f"{HOME}/.cache/blaze/work/bytes-out" + ("" if is_oracle else "-blaze")
+    if ur is None:
+        ur = UR if is_oracle else UR + "-blaze"
+    if not is_oracle and os.path.realpath(out) == os.path.realpath(
+        f"{HOME}/.cache/blaze/work/bytes-out"
+    ):
+        sys.exit("refusing to overwrite the saved oracle outputs with another binary's")
     prepare()
     if os.path.exists(out):
         shutil.rmtree(out)
+    # A fresh output user root every time: the repository rule of @bytes_repo prints its RCASE
+    # lines only when it runs, and an output base left by an earlier run would hide them.
+    if os.path.exists(ur):
+        subprocess.run(["chmod", "-R", "u+w", ur], check=False)
+        shutil.rmtree(ur)
     os.makedirs(os.path.join(out, "outputs"))
     env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
-    startup = [binary, f"--output_user_root={UR}", "--nohome_rc", "--nosystem_rc"]
+    startup = [binary, f"--output_user_root={ur}", "--nohome_rc", "--nosystem_rc"]
     common = [f"--repository_cache={REPO_CACHE}", "--color=no", "--curses=no"]
     codes = []
 

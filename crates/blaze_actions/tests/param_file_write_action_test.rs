@@ -330,3 +330,58 @@ fn test_compute_key() {
         );
     }
 }
+
+/// Not in the Java test: `ParameterFile.writeContent` writes
+/// `StringUnsafe.getInternalStringBytes(line)`, one byte per char of the internal string, for
+/// every `ParameterFileType`; `getStringContents` reads them back with ISO-8859-1. `é` (c3 a9),
+/// `🐷` (f0 9f 90 b7) and the byte ff, each as Starlark holds it.
+#[test]
+fn write_parameter_file_writes_internal_string_bytes() {
+    use blaze_actions::actions::parameter_file::write_parameter_file;
+    use blaze_util::string_encoding::latin1_decode;
+    let args: Vec<String> = [&b"-\xc3\xa9"[..], b"a b\xf0\x9f\x90\xb7", b"\xff"]
+        .iter()
+        .map(|b| latin1_decode(b).into_owned())
+        .collect();
+    for (type_, want) in [
+        (
+            ParameterFileType::UNQUOTED,
+            &b"-\xc3\xa9\na b\xf0\x9f\x90\xb7\n\xff\n"[..],
+        ),
+        // ShellEscaper: only ASCII letters, digits and `@%-_+:,./` are safe.
+        (
+            ParameterFileType::SHELL_QUOTED,
+            b"'-\xc3\xa9'\n'a b\xf0\x9f\x90\xb7'\n'\xff'\n",
+        ),
+        (
+            ParameterFileType::GCC_QUOTED,
+            b"-\xc3\xa9\na\\ b\xf0\x9f\x90\xb7\n\xff\n",
+        ),
+        (
+            ParameterFileType::WINDOWS,
+            b"-\xc3\xa9\n\"a b\xf0\x9f\x90\xb7\"\n\xff\n",
+        ),
+    ] {
+        let mut out = Vec::new();
+        write_parameter_file(&mut out, &args, type_).unwrap();
+        assert_eq!(out, want, "{type_}");
+    }
+
+    // `getStringContents` of the action: the internal strings again.
+    let f = fixture();
+    let action = ParameterFileWriteAction::with_inputs(
+        null_action_owner(),
+        NestedSetBuilder::empty_set(Order::STABLE_ORDER),
+        f.output_artifact.clone(),
+        command_line::of(args.clone()),
+        ParameterFileType::UNQUOTED,
+        false,
+        MNEMONIC,
+        &IndexMap::new(),
+        OutputPathsMode::OFF,
+    );
+    assert_eq!(
+        action.get_string_contents().unwrap(),
+        format!("{}\n", args.join("\n"))
+    );
+}

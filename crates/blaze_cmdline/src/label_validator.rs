@@ -1,7 +1,7 @@
 //! Port of `LabelValidator`: the canonical place to validate package and target names.
 //!
-//! Strings are examined byte by byte. Bazel's "internal" strings hold UTF-8 bytes as Latin-1
-//! chars, so every non-ASCII byte is a char >= 128; all decisions here depend only on ASCII.
+//! Names are internal strings (one char per byte of the real name) and are examined char by
+//! char, as Java does.
 
 /// Error for package names with characters outside the allowed set.
 // Java: com/google/devtools/build/lib/cmdline/LabelValidator.java:79 LabelValidator.PACKAGE_NAME_ERROR
@@ -26,14 +26,17 @@ fn allowed_character_in_package_name(c: u8) -> bool {
 }
 
 // Java: com/google/devtools/build/lib/cmdline/LabelValidator.java:69 LabelValidator.ALWAYS_ALLOWED_TARGET_CHARACTERS
-fn always_allowed_target_character(c: u8) -> bool {
-    // CharMatcher.javaLetterOrDigit() restricted to ASCII; every non-ASCII byte is accepted below.
+fn always_allowed_target_character(c: char) -> bool {
+    // CharMatcher.javaLetterOrDigit() restricted to ASCII; every non-ASCII char is accepted below.
     c.is_ascii_alphanumeric()
-        || PUNCTUATION_REQUIRING_QUOTING.contains(&c)
-        || PUNCTUATION_NOT_REQUIRING_QUOTING.contains(&c)
+        || (c.is_ascii()
+            && (PUNCTUATION_REQUIRING_QUOTING.contains(&(c as u8))
+                || PUNCTUATION_NOT_REQUIRING_QUOTING.contains(&(c as u8))))
         // Accept any non-ASCII character, which is also guaranteed to be (part of) the encoding
         // of a non-ASCII code point, both for internal and Unicode strings.
-        || c >= 128
+        // PORT: `inRange(128, 65535)` on UTF-16 units; a Rust char above U+FFFF is a surrogate
+        // pair in Java, both units in that range.
+        || c as u32 >= 128
 }
 
 /// Validates a package name. Returns `None` on success or an error message.
@@ -54,6 +57,7 @@ pub fn validate_package_name(package_name: &str) -> Option<String> {
         return Some(PACKAGE_NAME_ERROR.to_owned());
     }
 
+    // Every char is ASCII from here on, so the bytes are the chars.
     if b[len - 1] == b'/' {
         return Some("package names may not end with '/'".to_owned());
     }
@@ -92,16 +96,13 @@ pub fn validate_target_name(target_name: &str) -> Option<String> {
     // data directories.
 
     // Code optimized for the common case: success.
-    let b = target_name.as_bytes();
-    let len = b.len();
-    if len == 0 {
+    let Some(mut c) = target_name.chars().next() else {
         return Some("empty target name".to_owned());
-    }
+    };
     // Forbidden start chars:
-    let mut c = b[0];
-    if c == b'/' {
+    if c == '/' {
         return Some("target names may not start with '/'".to_owned());
-    } else if c == b'.' {
+    } else if c == '.' {
         if target_name.starts_with("../") || target_name == ".." {
             return Some("target names may not contain up-level references '..'".to_owned());
         } else if target_name == "." {
@@ -120,51 +121,50 @@ pub fn validate_target_name(target_name: &str) -> Option<String> {
         );
     }
 
-    for ii in 0..len {
-        c = b[ii];
+    // `ii` is a byte offset into the same string, used only for the region matches.
+    for (ii, ch) in target_name.char_indices() {
+        c = ch;
         if always_allowed_target_character(c) {
             continue;
         }
-        if c == b'.' {
+        if c == '.' {
             continue;
         }
-        if c == b'/' {
-            if string_region_match(b, b"/../", ii) {
+        if c == '/' {
+            if string_region_match(target_name, "/../", ii) {
                 return Some("target names may not contain up-level references '..'".to_owned());
-            } else if string_region_match(b, b"/./", ii) {
+            } else if string_region_match(target_name, "/./", ii) {
                 return Some("target names may not contain '.' as a path segment".to_owned());
-            } else if string_region_match(b, b"//", ii) {
+            } else if string_region_match(target_name, "//", ii) {
                 return Some("target names may not contain '//' path separators".to_owned());
             }
             continue;
         }
-        if c <= 0x1f || c == 0x7f {
+        if c <= '\u{1f}' || c == '\u{7f}' {
             return Some(format!(
                 "target names may not contain non-printable characters: '\\x{:02X}'",
-                c
+                c as u32
             ));
         }
-        return Some(format!("target names may not contain '{}'", c as char));
+        return Some(format!("target names may not contain '{}'", c));
     }
     // Forbidden end chars:
-    if c == b'.' {
+    if c == '.' {
         if target_name.ends_with("/..") {
             return Some("target names may not contain up-level references '..'".to_owned());
         } else if target_name.ends_with("/.") {
             return None; // See comment above; ideally should be an error.
         }
     }
-    if c == b'/' {
+    if c == '/' {
         return Some("target names may not end with '/'".to_owned());
     }
     None // ok
 }
 
 // Java: com/google/devtools/build/lib/cmdline/LabelValidator.java:216 LabelValidator.stringRegionMatch
-fn string_region_match(full_string: &[u8], possible_match: &[u8], offset: usize) -> bool {
-    full_string
-        .get(offset..offset + possible_match.len())
-        .is_some_and(|s| s == possible_match)
+fn string_region_match(full_string: &str, possible_match: &str, offset: usize) -> bool {
+    full_string.as_bytes()[offset..].starts_with(possible_match.as_bytes())
 }
 
 /// Validates the label and parses it into package and target names.

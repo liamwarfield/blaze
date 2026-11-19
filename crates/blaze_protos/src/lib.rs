@@ -16,6 +16,7 @@
 
 pub mod java;
 pub mod json;
+pub mod text_format;
 
 pub use java::JavaMessage;
 

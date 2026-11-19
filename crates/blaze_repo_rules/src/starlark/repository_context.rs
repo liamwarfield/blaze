@@ -27,6 +27,8 @@ use blaze_repo_fetch::decompressor::patch_util::PatchError;
 use blaze_sky_loading::ignored_subdirectories::IgnoredSubdirectories;
 use blaze_sky_loading::pkgcache::PathPackageLocator;
 use blaze_starlark::label::LabelValue;
+use blaze_util::string_encoding::latin1_decode;
+use blaze_util::string_encoding::latin1_encode_lossy;
 use blaze_vfs::DirentType;
 use blaze_vfs::Path;
 use blaze_vfs::PathFragment;
@@ -209,28 +211,14 @@ fn to_int(x: Value<'_>, what: &str) -> starlark::Result<i32> {
     )))
 }
 
-/// `StringUtilities.replaceAllLiteral` on Bazel's internal (Latin-1-of-UTF-8) strings: the same
-/// replacement on the raw bytes.
-// PORT: StringEncoding; Java reads the template as ISO_8859_1, so chars are bytes.
+/// Replaces all occurrences of `literal` in `input` with `replacement`, left to right.
 // Java: com/google/devtools/build/lib/util/StringUtilities.java:70 StringUtilities.replaceAllLiteral
-fn replace_all_literal(input: &[u8], literal: &[u8], replacement: &[u8]) -> Vec<u8> {
-    let literal_length = literal.len();
-    if literal_length == 0 {
-        return input.to_vec();
+fn replace_all_literal(input: &str, literal: &str, replacement: &str) -> String {
+    if literal.is_empty() {
+        return input.to_owned();
     }
-    let mut result = Vec::with_capacity(input.len() + replacement.len());
-    let mut start = 0;
-    while let Some(offset) = input[start..]
-        .windows(literal_length)
-        .position(|w| w == literal)
-    {
-        let index = start + offset;
-        result.extend_from_slice(&input[start..index]);
-        result.extend_from_slice(replacement);
-        start = index + literal_length;
-    }
-    result.extend_from_slice(&input[start..]);
-    result
+    // `str::replace` scans left to right and skips each match, as Java's `indexOf` loop does.
+    input.replace(literal, replacement)
 }
 
 /// Java `PathPackageLocator.getWorkspaceFile(syscallCache)`.
@@ -474,10 +462,12 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
             // encoding used by Bazel for strings.
             // PORT: `read_content` opens and reads; a failure is classified as Java's failure to
             // open the stream (`FileSystemUtils.readContent` -> `Path.getInputStream`).
-            let mut tpl = blaze_repo_fetch::fs_utils::read_content(&t.path)
+            let tpl = blaze_repo_fetch::fs_utils::read_content(&t.path)
                 .map_err(|e| JavaThrowable::from_stream_open(&e))?;
+            // Java: FileSystemUtils.readContent(t.getPath(), ISO_8859_1)
+            let mut tpl = latin1_decode(&tpl).into_owned();
             for (key, value) in &substitution_map {
-                tpl = replace_all_literal(&tpl, key.as_bytes(), value.as_bytes());
+                tpl = replace_all_literal(&tpl, key, value);
             }
             p.path.delete()?;
             {
@@ -485,8 +475,9 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
                     .path
                     .get_output_stream()
                     .map_err(|e| JavaThrowable::from_stream_open(&e))?;
+                // Java: tpl.getBytes(ISO_8859_1)
                 stream
-                    .write_all(&tpl)
+                    .write_all(&latin1_encode_lossy(&tpl))
                     .map_err(|e| JavaThrowable::from_stream_io(&e))?;
                 stream
                     .flush()
@@ -730,21 +721,26 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
 mod tests {
     use super::replace_all_literal;
 
+    use blaze_util::string_encoding::latin1_decode;
+
     #[test]
     fn replace_all_literal_empty_literal_is_identity() {
-        assert_eq!(replace_all_literal(b"abc", b"", b"x"), b"abc".to_vec());
+        assert_eq!(replace_all_literal("abc", "", "x"), "abc");
     }
 
     #[test]
     fn replace_all_literal_replaces_left_to_right() {
-        assert_eq!(replace_all_literal(b"aaa", b"aa", b"b"), b"ba".to_vec());
+        assert_eq!(replace_all_literal("aaa", "aa", "b"), "ba");
+        assert_eq!(replace_all_literal("%{x} and %{x}", "%{x}", "1"), "1 and 1");
+        // Internal strings: a template read as ISO-8859-1 and a substitution holding `é`.
         assert_eq!(
-            replace_all_literal(b"%{x} and %{x}", b"%{x}", b"1"),
-            b"1 and 1".to_vec()
+            replace_all_literal("\u{ff}%{x}\u{fe}", "%{x}", &latin1_decode("é".as_bytes())),
+            "\u{ff}\u{c3}\u{a9}\u{fe}"
         );
+        // A key that is the second byte of `é` matches inside the character, as in Java.
         assert_eq!(
-            replace_all_literal(b"\xff%{x}\xfe", b"%{x}", b"\xc3\xa9"),
-            b"\xff\xc3\xa9\xfe".to_vec()
+            replace_all_literal(&latin1_decode("é🐷".as_bytes()), "\u{a9}", "x"),
+            latin1_decode(b"\xc3x\xf0\x9f\x90\xb7")
         );
     }
 }

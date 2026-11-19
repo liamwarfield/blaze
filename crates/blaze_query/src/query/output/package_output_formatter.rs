@@ -82,7 +82,7 @@ impl StreamedFormatter for PackageOutputFormatter {
 struct PackageCallback {
     writer: TextWriter,
     /// Java `Sets.newTreeSet()` of internal strings: `String.compareTo` on Latin-1 characters
-    /// is byte order, which is `str` order on the UTF-8 bytes.
+    /// (one UTF-16 unit each) is `str` order.
     package_names: RefCell<BTreeSet<String>>,
     line_term: &'static str,
     label_printer: LabelPrinter,

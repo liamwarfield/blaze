@@ -1,0 +1,1 @@
+SYNTAX escape_upper_u.star:1:7: invalid escape sequence: \\U. Use '\\\\' to insert '\\'.

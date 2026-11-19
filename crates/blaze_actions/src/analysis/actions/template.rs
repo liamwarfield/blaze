@@ -51,18 +51,9 @@ impl Template {
                     Ok(bytes)
                 };
                 match read() {
-                    // Java: `FileSystemUtils.readContent(templatePath, ISO_8859_1)`. Until the
-                    // decoding switch (`string_encoding::STRINGS_ARE_INTERNAL`) a template that
-                    // is not valid UTF-8 has no string.
+                    // Java: `FileSystemUtils.readContent(templatePath, ISO_8859_1)`.
                     Ok(bytes) => {
-                        match blaze_util::string_encoding::internal_string_from_bytes(&bytes) {
-                            Ok(s) => Ok(s.into_owned()),
-                            Err(_) => blaze_util::unported!(
-                                "ArtifactTemplate.getContent",
-                                "template '{}' is not valid UTF-8",
-                                template_path.get_path_string()
-                            ),
-                        }
+                        Ok(blaze_util::string_encoding::latin1_decode(&bytes).into_owned())
                     }
                     Err(e) => Err(io::Error::new(
                         e.kind(),

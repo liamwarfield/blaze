@@ -13,6 +13,7 @@ use blaze_skyframe::{
     Key, SkyKey,
 };
 use blaze_starlark::StarlarkSemantics;
+use blaze_util::string_encoding::{internal_to_platform, platform_to_internal};
 use blaze_vfs::{
     DigestHashFunction, FileSystemExt, FileSystemRef, Path, PathFragment, Root, UnixFileSystem,
 };
@@ -52,7 +53,7 @@ impl Scratch {
         std::fs::create_dir_all(&base).unwrap();
         // Use the real path so that paths compare equal to what the file system reports.
         let base = std::fs::canonicalize(&base).unwrap();
-        let root = fs.get_path(base.to_str().unwrap());
+        let root = fs.get_path(&platform_to_internal(base.as_os_str()));
         Scratch { fs, root }
     }
 
@@ -63,37 +64,41 @@ impl Scratch {
         self.root.get_relative(&PathFragment::create(rel))
     }
 
+    /// Writes `contents` (the bytes of its UTF-8 text) to the file `rel`, an internal string.
     pub fn file(&self, rel: &str, contents: &str) -> Path {
         self.file_bytes(rel, contents.as_bytes())
     }
 
     pub fn file_bytes(&self, rel: &str, contents: &[u8]) -> Path {
         let p = self.path(rel);
-        std::fs::create_dir_all(std::path::Path::new(
-            p.get_parent_directory().unwrap().get_path_string(),
-        ))
-        .unwrap();
-        std::fs::write(p.get_path_string(), contents).unwrap();
+        std::fs::create_dir_all(platform(p.get_parent_directory().as_ref().unwrap())).unwrap();
+        std::fs::write(platform(&p), contents).unwrap();
         p
     }
 
     pub fn dir(&self, rel: &str) -> Path {
         let p = self.path(rel);
-        std::fs::create_dir_all(p.get_path_string()).unwrap();
+        std::fs::create_dir_all(platform(&p)).unwrap();
         p
     }
 
     pub fn symlink(&self, link: &str, target: &str) -> Path {
         let p = self.path(link);
-        std::fs::create_dir_all(p.get_parent_directory().unwrap().get_path_string()).unwrap();
-        std::os::unix::fs::symlink(target, p.get_path_string()).unwrap();
+        std::fs::create_dir_all(platform(p.get_parent_directory().as_ref().unwrap())).unwrap();
+        std::os::unix::fs::symlink(&*internal_to_platform(target), platform(&p)).unwrap();
         p
     }
 }
 
+/// The platform form of `path` (an internal string), for the `std::fs` calls of the scratch
+/// helpers.
+pub fn platform(path: &Path) -> std::path::PathBuf {
+    std::path::PathBuf::from(internal_to_platform(path.get_path_string()).into_owned())
+}
+
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(self.root.get_path_string());
+        let _ = std::fs::remove_dir_all(platform(&self.root));
     }
 }
 

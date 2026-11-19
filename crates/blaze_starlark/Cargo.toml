@@ -18,4 +18,5 @@ num-bigint.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+blaze_util = { path = "../blaze_util" }
 rayon.workspace = true

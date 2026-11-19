@@ -160,10 +160,15 @@ impl Path {
         &self.path_fragment
     }
 
-    /// Returns this path (there are no layered file systems in Blaze yet).
+    /// Returns the path on the host file system: this path, unless its file system is based on
+    /// another one (an action file system), then the same fragment on that file system.
     // Java: com/google/devtools/build/lib/vfs/Path.java:262 Path.forHostFileSystem
     pub fn for_host_file_system(&self) -> Path {
-        self.clone()
+        match self.file_system.get_host_file_system() {
+            // `hostFs.equals(fileSystem)`: `None` is "this file system".
+            None => self.clone(),
+            Some(host_fs) => Path::create(self.path_fragment.clone(), &host_fs),
+        }
     }
 
     /// Whether the file exists, following symlinks.
@@ -411,11 +416,11 @@ impl Path {
     /// the streams of this file system are opaque, and `fsync` acts on the file, so the file is
     /// synced through a descriptor of its own. Every file system here is the host file system.
     pub fn fsync(&self) -> io::Result<()> {
-        std::fs::File::open(self.path_fragment.get_path_string())
-            .map_err(|e| {
-                crate::unix_file_system::posix_error(self.path_fragment.get_path_string(), e)
-            })?
-            .sync_all()
+        std::fs::File::open(blaze_util::string_encoding::internal_to_platform(
+            self.path_fragment.get_path_string(),
+        ))
+        .map_err(|e| crate::unix_file_system::posix_error(self.path_fragment.get_path_string(), e))?
+        .sync_all()
     }
 
     /// Sets the modification time (ms since epoch, or [`NOW_SENTINEL_TIME`]).

@@ -1,0 +1,15 @@
+module(name = "bytes_b2")
+
+bytes_b2_repo = use_repo_rule("//:repo.bzl", "bytes_b2_repo")
+
+bytes_b2_repo(
+    name = "bytes_b2_repo",
+    ar = "//:archive.ar",
+    patch_content = "//:content.patch",
+    patch_newfile = "//:newfile.patch",
+    src = "//:src.txt",
+    tar = "//:archive.tar",
+    text = "é🐷",
+    tpl = "//:tpl.txt",
+    zip = "//:archive.zip",
+)

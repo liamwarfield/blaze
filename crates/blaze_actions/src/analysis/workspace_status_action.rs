@@ -123,16 +123,8 @@ pub fn parse_values(file: &Path) -> io::Result<HashMap<String, String>> {
 // Java: com/google/devtools/build/lib/analysis/WorkspaceStatusAction.java:120 WorkspaceStatusAction.parseValues
 pub fn parse_values_content(bytes: &[u8]) -> HashMap<String, String> {
     let mut result = HashMap::new();
-    // Java: `new String(FileSystemUtils.readContentAsLatin1(file))`. Until the decoding switch
-    // (`string_encoding::STRINGS_ARE_INTERNAL`) a status file that is not valid UTF-8 has no
-    // string.
-    let content = match blaze_util::string_encoding::internal_string_from_bytes(bytes) {
-        Ok(s) => s,
-        Err(_) => blaze_util::unported!(
-            "WorkspaceStatusAction.parseValues",
-            "status file is not valid UTF-8"
-        ),
-    };
+    // Java: `new String(FileSystemUtils.readContentAsLatin1(file))`.
+    let content = blaze_util::string_encoding::latin1_decode(bytes);
     // Splitter.on('\n') and Splitter.on(' ').limit(2).
     for line in content.split('\n') {
         let items: Vec<&str> = line.splitn(2, ' ').collect();

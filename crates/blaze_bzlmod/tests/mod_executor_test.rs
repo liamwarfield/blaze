@@ -1353,3 +1353,79 @@ fn test_graph_with_extension_filter_and_cycle() {
         ]
     );
 }
+
+/// Not in the Java test class. `mod show_extension` prints tag values (internal strings) through
+/// the UTF-8 `PrintWriter`, so `é` comes out double encoded. Expected bytes: the oracle's
+/// `bazel mod show_extension bytes_b1//:ext.bzl%ext` in the workspace of
+/// `tests/data/bytes-B1` (its MODULE.bazel), saved as `tests/data/bytes-B1/show_extension.stdout`
+/// with the workspace path replaced by `/ws`.
+#[test]
+fn test_show_extension_non_ascii_tags() {
+    let internal = |t: &str| blaze_util::string_encoding::latin1_decode(t.as_bytes()).into_owned();
+    let e = internal("é");
+    let pig = internal("🐷");
+    let dep_graph = map_of(vec![
+        build_augmented_module_full(
+            ModuleKey::root(),
+            "bytes_b1",
+            Version::parse("1.0").unwrap(),
+            true,
+        )
+        .build_entry(),
+    ]);
+    let ext_id =
+        ModuleExtensionId::create(Label::parse_canonical("@@//:ext.bzl").unwrap(), "ext", None);
+    let mut extension_usages: Table<ModuleExtensionId, ModuleKey, ModuleExtensionUsage> =
+        Table::new();
+    extension_usages.put(
+        ext_id.clone(),
+        ModuleKey::root(),
+        usage(
+            "ext",
+            Location::from_file_line_column("/ws/MODULE.bazel", 3, 20),
+            &[("ext_repo", "ext_repo")],
+            vec![tag(
+                "tag",
+                vec![
+                    ("s", AttributeValue::string(format!("{e}{pig}"))),
+                    (
+                        "l",
+                        AttributeValue::string_list([
+                            e.clone(),
+                            pig.clone(),
+                            format!("@@not_a_label_{e}"),
+                        ]),
+                    ),
+                    ("d", AttributeValue::string_dict([(e.clone(), pig.clone())])),
+                    ("x", AttributeValue::string("\u{ff}")),
+                ],
+            )],
+        ),
+    );
+    let extension_repos: IndexMap<ModuleExtensionId, IndexSet<String>> =
+        IndexMap::from([(ext_id.clone(), repos(&["ext_repo"]))]);
+    let mut out: Vec<u8> = Vec::new();
+    {
+        let mut executor = ModExecutor::with_extensions(
+            Cow::Borrowed(&dep_graph),
+            Cow::Borrowed(&extension_usages),
+            Cow::Borrowed(&extension_repos),
+            None,
+            ModOptions::get_default_options(),
+            &mut out,
+        );
+        executor
+            .show_extension(std::slice::from_ref(&ext_id), &IndexSet::new())
+            .unwrap();
+    }
+    let expected = std::fs::read(format!(
+        "{}/tests/data/bytes-B1/show_extension.stdout",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        String::from_utf8_lossy(&expected)
+    );
+    assert_eq!(out, expected);
+}

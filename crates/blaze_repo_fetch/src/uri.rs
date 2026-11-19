@@ -12,6 +12,8 @@
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+use blaze_util::string_encoding::java_new_string_utf8;
+
 /// Java `URISyntaxException` (the message is `getMessage()`: `<reason>: <input>` or
 /// `<reason> at index <i>: <input>`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,8 +118,9 @@ fn decode(s: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    // PORT: byte-strings (percent-decoded bytes; java.net.URI also decodes them as UTF-8 with replacement)
-    String::from_utf8_lossy(&out).into_owned()
+    // java.net.URI decodes the escaped bytes as UTF-8, replacing malformed input. The other
+    // chars are copied, so their UTF-8 bytes decode to themselves.
+    java_new_string_utf8(&out)
 }
 
 /// RFC 2396 hostname (with Java's rule that the top label starts with a letter) or IPv4.

@@ -75,9 +75,8 @@ impl OS {
             return String::new();
         }
         // SAFETY: release is NUL-terminated.
-        unsafe { std::ffi::CStr::from_ptr(uts.release.as_ptr()) }
-            .to_string_lossy()
-            .into_owned()
+        let release = unsafe { std::ffi::CStr::from_ptr(uts.release.as_ptr()) };
+        blaze_util::string_encoding::latin1_decode(release.to_bytes()).into_owned()
     }
 
     /// The JVM's `os.name` for the platform this binary was built for.

@@ -1013,6 +1013,16 @@ fn starts_with_any(path: &PathFragment, prefixes: &[PathFragment]) -> bool {
     prefixes.iter().any(|prefix| path.starts_with(prefix))
 }
 
+/// `System.err.println(s)`: the server's default-charset (ISO-8859-1) `PrintStream`, so an
+/// internal string leaves as its bytes.
+// TODO(byte-strings lead): move to blaze_util
+fn system_err_println(s: &str) {
+    use std::io::Write;
+    let mut bytes = blaze_util::string_encoding::latin1_encode_lossy(s).into_owned();
+    bytes.push(b'\n');
+    let _ = std::io::stderr().lock().write_all(&bytes);
+}
+
 /// Java `String.trim()`: removes leading and trailing characters `<= ' '`.
 fn java_trim(s: &str) -> &str {
     s.trim_matches(|c: char| c <= ' ')
@@ -1026,9 +1036,10 @@ const MSVC_CHARS: [&[u8]; 4] = [b"mM", b"sS", b"vV", b"cC"];
 const INCLUDE_PREFIX_CHARS: [&[u8]; 2] = [b"-/", b"iI"];
 
 // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:919 CppCompileAction.substrMatchesChars
-fn substr_matches_chars(s: &[u8], start_pos: usize, substr: &[&[u8]]) -> bool {
+fn substr_matches_chars(s: &[char], start_pos: usize, substr: &[&[u8]]) -> bool {
     for (i, chars) in substr.iter().enumerate() {
-        if !chars.contains(&s[start_pos + i]) {
+        let c = s[start_pos + i];
+        if !chars.iter().any(|&b| char::from(b) == c) {
             return false;
         }
     }
@@ -1037,16 +1048,17 @@ fn substr_matches_chars(s: &[u8], start_pos: usize, substr: &[&[u8]]) -> bool {
 
 // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:929 CppCompileAction.matchesCaseInsensitiveMsvc
 fn matches_case_insensitive_msvc(s: &str) -> bool {
-    // PORT: StringEncoding identity; the matched characters are ASCII, so bytes compare as Java's
-    // Latin-1 chars do.
-    s.len() >= 4 && substr_matches_chars(s.as_bytes(), 0, &MSVC_CHARS)
+    // Java `length()` and `charAt` count the chars of the internal string.
+    let chars: Vec<char> = s.chars().collect();
+    chars.len() >= 4 && substr_matches_chars(&chars, 0, &MSVC_CHARS)
 }
 
 // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:933 CppCompileAction.matchesIncludeCaseInsensitiveMsvc
 fn matches_include_case_insensitive_msvc(s: &str) -> bool {
-    s.len() >= 6
-        && substr_matches_chars(s.as_bytes(), 0, &INCLUDE_PREFIX_CHARS)
-        && substr_matches_chars(s.as_bytes(), 2, &MSVC_CHARS)
+    let chars: Vec<char> = s.chars().collect();
+    chars.len() >= 6
+        && substr_matches_chars(&chars, 0, &INCLUDE_PREFIX_CHARS)
+        && substr_matches_chars(&chars, 2, &MSVC_CHARS)
 }
 
 /// The `-I` part of `getIncludeDirs()`: the include directories given in `copts`.
@@ -1105,11 +1117,11 @@ fn system_include_dirs_from_options(
             i += 1;
             result.push(PathFragment::create(&compiler_options[i]));
         } else {
-            eprintln!(
+            system_err_println(&format!(
                 "WARNING: dangling {} flag in options for {}",
                 system_include_flag,
                 pretty_print()
-            );
+            ));
         }
         i += 1;
     }
@@ -1197,18 +1209,7 @@ fn read_lines_as_latin1(path: &Path) -> std::io::Result<Vec<String>> {
     use std::io::Read;
     let mut bytes = Vec::new();
     path.get_input_stream()?.read_to_end(&mut bytes)?;
-    // PORT: StringEncoding identity: Latin-1 decoding keeps the raw bytes, which is Rust's
-    // natural (UTF-8) form of a path string. Bytes that are not valid UTF-8 have no `String`
-    // form; they are not replaced (that would name another file) but fail loudly.
-    let text = match String::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(e) => blaze_util::unported!(
-            "FileSystemUtils.readLinesAsLatin1 (file content that is not valid UTF-8)",
-            "{}: {}",
-            path.as_fragment(),
-            e
-        ),
-    };
+    let text = blaze_util::string_encoding::latin1_decode(&bytes);
     let mut lines = Vec::new();
     let mut current = String::new();
     let mut chars = text.chars().peekable();
@@ -1468,10 +1469,10 @@ impl CppCompileAction {
                     i += 1;
                     result.push(PathFragment::create(&copts[i]));
                 } else {
-                    eprintln!(
+                    system_err_println(&format!(
                         "WARNING: dangling -iquote flag in options for {}",
                         self.pretty_print()
-                    );
+                    ));
                 }
             }
             i += 1;
@@ -1705,8 +1706,7 @@ impl CppCompileAction {
             .modmap_input_file
             .as_ref()
             .unwrap_or_else(|| panic!("NullPointerException: modmapInputFile"));
-        // Read the file paths as raw bytes, which matches Bazel's internal encoding of path
-        // strings (see StringEncoding).
+        // Latin-1: the file paths as internal strings.
         let used_module_paths: HashSet<String> = match read_lines_as_latin1(&get_input_path(
             action_execution_context,
             modmap_input_file,
@@ -1949,12 +1949,12 @@ impl CppCompileAction {
         if !cpp_file_types::COVERAGE_NOTES.matches_artifact(gcno_file) {
             // PORT: BugReport.sendNonFatalBugReport is not ported; the non-fatal report is
             // printed to stderr.
-            eprintln!(
+            system_err_println(&format!(
                 "java.lang.IllegalStateException: In coverage mode but gcno artifact is not \
                  correct type: {}, {}",
                 gcno_file,
                 self.to_string_java()
-            );
+            ));
             return Ok(());
         }
         let output_path = get_input_path(action_execution_context, gcno_file);
@@ -2915,6 +2915,17 @@ mod tests {
         assert!(matches_include_case_insensitive_msvc("/imsvc"));
         assert!(matches_include_case_insensitive_msvc("-IMSVCdir"));
         assert!(!matches_include_case_insensitive_msvc("-isystem"));
+        // Internal strings: "é" is two chars, "🐷" four, a raw byte FF one.
+        let i = |s: &[u8]| blaze_util::string_encoding::latin1_decode(s).into_owned();
+        assert!(matches_case_insensitive_msvc(&i("msvc\u{e9}".as_bytes())));
+        assert!(!matches_case_insensitive_msvc(&i("m\u{e9}".as_bytes())));
+        assert!(!matches_case_insensitive_msvc(&i(b"msv\xff")));
+        assert!(matches_include_case_insensitive_msvc(&i(
+            "-imsvc\u{1F437}".as_bytes()
+        )));
+        assert!(!matches_include_case_insensitive_msvc(&i(
+            "-i\u{1F437}".as_bytes()
+        )));
     }
 
     #[test]

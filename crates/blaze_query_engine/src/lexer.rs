@@ -176,9 +176,9 @@ impl std::fmt::Display for Token {
 ///
 /// No string escapes are allowed ("\"). Given the domain, that's not currently a problem.
 ///
-/// PORT: Java scans UTF-16 code units; this scans UTF-8 bytes. Every character the lexer
-/// distinguishes is ASCII, and every byte of a non-ASCII character is >= 0x80 just as every
-/// non-ASCII UTF-16 unit is > 0x7F, so the token boundaries are identical.
+/// PORT: Java scans the chars of the internal string; this scans its UTF-8 bytes. Every
+/// character the lexer distinguishes is ASCII, and both bytes of a char U+0080..U+00FF are
+/// >= 0x80 just as the char is > 0x7F, so the token boundaries are identical.
 // Java: com/google/devtools/build/lib/query2/engine/Lexer.java:29 Lexer
 pub struct Lexer<'a> {
     input: &'a str,
@@ -320,9 +320,10 @@ impl<'a> Lexer<'a> {
                     self.add_token(token);
                 }
                 _ => {
-                    // PORT: a word that starts with a non-ASCII character starts at its first
-                    // byte; scan_word then consumes the remaining bytes (all >= 0x80), exactly as
-                    // Java consumes the rest of the character.
+                    // PORT: the lexer steps over the UTF-8 bytes of the internal string. A char
+                    // above 0x7F is two bytes, both >= 0x80, so a word that starts with one
+                    // starts at its first byte and scan_word consumes the second, exactly as Java
+                    // consumes the char; no position leaves the lexer.
                     let token = self.word_or_keyword(c);
                     self.add_token(token);
                 }

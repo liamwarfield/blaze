@@ -1022,6 +1022,54 @@ fn after_command_shuts_the_action_input_fetcher_down() {
     assert!(prefetcher.get_download_cache().is_shutdown());
 }
 
+/// Root ruling 2026-11-19 (lead, round 2): action rewinding is not ported, so the disk cache
+/// checks that the blobs of an action result are present also under `--rewind_lost_inputs`
+/// (Java skips the check then, `RemoteModule.java:700-706`): an action result whose output blob
+/// is missing is a cache miss.
+#[test]
+fn disk_cache_checks_action_result_integrity_with_rewind_lost_inputs() {
+    let env = TestEnv::new();
+    let disk_cache_dir = env.root.get_relative_str("disk_cache");
+    let remote_options = parse_remote_options(&[&format!(
+        "--disk_cache={}",
+        disk_cache_dir.get_path_string()
+    )]);
+    let mut environment = env.environment(remote_options);
+    environment.rewind_lost_inputs = Some(true);
+    let remote_module = RemoteModule::before_command(environment).unwrap();
+    let combined_cache = remote_module
+        .get_action_context_provider()
+        .unwrap()
+        .get_combined_cache()
+        .unwrap()
+        .clone();
+    let digest_util = DigestUtil::new(DigestHashFunction::Sha256);
+    let action_key = ActionKey::new(digest_util.compute(b"action"));
+    let missing_blob = digest_util.compute(b"never stored");
+    let action_result = blaze_remote::reapi::ActionResult {
+        output_files: vec![blaze_remote::reapi::OutputFile {
+            path: "out".to_string(),
+            digest: Some(missing_blob),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let context = test_context();
+    get_from_future(
+        combined_cache
+            .disk_cache_client()
+            .unwrap()
+            .upload_action_result(&action_key, &action_result),
+    )
+    .unwrap();
+
+    let cached = combined_cache
+        .download_action_result(&context, &action_key, false, &HashSet::new())
+        .unwrap();
+
+    assert!(cached.is_none());
+}
+
 /// Review 2026-11-19 round 2 R13 (a), not in the Java test: with `--rewind_lost_inputs`,
 /// `executorInit` only warns that the option has no effect.
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1264 RemoteModule.executorInit

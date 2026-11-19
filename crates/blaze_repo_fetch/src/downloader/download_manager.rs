@@ -291,7 +291,10 @@ impl DownloadManager {
                         .handle(&Event::warn(format!("distdir {} is not a directory", dir)));
                 } else {
                     for name in &candidate_file_names {
-                        let candidate = dir.get_relative_str(name);
+                        // `name` may hold chars the URI decoded from `%XX` escapes (Unicode).
+                        let candidate = dir.get_relative_str(
+                            &crate::fs_utils::unicode_path_as_seen_by_file_system(name),
+                        );
                         self.event_handler.post(CacheProgress::started(
                             &main_url_string,
                             format!("Checking {} of {}", cache_key_type, candidate),
@@ -525,7 +528,11 @@ fn get_download_destination(url: &JavaUri, type_: Option<&str>, output: &Path) -
         }
     }
     // The basename may contain characters that aren't legal in a path with all file systems.
-    output.get_relative_str(&replace_fs_unsafe_chars(&basename))
+    // It comes from `URI.getPath()`, which decodes `%XX` escapes as UTF-8 (Unicode); Java puts
+    // it into the path unconverted.
+    output.get_relative_str(&crate::fs_utils::unicode_path_as_seen_by_file_system(
+        &replace_fs_unsafe_chars(&basename),
+    ))
 }
 
 /// The file names to look for in the distdirs.

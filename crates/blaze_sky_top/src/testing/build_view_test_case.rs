@@ -273,8 +273,10 @@ impl BuildViewTestCase {
         let output_base = directory.root.get_relative(&PathFragment::create(
             "usr/local/google/_blaze_jrluser/FAKEMD5",
         ));
-        std::fs::create_dir_all(root_directory.get_path_string()).expect("create workspace");
-        std::fs::create_dir_all(output_base.get_path_string()).expect("create output base");
+        std::fs::create_dir_all(crate::testing::scratch::os(&root_directory))
+            .expect("create workspace");
+        std::fs::create_dir_all(crate::testing::scratch::os(&output_base))
+            .expect("create output base");
         let scratch = Scratch::new(directory.fs.clone(), root_directory.clone());
         scratch.file(
             root_directory.get_child("MODULE.bazel").get_path_string(),

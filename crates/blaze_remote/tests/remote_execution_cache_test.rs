@@ -1228,3 +1228,91 @@ fn ensure_inputs_present_upload_failed_propagate_errors() {
 
     assert!(e.to_string().contains("upload failed"), "{e}");
 }
+
+/// An empty `ActionInputMap` (the action file system below has no inputs).
+struct NoInputs;
+
+impl InputMetadataProvider for NoInputs {
+    fn get_input_metadata(&self, _input: &ActionInputRef) -> io::Result<Option<FileArtifactValue>> {
+        Ok(None)
+    }
+    fn get_tree_metadata(&self, _input: &ActionInputRef) -> Option<Arc<TreeArtifactValue>> {
+        None
+    }
+    fn get_fileset(&self, _input: &ActionInputRef) -> Option<Arc<FilesetOutputTree>> {
+        None
+    }
+    fn get_runfiles_metadata(&self, _input: &ActionInputRef) -> Option<Arc<RunfilesArtifactValue>> {
+        None
+    }
+    fn get_input(&self, _exec_path: &PathFragment) -> Option<ActionInputRef> {
+        None
+    }
+}
+
+/// Blaze-only: the default `RemotePathChecker` (`RemoteExecutionCache.java:99-127`). A path on a
+/// `RemoteActionFileSystem` is available iff it exists on the host file system after the
+/// disk-cache download attempt; a missing one fails the upload with a `CacheNotFoundException`
+/// whose lost input is the path (the uploads of
+/// `ensureInputsPresent_missingInputs_exceptionHasLostInputs`, with the real checker). A path on
+/// another file system is always available.
+#[test]
+fn default_remote_path_checker_asks_the_host_file_system_for_action_file_system_paths() {
+    use blaze_exec::exec::remote_action_file_system::RemoteActionFileSystem;
+    let t = CombinedCacheTest::set_up();
+    let action_fs = RemoteActionFileSystem::new(
+        t.exec_root.get_file_system().clone(),
+        t.exec_root.as_fragment().clone(),
+        "bazel-out",
+        Arc::new(NoInputs),
+        None,
+    );
+    let remote_action_execution_context = RemoteActionExecutionContext::create(t.metadata.clone());
+
+    // Present on the host file system: uploaded.
+    let cache_protocol = Arc::new(InMemoryCacheClient::new());
+    let remote_cache = t.new_remote_execution_cache(cache_protocol.clone());
+    let present = action_fs.get_path(t.exec_root.get_relative_str("present").as_fragment());
+    write_content_as_latin1(&t.exec_root.get_relative_str("present"), "bar");
+    let mut inputs: BTreeMap<PathFragment, Path> = BTreeMap::new();
+    inputs.insert(PathFragment::create("present"), present.clone());
+    let merkle_tree = t.merkle_tree_computer.build_for_files(&inputs).unwrap();
+    remote_cache
+        .ensure_inputs_present_with_additional_inputs(
+            &remote_action_execution_context,
+            &merkle_tree,
+            &IndexMap::new(),
+            false,
+            Some(&DefaultRemotePathResolver::new(t.exec_root.clone())),
+        )
+        .unwrap();
+
+    // Missing from the host file system: a CacheNotFoundException for the path.
+    let remote_cache = t.new_remote_execution_cache(Arc::new(SpyCacheClient::new()));
+    let missing = action_fs.get_path(t.exec_root.get_relative_str("missing").as_fragment());
+    write_content_as_latin1(&t.exec_root.get_relative_str("missing"), "baz");
+    let mut inputs: BTreeMap<PathFragment, Path> = BTreeMap::new();
+    inputs.insert(PathFragment::create("missing"), missing.clone());
+    let merkle_tree = t.merkle_tree_computer.build_for_files(&inputs).unwrap();
+    t.exec_root.get_relative_str("missing").delete().unwrap();
+    let e =
+        assert_bulk_transfer_exception(remote_cache.ensure_inputs_present_with_additional_inputs(
+            &remote_action_execution_context,
+            &merkle_tree,
+            &IndexMap::new(),
+            false,
+            Some(&DefaultRemotePathResolver::new(t.exec_root.clone())),
+        ));
+    let by_digest = e
+        .get_lost_artifacts(&|exec_path: &PathFragment| {
+            Some(ActionInputRef::new(BasicActionInput::from_path_fragment(
+                exec_path.clone(),
+            )))
+        })
+        .by_digest;
+    let expected: IndexMap<String, IndexSet<ActionInputRef>> = IndexMap::from([(
+        DigestUtil::to_string(&t.digest_util.compute_as_utf8("baz")),
+        IndexSet::from([ActionInputRef::new(BasicActionInput::from_path("missing"))]),
+    )]);
+    assert_eq!(by_digest, expected);
+}

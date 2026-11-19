@@ -5,8 +5,9 @@
 //! This implementation is used in command line item expansions that use formatting. We use a
 //! custom implementation to improve performance and avoid GC.
 //!
-//! PORT: Java indexes UTF-16 chars of an internal (Latin-1) string, i.e. bytes; the port indexes
-//! the UTF-8 bytes. '%' and 's' are ASCII, so slicing at their positions is always valid.
+//! PORT: Java indexes the chars of an internal string; the port finds the ASCII '%' and 's' by
+//! byte offset, so slicing at their positions is always valid, and counts `chars()` where Java's
+//! lengths are visible.
 
 /// Returns true if the format string is a valid single-arg formatter.
 ///
@@ -39,9 +40,8 @@ pub fn formatted_length(format_str: &str) -> i32 {
 /// Returns the formatted length or `-1` if invalid.
 // Java: com/google/devtools/build/lib/actions/SingleStringArgFormatter.java:65 SingleStringArgFormatter.formattedLengthOrInvalid
 fn formatted_length_or_invalid(format_str: &str) -> i32 {
-    // Java counts the chars of the internal string (`internal_length`); the pieces are cut at
-    // ASCII `%`, so they are whole strings.
-    use blaze_util::string_encoding::internal_length;
+    // Java counts the chars of the internal string; the pieces are cut at ASCII `%`, so they are
+    // whole strings.
     let bytes = format_str.as_bytes();
     let mut length: i32 = 0;
     let n = bytes.len();
@@ -51,7 +51,7 @@ fn formatted_length_or_invalid(format_str: &str) -> i32 {
     while idx < n {
         let next = match index_of_percent(bytes, idx) {
             None => {
-                length += internal_length(&format_str[idx..n]) as i32;
+                length += format_str[idx..n].chars().count() as i32;
                 break;
             }
             Some(next) => next,
@@ -64,10 +64,10 @@ fn formatted_length_or_invalid(format_str: &str) -> i32 {
                 if found {
                     return -1; // Multiple '%s'.
                 }
-                length += internal_length(&format_str[idx..next]) as i32;
+                length += format_str[idx..next].chars().count() as i32;
                 found = true;
             }
-            b'%' => length += internal_length(&format_str[idx..next + 1]) as i32,
+            b'%' => length += format_str[idx..next + 1].chars().count() as i32,
             _ => {
                 return -1; // Illegal sequence.
             }

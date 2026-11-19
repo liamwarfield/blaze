@@ -5,6 +5,7 @@
 //! PORT: not a Bazel class. The runtime's `fetch` / `sync` / `build` commands will do the same
 //! from their `CommandEnvironment`.
 
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path as StdPath;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,6 +33,8 @@ use blaze_sky_loading::skyframe_executor::register_loading_functions;
 use blaze_skyframe::Evaluator;
 use blaze_skyframe::EvaluatorBuilder;
 use blaze_starlark::StarlarkSemantics;
+use blaze_util::string_encoding::internal_to_platform;
+use blaze_util::string_encoding::platform_to_internal;
 use blaze_vfs::DigestHashFunction;
 use blaze_vfs::FileSystemRef;
 use blaze_vfs::Path;
@@ -100,8 +103,11 @@ pub struct FetchEvaluator {
 }
 
 fn to_path(fs: &FileSystemRef, p: &StdPath) -> Path {
-    // PORT: byte-strings (a non-UTF-8 directory is converted lossily; Java keeps the bytes)
-    Path::create(PathFragment::create(&p.display().to_string()), fs)
+    // The client hands the server platform strings; Java holds them as internal strings.
+    Path::create(
+        PathFragment::create(&platform_to_internal(p.as_os_str())),
+        fs,
+    )
 }
 
 /// Java `BazelRepositoryModule.beforeCommand` (caches, download manager, repo env, process
@@ -228,13 +234,13 @@ fn output_user_root_of_default_output_base(
     workspace: &StdPath,
     output_base: &StdPath,
 ) -> Option<PathBuf> {
-    // PORT: byte-strings (the C++ hashes the workspace path's bytes)
+    // The C++ hashes the workspace path's bytes.
     let hashed = blaze_util::fingerprint::Fingerprint::with_digest_function(
         blaze_util::fingerprint::DigestHashFunction::Md5,
     )
-    .add_bytes(workspace.display().to_string().as_bytes())
+    .add_bytes(workspace.as_os_str().as_bytes())
     .hex_digest_and_reset();
-    if output_base.file_name().and_then(|n| n.to_str()) == Some(hashed.as_str()) {
+    if output_base.file_name().map(|n| n.as_bytes()) == Some(hashed.as_bytes()) {
         output_base.parent().map(StdPath::to_path_buf)
     } else {
         None
@@ -334,7 +340,7 @@ pub fn prepare_repository_functions_with(
                          up without an output user root and its output base [{}] is not the \
                          default one. Pass --repository_cache=<path> (or --repository_cache= to \
                          disable the cache).",
-                            setup.output_base.display()
+                            platform_to_internal(setup.output_base.as_os_str())
                         )
                     })?,
             };
@@ -433,7 +439,7 @@ pub fn prepare_repository_functions_with(
         download_manager.set_retries(retries);
     }
 
-    // PORT: byte-strings (the client environment is a String map here)
+    // The client environment holds internal strings, as in Java.
     let client_env: std::collections::HashMap<String, String> = setup
         .client_env
         .iter()
@@ -590,9 +596,12 @@ impl blaze_bzlmod::skyframe::RepositoryDirectoryLookup for RepositoryDirectoryFu
         // gets "translated" into a repo spec. So we can cast `repoDir` to `Success`.
         match &*repo_dir {
             RepositoryDirectoryValue::Success { root, .. } => Ok(Some(PathBuf::from(
-                root.as_path()
-                    .expect("repository root is a path")
-                    .get_path_string(),
+                internal_to_platform(
+                    root.as_path()
+                        .expect("repository root is a path")
+                        .get_path_string(),
+                )
+                .into_owned(),
             ))),
             // PORT: Java's cast throws ClassCastException here.
             RepositoryDirectoryValue::Failure { error_msg } => panic!(
@@ -628,11 +637,13 @@ impl blaze_bzlmod::skyframe::PackageLookup for PackageLookupFunctionLookup {
                 root,
                 build_file_name,
             } => PackageLookupResult::success(
-                // PORT: byte-strings
                 PathBuf::from(
-                    root.as_path()
-                        .expect("package roots are path roots")
-                        .get_path_string(),
+                    internal_to_platform(
+                        root.as_path()
+                            .expect("package roots are path roots")
+                            .get_path_string(),
+                    )
+                    .into_owned(),
                 ),
                 build_file_name.get_filename_fragment().get_path_string(),
             ),

@@ -1,10 +1,17 @@
 //! Port of `com.google.devtools.build.lib.unix.UnixFileSystem` using `std` instead of JNI.
 //!
 //! Error messages follow the native layer (`unix_jni.cc` `PostException`): `<path> (<strerror>)`.
+//!
+//! Paths, directory entry names and symlink targets are Bazel's internal strings (one char per
+//! byte): each system call gets the path's bytes ([`os`], Java
+//! `StringEncoding.internalToPlatform`), and names that come back are decoded one char per byte
+//! ([`from_os`], `StringEncoding.platformToInternal`). A file name that is not UTF-8 is therefore
+//! an ordinary name, as in Bazel.
 //! Not ported: xattr-based fast digests (`hashAttributeName`), the Profiler, `Blocker`.
 
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::sync::Arc;
 
@@ -17,6 +24,19 @@ use crate::file_system::{
 };
 use crate::path::NOW_SENTINEL_TIME;
 use crate::path_fragment::PathFragment;
+
+/// The platform string of an internal path string.
+// Java: com/google/devtools/build/lib/unix/UnixFileSystem.java (every native call:
+// `StringEncoding.internalToPlatform(path.getPathString())`)
+fn os(path: &str) -> std::borrow::Cow<'_, std::ffi::OsStr> {
+    blaze_util::string_encoding::internal_to_platform(path)
+}
+
+/// The internal string of a platform string (a directory entry, a symlink target).
+// Java: com/google/devtools/build/lib/util/StringEncoding.java:115 StringEncoding.platformToInternal
+fn from_os(name: &std::ffi::OsStr) -> String {
+    blaze_util::string_encoding::platform_to_internal(name).into_owned()
+}
 
 const EEXIST: i32 = 17;
 const EINVAL: i32 = 22;
@@ -105,7 +125,7 @@ impl FileSystem for UnixFileSystem {
     fn create_directory(&self, path: &PathFragment) -> io::Result<bool> {
         match fs::DirBuilder::new()
             .mode(0o777)
-            .create(path.get_path_string())
+            .create(os(path.get_path_string()))
         {
             Ok(()) => return Ok(true), // successfully created
             Err(e) if e.raw_os_error() == Some(EEXIST) => {}
@@ -154,8 +174,8 @@ impl FileSystem for UnixFileSystem {
     fn delete(&self, path: &PathFragment) -> io::Result<bool> {
         // remove(3): unlink, or rmdir for directories.
         let name = path.get_path_string();
-        let result = match fs::remove_file(name) {
-            Err(e) if e.raw_os_error() == Some(EISDIR) => fs::remove_dir(name),
+        let result = match fs::remove_file(os(name)) {
+            Err(e) if e.raw_os_error() == Some(EISDIR) => fs::remove_dir(os(name)),
             r => r,
         };
         match result {
@@ -181,7 +201,7 @@ impl FileSystem for UnixFileSystem {
         // needed, not ownership).
         // Java: (native) src/main/native/unix_jni.cc Java_com_google_devtools_build_lib_unix_NativePosixFiles_utimensat
         let name = path.get_path_string();
-        let c_name = std::ffi::CString::new(name).map_err(|_| {
+        let c_name = std::ffi::CString::new(os(name).as_bytes()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("{name} (Invalid argument)"),
@@ -212,9 +232,9 @@ impl FileSystem for UnixFileSystem {
     fn stat(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<FileStatus> {
         let name = path.get_path_string();
         let m = if follow_symlinks {
-            fs::metadata(name)
+            fs::metadata(os(name))
         } else {
-            fs::symlink_metadata(name)
+            fs::symlink_metadata(os(name))
         };
         m.map(|m| FileStatus::from_metadata(&m))
             .map_err(|e| posix_error(name, e))
@@ -249,8 +269,8 @@ impl FileSystem for UnixFileSystem {
         target_fragment: &PathFragment,
     ) -> io::Result<()> {
         std::os::unix::fs::symlink(
-            target_fragment.get_safe_path_string(),
-            link_path.get_path_string(),
+            os(target_fragment.get_safe_path_string()),
+            os(link_path.get_path_string()),
         )
         .map_err(|e| posix_error(link_path.get_path_string(), e))
     }
@@ -258,14 +278,8 @@ impl FileSystem for UnixFileSystem {
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:311 UnixFileSystem.readSymbolicLink
     fn read_symbolic_link(&self, path: &PathFragment) -> io::Result<PathFragment> {
         let name = path.get_path_string();
-        match fs::read_link(name) {
-            Ok(target) => match target.into_os_string().into_string() {
-                Ok(s) => Ok(PathFragment::create(&s)),
-                Err(_) => Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{} (symlink target is not valid UTF-8)", name),
-                )),
-            },
+        match fs::read_link(os(name)) {
+            Ok(target) => Ok(PathFragment::create(&from_os(target.as_os_str()))),
             Err(e) if e.raw_os_error() == Some(EINVAL) => {
                 Err(NotASymlinkException::new_error(path))
             }
@@ -282,9 +296,9 @@ impl FileSystem for UnixFileSystem {
     fn get_directory_entries(&self, path: &PathFragment) -> io::Result<Vec<String>> {
         let name = path.get_path_string();
         let mut result = Vec::new();
-        for entry in fs::read_dir(name).map_err(|e| posix_error(name, e))? {
+        for entry in fs::read_dir(os(name)).map_err(|e| posix_error(name, e))? {
             let entry = entry.map_err(|e| posix_error(name, e))?;
-            result.push(entry_name(name, entry)?);
+            result.push(from_os(&entry.file_name()));
         }
         Ok(result)
     }
@@ -293,10 +307,10 @@ impl FileSystem for UnixFileSystem {
     fn readdir(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<Vec<Dirent>> {
         let name = path.get_path_string();
         let mut result = Vec::new();
-        for entry in fs::read_dir(name).map_err(|e| posix_error(name, e))? {
+        for entry in fs::read_dir(os(name)).map_err(|e| posix_error(name, e))? {
             let entry = entry.map_err(|e| posix_error(name, e))?;
             let file_type = entry.file_type().map_err(|e| posix_error(name, e))?;
-            let child = entry_name(name, entry)?;
+            let child = from_os(&entry.file_name());
             // std resolves an unknown d_type with lstat, so "UNKNOWN" here means special file.
             let native_type = if file_type.is_file() {
                 DirentType::File
@@ -357,14 +371,14 @@ impl FileSystem for UnixFileSystem {
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:228 UnixFileSystem.chmod
     fn chmod(&self, path: &PathFragment, mode: u32) -> io::Result<()> {
         let name = path.get_path_string();
-        fs::set_permissions(name, fs::Permissions::from_mode(mode))
+        fs::set_permissions(os(name), fs::Permissions::from_mode(mode))
             .map_err(|e| posix_error(name, e))
     }
 
     // Java: com/google/devtools/build/lib/vfs/DiskBackedFileSystem.java:64 DiskBackedFileSystem.getInputStream
     fn get_input_stream(&self, path: &PathFragment) -> io::Result<Box<dyn Read + Send>> {
         let name = path.get_path_string();
-        let f = fs::File::open(name).map_err(|e| posix_error(name, e))?;
+        let f = fs::File::open(os(name)).map_err(|e| posix_error(name, e))?;
         Ok(Box::new(io::BufReader::new(f)))
     }
 
@@ -383,13 +397,17 @@ impl FileSystem for UnixFileSystem {
         } else {
             options.truncate(true);
         }
-        let f = options.open(name).map_err(|e| posix_error(name, e))?;
+        let f = options.open(os(name)).map_err(|e| posix_error(name, e))?;
         Ok(Box::new(f))
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:328 UnixFileSystem.renameTo
     fn rename_to(&self, source_path: &PathFragment, target_path: &PathFragment) -> io::Result<()> {
-        fs::rename(source_path.get_path_string(), target_path.get_path_string()).map_err(|e| {
+        fs::rename(
+            os(source_path.get_path_string()),
+            os(target_path.get_path_string()),
+        )
+        .map_err(|e| {
             posix_error(
                 &format!(
                     "{} -> {}",
@@ -408,16 +426,10 @@ impl FileSystem for UnixFileSystem {
         original_path: &PathFragment,
     ) -> io::Result<()> {
         // link_common in unix_jni.cc reports the new path.
-        fs::hard_link(original_path.get_path_string(), link_path.get_path_string())
-            .map_err(|e| posix_error(link_path.get_path_string(), e))
-    }
-}
-
-fn entry_name(dir: &str, entry: fs::DirEntry) -> io::Result<String> {
-    entry.file_name().into_string().map_err(|n| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{} (entry name is not valid UTF-8: {:?})", dir, n),
+        fs::hard_link(
+            os(original_path.get_path_string()),
+            os(link_path.get_path_string()),
         )
-    })
+        .map_err(|e| posix_error(link_path.get_path_string(), e))
+    }
 }

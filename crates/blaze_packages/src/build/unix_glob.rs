@@ -177,6 +177,12 @@ pub fn matches_cached(pattern: &str, s: &str, pattern_cache: Option<&mut Pattern
     }
 }
 
+/// Java's `.` without DOTALL: any char but a line terminator (`\n`, `\r`, U+0085, U+2028,
+/// U+2029; java/util/regex/Pattern.java `CharPredicates.DOT`). The regex crate's `.` only
+/// excludes `\n`. U+0085 matters for internal strings: it is the second byte of `Å` (C3 85), so
+/// Bazel's `x*y.txt` does not match a file `xÅy.txt` (oracle).
+const JAVA_DOT: &str = "[^\\n\\r\\x{85}\\x{2028}\\x{2029}]";
+
 /// Compiles a wildcard to a regex matching whole strings (Java `Pattern.matches`).
 // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:257 UnixGlob.makePatternFromWildcard
 fn make_pattern_from_wildcard(pattern: &str) -> Regex {
@@ -202,10 +208,11 @@ fn make_pattern_from_wildcard(pattern: &str) -> Regex {
                         regexp.pop();
                     }
                 }
-                regexp.push_str(".*");
+                regexp.push_str(JAVA_DOT);
+                regexp.push('*');
                 i += to_increment;
             }
-            '?' => regexp.push('.'),
+            '?' => regexp.push_str(JAVA_DOT),
             // escape the regexp special characters that are allowed in wildcards
             '^' | '$' | '|' | '+' | '{' | '}' | '[' | ']' | '\\' | '.' => {
                 regexp.push('\\');
@@ -225,8 +232,7 @@ fn make_pattern_from_wildcard(pattern: &str) -> Regex {
         }
         i += 1;
     }
-    // PORT: Java's `Matcher.matches()` matches the whole input; `(?s)` is not set, as in
-    // Java's default flags.
+    // PORT: Java's `Matcher.matches()` matches the whole input; `.` is written as JAVA_DOT.
     Regex::new(&format!("^(?:{regexp})$")).expect("wildcard regex")
 }
 
@@ -762,6 +768,13 @@ mod tests {
         }
     }
 
+    /// The platform form of `path` (an internal string), for `std::fs`.
+    fn platform(path: &Path) -> std::path::PathBuf {
+        std::path::PathBuf::from(
+            blaze_util::string_encoding::internal_to_platform(path.get_path_string()).into_owned(),
+        )
+    }
+
     // Java: GlobTest.initializeFileSystem
     fn fixture() -> Fixture {
         let root = std::env::temp_dir().join(format!(
@@ -781,7 +794,10 @@ mod tests {
         std::fs::write(tmp.join("foo/bar/wiz/file"), "").unwrap();
         let fs: FileSystemRef = Arc::new(UnixFileSystem::new(DigestHashFunction::Sha256));
         Fixture {
-            tmp_path: Path::create_from_str(tmp.to_str().unwrap(), &fs),
+            tmp_path: Path::create_from_str(
+                &blaze_util::string_encoding::platform_to_internal(tmp.as_os_str()),
+                &fs,
+            ),
             root,
         }
     }
@@ -1052,10 +1068,10 @@ mod tests {
     fn test_special_regex_character() {
         let f = fixture();
         let tmp_path2 = f.tmp_path.get_relative_str("../globtmp2");
-        std::fs::create_dir_all(tmp_path2.get_path_string()).unwrap();
+        std::fs::create_dir_all(platform(&tmp_path2)).unwrap();
         let mk = |name: &str| {
             let p = tmp_path2.get_child(name);
-            std::fs::write(p.get_path_string(), "").unwrap();
+            std::fs::write(platform(&p), "").unwrap();
             p
         };
         let a_dot_b = mk("a.b");
@@ -1087,11 +1103,11 @@ mod tests {
     fn test_parentheses_in_regex() {
         let f = fixture();
         let tmp_path3 = f.tmp_path.get_relative_str("../globtmp3");
-        std::fs::create_dir_all(tmp_path3.get_path_string()).unwrap();
+        std::fs::create_dir_all(platform(&tmp_path3)).unwrap();
         let foo_bar = tmp_path3.get_child("foo bar");
-        std::fs::write(foo_bar.get_path_string(), "").unwrap();
+        std::fs::write(platform(&foo_bar), "").unwrap();
         let foo_bar_in_parentheses = tmp_path3.get_child("foo (bar)");
-        std::fs::write(foo_bar_in_parentheses.get_path_string(), "").unwrap();
+        std::fs::write(platform(&foo_bar_in_parentheses), "").unwrap();
         // Note: these contain two asterisks because otherwise a RE is not built,
         // as an optimization.
         for pattern in [
@@ -1118,6 +1134,23 @@ mod tests {
     #[test]
     fn test_matches_call_with_no_cache() {
         assert!(matches_cached("*a*b", "CaCb", None));
+    }
+
+    // Not a Java test (oracle, ~/.cache/blaze/work/bytes-C1): Java's `.` does not match a line
+    // terminator, and file names are internal strings, so `x*y.txt` matches `xéy.txt`
+    // (78 C3 A9 79 ...) but not `xÅy.txt` (78 C3 85 79 ...): U+0085 is a line terminator.
+    #[test]
+    fn wildcard_dot_does_not_match_java_line_terminators() {
+        assert!(matches("x*y.txt", "x\u{c3}\u{a9}y.txt"));
+        assert!(!matches("x*y.txt", "x\u{c3}\u{85}y.txt"));
+        assert!(!matches("a?b", "a\rb"));
+        assert!(!matches("a?b", "a\u{85}b"));
+        assert!(matches("a?b", "a\u{a0}b"));
+        assert!(matches("a?b", "a\u{ff}b"));
+        // The common cases do not compile a regex: `*.xyz` and `xyz*` match any suffix.
+        assert!(matches("x*", "x\u{c3}\u{85}"));
+        // A 4-byte UTF-8 name (🐷) is four chars.
+        assert!(matches("p????q", "p\u{f0}\u{9f}\u{90}\u{b7}q"));
     }
 
     #[test]
@@ -1147,7 +1180,7 @@ mod tests {
     fn test_hidden_files() {
         let f = fixture();
         for dir in [".hidden", "..also.hidden", "not.hidden"] {
-            std::fs::create_dir_all(f.tmp_path.get_relative_str(dir).get_path_string()).unwrap();
+            std::fs::create_dir_all(platform(&f.tmp_path.get_relative_str(dir))).unwrap();
         }
         // Note that these are not in the result: ".", ".."
         f.assert_glob_matches(

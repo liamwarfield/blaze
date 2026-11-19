@@ -1,6 +1,7 @@
 //! Ports of `query2/query/output/ProtoOutputFormatter.java`,
 //! `StreamedProtoOutputFormatter.java` and `StreamedJSONProtoOutputFormatter.java`.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -29,6 +30,7 @@ use blaze_query_engine::{
     Callback, InterruptedException, OutputFormatterCallback, QueryError,
     SynchronizedDelegatingOutputFormatterCallback, ThreadSafeOutputFormatterCallback,
 };
+use blaze_util::string_encoding::internal_to_unicode;
 use blaze_vfs::DigestHashFunction;
 use indexmap::{IndexMap, IndexSet};
 
@@ -370,13 +372,15 @@ impl TargetProtoConverter {
         match target {
             Target::Rule(rule) => {
                 let mut rule_pb = RulePb {
-                    name: label_printer.to_string(rule.get_label()),
-                    rule_class: rule.get_rule_class().to_owned(),
+                    name: u(label_printer.to_string(rule.get_label())),
+                    rule_class: internal_to_unicode(rule.get_rule_class()).into_owned(),
                     ..Default::default()
                 };
                 if state.include_locations {
-                    rule_pb.location =
-                        Some(format_utils::get_location(target, state.relative_locations));
+                    rule_pb.location = Some(u(format_utils::get_location(
+                        target,
+                        state.relative_locations,
+                    )));
                 }
                 self.add_attributes(&mut rule_pb, rule, extra_data_for_attr_hash, label_printer);
                 let transitive_digest = rule
@@ -444,11 +448,11 @@ impl TargetProtoConverter {
                             }
                         }
                         for dep in seen {
-                            rule_pb.rule_input.push(label_printer.to_string(&dep));
+                            rule_pb.rule_input.push(u(label_printer.to_string(&dep)));
                         }
                     }
                     for input in rule.get_sorted_labels(self.dependency_filter()) {
-                        rule_pb.rule_input.push(label_printer.to_string(&input));
+                        rule_pb.rule_input.push(u(label_printer.to_string(&input)));
                     }
                     let mut seen_outputs: Vec<Label> = Vec::new();
                     for output in rule.get_output_files() {
@@ -456,7 +460,7 @@ impl TargetProtoConverter {
                             seen_outputs.push(output.get_label().clone());
                             rule_pb
                                 .rule_output
-                                .push(label_printer.to_string(output.get_label()));
+                                .push(u(label_printer.to_string(output.get_label())));
                         }
                     }
                 }
@@ -466,7 +470,7 @@ impl TargetProtoConverter {
                     .features()
                     .to_string_list()
                 {
-                    rule_pb.default_setting.push(feature);
+                    rule_pb.default_setting.push(u(feature));
                 }
 
                 if state.include_instantiation_stack {
@@ -488,14 +492,16 @@ impl TargetProtoConverter {
                 let label = output_file.get_label();
                 let generating_rule = output_file.get_generating_rule();
                 let mut output = GeneratedFile {
-                    generating_rule: label_printer.to_string(generating_rule.get_label()),
-                    name: label_printer.to_string(label),
+                    generating_rule: u(label_printer.to_string(generating_rule.get_label())),
+                    name: u(label_printer.to_string(label)),
                     ..Default::default()
                 };
 
                 if state.include_locations {
-                    output.location =
-                        Some(format_utils::get_location(target, state.relative_locations));
+                    output.location = Some(u(format_utils::get_location(
+                        target,
+                        state.relative_locations,
+                    )));
                 }
                 target_pb.set_type(TargetDiscriminator::GeneratedFile);
                 target_pb.generated_file = Some(output);
@@ -504,12 +510,14 @@ impl TargetProtoConverter {
                 let label = input_file.get_label();
 
                 let mut input = SourceFile {
-                    name: label_printer.to_string(label),
+                    name: u(label_printer.to_string(label)),
                     ..Default::default()
                 };
                 if state.include_locations {
-                    input.location =
-                        Some(format_utils::get_location(target, state.relative_locations));
+                    input.location = Some(u(format_utils::get_location(
+                        target,
+                        state.relative_locations,
+                    )));
                 }
 
                 if input_file.is_build_file() {
@@ -525,7 +533,7 @@ impl TargetProtoConverter {
                     for starlark_load_label in &starlark_load_labels {
                         input
                             .subinclude
-                            .push(label_printer.to_string(starlark_load_label));
+                            .push(u(label_printer.to_string(starlark_load_label)));
                     }
 
                     for feature in input_file
@@ -534,7 +542,7 @@ impl TargetProtoConverter {
                         .features()
                         .to_string_list()
                     {
-                        input.feature.push(feature);
+                        input.feature.push(u(feature));
                     }
 
                     input.package_contains_errors =
@@ -544,13 +552,13 @@ impl TargetProtoConverter {
                 for visibility_dependency in target.get_visibility_dependency_labels() {
                     input
                         .package_group
-                        .push(label_printer.to_string(&visibility_dependency));
+                        .push(u(label_printer.to_string(&visibility_dependency)));
                 }
 
                 for visibility_declaration in target.get_visibility_declared_labels() {
                     input
                         .visibility_label
-                        .push(label_printer.to_string(&visibility_declaration));
+                        .push(u(label_printer.to_string(&visibility_declaration)));
                 }
 
                 target_pb.set_type(TargetDiscriminator::SourceFile);
@@ -559,31 +567,35 @@ impl TargetProtoConverter {
             Target::FakeLoadTarget(_) => {
                 let label = target.get_label();
                 let mut input = SourceFile {
-                    name: label_printer.to_string(label),
+                    name: u(label_printer.to_string(label)),
                     ..Default::default()
                 };
 
                 if state.include_locations {
-                    input.location =
-                        Some(format_utils::get_location(target, state.relative_locations));
+                    input.location = Some(u(format_utils::get_location(
+                        target,
+                        state.relative_locations,
+                    )));
                 }
                 target_pb.set_type(TargetDiscriminator::SourceFile);
                 target_pb.source_file = Some(input);
             }
             Target::PackageGroup(package_group) => {
                 let mut package_group_pb = PackageGroupPb {
-                    name: label_printer.to_string(package_group.get_label()),
+                    name: u(label_printer.to_string(package_group.get_label())),
                     ..Default::default()
                 };
                 for contained_package in
                     package_group.get_contained_packages(state.package_group_includes_double_slash)
                 {
-                    package_group_pb.contained_package.push(contained_package);
+                    package_group_pb
+                        .contained_package
+                        .push(u(contained_package));
                 }
                 for include in package_group.get_includes() {
                     package_group_pb
                         .included_package_group
-                        .push(label_printer.to_string(include));
+                        .push(u(label_printer.to_string(include)));
                 }
 
                 target_pb.set_type(TargetDiscriminator::PackageGroup);
@@ -591,16 +603,18 @@ impl TargetProtoConverter {
             }
             Target::EnvironmentGroup(env_group) => {
                 let mut env_group_pb = EnvironmentGroupPb {
-                    name: label_printer.to_string(env_group.get_label()),
+                    name: u(label_printer.to_string(env_group.get_label())),
                     ..Default::default()
                 };
                 for env in env_group.get_environment_labels().get_environments() {
-                    env_group_pb.environment.push(label_printer.to_string(env));
+                    env_group_pb
+                        .environment
+                        .push(u(label_printer.to_string(env)));
                 }
                 for default_env in env_group.get_environment_labels().get_defaults() {
                     env_group_pb
                         .default
-                        .push(label_printer.to_string(default_env));
+                        .push(u(label_printer.to_string(default_env)));
                 }
                 target_pb.set_type(TargetDiscriminator::EnvironmentGroup);
                 target_pb.environment_group = Some(env_group_pb);
@@ -713,6 +727,15 @@ impl TargetProtoConverter {
     // Java: com/google/devtools/build/lib/query2/query/output/ProtoOutputFormatter.java:501 ProtoOutputFormatter.includeRuleDefinitionEnvironment
     fn include_rule_definition_environment(&self) -> bool {
         true
+    }
+}
+
+/// Java `StringEncoding.internalToUnicode(s)` on an owned internal string (the proto fields of
+/// `toTargetProtoBuffer` hold Unicode text).
+fn u(s: String) -> String {
+    match internal_to_unicode(&s) {
+        Cow::Borrowed(_) => s,
+        Cow::Owned(unicode) => unicode,
     }
 }
 

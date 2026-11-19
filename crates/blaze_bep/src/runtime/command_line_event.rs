@@ -586,14 +586,12 @@ impl CanonicalCommandLineEvent {
     }
 }
 
-/// Java `String.hashCode`.
-///
-/// PORT: StringEncoding identity. These strings are Bazel "internal" strings (one Java `char`
-/// per UTF-8 byte), so the hash runs over the UTF-8 bytes.
+/// Java `String.hashCode`: the polynomial over the UTF-16 units (for an internal string, its
+/// Latin-1 chars).
 fn java_string_hash_code(s: &str) -> i32 {
     let mut h: i32 = 0;
-    for &b in s.as_bytes() {
-        h = h.wrapping_mul(31).wrapping_add(b as i32);
+    for u in s.encode_utf16() {
+        h = h.wrapping_mul(31).wrapping_add(i32::from(u));
     }
     h
 }
@@ -769,3 +767,25 @@ impl BuildEvent for OriginalUnstructuredCommandLineEvent {
 }
 
 impl blaze_events::Postable for OriginalUnstructuredCommandLineEvent {}
+
+#[cfg(test)]
+mod tests {
+    use super::java_string_hash_code;
+
+    /// `String.hashCode` of internal strings: "é" is the chars C3 A9, "🐷" F0 9F 90 B7, a raw
+    /// byte FF one char.
+    #[test]
+    fn java_string_hash_code_of_internal_strings() {
+        let i = |s: &[u8]| blaze_util::string_encoding::latin1_decode(s).into_owned();
+        assert_eq!(java_string_hash_code("ab"), 97 * 31 + 98);
+        assert_eq!(
+            java_string_hash_code(&i("\u{e9}".as_bytes())),
+            0xC3 * 31 + 0xA9
+        );
+        assert_eq!(
+            java_string_hash_code(&i("\u{1F437}".as_bytes())),
+            ((0xF0 * 31 + 0x9F) * 31 + 0x90) * 31 + 0xB7
+        );
+        assert_eq!(java_string_hash_code(&i(b"\xff")), 0xFF);
+    }
+}

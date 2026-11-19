@@ -1845,3 +1845,29 @@ fn test_get_artifact_name_extension_for_category() {
         ".a"
     );
 }
+
+/// Not in the Java test: the position in the parse error counts the chars of the internal string
+/// (one per byte of the flag), as Java's index does. `é` (c3 a9), `🐷` (f0 9f 90 b7) and the
+/// byte ff are 2, 4 and 1 chars.
+#[test]
+fn flag_parsing_error_position_counts_internal_chars() {
+    for (flag, position) in [
+        ("\u{c3}\u{a9}%", 3),
+        ("\u{f0}\u{9f}\u{90}\u{b7}%x", 5),
+        ("\u{ff}%", 2),
+    ] {
+        let error = get_flag_parsing_error(flag);
+        assert!(
+            error.contains(&format!(
+                "expected '{{' at position {position} while parsing a flag containing '{flag}'"
+            )),
+            "{error}"
+        );
+    }
+    // The expansion keeps the chars as they are.
+    let empty = create_variables(&[]);
+    assert_eq!(
+        get_expansion_of_flag("\u{c3}\u{a9}%%\u{ff}", &empty),
+        "\u{c3}\u{a9}%\u{ff}"
+    );
+}

@@ -86,7 +86,9 @@ fn java_uri_quote_path(s: &str) -> String {
             } else {
                 out.push_str(&format!("%{:02X}", c as u32));
             }
-        } else if c.is_whitespace() || c.is_control() {
+        } else if java_is_space_char(c) || java_is_iso_control(c) {
+            // appendEncoded: the UTF-8 bytes of the char (of the internal string's Latin-1 char:
+            // U+00A0, the byte A0 of the path, becomes "%C2%A0").
             let mut buf = [0u8; 4];
             for b in c.encode_utf8(&mut buf).bytes() {
                 out.push_str(&format!("%{b:02X}"));
@@ -96,6 +98,22 @@ fn java_uri_quote_path(s: &str) -> String {
         }
     }
     out
+}
+
+/// Java `Character.isSpaceChar`: general categories Zs, Zl and Zp.
+// Java (JDK): java.base/java/lang/Character.java Character.isSpaceChar
+fn java_is_space_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{20}' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}'
+    )
+}
+
+/// Java `Character.isISOControl`: U+0000 to U+001F and U+007F to U+009F.
+// Java (JDK): java.base/java/lang/Character.java Character.isISOControl
+fn java_is_iso_control(c: char) -> bool {
+    c <= '\u{1f}' || ('\u{7f}'..='\u{9f}').contains(&c)
 }
 
 /// The identity of a node of an artifact set, as `NestedSet.Node` is in Java: a branch node is

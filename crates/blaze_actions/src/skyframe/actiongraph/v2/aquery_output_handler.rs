@@ -112,7 +112,7 @@ impl<W: std::io::Write> AqueryOutputHandler for MonolithicOutputHandler<W> {
         // with the default charset, ISO-8859-1 (`blaze.cc:431` `-Dfile.encoding`), so the
         // internal strings of the messages come out as their bytes, one per char.
         self.print_stream
-            .write_all(&blaze_util::string_encoding::internal_string_bytes(&json))?;
+            .write_all(&blaze_util::string_encoding::latin1_encode_lossy(&json))?;
         self.print_stream.write_all(b"\n")?;
         self.print_stream.flush()
     }

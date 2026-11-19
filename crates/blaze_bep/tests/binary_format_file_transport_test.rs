@@ -149,7 +149,7 @@ fn test_creates_file_and_writes_proto_binary_format() {
     build_event.set_stream_proto(completed.clone());
     transport.send_build_event(&build_event_dyn);
 
-    transport.close().unwrap();
+    transport.close().get().unwrap();
     let bytes = output.read();
     let mut input: &[u8] = &bytes;
     assert_eq!(parse_next(&mut input), Some(started));
@@ -173,7 +173,7 @@ fn test_cancelled_upload() {
     let transport = transport(&output, uploader);
     transport.send_build_event(&event1);
 
-    let expected = transport.close().unwrap_err();
+    let expected = transport.close().get().unwrap_err();
     assert!(
         expected
             .message
@@ -198,11 +198,11 @@ fn test_write_when_file_closed() {
 
     let transport = transport(&output, Arc::new(LocalFilesArtifactUploader));
 
-    transport.close().unwrap();
+    transport.close().get().unwrap();
 
     // This should not throw an exception.
     transport.send_build_event(&build_event_dyn);
-    transport.close().unwrap();
+    transport.close().get().unwrap();
 
     // Also, nothing should have been written to the file
     assert_eq!(output.read().len(), 0);
@@ -220,7 +220,7 @@ fn test_write_when_transport_closed() {
     let transport = transport(&output, Arc::new(LocalFilesArtifactUploader));
 
     transport.send_build_event(&build_event_dyn);
-    transport.close().unwrap();
+    transport.close().get().unwrap();
     // This should not throw an exception, but also not perform any write.
     transport.send_build_event(&build_event_dyn);
 
@@ -290,7 +290,7 @@ fn test_writes_with_upload_delays() {
     let transport = transport(&output, uploader.clone());
     transport.send_build_event(&event1);
     transport.send_build_event(&event2);
-    transport.close().unwrap();
+    transport.close().get().unwrap();
 
     let bytes = output.read();
     let mut input: &[u8] = &bytes;
@@ -318,7 +318,7 @@ fn test_handles_duplicate_files() {
     let output = Output::new();
     let transport = transport(&output, uploader);
     transport.send_build_event(&event1);
-    transport.close().unwrap();
+    transport.close().get().unwrap();
 
     let bytes = output.read();
     let mut input: &[u8] = &bytes;
@@ -353,7 +353,7 @@ fn test_close_waits_for_writes_to_finish() {
         std::thread::sleep(Duration::from_millis(100));
         upload.set(Box::new(NoConversion));
     });
-    transport.close().unwrap();
+    transport.close().get().unwrap();
     setter.join().unwrap();
 
     let bytes = output.read();

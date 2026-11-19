@@ -32,7 +32,10 @@ pub fn write_test_log(
     max_test_output_bytes: i32,
 ) -> io::Result<()> {
     let result = (|| {
-        writeln!(out, "==================== Test output for {test_name}:")?;
+        // `new PrintStream(out)`: the default charset, ISO-8859-1.
+        out.write_all(&blaze_util::string_encoding::latin1_encode_lossy(&format!(
+            "==================== Test output for {test_name}:\n"
+        )))?;
         out.flush()?;
 
         if max_test_output_bytes < 0 {

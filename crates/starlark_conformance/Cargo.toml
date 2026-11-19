@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 blaze_starlark = { path = "../blaze_starlark" }
+blaze_util = { path = "../blaze_util" }
 starlark.workspace = true
 allocative.workspace = true
 anyhow.workspace = true

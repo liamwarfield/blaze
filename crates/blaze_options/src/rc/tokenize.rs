@@ -1,7 +1,7 @@
 //! Ports of the client string helpers used by rc parsing (`src/main/cpp/util/strings.cc`).
 
 // Java: src/main/cpp/util/strings.cc:43 kSeparator
-const SEPARATOR: &[u8] = b" \n\t\r";
+const SEPARATOR: &[char] = &[' ', '\n', '\t', '\r'];
 
 // Java: src/main/cpp/util/strings.cc:142 blaze_util::Replace
 /// Replaces every occurrence of `oldsub` in `s` with `newsub`.
@@ -27,13 +27,14 @@ pub fn strip_whitespace(s: &mut String) {
 }
 
 // Java: src/main/cpp/util/strings.cc:181 blaze_util::GetNextToken
-fn get_next_token(s: &[u8], comment: u8, iter: &mut usize, words: &mut Vec<String>) {
-    let mut output: Vec<u8> = Vec::new();
+// The C++ walks the bytes of a `std::string`; they are the chars of the internal string.
+fn get_next_token(s: &[char], comment: char, iter: &mut usize, words: &mut Vec<String>) {
+    let mut output = String::new();
     let mut last = *iter;
-    let mut quote: u8 = 0;
-    while last < s.len() && (quote != 0 || !SEPARATOR.contains(&s[last])) {
+    let mut quote = '\0';
+    while last < s.len() && (quote != '\0' || !SEPARATOR.contains(&s[last])) {
         // Absorb escapes.
-        if s[last] == b'\\' {
+        if s[last] == '\\' {
             last += 1;
             if last == s.len() {
                 break;
@@ -42,10 +43,10 @@ fn get_next_token(s: &[u8], comment: u8, iter: &mut usize, words: &mut Vec<Strin
             last += 1;
             continue;
         }
-        if quote != 0 {
+        if quote != '\0' {
             if s[last] == quote {
                 // Absorb closing quote.
-                quote = 0;
+                quote = '\0';
                 last += 1;
             } else {
                 output.push(s[last]);
@@ -56,7 +57,7 @@ fn get_next_token(s: &[u8], comment: u8, iter: &mut usize, words: &mut Vec<Strin
                 last = s.len();
                 break;
             }
-            if s[last] == b'\'' || s[last] == b'"' {
+            if s[last] == '\'' || s[last] == '"' {
                 // Absorb opening quote.
                 quote = s[last];
                 last += 1;
@@ -67,8 +68,7 @@ fn get_next_token(s: &[u8], comment: u8, iter: &mut usize, words: &mut Vec<Strin
         }
     }
     if !output.is_empty() {
-        // PORT: byte-strings (C++ Tokenize pushes the token's raw bytes).
-        words.push(String::from_utf8_lossy(&output).into_owned());
+        words.push(output);
     }
     *iter = last;
 }
@@ -77,8 +77,7 @@ fn get_next_token(s: &[u8], comment: u8, iter: &mut usize, words: &mut Vec<Strin
 /// Splits `s` into words, treating `comment` as a comment start, honouring single and double
 /// quotes and `\` escapes. Dangling escapes and missing end quotes are silently ignored.
 pub fn tokenize(s: &str, comment: char) -> Vec<String> {
-    let b = s.as_bytes();
-    let comment = comment as u8;
+    let b: Vec<char> = s.chars().collect();
     let mut words = Vec::new();
     let mut i = 0;
     while i < b.len() {
@@ -89,7 +88,7 @@ pub fn tokenize(s: &str, comment: char) -> Vec<String> {
         if i < b.len() && b[i] == comment {
             break;
         }
-        get_next_token(b, comment, &mut i, &mut words);
+        get_next_token(&b, comment, &mut i, &mut words);
     }
     words
 }

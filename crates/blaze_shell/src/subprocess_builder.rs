@@ -115,7 +115,8 @@ impl SubprocessBuilder {
     pub fn set_argv(&mut self, argv: Vec<String>) -> &mut Self {
         self.argv = argv;
         blaze_util::check_argument!(!self.argv.is_empty());
-        // PORT: StringEncoding identity (internalToPlatform).
+        // PORT: `StringEncoding.internalToPlatform` is the identity in the Latin-1 locale (see
+        // `java_subprocess_factory`).
         let argv0 = JavaFile::new(&self.argv[0]);
         blaze_util::check_argument!(
             argv0.is_absolute() || argv0.get_parent().is_none(),

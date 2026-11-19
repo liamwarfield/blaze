@@ -318,10 +318,11 @@ impl CommandEnvironment {
             }
             workspace.get_relative(client_cwd)
         } else {
-            // FileSystemUtils.getWorkingDirectory: the process's working directory.
+            // FileSystemUtils.getWorkingDirectory: the process's working directory ('user.dir',
+            // a platform string, reencoded to the internal representation).
             let cwd = std::env::current_dir().expect("getcwd");
             Path::create_from_str(
-                cwd.to_str().expect("non-UTF-8 working directory"),
+                &blaze_util::string_encoding::platform_to_internal(cwd.as_os_str()),
                 directories.get_output_base().get_file_system(),
             )
         };

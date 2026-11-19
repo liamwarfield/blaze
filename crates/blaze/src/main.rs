@@ -41,7 +41,10 @@ impl InProcessServer for BazelServer {
 }
 
 fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+    // The raw bytes of each argument, as internal strings (one char per byte), as the C++
+    // `main` gets them.
+    // Java: src/main/cpp/main.cc:24 main
+    let argv = blaze_client::argv_from_os();
     let code = blaze_client::main(argv, &BazelServer, &embedded::archive());
     std::process::exit(code);
 }

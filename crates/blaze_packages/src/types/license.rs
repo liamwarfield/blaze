@@ -168,7 +168,9 @@ impl License {
                     .map_err(|e| LicenseParsingException(e.get_message().to_owned()))?;
                 exceptions.insert(label);
             } else {
-                match LicenseType::value_of(&str.to_ascii_uppercase()) {
+                // `str.toUpperCase(Locale.ENGLISH)` over the chars of the internal string
+                // (Rust's locale-free mapping agrees with it on Latin-1: ß becomes SS).
+                match LicenseType::value_of(&str.to_uppercase()) {
                     Some(t) => {
                         license_types.insert(t);
                     }

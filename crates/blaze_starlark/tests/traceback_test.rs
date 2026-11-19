@@ -268,3 +268,36 @@ fn resolve_reports_every_undefined_name() {
     .unwrap();
     assert!(blaze_starlark::eval::resolve(&ok, &globals).is_ok());
 }
+
+/// Columns count chars of the Latin-1 decoded file, i.e. bytes (Java `Location.column`), and the
+/// source line is trimmed with `String.trim` (chars <= U+0020): a line ending in `à` (C3 A0)
+/// keeps its U+00A0. Oracle: Bazel 9.3.2 on ~/.cache/blaze/work/bytes-interp/ws (`bazel query
+/// //a:all`, `//b:all`, `//c:all`), 2026-11-18.
+#[test]
+fn non_ascii_columns_and_source_lines() {
+    // a/defs.bzl: `x = "é" + 1` -> "line 1, column 10" (the `+` is the 10th byte).
+    let (head, _) = stack("x = \"é\" + 1\n");
+    assert_eq!(
+        head,
+        "Traceback (most recent call last):\n\
+\tFile \"test.bzl\", line 1, column 10, in <toplevel>\n\
+\t\tx = \"\u{c3}\u{a9}\" + 1"
+    );
+    // b/defs.bzl: `z = "é\q"` -> "1:9: invalid escape sequence: \q. Use '\\' to insert '\'."
+    let e = exec("z = \"é\\q\"\n").unwrap_err();
+    assert_eq!(
+        e.message_with_stack(),
+        "test.bzl:1:9: invalid escape sequence: \\q. Use '\\\\' to insert '\\'."
+    );
+    // c/defs.bzl: the source line `    fail("boom")  # voilà` keeps its last byte A0.
+    let (head, last) = stack("def f():\n    fail(\"boom\")  # voilà\n\nf()\n");
+    assert_eq!(
+        head,
+        "Traceback (most recent call last):\n\
+\tFile \"test.bzl\", line 4, column 2, in <toplevel>\n\
+\t\tf()\n\
+\tFile \"test.bzl\", line 2, column 9, in f\n\
+\t\tfail(\"boom\")  # voil\u{c3}\u{a0}"
+    );
+    assert_eq!(last, "Error in fail: boom");
+}

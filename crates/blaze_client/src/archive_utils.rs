@@ -25,6 +25,8 @@ use crate::util::file::{
 };
 use crate::util::logging::{LogLevel, bazel_die, bazel_log};
 use crate::util::path::{Path, is_root_directory_path};
+use crate::util::strings::from_platform_bytes;
+use blaze_util::string_encoding::latin1_encode;
 
 const ARCHIVE_UTILS_CC: &str = "src/main/cpp/archive_utils.cc";
 
@@ -156,11 +158,8 @@ fn unzip_until(
             Err(e) => read_error(archive_path, e),
         };
         let entry_type = entry.header().entry_type();
-        // PORT: byte-strings (the C++ zip extractor keeps member names as raw bytes).
-        let name = match entry.path() {
-            Ok(p) => p.to_string_lossy().into_owned(),
-            Err(e) => read_error(archive_path, e),
-        };
+        // The C++ zip extractor keeps member names as raw bytes.
+        let name = crate::util::strings::from_platform_bytes(&entry.path_bytes());
         // Accept(): skip directories.
         if entry_type.is_dir() || name.is_empty() || name.ends_with('/') {
             continue;
@@ -259,8 +258,8 @@ pub fn extract_data(
                             format!("Cannot read '{}'.", key_path.as_printable_path()),
                         );
                     }
-                    Some(on_disk_key) if on_disk_key != expected_install_md5.as_bytes() => {
-                        // PORT: byte-strings (C++ prints the on-disk key bytes unchanged).
+                    Some(on_disk_key) if on_disk_key != *latin1_encode(expected_install_md5) => {
+                        // The C++ prints the on-disk key bytes unchanged.
                         bazel_log(
                             LogLevel::User,
                             ARCHIVE_UTILS_CC,
@@ -270,7 +269,7 @@ pub fn extract_data(
                                  version (found {} but this binary is {}).",
                                 install_base.as_printable_path(),
                                 startup_options.product_name,
-                                String::from_utf8_lossy(&on_disk_key),
+                                from_platform_bytes(&on_disk_key),
                                 expected_install_md5
                             ),
                         );
@@ -472,8 +471,8 @@ pub fn extract_archive_or_die(
         );
     }
 
-    if install_md5 != expected_install_md5.as_bytes() {
-        // PORT: byte-strings (C++ prints the extracted install_base_key bytes unchanged).
+    if install_md5 != *latin1_encode(expected_install_md5) {
+        // The C++ prints the extracted install_base_key bytes unchanged.
         bazel_die(
             exit_code::LOCAL_ENVIRONMENTAL_ERROR,
             ARCHIVE_UTILS_CC,
@@ -486,7 +485,7 @@ pub fn extract_archive_or_die(
                 product_name,
                 archive_path,
                 expected_install_md5,
-                String::from_utf8_lossy(&install_md5),
+                from_platform_bytes(&install_md5),
                 product_name
             ),
         );

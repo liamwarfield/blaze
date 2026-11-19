@@ -8,6 +8,7 @@ use std::fmt;
 use std::sync::LazyLock;
 
 use blaze_cmdline::Label;
+use blaze_util::string_encoding::{internal_to_unicode, unicode_to_internal};
 use indexmap::IndexMap;
 use regex::Regex;
 
@@ -298,6 +299,19 @@ fn read_map<K: std::hash::Hash + Eq, V>(
     Ok(out)
 }
 
+/// `GsonTypeAdapterUtil.STRING_ADAPTER.write`: a `String` field, list element or map key of a
+/// Gson-serialized bzlmod value. The lockfile is Unicode JSON; Bazel's strings are internal.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:64 GsonTypeAdapterUtil.STRING_ADAPTER
+pub fn string_adapter_write(out: &mut JsonWriter, s: &str) {
+    out.value_str(&internal_to_unicode(s));
+}
+
+/// `GsonTypeAdapterUtil.STRING_ADAPTER.read`: the internal string of a JSON string (or map key).
+// Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:69 GsonTypeAdapterUtil.STRING_ADAPTER
+pub fn string_adapter_read(json_string: &str) -> String {
+    unicode_to_internal(json_string).into_owned()
+}
+
 /// `lockFileVersion` pattern used to sniff the version before parsing.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileFunction.java:56 BazelLockFileFunction.LOCKFILE_VERSION_PATTERN
 // PORT: `\s` and `\d` of java.util.regex are ASCII-only (the pattern is compiled without
@@ -324,7 +338,7 @@ impl BazelLockFileValue {
     }
 
     /// `LOCKFILE_GSON.toJson(value)` (no trailing newline).
-    // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:418 GsonTypeAdapterUtil.LOCKFILE_GSON
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:401 GsonTypeAdapterUtil.LOCKFILE_GSON
     pub fn to_json(&self) -> String {
         let mut out = JsonWriter::new(true);
         out.begin_object();
@@ -333,7 +347,9 @@ impl BazelLockFileValue {
 
         out.name("registryFileHashes").begin_object();
         for (url, checksum) in &self.registry_file_hashes {
-            out.name(url);
+            // Map key: STRING_ADAPTER.
+            // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:64 GsonTypeAdapterUtil.STRING_ADAPTER
+            out.name(&internal_to_unicode(url));
             // OptionalChecksumTypeAdapter: checksums are ASCII.
             match checksum {
                 Some(c) => out.value_str(&c.to_string()),
@@ -344,15 +360,20 @@ impl BazelLockFileValue {
 
         out.name("selectedYankedVersions").begin_object();
         for (key, info) in &self.selected_yanked_versions {
-            out.name(&key.to_string()).value_str(info);
+            // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:102 GsonTypeAdapterUtil.MODULE_KEY_TYPE_ADAPTER
+            out.name(&internal_to_unicode(&key.to_string()));
+            string_adapter_write(&mut out, info);
         }
         out.end_object();
 
         out.name("moduleExtensions").begin_object();
         for (id, per_factors) in &self.module_extensions {
-            out.name(&id.to_lockfile_form()).begin_object();
+            // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:182 GsonTypeAdapterUtil.MODULE_EXTENSION_ID_TYPE_ADAPTER
+            out.name(&internal_to_unicode(&id.to_lockfile_form()))
+                .begin_object();
             for (factors, ext) in per_factors {
-                out.name(&factors.to_string());
+                // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:228 GsonTypeAdapterUtil.MODULE_EXTENSION_FACTORS_TYPE_ADAPTER
+                out.name(&internal_to_unicode(&factors.to_string()));
                 write_lock_file_module_extension(&mut out, ext);
             }
             out.end_object();
@@ -361,14 +382,16 @@ impl BazelLockFileValue {
 
         out.name("facts").begin_object();
         for (id, facts) in &self.facts {
-            out.name(&id.to_lockfile_form());
+            // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:182 GsonTypeAdapterUtil.MODULE_EXTENSION_ID_TYPE_ADAPTER
+            out.name(&internal_to_unicode(&id.to_lockfile_form()));
             FactsAdapter::write(&mut out, facts);
         }
         out.end_object();
 
         out.name("factsVersions").begin_object();
         for (id, v) in &self.facts_versions {
-            out.name(&id.to_lockfile_form())
+            // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:182 GsonTypeAdapterUtil.MODULE_EXTENSION_ID_TYPE_ADAPTER
+            out.name(&internal_to_unicode(&id.to_lockfile_form()))
                 .value_number(&v.to_string());
         }
         out.end_object();
@@ -377,7 +400,9 @@ impl BazelLockFileValue {
         out.into_string()
     }
 
-    /// The bytes `BazelLockFileModule.updateLockfile` writes: the JSON plus a newline.
+    /// The text `BazelLockFileModule.updateLockfile` writes: the JSON plus a newline. It is
+    /// Unicode (the adapters convert Bazel's internal strings); the file holds its UTF-8 bytes
+    /// (`OutputStreamWriter(outputStream, UTF_8)`), i.e. `as_bytes()`.
     // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileModule.java:330 BazelLockFileModule.updateLockfile
     pub fn to_lockfile_contents(&self) -> String {
         let mut s = self.to_json();
@@ -385,8 +410,9 @@ impl BazelLockFileValue {
         s
     }
 
-    /// `LOCKFILE_GSON.fromJson(json, BazelLockFileValue.class)`. `Ok(None)` for an empty
-    /// document (Gson returns null).
+    /// `LOCKFILE_GSON.fromJson(json, BazelLockFileValue.class)`. `json` is Unicode text (the
+    /// file decoded as UTF-8); the adapters convert its strings to internal strings. `Ok(None)`
+    /// for an empty document (Gson returns null).
     pub fn from_json(json: &str) -> Result<Option<BazelLockFileValue>, LockfileParseError> {
         let tree = match parse_lenient(json) {
             Ok(Some(t)) => t,
@@ -420,7 +446,7 @@ impl BazelLockFileValue {
                     value.registry_file_hashes = read_map(
                         v,
                         &path,
-                        |k| Ok(k.to_string()),
+                        |k| Ok(string_adapter_read(k)),
                         |c, p| {
                             let s = expect_string(c, p)?;
                             if s == "not found" {
@@ -441,13 +467,15 @@ impl BazelLockFileValue {
                         v,
                         &path,
                         |k| {
-                            ModuleKey::from_string(k).or_else(|_| {
+                            // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:107 GsonTypeAdapterUtil.MODULE_KEY_TYPE_ADAPTER
+                            let json_string = unicode_to_internal(k);
+                            ModuleKey::from_string(&json_string).or_else(|_| {
                                 err(format!(
-                                    "Unable to parse ModuleKey {k} version from the lockfile"
+                                    "Unable to parse ModuleKey {json_string} version from the lockfile"
                                 ))
                             })
                         },
-                        |s, p| Ok(expect_string(s, p)?.to_string()),
+                        |s, p| Ok(string_adapter_read(expect_string(s, p)?)),
                     )?;
                 }
                 "moduleExtensions" => {
@@ -455,41 +483,31 @@ impl BazelLockFileValue {
                         // isValidLockfile treats a null map as an invalid lockfile.
                         return err("Null moduleExtensions");
                     }
-                    value.module_extensions = read_map(
-                        v,
-                        &path,
-                        |k| ModuleExtensionId::parse_lockfile_form(k).map_err(LockfileParseError),
-                        |per_factors, p| {
+                    value.module_extensions =
+                        read_map(v, &path, read_module_extension_id, |per_factors, p| {
                             read_map(
                                 per_factors,
                                 p,
-                                |k| Ok(ModuleExtensionEvalFactors::parse(k)),
+                                // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:233 GsonTypeAdapterUtil.MODULE_EXTENSION_FACTORS_TYPE_ADAPTER
+                                |k| Ok(ModuleExtensionEvalFactors::parse(&unicode_to_internal(k))),
                                 read_lock_file_module_extension,
                             )
-                        },
-                    )?;
+                        })?;
                 }
                 "facts" => {
                     if is_null {
                         return err("Null facts");
                     }
-                    value.facts = read_map(
-                        v,
-                        &path,
-                        |k| ModuleExtensionId::parse_lockfile_form(k).map_err(LockfileParseError),
-                        |f, _| FactsAdapter::read(f).map_err(LockfileParseError),
-                    )?;
+                    value.facts = read_map(v, &path, read_module_extension_id, |f, _| {
+                        FactsAdapter::read(f).map_err(LockfileParseError)
+                    })?;
                 }
                 "factsVersions" => {
                     if is_null {
                         return err("Null factsVersions");
                     }
-                    value.facts_versions = read_map(
-                        v,
-                        &path,
-                        |k| ModuleExtensionId::parse_lockfile_form(k).map_err(LockfileParseError),
-                        expect_int,
-                    )?;
+                    value.facts_versions =
+                        read_map(v, &path, read_module_extension_id, expect_int)?;
                 }
                 // Unknown names are skipped.
                 _ => {}
@@ -497,6 +515,12 @@ impl BazelLockFileValue {
         }
         Ok(Some(value))
     }
+}
+
+/// `MODULE_EXTENSION_ID_TYPE_ADAPTER.read` of a map key.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:191 GsonTypeAdapterUtil.MODULE_EXTENSION_ID_TYPE_ADAPTER
+fn read_module_extension_id(k: &str) -> Result<ModuleExtensionId, LockfileParseError> {
+    ModuleExtensionId::parse_lockfile_form(&unicode_to_internal(k)).map_err(LockfileParseError)
 }
 
 // Generated adapter of LockFileModuleExtension (auto-value-gson; property order).
@@ -508,12 +532,14 @@ fn write_lock_file_module_extension(out: &mut JsonWriter, ext: &LockFileModuleEx
         .value_str(&base64_encode(&ext.usages_digest));
     out.name("recordedInputs").begin_array();
     for input in &ext.recorded_inputs {
-        out.value_str(&input.0);
+        // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:339 GsonTypeAdapterUtil.REPO_RECORDED_INPUT_WITH_VALUE_TYPE_ADAPTER
+        out.value_str(&internal_to_unicode(&input.0));
     }
     out.end_array();
     out.name("generatedRepoSpecs").begin_object();
     for (name, spec) in &ext.generated_repo_specs {
-        out.name(name);
+        // Map key: STRING_ADAPTER.
+        out.name(&internal_to_unicode(name));
         write_repo_spec(out, spec);
     }
     out.end_object();
@@ -545,7 +571,7 @@ fn write_nullable_string_list(out: &mut JsonWriter, list: Option<&[String]>) {
         Some(items) => {
             out.begin_array();
             for i in items {
-                out.value_str(i);
+                string_adapter_write(out, i);
             }
             out.end_array();
         }
@@ -561,7 +587,8 @@ fn write_repo_spec(out: &mut JsonWriter, spec: &RepoSpec) {
             out.null_value();
         }
         Some(id) => {
-            out.value_str(&id.to_string());
+            // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:143 GsonTypeAdapterUtil.REPO_RULE_ID_TYPE_ADAPTER
+            out.value_str(&internal_to_unicode(&id.to_string()));
         }
     }
     out.name("attributes");
@@ -583,7 +610,7 @@ fn read_nullable_string_list(
         JsonValue::Array(items) => {
             let mut out: Vec<String> = Vec::new();
             for (i, item) in items.iter().enumerate() {
-                let s = expect_string(item, &format!("{path}[{i}]"))?.to_string();
+                let s = string_adapter_read(expect_string(item, &format!("{path}[{i}]"))?);
                 // ImmutableSet: duplicates collapse.
                 if !out.contains(&s) {
                     out.push(s);
@@ -638,9 +665,10 @@ fn read_lock_file_module_extension(
                         .iter()
                         .enumerate()
                         .map(|(i, s)| {
-                            Ok(RepoRecordedInputWithValue(
-                                expect_string(s, &format!("{p}[{i}]"))?.to_string(),
-                            ))
+                            // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:344 GsonTypeAdapterUtil.REPO_RECORDED_INPUT_WITH_VALUE_TYPE_ADAPTER
+                            Ok(RepoRecordedInputWithValue(string_adapter_read(
+                                expect_string(s, &format!("{p}[{i}]"))?,
+                            )))
                         })
                         .collect::<Result<Vec<_>, LockfileParseError>>()?,
                 );
@@ -650,8 +678,12 @@ fn read_lock_file_module_extension(
                     // isValidLockfile: a null map makes the lockfile invalid.
                     return err("Null generatedRepoSpecs");
                 }
-                generated_repo_specs =
-                    Some(read_map(val, &p, |k| Ok(k.to_string()), read_repo_spec)?);
+                generated_repo_specs = Some(read_map(
+                    val,
+                    &p,
+                    |k| Ok(string_adapter_read(k)),
+                    read_repo_spec,
+                )?);
             }
             "moduleExtensionMetadata" => {
                 module_extension_metadata = match val {
@@ -747,8 +779,9 @@ fn read_repo_spec(v: &JsonValue, path: &str) -> Result<RepoSpec, LockfileParseEr
                 repo_rule_id = match val {
                     JsonValue::Null => None,
                     other => {
-                        // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:117 GsonTypeAdapterUtil.REPO_RULE_ID_TYPE_ADAPTER
-                        let s = expect_string(other, &p)?;
+                        // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:148 GsonTypeAdapterUtil.REPO_RULE_ID_TYPE_ADAPTER
+                        let s = string_adapter_read(expect_string(other, &p)?);
+                        let s = s.as_str();
                         Some(match s.find('%') {
                             None => RepoRuleId::new_nullable(None, s),
                             Some(percent) => RepoRuleId::new_nullable(
@@ -973,6 +1006,8 @@ impl BazelLockFileModule {
         updated_lockfile: &BazelLockFileValue,
     ) -> std::io::Result<()> {
         // PORT: Java logs IO errors at SEVERE and continues; the caller decides here.
+        // `lockfile_root` is a platform path; the contents are written as UTF-8
+        // (`new OutputStreamWriter(outputStream, UTF_8)`).
         std::fs::write(
             lockfile_root.join("MODULE.bazel.lock"),
             updated_lockfile.to_lockfile_contents(),

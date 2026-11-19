@@ -122,20 +122,16 @@ impl QueryExpression {
     /// Truncates the provided string to a max of 1000 characters, in the fashion of
     /// `toTrunctatedString()` (Guava `Ascii.truncate(expr, 1000, "[truncated]")`).
     ///
-    /// PORT: StringEncoding identity. Java measures the internal-form string, one char per UTF-8
-    /// byte, so lengths here are byte lengths. Where Java's cut would split a multi-byte
-    /// character, this cut stops before that character.
+    /// Lengths count chars (Java `CharSequence.length()`); the expression is an internal string,
+    /// so a cut may split the bytes of a multi-byte UTF-8 character, as in Java.
     // Java: com/google/devtools/build/lib/query2/engine/QueryExpression.java:114 QueryExpression.truncate
     pub fn truncate(expr: &str) -> String {
         const INDICATOR: &str = "[truncated]";
-        if expr.len() <= MAX_QUERY_EXPRESSION_LOG_CHARS {
+        if expr.chars().count() <= MAX_QUERY_EXPRESSION_LOG_CHARS {
             return expr.to_owned();
         }
-        let mut end = MAX_QUERY_EXPRESSION_LOG_CHARS - INDICATOR.len();
-        while !expr.is_char_boundary(end) {
-            end -= 1;
-        }
-        let mut result = expr[..end].to_owned();
+        let end = MAX_QUERY_EXPRESSION_LOG_CHARS - INDICATOR.len();
+        let mut result: String = expr.chars().take(end).collect();
         result.push_str(INDICATOR);
         result
     }
@@ -232,5 +228,31 @@ impl fmt::Display for QueryExpression {
 impl fmt::Debug for QueryExpression {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Not in the Java tests: Guava `Ascii.truncate` counts chars, which are bytes of an internal
+    // string, so the cut may split a UTF-8 character.
+    #[test]
+    fn truncate_counts_internal_chars() {
+        let short = "\u{c3}\u{a9}".repeat(500);
+        assert_eq!(QueryExpression::truncate(&short), short);
+        let long = format!("a{}", "\u{c3}\u{a9}".repeat(500));
+        let got = QueryExpression::truncate(&long);
+        assert_eq!(got.chars().count(), 1000);
+        // 989 chars kept: 'a' then 494 pairs.
+        let mut expected = format!("a{}", "\u{c3}\u{a9}".repeat(494));
+        assert_eq!(
+            QueryExpression::truncate(&format!("ab{}", &long[1..]))
+                .chars()
+                .nth(988),
+            Some('\u{c3}')
+        );
+        expected.push_str("[truncated]");
+        assert_eq!(got, expected);
     }
 }

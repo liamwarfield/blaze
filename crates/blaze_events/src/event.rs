@@ -143,9 +143,12 @@ impl Event {
     pub fn get_message(&self) -> Cow<'_, str> {
         match &self.message {
             Message::Str(s) => Cow::Borrowed(s),
-            // PORT: Java's `new String(bytes, UTF_8)` replaces malformed input with U+FFFD, as
-            // `from_utf8_lossy` does.
-            Message::Bytes(b) => String::from_utf8_lossy(b),
+            // `new String(bytes, UTF_8)`: malformed input becomes U+FFFD the way the JDK's
+            // decoder replaces it.
+            Message::Bytes(b) => match std::str::from_utf8(b) {
+                Ok(s) => Cow::Borrowed(s),
+                Err(_) => Cow::Owned(blaze_util::string_encoding::java_new_string_utf8(b)),
+            },
         }
     }
 

@@ -87,9 +87,11 @@ pub fn startup_options_provenance_message(parsed_startup_options: &StartupOption
 // Java: src/main/cpp/option_processor.cc:576 OptionProcessor::PrintStartupOptionsProvenanceMessage
 /// Prints the startup flags in the order they are parsed, grouped by origin.
 pub fn print_startup_options_provenance_message(parsed_startup_options: &StartupOptions) {
-    eprint!(
-        "{}",
-        startup_options_provenance_message(parsed_startup_options)
+    let _ = std::io::Write::write_all(
+        &mut std::io::stderr(),
+        &crate::util::strings::console_bytes(&startup_options_provenance_message(
+            parsed_startup_options,
+        )),
     );
 }
 

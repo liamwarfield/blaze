@@ -9,16 +9,23 @@ pub struct ShellUtils;
 /// Characters that have no special meaning to the shell.
 const SAFE_PUNCTUATION: &[u8] = b"@%-_+:,./";
 
-/// `Character.isLetterOrDigit(c)` for a Latin-1 char (Java holds Bazel's internal strings as
-/// Latin-1 chars, one per UTF-8 byte).
-fn is_latin1_letter_or_digit(b: u8) -> bool {
-    b.is_ascii_alphanumeric()
-        || b == 0xAA
-        || b == 0xB5
-        || b == 0xBA
-        || (0xC0..=0xD6).contains(&b)
-        || (0xD8..=0xF6).contains(&b)
-        || b >= 0xF8
+/// `Character.isLetterOrDigit(c)`. The strings are Bazel's internal strings (chars up to
+/// U+00FF, one per byte), for which Java's answer is written out; a char above U+00FF (a string
+/// that is not internal) gets Rust's Unicode answer.
+fn is_java_letter_or_digit(c: char) -> bool {
+    match c as u32 {
+        b @ 0..=0xFF => {
+            let b = b as u8;
+            b.is_ascii_alphanumeric()
+                || b == 0xAA
+                || b == 0xB5
+                || b == 0xBA
+                || (0xC0..=0xD6).contains(&b)
+                || (0xD8..=0xF6).contains(&b)
+                || b >= 0xF8
+        }
+        _ => c.is_alphanumeric(),
+    }
 }
 
 /// Thrown by tokenize method if there is an error.
@@ -58,12 +65,12 @@ impl ShellUtils {
             // as a separate argument.
             return "''".to_string();
         }
-        // PORT: StringEncoding: Java iterates the internal (Latin-1) form, one char per UTF-8
-        // byte, so the check is per byte.
-        for &c in word.as_bytes() {
+        for c in word.chars() {
             // We do this positively so as to be sure we don't inadvertently forget any unsafe
             // characters.
-            if !is_latin1_letter_or_digit(c) && !SAFE_PUNCTUATION.contains(&c) {
+            if !is_java_letter_or_digit(c)
+                && !(c.is_ascii() && SAFE_PUNCTUATION.contains(&(c as u8)))
+            {
                 // replace() actually means "replace all".
                 return format!("'{}'", word.replace('\'', "'\\''"));
             }

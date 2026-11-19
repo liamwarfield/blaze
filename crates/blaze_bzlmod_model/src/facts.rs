@@ -113,6 +113,10 @@ pub struct FactsAdapter;
 impl FactsAdapter {
     /// Encodes with Starlark `json.encode`, round-trips through Gson, and writes with `out`'s
     /// indentation. Gson's default `serializeNulls` (false) drops null dict entries.
+    ///
+    /// Unlike the other lockfile adapters this one does not convert to Unicode: the internal
+    /// strings' chars go into the JSON as they are, so the UTF-8 lockfile holds them double
+    /// encoded (`é` is written as `Ã©`), as Bazel's does.
     // Java: com/google/devtools/build/lib/bazel/bzlmod/FactsAdapter.java:44 FactsAdapter.write
     pub fn write(out: &mut JsonWriter, facts: &Facts) {
         let json = json_encode(&FactValue::Dict(facts.value.clone()));
@@ -175,17 +179,40 @@ fn json_decode(json: &JsonValue) -> FactValue {
                 FactValue::Int(n.parse::<BigInt>().expect("JSON number"))
             }
         }
-        JsonValue::String(s) => FactValue::String(s.clone()),
+        JsonValue::String(s) => FactValue::String(decoded_string(s)),
         JsonValue::Array(items) => FactValue::List(items.iter().map(json_decode).collect()),
         JsonValue::Object(members) => FactValue::Dict(
             members
                 .iter()
                 // Gson's default serializeNulls drops null members before Starlark sees them.
                 .filter(|(_, v)| *v != JsonValue::Null)
-                .map(|(k, v)| (k.clone(), json_decode(v)))
+                .map(|(k, v)| (decoded_string(k), json_decode(v)))
                 .collect(),
         ),
     }
+}
+
+/// A string of Gson's tree as `json.decode` (with `INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS`, which
+/// `FactsAdapter` sets) returns it after Gson re-encodes the tree: Gson writes U+2028 and U+2029
+/// as `\u` escapes, and `json.decode` appends the UTF-8 bytes of an escaped run as Latin-1
+/// chars. The other escapes Gson writes are control chars, whose UTF-8 is the char itself; every
+/// other char is copied as is.
+// Java: net/starlark/java/lib/json/Json.java:510 Json.Decoder.parseString
+fn decoded_string(s: &str) -> String {
+    if !s.contains(['\u{2028}', '\u{2029}']) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        match c {
+            '\u{2028}' | '\u{2029}' => {
+                let mut buf = [0u8; 4];
+                out.extend(c.encode_utf8(&mut buf).bytes().map(char::from));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// `StarlarkFloat.toString` (`format(v, 'g')`): Java's `%.17g`, cleaned of trailing zeros.
@@ -241,5 +268,28 @@ pub fn starlark_float_repr(v: f64) -> String {
         };
         let exp_sign = if exp < 0 { '-' } else { '+' };
         format!("{sign}{mantissa}e{exp_sign}{:02}", exp.abs())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_separators_decode_to_their_utf8_bytes() {
+        // Gson writes U+2028 as ` `; `json.decode` with UTF-8 byte strings appends its UTF-8
+        // bytes as Latin-1 chars (Json.java parseString).
+        let json = JsonValue::Object(vec![(
+            "a\u{2029}".to_string(),
+            JsonValue::String("x\u{2028}\u{e9}".to_string()),
+        )]);
+        let facts = FactsAdapter::read(&json).unwrap();
+        assert_eq!(
+            facts.value(),
+            &[(
+                "a\u{e2}\u{80}\u{a9}".to_string(),
+                FactValue::String("x\u{e2}\u{80}\u{a8}\u{e9}".to_string())
+            )]
+        );
     }
 }

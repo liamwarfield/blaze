@@ -1,0 +1,1 @@
+SYNTAX escape_q.star:1:8: invalid escape sequence: \\q. Use '\\\\' to insert '\\'.

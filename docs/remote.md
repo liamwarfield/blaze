@@ -72,9 +72,13 @@ All evidence is against Bazel 9.3.2 (the oracle) and Bazel's own remote worker
 (`scripts/remote/worker`), through the real `blaze` binary unless a line says "harness"
 (`blaze-remote-replay`, which replays the spawns of an oracle exec log through `blaze_remote`).
 Tools: `scripts/remote/{oracle-run,worker,replay,compare-grpc-log,matrix,second-build,ws-run,
-probe-trees,probe-inprocess,evict-probe,caps-matrix,bep-uris,stale-probe,symlink-probe,
-srcdir-probe,cplookup-probe}` (each prints `help`). Numbers are from the working tree on top of
-c74f487 (binary recorded as `blaze-c74f4870286a-dirty-6cb9e325`) unless noted.
+probe-trees,probe-trees2,probe-inprocess,shard-probe,attempts-probe,evict-probe,caps-matrix,
+tls-probe,platform-probe,pathcheck-probe,recreate-probe,outpath-symlink-probe,bep-uris,
+bep-interrupt-probe,stale-probe,symlink-probe,srcdir-probe,cplookup-probe}` (each prints `help`;
+each takes `oracle` or a Blaze binary, so a result can be reproduced with another binary).
+The table is the state after review round 1 (working tree on top of c74f487, binary recorded as
+`blaze-c74f4870286a-dirty-6cb9e325`); what round 2 added, and the binary it was measured with,
+is in docs/reviews/2026-11-19-remote-response.md, "Round 2 response".
 
 | phase | what | evidence |
 |---|---|---|
@@ -84,14 +88,8 @@ c74f487 (binary recorded as `blaze-c74f4870286a-dirty-6cb9e325`) unless noted.
 | P4 build without the bytes | RemoteOutputChecker, AbstractActionInputPrefetcher, RemoteActionInputFetcher, RemoteActionFileSystem (a per-action overlay file system in `blaze_exec`), remote metadata in the action cache | brotli with an oracle-seeded disk cache, toplevel / minimal / all: build, build again, build after one source edit print the oracle's lines (`43 disk cache hit, 10 internal`; `1 process: 52 action cache hit, 1 internal`; `2 processes: 51 action cache hit, 1 internal, 1 linux-sandbox`) with identical `bazel-bin` after all 9 steps; tree artifacts (`probe-trees`), in-process readers (`probe-inprocess`), a remote-only `test.xml`: identical. |
 | default path | no remote flag | referee unchanged; `scripts/gate/compare-scores corpus/scores/blaze-ef66f55e904e.referee2.json <new>`: rows 39, gained 0, regressed 0, PASS. One intended change: the action cache salt is Java's (review R16), so Blaze reuses a Bazel-written output base (52 action cache hits where 43 actions re-ran before). |
 
-Gaps that are loud: see "Not ported (loud)". Gaps that are not loud are listed in
-docs/reviews/2026-11-19-remote-response.md ("Open after this round"): action rewinding (Bazel's
-default answer to an input lost from the remote cache under build without the bytes: Blaze
-matches Bazel only with `--norewind_lost_inputs`, and fails with `unported!` otherwise),
-`RemoteLeaseExtension`, exit code 39 after exhausted eviction retries not reproduced end to end,
-`argv[0]` conversion for a Windows execution platform (needs the platform's OS constraint),
-remote flags for commands other than build/test, the connection pool
-(`--remote_max_connections`: one multiplexed HTTP/2 connection).
+Gaps that are loud: see "Not ported (loud)". Deviations from Bazel that are not loud: see
+"Known deviations".
 
 - Build event artifact uploader (review R12, 2026-11-19): `byte_stream_build_event_artifact_uploader.rs`
   ports `ByteStreamBuildEventArtifactUploader(Factory)`; `RemoteModule::create_build_event_artifact_uploader`
@@ -101,26 +99,40 @@ remote flags for commands other than build/test, the connection pool
   `bytestream://<authority or --remote_bytestream_uri_prefix>[/<instance>]/blobs/[<fn>/]<hash>/<size>`;
   `--remote_build_event_upload=minimal|all` decides which files are uploaded. Evidence (brotli
   `build //...`, cold and warm, both modes): docs/reviews/2026-11-19-remote-response.md, R12.
+  A transport's `close` returns a future and does not wait for the uploads (`FileTransport.java:225-274`),
+  so an interrupted build cancels them (`RemoteExecutionService.shutdown`) and writes `file://`
+  URIs, as Bazel (`scripts/remote/bep-interrupt-probe`).
 
 ## Security posture
 
 Root ruling 2026-11-19 (docs/decisions.md): for output symlink paths, Tree node names and
 server-log keys Blaze stays identical to Bazel 9.3.2, which does not confine them; Blaze does
 not harden beyond Bazel. Each site is marked `// PORT: identical to Bazel, not hardened
-(decision 2026-11-19)` (or by the `SECURITY:` comment that describes it, in files whose owner
-has not added the marker yet). The sites:
+(decision 2026-11-19)`, next to a `SECURITY:` comment that describes it. The sites:
 
 | What the server controls | Rust site | Java |
 |---|---|---|
-| `ExecuteResponse.server_logs` keys: `..` and absolute keys escape the log directory | `remote_execution_service.rs` `maybe_download_server_logs` (marked) | `RemoteExecutionService.java:2075` |
-| Tree node names (`FileNode`/`SymlinkNode`/`DirectoryNode.name`): a file can land anywhere under the exec root, not only under its tree root (outside the exec root is a crash in both) | `remote_execution_service_download.rs:378` (`SECURITY:`), checked only by `relative_to(exec_root)` at :1337/:1407/:1416 | `RemoteExecutionService.java:1086-1200` |
-| `OutputFile`/`OutputDirectory`/`OutputSymlink.path` (normalized `getRelative`) | `remote_execution_service_download.rs:463` | `RemoteExecutionService.java:1086-1200` |
-| Output symlink paths and targets (absolute, `..`, dangling targets accepted; symlink path not compared with the exec root) | `remote_execution_service_download.rs:589`, `:1139` | `RemoteExecutionService.java:950` `createSymlinks` |
-| Inlined `OutputFile.contents` and inline stdout/stderr are not compared with their digests | `remote_execution_service_download.rs:1398` | `RemoteExecutionService.java` `downloadOutputs` |
-| Symlink targets found in the output tree are re-planted verbatim by the prefetcher | `abstract_action_input_prefetcher.rs:1050`, `:1078` | `AbstractActionInputPrefetcher.java` |
+| `ExecuteResponse.server_logs` keys: `..` and absolute keys escape the log directory | `remote_execution_service.rs` `maybe_download_server_logs` | `RemoteExecutionService.java:2075` |
+| Tree node names (`FileNode`/`SymlinkNode`/`DirectoryNode.name`): a file can land anywhere under the exec root, not only under its tree root (outside the exec root is a crash in both) | `remote_execution_service_download.rs` `parse_directory`; checked only by `relative_to(exec_root)` in `download_outputs` | `RemoteExecutionService.java:1086-1200` |
+| `OutputFile`/`OutputDirectory`/`OutputSymlink.path` (normalized `getRelative`) | `remote_execution_service_download.rs` `parse_action_result_metadata` | `RemoteExecutionService.java:1086-1200` |
+| Output symlink paths and targets (absolute, `..`, dangling targets accepted; symlink path not compared with the exec root) | `remote_execution_service_download.rs` `parse_action_result_metadata`, `create_symlinks` | `RemoteExecutionService.java:950` `createSymlinks` |
+| Inlined `OutputFile.contents` and inline stdout/stderr are not compared with their digests | `remote_execution_service_download.rs` `download_outputs` | `RemoteExecutionService.java` `downloadOutputs` |
+| Symlink targets found in the output tree are re-planted verbatim by the prefetcher | `abstract_action_input_prefetcher.rs` `get_symlinks`, `plant_symlink` (`SECURITY:` comments) | `AbstractActionInputPrefetcher.java` |
 
-The digest checks Java performs are all kept (rule 7 above). The one place where Blaze is weaker
-than Bazel is the build-wide remote output tree (review R7, owned by the integration).
+The digest checks Java performs are all kept (rule 7 above). Metadata injected for a remote
+output goes to the file system of the action that produced it and is read back only for that
+action's declared outputs, as in Java (review R7, closed). To find the sites, grep for the
+marker text; line numbers are not kept here.
+
+Where Blaze is stricter than Bazel (ruling 2026-11-19, docs/decisions.md): TLS for remote
+endpoints uses rustls with the webpki verifier and no hand-written verifier, so an X.509 v1
+certificate (server or client) is rejected, where Bazel (JDK/Netty) accepts it. Effect: an
+endpoint with a v1 certificate fails with "Failed to query remote execution capabilities:
+invalid peer certificate: ... UnsupportedCertVersion" (the build fails unless the local-fallback
+flags are set). Bazel's own test certificates (`src/test/testdata/test_tls_certificate`) are
+v1, so `remote_execution_tls_test` and `remote_execution_mtls_test` each fail 2 functions on
+Blaze for this reason. With X.509 v3 certificates TLS and mTLS behave as Bazel
+(`scripts/remote/tls-probe`).
 
 ## Not ported (loud)
 
@@ -129,18 +141,33 @@ where Bazel would enter it; none is silently ignored.
 
 | Feature / flag | Where it fails |
 |---|---|
-| TextFormat-dependent options: `exec_properties`/`remote_execution_properties` text protos of a platform; `--experimental_remote_scrubbing_config` | `platform_utils.rs` `PlatformUtils.getPlatformProto`; `scrubber.rs` `Scrubber.parse`, and `blaze_runtime` `build_remote.rs` before setup |
+| `--experimental_remote_scrubbing_config` (protobuf TextFormat for the scrubbing config; the reader in `blaze_protos::text_format` serves `Platform` only) | `scrubber.rs` `Scrubber.parse`, and `blaze_runtime` `build_remote.rs` before setup |
 | Credential helpers (`--credential_helper`) and Google credentials (`--google_credentials`, `--google_default_credentials`) | `authandtls/google_auth_utils.rs` |
 | HTTP/HTTPS remote cache (`--remote_cache=http(s)://`) | `combined_cache_client_factory.rs` `createHttp`, `remote_module.rs` `createCredentials` |
 | Content-defined chunking (`--experimental_remote_cache_chunking`) | `combined_cache.rs` `Chunking.*`, `uploadChunked`; `grpc_cache_client.rs` split/splice |
 | Remote output service (`--experimental_remote_output_service`); the "must be used with a cache" exit and the `--disk_cache` warning are ported | `remote_module.rs` setup, at Java's channel creation for it |
-| Remote downloader (`--experimental_remote_downloader`) | `remote_module.rs` setup |
-| Build event artifacts on a `RemoteActionFileSystem` path (`isRemoteFile`; Blaze's build events refer to output-base paths, so it is not reached) | `byte_stream_build_event_artifact_uploader.rs` `is_remote_file` |
-| `--remote_max_connections` / `--remote_max_concurrency_per_connection` other than 100 (one HTTP/2 connection per endpoint, no `DynamicConnectionPool`) | `remote_module.rs` setup, gRPC path |
-| `--experimental_remote_cache_lease_extension` (without `--rewind_lost_inputs`) | `remote_module.rs` setup (Java: `executorInit`) |
+| Remote downloader (`--experimental_remote_downloader`) | `remote_module.rs` setup; `blaze_runtime` `unported_options.rs` |
+| Remote repo contents cache (startup `--experimental_remote_repo_contents_cache` together with any cache) | `blaze_runtime` `build_remote.rs` `set_up_module` (`RemoteRepoContentsCacheImpl`) |
+| `--remote_max_connections` / `--remote_max_concurrency_per_connection` other than 100 with a gRPC endpoint (one HTTP/2 connection per endpoint, no `DynamicConnectionPool`); ignored for `--disk_cache` alone, as in Java | `remote_module.rs` `create_channel` |
+| `--experimental_remote_cache_lease_extension` with `--norewind_lost_inputs` (`RemoteLeaseExtension`); with the default `--rewind_lost_inputs` Java's "has no effect" warning is printed | `remote_module.rs` `executor_init` |
 | Disk cache garbage collection (`--experimental_disk_cache_gc_max_size` / `_max_age`, with `_idle_delay`): a server idle task, and Blaze has no server | `remote_module.rs` setup |
-| Path mapping, lost inputs and action rewinding, persistent-worker signatures | `common/remote_path_resolver.rs`, `common/bulk_transfer_exception.rs`, `remote_execution_service.rs` |
+| Action rewinding (`--rewind_lost_inputs`, Bazel's default) when an input is lost from the remote cache: the message names `--norewind_lost_inputs`, with which every lost-input source behaves as Bazel (retry of the invocation, exit 39 when the retries are used up); the stale local action cache entries are purged before the failure | `blaze_sky_exec` `skyframe_action_executor.rs` `handle_lost_inputs` |
+| `argv[0]` conversion for a Windows execution platform (`@platforms//os:windows` on the execution platform) | `remote_execution_service.rs`, `WindowsOsPathPolicy.postProcessPathStringForExecution` |
+| Remote flags on commands that execute actions other than `build` and `test` (`run`, `coverage`, ...: the commands themselves are not ported). `query`, `cquery`, `aquery`, `info` run `RemoteModule.beforeCommand`/`afterCommand` as Bazel | `blaze_runtime` `unported_options.rs` |
+| Path mapping, persistent-worker signatures | `common/remote_path_resolver.rs`, `remote_execution_service.rs` |
 
-Known silent deviations that cannot be made loud from this crate are listed in
-docs/reviews/2026-11-19-remote-response.md (argv[0] policy of a Windows execution platform:
-`PlatformInfo` carries no constraints).
+## Known deviations (not loud; each by a ruling or listed for one)
+
+| What | Bazel 9.3.2 | Blaze | Why |
+|---|---|---|---|
+| Disk cache action-result integrity check | skipped under the default `--rewind_lost_inputs` (`RemoteModule.java:700-706`) | always on | Ruling 2026-11-19: rewinding is not ported, so a disk-cache action result whose blobs are not in the disk CAS must be a miss, not a crash. Visible where a disk cache was filled under build without the bytes together with a remote cache: Bazel `disk cache hit`, Blaze re-executes. A disk-cache-only setup is unchanged (brotli, re2). Restore Java's expression when rewinding is ported. |
+| X.509 v1 certificates | accepted | rejected | Ruling 2026-11-19, see "Security posture". |
+| Transport error causes | Netty/JDK texts (`finishConnect(..) failed: Connection refused: localhost/127.0.0.1:9499`; `General OpenSslEngine problem`) | the status line is Bazel's (`UNAVAILABLE: io exception`, `INTERNAL: http2 exception`, `UNAVAILABLE: ssl exception`, `Unable to resolve host <host>`, ported from grpc-netty `Utils.statusFromThrowable`); the connect cause is rebuilt in Netty's form, but Netty's choice between `127.0.0.1` and `[0:0:0:0:0:0:0:1]` for `localhost` varies between runs of Bazel itself, and a certificate rejected locally prints rustls' text | not reproducible |
+| Lost top-level outputs (`RemoteImportantOutputHandler`, "Lost outputs no longer available remotely") | reported when a target becomes top-level after its action ran in an earlier command of the same server | not reached: Blaze has no server, top-level outputs are downloaded when their action is finalized or its cached result is checked | PORT: skipped, incremental |
+| Lost inputs during input discovery (`SkyframeActionExecutor.java:967,976`) | checked | not checked: the discovery context has no action file system (marked in `skyframe_action_executor.rs`) | no input-discovering action reads remote-only files in process today (include scanning is not ported) |
+| Connection pool | one connection per 100 concurrent calls (`DynamicConnectionPool`) | one HTTP/2 connection per endpoint | performance only with default flags; non-default values are loud |
+| `-1` ("unknown") permissions of a remote file's stat | `RemoteFileStatus.getPermissions() == -1` | the bits this file system's `isReadable/isWritable/isExecutable` answer | `blaze_vfs::FileStatus` has no unknown value |
+
+## Bazel's own remote tests
+
+@@UPSTREAM@@

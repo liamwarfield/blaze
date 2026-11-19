@@ -304,20 +304,25 @@ impl BlazeRuntime {
         if !request.invocation_policy.is_empty() {
             blaze_util::unported!("InvocationPolicyParser.parsePolicy");
         }
-        let args: Vec<String> = request
-            .arg
-            .iter()
-            .map(|a| String::from_utf8(a.clone()).expect("non-UTF-8 argument"))
-            .collect();
+        // Java: com/google/devtools/build/lib/server/GrpcServerImpl.java:784 GrpcServerImpl.platformBytesToInternalString
+        let platform_bytes_to_internal_string =
+            |bytes: &[u8]| blaze_util::string_encoding::latin1_decode(bytes).into_owned();
+        // Convert the startup options record to Java strings, source first.
         let startup_options_tagged_with_bazel_rc: Vec<(String, String)> = request
             .startup_options
             .iter()
             .map(|o| {
                 (
-                    String::from_utf8_lossy(&o.source).into_owned(),
-                    String::from_utf8_lossy(&o.option).into_owned(),
+                    platform_bytes_to_internal_string(&o.source),
+                    platform_bytes_to_internal_string(&o.option),
                 )
             })
+            .collect();
+        // Transform args into Bazel's internal string representation.
+        let args: Vec<String> = request
+            .arg
+            .iter()
+            .map(|a| platform_bytes_to_internal_string(a))
             .collect();
         let result = dispatcher.exec(
             args,

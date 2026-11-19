@@ -124,6 +124,17 @@ pub(crate) fn internal_to_unicode(s: &str) -> String {
     }
 }
 
+/// `StringEncoding.unicodeToInternal(s)`, giving the string Blaze holds where Java holds the
+/// internal string (the same seam as [`internal_to_unicode`]).
+// Java: com/google/devtools/build/lib/util/StringEncoding.java:137 StringEncoding.unicodeToInternal
+fn unicode_to_internal(s: &str) -> String {
+    if blaze_util::string_encoding::strings_are_internal() {
+        blaze_util::string_encoding::unicode_to_internal(s).into_owned()
+    } else {
+        s.to_string()
+    }
+}
+
 /// `String.compareTo`: lexicographic order of UTF-16 code units. For proto strings (which hold
 /// exactly the chars of the Java string) this is Java's order.
 pub(crate) fn java_string_compare(a: &str, b: &str) -> Ordering {
@@ -216,9 +227,40 @@ fn get_platform_proto(
         }
     } else if let Some(execution_platform) = spawn.get_execution_platform() {
         if !execution_platform.remote_execution_properties.is_empty() {
-            // Needs TextFormat parsing of a `Platform` proto (and its "Failed to parse
-            // remote_execution_properties from platform %s" error).
-            blaze_util::unported!("PlatformUtils.getPlatformProto(remote_execution_properties)");
+            // Java: com/google/devtools/build/lib/analysis/platform/PlatformUtils.java:128 PlatformUtils.getPlatformProto
+            let mut platform_builder =
+                blaze_protos::build::bazel::remote::execution::v2::Platform::default();
+            // Try and get the platform info from the execution properties.
+            if let Err(e) = blaze_protos::text_format::merge_platform(
+                &internal_to_unicode(&execution_platform.remote_execution_properties),
+                &mut platform_builder,
+            ) {
+                let message = format!(
+                    "Failed to parse remote_execution_properties from platform {}",
+                    execution_platform.label
+                );
+                // Java: com/google/devtools/build/lib/analysis/platform/PlatformUtils.java:179 PlatformUtils.createFailureDetail
+                return Err(crate::actions::UserExecException::with_cause(
+                    &e,
+                    FailureDetail {
+                        message,
+                        category: Some(failure_detail::Category::Spawn(
+                            blaze_protos::failure_details::Spawn {
+                                code: spawn_code::Code::InvalidRemoteExecutionProperties as i32,
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                )
+                .into());
+            }
+
+            for property in &platform_builder.properties {
+                properties.insert(
+                    unicode_to_internal(&property.name),
+                    unicode_to_internal(&property.value),
+                );
+            }
         } else {
             properties.extend(
                 execution_platform

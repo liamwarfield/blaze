@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+use blaze_util::string_encoding::{internal_to_unicode, java_new_string_utf8, unicode_to_internal};
 use regex::Regex;
 
 use crate::authandtls::basic_http_authentication_encode;
@@ -152,7 +153,7 @@ fn non_empty(s: Option<&String>) -> Option<&String> {
     s.filter(|s| !s.is_empty())
 }
 
-/// Java `URLDecoder.decode(s, UTF_8)`.
+/// Java `URLDecoder.decode(s, UTF_8)`: `s` and the result are Unicode strings.
 fn url_decode(s: &str) -> Result<String, IoException> {
     let bytes = s.as_bytes();
     let mut out = Vec::new();
@@ -184,8 +185,8 @@ fn url_decode(s: &str) -> Result<String, IoException> {
             }
         }
     }
-    // PORT: byte-strings (percent-decoded proxy credentials; URLDecoder.decode(.., UTF_8) also replaces malformed input)
-    Ok(String::from_utf8_lossy(&out).into_owned())
+    // The decoded bytes as UTF-8, malformed input replaced.
+    Ok(java_new_string_utf8(&out))
 }
 
 impl ProxyHelper {
@@ -296,7 +297,11 @@ pub fn create_proxy_info(
                 )));
             };
             // We need to make sure the proxy credentials are not url encoded.
-            (Some(url_decode(u)?), Some(url_decode(p)?))
+            // Java: unicodeToInternal(URLDecoder.decode(internalToUnicode(username), UTF_8))
+            (
+                Some(unicode_to_internal(&url_decode(&internal_to_unicode(u))?).into_owned()),
+                Some(unicode_to_internal(&url_decode(&internal_to_unicode(p))?).into_owned()),
+            )
         }
         None => match (system_property_user, system_property_password) {
             (Some(u), Some(p)) => (Some(u.to_string()), Some(p.to_string())),
@@ -315,6 +320,7 @@ pub fn create_proxy_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blaze_util::string_encoding::latin1_decode;
 
     // Expected values: Java's `String.split("\\s*,\\s*")`, which ProxyHelper.java:85 applies to
     // `no_proxy`, printed by OpenJDK 25.0.5 (the oracle embeds JDK 25) for each input below.
@@ -329,6 +335,35 @@ mod tests {
         assert_eq!(java_split_comma("a\t,\nb"), vec!["a", "b"]);
         assert_eq!(java_split_comma(","), Vec::<&str>::new());
         assert_eq!(java_split_comma("a b,c"), vec!["a b", "c"]);
+    }
+
+    /// Credentials in the proxy URL are internal strings (from the environment); they are
+    /// percent-decoded as UTF-8 and converted back (ProxyHelper.java:299-300): `%C3%A9` and a
+    /// raw `é` both give the internal `é` (C3 A9), `%FF` (malformed UTF-8) gives U+FFFD as
+    /// internal (EF BF BD).
+    #[test]
+    fn credentials_are_decoded_to_internal_strings() {
+        let e = latin1_decode("é".as_bytes()).into_owned();
+        let info = create_proxy_info(
+            Some(&format!("http://%C3%A9{e}:p%FF@proxy.local:3128")),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(info.username(), Some(format!("{e}{e}").as_str()));
+        assert_eq!(
+            info.password(),
+            Some(latin1_decode(b"p\xef\xbf\xbd").as_ref())
+        );
+        // Proxy-Authorization: the internal string's bytes (BasicHttpAuthenticationEncoder).
+        use base64::Engine as _;
+        assert_eq!(
+            info.get_proxy_authorization_header().unwrap(),
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(b"\xc3\xa9\xc3\xa9:p\xef\xbf\xbd")
+            )
+        );
     }
 
     /// `no_proxy=" example.com"` keeps the leading space, so the host does not match and the

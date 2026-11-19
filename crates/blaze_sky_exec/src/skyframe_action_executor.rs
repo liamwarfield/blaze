@@ -1726,7 +1726,18 @@ impl SkyframeActionExecutor {
             // Java: InterruptedException propagates unreported.
             Err(e) if e.is_interrupted() => Err(ExecutionFailure::Interrupted),
             Err(e) => {
-                // PORT: lost inputs (action file system) are not ported.
+                // PORT: Java checks the action file system for lost inputs after input discovery
+                // and, for any other failure of it, before reporting
+                // (`checkActionFileSystemForLostInputs`, SkyframeActionExecutor.java:967 and
+                // :976; a lost input then becomes the LostInputsActionExecutionException marked
+                // `setFromInputDiscovery`, :983-989). Blaze's discovery context has no action
+                // file system: the `RemoteActionFileSystem` belongs to the output metadata store,
+                // which `ActionExecutionContext.forInputDiscovery` does not have
+                // (`output_metadata_store: None` above), so there is nothing to ask. Missing: an
+                // action file system created before discovery, as `ActionExecutionFunction`
+                // creates `state.actionFileSystem` (only reachable for actions that discover
+                // inputs with a remote output service).
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:967 SkyframeActionExecutor.discoverInputs
                 let primary_output_path = context.get_input_path(&action.get_primary_output());
                 Err(self
                     .process_and_get_exception_to_throw(

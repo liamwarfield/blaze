@@ -113,7 +113,7 @@ enum FileWriteActionKind {
 /// directory entries, which are actually UTF-8, are misinterpreted by Bazel as Latin1, so that
 /// most Strings within the build language use this unusual representation. FileWriteAction writes
 /// those Strings out again as Latin1. (The bytes of the contents are
-/// `blaze_util::string_encoding::internal_string_bytes`.)
+/// `blaze_util::string_encoding::latin1_encode` of the internal string.)
 ///
 /// The contents may be lazily computed or compressed. If the object representing the contents is
 /// a `String`, its length is greater than `COMPRESS_CHARS_THRESHOLD`, and compression is enabled,
@@ -236,8 +236,7 @@ impl FileWriteAction {
         let kind = match file_contents {
             CharSequence::String(s)
                 if allow_compression == Compression::ALLOW
-                    && blaze_util::string_encoding::internal_length(&s)
-                        > COMPRESS_CHARS_THRESHOLD =>
+                    && s.chars().count() > COMPRESS_CHARS_THRESHOLD =>
             {
                 compressed_kind(&s)
             }
@@ -278,11 +277,8 @@ impl FileWriteAction {
                     uncompressed_bytes.len() == *uncompressed_size,
                     "Corrupt byte buffer in FileWriteAction"
                 );
-                // Java: `StringUnsafe.newInstance(uncompressedBytes, StringUnsafe.LATIN1)`. The
-                // bytes are `internal_string_bytes` of a string, so this cannot fail.
-                blaze_util::string_encoding::internal_string_from_bytes(&uncompressed_bytes)
-                    .expect("FileWriteAction compressed contents came from a string")
-                    .into_owned()
+                // Java: `StringUnsafe.newInstance(uncompressedBytes, StringUnsafe.LATIN1)`.
+                blaze_util::string_encoding::latin1_decode(&uncompressed_bytes).into_owned()
             }
         }
     }
@@ -315,7 +311,7 @@ fn compressed_kind(file_contents: &str) -> FileWriteActionKind {
     // Grab the string's internal byte array. Calling getBytes() makes a copy, which can cause
     // memory spikes resulting in OOMs (b/290807073). Do not mutate this!
     // Java: `StringUnsafe.getInternalStringBytes(fileContents)`.
-    let data_to_compress = blaze_util::string_encoding::internal_string_bytes(file_contents);
+    let data_to_compress = blaze_util::string_encoding::latin1_encode(file_contents);
     let compressed_bytes = gzip(&data_to_compress);
     FileWriteActionKind::Compressed {
         compressed_bytes,
@@ -400,7 +396,7 @@ impl AbstractFileWriteAction for FileWriteAction {
             FileWriteActionKind::Regular { .. } => {
                 Ok(Box::new(FnDeterministicWriter(|out: &mut dyn Write| {
                     // Java: `out.write(StringUnsafe.getInternalStringBytes(getFileContents()))`.
-                    out.write_all(&blaze_util::string_encoding::internal_string_bytes(
+                    out.write_all(&blaze_util::string_encoding::latin1_encode(
                         &self.get_file_contents(),
                     ))
                 })))

@@ -10,12 +10,9 @@ use crate::query_expression_visitor::QueryExpressionVisitor;
 use crate::set_expression::SetExpression;
 use crate::target_literal::TargetLiteral;
 
-/// Java `String.length()` of a string in Bazel's internal form (one char per UTF-8 byte; the
-/// query text reaches the parser in internal form).
-///
-/// PORT: StringEncoding identity.
+/// Java `String.length()`: chars (the query text is an internal string, one char per byte).
 fn java_length(s: &str) -> i64 {
-    s.len() as i64
+    s.chars().count() as i64
 }
 
 /// A `QueryExpressionVisitor` that cheaply estimates the size of a `QueryExpression` without

@@ -28,6 +28,7 @@ use blaze_sky_loading::repos::RepositoryDirectoryValue;
 use blaze_skyframe::EvaluationContext;
 use blaze_skyframe::SkyKey;
 use blaze_starlark::StarlarkSemantics;
+use blaze_util::string_encoding::platform_to_internal;
 use indexmap::IndexMap;
 
 /// Records events (`<kind>: <message>`) and posts (`POST: <Debug form>`), in the order the
@@ -107,11 +108,37 @@ impl Scratch {
         self.evaluator_with_precomputed(extra_options, RepoPrecomputedValues::default())
     }
 
+    /// The client environment of [`Scratch::evaluator`]: `PATH` and `HOME`, as internal strings.
+    pub fn default_env() -> IndexMap<String, String> {
+        [
+            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+            (
+                "HOME".to_owned(),
+                std::env::var_os("HOME")
+                    .map(|h| platform_to_internal(&h).into_owned())
+                    .unwrap_or_default(),
+            ),
+        ]
+        .into_iter()
+        .collect()
+    }
+
     /// [`Scratch::evaluator`] with the given precomputed values (`--nofetch`, ...).
     pub fn evaluator_with_precomputed(
         &self,
         extra_options: &[&str],
         precomputed: RepoPrecomputedValues,
+    ) -> FetchEvaluator {
+        self.evaluator_with_env(extra_options, precomputed, Self::default_env())
+    }
+
+    /// [`Scratch::evaluator_with_precomputed`] with the given client (and repo) environment,
+    /// whose keys and values are internal strings.
+    pub fn evaluator_with_env(
+        &self,
+        extra_options: &[&str],
+        precomputed: RepoPrecomputedValues,
+        env: IndexMap<String, String>,
     ) -> FetchEvaluator {
         let mut parser = OptionsParser::builder()
             .options_classes(&[RepositoryOptions::class()])
@@ -126,12 +153,6 @@ impl Scratch {
             .parse_with_priority(PriorityCategory::COMMAND_LINE, None, args)
             .unwrap();
         let repo_options: RepositoryOptions = parser.get_options().unwrap();
-        let env: IndexMap<String, String> = [
-            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
-            ("HOME".to_owned(), std::env::var("HOME").unwrap_or_default()),
-        ]
-        .into_iter()
-        .collect();
         create_evaluator(FetchSetup {
             workspace: &self.workspace,
             working_directory: &self.workspace,

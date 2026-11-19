@@ -97,6 +97,20 @@ mod path_converter_test {
             "file:///C:/Temp/Foo%20Bar.txt"
         );
     }
+
+    /// The path is an internal string: its Latin-1 chars are kept, except the ISO controls
+    /// (U+0080 to U+009F) and space chars (U+00A0), which are percent-encoded as their UTF-8
+    /// bytes. Expected value from `new URI("file", "", p, null, null)` on the JDK.
+    #[test]
+    fn path_to_uri_string_of_internal_string() {
+        let mut path = blaze_util::string_encoding::latin1_decode("/a/\u{e9}\u{1F437}".as_bytes())
+            .into_owned();
+        path.push_str("\u{ff} \u{c3}\u{a0}");
+        assert_eq!(
+            FileUriPathConverter::path_to_uri_string(&path),
+            "file:///a/\u{c3}\u{a9}\u{f0}%C2%9F%C2%90\u{b7}\u{ff}%20\u{c3}%C2%A0"
+        );
+    }
 }
 
 /// Port of `buildeventstream/LastBuildEventTest.java`.

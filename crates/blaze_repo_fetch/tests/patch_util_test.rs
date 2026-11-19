@@ -985,3 +985,41 @@ fn test_apply_patch_with_no_newline_at_end_of_file_multiple_files() {
     assert_eq!(read_lines(&foo), vec!["foo_new"]);
     assert_eq!(read_lines(&bar), vec!["bar_new"]);
 }
+
+/// Blaze-only: patches and patched files are read and written as UTF-8 (PatchUtil.java:166-170),
+/// and a file name from the (Unicode) patch text reaches the file system one byte per char, as
+/// the JNI's `GetStringLatin1Chars` passes it. Expected values from the oracle (Bazel 9.3.2,
+/// `repository_ctx.patch` in crates/blaze_repo_rules/tests/data/bytes_b2): `-héllo` / `+wörld🐷`
+/// rewrites the line byte for byte, and `+++ b/ñ.txt` creates the file named by the single byte
+/// F1 holding `ñ\n` (C3 B1 0A).
+#[test]
+fn test_non_ascii_content_and_file_name() {
+    let s = Scratch::new();
+    let target = s.root.get_relative_str("p.txt");
+    fs_utils::write_content(&target, "héllo\nsecond\n".as_bytes()).unwrap();
+    let content_patch = s.file(
+        "content.patch",
+        &[
+            "--- a/p.txt",
+            "+++ b/p.txt",
+            "@@ -1,2 +1,2 @@",
+            "-héllo",
+            "+wörld🐷",
+            " second",
+        ],
+    );
+    patch_util::apply(&content_patch, 1, &s.root).unwrap();
+    assert_eq!(
+        fs_utils::read_content(&target).unwrap(),
+        "wörld🐷\nsecond\n".as_bytes()
+    );
+    let newfile_patch = s.file(
+        "newfile.patch",
+        &["--- /dev/null", "+++ b/ñ.txt", "@@ -0,0 +1 @@", "+ñ"],
+    );
+    patch_util::apply(&newfile_patch, 1, &s.root).unwrap();
+    // The internal string "\u{f1}.txt" is the file name F1 2E 74 78 74.
+    let created = s.root.get_relative_str("\u{f1}.txt");
+    assert_eq!(fs_utils::read_content(&created).unwrap(), "ñ\n".as_bytes());
+    assert!(!s.root.get_relative_str("\u{c3}\u{b1}.txt").exists());
+}

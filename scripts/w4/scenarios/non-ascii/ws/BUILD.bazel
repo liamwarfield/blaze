@@ -1,0 +1,37 @@
+load(":defs.bzl", "fail_rule", "report", "shell_rule", "write_rule")
+
+report()
+
+genrule(
+    name = "gen",
+    srcs = ["é.txt"],
+    outs = ["gen.txt"],
+    cmd = "cat $(location é.txt) > $@ && printf '%s' 'é🐷' >> $@",
+)
+
+genrule(
+    name = "define",
+    outs = ["define.txt"],
+    cmd = "printf '%s' '$(x)' > $@",
+)
+
+write_rule(
+    name = "write",
+    content = "é🐷\377\n",
+    tags = ["tagé"],
+)
+
+shell_rule(
+    name = "shell",
+    arg = "é\377",
+)
+
+filegroup(
+    name = "fg_é",
+    srcs = glob(["*.txt"]),
+)
+
+fail_rule(
+    name = "fails",
+    msg = "é",
+)

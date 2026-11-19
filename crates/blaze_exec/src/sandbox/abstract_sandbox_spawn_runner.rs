@@ -480,7 +480,8 @@ fn get_sandbox_debug_output(sandbox: &dyn SandboxedSpawn) -> io::Result<String> 
         let mut input_stream = sandbox_debug_path.get_input_stream()?;
         let mut bytes = Vec::new();
         io::Read::read_to_end(&mut input_stream, &mut bytes)?;
-        let msg = String::from_utf8_lossy(&bytes).into_owned();
+        // `new String(readAllBytes(), UTF_8)`
+        let msg = blaze_util::string_encoding::java_new_string_utf8(&bytes);
         if !msg.is_empty() {
             sandbox_debug_output = Some(msg);
         }

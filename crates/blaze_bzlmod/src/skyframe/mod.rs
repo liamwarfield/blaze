@@ -53,8 +53,10 @@ pub mod precomputed;
 pub mod registry_functions;
 pub mod resolution_function;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use blaze_util::string_encoding::{internal_to_platform, platform_to_internal};
 
 use blaze_bzlmod_model::ExternalDepsException;
 use blaze_skyframe::{ComputeError, EvaluatorBuilder, SkyFunctionException, Transience};
@@ -82,6 +84,18 @@ pub(crate) fn throw(cause: ExternalDepsException, transience: Transience) -> Com
     SkyFunctionException::new(cause, transience).into()
 }
 
+/// The internal string of a platform path: Java's `Path.getPathString()`, which holds the file
+/// name's bytes one char per byte (the server's platform charset is ISO-8859-1).
+pub(crate) fn path_string(path: &Path) -> String {
+    platform_to_internal(path.as_os_str()).into_owned()
+}
+
+/// The platform path of an internal path string (`StringEncoding.internalToPlatform`, as
+/// `Path`'s file system calls apply it).
+pub(crate) fn platform_path(path: &str) -> PathBuf {
+    PathBuf::from(internal_to_platform(path).into_owned())
+}
+
 /// The message of the `IOException` Java's file system raises for `path`:
 /// `<path> (<strerror>)`, e.g. `/ws/MODULE.bazel (No such file or directory)`.
 ///
@@ -92,7 +106,7 @@ pub(crate) fn java_io_message(path: &Path, e: &std::io::Error) -> String {
         Some(i) if e.raw_os_error().is_some() => &text[..i],
         _ => text.as_str(),
     };
-    format!("{} ({})", path.display(), strerror)
+    format!("{} ({})", path_string(path), strerror)
 }
 
 /// Registers the bzlmod SkyFunctions and injects the precomputed values of `config`.

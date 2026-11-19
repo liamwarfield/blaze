@@ -29,7 +29,27 @@ use blaze_optdefs::misc::repository_options::RepositoryOptions;
 use blaze_options::{OptionsClass, OptionsParser, PriorityCategory};
 use blaze_skyframe::{EvaluationContext, EvaluatorBuilder, SkyKey};
 use blaze_starlark::StarlarkSemantics;
+use blaze_util::string_encoding::{
+    internal_to_platform, latin1_encode_lossy, platform_to_internal,
+};
 use indexmap::IndexMap;
+
+/// The internal string of a platform string (argv, environment).
+fn internal(s: &std::ffi::OsStr) -> String {
+    platform_to_internal(s).into_owned()
+}
+
+/// The platform path of an internal path string.
+fn platform_path(s: &str) -> PathBuf {
+    PathBuf::from(internal_to_platform(s).into_owned())
+}
+
+/// Writes a line to stderr through the Latin-1 console encoder.
+fn eprint_line(line: &str) {
+    let mut bytes = latin1_encode_lossy(line).into_owned();
+    bytes.push(b'\n');
+    let _ = std::io::stderr().write_all(&bytes);
+}
 
 /// Prints events the way Bazel's UI does for `--color=no --curses=no`.
 struct StderrHandler;
@@ -44,8 +64,8 @@ impl EventHandler for StderrHandler {
             _ => return,
         };
         match event.get_location() {
-            Some(l) => eprintln!("{kind}: {l}: {}", event.get_message()),
-            None => eprintln!("{kind}: {}", event.get_message()),
+            Some(l) => eprint_line(&format!("{kind}: {l}: {}", event.get_message())),
+            None => eprint_line(&format!("{kind}: {}", event.get_message())),
         }
     }
     fn as_extended_event_handler(&self) -> Option<&dyn ExtendedEventHandler> {
@@ -71,16 +91,18 @@ fn main() {
 }
 
 fn real_main() -> i32 {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args_os().skip(1).map(|a| internal(&a)).collect();
     if args.first().is_some_and(|a| a == "help" || a == "--help") {
         usage();
     }
     let cwd = std::env::current_dir().expect("cwd");
     let mut workspace = cwd.clone();
     let mut output_base: Option<PathBuf> = None;
-    let mut install_base = PathBuf::from(format!(
+    let mut install_base = platform_path(&format!(
         "{}/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9",
-        std::env::var("HOME").unwrap_or_default()
+        std::env::var_os("HOME")
+            .map(|h| internal(&h))
+            .unwrap_or_default()
     ));
     while let Some(a) = args.first().cloned() {
         let take = |args: &mut Vec<String>| -> PathBuf {
@@ -88,7 +110,7 @@ fn real_main() -> i32 {
             if args.is_empty() {
                 usage();
             }
-            PathBuf::from(args.remove(0))
+            platform_path(&args.remove(0))
         };
         match a.as_str() {
             "--workspace" => workspace = take(&mut args),
@@ -135,13 +157,15 @@ fn real_main() -> i32 {
 
     // PORT: BuildLanguageOptions.toStarlarkSemantics is not wired yet; Bazel's defaults.
     let semantics = StarlarkSemantics::default();
-    let client_env: IndexMap<String, String> = std::env::vars().collect();
+    let client_env: IndexMap<String, String> = std::env::vars_os()
+        .map(|(k, v)| (internal(&k), internal(&v)))
+        .collect();
     // Java BazelRepositoryModule.beforeCommand: `--repository_cache` (relative to the workspace),
     // else `<output_user_root>/cache/repos/v1`. PORT: this dev driver has no output user root
     // (it takes --output_base only), so it refuses to pick a default location.
     let repo_cache = match &repo_options.repository_cache {
         Some(p) if p.get_path_string().is_empty() => None,
-        Some(p) => Some(workspace.join(p.get_path_string())),
+        Some(p) => Some(workspace.join(platform_path(p.get_path_string()))),
         None => {
             reporter.handle(&Event::error(
                 "blaze-mod-dev has no output user root to put the default repository cache \

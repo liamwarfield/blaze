@@ -1,10 +1,13 @@
 //! The `json` module.
 //!
 //! Java: net/starlark/java/lib/json/Json.java (encode, decode, indent, encode_indent), ported
-//! with its error texts. Strings are sequences of Unicode scalar values (docs/decisions.md:
-//! code-point semantics), so offsets in decode errors count characters.
+//! with its error texts. Starlark strings are internal strings (one char per byte, PORTING.md
+//! "Strings"), so offsets in decode errors count chars as Java does. `json.decode` reads the
+//! byte-strings semantics flag from the evaluator (`Evaluator::utf8_byte_strings`, starlark-rust
+//! patch 0034), as Java reads `INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS` from the thread.
 
 use starlark::environment::GlobalsBuilder;
+use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::values::Heap;
 use starlark::values::Value;
@@ -268,6 +271,8 @@ struct Decoder<'v> {
     i: usize,
     heap: Heap<'v>,
     depth: usize,
+    /// Java `Decoder.utf8ByteStrings`.
+    utf8_byte_strings: bool,
 }
 
 fn isdigit(c: char) -> bool {
@@ -456,9 +461,18 @@ impl<'v> Decoder<'v> {
                         self.i += 2;
                         units.push(self.parse_unicode_escape()?);
                     }
-                    // Unpaired surrogates become U+FFFD (Java's UTF-16 encoder REPLACE action).
+                    // Java: Json.java:560-575. The escaped UTF-16 is encoded (unpaired surrogates
+                    // become U+FFFD, the encoders' REPLACE action) and appended as raw bytes:
+                    // with the byte-strings flag, its UTF-8 one char per byte (`new String(bytes,
+                    // ISO_8859_1)`); without, the code points (`new String(bytes, UTF_16)`).
                     for r in char::decode_utf16(units) {
-                        out.push(r.unwrap_or('\u{FFFD}'));
+                        let c = r.unwrap_or('\u{FFFD}');
+                        if self.utf8_byte_strings {
+                            let mut buf = [0u8; 4];
+                            out.extend(c.encode_utf8(&mut buf).bytes().map(char::from));
+                        } else {
+                            out.push(c);
+                        }
                     }
                 }
                 _ => return Err(DecErr::Msg(format!("invalid escape '\\{c}'"))),
@@ -557,13 +571,20 @@ enum DecErr {
     TooDeep,
 }
 
-/// Java: Json.decode (without `default`).
-pub fn json_decode<'v>(x: &str, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+/// Java: Json.decode (without `default`); `utf8_byte_strings` is the semantics flag
+/// `INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS` (Bazel's default: true).
+// Java: net/starlark/java/lib/json/Json.java:346 Json.decode
+pub fn json_decode<'v>(
+    x: &str,
+    utf8_byte_strings: bool,
+    heap: Heap<'v>,
+) -> starlark::Result<Value<'v>> {
     Decoder {
         s: x.chars().collect(),
         i: 0,
         heap,
         depth: 0,
+        utf8_byte_strings,
     }
     .decode()
 }
@@ -705,9 +726,10 @@ pub fn register_json_members(builder: &mut GlobalsBuilder) {
         #[starlark(require = pos)] x: &str,
         // Java @Param(name = "default", named = true): also positional.
         default: Option<Value<'v>>,
-        heap: Heap<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
-        match json_decode(x, heap) {
+        let utf8_byte_strings = eval.utf8_byte_strings();
+        match json_decode(x, utf8_byte_strings, eval.heap()) {
             Ok(v) => Ok(v),
             Err(e) => match default {
                 Some(d) => Ok(d),

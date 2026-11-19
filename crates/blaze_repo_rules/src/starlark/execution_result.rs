@@ -20,6 +20,7 @@ use blaze_shell::InterruptedException;
 use blaze_shell::JavaFile;
 use blaze_shell::OutputStream;
 use blaze_starlark::structs::DeeplyImmutable;
+use blaze_util::string_encoding::latin1_decode;
 use indexmap::IndexMap;
 use indexmap::IndexSet;
 use parking_lot::Mutex;
@@ -136,22 +137,6 @@ fn exec_result_methods(builder: &mut MethodsBuilder) {
     }
 }
 
-/// Bytes decoded as ISO-8859-1 into Bazel's internal string form (Java `new String(bytes,
-/// ISO_8859_1)`, `RecordingOutErr.outAsLatin1()`).
-///
-/// PORT: StringEncoding identity. Bazel's internal form of a Latin-1-decoded byte string is the
-/// bytes themselves; Blaze strings must be UTF-8, so output that is not valid UTF-8 is decoded
-/// lossily.
-// Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkExecutionResult.java:183 Builder.toString
-// Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:1643 StarlarkBaseExternalContext.readFile
-pub(crate) fn latin1_internal_string(bytes: &[u8]) -> String {
-    // PORT: byte-strings. Java decodes with ISO-8859-1 (`stream.toString(ISO_8859_1)`,
-    // `RecordingOutErr.outAsLatin1()`, `readContent(path, ISO_8859_1)`): each byte becomes one
-    // char, so the raw bytes of `execute()` output and of files read by `read()` survive, valid
-    // UTF-8 or not. Here bytes that are not valid UTF-8 become U+FFFD.
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
 /// One output stream of Java's `DelegatingOutErr` with the sinks `RecordingOutErr` and, when not
 /// quiet, `OutErr.create(System.err, System.err)`.
 struct DelegatingStream {
@@ -259,7 +244,8 @@ impl StarlarkExecutionResultBuilder {
         if stream.is_no_output_collected() {
             return String::new();
         }
-        latin1_internal_string(&stream.to_byte_array())
+        // Java: stream.toString(ISO_8859_1)
+        latin1_decode(&stream.to_byte_array()).into_owned()
     }
 
     /// Executes the command given by `add_arguments`.
@@ -293,8 +279,9 @@ impl StarlarkExecutionResultBuilder {
             recorder: recorded_err.clone(),
             to_system_err: !self.quiet,
         }));
-        let out_as_latin1 = || latin1_internal_string(&recorded_out.lock());
-        let err_as_latin1 = || latin1_internal_string(&recorded_err.lock());
+        // Java: RecordingOutErr.outAsLatin1() / errAsLatin1()
+        let out_as_latin1 = || latin1_decode(&recorded_out.lock()).into_owned();
+        let err_as_latin1 = || latin1_decode(&recorded_err.lock()).into_owned();
 
         let command = Command::with_timeout(
             self.args.clone(),

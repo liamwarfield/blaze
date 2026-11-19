@@ -7,12 +7,15 @@
 //! (`UnknownHostException`, `SocketTimeoutException`, `SSLException`, ...). Their messages come
 //! from the Rust stack, not the JDK.
 
+use std::ffi::OsString;
 use std::fs::File;
+use std::os::unix::ffi::OsStringExt as _;
 use std::sync::Arc;
 use std::time::Duration;
 
 use blaze_events::Event;
 use blaze_events::handler::EventHandler;
+use blaze_util::string_encoding::latin1_encode_lossy;
 
 use super::download_progress_event::format_grouped;
 use super::http_utils;
@@ -266,7 +269,11 @@ impl RequestProperties {
 fn open_file_connection(url: &JavaUri) -> UrlConnection {
     let path = url.get_path().unwrap_or_default();
     let mut headers = Vec::new();
-    let body: Result<Box<dyn InputStream>, IoException> = match File::open(&path) {
+    // `new File(path)`: the JDK encodes the file name with `sun.jnu.encoding` (ISO-8859-1 for
+    // Bazel's server), `?` for a char above U+00FF. The path's chars are the URL's own
+    // (internal, from Starlark) or decoded from `%XX` escapes as UTF-8.
+    let os_path = OsString::from_vec(latin1_encode_lossy(&path).into_owned());
+    let body: Result<Box<dyn InputStream>, IoException> = match File::open(&os_path) {
         Ok(f) => {
             if let Ok(m) = f.metadata() {
                 headers.push(("content-length".to_string(), m.len().to_string()));

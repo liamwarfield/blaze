@@ -209,10 +209,11 @@ impl StringValueParser {
         Ok(())
     }
 
-    /// Java's index (in chars of the internal string) of the byte offset `at`. The parser only
-    /// stops at ASCII delimiters or the end, so `at` is a char boundary.
+    /// Java's index (in chars of the internal string: one per byte of the flag) of the byte
+    /// offset `at`. The parser only stops at ASCII delimiters or the end, so `at` is a char
+    /// boundary.
     fn java_position(&self, at: usize) -> usize {
-        blaze_util::string_encoding::internal_length(&self.value[..at])
+        self.value[..at].chars().count()
     }
 
     /// Returns an error with the given text, adding information about the current position in

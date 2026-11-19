@@ -105,12 +105,14 @@ pub fn starlark_int_parse(s: &str, base: i32) -> Result<i64, NumberFormatExcepti
     let mut magnitude: i128 = 0;
     let mut beyond_64_bits = false;
     for c in digits.chars() {
+        // Character.digit accepts no Latin-1 char beyond ASCII (U+00B2, U+00B3, U+00B9 and
+        // U+00BC-U+00BE are numeric to Rust but not digits to Java): they are invalid literals.
         let digit = if c.is_ascii() {
             match c.to_digit(base as u32) {
                 Some(d) => d,
                 None => return Err(invalid_literal()),
             }
-        } else if c.is_numeric() || ('\u{ff21}'..='\u{ff5a}').contains(&c) {
+        } else if (c as u32 > 0xff && c.is_numeric()) || ('\u{ff21}'..='\u{ff5a}').contains(&c) {
             // PORT: Character.digit also accepts non-ASCII Unicode digits and fullwidth
             // letters; only ASCII digits are ported.
             blaze_util::unported!(

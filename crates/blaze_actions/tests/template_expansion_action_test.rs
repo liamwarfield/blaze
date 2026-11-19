@@ -22,6 +22,7 @@ use blaze_actions::{
 use blaze_cmdline::Label;
 use blaze_events::location::Location;
 use blaze_util::Fingerprint;
+use blaze_util::string_encoding::{internal_to_unicode, unicode_to_internal};
 use blaze_vfs::Root;
 use blaze_vfs::{DigestHashFunction, Path, PathFragment, UnixFileSystem};
 use indexmap::IndexMap;
@@ -375,11 +376,18 @@ fn test_with_special_characters() {
     // scratch.overwriteFile appends a newline, so we need an additional \n here
     let expected = format!("{}{}\n", SPECIAL_CHARS, SPECIAL_CHARS);
 
-    // PORT: StringEncoding.unicodeToInternal is the identity in Rust.
-    let actual = create_with_artifact(&f, vec![Substitution::of("%key%", SPECIAL_CHARS)])
-        .get_file_contents()
-        .unwrap();
-    assert_eq!(actual, expected);
+    let actual = create_with_artifact(
+        &f,
+        vec![Substitution::of(
+            "%key%",
+            unicode_to_internal(SPECIAL_CHARS).into_owned(),
+        )],
+    )
+    .get_file_contents()
+    .unwrap();
+    // Java reads the output file as UTF-8 (`FileSystemUtils.readContent(output, UTF_8)`); the
+    // contents are written as the internal string's bytes.
+    assert_eq!(internal_to_unicode(&actual), expected);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -453,7 +461,8 @@ fn oracle_template_expansion_key_and_content() {
         template,
         get_bin_artifact_with_no_owner("g_tpl.txt"),
         vec![
-            Substitution::of("%NAME%", "w\u{f6}rld"),
+            // The Starlark string "wörld": an internal string.
+            Substitution::of("%NAME%", unicode_to_internal("w\u{f6}rld").into_owned()),
             Substitution::of("%EMPTY%", ""),
         ],
         true,
@@ -467,7 +476,10 @@ fn oracle_template_expansion_key_and_content() {
     assert_eq!(
         substitutions,
         vec![
-            ("%NAME%".to_string(), "w\u{f6}rld".to_string()),
+            (
+                "%NAME%".to_string(),
+                unicode_to_internal("w\u{f6}rld").into_owned()
+            ),
             ("%EMPTY%".to_string(), String::new()),
         ]
     );

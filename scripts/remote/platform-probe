@@ -16,8 +16,8 @@ REPO_CACHE = os.path.join(CACHE, "repo-cache")
 WORKER = os.path.join(HERE, "worker")
 
 USAGE = """\
-usage: scripts/remote/platform-probe oracle <tag> [--port N] [<case>...]
-       scripts/remote/platform-probe run <binary> <tag> [--port N] [<case>...]
+usage: scripts/remote/platform-probe oracle <tag> [--port N] [--execlog] [<case>...]
+       scripts/remote/platform-probe run <binary> <tag> [--port N] [--execlog] [<case>...]
        scripts/remote/platform-probe compare <tag-a> <tag-b>
        scripts/remote/platform-probe cases
        scripts/remote/platform-probe help
@@ -56,6 +56,11 @@ Per case it prints and writes result.txt:
   processes <the `N processes: ...` line>
   then-exit/then-error/then-processes  for a case with a second build (`then` flags in `cases`):
                   the same workspace, output base and worker, built again with those flags
+
+`--execlog`: no remote flags (the default, local path); the build writes
+--execution_log_json_file=<step>/exec.json instead, and the result has
+  execlog-platform <the `platform` of the Probe spawn in that log, name=value in log order>
+in place of the action/command/argv0 lines (use a tag of its own; no second build).
 
 `compare <a> <b>` prints both result.txt per case and SAME/DIFFERENT; exit 0 iff all equal.
 `cases` lists the cases with their flags.
@@ -351,13 +356,37 @@ def error_blocks(err, ws, worker):
             text = text.replace(ws, "<ws>").replace(os.path.realpath(ws), "<ws>")
             text = text.replace(os.path.join(WORK, "worker-" + worker), "<worker>")
             text = re.sub(r"build-[0-9a-f-]{36}", "build-<uuid>", text)
+            # Control characters (a server's message can carry them) are shown as \xNN.
+            text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", lambda m: "\\x%02x" % ord(m.group()), text)
             out.append(text.replace("\t", "\\t"))
         else:
             i += 1
     return out
 
 
-def run_cases(binary, tag, port, names):
+def execlog_platform(path):
+    """The `platform` of the Probe spawn in an --execution_log_json_file, as name=value."""
+    import json
+    if not os.path.isfile(path):
+        return "-"
+    text = open(path, errors="replace").read()
+    dec = json.JSONDecoder()
+    i = 0
+    while True:
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text):
+            return "-"
+        obj, i = dec.raw_decode(text, i)
+        if obj.get("mnemonic") == "Probe":
+            props = (obj.get("platform") or {}).get("properties")
+            if props is None:
+                return "none"
+            return " ".join(repr("%s=%s" % (p.get("name", ""), p.get("value", "")))[1:-1]
+                            for p in props)
+
+
+def run_cases(binary, tag, port, names, execlog=False):
     root = os.path.join(WORK, tag + "-platform")
     our = os.path.join(OUT_ROOT, tag + "-platform")
     rm(our)
@@ -370,15 +399,20 @@ def run_cases(binary, tag, port, names):
         rm(step)
         ws = os.path.join(step, "ws")
         write_ws(ws, name)
-        args = ["build", "//:t", "--extra_execution_platforms=//:p",
-                "--remote_executor=grpc://localhost:%d" % port,
-                "--remote_grpc_log=" + os.path.join(step, "grpc.log")] + CASES[name][2]
+        if execlog:
+            args = ["build", "//:t", "--extra_execution_platforms=//:p",
+                    "--execution_log_json_file=" + os.path.join(step, "exec.json")]
+            args += CASES[name][2]
+        else:
+            args = ["build", "//:t", "--extra_execution_platforms=//:p",
+                    "--remote_executor=grpc://localhost:%d" % port,
+                    "--remote_grpc_log=" + os.path.join(step, "grpc.log")] + CASES[name][2]
         code = run_binary(binary, our, ws, step, args)
         err = open(os.path.join(step, "stderr"), errors="replace").read().splitlines()
         errors = error_blocks(err, ws, worker)
         procs = [l for l in err if re.search(r"\d+ process(es)?:", l)]
         then_lines = []
-        if CASES[name][3] is not None:
+        if CASES[name][3] is not None and not execlog:
             step2 = os.path.join(step, "then")
             os.makedirs(step2)
             args2 = ["build", "//:t", "--extra_execution_platforms=//:p",
@@ -395,7 +429,9 @@ def run_cases(binary, tag, port, names):
                             "PLATFORM_PROBE_" + name)
         lines = ["exit %d" % code, "error %s" % (errors[0] if errors else "-"),
                  "processes %s" % (procs[0] if procs else "-")]
-        if found is None:
+        if execlog:
+            lines.append("execlog-platform %s" % execlog_platform(os.path.join(step, "exec.json")))
+        elif found is None:
             lines += ["action-platform -", "command-platform -", "argv0 -"]
         else:
             aplat, cplat, args_ = found
@@ -418,8 +454,13 @@ def run_cases(binary, tag, port, names):
 def parse_run_args(rest):
     port = 9640
     names = []
+    execlog = False
     i = 0
     while i < len(rest):
+        if rest[i] == "--execlog":
+            execlog = True
+            i += 1
+            continue
         if rest[i] == "--port":
             port = int(rest[i + 1])
             i += 2
@@ -429,7 +470,7 @@ def parse_run_args(rest):
     for n in names:
         if n not in CASES:
             sys.exit("unknown case %s (see `platform-probe cases`)" % n)
-    return port, names or list(CASES)
+    return port, names or list(CASES), execlog
 
 
 def cmd_compare(a, b):
@@ -466,11 +507,12 @@ def main():
                                     "" if then is None else "; then " + " ".join(then)))
         return 0
     if args[0] == "oracle" and len(args) >= 2:
-        port, names = parse_run_args(args[2:])
-        return run_cases(ORACLE, args[1], port, names)
+        port, names, execlog = parse_run_args(args[2:])
+        return run_cases(ORACLE, args[1], port, names, execlog)
     if args[0] == "run" and len(args) >= 3:
-        port, names = parse_run_args(args[3:])
-        return run_cases(os.path.abspath(os.path.expanduser(args[1])), args[2], port, names)
+        port, names, execlog = parse_run_args(args[3:])
+        return run_cases(os.path.abspath(os.path.expanduser(args[1])), args[2], port, names,
+                         execlog)
     if args[0] == "compare" and len(args) == 3:
         return cmd_compare(args[1], args[2])
     print(USAGE, end="", file=sys.stderr)

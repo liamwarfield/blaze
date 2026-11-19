@@ -1,0 +1,28 @@
+{
+  "key": "<root>",
+  "name": "bytes_b1",
+  "version": "1.0",
+  "apparentName": "bytes_b1",
+  "dependencies": [],
+  "indirectDependencies": [],
+  "cycles": [],
+  "extensionUsages": [
+    {
+      "key": "@@//:MODULE.bazel%//:ext.bzl repo",
+      "unexpanded": false,
+      "used_repos": [
+        "rule_repo"
+      ],
+      "unused_repos": []
+    },
+    {
+      "key": "@@//:ext.bzl%ext",
+      "unexpanded": false,
+      "used_repos": [
+        "ext_repo"
+      ],
+      "unused_repos": []
+    }
+  ],
+  "root": true
+}

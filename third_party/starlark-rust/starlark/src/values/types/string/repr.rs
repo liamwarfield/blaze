@@ -67,27 +67,21 @@ fn push_escape(to_escape: char, buffer: &mut String) {
         '\\' => buffer.push_str("\\\\"),
         '"' => buffer.push_str("\\\""),
         // `write!` is slow, but these branches are rare.
-        c if (c as u32) < 0x100 => write!(buffer, "\\x{:02x}", c as u32).unwrap(),
-        c if (c as u32) < 0x10000 => write!(buffer, "\\u{:04x}", c as u32).unwrap(),
-        c => write!(buffer, "\\U{:08x}", c as u32).unwrap(),
+        // BLAZE PATCH 0035: Java `String.format("\\x%02x", c)`; `need_escape` admits nothing else.
+        c => write!(buffer, "\\x{:02x}", c as u32).unwrap(), // BLAZE PATCH 0035
     }
 }
 
+// BLAZE PATCH 0035: Java net/starlark/java/eval/Printer.java:239 escapeCharacter: only `"`, `\`
+// and chars below 0x20 are escaped; DEL, U+0080..U+00FF (the bytes of Blaze's internal strings)
+// and everything above are written as they are.
 #[inline(always)]
 fn need_escape(c: char) -> bool {
     match c {
         c if (c as u32) < 0x20 => true,
         '"' => true,
         '\\' => true,
-        // Note 0x7f needs to be escaped.
-        c if (c as u32) < 0x7f => false,
-        // Now all 8bit characters are covered:
-        c if (c as u32) <= 0xff => true,
-        // Rust does not expose `is_printable`.
-        // PEP-3138 goes long way defining precisely the Unicode groups which need escaping.
-        // We could pick more character groups here,
-        // but `is_alphanumeric` is practically enough for now.
-        c => !c.is_alphanumeric(),
+        _ => false, // BLAZE PATCH 0035
     }
 }
 
@@ -262,17 +256,18 @@ mod tests {
             assert_eq!(expected, &repr);
         }
         test(r#""\x12""#, "\x12");
-        test(r#""\x7f""#, "\x7f");
+        test("\"\x7f\"", "\x7f"); // BLAZE PATCH 0035
         test(r#""\n""#, "\n");
         // Do not escape single quotes because repr in Starlark uses double quotes.
         test(r#""'""#, "'");
         test(r#""\"""#, "\"");
         test(r#""\\""#, "\\");
         // Non-printable whitespace.
-        test(r#""\u200b""#, "\u{200b}");
+        test("\"\u{200b}\"", "\u{200b}"); // BLAZE PATCH 0035
+        test("\"\u{80}\u{e9}\u{ff}\"", "\u{80}\u{e9}\u{ff}"); // BLAZE PATCH 0035
         test(r#""Hello, 世界""#, "Hello, 世界");
         // Largest unicode number.
-        test(r#""\U0010ffff""#, "\u{10ffff}");
+        test("\"\u{10ffff}\"", "\u{10ffff}"); // BLAZE PATCH 0035
     }
 
     #[test]

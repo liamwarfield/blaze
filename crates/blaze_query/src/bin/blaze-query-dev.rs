@@ -42,6 +42,9 @@ use blaze_sky_loading::skyframe_executor::{
 };
 use blaze_skyframe::EvaluatorBuilder;
 use blaze_starlark::StarlarkSemantics;
+use blaze_util::string_encoding::{
+    internal_to_platform, latin1_encode_lossy, platform_to_internal,
+};
 use blaze_vfs::{DigestHashFunction, Path, PathFragment, UnixFileSystem};
 use indexmap::IndexMap;
 
@@ -73,8 +76,10 @@ impl EventHandler for StderrEventHandler {
             line.push_str(": ");
         }
         line.push_str(&event.get_message());
+        line.push('\n');
+        // The console is a Latin-1 stream on Bazel's server.
         let mut stderr = std::io::stderr().lock();
-        let _ = writeln!(stderr, "{line}");
+        let _ = stderr.write_all(&latin1_encode_lossy(&line));
     }
 
     fn as_extended_event_handler(&self) -> Option<&dyn ExtendedEventHandler> {
@@ -187,7 +192,11 @@ fn usage_error(message: &str) -> ! {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // argv is a platform string; Java's server receives it as an internal string.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| platform_to_internal(&a).into_owned())
+        .collect();
     if args.first().map(|a| a.as_str()) == Some("help") {
         println!("{USAGE}");
         return;
@@ -233,7 +242,9 @@ fn main() {
     let output_base = output_base.unwrap_or_else(|| usage_error("missing --output_base"));
     let repos = repos.unwrap_or_else(|| usage_error("missing --repos"));
     let install_base = install_base.unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = std::env::var_os("HOME")
+            .map(|h| platform_to_internal(&h).into_owned())
+            .unwrap_or_default();
         format!("{home}/{DEFAULT_INSTALL_BASE}")
     });
 
@@ -271,8 +282,10 @@ fn main() {
         output_base: Path::create(PathFragment::create(&output_base), &fs),
         install_base: Path::create(PathFragment::create(&install_base), &fs),
     };
-    let external_repos = match OracleRepos::load(std::path::Path::new(&repos), directories.clone())
-    {
+    let external_repos = match OracleRepos::load(
+        std::path::Path::new(&*internal_to_platform(&repos)),
+        directories.clone(),
+    ) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("ERROR: {}", e.0);

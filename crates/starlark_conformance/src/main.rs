@@ -2,20 +2,25 @@
 
 use std::path::PathBuf;
 
+use starlark_conformance::script_test::ScriptMode;
+
 const USAGE: &str = "\
 usage: starlark-conformance <command> [options]
 
 commands:
   help                 print this message
-  run [-v] [--testdata DIR] [FILE.star...]
+  run [-v] [--latin1] [--testdata DIR] [FILE.star...]
                        run Bazel's ScriptTest files (default: all *.star in DIR) and print a
-                       per-file markdown table; -v also lists every failure with its category
-  eval FILE            evaluate one Starlark file with the ScriptTest globals (print enabled) and
+                       per-file markdown table; -v also lists every failure with its category;
+                       --latin1 imitates Bazel's ScriptTest_Latin1 target (sources decoded one
+                       char per byte, the byte-strings semantics flag on, _utf8_byte_strings =
+                       True), which is how Blaze reads Starlark files
+  eval [--latin1] FILE evaluate one Starlark file with the ScriptTest globals (print enabled) and
                        show the Bazel-style traceback of any error
   parse PATH...         compile every Starlark file under PATH (.bzl, .scl, BUILD, *.BUILD,
                        MODULE.bazel, REPO.bazel) with Bazel's dialect and static checks
                        (blaze_starlark::eval::compile) and list failures
-  failures [--testdata DIR]
+  failures [--latin1] [--testdata DIR]
                        list every failure as `file:line: [category] detail`
 
 DIR defaults to ~/.cache/blaze/src/bazel-9.3.2/src/test/java/net/starlark/java/eval/testdata.
@@ -61,11 +66,19 @@ fn real_main() -> anyhow::Result<()> {
         println!("parsed {} files, {} failed", files.len(), bad);
         return Ok(());
     }
+    let mode = if args[1..].iter().any(|a| a == "--latin1") {
+        ScriptMode::Latin1
+    } else {
+        ScriptMode::Unicode
+    };
     if cmd == "eval" {
-        let path = args.get(1).expect("eval needs a FILE");
-        let src = std::fs::read_to_string(path)?;
-        let globals = starlark_conformance::script_test::script_test_globals();
-        match starlark_conformance::traceback::eval_for_cli(path, &src, &globals) {
+        let path = args[1..]
+            .iter()
+            .find(|a| *a != "--latin1")
+            .expect("eval needs a FILE");
+        let src = mode.source(&std::fs::read_to_string(path)?);
+        let globals = starlark_conformance::script_test::script_test_globals(mode);
+        match starlark_conformance::traceback::eval_for_cli(path, &src, &globals, mode) {
             Ok(()) => println!("OK"),
             Err(tb) => {
                 println!("{tb}");
@@ -81,20 +94,21 @@ fn real_main() -> anyhow::Result<()> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "-v" => verbose = true,
+            "--latin1" => {}
             "--testdata" => dir = PathBuf::from(it.next().expect("--testdata needs a value")),
             f => files.push(f.to_owned()),
         }
     }
     let results = if files.is_empty() {
-        starlark_conformance::script_test::run_dir(&dir)?
+        starlark_conformance::script_test::run_dir(&dir, mode)?
     } else {
-        let globals = starlark_conformance::script_test::script_test_globals();
+        let globals = starlark_conformance::script_test::script_test_globals(mode);
         files
             .iter()
             .map(|f| {
                 let p = PathBuf::from(f);
                 let p = if p.exists() { p } else { dir.join(f) };
-                starlark_conformance::script_test::run_file(&p, &globals)
+                starlark_conformance::script_test::run_file(&p, &globals, mode)
             })
             .collect::<anyhow::Result<Vec<_>>>()?
     };

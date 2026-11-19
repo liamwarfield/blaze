@@ -102,7 +102,7 @@ impl PackageLoadingTestCase {
     /// Java `scratch.deleteFile(path)`: `path` is relative to the workspace.
     pub fn delete_file(&self, path: &str) {
         let file = self.setup.scratch.path(&self.setup.ws(path));
-        let _ = std::fs::remove_file(file.get_path_string());
+        let _ = std::fs::remove_file(crate::test_util::platform(&file));
     }
 
     fn key(pkg: &str) -> PackageKey {

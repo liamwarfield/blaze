@@ -27,6 +27,10 @@ pub fn java_string_cmp(a: &str, b: &str) -> Ordering {
 /// never flushed never reaches the stream. With the ASCII charset, every character the encoder
 /// cannot map (any non-ASCII code point) becomes `?`. Write errors are ignored, like
 /// `PrintWriter`.
+///
+/// The text is internal strings (module names, tag values, repo names) mixed with Java literals.
+/// With UTF-8, `as_bytes()` is the writer's encoder: an internal string's bytes >= 0x80 come out
+/// double encoded, as Bazel prints them (`mod show_extension` prints `é` as C3 83 C2 A9).
 pub struct Printer<'a> {
     out: &'a mut dyn Write,
     ascii: bool,

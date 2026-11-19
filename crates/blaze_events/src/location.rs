@@ -97,8 +97,8 @@ impl fmt::Display for Location {
 // Java: net/starlark/java/syntax/Location.java:90 Location.compareTo
 impl Ord for Location {
     fn cmp(&self, that: &Self) -> Ordering {
-        // PORT: Java String.compareTo compares UTF-16 code units; file names here are UTF-8
-        // (StringEncoding identity), and byte order equals code-point order.
+        // PORT: Java String.compareTo compares UTF-16 code units; file names are internal
+        // strings (chars up to U+00FF), whose `str` order is that order.
         let cmp = self.file.cmp(&that.file);
         if cmp != Ordering::Equal {
             return cmp;

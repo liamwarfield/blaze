@@ -79,10 +79,11 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
 /// Whether the strings Blaze holds where Java holds internal strings (Starlark strings, paths,
-/// options, environment) are internal strings yet. `false`: they are still real Unicode (sources
-/// are read with `String::from_utf8`). See "Migration seam" in the module comment.
+/// options, environment) are internal strings. `true` since the switch of 2026-11-19 (sources
+/// are decoded with [`parser_input_from_latin1`]); `false` was the state before it, when they
+/// were real Unicode. See "Migration seam" in the module comment.
 // PORT: transitional; delete with the seam functions once it has been `true` for a while.
-pub const STRINGS_ARE_INTERNAL: bool = false;
+pub const STRINGS_ARE_INTERNAL: bool = true;
 
 thread_local! {
     static STRINGS_ARE_INTERNAL_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
@@ -209,6 +210,28 @@ pub fn latin1_encode(s: &str) -> Cow<'_, [u8]> {
         out.push(c as u8);
     }
     Cow::Owned(out)
+}
+
+/// `s.getBytes(ISO_8859_1)`, and what a `PrintStream` or `Writer` with the ISO-8859-1 charset
+/// writes (Bazel's default charset: the client starts the server with
+/// `-Dfile.encoding=ISO-8859-1`): one byte per char, and `?` for a char above U+00FF.
+///
+/// Use it where Java encodes with the charset (console, `PrintStream`, `getBytes`), where a
+/// string that is not internal (real Unicode from a proto, JSON or a Java literal) prints `?`s
+/// instead of failing. Where Java calls `StringUnsafe.getInternalStringBytes` use
+/// [`latin1_encode`].
+// PORT: Java's encoder writes one `?` per unmappable UTF-16 code unit sequence: one for a BMP
+// char and one for a surrogate pair (sun.nio.cs.ISO_8859_1.Encoder with the replacement action
+// consumes a well-formed pair as one malformed/unmappable input of length 2).
+pub fn latin1_encode_lossy(s: &str) -> Cow<'_, [u8]> {
+    if s.is_ascii() {
+        return Cow::Borrowed(s.as_bytes());
+    }
+    Cow::Owned(
+        s.chars()
+            .map(|c| if (c as u32) <= 0xff { c as u8 } else { b'?' })
+            .collect(),
+    )
 }
 
 /// Java: StringUnsafe.java:92 `throw new IllegalArgumentException(String.format("Expected internal

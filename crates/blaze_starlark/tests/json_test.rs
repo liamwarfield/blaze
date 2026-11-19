@@ -22,7 +22,7 @@ fn encode() {
         Ok(r#""{\"a\":[1,2],\"b\":[1]}""#.into())
     );
     assert_eq!(
-        eval_expr("json.encode('\\x01\"')"),
+        eval_expr("json.encode('\\001\"')"),
         Ok(r#""\"\\u0001\\\"\"""#.into())
     );
     assert_eq!(
@@ -62,11 +62,19 @@ fn decode() {
         eval_expr("json.decode('{\"a\": [1, 2.5, null, true, \"x\"]}')"),
         Ok("{\"a\": [1, 2.5, None, True, \"x\"]}".into())
     );
+    // Java Json.java:560-575: with the byte-strings flag (Bazel's default) the escapes are
+    // appended as their UTF-8 bytes, one char per byte; the literal is read the same way.
     assert_eq!(
         eval_expr(
             "json.decode('\"\\\\u00e9\\\\ud83d\\\\ude00\\\\ud800\"') == '\u{e9}\u{1f600}\u{fffd}'"
         ),
         Ok("True".into())
+    );
+    assert_eq!(
+        eval_expr(
+            "[len(json.decode(x)) for x in ['\"\\\\u00e9\"', '\"\\\\ud83d\\\\udc37\"', '\"\\\\ud83d\"', '\"\u{e9}\"']]"
+        ),
+        Ok("[2, 4, 3, 2]".into())
     );
     assert_eq!(eval_expr("json.decode('[1', default = 7)"), Ok("7".into()));
     assert_eq!(
@@ -85,6 +93,21 @@ fn decode() {
         exec_err("json.decode('[' * 100000)"),
         Err("nesting depth limit exceeded".into())
     );
+}
+
+/// With `--internal_starlark_utf_8_byte_strings=false` the escapes are appended as chars.
+#[test]
+fn decode_without_byte_strings() {
+    let semantics = blaze_starlark::StarlarkSemantics {
+        internal_starlark_utf_8_byte_strings: false,
+        ..Default::default()
+    };
+    let (m, _) = common::exec_with(
+        "r = [len(json.decode(x)) for x in ['\"\\\\u00e9\"', '\"\\\\ud83d\"', '\"\\\\u0041\"']]\n",
+        semantics,
+        Default::default(),
+    );
+    assert_eq!(common::global_repr(&m.unwrap(), "r"), "[1, 1, 1]");
 }
 
 #[test]

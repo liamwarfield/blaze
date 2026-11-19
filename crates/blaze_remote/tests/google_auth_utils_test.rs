@@ -319,3 +319,46 @@ fn new_channel_client_certificate_and_key_must_be_valid() {
     let channel = new_channel("grpcs://localhost:1234", None, &options, None, None).unwrap();
     assert!(channel.tls);
 }
+
+/// Not in the Java test (lead, round 2; root ruling 2026-11-19: X.509 v1 certificates stay
+/// refused). rustls refuses the X.509 v1 client certificate of Bazel's own TLS tests
+/// (`src/test/testdata/test_tls_certificate`, copied to `tests/testdata/x509v1`) when the TLS
+/// configuration is built; Java judges certificates only in the handshake. The channel is
+/// created, and every connection fails with the rejection as a transport error (so the
+/// capabilities check fails the build, as without a client certificate), not with "Failed to
+/// init TLS infrastructure".
+#[test]
+fn new_channel_rejected_client_certificate_fails_connections_not_channel_creation() {
+    let data = format!("{}/tests/testdata/x509v1", env!("CARGO_MANIFEST_DIR"));
+    let options = AuthAndTLSOptions {
+        tls_certificate: Some(format!("{data}/ca.crt")),
+        tls_client_certificate: Some(format!("{data}/client.crt")),
+        tls_client_key: Some(format!("{data}/client.pem")),
+        ..AuthAndTLSOptions::default()
+    };
+
+    let managed = new_channel("grpcs://localhost:1", None, &options, None, None).unwrap();
+
+    let channel = blaze_remote::grpc::ReferenceCountedChannel::new(
+        managed.channel,
+        &managed.authority,
+        managed.tls,
+        managed.interceptors,
+        managed.max_inbound_message_size,
+        None,
+    );
+    let status = blaze_remote::runtime::block_on(channel.unary::<
+        blaze_remote::reapi::GetCapabilitiesRequest,
+        blaze_remote::reapi::ServerCapabilities,
+    >(
+        blaze_remote::grpc::methods::GET_CAPABILITIES,
+        blaze_remote::reapi::GetCapabilitiesRequest::default(),
+        blaze_remote::grpc::CallOptions::new(),
+    ))
+    .unwrap_err();
+    let cause = blaze_remote::grpc::channel::transport_io_cause(&status).unwrap();
+    assert!(
+        cause.to_string().starts_with("invalid peer certificate: "),
+        "{cause}"
+    );
+}

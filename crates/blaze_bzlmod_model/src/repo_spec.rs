@@ -6,6 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::LazyLock;
 
 use blaze_cmdline::Label;
+use blaze_util::string_encoding::{internal_to_unicode, unicode_to_internal};
 use indexmap::IndexMap;
 
 use crate::gson::{JsonValue, JsonWriter};
@@ -165,17 +166,18 @@ impl AttributeValues {
 }
 
 /// Port of `AttributeValuesAdapter`.
-// Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:44 AttributeValuesAdapter
+// Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:47 AttributeValuesAdapter
 pub struct AttributeValuesAdapter;
 
-// Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:165 AttributeValuesAdapter.STRING_ESCAPE_SEQUENCE
+// Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:142 AttributeValuesAdapter.STRING_ESCAPE_SEQUENCE
 pub const STRING_ESCAPE_SEQUENCE: &str = "'";
 
 impl AttributeValuesAdapter {
-    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:48 AttributeValuesAdapter.write
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:52 AttributeValuesAdapter.write
     pub fn write(out: &mut JsonWriter, attribute_values: &AttributeValues) {
         out.begin_object();
         for (key, value) in attribute_values.attributes() {
+            // The attribute name is written as is (Java does not convert it either).
             out.name(key);
             // gson.toJson(JsonElement, out) with a default Gson: nulls in objects are dropped.
             out.json_value_with_gson_defaults(&Self::serialize_object(value));
@@ -183,7 +185,7 @@ impl AttributeValuesAdapter {
         out.end_object();
     }
 
-    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:58 AttributeValuesAdapter.read
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:62 AttributeValuesAdapter.read
     pub fn read(json: &JsonValue) -> Result<AttributeValues, String> {
         let JsonValue::Object(members) = json else {
             return Err(format!("Not a JSON Object: {}", json_to_string(json)));
@@ -191,12 +193,13 @@ impl AttributeValuesAdapter {
         Ok(AttributeValues::create(
             members
                 .iter()
+                // The attribute name is kept as is (Java does not convert it either).
                 .map(|(k, v)| Ok((k.clone(), Self::deserialize_object(v)?)))
                 .collect::<Result<Vec<_>, String>>()?,
         ))
     }
 
-    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:74 AttributeValuesAdapter.serializeObject
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:77 AttributeValuesAdapter.serializeObject
     pub fn serialize_object(obj: &AttributeValue) -> JsonValue {
         match obj {
             AttributeValue::None => JsonValue::Null,
@@ -234,7 +237,7 @@ impl AttributeValuesAdapter {
         }
     }
 
-    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:105 AttributeValuesAdapter.deserializeObject
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:109 AttributeValuesAdapter.deserializeObject
     pub fn deserialize_object(json: &JsonValue) -> Result<AttributeValue, String> {
         Ok(match json {
             JsonValue::Null => AttributeValue::None,
@@ -261,33 +264,41 @@ impl AttributeValuesAdapter {
         })
     }
 
-    /// Serializes a Label or String. A string that looks like a label is escaped so it can be
-    /// told apart from a label when deserializing.
-    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:176 AttributeValuesAdapter.serializeObjToString
+    /// Serializes a Label or String (internal strings) to a Unicode JSON string. A string that
+    /// looks like a label is escaped so it can be told apart from a label when deserializing.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:152 AttributeValuesAdapter.serializeObjToString
     fn serialize_obj_to_string(obj: &AttributeValue) -> String {
         match obj {
             AttributeValue::Label(label) => {
                 let label_string = label.get_unambiguous_canonical_form();
                 blaze_util::check_state!(label_string.starts_with("@@"));
-                // PORT: StringEncoding identity
-                label_string
+                // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:156 AttributeValuesAdapter.serializeObjToString
+                internal_to_unicode(&label_string).into_owned()
             }
             AttributeValue::String(string) => {
                 if string.starts_with("@@")
                     || (string.starts_with(STRING_ESCAPE_SEQUENCE)
                         && string.ends_with(STRING_ESCAPE_SEQUENCE))
                 {
-                    format!("{STRING_ESCAPE_SEQUENCE}{string}{STRING_ESCAPE_SEQUENCE}")
+                    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:165 AttributeValuesAdapter.serializeObjToString
+                    internal_to_unicode(&format!(
+                        "{STRING_ESCAPE_SEQUENCE}{string}{STRING_ESCAPE_SEQUENCE}"
+                    ))
+                    .into_owned()
                 } else {
-                    string.clone()
+                    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:167 AttributeValuesAdapter.serializeObjToString
+                    internal_to_unicode(string).into_owned()
                 }
             }
             other => panic!("ClassCastException: {other:?} cannot be cast to java.lang.String"),
         }
     }
 
-    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:203 AttributeValuesAdapter.deserializeStringToObject
-    fn deserialize_string_to_object(value: &str) -> AttributeValue {
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:177 AttributeValuesAdapter.deserializeStringToObject
+    fn deserialize_string_to_object(unicode_value: &str) -> AttributeValue {
+        // Java: com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java:178 AttributeValuesAdapter.deserializeStringToObject
+        let value = unicode_to_internal(unicode_value);
+        let value: &str = &value;
         // A string represents a label if and only if it starts with "@@".
         if value.starts_with("@@") {
             return AttributeValue::Label(Label::parse_canonical_unchecked(value));

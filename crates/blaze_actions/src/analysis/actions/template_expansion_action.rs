@@ -71,8 +71,8 @@ pub struct TemplateExpansionContextTemplateMetadata {
 /// Replace all occurrences of `literal` in `input` with `replacement`. If `literal` is empty,
 /// returns `input` unchanged.
 // Java: com/google/devtools/build/lib/util/StringUtilities.java:70 StringUtilities.replaceAllLiteral
-// PORT: Java indexes chars of internal (Latin-1-of-UTF-8) strings, i.e. bytes; `str::find` on the
-// UTF-8 form finds the same occurrences.
+// PORT: Java indexes chars of internal strings; `str::find` by byte offset finds the same
+// occurrences, and the offsets are only used to slice the same strings.
 pub fn replace_all_literal(input: &str, literal: &str, replacement: &str) -> String {
     let literal_length = literal.len();
     if literal_length == 0 {

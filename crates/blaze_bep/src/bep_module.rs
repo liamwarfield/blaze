@@ -206,7 +206,8 @@ impl BuildEvent for BuildEventPost {
 #[derive(Clone, Debug, Default)]
 pub struct BepCommandContext {
     /// `DestinationRelativeTo.WORKSPACE_OR_HOME`: relative `--build_event_*_file` paths are
-    /// resolved against the workspace (or the home directory outside a workspace).
+    /// resolved against the workspace (or the home directory outside a workspace). A platform
+    /// path: the bytes of the internal path string (`internal_to_platform`).
     pub workspace_or_home: std::path::PathBuf,
     /// `CommonCommandOptions.oomMessage`.
     pub oom_message: String,
@@ -365,7 +366,8 @@ impl ThrowingBuildEventArtifactUploaderSupplier {
 
 // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:1029 BuildEventOutputStreamFactoryImpl.create
 fn open_output(base: &std::path::Path, file_path: &str) -> std::io::Result<Box<dyn Write + Send>> {
-    let path = base.join(file_path);
+    // The option value is an internal string; `base` is a platform path.
+    let path = base.join(blaze_util::string_encoding::internal_to_platform(file_path));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -479,6 +481,10 @@ pub fn events_to_json_bytes(
         streamer.build_event(event);
     }
     streamer.close();
+    // Wait for the transport's close future (the file is complete then).
+    for (_name, result) in streamer.get_close_futures_map() {
+        let _ = result;
+    }
 
     buffer.0.lock().clone()
 }

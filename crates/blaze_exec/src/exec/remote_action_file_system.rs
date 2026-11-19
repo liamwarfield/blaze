@@ -31,9 +31,7 @@ use blaze_vfs::{
 use crate::actions::{
     ActionExecutionMetadata, FileArtifactValue, InputMetadataProvider, LostArtifacts,
 };
-use crate::exec::action_execution_context::{
-    ActionInputPrefetcher, BulkTransferError, RemoteOutputTree,
-};
+use crate::exec::action_execution_context::{ActionInputPrefetcher, BulkTransferError};
 
 /// `FollowMode`: how `statInternal` handles symlinks.
 // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:121 RemoteActionFileSystem.FollowMode
@@ -155,31 +153,6 @@ fn with_suppressed(local: io::Error, remote: io::Error) -> io::Error {
     io::Error::new(local.kind(), format!("{local}\n\tSuppressed: {remote}"))
 }
 
-/// `path.forHostFileSystem()`: the same path on the host file system. For a path on a
-/// [`RemoteActionFileSystem`] that is its local file system (`getHostFileSystem()` is
-/// `localFs.getHostFileSystem()`); any other path is returned as it is.
-///
-/// PORT: `blaze_vfs` has no `FileSystem.getHostFileSystem()` (its `Path::for_host_file_system` is
-/// the identity), so callers that may hold a path on this file system use this function. The
-/// exact port is a `get_host_file_system` method on the `FileSystem` trait that this file system
-/// overrides.
-// Java: com/google/devtools/build/lib/vfs/Path.java:262 Path.forHostFileSystem
-// Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:257 RemoteActionFileSystem.getHostFileSystem
-pub fn for_host_file_system(path: &Path) -> Path {
-    match path
-        .get_file_system()
-        .as_any()
-        .downcast_ref::<RemoteActionFileSystem>()
-    {
-        Some(remote_action_file_system) => Path::create(
-            path.as_fragment().clone(),
-            remote_action_file_system.get_local_file_system(),
-        )
-        .for_host_file_system(),
-        None => path.for_host_file_system(),
-    }
-}
-
 /// The action file system of build without the bytes: the local file system, with the metadata
 /// of the action's inputs and of its own remote outputs layered on top.
 ///
@@ -204,13 +177,6 @@ pub struct RemoteActionFileSystem {
     local_fs: FileSystemRef,
     /// `remoteOutputTree`.
     remote_output_tree: Arc<RemoteInMemoryFileSystem>,
-    /// The files of `remote_output_tree`, kept for the callers of
-    /// [`RemoteActionFileSystem::get_remote_output_tree`].
-    ///
-    /// PORT: transitional. `RemoteOutputTree` (owned by another file) is a flat map of injected
-    /// files that callers outside this file still read; the remote output tree proper is
-    /// `remote_output_tree`. This copy follows every injection, delete and rename of a file.
-    remote_output_files: RemoteOutputTree,
     /// `lostInputs`: concurrent access is rare and most builds don't have lost inputs.
     lost_inputs: parking_lot::Mutex<Vec<LostArtifacts>>,
     /// `action` (`updateContext`).
@@ -265,7 +231,6 @@ impl RemoteActionFileSystem {
             input_fetcher,
             local_fs,
             remote_output_tree,
-            remote_output_files: RemoteOutputTree::new(),
             lost_inputs: parking_lot::Mutex::new(Vec::new()),
             action: parking_lot::Mutex::new(None),
         })
@@ -289,12 +254,6 @@ impl RemoteActionFileSystem {
     /// `getPath(fragment)`: the path on this file system.
     pub fn get_path(&self, fragment: &PathFragment) -> Path {
         Path::create(fragment.clone(), &self.as_file_system())
-    }
-
-    /// The injected files of the remote output tree, as a flat map (see the field's PORT note).
-    /// [`Self::get_remote_in_memory_file_system`] is Java's `getRemoteOutputTree()`.
-    pub fn get_remote_output_tree(&self) -> &RemoteOutputTree {
-        &self.remote_output_files
     }
 
     /// `getRemoteOutputTree()`: the in-memory file system of the outputs of this action that
@@ -346,10 +305,7 @@ impl RemoteActionFileSystem {
             expiration_time_millis,
             in_memory_output,
         );
-        self.remote_output_tree
-            .inject_file(path, metadata.clone())?;
-        self.remote_output_files.inject_file(path.clone(), metadata);
-        Ok(())
+        self.remote_output_tree.inject_file(path, metadata)
     }
 
     /// `isRemote(path)`: whether the file at `path` (following symlinks) is known only by its
@@ -758,27 +714,19 @@ impl RemoteActionFileSystem {
             Err(e) => Err(e),
         }
     }
-
-    /// Moves the files of the flat copy (`remote_output_files`) after a rename of `src` to `dst`
-    /// in the remote output tree.
-    fn rename_remote_output_files(&self, src: &PathFragment, dst: &PathFragment) {
-        let files = &self.remote_output_files;
-        files.remove(dst);
-        for (relative, _) in files.get_files_under(dst) {
-            files.remove(&dst.get_relative(&relative));
-        }
-        if let Some(metadata) = files.get_metadata(src) {
-            files.remove(src);
-            files.inject_file(dst.clone(), metadata);
-        }
-        for (relative, metadata) in files.get_files_under(src) {
-            files.remove(&src.get_relative(&relative));
-            files.inject_file(dst.get_relative(&relative), metadata);
-        }
-    }
 }
 
 impl FileSystem for RemoteActionFileSystem {
+    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:257 RemoteActionFileSystem.getHostFileSystem
+    fn get_host_file_system(&self) -> Option<FileSystemRef> {
+        // `localFs.getHostFileSystem()` (`None` there is the local file system itself).
+        Some(
+            self.local_fs
+                .get_host_file_system()
+                .unwrap_or_else(|| self.local_fs.clone()),
+        )
+    }
+
     fn get_digest_function(&self) -> DigestHashFunction {
         self.local_fs.get_digest_function()
     }
@@ -840,11 +788,7 @@ impl FileSystem for RemoteActionFileSystem {
 
         let mut deleted = self.local_fs.delete(&path)?;
         if self.is_output(&path) {
-            let remote_deleted = self.remote_output_tree.delete(&path)?;
-            if remote_deleted {
-                self.remote_output_files.remove(&path);
-            }
-            deleted = remote_deleted || deleted;
+            deleted = self.remote_output_tree.delete(&path)? || deleted;
         }
 
         Ok(deleted)
@@ -1092,10 +1036,7 @@ impl FileSystem for RemoteActionFileSystem {
         self.path_canonicalizer.clear_prefix(&dst_path);
 
         let remote_exception = match self.remote_output_tree.rename_to(&src_path, &dst_path) {
-            Ok(()) => {
-                self.rename_remote_output_files(&src_path, &dst_path);
-                None
-            }
+            Ok(()) => None,
             Err(e) if is_file_not_found(&e) => Some(e),
             Err(e) => return Err(e),
         };

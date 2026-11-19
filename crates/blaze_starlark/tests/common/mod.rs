@@ -53,7 +53,8 @@ pub fn context(
     ctx
 }
 
-/// Executes `src` as a .bzl file (with blaze_starlark's builtins) on an evaluation thread.
+/// Executes `src` as a .bzl file (with blaze_starlark's builtins) on an evaluation thread. The
+/// file's bytes are the UTF-8 of `src`, decoded as Blaze decodes source files (Latin-1).
 /// Returns the frozen module or error, plus recorded events.
 pub fn exec_with(
     src: &str,
@@ -66,6 +67,8 @@ pub fn exec_with(
         let ctx = context(Phase::BzlLoad, semantics.clone(), events.clone());
         let globals =
             NativeRegistry::with_blaze_starlark_builtins().build(FileKind::Bzl, &semantics);
+        // As Blaze reads a .bzl file: one char per byte (Java ParserInput.fromLatin1).
+        let src = blaze_util::string_encoding::latin1_decode(src.as_bytes()).into_owned();
         let r = eval::compile(FileKind::Bzl, "test.bzl", src)
             .and_then(|c| eval::exec_module(c, &globals, &loads, &ctx, &Default::default()));
         (r, events.take())

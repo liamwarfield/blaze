@@ -105,6 +105,141 @@ enum StringOrTuple<'v> {
     Tuple(UnpackTuple<&'v str>),
 }
 
+// BLAZE PATCH 0033: java.lang.Character, as net/starlark/java/eval/StringModule.java applies it to
+// each UTF-16 char of a string. Blaze's strings are "internal" (every char <= U+00FF, one per
+// byte), for which these are exact (JDK CharacterDataLatin1; checked against the JDK of Bazel
+// 9.3.2's install base). Chars above U+00FF never occur in Blaze; for them the nearest Rust
+// property stands in (U+0100..=U+FFFF), and a char above U+FFFF is a surrogate pair in Java,
+// which is neither a letter nor cased and maps to itself.
+
+/// BLAZE PATCH 0033: Java `Character.isLetter(char)`.
+fn java_is_letter(c: char) -> bool { // BLAZE PATCH 0033
+    match c as u32 { // BLAZE PATCH 0033
+        0..=0xff => matches!( // BLAZE PATCH 0033
+            c as u32, // BLAZE PATCH 0033
+            0x41..=0x5a | 0x61..=0x7a | 0xaa | 0xb5 | 0xba | 0xc0..=0xd6 | 0xd8..=0xf6 | 0xf8..=0xff // BLAZE PATCH 0033
+        ), // BLAZE PATCH 0033
+        0x100..=0xffff => c.is_alphabetic(), // BLAZE PATCH 0033
+        _ => false, // BLAZE PATCH 0033
+    } // BLAZE PATCH 0033
+} // BLAZE PATCH 0033
+
+/// BLAZE PATCH 0033: Java `Character.isUpperCase(char)`.
+fn java_is_upper_case(c: char) -> bool { // BLAZE PATCH 0033
+    match c as u32 { // BLAZE PATCH 0033
+        0..=0xff => matches!(c as u32, 0x41..=0x5a | 0xc0..=0xd6 | 0xd8..=0xde), // BLAZE PATCH 0033
+        0x100..=0xffff => c.is_uppercase(), // BLAZE PATCH 0033
+        _ => false, // BLAZE PATCH 0033
+    } // BLAZE PATCH 0033
+} // BLAZE PATCH 0033
+
+/// BLAZE PATCH 0033: Java `Character.isLowerCase(char)` (`ª`, `µ`, `º` and `ß` are lower case).
+fn java_is_lower_case(c: char) -> bool { // BLAZE PATCH 0033
+    match c as u32 { // BLAZE PATCH 0033
+        0..=0xff => matches!( // BLAZE PATCH 0033
+            c as u32, // BLAZE PATCH 0033
+            0x61..=0x7a | 0xaa | 0xb5 | 0xba | 0xdf..=0xf6 | 0xf8..=0xff // BLAZE PATCH 0033
+        ), // BLAZE PATCH 0033
+        0x100..=0xffff => c.is_lowercase(), // BLAZE PATCH 0033
+        _ => false, // BLAZE PATCH 0033
+    } // BLAZE PATCH 0033
+} // BLAZE PATCH 0033
+
+/// BLAZE PATCH 0033: Java `Character.toUpperCase(char)`: one char, so `ß` stays `ß`; `µ` becomes
+/// U+039C and `ÿ` U+0178, leaving Latin-1 exactly as in Java.
+fn java_to_upper_case(c: char) -> char { // BLAZE PATCH 0033
+    match c as u32 { // BLAZE PATCH 0033
+        0x61..=0x7a | 0xe0..=0xf6 | 0xf8..=0xfe => char::from_u32(c as u32 - 0x20).unwrap(), // BLAZE PATCH 0033
+        0xb5 => '\u{39c}', // BLAZE PATCH 0033
+        0xff => '\u{178}', // BLAZE PATCH 0033
+        0..=0xff => c, // BLAZE PATCH 0033
+        0x100..=0xffff => single_char(c.to_uppercase()).unwrap_or(c), // BLAZE PATCH 0033
+        _ => c, // BLAZE PATCH 0033
+    } // BLAZE PATCH 0033
+} // BLAZE PATCH 0033
+
+/// BLAZE PATCH 0033: Java `Character.toLowerCase(char)`.
+fn java_to_lower_case(c: char) -> char { // BLAZE PATCH 0033
+    match c as u32 { // BLAZE PATCH 0033
+        0x41..=0x5a | 0xc0..=0xd6 | 0xd8..=0xde => char::from_u32(c as u32 + 0x20).unwrap(), // BLAZE PATCH 0033
+        0..=0xff => c, // BLAZE PATCH 0033
+        0x100..=0xffff => single_char(c.to_lowercase()).unwrap_or(c), // BLAZE PATCH 0033
+        _ => c, // BLAZE PATCH 0033
+    } // BLAZE PATCH 0033
+} // BLAZE PATCH 0033
+
+/// BLAZE PATCH 0033: the mapping when it is a single char (Java's simple case mapping).
+fn single_char(mut it: impl Iterator<Item = char>) -> Option<char> { // BLAZE PATCH 0033
+    let c = it.next()?; // BLAZE PATCH 0033
+    if it.next().is_some() { None } else { Some(c) } // BLAZE PATCH 0033
+} // BLAZE PATCH 0033
+
+/// BLAZE PATCH 0033: Guava `CharMatcher.javaDigit()` (`Character.isDigit`; only `0`-`9` in Latin-1).
+fn java_is_digit(c: char) -> bool { // BLAZE PATCH 0033
+    match c as u32 { // BLAZE PATCH 0033
+        0..=0xff => c.is_ascii_digit(), // BLAZE PATCH 0033
+        0x100..=0xffff => c.is_numeric(), // BLAZE PATCH 0033
+        _ => false, // BLAZE PATCH 0033
+    } // BLAZE PATCH 0033
+} // BLAZE PATCH 0033
+
+/// BLAZE PATCH 0033: Guava `CharMatcher.whitespace()` (StringModule.java:878 `SPACE`): Unicode
+/// White_Space; in Latin-1 TAB..CR, space, U+0085 and U+00A0, not U+001C..U+001F.
+fn guava_is_whitespace(c: char) -> bool { // BLAZE PATCH 0033
+    matches!( // BLAZE PATCH 0033
+        c as u32, // BLAZE PATCH 0033
+        0x09..=0x0d // BLAZE PATCH 0033
+            | 0x20 // BLAZE PATCH 0033
+            | 0x85 // BLAZE PATCH 0033
+            | 0xa0 // BLAZE PATCH 0033
+            | 0x1680 // BLAZE PATCH 0033
+            | 0x2000..=0x200a // BLAZE PATCH 0033
+            | 0x2028 // BLAZE PATCH 0033
+            | 0x2029 // BLAZE PATCH 0033
+            | 0x202f // BLAZE PATCH 0033
+            | 0x205f // BLAZE PATCH 0033
+            | 0x3000 // BLAZE PATCH 0033
+    ) // BLAZE PATCH 0033
+} // BLAZE PATCH 0033
+
+/// BLAZE PATCH 0033: StringModule.java:854 `matches(str, matcher, requiresAtLeastOneCasedLetter)`
+/// (`CASED` is `[a-zA-Z]`).
+fn java_matches(s: &str, matcher: impl Fn(char) -> bool, requires_cased: bool) -> bool { // BLAZE PATCH 0033
+    if s.is_empty() { // BLAZE PATCH 0033
+        return false; // BLAZE PATCH 0033
+    } // BLAZE PATCH 0033
+    let mut cased = false; // BLAZE PATCH 0033
+    for c in s.chars() { // BLAZE PATCH 0033
+        if !matcher(c) { // BLAZE PATCH 0033
+            return false; // BLAZE PATCH 0033
+        } // BLAZE PATCH 0033
+        cased |= c.is_ascii_alphabetic(); // BLAZE PATCH 0033
+    } // BLAZE PATCH 0033
+    !requires_cased || cased // BLAZE PATCH 0033
+} // BLAZE PATCH 0033
+
+/// BLAZE PATCH 0034: StringModule.java:196 `LATIN1_WHITESPACE` (the flag off) and :206
+/// `ASCII_WHITESPACE` (the flag on): what `strip`/`lstrip`/`rstrip` remove without `chars`.
+fn java_strip_whitespace(c: char, utf8_byte_strings: bool) -> bool { // BLAZE PATCH 0034
+    match c as u32 { // BLAZE PATCH 0034
+        0x09..=0x0d | 0x1c..=0x1f | 0x20 => true, // BLAZE PATCH 0034
+        0x85 | 0xa0 => !utf8_byte_strings, // BLAZE PATCH 0034
+        _ => false, // BLAZE PATCH 0034
+    } // BLAZE PATCH 0034
+} // BLAZE PATCH 0034
+
+/// BLAZE PATCH 0034: StringModule.java:326 `matcher(charsOrNone, semantics)`.
+fn java_strip_matcher<'a>( // BLAZE PATCH 0034
+    chars: Option<&'a str>, // BLAZE PATCH 0034
+    eval: &Evaluator, // BLAZE PATCH 0034
+) -> impl Fn(char) -> bool + 'a { // BLAZE PATCH 0034
+    let utf8_byte_strings = eval.utf8_byte_strings(); // BLAZE PATCH 0034
+    move |c| match chars { // BLAZE PATCH 0034
+        Some(s) => s.contains(c), // BLAZE PATCH 0034
+        None => java_strip_whitespace(c, utf8_byte_strings), // BLAZE PATCH 0034
+    } // BLAZE PATCH 0034
+} // BLAZE PATCH 0034
+
 #[starlark_module]
 pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// [string.elems](
@@ -146,16 +281,16 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "".capitalize() == ""
     /// # "#);
     /// ```
+    // BLAZE PATCH 0033: Java StringModule.java:526 capitalize:
+    // `Character.toUpperCase(self.charAt(0)) + Ascii.toLowerCase(self.substring(1))`.
     #[starlark(speculative_exec_safe)]
     fn capitalize(this: &str) -> anyhow::Result<String> {
-        let mut result = String::with_capacity(this.len());
-        for (i, c) in this.chars().enumerate() {
-            if i == 0 {
-                result.extend(c.to_uppercase())
-            } else {
-                result.extend(c.to_lowercase())
-            }
-        }
+        let mut chars = this.chars(); // BLAZE PATCH 0033
+        let mut result = String::with_capacity(this.len()); // BLAZE PATCH 0033
+        if let Some(first) = chars.next() { // BLAZE PATCH 0033
+            result.push(java_to_upper_case(first)); // BLAZE PATCH 0033
+            result.push_str(&chars.as_str().to_ascii_lowercase()); // BLAZE PATCH 0033
+        } // BLAZE PATCH 0033
         Ok(result)
     }
 
@@ -411,17 +546,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "Catch-22".isalnum() == False
     /// # "#);
     /// ```
+    // BLAZE PATCH 0033: Java StringModule.java:767 isAlnum: `[a-zA-Z]` or javaDigit.
     #[starlark(speculative_exec_safe)]
     fn isalnum(this: &str) -> anyhow::Result<bool> {
-        if this.is_empty() {
-            return Ok(false);
-        }
-        for c in this.chars() {
-            if !c.is_alphanumeric() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        Ok(java_matches(this, |c| c.is_ascii_alphabetic() || java_is_digit(c), false)) // BLAZE PATCH 0033
     }
 
     /// [string.isalpha](
@@ -438,17 +566,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "".isalpha() == False
     /// # "#);
     /// ```
+    // BLAZE PATCH 0033: Java StringModule.java:757 isAlpha: `[a-zA-Z]`.
     #[starlark(speculative_exec_safe)]
     fn isalpha(this: &str) -> anyhow::Result<bool> {
-        if this.is_empty() {
-            return Ok(false);
-        }
-        for c in this.chars() {
-            if !c.is_alphabetic() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        Ok(java_matches(this, |c| c.is_ascii_alphabetic(), false)) // BLAZE PATCH 0033
     }
 
     /// [string.isdigit](
@@ -465,17 +586,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "".isdigit() == False
     /// # "#);
     /// ```
+    // BLAZE PATCH 0033: Java StringModule.java:777 isDigit: javaDigit.
     #[starlark(speculative_exec_safe)]
     fn isdigit(this: &str) -> anyhow::Result<bool> {
-        if this.is_empty() {
-            return Ok(false);
-        }
-        for c in this.chars() {
-            if !c.is_numeric() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        Ok(java_matches(this, java_is_digit, false)) // BLAZE PATCH 0033
     }
 
     /// [string.islower](
@@ -492,17 +606,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "123".islower() == False
     /// # "#);
     /// ```
+    // BLAZE PATCH 0033: Java StringModule.java:797 isLower: no `[A-Z]`, at least one `[a-zA-Z]`.
     #[starlark(speculative_exec_safe)]
     fn islower(this: &str) -> anyhow::Result<bool> {
-        let mut result = false;
-        for c in this.chars() {
-            if c.is_uppercase() {
-                return Ok(false);
-            } else if c.is_lowercase() {
-                result = true;
-            }
-        }
-        Ok(result)
+        Ok(java_matches(this, |c| !c.is_ascii_uppercase(), true)) // BLAZE PATCH 0033
     }
 
     /// [string.isspace](
@@ -519,17 +626,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "".isspace() == False
     /// # "#);
     /// ```
+    // BLAZE PATCH 0033: Java StringModule.java:787 isSpace: Guava `CharMatcher.whitespace()`.
     #[starlark(speculative_exec_safe)]
     fn isspace(this: &str) -> anyhow::Result<bool> {
-        if this.is_empty() {
-            return Ok(false);
-        }
-        for c in this.chars() {
-            if !c.is_whitespace() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        Ok(java_matches(this, guava_is_whitespace, false)) // BLAZE PATCH 0033
     }
 
     /// [string.istitle](
@@ -548,29 +648,37 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "123".istitle() == False
     /// # "#);
     /// ```
+    // BLAZE PATCH 0033: Java StringModule.java:821 isTitle, right to left with the `[a-z]` /
+    // `[A-Z]` matchers.
     #[starlark(speculative_exec_safe)]
     fn istitle(this: &str) -> anyhow::Result<bool> {
-        let mut last_space = true;
-        let mut result = false;
-
-        for c in this.chars() {
-            if !c.is_alphabetic() {
-                last_space = true;
-            } else {
-                if last_space {
-                    if c.is_lowercase() {
-                        return Ok(false);
-                    }
-                } else if c.is_uppercase() {
-                    return Ok(false);
-                }
-                if c.is_alphabetic() {
-                    result = true;
-                }
-                last_space = false;
-            }
-        }
-        Ok(result)
+        if this.is_empty() { // BLAZE PATCH 0033
+            return Ok(false); // BLAZE PATCH 0033
+        } // BLAZE PATCH 0033
+        // 0: any char; 1: CASED (`[a-zA-Z]`); 2: not CASED.
+        let mut matcher = 0; // BLAZE PATCH 0033
+        let mut left_most_cased = ' '; // BLAZE PATCH 0033
+        for c in this.chars().rev() { // BLAZE PATCH 0033
+            let ok = match matcher { // BLAZE PATCH 0033
+                1 => c.is_ascii_alphabetic(), // BLAZE PATCH 0033
+                2 => !c.is_ascii_alphabetic(), // BLAZE PATCH 0033
+                _ => true, // BLAZE PATCH 0033
+            }; // BLAZE PATCH 0033
+            if !ok { // BLAZE PATCH 0033
+                return Ok(false); // BLAZE PATCH 0033
+            } // BLAZE PATCH 0033
+            matcher = if c.is_ascii_lowercase() { // BLAZE PATCH 0033
+                1 // BLAZE PATCH 0033
+            } else if c.is_ascii_uppercase() { // BLAZE PATCH 0033
+                2 // BLAZE PATCH 0033
+            } else { // BLAZE PATCH 0033
+                0 // BLAZE PATCH 0033
+            }; // BLAZE PATCH 0033
+            if c.is_ascii_alphabetic() { // BLAZE PATCH 0033
+                left_most_cased = c; // BLAZE PATCH 0033
+            } // BLAZE PATCH 0033
+        } // BLAZE PATCH 0033
+        Ok(left_most_cased.is_ascii_uppercase()) // BLAZE PATCH 0033
     }
 
     /// [string.isupper](
@@ -587,17 +695,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "123".isupper() == False
     /// # "#);
     /// ```
+    // BLAZE PATCH 0033: Java StringModule.java:808 isUpper: no `[a-z]`, at least one `[a-zA-Z]`.
     #[starlark(speculative_exec_safe)]
     fn isupper(this: &str) -> anyhow::Result<bool> {
-        let mut result = false;
-        for c in this.chars() {
-            if c.is_lowercase() {
-                return Ok(false);
-            } else if c.is_uppercase() {
-                result = true;
-            }
-        }
-        Ok(result)
+        Ok(java_matches(this, |c| !c.is_ascii_lowercase(), true)) // BLAZE PATCH 0033
     }
 
     /// [string.lower](
@@ -612,9 +713,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "Hello, World!".lower() == "hello, world!"
     /// # "#);
     /// ```
+    // BLAZE PATCH 0033: Java StringModule.java:174 lower: Guava `Ascii.toLowerCase`.
     #[starlark(speculative_exec_safe)]
     fn lower(this: &str) -> anyhow::Result<String> {
-        Ok(this.to_lowercase())
+        Ok(this.to_ascii_lowercase()) // BLAZE PATCH 0033
     }
 
     /// [string.join](
@@ -690,20 +792,19 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "x!hello  ".lstrip("!x ") == "hello  "
     /// # "#);
     /// ```
-    #[starlark(speculative_exec_safe)]
+    // BLAZE PATCH 0034: Java StringModule.java:256 lstrip: without `chars`, the whitespace of
+    // `StringModule.matcher` (ASCII when the byte-strings flag is on, Latin-1 when off). Not
+    // speculative: the result depends on the evaluator's flag.
     fn lstrip<'v>(
         this: StringValue<'v>,
         #[starlark(require = pos)] chars: Option<&str>,
-        heap: Heap<'v>,
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0034
     ) -> anyhow::Result<StringValue<'v>> {
-        let res = match chars {
-            None => this.trim_start(),
-            Some(s) => this.trim_start_matches(|c| s.contains(c)),
-        };
+        let res = this.trim_start_matches(java_strip_matcher(chars, eval)); // BLAZE PATCH 0034
         if res.len() == this.len() {
             Ok(this)
         } else {
-            Ok(heap.alloc_str(res))
+            Ok(eval.heap().alloc_str(res)) // BLAZE PATCH 0034
         }
     }
 
@@ -967,20 +1068,19 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "  hello!x".rstrip(" x!") == "  hello"
     /// # "#);
     /// ```
-    #[starlark(speculative_exec_safe)]
+    // BLAZE PATCH 0034: Java StringModule.java:286 rstrip: without `chars`, the whitespace of
+    // `StringModule.matcher` (ASCII when the byte-strings flag is on, Latin-1 when off). Not
+    // speculative: the result depends on the evaluator's flag.
     fn rstrip<'v>(
         this: StringValue<'v>,
         #[starlark(require = pos)] chars: Option<&str>,
-        heap: Heap<'v>,
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0034
     ) -> anyhow::Result<StringValue<'v>> {
-        let res = match chars {
-            None => this.trim_end(),
-            Some(s) => this.trim_end_matches(|c| s.contains(c)),
-        };
+        let res = this.trim_end_matches(java_strip_matcher(chars, eval)); // BLAZE PATCH 0034
         if res.len() == this.len() {
             Ok(this)
         } else {
-            Ok(heap.alloc_str(res))
+            Ok(eval.heap().alloc_str(res)) // BLAZE PATCH 0034
         }
     }
 
@@ -1161,20 +1261,19 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "xxhello!!".strip("x!") == "hello"
     /// # "#);
     /// ```
-    #[starlark(speculative_exec_safe)]
+    // BLAZE PATCH 0034: Java StringModule.java:317 strip: without `chars`, the whitespace of
+    // `StringModule.matcher` (ASCII when the byte-strings flag is on, Latin-1 when off). Not
+    // speculative: the result depends on the evaluator's flag.
     fn strip<'v>(
         this: StringValue<'v>,
         #[starlark(require = pos)] chars: Option<&str>,
-        heap: Heap<'v>,
+        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0034
     ) -> anyhow::Result<StringValue<'v>> {
-        let res = match chars {
-            None => this.trim(),
-            Some(s) => this.trim_matches(|c| s.contains(c)),
-        };
+        let res = this.trim_matches(java_strip_matcher(chars, eval)); // BLAZE PATCH 0034
         if res.len() == this.len() {
             Ok(this)
         } else {
-            Ok(heap.alloc_str(res))
+            Ok(eval.heap().alloc_str(res)) // BLAZE PATCH 0034
         }
     }
 
@@ -1193,22 +1292,23 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "hElLo, WoRlD!".title() == "Hello, World!"
     /// # "#);
     /// ```
+    // BLAZE PATCH 0033: Java StringModule.java:542 title, with `Character` per char.
     #[starlark(speculative_exec_safe)]
     fn title(this: &str) -> anyhow::Result<String> {
-        let mut last_space = true;
+        let mut previous_was_letter = false; // BLAZE PATCH 0033
         let mut result = String::with_capacity(this.len());
         for c in this.chars() {
-            if !c.is_alphabetic() {
-                last_space = true;
-                result.extend(c.to_lowercase());
-            } else {
-                if last_space {
-                    result.extend(c.to_uppercase())
-                } else {
-                    result.extend(c.to_lowercase())
-                }
-                last_space = false;
-            }
+            let current_is_letter = java_is_letter(c); // BLAZE PATCH 0033
+            let mut d = c; // BLAZE PATCH 0033
+            if current_is_letter { // BLAZE PATCH 0033
+                if previous_was_letter && java_is_upper_case(c) { // BLAZE PATCH 0033
+                    d = java_to_lower_case(c); // BLAZE PATCH 0033
+                } else if !previous_was_letter && java_is_lower_case(c) { // BLAZE PATCH 0033
+                    d = java_to_upper_case(c); // BLAZE PATCH 0033
+                } // BLAZE PATCH 0033
+            } // BLAZE PATCH 0033
+            result.push(d); // BLAZE PATCH 0033
+            previous_was_letter = current_is_letter; // BLAZE PATCH 0033
         }
         Ok(result)
     }
@@ -1225,9 +1325,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "Hello, World!".upper() == "HELLO, WORLD!"
     /// # "#);
     /// ```
+    // BLAZE PATCH 0033: Java StringModule.java:182 upper: Guava `Ascii.toUpperCase`.
     #[starlark(speculative_exec_safe)]
     fn upper(this: &str) -> anyhow::Result<String> {
-        Ok(this.to_uppercase())
+        Ok(this.to_ascii_uppercase()) // BLAZE PATCH 0033
     }
 
     /// [string.removeprefix](

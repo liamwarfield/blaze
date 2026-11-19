@@ -3,6 +3,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::Read;
 
+use blaze_util::string_encoding::latin1_decode;
+
 use super::netrc::{Netrc, NetrcCredential};
 use crate::errors::IoException;
 
@@ -77,10 +79,8 @@ impl TokenStream {
 pub fn parse_and_close(mut input: impl Read) -> Result<Netrc, IoException> {
     let mut bytes = Vec::new();
     input.read_to_end(&mut bytes)?;
-    // PORT: StringEncoding identity; the ISO-8859-1 reading keeps raw bytes, which Rust holds as
-    // UTF-8 text (lossy only for invalid UTF-8).
-    // PORT: byte-strings (Java reads .netrc as ISO-8859-1, keeping the raw bytes)
-    let content = String::from_utf8_lossy(&bytes);
+    // Java: new InputStreamReader(inputStream, ISO_8859_1)
+    let content = latin1_decode(&bytes);
     parse(&mut TokenStream::new(&content))
 }
 

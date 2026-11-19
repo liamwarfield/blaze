@@ -460,6 +460,7 @@ fn parse_action_result_metadata(
     // Java: checkNotNull(combinedCache, "combinedCache can't be null")
     // PORT: a reference cannot be null; the callers hold an `Option` and check it.
 
+    // PORT: identical to Bazel, not hardened (decision 2026-11-19)
     // SECURITY: the paths of the ActionResult (`OutputDirectory.path`, `OutputFile.path`,
     // `OutputSymlink.path`) are resolved with `RemotePathResolver.outputPathToLocalPath`, which
     // is `base.getRelative(outputPath)`: `..` segments are normalized and an absolute path is

@@ -155,13 +155,11 @@ pub fn max_command_length(execution_os: OS) -> usize {
     }
 }
 
-/// Java `command.length()` of the command string. Starlark and BUILD-file strings are Bazel
-/// "internal" strings (Latin-1 Java strings holding UTF-8 bytes, `StringEncoding`), so the
-/// length Java compares is the number of UTF-8 bytes (analysis review R2-5).
-// PORT: StringEncoding identity
+/// Java `command.length()` of the command string, an internal string: its chars (one per byte
+/// of the original text; analysis review R2-5).
 // Java: com/google/devtools/build/lib/analysis/CommandHelper.java:262 CommandHelper.buildCommandLine
 pub(crate) fn java_string_length(s: &str) -> usize {
-    s.len()
+    s.chars().count()
 }
 
 /// If `command` is too long, creates a helper shell script that runs that command.
@@ -602,11 +600,14 @@ mod tests {
         );
     }
 
-    // Java: the internal string of "é" (UTF-8 C3 A9) is two Latin-1 chars; of U+1F600 four.
+    // Java: the internal string of "é" (UTF-8 C3 A9) is two Latin-1 chars; of U+1F437 four; a
+    // raw byte FF is one.
     #[test]
     fn java_string_length_counts_internal_string_chars() {
+        let i = |s: &[u8]| blaze_util::string_encoding::latin1_decode(s).into_owned();
         assert_eq!(java_string_length("abc"), 3);
-        assert_eq!(java_string_length("\u{e9}"), 2);
-        assert_eq!(java_string_length("\u{1F600}"), 4);
+        assert_eq!(java_string_length(&i("\u{e9}".as_bytes())), 2);
+        assert_eq!(java_string_length(&i("\u{1F437}".as_bytes())), 4);
+        assert_eq!(java_string_length(&i(b"\xff")), 1);
     }
 }

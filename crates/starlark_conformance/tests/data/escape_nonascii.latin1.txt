@@ -1,0 +1,1 @@
+SYNTAX escape_nonascii.star:1:7: invalid escape sequence: \\\xc3. Use '\\\\' to insert '\\'.

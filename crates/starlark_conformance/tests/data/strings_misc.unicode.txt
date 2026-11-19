@@ -1,0 +1,20 @@
+1|2|2|False|1|1|1|2
+"\\x00\\x01\\nSS4\\x008\xff"|2
+A\xe9\u{d83d}\u{dc37}|a\xc9|\u{4e2d}|\xc9t\xe9|\u{0178}|\u{039c}
+\u{0178}|\u{039c}|\xdf|\u{0178}\xb5\xdf|A\xff
+\xff|\xb5|\xdf|\xc0|\xd8\xdf
+\xe9|\xc5|a|a\x85|\x85a|a|a
+["a\xc2\x85b", "c", "d", "e"]|["a\xc2\x85b"]
+\xe9|\u{d83d}\u{dc37}|\u{fffd}|\u{fffd}\u{fffd}|\xe9|A\xe9x
+1|2|["\xe9", {"\xe9": "\u{0123}"}]
+"\xe9"|"\xff"|"\\u0001\x7f\x80"|{"\xe9":"\u{d83d}\u{dc37}"}|[\x0a\xff\xa0"\xe9"\x0a\xff]
+{\x0a\x09"\xe9": [\x0a\x09\x091\x0a\x09]\x0a}|dflt
+["\xe9", "\\x01"]|\xe9|"\xe9"|\xe9|1|{"\xff": "\\t"}
+233|1772442|8160|["a", "z", "\xe9", "\xff", "\u{d83d}\u{dc37}"]|False
+["\xe9", "\u{d83d}", "\u{dc37}"]|\xe9|\u{dc37}|a\u{d83d}|0|["a\u{20ac}b"]
+("\xe9", "", "")|\xe9|\xe9|4|2|2
+\xe9\xe9\xe9|3|\xe9|2%
+12|True|False|True|False|False
+True|True|False|True|False|False
+\\\xe9|2|a\\\x0ab|ab|a\x0ab|1
+1.5|\xe9|True

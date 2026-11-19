@@ -110,3 +110,20 @@ fn convert_label() {
         Label::parse_canonical("@quux//baz:bar").unwrap()
     );
 }
+
+// Not a Java test: `LicenseType.valueOf(str.toUpperCase(Locale.ENGLISH))` maps the chars of the
+// internal string, so the byte DF (U+00DF, `ß`, written `\337` in a BUILD file) upper-cases to
+// `SS`; `é` (C3 A9) stays non-ASCII and is invalid.
+#[test]
+fn parse_license_upper_cases_latin1_chars_as_java() {
+    assert_eq!(
+        License::parse_license(&["permi\u{df}ive".to_owned()]).unwrap(),
+        License::parse_license(&["permissive".to_owned()]).unwrap()
+    );
+    assert_eq!(
+        License::parse_license(&["notic\u{c3}\u{a9}".to_owned()])
+            .unwrap_err()
+            .0,
+        "invalid license type: 'notic\u{c3}\u{a9}'"
+    );
+}

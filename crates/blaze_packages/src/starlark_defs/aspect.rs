@@ -615,21 +615,12 @@ fn starlark_int_parse(s: &str, base: i32) -> Result<i64, String> {
     }
     let mut magnitude: i128 = 0;
     for c in digits.chars() {
-        let digit = if c.is_ascii() {
-            match c.to_digit(base as u32) {
-                Some(d) => d,
-                None => return Err(invalid_literal()),
-            }
-        } else if c.is_numeric() {
-            // PORT: Character.digit also accepts non-ASCII Unicode digits.
-            blaze_util::unported!(
-                "Character.digit",
-                "non-ASCII digit {:?} in integer {:?}",
-                c,
-                string_for_errors
-            )
-        } else {
-            return Err(invalid_literal());
+        // `Character.digit(c, base)`: the string is internal, so `c` is a Latin-1 char, and no
+        // char of U+0080..U+00FF is a Java digit (`²`, U+00B2, is `No`, not `Nd`; the
+        // full-width letters Character.digit accepts are above U+00FF).
+        let digit = match c.to_digit(base as u32) {
+            Some(d) if c.is_ascii() => d,
+            _ => return Err(invalid_literal()),
         };
         magnitude = magnitude * i128::from(base) + i128::from(digit);
         if magnitude > i128::from(u64::MAX) {
@@ -1330,5 +1321,21 @@ pub fn register_aspect(builder: &mut GlobalsBuilder) {
                 definition_cache: Mutex::new(HashMap::new()),
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Not a Java test: StarlarkInt.parse over an internal string. `²` is C2 B2 and the byte FF
+    // is U+00FF; neither is a Java digit, so both are invalid literals (not a crash).
+    #[test]
+    fn starlark_int_parse_rejects_latin1_non_digits() {
+        assert_eq!(starlark_int_parse("12", 0), Ok(12));
+        for s in ["1\u{c2}\u{b2}", "\u{ff}", "0x\u{c3}\u{a9}"] {
+            let e = starlark_int_parse(s, 0).unwrap_err();
+            assert!(e.starts_with("invalid base-"), "{s:?}: {e}");
+        }
     }
 }

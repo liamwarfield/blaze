@@ -137,16 +137,22 @@ fn detokenize_java_options(javac_opts: &[String]) -> Vec<String> {
 
 const SAFE_PUNCTUATION: &[u8] = b"@%-_+:,./";
 
-/// `Character.isLetterOrDigit(c)` for a Latin-1 char (Java holds Bazel's internal strings as
-/// Latin-1 chars, one per UTF-8 byte).
-fn is_latin1_letter_or_digit(b: u8) -> bool {
-    b.is_ascii_alphanumeric()
-        || b == 0xAA
-        || b == 0xB5
-        || b == 0xBA
-        || (0xC0..=0xD6).contains(&b)
-        || (0xD8..=0xF6).contains(&b)
-        || b >= 0xF8
+/// `Character.isLetterOrDigit(c)`: written out for Latin-1 (the chars of an internal string), as
+/// in `blaze_shell::shell_utils`.
+fn is_java_letter_or_digit(c: char) -> bool {
+    match c as u32 {
+        b @ 0..=0xFF => {
+            let b = b as u8;
+            b.is_ascii_alphanumeric()
+                || b == 0xAA
+                || b == 0xB5
+                || b == 0xBA
+                || (0xC0..=0xD6).contains(&b)
+                || (0xD8..=0xF6).contains(&b)
+                || b >= 0xF8
+        }
+        _ => c.is_alphanumeric(),
+    }
 }
 
 // Java: com/google/devtools/build/lib/shell/ShellUtils.java:36 ShellUtils.shellEscape
@@ -160,12 +166,10 @@ fn shell_escape(word: &str) -> String {
         // separate argument.
         return "''".to_string();
     }
-    // PORT: StringEncoding: Java iterates the internal (Latin-1) form, one char per UTF-8 byte,
-    // so the check is per byte.
-    for &c in word.as_bytes() {
+    for c in word.chars() {
         // We do this positively so as to be sure we don't inadvertently forget any unsafe
         // characters.
-        if !is_latin1_letter_or_digit(c) && !SAFE_PUNCTUATION.contains(&c) {
+        if !is_java_letter_or_digit(c) && !(c.is_ascii() && SAFE_PUNCTUATION.contains(&(c as u8))) {
             // replace() actually means "replace all".
             return format!("'{}'", word.replace('\'', "'\\''"));
         }
@@ -517,5 +521,19 @@ mod tests {
         assert_eq!(shell_escape("abc"), "abc");
         assert_eq!(shell_escape("a b"), "'a b'");
         assert_eq!(shell_escape("a'b"), "'a'\\''b'");
+    }
+
+    // Blaze: Java tests each char of the internal string with Character.isLetterOrDigit. "ê"
+    // (C3 AA) is the chars U+00C3 and U+00AA, both letters: not quoted. "é" (C3 A9): U+00A9 is
+    // not a letter: quoted. "🐷" (F0 9F 90 B7) and a byte FF.
+    #[test]
+    fn shell_escape_tests_latin1_chars_of_internal_strings() {
+        assert_eq!(shell_escape("\u{c3}\u{aa}"), "\u{c3}\u{aa}");
+        assert_eq!(shell_escape("\u{c3}\u{a9}"), "'\u{c3}\u{a9}'");
+        assert_eq!(
+            shell_escape("\u{f0}\u{9f}\u{90}\u{b7}"),
+            "'\u{f0}\u{9f}\u{90}\u{b7}'"
+        );
+        assert_eq!(shell_escape("\u{ff}"), "\u{ff}");
     }
 }

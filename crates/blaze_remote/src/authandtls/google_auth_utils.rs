@@ -200,6 +200,8 @@ pub fn new_channel(
             return Err(failed_to_connect(&target_url, "target has no authority"));
         }
     };
+    // The client certificate rustls refused when the TLS configuration was built (see below).
+    let mut rejected_client_certificate: Option<String> = None;
     if let Some(mut ssl_context) = ssl_context {
         // builder.sslContext(sslContext);
         if let Some(tls_authority_override) = &options.tls_authority_override {
@@ -229,18 +231,56 @@ pub fn new_channel(
         // PORT: Java builds the `SslContext` before the channel builder
         // (`sslContextBuilder.build()` in `createSSlContext`); rustls builds its configuration
         // here, so its failures carry the text of that `catch`.
-        builder = builder.tls_config(ssl_context).map_err(|e| {
-            io_exception(format!(
-                "Failed to init TLS infrastructure: {}",
-                error_chain(&e)
-            ))
-        })?;
+        let has_client_certificate =
+            options.tls_client_certificate.is_some() && options.tls_client_key.is_some();
+        builder = match builder.clone().tls_config(ssl_context) {
+            Ok(builder) => builder,
+            Err(e)
+                if has_client_certificate
+                    && create_ssl_context(options.tls_certificate.as_deref(), None, None)
+                        .and_then(|without_identity| {
+                            builder
+                                .clone()
+                                .tls_config(without_identity)
+                                .map_err(|e| io_exception(e.to_string()))
+                        })
+                        .is_ok() =>
+            {
+                // PORT: rustls checks the client certificate when the configuration is built
+                // (`with_client_auth_cert` parses it; it refuses an X.509 v1 certificate, root
+                // ruling 2026-11-19: no custom verifier, fail closed), where Java's
+                // `keyManager` / `build()` accept it and certificates are only judged in the
+                // handshake. The rejection is therefore reported as a handshake failure of
+                // every connection (a transport error: the capabilities check fails with it),
+                // not as a "Failed to init TLS infrastructure" error of the channel.
+                rejected_client_certificate = Some(innermost_message(&e));
+                builder
+            }
+            Err(e) => {
+                return Err(io_exception(format!(
+                    "Failed to init TLS infrastructure: {}",
+                    error_chain(&e)
+                )));
+            }
+        };
     }
     // return builder.build();
     // PORT: `connect_lazy` needs a runtime context for the channel's background task.
     let channel = {
         let _guard = crate::runtime::runtime().enter();
-        builder.connect_lazy()
+        match rejected_client_certificate {
+            Some(message) => {
+                builder.connect_with_connector_lazy(tower::service_fn(move |_uri: http::Uri| {
+                    let message = message.clone();
+                    async move {
+                        Err::<hyper_util::rt::TokioIo<tokio::net::TcpStream>, io::Error>(
+                            io::Error::new(io::ErrorKind::InvalidData, message),
+                        )
+                    }
+                }))
+            }
+            None => builder.connect_lazy(),
+        }
     };
     Ok(ManagedChannel {
         channel,
@@ -263,6 +303,15 @@ fn to_int_exact(seconds: u64, target_url: &str) -> io::Result<u64> {
 }
 
 /// The message of an error and of its sources (`Throwable.getMessage()` of a wrapped cause).
+/// The message of the innermost error of `e`'s source chain (rustls' own text).
+fn innermost_message(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut current = e;
+    while let Some(s) = current.source() {
+        current = s;
+    }
+    current.to_string()
+}
+
 fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
     let mut message = e.to_string();
     let mut source = e.source();

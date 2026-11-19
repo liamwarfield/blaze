@@ -1,17 +1,12 @@
-//! Spike for docs/research/07-byte-strings.md, option A ("internal" Latin-1 strings).
-//!
-//! Bazel 9.3.2 reads BUILD/.bzl files and `repository_ctx.read` results as Latin-1, so every
-//! Starlark string element is one byte of the UTF-8 file (`--internal_starlark_utf_8_byte_strings`
-//! defaults to true). Option A does the same in Blaze: decode source and file bytes as Latin-1
-//! into a Rust `String` (one `char` <= U+00FF per byte) and encode back to bytes at the I/O
-//! boundaries. starlark-rust then sees code points that *are* bytes.
+//! Byte strings: Blaze reads Starlark sources and `repository_ctx.read` results one char per
+//! byte (Java `ParserInput.fromLatin1`, `readContent(path, ISO_8859_1)`), so every Starlark
+//! string element is one byte of the UTF-8 file, as in Bazel 9.3.2
+//! (`--internal_starlark_utf_8_byte_strings`, default true; docs/research/07-byte-strings.md).
 //!
 //! The cases are the lines of `scripts/bytes/workspace/cases.bzl`; expected values come from the
 //! oracle (`scripts/bytes/run`, Bazel 9.3.2, 2026-11-18; see `ORACLE`). Each case is evaluated in
-//! its own module twice: `Mode::Utf8` (Blaze today) and `Mode::Latin1` (option A, no starlark-rust
-//! patch). `LATIN1_GAPS` lists the cases option A still gets wrong; each needs a patch named in
-//! the research note. The test pins both lists, so a patch that fixes a gap fails it until the
-//! list is updated.
+//! its own module through blaze_starlark and must match the oracle (the remaining gaps were
+//! closed by starlark-rust patches 0033-0035 and blaze_starlark's `json.decode`).
 //!
 //! aspect_tools_telemetry's `sha1.bzl` and bazel_lib's `lib/private/strings.bzl` are third-party
 //! files; the test takes them from the workspace that `scripts/bytes/run` writes
@@ -29,6 +24,9 @@ use blaze_starlark::env::NativeRegistry;
 use blaze_starlark::eval;
 use blaze_starlark::loader::LoadMap;
 use blaze_starlark::thread::CollectingEvents;
+use blaze_util::string_encoding::internal_to_platform;
+use blaze_util::string_encoding::latin1_decode;
+use blaze_util::string_encoding::latin1_encode;
 use starlark::environment::FrozenModule;
 use starlark::environment::GlobalsBuilder;
 use starlark::starlark_module;
@@ -119,134 +117,17 @@ const ORACLE: &[(&str, &str)] = &[
     ("sha1_readme", "af20f6999927fe003d3ee76f76dc8ae5918a0a86"),
 ];
 
-/// Cases option A (Latin-1 decoding alone, stock vendored starlark-rust and Blaze json) still
-/// gets wrong, with the patch that fixes each (07-byte-strings.md section 4).
-const LATIN1_GAPS: &[(&str, &str)] = &[
-    (
-        "islower_ae",
-        "islower()/isupper(): ASCII [a-z]/[A-Z] matchers (StringModule.java:873)",
-    ),
-    (
-        "json_decode_len",
-        "json.decode: \\u escapes appended as UTF-8 bytes (Json.java:563)",
-    ),
-    (
-        "json_decode_lone",
-        "json.decode: \\u escapes appended as UTF-8 bytes (Json.java:563)",
-    ),
-    (
-        "json_decode_pair",
-        "json.decode: \\u escapes appended as UTF-8 bytes (Json.java:563)",
-    ),
-    (
-        "json_decode_u00e9",
-        "json.decode: \\u escapes appended as UTF-8 bytes (Json.java:563)",
-    ),
-    (
-        "lower_E",
-        "lower(): ASCII only (Ascii.toLowerCase, StringModule.java:175)",
-    ),
-    (
-        "pct_s_r",
-        "repr: escape only chars < 0x20 (Printer.java:239 escapeCharacter)",
-    ),
-    (
-        "repr_e_ctl",
-        "repr: escape only chars < 0x20 (Printer.java:239 escapeCharacter)",
-    ),
-    (
-        "str_list",
-        "repr: escape only chars < 0x20 (Printer.java:239 escapeCharacter)",
-    ),
-    (
-        "strip_A_ring",
-        "strip(): ASCII whitespace under byte strings (StringModule.java:206)",
-    ),
-    (
-        "strip_nbsp",
-        "strip(): ASCII whitespace under byte strings (StringModule.java:206)",
-    ),
-    (
-        "upper_zh",
-        "upper(): ASCII only (Ascii.toUpperCase, StringModule.java:183)",
-    ),
-];
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Mode {
-    /// Blaze today: sources and file contents decoded as UTF-8.
-    Utf8,
-    /// Option A: sources and file contents decoded as Latin-1 (Java `ParserInput.fromLatin1`,
-    /// `readContent(path, ISO_8859_1)`).
-    Latin1,
-}
-
-/// Java `new String(bytes, ISO_8859_1)`: one char per byte.
-fn latin1_decode(bytes: &[u8]) -> String {
-    bytes.iter().map(|&b| b as char).collect()
-}
-
-/// Java `StringUnsafe.getInternalStringBytes` / `getBytes(ISO_8859_1)` of an internal string.
-fn latin1_encode(s: &str) -> Vec<u8> {
-    s.chars()
-        .map(|c| u8::try_from(c as u32).expect("internal string holds a char above U+00FF"))
-        .collect()
-}
-
-fn decode(mode: Mode, bytes: &[u8]) -> String {
-    match mode {
-        Mode::Utf8 => String::from_utf8(bytes.to_vec()).expect("UTF-8 source"),
-        Mode::Latin1 => latin1_decode(bytes),
-    }
-}
-
-fn encode(mode: Mode, s: &str) -> Vec<u8> {
-    match mode {
-        Mode::Utf8 => s.as_bytes().to_vec(),
-        Mode::Latin1 => latin1_encode(s),
-    }
-}
-
-// The repository_ctx boundary, once per mode (StarlarkBaseExternalContext.readFile/createFile).
+// The repository_ctx boundary (StarlarkBaseExternalContext.readFile/createFile).
 #[starlark_module]
-fn rctx_utf8(builder: &mut GlobalsBuilder) {
-    fn rctx_read(path: &str) -> anyhow::Result<String> {
-        Ok(decode(Mode::Utf8, &std::fs::read(path)?))
-    }
-    fn rctx_file(path: &str, content: &str) -> anyhow::Result<NoneType> {
-        std::fs::write(path, encode(Mode::Utf8, content))?;
-        Ok(NoneType)
-    }
-}
-
-#[starlark_module]
-fn rctx_latin1(builder: &mut GlobalsBuilder) {
+fn rctx(builder: &mut GlobalsBuilder) {
     fn rctx_read(path: &str) -> anyhow::Result<String> {
         // Java: StarlarkBaseExternalContext.java:1643 readContent(p.getPath(), ISO_8859_1)
-        Ok(decode(
-            Mode::Latin1,
-            &std::fs::read(latin1_encode(path).as_slice().to_os())?,
-        ))
+        Ok(latin1_decode(&std::fs::read(&*internal_to_platform(path))?).into_owned())
     }
     fn rctx_file(path: &str, content: &str) -> anyhow::Result<NoneType> {
         // Java: StarlarkBaseExternalContext.java:1516 getInternalStringBytes(content)
-        std::fs::write(
-            latin1_encode(path).as_slice().to_os(),
-            encode(Mode::Latin1, content),
-        )?;
+        std::fs::write(&*internal_to_platform(path), latin1_encode(content))?;
         Ok(NoneType)
-    }
-}
-
-/// Internal path bytes to an OS path (Java: the JVM's sun.jnu.encoding=ISO-8859-1 on Linux).
-trait ToOs {
-    fn to_os(&self) -> PathBuf;
-}
-
-impl ToOs for &[u8] {
-    fn to_os(&self) -> PathBuf {
-        use std::os::unix::ffi::OsStrExt;
-        PathBuf::from(std::ffi::OsStr::from_bytes(self))
     }
 }
 
@@ -264,29 +145,18 @@ fn template(name: &str) -> PathBuf {
 }
 
 struct Fixture {
-    mode: Mode,
     loads: LoadMap,
 }
 
-fn exec(
-    mode: Mode,
-    name: &str,
-    source: &[u8],
-    loads: &LoadMap,
-) -> Result<(FrozenModule, Vec<String>), String> {
+fn exec(name: &str, source: &[u8], loads: &LoadMap) -> Result<(FrozenModule, Vec<String>), String> {
     let semantics = StarlarkSemantics::default();
     let events = Arc::new(CollectingEvents::default());
     let ctx = ThreadContext::new(Phase::BzlLoad, Arc::new(semantics.clone()), events.clone());
     let mut registry = NativeRegistry::with_blaze_starlark_builtins();
-    registry.register(
-        &[FileKind::Bzl],
-        match mode {
-            Mode::Utf8 => rctx_utf8,
-            Mode::Latin1 => rctx_latin1,
-        },
-    );
+    registry.register(&[FileKind::Bzl], rctx);
     let globals = registry.build(FileKind::Bzl, &semantics);
-    let m = eval::compile(FileKind::Bzl, name, decode(mode, source))
+    // Java: BzlCompileFunction → ParserInput.fromLatin1
+    let m = eval::compile(FileKind::Bzl, name, latin1_decode(source).into_owned())
         .and_then(|c| eval::exec_module(c, &globals, loads, &ctx, &Default::default()))
         .map_err(|e| e.message)?;
     let printed = events.take().into_iter().map(|e| e.message).collect();
@@ -294,11 +164,10 @@ fn exec(
 }
 
 impl Fixture {
-    fn new(mode: Mode, ws: &std::path::Path) -> Fixture {
+    fn new(ws: &std::path::Path) -> Fixture {
         let read = |p: PathBuf| std::fs::read(&p).unwrap_or_else(|e| panic!("{p:?}: {e}"));
         let mut loads = LoadMap::new();
         let strings = exec(
-            mode,
             "strings.bzl",
             &read(ws.join("third_party/telemetry/strings.bzl")),
             &loads,
@@ -307,7 +176,6 @@ impl Fixture {
         .0;
         loads.insert("//third_party/telemetry:strings.bzl", strings);
         let sha1 = exec(
-            mode,
             "sha1.bzl",
             &read(ws.join("third_party/telemetry/sha1.bzl")),
             &loads,
@@ -316,17 +184,12 @@ impl Fixture {
         .0;
         loads.insert(":sha1_shim.bzl", sha1.clone());
         loads.insert("//:sha1_shim.bzl", sha1);
-        let util = exec(
-            mode,
-            "bytes_util.bzl",
-            &read(template("bytes_util.bzl")),
-            &loads,
-        )
-        .unwrap()
-        .0;
+        let util = exec("bytes_util.bzl", &read(template("bytes_util.bzl")), &loads)
+            .unwrap()
+            .0;
         loads.insert(":bytes_util.bzl", util.clone());
         loads.insert("//:bytes_util.bzl", util);
-        Fixture { mode, loads }
+        Fixture { loads }
     }
 
     /// `str(<expr>)` with cases.bzl's locals, or the error message.
@@ -335,7 +198,7 @@ impl Fixture {
             "load(\":bytes_util.bzl\", \"b\")\nload(\":sha1_shim.bzl\", \"sha1\")\n\
              pig = \"\u{1F437}\"\ne = \"\u{e9}\"\nr = \"%s\" % ({expr},)\n"
         );
-        let (m, _) = exec(self.mode, "case.bzl", src.as_bytes(), &self.loads)?;
+        let (m, _) = exec("case.bzl", src.as_bytes(), &self.loads)?;
         Ok(m.get("r").unwrap().value().to_str())
     }
 }
@@ -350,8 +213,8 @@ fn cases() -> Vec<(String, String)> {
         .collect()
 }
 
-fn run_mode(mode: Mode, ws: &std::path::Path) -> BTreeMap<String, Result<String, String>> {
-    let fixture = Fixture::new(mode, ws);
+fn run_cases(ws: &std::path::Path) -> BTreeMap<String, Result<String, String>> {
+    let fixture = Fixture::new(ws);
     cases()
         .into_iter()
         .map(|(name, expr)| {
@@ -372,44 +235,31 @@ fn mismatches(results: &BTreeMap<String, Result<String, String>>) -> Vec<String>
 }
 
 #[test]
-fn byte_string_cases_latin1_vs_utf8() {
+fn byte_string_cases_match_oracle() {
     let Some(ws) = workspace() else {
         eprintln!("SKIP: run scripts/bytes/run first (needs ~/.cache/blaze/work/bytes)");
         return;
     };
     eval::run_on_evaluation_thread(move || {
-        let utf8 = run_mode(Mode::Utf8, &ws);
-        let latin1 = run_mode(Mode::Latin1, &ws);
+        let got = run_cases(&ws);
         let oracle: BTreeMap<_, _> = ORACLE.iter().copied().collect();
-        for (name, got) in &latin1 {
+        for (name, got) in &got {
             eprintln!(
-                "{name:20} oracle={:45} latin1={:45?} utf8={:?}",
-                oracle[name.as_str()],
-                got,
-                utf8[name]
+                "{name:20} oracle={:45} blaze={got:?}",
+                oracle[name.as_str()]
             );
         }
-        let bad_latin1 = mismatches(&latin1);
-        let bad_utf8 = mismatches(&utf8);
+        let bad = mismatches(&got);
         eprintln!(
-            "cases: {}; Blaze today (UTF-8) matches {}; option A (Latin-1) matches {}",
+            "cases: {}; matching: {}",
             ORACLE.len(),
-            ORACLE.len() - bad_utf8.len(),
-            ORACLE.len() - bad_latin1.len()
+            ORACLE.len() - bad.len()
         );
-        let gaps: Vec<String> = LATIN1_GAPS.iter().map(|(n, _)| n.to_string()).collect();
         assert_eq!(
-            bad_latin1, gaps,
-            "option A mismatches differ from LATIN1_GAPS"
+            bad,
+            Vec::<String>::new(),
+            "cases that differ from the oracle"
         );
-        // The telemetry hash: wrong today, right under option A without any patch.
-        for name in ["sha1_e_nl", "sha1_pig", "sha1_readme"] {
-            assert!(
-                bad_utf8.contains(&name.to_owned()),
-                "{name} unexpectedly OK today"
-            );
-            assert!(!bad_latin1.contains(&name.to_owned()));
-        }
     });
 }
 
@@ -425,77 +275,48 @@ fn repository_ctx_read_hash_and_write() {
     let out_dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("byte_strings");
     std::fs::create_dir_all(&out_dir).unwrap();
     eval::run_on_evaluation_thread(move || {
-        let mut got = BTreeMap::new();
-        for mode in [Mode::Utf8, Mode::Latin1] {
-            let fixture = Fixture::new(mode, &ws);
-            let sliced = out_dir.join(format!("sliced-{mode:?}.txt"));
-            let prelude = format!(
-                "load(\":bytes_util.bzl\", \"b\")\nload(\":sha1_shim.bzl\", \"sha1\")\n\
-                 data = rctx_read({src:?})\n\
-                 head = \"\\n\".join(data.split(\"\\n\")[:4])\n",
-                src = template("readme_head.txt").to_str().unwrap(),
-            );
-            let src = format!(
-                "{prelude}read_len = len(data)\nfirst8 = str(b(data[:8]))\n\
-                 rctx_file({sliced:?}, data[:3])\n",
-                sliced = sliced.to_str().unwrap(),
-            );
-            let (m, _) = exec(mode, "repo.bzl", src.as_bytes(), &fixture.loads).unwrap();
-            let s = |n: &str| m.get(n).unwrap().value().to_str();
-            // sha1 may fail today (None from bazel_lib's ord); keep the error text.
-            let hash_src = format!("{prelude}h = sha1(head)\n");
-            let hash = match exec(mode, "hash.bzl", hash_src.as_bytes(), &fixture.loads) {
-                Ok((m, _)) => m.get("h").unwrap().value().to_str(),
-                Err(e) => format!("ERROR {e}"),
-            };
-            got.insert(
-                mode,
-                (
-                    s("read_len"),
-                    s("first8"),
-                    hash,
-                    std::fs::read(&sliced).unwrap(),
-                ),
-            );
-        }
-        let latin1 = &got[&Mode::Latin1];
-        let utf8 = &got[&Mode::Utf8];
-        eprintln!("utf8:   {utf8:?}\nlatin1: {latin1:?}");
+        let fixture = Fixture::new(&ws);
+        let sliced = out_dir.join("sliced.txt");
+        let prelude = format!(
+            "load(\":bytes_util.bzl\", \"b\")\nload(\":sha1_shim.bzl\", \"sha1\")\n\
+             data = rctx_read({src:?})\n\
+             head = \"\\n\".join(data.split(\"\\n\")[:4])\n",
+            src = template("readme_head.txt").to_str().unwrap(),
+        );
+        let src = format!(
+            "{prelude}read_len = len(data)\nfirst8 = str(b(data[:8]))\nh = sha1(head)\n\
+             rctx_file({sliced:?}, data[:3])\n",
+            sliced = sliced.to_str().unwrap(),
+        );
+        let (m, _) = exec("repo.bzl", src.as_bytes(), &fixture.loads).unwrap();
+        let s = |n: &str| m.get(n).unwrap().value().to_str();
         // Oracle RCASE read_len / read_bytes_first8 / head_sha1, and repo_sliced.txt.
-        assert_eq!(latin1.0, "92");
-        assert_eq!(latin1.1, "[35, 32, 240, 159, 145, 183, 32, 96]");
-        assert_eq!(latin1.2, "b22cdf2a02e97d285f8000588780bbfd7236071f");
-        assert_eq!(latin1.3, b"# \xf0");
-        assert_ne!(utf8.0, "92");
-        assert_ne!(utf8.2, "b22cdf2a02e97d285f8000588780bbfd7236071f");
-        assert_ne!(utf8.3, b"# \xf0");
+        assert_eq!(s("read_len"), "92");
+        assert_eq!(s("first8"), "[35, 32, 240, 159, 145, 183, 32, 96]");
+        assert_eq!(s("h"), "b22cdf2a02e97d285f8000588780bbfd7236071f");
+        assert_eq!(std::fs::read(&sliced).unwrap(), b"# \xf0");
     });
 }
 
 /// `ctx.actions.write(content = "é🐷\377\n")` from a BUILD literal. Oracle: the output file holds
 /// the raw bytes C3 A9 F0 9F 90 B7 FF 0A (FileWriteAction writes getInternalStringBytes), while
 /// `aquery --include_file_write_contents` prints base64 of `contents.getBytes(UTF_8)`, i.e. the
-/// UTF-8 of the internal string: "w4PCqcOwwp/CkMK3w78K". Under option A the Rust `String` bytes
-/// are exactly that UTF-8, so Java's implicit re-encodings (Fingerprint.addString, protobuf
-/// string fields) come out the same without a conversion.
+/// UTF-8 of the internal string: "w4PCqcOwwp/CkMK3w78K". The Rust `String` bytes of the internal
+/// string are exactly that UTF-8, so Java's implicit re-encodings (Fingerprint.addString,
+/// protobuf string fields) come out the same without a conversion.
 #[test]
 fn file_write_bytes_and_aquery_contents() {
     let literal: &[u8] = b"\"\xc3\xa9\xf0\x9f\x90\xb7\\377\\n\"";
     let src = [b"r = ".as_slice(), literal, b"\n"].concat();
     let r = eval::run_on_evaluation_thread(move || {
-        let mut out = BTreeMap::new();
-        for mode in [Mode::Utf8, Mode::Latin1] {
-            let (m, _) = exec(mode, "BUILD.bzl", &src, &LoadMap::new()).unwrap();
-            let s = m.get("r").unwrap().value().to_str();
-            out.insert(format!("{mode:?}"), s);
-        }
-        out
+        let (m, _) = exec("BUILD.bzl", &src, &LoadMap::new()).unwrap();
+        m.get("r").unwrap().value().to_str()
     });
-    let latin1 = &r["Latin1"];
-    assert_eq!(latin1_encode(latin1), b"\xc3\xa9\xf0\x9f\x90\xb7\xff\n");
-    assert_eq!(base64(latin1.as_bytes()), "w4PCqcOwwp/CkMK3w78K");
-    // Today: "\377" is U+00FF, written as C3 BF; the file differs from the oracle's.
-    assert_eq!(r["Utf8"].as_bytes(), b"\xc3\xa9\xf0\x9f\x90\xb7\xc3\xbf\n");
+    assert_eq!(
+        latin1_encode(&r).as_ref(),
+        b"\xc3\xa9\xf0\x9f\x90\xb7\xff\n"
+    );
+    assert_eq!(base64(r.as_bytes()), "w4PCqcOwwp/CkMK3w78K");
 }
 
 fn base64(bytes: &[u8]) -> String {

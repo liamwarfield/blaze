@@ -38,12 +38,12 @@ impl CommandUtils {
             if !result.stdout_stream().is_no_output_collected()
                 && !result.stderr_stream().is_no_output_collected()
             {
-                // `new String(bytes)` decodes with the platform charset (UTF-8).
+                // `new String(bytes)` decodes with the default charset (ISO-8859-1).
                 return format!(
                     "{}\n{}{}",
                     message,
-                    String::from_utf8_lossy(&result.get_stdout()),
-                    String::from_utf8_lossy(&result.get_stderr())
+                    blaze_util::string_encoding::latin1_decode(&result.get_stdout()),
+                    blaze_util::string_encoding::latin1_decode(&result.get_stderr())
                 );
             }
         }

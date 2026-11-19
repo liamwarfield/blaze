@@ -7,35 +7,27 @@
 //! contain letters and/or digits, and have non-zero length, was: "..."`.
 //!
 //! Java tests each char of the string as Bazel holds it (one Latin-1 char per byte), so the
-//! result depends on the bytes: `Qé` (c3 a9) is rejected, `Qê` (c3 aa) is accepted. The test runs
-//! on both sides of the string migration seam.
+//! result depends on the bytes: `Qé` (c3 a9) is rejected, `Qê` (c3 aa) is accepted, and `"Q\351"`
+//! (the byte e9, not UTF-8 text) is accepted. Blaze decodes the sources as Bazel does (Latin-1).
 
 use std::sync::Arc;
 
 use blaze_actions::analysis::actions::spawn_action::is_valid_mnemonic;
 use blaze_actions::analysis::actions::starlark_action::starlark_action_builder;
-use blaze_util::string_encoding::{latin1_decode, with_strings_are_internal_for_testing};
+use blaze_util::string_encoding::latin1_decode;
 
 const CASES_BZL: &[u8] = include_bytes!("data/map_each_probe/workspace/cases.bzl");
 const EXPECTED: &[u8] = include_bytes!("data/map_each_probe/expected.txt");
 
-/// `"Q\351"` is the byte e9, which is not UTF-8 text: Bazel holds it as `é` (a letter); before
-/// the decoding switch Blaze has no string for it.
-const NOT_UTF8_TEXT: &[&str] = &["mnemonic_raw_byte"];
-
-/// What the source decoder gives on this side of the switch.
-fn decode(internal: bool, bytes: &[u8]) -> String {
-    if internal {
-        latin1_decode(bytes).into_owned()
-    } else {
-        String::from_utf8(bytes.to_vec()).unwrap()
-    }
+/// What Bazel's source decoder gives (`ParserInput.fromLatin1`).
+fn decode(bytes: &[u8]) -> String {
+    latin1_decode(bytes).into_owned()
 }
 
 /// `MNEMONIC_CASES` of cases.bzl, evaluated: (case, mnemonic).
-fn mnemonic_cases(internal: bool) -> Vec<(String, String)> {
+fn mnemonic_cases() -> Vec<(String, String)> {
     // Only the dict: the rest of the file needs `ctx.actions` natives.
-    let source = decode(internal, CASES_BZL);
+    let source = decode(CASES_BZL);
     let start = source.find("MNEMONIC_CASES = {").unwrap();
     let semantics = Arc::new(blaze_starlark::StarlarkSemantics::default());
     let globals = blaze_starlark::env::universe_builder(&semantics).build();
@@ -71,8 +63,8 @@ fn mnemonic_cases(internal: bool) -> Vec<(String, String)> {
 }
 
 /// (case, `None` for OK or the oracle's message without `Error in run: `).
-fn expected(internal: bool) -> Vec<(String, Option<String>)> {
-    decode(internal, EXPECTED)
+fn expected() -> Vec<(String, Option<String>)> {
+    decode(EXPECTED)
         .lines()
         .filter(|line| line.starts_with("mnemonic_"))
         .map(|line| {
@@ -88,57 +80,46 @@ fn expected(internal: bool) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
-fn check(internal: bool) -> usize {
-    with_strings_are_internal_for_testing(internal, || {
-        let cases = mnemonic_cases(internal);
-        let expected = expected(internal);
-        assert_eq!(cases.len(), 9);
-        assert_eq!(
-            cases.iter().map(|c| &c.0).collect::<Vec<_>>(),
-            expected.iter().map(|c| &c.0).collect::<Vec<_>>()
-        );
-        let mut checked = 0;
-        for ((case, mnemonic), (_, error)) in cases.iter().zip(&expected) {
-            if !internal && NOT_UTF8_TEXT.contains(&case.as_str()) {
-                continue;
+fn check() -> usize {
+    let cases = mnemonic_cases();
+    let expected = expected();
+    assert_eq!(cases.len(), 9);
+    assert_eq!(
+        cases.iter().map(|c| &c.0).collect::<Vec<_>>(),
+        expected.iter().map(|c| &c.0).collect::<Vec<_>>()
+    );
+    let mut checked = 0;
+    for ((case, mnemonic), (_, error)) in cases.iter().zip(&expected) {
+        checked += 1;
+        assert_eq!(is_valid_mnemonic(mnemonic), error.is_none(), "{case}");
+        // The builder: Java's IllegalArgumentException with the same message, which
+        // StarlarkActionFactory rethrows as the EvalException the oracle printed.
+        let mnemonic = mnemonic.clone();
+        let result = std::panic::catch_unwind(move || {
+            starlark_action_builder().set_mnemonic(mnemonic);
+        });
+        match (result, error) {
+            (Ok(()), None) => {}
+            (Err(panic), Some(error)) => {
+                let message = panic.downcast_ref::<String>().unwrap();
+                assert_eq!(
+                    message,
+                    &format!("IllegalArgumentException: {error}"),
+                    "{case}"
+                );
             }
-            checked += 1;
-            assert_eq!(is_valid_mnemonic(mnemonic), error.is_none(), "{case}");
-            // The builder: Java's IllegalArgumentException with the same message, which
-            // StarlarkActionFactory rethrows as the EvalException the oracle printed.
-            let mnemonic = mnemonic.clone();
-            let result = std::panic::catch_unwind(move || {
-                starlark_action_builder().set_mnemonic(mnemonic);
-            });
-            match (result, error) {
-                (Ok(()), None) => {}
-                (Err(panic), Some(error)) => {
-                    let message = panic.downcast_ref::<String>().unwrap();
-                    assert_eq!(
-                        message,
-                        &format!("IllegalArgumentException: {error}"),
-                        "{case}"
-                    );
-                }
-                (result, error) => {
-                    panic!(
-                        "{case}: oracle {error:?}, builder accepted: {}",
-                        result.is_ok()
-                    )
-                }
+            (result, error) => {
+                panic!(
+                    "{case}: oracle {error:?}, builder accepted: {}",
+                    result.is_ok()
+                )
             }
         }
-        checked
-    })
+    }
+    checked
 }
 
 #[test]
-fn mnemonic_check_after_the_decoding_switch() {
-    assert_eq!(check(true), 9);
-}
-
-#[test]
-fn mnemonic_check_before_the_decoding_switch() {
-    // All but the mnemonic that is not UTF-8 text.
-    assert_eq!(check(false), 8);
+fn mnemonic_check() {
+    assert_eq!(check(), 9);
 }

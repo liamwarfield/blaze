@@ -53,11 +53,10 @@ impl DownloadManagerRegistryFetcher {
 
         let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
         let mut repository_cache_value = RepositoryCache::new();
-        // PORT: byte-strings (a non-UTF-8 cache path is converted lossily here)
-        repository_cache_value.set_path(
-            repository_cache
-                .map(|p| Path::create(PathFragment::create(&p.display().to_string()), &fs)),
-        );
+        repository_cache_value
+            .set_path(repository_cache.map(|p| {
+                Path::create(PathFragment::create(&crate::skyframe::path_string(p)), &fs)
+            }));
         let http_downloader = Arc::new(http_downloader);
         let delegating: Arc<dyn Downloader> = Arc::new(DelegatingDownloader::new(
             http_downloader.clone() as Arc<dyn Downloader>,

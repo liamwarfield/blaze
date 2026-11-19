@@ -12,6 +12,7 @@ use blaze_optdefs::misc::build_event_protocol_options::OutputGroupFileModes;
 use blaze_protos::build_event_stream::build_event::Payload;
 use blaze_protos::build_event_stream::{self as bes, BuildEventId, OutputGroup};
 use blaze_util::DetailedExitCode;
+use blaze_util::string_encoding::internal_to_unicode;
 use blaze_vfs::PathFragment;
 use indexmap::IndexMap;
 
@@ -413,22 +414,23 @@ pub fn new_file_for_path(
     metadata: &FileArtifactValue,
     uri: Option<String>,
 ) -> bes::File {
-    // PORT: StringEncoding identity (internalToUnicode).
     let mut file = bes::File {
-        name: root_relative_path.get_path_string().to_string(),
+        name: internal_to_unicode(root_relative_path.get_path_string()).into_owned(),
         path_prefix: root
             .get_exec_path()
             .segments()
-            .map(|s| s.to_string())
+            .map(|s| internal_to_unicode(s).into_owned())
             .collect(),
         ..Default::default()
     };
     if metadata.get_type().is_symlink() {
         file.file = Some(bes::file::File::SymlinkTargetPath(
-            metadata
-                .get_unresolved_symlink_target()
-                .expect("unresolved symlink target")
-                .to_string(),
+            internal_to_unicode(
+                metadata
+                    .get_unresolved_symlink_target()
+                    .expect("unresolved symlink target"),
+            )
+            .into_owned(),
         ));
     } else if metadata.get_type().exists() {
         if let Some(digest) = metadata.get_digest() {
@@ -437,7 +439,7 @@ pub fn new_file_for_path(
         file.length = metadata.get_size();
     }
     if let Some(uri) = uri {
-        file.file = Some(bes::file::File::Uri(uri));
+        file.file = Some(bes::file::File::Uri(internal_to_unicode(&uri).into_owned()));
     }
     file
 }

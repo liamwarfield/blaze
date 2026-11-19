@@ -407,72 +407,40 @@ fn write_read_set() {
 // Not in the Java test: paths that are not ASCII (review 2026-11-18-actions S2-1).
 // Java: `new String(content, 0, w, ISO_8859_1)` keeps every byte of a path.
 
-/// A header whose name is UTF-8 text is the same file on both sides of the decoding switch.
+/// A header whose name is UTF-8 text: the path is the internal string of its bytes.
 #[test]
 fn dot_d_parser_utf8_filename() {
-    use blaze_util::string_encoding::{
-        internal_string_bytes, unicode_to_internal, with_strings_are_internal_for_testing,
-    };
+    use blaze_util::string_encoding::{latin1_encode, unicode_to_internal};
     let scratch = Scratch::new();
     let content = "hello.o: \\\n /usr/include/café.h \\\n /usr/include/🐷.h\n";
-    for on in [false, true] {
-        with_strings_are_internal_for_testing(on, || {
-            let mut set = new_dependency_set(&scratch);
-            set.process(content.as_bytes().to_vec()).unwrap();
-            let got: Vec<&str> = set
-                .get_dependencies()
-                .iter()
-                .map(|p| p.get_path_string())
-                .collect();
-            let want: Vec<String> = ["/usr/include/café.h", "/usr/include/🐷.h"]
-                .iter()
-                .map(|s| {
-                    if on {
-                        unicode_to_internal(s).into_owned()
-                    } else {
-                        s.to_string()
-                    }
-                })
-                .collect();
-            assert_eq!(got, want);
-            // Either way the path's bytes are the bytes of the .d file.
-            assert_eq!(
-                &*internal_string_bytes(got[0]),
-                "/usr/include/café.h".as_bytes()
-            );
-        });
-    }
+    let mut set = new_dependency_set(&scratch);
+    set.process(content.as_bytes().to_vec()).unwrap();
+    let got: Vec<&str> = set
+        .get_dependencies()
+        .iter()
+        .map(|p| p.get_path_string())
+        .collect();
+    let want: Vec<String> = ["/usr/include/café.h", "/usr/include/🐷.h"]
+        .iter()
+        .map(|s| unicode_to_internal(s).into_owned())
+        .collect();
+    assert_eq!(got, want);
+    // The path's bytes are the bytes of the .d file.
+    assert_eq!(&*latin1_encode(got[0]), "/usr/include/café.h".as_bytes());
 }
 
-/// A header whose name is not UTF-8 (Latin-1 `caf\xe9.h`): its bytes are kept. This needs
-/// internal strings.
+/// A header whose name is not UTF-8 (Latin-1 `caf\xe9.h`, and a byte ff): its bytes are kept.
 #[test]
-fn dot_d_parser_non_utf8_filename_after_the_decoding_switch() {
-    use blaze_util::string_encoding::{
-        internal_string_bytes, with_strings_are_internal_for_testing,
-    };
+fn dot_d_parser_non_utf8_filename() {
+    use blaze_util::string_encoding::latin1_encode;
     let scratch = Scratch::new();
-    with_strings_are_internal_for_testing(true, || {
-        let mut set = new_dependency_set(&scratch);
-        set.process(b"caf\xe9.o: \\\n /usr/include/caf\xe9.h\n".to_vec())
-            .unwrap();
-        assert_eq!(set.get_output_file_name(), Some("caf\u{e9}.o"));
-        let dep = set.get_dependencies()[0].get_path_string().to_string();
-        assert_eq!(dep, "/usr/include/caf\u{e9}.h");
-        assert_eq!(&*internal_string_bytes(&dep), b"/usr/include/caf\xe9.h");
-    });
-}
-
-/// Before the switch such a path has no string. It is not replaced by a lossy one (which would
-/// name another file, `caf\u{fffd}.h`); it fails loudly.
-#[test]
-#[should_panic(
-    expected = "blaze: not ported yet: DependencySet.process: path in a .d file is not valid UTF-8: /usr/include/caf\\xe9.h"
-)]
-fn dot_d_parser_non_utf8_filename_before_the_decoding_switch() {
-    let scratch = Scratch::new();
-    blaze_util::string_encoding::with_strings_are_internal_for_testing(false, || {
-        let mut set = new_dependency_set(&scratch);
-        let _ = set.process(b"hello.o: \\\n /usr/include/caf\xe9.h\n".to_vec());
-    });
+    let mut set = new_dependency_set(&scratch);
+    set.process(b"caf\xe9.o: \\\n /usr/include/caf\xe9.h \\\n /usr/include/\xff.h\n".to_vec())
+        .unwrap();
+    assert_eq!(set.get_output_file_name(), Some("caf\u{e9}.o"));
+    let dep = set.get_dependencies()[0].get_path_string().to_string();
+    assert_eq!(dep, "/usr/include/caf\u{e9}.h");
+    assert_eq!(&*latin1_encode(&dep), b"/usr/include/caf\xe9.h");
+    let dep = set.get_dependencies()[1].get_path_string().to_string();
+    assert_eq!(&*latin1_encode(&dep), b"/usr/include/\xff.h");
 }

@@ -158,9 +158,9 @@ pub const MAX_FILENAME_LENGTH: usize = 255;
 // Java: com/google/devtools/build/lib/rules/cpp/SolibSymlinkAction.java:249 SolibSymlinkAction.maybeHashPreserveExtension
 fn maybe_hash_preserve_extension(filename: &str) -> String {
     // Invariant: `filename` is an internal string (see `actions::fingerprint_util`). Java's
-    // `length()` counts its chars (`internal_length`), and
-    // `Hashing.sha256().hashString(filename, UTF_8)` hashes its UTF-8, as `get_hex_digest` does.
-    if blaze_util::string_encoding::internal_length(filename) <= MAX_FILENAME_LENGTH {
+    // `length()` counts its chars, and `Hashing.sha256().hashString(filename, UTF_8)` hashes its
+    // UTF-8, as `get_hex_digest` does.
+    if filename.chars().count() <= MAX_FILENAME_LENGTH {
         filename.to_string()
     } else {
         let hashed_name = Fingerprint::get_hex_digest(filename);

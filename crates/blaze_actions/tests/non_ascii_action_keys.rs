@@ -12,14 +12,10 @@
 //! byte for byte (`scripts/actions-probe/run` records it).
 //!
 //! The test rebuilds every recorded action from the same Starlark (`cases.bzl`) and from the
-//! recorded strings, and requires the oracle's `actionKey`. It runs on both sides of the string
-//! migration seam (`blaze_util::string_encoding::STRINGS_ARE_INTERNAL`):
-//!
-//! - after the decoding switch: sources and recorded strings are decoded as Latin-1, so every
-//!   string is an internal string. All actions must match.
-//! - before it (today): sources and recorded strings are decoded as UTF-8. All actions must match
-//!   except the probes of [`NOT_UTF8_TEXT`], whose strings are not UTF-8 text and have no Unicode
-//!   string.
+//! recorded strings, and requires the oracle's `actionKey`. Sources and recorded strings are
+//! decoded as Latin-1, as Bazel decodes them, so every string is an internal string
+//! (`blaze_util::string_encoding`); all 78 actions must match, the four `"\377"` probes included.
+//! A check with the strings decoded as UTF-8 instead shows that the keys depend on it.
 
 mod oracle_common;
 
@@ -44,9 +40,7 @@ use blaze_actions::analysis::starlark::unresolved_symlink_action::{
 };
 use blaze_actions::{ActionKeyContext, Artifact};
 use blaze_collect::{NestedSetBuilder, Order};
-use blaze_util::string_encoding::{
-    internal_to_unicode, latin1_decode, with_strings_are_internal_for_testing,
-};
+use blaze_util::string_encoding::{internal_to_unicode, latin1_decode};
 use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
 use oracle_common::{Recording, kv_list, str_list};
@@ -55,36 +49,29 @@ use serde_json::Value;
 const AQUERY: &[u8] = include_bytes!("data/non_ascii_probe/aquery.jsonproto");
 const CASES_BZL: &[u8] = include_bytes!("data/non_ascii_probe/workspace/cases.bzl");
 
-/// Probes that use a byte sequence that is not UTF-8 (`"\377"`). Bazel holds it as an internal
-/// string; before the decoding switch Blaze has no string for it.
-const NOT_UTF8_TEXT: &[&str] = &[
-    "raw_byte",
-    "plain_args_raw_byte",
-    "write_raw_byte",
-    "write_args_raw_byte",
-];
-
 /// The `ctx.actions.write(content = <Args>)` probes (`WRITE_ARGS_CASES` of cases.bzl).
 const WRITE_ARGS: &[&str] = &["write_args", "write_args_multiline", "write_args_raw_byte"];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Side {
-    /// Strings are still Unicode (sources read as UTF-8).
-    BeforeSwitch,
-    /// Strings are internal strings (sources read as Latin-1).
-    AfterSwitch,
+    /// Strings are internal strings (sources read as Latin-1): Bazel's strings.
+    Internal,
+    /// Strings are Unicode (sources read as UTF-8): not Bazel's strings; only to show that the
+    /// keys depend on the encoding.
+    Unicode,
 }
 
-/// What the Starlark source decoder gives for a file on this side of the switch.
+/// What a Starlark source decoder gives for a file: Bazel's (`ParserInput.fromLatin1`) or a
+/// UTF-8 one.
 fn decode_source(side: Side, bytes: &[u8]) -> String {
     match side {
-        Side::BeforeSwitch => String::from_utf8(bytes.to_vec()).expect("cases.bzl is UTF-8"),
-        Side::AfterSwitch => latin1_decode(bytes).into_owned(),
+        Side::Unicode => String::from_utf8(bytes.to_vec()).expect("cases.bzl is UTF-8"),
+        Side::Internal => latin1_decode(bytes).into_owned(),
     }
 }
 
 /// The recorded jsonproto holds Bazel's internal strings as raw bytes, so reading it as Latin-1
-/// gives exactly Bazel's strings. Before the switch Blaze would hold their Unicode form.
+/// gives exactly Bazel's strings; [`Side::Unicode`] converts them to Unicode.
 fn recorded_json(side: Side) -> Value {
     fn to_unicode(v: &mut Value) {
         match v {
@@ -95,7 +82,7 @@ fn recorded_json(side: Side) -> Value {
         }
     }
     let mut json: Value = serde_json::from_str(&latin1_decode(AQUERY)).unwrap();
-    if side == Side::BeforeSwitch {
+    if side == Side::Unicode {
         to_unicode(&mut json);
     }
     json
@@ -445,141 +432,103 @@ fn reconstruct(
     }
 }
 
-/// Returns (matched, skipped, mismatches).
-fn check(side: Side) -> (usize, Vec<String>, Vec<String>) {
-    check_with(side, side == Side::AfterSwitch, None)
-}
-
-/// [`check`] with `STRINGS_ARE_INTERNAL` forced to `strings_are_internal`, whatever the side,
-/// and optionally for some probes only.
-fn check_with(
-    side: Side,
-    strings_are_internal: bool,
-    only: Option<&[&str]>,
-) -> (usize, Vec<String>, Vec<String>) {
-    with_strings_are_internal_for_testing(strings_are_internal, || {
-        let rec = Recording::from_json(
-            "non_ascii_probe",
-            recorded_json(side),
-            "/probe/output_base",
-            "/probe/output_base/execroot/_main",
-            "/probe/workspace",
-        );
-        let (mut built, template_dict) = eval_cases(side, &rec);
-        let (mut matched, mut skipped, mut mismatches) = (0, Vec::new(), Vec::new());
-        let mut names = HashSet::new();
-        for a in rec.actions() {
-            let name = target_name(&rec, a);
-            names.insert(name.clone());
-            let mnemonic = a["mnemonic"].as_str().unwrap();
-            let expected = a["actionKey"].as_str().unwrap();
-            if only.is_some_and(|only| !only.contains(&name.as_str())) {
-                continue;
-            }
-            if side == Side::BeforeSwitch && NOT_UTF8_TEXT.contains(&name.as_str()) {
-                // The input FileWrite of an `args` probe is ASCII; the rest cannot be built.
-                if !(mnemonic == "FileWrite" && name == "raw_byte") {
-                    skipped.push(format!("{name} {mnemonic}"));
-                    continue;
-                }
-            }
-            let action = reconstruct(&rec, a, &name, &mut built, &template_dict);
-            let key = action.get_key(&ActionKeyContext::new(), None).unwrap();
-            // File-writing actions: the contents must also be what aquery printed.
-            if let Some(p) = action.as_file_contents_provider()
-                && let Some(want) = a.get("fileContents").and_then(|c| c.as_str())
-            {
-                assert_eq!(p.get_file_contents().unwrap(), want, "{name} contents");
-            }
-            if key == expected {
-                matched += 1;
-            } else {
-                mismatches.push(format!(
-                    "{side:?} {name} {mnemonic}: got {key}, oracle {expected}"
-                ));
-            }
+/// Rebuilds the recorded actions (optionally some probes only) from strings decoded as `side`
+/// says. Returns (matched, mismatches).
+fn check(side: Side, only: Option<&[&str]>) -> (usize, Vec<String>) {
+    let rec = Recording::from_json(
+        "non_ascii_probe",
+        recorded_json(side),
+        "/probe/output_base",
+        "/probe/output_base/execroot/_main",
+        "/probe/workspace",
+    );
+    let (mut built, template_dict) = eval_cases(side, &rec);
+    let (mut matched, mut mismatches) = (0, Vec::new());
+    let mut names = HashSet::new();
+    for a in rec.actions() {
+        let name = target_name(&rec, a);
+        names.insert(name.clone());
+        let mnemonic = a["mnemonic"].as_str().unwrap();
+        let expected = a["actionKey"].as_str().unwrap();
+        if only.is_some_and(|only| !only.contains(&name.as_str())) {
+            continue;
         }
-        assert_eq!(names.len(), 52, "probe targets in the recording");
-        (matched, skipped, mismatches)
-    })
+        let action = reconstruct(&rec, a, &name, &mut built, &template_dict);
+        let key = action.get_key(&ActionKeyContext::new(), None).unwrap();
+        // File-writing actions: the contents must also be what aquery printed.
+        if side == Side::Internal
+            && let Some(p) = action.as_file_contents_provider()
+            && let Some(want) = a.get("fileContents").and_then(|c| c.as_str())
+        {
+            assert_eq!(p.get_file_contents().unwrap(), want, "{name} contents");
+        }
+        if key == expected {
+            matched += 1;
+        } else {
+            mismatches.push(format!(
+                "{side:?} {name} {mnemonic}: got {key}, oracle {expected}"
+            ));
+        }
+    }
+    assert_eq!(names.len(), 52, "probe targets in the recording");
+    (matched, mismatches)
 }
 
 #[test]
-fn non_ascii_action_keys_after_the_decoding_switch() {
-    let (matched, skipped, mismatches) = check(Side::AfterSwitch);
+fn non_ascii_action_keys() {
+    let (matched, mismatches) = check(Side::Internal, None);
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
-    assert!(skipped.is_empty());
     assert_eq!(matched, 78);
 }
 
+/// The probe is sensitive to the encoding: with Unicode strings where Bazel holds internal
+/// strings (what Blaze held before the decoding switch, hashed the way Bazel hashes its strings),
+/// the keys differ from the oracle's. Only the three empty, ASCII input files match.
 #[test]
-fn non_ascii_action_keys_before_the_decoding_switch() {
-    let (matched, skipped, mismatches) = check(Side::BeforeSwitch);
-    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
-    // Not UTF-8 text: only after the switch.
-    assert_eq!(
-        skipped,
-        [
-            "plain_args_raw_byte Action",
-            "raw_byte Action",
-            "write_args_raw_byte FileWrite",
-            "write_raw_byte FileWrite",
-        ]
-    );
-    assert_eq!(matched, 74);
-}
-
-/// The probe is sensitive to the encoding: with the seam on the wrong side (Unicode strings
-/// hashed as if they were internal, which is what the sites listed in the review did), the keys
-/// differ from the oracle's. Only the three empty, ASCII input files match.
-#[test]
-fn non_ascii_action_keys_differ_with_the_seam_on_the_wrong_side() {
+fn non_ascii_action_keys_differ_for_unicode_strings() {
     let probes = ["add_plain", "map_each_depset", "file_add", "env_value"];
-    let (matched, _skipped, mismatches) = check_with(Side::BeforeSwitch, true, Some(&probes));
+    let (matched, mismatches) = check(Side::Unicode, Some(&probes));
     assert_eq!(matched, 3, "{}", mismatches.join("\n"));
     assert_eq!(mismatches.len(), 4, "{}", mismatches.join("\n"));
 }
 
 /// The compressed FileWrite probe must really take the compressed path, and the bytes written
-/// are the original text on both sides.
+/// are the original text.
 #[test]
 fn compressed_file_write_contents_bytes() {
-    for side in [Side::BeforeSwitch, Side::AfterSwitch] {
-        with_strings_are_internal_for_testing(side == Side::AfterSwitch, || {
-            let rec = Recording::from_json(
-                "non_ascii_probe",
-                recorded_json(side),
-                "/probe/output_base",
-                "/probe/output_base/execroot/_main",
-                "/probe/workspace",
-            );
-            for (name, compressed) in [("write_long", true), ("write_plain", false)] {
-                let a = rec
-                    .actions()
-                    .iter()
-                    .find(|a| target_name(&rec, a) == name)
-                    .unwrap();
-                let action = FileWriteAction::create(
-                    rec.action_owner(a),
-                    rec.primary_output(a),
-                    a["fileContents"].as_str().unwrap().to_string(),
-                    false,
-                    Compression::ALLOW,
-                );
-                assert_eq!(action.is_compressed(), compressed, "{name}");
-                use blaze_actions::analysis::actions::abstract_file_write_action::AbstractFileWriteAction;
-                let out = action
-                    .new_deterministic_writer()
-                    .unwrap()
-                    .get_bytes()
-                    .unwrap();
-                let want: String = if name == "write_long" {
-                    (0..200).map(|i| format!("ligne {i}: é🐷\n")).collect()
-                } else {
-                    "héllo wörld ☃\n".to_string()
-                };
-                assert_eq!(out, want.as_bytes(), "{side:?} {name}");
-            }
-        });
+    let side = Side::Internal;
+    let rec = Recording::from_json(
+        "non_ascii_probe",
+        recorded_json(side),
+        "/probe/output_base",
+        "/probe/output_base/execroot/_main",
+        "/probe/workspace",
+    );
+    for (name, compressed) in [("write_long", true), ("write_plain", false)] {
+        let a = rec
+            .actions()
+            .iter()
+            .find(|a| target_name(&rec, a) == name)
+            .unwrap();
+        let action = FileWriteAction::create(
+            rec.action_owner(a),
+            rec.primary_output(a),
+            a["fileContents"].as_str().unwrap().to_string(),
+            false,
+            Compression::ALLOW,
+        );
+        assert_eq!(action.is_compressed(), compressed, "{name}");
+        use blaze_actions::analysis::actions::abstract_file_write_action::AbstractFileWriteAction;
+        let out = action
+            .new_deterministic_writer()
+            .unwrap()
+            .get_bytes()
+            .unwrap();
+        let want: String = if name == "write_long" {
+            (0..200).map(|i| format!("ligne {i}: é🐷\n")).collect()
+        } else {
+            "héllo wörld ☃\n".to_string()
+        };
+        assert_eq!(out, want.as_bytes(), "{name}");
     }
 }

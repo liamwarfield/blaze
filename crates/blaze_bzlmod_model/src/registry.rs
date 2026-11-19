@@ -146,7 +146,12 @@ impl RegistryFetcher for FileRegistryFetcher {
             blaze_util::unported!("DownloadManager.downloadAndReadOneUrlForBzlmod", "{url}");
         }
         let path = url.get_path().unwrap_or_default();
-        let content = match std::fs::read(&path) {
+        // The JDK's `file:` handler opens `new File(path)`, whose name reaches the OS in the
+        // platform charset (ISO-8859-1 in Bazel's server): one byte per char, `?` for a char
+        // above U+00FF (a `%`-escaped non-ASCII path decodes to such Unicode chars).
+        let path_bytes = blaze_util::string_encoding::latin1_encode_lossy(&path);
+        let platform_path: &std::ffi::OsStr = std::os::unix::ffi::OsStrExt::from_bytes(&path_bytes);
+        let content = match std::fs::read(platform_path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(RegistryException::NotFound(format!(

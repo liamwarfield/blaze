@@ -69,9 +69,8 @@ pub fn get_default_path_from_options(options: &ShellConfigurationOptions) -> Opt
         return Some(shell_executable.0.clone());
     }
     // Honor BAZEL_SH env variable for backwards compatibility.
-    std::env::var("BAZEL_SH")
-        .ok()
-        .map(|path| PathFragment::create(&path))
+    std::env::var_os("BAZEL_SH")
+        .map(|path| PathFragment::create(&blaze_util::string_encoding::platform_to_internal(&path)))
 }
 
 // Java: com/google/devtools/build/lib/bazel/rules/BazelRuleClassProvider.java:130 BazelRuleClassProvider.getShellExecutableForOs

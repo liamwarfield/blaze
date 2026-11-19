@@ -20,7 +20,6 @@ pub mod errors;
 pub mod file_system_lock;
 pub mod fs_utils;
 pub mod java_hash;
-pub mod repo_utils;
 pub mod uri;
 
 /// The Bazel release this port follows (`BlazeVersionInfo.getVersion()`).

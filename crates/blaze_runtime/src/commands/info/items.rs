@@ -693,7 +693,10 @@ impl JavaHomeInfoItem {
             .get_relative_str("embedded_tools")
             .get_relative_str("jdk");
         let java = bundled_jre_path.get_relative_str("bin/java");
-        let java_c = std::ffi::CString::new(java.get_path_string()).expect("NUL in path");
+        let java_c = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(
+            &*blaze_util::string_encoding::internal_to_platform(java.get_path_string()),
+        ))
+        .expect("NUL in path");
         // blaze_util::CanExecuteFile: access(X_OK) on a regular file.
         // SAFETY: java_c is a valid NUL-terminated string.
         let can_execute =
@@ -718,7 +721,9 @@ impl InfoItem for JavaHomeInfoItem {
         _configuration_supplier: &mut dyn ConfigurationSupplier,
         env: &mut CommandEnvironment,
     ) -> Result<Vec<u8>, AbruptExitException> {
-        // PORT: StringEncoding.platformToInternal identity; java.home is never null here.
+        // StringEncoding.platformToInternal(System.getProperty("java.home")): the javabase is
+        // computed from the install base, which already is an internal string; java.home is
+        // never null here.
         let java_home = Self::get_server_javabase(env);
         // Tunnel through a Path object in order to normalize the representation of the path.
         let java_home_path = Path::create_from_str(&java_home, env.get_runtime().get_file_system());

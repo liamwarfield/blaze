@@ -498,9 +498,11 @@ impl RecursiveFilesystemTraversalValue {
 // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:558 ResolvedFileFactory.danglingSymlink
 fn dangling_symlink(link_name_path: RootedPath, link_value: PathFragment) -> ResolvedFile {
     use sha2::Digest;
-    // PORT: `hashString(linkValue.getPathString(), ISO_8859_1)` of the internal (Latin-1) form
-    // is the hash of the path's bytes (StringEncoding identity).
-    let mut digest = sha2::Sha256::digest(link_value.get_path_string().as_bytes()).to_vec();
+    // `hashString(linkValue.getPathString(), ISO_8859_1)`: the hash of the path's bytes.
+    let mut digest = sha2::Sha256::digest(blaze_util::string_encoding::latin1_encode_lossy(
+        link_value.get_path_string(),
+    ))
+    .to_vec();
     // Ensure that the digest does not collide with that of a regular file.
     digest[0] ^= 1;
     ResolvedFile::DanglingSymlink {

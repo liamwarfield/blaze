@@ -423,10 +423,10 @@ fn assert_provider_maps_equal(a: &TransitiveInfoProviderMap, b: &TransitiveInfoP
 /// `scratch.file(...).setExecutable(true)`.
 fn set_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
-    let p = path.get_path_string();
-    let mut perms = std::fs::metadata(p).expect("stat").permissions();
+    let p = crate::testing::scratch::os(path);
+    let mut perms = std::fs::metadata(&p).expect("stat").permissions();
     perms.set_mode(perms.mode() | 0o111);
-    std::fs::set_permissions(p, perms).expect("chmod");
+    std::fs::set_permissions(&p, perms).expect("chmod");
 }
 
 /// `RoundTripping.roundTripWithSkyframe(this::getDoneValue, value)`.

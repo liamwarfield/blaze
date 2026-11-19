@@ -1,0 +1,12 @@
+## @@//:ext.bzl%ext:
+
+Fetched repositories:
+  - ext_repo (imported by <root>)
+
+## Usage in <root> from /ws/MODULE.bazel:3
+ext.tag(d={"Ã©": "ð·"}, l=["Ã©", "ð·", "@@not_a_label_Ã©"], s="Ã©ð·", x="ÿ")
+use_repo(
+  ext,
+  "ext_repo",
+)
+

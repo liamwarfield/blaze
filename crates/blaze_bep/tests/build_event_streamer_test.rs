@@ -11,8 +11,8 @@ use blaze_actions::{Artifact, ArtifactOwner, ArtifactRoot, BuildConfigurationEve
 use blaze_bep::buildeventstream::build_event_id_util;
 use blaze_bep::buildeventstream::{
     ArtifactGroupNamer, ArtifactGroupNode, BuildEvent, BuildEventArtifactUploader,
-    BuildEventContext, BuildEventTransport, GenericBuildEvent, Interrupted, PathConverter,
-    ProgressEvent, ReportedArtifacts, TransportCloseError, proto_chaining, proto_chaining_with,
+    BuildEventContext, BuildEventTransport, CloseFuture, GenericBuildEvent, Interrupted,
+    PathConverter, ProgressEvent, ReportedArtifacts, proto_chaining, proto_chaining_with,
 };
 use blaze_bep::events::actions_events::{
     ActionExecutedEvent, ActionFailure, ErrorTiming, ExecutedActionInfo, ExecutedActionOwner,
@@ -138,8 +138,9 @@ impl BuildEventTransport for RecordingBuildEventTransport {
         recorded.events_as_protos.push(proto);
     }
 
-    fn close(&self) -> Result<(), TransportCloseError> {
-        Ok(())
+    fn close(&self) -> CloseFuture {
+        // Futures.immediateFuture(null)
+        CloseFuture::immediate(Ok(()))
     }
 
     fn get_uploader(&self) -> Option<Arc<dyn BuildEventArtifactUploader>> {

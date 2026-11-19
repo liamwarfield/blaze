@@ -616,3 +616,37 @@ TESTING/no/sp\ace /workspace/trivial/BUILD
 "
     );
 }
+
+/// Not in the Java test: the manifest is written through an ISO-8859-1 `Writer`, so paths come
+/// out as the bytes their internal strings stand for, and `getFileContents` reads them back with
+/// ISO-8859-1. `é` (c3 a9), `🐷` (f0 9f 90 b7) and the byte ff; only space, newline and
+/// backslash are escaped.
+#[test]
+fn test_non_ascii_paths() {
+    use blaze_util::string_encoding::latin1_decode;
+    let f = fixture();
+    let trivial_root = ArtifactRoot::as_source_root(Root::from_path(
+        f.root_directory.get_relative_str("trivial"),
+    ));
+    let target = Artifact::new_source_artifact(
+        trivial_root,
+        PathFragment::create(&latin1_decode(b"\xf0\x9f\x90\xb7\xff")),
+        ArtifactOwner::NullOwner,
+    );
+    let action = SourceManifestAction::new_for_testing(
+        Arc::new(ManifestType::SOURCE_SYMLINKS),
+        null_action_owner(),
+        f.get_bin_artifact_with_no_owner("manifest1"),
+        RunfilesBuilder::new("TESTING")
+            .add_symlink(
+                PathFragment::create(&latin1_decode(b"dir_\xc3\xa9/a b")),
+                target,
+            )
+            .build(),
+    );
+    let want: &[u8] = b" TESTING/dir_\xc3\xa9/a\\sb /workspace/trivial/\xf0\x9f\x90\xb7\xff\n";
+    let mut out = Vec::new();
+    action.write_to(&mut out).unwrap();
+    assert_eq!(out, want);
+    assert_eq!(action.get_file_contents().unwrap(), latin1_decode(want));
+}

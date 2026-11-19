@@ -39,9 +39,11 @@ pub fn get_user_name() -> String {
             &mut result,
         );
         if rc == 0 && !result.is_null() && !pwd.pw_name.is_null() {
-            return std::ffi::CStr::from_ptr(pwd.pw_name)
-                .to_string_lossy()
-                .into_owned();
+            // `user.name`: a platform string, decoded with `sun.jnu.encoding` (ISO-8859-1).
+            return blaze_util::string_encoding::latin1_decode(
+                std::ffi::CStr::from_ptr(pwd.pw_name).to_bytes(),
+            )
+            .into_owned();
         }
     }
     // The JVM falls back to "?" when the user cannot be looked up.

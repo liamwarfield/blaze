@@ -3,6 +3,8 @@
 //! PORT: W1 subset. The Skyframe executor, action cache, bin tools, syscall cache and package
 //! locator are added with the waves that need them.
 
+use std::io::Write;
+
 use blaze_vfs::Path;
 
 use crate::directories::BlazeDirectories;
@@ -113,7 +115,11 @@ impl BlazeWorkspace {
             content.push('\n');
         }
         // Failures are only logged (logger.atWarning) in Java.
-        let _ = std::fs::write(output_base_readme_file.get_path_string(), content);
+        let _ = output_base_readme_file
+            .get_output_stream()
+            .and_then(|mut out| {
+                out.write_all(&blaze_util::string_encoding::latin1_encode_lossy(&content))
+            });
     }
 
     // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:185 BlazeWorkspace.writeDoNotBuildHereFile
@@ -125,7 +131,12 @@ impl BlazeWorkspace {
             return;
         }
         // Failures are only logged (logger.atWarning) in Java.
-        let _ = std::fs::write(file_path.get_path_string(), workspace.get_path_string());
+        // FileSystemUtils.writeContent(filePath, ISO_8859_1, getWorkspace().toString()).
+        let _ = file_path.get_output_stream().and_then(|mut out| {
+            out.write_all(&blaze_util::string_encoding::latin1_encode_lossy(
+                workspace.get_path_string(),
+            ))
+        });
     }
 
     // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:185 BlazeWorkspace.writeDoNotBuildHereFile

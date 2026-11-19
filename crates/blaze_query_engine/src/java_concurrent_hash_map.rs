@@ -27,15 +27,13 @@ pub trait JavaHashCode {
     fn java_hash_code(&self) -> i32;
 }
 
-/// Java `String.hashCode()` of a string in Bazel's internal form (Latin-1 characters holding UTF-8
-/// bytes, `lib/util/StringEncoding.java`): the polynomial runs over the UTF-8 bytes.
-///
-/// PORT: StringEncoding identity. Labels, package names and repository names are internal-form
-/// strings in Java, so their hash codes are over UTF-8 bytes.
+/// Java `String.hashCode()`: the polynomial over the UTF-16 code units. Labels, package names
+/// and repository names are internal strings (`lib/util/StringEncoding.java`), one char (one
+/// unit) per byte.
 pub fn java_internal_string_hash_code(s: &str) -> i32 {
     let mut h: i32 = 0;
-    for b in s.as_bytes() {
-        h = h.wrapping_mul(31).wrapping_add(*b as i32);
+    for unit in s.encode_utf16() {
+        h = h.wrapping_mul(31).wrapping_add(unit as i32);
     }
     h
 }
@@ -722,6 +720,19 @@ mod tests {
             java_internal_string_hash_code("polygenelubricants"),
             i32::MIN
         );
+    }
+
+    // Oracle (docs/research/07-byte-strings.md 2.3): Starlark `hash("é")` = 6214 and
+    // `hash("🐷")` = 7307286, `String.hashCode` over the Latin-1 chars of the internal string.
+    #[test]
+    fn string_hash_code_of_internal_strings_matches_java() {
+        assert_eq!(java_internal_string_hash_code("\u{c3}\u{a9}"), 6214);
+        assert_eq!(
+            java_internal_string_hash_code("\u{f0}\u{9f}\u{90}\u{b7}"),
+            7307286
+        );
+        // "\377" is the one char U+00FF.
+        assert_eq!(java_internal_string_hash_code("\u{ff}"), 255);
     }
 
     #[test]

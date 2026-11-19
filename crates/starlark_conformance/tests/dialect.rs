@@ -172,3 +172,37 @@ fn bazel_set_repr() {
     // Bazel: repr(set()) == "set()". Blaze patch 0007.
     assert_eq!(eval("r = repr(set())"), Ok("\"set()\"".into()));
 }
+
+#[test]
+fn bazel_string_escapes() {
+    // Bazel 9.3.2 (net/starlark/java/syntax/Lexer.java:322-404): octal escapes are one char
+    // 0..=0xFF; \x, \u, \U, \N and other unknown escapes are errors. Blaze patch 0032 (stock
+    // starlark-rust accepted \x41, \u0041 and kept an unknown escape's backslash).
+    assert_eq!(
+        eval(r#"r = (len("\377"), "\101")"#),
+        Ok("(1, \"A\")".into())
+    );
+    for bad in [
+        r#""\x41""#,
+        r#""\u0041""#,
+        r#""\U00000041""#,
+        r#""\N{x}""#,
+        r#""\q""#,
+    ] {
+        let e = parse(&format!("r = {bad}\n")).unwrap_err();
+        assert!(e.starts_with("invalid escape sequence: \\"), "{bad}: {e}");
+    }
+    assert_eq!(
+        parse("r = \"\\400\"\n").unwrap_err(),
+        "octal escape sequence out of range (maximum is \\377)"
+    );
+}
+
+#[test]
+fn bazel_string_repr_escapes_only_control_chars() {
+    // Bazel: repr escapes `"`, `\` and chars below 0x20 only (Printer.java:239). Blaze patch 0035.
+    assert_eq!(
+        eval("r = repr(\"\\001\u{7f}\u{e9}\u{200b}\")"),
+        Ok("\"\\\"\\\\x01\u{7f}\u{e9}\u{200b}\\\"\"".into())
+    );
+}

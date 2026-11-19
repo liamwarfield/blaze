@@ -1,18 +1,16 @@
 //! Port of `src/main/cpp/util/file.cc` and `src/main/cpp/util/file_posix.cc`.
 
-use std::ffi::CString;
 use std::sync::OnceLock;
+
+use blaze_util::string_encoding::internal_to_platform;
 
 use super::errors::{errno, get_last_error_string, set_errno};
 use super::exit_code;
 use super::logging::bazel_die;
 use super::path::{Path, dirname, is_root_directory};
+use super::strings::{cstr, from_platform_bytes};
 
 const FILE_POSIX_CC: &str = "src/main/cpp/util/file_posix.cc";
-
-fn cstr(s: &str) -> CString {
-    CString::new(s).unwrap_or_default()
-}
 
 fn stat_path(path: &str) -> Option<libc::stat> {
     let c = cstr(path);
@@ -155,8 +153,7 @@ pub fn create_sibling_temp_dir(other_path: &Path) -> Path {
         );
     }
     buf.pop(); // NUL
-    // PORT: byte-strings (C++ keeps the mkdtemp path's raw bytes).
-    let path = String::from_utf8_lossy(&buf).into_owned();
+    let path = from_platform_bytes(&buf);
     // SAFETY: umask has no preconditions; restored immediately.
     let um = unsafe { libc::umask(0) };
     unsafe { libc::umask(um) };
@@ -168,15 +165,16 @@ pub fn create_sibling_temp_dir(other_path: &Path) -> Path {
 
 // Java: src/main/cpp/util/file_posix.cc:150 RemoveDirRecursively
 fn remove_dir_recursively(path: &Path) -> bool {
-    let Ok(dir) = std::fs::read_dir(path.as_native_path()) else {
+    let Ok(dir) = std::fs::read_dir(std::path::Path::new(&*internal_to_platform(
+        &path.as_native_path(),
+    ))) else {
         return false;
     };
     for ent in dir {
         let Ok(ent) = ent else {
             return false;
         };
-        // PORT: byte-strings (C++ uses dirent d_name's raw bytes).
-        let name = ent.file_name().to_string_lossy().into_owned();
+        let name = from_platform_bytes(ent.file_name().as_encoded_bytes());
         if name == "." || name == ".." {
             continue;
         }
@@ -205,7 +203,7 @@ pub fn remove_recursively(path: &Path) -> bool {
 /// Reads the file (at most `max_size` bytes if positive). `None` if it cannot be opened or read.
 pub fn read_file(filename: &str, max_size: i32) -> Option<Vec<u8>> {
     use std::io::Read;
-    let mut f = std::fs::File::open(filename).ok()?;
+    let mut f = std::fs::File::open(std::path::Path::new(&*internal_to_platform(filename))).ok()?;
     let mut content = Vec::new();
     if max_size > 0 {
         f.take(max_size as u64).read_to_end(&mut content).ok()?;
@@ -295,8 +293,7 @@ pub fn read_directory_symlink(symlink: &Path) -> Option<Path> {
         return None;
     }
     buf.truncate(len as usize);
-    // PORT: byte-strings (C++ keeps the readlink target's raw bytes).
-    Some(Path::new(&String::from_utf8_lossy(&buf)))
+    Some(Path::new(&from_platform_bytes(&buf)))
 }
 
 // Java: src/main/cpp/util/file_posix.cc:372 UnlinkPath
@@ -337,10 +334,7 @@ pub fn make_canonical(path: &str) -> String {
         if resolved.is_null() {
             return String::new();
         }
-        // PORT: byte-strings (C++ MakeCanonical returns realpath's raw bytes).
-        let ret = std::ffi::CStr::from_ptr(resolved)
-            .to_string_lossy()
-            .into_owned();
+        let ret = from_platform_bytes(std::ffi::CStr::from_ptr(resolved).to_bytes());
         libc::free(resolved as *mut libc::c_void);
         ret
     }
@@ -535,8 +529,7 @@ pub fn get_cwd() -> String {
     }
     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     buf.truncate(len);
-    // PORT: byte-strings (C++ GetCwd returns getcwd's raw bytes).
-    String::from_utf8_lossy(&buf).into_owned()
+    from_platform_bytes(&buf)
 }
 
 // Java: src/main/cpp/util/file_posix.cc:529 ChangeDirectory
@@ -549,12 +542,13 @@ pub fn change_directory(path: &str) -> bool {
 // Java: src/main/cpp/util/file_posix.cc:533 ForEachDirectoryEntry
 /// Calls `consume(child_path, is_directory)` for each entry of `path` except `.` and `..`.
 pub fn for_each_directory_entry(path: &Path, consume: &mut dyn FnMut(&Path, bool)) {
-    let Ok(dir) = std::fs::read_dir(path.as_native_path()) else {
+    let Ok(dir) = std::fs::read_dir(std::path::Path::new(&*internal_to_platform(
+        &path.as_native_path(),
+    ))) else {
         return;
     };
     for ent in dir.flatten() {
-        // PORT: byte-strings (C++ uses dirent d_name's raw bytes).
-        let name = ent.file_name().to_string_lossy().into_owned();
+        let name = from_platform_bytes(ent.file_name().as_encoded_bytes());
         if name == "." || name == ".." {
             continue;
         }

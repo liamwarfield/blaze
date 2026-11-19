@@ -34,7 +34,7 @@ use crate::cquery::configured_target_query_environment::{
     CqueryNode, configured_attribute_mapper, get_config_conditions,
 };
 use crate::cquery::cquery_options::as_query_options;
-use crate::cquery::cquery_threadsafe_callback::CqueryThreadsafeCallback;
+use crate::cquery::cquery_threadsafe_callback::{CqueryThreadsafeCallback, print_stream_bytes};
 use crate::post_analysis_query_environment::{
     NamedThreadSafeOutputFormatterCallback, as_configured_target_key,
 };
@@ -221,7 +221,9 @@ impl<'a> ProtoOutputFormatterCallback<'a> {
                 let json = JsonFormat::printer()
                     .print(message)
                     .map_err(|e| std::io::Error::other(e.get_message().to_owned()))?;
-                out.write_all(json.as_bytes())?;
+                // jsonPrinter.appendTo(message, printStream): the JSON text (Unicode, from
+                // internalToUnicode) through the Latin-1 writer.
+                out.write_all(&print_stream_bytes(&json))?;
                 out.write_all(b"\n")?;
             }
         }

@@ -269,18 +269,16 @@ impl<'a> SubprocessHandler<'a> {
             && !allowed_local_action.matches(&action_type)
         {
             // Java writes `(... + actionType + ... + unicodeToInternal(pattern) + "\n")
-            // .getBytes(UTF_8)`: the UTF-8 encoding of an internal string.
-            // Seam (decisions.md 2026-11-18 "Strings"): `to_internal` is the internal string the
-            // message stands for while `STRINGS_ARE_INTERNAL` is false. After the switch the
-            // mnemonic is internal already and the pattern (a Unicode string in Java) is whatever
-            // the option's converter keeps; revisit with the option intake.
+            // .getBytes(UTF_8)`: the UTF-8 encoding of an internal string. The pattern is a
+            // Unicode string (the option's converter compiles `internalToUnicode` of the value).
+            // Java: com/google/devtools/build/lib/exec/local/LocalSpawnRunner.java:326
             let message = format!(
                 "Action type {} is not allowed to run locally due to regex filter: {}\n",
                 action_type,
-                allowed_local_action.pattern()
+                blaze_util::string_encoding::unicode_to_internal(allowed_local_action.pattern())
             );
             out_err
-                .write_err(blaze_util::string_encoding::to_internal(&message).as_bytes())
+                .write_err(message.as_bytes())
                 .map_err(|e| exec_io_exception(&e))?;
             self.spawn_metrics.total_time_in_ms = to_ms(self.total_time_stopwatch.elapsed());
             return Ok(spawn_result_builder
@@ -584,7 +582,8 @@ fn compute_short_host_name() -> String {
         return "unknown".to_string();
     }
     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    let local = String::from_utf8_lossy(&buf[..len]).into_owned();
+    // A platform string (the JVM decodes it with `sun.jnu.encoding`, ISO-8859-1).
+    let local = blaze_util::string_encoding::latin1_decode(&buf[..len]).into_owned();
     // InetAddress.getLocalHost() resolves the name and throws UnknownHostException when it
     // cannot ("localhost" is special-cased to the loopback address).
     if local == "localhost" {

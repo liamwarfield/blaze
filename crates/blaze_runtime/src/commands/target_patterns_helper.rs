@@ -125,18 +125,8 @@ pub fn read_from_with(
         match read() {
             Ok(bytes) => {
                 // new String(bytes, ISO_8859_1): the internal string form (Latin-1 characters
-                // holding the file's bytes). PORT: StringEncoding identity for UTF-8 content. A
-                // Rust String cannot hold other bytes, and replacing them would change the
-                // patterns silently.
-                let content = match String::from_utf8(bytes) {
-                    Ok(content) => content,
-                    Err(e) => blaze_util::unported!(
-                        "TargetPatternsHelper.readFrom",
-                        "--target_pattern_file {} is not valid UTF-8 ({})",
-                        residue_path.get_path_string(),
-                        e.utf8_error()
-                    ),
-                };
+                // holding the file's bytes).
+                let content = blaze_util::string_encoding::latin1_decode(&bytes);
                 targets = read_lines(&content)
                     .into_iter()
                     // TARGET_PATTERN_SPLITTER.splitToList(s).get(0)
@@ -366,6 +356,31 @@ mod tests {
         assert_eq!(
             read(&f).unwrap(),
             vec!["//a:b".to_owned(), "//c/...".to_owned(), "//d".to_owned()]
+        );
+    }
+
+    // Blaze: the file is read as ISO_8859_1 (one char per byte): `é` (C3 A9), `🐷`
+    // (F0 9F 90 B7) and a byte that is not UTF-8 (FF) become internal strings. A trailing
+    // U+00A0 (byte A0) is not trimmed (String.trim strips only chars <= U+0020).
+    #[test]
+    fn target_pattern_file_non_ascii_is_read_as_latin1() {
+        let mut f = set_up();
+        std::fs::write(
+            f.working_directory
+                .get_relative_str("patterns.txt")
+                .get_path_string(),
+            b"//:fg_\xc3\xa9\n//:\xf0\x9f\x90\xb7\xa0\n//:\xff # c\n",
+        )
+        .unwrap();
+        parse_target_pattern_file(&mut f);
+
+        assert_eq!(
+            read(&f).unwrap(),
+            vec![
+                "//:fg_\u{c3}\u{a9}".to_owned(),
+                "//:\u{f0}\u{9f}\u{90}\u{b7}\u{a0}".to_owned(),
+                "//:\u{ff}".to_owned()
+            ]
         );
     }
 }

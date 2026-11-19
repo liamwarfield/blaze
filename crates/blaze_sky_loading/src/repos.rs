@@ -409,19 +409,27 @@ pub struct OracleRepos {
 #[error("{0}")]
 pub struct OracleReposError(pub String);
 
+/// The internal string of a Unicode string of the repos JSON.
+fn internal(s: &str) -> String {
+    blaze_util::string_encoding::unicode_to_internal(s).into_owned()
+}
+
 impl OracleRepos {
     /// Reads the JSON written by `scripts/w3/oracle-repos`.
     pub fn load(
         json_path: &std::path::Path,
         directories: LoadingDirectories,
     ) -> Result<OracleRepos, OracleReposError> {
-        let text = std::fs::read_to_string(json_path)
-            .map_err(|e| OracleReposError(format!("{}: {}", json_path.display(), e)))?;
-        Self::parse(&text, directories)
-            .map_err(|e| OracleReposError(format!("{}: {}", json_path.display(), e.0)))
+        let shown = blaze_util::string_encoding::platform_to_internal(json_path.as_os_str());
+        // The file is JSON text (UTF-8, as Python's json module writes it).
+        let text = std::fs::read(json_path)
+            .and_then(|bytes| String::from_utf8(bytes).map_err(std::io::Error::other))
+            .map_err(|e| OracleReposError(format!("{}: {}", shown, e)))?;
+        Self::parse(&text, directories).map_err(|e| OracleReposError(format!("{}: {}", shown, e.0)))
     }
 
-    /// Parses the JSON written by `scripts/w3/oracle-repos`.
+    /// Parses the JSON written by `scripts/w3/oracle-repos`. Its strings are Unicode; the names
+    /// and paths Blaze keeps are their internal strings.
     pub fn parse(
         text: &str,
         directories: LoadingDirectories,
@@ -456,7 +464,7 @@ impl OracleRepos {
                                 name, e
                             )));
                         };
-                        out.push((k.to_owned(), v.to_owned()));
+                        out.push((internal(k), internal(v)));
                     }
                     Some(out)
                 }
@@ -467,10 +475,9 @@ impl OracleRepos {
                     )));
                 }
             };
-            let string_field =
-                |field: &str| r.get(field).and_then(|v| v.as_str()).map(String::from);
+            let string_field = |field: &str| r.get(field).and_then(|v| v.as_str()).map(internal);
             repos.insert(
-                name.clone(),
+                internal(name),
                 OracleRepo {
                     found,
                     mapping,

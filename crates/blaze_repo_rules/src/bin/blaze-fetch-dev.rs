@@ -40,6 +40,9 @@ use blaze_repo_rules::setup::{FetchSetup, create_evaluator};
 use blaze_sky_loading::repos::RepositoryDirectoryKey;
 use blaze_skyframe::{EvaluationContext, SkyKey};
 use blaze_starlark::StarlarkSemantics;
+use blaze_util::string_encoding::{
+    internal_to_platform, latin1_encode_lossy, platform_to_internal,
+};
 use indexmap::IndexMap;
 
 /// Prints events the way Bazel's UI does for `--color=no --curses=no`.
@@ -54,10 +57,12 @@ impl EventHandler for StderrHandler {
             EventKind::Debug => "DEBUG",
             _ => return,
         };
-        match event.get_location() {
-            Some(l) => eprintln!("{kind}: {l}: {}", event.get_message()),
-            None => eprintln!("{kind}: {}", event.get_message()),
-        }
+        let line = match event.get_location() {
+            Some(l) => format!("{kind}: {l}: {}\n", event.get_message()),
+            None => format!("{kind}: {}\n", event.get_message()),
+        };
+        // Internal strings leave through the Latin-1 console encoding.
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), &latin1_encode_lossy(&line));
     }
     fn as_extended_event_handler(&self) -> Option<&dyn ExtendedEventHandler> {
         Some(self)
@@ -83,25 +88,39 @@ fn main() {
     std::process::exit(code);
 }
 
+/// The client environment as internal strings.
+fn client_env() -> IndexMap<String, String> {
+    std::env::vars_os()
+        .map(|(k, v)| {
+            (
+                platform_to_internal(&k).into_owned(),
+                platform_to_internal(&v).into_owned(),
+            )
+        })
+        .collect()
+}
+
 fn real_main() -> i32 {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // The JVM hands Java its argv and environment as internal strings.
+    let mut args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| platform_to_internal(&a).into_owned())
+        .collect();
     if args.first().is_some_and(|a| a == "help" || a == "--help") {
         usage();
     }
     let cwd = std::env::current_dir().expect("cwd");
     let mut workspace = cwd.clone();
     let mut output_base: Option<PathBuf> = None;
-    let mut install_base = PathBuf::from(format!(
-        "{}/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9",
-        std::env::var("HOME").unwrap_or_default()
-    ));
+    let mut install_base = PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+        .join(".cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9");
     while let Some(a) = args.first().cloned() {
         let take = |args: &mut Vec<String>| -> PathBuf {
             args.remove(0);
             if args.is_empty() {
                 usage();
             }
-            PathBuf::from(args.remove(0))
+            PathBuf::from(internal_to_platform(&args.remove(0)).into_owned())
         };
         match a.as_str() {
             "--workspace" => workspace = take(&mut args),
@@ -153,11 +172,11 @@ fn real_main() -> i32 {
 
     // PORT: BuildLanguageOptions.toStarlarkSemantics is not wired yet; Bazel's defaults.
     let semantics = StarlarkSemantics::default();
-    let client_env: IndexMap<String, String> = std::env::vars().collect();
+    let client_env = client_env();
     let (repo_env, nonstrict_repo_env) = compute_repo_env(
         &client_env,
         &common_options,
-        &workspace.display().to_string(),
+        &platform_to_internal(workspace.as_os_str()),
     );
 
     let fetch = match create_evaluator(FetchSetup {
@@ -313,11 +332,11 @@ fn mod_main(
 
     // PORT: BuildLanguageOptions.toStarlarkSemantics is not wired yet; Bazel's defaults.
     let semantics = StarlarkSemantics::default();
-    let client_env: IndexMap<String, String> = std::env::vars().collect();
+    let client_env = client_env();
     let (repo_env, nonstrict_repo_env) = compute_repo_env(
         &client_env,
         &common_options,
-        &workspace.display().to_string(),
+        &platform_to_internal(workspace.as_os_str()),
     );
     let fetch = match create_evaluator(FetchSetup {
         workspace: &workspace,

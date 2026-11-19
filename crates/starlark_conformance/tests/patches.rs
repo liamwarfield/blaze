@@ -1475,3 +1475,196 @@ fn patch_0029_resolve_errors() {
         AstModule::parse("t.bzl", "x = len([])\n".to_owned(), &dialect::bzl_dialect()).unwrap();
     assert!(starlark::eval::resolve_errors(&ok, &globals).is_empty());
 }
+
+/// Like `eval`, but the source is read as Bazel reads files (one char per byte of its UTF-8,
+/// `ParserInput.fromLatin1`) and the byte-strings flag is `utf8_byte_strings`; returns the
+/// Latin-1 bytes of `str(r)`, or the error message.
+fn eval_bytes(src: &'static str, utf8_byte_strings: bool) -> Result<Vec<u8>, String> {
+    std::thread::Builder::new()
+        .stack_size(1 << 28)
+        .spawn(move || {
+            let globals = dialect::bazel_universe();
+            let source = blaze_util::string_encoding::latin1_decode(src.as_bytes()).into_owned();
+            let ast = AstModule::parse("t.bzl", source, &dialect::bzl_dialect())
+                .map_err(|e| bare_message(&e))?;
+            Module::with_temp_heap(|module| {
+                let mut e = Evaluator::new(&module);
+                e.set_forbid_recursion(true);
+                e.set_utf8_byte_strings(utf8_byte_strings);
+                e.eval_module(ast, &globals).map_err(|e| bare_message(&e))?;
+                let r = module.get("r").map(|v| v.to_str()).unwrap_or_default();
+                Ok(blaze_util::string_encoding::latin1_encode_lossy(&r).into_owned())
+            })
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+/// The error of parsing `src` (Latin-1 decoded), as Java's `SyntaxError.toString`.
+fn syntax_error(src: &'static str) -> String {
+    let source = blaze_util::string_encoding::latin1_decode(src.as_bytes()).into_owned();
+    let e = AstModule::parse("t.bzl", source, &dialect::bzl_dialect()).unwrap_err();
+    match blaze_starlark::EvalError::from_starlark(&e).kind {
+        blaze_starlark::error::EvalErrorKind::Syntax(errors) => errors[0].to_string(),
+        k => panic!("not a syntax error: {k:?}"),
+    }
+}
+
+/// Java Lexer.java:322-404 (escapes) and :301 (unclosed literal). Expected values: Bazel's
+/// interpreter (java/StarlarkProbe.java; tests/data/escape_*.latin1.txt).
+#[test]
+fn patch_0032_lexer_escapes() {
+    // Octal escapes are one char 0..=0xFF; non-ASCII source bytes pass through as chars.
+    assert_eq!(
+        eval_bytes(
+            r#"r = (len("\0"), len("\0000"), len("\377"), "\303\251" == "é", len("é"))"#,
+            true
+        ),
+        Ok(b"(1, 2, 1, True, 2)".to_vec())
+    );
+    assert_eq!(
+        eval_bytes(r#"r = repr("\0\1\12\123\1234\08\377")"#, true),
+        Ok(b"\"\\x00\\x01\\nSS4\\x008\xff\"".to_vec())
+    );
+    assert_eq!(
+        eval_bytes(r#"r = repr("\a\b\f\n\r\t\v\\\'\"")"#, true),
+        Ok(br#""\x07\x08\x0c\n\r\t\x0b\\'\"""#.to_vec())
+    );
+    // Unknown escapes, including \x \u \U \N and a non-ASCII byte, are errors at the escape char.
+    assert_eq!(
+        syntax_error("x = \"a\\qb\"\n"),
+        "t.bzl:1:8: invalid escape sequence: \\q. Use '\\\\' to insert '\\'."
+    );
+    assert_eq!(
+        syntax_error("x = 1\ny = \"\\x41\"\n"),
+        "t.bzl:2:7: invalid escape sequence: \\x. Use '\\\\' to insert '\\'."
+    );
+    assert_eq!(
+        syntax_error("y = \"ab\\u0041\"\n"),
+        "t.bzl:1:9: invalid escape sequence: \\u. Use '\\\\' to insert '\\'."
+    );
+    assert_eq!(
+        syntax_error("y = '\\U00000041'\n"),
+        "t.bzl:1:7: invalid escape sequence: \\U. Use '\\\\' to insert '\\'."
+    );
+    assert_eq!(
+        syntax_error("y = \"\"\"\n\\N{DASH}\"\"\"\n"),
+        "t.bzl:2:2: invalid escape sequence: \\N. Use '\\\\' to insert '\\'."
+    );
+    assert_eq!(
+        syntax_error("x = \"\\é\"\n"),
+        "t.bzl:1:7: invalid escape sequence: \\\u{c3}. Use '\\\\' to insert '\\'."
+    );
+    // Octal above \377: at the last digit.
+    assert_eq!(
+        syntax_error("x = \"ab\\400\"\n"),
+        "t.bzl:1:11: octal escape sequence out of range (maximum is \\377)"
+    );
+    assert_eq!(
+        syntax_error("x = \"\\7777\"\n"),
+        "t.bzl:1:9: octal escape sequence out of range (maximum is \\377)"
+    );
+    assert_eq!(
+        syntax_error("x = \"abc\\"),
+        "t.bzl:1:5: unclosed string literal"
+    );
+    // Carriage returns: kept in literals; a backslash before CR or CRLF continues the line; in a
+    // raw literal a backslash-CRLF is backslash-LF, a backslash-CR stays (Java's quick scan).
+    assert_eq!(
+        eval_bytes(
+            "r = \"|\".join([str(len(\"a\\\rb\")), str(len(\"a\\\r\nb\")), str(len(\"\"\"a\r\nb\"\"\")), \
+             str(len(r\"a\\\r\nb\")), repr(r\"a\\\rb\"), repr(r\"\"\"a\\\rb\"\"\"), repr(\"\"\"x\ry\"\"\")])",
+            true
+        ),
+        Ok(br#"2|2|4|4|"a\\\rb"|"a\\\nb"|"x\ry""#.to_vec())
+    );
+}
+
+/// Java StringModule.java:174-182 (Ascii.toUpperCase/toLowerCase), :526 capitalize, :542 title,
+/// :757-878 predicates. Expected values: the oracle (07-byte-strings.md 2.3) and Bazel's
+/// interpreter (tests/data/latin1_chars.latin1.txt, strings_misc.latin1.txt).
+#[test]
+fn patch_0033_case_mapping_and_predicates() {
+    // ASCII-only upper/lower: "aé🐷".upper(), "AÉ".lower() (oracle).
+    assert_eq!(
+        eval_bytes(
+            r#"r = "|".join(["aé🐷".upper(), "AÉ".lower(), "中".upper()])"#,
+            true
+        ),
+        Ok(b"A\xc3\xa9\xf0\x9f\x90\xb7|a\xc3\x89|\xe4\xb8\xad".to_vec())
+    );
+    // Character.toUpperCase per char: "中".capitalize() turns the lead byte E4 into C4 (oracle);
+    // "été".title() lowers Ã after a letter (oracle).
+    assert_eq!(
+        eval_bytes(
+            r#"r = "|".join(["中".capitalize(), "été".title(), "AÉ".capitalize()])"#,
+            true
+        ),
+        Ok(b"\xc4\xb8\xad|\xc3\xa9T\xe3\xa9|A\xc3\x89".to_vec())
+    );
+    // ÿ (U+00FF) and µ (U+00B5) leave Latin-1 as in Java; ß has no one-char upper case.
+    assert_eq!(
+        eval(r#"r = ["\377".capitalize(), "\265".title(), "\337".capitalize(), "\337a\377".title(), "\377".upper(), "\300\330".lower()]"#),
+        Ok("[\"\u{178}\", \"\u{39c}\", \"\u{df}\", \"\u{df}a\u{ff}\", \"\u{ff}\", \"\u{c0}\u{d8}\"]".into())
+    );
+    // Predicates: ASCII matchers, javaDigit, Guava whitespace (oracle and Java).
+    assert_eq!(
+        eval_bytes(
+            r#"r = ("é".isalpha(), "é".isalnum(), "é".isdigit(), "aé".islower(), "AÉ".isupper(), "Éa".istitle(), "\205".isspace(), "\240".isspace(), "\034".isspace(), "ÉCOLE".isupper(), "Été Été".istitle(), "aB".istitle(), "1é".isalnum())"#,
+            true
+        ),
+        Ok(b"(False, False, False, True, True, False, True, True, False, True, False, False, False)".to_vec())
+    );
+}
+
+/// Java StringModule.java:196-206, :326 matcher: without `chars`, strip removes ASCII whitespace
+/// (with U+001C..U+001F) under the byte-strings flag, Latin-1 whitespace (plus U+0085, U+00A0)
+/// without it. The flag is the evaluator's (default true, Bazel's default).
+#[test]
+fn patch_0034_strip_whitespace_flag() {
+    let src = r#"r = "|".join([" é ".strip(), "Å".strip(), "\240a\240".strip(), "\205a\205".lstrip(), "\205a\205".rstrip(), "\034a\037".strip(), "\240a".strip("\240")])"#;
+    // Oracle: [C3 A9], [C3 85], [A0 61 A0].
+    assert_eq!(
+        eval_bytes(src, true),
+        Ok(b"\xc3\xa9|\xc3\x85|\xa0a\xa0|\x85a\x85|\x85a\x85|a|a".to_vec())
+    );
+    assert_eq!(
+        eval_bytes(src, false),
+        Ok(b"\xc3\xa9|\xc3|a|a\x85|\x85a|a|a".to_vec())
+    );
+    // The default evaluator has the flag on.
+    assert_eq!(eval(r#"r = "\240a".strip()"#), Ok("\"\u{a0}a\"".into()));
+}
+
+/// Java Printer.java:239 escapeCharacter: only `"`, `\`, and chars below 0x20 are escaped.
+#[test]
+fn patch_0035_repr_escapes() {
+    // Oracle: repr("é\001\177\200"), str(["é"]), "%s|%r" % (e, e).
+    assert_eq!(
+        eval_bytes(
+            r#"r = "|".join([repr("é\001\177\200"), str(["é"]), "%s|%r" % ("é", "é"), repr({"\377": "\t"})])"#,
+            true
+        ),
+        Ok(
+            b"\"\xc3\xa9\\x01\x7f\x80\"|[\"\xc3\xa9\"]|\xc3\xa9|\"\xc3\xa9\"|{\"\xff\": \"\\t\"}"
+                .to_vec()
+        )
+    );
+    // Not even DEL or chars above U+00FF (Java appends them as they are).
+    assert_eq!(
+        eval("r = repr(\"\u{200b}\u{7f}\")"),
+        Ok("\"\\\"\u{200b}\u{7f}\\\"\"".into())
+    );
+}
+
+/// Java EvalUtils.java:433 repeatString: the limit and the message count chars (= bytes of an
+/// internal string).
+#[test]
+fn patch_0036_repeat_limit_counts_chars() {
+    assert_eq!(
+        eval_bytes(r#"r = "é" * (1 << 30)"#, true),
+        Err("excessive repeat (2 * 1073741824 characters)".to_owned())
+    );
+    assert_eq!(eval_bytes(r#"r = len("é" * 3)"#, true), Ok(b"6".to_vec()));
+}
