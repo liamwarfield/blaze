@@ -217,3 +217,15 @@ Each entry: date, decision, why, who decided.
   (`command.profile.gz`) and the critical path are NEEDED, scheduled late. (4) Incremental
   plumbing is NEEDED since the server decision; PORTING.md's "skipped, incremental" rule is
   superseded for packages S and I. Root.
+- 2026-11-19. Outer measure, first full run: Bazel's integration suite against the v0.1.0
+  binary (clean-worktree build of 5a4e4a0, sha256 291d6df9…): 62 of 211 oracle-passing targets,
+  1,422 of 2,878 oracle-passing functions (`docs/upstream-tests.md`; ranked causes there). The
+  four timeouts repeat on rerun (hangs, not load). This number, re-measured at each accepted
+  commit, is the progress measure for the goal. Rulings from it: (1) tests that need a JVM
+  (jmap on the server, Java thread dumps, java.log format, JFR; 14 functions) are excluded from
+  the target as JVM_ONLY; (2) Starlark core-language error texts are no longer accepted as
+  starlark-rust's where Bazel's own tests read them: they are ported through the patch queue
+  (supersedes the earlier ruling for the messages Java's eval and syntax packages define);
+  (3) a panic on a worker thread that hangs the process is an S1, assigned with the crash
+  handling fix; (4) harness problems 1, 2 and 4 of the report go to the auditor's batch
+  (protected scripts). Root.

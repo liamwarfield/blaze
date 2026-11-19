@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""Classify why oracle-passing upstream test functions do not pass for a label. See `classify help`."""
+
+import json
+import os
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+RESULTS = os.path.expanduser("~/.cache/blaze/upstream-test-results")
+
+USAGE = """\
+usage: scripts/ut-analysis/classify <base-summary.json> <label> [--oracle-label L ...]
+                                        [--top N] [--out-dir DIR]
+       scripts/ut-analysis/classify help
+
+For every function (//pkg:name#fn) and target that passes in <base-summary.json> (normally
+corpus/upstream-tests/oracle-9.3.2.json; flaky names are skipped) and does not pass in
+~/.cache/blaze/upstream-test-results/<label>/results.json, finds the first cause in its log:
+
+  unported:<Class.method>   first `not ported yet: <Class.method>` panic
+  panic:<file>: <message>   another Rust panic
+  crash:<signal>            the inner binary died on a signal
+  error:<ERROR text>        first `ERROR:` line whose normalised text Bazel does not print in
+                            the same target's logs (oracle labels, default oracle-9.3.2 and
+                            oracle-9.3.2-run2)
+  timeout                   the target or shard hit its timeout before the function finished
+  assert:<message>          the test's own failure message (wrong output)
+  skipped:<message>         the function skipped itself
+  absent:<target status>    no result for the function and no better clue in the logs
+
+Text is the function's own failure output (test.xml) where it has one, else its section of
+test.log (shell: from its `** <fn> ***` header), else the whole target log. Normalisation drops
+locations, paths, labels, numbers and quoted text so that one cause groups.
+
+Writes <out-dir>/causes.json (per name: cause, detail, status, target status) and causes.txt
+(causes ranked by blocked functions, with three examples each). Default out-dir: the label's
+results directory.
+"""
+
+LOC = re.compile(r"^ERROR: (?:/\S+|\S*BUILD\S*|\S+\.bzl)?:\d+:\d+: ")
+
+
+def norm(s):
+    s = LOC.sub("ERROR: ", s)
+    s = re.sub(r"\x1b\[[0-9;]*m", "", s)
+    s = re.sub(r"'[^']*'", "'_'", s)
+    s = re.sub(r'"[^"]*"', '"_"', s)
+    s = re.sub(r"@{0,2}[\w.~+-]*//[\w/.~+-]*(?::[\w/.~+@=-]*)?", "<label>", s)
+    s = re.sub(r"(?<![\w.])/[\w.~+@=-]+(?:/[\w.~+@=-]*)+", "<path>", s)
+    s = re.sub(r"\b[0-9a-f]{16,}\b", "<hash>", s)
+    s = re.sub(r"\d+", "N", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:160]
+
+
+UNPORTED = re.compile(r"not ported yet: ([A-Za-z0-9_$<>]+(?:\.[A-Za-z0-9_$<>]+)*)")
+PANIC = re.compile(r"panicked at ([^\s:]+):\d+:\d+:\n(.*)")
+# A crash of the binary under test (the tests' own helpers, e.g. the remote worker, are killed
+# on purpose at teardown, so a bare "Killed" is not a crash).
+CRASH = re.compile(r"^(?!.*REMOTE_WORKER).*(Segmentation fault|core dumped|SIGSEGV|SIGABRT|"
+                   r"has overflowed its stack)", re.M)
+ERRLINE = re.compile(r"^(?:\(\d\d:\d\d:\d\d\) )?ERROR: .*$", re.M)
+
+
+def read(path):
+    try:
+        return open(path, errors="replace").read()
+    except OSError:
+        return ""
+
+
+def xml_cases(path):
+    """{name: (status, text)} with the full failure message and body."""
+    out = {}
+    try:
+        root = ET.parse(path).getroot()
+    except (ET.ParseError, OSError):
+        return out
+    for tc in root.iter("testcase"):
+        name = tc.get("name", "")
+        cls = tc.get("classname") or ""
+        if cls:
+            name = cls.split(".")[-1] + "." + name
+        st, text = "pass", ""
+        for ch in tc:
+            if ch.tag in ("failure", "error"):
+                st = "fail"
+                text = (ch.get("message") or "") + "\n" + (ch.text or "")
+            elif ch.tag == "skipped":
+                st = "skip"
+                text = (ch.get("message") or "") + "\n" + (ch.text or "")
+        out[name] = (st, text)
+    return out
+
+
+def shell_section(log, fn):
+    m = re.search(r"^\*\* %s \*+$" % re.escape(fn), log, re.M)
+    if not m:
+        return None
+    rest = log[m.end():]
+    n = re.search(r"^\*\* \S+ \*+$", rest, re.M)
+    return rest[: n.start()] if n else rest
+
+
+def oracle_errors(target, oracle_dirs):
+    seen = set()
+    pkg, name = target[2:].split(":")
+    for d in oracle_dirs:
+        base = os.path.join(d, "logs", pkg, name)
+        for root, _, files in os.walk(base):
+            for f in files:
+                if f in ("test.log", "test.xml"):
+                    for m in ERRLINE.finditer(read(os.path.join(root, f))):
+                        seen.add(norm(m.group(0)))
+    return seen
+
+
+def lit(s):
+    s = re.sub(r"\x1b\[[0-9;]*m", "", s)
+    s = re.sub(r"(?<![\w.])/[\w.~+@=-]+(?:/[\w.~+@=-]*)+", "<path>", s)
+    s = re.sub(r"\b[0-9a-f]{16,}\b", "<hash>", s)
+    return re.sub(r"\s+", " ", s).strip()[:110]
+
+
+def first_assert(text):
+    for pat in (r"^\S+ FAILED: (.*)$", r"^(?:\w*Error|AssertionError): (.*)$",
+                r"^\s*FAILED: (.*)$"):
+        m = re.search(pat, text, re.M)
+        if m and m.group(1).strip():
+            return lit(m.group(1))
+    lines = [l for l in text.splitlines() if l.strip()]
+    return lit(lines[0]) if lines else "(no message)"
+
+
+def classify_text(text, oracle_err, timed_out):
+    m = UNPORTED.search(text)
+    if m:
+        return "unported:" + m.group(1), text[m.start(): m.start() + 300].split("\n")[0]
+    m = PANIC.search(text)
+    if m:
+        return "panic:%s: %s" % (m.group(1), norm(m.group(2))[:100]), m.group(2)[:300]
+    m = CRASH.search(text)
+    if m:
+        return "crash:" + m.group(1), m.group(0)[:300]
+    for m in ERRLINE.finditer(text):
+        n = norm(m.group(0))
+        if n not in oracle_err:
+            return "error:" + n, m.group(0)[:300]
+    if timed_out:
+        return "timeout", ""
+    return None, None
+
+
+def main(argv):
+    if len(argv) < 2 or argv[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    base = json.load(open(argv[0]))
+    label = argv[1]
+    opts = argv[2:]
+    oracle_labels = [opts[i + 1] for i, a in enumerate(opts) if a == "--oracle-label"] or \
+        ["oracle-9.3.2", "oracle-9.3.2-run2"]
+    top = int(opts[opts.index("--top") + 1]) if "--top" in opts else 40
+    rdir = os.path.join(RESULTS, label)
+    out_dir = opts[opts.index("--out-dir") + 1] if "--out-dir" in opts else rdir
+    oracle_dirs = [os.path.join(RESULTS, l) for l in oracle_labels]
+    res = json.load(open(os.path.join(rdir, "results.json")))
+    targets, functions = res["targets"], res["functions"]
+    flaky = set(base["flaky"]["targets"]) | set(base["flaky"]["functions"])
+    passing = {}
+    for t, fns in base["passing"]["functions"].items():
+        for fn in fns:
+            passing.setdefault(t, []).append(fn)
+    for t in base["passing"]["targets"]:
+        passing.setdefault(t, [])
+
+    out = {}
+    xml_cache, log_cache, err_cache = {}, {}, {}
+
+    def target_logs(t):
+        if t not in log_cache:
+            rec = targets.get(t, {})
+            log_cache[t] = [(sh, read(os.path.join(rdir, sh["log"])) if sh.get("log") else "")
+                            for sh in rec.get("shards", [])]
+        return log_cache[t]
+
+    def oerr(t):
+        if t not in err_cache:
+            err_cache[t] = oracle_errors(t, oracle_dirs)
+        return err_cache[t]
+
+    for t, fns in sorted(passing.items()):
+        trec = targets.get(t)
+        tstatus = trec["status"] if trec else "not_run"
+        for fn in fns:
+            key = t + "#" + fn
+            if key in flaky:
+                continue
+            f = functions.get(key)
+            st = f["status"] if f else "absent"
+            if st == "pass":
+                continue
+            text, shard_timeout, from_log = None, False, None
+            if f:
+                sh = next((s for s in trec["shards"] if s["shard"] == f["shard"]), None)
+                shard_timeout = bool(sh and sh["status"] == "timeout")
+                if sh and sh.get("xml"):
+                    p = os.path.join(rdir, sh["xml"])
+                    if p not in xml_cache:
+                        xml_cache[p] = xml_cases(p)
+                    text = xml_cache[p].get(fn, (None, None))[1]
+                logtext = next((lg for s, lg in target_logs(t) if s is sh), "")
+                sec = shell_section(logtext, fn)
+                if sec:
+                    text = (text or "") + "\n" + sec
+                if st == "skip":
+                    out[key] = {"cause": "skipped:" + first_assert(text or ""), "status": st,
+                                "target_status": tstatus, "detail": (text or "")[:300]}
+                    continue
+            else:
+                # Absent: its section of any shard log, else the shard logs that have no XML.
+                for s, lg in target_logs(t):
+                    sec = shell_section(lg, fn)
+                    if sec is not None:
+                        text, shard_timeout = sec, s["status"] == "timeout"
+                        # The shard's test.xml did not parse (or lost this testcase); the
+                        # unittest.bash verdict line in test.log still says how it ended.
+                        plain = re.sub(r"\x1b\[[0-9;]*m", "", sec)
+                        v = re.search(r"^(PASSED|FAILED): %s$" % re.escape(fn), plain, re.M)
+                        if v:
+                            from_log = v.group(1)
+                        break
+                if text is None:
+                    bad = [(s, lg) for s, lg in target_logs(t) if s["status"] != "pass"]
+                    text = "\n".join(lg for _, lg in bad)
+                    if "Argument list too long" in text:
+                        # unittest.bash's perl XML writer overflowed on an earlier function's
+                        # large log and the suite stopped; this function never ran.
+                        out[key] = {"cause": "aborted:suite stopped after unittest.bash XML "
+                                    "writer overflow (Argument list too long)",
+                                    "status": st, "target_status": tstatus, "detail": ""}
+                        continue
+                    shard_timeout = bool(bad) and all(s["status"] == "timeout" for s, _ in bad)
+            if from_log == "PASSED":
+                out[key] = {"cause": "pass-in-log", "status": st, "target_status": tstatus,
+                            "detail": "test.xml lost it; test.log says PASSED"}
+                continue
+            cause, detail = classify_text(text or "", oerr(t), shard_timeout or tstatus == "timeout")
+            if cause is None:
+                if f or from_log == "FAILED":
+                    cause = "assert:%s: %s" % (t.split(":")[-1], first_assert(text or ""))
+                    detail = (text or "")[:300]
+                else:
+                    cause, detail = "absent:" + tstatus, ""
+            out[key] = {"cause": cause, "status": st, "target_status": tstatus,
+                        "detail": detail}
+
+    # Targets that the oracle passes and that do not pass here.
+    tout = {}
+    for t in sorted(passing):
+        if t in flaky:
+            continue
+        st = targets.get(t, {}).get("status", "not_run")
+        if st not in ("pass", "flaky"):
+            tout[t] = st
+
+    os.makedirs(out_dir, exist_ok=True)
+    groups = {}
+    recovered = sorted(k for k, v in out.items() if v["cause"] == "pass-in-log")
+    out = {k: v for k, v in out.items() if v["cause"] != "pass-in-log"}
+    for k, v in out.items():
+        groups.setdefault(v["cause"], []).append(k)
+    ranked = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    json.dump({"label": label, "functions": out, "targets_not_passing": tout,
+               "pass_in_log": recovered,
+               "causes": {c: sorted(ks) for c, ks in ranked}},
+              open(os.path.join(out_dir, "causes.json"), "w"), indent=1, sort_keys=True)
+    with open(os.path.join(out_dir, "causes.txt"), "w") as fh:
+        nfn = sum(len(v) for v in passing.values())
+        fh.write("label %s: %d oracle-passing functions do not pass (of %d counted)\n\n"
+                 % (label, len(out), nfn))
+        for c, ks in ranked:
+            ts = sorted({k.split("#")[0] for k in ks})
+            fh.write("%5d  %s\n       targets(%d): %s\n       e.g. %s\n" % (
+                len(ks), c, len(ts), " ".join(x.split(":")[-1] for x in ts[:6]),
+                "  ".join(ks[:3])))
+    for i, (c, ks) in enumerate(ranked[:top]):
+        print("%3d %5d  %s" % (i + 1, len(ks), c))
+    print("%d functions passed per test.log but are missing from an unparsable test.xml"
+          % len(recovered))
+    print("total %d functions in %d causes; %d targets not passing" % (len(out), len(ranked), len(tout)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -19,6 +19,14 @@ Updated 2026-11-19, after tag v0.1.0 (root). Numbers cite their evidence; histor
   critical-path line, no persistent server, process counts after failed analysis, error
   locations.
 
+## Outer measure
+
+Bazel's own integration suite (`docs/upstream-tests.md`), binary of tag v0.1.0: 62 of 211
+oracle-passing targets and 1,422 of 2,878 oracle-passing functions. Largest causes: Java rules
+(395 functions), `run` (175, ported since), `coverage` (124), `fetch` (43, ported since).
+Coverage map (`docs/coverage/README.md`, at a79275e): about 139k ± 15k lines of needed Java
+code not yet ported, of 406k.
+
 ## Reviews (docs/reviews/, Fable 5.2, read-only)
 
 | Area | Last round | Verdict |

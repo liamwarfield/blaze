@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+#!/usr/bin/env python3
+"""Group classify's per-function causes into families and rank them. See `families help`."""
+import json, os, re, sys
+from collections import defaultdict
+
+USAGE = """\
+usage: scripts/ut-analysis/families <label>
+       scripts/ut-analysis/families help
+
+Reads ~/.cache/blaze/upstream-test-results/<label>/causes.json (written by `classify`) and groups
+the causes into families: `unported:<Class.method>` by the table U, the rest by the regexes in
+RULES (over "<name> <cause> <detail>", first match wins). The rules were written by reading
+the logs of blaze-v0.1.0; on another label, check the `unclassified` list it prints. Writes
+<label>/families.json and prints the ranked families with three examples each.
+"""
+if len(sys.argv) != 2 or sys.argv[1] in ("help", "--help", "-h"):
+    print(USAGE)
+    sys.exit(0)
+R = os.path.expanduser(os.path.join("~/.cache/blaze/upstream-test-results", sys.argv[1]))
+d = json.load(open(os.path.join(R, "causes.json")))
+F = d["functions"]
+
+# (family, java/behaviour, missing-features item or None=NEW)
+U = {
+ "java_common_internal_do_not_use.expand_java_opts": ("java", ),
+ "RunCommand.exec": ("run",), "CoverageCommand.exec": ("coverage",),
+ "FetchCommand.exec": ("fetch",), "VendorManager": ("vendor",), "VendorCommand.exec": ("vendor",),
+ "RemoteRepoContentsCacheImpl": ("remote-repo-contents-cache",),
+ "TextFormatFileTransport": ("textformat",), "TextFormat.printer().print": ("textformat",), "TextFormat.printer": ("textformat",),
+ "AutoloadSymbols.<init>": ("autoload",),
+ "SkyQueryEnvironment": ("skyquery",),
+ "ToolchainResolutionDebugPrinter.create": ("toolchain-debug",),
+ "Project.getProjectFiles": ("project-files",), "BuildOptionsScopeFunction.findProjectFiles": ("project-files",),
+ "RemoteModule.beforeCommand": ("remote-flags-other-commands",),
+ "StarlarkOutputFormatterCallback.start": ("cquery-formatters",),
+ "TransitionsOutputFormatterCallback.start": ("cquery-formatters",),
+ "FilesOutputFormatterCallback.start": ("cquery-formatters",),
+ "CommittedHeapSizeInfoItem.get": ("info-jvm",), "UsedHeapSizeAfterGcInfoItem.get": ("info-jvm",),
+ "FailureDetail": ("failure-detail",), "DetailedExitCode.getFailureDetail": ("failure-detail",),
+ "ModCommand.execInternal": ("mod",), "ModCommand.runTidy": ("mod",),
+ "UiStateTracker.writeProgressBar": ("progress-bar",),
+ "StreamedConsumingOutputHandler": ("aquery-proto",),
+ "RequiredFragmentsUtil.getRuleRequiredFragmentsIfEnabled": ("config-fragments",),
+ "TestStrategy.createStreamedTestOutput": ("test-streamed",),
+ "RemoteModule.createCredentials": ("http-cache",),
+ "ConfiguredRuleClassProvider.getNativeAspectClassMap": ("native-aspects",),
+ "ParsedFlagsValue.Key.create": ("platform-mappings",), "PlatformMappingFunction.parse": ("platform-mappings",),
+ "CcStarlarkInternal.createCppCompileActionTemplate": ("cc-tree-templates",),
+ "GoogleAuthUtils.newCredentialHelperProvider": ("credential-helper",),
+ "BuildEventServiceModule.beforeCommand": ("bep-other-commands",),
+ "BuildEventServiceModule.createBesTransport": ("bes",),
+ "RuleConfiguredTargetFactory.create": ("genquery",),
+ "DumpCommand.exec": ("dump",),
+ "StrippingPathMapper.tryCreate": ("path-mapping",),
+ "AnalysisTestActionBuilder.writeAnalysisTestAction": ("analysis-test",),
+ "StarlarkDefinedConfigTransition.AnalysisTestTransition.evaluate": ("analysis-test",),
+ "AqueryProcessor.dumpActionGraphFromSkyframe": ("aquery-skyframe",),
+ "BuildTool.dumpSkyframeStateAfterBuild": ("aquery-skyframe",),
+ "BuildConfigurationValue.modifyExecutionInfo": ("modify-execution-info",),
+ "BuildConfigurationValue.modifiedExecutionInfo": ("modify-execution-info",),
+ "BlazeQueryEnvironment": ("query-graph",), "OutputFormatter": ("query-xml",),
+ "BlazeCommandUtils.getUsage": ("help",), "BlazeCommandUtils.expandHelpTopic": ("help",),
+ "BuildTool.runExclusiveTests": ("exclusive-tests",),
+ "CommandLogModule.getOutputListener": ("command-log",),
+ "FakeLoadTarget.<init>": ("fake-load-target",),
+ "StarlarkActionFactory.registerStarlarkAction": ("shadowed-action",),
+ "CanonicalizeCommand.exec": ("canonicalize",), "ConfigCommand.exec": ("config",),
+ "LicenseCommand.exec": ("license",),
+ "CppCompileAction.discoverInputs": ("include-scanning",),
+ "QueryOptionHelper.readQuery": ("query-file",),
+ "RuleConfiguredTargetBuilder.createExtraActionProvider": ("extra-action",),
+ "UnixFileSystem.getFastDigest": ("xattr-digest",),
+ "ActionExecutedEvent": ("publish-all-actions",),
+ "BuildInfoFileWriteAction.execute": ("build-info",),
+ "CyclesReporter.maybeReportCycle": ("cycles",), "SkyframeErrorProcessor.processErrors": ("cycles",),
+ "DiskCacheGarbageCollectorIdleTask.create": ("disk-cache-gc",),
+ "Duration.ofSeconds": ("misc-small",), "SkyframeExecutor.getEffectiveStarlarkSemantics": ("misc-small",),
+ "TestXmlOutputParser.parseXmlIntoTestResult": ("misc-small",),
+ "TopLevelArtifactHelper.getFilesToBuild": ("misc-small",),
+ "StarlarkExecTransitionLoader.loadStarlarkExecTransition": ("misc-small",),
+ "DynamicSpawnStrategy.canExec": ("dynamic",),
+ "ImplicitOutputsFunction.StarlarkImplicitOutputsFunctionWithCallback.calculateOutputs": ("implicit-outputs-callback",),
+ "Scrubber.parse": ("scrubbing",), "StarlarkBaseExternalContext.loadWasm": ("wasm",),
+}
+
+# Non-unported causes: (regex over "<target>#<fn> <cause>") -> family; first match wins.
+RULES = [
+ (r"absent:not_run", "help-completion"),
+ (r" aborted:suite stopped", "collateral-xml-overflow"),
+ (r"bazel_lockfile_test", "lockfile"),
+ (r"undeclared inclusion", "undeclared-inclusion-after-discard"),
+ (r"ui_test#test_interleaved_errors_and_progress", "progress-messages"),
+ (r"Not an input-discovering action", "unused-inputs-list"),
+ (r"UnsupportedCertVersion", "tls-v1-cert"),
+ (r"sibling|execroot_test#test_cc_smoke_with_new_layouts|execroot_test#test_external_directory_globs|"
+  r"cc_integration_test#test_include_external_genrule_header", "sibling-layout"),
+ (r"_trash|No such file or directory\)|cannot load '_': no such file|BUILD file not found in directory '_' of external|error globbing", "repo-contents-cache-race"),
+ (r"Variable `|Key `|has no field or method|got select for|Multiple entries with same key|ERROR: Traceback", "starlark-error-text"),
+ (r"sparse", "sparse-tar"),
+ (r"fetching is disabled|nofetch|test_no_fetch_then_fetch", "nofetch"),
+ (r"client_test#test_(nobatch|server_not_restarted|client_debug_change|multiple_requests|no_server_restart|batch|server_restart|local_startup|multiple_commands|server_process_name|noblock)|"
+  r"bazel_server_mode_test|discard_analysis_cache_test#test_aspect_and|startup_options_test|check_external_files_test|"
+  r"external_correctness_test|bazel_spawnstats|build_without_the_bytes_test#test_downloads_toplevel|"
+  r"remote_execution_test#test_remote_default_exec|my_rule is being analyzed|nonincremental_builds_test|"
+  r"execution_phase_tests#test_cache_computed|starlark_repository_test#test_unrelated_env|"
+  r"external_integration_test#test_cache_hit_reported", "no-server"),
+ (r"discard_graph_edges_test|client_test#test_sigquit|server_logging_test|bazel_java_test#test_server_javabase|"
+  r"command_profiler_test|dump_test", "jvm-only"),
+ (r"profile_test|watchfs_test|loading_phase_tests#test_starlark_cpu_profile|command.profile.gz", "profile"),
+ (r"ui_test#test_(line_wrapping|terminal_title|basic_progress)|rc_options_test", "progress-bar"),
+ (r"ui_test#test_loading_progress|progress_reporting_test|^timeout|sandboxing_test#test_succeed", "progress-messages"),
+ (r"repo_contents_cache_test#RepoContentsCacheTest.testGc", "repo-contents-cache-gc"),
+ (r"execution_strategies_test", "strategy-debug-log"),
+ (r"bazel_lockfile_test", "lockfile"),
+ (r"mod_command_test", "mod-cycle"),
+ (r"configured_query_test#test_config_function", "cquery-config-function"),
+ (r"bazel_rules_cc_test", "rules-cc-self"),
+ (r"bazel_repository_cache_test#test_contents_cache_not_allowed", "exit-code"),
+ (r"external_integration_test#test_integrity_correct", "convenience-symlink-in-repo"),
+ (r"cc_integration_test#test_save_feature_state", "cc-feature-state"),
+ (r"build_without_the_bytes_test#test_remote_cache_eviction", "rewinding"),
+ (r"remote_execution_test#test_create_tree_artifact_outputs", "remote-worker-start"),
+ (r"sandboxing_test#test_sandbox_reuse", "sandbox-reuse"),
+ (r"starlark_repository_test#test_starlark_repository_which", "repo-which-execute"),
+ (r"bazel_external_repository_test#.*Sparse", "sparse-tar"),
+ (r"bazel_sandboxed_worker_with_cgroups_test|bazel_json_worker_test|bazel_worker_test", "repo-contents-cache-race"),
+]
+
+fam = defaultdict(list)
+unknown = []
+for k, v in F.items():
+    c = v["cause"]
+    f = None
+    if c.startswith("unported:"):
+        key = c[len("unported:"):]
+        f = U.get(key, (None,))[0]
+    if f is None:
+        s = k + " " + c + " " + v.get("detail", "")
+        for rx, fam_name in RULES:
+            if re.search(rx, s):
+                f = fam_name
+                break
+    if f is None:
+        unknown.append((k, c))
+        f = "unclassified"
+    fam[f].append(k)
+
+ranked = sorted(fam.items(), key=lambda kv: -len(kv[1]))
+json.dump({f: sorted(ks) for f, ks in ranked}, open(os.path.join(R, "families.json"), "w"), indent=1)
+for i, (f, ks) in enumerate(ranked):
+    ts = sorted({k.split("#")[0].split(":")[1] for k in ks})
+    ex = sorted(ks)
+    ex3 = [ex[0], ex[len(ex) // 2], ex[-1]] if len(ex) >= 3 else ex
+    print("%2d %4d %-28s targets=%d | %s" % (i + 1, len(ks), f, len(ts), " ; ".join(e.replace("//src/test/", "") for e in ex3)))
+print("unclassified:", len(unknown))
+for k, c in unknown:
+    print("  ", k, c[:120])
