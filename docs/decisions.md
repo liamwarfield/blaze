@@ -173,3 +173,11 @@ Each entry: date, decision, why, who decided.
   next wave. Execution-crate items (exclusive tests, `unused_inputs_list`, compile action
   templates) wait until the remote lead is out of those crates. The persistent server (W8) is
   deferred until the next accepted commit. Root.
+- 2026-11-19. New goal from the user: complete the port of Bazel to Rust. Root's reading: every
+  NEEDED Java class (Linux x86-64, per PORTING.md "Skip only") ported, the persistent server and
+  incremental builds included, Bazel's own integration suite as the outer measure
+  (`docs/upstream-tests.md`), and every area with a PASS verdict. Planning inputs started:
+  a file- and method-level coverage map (`docs/coverage/`, Opus) and a plan for the server and
+  incremental evaluation (`docs/research/08-server-and-incrementality.md`, Fable lead, read-only).
+  Byte-strings review round 1 is STOP at 2574fef (six S1 at boundary sites); two Opus fixers
+  started (byte-string findings; interpreter differences in lexer and string methods). Root.
