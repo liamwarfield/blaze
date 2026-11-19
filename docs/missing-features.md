@@ -34,12 +34,12 @@ Partly ported:
 | Command | Missing |
 | --- | --- |
 | `mod` | `dump_repo_mapping` (33 upstream tests need it), `show_repo`, `tidy` |
-| `help`, `fetch`, `canonicalize-flags`, `license` | ported after v0.1.0 (132 of 137 oracle invocations byte-identical; 35 of 38 upstream functions); missing: `canonicalize-flags --invocation_policy`, `fetch --force` with target patterns |
+| `help`, `fetch`, `canonicalize-flags`, `license` | ported after v0.1.0 (132 of 137 oracle invocations byte-identical by `scripts/cmds/compare`, which the auditor found can record a signal death as exit 0; upstream test counts to be re-measured under the fixed harness); missing: `canonicalize-flags --invocation_policy`, `fetch --force` with target patterns |
 | `info` | 15 of 57 compared cases: `info` with no key, JVM-only keys (heap sizes, `java-home`), `build-language`, `peak-heap-size`, `starlark-semantics` |
 | `query` | `--output=graph` and other formatters that need the dependency graph, `--query_file`, SkyQuery (`--universe_scope`), definition and instantiation stacks in proto output, rule class info, native aspects |
 | `cquery` | `--show_config_fragments`, some output formats' start/process hooks |
 | `aquery` | `--skyframe_state`, the dump after a build (`--experimental_aquery_dump_after_build_format`) |
-| `run` | ported after v0.1.0 (20 of 20 oracle comparison cases, 32 of 34 upstream test functions); missing: the Build Event Protocol for `run`, remote flags with `run` |
+| `run` | ported after v0.1.0 (exit code and program output equal to Bazel's in 20 of 20 comparison cases; 15 of 20 equal in every field, the others differ in stderr summary lines; upstream test counts to be re-measured under the fixed harness); missing: the Build Event Protocol for `run`, remote flags with `run` |
 | `shutdown` | there is no server to stop |
 
 ## Server and client

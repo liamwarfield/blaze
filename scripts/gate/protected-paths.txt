@@ -37,3 +37,18 @@ third_party/starlark-rust/PATCHES.md
 
 # Review reports and verdicts (written by reviewers, committed by root).
 docs/reviews/
+
+# Comparison tools written by implementers whose numbers are cited (audit round 3, batch B),
+# and the oracle recordings they wrote. A change needs a task that names the path and the
+# auditor's review.
+scripts/run/
+scripts/cmds/
+scripts/textproto/
+scripts/starlark/
+scripts/proxy/
+scripts/coverage/
+scripts/ut-analysis/
+crates/blaze_repo_fetch/tests/data/proxy/
+crates/blaze_protos/tests/data/text/
+crates/starlark_conformance/tests/data/interp/
+crates/blaze_options/tests/data/line_breaks.tsv

@@ -1,5 +1,16 @@
 # Bazel's integration tests against Blaze v0.1.0
 
+> **Withdrawn (2026-11-19, audit round 3, `docs/reviews/2026-11-19-audit-3.md`).** The totals
+> in this document were measured with harness scripts that had no lock, while other agents ran
+> the same scripts. The run recorded another binary's logs for two targets (32 passes that are
+> not this binary's) and the shared repo contents cache was deleted under it three times. From
+> this run's own evidence: 1,397 of 2,878 functions measured as passing, 34 unmeasured, and at
+> least 11 failures caused by the harness (cause family 28, "files vanish from the shared repo
+> contents cache", is the harness, not Blaze). Targets: 62 of 211. The cause ranking below is
+> still a usable work list; no total from it may be quoted. A fresh full run of the same binary
+> under the fixed harness is recorded under the label `blaze-v0.1.0-r2`.
+
+
 First full run of Bazel's own shell and Python integration tests (237 targets) against Blaze,
 2026-11-19. The baseline is the pinned real Bazel on the same host
 (`corpus/upstream-tests/oracle-9.3.2.json`: 211 targets and 2,878 functions pass there).

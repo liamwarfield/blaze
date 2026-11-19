@@ -21,17 +21,21 @@ Updated 2026-11-19, after tag v0.1.0 (root). Numbers cite their evidence; histor
 
 ## Outer measure
 
-Bazel's own integration suite (`docs/upstream-tests.md`), binary of tag v0.1.0: 62 of 211
-oracle-passing targets and 1,422 of 2,878 oracle-passing functions. Largest causes: Java rules
-(395 functions), `run` (175, ported since), `coverage` (124), `fetch` (43, ported since).
-Coverage map (`docs/coverage/README.md`, at a79275e): about 139k ± 15k lines of needed Java
-code not yet ported, of 406k.
+Bazel's own integration suite (`docs/upstream-tests.md`), binary of tag v0.1.0. The first
+run's total (1,422 of 2,878 functions) is withdrawn: the auditor found it contaminated by
+concurrent runs under the old, unlocked harness (`docs/reviews/2026-11-19-audit-3.md`). From
+that run's own evidence: 1,397 functions measured as passing, 34 unmeasured, 62 of 211 targets.
+A fresh run under the fixed harness (label `blaze-v0.1.0-r2`) replaces it. Largest causes of
+failure, still valid as a work list: Java rules, `run`, `coverage`, `fetch`.
+Coverage map (`docs/coverage/README.md`, at a79275e; counts port markers, so it is a planning
+tool, not a progress measure): about 139k ± 15k lines of needed Java code not yet ported, of
+406k.
 
 ## Reviews (docs/reviews/, Fable 5.2, read-only)
 
 | Area | Last round | Verdict |
 | --- | --- | --- |
-| Referee and gate scripts | 2A | PASS |
+| Referee and gate scripts | 2A; audit 3 batch A (upstream harness) | PASS |
 | Integrity audit (whole) | 2B | PASS; baseline move approved |
 | Evaluator (blaze_skyframe) | 2 | PASS |
 | Loading, query, Starlark bridge | 3 | PASS |

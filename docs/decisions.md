@@ -229,3 +229,22 @@ Each entry: date, decision, why, who decided.
   (3) a panic on a worker thread that hangs the process is an S1, assigned with the crash
   handling fix; (4) harness problems 1, 2 and 4 of the report go to the auditor's batch
   (protected scripts). Root.
+- 2026-11-19. Audit round 3 (`docs/reviews/2026-11-19-audit-3.md`). Batch A: PASS for the
+  upstream-tests harness fix (committed 99a74d0). The first full-run total (1,422, or 1,429
+  after reparse) is withdrawn as contaminated by concurrent unlocked runs; the outer measure is
+  re-recorded under label `blaze-v0.1.0-r2`, and labels run-1, cmds-1 and textproto-1 are not
+  quoted. Rulings taken from the auditor: (1) the progress measure is the suite-mode count of a
+  complete run of all 237 targets; per-function results are diagnostic, on a separate line
+  naming the mode, never as a share of 2,878, until the oracle has a per-function baseline.
+  (2) D12: scripts/oracle/README.md is wrong and the script right: the oracle's build is the
+  second command on a warm server, Blaze's is a cold process; the open "1 extra stderr line on
+  re2" is that asymmetry and is not to be silenced in Blaze; before the server becomes the
+  default (S5) the referee records server state per command, a cold build and a warm sequence
+  as separate surfaces on both sides, the server-start line, and the `shutdown` exit code.
+  (3) The comparison tools implementers wrote today become protected paths now (scripts/run,
+  cmds, textproto, starlark, proxy, coverage, ut-analysis and their recordings), the others
+  before any number of theirs is cited; their shared defects (any binary accepted as oracle,
+  unanchored caches, empty selection exits 0, identical failures match, no binary hash,
+  exit status of a signal death recorded as 0) are fixed by one hardening pass that the
+  auditor reviews. (4) Numbers from those tools already in docs are reworded or marked. Root.
+
