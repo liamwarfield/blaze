@@ -25,6 +25,7 @@ use blaze_remote::reapi::{
 use blaze_remote::upload_manifest::UploadManifest;
 use blaze_remote::util::DigestUtil;
 use blaze_repo_fetch::fs_utils;
+use blaze_util::string_encoding::unicode_to_internal;
 use blaze_vfs::{DigestHashFunction, FileSystemRef, Path, PathFragment, UnixFileSystem};
 use indexmap::IndexMap;
 
@@ -152,15 +153,6 @@ impl Fixture {
 /// `FileSystemUtils.writeContent(path, bytes)`.
 fn write_content(path: &Path, content: &[u8]) {
     fs_utils::write_content(path, content).unwrap();
-}
-
-/// `StringEncoding.unicodeToInternal(s)`, as the string Blaze holds for that internal string.
-fn unicode_to_internal(s: &str) -> String {
-    if blaze_util::string_encoding::strings_are_internal() {
-        blaze_util::string_encoding::unicode_to_internal(s).into_owned()
-    } else {
-        s.to_string()
-    }
 }
 
 /// `assertThat(um.getDigestToFile()).containsExactly(...)`.

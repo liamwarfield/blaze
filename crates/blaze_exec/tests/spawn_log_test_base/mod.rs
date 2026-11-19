@@ -1451,6 +1451,67 @@ fn log_simple(
     t.close_and_assert_log(f, context, vec![expected]);
 }
 
+/// Not a test of Java's `SpawnLogContextTestBase`: a spawn whose argument, environment entry,
+/// input path and output path are non-ASCII internal strings (`é`, `🐷` and a lone byte FF).
+/// `SpawnLogContext.getEnvironmentVariables` always applies `internalToUnicode` to the
+/// environment; the argument and the paths go through `convert`, which is what the context under
+/// test does with them (`CompactSpawnLogContext`: `internalToUnicode`;
+/// `ExpandedSpawnLogContext`: nothing, the internal string is stored as is).
+// Java: com/google/devtools/build/lib/exec/SpawnLogContext.java:117 SpawnLogContext.getEnvironmentVariables
+pub fn test_non_ascii_strings(t: &dyn SpawnLogContextTest, convert: fn(&str) -> String) {
+    use blaze_util::string_encoding::{internal_to_unicode, latin1_decode};
+    let internal = |b: &[u8]| latin1_decode(b).into_owned();
+    let arg = internal(b"a\xc3\xa9\xf0\x9f\x90\xb7\xff");
+    let env_name = internal(b"V\xc3\x84R");
+    let env_value = internal(b"v\xc3\xa4lue\xf0\x9f\x90\xb7");
+    let input_name = internal(b"in_\xc3\xa9_\xff");
+    let output_name = internal(b"out_\xc3\xbc");
+    for sibling in SIBLING_REPOSITORY_LAYOUT {
+        let f = Fixture::new(sibling);
+        let file_input = create_artifact(&f.root_dir, &input_name);
+        let file_output = create_artifact(&f.output_dir, &output_name);
+        write_file(&f.path_of(&file_input), "abc");
+        write_file(&f.path_of(&file_output), "def");
+
+        let spawn = SpawnBuilder::new(&["cmd", &arg])
+            .with_environment(&env_name, &env_value)
+            .with_inputs(&[&file_input])
+            .with_outputs(&[&file_output])
+            .build();
+
+        let context = f.create_spawn_log_context(t);
+
+        f.log_spawn(
+            &*context,
+            &spawn,
+            &f.create_input_metadata_provider(&[&file_input]),
+            f.create_input_map(&[&file_input]),
+            &f.fs,
+            default_timeout(),
+            &default_spawn_result(),
+        );
+
+        let mut expected = default_spawn_exec();
+        expected.command_args = vec!["cmd".to_string(), convert(&arg)];
+        expected.environment_variables.push(EnvironmentVariable {
+            name: internal_to_unicode(&env_name).into_owned(),
+            value: internal_to_unicode(&env_value).into_owned(),
+        });
+        expected.inputs.push(file(
+            &convert(&input_name),
+            Some(f.get_digest("abc")),
+            false,
+        ));
+        expected.listed_outputs.push(convert(&bin(&output_name)));
+        expected.actual_outputs.push(file(
+            &convert(&bin(&output_name)),
+            Some(f.get_digest("def")),
+            false,
+        ));
+        t.close_and_assert_log(&f, context, vec![expected]);
+    }
+}
+
 pub fn test_environment(t: &dyn SpawnLogContextTest) {
     for sibling in SIBLING_REPOSITORY_LAYOUT {
         let f = Fixture::new(sibling);

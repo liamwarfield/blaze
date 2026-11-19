@@ -29,6 +29,7 @@ use blaze_optdefs::misc::remote_options::{ConcurrentChangesCheckLevel, RemoteOpt
 use blaze_protos::JavaMessage;
 use blaze_protos::tools::protos::{CacheSalt, cache_salt};
 use blaze_shell::util::os::OS;
+use blaze_util::string_encoding::{internal_to_unicode, unicode_to_internal};
 use blaze_vfs::os_path_policy::{OsPathPolicy, UnixOsPathPolicy};
 use blaze_vfs::{Path, PathFragment, Symlinks};
 use indexmap::{IndexMap, IndexSet};
@@ -67,33 +68,6 @@ use crate::util::utils::{
     self, create_exec_exception_from_remote_execution_capabilities_exception,
     get_in_memory_output_path, should_upload_local_results_to_remote_cache,
 };
-
-/// `StringEncoding.internalToUnicode(s)` of the internal string that `s` stands for.
-///
-/// Seam (decisions.md 2026-11-18 "Strings"): while
-/// `blaze_util::string_encoding::STRINGS_ARE_INTERNAL` is false Blaze's strings are Unicode
-/// already and this is the identity; once it is true it is `internal_to_unicode`.
-// PORT: StringEncoding identity (until the strings switch).
-// Java: com/google/devtools/build/lib/util/StringEncoding.java:126 StringEncoding.internalToUnicode
-pub(crate) fn internal_to_unicode(s: &str) -> String {
-    if blaze_util::string_encoding::strings_are_internal() {
-        blaze_util::string_encoding::internal_to_unicode(s).into_owned()
-    } else {
-        s.to_string()
-    }
-}
-
-/// `StringEncoding.unicodeToInternal(s)`, giving the string that stands for the resulting
-/// internal string (the same seam as [`internal_to_unicode`]).
-// PORT: StringEncoding identity (until the strings switch).
-// Java: com/google/devtools/build/lib/util/StringEncoding.java:137 StringEncoding.unicodeToInternal
-pub(crate) fn unicode_to_internal(s: &str) -> String {
-    if blaze_util::string_encoding::strings_are_internal() {
-        blaze_util::string_encoding::unicode_to_internal(s).into_owned()
-    } else {
-        s.to_string()
-    }
-}
 
 /// `PROTO_STRING_COMPARATOR = comparing(StringEncoding::unicodeToInternal)`, for Unicode strings.
 ///
@@ -694,7 +668,7 @@ impl RemoteActionResult {
         let all_output_paths: IndexSet<String> = output_files
             .chain(output_dir_paths)
             .chain(output_symlink_paths)
-            .map(|path| unicode_to_internal(path))
+            .map(|path| unicode_to_internal(path).into_owned())
             .collect();
         // Check that all mandatory outputs are created.
         let spawn = action.get_spawn();
@@ -1136,7 +1110,8 @@ impl RemoteExecutionService {
             for output in outputs {
                 let path_string = internal_to_unicode(
                     &remote_path_resolver.local_action_input_to_output_path(&**output),
-                );
+                )
+                .into_owned();
                 output_paths.push(path_string);
             }
             output_paths.sort_by(|a, b| proto_string_comparator(a, b));
@@ -1147,7 +1122,8 @@ impl RemoteExecutionService {
             for output in outputs {
                 let path_string = internal_to_unicode(
                     &remote_path_resolver.local_action_input_to_output_path(&**output),
-                );
+                )
+                .into_owned();
                 if output.is_directory() {
                     output_directories.push(path_string);
                 } else {
@@ -1188,7 +1164,9 @@ impl RemoteExecutionService {
                 }
                 arg = UnixOsPathPolicy.post_process_path_string_for_execution(&arg);
             }
-            command.arguments.push(internal_to_unicode(&arg));
+            command
+                .arguments
+                .push(internal_to_unicode(&arg).into_owned());
         }
         // Sorting the environment pairs by variable name.
         //
@@ -1198,8 +1176,8 @@ impl RemoteExecutionService {
         let variables: BTreeSet<&String> = env.keys().collect();
         for var in variables {
             command.environment_variables.push(EnvironmentVariable {
-                name: internal_to_unicode(var),
-                value: internal_to_unicode(&env[var]),
+                name: internal_to_unicode(var).into_owned(),
+                value: internal_to_unicode(&env[var]).into_owned(),
             });
         }
 
@@ -1207,7 +1185,8 @@ impl RemoteExecutionService {
             remote_path_resolver
                 .get_working_directory()
                 .get_path_string(),
-        );
+        )
+        .into_owned();
         command
     }
 
@@ -1278,10 +1257,9 @@ impl RemoteExecutionService {
             .get_execution_info()
             .get(execution_requirements::DIFFERENTIATE_WORKSPACE_CACHE);
         if let Some(workspace) = workspace {
-            // PORT: Java stores the internal string as it is (no `internalToUnicode`); the
-            // message then holds the UTF-8 encoding of the internal string's chars.
-            salt_builder.workspace =
-                blaze_util::string_encoding::to_internal(workspace).into_owned();
+            // Java stores the internal string as it is (no `internalToUnicode`); the message
+            // then holds the UTF-8 encoding of the internal string's chars.
+            salt_builder.workspace = workspace.clone();
         }
 
         if let Some(spawn_scrubber) = spawn_scrubber {
@@ -1604,15 +1582,12 @@ impl RemoteExecutionService {
         let mut inline_output_files: HashSet<String> = HashSet::new();
         let in_memory_output_path = get_in_memory_output_path(action.get_spawn());
         if let Some(in_memory_output_path) = &in_memory_output_path {
-            // PORT: Java puts the internal string into the request as it is (no
+            // Java puts the internal string into the request as it is (no
             // `internalToUnicode`, unlike `executeRemotely`).
             inline_output_files.insert(
-                blaze_util::string_encoding::to_internal(
-                    &action
-                        .get_remote_path_resolver()
-                        .local_exec_path_to_output_path(in_memory_output_path),
-                )
-                .into_owned(),
+                action
+                    .get_remote_path_resolver()
+                    .local_exec_path_to_output_path(in_memory_output_path),
             );
         }
 
@@ -2047,13 +2022,14 @@ impl RemoteExecutionService {
         }
         let in_memory_output_path = get_in_memory_output_path(action.get_spawn());
         if let Some(in_memory_output_path) = &in_memory_output_path {
-            request_builder
-                .inline_output_files
-                .push(internal_to_unicode(
+            request_builder.inline_output_files.push(
+                internal_to_unicode(
                     &action
                         .get_remote_path_resolver()
                         .local_exec_path_to_output_path(in_memory_output_path),
-                ));
+                )
+                .into_owned(),
+            );
         }
 
         let request = request_builder;

@@ -24,6 +24,7 @@ use blaze_exec::util::FileOutErr;
 use blaze_protos::JavaMessage;
 use blaze_protos::failure_details::remote_execution;
 use blaze_repo_fetch::fs_utils;
+use blaze_util::string_encoding::{internal_to_unicode, unicode_to_internal};
 use blaze_vfs::{DirentType, Path, PathFragment, Symlinks};
 use futures::future::LocalBoxFuture;
 use indexmap::IndexMap;
@@ -40,9 +41,7 @@ use crate::common::remote_cache_client::ActionKey;
 use crate::common::remote_path_resolver::RemotePathResolver;
 use crate::reapi::{ActionResult, Digest, Directory, Tree};
 use crate::remote_action::RemoteAction;
-use crate::remote_execution_service::{
-    RemoteActionResult, RemoteExecutionService, internal_to_unicode, unicode_to_internal,
-};
+use crate::remote_execution_service::{RemoteActionResult, RemoteExecutionService};
 use crate::runtime::get_from_future;
 use crate::util::digest_util::DigestUtil;
 use crate::util::utils::{InMemoryOutput, get_in_memory_output_path, wait_for_bulk_transfer};
@@ -115,11 +114,11 @@ impl<V> JavaHashMap<V> {
     fn hash(key: &Path) -> u32 {
         // Java: com/google/devtools/build/lib/vfs/Path.java:229 Path.hashCode
         // (`pathFragment.hashCode()`, which is `normalizedPath.hashCode()`).
-        // PORT: StringEncoding identity. The Java string is in the internal encoding (one char
-        // per byte of the path), so `String.hashCode()` runs over the bytes.
+        // Java: java/lang/String.java String.hashCode (`31 * h + c` over the UTF-16 code units;
+        // the path is an internal string, all chars <= U+00FF, so one code unit per char).
         let mut h: i32 = 0;
-        for b in key.get_path_string().bytes() {
-            h = h.wrapping_mul(31).wrapping_add(i32::from(b));
+        for c in key.get_path_string().chars() {
+            h = h.wrapping_mul(31).wrapping_add(c as i32);
         }
         let h = h as u32;
         h ^ (h >> 16)
@@ -1015,7 +1014,8 @@ impl RemoteExecutionService {
             .expect("NullPointerException: combinedCache can't be null");
 
         let output_path =
-            internal_to_unicode(&remote_path_resolver.local_path_to_output_path(file.path()));
+            internal_to_unicode(&remote_path_resolver.local_path_to_output_path(file.path()))
+                .into_owned();
         let exec_path = remote_path_resolver.local_path_to_exec_path(file.path().as_fragment());
         let reporter = DownloadProgressReporter::new(
             progress_status_listener,

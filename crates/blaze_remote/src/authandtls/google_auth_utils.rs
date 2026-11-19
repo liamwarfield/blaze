@@ -411,8 +411,10 @@ fn pem_sections(pem: &str, label: impl Fn(&str) -> bool) -> Vec<(&str, Vec<u8>)>
 // Java: io/netty/handler/ssl/SslContext.java SslContext.toX509Certificates
 fn to_x509_certificates(file: &str) -> Result<Vec<u8>, ()> {
     // PORT: `new File(path)` of a relative path resolves against the working directory of the
-    // process, as here.
-    let pem = std::fs::read(file).map_err(|_| ())?;
+    // process, as here. The option value is an internal string; the JVM hands `File` paths to
+    // the OS as platform strings.
+    let pem =
+        std::fs::read(blaze_util::string_encoding::internal_to_platform(file)).map_err(|_| ())?;
     let text = std::str::from_utf8(&pem).map_err(|_| ())?;
     if pem_sections(text, |label| label == "CERTIFICATE").is_empty() {
         // CertificateException("found no certificates in input stream")
@@ -432,7 +434,8 @@ fn to_x509_certificates(file: &str) -> Result<Vec<u8>, ()> {
 /// encrypted key is refused; the port refuses them by their section label.
 // Java: io/netty/handler/ssl/SslContext.java SslContext.toPrivateKey
 fn to_private_key(key_file: &str) -> Result<Vec<u8>, ()> {
-    let pem = std::fs::read(key_file).map_err(|_| ())?;
+    let pem = std::fs::read(blaze_util::string_encoding::internal_to_platform(key_file))
+        .map_err(|_| ())?;
     let text = std::str::from_utf8(&pem).map_err(|_| ())?;
     let sections = pem_sections(text, |label| label.ends_with("PRIVATE KEY"));
     match sections.first() {

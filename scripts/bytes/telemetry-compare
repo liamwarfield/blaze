@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Same-day comparison of workerd's telemetry repository, oracle against Blaze. See `help`."""
+
+import hashlib
+import importlib.machinery
+import importlib.util
+import os
+import shutil
+import subprocess
+import sys
+
+USAGE = """\
+usage: scripts/bytes/telemetry-compare [--binary <blaze>] [--keep]
+       scripts/bytes/telemetry-compare help
+
+aspect_tools_telemetry's repository rule hashes the first lines of workerd's README (which holds
+an emoji) with a pure-Starlark SHA-1 over `elems()`, and writes report.json with `id_day` =
+sha1(sha1(README head) + ";" + the UTC date). The oracle's recorded output base is from another
+day, so its `id_day` cannot be compared with a later run. This tool fetches that one repository
+with the oracle and with Blaze (default target/debug/blaze) on the same day, from the same
+pristine workspace path:
+
+  1. prepares ~/.cache/blaze/work/bytes-telemetry/ws from ~/.cache/blaze/corpus/workerd exactly
+     as scripts/oracle/record does (rsync, restored to git HEAD; README emoji intact);
+  2. runs `<binary> query @@aspect_tools_telemetry++telemetry+aspect_tools_telemetry_report//:all`
+     with its own fresh --output_user_root (~/.cache/blaze/oracle-out/ur-bytes-telemetry-<who>),
+     --repository_cache=~/.cache/blaze/repo-cache, env HOME and PATH=/usr/bin:/bin;
+  3. saves the fetched repository, its marker file and the workspace MODULE.bazel.lock under
+     ~/.cache/blaze/work/bytes-telemetry/<who>/;
+  4. repeats 1-3 for the other binary and compares the three byte for byte, and checks `id_day`
+     against real SHA-1 (hashlib) of the README bytes and today's UTC date.
+
+Exit status 0 only when the repository tree, the marker and the lockfile are identical and
+`id_day` is the real SHA-1. Run inside `systemd-run --user --collect --wait -p MemoryMax=20G
+-p MemorySwapMax=0` (AGENTS.md). --keep leaves the output user roots in place.
+"""
+
+HOME = os.path.expanduser("~")
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+ORACLE = f"{HOME}/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+CHECKOUT = f"{HOME}/.cache/blaze/corpus/workerd"
+WORK = f"{HOME}/.cache/blaze/work/bytes-telemetry"
+WS = f"{WORK}/ws"
+REPO = "aspect_tools_telemetry++telemetry+aspect_tools_telemetry_report"
+
+
+def load_record():
+    path = os.path.join(ROOT, "scripts", "oracle", "record")
+    loader = importlib.machinery.SourceFileLoader("oracle_record", path)
+    spec = importlib.util.spec_from_loader("oracle_record", loader)
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, os.path.dirname(path))
+    loader.exec_module(mod)
+    return mod
+
+
+def tree(d):
+    out = {}
+    for base, dirs, files in os.walk(d):
+        for name in sorted(dirs + files):
+            p = os.path.join(base, name)
+            rel = os.path.relpath(p, d)
+            if os.path.islink(p):
+                out[rel] = ("symlink", os.readlink(p))
+            elif os.path.isfile(p):
+                with open(p, "rb") as f:
+                    out[rel] = ("file", hashlib.sha256(f.read()).hexdigest())
+            else:
+                out[rel] = ("dir", "")
+    return out
+
+
+def run(who, binary, record, keep):
+    if os.path.exists(WS):
+        subprocess.run(["chmod", "-R", "u+w", WS], check=False)
+        shutil.rmtree(WS)
+    record.prepare_workspace(CHECKOUT, WS)
+    ur = f"{HOME}/.cache/blaze/oracle-out/ur-bytes-telemetry-{who}"
+    if os.path.exists(ur):
+        subprocess.run(["chmod", "-R", "u+w", ur], check=False)
+        shutil.rmtree(ur)
+    env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+    startup = [binary, f"--output_user_root={ur}", "--nohome_rc", "--nosystem_rc"]
+    common = [f"--repository_cache={HOME}/.cache/blaze/repo-cache", "--color=no", "--curses=no"]
+    p = subprocess.run(startup + ["query", f"@@{REPO}//:all"] + common, cwd=WS, env=env,
+                       capture_output=True)
+    out = f"{WORK}/{who}"
+    if os.path.exists(out):
+        shutil.rmtree(out)
+    os.makedirs(out)
+    with open(f"{out}/query.stdout", "wb") as f:
+        f.write(p.stdout)
+    with open(f"{out}/query.stderr", "wb") as f:
+        f.write(p.stderr)
+    print(f"[{who}] query exit {p.returncode}: {p.stdout.decode('latin-1').split()}")
+    base = subprocess.run(startup + ["info", "output_base"], cwd=WS, env=env,
+                          capture_output=True).stdout.decode().strip()
+    ext = os.path.join(base, "external")
+    if os.path.isdir(os.path.join(ext, REPO)):
+        shutil.copytree(os.path.join(ext, REPO), f"{out}/repo", symlinks=True)
+    marker = os.path.join(ext, "@" + REPO + ".marker")
+    if os.path.exists(marker):
+        shutil.copy(marker, f"{out}/marker")
+    lock = os.path.join(WS, "MODULE.bazel.lock")
+    if os.path.exists(lock):
+        shutil.copy(lock, f"{out}/MODULE.bazel.lock")
+    subprocess.run(startup + ["shutdown"], cwd=WS, env=env, capture_output=True)
+    if not keep:
+        subprocess.run(["chmod", "-R", "u+w", ur], check=False)
+        shutil.rmtree(ur, ignore_errors=True)
+    return p.returncode
+
+
+def read(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def main(argv):
+    if argv[:1] == ["help"]:
+        print(USAGE)
+        return 0
+    binary, keep = os.path.join(ROOT, "target/debug/blaze"), False
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == "--binary" and args:
+            binary = os.path.abspath(args.pop(0))
+        elif a == "--keep":
+            keep = True
+        else:
+            print(USAGE)
+            return 2
+    record = load_record()
+    codes = {"oracle": run("oracle", ORACLE, record, keep), "blaze": run("blaze", binary, record, keep)}
+    ok = codes["oracle"] == codes["blaze"]
+    print(f"exit codes: {codes}")
+    o, b = f"{WORK}/oracle", f"{WORK}/blaze"
+    to, tb = tree(f"{o}/repo"), tree(f"{b}/repo")
+    same_tree = to == tb and bool(to)
+    print(f"repository tree: {'IDENTICAL' if same_tree else 'DIFFERENT'} ({len(to)} entries)")
+    for k in sorted(set(to) | set(tb)):
+        if to.get(k) != tb.get(k):
+            print(f"  {k}: oracle={to.get(k)} blaze={tb.get(k)}")
+    same_marker = read(f"{o}/marker") == read(f"{b}/marker") and read(f"{o}/marker") is not None
+    print(f"marker file: {'IDENTICAL' if same_marker else 'DIFFERENT'}")
+    same_lock = (read(f"{o}/MODULE.bazel.lock") == read(f"{b}/MODULE.bazel.lock")
+                 and read(f"{o}/MODULE.bazel.lock") is not None)
+    print(f"workspace MODULE.bazel.lock: {'IDENTICAL' if same_lock else 'DIFFERENT'}")
+    import datetime
+    import json
+    head = b"\n".join(read(os.path.join(CHECKOUT, "README.md")).split(b"\n")[:4])
+    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    want = hashlib.sha1((hashlib.sha1(head).hexdigest() + ";" + today).encode()).hexdigest()
+    ids = {}
+    for who, d in (("oracle", o), ("blaze", b)):
+        try:
+            ids[who] = json.loads(read(f"{d}/repo/report.json"))["tools_telemetry"]["id_day"]
+        except Exception as e:  # noqa: BLE001 - report whatever is wrong with the file
+            ids[who] = f"unreadable ({e})"
+    print(f"id_day: oracle={ids['oracle']} blaze={ids['blaze']} sha1(README head; {today})={want}")
+    real = ids["blaze"] == want and ids["oracle"] == want
+    ok = ok and same_tree and same_marker and same_lock and real
+    print("result: " + ("PASS" if ok else "FAIL"))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

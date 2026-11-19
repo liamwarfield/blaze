@@ -242,6 +242,61 @@ mod template_expansion_action_test {
         );
     }
 
+    /// The template artifact is read as ISO-8859-1 (`ArtifactTemplate.getContent`) and the
+    /// expansion written with `getBytes(ISO_8859_1)` (`LocalTemplateExpansionStrategy`), so its
+    /// bytes, UTF-8 or not, reach the output unchanged; an internal substitution value is written
+    /// as its bytes.
+    // Java: com/google/devtools/build/lib/analysis/actions/Template.java:107 ArtifactTemplate.getContent
+    // Java: com/google/devtools/build/lib/analysis/actions/LocalTemplateExpansionStrategy.java:51 LocalTemplateExpansionStrategy.expandTemplate
+    #[test]
+    fn artifact_template_bytes_are_copied_unchanged() {
+        let f = fixture(TEMPLATE);
+        std::fs::write(
+            f.input_artifact.get_path().get_path_string(),
+            b"\xc3\xa9 \xe9 \xff \xf0\x9f\x90\xb7 %key%\n",
+        )
+        .unwrap();
+        let action = TemplateExpansionAction::for_template_artifact(
+            null_action_owner(),
+            f.input_artifact.clone(),
+            f.output_artifact.clone(),
+            vec![Substitution::of(
+                "%key%",
+                &*blaze_util::string_encoding::latin1_decode(b"\xc3\xbc\xfe"),
+            )],
+            false,
+        );
+        let ctx = f.dirs.context();
+        execute(&ctx, &action).unwrap();
+        assert_eq!(
+            read(&f.output_artifact.get_path()),
+            b"\xc3\xa9 \xe9 \xff \xf0\x9f\x90\xb7 \xc3\xbc\xfe\n"
+        );
+    }
+
+    /// `String.getBytes(ISO_8859_1)` replaces a char above U+00FF (a substitution that is not an
+    /// internal string, like the Unicode literal `SPECIAL_CHARS` without `unicodeToInternal`)
+    /// with '?'.
+    // Java: com/google/devtools/build/lib/analysis/actions/LocalTemplateExpansionStrategy.java:51 LocalTemplateExpansionStrategy.expandTemplate
+    #[test]
+    fn char_above_latin1_is_written_as_question_mark() {
+        let f = fixture("%key%");
+        let action = TemplateExpansionAction::for_template_artifact(
+            null_action_owner(),
+            f.input_artifact.clone(),
+            f.output_artifact.clone(),
+            vec![Substitution::of("%key%", SPECIAL_CHARS)],
+            false,
+        );
+        let ctx = f.dirs.context();
+        execute(&ctx, &action).unwrap();
+        // Š (U+0160) -> '?'; ©, ±, ½, ø are Latin-1 chars and become one byte each.
+        assert_eq!(
+            read(&f.output_artifact.get_path()),
+            b"?\xa9\xb1\xbd_str\xf8get\n"
+        );
+    }
+
     /// A missing template artifact fails with `EnvironmentalExecException(e,
     /// LOCAL_TEMPLATE_EXPANSION_FAILURE)`, whose message is `"" + ": " + e.getMessage()`.
     #[test]

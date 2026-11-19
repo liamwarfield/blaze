@@ -189,6 +189,18 @@ fn latin1_encode_and_decode_are_inverse_on_all_bytes() {
 }
 
 /// Java: StringUnsafe.getInternalStringBytes on a string with the UTF16 coder.
+/// A path string that is not internal does not fail at the system boundary: Bazel's JNI layer
+/// writes `?` for a char above U+00FF (src/main/native/latin1_jni_path.cc
+/// GetStringLatin1Chars, the UTF-16 fallback), as the JDK's ISO-8859-1 encoder does. (For a char
+/// outside the BMP the JNI layer writes one `?` per UTF-16 unit; blaze_vfs ports that.)
+#[test]
+fn internal_to_platform_of_a_string_that_is_not_internal_writes_question_marks() {
+    assert_eq!(
+        internal_to_platform("a\u{20ac}/\u{e9}").as_bytes(),
+        b"a?/\xe9"
+    );
+}
+
 #[test]
 #[should_panic(
     expected = "IllegalArgumentException: Expected internal string with Latin-1 coder, got: a€ ([97, 0, -84, 32])"

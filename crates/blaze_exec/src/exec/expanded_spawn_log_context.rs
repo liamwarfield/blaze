@@ -15,7 +15,7 @@ use super::io::{
 };
 use super::spawn_log_context::{
     SpawnLogAction, SpawnLogContext, compute_digest, get_environment_variables, get_platform,
-    get_spawn_metrics_proto, internal, is_input_directory, java_string_compare,
+    get_spawn_metrics_proto, is_input_directory, java_string_compare,
 };
 use super::stable_sort::stable_sort;
 use crate::actions::{
@@ -132,7 +132,7 @@ impl ExpandedSpawnLogContext {
         result: &SpawnResult,
     ) -> Result<(), ExecException> {
         let mut builder = SpawnExec {
-            command_args: spawn.get_arguments().iter().map(|a| internal(a)).collect(),
+            command_args: spawn.get_arguments().to_vec(),
             environment_variables: get_environment_variables(spawn),
             ..Default::default()
         };
@@ -164,7 +164,7 @@ impl ExpandedSpawnLogContext {
                 {
                     // Do not include a digest, as it's a waste of space.
                     builder.inputs.push(File {
-                        path: internal(display_path.get_path_string()),
+                        path: display_path.get_path_string().to_string(),
                         is_tool: tool_runfiles_directories
                             .iter()
                             .any(|d| display_path.starts_with(d)),
@@ -205,12 +205,11 @@ impl ExpandedSpawnLogContext {
                         panic!("IllegalStateException: {metadata}");
                     }
                     builder.inputs.push(File {
-                        path: internal(display_path.get_path_string()),
-                        symlink_target_path: internal(
-                            metadata
-                                .get_unresolved_symlink_target()
-                                .expect("NullPointerException: getUnresolvedSymlinkTarget"),
-                        ),
+                        path: display_path.get_path_string().to_string(),
+                        symlink_target_path: metadata
+                            .get_unresolved_symlink_target()
+                            .expect("NullPointerException: getUnresolvedSymlinkTarget")
+                            .to_string(),
                         is_tool,
                         ..Default::default()
                     });
@@ -226,7 +225,7 @@ impl ExpandedSpawnLogContext {
                 )?;
 
                 builder.inputs.push(File {
-                    path: internal(display_path.get_path_string()),
+                    path: display_path.get_path_string().to_string(),
                     digest: Some(digest),
                     is_tool,
                     ..Default::default()
@@ -240,7 +239,7 @@ impl ExpandedSpawnLogContext {
         let mut output_paths: Vec<String> = spawn
             .get_output_files()
             .iter()
-            .map(|output| internal(&output.get_exec_path_string()))
+            .map(|output| output.get_exec_path_string().to_string())
             .collect();
         // `Collections.sort`: the internal strings in Java order.
         output_paths.sort_by(|a, b| java_string_compare(a, b));
@@ -250,7 +249,7 @@ impl ExpandedSpawnLogContext {
                 let path = self.get_path(file_system, output.get_exec_path());
                 if !output.is_directory() && !output.is_symlink() && path.is_file() {
                     builder.actual_outputs.push(File {
-                        path: internal(&output.get_exec_path_string()),
+                        path: output.get_exec_path_string().to_string(),
                         digest: Some(compute_digest(
                             Some(output),
                             &path,
@@ -270,8 +269,11 @@ impl ExpandedSpawnLogContext {
                     )?;
                 } else if output.is_symlink() && path.is_symbolic_link() {
                     builder.actual_outputs.push(File {
-                        path: internal(&output.get_exec_path_string()),
-                        symlink_target_path: internal(path.read_symbolic_link()?.get_path_string()),
+                        path: output.get_exec_path_string().to_string(),
+                        symlink_target_path: path
+                            .read_symbolic_link()?
+                            .get_path_string()
+                            .to_string(),
                         ..Default::default()
                     });
                 }
@@ -287,7 +289,7 @@ impl ExpandedSpawnLogContext {
             builder.platform = Some(platform);
         }
         if result.status() != Status::Success {
-            builder.status = internal(result.status().name());
+            builder.status = result.status().name().to_string();
         }
         if !timeout.is_zero() {
             builder.timeout_millis = timeout.as_millis() as i64;
@@ -296,16 +298,16 @@ impl ExpandedSpawnLogContext {
         builder.remote_cacheable = spawns::may_be_cached_remotely(spawn);
         builder.exit_code = result.exit_code();
         builder.cache_hit = result.is_cache_hit();
-        builder.runner = internal(result.get_runner_name());
+        builder.runner = result.get_runner_name().to_string();
 
         if let Some(digest) = result.get_digest() {
             builder.digest = Some(digest.clone());
         }
 
-        builder.mnemonic = internal(&spawn.get_mnemonic());
+        builder.mnemonic = spawn.get_mnemonic();
 
         if let Some(target_label) = spawn.get_target_label() {
-            builder.target_label = internal(&target_label.to_string());
+            builder.target_label = target_label.to_string();
         }
 
         builder.metrics = Some(get_spawn_metrics_proto(result));
@@ -350,7 +352,7 @@ impl ExpandedSpawnLogContext {
             }
 
             add_file.push(File {
-                path: internal(child_display_path.get_path_string()),
+                path: child_display_path.get_path_string().to_string(),
                 digest: Some(compute_digest(
                     None,
                     &child_content_path,

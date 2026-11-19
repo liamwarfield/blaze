@@ -27,51 +27,27 @@
 //! All functions are the identity on ASCII and return the borrowed input then (Java returns the
 //! same instance).
 //!
-//! # Migration seam
+//! # Migration seam (transitional)
 //!
-//! Until Starlark sources, file names and command-line input are decoded as Latin-1 (migration
-//! steps 2 and 3 of docs/research/07-byte-strings.md), the strings Blaze's inner layers hold are
-//! real Unicode, not internal strings. [`STRINGS_ARE_INTERNAL`] says which of the two holds, and
-//! the four seam functions ([`to_internal`], [`internal_string_bytes`],
-//! [`internal_string_from_bytes`], [`internal_length`]) give, for either state, what Java computes
-//! from its internal string. Code that calls them is right before the switch (for every string
-//! that is valid UTF-8 text) and after it (for every string). Afterwards each seam function is
-//! the plain function named in its documentation and can be replaced by it.
+//! The switch was made on 2026-11-19: Starlark sources, file names, the command line and the
+//! environment are decoded one char per byte, so the strings Blaze's inner layers hold are
+//! internal strings ([`STRINGS_ARE_INTERNAL`] is `true`). The record of the migration is
+//! docs/research/07-byte-strings.md section 7; the rules for new code are PORTING.md "Strings"
+//! and docs/research/07-byte-strings-rules.md.
 //!
-//! The decoding itself is on the seam too: the source decoders (`StarlarkUtil.createParserInput`
-//! for BUILD, .bzl, MODULE.bazel, REPO.bazel, VENDOR.bazel) must produce their text with
-//! [`parser_input_from_latin1`], which reads the same constant as the fingerprint bridge, so
-//! that the two cannot be switched separately. `tests/string_seam_guard_test.rs` fails when a
-//! decoder and the constant disagree.
+//! The seam functions ([`to_internal`], [`internal_string_bytes`],
+//! [`internal_string_from_bytes`], [`internal_length`], [`strings_are_internal`],
+//! [`with_strings_are_internal_for_testing`]) gave, before the switch, what Java computes from
+//! its internal string while Blaze still held Unicode. Each is now the plain function its
+//! documentation names. New code calls the plain function; the seam functions stay only until
+//! their last callers (blaze_remote and three files of blaze_exec, listed in
+//! docs/research/07-byte-strings-exec-sites.md) are converted, and are deleted then, together
+//! with `Fingerprint::add_internal_string` and the `Result` of [`parser_input_from_latin1`].
 //!
-//! ## The switch
-//!
-//! 1. Before the switch, with no change of behaviour (every step is the identity while the
-//!    constant is `false`):
-//!    - both `create_parser_input` functions (`blaze_sky_loading/src/starlark_util.rs`,
-//!      `blaze_bzlmod/src/module_file/compiled_module_file.rs`) call
-//!      [`parser_input_from_latin1`];
-//!    - every place where a string leaves or enters as bytes calls [`internal_string_bytes`] or
-//!      [`internal_string_from_bytes`] instead of `as_bytes()` / `String::from_utf8*`: process
-//!      argv, environment and working directory, file system paths and directory entries, the
-//!      console and event output, file-writing actions, repository rule `read` / `execute` /
-//!      `file` / `template`, command-line and rc-file intake, and the query, cquery and aquery
-//!      writers (the Java list is docs/research/07-byte-strings.md 2.5);
-//!    - every `String.length()` or char index that Java computes on an internal string calls
-//!      [`internal_length`];
-//!    - text that really is Unicode (protos, JSON, lockfile, registry files) is converted with
-//!      [`unicode_to_internal`] / [`internal_to_unicode`] where Java calls `StringEncoding`.
-//! 2. The interpreter's part: starlark-rust escapes, case mapping, `strip`, `repr`, and Blaze's
-//!    `json.decode` (07-byte-strings.md section 4, option A).
-//! 3. Set [`STRINGS_ARE_INTERNAL`] to `true`. This is the only edit of the switch itself.
-//! 4. Check: `scripts/cargo-capped test -p blaze_util -p blaze_actions` (the guard, and
-//!    `non_ascii_action_keys` / `oracle_aquery_dump`, which run both sides);
-//!    `scripts/actions-probe/run --binary <blaze> --out <file>` and `cmp <file>
-//!    crates/blaze_actions/tests/data/non_ascii_probe/aquery.jsonproto` (all 78 actions,
-//!    byte for byte, including the four `"\377"` probes); `scripts/bytes/run --binary <blaze>`;
-//!    the gate (brotli and re2 stay byte-identical).
-//! 5. Later: delete the seam (each function becomes the plain one), the
-//!    `Fingerprint::add_internal_string` alias and the before-the-switch halves of the tests.
+//! The source decoders (`StarlarkUtil.createParserInput` for BUILD, .bzl, MODULE.bazel,
+//! REPO.bazel, VENDOR.bazel) must produce their text with [`parser_input_from_latin1`] and
+//! nothing else; `tests/string_seam_guard_test.rs` fails when a decoder does not, or when a new
+//! decoder appears.
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -262,9 +238,13 @@ fn not_internal(s: &str) -> ! {
 /// Java: com/google/devtools/build/lib/util/StringEncoding.java:104
 /// StringEncoding.internalToPlatform
 // PORT: the Linux, Latin-1 locale branch of `needsReencodeForPlatform` (see the module comment):
-// the platform string is the internal string's bytes.
+// Java returns the string itself, and whoever hands it to the system encodes it one byte per
+// char: Bazel's JNI layer (src/main/native/latin1_jni_path.cc GetStringLatin1Chars: a char above
+// U+00FF, which a well-formed path never has, becomes `?`) and the JDK with `sun.jnu.encoding`
+// ISO-8859-1 (unmappable chars become `?` too). So the platform string is the Latin-1
+// encoding, and a string that is not internal does not fail here either.
 pub fn internal_to_platform(s: &str) -> Cow<'_, OsStr> {
-    match latin1_encode(s) {
+    match latin1_encode_lossy(s) {
         Cow::Borrowed(b) => Cow::Borrowed(OsStr::from_bytes(b)),
         Cow::Owned(b) => Cow::Owned(OsString::from_vec(b)),
     }

@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+"""Non-ASCII names, arguments and environment through blaze_remote: oracle vs Blaze.
+See `nonascii-probe help`."""
+
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+CACHE = os.path.expanduser("~/.cache/blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+WORK = os.path.join(CACHE, "work", "remote", "tg-nonascii")
+TEMPLATE = os.path.join(WORK, "src")
+OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-remote", "tg-nonascii")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+FAKE_CAPS_DEFAULT = os.path.join(CACHE, "work", "remote", "tg-tools", "blaze-remote-fake-caps")
+PORT_EXEC = 9700
+PORT_MIN = 9701
+PORT_HDR = 9702
+
+USAGE = """\
+usage: scripts/remote/nonascii-probe oracle <tag> [--cache-from <tag>] [--steps s1,s2,...]
+       scripts/remote/nonascii-probe run <binary> <tag> [--cache-from <tag>] [--steps s1,s2,...]
+       scripts/remote/nonascii-probe compare <tag-a> <tag-b>
+       scripts/remote/nonascii-probe help
+
+Non-ASCII strings through blaze_remote (byte-strings switch, docs/research/07-byte-strings-*.md).
+The template workspace (<WORK>/src, written on first use) has:
+  é.txt        a source file with a non-ASCII name
+  //:gen       run_shell: input é.txt, output out_ü.txt, argument "argé🐷", environment
+               VÉ=välue🐷 (writes the input, the argument and `env | grep ^V`)
+  //:tree      declare_directory tree_ö with the children kid_é.txt, sub_ä/x.txt and the
+               relative symlink link_ü -> kid_é.txt (a non-ASCII target)
+  //:sym       declare_symlink sym_ß written by a spawn (`ln -s tärget/é`)
+  //:cons      run_shell over //:gen and //:tree (find -L | sort, cat), output cons.txt
+  //:localcons the same with execution_requirements no-remote (runs locally), localcons.txt
+
+Steps (each in a fresh output base <OUT_ROOT>/<tag>/<step> unless noted; default: all but xc):
+  dc      --disk_cache=<WORK>/<tag>/dc (fresh), build //:gen //:tree //:sym //:cons
+  xc      only with --cache-from <tag2>: --disk_cache=<a copy of <tag2>'s dc>, same targets;
+          the `processes:` line shows the hits on the other binary's cache
+  rexec   --remote_executor=grpc://localhost:9700 (Bazel's worker, fresh), --remote_grpc_log=
+          <step>/grpc.log, same targets
+  min1    --remote_executor=grpc://localhost:9701 (fresh worker) --remote_download_outputs=minimal,
+          build //:cons
+  min2    same output base and worker, minimal, build //:localcons: out_ü.txt and tree_ö must be
+          fetched for the local action
+  hdr     --remote_cache=grpc://localhost:9702 against blaze-remote-fake-caps --code OK
+          --print-header x (binary $BLAZE_FAKE_CAPS, default
+          ~/.cache/blaze/work/remote/tg-tools/blaze-remote-fake-caps) with --remote_header=x=aé,
+          build //:gen; records the bytes of header `x` as the server received them
+Each step directory <WORK>/<tag>/<step> holds stdout, stderr, exit and outputs.txt (sha256 and
+path of every file under bazel-bin, every symlink with its target, both as escaped UTF-8 bytes,
+the output base shown as <execroot>); hdr also headers.txt.
+
+`compare <a> <b>`: per step both exits, both `processes:` lines, outputs.txt equal or the
+differing lines, for rexec `scripts/remote/compare-grpc-log <a> <b>` (a is the reference), for
+hdr both headers.txt. Exit 0 iff all equal.
+
+Every Bazel/Blaze call runs in `systemd-run --user --collect --wait -p MemoryMax=12G
+-p MemorySwapMax=0` with HOME and PATH=/usr/bin:/bin only, startup options --output_user_root
+--nohome_rc --nosystem_rc, and --repository_cache, --color=no --curses=no.
+WORK is ~/.cache/blaze/work/remote/tg-nonascii, OUT_ROOT ~/.cache/blaze/oracle-out/ur-remote/tg-nonascii.
+"""
+
+DEFS = """\
+def _gen_impl(ctx):
+    out = ctx.actions.declare_file("out_ü.txt")
+    ctx.actions.run_shell(
+        inputs = [ctx.file.src],
+        outputs = [out],
+        arguments = [ctx.file.src.path, out.path, "argé🐷"],
+        env = {"VÉ": "välue🐷"},
+        command = 'cat "$1" > "$2"; printf "%s\\\\n" "$3" >> "$2"; env | grep "^V" | sort >> "$2"',
+        mnemonic = "Gen",
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+gen = rule(implementation = _gen_impl, attrs = {"src": attr.label(allow_single_file = True)})
+
+def _tree_impl(ctx):
+    d = ctx.actions.declare_directory("tree_ö")
+    ctx.actions.run_shell(
+        outputs = [d],
+        command = "mkdir -p {d}/sub_ä && echo kid > {d}/kid_é.txt && echo x > {d}/sub_ä/x.txt && ln -s kid_é.txt {d}/link_ü".format(d = d.path),
+        mnemonic = "Tree",
+    )
+    return [DefaultInfo(files = depset([d]))]
+
+tree = rule(implementation = _tree_impl)
+
+def _sym_impl(ctx):
+    out = ctx.actions.declare_symlink("sym_ß")
+    ctx.actions.run_shell(
+        outputs = [out],
+        command = "ln -s 'tärget/é' %s" % out.path,
+        mnemonic = "MakeLink",
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+sym = rule(implementation = _sym_impl)
+
+def _cons_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ins = depset(transitive = [d[DefaultInfo].files for d in ctx.attr.deps])
+    args = ctx.actions.args()
+    args.add(out)
+    args.add_all(ins, expand_directories = False)
+    ctx.actions.run_shell(
+        inputs = ins,
+        outputs = [out],
+        arguments = [args],
+        command = 'o=$1; shift; for f in $(find -L "$@" -type f | sort); do echo "== $f"; cat "$f"; done > $o',
+        mnemonic = "Cons",
+        execution_requirements = ctx.attr.reqs,
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+cons = rule(
+    implementation = _cons_impl,
+    attrs = {"deps": attr.label_list(), "reqs": attr.string_dict()},
+)
+"""
+
+BUILD = """\
+load(":defs.bzl", "cons", "gen", "sym", "tree")
+
+gen(name = "gen", src = "é.txt")
+
+tree(name = "tree")
+
+sym(name = "sym")
+
+cons(name = "cons", deps = [":gen", ":tree"])
+
+cons(name = "localcons", deps = [":gen", ":tree"], reqs = {"no-remote": "1"})
+"""
+
+TARGETS = ["//:gen", "//:tree", "//:sym", "//:cons"]
+STEPS = ["dc", "xc", "rexec", "min1", "min2", "hdr"]
+
+
+def init():
+    if os.path.isdir(TEMPLATE):
+        return
+    os.makedirs(TEMPLATE)
+    files = {b"MODULE.bazel": b"", b"defs.bzl": DEFS.encode("utf-8"),
+             b"BUILD": BUILD.encode("utf-8"),
+             "é.txt".encode("utf-8"): "source é\n".encode("utf-8")}
+    for name, data in files.items():
+        with open(os.path.join(os.fsencode(TEMPLATE), name), "wb") as f:
+            f.write(data)
+
+
+def rm(p):
+    if os.path.lexists(p):
+        subprocess.run(["chmod", "-R", "u+w", p])
+        shutil.rmtree(p)
+
+
+def esc(b):
+    """Bytes as printable ASCII: non-ASCII and control bytes as \\xHH."""
+    return "".join(chr(c) if 0x20 <= c < 0x7f and c != 0x5c else "\\x%02x" % c for c in b)
+
+
+def run_binary(binary, our, ws, step, args):
+    os.makedirs(step, exist_ok=True)
+    full = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc", args[0],
+            "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args[1:]
+    unit = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
+            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "env", "-i",
+            "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin"]
+    with open(os.path.join(step, "stdout"), "wb") as so, \
+            open(os.path.join(step, "stderr"), "wb") as se:
+        code = subprocess.run(unit + full, cwd=ws, stdout=so, stderr=se).returncode
+    with open(os.path.join(step, "exit"), "w") as f:
+        f.write("%d\n" % code)
+    record_outputs(ws, step)
+    return code
+
+
+def record_outputs(ws, step):
+    bin_ = os.path.join(os.fsencode(ws), b"bazel-bin")
+    lines = []
+    if os.path.isdir(bin_):
+        for dirpath, dirnames, filenames in os.walk(bin_):
+            dirnames.sort()
+            for name in sorted(dirnames + filenames):
+                p = os.path.join(dirpath, name)
+                rel = os.path.relpath(p, bin_)
+                if os.path.islink(p):
+                    t = os.readlink(p)
+                    t = re.sub(rb"^.*/execroot/", b"<execroot>/", t)
+                    lines.append("link %s -> %s" % (esc(rel), esc(t)))
+                elif os.path.isfile(p):
+                    if rel.endswith(b".params") or b"_objs" in rel:
+                        continue
+                    data = open(p, "rb").read()
+                    data = re.sub(rb"bazel-out/[^/ ]+/bin/", b"<bin>/", data)
+                    lines.append("file %s %s" % (esc(rel), hashlib.sha256(data).hexdigest()[:16]))
+                    if rel.endswith(b".txt") and b"/" not in rel:
+                        lines.append("  content %s" % esc(data))
+    with open(os.path.join(step, "outputs.txt"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def processes(step):
+    err = open(os.path.join(step, "stderr"), errors="replace").read().splitlines()
+    return [l for l in err if "processes:" in l or re.search(r"\d+ process:", l)] + \
+        [l for l in err if l.startswith("ERROR:")][:3]
+
+
+def worker(cmd, name, port=None):
+    args = [os.path.join(HERE, "worker"), cmd, name] + ([str(port)] if port else [])
+    subprocess.run(args, stdout=subprocess.DEVNULL, check=cmd == "start")
+
+
+def new_ws(run_dir, step):
+    ws = os.path.join(run_dir, "ws-" + step)
+    rm(ws)
+    shutil.copytree(TEMPLATE, ws, symlinks=True)
+    return ws
+
+
+def cmd_run(binary, tag, cache_from, steps):
+    init()
+    binary = ORACLE if binary == "oracle" else os.path.abspath(os.path.expanduser(binary))
+    run_dir = os.path.join(WORK, tag)
+    os.makedirs(run_dir, exist_ok=True)
+    if steps is None:
+        steps = [s for s in STEPS if s != "xc" or cache_from]
+    if "xc" in steps and not cache_from:
+        sys.exit("nonascii-probe: step xc needs --cache-from <tag>")
+    for s in steps:
+        step = os.path.join(run_dir, s)
+        rm(step)
+        if s != "min2":
+            rm(os.path.join(OUT_ROOT, tag, s))
+    for s in STEPS:
+        if s not in steps:
+            continue
+        step = os.path.join(run_dir, s)
+        os.makedirs(step)
+        our = os.path.join(OUT_ROOT, tag, "min1" if s == "min2" else s)
+        args = ["build"] + TARGETS
+        extra = ""
+        if s == "dc":
+            dc = os.path.join(run_dir, "dc")
+            rm(dc)
+            args.append("--disk_cache=" + dc)
+            ws = new_ws(run_dir, s)
+        elif s == "xc":
+            src = os.path.join(WORK, cache_from, "dc")
+            if not os.path.isdir(src):
+                sys.exit("nonascii-probe: no disk cache at %s (run %s first)" % (src, cache_from))
+            dc = os.path.join(run_dir, "dc-from-" + cache_from)
+            rm(dc)
+            shutil.copytree(src, dc, symlinks=True)
+            args.append("--disk_cache=" + dc)
+            ws = new_ws(run_dir, s)
+        elif s == "rexec":
+            worker("start", "tg-nonascii-exec", PORT_EXEC)
+            args += ["--remote_executor=grpc://localhost:%d" % PORT_EXEC,
+                     "--remote_grpc_log=" + os.path.join(step, "grpc.log")]
+            ws = new_ws(run_dir, s)
+        elif s == "min1":
+            worker("start", "tg-nonascii-min", PORT_MIN)
+            args = ["build", "//:cons", "--remote_executor=grpc://localhost:%d" % PORT_MIN,
+                    "--remote_download_outputs=minimal"]
+            ws = new_ws(run_dir, s)
+        elif s == "min2":
+            if not os.path.isdir(os.path.join(run_dir, "ws-min1")):
+                sys.exit("nonascii-probe: step min2 needs min1 in the same call")
+            args = ["build", "//:localcons", "--remote_executor=grpc://localhost:%d" % PORT_MIN,
+                    "--remote_download_outputs=minimal"]
+            ws = os.path.join(run_dir, "ws-min1")
+        elif s == "hdr":
+            fake = os.environ.get("BLAZE_FAKE_CAPS", FAKE_CAPS_DEFAULT)
+            log = open(os.path.join(step, "server.log"), "wb")
+            server = subprocess.Popen([fake, "--port", str(PORT_HDR), "--code", "OK",
+                                       "--print-header", "x"], stdout=log, stderr=log)
+            time.sleep(1)
+            args = ["build", "//:gen", "--remote_cache=grpc://localhost:%d" % PORT_HDR,
+                    "--remote_header=x=aé"]
+            ws = new_ws(run_dir, s)
+        code = run_binary(binary, our, ws, step, args)
+        if s == "rexec":
+            worker("stop", "tg-nonascii-exec")
+        elif s == "min2":
+            worker("stop", "tg-nonascii-min")
+        elif s == "hdr":
+            server.terminate()
+            server.wait()
+            log.close()
+            hdrs = [l for l in open(os.path.join(step, "server.log"), errors="replace")
+                    .read().splitlines() if l.startswith("header ")]
+            with open(os.path.join(step, "headers.txt"), "w") as f:
+                f.write("\n".join(sorted(set(hdrs))) + "\n")
+            extra = " | " + " ; ".join(sorted(set(hdrs)))
+        print("%-6s exit %d %s%s" % (s, code, " | ".join(processes(step)), extra))
+    if "min1" in steps and "min2" not in steps:
+        worker("stop", "tg-nonascii-min")
+    return 0
+
+
+def cmd_compare(a, b):
+    same = True
+    for s in STEPS:
+        sa, sb = os.path.join(WORK, a, s), os.path.join(WORK, b, s)
+        if not (os.path.isdir(sa) and os.path.isdir(sb)):
+            continue
+        print("== %s" % s)
+        for tag, sd in ((a, sa), (b, sb)):
+            print("  %-12s exit %s %s" % (tag, open(os.path.join(sd, "exit")).read().strip(),
+                                          " | ".join(processes(sd))))
+        if open(os.path.join(sa, "exit")).read() != open(os.path.join(sb, "exit")).read():
+            same = False
+        oa = open(os.path.join(sa, "outputs.txt")).read()
+        ob = open(os.path.join(sb, "outputs.txt")).read()
+        if oa == ob:
+            print("  outputs: same (%d lines)" % len(oa.splitlines()))
+            for line in oa.splitlines():
+                print("    " + line)
+        else:
+            same = False
+            print("  outputs: DIFFERENT")
+            la, lb = oa.splitlines(), ob.splitlines()
+            for x in la:
+                if x not in lb:
+                    print("    only %s: %s" % (a, x))
+            for x in lb:
+                if x not in la:
+                    print("    only %s: %s" % (b, x))
+        if s == "rexec":
+            r = subprocess.run([os.path.join(HERE, "compare-grpc-log"),
+                                os.path.join(sa, "grpc.log"), os.path.join(sb, "grpc.log")],
+                               capture_output=True, text=True, errors="replace")
+            print("  compare-grpc-log exit %d" % r.returncode)
+            for line in r.stdout.splitlines()[:40]:
+                print("    " + line)
+            if r.returncode:
+                same = False
+        if s == "hdr":
+            ha = open(os.path.join(sa, "headers.txt")).read()
+            hb = open(os.path.join(sb, "headers.txt")).read()
+            print("  headers %s: %s" % (a, ha.strip().replace("\n", " ; ")))
+            print("  headers %s: %s" % (b, hb.strip().replace("\n", " ; ")))
+            if ha != hb:
+                same = False
+    print("ALL SAME" if same else "DIFFERENCES")
+    return 0 if same else 1
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    cache_from = None
+    steps = None
+    rest = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--cache-from" and i + 1 < len(args):
+            cache_from = args[i + 1]
+            i += 2
+        elif args[i] == "--steps" and i + 1 < len(args):
+            steps = args[i + 1].split(",")
+            unknown = [s for s in steps if s not in STEPS]
+            if unknown:
+                sys.exit("nonascii-probe: unknown steps %s" % unknown)
+            i += 2
+        else:
+            rest.append(args[i])
+            i += 1
+    if rest and rest[0] == "oracle" and len(rest) == 2:
+        return cmd_run("oracle", rest[1], cache_from, steps)
+    if rest and rest[0] == "run" and len(rest) == 3:
+        return cmd_run(rest[1], rest[2], cache_from, steps)
+    if rest and rest[0] == "compare" and len(rest) == 3 and not cache_from and not steps:
+        return cmd_compare(rest[1], rest[2])
+    print(USAGE, end="", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

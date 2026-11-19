@@ -463,6 +463,13 @@ fn test_missing_output() {
 }
 
 #[test]
+fn test_non_ascii_strings() {
+    base::test_non_ascii_strings(T, |s| {
+        blaze_util::string_encoding::internal_to_unicode(s).into_owned()
+    });
+}
+
+#[test]
 fn test_environment() {
     base::test_environment(T);
 }

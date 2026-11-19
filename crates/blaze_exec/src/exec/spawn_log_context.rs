@@ -12,6 +12,7 @@ use blaze_optdefs::misc::remote_options::RemoteOptions;
 use blaze_protos::failure_details::{FailureDetail, failure_detail, spawn as spawn_code};
 use blaze_protos::google::protobuf::{Duration as ProtoDuration, Timestamp};
 use blaze_protos::tools::protos::{self, Digest, EnvironmentVariable, Platform, platform};
+use blaze_util::string_encoding::{internal_to_unicode, unicode_to_internal};
 use blaze_vfs::{DigestHashFunction, FileSystemRef, Path};
 
 use crate::actions::{
@@ -98,43 +99,6 @@ pub fn spawn_log_io_exception(e: &io::Error) -> ExecException {
     .into()
 }
 
-/// A Java `String` held in its "internal" form (Latin-1 chars holding UTF-8 bytes), as Java
-/// protos store strings that Bazel sets without `StringEncoding.internalToUnicode`. Their UTF-8
-/// encoding on the wire is therefore "double encoded" for non-ASCII text.
-// Java: com/google/devtools/build/lib/util/StringEncoding.java StringEncoding.unicodeToInternal
-///
-/// Seam (decisions.md 2026-11-18 "Strings"): `to_internal` gives the internal string that `s`
-/// stands for, whether or not Blaze's strings are internal yet
-/// (`blaze_util::string_encoding::STRINGS_ARE_INTERNAL`).
-pub(crate) fn internal(s: &str) -> String {
-    blaze_util::string_encoding::to_internal(s).into_owned()
-}
-
-/// `StringEncoding.internalToUnicode(s)` of the internal string that `s` stands for.
-///
-/// Seam (decisions.md 2026-11-18 "Strings"): while
-/// `blaze_util::string_encoding::STRINGS_ARE_INTERNAL` is false Blaze's strings are Unicode
-/// already and this is the identity; once it is true it is `internal_to_unicode`.
-// Java: com/google/devtools/build/lib/util/StringEncoding.java:126 StringEncoding.internalToUnicode
-pub(crate) fn internal_to_unicode(s: &str) -> String {
-    if blaze_util::string_encoding::strings_are_internal() {
-        blaze_util::string_encoding::internal_to_unicode(s).into_owned()
-    } else {
-        s.to_string()
-    }
-}
-
-/// `StringEncoding.unicodeToInternal(s)`, giving the string Blaze holds where Java holds the
-/// internal string (the same seam as [`internal_to_unicode`]).
-// Java: com/google/devtools/build/lib/util/StringEncoding.java:137 StringEncoding.unicodeToInternal
-fn unicode_to_internal(s: &str) -> String {
-    if blaze_util::string_encoding::strings_are_internal() {
-        blaze_util::string_encoding::unicode_to_internal(s).into_owned()
-    } else {
-        s.to_string()
-    }
-}
-
 /// `String.compareTo`: lexicographic order of UTF-16 code units. For proto strings (which hold
 /// exactly the chars of the Java string) this is Java's order.
 pub(crate) fn java_string_compare(a: &str, b: &str) -> Ordering {
@@ -164,15 +128,15 @@ impl PartialOrd for JavaOrderedString {
 // Java: com/google/devtools/build/lib/exec/SpawnLogContext.java:110 SpawnLogContext.getEnvironmentVariables
 pub fn get_environment_variables(spawn: &dyn Spawn) -> Vec<EnvironmentVariable> {
     let environment = spawn.get_environment();
-    // `ImmutableSortedMap.copyOf(environment)`: the keys are internal strings, whose Java order is
-    // the byte order of their UTF-8 form.
+    // `ImmutableSortedMap.copyOf(environment)`: the keys are internal strings (every char
+    // <= U+00FF), so Java's `String.compareTo` (char order) is the order of their Rust bytes.
     let mut entries: Vec<(&String, &String)> = environment.iter().collect();
     entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
     entries
         .into_iter()
         .map(|(name, value)| EnvironmentVariable {
-            name: internal_to_unicode(name),
-            value: internal_to_unicode(value),
+            name: internal_to_unicode(name).into_owned(),
+            value: internal_to_unicode(value).into_owned(),
         })
         .collect()
 }
@@ -257,8 +221,8 @@ fn get_platform_proto(
 
             for property in &platform_builder.properties {
                 properties.insert(
-                    unicode_to_internal(&property.name),
-                    unicode_to_internal(&property.value),
+                    unicode_to_internal(&property.name).into_owned(),
+                    unicode_to_internal(&property.value).into_owned(),
                 );
             }
         } else {
@@ -280,7 +244,12 @@ fn get_platform_proto(
     // setName(internalToUnicode(entry.getKey())).setValue(internalToUnicode(entry.getValue()))
     let mut sorted: Vec<(String, String)> = properties
         .into_iter()
-        .map(|(name, value)| (internal_to_unicode(&name), internal_to_unicode(&value)))
+        .map(|(name, value)| {
+            (
+                internal_to_unicode(&name).into_owned(),
+                internal_to_unicode(&value).into_owned(),
+            )
+        })
         .collect();
     // Java: com/google/devtools/build/lib/analysis/platform/PlatformUtils.java:43 PlatformUtils.sortPlatformProperties
     sorted.sort_by(|a, b| java_string_compare(&a.0, &b.0));

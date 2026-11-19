@@ -23,7 +23,8 @@ const OPTION_PROCESSOR_CC: &str = "src/main/cpp/option_processor.cc";
 
 /// The environment `OptionProcessor` reads, taken from this process (C++ reads it directly).
 pub fn client_environment() -> ClientEnvironment {
-    // PORT: byte-strings (C++ reads cwd, $HOME, $BAZELRC and environ as raw bytes).
+    // C++ reads cwd, $HOME, $BAZELRC and environ as raw bytes: they are internal strings here
+    // (`platform_to_internal` in `platform.rs`).
     let processed_env = get_processed_env();
     let mut env = std::collections::HashMap::new();
     for var_value in &processed_env {

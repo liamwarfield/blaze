@@ -523,3 +523,37 @@ fn test_relative_path() {
         "/working/directory/relative/path/to/binary"
     );
 }
+
+/// Arguments, environment values and the working directory are Bazel's internal strings and
+/// reach the child as their bytes, one per char: `é` (the chars U+00C3 U+00A9) as C3 A9, a byte
+/// that is not UTF-8 (U+00FF) as FF. The JVM does this with `sun.jnu.encoding` ISO-8859-1, which
+/// Bazel's client sets (blaze.cc: the `en_US.ISO-8859-1` locale); oracle: the `shell.txt`
+/// output and `exec_stdout` case of scripts/bytes (argument "é\377", `ENV_E=é`).
+// Java: com/google/devtools/build/lib/shell/JavaSubprocessFactory.java:213 JavaSubprocessFactory.create
+#[test]
+fn non_ascii_argv_env_and_working_dir_are_bytes() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = std::env::temp_dir().join(format!("blaze_shell_bytes_{}", std::process::id()));
+    let sub = dir.join(std::ffi::OsStr::from_bytes(b"d\xc3\xa9\xff"));
+    std::fs::create_dir_all(&sub).unwrap();
+    let internal_dir = format!("{}/d\u{c3}\u{a9}\u{ff}", dir.to_str().unwrap());
+    let command = Command::with_env(
+        common::strings(&[
+            "/bin/sh",
+            "-c",
+            "printf '%s|%s|' \"$1\" \"$ENV_E\"; basename \"$PWD\"",
+            "sh",
+            "\u{c3}\u{a9}\u{ff}",
+        ]),
+        Some(common::map(&[("ENV_E", "\u{f0}\u{9f}\u{90}\u{b7}")])),
+        Some(JavaFile::new(&internal_dir)),
+        &empty(),
+    );
+    let result = command.execute().unwrap();
+    assert!(result.termination_status().success());
+    assert_eq!(
+        result.get_stdout(),
+        b"\xc3\xa9\xff|\xf0\x9f\x90\xb7|d\xc3\xa9\xff\n"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

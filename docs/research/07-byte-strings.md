@@ -1,6 +1,9 @@
 # 07 — Byte strings: what Bazel 9.3.2 does with non-ASCII text, and how Blaze should match it
 
-Status: design study with a spike (2026-11-18). Question from the workerd stress project:
+Status: design study with a spike (2026-11-18); **migrated 2026-11-19** (section 7 is the record;
+sections 1 to 6 and 8 to 10 are the study as written, "Blaze today" meaning Blaze before the
+migration; the rules for new code are `07-byte-strings-rules.md` and PORTING.md "Strings").
+Question from the workerd stress project:
 aspect_tools_telemetry's `sha1.bzl` hashes the first lines of a README that contains an emoji and
 gets a different result in Blaze. Decisions.md (2026-11-17) accepted starlark-rust's code-point
 strings "until a non-ASCII case shows up". This is that case.
@@ -321,7 +324,162 @@ today.
    scripts/gate that flags new `std::fs` calls with `&str` paths and `as_bytes()` on Starlark
    strings outside the boundary modules.
 
-## 7. Test plan
+## 7. Migration record
+
+Done 2026-11-18/19 on the working tree over `e98c83c` (byte-strings lead, eight Opus workers, one
+read-only surveyor). Rules used: `07-byte-strings-rules.md`. The order differed from section 6 in
+one point: the switch (step 3) was made first, together with the base crates, and the other crates
+were then converted against the final state, so no second "before the switch" form of any site
+was written. Non-ASCII was wrong in a new way for a few hours in between, as section 6 allows;
+ASCII never moved (brotli and re2 scores unchanged at every check).
+
+### 7.1 The switch and the interpreter
+
+- `blaze_util::string_encoding::STRINGS_ARE_INTERNAL = true`; both decoders
+  (`blaze_sky_loading/src/starlark_util.rs`, `blaze_bzlmod/src/module_file/compiled_module_file.rs`)
+  port `StarlarkUtil.createParserInput` in full and take their text from
+  `parser_input_from_latin1`. A source file that is not UTF-8 now parses (warning at the default
+  enforcement mode); the two `unported!`s are gone. New in blaze_util: `latin1_encode_lossy`
+  (`getBytes(ISO_8859_1)` / default-charset writers: `?` above U+00FF).
+- starlark-rust patches 0032–0036 (PATCHES.md): 0032 lexer (octal escapes are one char up to
+  `\377`; `\x`, `\u`, `\U`, `\N` and every unknown escape are Java's errors; CR handling; "unclosed
+  string literal"), 0033 `upper`/`lower` ASCII only, `is*` with Java's matchers,
+  `capitalize`/`title` with Java's `Character` rules per char, 0034 `Evaluator::set_utf8_byte_strings`
+  (default true) read by the `strip` family (ASCII whitespace, or Java's Latin-1 set when off),
+  0035 `repr` escapes only `"`, `\` and chars below 0x20, 0036 the string repeat limit counts
+  chars. `hash`, ordering, `elems`, `format`, `int()` and `json.encode` needed nothing.
+- blaze_starlark: `json.decode` appends `\uXXXX` escapes as UTF-8 bytes, one char each (lone
+  surrogate: EF BF BD) when the flag is on; tracebacks trim source lines with Java's `trim`; Label
+  repr through `printer::quote`. Oracle check of error columns: they count bytes (`x = "é" + 1`
+  is column 10), and so does Blaze.
+- starlark_conformance: `run --latin1` / `eval --latin1` (Bazel's `ScriptTest_Latin1`),
+  `java/StarlarkProbe.java` (runs a file on the oracle's own interpreter; recordings in
+  `tests/data`), `byte_strings.rs` with all 69 oracle cases and no gap list, no UTF-8 mode.
+  ScriptTest strict asserts: Unicode mode 2494 before and after; Latin-1 mode 2487 → 2495
+  (38 of 95 chunks). No remaining Latin-1 failure is about bytes.
+
+### 7.2 Sites converted, by crate
+
+| crate | converted (Java reference in the code) | deleted |
+|---|---|---|
+| blaze_vfs | every `UnixFileSystem` system call gets the path one byte per char, as the JNI layer passes it (`latin1_jni_path.cc`: `?` for a char above U+00FF); directory entries and symlink targets through `platform_to_internal` (a name that is not UTF-8 is an ordinary name); `Path::fsync` | the two "not valid UTF-8" errors |
+| blaze_events | `OutErr.printOut/printErr`, `AnsiTerminal.writeString/setTitle`, `AnsiTerminalPrinter`, `UiEventHandler` debug line and the max-stdouterr message: `latin1_encode_lossy`; `Event.getMessage` with the JDK's UTF-8 decoder; `OutputFilter` matches `internal_to_unicode(tag)` | 5 identity markers |
+| blaze_shell | `JavaProcess` argv, environment, directory, redirect files: one byte per char; `strerror`, `user.dir`, `uname`, `LogUtil`, `CommandUtils`, `ByteArrayOutputStream.toString`: Latin-1 (the server's default charset; the old comments said UTF-8); `ShellUtils.shellEscape` per char | byte-wise `is_latin1_letter_or_digit` |
+| blaze_client | argv (`argv_from_os`), environment, cwd, every libc path (`util/strings.rs` `cstr`), readdir/readlink/realpath results, the output-base md5 over the path's bytes, rc/`--default_override` arguments, pid and lock files, all client messages as raw bytes | 15 lossy decodes |
+| blaze_runtime | `GrpcServerImpl.platformBytesToInternalString` for arguments, `SimpleLogHandler` (4 calls), `InfoItem.print` (`getInternalStringBytes`), working directory, workspace README / `DO_NOT_BUILD_HERE`, target pattern files (ISO_8859_1), explanation handler (UTF-8), BEP output path | `expect("non-UTF-8 …")`s, a triple encoding in the explain log |
+| blaze_options, blaze_optdefs | `RegexPatternConverter` and `RegexUtil.asOptimizedMatchingPredicate` (pattern from `internalToUnicode`, 4 calls), rc files read as bytes and tokenized per char, `ExecutionInfoModifier` (3 calls), `parseAndExitUponError` output | identity markers, lossy rebuild in the tokenizer |
+| blaze_cmdline | `LabelValidator` target-name loop and the spell checker per char | byte-wise Latin-1 lowercasing |
+| blaze_build_config | `JavaConfiguration` shell escaping per char, platform mappings file (`readLines(UTF_8)`), `BAZEL_SH` through `var_os`, numeric converters (`Character.digit`) | byte-wise letter test, an `unported!` |
+| blaze_bzlmod, blaze_bzlmod_model | lockfile adapters at each of `GsonTypeAdapterUtil`'s 17 and `AttributeValuesAdapter`'s 4 calls; facts left unconverted as in Java (double encoded); registry JSON and lockfile read with the JDK's UTF-8 decoder; `java.net.URI` illegal-char and escape rules; paths through `platform_to_internal` / `internal_to_platform`; `String.trim`, `isBlank` | 8 `byte-strings` notes, lossy decodes |
+| blaze_repo_rules | `read` (ISO_8859_1), `file` (`getInternalStringBytes`), `execute` stdout/stderr, `template` on strings, marker files (Latin-1), predeclared-hash and usages JSON with `internalToUnicode`, basic auth (`getBytes(UTF_8)`) | `latin1_internal_string`, `internal_string_get_bytes_utf8`, `add_internal_string(s)` (all), the byte-level template emulation |
+| blaze_repo_fetch | tar names (Latin-1, `CompressedTarFunction`), zip names (UTF-8), ar names (US-ASCII), `StripPrefixedPath`, `PatchUtil` (UTF-8 lines; file names as the JNI passes them), `.netrc`, `ProxyHelper` credentials (2 calls), URL rewriter config, request head, `file:` URLs | unused `repo_utils.rs` |
+| blaze_packages, blaze_sky_loading | `.bazelignore` (UTF-8 reader, then the `Path.of` check: an entry above U+00FF is Bazel's "Malformed input" error), `UnixGlob` wildcard class (Java's `.`), `License` upper-casing, doc-string whitespace, `Package.dump`, bundled-file digests, test scratch helpers | lossy decode, `unported!("Character.digit")` |
+| blaze_query, blaze_query_engine | `ProtoOutputFormatter` (24 of 27 calls; 3 are in branches not ported) and `AttributeFormatter` (18 of 18); text formatters through a Latin-1 writer; `--output_file` through the VFS; `String.hashCode` over UTF-16 units; `Ascii.truncate` and weights in chars | byte-polynomial hash, byte lengths |
+| blaze_cquery (aquery) | `CqueryThreadsafeCallback` print stream (Latin-1, so `é` is E9 and an emoji `?`), `--query_file` (ISO_8859_1), aquery text formatter ported (`internalToEscapedUnicode`, base64 of `getBytes(UTF_8)`), summary writer | `unported!`s for non-UTF-8 query files and the text formatter |
+| blaze_actions, blaze_cc_features | `FileWriteAction` (3), `ParameterFile`, lazy-write actions, `Template`, `SourceManifestAction`, `RepoMappingManifestAction`, `WorkspaceStatusAction`, `DependencySet` (ISO_8859_1 both ways), aquery JSON writer, `ArtifactFactory` source-artifact key (`internalToUnicode` + `CASE_INSENSITIVE_ORDER`, new port), lengths in chars | every seam call of both crates, the before-the-switch halves of 4 tests, 3 `unported!`s |
+| blaze_analysis, blaze_rules, blaze_sky_top, blaze_bep | `TemplateExpander` scan per char, `CommandHelper` length, `PlatformUtils.buildPlatformProto` (2 calls), `System.err` prints, `.d`/include reading (Latin-1), `TargetCompleteEvent` (3 calls), `URI.quote` predicates, command-line hash, scratch helpers | byte-wise identifier scan, byte hashes, identity markers |
+| blaze, blaze_exec, blaze_sky_exec (files the remote lead had not touched) | `main.rs` argv; host and user name; test log header; `FileOutErr`; sandbox debug text and workspace-status stdout (JDK UTF-8 decoder); local-execution filter message (`unicodeToInternal(pattern)`); dangling-symlink digest | |
+
+`StringEncoding` calls of section 2.5 with a real counterpart now, where the workers counted
+them: query output 43 of 46 (`ProtoOutputFormatter` 24 of 27, `AttributeFormatter` 18,
+aquery text 1); bzlmod lockfile 21 of 28 (the other 7 are `RepoOutputFormatter` and
+`VendorFileFunction`, not ported); `TargetCompleteEvent` 3 of 3; `ExecutionInfoModifier` 3 of 3;
+`PlatformUtils.buildPlatformProto` 2 (the rest of `PlatformUtils` is in blaze_remote);
+`ArtifactFactory` 1 of 1; `OutputFilter` 1 of 1; `Converters` 1 of 1; `RegexUtil` 4;
+`SimpleLogHandler` 4; `ProxyHelper` 2 (the others are JVM proxy properties, not ported). Not
+ported, so nothing to convert: `BuildLanguageInfoItem` (2), starlark_doc_extract (40), workers
+(4). Remote and execution log: 7.4.
+
+### 7.3 Evidence
+
+- `scripts/bytes/run --binary target/debug/blaze` + `scripts/bytes/compare`: 97 of 97 items
+  (77 case lines, 6 output files, 6 stdout files, 8 exit codes); 1 of 93 before. The oracle
+  recording was made again from a fresh output root, which adds the four `RCASE` lines of the
+  repository rule; the old 93 items are byte-identical in both recordings.
+- `scripts/actions-probe/run`: the 78 actions of the non-ASCII probe byte for byte (47,882 bytes),
+  the four `"\377"` probes included.
+- Worker scratch workspaces against the oracle, all byte-identical: lockfile and hidden lockfile,
+  `mod deps`, `mod graph --output=json`, `mod show_extension` (attributes with `é`, `🐷`, FF);
+  a repository rule using `read`, `file`, `execute`, `template`, `patch`, `symlink`,
+  `download_and_extract` on tar, zip and ar members named `é.txt`, and its marker file; a
+  workspace in a directory `wsé` with a non-ASCII `.bazelrc` (`info`, `--announce_rc`,
+  output-base hash); packages with files named `é.txt` and a file named by the byte FF, globs,
+  `.bazelignore`; 20 `--output` forms of query, cquery and aquery; BEP string fields.
+- `scripts/w4/scenarios/non-ascii` (23 steps, oracle transcript recorded): every line that
+  carries non-ASCII text equals the oracle's; the lines that differ are the known classes of the
+  other scenarios (no persistent server, critical path, process counts).
+- brotli and re2, label `blaze-bytes-1`: `compare-scores` against
+  `blaze-ef66f55e904e.referee2.json` PASS, 39 rows, 0 regressed, 13,850 matching.
+  `scripts/w3/query-compare`: brotli 162 of 162, re2 1,091 of 1,091, workerd 46,371 of 46,371.
+- Test gate on the working tree: 6,597 pass, 6 fail, 2,021 ignored; against the baseline with
+  `07-byte-strings-name-map.tsv` (11 renamed or merged tests) no name is absent and 5 are lost,
+  all in `blaze_remote/tests/remote_execution_service_test.rs` (7.4).
+- workerd on the pristine checkout (README with the emoji), binary sha256 `6e8c9eb9dc3f`
+  (working tree just before checkpoint `051c8c7`):
+  - referee protocol, label `blaze-bytes-w1` against `oracle-9.3.2`: query_label_kind 46,371 of
+    46,371, query_jsonproto 46,371 of 46,371, cquery_label_kind 38,892 of 38,892,
+    cquery_jsonproto 4 of 4 (all MATCH; before the migration cquery and aquery failed at the
+    telemetry rule). `mod graph` and the lockfile are FAILED surfaces on both sides by the
+    protocol (both binaries exit 2 on the crate_universe extension); their raw outputs are
+    byte-identical: `mod graph --output=json` 83,453 bytes, `MODULE.bazel.lock` before and
+    after 267,302 bytes.
+  - aquery: under the protocol (fresh output base) Blaze exits 8, "build interrupted", as the
+    oracle does (label `oracle-9.3.2-workerd`); the reference's aquery surface is the declared
+    exception spliced from a built output base. Compared the way that reference was made,
+    `scripts/workerd/aquery-compare 'deps(//src/workerd/server:workerd)' --full --order
+    --make-unresolved-symlinks` on the pristine copy: 13,416 actions on both sides, 13,160
+    identical, 256 differing only in `actionKey` (128 `SourceSymlinkManifest`, 128 `SymlinkTree`:
+    the allow-listed runfiles kind), all nine order items equal. The same numbers as on the
+    ASCII-README copy before.
+  - fetch: `scripts/workerd/compare-repos` without `--ascii-readme`: exit 0 of the fetch, 1,013
+    of 1,017 repositories identical, hidden lockfile 44 of 44. Three of the four are the setup
+    artifacts docs/workerd.md lists; the fourth, the telemetry report, differs from the oracle's
+    old output base only in what depends on the day and on that tool's setup (`id_day` hashes
+    the UTC date; the tool deletes the lockfile the `deps` list is read from). Same day, same
+    workspace path, both binaries (`scripts/bytes/telemetry-compare`): repository tree, marker
+    file and workspace `MODULE.bazel.lock` identical, and `id_day` equals the real SHA-1 of the
+    README head (emoji included) and the date.
+
+### 7.4 Left for the remote lead's files (listed, not edited)
+
+`07-byte-strings-exec-sites.md` is the inventory (blaze_exec, blaze_sky_exec, blaze_buildtool,
+blaze_remote, blaze_skyframe, blaze; classes right / wrong / seam / unsure with Java references).
+Open there: 6 wrong sites and 9 seam wrappers in blaze_remote, the template strategy, the
+symlink digest and the spawn-log wrappers in blaze_exec, and six tests of
+`remote_execution_service_test.rs` that feed Unicode literals where Java's tests call
+`StringEncoding.unicodeToInternal` (they fail since the switch). The seam functions
+(`to_internal`, `internal_string_bytes`, `internal_string_from_bytes`, `internal_length`,
+`strings_are_internal`, `with_strings_are_internal_for_testing`, `Fingerprint::add_internal_string`)
+stay in blaze_util until those callers are gone; no crate of this migration calls them.
+
+### 7.5 Residual known deviations
+
+- Regular expressions: Blaze uses the `regex` crate where Java uses `java.util.regex`. On the
+  Latin-1 chars of internal strings `\w`, `\s`, `\d` and `(?i)` are Unicode-aware in Rust and
+  ASCII-only in Java, and Java's `.` excludes U+0085 (fixed for globs only). Affects `attr`,
+  `filter`, `kind`, aquery filters, `--output_filter`-style options, the remote scrubber. Older
+  than this migration; a faithful fix translates the pattern to a bytes regex.
+- A char above U+00FF in an internal string (possible only from a hand-edited lockfile `facts`
+  value or a Unicode Java literal): `latin1_encode` panics with Java's
+  `IllegalArgumentException` text at `getInternalStringBytes` sites and writes `?` at charset
+  sites, as Java does; the Java `Character` helper ports use Rust's Unicode tables above U+00FF.
+- Lexer: Bazel reports every lexical error of a file, starlark-rust the first.
+- Not ported, so not converted (each fails loudly or is listed): `mod show_repo`
+  (`RepoOutputFormatter`, 6 calls), `VendorFileFunction`, query `xml`/`graph`/`minrank`/`maxrank`,
+  cquery `build`/`files`/`starlark`/`transitions`/`textproto`, aquery
+  `proto`/`streamed_proto`/`textproto`, the three stack branches of `ProtoOutputFormatter`,
+  `BuildLanguageInfoItem`, wasm, the credential helper, `unused_inputs_list`, workers,
+  `RemoteExternalOverlayFileSystem`, `RemoteRepoContentsCacheImpl`, the BEP stdout/stderr chunks
+  (`SynchronizedOutputStream.readAndReset` decodes UTF-8 when it is wired).
+- A hostname that is not UTF-8 resolves to "unknown" in the server log (Java would try to
+  resolve it); `/proc` and cgroup files are read as text.
+- Private helper copies to move to blaze_util when it is next touched: `system_err_println`
+  (blaze_analysis, blaze_rules), `java_is_whitespace` (blaze_bzlmod_model),
+  `unicode_path_as_seen_by_file_system` (blaze_repo_fetch).
+- The vendored interpreter's own lexer tests and golden files still hold the old
+  "unfinished string literal" text; they are not part of the workspace's tests.
+
+## 8. Test plan
 
 - **Unit**: `StringEncodingTest` ported (step 1); each starlark-rust patch gets
   `patch_00NN_*` in `crates/starlark_conformance/tests/patches.rs` with oracle values from
@@ -342,7 +500,7 @@ today.
 - **workerd**: the telemetry repository rule's hash (`id_day`, README with 👷) must match the
   oracle's lockfile/marker output once workerd fetching runs through Blaze.
 
-## 8. Spike
+## 9. Spike
 
 Files (not production code):
 - `scripts/bytes/run` and `scripts/bytes/workspace/`: builds the scratch workspace in
@@ -369,7 +527,7 @@ Files (not production code):
 The cache-dependent tests print `SKIP` and pass when `~/.cache/blaze/work/bytes` is missing (run
 `scripts/bytes/run` first).
 
-## 9. Open points
+## 10. Open points
 
 - The root must rule on A (decision entry above) before any production change.
 - `capitalize`/`title` matched the oracle in the spike only because starlark-rust's char mappings

@@ -1370,8 +1370,11 @@ impl Inode {
     fn get_size(&self) -> i64 {
         match &self.kind {
             InodeKind::Directory(children) => children.len() as i64,
-            // PORT: Java's String.length() counts UTF-16 units; this counts bytes.
-            InodeKind::Link(link_content) => link_content.get_safe_path_string().len() as i64,
+            // `getSafePathString().length()`: chars of the internal string (one per byte).
+            // Java: com/google/devtools/build/lib/vfs/inmemoryfs/InMemoryLinkInfo.java:60 InMemoryLinkInfo.getSize
+            InodeKind::Link(link_content) => {
+                link_content.get_safe_path_string().chars().count() as i64
+            }
             InodeKind::File(metadata) => metadata
                 .as_ref()
                 .expect("NullPointerException: RemoteInMemoryFileInfo without metadata")

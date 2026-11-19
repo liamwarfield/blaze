@@ -2556,6 +2556,29 @@ fn read_symbolic_link_from_remote_filesystem() {
     ));
 }
 
+/// The size of an in-memory symlink is `linkContent.getSafePathString().length()`: the number of
+/// chars of the internal string, i.e. the number of bytes of the target (`é/ü` is 5 bytes, a lone
+/// FF one).
+// Java: com/google/devtools/build/lib/vfs/inmemoryfs/InMemoryLinkInfo.java:60 InMemoryLinkInfo.getSize
+#[test]
+fn remote_symlink_size_counts_internal_chars() {
+    let f = Fixture::new();
+    let action_fs = f.create_action_file_system();
+    for (name, target, size) in [
+        ("sym1", &b"\xc3\xa9/\xc3\xbc"[..], 5),
+        ("sym2", &b"\xf0\x9f\x90\xb7"[..], 4),
+        ("sym3", &b"a\xffb"[..], 3),
+    ] {
+        let link_path = f.get_output_path(name);
+        let target_path = PathFragment::create(&blaze_util::string_encoding::latin1_decode(target));
+        remote_fs(&action_fs)
+            .create_symbolic_link(&link_path, &target_path)
+            .unwrap();
+        let st = action_fs.stat(&link_path, false).unwrap();
+        assert_eq!(st.get_size(), size);
+    }
+}
+
 #[test]
 fn read_symbolic_link_from_input_artifact_data_regular_file() {
     let f = Fixture::new();

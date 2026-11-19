@@ -89,6 +89,7 @@ use blaze_remote::util::async_task_cache::AsyncTaskCacheNoResult;
 use blaze_remote::util::temp_path_generator::TempPathGenerator;
 use blaze_remote::util::tracing_metadata_utils;
 use blaze_repo_fetch::fs_utils;
+use blaze_util::string_encoding::unicode_to_internal;
 use blaze_vfs::{
     DigestHashFunction, FileSystemRef, Path, PathFragment, Root, Symlinks, UnixFileSystem,
 };
@@ -673,16 +674,6 @@ struct Fixture {
     scrubber: Option<Arc<Scrubber>>,
 }
 
-/// `StringEncoding.unicodeToInternal` on the strings seam (the identity until the switch).
-// Java: com/google/devtools/build/lib/util/StringEncoding.java:137 StringEncoding.unicodeToInternal
-fn unicode_to_internal(s: &str) -> String {
-    if blaze_util::string_encoding::strings_are_internal() {
-        blaze_util::string_encoding::unicode_to_internal(s).into_owned()
-    } else {
-        s.to_string()
-    }
-}
-
 impl Fixture {
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionServiceTest.java:232 RemoteExecutionServiceTest.setUp
     fn set_up() -> Fixture {
@@ -1106,7 +1097,8 @@ fn from_cache(r: ActionResult) -> RemoteActionResult {
 
 /// `readContent(path, UTF_8)`.
 fn read_content(path: &Path) -> String {
-    String::from_utf8(fs_utils::read_content(path).unwrap()).unwrap()
+    // `readContent(path, UTF_8)`.
+    blaze_util::string_encoding::java_new_string_utf8(&fs_utils::read_content(path).unwrap())
 }
 
 /// The `IOException` of a call that throws `IOException` / `ExecException`.
@@ -1467,8 +1459,7 @@ fn build_remote_action_golden_test(seed: u64) {
     let mut f = Fixture::set_up();
     let mut inputs: Vec<BlazeArtifact> = Vec::new();
 
-    // PORT: StringEncoding identity (`unicodeToInternal`).
-    let files = [
+    let files: Vec<String> = [
         "root_file1",
         "root_file2",
         "root_file3",
@@ -1483,14 +1474,17 @@ fn build_remote_action_golden_test(seed: u64) {
         "dir/file3",
         // These paths sort differently depending on whether they are sorted as Java Unicode
         // or Bazel internal strings.
-        "path/ﾐ",
-        "path/🔥",
+        &*unicode_to_internal("path/ﾐ"),
+        &*unicode_to_internal("path/🔥"),
         // These paths sort differently depending on whether they are sorted as Strings or as
         // PathFragments.
         "srcs/system/foo.txt",
         "srcs/system-root/bar.txt",
-    ];
-    for file in files {
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    for file in &files {
         let artifact = create_artifact_str(&f.artifact_root, file);
         f.fake_file_cache
             .create_scratch_input(&input(&artifact), &format!("content of {file}"))
@@ -1503,7 +1497,7 @@ fn build_remote_action_golden_test(seed: u64) {
         "dir/subdir/tree_artifact",
     );
     let mut tree_children: Vec<(ActionInputRef, FileArtifactValue)> = Vec::new();
-    for file in files {
+    for file in &files {
         let tree_file_artifact = BlazeArtifact::create_tree_output_str(&tree_artifact_input, file);
         let digest = f
             .fake_file_cache
@@ -2393,105 +2387,92 @@ fn download_outputs_output_directories_with_unicode_filenames_works() {
     service.download_outputs(&action, &result).unwrap();
 
     // assert
-    // PORT: StringEncoding identity (`unicodeToInternal`).
     assert_eq!(
-        read_content(&f.exec_path("outputs/dir/Iñtërnâtiônàlizætiøn")),
+        read_content(&f.exec_path(&unicode_to_internal("outputs/dir/Iñtërnâtiônàlizætiøn"))),
         "hello"
     );
     assert_eq!(
-        f.exec_path("outputs/dir/東京都")
+        f.exec_path(&unicode_to_internal("outputs/dir/東京都"))
             .read_symbolic_link()
             .unwrap(),
-        PathFragment::create("京都市")
+        PathFragment::create(&unicode_to_internal("京都市"))
     );
     assert!(context.is_lock_output_files_called());
 }
 
-/// Review R8 (download half): the Java test above on both sides of the strings seam. Proto
-/// strings are Unicode; the paths Blaze holds are internal strings once the switch is made, so
-/// the names in the Tree and the output paths must go through `unicodeToInternal` (and the
-/// output path handed to the cache through `internalToUnicode`). Fails with the old identity
-/// once strings are internal.
+/// Review R8 (download half): the Java test above with more non-ASCII names. Proto strings are
+/// Unicode; the paths Blaze holds are internal strings, so the names in the Tree and the output
+/// paths must go through `unicodeToInternal` (and the output path handed to the cache through
+/// `internalToUnicode`).
 #[test]
 fn download_outputs_non_ascii_names_are_unicode_on_both_sides_of_the_seam() {
-    for internal in [false, true] {
-        blaze_util::string_encoding::with_strings_are_internal_for_testing(internal, || {
-            // The string Blaze holds for a Unicode name: the internal form once strings are
-            // internal (Java's test calls `unicodeToInternal` for the same reason).
-            let logical = unicode_to_internal;
-            let mut f = Fixture::set_up();
-            let file_digest = f.add_contents_str("hello");
-            let tree = Tree {
-                root: Some(Directory {
-                    files: vec![FileNode {
-                        name: "fü".to_string(),
-                        digest: Some(file_digest.clone()),
-                        ..Default::default()
-                    }],
-                    symlinks: vec![SymlinkNode {
-                        name: "東京都".to_string(),
-                        target: "京都市".to_string(),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }),
-                children: Vec::new(),
-            };
-            let tree_digest = f.add_contents(&tree.to_byte_array());
-            let builder = ActionResult {
-                output_files: vec![OutputFile {
-                    path: "outputs/é".to_string(),
-                    digest: Some(file_digest),
-                    ..Default::default()
-                }],
-                output_directories: vec![OutputDirectory {
-                    path: "outputs/dé".to_string(),
-                    tree_digest: Some(tree_digest),
-                    ..Default::default()
-                }],
-                output_symlinks: vec![OutputSymlink {
-                    path: "outputs/lé".to_string(),
-                    target: "é".to_string(),
-                    ..Default::default()
-                }],
+    // The string Blaze holds for a Unicode name: its internal form (Java's test calls
+    // `unicodeToInternal` for the same reason).
+    let logical = unicode_to_internal;
+    let mut f = Fixture::set_up();
+    let file_digest = f.add_contents_str("hello");
+    let tree = Tree {
+        root: Some(Directory {
+            files: vec![FileNode {
+                name: "fü".to_string(),
+                digest: Some(file_digest.clone()),
                 ..Default::default()
-            };
-            let result = from_cache(builder);
-            let spawn = f.new_spawn_from_result(&result);
-            let context = f.new_spawn_execution_context(&spawn);
-            f.outputs_to_download = OutputsToDownload::All;
-            let service = f.new_remote_execution_service();
-            let action = service.build_remote_action(&*spawn, &context).unwrap();
-            f.create_output_directories(&spawn);
+            }],
+            symlinks: vec![SymlinkNode {
+                name: "東京都".to_string(),
+                target: "京都市".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        children: Vec::new(),
+    };
+    let tree_digest = f.add_contents(&tree.to_byte_array());
+    let builder = ActionResult {
+        output_files: vec![OutputFile {
+            path: "outputs/é".to_string(),
+            digest: Some(file_digest),
+            ..Default::default()
+        }],
+        output_directories: vec![OutputDirectory {
+            path: "outputs/dé".to_string(),
+            tree_digest: Some(tree_digest),
+            ..Default::default()
+        }],
+        output_symlinks: vec![OutputSymlink {
+            path: "outputs/lé".to_string(),
+            target: "é".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let result = from_cache(builder);
+    let spawn = f.new_spawn_from_result(&result);
+    let context = f.new_spawn_execution_context(&spawn);
+    f.outputs_to_download = OutputsToDownload::All;
+    let service = f.new_remote_execution_service();
+    let action = service.build_remote_action(&*spawn, &context).unwrap();
+    f.create_output_directories(&spawn);
 
-            service.download_outputs(&action, &result).unwrap();
+    service.download_outputs(&action, &result).unwrap();
 
-            assert_eq!(
-                read_content(&f.exec_path(&logical("outputs/é"))),
-                "hello",
-                "internal={internal}"
-            );
-            assert_eq!(
-                read_content(&f.exec_path(&logical("outputs/dé/fü"))),
-                "hello",
-                "internal={internal}"
-            );
-            assert_eq!(
-                f.exec_path(&logical("outputs/dé/東京都"))
-                    .read_symbolic_link()
-                    .unwrap(),
-                PathFragment::create(&logical("京都市")),
-                "internal={internal}"
-            );
-            assert_eq!(
-                f.exec_path(&logical("outputs/lé"))
-                    .read_symbolic_link()
-                    .unwrap(),
-                PathFragment::create(&logical("é")),
-                "internal={internal}"
-            );
-        });
-    }
+    assert_eq!(read_content(&f.exec_path(&logical("outputs/é"))), "hello",);
+    assert_eq!(
+        read_content(&f.exec_path(&logical("outputs/dé/fü"))),
+        "hello",
+    );
+    assert_eq!(
+        f.exec_path(&logical("outputs/dé/東京都"))
+            .read_symbolic_link()
+            .unwrap(),
+        PathFragment::create(&logical("京都市")),
+    );
+    assert_eq!(
+        f.exec_path(&logical("outputs/lé"))
+            .read_symbolic_link()
+            .unwrap(),
+        PathFragment::create(&logical("é")),
+    );
 }
 
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionServiceTest.java:1287 RemoteExecutionServiceTest.downloadOutputs_relativeFileSymlink_success
@@ -4852,15 +4833,14 @@ fn build_remote_action_executable_path_without_or_with_unknown_os_constraint() {
 #[test]
 fn build_remote_action_code_point_sorting() {
     let f = Fixture::set_up();
-    // PORT: StringEncoding identity (`unicodeToInternal`).
     let one = "path/ﾐ";
-    let one_f = f.exec_fragment(one);
+    let one_f = f.exec_fragment(&unicode_to_internal(one));
     let two = "path/🔥";
-    let two_f = f.exec_fragment(two);
+    let two_f = f.exec_fragment(&unicode_to_internal(two));
     let three = "sort/system-foo";
-    let three_f = f.exec_fragment(three);
+    let three_f = f.exec_fragment(&unicode_to_internal(three));
     let four = "sort/system/foo";
-    let four_f = f.exec_fragment(four);
+    let four_f = f.exec_fragment(&unicode_to_internal(four));
     let spawn = SpawnBuilder::new(&["dummy"])
         .with_output(input(&create_artifact_with_exec_path(
             &f.artifact_root,
@@ -4878,10 +4858,10 @@ fn build_remote_action_code_point_sorting() {
             &f.artifact_root,
             four_f,
         )))
-        .with_environment(one, "value1")
-        .with_environment(two, "value2")
-        .with_environment(three, "value3")
-        .with_environment(four, "value4")
+        .with_environment(&unicode_to_internal(one), "value1")
+        .with_environment(&unicode_to_internal(two), "value2")
+        .with_environment(&unicode_to_internal(three), "value3")
+        .with_environment(&unicode_to_internal(four), "value4")
         .build();
     let context = f.new_spawn_execution_context(&spawn);
     let service = f.new_remote_execution_service();

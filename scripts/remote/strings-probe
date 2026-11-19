@@ -1,0 +1,467 @@
+#!/usr/bin/env python3
+"""Non-ASCII strings at blaze_exec's boundaries: oracle vs Blaze. See `strings-probe help`."""
+
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CACHE = os.path.expanduser("~/.cache/blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+WORK = os.path.join(CACHE, "work", "remote", "th-strings-probe")
+TEMPLATE = os.path.join(WORK, "src")
+OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-remote", "th-strings-probe")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+
+USAGE = """\
+usage: scripts/remote/strings-probe oracle <tag> [--cache-from <tag>]
+       scripts/remote/strings-probe run <binary> <tag> [--cache-from <tag>]
+       scripts/remote/strings-probe compare <tag-a> <tag-b>
+       scripts/remote/strings-probe help
+
+Non-ASCII strings at blaze_exec's string boundaries (docs/research/07-byte-strings-exec-sites.md).
+The template workspace (<WORK>/src, written on first use) has:
+  //:tmpl     ctx.actions.expand_template on t.tmpl, whose bytes are UTF-8 "é", a lone E9, a lone
+              FF and "🐷", with the substitution value "ü🐷" (LocalTemplateExpansionStrategy:
+              template read as ISO-8859-1, written with getBytes(ISO_8859_1))
+  //:link     declare_symlink + ctx.actions.symlink(target_path = "é/ü")
+              (FileArtifactValue.UnresolvedSymlinkArtifactValue: hashString(target, ISO_8859_1))
+  //:spawned  declare_symlink written by a spawn (`ln -s é/spawned`)
+  //:r        run_shell taking both symlinks as inputs, writing their readlink
+  //:gen      run_shell with input in_é.txt, output out_é.txt, argument "argé🐷" and environment
+              VÉ=välue🐷, PLAIN=ü
+Every target is built with `build //:tmpl //:r //:gen`.
+
+`oracle <tag>` (the oracle binary) and `run <binary> <tag>` run, each in a fresh output user root
+<OUT_ROOT>/<tag>/<step>:
+  json     --execution_log_json_file=<step>/exec.json
+  binary   --execution_log_binary_file=<step>/exec.bin
+  compact  --execution_log_compact_file=<step>/exec.zst
+  dc       --disk_cache=<WORK>/<tag>/dc (fresh); then `dump --action_cache` in the same output
+           base (step `dump`): //:r's entry digest covers the unresolved symlink's digest
+  xc       only with --cache-from <tag2>: --disk_cache=<a copy of <tag2>'s dc>; the `processes:`
+           line shows how many spawns hit the other binary's cache
+Each step directory <WORK>/<tag>/<step> holds stdout, stderr, exit, the log and outputs.txt
+(hex of tmpl.out, out_é.txt, r.txt, and readlink of bazel-bin/link and bazel-bin/spawned).
+Bazel's options allow only one execution log per build, hence the three builds.
+
+`compare <a> <b>` prints, per step: both `processes:` lines, whether outputs.txt is equal, and for
+the three logs whether they are equal after normalisation (timings dropped, entries sorted; the
+compact log through `scripts/execlog-compact compare`), and per format the table of every string
+field holding non-ASCII text: `converted` (StringEncoding.internalToUnicode applied: the proto
+string is the Unicode text) or `raw` (the internal string stored as is: its UTF-8 on the wire is
+double encoded), side by side for a and b.
+
+Every call runs in `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0` with
+HOME and PATH=/usr/bin:/bin only, startup options --output_user_root --nohome_rc --nosystem_rc,
+and --repository_cache, --color=no --curses=no. WORK is ~/.cache/blaze/work/remote/th-strings-probe,
+OUT_ROOT ~/.cache/blaze/oracle-out/ur-remote/th-strings-probe.
+"""
+
+DEFS = """\
+def _tmpl_impl(ctx):
+    out = ctx.actions.declare_file(ctx.attr.name + ".out")
+    ctx.actions.expand_template(
+        template = ctx.file.template,
+        output = out,
+        substitutions = {"%K%": ctx.attr.value},
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+tmpl = rule(
+    implementation = _tmpl_impl,
+    attrs = {"template": attr.label(allow_single_file = True), "value": attr.string()},
+)
+
+def _sym_impl(ctx):
+    out = ctx.actions.declare_symlink(ctx.attr.name)
+    ctx.actions.symlink(output = out, target_path = ctx.attr.target)
+    return [DefaultInfo(files = depset([out]))]
+
+sym = rule(implementation = _sym_impl, attrs = {"target": attr.string()})
+
+def _spawn_sym_impl(ctx):
+    out = ctx.actions.declare_symlink(ctx.attr.name)
+    ctx.actions.run_shell(
+        outputs = [out],
+        command = "ln -s '%s' %s" % (ctx.attr.target, out.path),
+        mnemonic = "MakeLink",
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+spawn_sym = rule(implementation = _spawn_sym_impl, attrs = {"target": attr.string()})
+
+def _readlinks_impl(ctx):
+    out = ctx.actions.declare_file(ctx.attr.name + ".txt")
+    ctx.actions.run_shell(
+        inputs = ctx.files.links,
+        outputs = [out],
+        command = "for f in %s; do echo \\"$f -> $(readlink $f)\\"; done > %s" % (
+            " ".join([f.path for f in ctx.files.links]),
+            out.path,
+        ),
+        mnemonic = "ReadLinks",
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+readlinks = rule(implementation = _readlinks_impl, attrs = {"links": attr.label_list()})
+
+def _gen_impl(ctx):
+    out = ctx.actions.declare_file("out_é.txt")
+    ctx.actions.run_shell(
+        inputs = [ctx.file.src],
+        outputs = [out],
+        arguments = [ctx.file.src.path, out.path, "argé🐷"],
+        env = {"VÉ": "välue🐷", "PLAIN": "ü"},
+        command = 'cat "$1" > "$2"; printf "%s\\\\n" "$3" "$PLAIN" >> "$2"; env | grep "^V" | sort >> "$2"',
+        mnemonic = "Gen",
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+gen = rule(implementation = _gen_impl, attrs = {"src": attr.label(allow_single_file = True)})
+"""
+
+BUILD = """\
+load(":defs.bzl", "gen", "readlinks", "spawn_sym", "sym", "tmpl")
+
+tmpl(name = "tmpl", template = "t.tmpl", value = "ü🐷")
+
+sym(name = "link", target = "é/ü")
+
+spawn_sym(name = "spawned", target = "é/spawned")
+
+readlinks(name = "r", links = [":link", ":spawned"])
+
+gen(name = "gen", src = "in_é.txt")
+"""
+
+TEMPLATE_BYTES = b"utf8 \xc3\xa9 lone-e9 \xe9 lone-ff \xff pig \xf0\x9f\x90\xb7 sub=%K% end\n"
+TARGETS = ["//:tmpl", "//:r", "//:gen"]
+LOGS = {"json": ("--execution_log_json_file", "exec.json"),
+        "binary": ("--execution_log_binary_file", "exec.bin"),
+        "compact": ("--execution_log_compact_file", "exec.zst")}
+STEPS = ["json", "binary", "compact", "dc", "xc"]
+
+
+def init():
+    if os.path.isdir(TEMPLATE):
+        return
+    os.makedirs(TEMPLATE)
+    files = {b"MODULE.bazel": b"", b"defs.bzl": DEFS.encode("utf-8"),
+             b"BUILD": BUILD.encode("utf-8"), b"t.tmpl": TEMPLATE_BYTES,
+             "in_é.txt".encode("utf-8"): "input é\n".encode("utf-8")}
+    for name, data in files.items():
+        with open(os.path.join(os.fsencode(TEMPLATE), name), "wb") as f:
+            f.write(data)
+
+
+def rm(p):
+    if os.path.lexists(p):
+        subprocess.run(["chmod", "-R", "u+w", p])
+        shutil.rmtree(p)
+
+
+def run_binary(binary, our, ws, step, args):
+    os.makedirs(step, exist_ok=True)
+    full = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc", args[0],
+            "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args[1:]
+    unit = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
+            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "env", "-i",
+            "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin"]
+    with open(os.path.join(step, "stdout"), "wb") as so, \
+            open(os.path.join(step, "stderr"), "wb") as se:
+        code = subprocess.run(unit + full, cwd=ws, stdout=so, stderr=se).returncode
+    with open(os.path.join(step, "exit"), "w") as f:
+        f.write("%d\n" % code)
+    record_outputs(ws, step)
+    return code
+
+
+def record_outputs(ws, step):
+    bin_ = os.path.join(os.fsencode(ws), b"bazel-bin")
+    lines = []
+    for rel in (b"tmpl.out", "out_é.txt".encode(), b"r.txt"):
+        p = os.path.join(bin_, rel)
+        if os.path.isfile(p):
+            data = open(p, "rb").read()
+            data = re.sub(rb"bazel-out/[^/ ]+/bin/", b"<bin>/", data)
+            lines.append("%s: %s" % (rel.decode("utf-8", "replace"), data.hex(" ")))
+        else:
+            lines.append("%s: missing" % rel.decode("utf-8", "replace"))
+    for rel in (b"link", b"spawned"):
+        p = os.path.join(bin_, rel)
+        if os.path.islink(p):
+            lines.append("readlink %s: %s" % (rel.decode(), os.readlink(p).hex(" ")))
+        else:
+            lines.append("readlink %s: %s" % (rel.decode(), "exists" if os.path.lexists(p)
+                                               else "missing"))
+    with open(os.path.join(step, "outputs.txt"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def processes(step):
+    err = open(os.path.join(step, "stderr"), errors="replace").read().splitlines()
+    return [l for l in err if "processes:" in l or re.search(r"\d+ process:", l)] + \
+        [l for l in err if l.startswith("ERROR:")][:3]
+
+
+def cmd_run(binary, tag, cache_from):
+    init()
+    binary = ORACLE if binary == "oracle" else os.path.abspath(os.path.expanduser(binary))
+    run_dir = os.path.join(WORK, tag)
+    rm(run_dir)
+    rm(os.path.join(OUT_ROOT, tag))
+    for s in STEPS:
+        if s == "xc" and not cache_from:
+            continue
+        ws = os.path.join(run_dir, "ws-" + s)
+        shutil.copytree(TEMPLATE, ws, symlinks=True)
+        step = os.path.join(run_dir, s)
+        os.makedirs(step)
+        our = os.path.join(OUT_ROOT, tag, s)
+        args = ["build"] + TARGETS
+        if s in LOGS:
+            flag, name = LOGS[s]
+            args.append("%s=%s" % (flag, os.path.join(step, name)))
+        elif s == "dc":
+            args.append("--disk_cache=" + os.path.join(run_dir, "dc"))
+        else:
+            src = os.path.join(WORK, cache_from, "dc")
+            if not os.path.isdir(src):
+                sys.exit("strings-probe: no disk cache at %s (run %s first)" % (src, cache_from))
+            dc = os.path.join(run_dir, "dc-from-" + cache_from)
+            shutil.copytree(src, dc, symlinks=True)
+            args.append("--disk_cache=" + dc)
+        code = run_binary(binary, our, ws, step, args)
+        print("%-8s exit %d %s" % (s, code, " | ".join(processes(step))))
+        if s == "dc":
+            # The action cache holds the unresolved symlink's digest (hashString(target,
+            # ISO_8859_1)) as part of //:r's entry digest.
+            dump = os.path.join(run_dir, "dump")
+            code = run_binary(binary, our, ws, dump, ["dump", "--action_cache"])
+            print("%-8s exit %d" % ("dump", code))
+    return 0
+
+
+# ---- log decoding ----
+
+def execlog_module():
+    path = os.path.join(os.path.dirname(HERE), "execlog-compact")
+    loader = importlib.machinery.SourceFileLoader("execlog_compact", path)
+    spec = importlib.util.spec_from_loader("execlog_compact", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def spawn_exec_class(mod):
+    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+    mod.entry_class()  # compiles spawn.desc on first use
+    fds = descriptor_pb2.FileDescriptorSet()
+    with open(os.path.join(mod.CACHE, "spawn.desc"), "rb") as f:
+        fds.ParseFromString(f.read())
+    pool = descriptor_pool.DescriptorPool()
+    for fd in fds.file:
+        pool.Add(fd)
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName("tools.protos.SpawnExec"))
+
+
+def read_json_log(path):
+    text = open(path, encoding="utf-8").read()
+    dec = json.JSONDecoder()
+    i, out = 0, []
+    while True:
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text):
+            break
+        obj, i = dec.raw_decode(text, i)
+        out.append(obj)
+    return out
+
+
+def read_binary_log(path, mod):
+    from google.protobuf.json_format import MessageToDict
+    cls = spawn_exec_class(mod)
+    data = open(path, "rb").read()
+    pos, out = 0, []
+    while pos < len(data):
+        size = shift = 0
+        while True:
+            b = data[pos]
+            pos += 1
+            size |= (b & 0x7F) << shift
+            shift += 7
+            if not b & 0x80:
+                break
+        msg = cls()
+        msg.ParseFromString(data[pos:pos + size])
+        pos += size
+        out.append(MessageToDict(msg, preserving_proto_field_name=True))
+    return out
+
+
+def normalise(entries):
+    def strip(v):
+        if isinstance(v, dict):
+            return {k: strip(x) for k, x in v.items()
+                    if k not in ("walltime", "metrics", "startTime", "start_time")}
+        if isinstance(v, list):
+            return [strip(x) for x in v]
+        return v
+    return sorted(json.dumps(strip(e), sort_keys=True, ensure_ascii=False) for e in entries)
+
+
+def classify(s):
+    """`converted` (Unicode text) or `raw` (an internal string: one char per UTF-8 byte)."""
+    try:
+        s.encode("latin-1").decode("utf-8")
+        return "raw"
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return "converted"
+
+
+def string_fields(entries, compact):
+    """{field path: {classification: example}} for every non-ASCII string leaf."""
+    table = {}
+
+    def walk(v, path):
+        if isinstance(v, dict):
+            for k, x in v.items():
+                walk(x, path + "." + k if path else k)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x, path + "[]")
+        elif isinstance(v, str) and not v.isascii():
+            table.setdefault(path, {}).setdefault(classify(v), v)
+
+    for e in entries:
+        if compact:
+            e = {k: x for k, x in e.items() if k != "id"}
+        walk(e, "")
+    return table
+
+
+def load_log(tag, fmt, mod):
+    step = os.path.join(WORK, tag, fmt)
+    name = LOGS[fmt][1]
+    path = os.path.join(step, name)
+    if not os.path.isfile(path):
+        return None, "missing"
+    try:
+        if fmt == "json":
+            return read_json_log(path), None
+        if fmt == "binary":
+            return read_binary_log(path, mod), None
+        return mod.entries(path), None
+    except Exception as e:  # report a log that does not decode instead of stopping
+        return None, "does not decode: %s" % e
+
+
+def cmd_compare(a, b):
+    mod = execlog_module()
+    same = True
+    for s in STEPS:
+        sa, sb = os.path.join(WORK, a, s), os.path.join(WORK, b, s)
+        if not (os.path.isdir(sa) and os.path.isdir(sb)):
+            continue
+        print("== %s" % s)
+        print("  %-10s %s" % (a, " | ".join(processes(sa))))
+        print("  %-10s %s" % (b, " | ".join(processes(sb))))
+        oa = open(os.path.join(sa, "outputs.txt")).read()
+        ob = open(os.path.join(sb, "outputs.txt")).read()
+        if oa == ob:
+            print("  outputs: same")
+            for line in oa.splitlines():
+                print("    " + line)
+        else:
+            same = False
+            print("  outputs: DIFFERENT")
+            for la, lb in zip(oa.splitlines(), ob.splitlines()):
+                print("    %s %s" % ("  " if la == lb else "!=", la))
+                if la != lb:
+                    print("       %s" % lb)
+        if s == "dc":
+            da, db = (os.path.join(WORK, t, "dump") for t in (a, b))
+            if os.path.isdir(da) and os.path.isdir(db):
+                ca, cb = (open(os.path.join(d, "exit")).read().strip() for d in (da, db))
+                xa, xb = ([l for l in open(os.path.join(d, "stdout"), "rb").read().splitlines()
+                           if b"timestamp = " not in l] for d in (da, db))
+                print("  dump --action_cache (timestamps dropped): exit %s %s, %s %s: %s" % (
+                    a, ca, b, cb, "same" if xa == xb and ca == cb else "DIFFERENT"))
+                if xa != xb or ca != cb:
+                    same = False
+                    if cb != "0" or ca != "0":
+                        for t, d, c in ((a, da, ca), (b, db, cb)):
+                            if c != "0":
+                                err = open(os.path.join(d, "stderr"), errors="replace").read()
+                                print("    %s stderr: %s" % (t, " / ".join(
+                                    l for l in err.splitlines() if "panicked" in l or
+                                    "not ported" in l or l.startswith("ERROR"))[:300]))
+        if s not in LOGS:
+            continue
+        ea, erra = load_log(a, s, mod)
+        eb, errb = load_log(b, s, mod)
+        if erra or errb:
+            same = False
+            print("  log: %s %s, %s %s" % (a, erra or "ok", b, errb or "ok"))
+            continue
+        if s == "compact":
+            r = subprocess.run([os.path.join(os.path.dirname(HERE), "execlog-compact"), "compare",
+                                os.path.join(sa, LOGS[s][1]), os.path.join(sb, LOGS[s][1])],
+                               capture_output=True, text=True)
+            print("  log: execlog-compact compare exit %d" % r.returncode)
+            for line in r.stdout.splitlines()[:40]:
+                print("    " + line)
+            if r.returncode:
+                same = False
+        else:
+            na, nb = normalise(ea), normalise(eb)
+            if na == nb:
+                print("  log: equal after normalisation (%d entries)" % len(na))
+            else:
+                same = False
+                print("  log: DIFFERENT after normalisation")
+                for x in sorted(set(na) - set(nb))[:5]:
+                    print("    only %s: %s" % (a, x[:600]))
+                for x in sorted(set(nb) - set(na))[:5]:
+                    print("    only %s: %s" % (b, x[:600]))
+        ta, tb = string_fields(ea, s == "compact"), string_fields(eb, s == "compact")
+        print("  non-ASCII string fields (%s | %s):" % (a, b))
+        for path in sorted(set(ta) | set(tb)):
+            ca = ",".join(sorted(ta.get(path, {}))) or "-"
+            cb = ",".join(sorted(tb.get(path, {}))) or "-"
+            ex = next(iter((ta.get(path) or tb.get(path)).values()))
+            mark = "  " if ca == cb else "!="
+            if ca != cb:
+                same = False
+            print("   %s %-55s %-17s %-17s e.g. %r" % (mark, path, ca, cb, ex[:40]))
+    return 0 if same else 1
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    cache_from = None
+    if len(args) >= 2 and args[-2] == "--cache-from":
+        cache_from = args[-1]
+        args = args[:-2]
+    if args[0] == "oracle" and len(args) == 2:
+        return cmd_run("oracle", args[1], cache_from)
+    if args[0] == "run" and len(args) == 3:
+        return cmd_run(args[1], args[2], cache_from)
+    if args[0] == "compare" and len(args) == 3 and not cache_from:
+        return cmd_compare(args[1], args[2])
+    print(USAGE, end="", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

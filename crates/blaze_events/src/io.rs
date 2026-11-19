@@ -411,6 +411,25 @@ mod tests {
         latin1(&output.to_byte_array())
     }
 
+    /// `OutErr.printOut` / `printErr` write through a `PrintWriter` with the server's default
+    /// charset, ISO-8859-1: an internal string comes out as its bytes (`é` = C3 A9, U+00FF = FF)
+    /// and a char above U+00FF as `?`. Oracle: the `RAWPRINT` line of scripts/bytes.
+    // Java: com/google/devtools/build/lib/util/io/OutErr.java:123 OutErr.printOut
+    #[test]
+    fn print_out_and_err_encode_latin1() {
+        let recording = RecordingOutErr::new();
+        recording
+            .out_err()
+            .print_out("\u{c3}\u{a9}\u{f0}\u{9f}\u{90}\u{b7}|\u{ff}|\u{20ac}");
+        recording.out_err().print_err_ln("\u{c3}\u{a9}");
+        assert_eq!(
+            recording.get_output_stream().to_byte_array(),
+            b"\xc3\xa9\xf0\x9f\x90\xb7|\xff|?"
+        );
+        assert_eq!(recording.get_error_stream().to_byte_array(), b"\xc3\xa9\n");
+        assert_eq!(recording.err_as_latin1(), "\u{c3}\u{a9}\n");
+    }
+
     // Java: src/test/java/com/google/devtools/build/lib/util/AnsiStrippingOutputStreamTest.java AnsiStrippingOutputStreamTest.doesNotFailHorribly
     #[test]
     fn does_not_fail_horribly() {

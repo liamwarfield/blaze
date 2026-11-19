@@ -3,6 +3,7 @@
 //! Bazel's remote worker cannot answer GetCapabilities with NOT_FOUND).
 //!
 //! usage: blaze-remote-fake-caps --port N --code CODE [--message TEXT] [--exit-after-capabilities]
+//!        [--print-header NAME]
 //!
 //! CODE is a gRPC status code name (`NOT_FOUND`, `PERMISSION_DENIED`, ...); with `OK` the server
 //! answers the capabilities of a cache (SHA256, action cache updates) and, with
@@ -29,13 +30,15 @@ use tonic::transport::server::TcpIncoming;
 use tonic::{Request, Response, Status};
 use tower::Service;
 
-const USAGE: &str = "usage: blaze-remote-fake-caps --port N --code CODE [--message TEXT] [--exit-after-capabilities]\n\
+const USAGE: &str = "usage: blaze-remote-fake-caps --port N --code CODE [--message TEXT] [--exit-after-capabilities] [--print-header NAME]\n\
 \n\
 Answers Capabilities.GetCapabilities with the status CODE (a gRPC code name such as NOT_FOUND)\n\
 and TEXT as its description, and every other method with UNIMPLEMENTED. With CODE OK it\n\
 answers the capabilities of a cache (SHA256, action cache updates enabled) instead, and with\n\
 --exit-after-capabilities it exits 0.5 s after that first answer. Listens on 127.0.0.1:N and\n\
-[::1]:N until killed.";
+[::1]:N until killed. With --print-header NAME every request's header NAME is printed to stderr\n\
+as `header NAME <bytes>` (non-printable and non-ASCII bytes as \\xHH), or `header NAME -` when\n\
+absent.";
 
 /// The Capabilities service: fails with the configured status.
 struct FailingCapabilities {
@@ -82,6 +85,7 @@ impl Capabilities for FailingCapabilities {
 #[derive(Clone)]
 struct Router {
     capabilities: CapabilitiesServer<FailingCapabilities>,
+    print_header: Option<String>,
 }
 
 impl Service<http::Request<Body>> for Router {
@@ -94,6 +98,18 @@ impl Service<http::Request<Body>> for Router {
     }
 
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+        if let Some(name) = &self.print_header {
+            let value = match request.headers().get(name.as_str()) {
+                Some(v) => v
+                    .as_bytes()
+                    .iter()
+                    .flat_map(|&b| std::ascii::escape_default(b))
+                    .map(char::from)
+                    .collect(),
+                None => "-".to_string(),
+            };
+            eprintln!("header {name} {value}");
+        }
         let path = request.uri().path().to_string();
         let prefix = format!(
             "/{}/",
@@ -151,6 +167,7 @@ fn main() -> ExitCode {
     let mut code: Option<tonic::Code> = None;
     let mut message = String::new();
     let mut exit_after_capabilities = false;
+    let mut print_header: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--exit-after-capabilities" {
@@ -169,6 +186,7 @@ fn main() -> ExitCode {
                 }
             },
             ("--message", Some(v)) => message = v,
+            ("--print-header", Some(v)) => print_header = Some(v.to_ascii_lowercase()),
             (other, _) => {
                 eprintln!("bad argument: {other}\n{USAGE}");
                 return ExitCode::from(2);
@@ -186,6 +204,7 @@ fn main() -> ExitCode {
             message,
             exit_after_capabilities,
         }),
+        print_header,
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

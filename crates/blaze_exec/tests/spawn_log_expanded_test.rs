@@ -200,6 +200,11 @@ fn test_missing_output() {
 }
 
 #[test]
+fn test_non_ascii_strings() {
+    base::test_non_ascii_strings(T, str::to_string);
+}
+
+#[test]
 fn test_environment() {
     base::test_environment(T);
 }

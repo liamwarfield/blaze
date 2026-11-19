@@ -44,15 +44,26 @@ impl std::error::Error for PatternSyntaxException {}
 /// `java.util.regex.Pattern`, as far as the scrubber uses it (`matcher(s).matches()` and
 /// `matcher(s).find()` with `start()` / `end()`).
 ///
-/// PORT: the patterns are compiled by the `regex` crate, whose dialect differs from
-/// `java.util.regex`:
-/// - no backreferences, lookahead / lookbehind, possessive quantifiers, atomic groups or
-///   `\Q...\E` quoting (such a pattern fails to compile and is a `PatternSyntaxException`);
-/// - `.` excludes only `\n` (Java also excludes `\r`, `\u0085`, ` `, ` `) and `$`
-///   matches only at the very end (Java also before a final line terminator);
-/// - `\d`, `\w`, `\s`, `\b` are Unicode-aware (Java: ASCII unless `(?U)`);
-/// - Java matches the UTF-16 code units of Bazel's "internal" strings (Latin-1 chars holding
-///   UTF-8 bytes); here the pattern runs over the Unicode scalar values of the UTF-8 string.
+/// The pattern is a Unicode string (a proto field); the input is an internal string (an exec
+/// path or an argument: one Latin-1 char per byte). Java's `Pattern` runs over the UTF-16 code
+/// units of the input, i.e. over its chars, as the `regex` crate does on a `&str`, so a pattern
+/// char `é` (U+00E9) does not match the internal `é` (U+00C3 U+00A9), in Java as here.
+///
+/// The pattern is translated by [`translate_java_regex`] so that the constructs whose Java
+/// default (no flags given to `Pattern.compile`) is ASCII-only, and which the `regex` crate makes
+/// Unicode-aware, keep Java's meaning on the Latin-1 chars of an internal string:
+/// `\w \W \d \D \s \S \b \B \h \H \v \V`, `.` (Java excludes `\r`, U+0085, U+2028,
+/// U+2029 besides `\n`, unless `(?s)`), and `(?i)` (Java folds ASCII letters only, unless
+/// `(?u)`).
+///
+/// PORT: what remains of the `regex` crate's dialect:
+/// - no backreferences, lookahead / lookbehind, possessive quantifiers or atomic groups (such a
+///   pattern fails to compile and is a `PatternSyntaxException`);
+/// - `$` matches only at the very end (Java also before a final line terminator), and with
+///   `(?m)` `^`/`$` see only `\n` as a line terminator;
+/// - `\p{..}` classes are passed through: the POSIX names (`\p{Alpha}`, ...) are ASCII-only in
+///   Java and Unicode in the crate, and `(?i)` does not fold them;
+/// - the flags `(?x)`, `(?u)`, `(?U)`, `(?d)`, `(?c)` are not ported (`unported!`).
 ///
 /// Both engines prefer the leftmost match and, among alternatives, the first one that matches
 /// (Perl semantics), so `find()` returns the same span for patterns in the common subset.
@@ -73,8 +84,9 @@ impl Pattern {
             pattern: regex.to_string(),
             message: e.to_string(),
         };
-        let find = Regex::new(regex).map_err(syntax_error)?;
-        let matches = Regex::new(&format!(r"\A(?:{regex})\z")).map_err(syntax_error)?;
+        let translated = translate_java_regex(regex);
+        let find = Regex::new(&translated).map_err(syntax_error)?;
+        let matches = Regex::new(&format!(r"\A(?:{translated})\z")).map_err(syntax_error)?;
         Ok(Arc::new(Pattern {
             pattern: regex.to_string(),
             find,
@@ -97,6 +109,400 @@ impl fmt::Debug for Pattern {
     /// `Pattern.toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.pattern)
+    }
+}
+
+/// Java's `\w` (`[a-zA-Z_0-9]`), as the inside of a `regex` class.
+const JAVA_WORD: &str = r"0-9A-Za-z_";
+/// Java's `\d` (`[0-9]`).
+const JAVA_DIGIT: &str = r"0-9";
+/// Java's `\s` (`[ \t\n\x0B\f\r]`).
+const JAVA_SPACE: &str = r"\x20\t\n\x0B\x0C\r";
+/// Java's `\h` (`[ \t\xA0\u1680\u180e\u2000-\u200a\u202f\u205f\u3000]`).
+const JAVA_HORIZONTAL: &str =
+    r"\x20\t\xA0\x{1680}\x{180E}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}";
+/// Java's `\v` (`[\n\x0B\f\r\x85\u2028\u2029]`).
+const JAVA_VERTICAL: &str = r"\n\x0B\x0C\r\x{85}\x{2028}\x{2029}";
+/// What Java's `.` does not match without `DOTALL`: the line terminators of
+/// `Pattern.LineEnding` (`\n`, `\r`, U+0085, U+2028, U+2029).
+const JAVA_DOT_EXCLUDES: &str = r"\n\r\x{85}\x{2028}\x{2029}";
+
+/// The flags of `java.util.regex.Pattern` that the translation tracks itself.
+#[derive(Clone, Copy, Default)]
+struct JavaRegexFlags {
+    /// `CASE_INSENSITIVE` (`(?i)`): ASCII letters only (no `UNICODE_CASE`).
+    case_insensitive: bool,
+    /// `DOTALL` (`(?s)`).
+    dotall: bool,
+}
+
+/// Translates a `java.util.regex.Pattern` (compiled without flags) into the `regex` crate's
+/// syntax, so that the constructs listed on [`Pattern`] keep Java's ASCII meaning on internal
+/// strings.
+///
+/// The `regex` crate cannot run in its ASCII mode (`(?-u)`) on a `&str` (`.` and negated classes
+/// could then match part of a UTF-8 sequence), and `regex::bytes` would see the UTF-8 bytes of
+/// the Latin-1 chars instead of the chars Java sees. So the translation stays in Unicode mode and
+/// spells out Java's classes, never emits `(?i)` or `(?s)` (it folds ASCII letters and expands
+/// `.` itself), and uses the crate's ASCII word boundary `(?-u:\b)`.
+// Java: java/util/regex/Pattern.java (JDK 25, the JDK embedded in Bazel 9.3.2)
+fn translate_java_regex(pattern: &str) -> String {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::with_capacity(pattern.len() * 2);
+    // One entry per open group; the last is the scope of the flags.
+    let mut scopes: Vec<JavaRegexFlags> = vec![JavaRegexFlags::default()];
+    let mut i = 0;
+    while i < chars.len() {
+        let flags = *scopes.last().expect("scope");
+        let c = chars[i];
+        match c {
+            '\\' if i + 1 < chars.len() => {
+                let e = chars[i + 1];
+                i += 2;
+                if let Some((set, negated)) = java_class_escape(e) {
+                    out.push_str(if negated { "[^" } else { "[" });
+                    out.push_str(set);
+                    out.push(']');
+                    continue;
+                }
+                match e {
+                    'b' => out.push_str(r"(?-u:\b)"),
+                    'B' => out.push_str(r"(?-u:\B)"),
+                    'Q' => {
+                        // `\Q...\E`: every char up to `\E` (or the end) is a literal.
+                        while i < chars.len() {
+                            if chars[i] == '\\' && chars.get(i + 1) == Some(&'E') {
+                                i += 2;
+                                break;
+                            }
+                            push_literal(&mut out, chars[i], flags.case_insensitive);
+                            i += 1;
+                        }
+                    }
+                    'p' | 'P' | 'N' | 'k' => {
+                        // A name in braces or angle brackets, copied as is (never folded).
+                        out.push('\\');
+                        out.push(e);
+                        i = copy_bracketed(&chars, i, &mut out);
+                    }
+                    'x' | 'u' => match parse_numeric_escape(&chars, i, e) {
+                        Some((ch, next)) => {
+                            push_literal(&mut out, ch, flags.case_insensitive);
+                            i = next;
+                        }
+                        None => {
+                            out.push('\\');
+                            out.push(e);
+                        }
+                    },
+                    _ => {
+                        out.push('\\');
+                        out.push(e);
+                    }
+                }
+            }
+            '.' => {
+                if flags.dotall {
+                    out.push_str("(?s:.)");
+                } else {
+                    out.push_str("[^");
+                    out.push_str(JAVA_DOT_EXCLUDES);
+                    out.push(']');
+                }
+                i += 1;
+            }
+            '[' => {
+                i = translate_class(&chars, i + 1, flags.case_insensitive, &mut out);
+            }
+            '(' => {
+                i += 1;
+                if chars.get(i) == Some(&'?') {
+                    // `(?flags)` or `(?flags:`.
+                    let mut j = i + 1;
+                    while j < chars.len() && (chars[j].is_ascii_alphabetic() || chars[j] == '-') {
+                        j += 1;
+                    }
+                    if matches!(chars.get(j), Some(')') | Some(':')) {
+                        let mut on = true;
+                        let mut new_flags = flags;
+                        let mut passed = String::new();
+                        for &flag in &chars[i + 1..j] {
+                            match flag {
+                                '-' => {
+                                    on = false;
+                                    passed.push('-');
+                                }
+                                'i' => new_flags.case_insensitive = on,
+                                's' => new_flags.dotall = on,
+                                'm' => passed.push('m'),
+                                other => blaze_util::unported!(format!(
+                                    "java.util.regex.Pattern flag ({other}) in scrubbing pattern \
+                                     '{pattern}'"
+                                )),
+                            }
+                        }
+                        let passed = passed.trim_end_matches('-');
+                        if chars[j] == ')' {
+                            // Sets the flags until the end of the enclosing group.
+                            *scopes.last_mut().expect("scope") = new_flags;
+                            if !passed.is_empty() {
+                                out.push_str("(?");
+                                out.push_str(passed);
+                                out.push(')');
+                            }
+                            i = j + 1;
+                            continue;
+                        }
+                        out.push_str("(?");
+                        out.push_str(passed);
+                        out.push(':');
+                        scopes.push(new_flags);
+                        i = j + 1;
+                        continue;
+                    }
+                    // Another `(?` construct: a named group's name is copied as is.
+                    out.push_str("(?");
+                    i += 1;
+                    if chars.get(i) == Some(&'P') {
+                        out.push('P');
+                        i += 1;
+                    }
+                    if chars.get(i) == Some(&'<')
+                        && chars.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic())
+                    {
+                        while i < chars.len() {
+                            out.push(chars[i]);
+                            i += 1;
+                            if chars[i - 1] == '>' {
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    out.push('(');
+                }
+                scopes.push(flags);
+            }
+            ')' => {
+                if scopes.len() > 1 {
+                    scopes.pop();
+                }
+                out.push(')');
+                i += 1;
+            }
+            '{' => {
+                // A quantifier, copied as is.
+                i = copy_bracketed(&chars, i, &mut out);
+            }
+            _ => {
+                if flags.case_insensitive && c.is_ascii_alphabetic() {
+                    push_literal(&mut out, c, true);
+                } else {
+                    out.push(c);
+                }
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The predefined classes of `Pattern` (`\w` and the like): the inside of the `regex` class with
+/// Java's members, and whether the escape is the negation.
+fn java_class_escape(e: char) -> Option<(&'static str, bool)> {
+    Some(match e {
+        'w' => (JAVA_WORD, false),
+        'W' => (JAVA_WORD, true),
+        'd' => (JAVA_DIGIT, false),
+        'D' => (JAVA_DIGIT, true),
+        's' => (JAVA_SPACE, false),
+        'S' => (JAVA_SPACE, true),
+        'h' => (JAVA_HORIZONTAL, false),
+        'H' => (JAVA_HORIZONTAL, true),
+        'v' => (JAVA_VERTICAL, false),
+        'V' => (JAVA_VERTICAL, true),
+        _ => return None,
+    })
+}
+
+/// Copies `{...}` or `<...>` starting at `chars[i]` (if it opens one) and returns the index after
+/// it.
+fn copy_bracketed(chars: &[char], mut i: usize, out: &mut String) -> usize {
+    let close = match chars.get(i) {
+        Some('{') => '}',
+        Some('<') => '>',
+        _ => return i,
+    };
+    while i < chars.len() {
+        out.push(chars[i]);
+        i += 1;
+        if chars[i - 1] == close {
+            break;
+        }
+    }
+    i
+}
+
+/// `\xhh`, `\x{h...h}` or `\uhhhh` after the escape letter at `chars[i - 1]`: the char and the
+/// index after the escape.
+fn parse_numeric_escape(chars: &[char], i: usize, e: char) -> Option<(char, usize)> {
+    let hex = |from: usize, to: usize| -> Option<u32> {
+        let digits: String = chars.get(from..to)?.iter().collect();
+        if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        u32::from_str_radix(&digits, 16).ok()
+    };
+    let (value, next) = match e {
+        'x' if chars.get(i) == Some(&'{') => {
+            let close = i + chars[i..].iter().position(|&c| c == '}')?;
+            (hex(i + 1, close)?, close + 1)
+        }
+        'x' => (hex(i, i + 2)?, i + 2),
+        'u' => (hex(i, i + 4)?, i + 4),
+        _ => return None,
+    };
+    Some((char::from_u32(value)?, next))
+}
+
+/// A literal char, escaped for the `regex` crate; with `CASE_INSENSITIVE` an ASCII letter also
+/// matches its other case (`ASCII.toLower`/`toUpper`), and no other char is folded.
+fn push_literal(out: &mut String, c: char, case_insensitive: bool) {
+    if case_insensitive && c.is_ascii_alphabetic() {
+        out.push('[');
+        out.push(c.to_ascii_lowercase());
+        out.push(c.to_ascii_uppercase());
+        out.push(']');
+    } else {
+        out.push_str(&format!(r"\x{{{:X}}}", c as u32));
+    }
+}
+
+/// Translates a character class whose `[` is at `chars[i - 1]`; returns the index after its `]`.
+///
+/// With `CASE_INSENSITIVE` each single char and range also matches the other case of the ASCII
+/// letters in it, as Java folds each member (`Pattern.range`/`single` with `ASCII.toLower` /
+/// `toUpper`); negation and intersection apply to the folded members, as in Java.
+fn translate_class(
+    chars: &[char],
+    mut i: usize,
+    case_insensitive: bool,
+    out: &mut String,
+) -> usize {
+    out.push('[');
+    if chars.get(i) == Some(&'^') {
+        out.push('^');
+        i += 1;
+    }
+    let mut first = true;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == ']' && !first {
+            out.push(']');
+            return i + 1;
+        }
+        first = false;
+        if c == '[' {
+            i = translate_class(chars, i + 1, case_insensitive, out);
+            continue;
+        }
+        if c == '&' && chars.get(i + 1) == Some(&'&') {
+            out.push_str("&&");
+            i += 2;
+            continue;
+        }
+        // A single char, possibly the start of a range.
+        let (lo, next) = match class_atom(chars, i, out) {
+            Some(atom) => atom,
+            None => {
+                // A predefined class or a property, already written.
+                i = class_atom_end(chars, i);
+                continue;
+            }
+        };
+        i = next;
+        let mut hi = lo;
+        if chars.get(i) == Some(&'-') && chars.get(i + 1).is_some_and(|&c| c != ']') {
+            let mut scratch = String::new();
+            if let Some((end, after)) = class_atom(chars, i + 1, &mut scratch) {
+                hi = end;
+                i = after;
+            }
+        }
+        out.push_str(&format!(r"\x{{{:X}}}", lo as u32));
+        if hi != lo {
+            out.push_str(&format!(r"-\x{{{:X}}}", hi as u32));
+        }
+        if case_insensitive {
+            for letter in ('A'..='Z').chain('a'..='z') {
+                let other = if letter.is_ascii_uppercase() {
+                    letter.to_ascii_lowercase()
+                } else {
+                    letter.to_ascii_uppercase()
+                };
+                if (lo..=hi).contains(&other) && !(lo..=hi).contains(&letter) {
+                    out.push(letter);
+                }
+            }
+        }
+    }
+    // Unclosed: the `regex` crate reports the syntax error.
+    i
+}
+
+/// A literal char of a class at `chars[i]` and the index after it, or `None` when the item is a
+/// predefined class (`\w`, ...) or a property (`\p{..}`), which this writes to `out`.
+fn class_atom(chars: &[char], i: usize, out: &mut String) -> Option<(char, usize)> {
+    let c = chars[i];
+    if c != '\\' || i + 1 >= chars.len() {
+        return Some((c, i + 1));
+    }
+    let e = chars[i + 1];
+    if let Some((set, negated)) = java_class_escape(e) {
+        if negated {
+            out.push_str("[^");
+            out.push_str(set);
+            out.push(']');
+        } else {
+            out.push_str(set);
+        }
+        return None;
+    }
+    match e {
+        'p' | 'P' => {
+            out.push('\\');
+            out.push(e);
+            copy_bracketed(chars, i + 2, out);
+            None
+        }
+        'x' | 'u' => match parse_numeric_escape(chars, i + 2, e) {
+            Some(atom) => Some(atom),
+            None => Some((e, i + 2)),
+        },
+        't' => Some(('\t', i + 2)),
+        'n' => Some(('\n', i + 2)),
+        'r' => Some(('\r', i + 2)),
+        'f' => Some(('\x0C', i + 2)),
+        'a' => Some(('\x07', i + 2)),
+        'e' => Some(('\x1B', i + 2)),
+        _ if e.is_ascii_alphanumeric() => {
+            // Another escape (`\0`, `\c`, ...): copied as is for the `regex` crate.
+            out.push('\\');
+            out.push(e);
+            None
+        }
+        _ => Some((e, i + 2)),
+    }
+}
+
+/// The index after a class item for which [`class_atom`] returned `None`.
+fn class_atom_end(chars: &[char], i: usize) -> usize {
+    match chars.get(i + 1) {
+        Some('p') | Some('P') => {
+            let mut scratch = String::new();
+            copy_bracketed(chars, i + 2, &mut scratch)
+        }
+        _ => i + 2,
     }
 }
 

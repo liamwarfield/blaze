@@ -121,7 +121,7 @@ ASCII must be untouched by every change: all conversions are the identity on ASC
   `systemd-run --user --collect --wait --quiet --pipe --same-dir -p MemoryMax=12G -p MemorySwapMax=0
   scripts/bytes/run --binary $PWD/target/debug/blaze --out <your own dir> --output-user-root
   <your own dir>` and `scripts/bytes/compare --candidate <your own dir> --verbose`. Report
-  `matching N / 93` and which remaining differences are in your crates. (Other workers run the
+  `matching N / 97` and which remaining differences are in your crates. (Other workers run the
   same build; cargo serializes them. Use your own `--out` and `--output-user-root`, under
   `~/.cache/blaze/work/bytes-<name>` and `~/.cache/blaze/oracle-out/ur-bytes-<name>`.)
 - List, per file, each site converted (Java reference), each emulation deleted, and each site

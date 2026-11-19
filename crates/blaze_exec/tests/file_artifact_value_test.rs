@@ -165,3 +165,28 @@ fn unresolved_symlink_digest_is_tweaked_target_digest() {
         format!("{} is not a symlink", file.get_path_string())
     );
 }
+/// `hashString(symlinkTarget, ISO_8859_1)`: the target is an internal string, so its digest is
+/// over the target's bytes on disk (`é/ü` = C3 A9 2F C3 BC, and a lone FF stays one byte), not
+/// over their UTF-8 re-encoding.
+// Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1157 UnresolvedSymlinkArtifactValue.<init>
+#[test]
+fn unresolved_symlink_digest_hashes_the_internal_target_bytes() {
+    let (_dir, root) = scratch_root();
+    for (name, target_bytes) in [
+        ("sym1", &b"\xc3\xa9/\xc3\xbc"[..]),
+        ("sym2", &b"\xf0\x9f\x90\xb7"[..]),
+        ("sym3", &b"a\xffb"[..]),
+    ] {
+        let target = blaze_util::string_encoding::latin1_decode(target_bytes);
+        let path = root.get_relative_str(name);
+        path.create_symbolic_link_to_fragment(&PathFragment::create(&target))
+            .unwrap();
+        let value = FileArtifactValue::create_for_unresolved_symlink(&path).unwrap();
+        assert_eq!(value.get_unresolved_symlink_target(), Some(&*target));
+        let mut expected = DigestHashFunction::Sha256
+            .hash_reader(&mut &target_bytes[..])
+            .unwrap();
+        expected[0] ^= 0xff;
+        assert_eq!(value.get_digest(), Some(&expected[..]));
+    }
+}

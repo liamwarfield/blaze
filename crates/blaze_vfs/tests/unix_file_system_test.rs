@@ -183,3 +183,76 @@ fn modification_time_and_rename() {
     assert!(tmp.is_directory());
     assert!(tmp.get_base_name().starts_with("tmp"));
 }
+
+/// File names are Bazel's internal strings: one char per byte, whatever the bytes are. `é` is
+/// the two chars U+00C3 U+00A9 and names the file `C3 A9`; a name that is not UTF-8 (the byte
+/// FF) is an ordinary name; directory entries and symlink targets come back the same way.
+// Java: com/google/devtools/build/lib/util/StringEncoding.java:104 StringEncoding.internalToPlatform
+// (the Latin-1 locale: platform strings are internal strings), src/main/native/latin1_jni_path.cc
+#[test]
+fn non_ascii_names_are_bytes_at_the_system_call() {
+    use std::os::unix::ffi::OsStrExt;
+    let f = Fixture::new("bytes");
+    let os_dir = std::path::PathBuf::from(f.work.get_path_string());
+
+    // Written through the VFS, seen by the system as the UTF-8 bytes of "é.txt".
+    let e = f.work.get_child("\u{c3}\u{a9}.txt");
+    write(&e, "x");
+    assert_eq!(std::fs::read(os_dir.join("é.txt")).unwrap(), b"x");
+    assert_eq!(read(&e), "x");
+    assert!(e.exists());
+
+    // Created by the system with a name that is not UTF-8, seen through the VFS as U+00FF.
+    let raw = os_dir.join(std::ffi::OsStr::from_bytes(b"\xff"));
+    std::fs::write(&raw, b"y").unwrap();
+    let ff = f.work.get_child("\u{ff}");
+    assert_eq!(read(&ff), "y");
+
+    let mut names: Vec<String> = f
+        .work
+        .readdir(Symlinks::Nofollow)
+        .unwrap()
+        .into_iter()
+        .map(|d| d.get_name().to_string())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["\u{c3}\u{a9}.txt", "\u{ff}"]);
+    let mut entries = f.work.get_directory_entries().unwrap();
+    entries.sort();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|p| p.get_base_name().to_string())
+            .collect::<Vec<_>>(),
+        ["\u{c3}\u{a9}.txt", "\u{ff}"]
+    );
+
+    // A symlink target is written and read back as its bytes.
+    let link = f.work.get_child("link");
+    link.create_symbolic_link_to_fragment(&PathFragment::create("\u{c3}\u{a9}.txt/\u{ff}"))
+        .unwrap();
+    assert_eq!(
+        std::fs::read_link(os_dir.join("link"))
+            .unwrap()
+            .as_os_str()
+            .as_bytes(),
+        b"\xc3\xa9.txt/\xff"
+    );
+    assert_eq!(
+        link.read_symbolic_link().unwrap().get_path_string(),
+        "\u{c3}\u{a9}.txt/\u{ff}"
+    );
+
+    // Rename and delete act on the same bytes.
+    let moved = f.work.get_child("\u{f0}\u{9f}\u{90}\u{b7}");
+    e.rename_to(&moved).unwrap();
+    assert!(os_dir.join("🐷").exists());
+    assert!(moved.delete().unwrap());
+    assert!(!os_dir.join("🐷").exists());
+
+    // A path string that is not internal is tolerated the way the native layer tolerates it:
+    // `?` for each UTF-16 unit above 0xFF.
+    let bad = f.work.get_child("a\u{20ac}\u{1f437}");
+    write(&bad, "z");
+    assert_eq!(std::fs::read(os_dir.join("a???")).unwrap(), b"z");
+}

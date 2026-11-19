@@ -134,7 +134,8 @@ fn create_tree_artifact_with_generating_action(
 // Java: FileSystemUtils.writeContentAsLatin1
 fn write_content_as_latin1(path: &Path, content: &str) {
     let mut out = path.get_output_stream().unwrap();
-    out.write_all(content.as_bytes()).unwrap();
+    out.write_all(&blaze_util::string_encoding::latin1_encode_lossy(content))
+        .unwrap();
     out.flush().unwrap();
 }
 
@@ -1173,39 +1174,31 @@ fn build_for_spawn_matches_hand_built_directories() {
 }
 
 /// Review 2026-11-19 R8: node names are `internalToUnicode` of the internal path strings
-/// (MerkleTreeComputer.java:629,639), on both sides of the strings seam. The tree holds the
+/// (MerkleTreeComputer.java:629,639). The tree holds the
 /// UTF-8 of the Unicode name (`é` is C3 A9), never the UTF-8 of its internal form (C3 83 C2 A9).
 #[test]
 fn build_for_files_non_ascii_names_are_unicode_on_both_sides_of_the_seam() {
-    for internal in [false, true] {
-        blaze_util::string_encoding::with_strings_are_internal_for_testing(internal, || {
-            let t = MerkleTreeComputerTest::set_up();
-            let digest_util = DigestUtil::new(DigestHashFunction::Sha256);
-            let files_root = t.exec_root.get_relative_str("files");
-            files_root.create_directory_and_parents().unwrap();
-            let path = files_root.get_child("one");
-            write_content_as_latin1(&path, "content");
-            // The string Blaze holds for the path: the internal form once strings are internal.
-            let logical = if internal {
-                blaze_util::string_encoding::unicode_to_internal("dé/fü").into_owned()
-            } else {
-                "dé/fü".to_string()
-            };
-            let mut inputs: BTreeMap<PathFragment, Path> = BTreeMap::new();
-            inputs.insert(PathFragment::create(&logical), path);
+    let t = MerkleTreeComputerTest::set_up();
+    let digest_util = DigestUtil::new(DigestHashFunction::Sha256);
+    let files_root = t.exec_root.get_relative_str("files");
+    files_root.create_directory_and_parents().unwrap();
+    let path = files_root.get_child("one");
+    write_content_as_latin1(&path, "content");
+    // The string Blaze holds for the path: its internal form.
+    let logical = blaze_util::string_encoding::unicode_to_internal("dé/fü").into_owned();
+    let mut inputs: BTreeMap<PathFragment, Path> = BTreeMap::new();
+    inputs.insert(PathFragment::create(&logical), path);
 
-            let merkle_tree = t
-                .create_merkle_tree_computer(/* uploader= */ None)
-                .build_for_files(&inputs)
-                .unwrap();
+    let merkle_tree = t
+        .create_merkle_tree_computer(/* uploader= */ None)
+        .build_for_files(&inputs)
+        .unwrap();
 
-            let content = digest_util.compute(b"content");
-            let dir = directory(vec![file_node("fü", &content, false)], vec![]);
-            assert_eq!(dir.files[0].name.as_bytes(), b"f\xc3\xbc");
-            let dir_digest = digest_util.compute(&dir.to_byte_array());
-            let root = directory(vec![], vec![directory_node("dé", &dir_digest)]);
-            let root_digest = digest_util.compute(&root.to_byte_array());
-            assert_eq!(merkle_tree.digest(), &root_digest, "internal={internal}");
-        });
-    }
+    let content = digest_util.compute(b"content");
+    let dir = directory(vec![file_node("fü", &content, false)], vec![]);
+    assert_eq!(dir.files[0].name.as_bytes(), b"f\xc3\xbc");
+    let dir_digest = digest_util.compute(&dir.to_byte_array());
+    let root = directory(vec![], vec![directory_node("dé", &dir_digest)]);
+    let root_digest = digest_util.compute(&root.to_byte_array());
+    assert_eq!(merkle_tree.digest(), &root_digest);
 }

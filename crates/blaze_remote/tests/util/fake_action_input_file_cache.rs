@@ -107,17 +107,20 @@ impl FakeActionInputFileCache {
             .expect("NullPointerException: parent directory")
             .create_directory_and_parents()?;
         // `FileSystemUtils.writeContentAsLatin1(inputFile, content)`.
-        // PORT: StringEncoding identity: Java's content is an internal string (Latin-1 chars
-        // holding UTF-8 bytes), so its Latin-1 encoding is the UTF-8 encoding of the Rust string.
-        blaze_repo_fetch::fs_utils::write_content(&input_file, content.as_bytes())?;
+        // Java: com/google/devtools/build/lib/vfs/FileSystemUtils.java:692 FileSystemUtils.writeContentAsLatin1
+        // (a CharSink with ISO-8859-1: one byte per char, `?` for a char above U+00FF).
+        blaze_repo_fetch::fs_utils::write_content(
+            &input_file,
+            &blaze_util::string_encoding::latin1_encode_lossy(content),
+        )?;
         let digest = self.digest_util.compute_path(&input_file)?;
         self.set_metadata(
             input,
             FileArtifactValue::create_for_normal_file(
                 Some(DigestUtil::to_binary_digest(&digest)),
                 Some(FileContentsProxy::create(&input_file.stat()?)),
-                // `content.length()` of the internal string: its number of bytes.
-                content.len() as i64,
+                // `content.length()`: its number of chars.
+                content.chars().count() as i64,
             ),
         );
         Ok(digest)

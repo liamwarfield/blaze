@@ -339,7 +339,8 @@ fn create_artifact(root: &ArtifactRoot, path: &str) -> Artifact {
 // Java: FileSystemUtils.writeContentAsLatin1
 fn write_content_as_latin1(path: &Path, content: &str) {
     let mut out = path.get_output_stream().unwrap();
-    out.write_all(content.as_bytes()).unwrap();
+    out.write_all(&blaze_util::string_encoding::latin1_encode_lossy(content))
+        .unwrap();
     out.flush().unwrap();
 }
 

@@ -53,10 +53,13 @@ pub fn create_from_timeout(remote_timeout: Duration) -> Map<String, Value> {
 
 // Java: com/google/devtools/build/lib/remote/RemoteGrpcServiceConfig.java:85 RemoteGrpcServiceConfig.parse
 fn parse(service_config_path: &Path) -> io::Result<Map<String, Value>> {
-    let mut text = String::new();
+    // `new InputStreamReader(..., UTF_8)`: malformed input becomes U+FFFD; the text is Unicode,
+    // as Gson gets it.
+    let mut bytes = Vec::new();
     service_config_path
         .get_input_stream()?
-        .read_to_string(&mut text)?;
+        .read_to_end(&mut bytes)?;
+    let text = blaze_util::string_encoding::java_new_string_utf8(&bytes);
     let root: Value = serde_json::from_str(&text).map_err(|e| {
         // PORT: the text after the path is Gson's JsonParseException message in Java.
         io::Error::other(format!(

@@ -315,7 +315,13 @@ fn test_using_correct_quoting_in_target_literal_to_string() {
 
 #[test]
 fn test_unicode_labels() {
-    // PORT: StringEncoding.unicodeToInternal is the identity (Rust strings are UTF-8).
-    check_pretty_print_as("//:äöüÄÖÜß🌱", "'//:äöüÄÖÜß🌱'");
-    check_pretty_print_as("//:äöüÄÖÜß🌱", "//:äöüÄÖÜß🌱");
+    use blaze_util::string_encoding::unicode_to_internal;
+    check_pretty_print_as(
+        &unicode_to_internal("//:äöüÄÖÜß🌱"),
+        &unicode_to_internal("'//:äöüÄÖÜß🌱'"),
+    );
+    check_pretty_print_as(
+        &unicode_to_internal("//:äöüÄÖÜß🌱"),
+        &unicode_to_internal("//:äöüÄÖÜß🌱"),
+    );
 }

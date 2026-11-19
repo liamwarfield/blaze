@@ -497,7 +497,9 @@ impl DiskCacheClient {
 // Java: com/google/devtools/build/lib/remote/disk/DiskCacheClient.java:455 DiskCacheClient.syncFile
 fn sync_file(path: &Path) -> io::Result<()> {
     let input_stream = path.get_input_stream()?;
-    let synced = match std::fs::File::open(path.get_path_string()) {
+    let synced = match std::fs::File::open(blaze_util::string_encoding::internal_to_platform(
+        path.get_path_string(),
+    )) {
         Ok(file) => file.sync_all(),
         Err(_) => Ok(()),
     };

@@ -25,11 +25,29 @@ use crate::file_system::{
 use crate::path::NOW_SENTINEL_TIME;
 use crate::path_fragment::PathFragment;
 
-/// The platform string of an internal path string.
-// Java: com/google/devtools/build/lib/unix/UnixFileSystem.java (every native call:
-// `StringEncoding.internalToPlatform(path.getPathString())`)
+/// The platform string of an internal path string: one byte per char.
+///
+/// A path string that is not internal (a char above U+00FF: "not well-formed but must be
+/// tolerated") gets `?` for each UTF-16 unit above 0xFF, as the native layer writes it.
+// Java: (native) src/main/native/latin1_jni_path.cc GetStringLatin1Chars
+// PORT: the Java side reports such a path once (`NativePosixFiles.logBadPath`, a non-fatal bug
+// report); not ported.
 fn os(path: &str) -> std::borrow::Cow<'_, std::ffi::OsStr> {
-    blaze_util::string_encoding::internal_to_platform(path)
+    use std::borrow::Cow;
+    use std::ffi::{OsStr, OsString};
+    use std::os::unix::ffi::OsStringExt;
+    if path.is_ascii() {
+        return Cow::Borrowed(OsStr::new(path));
+    }
+    let mut bytes = Vec::with_capacity(path.len());
+    for c in path.chars() {
+        if (c as u32) <= 0xff {
+            bytes.push(c as u8);
+        } else {
+            bytes.extend(std::iter::repeat_n(b'?', c.len_utf16()));
+        }
+    }
+    Cow::Owned(OsString::from_vec(bytes))
 }
 
 /// The internal string of a platform string (a directory entry, a symlink target).

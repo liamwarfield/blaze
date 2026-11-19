@@ -442,13 +442,13 @@ impl FileArtifactValue {
     pub fn create_for_unresolved_symlink(symlink: &Path) -> io::Result<FileArtifactValue> {
         let symlink_target = symlink.read_symbolic_link()?.get_path_string().to_owned();
 
-        // `hashString(symlinkTarget, ISO_8859_1)`: the bytes of the internal string
-        // (`internal_string_bytes`, the strings seam).
+        // `hashString(symlinkTarget, ISO_8859_1)`: the bytes of the internal string (Guava encodes
+        // with `String.getBytes(charset)`, so a char above U+00FF hashes as '?').
         // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1157 UnresolvedSymlinkArtifactValue.<init>
         let mut digest = symlink
             .get_file_system()
             .get_digest_function()
-            .hash_reader(&mut &*blaze_util::string_encoding::internal_string_bytes(
+            .hash_reader(&mut &*blaze_util::string_encoding::latin1_encode_lossy(
                 &symlink_target,
             ))?;
 

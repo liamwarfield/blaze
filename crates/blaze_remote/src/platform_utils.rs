@@ -11,35 +11,11 @@ use std::collections::{BTreeMap, HashMap};
 use blaze_exec::actions::{ExecException, Spawn, UserExecException};
 use blaze_optdefs::misc::remote_options::RemoteOptions;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail, spawn as spawn_code};
+use blaze_util::string_encoding::{internal_to_unicode, unicode_to_internal};
 use indexmap::IndexMap;
 
 use crate::reapi::{Platform, platform};
 use crate::text_format::{self, ParseException};
-
-/// `StringEncoding.internalToUnicode(s)` of the internal string that `s` stands for.
-///
-/// Seam (decisions.md 2026-11-18 "Strings"): while
-/// `blaze_util::string_encoding::STRINGS_ARE_INTERNAL` is false Blaze's strings are Unicode
-/// already and this is the identity; once it is true it is `internal_to_unicode`.
-// Java: com/google/devtools/build/lib/util/StringEncoding.java:126 StringEncoding.internalToUnicode
-fn internal_to_unicode(s: &str) -> String {
-    if blaze_util::string_encoding::strings_are_internal() {
-        blaze_util::string_encoding::internal_to_unicode(s).into_owned()
-    } else {
-        s.to_string()
-    }
-}
-
-/// `StringEncoding.unicodeToInternal(s)`, giving the string Blaze holds where Java holds the
-/// internal string (the same seam as [`internal_to_unicode`]).
-// Java: com/google/devtools/build/lib/util/StringEncoding.java:137 StringEncoding.unicodeToInternal
-fn unicode_to_internal(s: &str) -> String {
-    if blaze_util::string_encoding::strings_are_internal() {
-        blaze_util::string_encoding::unicode_to_internal(s).into_owned()
-    } else {
-        s.to_string()
-    }
-}
 
 /// `String.compareTo`: lexicographic order of UTF-16 code units. For proto strings (which hold
 /// exactly the chars of the Java string) this is Java's order.
@@ -66,8 +42,8 @@ pub fn build_platform_proto(execution_properties: &IndexMap<String, String>) -> 
     let mut builder = Platform::default();
     for (key, value) in execution_properties {
         let property = platform::Property {
-            name: internal_to_unicode(key),
-            value: internal_to_unicode(value),
+            name: internal_to_unicode(key).into_owned(),
+            value: internal_to_unicode(value).into_owned(),
         };
         builder.properties.push(property);
     }
@@ -187,8 +163,8 @@ pub fn get_platform_proto_with_additional_properties(
 
             for property in &platform_builder.properties {
                 properties.insert(
-                    unicode_to_internal(&property.name),
-                    unicode_to_internal(&property.value),
+                    unicode_to_internal(&property.name).into_owned(),
+                    unicode_to_internal(&property.value).into_owned(),
                 );
             }
         } else {
@@ -224,8 +200,8 @@ pub fn get_platform_proto_with_additional_properties(
     let mut platform_builder = Platform::default();
     for (key, value) in &properties {
         platform_builder.properties.push(platform::Property {
-            name: internal_to_unicode(key),
-            value: internal_to_unicode(value),
+            name: internal_to_unicode(key).into_owned(),
+            value: internal_to_unicode(value).into_owned(),
         });
     }
     sort_platform_properties(&mut platform_builder);

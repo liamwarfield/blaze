@@ -17,6 +17,7 @@ use blaze_exec::actions::{
 use blaze_exec::exec::SpawnExecutionContext;
 use blaze_exec::exec::action_execution_context::SpawnCacheError;
 use blaze_protos::JavaMessage;
+use blaze_util::string_encoding::internal_to_unicode;
 use blaze_vfs::{DirentType, Path, PathFragment, Symlinks};
 use futures::future::LocalBoxFuture;
 use parking_lot::Mutex;
@@ -841,7 +842,7 @@ impl MerkleTreeComputer {
                         }
                     };
                     top_directory.directories.push(DirectoryNode {
-                        name: internal_to_unicode(&dir_to_pop),
+                        name: internal_to_unicode(&dir_to_pop).into_owned(),
                         digest: Some(directory_blob_digest),
                     });
                 }
@@ -859,7 +860,7 @@ impl MerkleTreeComputer {
             let Some(current_directory) = directory_stack.last_mut() else {
                 panic!("NullPointerException");
             };
-            let name = internal_to_unicode(path.get_base_name());
+            let name = internal_to_unicode(path.get_base_name()).into_owned();
             let node_properties = if is_tool_input(path) {
                 Some(tool_node_properties())
             } else {
@@ -904,7 +905,7 @@ impl MerkleTreeComputer {
                     };
                     current_directory.symlinks.push(SymlinkNode {
                         name,
-                        target: internal_to_unicode(target),
+                        target: internal_to_unicode(target).into_owned(),
                         node_properties,
                     });
                     input_files += 1;
@@ -1360,20 +1361,6 @@ fn get_output_path(
     remote_path_resolver
         .get_working_directory()
         .get_relative(&path_mapper.map(input.get_exec_path()))
-}
-
-/// `StringEncoding.internalToUnicode(s)` of the internal string that `s` stands for.
-///
-/// Seam (decisions.md 2026-11-18 "Strings"): while
-/// `blaze_util::string_encoding::STRINGS_ARE_INTERNAL` is false Blaze's strings are Unicode
-/// already and this is the identity; once it is true it is `internal_to_unicode`.
-// Java: com/google/devtools/build/lib/util/StringEncoding.java:126 StringEncoding.internalToUnicode
-fn internal_to_unicode(s: &str) -> String {
-    if blaze_util::string_encoding::strings_are_internal() {
-        blaze_util::string_encoding::internal_to_unicode(s).into_owned()
-    } else {
-        s.to_string()
-    }
 }
 
 /// An `ActionInput` that is a child of another one at a given relative path.

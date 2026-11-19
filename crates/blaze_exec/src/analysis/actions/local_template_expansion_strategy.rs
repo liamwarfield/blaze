@@ -123,11 +123,11 @@ impl TemplateExpansionContext for LocalTemplateExpansionStrategy {
                 .into());
             }
         };
-        // `expandedTemplate.getBytes(ISO_8859_1)`: the bytes of the internal string.
-        // Seam (decisions.md 2026-11-18 "Strings"): `internal_string_bytes` gives them whether
-        // or not Blaze's strings are internal yet (`STRINGS_ARE_INTERNAL`).
+        // `expandedTemplate.getBytes(ISO_8859_1)`: the bytes of the internal string; a char above
+        // U+00FF (from a Unicode substitution) is written as '?'.
+        // Java: com/google/devtools/build/lib/analysis/actions/LocalTemplateExpansionStrategy.java:51 LocalTemplateExpansionStrategy.expandTemplate
         let deterministic_writer = BytesWriter(
-            blaze_util::string_encoding::internal_string_bytes(&expanded_template).into_owned(),
+            blaze_util::string_encoding::latin1_encode_lossy(&expanded_template).into_owned(),
         );
         let context = super::get_required_context::<dyn FileWriteActionContext>(
             ctx,
@@ -155,18 +155,9 @@ fn get_artifact_template_content(template_path: &blaze_vfs::Path) -> io::Result<
         Ok(bytes)
     };
     match read() {
-        // Bazel's internal encoding for strings is raw bytes as Latin-1.
-        // PORT: as `Template::get_content`: until the decoding switch
-        // (`string_encoding::STRINGS_ARE_INTERNAL`) a template that is not valid UTF-8 has no
-        // string.
-        Ok(bytes) => match blaze_util::string_encoding::internal_string_from_bytes(&bytes) {
-            Ok(s) => Ok(s.into_owned()),
-            Err(_) => blaze_util::unported!(
-                "ArtifactTemplate.getContent",
-                "template '{}' is not valid UTF-8",
-                template_path.get_path_string()
-            ),
-        },
+        // Bazel's internal encoding for strings is raw bytes as Latin-1
+        // Java: com/google/devtools/build/lib/analysis/actions/Template.java:107 ArtifactTemplate.getContent
+        Ok(bytes) => Ok(blaze_util::string_encoding::latin1_decode(&bytes).into_owned()),
         Err(e) => Err(io::Error::new(
             e.kind(),
             format!(

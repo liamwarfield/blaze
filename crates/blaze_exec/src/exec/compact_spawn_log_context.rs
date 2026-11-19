@@ -18,13 +18,13 @@ use parking_lot::ReentrantMutex;
 use super::io::{AsynchronousMessageOutputStream, ZstdOutputStream};
 use super::spawn_log_context::{
     SpawnLogAction, SpawnLogContext, compute_digest, get_environment_variables, get_platform,
-    get_spawn_metrics_proto, internal, internal_to_unicode, is_input_directory,
-    java_string_compare, spawn_log_io_exception,
+    get_spawn_metrics_proto, is_input_directory, java_string_compare, spawn_log_io_exception,
 };
 use crate::actions::{
     ActionInputRef, ExecException, InputMapping, InputMetadataProvider, RunfilesTree, Spawn,
     SpawnResult, Status, spawns,
 };
+use blaze_util::string_encoding::internal_to_unicode;
 
 pub use crate::actions::SymlinkEntry;
 
@@ -140,10 +140,12 @@ impl CompactSpawnLogContext {
         self.log_entry_without_id(&mut || {
             Ok(entry(exec_log_entry::Type::Invocation(
                 exec_log_entry::Invocation {
-                    hash_function_name: internal_to_unicode(&self.digest_hash_function.to_string()),
-                    workspace_runfiles_directory: internal_to_unicode(&self.workspace_name),
+                    hash_function_name: internal_to_unicode(&self.digest_hash_function.to_string())
+                        .into_owned(),
+                    workspace_runfiles_directory: internal_to_unicode(&self.workspace_name)
+                        .into_owned(),
                     sibling_repository_layout: self.sibling_repository_layout,
-                    id: internal_to_unicode(&self.invocation_id),
+                    id: internal_to_unicode(&self.invocation_id).into_owned(),
                 },
             )))
         })
@@ -166,7 +168,7 @@ impl CompactSpawnLogContext {
             args: spawn
                 .get_arguments()
                 .iter()
-                .map(|arg| internal_to_unicode(arg))
+                .map(|arg| internal_to_unicode(arg).into_owned())
                 .collect(),
             env_vars: get_environment_variables(spawn),
             ..Default::default()
@@ -184,9 +186,10 @@ impl CompactSpawnLogContext {
             .map_err(|e| spawn_log_io_exception(&e))? as u32;
 
         if let Some(target_label) = spawn.get_target_label() {
-            builder.target_label = internal_to_unicode(&target_label.get_canonical_form());
+            builder.target_label =
+                internal_to_unicode(&target_label.get_canonical_form()).into_owned();
         }
-        builder.mnemonic = internal_to_unicode(&spawn.get_mnemonic());
+        builder.mnemonic = internal_to_unicode(&spawn.get_mnemonic()).into_owned();
 
         let mut warned = false;
         for output in spawn.get_output_files() {
@@ -207,9 +210,9 @@ impl CompactSpawnLogContext {
                             output, &path, /* input_metadata_provider= */ None,
                         )? as u32)
                     } else {
-                        exec_log_entry::output::Type::InvalidOutputPath(internal_to_unicode(
-                            &output.get_exec_path_string(),
-                        ))
+                        exec_log_entry::output::Type::InvalidOutputPath(
+                            internal_to_unicode(&output.get_exec_path_string()).into_owned(),
+                        )
                     },
                 )
             })();
@@ -222,9 +225,9 @@ impl CompactSpawnLogContext {
                         // PORT: skipped, tracing (Java log) ("Failed to log outputs of spawn with mnemonic
                         // %s and primary output %s").
                     }
-                    exec_log_entry::output::Type::InvalidOutputPath(internal_to_unicode(
-                        &output.get_exec_path_string(),
-                    ))
+                    exec_log_entry::output::Type::InvalidOutputPath(
+                        internal_to_unicode(&output.get_exec_path_string()).into_owned(),
+                    )
                 }
             };
             builder.outputs.push(exec_log_entry::Output {
@@ -234,9 +237,9 @@ impl CompactSpawnLogContext {
 
         builder.exit_code = result.exit_code();
         if result.status() != Status::Success {
-            builder.status = internal_to_unicode(result.status().name());
+            builder.status = internal_to_unicode(result.status().name()).into_owned();
         }
-        builder.runner = internal_to_unicode(result.get_runner_name());
+        builder.runner = internal_to_unicode(result.get_runner_name()).into_owned();
         builder.cache_hit = result.is_cache_hit();
         builder.remotable = spawns::may_be_executed_remotely(spawn);
         builder.cacheable = spawns::may_be_cached(spawn);
@@ -268,15 +271,16 @@ impl CompactSpawnLogContext {
             return Ok(());
         };
         let mut builder = exec_log_entry::SymlinkAction {
-            input_path: internal_to_unicode(&input.get_exec_path_string()),
-            output_path: internal_to_unicode(&action.get_primary_output().get_exec_path_string()),
+            input_path: internal_to_unicode(&input.get_exec_path_string()).into_owned(),
+            output_path: internal_to_unicode(&action.get_primary_output().get_exec_path_string())
+                .into_owned(),
             ..Default::default()
         };
 
         if let Some(label) = action.get_owner_label() {
-            builder.target_label = internal_to_unicode(&label.get_canonical_form());
+            builder.target_label = internal_to_unicode(&label.get_canonical_form()).into_owned();
         }
-        builder.mnemonic = internal_to_unicode(&action.get_mnemonic());
+        builder.mnemonic = internal_to_unicode(&action.get_mnemonic()).into_owned();
 
         let mut symlink_entry = Some(builder);
         self.log_entry_without_id(&mut || {
@@ -443,7 +447,7 @@ impl CompactSpawnLogContext {
                 }
 
                 for input in symlinks.get_leaves() {
-                    let key = internal_to_unicode(&input.path);
+                    let key = internal_to_unicode(&input.path).into_owned();
                     let value =
                         self.log_input(&input.artifact, input_metadata_provider, file_system)?
                             as u32;
@@ -519,7 +523,7 @@ impl CompactSpawnLogContext {
                 )?;
 
                 Ok(entry(exec_log_entry::Type::File(exec_log_entry::File {
-                    path: internal_to_unicode(&input.get_exec_path_string()),
+                    path: internal_to_unicode(&input.get_exec_path_string()).into_owned(),
                     digest: Some(digest),
                 })))
             },
@@ -544,7 +548,7 @@ impl CompactSpawnLogContext {
             &mut || {
                 Ok(entry(exec_log_entry::Type::Directory(
                     exec_log_entry::Directory {
-                        path: internal_to_unicode(&input.get_exec_path_string()),
+                        path: internal_to_unicode(&input.get_exec_path_string()).into_owned(),
                         files: self.expand_directory(input, root, input_metadata_provider)?,
                     },
                 )))
@@ -582,7 +586,8 @@ impl CompactSpawnLogContext {
                 blaze_util::check_state!(self.workspace_name == runfiles_tree.get_workspace_name());
 
                 let mut builder = exec_log_entry::RunfilesTree {
-                    path: internal_to_unicode(runfiles_tree.get_exec_path().get_path_string()),
+                    path: internal_to_unicode(runfiles_tree.get_exec_path().get_path_string())
+                        .into_owned(),
                     ..Default::default()
                 };
 
@@ -614,7 +619,7 @@ impl CompactSpawnLogContext {
                     runfiles_tree
                         .get_empty_filenames_for_logging()
                         .iter()
-                        .map(|p| internal(p.get_path_string())),
+                        .map(|p| p.get_path_string().to_string()),
                 );
                 if let Some(repo_mapping_manifest) =
                     runfiles_tree.get_repo_mapping_manifest_for_logging()
@@ -685,7 +690,7 @@ impl CompactSpawnLogContext {
                 /* include_hash_function_name= */ false,
             )?;
             files.push(exec_log_entry::File {
-                path: internal_to_unicode(parent_relative_path.get_path_string()),
+                path: internal_to_unicode(parent_relative_path.get_path_string()).into_owned(),
                 digest: Some(digest),
             });
         }
@@ -711,7 +716,7 @@ impl CompactSpawnLogContext {
             )?;
 
             files.push(exec_log_entry::File {
-                path: internal_to_unicode(child.relative_to(root).get_path_string()),
+                path: internal_to_unicode(child.relative_to(root).get_path_string()).into_owned(),
                 digest: Some(digest),
             });
             Ok(())
@@ -757,8 +762,8 @@ impl CompactSpawnLogContext {
 
                 Ok(entry(exec_log_entry::Type::UnresolvedSymlink(
                     exec_log_entry::UnresolvedSymlink {
-                        path: internal_to_unicode(&input.get_exec_path_string()),
-                        target_path: internal_to_unicode(&target_path),
+                        path: internal_to_unicode(&input.get_exec_path_string()).into_owned(),
+                        target_path: internal_to_unicode(&target_path).into_owned(),
                     },
                 )))
             },

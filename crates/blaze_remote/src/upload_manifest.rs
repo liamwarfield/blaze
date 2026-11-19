@@ -18,6 +18,7 @@ use blaze_protos::failure_details::{
     FailureDetail, RemoteExecution, failure_detail, remote_execution,
 };
 use blaze_protos::google::protobuf::Timestamp;
+use blaze_util::string_encoding::internal_to_unicode;
 use blaze_vfs::{DirentType, FileStatus, Path, PathFragment, Symlinks};
 use bytes::Bytes;
 use futures::future::BoxFuture;
@@ -190,20 +191,6 @@ pub struct UploadManifest {
     action_key: Option<ActionKey>,
     stderr_digest: Option<Digest>,
     stdout_digest: Option<Digest>,
-}
-
-/// `StringEncoding.internalToUnicode(s)` of the internal string that `s` stands for.
-///
-/// Seam (decisions.md 2026-11-18 "Strings"): while
-/// `blaze_util::string_encoding::STRINGS_ARE_INTERNAL` is false Blaze's strings are Unicode
-/// already and this is the identity; once it is true it is `internal_to_unicode`.
-// Java: com/google/devtools/build/lib/util/StringEncoding.java:126 StringEncoding.internalToUnicode
-fn internal_to_unicode(s: &str) -> String {
-    if blaze_util::string_encoding::strings_are_internal() {
-        blaze_util::string_encoding::internal_to_unicode(s).into_owned()
-    } else {
-        s.to_string()
-    }
 }
 
 /// The sort key of `comparing(FileNode::getName)` / `comparing(SymlinkNode::getName)`:
@@ -473,8 +460,9 @@ impl UploadManifest {
     #[allow(deprecated)]
     fn add_file_symbolic_link(&mut self, file: &Path, target: &PathFragment) {
         let output_symlink = OutputSymlink {
-            path: internal_to_unicode(&self.remote_path_resolver.local_path_to_output_path(file)),
-            target: internal_to_unicode(target.get_path_string()),
+            path: internal_to_unicode(&self.remote_path_resolver.local_path_to_output_path(file))
+                .into_owned(),
+            target: internal_to_unicode(target.get_path_string()).into_owned(),
             ..Default::default()
         };
         self.result
@@ -488,8 +476,9 @@ impl UploadManifest {
     #[allow(deprecated)]
     fn add_directory_symbolic_link(&mut self, file: &Path, target: &PathFragment) {
         let output_symlink = OutputSymlink {
-            path: internal_to_unicode(&self.remote_path_resolver.local_path_to_output_path(file)),
-            target: internal_to_unicode(target.get_path_string()),
+            path: internal_to_unicode(&self.remote_path_resolver.local_path_to_output_path(file))
+                .into_owned(),
+            target: internal_to_unicode(target.get_path_string()).into_owned(),
             ..Default::default()
         };
         self.result
@@ -501,7 +490,8 @@ impl UploadManifest {
     // Java: com/google/devtools/build/lib/remote/UploadManifest.java:348 UploadManifest.addFile
     fn add_file(&mut self, digest: Digest, file: &Path, stat_no_follow: &FileStatus) {
         self.result.output_files.push(OutputFile {
-            path: internal_to_unicode(&self.remote_path_resolver.local_path_to_output_path(file)),
+            path: internal_to_unicode(&self.remote_path_resolver.local_path_to_output_path(file))
+                .into_owned(),
             digest: Some(digest.clone()),
             is_executable: !self.preserve_executable_bit
                 || (stat_no_follow.get_permissions() & 0o100) != 0,
@@ -517,7 +507,8 @@ impl UploadManifest {
         let tree_digest = self.digest_util.compute(&tree_blob);
 
         self.result.output_directories.push(OutputDirectory {
-            path: internal_to_unicode(&self.remote_path_resolver.local_path_to_output_path(dir)),
+            path: internal_to_unicode(&self.remote_path_resolver.local_path_to_output_path(dir))
+                .into_owned(),
             tree_digest: Some(tree_digest.clone()),
             is_topologically_sorted: true,
             ..Default::default()
@@ -874,7 +865,7 @@ impl<'m> DirectoryBuilder<'m> {
                 for subdir in subdirs {
                     blaze_util::check_state!(subdir.get_parent_directory().as_ref() == Some(dir));
                     builder.directories.push(DirectoryNode {
-                        name: internal_to_unicode(subdir.get_base_name()),
+                        name: internal_to_unicode(subdir.get_base_name()).into_owned(),
                         digest: Some(
                             dir_to_digest
                                 .get(subdir)
@@ -973,7 +964,7 @@ impl<'m> DirectoryBuilder<'m> {
         let parent_path = path.get_parent_directory().expect("NullPointerException");
         let stat = path.stat_if_found(Symlinks::Nofollow)?;
         let digest = self.manifest.digest_util.compute_path(path)?;
-        let name = internal_to_unicode(path.get_base_name());
+        let name = internal_to_unicode(path.get_base_name()).into_owned();
         let node = FileNode {
             name: name.clone(),
             digest: Some(digest.clone()),
@@ -994,10 +985,10 @@ impl<'m> DirectoryBuilder<'m> {
     // Java: com/google/devtools/build/lib/remote/UploadManifest.java:540 DirectoryBuilder.visitAsSymlink
     fn visit_as_symlink(&mut self, path: &Path, target: &PathFragment) {
         let parent_path = path.get_parent_directory().expect("NullPointerException");
-        let name = internal_to_unicode(path.get_base_name());
+        let name = internal_to_unicode(path.get_base_name()).into_owned();
         let node = SymlinkNode {
             name: name.clone(),
-            target: internal_to_unicode(target.get_path_string()),
+            target: internal_to_unicode(target.get_path_string()).into_owned(),
             ..Default::default()
         };
         // `TreeMultimap.put` keeps the node already there for a name.
