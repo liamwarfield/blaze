@@ -617,7 +617,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          )
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/expr.rs starlark/src/eval/compiler/expr.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/expr.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/expr.rs	2026-11-18 15:33:20.899670422 -0700
++++ starlark/src/eval/compiler/expr.rs	2026-11-19 12:19:22.177893257 -0700
 @@ -871,18 +871,16 @@
          attr: &Symbol,
          ctx: &mut OptCtx,
@@ -711,6 +711,89 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              }
              ExprP::Tuple(exprs) => {
                  let xs = self.exprs(exprs)?;
+@@ -1443,8 +1452,11 @@
+                 // Desugar f"foo{x}bar{y}" to "foo{}bar{}.format(x, y)"
+                 let heap = self.eval.module_env.frozen_heap();
+ 
++                // BLAZE PATCH 0045: `str.format` has no `!r` conversion (Bazel's), so a `{!r}`
++                // field of the f-string becomes `{}` with the argument `"%r" % (x,)`.
++                let (format_text, repr_args) = fstring_repr_fields(format.node.as_str()); // BLAZE PATCH 0045
+                 let format = IrSpanned {
+-                    node: ExprCompiled::Value(heap.alloc(format.node.as_str())),
++                    node: ExprCompiled::Value(heap.alloc(format_text.as_str())), // BLAZE PATCH 0045
+                     span: fstring_span,
+                 };
+                 let method = IrSpanned {
+@@ -1453,8 +1465,36 @@
+                 };
+ 
+                 let mut args = ArgsCompiledValue::default();
+-                for expr in expressions {
+-                    args.push_pos(self.expr(expr)?);
++                for (i, expr) in expressions.iter().enumerate() { // BLAZE PATCH 0045
++                    let arg = self.expr(expr)?;
++                    let arg = if repr_args.contains(&i) { // BLAZE PATCH 0045
++                        let arg_span = arg.span; // BLAZE PATCH 0045
++                        let percent_r = IrSpanned { // BLAZE PATCH 0045
++                            node: ExprCompiled::Value( // BLAZE PATCH 0045
++                                self.eval.module_env.frozen_heap().alloc("%r"), // BLAZE PATCH 0045
++                            ), // BLAZE PATCH 0045
++                            span: arg_span, // BLAZE PATCH 0045
++                        }; // BLAZE PATCH 0045
++                        let one = IrSpanned { // BLAZE PATCH 0045
++                            node: ExprCompiled::tuple( // BLAZE PATCH 0045
++                                vec![arg], // BLAZE PATCH 0045
++                                self.eval.module_env.frozen_heap(), // BLAZE PATCH 0045
++                            ), // BLAZE PATCH 0045
++                            span: arg_span, // BLAZE PATCH 0045
++                        }; // BLAZE PATCH 0045
++                        IrSpanned { // BLAZE PATCH 0045
++                            node: ExprCompiled::bin_op( // BLAZE PATCH 0045
++                                Builtin2::Percent, // BLAZE PATCH 0045
++                                percent_r, // BLAZE PATCH 0045
++                                one, // BLAZE PATCH 0045
++                                &mut self.opt_ctx(), // BLAZE PATCH 0045
++                            ), // BLAZE PATCH 0045
++                            span: arg_span, // BLAZE PATCH 0045
++                        } // BLAZE PATCH 0045
++                    } else { // BLAZE PATCH 0045
++                        arg // BLAZE PATCH 0045
++                    }; // BLAZE PATCH 0045
++                    args.push_pos(arg);
+                 }
+ 
+                 CallCompiled::call(span, method, args, &mut self.opt_ctx())
+@@ -1483,3 +1523,30 @@
+             .collect::<Result<_, CompilerInternalError>>()
+     }
+ }
++
++/// BLAZE PATCH 0045: an f-string's desugared format string (`{}` / `{!r}` fields only, from
++/// `grammar_util::fstring_from_parts`) with `{!r}` turned into `{}`, and the indexes of the
++/// arguments that were `{!r}`.
++fn fstring_repr_fields(format: &str) -> (String, Vec<usize>) { // BLAZE PATCH 0045
++    use starlark_syntax::dot_format_parser::FormatConv; // BLAZE PATCH 0045
++    use starlark_syntax::dot_format_parser::FormatParser; // BLAZE PATCH 0045
++    use starlark_syntax::dot_format_parser::FormatToken; // BLAZE PATCH 0045
++    let mut out = String::with_capacity(format.len()); // BLAZE PATCH 0045
++    let mut repr_args = Vec::new(); // BLAZE PATCH 0045
++    let mut parser = FormatParser::new_with_conversions(format); // BLAZE PATCH 0045
++    let mut index = 0; // BLAZE PATCH 0045
++    while let Ok(Some(token)) = parser.next() { // BLAZE PATCH 0045
++        match token { // BLAZE PATCH 0045
++            FormatToken::Text(t) => out.push_str(t), // BLAZE PATCH 0045
++            FormatToken::Escape(e) => out.push_str(e.back_to_escape()), // BLAZE PATCH 0045
++            FormatToken::Capture { conv, .. } => { // BLAZE PATCH 0045
++                if conv == FormatConv::Repr { // BLAZE PATCH 0045
++                    repr_args.push(index); // BLAZE PATCH 0045
++                } // BLAZE PATCH 0045
++                out.push_str("{}"); // BLAZE PATCH 0045
++                index += 1; // BLAZE PATCH 0045
++            } // BLAZE PATCH 0045
++        } // BLAZE PATCH 0045
++    } // BLAZE PATCH 0045
++    (out, repr_args) // BLAZE PATCH 0045
++} // BLAZE PATCH 0045
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/module.rs starlark/src/eval/compiler/module.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/module.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/eval/compiler/module.rs	2026-11-18 10:00:27.727146091 -0700
@@ -1214,6 +1297,21 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [hash](
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/tests/uncategorized.rs starlark/src/tests/uncategorized.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/tests/uncategorized.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/tests/uncategorized.rs	2026-11-19 12:31:13.018750465 -0700
+@@ -90,8 +90,9 @@
+ #[test]
+ fn test_tabs_fail() {
+     let a = Assert::new();
+-    a.fail("def f():\n\tpass", "Parse error");
+-    a.fail("def f():\n x\t=3", "Parse error");
++    // BLAZE PATCH 0037: Java's text; a tab between tokens is ignored (Lexer.java:824-828).
++    a.fail("def f():\n\tpass", "Tab characters are not allowed"); // BLAZE PATCH 0037
++    a.pass("def f():\n x\t=3"); // BLAZE PATCH 0037
+ }
+ 
+ #[test]
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/error.rs starlark/src/values/error.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/error.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/error.rs	2026-11-18 16:05:12.252034303 -0700
@@ -2189,6 +2287,213 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      fn invoke(
          &self,
          _me: Value<'v>,
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/globals.rs starlark/src/values/types/int/globals.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/globals.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/int/globals.rs	2026-11-19 12:28:11.295137323 -0700
+@@ -41,19 +41,13 @@
+     /// `+Inf`, `-Inf`).
+     /// If x is a `bool`, the result is 0 for `False` or 1 for `True`.
+     ///
+-    /// If x is a string, it is interpreted like a string literal;
+-    /// an optional base prefix (`0`, `0b`, `0B`, `0x`, `0X`) determines which
+-    /// base to use. The string may specify an arbitrarily large integer,
+-    /// whereas true integer literals are restricted to 64 bits.
+-    /// If a non-zero `base` argument is provided, the string is interpreted
+-    /// in that base and no base prefix is permitted; the base argument may
+-    /// specified by name.
+-    ///
+-    /// `int()` with no arguments returns 0.
++    /// If x is a string, it is parsed as Bazel's `StarlarkInt.parse` does (BLAZE PATCH 0044):
++    /// `base` defaults to 10; with `base = 0` a `0b`/`0o`/`0x` prefix determines the base, and a
++    /// prefix matching an explicit base is allowed. The string may specify an arbitrarily large
++    /// integer. `x` is required.
+     ///
+     /// ```
+     /// # starlark::assert::all_true(r#"
+-    /// int() == 0
+     /// int(1) == 1
+     /// int(False) == 0
+     /// int(True) == 1
+@@ -68,8 +62,8 @@
+     /// int(2e9) == 2000000000
+     /// # "#);
+     /// # starlark::assert::fail(r#"
+-    /// int("hello")   # error: Cannot parse
+-    /// # "#, "Cannot parse");
++    /// int("hello")   # error: invalid base-10 literal
++    /// # "#, "invalid base-10 literal");
+     /// # starlark::assert::fail(r#"
+     /// int(float("nan"))   # error: cannot be represented as exact integer
+     /// # "#, "cannot be represented as exact integer");
+@@ -79,84 +73,25 @@
+     /// ```
+     #[starlark(as_type = PointerI32, speculative_exec_safe)]
+     fn int<'v>(
+-        #[starlark(require = pos)] a: Option<
+-            ValueOf<'v, Either<Either<NumRef<'v>, bool>, &'v str>>,
+-        >,
++        // BLAZE PATCH 0044: `x` is required (Java MethodLibrary.java:551-570: no default).
++        #[starlark(require = pos)] a: ValueOf<'v, Either<Either<NumRef<'v>, bool>, &'v str>>, // BLAZE PATCH 0044
+         base: Option<i32>,
+         heap: Heap<'v>,
+     ) -> starlark::Result<ValueOfUnchecked<'v, StarlarkInt>> {
+-        let Some(a) = a else {
+-            return Ok(ValueOfUnchecked::new(heap.alloc(0)));
+-        };
+         let num_or_bool = match a.typed {
+             Either::Left(num_or_bool) => num_or_bool,
+-            Either::Right(s) => {
+-                let base = base.unwrap_or(0);
+-                if base == 1 || base < 0 || base > 36 {
+-                    return Err(anyhow::anyhow!(
+-                        "{} is not a valid base, int() base must be >= 2 and <= 36",
+-                        base
+-                    )
+-                    .into());
+-                }
+-                let (negate, s) = {
+-                    match s.chars().next() {
+-                        Some('+') => (false, s.get(1..).unwrap()),
+-                        Some('-') => (true, s.get(1..).unwrap()),
+-                        _ => (false, s),
+-                    }
+-                };
+-                let base = if base == 0 {
+-                    match s.get(0..2) {
+-                        Some("0b") | Some("0B") => 2,
+-                        Some("0o") | Some("0O") => 8,
+-                        Some("0x") | Some("0X") => 16,
+-                        _ => 10,
+-                    }
+-                } else {
+-                    base as u32
+-                };
+-                let s = match base {
+-                    16 => {
+-                        if s.starts_with("0x") || s.starts_with("0X") {
+-                            s.get(2..).unwrap()
+-                        } else {
+-                            s
+-                        }
+-                    }
+-                    8 => {
+-                        if s.starts_with("0o") || s.starts_with("0O") {
+-                            s.get(2..).unwrap()
+-                        } else {
+-                            s
+-                        }
+-                    }
+-                    2 => {
+-                        if s.starts_with("0b") || s.starts_with("0B") {
+-                            s.get(2..).unwrap()
+-                        } else {
+-                            s
+-                        }
+-                    }
+-                    _ => s,
+-                };
+-                // We already handled the sign above, so we are not trying to parse another sign.
+-                if s.starts_with('-') || s.starts_with('+') {
+-                    return Err(anyhow::anyhow!("Cannot parse `{}` as an integer", s,).into());
+-                }
+-
+-                let x = StarlarkInt::from_str_radix(s, base)?;
+-                let x = if negate { -x } else { x };
+-                return Ok(ValueOfUnchecked::new(heap.alloc(x)));
+-            }
++            // BLAZE PATCH 0044: Java MethodLibrary.intForStarlark (MethodLibrary.java:613):
++            // `StarlarkInt.parse(x, base)` with base 10 when unbound.
++            Either::Right(s) => { // BLAZE PATCH 0044
++                let x = java_parse_int(s, base.unwrap_or(10)) // BLAZE PATCH 0044
++                    .map_err(crate::Error::new_value)?; // BLAZE PATCH 0044
++                return Ok(ValueOfUnchecked::new(heap.alloc(x))); // BLAZE PATCH 0044
++            } // BLAZE PATCH 0044
+         };
+ 
+-        if let Some(base) = base {
+-            return Err(anyhow::anyhow!(
+-                "int() cannot convert non-string with explicit base '{}'",
+-                base
+-            )
+-            .into());
++        if base.is_some() {
++            // BLAZE PATCH 0044: Java's text (MethodLibrary.java:624).
++            return Err(anyhow::anyhow!("can't convert non-string with explicit base").into()); // BLAZE PATCH 0044
+         }
+ 
+         match num_or_bool {
+@@ -168,3 +103,71 @@
+         }
+     }
+ }
++
++/// BLAZE PATCH 0044: Java `StarlarkInt.parse` (net/starlark/java/eval/StarlarkInt.java:99-168).
++/// Digits are Java's `Character.digit(c, base)`, which for chars up to U+00FF (every char of a
++/// Blaze internal string) is ASCII `0-9`, `a-z`, `A-Z` only; chars above U+00FF (other Unicode
++/// digits, which Java accepts) are rejected here.
++fn java_parse_int(s: &str, base: i32) -> anyhow::Result<StarlarkInt> { // BLAZE PATCH 0044
++    use num_bigint::BigInt; // BLAZE PATCH 0044
++    use num_traits::Num; // BLAZE PATCH 0044
++    let repr = |x: &str| { // BLAZE PATCH 0044
++        let mut r = String::new(); // BLAZE PATCH 0044
++        crate::values::types::string::repr::string_repr(x, &mut r); // BLAZE PATCH 0044
++        r // BLAZE PATCH 0044
++    }; // BLAZE PATCH 0044
++    let string_for_errors = s; // BLAZE PATCH 0044
++    if s.is_empty() { // BLAZE PATCH 0044
++        return Err(anyhow::anyhow!("empty string")); // BLAZE PATCH 0044
++    } // BLAZE PATCH 0044
++    let mut base = base; // BLAZE PATCH 0044
++    let (is_negative, s) = match s.as_bytes()[0] { // BLAZE PATCH 0044
++        b'+' => (false, &s[1..]), // BLAZE PATCH 0044
++        b'-' => (true, &s[1..]), // BLAZE PATCH 0044
++        _ => (false, s), // BLAZE PATCH 0044
++    }; // BLAZE PATCH 0044
++    let mut digits = s; // BLAZE PATCH 0044
++    let mut stripped = false; // BLAZE PATCH 0044
++    let mut chars = s.chars(); // BLAZE PATCH 0044
++    if let (Some('0'), Some(c)) = (chars.next(), chars.next()) { // BLAZE PATCH 0044
++        let prefix_base = match c { // BLAZE PATCH 0044
++            'b' | 'B' => 2, // BLAZE PATCH 0044
++            'o' | 'O' => 8, // BLAZE PATCH 0044
++            'x' | 'X' => 16, // BLAZE PATCH 0044
++            _ => 0, // BLAZE PATCH 0044
++        }; // BLAZE PATCH 0044
++        if prefix_base != 0 && (base == 0 || base == prefix_base) { // BLAZE PATCH 0044
++            base = prefix_base; // BLAZE PATCH 0044
++            digits = &s[2..]; // BLAZE PATCH 0044
++            stripped = true; // BLAZE PATCH 0044
++        } // BLAZE PATCH 0044
++    } // BLAZE PATCH 0044
++    if !stripped && base == 0 { // BLAZE PATCH 0044
++        // Don't infer base when input starts with '0' due to octal/decimal ambiguity.
++        if s.chars().count() > 1 && s.starts_with('0') { // BLAZE PATCH 0044
++            return Err(anyhow::anyhow!( // BLAZE PATCH 0044
++                "cannot infer base when string begins with a 0: {}", // BLAZE PATCH 0044
++                repr(string_for_errors) // BLAZE PATCH 0044
++            )); // BLAZE PATCH 0044
++        } // BLAZE PATCH 0044
++        base = 10; // BLAZE PATCH 0044
++    } // BLAZE PATCH 0044
++    if !(2..=36).contains(&base) { // BLAZE PATCH 0044
++        return Err(anyhow::anyhow!( // BLAZE PATCH 0044
++            "invalid base {base} (want 2 <= base <= 36)" // BLAZE PATCH 0044
++        )); // BLAZE PATCH 0044
++    } // BLAZE PATCH 0044
++    let invalid = || { // BLAZE PATCH 0044
++        anyhow::anyhow!("invalid base-{base} literal: {}", repr(string_for_errors)) // BLAZE PATCH 0044
++    }; // BLAZE PATCH 0044
++    // Java: Long.parseLong / new BigInteger: at least one digit, each `Character.digit >= 0`
++    // (their own sign was ruled out above).
++    if digits.is_empty() // BLAZE PATCH 0044
++        || !digits.chars().all(|c| c.is_ascii() && c.to_digit(base as u32).is_some()) // BLAZE PATCH 0044
++    { // BLAZE PATCH 0044
++        return Err(invalid()); // BLAZE PATCH 0044
++    } // BLAZE PATCH 0044
++    let value = BigInt::from_str_radix(digits, base as u32).map_err(|_| invalid())?; // BLAZE PATCH 0044
++    let value = if is_negative { -value } else { value }; // BLAZE PATCH 0044
++    Ok(StarlarkInt::from(value)) // BLAZE PATCH 0044
++} // BLAZE PATCH 0044
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/inline_int.rs starlark/src/values/types/int/inline_int.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/inline_int.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/int/inline_int.rs	2026-11-17 22:47:14.139673452 -0700
@@ -2214,7 +2519,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      pub(crate) fn to_bigint(self) -> BigInt {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/int_or_big.rs starlark/src/values/types/int/int_or_big.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/int_or_big.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/int/int_or_big.rs	2026-11-18 16:05:57.072030439 -0700
++++ starlark/src/values/types/int/int_or_big.rs	2026-11-19 12:19:33.436692133 -0700
 @@ -49,16 +49,20 @@
  
  #[derive(Debug, thiserror::Error)]
@@ -2239,9 +2544,11 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      #[error("Negative right shift")]
      RightShiftNegative,
  }
-@@ -105,7 +109,11 @@
+@@ -104,8 +108,13 @@
+ }
  
  impl StarlarkInt {
++    #[allow(dead_code)] // BLAZE PATCH 0044: `int()` parses as Java's StarlarkInt.parse
      pub(crate) fn from_str_radix(s: &str, base: u32) -> crate::Result<StarlarkInt> {
 -        Ok(StarlarkInt::from(TokenInt::from_str_radix(s, base)?))
 +        // BLAZE PATCH 0028: a value error, not the lexer's `Parser` kind (which reads as a syntax
@@ -2252,7 +2559,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      pub(crate) fn from_f64_exact(f: f64) -> anyhow::Result<StarlarkInt> {
-@@ -162,7 +170,7 @@
+@@ -162,7 +171,7 @@
          }
      }
  
@@ -2261,7 +2568,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          match self {
              StarlarkIntRef::Small(i) => i.to_bigint(),
              StarlarkIntRef::Big(i) => i.get().clone(),
-@@ -345,10 +353,10 @@
+@@ -345,10 +354,10 @@
          if self.is_zero() || other.is_zero() {
              return Ok(self.to_owned());
          }
@@ -3617,7 +3924,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +pub use crate::values::set::value::set_is_immutable; // BLAZE PATCH 0025
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/dot_format.rs starlark/src/values/types/string/dot_format.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/dot_format.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/string/dot_format.rs	2026-11-18 02:31:09.626428655 -0700
++++ starlark/src/values/types/string/dot_format.rs	2026-11-19 12:19:04.310530335 -0700
 @@ -71,7 +71,7 @@
          None => {
              let mut result = String::with_capacity(before.len() + after.len() + 10);
@@ -3627,6 +3934,60 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              result.push_str(after);
              heap.alloc_str(&result)
          }
+@@ -114,7 +114,9 @@
+         }
+     }
+ 
+-    fn by_index(&mut self, index: usize) -> anyhow::Result<Value<'v>> {
++    // BLAZE PATCH 0045: a Java `int` index (FormatParser.java:89-96: negative is "No replacement
++    // found for index -1", after the numbering check).
++    fn by_index(&mut self, index: i32) -> anyhow::Result<Value<'v>> { // BLAZE PATCH 0045
+         if self.by_order {
+             Err(anyhow::anyhow!(
+                 "Cannot mix manual field specification and automatic field numbering in format string",
+@@ -124,8 +126,8 @@
+                 self.args.extend(&mut self.iterator);
+                 self.by_index = true;
+             }
+-            match self.args.get(index) {
+-                None => Err(ValueError::IndexOutOfBound(index as i32).into()),
++            match usize::try_from(index).ok().and_then(|i| self.args.get(i)) { // BLAZE PATCH 0045
++                None => Err(ValueError::IndexOutOfBound(index).into()), // BLAZE PATCH 0045
+                 Some(v) => Ok(*v),
+             }
+         }
+@@ -174,10 +176,14 @@
+     if field.is_empty() {
+         conv(args.next_ordered()?, result);
+         Ok(())
+-    } else if field.bytes().all(|c| c.is_ascii_digit()) {
+-        let i = usize::from_str(field).map_err(|e| {
+-            anyhow::anyhow!("Error parsing `{field}` as a format string index: {e}")
+-        })?;
++    // BLAZE PATCH 0045: Java FormatParser.processOpeningBrace (FormatParser.java:85-100): a
++    // field of digits and `-` is an index when `Integer.parseInt` accepts it, else a keyword.
++    } else if let Some(i) = field // BLAZE PATCH 0045
++        .bytes() // BLAZE PATCH 0045
++        .all(|c| c.is_ascii_digit() || c == b'-') // BLAZE PATCH 0045
++        .then(|| i32::from_str(field).ok()) // BLAZE PATCH 0045
++        .flatten() // BLAZE PATCH 0045
++    {
+         conv(args.by_index(i)?, result);
+         Ok(())
+     } else {
+@@ -278,10 +284,8 @@
+             Some(("abc".to_owned(), "def".to_owned())),
+             parse_format_one("abc{}def")
+         );
+-        assert_eq!(
+-            Some(("abc".to_owned(), "def".to_owned())),
+-            parse_format_one("abc{!s}def")
+-        );
++        // BLAZE PATCH 0045: `{!s}` is the field `!s`, not a conversion.
++        assert_eq!(None, parse_format_one("abc{!s}def"));
+         assert_eq!(None, parse_format_one("abc{!r}def"));
+         assert_eq!(
+             Some(("a{b".to_owned(), "c}d{".to_owned())),
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/interpolation.rs starlark/src/values/types/string/interpolation.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/interpolation.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/string/interpolation.rs	2026-11-18 16:05:12.251768694 -0700
@@ -3891,7 +4252,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      if values.next().is_some() {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/iter.rs starlark/src/values/types/string/iter.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/iter.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/string/iter.rs	2026-11-18 07:57:12.584746662 -0700
++++ starlark/src/values/types/string/iter.rs	2026-11-19 12:16:46.838453614 -0700
 @@ -56,6 +56,7 @@
      produce_char: bool, // if not char, then int
  }
@@ -3900,15 +4261,23 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  pub(crate) fn iterate_chars<'v>(
      string: StringValue<'v>,
      heap: Heap<'v>,
+@@ -66,6 +67,7 @@
+     }))
+ }
+ 
++#[allow(dead_code)] // BLAZE PATCH 0043: no `codepoints` method
+ pub(crate) fn iterate_codepoints<'v>(
+     string: StringValue<'v>,
+     heap: Heap<'v>,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/methods.rs starlark/src/values/types/string/methods.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/methods.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/string/methods.rs	2026-11-18 21:32:30.947042751 -0700
-@@ -39,12 +39,12 @@
++++ starlark/src/values/types/string/methods.rs	2026-11-19 12:31:13.019944568 -0700
+@@ -39,12 +39,11 @@
  use crate::values::string::dot_format;
  use crate::values::tuple::UnpackTuple;
  use crate::values::type_repr::StarlarkTypeRepr;
 -use crate::values::types::string::iter::iterate_chars;
- use crate::values::types::string::iter::iterate_codepoints;
+-use crate::values::types::string::iter::iterate_codepoints;
  use crate::values::typing::iter::StarlarkIter;
  
  // This does not exists in rust, split would cut the string incorrectly and
@@ -3917,7 +4286,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  fn splitn_whitespace(s: &str, maxsplit: usize) -> Vec<String> {
      let mut v = Vec::new();
      let mut cur = String::new();
-@@ -71,6 +71,7 @@
+@@ -71,6 +70,7 @@
      v
  }
  
@@ -3925,7 +4294,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  fn rsplitn_whitespace(s: &str, maxsplit: usize) -> Vec<String> {
      let mut v = Vec::new();
      let mut cur = String::new();
-@@ -104,6 +105,141 @@
+@@ -104,6 +104,141 @@
      Tuple(UnpackTuple<&'v str>),
  }
  
@@ -4067,7 +4436,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  #[starlark_module]
  pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
      /// [string.elems](
-@@ -121,11 +257,16 @@
+@@ -121,11 +256,16 @@
      /// list("Hello, 世界".elems()) == ["H", "e", "l", "l", "o", ",", " ", "世", "界"]
      /// # "#);
      /// ```
@@ -4089,7 +4458,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.capitalize](
-@@ -140,16 +281,16 @@
+@@ -140,43 +280,21 @@
      /// "".capitalize() == ""
      /// # "#);
      /// ```
@@ -4114,7 +4483,55 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          Ok(result)
      }
  
-@@ -405,17 +546,10 @@
+-    /// [string.codepoints](
+-    /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·codepoints
+-    /// ): returns an iterable of the unicode codepoint of a string.
+-    ///
+-    /// `S.codepoints()` returns an iterable value containing the
+-    /// sequence of integer Unicode code points encoded by the string S.
+-    /// Each invalid code within the string is treated as if it encodes the
+-    /// Unicode replacement character, U+FFFD.
+-    ///
+-    /// By returning an iterable, not a list, the cost of decoding the string
+-    /// is deferred until actually needed; apply `list(...)` to the result to
+-    /// materialize the entire sequence.
+-    ///
+-    /// ```
+-    /// # starlark::assert::all_true(r#"
+-    /// list("Hello, 世界".codepoints()) == [72, 101, 108, 108, 111, 44, 32, 19990, 30028]
+-    /// # "#);
+-    /// ```
+-    fn codepoints<'v>(
+-        this: StringValue<'v>,
+-        heap: Heap<'v>,
+-    ) -> anyhow::Result<ValueOfUnchecked<'v, StarlarkIter<String>>> {
+-        Ok(iterate_codepoints(this, heap))
+-    }
++    // BLAZE PATCH 0043: no `codepoints` method (Java StringModule has none; `"abc".codepoints()`
++    // fails "'string' value has no field or method 'codepoints'").
+ 
+     /// [string.count](
+     /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·count
+@@ -321,7 +439,8 @@
+     /// The *conversion* specifies how to convert an argument value `x` to a
+     /// string. It may be either `!r`, which converts the value using
+     /// `repr(x)`, or `!s`, which converts the value using `str(x)` and is
+-    /// the default.
++    /// the default. BLAZE PATCH 0045: not in Bazel, whose `format` has no conversions: the
++    /// whole field (`0!r`) is the argument name (net/starlark/java/eval/FormatParser.java).
+     ///
+     /// The *format specifier*, after a colon, specifies field width,
+     /// alignment, padding, and numeric precision.
+@@ -333,7 +452,7 @@
+     /// "a{x}b{y}c{}".format(1, x=2, y=3) == "a2b3c1"
+     /// "a{}b{}c".format(1, 2) == "a1b2c"
+     /// "({1}, {0})".format("zero", "one") == "(one, zero)"
+-    /// "Is {0!r} {0!s}?".format("heterological") == "Is \"heterological\" heterological?"
++    /// "{0!r}".format(**{"0!r": 1}) == "1"
+     /// # "#);
+     /// ```
+     #[starlark(speculative_exec_safe)]
+@@ -405,17 +524,10 @@
      /// "Catch-22".isalnum() == False
      /// # "#);
      /// ```
@@ -4134,7 +4551,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.isalpha](
-@@ -432,17 +566,10 @@
+@@ -432,17 +544,10 @@
      /// "".isalpha() == False
      /// # "#);
      /// ```
@@ -4154,7 +4571,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.isdigit](
-@@ -459,17 +586,10 @@
+@@ -459,17 +564,10 @@
      /// "".isdigit() == False
      /// # "#);
      /// ```
@@ -4174,7 +4591,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.islower](
-@@ -486,17 +606,10 @@
+@@ -486,17 +584,10 @@
      /// "123".islower() == False
      /// # "#);
      /// ```
@@ -4194,7 +4611,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.isspace](
-@@ -513,17 +626,10 @@
+@@ -513,17 +604,10 @@
      /// "".isspace() == False
      /// # "#);
      /// ```
@@ -4214,7 +4631,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.istitle](
-@@ -542,29 +648,37 @@
+@@ -542,29 +626,37 @@
      /// "123".istitle() == False
      /// # "#);
      /// ```
@@ -4273,7 +4690,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.isupper](
-@@ -581,17 +695,10 @@
+@@ -581,17 +673,10 @@
      /// "123".isupper() == False
      /// # "#);
      /// ```
@@ -4293,7 +4710,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.lower](
-@@ -606,9 +713,10 @@
+@@ -606,9 +691,10 @@
      /// "Hello, World!".lower() == "hello, world!"
      /// # "#);
      /// ```
@@ -4305,7 +4722,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.join](
-@@ -684,20 +792,19 @@
+@@ -684,20 +770,22 @@
      /// "x!hello  ".lstrip("!x ") == "hello  "
      /// # "#);
      /// ```
@@ -4315,14 +4732,18 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    // speculative: the result depends on the evaluator's flag.
      fn lstrip<'v>(
          this: StringValue<'v>,
-         #[starlark(require = pos)] chars: Option<&str>,
+-        #[starlark(require = pos)] chars: Option<&str>,
 -        heap: Heap<'v>,
++        // BLAZE PATCH 0046: `chars` may be `None` (Java StringModule.java:243-249: String or
++        // NoneType, default None).
++        #[starlark(require = pos, default = NoneOr::None)] chars: NoneOr<&str>, // BLAZE PATCH 0046
 +        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0034
      ) -> anyhow::Result<StringValue<'v>> {
 -        let res = match chars {
 -            None => this.trim_start(),
 -            Some(s) => this.trim_start_matches(|c| s.contains(c)),
 -        };
++        let chars = chars.into_option(); // BLAZE PATCH 0046
 +        let res = this.trim_start_matches(java_strip_matcher(chars, eval)); // BLAZE PATCH 0034
          if res.len() == this.len() {
              Ok(this)
@@ -4332,7 +4753,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  
-@@ -772,15 +879,13 @@
+@@ -772,15 +860,13 @@
          #[starlark(require = pos)] count: Option<i32>,
          heap: Heap<'v>,
      ) -> anyhow::Result<StringValue<'v>> {
@@ -4351,7 +4772,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                  // Optimise `replace` using the Rust standard library definition,
                  // but avoiding redundant allocation in the last step
                  let x = this.as_str();
-@@ -925,41 +1030,29 @@
+@@ -925,41 +1011,29 @@
      /// "one two  three".rsplit(None, 1) == ["one two", "three"]
      /// # "#);
      /// ```
@@ -4411,7 +4832,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.rstrip](
-@@ -975,20 +1068,19 @@
+@@ -975,20 +1049,22 @@
      /// "  hello!x".rstrip(" x!") == "  hello"
      /// # "#);
      /// ```
@@ -4421,14 +4842,18 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    // speculative: the result depends on the evaluator's flag.
      fn rstrip<'v>(
          this: StringValue<'v>,
-         #[starlark(require = pos)] chars: Option<&str>,
+-        #[starlark(require = pos)] chars: Option<&str>,
 -        heap: Heap<'v>,
++        // BLAZE PATCH 0046: `chars` may be `None` (Java StringModule.java:243-249: String or
++        // NoneType, default None).
++        #[starlark(require = pos, default = NoneOr::None)] chars: NoneOr<&str>, // BLAZE PATCH 0046
 +        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0034
      ) -> anyhow::Result<StringValue<'v>> {
 -        let res = match chars {
 -            None => this.trim_end(),
 -            Some(s) => this.trim_end_matches(|c| s.contains(c)),
 -        };
++        let chars = chars.into_option(); // BLAZE PATCH 0046
 +        let res = this.trim_end_matches(java_strip_matcher(chars, eval)); // BLAZE PATCH 0034
          if res.len() == this.len() {
              Ok(this)
@@ -4438,7 +4863,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  
-@@ -1024,54 +1116,48 @@
+@@ -1024,54 +1100,48 @@
      /// "banana".split("n", 1) == ["ba", "ana"]
      /// # "#);
      /// ```
@@ -4528,7 +4953,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  
      /// [string.splitlines](
      /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·splitlines
-@@ -1175,20 +1261,19 @@
+@@ -1175,20 +1245,22 @@
      /// "xxhello!!".strip("x!") == "hello"
      /// # "#);
      /// ```
@@ -4538,14 +4963,18 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    // speculative: the result depends on the evaluator's flag.
      fn strip<'v>(
          this: StringValue<'v>,
-         #[starlark(require = pos)] chars: Option<&str>,
+-        #[starlark(require = pos)] chars: Option<&str>,
 -        heap: Heap<'v>,
++        // BLAZE PATCH 0046: `chars` may be `None` (Java StringModule.java:243-249: String or
++        // NoneType, default None).
++        #[starlark(require = pos, default = NoneOr::None)] chars: NoneOr<&str>, // BLAZE PATCH 0046
 +        eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0034
      ) -> anyhow::Result<StringValue<'v>> {
 -        let res = match chars {
 -            None => this.trim(),
 -            Some(s) => this.trim_matches(|c| s.contains(c)),
 -        };
++        let chars = chars.into_option(); // BLAZE PATCH 0046
 +        let res = this.trim_matches(java_strip_matcher(chars, eval)); // BLAZE PATCH 0034
          if res.len() == this.len() {
              Ok(this)
@@ -4555,7 +4984,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  
-@@ -1207,22 +1292,23 @@
+@@ -1207,22 +1279,23 @@
      /// "hElLo, WoRlD!".title() == "Hello, World!"
      /// # "#);
      /// ```
@@ -4591,7 +5020,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
          Ok(result)
      }
-@@ -1239,9 +1325,10 @@
+@@ -1239,9 +1312,10 @@
      /// "Hello, World!".upper() == "HELLO, WORLD!"
      /// # "#);
      /// ```
@@ -4603,6 +5032,15 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [string.removeprefix](
+@@ -1325,7 +1399,7 @@
+     #[test]
+     fn test_opaque_iterator() {
+         assert::is_true("type('foo'.elems()) != type([])");
+-        assert::is_true("type('foo'.codepoints()) != type([])");
++        // BLAZE PATCH 0043: no `codepoints`.
+     }
+ 
+     #[test]
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/repr.rs starlark/src/values/types/string/repr.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/repr.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/string/repr.rs	2026-11-18 21:32:43.475241984 -0700
@@ -4664,8 +5102,18 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      #[test]
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/str_type.rs starlark/src/values/types/string/str_type.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/string/str_type.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/string/str_type.rs	2026-11-18 21:32:59.512670930 -0700
-@@ -361,6 +361,17 @@
++++ starlark/src/values/types/string/str_type.rs	2026-11-19 12:16:31.263086345 -0700
+@@ -331,6 +331,9 @@
+         fn start_stop_to_none_or(v: Option<Value>) -> crate::Result<NoneOr<i32>> {
+             match v {
+                 None => Ok(NoneOr::None),
++                // BLAZE PATCH 0042: an explicit `None` bound is the default (Java
++                // Starlark.slice, net/starlark/java/eval/Starlark.java:692, :698).
++                Some(v) if v.is_none() => Ok(NoneOr::None), // BLAZE PATCH 0042
+                 Some(v) => Ok(NoneOr::Other(i32::unpack_value_err(v)?)),
+             }
+         }
+@@ -361,6 +364,17 @@
              Ok(None) => return None,
              Err(e) => return Some(Err(e)),
          };
@@ -4700,10 +5148,223 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              result.extend(self.content().iter().map(|e| e.to_value()));
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2: .cargo-ok
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2: .cargo_vcs_info.json
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/dialect.rs starlark_syntax/src/dialect.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/dialect.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/dialect.rs	2026-11-19 12:15:56.388114254 -0700
+@@ -64,6 +64,10 @@
+     ///
+     /// [Starlark spec proposal](https://github.com/bazelbuild/starlark/issues/91).
+     pub enable_f_strings: bool,
++    /// BLAZE PATCH 0040: are `b"..."` bytes literals (and `br`/`rb`) supported? Enabled in
++    /// every built-in dialect (upstream behaviour). Bazel has none: its lexer reads `b"x"` as the
++    /// identifier `b` followed by a string literal (net/starlark/java/syntax/Lexer.java:855-877).
++    pub enable_bytes_literals: bool, // BLAZE PATCH 0040
+     /// Like `#[non_exhaustive]`, but allows struct expression.
+     ///
+     /// [Explanation](https://github.com/rust-lang/rust-clippy/issues/6559).
+@@ -93,6 +97,7 @@
+         enable_load_reexport: true, // But they plan to change it
+         enable_top_level_stmt: false,
+         enable_f_strings: false,
++        enable_bytes_literals: true, // BLAZE PATCH 0040
+         _non_exhaustive: (),
+     };
+ 
+@@ -108,6 +113,7 @@
+         enable_load_reexport: true,
+         enable_top_level_stmt: true,
+         enable_f_strings: false,
++        enable_bytes_literals: true, // BLAZE PATCH 0040
+         _non_exhaustive: (),
+     };
+ 
+@@ -123,6 +129,7 @@
+         enable_load_reexport: true,
+         enable_top_level_stmt: true,
+         enable_f_strings: true,
++        enable_bytes_literals: true, // BLAZE PATCH 0040
+         _non_exhaustive: (),
+     };
+ }
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/dot_format_parser.rs starlark_syntax/src/dot_format_parser.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/dot_format_parser.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/dot_format_parser.rs	2026-11-19 12:19:04.310178677 -0700
+@@ -23,6 +23,10 @@
+ /// Parser for `.format()` arguments.
+ pub struct FormatParser<'a> {
+     view: StringView<'a>,
++    /// BLAZE PATCH 0045: whether `{x!r}` / `{x!s}` are conversions (upstream; used only to
++    /// compile f-strings). Bazel's `str.format` has none: the whole field is the key
++    /// (net/starlark/java/eval/FormatParser.java:193 getFieldName).
++    conversions: bool, // BLAZE PATCH 0045
+ }
+ 
+ /// Output the capture as `str` or `repr`.
+@@ -74,13 +78,24 @@
+ }
+ 
+ impl<'a> FormatParser<'a> {
++    /// BLAZE PATCH 0045: Bazel's `str.format` fields: no conversions.
+     #[inline]
+     pub fn new(s: &'a str) -> Self {
+         Self {
+             view: StringView::new(s),
++            conversions: false, // BLAZE PATCH 0045
+         }
+     }
+ 
++    /// BLAZE PATCH 0045: upstream fields with `!r` / `!s` conversions (f-strings).
++    #[inline]
++    pub fn new_with_conversions(s: &'a str) -> Self { // BLAZE PATCH 0045
++        Self { // BLAZE PATCH 0045
++            view: StringView::new(s), // BLAZE PATCH 0045
++            conversions: true, // BLAZE PATCH 0045
++        } // BLAZE PATCH 0045
++    } // BLAZE PATCH 0045
++
+     /// Parse the next token from the format string.
+     pub fn next(&mut self) -> anyhow::Result<Option<FormatToken<'a>>> {
+         let mut i = 0;
+@@ -106,7 +121,7 @@
+                                     conv: FormatConv::Str,
+                                 }));
+                             }
+-                            b'!' => {
++                            b'!' if self.conversions => { // BLAZE PATCH 0045
+                                 let capture = &self.view.eat(i + 1)[1..i];
+                                 let conv = if self.view.rem().starts_with('r') {
+                                     FormatConv::Repr
+@@ -221,7 +236,7 @@
+     #[test]
+     fn test_parser_position() {
+         let s = "foo{x}bar{yz}baz{w!s}qux{v!r}quux";
+-        let mut parser = FormatParser::new(s);
++        let mut parser = FormatParser::new_with_conversions(s); // BLAZE PATCH 0045
+         assert_eq!(parser.next().unwrap(), Some(FormatToken::Text("foo")));
+         assert_eq!(
+             parser.next().unwrap(),
+@@ -262,6 +277,29 @@
+         assert_eq!(parser.next().unwrap(), None);
+     }
+ 
++    // BLAZE PATCH 0045: Bazel's fields have no conversions.
++    #[test]
++    fn test_parser_bazel_fields_have_no_conversions() {
++        let mut parser = FormatParser::new("{v!r}{!s}");
++        assert_eq!(
++            parser.next().unwrap(),
++            Some(FormatToken::Capture {
++                capture: "v!r",
++                pos: 1,
++                conv: FormatConv::Str,
++            })
++        );
++        assert_eq!(
++            parser.next().unwrap(),
++            Some(FormatToken::Capture {
++                capture: "!s",
++                pos: 6,
++                conv: FormatConv::Str,
++            })
++        );
++        assert_eq!(parser.next().unwrap(), None);
++    }
++
+     #[test]
+     fn test_failure() {
+         let s = "}foo";
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/fast_string.rs starlark_syntax/src/fast_string.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/fast_string.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/fast_string.rs	2026-11-19 12:16:31.262316859 -0700
+@@ -178,6 +178,7 @@
+     }
+ }
+ 
++#[allow(dead_code)] // BLAZE PATCH 0041: replaced by Java's clamping
+ fn convert_str_indices_slow(
+     s: &str,
+     start: Option<i32>,
+@@ -213,45 +214,38 @@
+ }
+ 
+ /// Convert common `start` and `end` arguments of `str` functions like `str.find`.
++///
++/// BLAZE PATCH 0041: Java `StringModule.substringIndices` (net/starlark/java/eval/
++/// StringModule.java:111-126): each index is made non-negative and clamped to `[0, len]`
++/// (`EvalUtils.toIndex`), and an end before the start becomes the start, so the result is never
++/// `None`: `"abc".find("", 5)` searches the empty substring at 3 (was `None`, i.e. "not found").
+ #[inline(always)]
+-pub fn convert_str_indices(
+-    s: &str,
+-    start: Option<i32>,
+-    end: Option<i32>,
+-) -> Option<StrIndices<'_>> {
+-    match (start, end) {
+-        // Following cases but last optimize index computation
+-        // by avoiding computing the length of the string.
+-        (None, None) => Some(StrIndices {
+-            start: CharIndex(0),
+-            haystack: s,
+-        }),
+-        (Some(start), None) if start >= 0 => {
+-            let (_, s) = split_at(s, CharIndex(start as usize))?;
+-            Some(StrIndices {
+-                start: CharIndex(start as usize),
+-                haystack: s,
+-            })
+-        }
+-        (None, Some(end)) if end >= 0 => {
+-            let s = split_at_end(s, CharIndex(end as usize));
+-            Some(StrIndices {
+-                start: CharIndex(0),
+-                haystack: s,
+-            })
+-        }
+-        (Some(start), Some(end)) if start >= 0 && end >= start => {
+-            let (_, s) = split_at(s, CharIndex(start as usize))?;
+-            let s = split_at_end(s, CharIndex((end - start) as usize));
+-            Some(StrIndices {
+-                start: CharIndex(start as usize),
+-                haystack: s,
+-            })
+-        }
+-        (Some(start), Some(end)) if ((start >= 0) == (end >= 0)) && start > end => None,
+-        (start, end) => convert_str_indices_slow(s, start, end),
+-    }
+-}
++pub fn convert_str_indices( // BLAZE PATCH 0041
++    s: &str, // BLAZE PATCH 0041
++    start: Option<i32>, // BLAZE PATCH 0041
++    end: Option<i32>, // BLAZE PATCH 0041
++) -> Option<StrIndices<'_>> { // BLAZE PATCH 0041
++    if start.is_none() && end.is_none() { // BLAZE PATCH 0041
++        return Some(StrIndices { // BLAZE PATCH 0041
++            start: CharIndex(0), // BLAZE PATCH 0041
++            haystack: s, // BLAZE PATCH 0041
++        }); // BLAZE PATCH 0041
++    } // BLAZE PATCH 0041
++    let n = len(s).0 as i32; // BLAZE PATCH 0041
++    // Java EvalUtils.toIndex (EvalUtils.java:63).
++    let to_index = |i: i32| { // BLAZE PATCH 0041
++        let i = if i < 0 { i.saturating_add(n) } else { i }; // BLAZE PATCH 0041
++        i.clamp(0, n) as usize // BLAZE PATCH 0041
++    }; // BLAZE PATCH 0041
++    let istart = start.map_or(0, to_index); // BLAZE PATCH 0041
++    let iend = end.map_or(n as usize, to_index).max(istart); // BLAZE PATCH 0041
++    let (_, rest) = split_at(s, CharIndex(istart))?; // BLAZE PATCH 0041
++    let haystack = split_at_end(rest, CharIndex(iend - istart)); // BLAZE PATCH 0041
++    Some(StrIndices { // BLAZE PATCH 0041
++        start: CharIndex(istart), // BLAZE PATCH 0041
++        haystack, // BLAZE PATCH 0041
++    }) // BLAZE PATCH 0041
++} // BLAZE PATCH 0041
+ 
+ #[inline]
+ pub fn contains(haystack: &str, needle: &str) -> bool {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer.rs starlark_syntax/src/lexer.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark_syntax/src/lexer.rs	2026-11-18 21:37:50.734599343 -0700
-@@ -33,6 +33,37 @@
++++ starlark_syntax/src/lexer.rs	2026-11-19 12:15:56.388715010 -0700
+@@ -33,20 +33,57 @@
  use crate::dialect::Dialect;
  use crate::eval_exception::EvalException;
  
@@ -4741,9 +5402,12 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  #[derive(Error, Debug)]
  pub enum LexemeError {
      #[error("Parse error: incorrect indentation")]
-@@ -41,12 +72,17 @@
+     Indentation,
+     #[error("Parse error: invalid input `{0}`")]
      InvalidInput(String),
-     #[error("Parse error: tabs are not allowed")]
+-    #[error("Parse error: tabs are not allowed")]
++    // BLAZE PATCH 0037: Java's text (net/starlark/java/syntax/Lexer.java:220).
++    #[error("Tab characters are not allowed for indentation. Use spaces instead.")] // BLAZE PATCH 0037
      InvalidTab,
 -    #[error("Parse error: unfinished string literal")]
 +    #[error("unclosed string literal")] // BLAZE PATCH 0032: Java's text (Lexer.java:301)
@@ -4760,7 +5424,91 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      #[error("Parse error: cannot use reserved keyword `{0}`")]
      ReservedKeyword(String),
      #[error("Parse error: integer cannot have leading 0, got `{0}`")]
-@@ -332,6 +368,52 @@
+@@ -59,6 +96,11 @@
+     CannotParse(String, u32),
+     #[error("Parse error: f-string expression is missing closing `}}`")]
+     UnfinishedFStringExpression,
++    // BLAZE PATCH 0038: Java's texts (net/starlark/java/syntax/IntLiteral.java:82, Lexer.java:1007).
++    #[error("invalid octal literal: {0} (use '0o{1}')")] // BLAZE PATCH 0038
++    BlazeInvalidOctalLiteral(String, String), // BLAZE PATCH 0038
++    #[error("floating-point literal too large")] // BLAZE PATCH 0038
++    BlazeFloatTooLarge, // BLAZE PATCH 0038
+ }
+ 
+ impl From<LexemeError> for crate::error::Error {
+@@ -102,10 +144,12 @@
+     done: bool,
+     /// Stack of f-string states (for nested f-strings).
+     fstring_stack: Vec<FStringState>,
++    /// BLAZE PATCH 0040: `Dialect::enable_bytes_literals`.
++    bytes_literals: bool, // BLAZE PATCH 0040
+ }
+ 
+ impl<'a> Lexer<'a> {
+-    pub fn new(input: &'a str, _dialect: &Dialect, codemap: CodeMap) -> Self {
++    pub fn new(input: &'a str, dialect: &Dialect, codemap: CodeMap) -> Self { // BLAZE PATCH 0040
+         let lexer = Token::lexer(input);
+         let mut lexer2 = Self {
+             codemap,
+@@ -116,6 +160,7 @@
+             parens: 0,
+             done: false,
+             fstring_stack: Vec::new(),
++            bytes_literals: dialect.enable_bytes_literals, // BLAZE PATCH 0040
+         };
+         if let Err(e) = lexer2.calculate_indent() {
+             lexer2.buffer.push_back(Err(e));
+@@ -171,11 +216,20 @@
+         let mut it = CursorBytes::new(self.lexer.remainder());
+         let mut spaces = 0;
+         let mut tabs = 0;
++        // BLAZE PATCH 0037: Java Lexer.computeIndentation (Lexer.java:217-220) reports a tab
++        // anywhere in the indentation it skips, including blank lines, lines holding only a
++        // comment, and trailing whitespace at the end of the file; at the position after the
++        // first tab.
++        let mut first_tab: Option<usize> = None; // BLAZE PATCH 0037
++        let indent_scan_start = self.lexer.span().end; // BLAZE PATCH 0037
+         let mut indent_start = self.lexer.span().end;
+         loop {
+             match it.next_char() {
+                 None => {
+                     self.lexer.bump(it.pos());
++                    if let Some(at) = first_tab { // BLAZE PATCH 0037
++                        return self.err_pos(LexemeError::InvalidTab, at); // BLAZE PATCH 0037
++                    } // BLAZE PATCH 0037
+                     return Ok(());
+                 }
+                 Some(' ') => {
+@@ -183,11 +237,17 @@
+                 }
+                 Some('\t') => {
+                     tabs += 1;
++                    if first_tab.is_none() { // BLAZE PATCH 0037
++                        first_tab = Some(indent_scan_start + it.pos()); // BLAZE PATCH 0037
++                    } // BLAZE PATCH 0037
+                 }
+                 Some('\n') => {
+                     // A line that is entirely blank gets emitted as a newline, and then
+                     // we don't consume the subsequent newline character.
+                     self.lexer.bump(it.pos() - 1);
++                    if let Some(at) = first_tab { // BLAZE PATCH 0037
++                        return self.err_pos(LexemeError::InvalidTab, at); // BLAZE PATCH 0037
++                    } // BLAZE PATCH 0037
+                     return Ok(());
+                 }
+                 Some('\r') => {
+@@ -221,8 +281,8 @@
+         }
+         self.lexer.bump(it.pos() - 1); // last character broke us out the loop
+         let indent = spaces + tabs * 8;
+-        if tabs > 0 {
+-            return self.err_pos(LexemeError::InvalidTab, self.lexer.span().start);
++        if let Some(at) = first_tab { // BLAZE PATCH 0037
++            return self.err_pos(LexemeError::InvalidTab, at); // BLAZE PATCH 0037
+         }
+         let now = self.indent_levels.last().copied().unwrap_or(0);
+ 
+@@ -332,6 +392,52 @@
          Ok(())
      }
  
@@ -4813,7 +5561,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Parse a String. Return the String, and the offset where it starts.
      // String parsing is a hot-spot, so parameterise by a `stop` function which gets
      // specialised for each variant
-@@ -412,34 +494,59 @@
+@@ -412,34 +518,59 @@
                      string_end -= 1;
                      break;
                  }
@@ -4892,6 +5640,188 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                      }
                  }
                  c => res.push(c),
+@@ -699,15 +830,11 @@
+                                 self.wrap(Token::Newline)
+                             }
+                             Some(Ok(token)) => match token {
+-                                Token::Tabs => {
+-                                    self.buffer.push_back(
+-                                        self.err_pos(
+-                                            LexemeError::InvalidTab,
+-                                            self.lexer.span().start,
+-                                        ),
+-                                    );
+-                                    continue;
+-                                }
++                                // BLAZE PATCH 0037: a tab between tokens is ignored, as a space
++                                // (Java Lexer.tokenize, Lexer.java:824-828; inside brackets
++                                // newlineInsideExpression, :191). Tabs in indentation are
++                                // checked by `calculate_indent`.
++                                Token::Tabs => continue, // BLAZE PATCH 0037
+                                 Token::Newline => {
+                                     if self.parens == 0 && !self.in_fstring_expr_mode() {
+                                         let span = self.lexer.span();
+@@ -723,7 +850,11 @@
+                                 Token::RawDecInt => {
+                                     let s = self.lexer.slice();
+                                     if s.len() > 1 && &s[0..1] == "0" {
+-                                        return Some(self.err_now(LexemeError::StartsZero));
++                                        // BLAZE PATCH 0038: Java IntLiteral.scan (IntLiteral.java:82).
++                                        return Some(self.err_now(|s| { // BLAZE PATCH 0038
++                                            let rest = s[1..].to_owned(); // BLAZE PATCH 0038
++                                            LexemeError::BlazeInvalidOctalLiteral(s, rest) // BLAZE PATCH 0038
++                                        })); // BLAZE PATCH 0038
+                                     }
+                                     Some(self.int(s, 10))
+                                 }
+@@ -737,11 +868,18 @@
+                                     assert!(s.starts_with("0x") || s.starts_with("0X"));
+                                     Some(self.int(&s[2..], 16))
+                                 }
+-                                Token::RawBinInt => {
+-                                    let s = self.lexer.slice();
+-                                    assert!(s.starts_with("0b") || s.starts_with("0B"));
+-                                    Some(self.int(&s[2..], 2))
+-                                }
++                                // BLAZE PATCH 0038: Bazel has no binary literals: its lexer scans
++                                // `0b101` (Lexer.java:945-953) and IntLiteral.scan rejects every
++                                // `0` prefix but `0x`/`0o` (IntLiteral.java:69-84).
++                                Token::RawBinInt => Some(self.err_now(|s| { // BLAZE PATCH 0038
++                                    let rest = s[1..].to_owned(); // BLAZE PATCH 0038
++                                    LexemeError::BlazeInvalidOctalLiteral(s, rest) // BLAZE PATCH 0038
++                                })), // BLAZE PATCH 0038
++                                // BLAZE PATCH 0038: Java Lexer.scanNumberOrDotOrEllipsis
++                                // (Lexer.java:1005-1008): a float literal that is not finite.
++                                Token::Float(f) if !f.is_finite() => { // BLAZE PATCH 0038
++                                    Some(self.err_now(|_| LexemeError::BlazeFloatTooLarge)) // BLAZE PATCH 0038
++                                } // BLAZE PATCH 0038
+                                 Token::Int(..) => unreachable!("Lexer does not produce Int tokens"),
+                                 Token::RawDoubleQuote => {
+                                     let raw = self.lexer.span().len() == 2;
+@@ -804,6 +942,14 @@
+                                     }
+                                     self.wrap(token)
+                                 }
++                                // BLAZE PATCH 0040: without bytes literals, the prefix is an
++                                // identifier and the quote starts an ordinary string literal
++                                // (Java Lexer.java:855-877).
++                                Token::RawByteDoubleQuote | Token::RawByteSingleQuote // BLAZE PATCH 0040
++                                    if !self.bytes_literals => // BLAZE PATCH 0040
++                                {
++                                    Some(self.bytes_prefix_as_identifier()) // BLAZE PATCH 0040
++                                }
+                                 Token::RawByteDoubleQuote => {
+                                     // span len: b" = 2, br" = 3, rb" = 3
+                                     let raw = self.lexer.span().len() >= 3;
+@@ -877,6 +1023,26 @@
+         }
+     }
+ 
++    /// BLAZE PATCH 0040: the current `b"` / `br"` / `rb"` token (and its single-quote forms) as
++    /// Bazel's lexer reads it: an identifier (`b`, `br`, `rb`), then a non-raw string literal
++    /// opened by the quote (queued in `buffer`).
++    fn bytes_prefix_as_identifier(&mut self) -> Lexeme { // BLAZE PATCH 0040
++        let span = self.lexer.span(); // BLAZE PATCH 0040
++        let slice = self.lexer.slice(); // BLAZE PATCH 0040
++        let ident = slice[..slice.len() - 1].to_owned(); // BLAZE PATCH 0040
++        let string = if slice.ends_with('"') { // BLAZE PATCH 0040
++            self.parse_double_quoted_string(false) // BLAZE PATCH 0040
++        } else { // BLAZE PATCH 0040
++            self.parse_single_quoted_string(false) // BLAZE PATCH 0040
++        }; // BLAZE PATCH 0040
++        if let Some(string) = string { // BLAZE PATCH 0040
++            let string = map_lexeme_t(string, |(s, _offset)| Token::String(s)) // BLAZE PATCH 0040
++                .map(|(_, t, r)| (span.end - 1, t, r)); // BLAZE PATCH 0040
++            self.buffer.push_back(string); // BLAZE PATCH 0040
++        } // BLAZE PATCH 0040
++        Ok((span.start, Token::Identifier(ident), span.end - 1)) // BLAZE PATCH 0040
++    } // BLAZE PATCH 0040
++
+     fn parse_double_quoted_string(&mut self, raw: bool) -> Option<LexemeT<(String, usize)>> {
+         if self.lexer.remainder().starts_with("\"\"") {
+             let mut qs = 0;
+@@ -1215,12 +1381,16 @@
+ /// All token that can be generated by the lexer
+ #[derive(Logos, Debug, Clone, PartialEq)]
+ #[logos(skip r" +")] // whitespace
++#[logos(skip r"\r")] // BLAZE PATCH 0037: a carriage return between tokens is ignored (Lexer.java:826)
+ #[logos(skip r"\\\n")] // Escaped newline
+ #[logos(skip r"\\\r\n")] // Escaped newline (Windows line ending)
+ pub enum Token {
+     /// Comment as token.
+     /// Span includes the leading `#`, but the content does not.
+-    #[regex(r#"#[^\r\n]*"#, |lex| lex.slice()[1..].to_owned())]
++    // BLAZE PATCH 0037: a comment runs to the line feed (Java Lexer.scanToNewline, Lexer.java:555);
++    // a carriage return inside it is part of it. A trailing CR (CRLF line end) is not kept in
++    // the content, as before.
++    #[regex(r#"#[^\n]*"#, |lex| { let s = &lex.slice()[1..]; s.strip_suffix('\r').unwrap_or(s).to_owned() })] // BLAZE PATCH 0037
+     Comment(String),
+ 
+     #[regex("\t+")] // Tabs (might be an error)
+@@ -1263,11 +1433,11 @@
+ 
+     Bytes(Vec<u8>), // A bytes literal
+ 
++    // BLAZE PATCH 0039: `async` and `await` are not reserved (Java's keywordMap,
++    // net/starlark/java/syntax/Lexer.java:569-599, does not have them): identifiers.
+     #[regex(
+         "as|\
+         assert|\
+-        async|\
+-        await|\
+         class|\
+         del|\
+         except|\
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer_tests/int_lit.fail.golden starlark_syntax/src/lexer_tests/int_lit.fail.golden
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer_tests/int_lit.fail.golden	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/lexer_tests/int_lit.fail.golden	2026-11-19 12:30:58.647073576 -0700
+@@ -8,7 +8,7 @@
+ x = 01
+ 
+ Error:
+-error: Parse error: integer cannot have leading 0, got `01`
++error: invalid octal literal: 01 (use '0o1')
+  --> x:1:5
+   |
+ 1 | x = 01
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer_tests/int_lit.golden starlark_syntax/src/lexer_tests/int_lit.golden
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer_tests/int_lit.golden	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/lexer_tests/int_lit.golden	2026-11-19 12:30:58.646484450 -0700
+@@ -7,7 +7,6 @@
+ Program:
+ 0 123
+ 0x7F 0x7d
+-0B1011 0b1010
+ 0o755 0O753
+ 
+ Tokens:
+@@ -17,9 +16,6 @@
+ integer literal '127'  # 0x7F
+ integer literal '125'  # 0x7d
+ new line               # \n
+-integer literal '11'   # 0B1011
+-integer literal '10'   # 0b1010
+-new line               # \n
+ integer literal '493'  # 0o755
+ integer literal '491'  # 0O753
+ new line               #
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer_tests.rs starlark_syntax/src/lexer_tests.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer_tests.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/lexer_tests.rs	2026-11-19 12:30:58.647486674 -0700
+@@ -134,11 +134,12 @@
+         r#"
+ 0 123
+ 0x7F 0x7d
+-0B1011 0b1010
+ 0o755 0O753
+ "#,
+     );
+     // Starlark requires us to ban leading zeros (confusion with implicit octal)
++    // BLAZE PATCH 0038: and Bazel has no binary literals (`0b...`, tested in starlark_conformance
++    // patch_0038_number_literals); the binary literals of this input were removed.
+     lexer_fail_golden_test("int_lit", &["x = 01"]);
+ }
+ 
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/ast.rs starlark_syntax/src/syntax/ast.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/ast.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark_syntax/src/syntax/ast.rs	2026-11-18 15:53:55.966247222 -0700
@@ -4948,7 +5878,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          expr: Spanned { node, span },
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/parser_rd.rs starlark_syntax/src/syntax/parser_rd.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/parser_rd.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark_syntax/src/syntax/parser_rd.rs	2026-11-18 16:14:11.696211684 -0700
++++ starlark_syntax/src/syntax/parser_rd.rs	2026-11-19 12:36:52.874065150 -0700
 @@ -37,6 +37,7 @@
  use crate::lexer::Token;
  use crate::syntax::ast::*;
@@ -4970,7 +5900,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  pub(crate) struct ParserRd<'a, I: Iterator<Item = Lexeme>> {
      tokens: I,
      /// Current token with span, or None if EOF.
-@@ -67,6 +74,10 @@
+@@ -67,6 +74,13 @@
      /// token, used to construct EOF spans when `current` is None.
      last_end: usize,
      state: ParserState<'a>,
@@ -4978,10 +5908,13 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    type_syntax: bool,
 +    /// BLAZE PATCH 0020: nesting depth of `def` bodies (type aliases are top-level only).
 +    def_depth: u32,
++    /// BLAZE PATCH 0047: Java Parser.insideTypeExpr (Parser.java:120), set while parsing a type
++    /// annotation.
++    in_type_expr: bool, // BLAZE PATCH 0047
  }
  
  impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
-@@ -75,12 +86,16 @@
+@@ -75,12 +89,17 @@
              Ok(current) => (current, None),
              Err(err) => (None, Some(err)),
          };
@@ -4995,10 +5928,11 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              state,
 +            type_syntax,
 +            def_depth: 0,
++            in_type_expr: false, // BLAZE PATCH 0047
          }
      }
  
-@@ -237,6 +252,8 @@
+@@ -237,6 +256,8 @@
          let l = self.pos();
          self.consume(&Token::Def);
          let name = self.parse_assign_ident()?;
@@ -5007,7 +5941,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          self.expect(&Token::OpeningRound)?;
          let params = self.parse_comma_separated_def_params()?;
          self.expect(&Token::ClosingRound)?;
-@@ -246,7 +263,10 @@
+@@ -246,7 +267,10 @@
              None
          };
          self.expect(&Token::Colon)?;
@@ -5019,7 +5953,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let r = self.last_end;
          Ok(StmtP::Def(DefP {
              name,
-@@ -385,6 +405,15 @@
+@@ -385,6 +409,15 @@
      fn parse_assign_or_expr_stmt(&mut self) -> Result<AstStmt, EvalException> {
          let l = self.pos();
          let first = self.parse_test()?;
@@ -5035,7 +5969,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let lhs_is_expr_list = self.peek() == Some(&Token::Comma);
          let lhs = if lhs_is_expr_list {
              self.parse_test_list_tail(l, first, false)?
-@@ -393,6 +422,7 @@
+@@ -393,6 +426,7 @@
          };
  
          // Check for type annotation
@@ -5043,7 +5977,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let ty = if self.eat(&Token::Colon) {
              Some(Box::new(self.parse_type_expr()?))
          } else {
-@@ -407,6 +437,47 @@
+@@ -407,6 +441,47 @@
              let r = self.last_end;
              let stmt = grammar_util::check_assignment(self.state.codemap, lhs, ty, assign_op, rhs)?;
              Ok(stmt.ast(l, r))
@@ -5091,7 +6025,18 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          } else if lhs_is_expr_list || ty.is_some() {
              Err(self.error_expected("assignment operator"))
          } else {
-@@ -950,6 +1021,12 @@
+@@ -522,7 +597,9 @@
+     fn parse_load_symbol(&mut self) -> Result<(AstAssignIdent, AstString), EvalException> {
+         // Either "name" or ident = "name"
+         match self.peek() {
+-            Some(Token::Identifier(_)) => {
++            // BLAZE PATCH 0048: `cast` / `isinstance` are keywords under type syntax, not a
++            // local name (Java Parser.parseLoadStatement expects an IDENTIFIER).
++            Some(Token::Identifier(_)) if self.at_type_keyword().is_none() => { // BLAZE PATCH 0048
+                 // Check if this is `ident = "string"` form
+                 let (id_l, ident, id_r) = take_payload!(self, Token::Identifier);
+                 if self.eat(&Token::Equal) {
+@@ -950,6 +1027,12 @@
      }
  
      fn parse_atom(&mut self) -> Result<AstExpr, EvalException> {
@@ -5104,7 +6049,25 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          match self.peek() {
              Some(Token::Identifier(_)) => {
                  let (l, ident, r) = take_payload!(self, Token::Identifier);
-@@ -1152,6 +1229,10 @@
+@@ -1027,6 +1110,17 @@
+                 let l = self.pos();
+                 self.advance();
+                 let r = self.last_end;
++                // BLAZE PATCH 0047: Java Parser.parsePrimary (Parser.java:775-778) under type
++                // syntax: `...` only inside a type expression. (Without type syntax `validate`
++                // rejects it; with type checking, upstream rules.)
++                if self.type_syntax && !self.in_type_expr { // BLAZE PATCH 0047
++                    let err = self.error_at( // BLAZE PATCH 0047
++                        l, // BLAZE PATCH 0047
++                        r, // BLAZE PATCH 0047
++                        "ellipsis ('...') is not allowed outside type expressions".to_owned(), // BLAZE PATCH 0047
++                    ); // BLAZE PATCH 0047
++                    self.state.errors.push(err); // BLAZE PATCH 0047
++                } // BLAZE PATCH 0047
+                 Ok(Expr::Literal(AstLiteral::Ellipsis).ast(l, r))
+             }
+             Some(Token::OpeningRound) => {
+@@ -1152,6 +1246,10 @@
      // ==================== Helpers ====================
  
      fn parse_identifier_string(&mut self) -> Result<AstString, EvalException> {
@@ -5115,7 +6078,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          match &self.current {
              Some((_, Token::Identifier(_), _)) => match self.take_current() {
                  Some((l, Token::Identifier(s), r)) => Ok(s.ast(l, r)),
-@@ -1182,6 +1263,102 @@
+@@ -1182,9 +1280,109 @@
          }
      }
  
@@ -5216,8 +6179,29 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    }
 +
      fn parse_type_expr(&mut self) -> Result<AstTypeExpr, EvalException> {
-         let expr = self.parse_test()?;
-         grammar_util::dialect_check_type(&self.state, expr)
+-        let expr = self.parse_test()?;
+-        grammar_util::dialect_check_type(&self.state, expr)
++        // BLAZE PATCH 0047: Java Parser.parseTypeExprWithFallback (Parser.java:1084-1095) sets
++        // insideTypeExpr, and clears it (not restores it) afterwards.
++        self.in_type_expr = true; // BLAZE PATCH 0047
++        let expr = self.parse_test(); // BLAZE PATCH 0047
++        self.in_type_expr = false; // BLAZE PATCH 0047
++        grammar_util::dialect_check_type(&self.state, expr?) // BLAZE PATCH 0047
+     }
+ 
+     // ==================== Parameters ====================
+@@ -1346,7 +1544,10 @@
+                 let r = self.last_end;
+                 Ok(Argument::Args(e).ast(l, r))
+             }
+-            Some(Token::Identifier(_)) => {
++            // BLAZE PATCH 0048: under type syntax `cast` and `isinstance` are keywords
++            // (Lexer.java:615), so `f(cast(T, x))` is a cast expression argument
++            // (Parser.parseArgument -> parseTest), not a call of a name `cast`.
++            Some(Token::Identifier(_)) if self.at_type_keyword().is_none() => { // BLAZE PATCH 0048
+                 // Could be `ident = expr` (named) or just a positional expr
+                 // We need to tentatively parse as identifier, then check for `=`
+                 let (id_l, ident, id_r) = take_payload!(self, Token::Identifier);
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/validate.rs starlark_syntax/src/syntax/validate.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/validate.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark_syntax/src/syntax/validate.rs	2026-11-18 15:53:55.966458751 -0700

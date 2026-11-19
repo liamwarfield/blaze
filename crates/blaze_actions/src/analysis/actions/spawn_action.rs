@@ -560,6 +560,36 @@ impl Action for SpawnAction {
         }
     }
 
+    // Java: com/google/devtools/build/lib/analysis/actions/StarlarkAction.java:336 EnhancedStarlarkAction.setInputsDiscovered
+    fn set_inputs_discovered(&self, inputs_discovered: bool) {
+        match self.enhanced() {
+            Some(d) => *d.inputs_discovered.lock() = inputs_discovered,
+            None => panic!(
+                "IllegalStateException: Must be overridden by input-discovering action: {}",
+                self.to_string_java()
+            ),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/actions/StarlarkAction.java:341 EnhancedStarlarkAction.getAllowedDerivedInputs
+    fn get_allowed_derived_inputs(&self) -> NestedSet<Artifact> {
+        match self.enhanced() {
+            Some(d) => {
+                if let Some(shadowed) = &d.shadowed_action {
+                    return create_inputs(&[
+                        shadowed.get_allowed_derived_inputs(),
+                        self.get_inputs(),
+                    ]);
+                }
+                self.get_inputs()
+            }
+            None => panic!(
+                "IllegalStateException: Must be overridden for action that may have unknown inputs: {}",
+                self.to_string_java()
+            ),
+        }
+    }
+
     // Java: com/google/devtools/build/lib/analysis/actions/StarlarkAction.java:483 EnhancedStarlarkAction.getEffectiveEnvironment
     fn get_effective_environment(
         &self,

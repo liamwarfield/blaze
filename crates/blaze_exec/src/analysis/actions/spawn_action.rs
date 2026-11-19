@@ -8,7 +8,7 @@ use blaze_actions::actions::action::Action;
 use blaze_actions::actions::command_line_limits::CommandLineLimits;
 use blaze_actions::analysis::actions::path_mappers;
 use blaze_actions::analysis::actions::spawn_action::{
-    ResourceSet as AnalysisResourceSet, ResourceSetBuilder, SpawnAction,
+    ResourceSet as AnalysisResourceSet, ResourceSetBuilder, SpawnAction, SpawnActionClass,
 };
 use blaze_collect::command_line_item::{CommandLineExpansionException, MapFnError};
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
@@ -17,6 +17,7 @@ use blaze_shell::util::os::OS;
 use indexmap::IndexMap;
 
 use super::{KeyMetadataAdapter, failure_detail, to_action_input_set};
+use crate::actions::EnvironmentalExecException;
 use crate::actions::action_adapters::{ActionMetadataSnapshot, artifact_input};
 use crate::actions::{
     ActionExecutionException, ActionInputRef, ActionResult, ExecException, ExecutableAction,
@@ -241,22 +242,274 @@ fn create_command_line_exception(
 // Java: com/google/devtools/build/lib/analysis/actions/StarlarkAction.java:403 EnhancedStarlarkAction.afterExecute
 fn after_execute(
     action: &SpawnAction,
-    _ctx: &dyn ActionExecutionContext,
-    _spawn_results: &[SpawnResult],
+    action_execution_context: &dyn ActionExecutionContext,
+    spawn_results: &[SpawnResult],
+    path_mapper: &PathMapper,
 ) -> Result<(), ExecException> {
-    if action.get_unused_inputs_list().is_none() {
+    let Some(unused_inputs_list) = action.get_unused_inputs_list() else {
         return Ok(());
+    };
+
+    // Get all the action's inputs after execution which will include the shadowed action
+    // discovered inputs
+    let all_inputs = action.get_inputs();
+    // PORT: java-hash-order. Java collects the used inputs in a `HashMap<String, Artifact>` keyed
+    // by mapped exec path and passes `values()` to `updateInputs`; `JavaStringHashMap` replays
+    // `java.util.HashMap`'s iteration order.
+    let mut used_inputs_by_mapped_path = JavaStringHashMap::new();
+    for input in all_inputs.to_list().iter() {
+        used_inputs_by_mapped_path.put(
+            path_mapper
+                .map(input.get_exec_path())
+                .get_path_string()
+                .to_string(),
+            input.clone(),
+        );
     }
-    // PORT: the pruned inputs are `HashMap.values()` of the used inputs keyed by mapped exec path
-    // (Java hash order) and the action's `updateInputs` needs `blaze_actions`' private
-    // `inputsDiscovered` flag; not ported.
-    blaze_util::unported!(
-        "EnhancedStarlarkAction.afterExecute",
-        "unused_inputs_list (blaze_actions does not expose updateInputs/setInputsDiscovered)"
+    // Bazel encodes file system paths as raw bytes stored in a Latin-1 encoded string, so we need
+    // to make sure to also decode the unused input list as Latin-1.
+    let content = get_unused_input_list_input_stream(
+        action_execution_context,
+        spawn_results,
+        &unused_inputs_list,
+    )?;
+    let content = match content {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(EnvironmentalExecException::with_cause(
+                &e,
+                unused_inputs_failure_detail(
+                    "Unused inputs read failure",
+                    failure_details::starlark_action::Code::UnusedInputListReadFailure,
+                ),
+            )
+            .into());
+        }
+    };
+    let text = blaze_util::string_encoding::latin1_decode(&content);
+    for line in buffered_reader_lines(&text) {
+        let line = java_string_trim(line);
+        if line.is_empty() {
+            continue;
+        }
+        used_inputs_by_mapped_path.remove(line);
+    }
+    action.update_inputs(NestedSetBuilder::wrap(
+        Order::STABLE_ORDER,
+        used_inputs_by_mapped_path.into_values(),
+    ));
+    Ok(())
+}
+
+/// The content of the unused inputs list: the in-memory output of the first spawn result, else
+/// the file. The outer `Err` is the `UserExecException` for a missing file; the inner one an
+/// `IOException` of the read (`afterExecute` turns it into an `EnvironmentalExecException`).
+// Java: com/google/devtools/build/lib/analysis/actions/StarlarkAction.java:374 EnhancedStarlarkAction.getUnusedInputListInputStream
+fn get_unused_input_list_input_stream(
+    action_execution_context: &dyn ActionExecutionContext,
+    spawn_results: &[SpawnResult],
+    unused_inputs_list_artifact: &Artifact,
+) -> Result<std::io::Result<Vec<u8>>, ExecException> {
+    // Check if the file is in-memory.
+    // Note: SpawnActionContext guarantees that the first list entry exists and corresponds to the
+    // executed spawn.
+    let content = spawn_results[0].get_in_memory_output(&artifact_input(unused_inputs_list_artifact));
+    if let Some(content) = content {
+        return Ok(Ok(content.to_vec()));
+    }
+    // Fallback to reading from disk.
+    let path = action_execution_context.convert_path(
+        &action_execution_context
+            .get_exec_root()
+            .get_relative(unused_inputs_list_artifact.get_exec_path()),
+    );
+    let mut stream = match path.get_input_stream() {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let message = format!(
+                "Action did not create expected output file listing unused inputs: {}",
+                unused_inputs_list_artifact.get_exec_path_string()
+            );
+            return Err(UserExecException::with_cause(
+                &e,
+                unused_inputs_failure_detail(
+                    &message,
+                    failure_details::starlark_action::Code::UnusedInputListFileNotFound,
+                ),
+            )
+            .into());
+        }
+        // PORT: Java's `getInputStream` throws other `IOException`s out of the try-with-resources
+        // in `afterExecute`, which wraps them as "Unused inputs read failure".
+        Err(e) => return Ok(Err(e)),
+    };
+    let mut content = Vec::new();
+    Ok(std::io::Read::read_to_end(&mut stream, &mut content).map(|_| content))
+}
+
+// Java: com/google/devtools/build/lib/analysis/actions/StarlarkAction.java:131 StarlarkAction.createFailureDetail
+fn unused_inputs_failure_detail(
+    message: &str,
+    code: failure_details::starlark_action::Code,
+) -> failure_details::FailureDetail {
+    failure_detail(
+        message,
+        Category::StarlarkAction(failure_details::StarlarkAction { code: code as i32 }),
     )
 }
 
+/// `BufferedReader.readLine()` over the whole text: lines end at `\n`, `\r` or `\r\n`; a final
+/// line without terminator is returned, an empty remainder is not.
+fn buffered_reader_lines(text: &str) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => {
+                lines.push(&text[start..i]);
+                i += 1;
+                start = i;
+            }
+            b'\r' => {
+                lines.push(&text[start..i]);
+                i += 1;
+                if i < bytes.len() && bytes[i] == b'\n' {
+                    i += 1;
+                }
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    if start < bytes.len() {
+        lines.push(&text[start..]);
+    }
+    lines
+}
+
+/// `String.trim()`: strips leading and trailing chars `<= ' '`.
+fn java_string_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| c <= ' ')
+}
+
+/// A `java.util.HashMap<String, V>` that replays Java's iteration order: `String.hashCode`
+/// spread by `h ^ (h >>> 16)`, a power-of-two table starting at 16 buckets that doubles when the
+/// size exceeds 3/4 of the capacity (or when a bin of a table below 64 buckets grows past 8
+/// entries, `treeifyBin`), insertion order within a bucket (kept by `resize`), `put` of a present
+/// key keeps its position. Removal does not shrink the table.
+///
+/// PORT: java-hash-order. Treeified bins (9+ colliding entries in a table of 64+ buckets) keep
+/// insertion order here; Java's red-black bins iterate in their `next` order, which is the same
+/// unless a bin was split by a resize after treeification.
+struct JavaStringHashMap<V> {
+    table: Vec<Vec<(u32, String, V)>>,
+    size: usize,
+}
+
+impl<V> JavaStringHashMap<V> {
+    fn new() -> Self {
+        JavaStringHashMap {
+            table: (0..16).map(|_| Vec::new()).collect(),
+            size: 0,
+        }
+    }
+
+    /// `String.hashCode()` (UTF-16 code units; internal strings are one char per byte).
+    fn hash(key: &str) -> u32 {
+        let mut h: i32 = 0;
+        for unit in key.encode_utf16() {
+            h = h.wrapping_mul(31).wrapping_add(unit as i32);
+        }
+        let h = h as u32;
+        h ^ (h >> 16)
+    }
+
+    fn resize(&mut self) {
+        let new_cap = self.table.len() * 2;
+        let mut new_table: Vec<Vec<(u32, String, V)>> = (0..new_cap).map(|_| Vec::new()).collect();
+        for bin in self.table.drain(..) {
+            for (h, k, v) in bin {
+                new_table[(h as usize) & (new_cap - 1)].push((h, k, v));
+            }
+        }
+        self.table = new_table;
+    }
+
+    fn put(&mut self, key: String, value: V) {
+        const TREEIFY_THRESHOLD: usize = 8;
+        const MIN_TREEIFY_CAPACITY: usize = 64;
+        let h = Self::hash(&key);
+        let idx = (h as usize) & (self.table.len() - 1);
+        if let Some(entry) = self.table[idx]
+            .iter_mut()
+            .find(|(hh, k, _)| *hh == h && *k == key)
+        {
+            entry.2 = value;
+            return;
+        }
+        self.table[idx].push((h, key, value));
+        if self.table[idx].len() > TREEIFY_THRESHOLD && self.table.len() < MIN_TREEIFY_CAPACITY {
+            self.resize();
+        }
+        self.size += 1;
+        if self.size > self.table.len() * 3 / 4 {
+            self.resize();
+        }
+    }
+
+    fn remove(&mut self, key: &str) {
+        let h = Self::hash(key);
+        let idx = (h as usize) & (self.table.len() - 1);
+        if let Some(pos) = self.table[idx]
+            .iter()
+            .position(|(hh, k, _)| *hh == h && k == key)
+        {
+            self.table[idx].remove(pos);
+            self.size -= 1;
+        }
+    }
+
+    fn into_values(self) -> Vec<V> {
+        self.table
+            .into_iter()
+            .flatten()
+            .map(|(_, _, v)| v)
+            .collect()
+    }
+}
+
 impl ExecutableAction for SpawnAction {
+    // Java: com/google/devtools/build/lib/analysis/actions/StarlarkAction.java:349 EnhancedStarlarkAction.discoverInputs
+    fn discover_inputs(
+        &self,
+        _action_execution_context: &dyn ActionExecutionContext,
+    ) -> Result<Option<NestedSet<Artifact>>, ActionExecutionException> {
+        let SpawnActionClass::EnhancedStarlark(d) = self.get_class() else {
+            panic!(
+                "IllegalStateException: Not an input-discovering action: {}",
+                self.to_string_java()
+            )
+        };
+        // If the Starlark action shadows another action and the shadowed action discovers its
+        // inputs, we get the shadowed action's discovered inputs and append it to the Starlark
+        // action inputs.
+        if d.shadowed_action
+            .as_ref()
+            .is_some_and(|s| s.discovers_inputs())
+        {
+            blaze_util::unported!(
+                "EnhancedStarlarkAction.discoverInputs",
+                "shadowed action that discovers inputs (Action.getInputFilesForExtraAction)"
+            );
+        }
+        // Otherwise, we need to "re-discover" all the original inputs: the unused ones that were
+        // removed might now be needed.
+        self.update_inputs(d.all_starlark_action_inputs.clone());
+        Ok(Some(d.all_starlark_action_inputs.clone()))
+    }
+
     // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:278 SpawnAction.execute
     fn execute(
         &self,
@@ -285,7 +538,7 @@ impl ExecutableAction for SpawnAction {
         let result = resolver
             .exec(&spawn, ctx)
             .and_then(|result| {
-                after_execute(self, ctx, &result)?;
+                after_execute(self, ctx, &result, crate::actions::Spawn::get_path_mapper(&spawn))?;
                 Ok(result)
             })
             .map_err(|e| match &e {

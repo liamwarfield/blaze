@@ -482,6 +482,16 @@ impl<'v> Decoder<'v> {
                             let mut buf = [0u8; 4];
                             out.extend(c.encode_utf8(&mut buf).bytes().map(char::from));
                         } else {
+                            // PORT: Java's string holds a code point above U+FFFF as two
+                            // UTF-16 chars (len 2); a Rust `String` cannot, so this fails
+                            // loudly instead of returning a string of the wrong length
+                            // (docs/reviews/2026-11-20-byte-strings.md, round 2, S2-1).
+                            if c > '\u{FFFF}' {
+                                unimplemented!(
+                                    "Java: Json.Decoder.parseString (\\u surrogate pair U+{:04X} with --nointernal_starlark_utf_8_byte_strings)",
+                                    c as u32
+                                );
+                            }
                             out.push(c);
                         }
                     }

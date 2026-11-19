@@ -56,13 +56,15 @@ impl PrintHandler for Collect {
     }
 }
 
-/// `SYNTAX file:line:col: message` (Java `SyntaxError.toString`), or `EVAL message` when the
-/// error is not a syntax error.
+/// `SYNTAX file:line:col: message` (Java `SyntaxError.toString`) for an error of parsing or
+/// resolving (Java reports every error before execution as a `SyntaxError`; starlark-rust's
+/// dialect and resolver errors are not `EvalErrorKind::Syntax`, so they print without a
+/// location).
 fn syntax_line(e: &starlark::Error) -> String {
     let err = EvalError::from_starlark(e);
     match &err.kind {
         EvalErrorKind::Syntax(errors) => escape(&format!("SYNTAX {}", errors[0])),
-        _ => escape(&format!("EVAL {}", err.message)),
+        _ => escape(&format!("SYNTAX {}", err.message)),
     }
 }
 

@@ -2,7 +2,8 @@
 """File- and method-level map of how much of Bazel's Java (at the pin) Blaze has ported.
 
 Usage:
-  scripts/coverage/java-map build [--out DIR]   scan, classify, write DIR (default docs/coverage):
+  scripts/coverage/java-map build [--out DIR] [--crates DIR] [--label TEXT]
+                                                scan, classify, write DIR (default docs/coverage):
                                                 java-map.tsv, java-methods.tsv.gz, java-tests.tsv,
                                                 markers-unresolved.tsv, and the generated sections
                                                 of README.md (between BEGIN/END GENERATED lines)
@@ -15,6 +16,9 @@ Usage:
   scripts/coverage/java-map file PATH           print the parse of one Java file (relative to
                                                 src/main/java or src/test/java) with marks
   scripts/coverage/java-map help
+
+  --crates DIR   Rust tree to scan instead of ./crates (e.g. a `git archive <commit> crates`
+                 export, so numbers are bound to a commit); --label names that tree in README.
 
 Inputs (read-only): the pinned Bazel source (~/.cache/blaze/src/bazel-9.3.2: src/main/java,
 src/test/java, src/main/cpp, src/main/protobuf) and the Rust tree crates/ (third_party is not
@@ -66,6 +70,7 @@ SCOPE_RULES = [
     ("JVM_ONLY", L + r"server/GcAndInternerShrinkingIdleTask\.java$", "JVM GC and interner shrinking"),
     ("JVM_ONLY", L + r"skyframe/serialization/strings/UnsafeStringCodec\.java$", "sun.misc.Unsafe string codec"),
     ("JVM_ONLY", L + r"concurrent/(ForkJoinQuiescingExecutor|NamedForkJoinPool)\.java$", "java.util.concurrent ForkJoin plumbing"),
+    ("JVM_ONLY", L + r"vfs/JavaIoFileSystem\.java$", "java.io file system for hosts without the JNI library; Linux Bazel uses UnixFileSystem"),
     ("OUT_OF_SCOPE_BY_CONTRACT", r"com/google/devtools/build/docgen/", "doc generator, not part of the bazel binary"),
     ("OUT_OF_SCOPE_BY_CONTRACT", L + r"profiler/memory/", "memory instrumentation (PORTING.md Skip only)"),
     ("OUT_OF_SCOPE_BY_CONTRACT", L + r"(profiler/MemoryProfiler|buildtool/SkyframeMemoryDumper)\.java$", "memory instrumentation (--memory_profile, dump --memory)"),
@@ -93,9 +98,9 @@ CLUSTER_RULES = [
     ("dynamic-execution", [L + r"dynamic/"]),
     ("action-rewinding", [L + r"skyframe/rewinding/", r"/(LostInputs\w*|ActionRewind\w*|RewindingStrategy\w*|ImportantOutputHandler\w*)\.java$"]),
     ("include-scanning", [L + r"includescanning/", L + r"rules/cpp/(IncludeScann\w*|IncludeParser|IncludeProblems|SwigIncludeScanner|CppIncludeScanningContext\w*|ScanningIncludeHelper)", L + r"standalone/DummyCppIncludeScanningContext"]),
-    ("java-rules-in-core", [L + r"rules/java/", L + r"bazel/rules/java/", L + r"starlarkbuildapi/java/", L + r"[\w/]*/(Java\w*|Jvm\w*)\.java$"]),
+    ("java-rules-in-core", [L + r"rules/java/", L + r"bazel/rules/java/", L + r"starlarkbuildapi/java/", L + r"(analysis|rules|packages)/[\w/]*/?(Java\w*|Jvm\w*)\.java$"]),
     ("android-apple-objc-proto", [L + r"rules/(android|apple|objc|proto)/", L + r"starlarkbuildapi/(android|apple|objc|proto)/", r"/(Android|Apple|Objc|J2Objc|XcodeConfig)\w*\.java$"]),
-    ("query-and-genquery", [L + r"query2/", L + r"rules/genquery/", L + r"runtime/commands/(Query|CQuery|AQuery)\w*", L + r"buildtool/(QueryProcessor|AqueryProcessor|CqueryProcessor|PostAnalysisQueryProcessor)", L + r"graph/", L + r"skyframe/(TraversalInfoRootPackageExtractor|TransitiveTraversal\w*|TransitiveBaseTraversalFunction|CollectTargetsInPackage\w*|PrepareDepsOfTargetsUnderDirectory\w*|RecursivePackageProviderBackedTargetPatternResolver|TargetExcludingFilteringPolicy|SimplePackageIdentifierBatchingCallback)", L + r"skyframe/actiongraph/v2/", L + r"pkgcache/"]),
+    ("query-and-genquery", [L + r"query2/", L + r"rules/genquery/", L + r"runtime/commands/(Query|CQuery|AQuery)\w*", L + r"buildtool/(QueryProcessor|AqueryProcessor|CqueryProcessor|PostAnalysisQueryProcessor)", L + r"graph/", L + r"skyframe/(TraversalInfoRootPackageExtractor|TransitiveTraversal\w*|TransitiveBaseTraversalFunction|CollectTargetsInPackage\w*|PrepareDepsOfTargetsUnderDirectory\w*|RecursivePackageProviderBackedTargetPatternResolver|TargetExcludingFilteringPolicy|SimplePackageIdentifierBatchingCallback)", L + r"skyframe/actiongraph/v2/"]),
     ("profiler-and-metrics", [L + r"profiler/", L + r"metrics/", L + r"runtime/(BuildSummaryStatsModule|CriticalPath\w*|CommandProfilerModule|ProfilerStartedEvent|ActionExecutionStatusReporter|ExecutionGraphModule|MemoryPressure\w*|InstrumentationOutput\w*|LocalInstrumentationOutput|BlazeOptionHandler)", L + r"packages/metrics/", L + r"buildtool/buildevent/BuildMetrics", L + r"actions/(ActionExecutionStatusReporter|ActionConcurrencyMeter|AggregatedSpawnMetrics|FullSpawnMetrics)", L + r"util/(ResourceUsage|ConcurrencyMeter|LatestObjectMetricExporter)\.java$", L + r"skyframe/SkyKeyStats"]),
     ("remote-execution-and-caching", [L + r"remote/", L + r"authandtls/", L + r"bazel/repository/downloader/(GrpcRemoteDownloader|Http\w*|DelegatingDownloader)", L + r"exec/(SpawnCache|RemoteLocalFallbackRegistry)", L + r"vfs/(PathTransformingDelegateFileSystem|DiskBackedFileSystem|LocalOutputService|OutputService|BulkDeleter)\w*\.java$", L + r"network/"]),
     ("build-event-service", [L + r"buildeventservice/", L + r"buildeventstream/", L + r"runtime/(BuildEvent\w*|BuildEventStreamer\w*|BuildEventArtifactUploader\w*|CountingArtifactGroupNamer|SynchronizedOutputStream)", L + r"buildtool/buildevent/", L + r"causes/"]),
@@ -108,7 +113,7 @@ CLUSTER_RULES = [
     ("cpp-rules", [L + r"rules/cpp/", L + r"bazel/rules/cpp/", L + r"starlarkbuildapi/cpp/"]),
     ("python-and-other-native-rules", [L + r"rules/", L + r"bazel/rules/"]),
     ("analysis-core", [L + r"analysis/", L + r"starlarkbuildapi/", L + r"skyframe/(ConfiguredTarget\w*|Aspect\w*|\w*Analysis\w*|SkyframeBuildView|StarlarkAspect\w*|ConfiguredValueCreation\w*|AbstractConfiguredTargetValue|ActionLookupConflict\w*|ToplevelStarlarkAspect\w*|ArtifactConflict\w*|BuildTopLevelAspects\w*)"]),
-    ("packages-and-loading", [L + r"packages/", L + r"skyframe/(Package\w*|Bzl\w*|CachedBzlLoadData|Glob\w*|TargetPattern\w*|\w*Recursive\w*|StarlarkBuiltins\w*|Ignored\w*|ContainingPackage\w*|CollectPackages\w*|PrepareDepsOfPattern\w*|BuildFile\w*|ProcessPackageDirectory\w*|TargetMarker\w*|TargetLoading\w*|LoadedPackage\w*|SkyframePackage\w*|BzlCompile\w*|StarlarkFile\w*|CompiledBuildFile\w*|DirectoryListing\w*|File\w*|DirectoryTree\w*|RepositoryMapping\w*|WorkspaceName\w*|CompactSortedDirents|TestsForTargetPattern\w*|TestExpansion\w*|CycleUtils)", L + r"cmdline/", L + r"io/"]),
+    ("packages-and-loading", [L + r"packages/", L + r"pkgcache/", L + r"skyframe/(Package\w*|Bzl\w*|CachedBzlLoadData|Glob\w*|TargetPattern\w*|\w*Recursive\w*|StarlarkBuiltins\w*|Ignored\w*|ContainingPackage\w*|CollectPackages\w*|PrepareDepsOfPattern\w*|BuildFile\w*|ProcessPackageDirectory\w*|TargetMarker\w*|TargetLoading\w*|LoadedPackage\w*|SkyframePackage\w*|BzlCompile\w*|StarlarkFile\w*|CompiledBuildFile\w*|DirectoryListing\w*|File\w*|DirectoryTree\w*|RepositoryMapping\w*|WorkspaceName\w*|CompactSortedDirents|TestsForTargetPattern\w*|TestExpansion\w*|CycleUtils)", L + r"cmdline/", L + r"io/"]),
     ("skyframe-engine", [r"com/google/devtools/build/skyframe/"]),
     ("execution-and-action-graph", [L + r"actions/", L + r"skyframe/", L + r"buildtool/"]),
     ("runtime-and-ui", [L + r"runtime/", L + r"bazel/", L + r"events/", L + r"outputfilter/", L + r"util/io/"]),
@@ -200,7 +205,7 @@ ANNOT_RE = re.compile(r"@\s*(?!interface\b)[\w$]+(?:\s*\.\s*[\w$]+)*")
 
 
 class Parsed:
-    __slots__ = ("supers", "methods", "types", "idents", "loc", "lines", "doc", "unknown", "imports",
+    __slots__ = ("codeline", "supers", "methods", "types", "idents", "loc", "lines", "doc", "unknown", "imports",
                  "package")
 
 
@@ -239,7 +244,8 @@ def parse_java(src):
     nocomment, blank = strip_java(src)
     p = Parsed()
     p.lines = src.count("\n") + 1
-    p.loc = sum(1 for ln in nocomment.split("\n") if ln.strip())
+    p.codeline = [bool(ln.strip()) for ln in nocomment.split("\n")]
+    p.loc = sum(p.codeline)
     p.methods = []   # (classpath, name, start, end, kind, is_test)
     p.types = []     # (classpath, kind, start, end)
     p.unknown = 0
@@ -248,8 +254,16 @@ def parse_java(src):
     p.imports = re.findall(r"^\s*import\s+(?:static\s+)?([\w.]+)\s*;", blank, re.M)
     pm = re.search(r"^\s*package\s+([\w.]+)\s*;", blank, re.M)
     p.package = pm.group(1) if pm else ""
-    m = re.search(r"/\*\*(.*?)\*/\s*(?:@[^\n]*\n\s*)*(?:public\s+|final\s+|abstract\s+|sealed\s+)*(?:class|interface|enum|record|@interface)\b", src, re.S)
+    m = re.search(r"/\*\*((?:(?!\*/).)*)\*/\s*(?://[^\n]*\n\s*|@[^\n]*\n\s*)*(?:(?:public|final|abstract|sealed|non-sealed)\s+)*(?:class|interface|enum|record|@interface)\s", src, re.S)
     p.doc = clean_doc(m.group(1)) if m else ""
+    if not p.doc:
+        m = re.search(r"@StarlarkBuiltin\((?:[^()]|\([^()]*\))*?doc\s*=\s*((?:\"(?:[^\"\\]|\\.)*\"\s*\+?\s*)+)", src, re.S)
+        if m:
+            p.doc = clean_doc("".join(re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(1))))
+    if not p.doc:
+        m = re.search(r"((?:^\s*//[^\n]*\n)+)\s*(?:@[^\n]*\n\s*)*(?:(?:public|final|abstract|sealed)\s+)*(?:class|interface|enum|record)\s", src, re.M)
+        if m and "Copyright" not in m.group(1):
+            p.doc = clean_doc(re.sub(r"^\s*//\s?", "", m.group(1), flags=re.M))
 
     n = len(blank)
     line_at = [0] * (n + 1)
@@ -453,7 +467,7 @@ def scan_rust():
         except OSError:
             continue
         cr = crate_of(f)
-        rel = os.path.relpath(f, REPO)
+        rel = os.path.relpath(f, os.path.dirname(CRATES))
         lines = text.split("\n")
         for m in UNPORTED_RE.finditer(text):
             ls = text.rfind("\n", 0, m.start()) + 1
@@ -787,6 +801,10 @@ def build_model():
         for i in idxs:
             M.marks[(target, i)].add("line" if "line only" in cat or "by line" in cat else "name")
     M.unresolved = unresolved
+    ov = collections.Counter((f, M.parsed[f].methods[i][0], M.parsed[f].methods[i][1]) for (f, i) in M.marks)
+    allov = collections.Counter((f, m[0], m[1]) for f in M.files for m in M.parsed[f].methods)
+    M.overload_name_only = sum(1 for (f, i), k in M.marks.items() if k == {"name"}
+                               and allov[(f, M.parsed[f].methods[i][0], M.parsed[f].methods[i][1])] > 1)
 
     # An abstract method counts as marked when a marked method of the same name exists in a
     # class that directly extends or implements its type (Starlark API interfaces are ported
@@ -893,14 +911,14 @@ def build_model():
         touched = M.file_markers[f] > 0 or M.unported_sites[f] > 0 or M.skipped_sites[f] > 0
         if eff:
             ratio = len(marked) / len(eff)
-            if ratio > 0.5:
+            if ratio > 0.5 and M.unported_sites[f] == 0:
                 status = "PORTED"
             elif marked or touched:
                 status = "PARTIAL"
             else:
                 status = "UNTOUCHED"
         else:
-            status = "PORTED" if M.file_markers[f] else ("PARTIAL" if touched else "UNTOUCHED")
+            status = "PORTED" if M.file_markers[f] and not M.unported_sites[f] else ("PARTIAL" if touched else "UNTOUCHED")
         reason, rule = "", ""
         if status != "PORTED":
             r = first_rule(SCOPE_RULES, f, None)
@@ -913,7 +931,21 @@ def build_model():
                 reason, rule = "GENERATED_OR_TRIVIAL", f"no method bodies, loc <= {TRIVIAL_MAX_LOC}"
             else:
                 reason, rule = "NEEDED", ""
-        M.rows[f] = dict(path=f, package=P.package, loc=P.loc, methods=len(meths),
+        # code lines inside unmarked methods (outermost ranges), plus the unmarked share of
+        # code lines outside any method
+        inside = [0] * (len(P.codeline) + 2)
+        for i, m in enumerate(meths):
+            v = 2 if (f, i) in M.marks else 1
+            for ln in range(m[2], m[3] + 1):
+                if inside[ln] == 0:
+                    inside[ln] = v
+        um = sum(1 for ln, c in enumerate(P.codeline, 1) if c and inside[ln] == 1)
+        outside = sum(1 for ln, c in enumerate(P.codeline, 1) if c and inside[ln] == 0)
+        share = (len(eff) - len(marked)) / len(eff) if eff else 1.0
+        unmarked_loc = um + round(outside * share)
+        if status == "UNTOUCHED":
+            unmarked_loc = P.loc
+        M.rows[f] = dict(unmarked_loc=unmarked_loc, path=f, package=P.package, loc=P.loc, methods=len(meths),
                          eff=len(eff), methods_marked=all_marked, eff_marked=len(marked),
                          status=status, reason=reason, rule=rule,
                          unported_sites=M.unported_sites[f], skipped=M.skipped_sites[f],
@@ -1045,15 +1077,12 @@ REASONS = ["NEEDED", "GENERATED_OR_TRIVIAL", "TEST_SUPPORT", "JVM_ONLY", "OUT_OF
 
 
 def unported_lines(r):
-    """Lines of a NEEDED file not yet covered: all lines if UNTOUCHED, the unmarked share if
-    PARTIAL (loc * unmarked methods / methods; an estimate)."""
+    """Code lines of a NEEDED file not yet covered: all if UNTOUCHED; if PARTIAL, the code lines
+    inside unmarked methods (outermost method wins for nested classes' methods) plus the unmarked
+    share of code lines outside methods. An estimate: a marked method may be ported in part."""
     if r["reason"] != "NEEDED":
         return 0
-    if r["status"] == "UNTOUCHED":
-        return r["loc"]
-    if r["eff"] == 0:
-        return r["loc"]
-    return round(r["loc"] * (r["eff"] - r["eff_marked"]) / r["eff"])
+    return r["unmarked_loc"]
 
 
 def md_table(head, rows):
@@ -1083,6 +1112,9 @@ def gen_totals(M):
                 t.append((rsn, s, len(rs), sum(r["loc"] for r in rs), sum(r["eff"] for r in rs),
                           sum(r["eff"] - r["eff_marked"] for r in rs),
                           sum(unported_lines(r) for r in rs)))
+    held = [r for r in rows if r["status"] == "PARTIAL" and r["eff"] and r["eff_marked"] / r["eff"] > 0.5]
+    out.append(f"\nOf the PARTIAL files, {len(held)} ({sum(r['loc'] for r in held)} lines) have most methods "
+               f"marked and are PARTIAL only because an `unported!` site names their class.\n")
     out.append("\nNot PORTED, by reason:\n")
     out.append(md_table(["reason", "status", "files", "lines", "methods", "methods unmarked",
                          "unported lines (est.)"], t))
@@ -1177,6 +1209,9 @@ def gen_markers(M):
     tot = sum(M.marker_cat.values())
     rows = [(k, v, f"{100*v/tot:.1f}%") for k, v in t] + [("total", tot, "100%")]
     s = md_table(["marker resolves to", "markers", "share"], rows)
+    s += (f"\n\nMethods marked by name only whose name has overloads in the same class (a marker "
+          f"without a matching line marks every overload, so some of these may be unported): "
+          f"{M.overload_name_only}.")
     s += (f"\n\n`unported!` sites: {len(M.rust.unported)}; attributed to a Java file by class name: "
           f"{len(M.rust.unported) - M.unported_unattributed - M.unported_test} ({M.unported_ambiguous} of them by a class name "
           f"that several files define: first file taken); naming a Java test class: {M.unported_test}; "
@@ -1230,7 +1265,7 @@ def gen_cpp(M):
     return s
 
 
-def write_outputs(M, out):
+def write_outputs(M, out, label):
     os.makedirs(out, exist_ok=True)
     cols = ["path", "package", "loc", "methods", "methods_marked", "status", "reason",
             "unported_sites", "crate", "crate_basis", "methods_with_body", "methods_with_body_marked",
@@ -1264,6 +1299,8 @@ def write_outputs(M, out):
         for mk, cat in sorted(M.unresolved, key=lambda x: (x[1], x[0]["rs"], x[0]["line"])):
             fh.write(f'{cat}\t{mk["rs"]}\t{mk["line"]}\t{mk["text"][:200]}\n')
     sections = {
+        "SOURCE": (f"Rust tree measured: {label}. Java: {SRC.replace(HOME, '~')} (pin in UPSTREAM.json). "
+                   f"Generated by `scripts/coverage/java-map build`."),
         "TOTALS": gen_totals(M),
         "MARKERS": gen_markers(M),
         "PACKAGES": gen_packages(M),
@@ -1367,12 +1404,16 @@ def main(argv):
         print(__doc__)
         return 0
     cmd = argv[1]
+    global CRATES
+    if "--crates" in argv:
+        CRATES = os.path.abspath(argv[argv.index("--crates") + 1])
+    label = argv[argv.index("--label") + 1] if "--label" in argv else "working tree of " + REPO
     if cmd == "build":
         out = f"{REPO}/docs/coverage"
         if "--out" in argv:
             out = argv[argv.index("--out") + 1]
         M = build_model()
-        write_outputs(M, out)
+        write_outputs(M, out, label)
         print(gen_totals(M))
         return 0
     if cmd == "summary":

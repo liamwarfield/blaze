@@ -111,7 +111,7 @@ def run(binary, ws, tag):
     return p.returncode, err
 
 
-PKG_RE = re.compile(r"(?:<WS>/|//|package ')([bz]_[A-Za-z0-9_]+)")
+PKG_RE = re.compile(r"(?:<WS>/|//|package '|package contains errors: )([bz]_[A-Za-z0-9_]+)")
 
 
 def summarize(err, packages):

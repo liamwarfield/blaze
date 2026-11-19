@@ -15,6 +15,7 @@ use blaze_exec::analysis::test::test_action_context::TestActionContext;
 use blaze_exec::analysis::test::test_strategy::TestStrategy;
 use blaze_exec::exec::ExecCommandEnvironment;
 use blaze_exec::exec::standalone_test_strategy::StandaloneTestStrategy;
+use blaze_exec::rules::test::ExclusiveTestStrategy;
 use blaze_optdefs::command::test_summary_options::TestSummaryOptions;
 use blaze_options::Options;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail};
@@ -66,7 +67,12 @@ pub fn register_test_action_contexts(
         return Ok(());
     }
     if restriction == "exclusive" {
-        blaze_util::unported!("ExclusiveTestStrategy");
+        // registryBuilder.register(TestActionContext.class,
+        //     new ExclusiveTestStrategy(testStrategy), "exclusive")
+        let exclusive: Arc<dyn TestActionContext> =
+            Arc::new(ExclusiveTestStrategy::new(test_strategy));
+        contexts.register::<Arc<dyn TestActionContext>>(Arc::new(exclusive));
+        return Ok(());
     }
     Err(DetailedExitCode::of(FailureDetail {
         message: get_missing_identifier_error_message(restriction),

@@ -18,6 +18,7 @@
 pub mod actions;
 pub mod analysis;
 pub mod exec;
+pub mod rules;
 pub mod runtime;
 pub mod sandbox;
 pub mod standalone;
