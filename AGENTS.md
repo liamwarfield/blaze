@@ -39,6 +39,9 @@ Read them again after a context reset.
   `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0 ...`.
 - Wait for a job by blocking in the foreground (Bash timeout up to 600000 ms), not by short polls.
 - Tools live under `scripts/`, never in `/tmp`. Every tool prints usage with `help`.
+- Disk: the shared `target/` grows by hundreds of GB. Leads check `df -h /home` at each
+  consistent point and run `scripts/clean-target` below 150 GB free. Do not create extra target
+  directories (private worktree builds) below 200 GB free.
 - Do not commit unless your task says so. Root commits.
 - Run `rustfmt --edition 2024` on every `.rs` file you change before you report.
 - Do not ask questions. Choose the option you would recommend, say which in your report, continue.

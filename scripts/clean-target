@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Frees disk in the Cargo target directory without a full `cargo clean`.
+# Usage: scripts/clean-target [--older-than MINUTES]   (default 600)
+#        scripts/clean-target help
+# Deletes target/debug/incremental (regenerated on the next build) and files under
+# target/debug/deps older than the given age (stale rlibs and test binaries from earlier
+# revisions; anything still needed is rebuilt). A build running at the same moment may fail
+# once and succeed on retry. Run it when `df -h /home` shows less than 150 GB free.
+set -euo pipefail
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,8p' "$0"; exit 0; fi
+age=600
+if [[ "${1:-}" == "--older-than" ]]; then age="$2"; fi
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+before=$(df --output=avail -BG "$root" | tail -1)
+rm -rf "$root/target/debug/incremental"
+find "$root/target/debug/deps" -type f -mmin "+$age" -delete 2>/dev/null || true
+after=$(df --output=avail -BG "$root" | tail -1)
+echo "free before: $before  after: $after"
