@@ -33,7 +33,7 @@ Partly ported:
 
 | Command | Missing |
 | --- | --- |
-| `mod` | `dump_repo_mapping` (33 upstream tests need it), `show_repo`, `tidy` |
+| `mod` | `dump_repo_mapping`, `show_repo` and `tidy` ported after v0.1.0 (exit code and stdout equal to Bazel's in 133 of 133 cases by `scripts/mod/compare`, a tool not yet hardened; stderr differs in 98, mostly Bazel's progress line; upstream tests not run yet); missing: `show_repo` proto output for three attribute types |
 | `help`, `fetch`, `canonicalize-flags`, `license` | ported after v0.1.0 (132 of 137 oracle invocations byte-identical by `scripts/cmds/compare`, which the auditor found can record a signal death as exit 0; upstream test counts to be re-measured under the fixed harness); missing: `fetch --force` with target patterns |
 | `info` | 15 of 57 compared cases: `info` with no key, JVM-only keys (heap sizes, `java-home`), `build-language`, `peak-heap-size`, `starlark-semantics` |
 | `query` | `--output=graph` and other formatters that need the dependency graph, `--query_file`, SkyQuery (`--universe_scope`), definition and instantiation stacks in proto output, rule class info, native aspects |
