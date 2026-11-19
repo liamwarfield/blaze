@@ -146,3 +146,11 @@ Each entry: date, decision, why, who decided.
 - 2026-11-19. First run of Bazel's own remote shell tests against Blaze (baseline binary before
   the round-2 fixes): 110 of 253 oracle-passing functions pass; causes classified in
   docs/remote.md. Root (recording the remote lead's measurement).
+- 2026-11-19. Disk-cache action-result integrity check: kept on regardless of
+  `--rewind_lost_inputs` while action rewinding is unported (Java skips it when rewinding is on,
+  RemoteModule.java:700-706). Known deviation: such entries are misses where Bazel reports hits;
+  restore Java's expression when rewinding is ported. Root, on the remote lead's evidence.
+- 2026-11-19. workerd: `blaze build //src/workerd/server:workerd` completes on the ASCII-README
+  copy with Bazel's summary line and a byte-identical output binary (sha256 cdedf3f9…, verified
+  by root from both output bases). Byte-strings migration started so the pristine checkout
+  passes. Root.
