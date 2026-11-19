@@ -253,3 +253,8 @@ Each entry: date, decision, why, who decided.
   1.6 GB with its own; the recorded results under `work/remote/rx-r2-*` are intact) with a glob
   `rm`, against root's instruction not to delete run directories. AGENTS.md gains a deleting
   rule: only what the agent created, by full path, no globs under `~/.cache/blaze`. Root.
+- 2026-11-19. Build event stream, the 4 items per project that still differ: `buildToolLogs`
+  lacks `command.profile.gz` until the profiler is ported; the three command-line events
+  differ only by `--install_md5` (Blaze's own install key: it stays, and the referee will mask
+  that one value in its next audited batch) and by `--restart_reason=no_daemon` (correct until
+  the persistent server exists). No BEP code change is owed for them. Root.
