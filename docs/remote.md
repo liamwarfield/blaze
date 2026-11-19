@@ -280,8 +280,10 @@ action cache rebuilds such tree metadata.
 outputs when they are produced; the handler's runfiles download at target completion is covered
 by the checker's `addRunfiles` only. `FileArtifactValue.setContentsProxy` after a download or an
 up-to-date check is not ported (Blaze's values are immutable): later checks hash the file again.
-The prefetcher creates directories with `createDirectoryAndParents` (Java's branch for a null
-`ActionOutputDirectoryHelper`; Blaze's executor owns its helper). Download progress events are not
+The prefetcher creates directories with `createDirectoryAndParents`, not through the
+`ActionOutputDirectoryHelper` Java passes for every build (Blaze's executor owns its helper): a
+file or symlink where a directory is needed (an output path component that changed from file to
+directory between builds, served from the action cache) is an I/O error, where Java replaces it. Download progress events are not
 posted. The prefetcher's `shutdown` is not called in `afterCommand` (Blaze's downloads are
 synchronous, nothing is pending). An output symlink to a local input gets no resolved path (only
 remote targets do). `--experimental_finalize_actions` is not read (true by default). Local tree
@@ -308,3 +310,71 @@ also lists its `command-*.profile.gz`, which Blaze does not write). R2-3:
 `--experimental_stream_log_file_uploads` with a gRPC cache fails loudly in Blaze
 (`ByteStreamBuildEventArtifactUploader (BlazeRuntime.newUploader:
 --experimental_stream_log_file_uploads)`); Bazel streams the profile to the cache.
+
+**Fix after the RBE run (re2, `minimal`, warm: 21 extra `TestXmlGeneration` spawns).** Java's
+test strategy resolves a test's outputs on `actionExecutionContext.getExecRoot()`, the action file
+system's exec root, so a `test.xml`, `test.shard` or undeclared output that stays remote exists
+there. Blaze resolved them on the local exec root: with a test that writes its own `test.xml`
+(googletest), `!xmlOutputPath.exists()` held and the generator spawn ran for every test; a sharded
+test failed with `Sharding requested, but the test runner did not advertise support for it ...`.
+`blaze_exec::exec::action_execution_context::exec_root_on_action_file_system` is Java's
+`getExecRoot()`; the `StandaloneTestRunnerSpawn` (`prepareFileSystem`, `resolve(execRoot)` of
+each attempt) and `getTestOutputsMapping` (also its test log and coverage paths, Java's
+`pathResolver.toPath`) use it. The action file system's `delete` and `renameTo` (flaky test
+attempts) also act on the remote output tree, as Java's. `TestRunnerAction.actionCacheHit` keeps
+the local exec root (Java's action file system is empty on an action cache hit, see the TODO
+there). Reproduced before the fix (`min-exec-test` below: the oracle has one `TestRunner` spawn for
+`//:xml_test`, Blaze two; the shard test fails) and compared after it, with
+`//:hello_test //:xml_test //:xml_shard_test` (`xml_test.cc` writes `$XML_OUTPUT_FILE`, touches
+`$TEST_SHARD_STATUS_FILE` and writes an undeclared output; `xml_shard_test` has `shard_count = 2`;
+contents differ per target and shard so that no blob is shared between test actions), runs in
+`~/.cache/blaze/bench/bwob-runs/m6`:
+
+| scenario | oracle summary (cold / warm / rebuild) | Blaze | files | exec log | gRPC log |
+|---|---|---|---|---|---|
+| `test --remote_executor`, `minimal` | 14 internal, 16 remote / 16 remote cache hit, 14 internal / 28 action cache hit; 3 tests pass | same | 60/60 ×3 | 16/16, 16/16, 0/0 | MATCH ×3 |
+| same, `toplevel` | same | same | 72/72 ×3 | same | MATCH ×3 |
+| same, `all` | same | same | 83/83 ×3 | same | MATCH ×3 |
+| `test --remote_cache`, `minimal` | 16 processwrapper-sandbox / 16 remote cache hit / 28 action cache hit | same | 91/91, 60/60, 60/60 | same | MATCH ×3 |
+| same, `toplevel` | same | same | 91/91, 72/72, 72/72 | same | MATCH ×3 |
+| same, `all` | same | same | 91/91, 83/83, 83/83 | same | MATCH ×3 |
+
+The summary total does not sum its parts in Bazel either (`29 processes: 14 internal, 16
+remote.`): Blaze prints the same line; on the RBE the parts differed only by the extra spawns.
+
+**Review round 1 of phase 2 (STOP on e7451bb, `docs/reviews/2026-11-19-remote-bwob.md`).** B1: the
+remote children of a tree are merged with the local ones by parent-relative path (a remote `x.txt`
+was dropped when a local child was `sub/x.txt`). B2: a tree artifact that is a symlink to a tree
+(`ctx.actions.symlink` of a directory) is listed through its canonical path: its children come
+from the local target directory and the remote output tree, and its value gets the resolved path
+when the target is an input of the action (`ActionOutputMetadataStore.java:300`); the action file
+system's `stat`/`readdir` canonicalize every component through local symlinks
+(`resolveSymbolicLinks`). A side effect that follows Java: with any cache, a symlinked tree whose
+target is an input now carries `resolvedPath` (also with `--remote_download_outputs=all`). Bench
+additions: `//:dup_tree` (`x.txt`, `sub/x.txt`) with `cat_dir` consumers `//:dup_consumer`,
+`//:dup_consumer_local`; `//:sym_tree` (symlink to `//:tree_for_sym`) with `//:sym_tree_consumer`,
+`//:sym_tree_consumer_local` (runs in `~/.cache/blaze/bench/bwob-runs/m7`, all three steps MATCH on
+exit, summary, files, exec log and gRPC log):
+
+| scenario | files | exec log |
+|---|---|---|
+| dup consumers, `--remote_executor --remote_download_outputs=minimal --remote_download_regex=.*/sub/.*` | 10/10 ×3 | 3/3, 3/3, 0/0 |
+| same with B1's old comparison (reproduction) | DIFF: `dup_tree_dir/x.txt` missing, `dup_consumer_local.txt` differs | 1/3 identical |
+| sym consumers, `--remote_executor`, `minimal` | 11/11 ×3 | 3/3, 3/3, 0/0 |
+| sym consumers, `--remote_cache`, `minimal` (warm: remote cache hits) | 12/12, 11/11, 11/11 | 3/3, 3/3, 0/0 |
+| `//:sym_tree //:sym_tree_consumer`, `--remote_executor`, `toplevel` | 11/11 ×3 | 2/2, 2/2, 0/0 |
+| all five new targets, `all`, remote exec / remote cache | 18/18 ×3 each | 6/6, 6/6, 0/0 |
+| regression: `min-regex-exec-build`, `tl-cache-build` (phase 2 targets) | 27/27 ×3; 38/38, 32/32, 32/32 | 13/13, 13/13, 0/0 |
+
+One `tl-cache-build` cold run had a `FindMissingBlobs` difference on `//:use_sym`: its output has
+the contents of `a.txt`, which `//:gen_a` uploads concurrently, so whether the blob is reported
+missing is a race (two oracle runs differ the same way); the repeated run matched.
+
+**A lost remote blob is a sticky, loud failure.** When a remote or disk cache loses a blob that a
+later build must download (eviction, a deleted or collected `--disk_cache`), Blaze fails loudly
+(`LostInputsExecException (...)`: action rewinding is not ported). The action cache entries with
+remote metadata stay, so every later build fails at the same place until `blaze clean`, or one
+build with `--remote_download_outputs=all` (whose `RemoteOutputChecker` does not trust remote
+metadata), restores the outputs. `RemoteActionInputFetcher.doDownloadFile` turns only errors of
+the download itself into `CacheNotFoundException`: creating the temporary file's directory or an
+empty file, and an interruption, are reported as they are.

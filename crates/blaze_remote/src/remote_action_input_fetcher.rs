@@ -154,6 +154,21 @@ impl ActionInputPrefetcherHooks for Hooks {
         );
         // Treat other download error as CacheNotFoundException so that Bazel can correctly
         // rewind the action/build.
+        // Intentionally, do not transform IOExceptions directly thrown by downloadFile rather
+        // than in the returned future, as those are likely to be caused by local FS issues.
+        // PORT: the part of `CombinedCache.downloadFile` that runs before Java returns the
+        // future (creating the parent directory, writing an empty file) is done here first, so
+        // that its errors are returned as they are; `downloadFile` repeats it as a no-op.
+        // Java: com/google/devtools/build/lib/remote/CombinedCache.java:756 CombinedCache.downloadFile
+        let local_path = temp_path.for_host_file_system();
+        local_path
+            .get_parent_directory()
+            .expect("NullPointerException")
+            .create_directory_and_parents()?;
+        if digest.size_bytes == 0 {
+            blaze_repo_fetch::fs_utils::write_content(&local_path, &[])?;
+            return Ok(());
+        }
         match self
             .combined_cache
             .download_file_with_reporter(
@@ -168,6 +183,8 @@ impl ActionInputPrefetcherHooks for Hooks {
         {
             Ok(()) => Ok(()),
             Err(e) if errors::downcast_ref::<CacheNotFoundException>(&e).is_some() => Err(e),
+            // An interruption is not an `IOException` in Java.
+            Err(e) if errors::is_interrupted(&e) => Err(e),
             Err(e) => {
                 // PORT: `cacheNotFoundException.addSuppressed(e)` has no counterpart.
                 let _ = e;

@@ -62,6 +62,24 @@ pub fn get_context<T: Send + Sync + 'static>(
         .and_then(|c| c.downcast::<T>().ok())
 }
 
+/// `actionExecutionContext.getExecRoot()` as Java returns it: the exec root on the action file
+/// system when one is in use (`actionFileSystem.getPath(execRoot)`), so that reads of outputs
+/// that stay remote (Build without the Bytes) see them.
+///
+/// PORT: [`ActionExecutionContext::get_exec_root`] stays the local exec root, which the spawn
+/// runners need; the in-process readers that Java gives the action file system's exec root
+/// (the test strategy) call this.
+// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:369 ActionExecutionContext.getExecRoot
+pub fn exec_root_on_action_file_system(ctx: &dyn ActionExecutionContext) -> Path {
+    match ctx.get_action_file_system() {
+        Some(file_system) => blaze_vfs::FileSystemExt::get_path_fragment(
+            &file_system,
+            ctx.get_exec_root().as_fragment(),
+        ),
+        None => ctx.get_exec_root().clone(),
+    }
+}
+
 /// The parts of `ActionExecutionContext` that spawn strategies read.
 // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:64 ActionExecutionContext
 pub trait ActionExecutionContext: ActionContextRegistry {

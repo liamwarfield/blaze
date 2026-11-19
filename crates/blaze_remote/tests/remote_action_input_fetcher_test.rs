@@ -168,6 +168,7 @@ impl Fixture {
         path_fragment: &str,
         local_content_map: &[(&str, &str)],
         remote_content_map: &[(&str, &str)],
+        resolved_path: Option<PathFragment>,
         metadata: &mut Metadata,
         cas: &mut HashMap<blaze_remote::reapi::Digest, Vec<u8>>,
     ) -> (BlazeArtifact, Vec<ActionInputRef>) {
@@ -183,13 +184,13 @@ impl Fixture {
         let mut children = Vec::new();
         for (path, contents) in local_content_map {
             let child = BlazeArtifact::create_tree_output_str(&parent, path);
-            let p = self.exec_root.get_relative(child.get_exec_path());
-            p.get_parent_directory()
-                .unwrap()
-                .create_directory_and_parents()
-                .unwrap();
-            blaze_repo_fetch::fs_utils::write_content(&p, contents.as_bytes()).unwrap();
-            let value = FileArtifactValue::create_for_testing(&p).unwrap();
+            let digest = self.digest_util.compute(contents.as_bytes());
+            let value = FileArtifactValue::create_for_normal_file(
+                Some(DigestUtil::to_binary_digest(&digest)),
+                /* proxy= */ None,
+                contents.len() as i64,
+            );
+            cas.insert(digest, contents.as_bytes().to_vec());
             children.push((ActionInputRef::new(child), value));
         }
         for (path, contents) in remote_content_map {
@@ -205,7 +206,7 @@ impl Fixture {
             cas.insert(digest, contents.as_bytes().to_vec());
             children.push((ActionInputRef::new(child), value));
         }
-        let tree = TreeArtifactValue::build(children.clone(), None, None);
+        let tree = TreeArtifactValue::build(children.clone(), None, resolved_path);
         metadata.push((
             ActionInputRef::new(parent.clone()),
             tree.metadata.clone().unwrap(),
@@ -213,7 +214,10 @@ impl Fixture {
         for (child, value) in &children {
             metadata.push((child.clone(), value.clone()));
         }
-        (parent, children.into_iter().map(|(c, _)| c).collect())
+        // `treeValue.getChildren()`: sorted by exec path.
+        let children: Vec<ActionInputRef> =
+            tree.child_values.iter().map(|(c, _)| c.clone()).collect();
+        (parent, children)
     }
 
     // Java: com/google/devtools/build/lib/remote/RemoteActionInputFetcherTest.java:76 RemoteActionInputFetcherTest.createPrefetcher
@@ -449,6 +453,7 @@ fn prefetch_files_download_remote_trees() {
         "dir",
         &[],
         &[("file1", "content1"), ("nested_dir/file2", "content2")],
+        None,
         &mut metadata,
         &mut cas,
     );
@@ -496,13 +501,116 @@ fn prefetch_files_download_remote_trees() {
     assert!(prefetcher.base().downloads_in_progress().is_empty());
 }
 
-#[test]
-#[ignore = "port pending: tree artifacts with local children, resolved paths and action template expansions"]
-fn prefetch_files_download_remote_trees_partial() {}
+/// Prefetches `inputs` with `metadata` as the supplier.
+fn prefetch_inputs(
+    f: &Fixture,
+    prefetcher: &RemoteActionInputFetcher,
+    inputs: &[ActionInputRef],
+    metadata: &Metadata,
+) {
+    let supplier = |input: &ActionInputRef| Ok(lookup(metadata, input));
+    blaze_remote::runtime::get_from_future(prefetcher.base().prefetch_files_interruptibly(
+        Some(&f.action),
+        inputs,
+        &supplier,
+        Priority::MEDIUM,
+        Reason::INPUTS,
+    ))
+    .unwrap();
+}
 
+// Java: com/google/devtools/build/lib/remote/ActionInputPrefetcherTestBase.java:1226 ActionInputPrefetcherTestBase.assertTreeReadableNonWritableAndExecutable
+fn assert_tree_readable_non_writable_and_executable(path: &Path) {
+    assert_readable_non_writable_and_executable(path);
+    for entry in std::fs::read_dir(path.get_path_string()).unwrap() {
+        let child = path.get_child(entry.unwrap().file_name().to_str().unwrap());
+        if child.is_directory() {
+            assert_tree_readable_non_writable_and_executable(&child);
+        } else {
+            assert_readable_non_writable_and_executable(&child);
+        }
+    }
+}
+
+// Java: com/google/devtools/build/lib/remote/ActionInputPrefetcherTestBase.java:318 ActionInputPrefetcherTestBase.prefetchFiles_downloadRemoteTrees_partial
 #[test]
-#[ignore = "port pending: tree artifacts with local children, resolved paths and action template expansions"]
-fn prefetch_files_download_remote_trees_with_resolved_path() {}
+fn prefetch_files_download_remote_trees_partial() {
+    let f = Fixture::set_up();
+    let mut metadata = Metadata::new();
+    let mut cas = HashMap::new();
+    let (tree, children) = f.create_remote_tree_artifact(
+        "dir",
+        &[("file1", "content1")],
+        &[("file2", "content2")],
+        None,
+        &mut metadata,
+        &mut cas,
+    );
+    let first_child = children[0].clone();
+    let second_child = children[1].clone();
+    let (prefetcher, _) = f.create_prefetcher(cas);
+
+    prefetch_inputs(
+        &f,
+        &prefetcher,
+        &[first_child.clone(), second_child.clone()],
+        &metadata,
+    );
+
+    assert!(!f.path_of(&first_child).exists());
+    assert_eq!(read_content(&f.path_of(&second_child)), "content2");
+    assert_tree_readable_non_writable_and_executable(
+        &f.exec_root.get_relative(tree.get_exec_path()),
+    );
+    assert_eq!(
+        sorted(prefetcher.base().downloaded_files()),
+        sorted(vec![f.path_of(&second_child)])
+    );
+}
+
+// Java: com/google/devtools/build/lib/remote/ActionInputPrefetcherTestBase.java:345 ActionInputPrefetcherTestBase.prefetchFiles_downloadRemoteTrees_withResolvedPath
+#[test]
+fn prefetch_files_download_remote_trees_with_resolved_path() {
+    let f = Fixture::set_up();
+    let mut metadata = Metadata::new();
+    let mut cas = HashMap::new();
+    let resolved_path = f.root_path().get_child("target").as_fragment().clone();
+    let (tree, children) = f.create_remote_tree_artifact(
+        "dir",
+        &[],
+        &[("file1", "content1"), ("nested_dir/file2", "content2")],
+        Some(resolved_path.clone()),
+        &mut metadata,
+        &mut cas,
+    );
+    let first_child = children[0].clone();
+    let second_child = children[1].clone();
+    let (prefetcher, _) = f.create_prefetcher(cas);
+
+    prefetch_inputs(&f, &prefetcher, &children, &metadata);
+
+    let tree_path = f.exec_root.get_relative(tree.get_exec_path());
+    assert!(tree_path.is_symbolic_link());
+    assert_eq!(tree_path.read_symbolic_link().unwrap(), resolved_path);
+    assert_eq!(read_content(&f.path_of(&first_child)), "content1");
+    assert_eq!(read_content(&f.path_of(&second_child)), "content2");
+    let resolved = f.root_path().get_child("target");
+    assert_tree_readable_non_writable_and_executable(&resolved);
+    let relative = |c: &ActionInputRef| {
+        c.as_artifact()
+            .and_then(|a| a.get_parent_relative_path())
+            .unwrap()
+    };
+    assert_eq!(
+        sorted(prefetcher.base().downloaded_files()),
+        sorted(vec![
+            tree_path.clone(),
+            resolved.get_relative(&relative(&first_child)),
+            resolved.get_relative(&relative(&second_child)),
+        ])
+    );
+    assert!(prefetcher.base().downloads_in_progress().is_empty());
+}
 
 #[test]
 #[ignore = "port pending: tree artifacts with local children, resolved paths and action template expansions"]

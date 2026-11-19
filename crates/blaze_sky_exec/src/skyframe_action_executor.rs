@@ -1888,12 +1888,38 @@ impl ActionOutputMetadataStore {
         let tree_dir = parent.get_path();
         let chmod = self.execution_mode.load(Ordering::SeqCst);
 
+        // With an action file system (the remote output service), the stat and the visit go
+        // through `RemoteActionFileSystem`, which canonicalizes the path first: a tree that is a
+        // symlink to another tree (`ctx.actions.symlink` of a directory) is the target's
+        // directory, whose children may only exist in the remote output tree.
+        // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:326 RemoteActionFileSystem.resolveSymbolicLinks
+        let real_tree_dir = match &self.remote_output_tree {
+            Some(_) => self.resolve_symlink_chain(&tree_dir)?,
+            None => tree_dir.clone(),
+        };
+        let remote_children: Vec<(PathFragment, FileArtifactValue)> = match &self.remote_output_tree
+        {
+            Some(remote_output_tree) => remote_output_tree.files_under(real_tree_dir.as_fragment()),
+            None => Vec::new(),
+        };
+        // `statFromMetadata` of the input that the canonical path is (the symlinked tree is an
+        // input of the action that made the symlink).
+        let input_tree_metadata = match &self.remote_output_tree {
+            Some(_) => self.input_metadata_at(real_tree_dir.as_fragment())?,
+            None => None,
+        };
+
         let stat = tree_dir.stat_if_found(Symlinks::Follow)?;
 
         // Make sure the tree artifact root exists and is a regular directory. Note that this is
         // how the action is initialized, so this should hold unless the action itself has deleted
         // the root.
-        if !stat.as_ref().is_some_and(|s| s.is_directory()) {
+        let is_directory = stat.as_ref().is_some_and(|s| s.is_directory())
+            || !remote_children.is_empty()
+            || input_tree_metadata
+                .as_ref()
+                .is_some_and(|m| m.get_type().is_directory());
+        if !is_directory {
             if chmod {
                 self.set_path_permissions_if_file(&tree_dir)?;
             }
@@ -1903,42 +1929,45 @@ impl ActionOutputMetadataStore {
         // TreeArtifactValue.newBuilder(parent)
         let mut tree: Vec<(ActionInputRef, FileArtifactValue)> = Vec::new();
 
-        TreeArtifactValue::visit_tree(
-            &tree_dir,
-            &mut |parent_relative_path, type_, traversed_symlink| {
-                check_state!(type_ == DirentType::File || type_ == DirentType::Directory);
-                // Set the output permissions when the execution mode requires it, unless at least
-                // one symlink was traversed on the way to this entry, as it might have led
-                // outside of the root directory.
-                if chmod && !traversed_symlink {
-                    self.set_path_permissions(&tree_dir.get_relative(parent_relative_path))?;
-                }
-                if type_ == DirentType::Directory {
-                    return Ok(()); // The final TreeArtifactValue does not contain child directories.
-                }
-                let child = Artifact::create_tree_output(parent, parent_relative_path.clone());
-                let metadata = self.construct_file_artifact_value_from_filesystem(&child)?;
-                tree.push((artifact_input(&child), metadata));
-                Ok(())
-            },
-        )?;
+        if stat.as_ref().is_some_and(|s| s.is_directory()) {
+            TreeArtifactValue::visit_tree(
+                &tree_dir,
+                &mut |parent_relative_path, type_, traversed_symlink| {
+                    check_state!(type_ == DirentType::File || type_ == DirentType::Directory);
+                    // Set the output permissions when the execution mode requires it, unless at
+                    // least one symlink was traversed on the way to this entry, as it might have
+                    // led outside of the root directory.
+                    if chmod && !traversed_symlink {
+                        self.set_path_permissions(&tree_dir.get_relative(parent_relative_path))?;
+                    }
+                    if type_ == DirentType::Directory {
+                        return Ok(()); // The final TreeArtifactValue does not contain child directories.
+                    }
+                    let child = Artifact::create_tree_output(parent, parent_relative_path.clone());
+                    let metadata = self.construct_file_artifact_value_from_filesystem(&child)?;
+                    tree.push((artifact_input(&child), metadata));
+                    Ok(())
+                },
+            )?;
+        }
 
-        // The remote output tree's entries under the root: `TreeArtifactValue.visitTree` lists
-        // the directory through the action file system, whose `readdir` merges them in.
+        // The remote output tree's entries under the (canonical) root: `TreeArtifactValue
+        // .visitTree` lists the directory through the action file system, whose `readdir` merges
+        // the local and the remote entries of each directory by name.
         // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:835 RemoteActionFileSystem.getDirectoryContents
-        if let Some(remote_output_tree) = &self.remote_output_tree {
-            for (parent_relative_path, metadata) in
-                remote_output_tree.files_under(tree_dir.as_fragment())
-            {
-                if tree
-                    .iter()
-                    .any(|(child, _)| child.get_exec_path().ends_with(&parent_relative_path))
-                {
-                    continue;
-                }
-                let child = Artifact::create_tree_output(parent, parent_relative_path);
-                tree.push((artifact_input(&child), metadata));
+        // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:245 ActionOutputMetadataStore.constructTreeArtifactValueFromFilesystem
+        for (parent_relative_path, metadata) in remote_children {
+            let listed = tree.iter().any(|(child, _)| {
+                child
+                    .as_artifact()
+                    .and_then(|a| a.get_parent_relative_path())
+                    .is_some_and(|p| p == parent_relative_path)
+            });
+            if listed {
+                continue;
             }
+            let child = Artifact::create_tree_output(parent, parent_relative_path);
+            tree.push((artifact_input(&child), metadata));
         }
 
         if self.archived_tree_artifacts_enabled {
@@ -1946,11 +1975,72 @@ impl ActionOutputMetadataStore {
         }
 
         // If the artifact was materialized in the filesystem as as symlink to another artifact,
-        // Java records the real path in the metadata (`tree.setResolvedPath`) when `stat` is a
-        // `FileStatusWithMetadata`. Only an action file system or a remote output service hands
-        // out such a stat; the local file system never does.
+        // record the real path in the metadata so that it can be recreated as such later. A stat
+        // with metadata (`FileStatusWithMetadata`) comes from the action file system: the
+        // canonical path is one of the action's inputs.
+        // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:300 ActionOutputMetadataStore.constructTreeArtifactValueFromFilesystem
+        let resolved_path = match &input_tree_metadata {
+            Some(metadata) if tree_dir.is_symbolic_link() => Some(
+                metadata
+                    .get_resolved_path()
+                    .cloned()
+                    .unwrap_or_else(|| real_tree_dir.as_fragment().clone()),
+            ),
+            _ => None,
+        };
 
-        Ok(Some(Arc::new(TreeArtifactValue::build(tree, None, None))))
+        Ok(Some(Arc::new(TreeArtifactValue::build(
+            tree,
+            None,
+            resolved_path,
+        ))))
+    }
+
+    /// `path` with its local symlinks resolved, one link at a time; a dangling or missing path
+    /// stays as far as it resolved (the action file system knows remote directories that do
+    /// not exist locally).
+    fn resolve_symlink_chain(&self, path: &Path) -> std::io::Result<Path> {
+        let mut path = path.clone();
+        for _ in 0..32 {
+            match path.stat_if_found(Symlinks::Nofollow)? {
+                Some(stat) if stat.is_symbolic_link() => {
+                    let target = path.read_symbolic_link()?;
+                    path = if target.is_absolute() {
+                        path.get_file_system().get_path_fragment(&target)
+                    } else {
+                        path.get_parent_directory()
+                            .expect("a symlink has a parent")
+                            .get_relative(&target)
+                    };
+                }
+                _ => return Ok(path),
+            }
+        }
+        Err(std::io::Error::other(format!(
+            "{} (Too many levels of symbolic links)",
+            path
+        )))
+    }
+
+    /// The input metadata of the action at the absolute `path` (the first source of the action
+    /// file system's `statInternal`).
+    fn input_metadata_at(&self, path: &PathFragment) -> std::io::Result<Option<FileArtifactValue>> {
+        let Some(inputs) = self.input_metadata.get() else {
+            return Ok(None);
+        };
+        if !path.starts_with(&self.exec_root) {
+            return Ok(None);
+        }
+        let inputs = inputs.action_input_map_only();
+        match inputs.get_input(&path.relative_to(&self.exec_root)) {
+            Some(input) => {
+                if let Some(tree) = inputs.get_tree_metadata(&input) {
+                    return Ok(tree.metadata.clone());
+                }
+                inputs.get_input_metadata(&input)
+            }
+            None => Ok(None),
+        }
     }
 
     /// Sets the output permissions of a freshly created output file.

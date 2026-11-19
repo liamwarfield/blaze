@@ -63,6 +63,27 @@ impl RemoteOutputTree {
         self.files.lock().remove(path);
     }
 
+    /// `remoteOutputTree.getPath(path).delete()` of a file: whether there was one.
+    pub fn delete(&self, path: &PathFragment) -> bool {
+        self.files.lock().remove(path).is_some()
+    }
+
+    /// `remoteOutputTree.renameTo(src, dst)`: moves the file at `src`, or every file under the
+    /// directory `src`; `false` when nothing is there (Java's `FileNotFoundException`).
+    pub fn rename_to(&self, src: &PathFragment, dst: &PathFragment) -> bool {
+        let mut files = self.files.lock();
+        let moved: Vec<PathFragment> = files
+            .keys()
+            .filter(|p| p.starts_with(src))
+            .cloned()
+            .collect();
+        for path in &moved {
+            let metadata = files.remove(path).expect("listed above");
+            files.insert(dst.get_relative(&path.relative_to(src)), metadata);
+        }
+        !moved.is_empty()
+    }
+
     /// The entries of the directory `dir` in the remote output tree, by name, with whether each
     /// is a directory (a remote file's parent directories exist in the tree); `None` when no
     /// file was injected under `dir`.
@@ -137,6 +158,44 @@ impl RemoteActionFileSystem {
         }
     }
 
+    /// `path` canonicalized through the local symlinks (`pathCanonicalizer
+    /// .resolveSymbolicLinks`): each component that is a local symlink is replaced by its
+    /// target; components that do not exist locally (remote directories and files) are kept.
+    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:326 RemoteActionFileSystem.resolveSymbolicLinks
+    fn canonicalize(&self, path: &PathFragment) -> io::Result<PathFragment> {
+        let mut hops = 0;
+        let mut pending: Vec<String> = path.segments().map(str::to_string).collect();
+        pending.reverse();
+        let mut current = PathFragment::create("/");
+        while let Some(segment) = pending.pop() {
+            let candidate = current.get_child(&segment);
+            match self.delegate.stat(&candidate, /* follow_symlinks= */ false) {
+                Ok(stat) if stat.is_symbolic_link() => {
+                    hops += 1;
+                    if hops > 32 {
+                        return Err(io::Error::other(format!(
+                            "{} (Too many levels of symbolic links)",
+                            path.get_path_string()
+                        )));
+                    }
+                    let target = self.delegate.read_symbolic_link(&candidate)?;
+                    let resolved = if target.is_absolute() {
+                        target
+                    } else {
+                        current.get_relative(&target)
+                    };
+                    let mut segments: Vec<String> =
+                        resolved.segments().map(str::to_string).collect();
+                    segments.reverse();
+                    pending.extend(segments);
+                    current = PathFragment::create("/");
+                }
+                _ => current = candidate,
+            }
+        }
+        Ok(current)
+    }
+
     /// The metadata of the remote file `path` resolves to, following the local symlinks on the
     /// way (`isRemote(path)`: `statInternal(path, FOLLOW_ALL, IN_MEMORY_ONLY)`), with the
     /// canonical path.
@@ -145,29 +204,14 @@ impl RemoteActionFileSystem {
         &self,
         path: &PathFragment,
     ) -> io::Result<Option<(PathFragment, FileArtifactValue)>> {
-        let mut path = path.clone();
-        for _ in 0..32 {
-            if let Some(m) = self.remote(&path) {
-                return Ok(m.is_remote().then_some((path, m)));
-            }
-            match self.delegate.stat(&path, /* follow_symlinks= */ false) {
-                Ok(stat) if stat.is_symbolic_link() => {
-                    let target = self.delegate.read_symbolic_link(&path)?;
-                    path = if target.is_absolute() {
-                        target
-                    } else {
-                        path.get_parent_directory()
-                            .expect("a symlink has a parent")
-                            .get_relative(&target)
-                    };
-                }
-                _ => return Ok(None),
-            }
+        if let Some(m) = self.remote(path) {
+            return Ok(m.is_remote().then_some((path.clone(), m)));
         }
-        Err(io::Error::other(format!(
-            "{} (Too many levels of symbolic links)",
-            path.get_path_string()
-        )))
+        let path = self.canonicalize(path)?;
+        Ok(self
+            .remote(&path)
+            .filter(FileArtifactValue::is_remote)
+            .map(|m| (path, m)))
     }
 
     /// Downloads the file at `path` if it is remote.
@@ -237,10 +281,14 @@ impl FileSystem for RemoteActionFileSystem {
             return Ok(RemoteActionFileSystem::stat_from_metadata(&m));
         }
         match self.delegate.stat(path, follow_symlinks) {
-            // A directory of the remote output tree that does not exist locally.
+            // A directory of the remote output tree that does not exist locally (possibly
+            // reached through a symlinked directory).
             Err(e)
                 if e.kind() == io::ErrorKind::NotFound
-                    && self.remote_output_tree.directory_entries(path).is_some() =>
+                    && self
+                        .remote_output_tree
+                        .directory_entries(&self.canonicalize(path)?)
+                        .is_some() =>
             {
                 Ok(FileStatus::new(libc::S_IFDIR | 0o555, 0, 0, 0, 0))
             }
@@ -306,8 +354,11 @@ impl FileSystem for RemoteActionFileSystem {
     fn create_directory_and_parents(&self, path: &PathFragment) -> io::Result<()> {
         self.delegate.create_directory_and_parents(path)
     }
+    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:357 RemoteActionFileSystem.delete
     fn delete(&self, path: &PathFragment) -> io::Result<bool> {
-        self.delegate.delete(path)
+        let deleted = self.delegate.delete(path)?;
+        // The remote output tree only holds outputs (`isOutput(path)`).
+        Ok(self.remote_output_tree.delete(path) || deleted)
     }
     fn set_last_modified_time(&self, path: &PathFragment, new_time: i64) -> io::Result<()> {
         self.delegate.set_last_modified_time(path, new_time)
@@ -334,7 +385,10 @@ impl FileSystem for RemoteActionFileSystem {
     /// The sorted union of the local and the remote entries (`getDirectoryContents`).
     // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:835 RemoteActionFileSystem.getDirectoryContents
     fn readdir(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<Vec<Dirent>> {
-        let Some(remote) = self.remote_output_tree.directory_entries(path) else {
+        let Some(remote) = self
+            .remote_output_tree
+            .directory_entries(&self.canonicalize(path)?)
+        else {
             return self.delegate.readdir(path, follow_symlinks);
         };
         let mut entries: BTreeMap<String, Dirent> = BTreeMap::new();
@@ -390,8 +444,13 @@ impl FileSystem for RemoteActionFileSystem {
     ) -> io::Result<Box<dyn Write + Send>> {
         self.delegate.get_output_stream(path, append, internal)
     }
+    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:773 RemoteActionFileSystem.renameTo
     fn rename_to(&self, source_path: &PathFragment, target_path: &PathFragment) -> io::Result<()> {
-        self.delegate.rename_to(source_path, target_path)
+        let remote_renamed = self.remote_output_tree.rename_to(source_path, target_path);
+        match self.delegate.rename_to(source_path, target_path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound && remote_renamed => Ok(()),
+            r => r,
+        }
     }
     fn create_fs_dependent_hard_link(
         &self,

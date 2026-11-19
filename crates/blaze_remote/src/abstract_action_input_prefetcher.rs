@@ -135,9 +135,12 @@ pub struct AbstractActionInputPrefetcher {
     output_permissions: OutputPermissions,
     pub(crate) exec_root: Path,
     pub(crate) remote_output_checker: Arc<RemoteOutputChecker>,
-    // PORT: `@Nullable ActionOutputDirectoryHelper outputDirectoryHelper` is not taken: Blaze's
-    // executor owns its own helper, so directories are created with
-    // `createDirectoryAndParents()`, Java's branch for a null helper.
+    // PORT: `@Nullable ActionOutputDirectoryHelper outputDirectoryHelper` is not taken (Blaze's
+    // executor owns its helper) and directories are created with `createDirectoryAndParents()`.
+    // Java passes the helper for every build command (`RemoteModule.createActionInputFetcher`)
+    // and its `createOutputDirectory` replaces a file or symlink found where a directory is
+    // needed; here that case fails with an I/O error (an output path component that changed
+    // from file to directory between builds, served from the action cache).
     /// `DirectoryTracker.directoryStateMap`.
     directory_state_map: Mutex<HashMap<Path, DirectoryState>>,
     /// `treeArtifactLocks` (`Striped.lazyWeakReadWriteLock`): one lock per resolved tree root.

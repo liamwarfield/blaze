@@ -469,8 +469,14 @@ impl StandaloneTestStrategy {
         action: &TestRunnerAction,
         result: &StandaloneTestResult,
     ) -> io::Result<StandaloneProcessedAttemptResult> {
-        let mut test_outputs =
-            action.get_test_outputs_mapping(Some(action_execution_context.get_exec_root()))?;
+        // `getTestOutputsMapping(actionExecutionContext.getPathResolver(),
+        // actionExecutionContext.getExecRoot())`: through the action file system, where the
+        // outputs that stay remote exist.
+        let mut test_outputs = action.get_test_outputs_mapping(Some(
+            &crate::exec::action_execution_context::exec_root_on_action_file_system(
+                action_execution_context,
+            ),
+        ))?;
         if !is_last_attempt {
             test_outputs =
                 rename_outputs(action_execution_context, action, test_outputs, attempt_id)?;
@@ -1130,7 +1136,12 @@ impl TestActionContext for StandaloneTestStrategy {
             Arc::new(local_resources),
             PathMapper::NOOP,
         );
-        let exec_root = action_execution_context.get_exec_root().clone();
+        // Java: `actionExecutionContext.getExecRoot()`, on the action file system when one is in
+        // use: the test's outputs (`resolve(execRoot)`: test.xml, the shard file, the undeclared
+        // outputs) may stay remote, and the checks of their existence see them there.
+        let exec_root = crate::exec::action_execution_context::exec_root_on_action_file_system(
+            action_execution_context,
+        );
         let tmp_dir = self
             .tmp_dir_root
             .get_child(&TestStrategy::get_tmp_dir_name(action));

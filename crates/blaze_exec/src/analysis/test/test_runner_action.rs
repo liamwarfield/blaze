@@ -501,13 +501,24 @@ impl TestRunnerAction {
         // produced by test spawns, but not declared as action outputs, and only the latter are
         // stored in the action cache.
         let mut builder: TestOutputs = Vec::new();
-        if self.get_test_log().get_path().exists() {
-            builder.push((names::TEST_LOG.to_string(), self.get_test_log().get_path()));
+        // `resolver.toPath(artifact)`: the artifact's path on the file system of `exec_root`
+        // (the action file system when the caller passes its exec root).
+        let to_path = |artifact: &Artifact| match exec_root {
+            Some(exec_root) => blaze_vfs::FileSystemExt::get_path_fragment(
+                exec_root.get_file_system(),
+                artifact.get_path().as_fragment(),
+            ),
+            None => artifact.get_path(),
+        };
+        let test_log = to_path(self.get_test_log());
+        if test_log.exists() {
+            builder.push((names::TEST_LOG.to_string(), test_log));
         }
-        if let Some(coverage_data) = self.get_coverage_data()
-            && coverage_data.get_path().exists()
-        {
-            builder.push((names::TEST_COVERAGE.to_string(), coverage_data.get_path()));
+        if let Some(coverage_data) = self.get_coverage_data() {
+            let coverage_data = to_path(coverage_data);
+            if coverage_data.exists() {
+                builder.push((names::TEST_COVERAGE.to_string(), coverage_data));
+            }
         }
         if let Some(exec_root) = exec_root {
             let resolved_paths = self.resolve(exec_root);
