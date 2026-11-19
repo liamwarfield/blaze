@@ -17,6 +17,7 @@ use crate::actions::{
 use crate::exec::abstract_spawn_strategy::exec_io_exception;
 use crate::exec::bin_tools::BinTools;
 use crate::exec::local::local_env_provider::LocalEnvProvider;
+use crate::exec::runfiles_tree_updater::{RunfilesTreeUpdater, UpdateRunfilesError};
 use crate::exec::spawn_runner::{ProgressStatus, SpawnExecutionContext, SpawnRunner};
 use crate::runtime::ProcessWrapper;
 
@@ -37,8 +38,7 @@ pub struct LocalSpawnRunner {
     process_wrapper: Option<ProcessWrapper>,
     local_env_provider: Arc<dyn LocalEnvProvider>,
     bin_tools: Arc<BinTools>,
-    // PORT: RunfilesTreeUpdater is not ported; a spawn with a runfiles tree input fails loudly in
-    // update_runfiles.
+    runfiles_tree_updater: Arc<RunfilesTreeUpdater>,
     action_temp_creator: Option<ActionTempCreator>,
 }
 
@@ -53,6 +53,7 @@ impl LocalSpawnRunner {
         local_env_provider: Arc<dyn LocalEnvProvider>,
         bin_tools: Arc<BinTools>,
         process_wrapper: Option<ProcessWrapper>,
+        runfiles_tree_updater: Arc<RunfilesTreeUpdater>,
     ) -> LocalSpawnRunner {
         LocalSpawnRunner {
             exec_root,
@@ -62,6 +63,7 @@ impl LocalSpawnRunner {
             resource_manager,
             local_env_provider,
             bin_tools,
+            runfiles_tree_updater,
             action_temp_creator: None,
         }
     }
@@ -78,14 +80,6 @@ impl LocalSpawnRunner {
             return creator(exec_root);
         }
         exec_root.create_temp_directory("local-spawn-runner.")
-    }
-
-    /// `runfilesTreeUpdater.updateRunfiles(runfilesTrees)`.
-    // Java: com/google/devtools/build/lib/exec/RunfilesTreeUpdater.java:71 RunfilesTreeUpdater.updateRunfiles
-    fn update_runfiles(&self, runfiles_trees: &[Arc<dyn RunfilesTree>]) {
-        if !runfiles_trees.is_empty() {
-            blaze_util::unported!("RunfilesTreeUpdater.updateRunfiles");
-        }
     }
 }
 
@@ -323,7 +317,15 @@ impl<'a> SubprocessHandler<'a> {
         }
 
         // PORT: skipped, profiling.
-        runner.update_runfiles(&runfiles_trees);
+        // Java: com/google/devtools/build/lib/exec/local/LocalSpawnRunner.java:354 LocalSpawnRunner.SubprocessHandler.start
+        runner
+            .runfiles_tree_updater
+            .update_runfiles(&runfiles_trees)
+            .map_err(|e| match e {
+                UpdateRunfilesError::Exec(e) => e,
+                // An IOException leaves `exec` as one (AbstractSpawnStrategy's handler).
+                UpdateRunfilesError::Io(e) => exec_io_exception(&e),
+            })?;
 
         let tmp_dir = runner
             .create_action_temp(exec_root)

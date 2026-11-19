@@ -14,6 +14,7 @@ use blaze_protos::failure_details::{self, FailureDetail, failure_detail, spawn a
 use indexmap::IndexMap;
 
 use crate::reapi::{Platform, platform};
+use crate::text_format::{self, ParseException};
 
 /// `StringEncoding.internalToUnicode(s)` of the internal string that `s` stands for.
 ///
@@ -113,13 +114,13 @@ fn should_produce_platform_proto(
     false
 }
 
-/// `TextFormat.getParser().merge(text, platformBuilder)`; the `Err` is the message of the
-/// `ParseException`.
-// Java: com/google/protobuf/TextFormat.java TextFormat.Parser.merge
-fn text_format_merge_platform(_text: &str) -> Result<Platform, String> {
-    // Blaze has no protobuf text-format parser (the same gap as
-    // blaze_exec::exec::spawn_log_context).
-    blaze_util::unported!("PlatformUtils.getPlatformProto(remote_execution_properties)")
+/// `Platform.Builder platformBuilder = Platform.newBuilder();
+/// TextFormat.getParser().merge(text, platformBuilder)`; the `Err` is the `ParseException`.
+// Java: com/google/devtools/build/lib/analysis/platform/PlatformUtils.java:129 PlatformUtils.getPlatformProto
+fn text_format_merge_platform(text: &str) -> Result<Platform, ParseException> {
+    let mut platform_builder = Platform::default();
+    text_format::merge_platform(text, &mut platform_builder)?;
+    Ok(platform_builder)
 }
 
 /// `getPlatformProto(spawn, remoteOptions, additionalProperties)`.

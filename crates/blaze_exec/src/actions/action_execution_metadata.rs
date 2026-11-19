@@ -18,6 +18,11 @@ pub struct PlatformInfo {
     pub exec_properties: IndexMap<String, String>,
     /// `remoteExecutionProperties()`.
     pub remote_execution_properties: String,
+    /// `constraints().get(ConstraintConstants.OS_CONSTRAINT_SETTING)`: the label of the platform's
+    /// value for `@platforms//os:os`, `None` when neither the platform nor a parent sets one (the
+    /// setting has no default). Read by `ConstraintConstants.getOsFromConstraintsOrHost`.
+    // Java: com/google/devtools/build/lib/analysis/constraints/ConstraintConstants.java:83 ConstraintConstants.getOsFromConstraintsOrHost
+    pub os_constraint: Option<Label>,
 }
 
 /// The parts of `ActionOwner` the execution layer reads.

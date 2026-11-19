@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use blaze_actions::actions::runfiles_tree::RunfilesTreeRef;
 use blaze_actions::actions::runfiles_tree_action::RunfilesTreeAction;
+use blaze_actions::analysis::actions::symlink_tree_action::RunfileSymlinksMode;
 use blaze_actions::analysis::symlink_entry::SymlinkEntry as BlazeSymlinkEntry;
 use blaze_collect::{NestedSet, NestedSetBuilder, NestedSetNode};
 use blaze_vfs::PathFragment;
@@ -40,6 +41,16 @@ impl RunfilesTree for RunfilesTreeAdapter {
             .iter()
             .map(|(path, artifact)| (path.clone(), artifact.as_ref().map(artifact_input)))
             .collect()
+    }
+
+    // Java: com/google/devtools/build/lib/actions/RunfilesTree.java:44 RunfilesTree.getSymlinksMode
+    fn get_symlinks_mode(&self) -> RunfileSymlinksMode {
+        self.0.get_symlinks_mode()
+    }
+
+    // Java: com/google/devtools/build/lib/actions/RunfilesTree.java:47 RunfilesTree.isBuildRunfileLinks
+    fn is_build_runfile_links(&self) -> bool {
+        self.0.is_build_runfile_links()
     }
 
     // Java: com/google/devtools/build/lib/actions/RunfilesTree.java:50 RunfilesTree.getWorkspaceName

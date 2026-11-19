@@ -68,7 +68,9 @@ pub trait SpawnExecutionContext: Send + Sync {
     fn is_rewinding_enabled(&self) -> bool {
         false
     }
-    /// `checkForLostInputs()`.
+    /// `checkForLostInputs() throws LostInputsExecException`. Bazel 9.3.2 has no caller of
+    /// this method; the strategies' implementation asks the action execution context.
+    // Java: com/google/devtools/build/lib/exec/SpawnRunner.java:265 SpawnRunner.SpawnExecutionContext.checkForLostInputs
     fn check_for_lost_inputs(&self) -> Result<(), ExecException> {
         Ok(())
     }

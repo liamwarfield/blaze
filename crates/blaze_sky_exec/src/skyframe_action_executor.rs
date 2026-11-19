@@ -37,7 +37,7 @@ use blaze_exec::actions::cache::{IoOrInterruptedException, OutputMetadataStore};
 use blaze_exec::actions::exec_exception::{EnvironmentalExecException, ExecException};
 use blaze_exec::actions::{
     ActionExecutionException, ActionExecutionMetadata, ActionInput, ActionInputRef, ActionResult,
-    CacheCheckAction, FileArtifactValue, FileContentsProxy, FileStateType, FilesetOutputTree,
+    CacheCheckAction, FileArtifactValue, FileContentsProxy, FilesetOutputTree,
     InputMetadataProvider, LostArtifacts, OutputChecker, RunfilesArtifactValue, Spawn,
     TreeArtifactValue, as_executable,
 };
@@ -439,8 +439,11 @@ impl SkyframeActionExecutor {
     fn handle_lost_inputs(
         &self,
         action: &dyn Action,
-        lost_artifacts: &LostArtifacts,
+        lost_inputs_exception: &ActionExecutionException,
     ) -> ActionExecutionException {
+        let lost_artifacts: &LostArtifacts = lost_inputs_exception
+            .get_lost_inputs()
+            .expect("a LostInputsActionExecutionException");
         // LostType.INPUT
         let (description, code_when_disabled) = (
             "inputs",
@@ -453,6 +456,12 @@ impl SkyframeActionExecutor {
             );
         };
         if policy.rewinding_enabled {
+            // PORT: Java rewinds here. Before failing loudly, forget the remote metadata of the
+            // persistent action cache (what LeaseService.handleMissingInputs does without
+            // rewinding), so that a rerun does not trust the same stale entry again.
+            if let Some(purge) = &policy.purge_before_unported_rewinding {
+                purge();
+            }
             blaze_util::unported!(
                 "ActionRewindStrategy.prepareRewindPlanForLostInputs",
                 "action rewinding (--rewind_lost_inputs, the default) for the lost inputs of {}; \
@@ -521,6 +530,97 @@ impl SkyframeActionExecutor {
             (message, failure_detail)
         };
         ActionExecutionException::new(message, Some(action), false, Some(failure_detail))
+    }
+
+    /// A `LostInputsActionExecutionException` that leaves `ActionRunner.actuallyCompleteAction`
+    /// (outputs or inputs lost while completing the action) and reaches
+    /// `ActionExecutionFunction.handleLostInputs`: the rewinding failure, reported as
+    /// `processAndGetExceptionToThrow(env.getListener(), e.getPrimaryOutputPath(), action, ...,
+    /// e.getFileOutErr(), ErrorTiming.AFTER_EXECUTION)` reports it.
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:509 ActionExecutionFunction.handleLostInputs
+    fn handle_lost_inputs_of_completion(
+        &self,
+        listener: &dyn ExtendedEventHandler,
+        primary_output_path: &Path,
+        action: &ActionRef,
+        lost_inputs_exception: &ActionExecutionException,
+        out_err_buffer: &FileOutErr,
+    ) -> ActionExecutionException {
+        let e = self.handle_lost_inputs(action.as_ref(), lost_inputs_exception);
+        self.process_and_get_exception_to_throw(
+            listener,
+            primary_output_path,
+            action,
+            e,
+            out_err_buffer,
+            ErrorTiming::AFTER_EXECUTION,
+        )
+    }
+
+    /// `maybeSignalLostInputs(e, primaryOutputPath)`: action failures may be caused by lost
+    /// inputs. Lost input failures have higher priority because rewinding may be able to restore
+    /// what was lost and allow the action to complete without error. `Err` is the
+    /// `LostInputsActionExecutionException` Java throws (then the failure is not reported here);
+    /// `Ok` gives `e` back when no input was lost.
+    ///
+    /// PORT: `lostInputsException.setActionStartedEventAlreadyEmitted()` and
+    /// `enrichLostInputsException` (primary action, primary output path, out/err) decorate the
+    /// exception for `ActionExecutionFunction.handleLostInputs`; the callers here pass the
+    /// primary output path and out/err to [`Self::handle_lost_inputs`]'s report directly, and
+    /// the `ActionCompletionEvent` is posted by `run_action` either way (Java's `handleLostInputs`
+    /// posts it when rewinding fails). The primary-action check and the started-event flag only
+    /// matter to action rewinding, which is not ported.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1220 ActionRunner.maybeSignalLostInputs
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1557 SkyframeActionExecutor.enrichLostInputsException
+    fn maybe_signal_lost_inputs(
+        e: ActionExecutionException,
+        action: &dyn Action,
+        context: &ActionExecutionContextImpl<'_>,
+    ) -> Result<ActionExecutionException, ActionExecutionException> {
+        if e.get_lost_inputs().is_some() {
+            return Err(e);
+        }
+        match Self::check_action_file_system_for_lost_inputs(
+            context.get_remote_action_file_system().as_ref(),
+            action,
+        ) {
+            Ok(()) => Ok(e),
+            Err(lost_inputs_exception) => Err(lost_inputs_exception),
+        }
+    }
+
+    /// Validates that all action input contents were not lost if they were read, and if an
+    /// action file system was used. Fails with a `LostInputsActionExecutionException` describing
+    /// the lost inputs if any were (`outputService.checkActionFileSystemForLostInputs`:
+    /// `RemoteOutputService` asks a `RemoteActionFileSystem`, the only action file system here).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1606 SkyframeActionExecutor.checkActionFileSystemForLostInputs
+    // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:233 RemoteOutputService.checkActionFileSystemForLostInputs
+    fn check_action_file_system_for_lost_inputs(
+        action_file_system: Option<&Arc<RemoteActionFileSystem>>,
+        action: &dyn Action,
+    ) -> Result<(), ActionExecutionException> {
+        if let Some(action_file_system) = action_file_system
+            && let Some(lost_inputs) = Self::action_file_system_lost_inputs(action_file_system)
+        {
+            // throw (LostInputsActionExecutionException)
+            //     ActionExecutionException.fromExecException(mergedException, action)
+            // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:914 RemoteActionFileSystem.checkForLostInputs
+            return Err(ActionExecutionException::from_exec_exception(
+                &blaze_exec::actions::LostInputsExecException::create(lost_inputs),
+                None,
+                action,
+            ));
+        }
+        Ok(())
+    }
+
+    /// The merged record of the inputs the action file system found lost
+    /// (`RemoteActionFileSystem.checkForLostInputs`), `None` when nothing was lost. The one place
+    /// that asks the overlay.
+    fn action_file_system_lost_inputs(
+        action_file_system: &RemoteActionFileSystem,
+    ) -> Option<LostArtifacts> {
+        action_file_system.check_for_lost_inputs()
     }
 
     /// Sets `--subcommands` (`BlazeExecutor.reportsSubcommands`).
@@ -809,6 +909,7 @@ impl SkyframeActionExecutor {
             file_system.update_context(ActionMetadataSnapshot::of(action.as_ref()));
         }
         let context = ActionExecutionContextImpl {
+            exec_root: action_exec_root(self, Some(&output_metadata_store)),
             executor: self,
             input_metadata: input_metadata.clone(),
             output_metadata_store: Some(output_metadata_store.clone()),
@@ -898,18 +999,31 @@ impl SkyframeActionExecutor {
             )
             // Starlark callbacks (map_each) run on an evaluation-sized stack.
             .and_then(|()| on_evaluation_stack(|| executable.execute(context)))
-        {
+            // An action's result (or intermediate state) may have been affected by lost inputs.
+            // If an action filesystem is used, it may know whether inputs were lost. We should
+            // fail fast if any were; rewinding may be able to fix it.
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1265 ActionRunner.executeAction
+            .and_then(|r| {
+                Self::check_action_file_system_for_lost_inputs(
+                    context.get_remote_action_file_system().as_ref(),
+                    action.as_ref(),
+                )?;
+                Ok(r)
+            }) {
             Ok(r) => r,
             // Java: InterruptedException is not caught here; it leaves Action.execute and this
             // method unreported.
             Err(e) if e.is_interrupted() => return Err(ExecutionFailure::Interrupted),
             Err(e) => {
                 let primary_output_path = context.get_input_path(&action.get_primary_output());
-                // catch (LostInputsActionExecutionException e): handled as
-                // ActionExecutionFunction.handleLostInputs does (see handle_lost_inputs).
-                let e = match e.get_lost_inputs() {
-                    Some(lost_inputs) => self.handle_lost_inputs(action.as_ref(), lost_inputs),
-                    None => e,
+                // maybeSignalLostInputs(e, primaryOutputPath): a LostInputsActionExecutionException
+                // leaves this method unreported and ActionExecutionFunction.handleLostInputs
+                // handles it (see handle_lost_inputs).
+                let e = match Self::maybe_signal_lost_inputs(e, action.as_ref(), context) {
+                    Ok(e) => e,
+                    Err(lost_inputs_exception) => {
+                        self.handle_lost_inputs(action.as_ref(), &lost_inputs_exception)
+                    }
                 };
                 return Err(self
                     .process_and_get_exception_to_throw(
@@ -924,7 +1038,6 @@ impl SkyframeActionExecutor {
             }
         };
         self.actually_complete_action(listener, action, context, result)
-            .map_err(ExecutionFailure::from)
     }
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1302 ActionRunner.actuallyCompleteAction
@@ -934,7 +1047,7 @@ impl SkyframeActionExecutor {
         action: &ActionRef,
         context: &ActionExecutionContextImpl<'_>,
         action_result: ActionResult,
-    ) -> Result<ActionExecutionValue, ActionExecutionException> {
+    ) -> Result<ActionExecutionValue, ExecutionFailure> {
         let mut output_already_dumped = false;
         if !action_result.is_empty() {
             listener.post(Arc::new(ActionResultReceivedEvent {
@@ -974,6 +1087,23 @@ impl SkyframeActionExecutor {
                 },
                 execution::Code::ActionOutputsNotCreated,
             );
+            // catch (ActionExecutionException actionException): maybeSignalLostInputs, then
+            // report.
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1356 ActionRunner.actuallyCompleteAction
+            let e = match Self::maybe_signal_lost_inputs(e, action.as_ref(), context) {
+                Ok(e) => e,
+                Err(lost_inputs_exception) => {
+                    return Err(self
+                        .handle_lost_inputs_of_completion(
+                            listener,
+                            &primary_output_path,
+                            action,
+                            &lost_inputs_exception,
+                            out_err_buffer,
+                        )
+                        .into());
+                }
+            };
             // Success in execution but failure in completion.
             self.report_action_execution(
                 listener,
@@ -983,7 +1113,7 @@ impl SkyframeActionExecutor {
                 out_err_buffer,
                 ErrorTiming::AFTER_EXECUTION,
             );
-            return Err(e);
+            return Err(e.into());
         }
         // if (finalizeActions) outputService.finalizeAction(action, outputMetadataStore): the
         // context is registered only for an output service that does something there (the remote
@@ -999,9 +1129,45 @@ impl SkyframeActionExecutor {
             if let Err(e) =
                 finalizer.finalize_action(&*metadata, &outputs, &**output_metadata_store)
             {
-                // PORT: LostInputsExecException (action rewinding) is not ported, and an
-                // InterruptedException cannot leave this method (it has no Interrupted result);
-                // both are reported as the failure to finalize.
+                use blaze_exec::exec::action_execution_context::SpawnCacheError;
+                let e: std::io::Error = match e {
+                    // catch (LostInputsExecException e): the remote cache has lost an output of the
+                    // action before it could be downloaded. Like a lost input, this is recovered
+                    // from by rewinding rather than reported: `throw
+                    // ActionExecutionException.fromExecException(e, action)`, which the catch of
+                    // ActionExecutionException below hands to maybeSignalLostInputs.
+                    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1344 ActionRunner.actuallyCompleteAction
+                    SpawnCacheError::Exec(lost) if lost.get_lost_inputs().is_some() => {
+                        let lost_inputs_exception = ActionExecutionException::from_exec_exception(
+                            &lost,
+                            None,
+                            action.as_ref(),
+                        );
+                        return Err(self
+                            .handle_lost_inputs_of_completion(
+                                listener,
+                                &primary_output_path,
+                                action,
+                                &lost_inputs_exception,
+                                out_err_buffer,
+                            )
+                            .into());
+                    }
+                    // InterruptedException (see below).
+                    SpawnCacheError::Exec(ExecException::Interrupted) => {
+                        std::io::Error::from(std::io::ErrorKind::Interrupted)
+                    }
+                    // PORT: `finalizeAction` throws no other ExecException; one would be reported
+                    // as the failure to finalize, with its message as the cause.
+                    SpawnCacheError::Exec(other) => std::io::Error::other(other.get_message()),
+                    SpawnCacheError::Io(e) => e,
+                };
+                // InterruptedException is not caught: it leaves finalizeAction and this method
+                // unreported (`finalizeAction(...) throws ... InterruptedException`).
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1340 ActionRunner.actuallyCompleteAction
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    return Err(ExecutionFailure::Interrupted);
+                }
                 // PORT: skipped, logging (logger.atWarning "unable to finalize action").
                 let e = self.to_action_execution_exception(
                     "unable to finalize action",
@@ -1019,7 +1185,7 @@ impl SkyframeActionExecutor {
                     out_err_buffer,
                     ErrorTiming::AFTER_EXECUTION,
                 );
-                return Err(e);
+                return Err(e.into());
             }
         }
         self.report_action_execution(
@@ -1472,6 +1638,7 @@ impl SkyframeActionExecutor {
         input_metadata: Arc<ActionInputMetadata>,
     ) -> Result<Option<NestedSet<Artifact>>, ExecutionFailure> {
         let context = ActionExecutionContextImpl {
+            exec_root: action_exec_root(self, None),
             executor: self,
             input_metadata,
             // ActionExecutionContext.forInputDiscovery has no output metadata store.
@@ -1951,86 +2118,86 @@ impl ActionOutputMetadataStore {
         ActionOutputMetadataStore::check_tree_exists(value, artifact)
     }
 
+    /// `artifactPathResolver.toPath(artifact)`: the artifact's path on the action file system
+    /// when there is one (`TransformResolver`), its own path otherwise (`IdentityResolver`).
+    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:75 IdentityResolver.toPath
+    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:107 TransformResolver.toPath
+    fn to_path(&self, artifact: &Artifact) -> Path {
+        artifact_path_resolver_to_path(self.action_file_system.as_ref(), artifact)
+    }
+
     // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:236 ActionOutputMetadataStore.constructTreeArtifactValueFromFilesystem
     fn construct_tree_artifact_value_from_filesystem(
         &self,
         parent: &Artifact,
     ) -> std::io::Result<Option<Arc<TreeArtifactValue>>> {
-        let tree_dir = parent.get_path();
+        let tree_dir = self.to_path(parent);
         let chmod = self.execution_mode.load(Ordering::SeqCst);
 
-        let stat = tree_dir.stat_if_found(Symlinks::Follow)?;
-
-        // With an action file system (RemoteActionFileSystem), the tree's files that were not
-        // downloaded are in the remote output tree: its `readdir` (which `visitTree` uses) adds
-        // them to the local entries, and its `stat` of the root finds the remote directory.
-        // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:831 RemoteActionFileSystem.readdir
-        let remote_files: Vec<(PathFragment, FileArtifactValue)> = match &self.action_file_system {
-            Some(file_system) => file_system
-                .get_remote_output_tree()
-                .get_files_under(tree_dir.as_fragment()),
-            None => Vec::new(),
-        };
+        let stat = stat_if_found_with_metadata(&tree_dir, Symlinks::Follow)?;
 
         // Make sure the tree artifact root exists and is a regular directory. Note that this is
         // how the action is initialized, so this should hold unless the action itself has deleted
         // the root.
-        if !stat.as_ref().is_some_and(|s| s.is_directory()) && remote_files.is_empty() {
+        let Some(stat) = stat.filter(|s| s.status.is_directory()) else {
             if chmod {
                 self.set_path_permissions_if_file(&tree_dir)?;
             }
             return Ok(None);
-        }
+        };
 
         // TreeArtifactValue.newBuilder(parent)
         let mut tree: Vec<(ActionInputRef, FileArtifactValue)> = Vec::new();
-        let mut visited: HashSet<PathFragment> = HashSet::new();
 
-        if stat.as_ref().is_some_and(|s| s.is_directory()) {
-            TreeArtifactValue::visit_tree(
-                &tree_dir,
-                &mut |parent_relative_path, type_, traversed_symlink| {
-                    check_state!(type_ == DirentType::File || type_ == DirentType::Directory);
-                    // Set the output permissions when the execution mode requires it, unless at least
-                    // one symlink was traversed on the way to this entry, as it might have led
-                    // outside of the root directory.
-                    if chmod && !traversed_symlink {
-                        self.set_path_permissions(&tree_dir.get_relative(parent_relative_path))?;
-                    }
-                    if type_ == DirentType::Directory {
-                        return Ok(()); // The final TreeArtifactValue does not contain child directories.
-                    }
-                    let child = Artifact::create_tree_output(parent, parent_relative_path.clone());
-                    let metadata = self.construct_file_artifact_value_from_filesystem(&child)?;
-                    tree.push((artifact_input(&child), metadata));
-                    visited.insert(parent_relative_path.clone());
-                    Ok(())
-                },
-            )?;
-        }
-
-        // The files that exist only in the remote output tree (the remote half of the action
-        // file system's `readdir`); their permissions are those of `statFromMetadata`, so no chmod.
-        // PORT: Java visits the merged listing depth-first; `TreeArtifactValue.build` sorts the
-        // children, so the visiting order is not observable.
-        for (parent_relative_path, metadata) in remote_files {
-            if visited.contains(&parent_relative_path) {
-                continue;
-            }
-            let child = Artifact::create_tree_output(parent, parent_relative_path);
-            tree.push((artifact_input(&child), metadata));
-        }
+        TreeArtifactValue::visit_tree(
+            &tree_dir,
+            &mut |parent_relative_path, type_, traversed_symlink| {
+                check_state!(type_ == DirentType::File || type_ == DirentType::Directory);
+                // Set the output permissions when the execution mode requires it, unless at least
+                // one symlink was traversed on the way to this entry, as it might have led outside
+                // of the root directory.
+                if chmod && !traversed_symlink {
+                    self.set_path_permissions(&tree_dir.get_relative(parent_relative_path))?;
+                }
+                if type_ == DirentType::Directory {
+                    return Ok(()); // The final TreeArtifactValue does not contain child directories.
+                }
+                let child = Artifact::create_tree_output(parent, parent_relative_path.clone());
+                let metadata = self.construct_file_artifact_value_from_filesystem(&child)?;
+                tree.push((artifact_input(&child), metadata));
+                Ok(())
+            },
+        )?;
 
         if self.archived_tree_artifacts_enabled {
             blaze_util::unported!("ArchivedTreeArtifact.createForTree");
         }
 
         // If the artifact was materialized in the filesystem as as symlink to another artifact,
-        // Java records the real path in the metadata (`tree.setResolvedPath`) when `stat` is a
-        // `FileStatusWithMetadata`. Only an action file system or a remote output service hands
-        // out such a stat; the local file system never does.
+        // record the real path in the metadata so that it can be recreated as such later.
+        // See {@link FileArtifactValue#getResolvedPath} for why this is useful.
+        // TODO(tjgq): Actually check whether the path matches one of the action inputs. The
+        // presence of a FileStatusWithMetadata happens to coincide, but seems a little brittle.
+        let mut resolved_path: Option<PathFragment> = None;
+        if let Some(metadata) = stat.metadata
+            && tree_dir.is_symbolic_link()
+        {
+            match metadata.get_resolved_path() {
+                Some(path) => resolved_path = Some(path.clone()),
+                None => {
+                    resolved_path = Some(tree_dir.resolve_symbolic_links()?.as_fragment().clone())
+                }
+            }
+            // Builder.setResolvedPath: checkArgument(resolvedPath.isAbsolute(), resolvedPath).
+            let path = resolved_path.as_ref().unwrap();
+            blaze_util::check_argument!(path.is_absolute(), "{}", path);
+        }
 
-        Ok(Some(Arc::new(TreeArtifactValue::build(tree, None, None))))
+        Ok(Some(Arc::new(TreeArtifactValue::build(
+            tree,
+            None,
+            resolved_path,
+        ))))
     }
 
     /// Sets the output permissions of a freshly created output file.
@@ -2064,60 +2231,8 @@ impl ActionOutputMetadataStore {
             artifact
         );
 
-        // With an action file system (RemoteActionFileSystem), `pathNoFollow.statIfFound(NOFOLLOW)`
-        // and the stat of the real path are answered from the in-memory sources first: an
-        // output of this action that was not downloaded (its remote output tree) is a
-        // `FileStatusWithMetadata`, and so is an input of this action a symlink output points
-        // to (`fileArtifactValueFromStat` returns that metadata; the real path is recorded).
-        // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:478 ActionOutputMetadataStore.fileArtifactValueFromArtifact
-        // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:580 ActionOutputMetadataStore.fileArtifactValueFromStat
-        if let Some(file_system) = &self.action_file_system
-            && !artifact.is_symlink()
-        {
-            let path_no_follow = artifact.get_path();
-            let fragment = path_no_follow.as_fragment();
-            match file_system.stat_metadata(fragment, /* follow_symlinks= */ false)? {
-                Some(metadata) if !metadata.get_type().is_symlink() => {
-                    if metadata.get_type() != FileStateType::Directory {
-                        return Ok(metadata);
-                    }
-                }
-                Some(_) => {}
-                None => {
-                    let stat_no_follow = blaze_vfs::FileSystem::stat_if_found(
-                        &**file_system,
-                        fragment,
-                        /* follow_symlinks= */ false,
-                    )?;
-                    if stat_no_follow.is_some_and(|s| s.is_symbolic_link()) {
-                        let real_path = blaze_vfs::FileSystem::resolve_symbolic_links(
-                            &**file_system,
-                            fragment,
-                        )?;
-                        if &real_path == fragment {
-                            return Err(std::io::Error::other("symlink cycle"));
-                        }
-                        if let Some(metadata) = file_system.stat_metadata(&real_path, false)?
-                            && metadata.get_type() != FileStateType::Directory
-                        {
-                            // If the artifact was materialized in the filesystem as a symlink to
-                            // another artifact, record the real path in the metadata so that it
-                            // can be recreated as such later.
-                            if metadata.get_resolved_path().is_none() {
-                                return Ok(
-                                    FileArtifactValue::create_from_existing_with_resolved_path(
-                                        metadata, real_path,
-                                    ),
-                                );
-                            }
-                            return Ok(metadata);
-                        }
-                    }
-                }
-            }
-        }
-
-        let stat_and_value = file_artifact_value_from_artifact(artifact)?;
+        let stat_and_value =
+            file_artifact_value_from_artifact(artifact, self.action_file_system.as_ref())?;
         let value = stat_and_value.file_artifact_value;
 
         let type_ = value.get_type();
@@ -2153,7 +2268,7 @@ impl ActionOutputMetadataStore {
             //     up-to-dateness checks)
             //   - A symlink to a source directory due to Filesets
             return Ok(FileArtifactValue::create_for_directory_with_mtime(
-                artifact.get_path().get_last_modified_time()?,
+                self.to_path(artifact).get_last_modified_time()?,
             ));
         }
 
@@ -2213,10 +2328,63 @@ struct FileArtifactStatAndValue {
     file_artifact_value: FileArtifactValue,
 }
 
+/// `artifactPathResolver.toPath(artifact)` for the output metadata store's resolver
+/// (`ArtifactPathResolver.createPathResolver(actionFileSystem, execRoot)`).
+// Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:75 IdentityResolver.toPath
+// Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:107 TransformResolver.toPath
+fn artifact_path_resolver_to_path(
+    action_file_system: Option<&Arc<RemoteActionFileSystem>>,
+    artifact: &Artifact,
+) -> Path {
+    match action_file_system {
+        // fileSystem.getPath(artifact.getPath().asFragment())
+        Some(file_system) => file_system.get_path(artifact.get_path().as_fragment()),
+        None => artifact.get_path(),
+    }
+}
+
+/// A `FileStatus` as Java's `Path.statIfFound` returns it, with the metadata of a
+/// `FileStatusWithMetadata` (what the action file system returns for a path its in-memory
+/// sources know: an input, or an output in its remote output tree).
+///
+/// PORT: `blaze_vfs::FileStatus` carries no metadata, so the `instanceof FileStatusWithMetadata`
+/// test is `RemoteActionFileSystem::stat_metadata` on the same path and the same `Symlinks`.
+struct StatWithMetadata {
+    status: blaze_vfs::FileStatus,
+    metadata: Option<FileArtifactValue>,
+}
+
+/// `path.statIfFound(symlinks)`, with the metadata of a `FileStatusWithMetadata`.
+fn stat_if_found_with_metadata(
+    path: &Path,
+    symlinks: Symlinks,
+) -> std::io::Result<Option<StatWithMetadata>> {
+    let Some(status) = path.stat_if_found(symlinks)? else {
+        return Ok(None);
+    };
+    let metadata = match path
+        .get_file_system()
+        .as_any()
+        .downcast_ref::<RemoteActionFileSystem>()
+    {
+        Some(file_system) => {
+            file_system.stat_metadata(path.as_fragment(), symlinks == Symlinks::Follow)?
+        }
+        None => None,
+    };
+    Ok(Some(StatWithMetadata { status, metadata }))
+}
+
 /// Constructs a `FileArtifactValue` for a regular (non-tree, non-runfiles tree) artifact.
+///
+/// PORT: Java's `statNoFollow` parameter is always null here (`constructFileArtifactValue` is
+/// only reached through `constructFileArtifactValueFromFilesystem`; the archived tree artifact
+/// caller is not ported), so it is not a parameter. `action_file_system` is the
+/// `artifactPathResolver` (`None`: `IDENTITY`).
 // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:478 ActionOutputMetadataStore.fileArtifactValueFromArtifact
 fn file_artifact_value_from_artifact(
     artifact: &Artifact,
+    action_file_system: Option<&Arc<RemoteActionFileSystem>>,
 ) -> std::io::Result<FileArtifactStatAndValue> {
     check_state!(
         !artifact.is_tree_artifact() && !artifact.is_runfiles_tree(),
@@ -2224,7 +2392,7 @@ fn file_artifact_value_from_artifact(
         artifact
     );
 
-    let path_no_follow = artifact.get_path();
+    let path_no_follow = artifact_path_resolver_to_path(action_file_system, artifact);
     // If we expect a symlink, we can readlink it directly and handle errors appropriately - there
     // is no need for the stat below.
     if artifact.is_symlink() {
@@ -2239,22 +2407,24 @@ fn file_artifact_value_from_artifact(
         });
     }
 
+    // RootedPath.toRootedPath(artifactPathResolver.transformRoot(root), rootRelativePath): its
+    // `asPath()` is `pathNoFollow`.
     // Stat the file. All output artifacts of an action are deleted before execution, so if a file
     // exists, it was most likely created by the current action. There is a race condition here if
     // an external process creates (or modifies) the file between the deletion and this stat,
     // which we cannot solve.
-    let stat_no_follow = path_no_follow.stat_if_found(Symlinks::Nofollow)?;
+    let stat_no_follow = stat_if_found_with_metadata(&path_no_follow, Symlinks::Nofollow)?;
 
     if !stat_no_follow
         .as_ref()
-        .is_some_and(|s| s.is_symbolic_link())
+        .is_some_and(|s| s.status.is_symbolic_link())
     {
         let file_artifact_value =
             file_artifact_value_from_stat(&path_no_follow, stat_no_follow.as_ref())?;
         return Ok(FileArtifactStatAndValue {
             path_no_follow,
             real_path: None,
-            stat_no_follow,
+            stat_no_follow: stat_no_follow.map(|s| s.status),
             file_artifact_value,
         });
     }
@@ -2267,18 +2437,31 @@ fn file_artifact_value_from_artifact(
         return Err(std::io::Error::other("symlink cycle"));
     }
 
+    // RootedPath.toRootedPathMaybeUnderRoot(realPath, [transformRoot(root)]): its `asPath()` is
+    // `realPath`.
     // TODO(bazel-team): consider avoiding a 'stat' here when the symlink target hasn't changed
     // and is a source file (since changes to those are checked separately).
-    let real_stat = real_path.stat_if_found(Symlinks::Nofollow)?;
-    let file_artifact_value = file_artifact_value_from_stat(&real_path, real_stat.as_ref())?;
+    let real_stat = stat_if_found_with_metadata(&real_path, Symlinks::Nofollow)?;
+    let mut file_artifact_value = file_artifact_value_from_stat(&real_path, real_stat.as_ref())?;
 
-    // Java records the real path in the metadata (createFromExistingWithResolvedPath) when
-    // `realStat` is a `FileStatusWithMetadata`; the local file system never hands one out.
+    // If the artifact was materialized in the filesystem as as symlink to another artifact, record
+    // the real path in the metadata so that it can be recreated as such later.
+    // See {@link FileArtifactValue#getResolvedPath} for why this is useful.
+    // TODO(tjgq): Actually check whether the path matches one of the action inputs. The presence
+    // of a FileStatusWithMetadata happens to coincide, but seems a little brittle.
+    if real_stat.as_ref().is_some_and(|s| s.metadata.is_some())
+        && file_artifact_value.get_resolved_path().is_none()
+    {
+        file_artifact_value = FileArtifactValue::create_from_existing_with_resolved_path(
+            file_artifact_value,
+            real_path.as_fragment().clone(),
+        );
+    }
 
     Ok(FileArtifactStatAndValue {
         path_no_follow,
         real_path: Some(real_path),
-        stat_no_follow,
+        stat_no_follow: stat_no_follow.map(|s| s.status),
         file_artifact_value,
     })
 }
@@ -2286,16 +2469,21 @@ fn file_artifact_value_from_artifact(
 // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:566 ActionOutputMetadataStore.fileArtifactValueFromStat
 fn file_artifact_value_from_stat(
     path: &Path,
-    stat: Option<&blaze_vfs::FileStatus>,
+    stat: Option<&StatWithMetadata>,
 ) -> std::io::Result<FileArtifactValue> {
-    let Some(stat) = stat else {
+    let Some(stat_with_metadata) = stat else {
         return Ok(FileArtifactValue::MissingFileMarker);
     };
+    let stat = &stat_with_metadata.status;
 
     if stat.is_directory() {
         return Ok(FileArtifactValue::create_for_directory_with_mtime(
             stat.get_last_modified_time(),
         ));
+    }
+
+    if let Some(metadata) = &stat_with_metadata.metadata {
+        return Ok(metadata.clone());
     }
 
     // FileStateValue.createWithStatNoFollow(rootedPath, stat, xattrProvider, tsgm), then
@@ -2407,7 +2595,7 @@ impl OutputMetadataStore for ActionOutputMetadataStore {
         // If necessary, we first call chmod the output file. The FileArtifactValue may use a
         // FileContentsProxy, which is based on ctime (affected by chmod).
         if self.execution_mode.load(Ordering::SeqCst) {
-            self.set_path_permissions_if_file(&artifact.get_path())?;
+            self.set_path_permissions_if_file(&self.to_path(artifact))?;
         }
 
         let value = self.construct_file_artifact_value_from_filesystem(artifact)?;
@@ -3203,6 +3391,8 @@ impl InputMetadataProvider for ActionInputMetadata {
 /// `ActionExecutionContext.forInputDiscovery` of one action).
 // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:59 ActionExecutionContext
 struct ActionExecutionContextImpl<'a> {
+    /// `getExecRoot()`: the executor's exec root, on the action file system when there is one.
+    exec_root: Path,
     executor: &'a SkyframeActionExecutor,
     input_metadata: Arc<ActionInputMetadata>,
     output_metadata_store: Option<Arc<ActionOutputMetadataStore>>,
@@ -3226,9 +3416,28 @@ impl ActionContextRegistry for ActionExecutionContextImpl<'_> {
     }
 }
 
+/// `ActionExecutionContext.getExecRoot()`: `actionFileSystem != null ?
+/// actionFileSystem.getPath(executor.getExecRoot().asFragment()) : executor.getExecRoot()`.
+///
+/// PORT: Java computes it on every call; the context returns a borrowed `Path`, so it is computed
+/// once when the context is created (the action file system of a context never changes). The
+/// action file system is the one of the action's output metadata store
+/// (`get_remote_action_file_system`); a context for input discovery has none.
+// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:369 ActionExecutionContext.getExecRoot
+fn action_exec_root(
+    executor: &SkyframeActionExecutor,
+    output_metadata_store: Option<&Arc<ActionOutputMetadataStore>>,
+) -> Path {
+    match output_metadata_store.and_then(|store| store.get_action_file_system()) {
+        Some(action_file_system) => action_file_system.get_path(executor.exec_root.as_fragment()),
+        None => executor.exec_root.clone(),
+    }
+}
+
 impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:369 ActionExecutionContext.getExecRoot
     fn get_exec_root(&self) -> &Path {
-        &self.executor.exec_root
+        &self.exec_root
     }
     fn get_input_metadata_provider(&self) -> &dyn InputMetadataProvider {
         &*self.input_metadata
@@ -3266,6 +3475,25 @@ impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
         self.output_metadata_store
             .as_ref()
             .and_then(|store| store.get_action_file_system().cloned())
+    }
+    /// `lostInputsCheck.checkForLostInputs()` with the check the executor gives the context:
+    /// `actionFileSystem == null ? LostInputsCheck.NONE : () ->
+    /// outputService.checkActionFileSystemForLostInputs(actionFileSystem, action)`, in the
+    /// `toExecException()` form the trait returns (see
+    /// `ActionExecutionContext::check_for_lost_inputs`).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1614 SkyframeActionExecutor.lostInputsCheck
+    fn check_for_lost_inputs(&self) -> Result<(), ExecException> {
+        match self.get_remote_action_file_system() {
+            Some(action_file_system) => {
+                match SkyframeActionExecutor::action_file_system_lost_inputs(&action_file_system) {
+                    Some(lost_inputs) => Err(blaze_exec::actions::LostInputsExecException::create(
+                        lost_inputs,
+                    )),
+                    None => Ok(()),
+                }
+            }
+            None => Ok(()),
+        }
     }
     // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:401 ActionExecutionContext.getInputPath
     fn get_input_path(&self, input: &dyn ActionInput) -> Path {
@@ -3505,9 +3733,12 @@ mod action_output_metadata_store_tests {
     use blaze_cmdline::Label;
     use blaze_exec::actions::action_adapters::artifact_input;
     use blaze_exec::actions::cache::{IoOrInterruptedException, OutputMetadataStore};
+    use std::sync::Arc;
+
+    use blaze_exec::exec::remote_action_file_system::RemoteActionFileSystem;
     use blaze_vfs::{DigestHashFunction, FileSystemExt, UnixFileSystem};
 
-    use super::{ActionOutputMetadataStore, OutputPermissions};
+    use super::{ActionInputMetadata, ActionOutputMetadataStore, OutputPermissions};
 
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
     struct Key(String);
@@ -3826,6 +4057,442 @@ mod action_output_metadata_store_tests {
 
         assert!(!blaze_vfs::NotASymlinkException::is(&e), "{e}");
         assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    /// The fixture of the `ActionOutputMetadataStoreTest` methods that use an action file
+    /// system: one file system, the execroot `<tmp>/workspace`, its source root and the output
+    /// root `out` (both created).
+    struct ActionFsFixture {
+        _dir: tempfile::TempDir,
+        fs: blaze_vfs::FileSystemRef,
+        exec_root: blaze_vfs::Path,
+        source_root: ArtifactRoot,
+        output_root: ArtifactRoot,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum ArtifactType {
+        Source,
+        Output,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum ResolvedPathDepth {
+        Shallow,
+        Deep,
+    }
+
+    impl ActionFsFixture {
+        // Java: ActionOutputMetadataStoreTest.createRootDirs
+        fn new() -> ActionFsFixture {
+            let dir = tempfile::tempdir().unwrap();
+            let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+            let exec_root = fs.get_path(&format!("{}/workspace", dir.path().to_str().unwrap()));
+            let source_root =
+                ArtifactRoot::as_source_root(blaze_vfs::Root::from_path(exec_root.clone()));
+            let output_root = ArtifactRoot::as_derived_root(&exec_root, RootType::OUTPUT, &["out"]);
+            exec_root.create_directory_and_parents().unwrap();
+            output_root
+                .get_root()
+                .as_path()
+                .unwrap()
+                .create_directory_and_parents()
+                .unwrap();
+            ActionFsFixture {
+                _dir: dir,
+                fs,
+                exec_root,
+                source_root,
+                output_root,
+            }
+        }
+
+        fn owner() -> ActionLookupKeyRef {
+            ActionLookupKeyRef::new(Key("//foo:bar".to_string()))
+        }
+
+        /// `ActionsTestUtil.createArtifactWithRootRelativePath(root, rootRelativePath)`.
+        fn create_artifact_with_root_relative_path(
+            &self,
+            root: &ArtifactRoot,
+            root_relative_path: &str,
+        ) -> Artifact {
+            let exec_path = root.get_exec_path().get_relative_str(root_relative_path);
+            if root.is_source_root() {
+                Artifact::new_source_artifact(
+                    root.clone(),
+                    exec_path,
+                    blaze_actions::actions::action_lookup::ArtifactOwner::NullOwner,
+                )
+            } else {
+                Artifact::create_derived_artifact(root.clone(), exec_path, Self::owner())
+            }
+        }
+
+        /// `ActionsTestUtil.createTreeArtifactWithGeneratingAction(outputRoot, rootRelativePath)`.
+        fn create_tree_artifact_with_generating_action(
+            &self,
+            root_relative_path: &str,
+        ) -> Artifact {
+            let exec_path = self
+                .output_root
+                .get_exec_path()
+                .get_relative_str(root_relative_path);
+            let owner = Self::owner();
+            let tree_artifact = Artifact::create_special_artifact(
+                self.output_root.clone(),
+                exec_path,
+                owner.clone(),
+                SpecialArtifactType::TREE,
+            );
+            tree_artifact.set_generating_action_key(ActionLookupData::create(owner, 0));
+            tree_artifact
+        }
+
+        // Java: ActionOutputMetadataStoreTest.createRemoteActionFileSystem
+        fn create_remote_action_file_system(
+            &self,
+            input_map: ActionInputMetadata,
+        ) -> Arc<RemoteActionFileSystem> {
+            RemoteActionFileSystem::new(
+                self.fs.clone(),
+                self.exec_root.as_fragment().clone(),
+                self.output_root.get_exec_path().get_path_string(),
+                Arc::new(input_map) as Arc<dyn blaze_exec::actions::InputMetadataProvider>,
+                // mock(RemoteActionInputFetcher.class): nothing is fetched.
+                None,
+            )
+        }
+
+        // Java: ActionOutputMetadataStoreTest.createStore
+        fn create_store(
+            &self,
+            output: &Artifact,
+            action_fs: Option<Arc<RemoteActionFileSystem>>,
+        ) -> ActionOutputMetadataStore {
+            let mut store = ActionOutputMetadataStore::create(
+                /* archived_tree_artifacts_enabled= */ false,
+                OutputPermissions::READONLY,
+                vec![output.clone()],
+            );
+            store.action_file_system = action_fs;
+            store
+        }
+    }
+
+    /// `TreeArtifactValue.equals`: the digest (in the aggregate metadata), the children, the
+    /// archived representation and the resolved path.
+    fn assert_tree_eq(
+        actual: &blaze_exec::actions::TreeArtifactValue,
+        expected: &blaze_exec::actions::TreeArtifactValue,
+        what: &str,
+    ) {
+        assert_eq!(actual.metadata, expected.metadata, "{what}");
+        assert_eq!(actual.child_values, expected.child_values, "{what}");
+        assert_eq!(
+            actual.archived_representation, expected.archived_representation,
+            "{what}"
+        );
+        assert_eq!(actual.resolved_path, expected.resolved_path, "{what}");
+    }
+
+    /// `actionFs.getPath(artifact.getPath().asFragment())`.
+    fn on(action_fs: &Arc<RemoteActionFileSystem>, path: &blaze_vfs::Path) -> blaze_vfs::Path {
+        action_fs.get_path(path.as_fragment())
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:376 ActionOutputMetadataStoreTest.fileArtifactMaterializedAsSymlinkToNonArtifact
+    #[test]
+    fn file_artifact_materialized_as_symlink_to_non_artifact() {
+        let f = ActionFsFixture::new();
+        let resolved_path = f
+            .output_root
+            .get_root()
+            .as_path()
+            .unwrap()
+            .get_relative_str("resolved");
+        let output_artifact = f.create_artifact_with_root_relative_path(&f.output_root, "output");
+
+        let action_fs =
+            f.create_remote_action_file_system(ActionInputMetadata::with_providers(None));
+
+        let store = f.create_store(&output_artifact, Some(action_fs.clone()));
+        store.prepare_for_action_execution();
+
+        on(&action_fs, &output_artifact.get_path())
+            .get_parent_directory()
+            .unwrap()
+            .create_directory_and_parents()
+            .unwrap();
+        on(&action_fs, &output_artifact.get_path())
+            .create_symbolic_link_to_fragment(resolved_path.as_fragment())
+            .unwrap();
+        std::fs::write(resolved_path.get_path_string(), "foo").unwrap();
+
+        assert_eq!(
+            get_output_metadata(&store, &output_artifact).unwrap(),
+            blaze_exec::actions::FileArtifactValue::create_for_testing(&resolved_path).unwrap()
+        );
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:400 ActionOutputMetadataStoreTest.fileArtifactMaterializedAsSymlinkToFileArtifact
+    #[test]
+    fn file_artifact_materialized_as_symlink_to_file_artifact() {
+        // @TestParameter ArtifactType artifactType, @TestParameter ResolvedPathDepth depth
+        for artifact_type in [ArtifactType::Source, ArtifactType::Output] {
+            for depth in [ResolvedPathDepth::Shallow, ResolvedPathDepth::Deep] {
+                let f = ActionFsFixture::new();
+                let root = match artifact_type {
+                    ArtifactType::Source => f.source_root.clone(),
+                    ArtifactType::Output => f.output_root.clone(),
+                };
+                let resolved_artifact =
+                    f.create_artifact_with_root_relative_path(&root, "resolved");
+                let input_artifact = match depth {
+                    ResolvedPathDepth::Shallow => resolved_artifact.clone(),
+                    ResolvedPathDepth::Deep => {
+                        f.create_artifact_with_root_relative_path(&f.output_root, "input")
+                    }
+                };
+                let output_artifact =
+                    f.create_artifact_with_root_relative_path(&f.output_root, "output");
+
+                let file_metadata = blaze_exec::actions::FileArtifactValue::create_for_normal_file(
+                    Some(vec![1, 2, 3]),
+                    None,
+                    123,
+                );
+                let mut input_metadata = file_metadata.clone();
+                if resolved_artifact != input_artifact {
+                    input_metadata =
+                        blaze_exec::actions::FileArtifactValue::create_from_existing_with_resolved_path(
+                            input_metadata,
+                            resolved_artifact.get_path().as_fragment().clone(),
+                        );
+                }
+
+                let input_map = ActionInputMetadata::with_providers(None);
+                input_map.put(&input_artifact, input_metadata.clone());
+
+                let action_fs = f.create_remote_action_file_system(input_map);
+
+                let store = f.create_store(&output_artifact, Some(action_fs.clone()));
+                store.prepare_for_action_execution();
+
+                on(&action_fs, &output_artifact.get_path())
+                    .get_parent_directory()
+                    .unwrap()
+                    .create_directory_and_parents()
+                    .unwrap();
+                on(&action_fs, &output_artifact.get_path())
+                    .create_symbolic_link_to_fragment(input_artifact.get_path().as_fragment())
+                    .unwrap();
+
+                // FileArtifactValue.createFromExistingWithResolvedPath(inputMetadata, resolvedPath):
+                // `new ResolvedSymlinkArtifactValue(delegate, resolvedPath)`, whose constructor
+                // keeps the delegate of a delegate that is itself a ResolvedSymlinkArtifactValue
+                // (FileArtifactValue.java:958-961).
+                // PORT: blaze_exec's `create_from_existing_with_resolved_path` does not unwrap
+                // (reported; not this test's file), so the Java value is written out here.
+                let expected = blaze_exec::actions::FileArtifactValue::ResolvedSymlink {
+                    delegate: Box::new(file_metadata),
+                    resolved_path: resolved_artifact.get_path().as_fragment().clone(),
+                };
+                assert_eq!(
+                    get_output_metadata(&store, &output_artifact).unwrap(),
+                    expected,
+                    "{artifact_type:?} {depth:?}"
+                );
+            }
+        }
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:452 ActionOutputMetadataStoreTest.treeArtifactMaterializedAsSymlinkToNonArtifact
+    #[test]
+    fn tree_artifact_materialized_as_symlink_to_non_artifact() {
+        let f = ActionFsFixture::new();
+        let resolved_path = f
+            .output_root
+            .get_root()
+            .as_path()
+            .unwrap()
+            .get_relative_str("resolved");
+        let output_artifact = f.create_tree_artifact_with_generating_action("output");
+
+        let action_fs =
+            f.create_remote_action_file_system(ActionInputMetadata::with_providers(None));
+
+        let store = f.create_store(&output_artifact, Some(action_fs.clone()));
+        store.prepare_for_action_execution();
+
+        on(&action_fs, &output_artifact.get_path())
+            .get_parent_directory()
+            .unwrap()
+            .create_directory_and_parents()
+            .unwrap();
+        on(&action_fs, &output_artifact.get_path())
+            .create_symbolic_link_to_fragment(resolved_path.as_fragment())
+            .unwrap();
+        on(&action_fs, &resolved_path)
+            .create_directory_and_parents()
+            .unwrap();
+        std::fs::write(
+            resolved_path.get_relative_str("child").get_path_string(),
+            "foo",
+        )
+        .unwrap();
+
+        let child = Artifact::create_tree_output_str(&output_artifact, "child");
+        let expected = blaze_exec::actions::TreeArtifactValue::build(
+            vec![(
+                artifact_input(&child),
+                blaze_exec::actions::FileArtifactValue::create_for_testing(
+                    &resolved_path.get_relative_str("child"),
+                )
+                .unwrap(),
+            )],
+            None,
+            None,
+        );
+        let tree = match store.get_tree_artifact_value(&artifact_input(&output_artifact)) {
+            Ok(tree) => tree,
+            Err(IoOrInterruptedException::Io(e)) => panic!("{e}"),
+            Err(IoOrInterruptedException::Interrupted(_)) => panic!("interrupted"),
+        };
+        assert_tree_eq(&tree, &expected, "");
+
+        // Let the temporary directory be deleted (the store chmod'ed the tree to 0555).
+        chmod(resolved_path.get_path_string(), 0o755);
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:482 ActionOutputMetadataStoreTest.treeArtifactMaterializedAsSymlinkToAnotherTreeArtifact
+    #[test]
+    fn tree_artifact_materialized_as_symlink_to_another_tree_artifact() {
+        // @TestParameter ResolvedPathDepth depth
+        for depth in [ResolvedPathDepth::Shallow, ResolvedPathDepth::Deep] {
+            let f = ActionFsFixture::new();
+            let resolved_artifact = f.create_tree_artifact_with_generating_action("resolved");
+            let input_artifact = match depth {
+                ResolvedPathDepth::Shallow => resolved_artifact.clone(),
+                ResolvedPathDepth::Deep => f.create_tree_artifact_with_generating_action("input"),
+            };
+            let output_artifact = f.create_tree_artifact_with_generating_action("output");
+
+            let input_metadata = blaze_exec::actions::TreeArtifactValue::build(
+                vec![(
+                    artifact_input(&Artifact::create_tree_output_str(&input_artifact, "child")),
+                    blaze_exec::actions::FileArtifactValue::create_for_normal_file(
+                        Some(vec![1, 2, 3]),
+                        /* proxy= */ None,
+                        123,
+                    ),
+                )],
+                None,
+                (depth == ResolvedPathDepth::Deep)
+                    .then(|| resolved_artifact.get_path().as_fragment().clone()),
+            );
+
+            let input_map = ActionInputMetadata::with_providers(None);
+            input_map.put_tree_artifact(&input_artifact, Arc::new(input_metadata));
+
+            let action_fs = f.create_remote_action_file_system(input_map);
+
+            let store = f.create_store(&output_artifact, Some(action_fs.clone()));
+            store.prepare_for_action_execution();
+
+            on(&action_fs, &output_artifact.get_path())
+                .get_parent_directory()
+                .unwrap()
+                .create_directory_and_parents()
+                .unwrap();
+            on(&action_fs, &output_artifact.get_path())
+                .create_symbolic_link_to_fragment(input_artifact.get_path().as_fragment())
+                .unwrap();
+
+            let expected = blaze_exec::actions::TreeArtifactValue::build(
+                vec![(
+                    artifact_input(&Artifact::create_tree_output_str(&output_artifact, "child")),
+                    blaze_exec::actions::FileArtifactValue::create_for_normal_file(
+                        Some(vec![1, 2, 3]),
+                        /* proxy= */ None,
+                        123,
+                    ),
+                )],
+                None,
+                Some(resolved_artifact.get_path().as_fragment().clone()),
+            );
+            let tree = match store.get_tree_artifact_value(&artifact_input(&output_artifact)) {
+                Ok(tree) => tree,
+                Err(IoOrInterruptedException::Io(e)) => panic!("{depth:?}: {e}"),
+                Err(IoOrInterruptedException::Interrupted(_)) => panic!("interrupted"),
+            };
+            assert_tree_eq(&tree, &expected, &format!("{depth:?}"));
+        }
+    }
+
+    /// Review round 2, N1 (i): a tree output whose files exist only in the action's remote
+    /// output tree (build without the bytes) and whose relative symlink
+    /// `lib/libfoo.so -> libfoo.so.1` exists only locally is visited on the action file system:
+    /// the link resolves to the remote file and is a child with the remote file's metadata and
+    /// its resolved path. Expected children: the oracle (`scripts/remote/probe-trees2`, run1:
+    /// the consumer lists both `lib/libfoo.so` and `lib/libfoo.so.1`); expected metadata:
+    /// `ActionOutputMetadataStore.java:536-545` (the real stat is a `FileStatusWithMetadata`).
+    #[test]
+    fn tree_artifact_with_relative_symlink_to_remote_child() {
+        let f = ActionFsFixture::new();
+        let tree_artifact = f.create_tree_artifact_with_generating_action("libtree");
+        let action_fs =
+            f.create_remote_action_file_system(ActionInputMetadata::with_providers(None));
+        let store = f.create_store(&tree_artifact, Some(action_fs.clone()));
+        store.prepare_for_action_execution();
+
+        let lib = tree_artifact.get_path().get_relative_str("lib");
+        lib.create_directory_and_parents().unwrap();
+        let remote_file = lib.get_relative_str("libfoo.so.1");
+        action_fs
+            .inject_remote_file(remote_file.as_fragment(), vec![1, 2, 3], 11, None, false)
+            .unwrap();
+        on(&action_fs, &lib.get_relative_str("libfoo.so"))
+            .create_symbolic_link_to_fragment(&blaze_vfs::PathFragment::create("libfoo.so.1"))
+            .unwrap();
+
+        let tree = match store.get_tree_artifact_value(&artifact_input(&tree_artifact)) {
+            Ok(tree) => tree,
+            Err(IoOrInterruptedException::Io(e)) => panic!("{e}"),
+            Err(IoOrInterruptedException::Interrupted(_)) => panic!("interrupted"),
+        };
+        let remote = action_fs
+            .stat_metadata(remote_file.as_fragment(), false)
+            .unwrap()
+            .expect("the injected file");
+        let expected = blaze_exec::actions::TreeArtifactValue::build(
+            vec![
+                (
+                    artifact_input(&Artifact::create_tree_output_str(
+                        &tree_artifact,
+                        "lib/libfoo.so",
+                    )),
+                    blaze_exec::actions::FileArtifactValue::create_from_existing_with_resolved_path(
+                        remote.clone(),
+                        remote_file.as_fragment().clone(),
+                    ),
+                ),
+                (
+                    artifact_input(&Artifact::create_tree_output_str(
+                        &tree_artifact,
+                        "lib/libfoo.so.1",
+                    )),
+                    remote,
+                ),
+            ],
+            None,
+            None,
+        );
+        assert_tree_eq(&tree, &expected, "");
+
+        // Let the temporary directory be deleted.
+        chmod(tree_artifact.get_path().get_path_string(), 0o755);
+        chmod(lib.get_path_string(), 0o755);
     }
 }
 

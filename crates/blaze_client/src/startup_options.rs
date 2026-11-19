@@ -1168,23 +1168,36 @@ impl StartupOptions {
     // ignored. Ignoring these ones silently would make Blaze trust a different set of
     // authorities than the user configured, so they fail loudly until they are ported. Every
     // other --host_jvm_args value is still accepted and ignored, as before.
+    //
+    // -DBAZEL_TRACK_SOURCE_DIRECTORIES sets the JVM system property that
+    // TrackSourceDirectoriesFlag reads (com/google/devtools/build/lib/skyframe/
+    // TrackSourceDirectoriesFlag.java:29); Blaze fixes the flag at Bazel's default
+    // (blaze_sky_exec TrackSourceDirectoriesFlag), so the option fails loudly too.
     /// The error for the first `--host_jvm_args` value that sets a `javax.net.ssl` trust store
-    /// or key store property, or `None`. The message names the property, never its value (it
-    /// may be a password).
+    /// or key store property or the `BAZEL_TRACK_SOURCE_DIRECTORIES` property, or `None`. The
+    /// message names the property, never its value (it may be a password).
     pub fn unported_host_jvm_arg_error(&self) -> Option<String> {
-        const UNPORTED_PREFIXES: [&str; 2] =
-            ["-Djavax.net.ssl.trustStore", "-Djavax.net.ssl.keyStore"];
-        let arg = self.host_jvm_args.iter().find(|arg| {
+        const TLS_STORES: &str = "the JVM trust store and key store options \
+             (-Djavax.net.ssl.trustStore*, -Djavax.net.ssl.keyStore*) are not ported";
+        const TRACK_SOURCE_DIRECTORIES: &str = "the JVM system property \
+             BAZEL_TRACK_SOURCE_DIRECTORIES (TrackSourceDirectoriesFlag) is not ported; Blaze \
+             always uses Bazel's default";
+        const UNPORTED_PREFIXES: [(&str, &str); 3] = [
+            ("-Djavax.net.ssl.trustStore", TLS_STORES),
+            ("-Djavax.net.ssl.keyStore", TLS_STORES),
+            ("-DBAZEL_TRACK_SOURCE_DIRECTORIES", TRACK_SOURCE_DIRECTORIES),
+        ];
+        let (arg, what) = self.host_jvm_args.iter().find_map(|arg| {
             UNPORTED_PREFIXES
                 .iter()
-                .any(|prefix| arg.starts_with(*prefix))
+                .find(|(prefix, _)| arg.starts_with(*prefix))
+                .map(|(_, what)| (arg, *what))
         })?;
         let property = arg.split('=').next().unwrap_or(arg.as_str());
         Some(format!(
-            "blaze: not ported yet: --host_jvm_args={}: the JVM trust store and key store options \
-             (-Djavax.net.ssl.trustStore*, -Djavax.net.ssl.keyStore*) are not ported. Blaze has \
-             no JVM and would silently ignore the option.",
-            property
+            "blaze: not ported yet: --host_jvm_args={}: {}. Blaze has no JVM and would silently \
+             ignore the option.",
+            property, what
         ))
     }
 }

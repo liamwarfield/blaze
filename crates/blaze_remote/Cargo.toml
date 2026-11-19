@@ -59,3 +59,8 @@ path = "src/bin/blaze-remote-replay.rs"
 [[bin]]
 name = "blaze-remote-grpc-log"
 path = "src/bin/blaze-remote-grpc-log.rs"
+
+# A gRPC server whose GetCapabilities fails with a given status (scripts/remote/caps-matrix).
+[[bin]]
+name = "blaze-remote-fake-caps"
+path = "src/bin/blaze-remote-fake-caps.rs"

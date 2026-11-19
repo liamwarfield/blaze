@@ -40,6 +40,8 @@ use crate::runtime::{block_on, get_from_future};
 use crate::util::async_task_cache::AsyncTaskCacheNoResult;
 use crate::util::temp_path_generator::TempPathGenerator;
 use crate::util::utils::merge_bulk_transfer;
+use blaze_exec::actions::LostInputsExecException;
+use blaze_exec::exec::action_execution_context::SpawnCacheError;
 
 // ---------------------------------------------------------------------------------------------
 // ActionInputPrefetcher (lib/actions)
@@ -860,15 +862,15 @@ impl<'t> dyn AbstractActionInputPrefetcher + 't {
     ///
     /// PORT: `action.getOutputs()` is `action_outputs`: blaze_exec's `ActionExecutionMetadata`
     /// has no `getOutputs()`. `OutputMetadataStore` errors: `InterruptedException` is
-    /// `errors::interrupted()`. `LostInputsExecException` (action rewinding) is not ported: a
-    /// download that lost outputs fails loudly through `LostArtifacts.throwIfNotEmpty`.
+    /// `errors::interrupted()`. `throws IOException, LostInputsExecException,
+    /// InterruptedException`: the `LostInputsExecException` is [`SpawnCacheError::Exec`].
     // Java: com/google/devtools/build/lib/remote/AbstractActionInputPrefetcher.java:849 AbstractActionInputPrefetcher.finalizeAction
     pub fn finalize_action(
         &self,
         action: &dyn ActionExecutionMetadata,
         action_outputs: &[ActionInputRef],
         output_metadata_store: &dyn OutputMetadataStore,
-    ) -> io::Result<()> {
+    ) -> Result<(), SpawnCacheError> {
         let base = self.base();
         let mut outputs_to_download: Vec<ActionInputRef> = Vec::new();
         for output in action_outputs {
@@ -927,7 +929,7 @@ impl<'t> dyn AbstractActionInputPrefetcher + 't {
                 let Some(bulk_transfer_exception) =
                     errors::downcast_ref::<BulkTransferException>(&e)
                 else {
-                    return Err(e);
+                    return Err(e.into());
                 };
                 // Outputs whose blobs the remote cache has lost are recreated by rewinding.
                 // `Maps.uniqueIndex(outputsToDownload, Artifact::getExecPath)`
@@ -948,11 +950,10 @@ impl<'t> dyn AbstractActionInputPrefetcher + 't {
                         by_exec_path.get(exec_path).cloned()
                     });
                 if lost_outputs.is_empty() {
-                    return Err(e);
+                    return Err(e.into());
                 }
                 // `throw new LostInputsExecException(lostOutputs.byDigest(), e)`
-                lost_outputs.throw_if_not_empty();
-                unreachable!("LostArtifacts.throwIfNotEmpty throws for non-empty lost artifacts");
+                return Err(LostInputsExecException::create(lost_outputs).into());
             }
         }
         Ok(())

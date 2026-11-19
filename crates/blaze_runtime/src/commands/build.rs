@@ -13,6 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::io::Write as _;
 use std::sync::Arc;
 
+use blaze_actions::actions::action_lookup::ActionLookupKeyRef;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::providers::file_provider::FileProvider;
 use blaze_analysis::providers::output_group_info::ValidationMode;
@@ -53,9 +54,10 @@ use blaze_sky_analysis::top_level_status_events::{
     TopLevelTargetAnalyzedEvent, TopLevelTargetSkippedEvent,
 };
 use blaze_sky_exec::artifact_function::ArtifactNestedSetEvalException;
+use blaze_sky_exec::build_driver_function::TopLevelSkyValue;
 use blaze_sky_exec::completion_function::InputFileErrorException;
 use blaze_sky_exec::events::TestAnalyzedEvent;
-use blaze_sky_exec::keys::{BuildDriverKey, TargetCompletionKey, TestType};
+use blaze_sky_exec::keys::{AspectCompletionKey, BuildDriverKey, TargetCompletionKey, TestType};
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use blaze_sky_top::build_tool::{
     AnalysisPostProcessor, BuildRequest, BuildTool, BuildToolError, ExecutionPhase,
@@ -63,8 +65,9 @@ use blaze_sky_top::build_tool::{
 use blaze_sky_top::build_view::{AnalysisResult, construct_label_to_target_map};
 use blaze_sky_top::execution_phase::ExecutionSetup;
 use blaze_sky_top::execution_seam::{
-    BuildDriverKeyTestContext, build_driver_keys, configured_target_views,
-    get_explicit_target_patterns, top_level_output_groups, validation_mode,
+    BuildDriverKeyTestContext, build_driver_aspect_keys, build_driver_keys,
+    configured_aspect_views, configured_target_views, get_explicit_target_patterns,
+    top_level_output_groups, validation_mode,
 };
 use blaze_sky_top::skyframe_executor::{SkyframeExecutor, get_configuration_from_graph};
 use blaze_sky_top::target_pattern_phase::TargetPatternPhaseValue;
@@ -177,14 +180,44 @@ fn run_build(
         &build_remote::build_event_artifact_uploader_factory_map(remote.as_ref()),
     );
     let result = run_build_with_bep(env, options, run_tests, bep.as_ref(), remote.as_ref());
-    // BlazeRuntime.afterCommand: CommandPrecompleteEvent, then each module's afterCommand
-    // (RemoteModule before BuildEventServiceModule); an AbruptExitException of a module replaces
-    // the result unless that is an infrastructure failure.
+    // BlazeRuntime.afterCommand: CommandPrecompleteEvent, then each module's afterCommand in
+    // module order; each AbruptExitException is reported as `ERROR: <message>` and the more
+    // important exit code (the first on a tie) replaces the result unless that is an
+    // infrastructure failure.
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:750 BlazeRuntime.afterCommand
+    //
+    // Order of the remote module and the BEP transports (review finding N8), from the pin:
+    // - The streamer starts the transports' close (and with it the artifact uploads) itself when
+    //   the last announced event is posted.
+    //   Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:678 BuildEventStreamer.buildEvent
+    //   Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:476 BuildEventStreamer.close
+    // - Module order: RemoteModule, ..., BlockWaitingModule, then BazelBuildEventServiceModule
+    //   ("needs to come after BlockWaitingModule so that the BES isn't closed until the
+    //   background tasks maintained by the module have completed").
+    //   Java: com/google/devtools/build/lib/bazel/Bazel.java:60 Bazel.BAZEL_MODULES
+    //   Java: com/google/devtools/build/lib/bazel/Bazel.java:92 Bazel.BAZEL_MODULES
+    // - RemoteModule.afterCommand resets the uploader factory delegate and submits
+    //   afterCommandTask (RemoteActionContextProvider.afterCommand ->
+    //   RemoteExecutionService.shutdown) to the BlockWaitingModule, whose afterCommand waits for
+    //   it. shutdown calls combinedCache.shutdownNow() only when the build was interrupted;
+    //   otherwise it waits for the background tasks and release()s the cache, which the BEP
+    //   uploader keeps alive with its own retain().
+    //   Java: com/google/devtools/build/lib/remote/RemoteModule.java:1098 RemoteModule.afterCommand
+    //   Java: com/google/devtools/build/lib/runtime/BlockWaitingModule.java:81 BlockWaitingModule.afterCommand
+    //   Java: com/google/devtools/build/lib/remote/RemoteActionContextProvider.java:244 RemoteActionContextProvider.afterCommand
+    //   Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:2117 RemoteExecutionService.shutdown
+    //   Java: com/google/devtools/build/lib/remote/ByteStreamBuildEventArtifactUploaderFactory.java:70 ByteStreamBuildEventArtifactUploaderFactory.create
+    // - BuildEventServiceModule.afterCommand then waits for the transports' close futures
+    //   (closeBepTransports).
+    //   Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:672 BuildEventServiceModule.afterCommand
+    // So the remote module's afterCommand (with its afterCommandTask) runs first and the wait for
+    // the BEP transports second, as here.
     if let Some(bep) = &bep {
         // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:802 CommandEnvironment.precompleteCommand
         bep.command_precomplete();
     }
+    let mut module_exit_code: Option<DetailedExitCode> = None;
+    // RemoteModule.afterCommand and its BlockWaitingModule task (reports its own error).
     let remote_exit = match &remote {
         Some(remote) => remote.after_command(env.get_reporter().as_ref()),
         None => {
@@ -192,26 +225,31 @@ fn run_build(
             None
         }
     };
-    let result = match remote_exit {
-        Some(e) if !result.get_exit_code().is_infrastructure_failure() => {
-            BlazeCommandResult::detailed_exit_code(abrupt_exit_detailed_exit_code(e))
+    if let Some(e) = remote_exit {
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:780 BlazeRuntime.afterCommand
+        module_exit_code = DetailedExitCode::choose_more_important_with_first_if_tie(
+            module_exit_code,
+            Some(abrupt_exit_detailed_exit_code(e)),
+        );
+    }
+    // BuildEventServiceModule.afterCommand.
+    if let Some(bep) = &bep
+        && let Err(e) = bep.after_command()
+    {
+        env.get_reporter()
+            .handle(&Event::error(e.get_message().to_owned()));
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:780 BlazeRuntime.afterCommand
+        module_exit_code = DetailedExitCode::choose_more_important_with_first_if_tie(
+            module_exit_code,
+            Some(e.detailed_exit_code),
+        );
+    }
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:795 BlazeRuntime.afterCommand
+    match module_exit_code {
+        Some(code) if !result.get_exit_code().is_infrastructure_failure() => {
+            BlazeCommandResult::detailed_exit_code(code)
         }
         _ => result,
-    };
-    let Some(bep) = bep else {
-        return result;
-    };
-    match bep.after_command() {
-        Ok(()) => result,
-        Err(e) => {
-            env.get_reporter()
-                .handle(&Event::error(e.get_message().to_owned()));
-            if result.get_exit_code().is_infrastructure_failure() {
-                result
-            } else {
-                BlazeCommandResult::detailed_exit_code(e.detailed_exit_code)
-            }
-        }
     }
 }
 
@@ -1076,6 +1114,46 @@ fn top_level_target_built(
     evaluation.get(key).is_some_and(|value| !value.skipped)
 }
 
+/// Whether a top-level aspect was built, as `BuildResultListener.getBuiltAspects()` records it
+/// from the `AspectBuiltEvent`s of `ExecutionProgressReceiver.evaluated`: its
+/// `ASPECT_COMPLETION` node succeeded, or a `BUILD_DRIVER` node of a top-level aspect driver
+/// succeeded (not skipped) with a `TopLevelAspectsValue` that holds the aspect.
+///
+/// PORT: the evaluator has no `EvaluationProgressReceiver`; the same facts are read from the
+/// graph after the evaluation.
+// Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:121 ExecutionProgressReceiver.evaluated
+fn top_level_aspect_built(
+    evaluator: &blaze_skyframe::Evaluator,
+    evaluation: &blaze_skyframe::EvaluationResult,
+    keys_to_execute: &[BuildDriverKey],
+    aspect_key: &ActionLookupKeyRef,
+) -> bool {
+    for key in keys_to_execute {
+        if !key.is_top_level_aspect_driver() {
+            continue;
+        }
+        // BuildDriverFunction requests the AspectCompletionKey with the driver's output groups.
+        let aspect_completion_key = blaze_skyframe::SkyKey::new(AspectCompletionKey::create(
+            aspect_key.clone(),
+            key.output_groups.clone(),
+        ));
+        if evaluator
+            .get_existing_value(&aspect_completion_key)
+            .is_some()
+        {
+            return true;
+        }
+        if let Some(value) = evaluation.get(key)
+            && !value.skipped
+            && let TopLevelSkyValue::TopLevelAspects(aspects) = &value.top_level_sky_value
+            && aspects.iter().any(|a| a.get_aspect_key() == *aspect_key)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// What `BuildResultPrinter.filterTargetsToPrint` reads from the `OutputFileConfiguredTarget`
 /// behind `target` (a `generated file` among the analyzed targets) and from its generating rule.
 // Java: com/google/devtools/build/lib/buildtool/BuildResultPrinter.java:353 BuildResultPrinter.filterTargetsToPrint
@@ -1493,6 +1571,17 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             },
             reporter.as_ref(),
         );
+        // Java's topLevelKeys: the union of the configured-target and the top-level aspect
+        // BuildDriverKeys.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:680 SkyframeBuildView.analyzeAndExecuteTargets
+        let mut keys = keys;
+        keys.extend(build_driver_aspect_keys(
+            analysis_result.get_top_level_aspects_keys(),
+            &explicit_target_patterns,
+            &output_groups,
+            request.skip_incompatible_explicit_targets,
+            self.extra_action_top_level_only,
+        ));
         if keys.iter().any(|k| {
             matches!(
                 k.test_type,
@@ -1525,9 +1614,32 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             .iter()
             .map(|target| target.get_original_label())
             .collect();
+        // PORT: a top-level aspect driver gets as far as Java's BuildDriverFunction.compute when
+        // its TopLevelAspectsKey was analyzed (`env.getValueOrThrow(actionLookupKey)` has a
+        // value); otherwise the function throws the analysis error, which BuildView.update
+        // reported. Java never skips an aspect driver.
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:174 BuildDriverFunction.compute
+        let analyzed_top_level_aspects_keys: indexmap::IndexSet<ActionLookupKeyRef> =
+            analysis_result
+                .get_top_level_aspects_keys()
+                .iter()
+                .filter(|k| {
+                    skyframe_executor
+                        .get_evaluator()
+                        .get_existing_value(&blaze_skyframe::SkyKey::new((*k).clone()))
+                        .is_some()
+                })
+                .map(|k| ActionLookupKeyRef::new(k.clone()))
+                .collect();
         let mut keys_to_execute: Vec<BuildDriverKey> = Vec::new();
         let mut skipped_keys: Vec<BuildDriverKey> = Vec::new();
         for key in &keys {
+            if key.is_top_level_aspect_driver() {
+                if analyzed_top_level_aspects_keys.contains(&key.action_lookup_key) {
+                    keys_to_execute.push(key.clone());
+                }
+                continue;
+            }
             let label = key
                 .action_lookup_key
                 .get_label()
@@ -1670,6 +1782,8 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             let num_successful = skipped_keys.len()
                 + keys_to_execute
                     .iter()
+                    // buildDriverCTKeys: the configured-target keys only.
+                    .filter(|key| !key.is_top_level_aspect_driver())
                     .filter(|key| evaluation.get(*key).is_some())
                     .count();
             // PORT: this is the line of BuildView.update for `includeExecutionPhase`.
@@ -1708,7 +1822,8 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         for (target, view) in analyzed_targets.iter().zip(views.iter()) {
             let top_level_label = target.get_original_label();
             let built = keys_to_execute.iter().any(|key| {
-                key.action_lookup_key.get_label().as_ref() == Some(&top_level_label)
+                !key.is_top_level_aspect_driver()
+                    && key.action_lookup_key.get_label().as_ref() == Some(&top_level_label)
                     && top_level_target_built(skyframe_executor.get_evaluator(), &evaluation, key)
             });
             if built {
@@ -1724,9 +1839,25 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             build_result.set_test_targets(Some(test_targets));
             // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:552 ExecutionTool.nonCatastrophicFinalizations
             build_result.set_successful_targets(Some(successful_targets));
-            // PORT: top-level aspects are not ported (BuildView.createTopLevelAspectKeys fails
-            // loudly for --aspects), so there are no analyzed or built aspects.
-            build_result.set_successful_aspects(Some(indexmap::IndexSet::new()));
+            // Maintain the ordering.
+            // PORT: Java's analyzed aspects are BuildResultListener.getAnalyzedAspects() (the
+            // AspectAnalyzedEvents of BuildView.update), which are the keys of
+            // AnalysisResult.getAspectsMap().
+            // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:890 ExecutionTool.determineSuccessfulAspects
+            let successful_aspects: indexmap::IndexSet<ActionLookupKeyRef> = analysis_result
+                .get_aspects_map()
+                .keys()
+                .map(|aspect_key| ActionLookupKeyRef::new(aspect_key.clone()))
+                .filter(|aspect_key| {
+                    top_level_aspect_built(
+                        skyframe_executor.get_evaluator(),
+                        &evaluation,
+                        &keys_to_execute,
+                        aspect_key,
+                    )
+                })
+                .collect();
+            build_result.set_successful_aspects(Some(successful_aspects));
             build_result.set_skipped_targets(Some(skipped_targets.clone()));
             let generating_rule_lookup = |target: &ConfiguredTargetRef| {
                 output_file_generating_rule(&analyzed_targets, target)
@@ -1737,7 +1868,7 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                     &build_result,
                     &views,
                     &skipped_targets,
-                    &indexmap::IndexMap::new(),
+                    &configured_aspect_views(analysis_result.get_aspects_map()),
                     &generating_rule_lookup,
                 );
         }

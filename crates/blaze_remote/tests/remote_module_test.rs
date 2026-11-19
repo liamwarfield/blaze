@@ -27,18 +27,27 @@ use blaze_remote::authandtls::google_auth_utils::CredentialHelperEnvironment;
 use blaze_remote::circuitbreaker::failure_circuit_breaker::FailureCircuitBreaker;
 use blaze_remote::common::errors;
 use blaze_remote::common::remote_execution_capabilities_exception::RemoteExecutionCapabilitiesException;
+use blaze_remote::common::{
+    ActionKey, BytesBlob, CacheNotFoundException, FileBlob, RemoteActionExecutionContext,
+    RemoteCacheClient,
+};
 use blaze_remote::grpc_cache_client::GrpcCacheClient;
 use blaze_remote::grpc_remote_executor::GrpcRemoteExecutor;
 use blaze_remote::hooks::RemoteHooks;
+use blaze_remote::reapi::Digest;
 use blaze_remote::reapi::{
     ActionCacheUpdateCapabilities, CacheCapabilities, ExecutionCapabilities, ServerCapabilities,
     digest_function, symlink_absolute_path_strategy,
 };
 use blaze_remote::remote_module::{RemoteModule, RemoteModuleEnvironment, create_credentials};
 use blaze_remote::retrier::{ALLOW_ALL_CALLS, CircuitBreaker};
+use blaze_remote::runtime::get_from_future;
+use blaze_remote::util::DigestUtil;
+use blaze_remote::util::tracing_metadata_utils;
 use blaze_repo_fetch::uri::JavaUri;
 use blaze_vfs::{DigestHashFunction, FileSystemRef, Path, UnixFileSystem};
 use indexmap::IndexMap;
+use std::collections::HashSet;
 use util::grpc_server::{FakeCapabilities, FakeServer};
 
 fn cache_only_caps() -> ServerCapabilities {
@@ -706,6 +715,163 @@ fn verify_capabilities_unimplemented_capabilities_fail_with_status_message() {
     cache_server.shutdown_now();
 }
 
+/// A started cache server whose `GetCapabilities` fails with `code` / `message`, and a module
+/// set up against it as `--remote_cache`.
+fn module_with_failing_capabilities(
+    env: &TestEnv,
+    code: tonic::Code,
+    message: &'static str,
+) -> (FakeServer, RemoteModule) {
+    let mut cache_server = FakeServer::new();
+    cache_server
+        .service_registry
+        .add_capabilities(FakeCapabilities {
+            get_capabilities: Some(Box::new(move |_request| {
+                Err(tonic::Status::new(code, message))
+            })),
+        });
+    cache_server.start();
+    let mut remote_options = Options::<RemoteOptions>::get_defaults();
+    remote_options.remote_cache = Some(target(&cache_server));
+    let remote_module = before_command(env, remote_options).unwrap();
+    (cache_server, remote_module)
+}
+
+fn grpc_cache_client(remote_module: &RemoteModule) -> Arc<dyn RemoteCacheClient> {
+    remote_module
+        .get_action_context_provider()
+        .unwrap()
+        .get_combined_cache()
+        .unwrap()
+        .remote_cache_client()
+        .unwrap()
+        .clone()
+}
+
+fn test_context() -> RemoteActionExecutionContext<'static> {
+    RemoteActionExecutionContext::create(tracing_metadata_utils::build_metadata(
+        "build-request-id",
+        "command-id",
+        "action-id",
+        None,
+    ))
+}
+
+/// The `RemoteExecutionCapabilitiesException` of a failed `GetCapabilities` with NOT_FOUND.
+fn assert_not_found_capabilities_exception(e: &io::Error) {
+    let capabilities_exception = errors::downcast_ref::<RemoteExecutionCapabilitiesException>(e)
+        .unwrap_or_else(|| panic!("RemoteExecutionCapabilitiesException, got {e}"));
+    assert_eq!(
+        capabilities_exception.get_cause().to_string(),
+        "NOT_FOUND: instance not found"
+    );
+    assert!(errors::downcast_ref::<CacheNotFoundException>(e).is_none());
+}
+
+/// Not in the Java test (review 2026-11-19 N3): `GrpcCacheClient.handleStatus`
+/// (`GrpcCacheClient.java:377`) catches only a `StatusRuntimeException`; the
+/// `RemoteExecutionCapabilitiesException` of a capabilities check that failed with NOT_FOUND
+/// propagates instead of being a cache miss.
+#[test]
+fn verify_capabilities_not_found_fails_download_action_result() {
+    let env = TestEnv::new();
+    let (mut cache_server, remote_module) =
+        module_with_failing_capabilities(&env, tonic::Code::NotFound, "instance not found");
+    let client = grpc_cache_client(&remote_module);
+    let context = test_context();
+    let action_key = ActionKey::new(Digest {
+        hash: "a".repeat(64),
+        size_bytes: 1,
+    });
+
+    let result = get_from_future(client.download_action_result(
+        &context,
+        &action_key,
+        false,
+        &HashSet::new(),
+    ));
+
+    assert_not_found_capabilities_exception(&result.unwrap_err());
+    cache_server.shutdown_now();
+}
+
+/// Not in the Java test (review 2026-11-19 N3): `requestRead`'s `onError`
+/// (`GrpcCacheClient.java:572`) never runs for a call that did not start, so the capabilities
+/// exception is not turned into a `CacheNotFoundException`.
+#[test]
+fn verify_capabilities_not_found_fails_download_blob() {
+    let env = TestEnv::new();
+    let (mut cache_server, remote_module) =
+        module_with_failing_capabilities(&env, tonic::Code::NotFound, "instance not found");
+    let client = grpc_cache_client(&remote_module);
+    let context = test_context();
+    let digest = Digest {
+        hash: "b".repeat(64),
+        size_bytes: 3,
+    };
+    let mut out: Vec<u8> = Vec::new();
+
+    let result = get_from_future(client.download_blob(&context, &digest, &mut out));
+
+    assert_not_found_capabilities_exception(&result.unwrap_err());
+    cache_server.shutdown_now();
+}
+
+/// Not in the Java test (review 2026-11-19 N3): `ByteStreamUploader.Writer.onError`
+/// (`ByteStreamUploader.java:464`) maps ALREADY_EXISTS to success, but it never runs for a call
+/// that did not start: a capabilities check that failed with ALREADY_EXISTS fails the upload.
+#[test]
+fn verify_capabilities_already_exists_fails_upload_blob() {
+    let env = TestEnv::new();
+    let (mut cache_server, remote_module) =
+        module_with_failing_capabilities(&env, tonic::Code::AlreadyExists, "exists");
+    let client = grpc_cache_client(&remote_module);
+    let context = test_context();
+    let data = bytes::Bytes::from_static(b"abc");
+    let digest = DigestUtil::new(DigestHashFunction::Sha256).compute(&data);
+
+    let result = get_from_future(client.upload_blob_impl(&context, &digest, &BytesBlob(data)));
+
+    let e = result.unwrap_err();
+    let capabilities_exception = errors::downcast_ref::<RemoteExecutionCapabilitiesException>(&e)
+        .unwrap_or_else(|| panic!("RemoteExecutionCapabilitiesException, got {e}"));
+    assert_eq!(
+        capabilities_exception.get_cause().to_string(),
+        "ALREADY_EXISTS: exists"
+    );
+    cache_server.shutdown_now();
+}
+
+/// Not in the Java test (review 2026-11-19 N3): `uploadBlobImpl` (`GrpcCacheClient.java:640`)
+/// looks at `e.getCause()`, which for the capabilities exception is the `StatusRuntimeException`
+/// of `GetCapabilities`: INVALID_ARGUMENT with a blob description adds "while uploading".
+#[test]
+fn verify_capabilities_invalid_argument_upload_names_the_blob() {
+    let env = TestEnv::new();
+    let (mut cache_server, remote_module) =
+        module_with_failing_capabilities(&env, tonic::Code::InvalidArgument, "bad instance");
+    let client = grpc_cache_client(&remote_module);
+    let context = test_context();
+    let file = env.root.get_relative_str("blob.txt");
+    blaze_repo_fetch::fs_utils::write_content(&file, b"abc").unwrap();
+    let digest = DigestUtil::new(DigestHashFunction::Sha256)
+        .compute_path(&file)
+        .unwrap();
+
+    let result =
+        get_from_future(client.upload_blob_impl(&context, &digest, &FileBlob(file.clone())));
+
+    let e = result.unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        format!(
+            "while uploading file {}: INVALID_ARGUMENT: bad instance",
+            file.get_path_string()
+        )
+    );
+    cache_server.shutdown_now();
+}
+
 #[test]
 fn invalid_tls_certificate_fails_calls_not_setup() {
     let env = TestEnv::new();
@@ -815,7 +981,65 @@ fn remote_cache_lease_extension_fails_loudly() {
         &format!("--disk_cache={}", disk_cache_dir.get_path_string()),
         "--experimental_remote_cache_lease_extension",
     ]);
-    let _ = before_command(&env, remote_options);
+    let remote_module = before_command(&env, remote_options).unwrap();
+    // RemoteModule.executorInit, without --rewind_lost_inputs.
+    remote_module.executor_init(env.reporter.as_ref(), false);
+}
+
+/// Review 2026-11-19 round 2 R13 (a), not in the Java test: with `--rewind_lost_inputs`,
+/// `executorInit` only warns that the option has no effect.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1264 RemoteModule.executorInit
+#[test]
+fn remote_cache_lease_extension_with_rewind_lost_inputs_warns() {
+    let env = TestEnv::new();
+    let disk_cache_dir = env.root.get_relative_str("disk_cache");
+    let remote_options = parse_remote_options(&[
+        &format!("--disk_cache={}", disk_cache_dir.get_path_string()),
+        "--experimental_remote_cache_lease_extension",
+    ]);
+    let remote_module = before_command(&env, remote_options).unwrap();
+
+    remote_module.executor_init(env.reporter.as_ref(), true);
+
+    let warnings: Vec<String> = env
+        .reporter
+        .get_events()
+        .iter()
+        .filter(|e| e.get_kind() == blaze_events::EventKind::Warning)
+        .map(|e| e.get_message().to_string())
+        .collect();
+    assert_eq!(
+        warnings,
+        vec![
+            "--experimental_remote_cache_lease_extension has no effect since --rewind_lost_inputs is enabled, which recovers from lost remote cache entries as they are encountered."
+                .to_string()
+        ]
+    );
+}
+
+/// Review 2026-11-19 round 2 R13 (b), not in the Java test: only a gRPC channel reads
+/// `--remote_max_connections` / `--experimental_remote_max_concurrency_per_connection`
+/// (`RemoteModule.createChannel`); a disk cache alone sets up.
+#[test]
+fn remote_max_connections_ignored_for_disk_cache_only() {
+    let env = TestEnv::new();
+    let disk_cache_dir = env.root.get_relative_str("disk_cache");
+    let remote_options = parse_remote_options(&[
+        &format!("--disk_cache={}", disk_cache_dir.get_path_string()),
+        "--remote_max_connections=200",
+        "--remote_max_concurrency_per_connection=5",
+    ]);
+
+    let remote_module = before_command(&env, remote_options).unwrap();
+
+    assert!(
+        remote_module
+            .get_action_context_provider()
+            .unwrap()
+            .get_combined_cache()
+            .unwrap()
+            .has_disk_cache()
+    );
 }
 
 /// Review 2026-11-19 R15: `getTempPathGenerator`'s failure carries Java's explicit

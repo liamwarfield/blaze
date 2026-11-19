@@ -16,6 +16,7 @@ use crate::authandtls::CallCredentialsProvider;
 use crate::byte_stream_uploader::ByteStreamUploader;
 use crate::chunker::Chunker;
 use crate::common::errors::{self, StatusRuntimeException, io_exception, status_to_io_error};
+use crate::common::remote_execution_capabilities_exception::RemoteExecutionCapabilitiesException;
 use crate::common::{
     ActionKey, Blob, CacheNotFoundException, MissingDigestsFinder, OutputDigestMismatchException,
     RemoteActionExecutionContext, RemoteCacheClient,
@@ -403,6 +404,11 @@ impl GrpcCacheClient {
     ) -> io::Result<Option<ActionResult>> {
         match download {
             Ok(action_result) => Ok(Some(action_result)),
+            // A call that never started failed with an `IOException` (the
+            // `RemoteExecutionCapabilitiesException` of the capabilities check), which
+            // `catchingAsync(.., StatusRuntimeException.class, ..)` does not catch: it propagates
+            // whatever the code of its cause (review 2026-11-19 N3).
+            Err(sre) if errors::is_call_not_started(&sre) => Err(status_to_io_error(sre)),
             Err(sre) => {
                 if sre.code() == tonic::Code::NotFound {
                     // Return null to indicate that it was a cache miss.
@@ -511,6 +517,15 @@ impl GrpcCacheClient {
             .await
         {
             Ok(response_stream) => response_stream,
+            // `channel.withChannelFuture(..)` failed before `requestRead` ran (the
+            // `RemoteExecutionCapabilitiesException` of the capabilities check): Java never calls
+            // `onError`, so neither the "fully received" check nor the NOT_FOUND mapping applies
+            // (review 2026-11-19 N3). PORT: the output stream exists already here; it is released
+            // as `onError` would.
+            Err(t) if errors::is_call_not_started(&t) => {
+                out.release_out();
+                return Err(status_to_io_error(t));
+            }
             Err(t) => return GrpcCacheClient::on_error(t, digest, raw_out, &mut out),
         };
         loop {
@@ -833,9 +848,17 @@ impl RemoteCacheClient for GrpcCacheClient {
             Err(e) => e,
         };
         // var cause = e.getCause(); if (!(cause instanceof StatusRuntimeException sre)) ...
-        let Some(code) =
-            errors::downcast_ref::<StatusRuntimeException>(&e).map(|sre| sre.status.code())
-        else {
+        // `e` is `new IOException(sre)` (the payload is the `StatusRuntimeException`) or the
+        // `RemoteExecutionCapabilitiesException` of a call that never started, whose cause is
+        // the `StatusRuntimeException` of a failed `GetCapabilities` (review 2026-11-19 N3).
+        // PORT: that cause is the `StatusRuntimeException` itself in Java; the port wraps it in
+        // an `IoExceptionWithCause` for its message (`remote_module::capabilities_failure_cause`),
+        // hence `find_cause`.
+        let cause_status = errors::downcast_ref::<StatusRuntimeException>(&e).or_else(|| {
+            errors::downcast_ref::<RemoteExecutionCapabilitiesException>(&e)
+                .and_then(|rece| errors::find_cause::<StatusRuntimeException>(rece.get_cause()))
+        });
+        let Some(code) = cause_status.map(|sre| sre.status.code()) else {
             return Err(e);
         };
         let blob_description = blob.description();

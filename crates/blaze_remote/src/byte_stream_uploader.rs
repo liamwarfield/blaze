@@ -422,6 +422,9 @@ impl<'a, 'c> AsyncUpload<'a, 'c> {
                 }
             }
             Err(status) => {
+                // `Status.fromThrowable(e)` walks the cause chain, so a call that never started
+                // (`call_not_started`: the code of its cause) is tested by its cause's code as
+                // well, as in Java.
                 if status.code() == tonic::Code::Unimplemented {
                     self.uploader
                         .query_write_status_implemented
@@ -625,6 +628,11 @@ impl<'w, 'a, 'c> Writer<'w, 'a, 'c> {
 
     // Java: com/google/devtools/build/lib/remote/ByteStreamUploader.java:464 ByteStreamUploader.Writer.onError
     fn on_error(&mut self, t: tonic::Status) -> io::Error {
+        // A call that never started: `upload`'s `channel.withChannelFuture(..)` fails with the
+        // `IOException` itself and no `Writer` callback runs (review 2026-11-19 N3).
+        if errors::is_call_not_started(&t) {
+            return errors::status_to_io_error(t);
+        }
         // requestObserver.cancel("failed", t): the call is over.
         if t.code() == tonic::Code::AlreadyExists {
             AlreadyExists::new().into()

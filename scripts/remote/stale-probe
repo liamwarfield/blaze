@@ -10,14 +10,26 @@
 #   1. create <output_base>/execroot/_main/bazel-out/_tmp/actions/remote/x/stale and delete the
 #      bazel-* symlinks of the workspace copy (the checkout's point at other output bases)
 #   2. run the command (no remote flags)
-#   3. print the command, its exit code, the stderr lines mentioning "stale", and whether the
-#      `remote` directory exists afterwards.
+#   3. print the command, its exit code, the stderr lines mentioning "stale", the other
+#      ERROR/WARNING lines, and whether the `remote` directory exists afterwards.
 # Results of each step are in ~/.cache/blaze/work/remote/<run-name>/run<N>/.
+# A command may carry options (it is split on spaces). The command list `remote-variants`
+# (review 2026-11-19 round 2 N11) stands for query, cquery, aquery and `info release`, each
+# with --disk_cache=~/.cache/blaze/work/remote/<run-name>-dc, with
+# --remote_cache=grpc://localhost:9499 (closed port) and with both.
 set -euo pipefail
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-if [[ $# -lt 2 || "$1" == help || "$1" == --help ]]; then sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+if [[ $# -lt 2 || "$1" == help || "$1" == --help ]]; then sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
 run="$1"; bin="$2"; shift 2
 cmds=("$@"); [[ ${#cmds[@]} -eq 0 ]] && cmds=("query //..." "build //..." "info" "clean")
+if [[ ${#cmds[@]} -eq 1 && "${cmds[0]}" == remote-variants ]]; then
+  dc="--disk_cache=$HOME/.cache/blaze/work/remote/$run-dc"
+  rc="--remote_cache=grpc://localhost:9499"
+  cmds=()
+  for c in "query //:brotlicommon" "cquery //:brotlicommon" "aquery //:brotlicommon" "info release"; do
+    cmds+=("$c $dc" "$c $rc" "$c $dc $rc")
+  done
+fi
 src="$HOME/.cache/blaze/corpus/brotli"
 step=$("$here/ws-run" "$run" "$src" "$bin" --fresh -- info output_base | sed -n 's/^step: //p')
 ob=$(tail -1 "$step/stdout")
@@ -31,5 +43,6 @@ for c in "${cmds[@]}"; do
   s=$(echo "$out" | sed -n 's/^step: //p'); code=$(echo "$out" | sed -n 's/^exit code: //p')
   echo "== $c: exit $code"
   grep -i "stale" "$s/stderr" | sed 's/^/   /' || echo "   (no stale-downloads line)"
+  grep -iv "stale" "$s/stderr" | grep -E '^(ERROR|WARNING)' | sed 's/^/   /' || true
   if [[ -e "$dir" ]]; then echo "   remote dir: exists"; else echo "   remote dir: gone"; fi
 done

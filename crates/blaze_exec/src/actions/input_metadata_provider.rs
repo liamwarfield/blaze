@@ -305,6 +305,24 @@ pub trait RunfilesTree: Send + Sync + fmt::Debug {
     fn get_exec_path(&self) -> PathFragment;
     /// `getMapping()`: runfiles-relative path to artifact (`None`: an empty file).
     fn get_mapping(&self) -> Vec<(PathFragment, Option<ActionInputRef>)>;
+    /// `getSymlinksMode()`: the `RunfileSymlinksMode` of this runfiles tree.
+    ///
+    /// PORT: a default so that test and replay trees need not implement it; the trees of a build
+    /// (`RunfilesTreeAdapter`) do.
+    // Java: com/google/devtools/build/lib/actions/RunfilesTree.java:44 RunfilesTree.getSymlinksMode
+    fn get_symlinks_mode(
+        &self,
+    ) -> blaze_actions::analysis::actions::symlink_tree_action::RunfileSymlinksMode {
+        blaze_util::unported!("RunfilesTree.getSymlinksMode");
+    }
+    /// `isBuildRunfileLinks()`: whether the runfile symlinks should be materialized during the
+    /// build.
+    ///
+    /// PORT: a default, as for `get_symlinks_mode`.
+    // Java: com/google/devtools/build/lib/actions/RunfilesTree.java:47 RunfilesTree.isBuildRunfileLinks
+    fn is_build_runfile_links(&self) -> bool {
+        blaze_util::unported!("RunfilesTree.isBuildRunfileLinks");
+    }
     /// `getWorkspaceName()`.
     fn get_workspace_name(&self) -> String;
     /// `isMappingCached()`.

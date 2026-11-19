@@ -260,6 +260,23 @@ impl ActionExecutionException {
         self.lost_inputs.as_ref()
     }
 
+    /// `LostInputsActionExecutionException.toExecException()`: converts to the "lost inputs"
+    /// subtype of the other exception type ([`ExecException`]) used during action execution.
+    /// Panics (`ClassCastException`) when this is not a `LostInputsActionExecutionException`.
+    ///
+    /// PORT: the `checkState`s on the decorations (primary action, output path, out/err, input
+    /// discovery) have no counterpart: this port does not decorate the exception (see
+    /// `SkyframeActionExecutor.enrichLostInputsException` in `blaze_sky_exec`).
+    // Java: com/google/devtools/build/lib/actions/LostInputsActionExecutionException.java:133 LostInputsActionExecutionException.toExecException
+    pub fn to_exec_exception(&self) -> ExecException {
+        let lost_inputs = self.lost_inputs.as_ref().unwrap_or_else(|| {
+            panic!(
+                "ClassCastException: ActionExecutionException cannot be cast to LostInputsActionExecutionException"
+            )
+        });
+        super::LostInputsExecException::create((**lost_inputs).clone())
+    }
+
     /// The action was interrupted: this stands for the `InterruptedException` Java's
     /// `Action.execute` / `discoverInputs` throw, not for a failure. The caller
     /// (`SkyframeActionExecutor`) rethrows it as `InterruptedException`; nothing is reported.

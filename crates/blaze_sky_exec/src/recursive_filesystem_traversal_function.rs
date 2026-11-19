@@ -1064,39 +1064,6 @@ fn to_file_info(
     ))))
 }
 
-/// `FileStateValue.getValueFingerprint()`.
-// Java: com/google/devtools/build/lib/actions/FileStateValue.java:291 FileStateValue.getValueFingerprint
-fn get_value_fingerprint(fsv: &FileStateValue) -> Vec<u8> {
-    match fsv {
-        // Java: com/google/devtools/build/lib/actions/FileStateValue.java:351 RegularFileStateValueWithDigest.getValueFingerprint
-        FileStateValue::RegularFileWithDigest { size, digest } => {
-            let mut fp = Fingerprint::new();
-            fp.add_long(*size);
-            fp.add_bytes(digest);
-            fp.digest_and_reset()
-        }
-        // Java: com/google/devtools/build/lib/actions/FileStateValue.java:423 RegularFileStateValueWithContentsProxy.getValueFingerprint
-        // Java: com/google/devtools/build/lib/actions/FileStateValue.java:573 SpecialFileStateValue.getValueFingerprint
-        FileStateValue::RegularFileWithContentsProxy { .. }
-        | FileStateValue::SpecialFile { .. } => {
-            // PORT: needs `FileContentsProxy.addToFingerprint` (ctime, mtime, nodeId), whose
-            // fields blaze_sky_loading's FileContentsProxy does not expose. Not reached for
-            // regular files (withDigest turns them into a FileArtifactValue).
-            blaze_util::unported!("FileContentsProxy.addToFingerprint")
-        }
-        // Java: com/google/devtools/build/lib/actions/FileStateValue.java:618 DirectoryFileStateValue.getValueFingerprint
-        FileStateValue::Directory => b"DirectoryFileStateValue".to_vec(),
-        // Java: com/google/devtools/build/lib/actions/FileStateValue.java:664 SymlinkFileStateValue.getValueFingerprint
-        FileStateValue::Symlink { symlink_target } => {
-            let mut fp = Fingerprint::new();
-            fp.add_string(symlink_target.get_path_string());
-            fp.digest_and_reset()
-        }
-        // Java: com/google/devtools/build/lib/actions/FileStateValue.java:710 NonexistentFileStateValue.getValueFingerprint
-        FileStateValue::Nonexistent => b"NonexistentFileStateValue".to_vec(),
-    }
-}
-
 /// Transform the HasDigest to the appropriate type based on the current state of the digest. If
 /// fsVal is type RegularFileStateValue or FileArtifactValue and has a valid digest value, then we
 /// want to convert it to a new FileArtifactValue type. Otherwise if they are of the two
@@ -1118,7 +1085,8 @@ pub fn with_digest(fs_val: &FileStateValue, path: Option<&Path>) -> Result<HasDi
                 .map(HasDigest::FileArtifactValue)
                 .map_err(|e| IOException::from_io(&e))
         }
-        _ => Ok(HasDigest::ByteStringDigest(get_value_fingerprint(fs_val))),
+        // Java: com/google/devtools/build/lib/actions/FileStateValue.java:291 FileStateValue.getValueFingerprint
+        _ => Ok(HasDigest::ByteStringDigest(fs_val.get_value_fingerprint())),
     }
 }
 

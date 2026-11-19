@@ -363,8 +363,9 @@ impl SpawnExecutionContext for SpawnExecutionContextImpl<'_> {
                 .values()
                 .cloned()
                 .collect();
-            // PORT: the BulkTransferException handling (lost remote inputs) belongs to the
-            // remote prefetcher, which is not ported.
+            // Futures.catchingAsync(..., BulkTransferException.class, ...): the lost inputs
+            // (LostArtifacts.throwIfNotEmpty) and the EnvironmentalExecException are made in
+            // ActionExecutionContext::prefetch_files, where the prefetcher's error arrives.
             return self.action_execution_context.prefetch_files(
                 self.spawn.get_resource_owner(),
                 &inputs,
@@ -452,6 +453,10 @@ impl SpawnExecutionContext for SpawnExecutionContextImpl<'_> {
         self.action_execution_context.is_rewinding_enabled()
     }
 
+    // try { actionExecutionContext.checkForLostInputs(); } catch
+    // (LostInputsActionExecutionException e) { throw e.toExecException(); }: the context returns
+    // the converted form (see ActionExecutionContext::check_for_lost_inputs).
+    // Java: com/google/devtools/build/lib/exec/AbstractSpawnStrategy.java:390 SpawnExecutionContextImpl.checkForLostInputs
     fn check_for_lost_inputs(&self) -> Result<(), ExecException> {
         self.action_execution_context.check_for_lost_inputs()
     }

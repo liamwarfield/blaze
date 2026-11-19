@@ -26,6 +26,12 @@ pub trait PlatformInfo: Send + Sync + fmt::Debug {
     /// `execProperties().properties()`.
     fn exec_properties(&self) -> IndexMap<String, String>;
 
+    /// `remoteExecutionProperties()`: the platform's text-format
+    /// `build.bazel.remote.execution.v2.Platform`, already merged with its parent's when the
+    /// platform was built (`PlatformInfo.Builder.mergeRemoteExecutionProperties`).
+    // Java: com/google/devtools/build/lib/analysis/platform/PlatformInfo.java:130 PlatformInfo.remoteExecutionProperties
+    fn remote_execution_properties(&self) -> String;
+
     /// `constraints().get(setting)` for the constraint setting with this label: the label of the
     /// constraint value the platform, or one of its parents, sets for it.
     ///
@@ -128,6 +134,11 @@ impl PlatformInfo for PlatformInfoData {
 
     fn exec_properties(&self) -> IndexMap<String, String> {
         self.exec_properties.clone()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/platform/PlatformInfo.java:130 PlatformInfo.remoteExecutionProperties
+    fn remote_execution_properties(&self) -> String {
+        self.remote_execution_properties.clone()
     }
 
     // Java: com/google/devtools/build/lib/analysis/platform/ConstraintCollection.java:208 ConstraintCollection.get

@@ -21,15 +21,48 @@
 # --remote_cache=grpc://localhost:<port> and the extra options, stops the worker, and prints
 # the exit code, the retry lines ("Found transient remote cache error, ...") and the ERROR
 # lines of the run's stderr.
+#
+# Lost-input sources on a small workspace (review N5):
+#
+# usage: scripts/remote/evict-probe ws-seed
+#        scripts/remote/evict-probe ws <oracle|BLAZE-BINARY> <label> <scenario> <port>
+#                                   [--again] [--validating] [--rm PATH]... [extra options...]
+#
+# `ws-seed` writes the workspace <W>/te-evict/src (genrules a1, b1 <- a1, a2, b2 <- a2 b1,
+# t -> tmpl.txt, expand_template :expanded of tmpl.txt, a3, symlink rule :l -> a3.txt), starts a
+# worker (te-evseed, port 9660, --noaction_cache_integrity_check), runs the oracle once
+# (`build //...`, --remote_cache, execution log), stops the worker and keeps its cache in
+# <W>/te-evseed-cas (plus <W>/te-evseed-keys.json: the action keys of b1 and b2, from the log).
+#
+# `ws` copies that cache to the worker te-ev-<label>, deletes from the copy what <scenario>
+# needs lost, starts the worker on <port> (with --noaction_cache_integrity_check unless
+# --validating: then the worker refuses action results whose blobs are missing), runs one
+# `build` with run name te-ev-<label> through scripts/remote/ws-run (fresh output base unless
+# --again: then the output base of the previous run with that label is reused; --rm PATH first
+# deletes bazel-bin/PATH from it, so that its action runs again), stops the
+# worker and prints the exit code, the "Lost inputs" / retry / ERROR / process lines and the
+# content of the built outputs. Scenarios (CAS = a blob deleted, AC = an action result deleted):
+#   none      //:b1, nothing deleted        (a warm output base for --again; a1.txt stays remote)
+#   local     //:b1, CAS a1.txt, AC b1      b1 runs locally, prefetching a1.txt fails (S-a)
+#   remote    //:b1, CAS a1.txt, AC b1,     b1 runs remotely; uploading a1.txt (remote only)
+#             adds --remote_executor        fails (S-b)
+#   inprocess //:expanded, CAS tmpl.txt     the template expansion reads tmpl.txt (S-c)
+#   finalize  //:l, CAS a3.txt              finalizeAction downloads the top-level symlink l.txt
+#                                           to a3.txt (S-d)
+#   exit39    //:b2 --jobs=1, CAS a1.txt    attempt 1 loses a1.txt (b1), attempt 2 loses a2.txt
+#             a2.txt, AC b1 b2              (b2): with one retry the build exits 39
+# The remote cache is --remote_cache=grpc://localhost:<port> (and --remote_executor for remote).
 set -euo pipefail
-if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,23p' "$0"; exit 0; fi
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,54p' "$0"; exit 0; fi
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 W="$HOME/.cache/blaze/work/remote"
 java="$HOME/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9/embedded_tools/jdk/bin/java"
 jar="$HOME/.cache/blaze/work/upstream-src/bazel-bin/src/tools/remote/worker_deploy.jar"
 
-start_worker() { # name port (cas directory already in place)
+start_worker() { # name port [validating] (cas directory already in place)
   local name="$1" port="$2" dir="$W/worker-$1" unit="blaze-remote-worker-$1"
+  local integrity=(--noaction_cache_integrity_check)
+  [[ "${3:-}" == validating ]] && integrity=()
   systemctl --user stop "$unit" 2>/dev/null || true
   systemctl --user reset-failed "$unit" 2>/dev/null || true
   mkdir -p "$dir/work" "$dir/cas"
@@ -38,7 +71,7 @@ start_worker() { # name port (cas directory already in place)
     --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin --setenv=RUNFILES_DIR="$dir/runfiles" \
     -p StandardOutput="file:$dir/stdout" -p StandardError="file:$dir/stderr" \
     "$java" -jar "$jar" --work_path="$dir/work" --cas_path="$dir/cas" --pid_file="$dir/pid" \
-    --listen_port="$port" --noaction_cache_integrity_check
+    --listen_port="$port" "${integrity[@]}"
   for _ in $(seq 1 100); do
     if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then return 0; fi
     sleep 0.2
@@ -87,6 +120,134 @@ EOF
     step="$W/$name/run1"
     echo "exit code: $code"
     grep -E "Found transient remote cache error|^ERROR|^INFO: [0-9]+ process|^FAILED|^Build completed|Lost inputs" "$step/stderr" || true
+    ;;
+  ws-seed)
+    src="$W/te-evict/src"
+    rm -rf "$src"; mkdir -p "$src"
+    cat > "$src/MODULE.bazel" <<'EOF'
+module(name = "te_evict")
+EOF
+    cat > "$src/defs.bzl" <<'EOF'
+def _expand_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.expand_template(
+        template = ctx.file.template,
+        output = out,
+        substitutions = {"{NAME}": "world"},
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+expand = rule(
+    implementation = _expand_impl,
+    attrs = {"template": attr.label(allow_single_file = True)},
+)
+
+def _link_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.symlink(output = out, target_file = ctx.file.src)
+    return [DefaultInfo(files = depset([out]))]
+
+link = rule(
+    implementation = _link_impl,
+    attrs = {"src": attr.label(allow_single_file = True)},
+)
+EOF
+    cat > "$src/BUILD.bazel" <<'EOF'
+load(":defs.bzl", "expand", "link")
+
+genrule(name = "a1", outs = ["a1.txt"], cmd = "echo a1 > $@")
+genrule(name = "b1", srcs = [":a1.txt"], outs = ["b1.txt"], cmd = "cat $(SRCS) > $@ && echo b1 >> $@")
+
+genrule(name = "a2", outs = ["a2.txt"], cmd = "echo a2 > $@")
+genrule(name = "b2", srcs = [":a2.txt", ":b1.txt"], outs = ["b2.txt"], cmd = "cat $(SRCS) > $@")
+
+genrule(name = "t", outs = ["tmpl.txt"], cmd = "echo 'hello {NAME}' > $@")
+expand(name = "expanded", template = ":t")
+
+genrule(name = "a3", outs = ["a3.txt"], cmd = "echo a3 > $@")
+link(name = "l", src = ":a3")
+EOF
+    "$here/worker" start te-evseed 9660 --noaction_cache_integrity_check
+    set +e
+    "$here/ws-run" te-evseed "$src" oracle --fresh -- build --remote_cache=grpc://localhost:9660 \
+      "--execution_log_json_file={step}/execlog.json" //...
+    code=$?
+    set -e
+    "$here/worker" stop te-evseed
+    [[ $code == 0 ]] || { echo "seed build failed" >&2; exit 1; }
+    rm -rf "$W/te-evseed-cas"; cp -a "$W/worker-te-evseed/cas" "$W/te-evseed-cas"
+    python3 -I - "$W/te-evseed/run1/execlog.json" "$W/te-evseed-keys.json" <<'EOF'
+import json, sys
+s = open(sys.argv[1]).read(); d = json.JSONDecoder(); i = 0; keys = {}
+while i < len(s):
+    while i < len(s) and s[i].isspace(): i += 1
+    if i >= len(s): break
+    o, i = d.raw_decode(s, i)
+    outs = [x['path'] for x in o.get('actualOutputs', [])]
+    for name in ('b1', 'b2'):
+        if outs == ['bazel-out/k8-fastbuild/bin/%s.txt' % name]:
+            keys[name] = o['digest']['hash']
+assert set(keys) == {'b1', 'b2'}, keys
+json.dump(keys, open(sys.argv[2], 'w')); print('action keys:', keys)
+EOF
+    ;;
+  ws)
+    bin="${2:?binary}"; label="${3:?label}"; scenario="${4:?scenario}"; port="${5:?port}"; shift 5
+    again=0; validating=; rmout=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --again) again=1; shift ;;
+        --validating) validating=validating; shift ;;
+        --rm) rmout+=("$2"); shift 2 ;;
+        *) break ;;
+      esac
+    done
+    [[ -d "$W/te-evseed-cas" ]] || { echo "run '$0 ws-seed' first" >&2; exit 2; }
+    extra=(); ac=(); cas=()
+    case "$scenario" in
+      none) targets=(//:b1) ;;
+      local) targets=(//:b1); ac=(b1); cas=($'a1\n') ;;
+      remote) targets=(//:b1); ac=(b1); cas=($'a1\n'); extra=("--remote_executor=grpc://localhost:$port") ;;
+      inprocess) targets=(//:expanded); cas=($'hello {NAME}\n') ;;
+      finalize) targets=(//:l); cas=($'a3\n') ;;
+      exit39) targets=(//:b2); ac=(b1 b2); cas=($'a1\n' $'a2\n'); extra=(--jobs=1) ;;
+      *) echo "unknown scenario: $scenario" >&2; exit 2 ;;
+    esac
+    name="te-ev-$label"
+    systemctl --user stop "blaze-remote-worker-$name" 2>/dev/null || true
+    chmod -R u+w "$W/worker-$name" 2>/dev/null || true
+    rm -rf "$W/worker-$name"; mkdir -p "$W/worker-$name"
+    cp -a "$W/te-evseed-cas" "$W/worker-$name/cas"
+    python3 -I - "$W/worker-$name/cas" "$W/te-evseed-keys.json" "${ac[*]:-}" "${cas[@]}" <<'EOF'
+import hashlib, json, os, sys
+cas, keys = sys.argv[1], json.load(open(sys.argv[2]))
+for name in sys.argv[3].split():
+    h = keys[name]; os.remove(os.path.join(cas, 'ac', h[:2], h)); print('deleted AC entry of %s: %s' % (name, h))
+for content in sys.argv[4:]:
+    h = hashlib.sha256(content.encode()).hexdigest()
+    os.remove(os.path.join(cas, 'cas', h[:2], h)); print('deleted CAS blob %s/%d (%r)' % (h, len(content), content))
+EOF
+    start_worker "$name" "$port" "$validating"
+    binopt="$bin"; fresh=(--fresh); [[ $again == 1 ]] && fresh=()
+    for r in "${rmout[@]}"; do
+      for f in "$HOME/.cache/blaze/oracle-out/ur-remote/$name"/*/execroot/_main/bazel-out/k8-fastbuild/bin/"$r"; do
+        [[ -e $f ]] && { chmod u+w "$(dirname "$f")"; rm -f "$f"; echo "deleted output $f"; }
+      done
+    done
+    set +e
+    "$here/ws-run" "$name" "$W/te-evict/src" "$binopt" "${fresh[@]}" -- build \
+      "--remote_cache=grpc://localhost:$port" "${extra[@]}" "$@" "${targets[@]}" >/dev/null
+    code=$?
+    set -e
+    systemctl --user stop "blaze-remote-worker-$name" 2>/dev/null || true
+    step=$(ls -d "$W/$name"/run* | sort -V | tail -1)
+    echo "step: $step"
+    echo "exit code: $code"
+    grep -E "Found transient remote cache error|^ERROR|^INFO: [0-9]+ process|^FAILED|^Build completed|Lost inputs|lost inputs|not ported yet|panicked" "$step/stderr" || true
+    ob=$(ls -d "$HOME/.cache/blaze/oracle-out/ur-remote/$name"/*/ 2>/dev/null | grep -v install | head -1)
+    for f in $(find "$ob" -path '*k8-fastbuild/bin/*.txt' 2>/dev/null | sort); do
+      printf '%s: ' "${f##*/bin/}"; tr '\n' '|' < "$f" 2>/dev/null || printf '(unreadable)'; echo
+    done
     ;;
   *) echo "unknown command: $1" >&2; exit 2 ;;
 esac

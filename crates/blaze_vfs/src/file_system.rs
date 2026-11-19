@@ -115,7 +115,7 @@ pub(crate) fn is_not_found(e: &io::Error) -> bool {
 ///
 /// Errors are [`io::Error`]s whose messages follow Bazel's native layer: `<path> (<strerror>)`.
 // Java: com/google/devtools/build/lib/vfs/FileSystem.java:50 FileSystem
-pub trait FileSystem: Send + Sync + fmt::Debug {
+pub trait FileSystem: std::any::Any + Send + Sync + fmt::Debug {
     /// The digest function used for file contents.
     // Java: com/google/devtools/build/lib/vfs/FileSystem.java:71 FileSystem.getDigestFunction
     fn get_digest_function(&self) -> DigestHashFunction;
@@ -523,6 +523,18 @@ fn append_segment<F: FileSystem + ?Sized>(
         }
     }
     Ok(dir)
+}
+
+impl dyn FileSystem {
+    /// This file system as `Any`, for Java's `fs instanceof <FileSystem subclass>` checks
+    /// (`downcast_ref::<T>()`).
+    ///
+    /// PORT: an inherent method of the trait object (trait upcasting), so every implementation
+    /// has it without writing it; call it on the `dyn FileSystem` (an `Arc<dyn FileSystem>`
+    /// derefs to it).
+    pub fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Java's `FileSystem.getPath` and `getAbsoluteRoot`, which need the shared handle.

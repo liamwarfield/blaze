@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# Tree artifacts built through the action file system (review round 2, N1): oracle vs Blaze.
+#
+# usage: scripts/remote/probe-trees2 <oracle|BLAZE-BINARY> <label> [extra options...]
+#        scripts/remote/probe-trees2 help
+#
+# Workspace: ~/.cache/blaze/work/remote/probe-trees2/src (written by this script when missing):
+#   //:libtree   a declare_directory with lib/libfoo.so.1 and the relative symlink
+#                lib/libfoo.so -> libfoo.so.1
+#   //:libcons   a cacheable consumer of //:libtree (find -L, cat)
+#   //:liblocal  the same with no-cache (runs locally: the tree's files must be fetched)
+#   //:srctree   a declare_directory with a.txt and sub/b.txt
+#   //:sym       ctx.actions.symlink(output = declare_directory, target_file = //:srctree)
+#   //:symcons   a cacheable consumer of //:sym;  //:symlocal the same with no-cache
+#
+# Seeds a disk cache with the oracle once (<W>/pt2-dc-seed, from `build //:libcons //:symcons`
+# //:libtree //:srctree //:sym), copies it to <W>/pt2-<label>-dc and runs with run name
+# pt2-<label> (fresh output base for step 1), --disk_cache=<copy>, default download mode
+# (toplevel):
+#   run1  build //:libcons //:liblocal   scenario (i): the tree with a symlink is not top-level
+#   run2  build //:symcons //:symlocal   scenario (ii): symlink to a remote-only tree
+#   run3  build //:libtree //:sym        both trees top-level (downloaded)
+# and prints for each step the `N processes:` / ERROR lines, the exit code, the files of
+# bazel-bin (sha256, path), its symlinks (path -> target, the output base shown as
+# <execroot>) and the consumers' outputs, saved as
+# <W>/pt2-<label>/seq-run<N>.{bazel-bin.txt,stderr} for comparing two labels.
+# <W> is ~/.cache/blaze/work/remote.
+set -euo pipefail
+if [[ $# -lt 2 || $1 == help ]]; then sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+here=$(cd "$(dirname "$0")" && pwd)
+W=~/.cache/blaze/work/remote
+src=$W/probe-trees2/src
+bin=$1; label=$2; shift 2
+if [[ ! -f $src/BUILD.bazel ]]; then
+  mkdir -p "$src"
+  echo 'module(name = "probe_trees2")' > "$src/MODULE.bazel"
+  cat > "$src/defs.bzl" <<'EOF'
+def _gen_lib_impl(ctx):
+    d = ctx.actions.declare_directory(ctx.label.name)
+    ctx.actions.run_shell(
+        outputs = [d],
+        command = "mkdir -p {d}/lib && echo 'libfoo one' > {d}/lib/libfoo.so.1 && ln -s libfoo.so.1 {d}/lib/libfoo.so".format(d = d.path),
+        mnemonic = "GenLib",
+    )
+    return [DefaultInfo(files = depset([d]))]
+
+gen_lib = rule(implementation = _gen_lib_impl)
+
+def _gen_dir_impl(ctx):
+    d = ctx.actions.declare_directory(ctx.label.name)
+    ctx.actions.run_shell(
+        outputs = [d],
+        command = "mkdir -p {d}/sub && echo alpha > {d}/a.txt && echo beta > {d}/sub/b.txt".format(d = d.path),
+        mnemonic = "GenDir",
+    )
+    return [DefaultInfo(files = depset([d]))]
+
+gen_dir = rule(implementation = _gen_dir_impl)
+
+def _sym_dir_impl(ctx):
+    out = ctx.actions.declare_directory(ctx.label.name)
+    ctx.actions.symlink(output = out, target_file = ctx.attr.dir[DefaultInfo].files.to_list()[0])
+    return [DefaultInfo(files = depset([out]))]
+
+sym_dir = rule(implementation = _sym_dir_impl, attrs = {"dir": attr.label()})
+
+def _consume_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    args = ctx.actions.args()
+    args.add(out)
+    args.add_all([ctx.attr.dir[DefaultInfo].files.to_list()[0]])
+    ctx.actions.run_shell(
+        inputs = ctx.attr.dir[DefaultInfo].files,
+        outputs = [out],
+        arguments = [args],
+        command = "o=$1; shift; for f in $(find -L \"$@\" -type f | sort); do echo \"== $f\"; cat \"$f\"; done > $o",
+        mnemonic = "Consume",
+        execution_requirements = ctx.attr.reqs,
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+consume = rule(
+    implementation = _consume_impl,
+    attrs = {"dir": attr.label(), "reqs": attr.string_dict()},
+)
+EOF
+  cat > "$src/BUILD.bazel" <<'EOF'
+load(":defs.bzl", "consume", "gen_dir", "gen_lib", "sym_dir")
+
+gen_lib(name = "libtree")
+
+consume(name = "libcons", dir = ":libtree")
+
+consume(name = "liblocal", dir = ":libtree", reqs = {"no-cache": "1"})
+
+gen_dir(name = "srctree")
+
+sym_dir(name = "sym", dir = ":srctree")
+
+consume(name = "symcons", dir = ":sym")
+
+consume(name = "symlocal", dir = ":sym", reqs = {"no-cache": "1"})
+EOF
+fi
+if [[ ! -d $W/pt2-dc-seed ]]; then
+  "$here/ws-run" pt2-seed "$src" oracle --fresh -- build "--disk_cache=$W/pt2-dc-seed" \
+    //:libcons //:symcons //:libtree //:srctree //:sym
+fi
+rm -rf "$W/pt2-$label-dc"; cp -a "$W/pt2-dc-seed" "$W/pt2-$label-dc"
+step() {
+  local n=$1; shift
+  local out; out=$("$here/ws-run" "pt2-$label" "$src" "$bin" "$@") || true
+  echo "$out" | grep -v '^step:' | sed "s/^/  /"
+  local s; s=$(echo "$out" | sed -n 's/^step: //p')
+  {
+    (cd "$W/pt2-$label/ws/bazel-bin" 2>/dev/null && find . -type f -print0 | sort -z | xargs -0 -r sha256sum) || true
+    (cd "$W/pt2-$label/ws/bazel-bin" 2>/dev/null && find . -type l | sort | while read -r l; do echo "link $l -> $(readlink "$l" | sed 's#^.*/execroot/#<execroot>/#')"; done) || true
+  } > "$s/bazel-bin.txt"
+  cp "$s/bazel-bin.txt" "$W/pt2-$label/seq-run$n.bazel-bin.txt"
+  cp "$s/stderr" "$W/pt2-$label/seq-run$n.stderr"
+  echo "  bazel-bin: $(grep -vc '^link ' "$s/bazel-bin.txt") files, $(grep -c '^link ' "$s/bazel-bin.txt") symlinks ($W/pt2-$label/seq-run$n.bazel-bin.txt)"
+  for f in libcons liblocal symcons symlocal; do
+    if [[ -f $W/pt2-$label/ws/bazel-bin/$f.txt ]]; then
+      echo "  $f.txt: $(tr '\n' '|' < "$W/pt2-$label/ws/bazel-bin/$f.txt")"
+    fi
+  done
+}
+dc="--disk_cache=$W/pt2-$label-dc"
+echo "pt2-$label run1"; step 1 --fresh -- build "$dc" "$@" //:libcons //:liblocal
+echo "pt2-$label run2"; step 2 -- build "$dc" "$@" //:symcons //:symlocal
+echo "pt2-$label run3"; step 3 -- build "$dc" "$@" //:libtree //:sym

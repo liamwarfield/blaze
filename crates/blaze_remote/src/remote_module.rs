@@ -264,6 +264,39 @@ impl RemoteModule {
         self.cache_available
     }
 
+    /// The `--experimental_remote_cache_lease_extension` part of `executorInit`, which Java runs
+    /// for the commands that execute actions, after `beforeCommand`: with a combined cache and
+    /// `--rewind_lost_inputs` (`rewind_lost_inputs`: `buildRequestOptions != null &&
+    /// buildRequestOptions.rewindLostInputs`) the option has no effect and a warning says so;
+    /// without rewinding it creates a `RemoteLeaseExtension`, which is not ported (it needs the
+    /// Skyframe evaluator and the persistent action cache). The `LeaseService` of the same
+    /// branch is the caller's (`blaze_runtime` `build_remote.rs`).
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1241 RemoteModule.executorInit
+    pub fn executor_init(&self, reporter: &dyn EventHandler, rewind_lost_inputs: bool) {
+        let Some(action_context_provider) = &self.action_context_provider else {
+            return;
+        };
+        if action_context_provider.get_combined_cache().is_none() {
+            return;
+        }
+        let remote_options = &action_context_provider.remote_options;
+        if rewind_lost_inputs {
+            // Action rewinding regenerates lost inputs within the build, so there is no need for
+            // the lease service to extend leases or to discard all remote metadata after a build
+            // that encountered lost inputs.
+            if remote_options.remote_cache_lease_extension {
+                reporter.handle(&Event::warn(
+                    "--experimental_remote_cache_lease_extension has no effect since --rewind_lost_inputs is enabled, which recovers from lost remote cache entries as they are encountered.",
+                ));
+            }
+        } else if remote_options.remote_cache_lease_extension {
+            blaze_util::unported!(
+                "RemoteLeaseExtension",
+                "--experimental_remote_cache_lease_extension"
+            );
+        }
+    }
+
     /// `actionContextProvider`.
     pub fn get_action_context_provider(&self) -> Option<&RemoteActionContextProvider> {
         self.action_context_provider.as_ref()
@@ -634,19 +667,6 @@ impl RemoteModule {
             }
         };
 
-        // `maxConcurrencyPerConnection` / `maxConnections` size Java's connection pool
-        // (`DynamicConnectionPool`); the channel of the port multiplexes every call on one
-        // HTTP/2 connection (`crate::grpc::channel`), so a non-default value fails loudly
-        // (review 2026-11-19 R13). They are only read for the gRPC channels, as in Java.
-        if remote_options.remote_max_concurrency_per_connection != 100
-            || remote_options.remote_max_connections != 100
-        {
-            blaze_util::unported!(
-                "DynamicConnectionPool",
-                "--remote_max_connections / --remote_max_concurrency_per_connection other than 100 (one HTTP/2 connection per endpoint)"
-            );
-        }
-
         let circuit_breaker = circuit_breaker_factory::create_circuit_breaker(&remote_options);
         let retrier = Arc::new(RemoteRetrier::new(
             &remote_options,
@@ -684,19 +704,6 @@ impl RemoteModule {
         // be skipped. This allows disk cache AC checks to be entirely local, reducing server
         // load and avoiding a network round trip.
         let check_disk_cache_action_result_integrity = !rewind_lost_inputs.unwrap_or(false);
-
-        // Java reads `--experimental_remote_cache_lease_extension` in `executorInit` for any
-        // command with a combined cache: a warning with `--rewind_lost_inputs`, else a
-        // `RemoteLeaseExtension` (not ported: it needs the Skyframe evaluator and the persistent
-        // action cache). Checked here, where every cache is known to be enabled (review
-        // 2026-11-19 R13).
-        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1268 RemoteModule.executorInit
-        if remote_options.remote_cache_lease_extension && !rewind_lost_inputs.unwrap_or(false) {
-            blaze_util::unported!(
-                "RemoteLeaseExtension",
-                "--experimental_remote_cache_lease_extension"
-            );
-        }
 
         if (enable_http_cache || enable_disk_cache) && !enable_grpc_cache {
             // Java: com/google/devtools/build/lib/remote/RemoteModule.java:287 RemoteModule.initHttpAndDiskCache
@@ -1094,6 +1101,24 @@ fn create_channel(
     digest_function: digest_function::Value,
     requirement: ServerCapabilitiesRequirement,
 ) -> ReferenceCountedChannel {
+    // `setup` turns `--experimental_remote_max_concurrency_per_connection` and
+    // `--remote_max_connections` into `maxConcurrencyPerConnection` / `maxConnections` and
+    // hands them to `createChannel`, whose `GoogleChannelConnectionFactory` and
+    // `ReferenceCountedChannel` size a `DynamicConnectionPool` with them: only a gRPC channel
+    // reads them (a `--disk_cache` alone never does). The port's channel multiplexes every call
+    // on one HTTP/2 connection (`crate::grpc::channel`), so a value other than the default fails
+    // loudly here (review 2026-11-19 R13).
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:623 RemoteModule.setup
+    // Java: com/google/devtools/build/lib/remote/ReferenceCountedChannel.java:70 ReferenceCountedChannel.<init>
+    if remote_options.remote_max_concurrency_per_connection != 100
+        || remote_options.remote_max_connections != 100
+    {
+        blaze_util::unported!(
+            "DynamicConnectionPool",
+            "--remote_max_connections / --remote_max_concurrency_per_connection other than 100 (one HTTP/2 connection per endpoint)"
+        );
+    }
+
     let mut interceptors: Vec<Arc<dyn ClientInterceptor>> = Vec::new();
     if let Some(headers_interceptor) = headers_interceptor {
         interceptors.push(headers_interceptor);

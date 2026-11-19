@@ -48,6 +48,7 @@ pub mod retrier;
 pub mod runtime;
 pub mod scrubber;
 pub mod store;
+pub mod text_format;
 pub mod upload_manifest;
 pub mod util;
 pub mod zstd;

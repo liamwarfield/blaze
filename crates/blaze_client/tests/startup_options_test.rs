@@ -689,6 +689,38 @@ fn host_jvm_args_trust_store_options_are_not_ported() {
     assert!(startup_options.unported_host_jvm_arg_error().is_some());
 }
 
+/// Blaze-only: `--host_jvm_args=-DBAZEL_TRACK_SOURCE_DIRECTORIES=...` would switch
+/// `TrackSourceDirectoriesFlag`, which Blaze fixes at Bazel's default; it is reported instead of
+/// ignored.
+#[test]
+fn host_jvm_args_track_source_directories_is_not_ported() {
+    let _f = Fixture::new();
+    for arg in [
+        "-DBAZEL_TRACK_SOURCE_DIRECTORIES=0",
+        "-DBAZEL_TRACK_SOURCE_DIRECTORIES=1",
+        "-DBAZEL_TRACK_SOURCE_DIRECTORIES",
+    ] {
+        let mut startup_options = StartupOptions::bazel();
+        assert_eq!(
+            Ok(()),
+            startup_options.process_args_impl(&[
+                flag("", "--host_jvm_args=-Xmx2g"),
+                flag("/x/.bazelrc", &format!("--host_jvm_args={}", arg)),
+            ])
+        );
+        assert_eq!(
+            Some(
+                "blaze: not ported yet: --host_jvm_args=-DBAZEL_TRACK_SOURCE_DIRECTORIES: the JVM \
+                 system property BAZEL_TRACK_SOURCE_DIRECTORIES (TrackSourceDirectoriesFlag) is \
+                 not ported; Blaze always uses Bazel's default. Blaze has no JVM and would \
+                 silently ignore the option."
+                    .to_owned()
+            ),
+            startup_options.unported_host_jvm_arg_error()
+        );
+    }
+}
+
 /// Every other `--host_jvm_args` value is accepted (and has no effect in-process), as before.
 #[test]
 fn other_host_jvm_args_are_accepted() {

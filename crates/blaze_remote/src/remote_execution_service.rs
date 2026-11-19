@@ -28,7 +28,8 @@ use blaze_optdefs::command::execution_options::ExecutionOptions;
 use blaze_optdefs::misc::remote_options::{ConcurrentChangesCheckLevel, RemoteOptions};
 use blaze_protos::JavaMessage;
 use blaze_protos::tools::protos::{CacheSalt, cache_salt};
-use blaze_vfs::os_path_policy::{HOST_POLICY, OsPathPolicy};
+use blaze_shell::util::os::OS;
+use blaze_vfs::os_path_policy::{OsPathPolicy, UnixOsPathPolicy};
 use blaze_vfs::{Path, PathFragment, Symlinks};
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::{Condvar, Mutex};
@@ -103,6 +104,45 @@ pub(crate) fn unicode_to_internal(s: &str) -> String {
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:175 RemoteExecutionService.PROTO_STRING_COMPARATOR
 fn proto_string_comparator(a: &str, b: &str) -> Ordering {
     a.as_bytes().cmp(b.as_bytes())
+}
+
+/// Standard mapping between OS and the corresponding platform constraints, in Java's order.
+// Java: com/google/devtools/build/lib/analysis/constraints/ConstraintConstants.java:39 ConstraintConstants.CONSTRAINT_VALUE_TO_OS
+const CONSTRAINT_VALUE_TO_OS: [(&str, OS); 7] = [
+    ("@platforms//os:linux", OS::Linux),
+    ("@platforms//os:osx", OS::Darwin),
+    ("@platforms//os:macos", OS::Darwin),
+    ("@platforms//os:windows", OS::Windows),
+    ("@platforms//os:freebsd", OS::Freebsd),
+    ("@platforms//os:openbsd", OS::Openbsd),
+    ("@platforms//os:none", OS::Unknown),
+];
+
+/// Returns the OS corresponding to the given platform's constraint collection based on the
+/// contained platform constraint, falling back to the host platform if none is found.
+///
+/// PORT: `blaze_analysis::platform::get_os_from_constraints_or_host` ports the same method over
+/// the analysis `PlatformInfo`; this crate sees the execution layer's `PlatformInfo`, which
+/// carries the platform's `@platforms//os:os` value as `os_constraint`. Java compares
+/// `ConstraintValueInfo`s, whose equality is that of their labels (the setting is the same).
+// Java: com/google/devtools/build/lib/analysis/constraints/ConstraintConstants.java:82 ConstraintConstants.getOsFromConstraintsOrHost
+fn get_os_from_constraints_or_host(platform_info: &PlatformInfo) -> OS {
+    let Some(os_constraint_value) = &platform_info.os_constraint else {
+        // The platform doesn't specify any OS constraint, which makes it difficult to say how the
+        // parts of Bazel that are OS-specific should behave. Purely for backwards compatibility
+        // and to avoid unexpected breakages, we fall back to the host OS in this case.
+        return OS::get_current();
+    };
+    // If the constraint value isn't known to Bazel, it is certainly distinct from all the values
+    // Bazel specifically cares about (e.g. for Windows- or macOS-specific behavior). This is best
+    // modeled by returning UNKNOWN, which is distinct from all the specific OS values in the
+    // enum.
+    CONSTRAINT_VALUE_TO_OS
+        .iter()
+        .find(|(label, _)| {
+            blaze_cmdline::Label::parse_canonical_unchecked(label) == *os_constraint_value
+        })
+        .map_or(OS::Unknown, |(_, os)| *os)
 }
 
 /// A counting semaphore that hands its permits out in the order of the requests
@@ -1129,15 +1169,24 @@ impl RemoteExecutionService {
             if let Some(spawn_scrubber) = spawn_scrubber {
                 arg = spawn_scrubber.transform_argument(&arg);
             }
-            if first && execution_platform.is_some() {
+            if let Some(execution_platform) = execution_platform
+                && first
+            {
                 first = false;
-                // PORT: skipped, Windows only. Java:
-                //   OS executionOs = getOsFromConstraintsOrHost(executionPlatform);
-                //   arg = OsPathPolicy.of(executionOs).postProcessPathStringForExecution(arg);
-                // `OsPathPolicy.of` is the Unix policy for every OS but Windows. blaze_exec's
-                // `PlatformInfo` has no constraints to read the OS from, and blaze_vfs has no
-                // Windows policy, so the Unix policy (the identity) is applied.
-                arg = HOST_POLICY.post_process_path_string_for_execution(&arg);
+                let execution_os = get_os_from_constraints_or_host(execution_platform);
+                // Java: com/google/devtools/build/lib/vfs/OsPathPolicy.java:66 OsPathPolicy.of
+                // (`os == OS.WINDOWS ? WindowsOsPathPolicy.INSTANCE : UnixOsPathPolicy.INSTANCE`).
+                if execution_os == OS::Windows {
+                    // blaze_vfs has no WindowsOsPathPolicy (it turns '/' into '\'; the oracle
+                    // sends `tools\run.sh` for `tools/run.sh`, scripts/remote/platform-probe
+                    // case os-windows).
+                    blaze_util::unported!(format!(
+                        "WindowsOsPathPolicy.postProcessPathStringForExecution (Windows execution \
+                         platform {})",
+                        execution_platform.label
+                    ));
+                }
+                arg = UnixOsPathPolicy.post_process_path_string_for_execution(&arg);
             }
             command.arguments.push(internal_to_unicode(&arg));
         }

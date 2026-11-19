@@ -644,7 +644,9 @@ impl ReferenceCountedChannel {
         let deadline = self.deadline_for(&method, &options);
         let call = async {
             let mut grpc = self.grpc();
-            grpc.ready().await.map_err(not_ready)?;
+            grpc.ready()
+                .await
+                .map_err(|e| not_ready(e, &self.inner.authority))?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
             grpc.unary(
                 Self::request(request, headers, deadline),
@@ -653,7 +655,9 @@ impl ReferenceCountedChannel {
             )
             .await
         };
-        let result = with_deadline(deadline, call).await;
+        let result = with_deadline(deadline, call)
+            .await
+            .map_err(|status| transport_status(status, &self.inner.authority));
         match result {
             Ok(response) => {
                 let message = response.into_inner();
@@ -687,7 +691,9 @@ impl ReferenceCountedChannel {
         let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
         let call = async {
             let mut grpc = self.grpc();
-            grpc.ready().await.map_err(not_ready)?;
+            grpc.ready()
+                .await
+                .map_err(|e| not_ready(e, &self.inner.authority))?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
             grpc.server_streaming(
                 Self::request(request, headers, deadline),
@@ -702,8 +708,12 @@ impl ReferenceCountedChannel {
             None
         };
         let started = with_idle_timeout(idle_timeout, &method, with_deadline_at(deadline_at, call));
-        match started.await {
+        match started
+            .await
+            .map_err(|status| transport_status(status, &self.inner.authority))
+        {
             Ok(response) => Ok(ResponseStream {
+                authority: self.inner.authority.clone(),
                 inner: response.into_inner(),
                 listeners,
                 deadline: deadline_at,
@@ -740,7 +750,9 @@ impl ReferenceCountedChannel {
         };
         let call = async {
             let mut grpc = self.grpc();
-            grpc.ready().await.map_err(not_ready)?;
+            grpc.ready()
+                .await
+                .map_err(|e| not_ready(e, &self.inner.authority))?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
             grpc.client_streaming(
                 Self::request(observed, headers, deadline),
@@ -749,7 +761,9 @@ impl ReferenceCountedChannel {
             )
             .await
         };
-        let result = with_deadline(deadline, call).await;
+        let result = with_deadline(deadline, call)
+            .await
+            .map_err(|status| transport_status(status, &self.inner.authority));
         let mut listeners = listeners.lock();
         match result {
             Ok(response) => {
@@ -870,28 +884,228 @@ fn effective_deadline(options: &CallOptions) -> Option<Duration> {
     options.deadline.filter(|d| !d.is_zero())
 }
 
-fn not_ready(e: tonic::transport::Error) -> tonic::Status {
-    // Java reports a connection that cannot be established as UNAVAILABLE, with the transport's
-    // `IOException` as the cause of the status.
-    let mut message = e.to_string();
-    let mut io_cause: Option<io::Error> = None;
-    let mut source = std::error::Error::source(&e);
-    while let Some(s) = source {
-        message.push_str(": ");
-        message.push_str(&s.to_string());
-        if io_cause.is_none()
-            && let Some(io) = s.downcast_ref::<io::Error>()
-        {
-            io_cause = Some(io::Error::new(io.kind(), io.to_string()));
-        }
-        source = s.source();
-    }
-    let mut status = tonic::Status::unavailable(message);
-    if let Some(io_cause) = io_cause {
-        status.set_source(Arc::new(TransportIoException(Arc::new(io_cause))));
-    }
-    status
+/// The status of a call whose connection could not be made ready (`grpc.ready()` failed).
+fn not_ready(e: tonic::transport::Error, authority: &str) -> tonic::Status {
+    let mut status = tonic::Status::unavailable(e.to_string());
+    status.set_source(Arc::new(e));
+    transport_status(status, authority)
 }
+
+/// What a transport error of the port stands for among the exceptions grpc-java's transport
+/// turns into a status.
+enum TransportThrowable {
+    /// `DnsNameResolver`: `UnknownHostException` while resolving the target's host.
+    UnresolvedHost,
+    /// A connection that could not be established: Netty's `AnnotatedConnectException` (an
+    /// `IOException`), with its message.
+    Connect(io::Error),
+    /// Any other `IOException` of the transport (a socket error on an established connection).
+    Io(io::Error),
+    /// A protocol violation this side detected (Netty's `Http2Exception`).
+    Http2,
+}
+
+/// Classifies the error that made tonic fail a call (the source chain of a `tonic::Status`
+/// that tonic built from a transport error), or `None` when it is not a transport error the
+/// port maps (a status the server sent has no source; an HTTP/2 reset or GOAWAY the server sent,
+/// a TLS handshake failure and Blaze's own statuses keep their text).
+///
+/// PORT: the transport crates (hyper, h2) are not dependencies of this crate, so their error
+/// types are recognised by their `Display` texts, which are fixed in the pinned versions:
+/// hyper-util's `ConnectError` displays its kind ("dns error", "tcp connect error") and carries
+/// the address in its `Debug` text, hyper's HTTP/2 error displays "http2 error", h2 displays a
+/// protocol error this side detected as "connection error detected: ..." / "stream error
+/// detected: ..." / "protocol error: ...", and an I/O error inside h2 as the `io::Error` itself
+/// (`Debug`: `Error { kind: Io(..) }`).
+fn classify_transport_error(status: &tonic::Status, host: &str) -> Option<TransportThrowable> {
+    let mut source = std::error::Error::source(status);
+    while let Some(e) = source {
+        if e.downcast_ref::<crate::common::errors::CallNotStarted>()
+            .is_some()
+            || e.downcast_ref::<TransportIoException>().is_some()
+            || e.downcast_ref::<TransportException>().is_some()
+        {
+            return None;
+        }
+        if e.downcast_ref::<tonic::ConnectError>().is_some() {
+            // The connector's error: hyper-util's `ConnectError` for the TCP connection (with
+            // the OS error as its source), or the `io::Error` of the TLS handshake.
+            let connector_error = e.source()?;
+            if connector_error.downcast_ref::<io::Error>().is_some() {
+                // A TLS handshake failure: the `SSLException` Netty reports is not reproduced.
+                return None;
+            }
+            if connector_error.to_string() == "dns error" {
+                return Some(TransportThrowable::UnresolvedHost);
+            }
+            if connector_error.to_string() != "tcp connect error" {
+                return None;
+            }
+            let os_error = connector_error
+                .source()
+                .and_then(|c| c.downcast_ref::<io::Error>())?;
+            let address = connect_error_address(&format!("{connector_error:?}"));
+            return Some(TransportThrowable::Connect(annotated_connect_exception(
+                os_error, host, address,
+            )));
+        }
+        if e.to_string() == "http2 error"
+            && let Some(h2_error) = e.source()
+        {
+            let debug = format!("{h2_error:?}");
+            if debug.starts_with("Error { kind: Io(") {
+                return Some(TransportThrowable::Io(io::Error::other(
+                    h2_error.to_string(),
+                )));
+            }
+            let text = h2_error.to_string();
+            if text.starts_with("connection error detected: ")
+                || text.starts_with("stream error detected: ")
+                || text.starts_with("protocol error: ")
+            {
+                return Some(TransportThrowable::Http2);
+            }
+            return None;
+        }
+        if let Some(io_error) = e.downcast_ref::<io::Error>() {
+            return Some(TransportThrowable::Io(io::Error::new(
+                io_error.kind(),
+                io_error.to_string(),
+            )));
+        }
+        source = e.source();
+    }
+    None
+}
+
+/// The address field of hyper-util's `ConnectError` `Debug` text
+/// (`ConnectError("tcp connect error", 127.0.0.1:9499, Os { .. })`).
+fn connect_error_address(debug: &str) -> Option<std::net::SocketAddr> {
+    let rest = debug.strip_prefix("ConnectError(\"tcp connect error\", ")?;
+    rest.split(", ").next()?.parse().ok()
+}
+
+/// The `TransportThrowable::Connect` exception: Netty's `AnnotatedConnectException`, whose
+/// message is `finishConnect(..) failed: <strerror>: <remote address>`, the remote address being
+/// `InetSocketAddress.toString()`, `<host name>/<literal>:<port>` (the host name is empty for a
+/// target given as an IP literal; an IPv6 literal is written in brackets, in Java's
+/// uncompressed form).
+///
+/// PORT: Netty names the address it tried last, hyper-util the first one that failed; with more
+/// than one address (`localhost`) the two may differ, as Bazel's own choice varies between runs.
+/// Netty's `connect(..)` (a connect that fails at once) and connect timeouts are not told apart.
+// Java: io/netty/channel/unix/Errors.java Errors.newConnectException0
+// Java: io/netty/channel/epoll/AbstractEpollChannel.java AbstractEpollUnsafe.finishConnect
+fn annotated_connect_exception(
+    os_error: &io::Error,
+    host: &str,
+    address: Option<std::net::SocketAddr>,
+) -> io::Error {
+    let strerror = match os_error.raw_os_error() {
+        Some(code) => {
+            let text = io::Error::from_raw_os_error(code).to_string();
+            match text.rfind(" (os error ") {
+                Some(i) => text[..i].to_string(),
+                None => text,
+            }
+        }
+        None => os_error.to_string(),
+    };
+    let message = match address {
+        Some(address) => format!(
+            "finishConnect(..) failed: {strerror}: {}",
+            java_inet_socket_address(host, &address)
+        ),
+        None => format!("finishConnect(..) failed: {strerror}"),
+    };
+    io::Error::new(os_error.kind(), message)
+}
+
+/// `InetSocketAddress.toString()` of `address` resolved from `host`.
+fn java_inet_socket_address(host: &str, address: &std::net::SocketAddr) -> String {
+    // A target given as an IP literal has no host name.
+    let unbracketed = host.trim_start_matches('[').trim_end_matches(']');
+    let host_name = if unbracketed.parse::<std::net::IpAddr>().is_ok() {
+        ""
+    } else {
+        host
+    };
+    let literal = match address.ip() {
+        std::net::IpAddr::V4(v4) => v4.to_string(),
+        std::net::IpAddr::V6(v6) => {
+            // Inet6Address.getHostAddress: eight hexadecimal groups, no compression.
+            let groups: Vec<String> = v6.segments().iter().map(|g| format!("{g:x}")).collect();
+            format!("[{}]", groups.join(":"))
+        }
+    };
+    format!("{host_name}/{literal}:{}", address.port())
+}
+
+/// The host of an authority (`host:port`, `[v6]:port` or `host`).
+fn authority_host(authority: &str) -> &str {
+    if authority.starts_with('[') {
+        return match authority.find(']') {
+            Some(i) => &authority[..=i],
+            None => authority,
+        };
+    }
+    match authority.rfind(':') {
+        Some(i) => &authority[..i],
+        None => authority,
+    }
+}
+
+/// The status grpc-java's transport reports for the transport error that made tonic fail a call
+/// (`status`), with the cause `Status.getCause()` would return; any other status is returned
+/// unchanged.
+///
+/// * a connection that cannot be established, or an I/O error: UNAVAILABLE "io exception"
+///   with the `IOException` as its cause ([`transport_io_cause`]);
+/// * a protocol error (Netty's `Http2Exception`): INTERNAL "http2 exception";
+/// * a host that does not resolve: grpc's `DnsNameResolver` fails the call with UNAVAILABLE
+///   "Unable to resolve host <host>" (the oracle shows no `IOException` cause for it).
+///
+/// `authority` is the channel's authority; its host stands for the target's host (PORT: with
+/// `--tls_authority_override` Java prints the target's host instead).
+// Java: io/grpc/netty/Utils.java:327 Utils.statusFromThrowable
+// Java: io/grpc/internal/DnsNameResolver.java:285 DnsNameResolver.doResolve
+fn transport_status(status: tonic::Status, authority: &str) -> tonic::Status {
+    let host = authority_host(authority);
+    let Some(throwable) = classify_transport_error(&status, host) else {
+        return status;
+    };
+    match throwable {
+        TransportThrowable::UnresolvedHost => {
+            let mut mapped = tonic::Status::unavailable(format!("Unable to resolve host {host}"));
+            mapped.set_source(Arc::new(TransportException(status.to_string())));
+            mapped
+        }
+        TransportThrowable::Connect(cause) | TransportThrowable::Io(cause) => {
+            let mut mapped = tonic::Status::unavailable("io exception");
+            mapped.set_source(Arc::new(TransportIoException(Arc::new(cause))));
+            mapped
+        }
+        TransportThrowable::Http2 => {
+            let mut mapped = tonic::Status::internal("http2 exception");
+            mapped.set_source(Arc::new(TransportException(status.to_string())));
+            mapped
+        }
+    }
+}
+
+/// The cause of a mapped transport status that is not an `IOException` (an `Http2Exception`,
+/// the resolver's failure): keeps the original text for debugging, invisible to
+/// [`transport_io_cause`].
+#[derive(Debug, Clone)]
+struct TransportException(String);
+
+impl std::fmt::Display for TransportException {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TransportException {}
 
 /// The `IOException` of the transport that caused a status (`status.getCause()` when it is an
 /// `IOException`, as Netty's connection failures are).
@@ -1082,6 +1296,8 @@ impl Drop for Listeners {
 /// The responses of a server-streaming call (`StreamObserver.onNext/onError/onCompleted` as a
 /// pull stream).
 pub struct ResponseStream<Resp> {
+    /// The channel's authority (see [`transport_status`]).
+    authority: String,
     inner: tonic::Streaming<Resp>,
     listeners: Listeners,
     deadline: Option<tokio::time::Instant>,
@@ -1108,7 +1324,8 @@ impl<Resp: Send + Sync + 'static> ResponseStream<Resp> {
                 },
             }
         })
-        .await;
+        .await
+        .map_err(|status| transport_status(status, &self.authority));
         match next {
             Ok(Some(message)) => {
                 self.listeners.on_response(&message);
@@ -1155,5 +1372,145 @@ pub mod testing {
             usize::MAX,
             capabilities_fetcher,
         )
+    }
+}
+
+/// Not from a Java test: the transport texts of review 2026-11-19 R3 (round 2), expected values
+/// from the oracle (`scripts/remote/caps-matrix`, runs `ry-caps-tco-*`) and from grpc-netty's
+/// `Utils.statusFromThrowable`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reapi::{GetCapabilitiesRequest, ServerCapabilities};
+
+    fn get_capabilities_status(target_authority: &str, endpoint: &str) -> tonic::Status {
+        let endpoint =
+            tonic::transport::Endpoint::from_shared(endpoint.to_string()).expect("endpoint");
+        let lazy = {
+            let _guard = crate::runtime::runtime().enter();
+            endpoint.connect_lazy()
+        };
+        let channel = ReferenceCountedChannel::new(
+            lazy,
+            target_authority,
+            false,
+            Vec::new(),
+            usize::MAX,
+            None,
+        );
+        crate::runtime::block_on(channel.unary::<GetCapabilitiesRequest, ServerCapabilities>(
+            methods::GET_CAPABILITIES,
+            GetCapabilitiesRequest::default(),
+            CallOptions::new(),
+        ))
+        .unwrap_err()
+    }
+
+    fn closed_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    #[test]
+    fn inet_socket_address_to_string() {
+        let v4: std::net::SocketAddr = "127.0.0.1:9499".parse().unwrap();
+        let v6: std::net::SocketAddr = "[::1]:9499".parse().unwrap();
+        assert_eq!(
+            java_inet_socket_address("localhost", &v4),
+            "localhost/127.0.0.1:9499"
+        );
+        assert_eq!(
+            java_inet_socket_address("localhost", &v6),
+            "localhost/[0:0:0:0:0:0:0:1]:9499"
+        );
+        assert_eq!(
+            java_inet_socket_address("127.0.0.1", &v4),
+            "/127.0.0.1:9499"
+        );
+        assert_eq!(
+            java_inet_socket_address("[::1]", &v6),
+            "/[0:0:0:0:0:0:0:1]:9499"
+        );
+    }
+
+    #[test]
+    fn authority_host_strips_the_port() {
+        assert_eq!(authority_host("localhost:9499"), "localhost");
+        assert_eq!(authority_host("[::1]:9499"), "[::1]");
+        assert_eq!(authority_host("example.com"), "example.com");
+    }
+
+    #[test]
+    fn connect_error_address_from_debug_text() {
+        assert_eq!(
+            connect_error_address(
+                "ConnectError(\"tcp connect error\", [::1]:9499, Os { code: 111, kind: ConnectionRefused, message: \"Connection refused\" })"
+            ),
+            Some("[::1]:9499".parse().unwrap())
+        );
+        assert_eq!(
+            connect_error_address("ConnectError(\"dns error\", Custom { .. })"),
+            None
+        );
+    }
+
+    /// Oracle: "Failed to query remote execution capabilities: finishConnect(..) failed:
+    /// Connection refused: /127.0.0.1:9499" (row unreach-cache-ip); the call's status is
+    /// UNAVAILABLE "io exception" (the later "Remote Cache: UNAVAILABLE: io exception" warning,
+    /// row closed-cache).
+    #[test]
+    fn connection_refused_is_unavailable_io_exception() {
+        let port = closed_port();
+        let status = get_capabilities_status(
+            &format!("127.0.0.1:{port}"),
+            &format!("http://127.0.0.1:{port}"),
+        );
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(status.message(), "io exception");
+        assert_eq!(
+            transport_io_cause(&status).unwrap().to_string(),
+            format!("finishConnect(..) failed: Connection refused: /127.0.0.1:{port}")
+        );
+    }
+
+    /// Oracle: "Failed to query remote execution capabilities: INTERNAL: http2 exception" for a
+    /// gRPC call to an HTTP/1 server (row http-cache); the cause is not an `IOException`.
+    #[test]
+    fn http1_server_is_internal_http2_exception() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf);
+            let _ = socket.write_all(
+                b"HTTP/1.0 400 Bad request version\r\nContent-Type: text/html\r\n\r\n<html></html>\n",
+            );
+        });
+        let status = get_capabilities_status(
+            &format!("localhost:{port}"),
+            &format!("http://127.0.0.1:{port}"),
+        );
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert_eq!(status.message(), "http2 exception");
+        assert!(transport_io_cause(&status).is_none());
+        server.join().unwrap();
+    }
+
+    /// Oracle: "Failed to query remote execution capabilities: UNAVAILABLE: Unable to resolve
+    /// host blaze-unresolvable.invalid" (rows unresolved-cache, unresolved-exec).
+    #[test]
+    fn unresolvable_host_is_unavailable_unable_to_resolve_host() {
+        let status = get_capabilities_status(
+            "blaze-unresolvable.invalid:9621",
+            "http://blaze-unresolvable.invalid:9621",
+        );
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(
+            status.message(),
+            "Unable to resolve host blaze-unresolvable.invalid"
+        );
+        assert!(transport_io_cause(&status).is_none());
     }
 }

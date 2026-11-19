@@ -2195,6 +2195,7 @@ mod timestamp_builder_tests {
                     on_lost_inputs: Arc::new(move |digests: &[String]| {
                         seen_in_handler.lock().extend(digests.iter().cloned())
                     }),
+                    purge_before_unported_rewinding: None,
                 }),
                 loading: false,
             };

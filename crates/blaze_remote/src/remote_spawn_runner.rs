@@ -507,10 +507,14 @@ impl RemoteSpawnRunner {
                                 // locally can only be regenerated reliably by action rewinding or an
                                 // invocation retry. Unwrap the LostInputsExecException, which is not
                                 // classified as retryable.
-                                bulk.get_lost_artifacts(&|exec_path| {
-                                    context.get_input_metadata_provider().get_input(exec_path)
-                                })
-                                .throw_if_not_empty();
+                                if let Err(lost_inputs) = bulk
+                                    .get_lost_artifacts(&|exec_path| {
+                                        context.get_input_metadata_provider().get_input(exec_path)
+                                    })
+                                    .throw_if_not_empty()
+                                {
+                                    return Err(to_retrier_error(lost_inputs.into()));
+                                }
                             }
                             return Err(e);
                         }
@@ -855,7 +859,7 @@ impl RemoteSpawnRunner {
             e.get_lost_artifacts(&|exec_path| {
                 context.get_input_metadata_provider().get_input(exec_path)
             })
-            .throw_if_not_empty();
+            .throw_if_not_empty()?;
         }
         if self.remote_options.remote_local_fallback
             && !remote_retrier_utils::caused_by_exec_timeout(&cause)

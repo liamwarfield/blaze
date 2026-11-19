@@ -21,6 +21,7 @@ use blaze_exec::actions::{
 use blaze_exec::exec::bin_tools::BinTools;
 use blaze_exec::exec::local::local_env_provider::{self, LocalEnvProvider};
 use blaze_exec::exec::local::local_spawn_runner::{LocalSpawnRunner, get_cached_short_host_name};
+use blaze_exec::exec::runfiles_tree_updater::RunfilesTreeUpdater;
 use blaze_exec::exec::spawn_runner::{ProgressStatus, SpawnExecutionContext, SpawnRunner};
 use blaze_exec::runtime::ProcessWrapper;
 use blaze_exec::util::FileOutErr;
@@ -431,6 +432,7 @@ fn tested_local_spawn_runner(
     let tmp_dir_path: Arc<Mutex<Option<Path>>> = Arc::new(Mutex::new(None));
     let tmp_dir_path2 = tmp_dir_path.clone();
     let bin_tools = Arc::new(BinTools::for_unit_testing(&exec_root, vec![]));
+    let exec_root_for_updater = exec_root.clone();
     let runner = LocalSpawnRunner::new(
         exec_root,
         Arc::new(options),
@@ -438,6 +440,7 @@ fn tested_local_spawn_runner(
         local_env_provider,
         bin_tools,
         process_wrapper,
+        Arc::new(RunfilesTreeUpdater::new(exec_root_for_updater)),
     )
     .with_action_temp_creator(Arc::new(move |exec_root: &Path| {
         let temp_dir_path = loop {
@@ -846,6 +849,7 @@ fn interrupt_waits_for_process_exit() {
         Arc::new(local_env_provider::for_current_os(&IndexMap::new())),
         Arc::new(BinTools::for_unit_testing(&temp_dir, vec![])),
         /* process_wrapper= */ None,
+        Arc::new(RunfilesTreeUpdater::new(temp_dir.clone())),
     ));
     let file_out_err = FileOutErr::new(
         temp_dir.get_relative_str("stdout"),

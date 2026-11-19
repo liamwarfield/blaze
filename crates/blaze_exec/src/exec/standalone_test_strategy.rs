@@ -4,8 +4,9 @@
 //! PORT: `ActionExecutionContext.withFileOutErr` / `withOutputsAsInputs` return a new context in
 //! Java; here [`DerivedActionExecutionContext`] wraps the action's context and replaces the
 //! `FileOutErr` and/or adds outputs to the input metadata. `SpawnStrategyResolver` is stateless,
-//! so it is constructed instead of looked up with `getContext(SpawnStrategyResolver.class)`. The
-//! `ArtifactPathResolver` is always `IDENTITY` (no action file system).
+//! so it is constructed instead of looked up with `getContext(SpawnStrategyResolver.class)`.
+//! `getPathResolver().convertPath(path)` is `ActionExecutionContext::convert_path` (the path on
+//! the action file system when there is one).
 
 use std::any::Any;
 use std::collections::{BTreeMap, HashSet};
@@ -474,8 +475,11 @@ impl StandaloneTestStrategy {
         action: &TestRunnerAction,
         result: &StandaloneTestResult,
     ) -> io::Result<StandaloneProcessedAttemptResult> {
-        let mut test_outputs =
-            action.get_test_outputs_mapping(Some(action_execution_context.get_exec_root()))?;
+        let action_file_system = action_execution_context.get_action_file_system();
+        let mut test_outputs = action.get_test_outputs_mapping(
+            action_file_system.as_ref(),
+            Some(action_execution_context.get_exec_root()),
+        )?;
         if !is_last_attempt {
             test_outputs =
                 rename_outputs(action_execution_context, action, test_outputs, attempt_id)?;
@@ -634,7 +638,12 @@ impl StandaloneTestStrategy {
         let end_time_millis = action_execution_context.get_clock().current_time_millis();
 
         // Check TEST_PREMATURE_EXIT_FILE file (and always delete it)
-        if resolved_paths.get_exit_safe_file().delete()? && test_result_data_builder.test_passed() {
+        // Java: com/google/devtools/build/lib/exec/StandaloneTestStrategy.java:687 StandaloneTestStrategy.runTestAttempt
+        if action_execution_context
+            .convert_path(&resolved_paths.get_exit_safe_file())
+            .delete()?
+            && test_result_data_builder.test_passed()
+        {
             test_result_data_builder.cachable = Some(false);
             test_result_data_builder.test_passed = Some(false);
             test_result_data_builder.set_status(BlazeTestStatus::Failed);
@@ -648,7 +657,10 @@ impl StandaloneTestStrategy {
         if test_result_data_builder.test_passed()
             && test_action.is_sharded()
             && test_action.check_sharding_support()
-            && !resolved_paths.get_test_shard().unwrap().exists()
+            // Java: com/google/devtools/build/lib/exec/StandaloneTestStrategy.java:706 StandaloneTestStrategy.runTestAttempt
+            && !action_execution_context
+                .convert_path(&resolved_paths.get_test_shard().unwrap())
+                .exists()
         {
             return Err(create_test_exec_exception(
                 failure_details::test_action::Code::LocalTestPrereqUnmet,
@@ -733,18 +745,12 @@ impl StandaloneTestStrategy {
         // test.xml from test.log. We do this as a spawn rather than doing it locally in-process,
         // as the test.log file may only exist remotely (when remote execution is enabled), and we
         // do not want to have to download it.
-        // PORT: Java resolves `resolvedPaths` (and the test's FileOutErr) against
+        // `resolvedPaths` and the test's FileOutErr are resolved against
         // `actionExecutionContext.getExecRoot()`, which is on the action file system when there
         // is one: the existence checks see a `test.xml` (or `test.log`) that a cached or remote
-        // test produced but that was not downloaded. Blaze's paths are on the local file system,
-        // so both checks convert them (`getPathResolver().convertPath`).
-        if action_execution_context
-            .convert_path(file_out_err.get_output_path())
-            .exists()
-            && !action_execution_context
-                .convert_path(&xml_output_path)
-                .exists()
-        {
+        // test produced but that was not downloaded.
+        // Java: com/google/devtools/build/lib/exec/StandaloneTestStrategy.java:857 StandaloneTestStrategy.runTestAttempt
+        if file_out_err.get_output_path().exists() && !xml_output_path.exists() {
             let xml_generating_spawn = create_xml_generating_spawn(
                 test_action,
                 spawn.get_environment(),
@@ -1061,16 +1067,20 @@ fn create_environment(
     tmp_dir_root: &Path,
 ) -> IndexMap<String, String> {
     let exec_root = action_execution_context.get_exec_root();
-    let runfiles_dir = action
-        .get_execution_settings()
-        .get_runfiles_dir()
-        .expect("NullPointerException: getRunfilesDir()");
-    let tmp_dir = tmp_dir_root.get_child(&TestStrategy::get_tmp_dir_name(action));
+    // ArtifactPathResolver pathResolver = actionExecutionContext.getPathResolver()
+    let runfiles_dir = action_execution_context.convert_path(
+        action
+            .get_execution_settings()
+            .get_runfiles_dir()
+            .expect("NullPointerException: getRunfilesDir()"),
+    );
+    let tmp_dir = action_execution_context
+        .convert_path(&tmp_dir_root.get_child(&TestStrategy::get_tmp_dir_name(action)));
     setup_environment(
         action,
         action_execution_context.get_client_env(),
         exec_root,
-        runfiles_dir,
+        &runfiles_dir,
         &tmp_dir,
     )
 }
@@ -1148,9 +1158,12 @@ impl TestActionContext for StandaloneTestStrategy {
             PathMapper::NOOP,
         );
         let exec_root = action_execution_context.get_exec_root().clone();
-        let tmp_dir = self
-            .tmp_dir_root
-            .get_child(&TestStrategy::get_tmp_dir_name(action));
+        // ArtifactPathResolver pathResolver = actionExecutionContext.getPathResolver()
+        let tmp_dir = action_execution_context.convert_path(
+            &self
+                .tmp_dir_root
+                .get_child(&TestStrategy::get_tmp_dir_name(action)),
+        );
         Ok(Box::new(StandaloneTestRunnerSpawn {
             strategy: self,
             test_action: action,

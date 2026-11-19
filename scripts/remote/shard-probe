@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# A cached sharded test under build without the bytes (review round 2, N2): oracle vs Blaze.
+#
+# usage: scripts/remote/shard-probe <oracle|BLAZE-BINARY> <label>
+#        scripts/remote/shard-probe help
+#
+# Workspace: ~/.cache/blaze/work/remote/shard-probe/src (written by this script when missing),
+# two Starlark test rules with shard_count = 2 whose script touches $TEST_SHARD_STATUS_FILE:
+#   //:t   only that
+#   //:u   also writes its own $XML_OUTPUT_FILE and a file in $TEST_UNDECLARED_OUTPUTS_DIR
+#          (zipped by default into test.outputs/outputs.zip)
+#
+# Seeds a disk cache with the oracle once (<W>/sp-dc-seed, `test //:t //:u`), copies it to
+# <W>/sp-<label>-dc, then runs (each in a fresh output base, run names sp-<label>-<case>):
+#   minimal   test //:t //:u --remote_download_outputs=minimal
+#   minimal2  test //:t //:u --remote_download_minimal
+# both with --disk_cache=<copy> --build_event_json_file=<step>/bep.json, and prints for each the
+# test summary lines, the `N processes:` line, the exit code, the bazel-testlogs listing of
+# t and u (files and symlinks) and the BEP TestResult events (id, status, cachedLocally and
+# the names of testActionOutput, with the URIs' output base shown as <execroot>; sorted), saved as
+# <W>/sp-<label>-<case>/summary.txt for comparing two labels. <W> is ~/.cache/blaze/work/remote.
+set -euo pipefail
+if [[ $# -lt 2 || $1 == help ]]; then sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+here=$(cd "$(dirname "$0")" && pwd)
+W=~/.cache/blaze/work/remote
+src=$W/shard-probe/src
+bin=$1; label=$2; shift 2
+if [[ ! -f $src/BUILD.bazel ]]; then
+  mkdir -p "$src"
+  echo 'module(name = "shard_probe")' > "$src/MODULE.bazel"
+  cat > "$src/defs.bzl" <<'EOF'
+def _impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    body = "#!/bin/sh\ntouch \"$TEST_SHARD_STATUS_FILE\"\necho \"shard $TEST_SHARD_INDEX of $TEST_TOTAL_SHARDS\"\n"
+    if ctx.attr.own_outputs:
+        body += "echo '<?xml version=\"1.0\" encoding=\"UTF-8\"?><testsuites><testsuite name=\"own\" tests=\"1\" failures=\"0\" errors=\"0\"><testcase name=\"own_case\" status=\"run\"/></testsuite></testsuites>' > \"$XML_OUTPUT_FILE\"\n"
+        body += "echo \"undeclared $TEST_SHARD_INDEX\" > \"$TEST_UNDECLARED_OUTPUTS_DIR/u$TEST_SHARD_INDEX.txt\"\n"
+    ctx.actions.write(out, body, is_executable = True)
+    return [DefaultInfo(executable = out)]
+
+sharded_test = rule(implementation = _impl, test = True, attrs = {"own_outputs": attr.bool()})
+EOF
+  cat > "$src/BUILD.bazel" <<'EOF'
+load(":defs.bzl", "sharded_test")
+
+sharded_test(name = "t", shard_count = 2)
+
+sharded_test(name = "u", own_outputs = True, shard_count = 2)
+EOF
+fi
+if [[ ! -d $W/sp-dc-seed ]]; then
+  "$here/ws-run" sp-seed "$src" oracle --fresh -- test "--disk_cache=$W/sp-dc-seed" //:t //:u
+fi
+rm -rf "$W/sp-$label-dc"; cp -a "$W/sp-dc-seed" "$W/sp-$label-dc"
+summarize() {
+  local run=$1 s=$2
+  {
+    echo "summary lines:"
+    grep -E '^//:|PASSED|FAILED|NO STATUS|Executed|INFO: [0-9]+ process|^ERROR' "$s/stderr" "$s/stdout" 2>/dev/null \
+      | sed 's/^[^:]*:\(\/\/\)/\1/; s#^/[^:]*/s\(td\(out\|err\)\):##' | sed 's/ in [0-9.]*s/ in <t>s/; s/(Total: .*s)/<times>/' || true
+    echo "exit code: $(cat "$s/exit" 2>/dev/null || echo '?')"
+    echo "bazel-testlogs:"
+    for t in t u; do
+      (cd "$W/$run/ws/bazel-testlogs/$t" 2>/dev/null && find . \( -type f -o -type l \) | sort | sed "s#^\.#  $t#") || echo "  $t: (missing)"
+    done
+    echo "BEP TestResult:"
+    python3 -I - "$s/bep.json" <<'PY' || echo "  (no BEP file)"
+import json, re, sys
+rows = []
+for line in open(sys.argv[1]):
+    ev = json.loads(line)
+    if "testResult" not in ev.get("id", {}):
+        continue
+    i = ev["id"]["testResult"]
+    r = ev.get("testResult", {})
+    outs = []
+    for o in r.get("testActionOutput", []):
+        uri = re.sub(r"^.*/execroot/", "<execroot>/", o.get("uri", "")) if "uri" in o else "(no uri)"
+        outs.append("%s=%s" % (o.get("name"), uri))
+    rows.append("  %s shard=%s run=%s attempt=%s status=%s cachedLocally=%s outputs=[%s]" % (
+        i.get("label"), i.get("shard"), i.get("run"), i.get("attempt"), r.get("status"),
+        r.get("cachedLocally", False), ", ".join(outs)))
+# Sorted: the events of concurrent tests arrive in completion order.
+print("\n".join(sorted(rows)))
+PY
+  } > "$W/$run/summary.txt"
+  sed 's/^/  /' "$W/$run/summary.txt"
+}
+dc="--disk_cache=$W/sp-$label-dc"
+for case in minimal minimal2; do
+  run=sp-$label-$case
+  if [[ $case == minimal ]]; then flag=--remote_download_outputs=minimal; else flag=--remote_download_minimal; fi
+  echo "$run ($flag)"
+  out=$("$here/ws-run" "$run" "$src" "$bin" --fresh -- test "$dc" "$flag" \
+    '--build_event_json_file={step}/bep.json' //:t //:u) || true
+  s=$(echo "$out" | sed -n 's/^step: //p')
+  echo "$out" | sed -n 's/^exit code: //p' > "$s/exit"
+  summarize "$run" "$s"
+done

@@ -150,10 +150,7 @@ pub trait ActionExecutionContext: ActionContextRegistry {
                             let lost = bulk.get_lost_artifacts(&|exec_path| {
                                 input_metadata_provider.get_input(exec_path)
                             });
-                            // .throwIfNotEmpty()
-                            if !lost.is_empty() {
-                                return Err(crate::actions::LostInputsExecException::create(lost));
-                            }
+                            lost.throw_if_not_empty()?;
                             Err(crate::actions::EnvironmentalExecException::with_cause(
                                 &bulk.message,
                                 blaze_protos::failure_details::FailureDetail {
@@ -203,7 +200,17 @@ pub trait ActionExecutionContext: ActionContextRegistry {
     // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:440 ActionExecutionContext.setRichArtifactData
     fn set_rich_artifact_data(&self, _data: Arc<crate::actions::RunfilesArtifactValue>) {}
 
-    /// `checkForLostInputs()`.
+    /// `checkForLostInputs()`: `lostInputsCheck.checkForLostInputs()`, the check the action
+    /// executor gives the context (`SkyframeActionExecutor.lostInputsCheck`: the action file
+    /// system's record of lost inputs, or `LostInputsCheck.NONE` without one, the default).
+    ///
+    /// PORT: Java throws `LostInputsActionExecutionException`; the only caller,
+    /// `SpawnExecutionContextImpl.checkForLostInputs`, converts it with `toExecException()`, so
+    /// the context returns that form (a [`LostInputsExecException`]) directly.
+    ///
+    /// [`LostInputsExecException`]: crate::actions::LostInputsExecException
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:388 ActionExecutionContext.checkForLostInputs
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:623 ActionExecutionContext.LostInputsCheck.NONE
     fn check_for_lost_inputs(&self) -> Result<(), ExecException> {
         Ok(())
     }
@@ -316,14 +323,16 @@ pub trait ActionInputPrefetcher: Send + Sync {
 // Java: com/google/devtools/build/lib/vfs/OutputService.java OutputService.finalizeAction
 // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:170 RemoteOutputService.finalizeAction
 pub trait ActionFinalizer: Send + Sync {
-    /// `finalizeAction(action, outputMetadataStore)`; `outputs` is `action.getOutputs()`. An
-    /// `io::Error` of kind `Interrupted` is an `InterruptedException`.
+    /// `finalizeAction(action, outputMetadataStore) throws IOException, LostInputsExecException,
+    /// InterruptedException`; `outputs` is `action.getOutputs()`. A [`SpawnCacheError::Exec`] is
+    /// the `LostInputsExecException` (outputs the remote cache lost before they were
+    /// downloaded); an `io::Error` of kind `Interrupted` is an `InterruptedException`.
     fn finalize_action(
         &self,
         action: &dyn crate::actions::ActionExecutionMetadata,
         outputs: &[ActionInputRef],
         output_metadata_store: &dyn crate::actions::cache::output_metadata_store::OutputMetadataStore,
-    ) -> io::Result<()>;
+    ) -> Result<(), SpawnCacheError>;
 }
 
 /// The remote output tree of a [`RemoteActionFileSystem`]: the outputs of one action that exist

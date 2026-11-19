@@ -491,23 +491,39 @@ impl TestRunnerAction {
     /// the file system for existence of these output files, so it must only be used after test
     /// execution.
     ///
-    /// PORT: the `ArtifactPathResolver` is always `IDENTITY` (no action file system), so
-    /// `resolver.toPath(artifact)` is `artifact.getPath()`.
+    /// `resolver` is `ArtifactPathResolver.createPathResolver(actionFileSystem, execRoot)`, given
+    /// by its action file system: `resolver.toPath(artifact)` is `artifact.getPath()` without one
+    /// (`IdentityResolver`) and the same path on the action file system with one
+    /// (`TransformResolver`).
     // Java: com/google/devtools/build/lib/analysis/test/TestRunnerAction.java:429 TestRunnerAction.getTestOutputsMapping
-    pub fn get_test_outputs_mapping(&self, exec_root: Option<&Path>) -> io::Result<TestOutputs> {
+    pub fn get_test_outputs_mapping(
+        &self,
+        resolver: Option<&blaze_vfs::FileSystemRef>,
+        exec_root: Option<&Path>,
+    ) -> io::Result<TestOutputs> {
+        // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:75 IdentityResolver.toPath
+        // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:107 TransformResolver.toPath
+        let to_path = |artifact: &Artifact| -> Path {
+            match resolver {
+                Some(file_system) => {
+                    Path::create(artifact.get_path().as_fragment().clone(), file_system)
+                }
+                None => artifact.get_path(),
+            }
+        };
         // TODO(tjgq): The existence checks below will incorrectly return false if the test action
         // was reconstructed from the action cache, as we don't populate the output filesystem on
         // an action cache hit. This is difficult to fix because some of the files below are
         // produced by test spawns, but not declared as action outputs, and only the latter are
         // stored in the action cache.
         let mut builder: TestOutputs = Vec::new();
-        if self.get_test_log().get_path().exists() {
-            builder.push((names::TEST_LOG.to_string(), self.get_test_log().get_path()));
+        if to_path(self.get_test_log()).exists() {
+            builder.push((names::TEST_LOG.to_string(), to_path(self.get_test_log())));
         }
         if let Some(coverage_data) = self.get_coverage_data()
-            && coverage_data.get_path().exists()
+            && to_path(coverage_data).exists()
         {
-            builder.push((names::TEST_COVERAGE.to_string(), coverage_data.get_path()));
+            builder.push((names::TEST_COVERAGE.to_string(), to_path(coverage_data)));
         }
         if let Some(exec_root) = exec_root {
             let resolved_paths = self.resolve(exec_root);
@@ -725,7 +741,12 @@ impl TestRunnerAction {
             return false;
         };
         let posted = self
-            .get_test_outputs_mapping(Some(exec_root))
+            // PORT: Java passes `executor.getPathResolver()`, the resolver of the action's
+            // cache check (`createPathResolver(actionFileSystem, execRoot)`). The action
+            // executor's cache-hit path has no action file system here; at that point it holds no
+            // remote output of this action (nothing was injected into its remote output tree), so
+            // it answers these local existence checks as the local file system does.
+            .get_test_outputs_mapping(None, Some(exec_root))
             .and_then(|test_outputs| {
                 test_action_context.new_cached_test_result(exec_root, self, cached, test_outputs)
             });

@@ -50,6 +50,7 @@ fn empty_platform_info() -> PlatformInfo {
         label: Label::parse_canonical_unchecked("@bazel_tools//tools:internal_platform"),
         exec_properties: IndexMap::new(),
         remote_execution_properties: String::new(),
+        os_constraint: None,
     }
 }
 

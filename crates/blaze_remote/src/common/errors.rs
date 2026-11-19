@@ -128,6 +128,17 @@ impl fmt::Display for CallNotStarted {
 
 impl Error for CallNotStarted {}
 
+/// Whether `status` is the status of a call that never started ([`call_not_started`]).
+///
+/// In Java the future of `withChannelFuture` fails with the `IOException` itself (for a failed
+/// capabilities check, the `RemoteExecutionCapabilitiesException`): no `StreamObserver` callback
+/// of the call runs, and a `catching(.., StatusRuntimeException.class, ..)` does not catch it.
+/// A site that branches on the code of a call's `tonic::Status` where Java branches inside such
+/// a callback or catch tests this first.
+pub fn is_call_not_started(status: &tonic::Status) -> bool {
+    Error::source(status).is_some_and(|s| s.downcast_ref::<CallNotStarted>().is_some())
+}
+
 /// The status of a call that fails with `e` before it starts (see [`CallNotStarted`]). Its code
 /// is `Status.fromThrowable(e).getCode()`, which the callers that look at the code of a failed
 /// call (`Status.fromThrowable(e)` in Java) see.

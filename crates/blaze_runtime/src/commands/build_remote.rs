@@ -55,6 +55,10 @@ pub(crate) struct RemoteSupport {
     /// `RemoteModule.executorInit`'s `LeaseService` (a combined cache without
     /// `--rewind_lost_inputs`).
     lease_service: Option<Arc<blaze_remote::lease_service::LeaseService>>,
+    /// The output base (`<output_base>/action_cache` is the persistent action cache) and the
+    /// command's reporter, for [`purge_persistent_action_cache`].
+    output_base: blaze_vfs::Path,
+    reporter: Arc<dyn ExtendedEventHandler>,
 }
 
 /// Whether any remote functionality is requested: `RemoteModule.setup` returns early (the
@@ -175,6 +179,9 @@ pub(crate) fn before_command(
     let rewind_lost_inputs = build_request_options
         .as_ref()
         .is_some_and(|o| o.rewind_lost_inputs);
+    // The --experimental_remote_cache_lease_extension warning (with --rewind_lost_inputs) or
+    // RemoteLeaseExtension (without).
+    module.executor_init(env.get_reporter().as_ref(), rewind_lost_inputs);
     let lease_service = module
         .get_action_context_provider()
         .and_then(|provider| provider.get_combined_cache())
@@ -187,7 +194,47 @@ pub(crate) fn before_command(
     Ok(Some(RemoteSupport {
         module: Mutex::new(module),
         lease_service,
+        output_base: env.get_output_base().clone(),
+        reporter: env.get_reporter().clone(),
     }))
+}
+
+/// `LeaseService.handleMissingInputs` on the persistent action cache, written to disk at once:
+/// every entry with output files or output trees (remote metadata) is removed.
+///
+/// PORT: no Java counterpart. Java answers lost inputs under `--rewind_lost_inputs` (Bazel's
+/// default) with action rewinding, which is not ported: the executor fails loudly right after
+/// this runs (`SkyframeActionExecutor::handle_lost_inputs`). The build then crashes and nothing
+/// saves the in-memory action cache of this command, so the purge works on the copy on disk
+/// (`<output_base>/action_cache`, loaded as `ExecutionTool` loads it), which is what the next
+/// command loads; without it a rerun would trust the same stale remote metadata again (review
+/// 2026-11-19 N5).
+// Java: com/google/devtools/build/lib/remote/LeaseService.java:79 LeaseService.handleMissingInputs
+fn purge_persistent_action_cache(
+    output_base: &blaze_vfs::Path,
+    reporter: &dyn ExtendedEventHandler,
+) {
+    let cache = match blaze_exec::actions::cache::CompactPersistentActionCache::create(
+        &output_base.get_child("action_cache"),
+        &output_base.get_child("action_cache.bad"),
+        &output_base.get_child("action_cache.tmp"),
+        Arc::new(JavaClock),
+        reporter as &dyn EventHandler,
+    ) {
+        Ok(cache) => cache,
+        // Nothing on disk that could be trusted again.
+        Err(_) => return,
+    };
+    // A LeaseService that saw a LostInputsEvent, finalized on this cache.
+    let lease_service = blaze_remote::lease_service::LeaseService::new(false);
+    lease_service.on_lost_inputs();
+    lease_service.finalize_execution(Some(&cache));
+    // ExecutionTool.saveActionCache's error text.
+    if let Err(e) = blaze_exec::actions::cache::ActionCache::save(&cache) {
+        reporter.handle(&Event::error(format!(
+            "I/O error while writing action log: {e}"
+        )));
+    }
 }
 
 /// `CommandEnvironment.buildRequestId`: `--build_request_id`, else the dispatcher's
@@ -453,6 +500,15 @@ impl RemoteSupport {
                         KNOWN_MISSING_CAS_DIGESTS
                             .lock()
                             .extend(missing_digests.iter().cloned());
+                    }),
+                    // PORT: with --rewind_lost_inputs Java rewinds the action (no LeaseService);
+                    // rewinding is not ported and fails loudly, so the persistent action cache is
+                    // purged first (see purge_persistent_action_cache).
+                    purge_before_unported_rewinding: rewind_lost_inputs.then(|| {
+                        let output_base = self.output_base.clone();
+                        let reporter = self.reporter.clone();
+                        Arc::new(move || purge_persistent_action_cache(&output_base, &*reporter))
+                            as Arc<dyn Fn() + Send + Sync>
                     }),
                 }
             }),

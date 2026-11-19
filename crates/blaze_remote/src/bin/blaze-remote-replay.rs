@@ -555,6 +555,10 @@ fn main() -> ExitCode {
             label: blaze_cmdline::Label::parse_canonical_unchecked("@@platforms//host:host"),
             exec_properties: IndexMap::new(),
             remote_execution_properties: String::new(),
+            // The host platform's OS constraint on the Linux machines these replays run on.
+            os_constraint: Some(blaze_cmdline::Label::parse_canonical_unchecked(
+                "@@platforms//os:linux",
+            )),
         });
         if let Some(first) = outputs.first() {
             owner.primary_output = first.clone();

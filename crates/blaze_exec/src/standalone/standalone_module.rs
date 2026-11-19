@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::exec::exec_command_environment::ExecCommandEnvironment;
 use crate::exec::local::local_env_provider;
 use crate::exec::local::local_spawn_runner::LocalSpawnRunner;
+use crate::exec::runfiles_tree_updater::RunfilesTreeUpdater;
 use crate::exec::spawn_strategy_registry::SpawnStrategyRegistryBuilder;
 use crate::runtime::ProcessWrapper;
 use crate::standalone::standalone_spawn_strategy::StandaloneSpawnStrategy;
@@ -41,8 +42,6 @@ impl StandaloneModule {
             ),
             env.local_execution_options.process_wrapper_graceful_sigterm,
         );
-        // PORT: RunfilesTreeUpdater.forCommandEnvironment(env) is not ported (see
-        // LocalSpawnRunner).
         let local_spawn_runner = Arc::new(LocalSpawnRunner::new(
             env.exec_root.clone(),
             env.local_execution_options.clone(),
@@ -50,6 +49,7 @@ impl StandaloneModule {
             Arc::new(local_env_provider::for_current_os(&env.client_env)),
             env.bin_tools.clone(),
             process_wrapper,
+            Arc::new(RunfilesTreeUpdater::for_command_environment(env)),
         ));
 
         let execution_options = env.execution_options.clone();

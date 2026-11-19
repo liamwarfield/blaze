@@ -140,6 +140,9 @@ impl blaze_actions::PlatformInfo for LabelOnlyPlatform {
     fn exec_properties(&self) -> IndexMap<String, String> {
         IndexMap::new()
     }
+    fn remote_execution_properties(&self) -> String {
+        unreachable!()
+    }
     fn constraint_value(&self, _setting: &Label) -> Option<Label> {
         unreachable!()
     }

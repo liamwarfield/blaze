@@ -170,9 +170,24 @@ pub struct LostArtifacts {
 }
 
 impl LostArtifacts {
+    /// `LostArtifacts.EMPTY`.
+    // Java: com/google/devtools/build/lib/actions/ImportantOutputHandler.java:144 LostArtifacts.EMPTY
+    pub fn empty() -> LostArtifacts {
+        LostArtifacts::default()
+    }
+
     /// `isEmpty()`.
     pub fn is_empty(&self) -> bool {
         self.by_digest.is_empty()
+    }
+
+    /// Throws [`LostInputsExecException`] if this instance is not empty.
+    // Java: com/google/devtools/build/lib/actions/ImportantOutputHandler.java:155 LostArtifacts.throwIfNotEmpty
+    pub fn throw_if_not_empty(&self) -> Result<(), ExecException> {
+        if !self.is_empty() {
+            return Err(LostInputsExecException::create(self.clone()));
+        }
+        Ok(())
     }
 
     /// The `(digest, input)` entries in multimap order (`lostInputs.entries()`).

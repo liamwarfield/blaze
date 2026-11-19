@@ -1,0 +1,450 @@
+#!/usr/bin/env python3
+"""Execution platform -> REAPI Platform and argv[0]: oracle vs Blaze. See `platform-probe help`."""
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CACHE = os.path.expanduser("~/.cache/blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+WORK = os.path.join(CACHE, "work", "remote")
+OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-remote")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+WORKER = os.path.join(HERE, "worker")
+
+USAGE = """\
+usage: scripts/remote/platform-probe oracle <tag> [--port N] [<case>...]
+       scripts/remote/platform-probe run <binary> <tag> [--port N] [<case>...]
+       scripts/remote/platform-probe compare <tag-a> <tag-b>
+       scripts/remote/platform-probe cases
+       scripts/remote/platform-probe help
+
+How an execution platform's `remote_execution_properties` (a text-format
+build.bazel.remote.execution.v2.Platform), `exec_properties`, a target's `exec_properties` and
+`--remote_default_exec_properties` become the Platform of the remote Action and Command
+(PlatformUtils.getPlatformProto), and how argv[0] follows the execution platform's OS constraint
+(RemoteExecutionService.buildCommand, getOsFromConstraintsOrHost).
+
+Each case is a workspace (MODULE.bazel, BUILD, defs.bzl, tools/run.sh) whose BUILD defines the
+execution platform //:p (and parents) and the target //:t, a Starlark rule running
+`ctx.actions.run(executable = //tools:run.sh, arguments = [<out>, "PLATFORM_PROBE_<case>"])`.
+The case is built with
+  build //:t --extra_execution_platforms=//:p --remote_executor=grpc://localhost:<port>
+  --remote_grpc_log=<step>/grpc.log <case flags>
+against Bazel's own remote worker (scripts/remote/worker, name td-<tag> or <tag> if it starts
+with td-, started fresh for
+each `oracle`/`run` call on --port, default 9640). The worker's CAS is then searched for the
+Action whose Command carries the case's marker argument.
+
+`oracle <tag>` uses the oracle binary, `run <binary> <tag>` another binary (copy a Blaze
+binary first, others rebuild target/debug/blaze). Without cases every case runs. Work dir:
+~/.cache/blaze/work/remote/<tag>-platform/<case>/{ws,stdout,stderr,exit,result.txt}; output
+user root ~/.cache/blaze/oracle-out/ur-remote/<tag>-platform (fresh per call). A call
+replaces the directories of the cases it runs and keeps the others.
+
+Per case it prints and writes result.txt:
+  exit <code>
+  error <first ERROR line and its continuation lines joined by ` | `, the workspace path
+        replaced by <ws>, the worker's by <worker>>  (or `error -`)
+  action-platform <name=value ...> (in the order sent; `-` when no Action was sent, `none`
+                  when the Action has no Platform)
+  command-platform <...> (same for the Command)
+  argv0 <Command.arguments[0]>
+
+`compare <a> <b>` prints both result.txt per case and SAME/DIFFERENT; exit 0 iff all equal.
+`cases` lists the cases with their flags.
+
+Every Bazel/Blaze call runs in `systemd-run --user --collect --wait -p MemoryMax=12G
+-p MemorySwapMax=0` with HOME and PATH=/usr/bin:/bin only, startup options
+--output_user_root=<above> --nohome_rc --nosystem_rc, and --repository_cache=~/.cache/blaze/
+repo-cache --color=no --curses=no.
+"""
+
+DEFS = """\
+def _probe_impl(ctx):
+    out = ctx.actions.declare_file(ctx.attr.name + ".out")
+    ctx.actions.run(
+        executable = ctx.executable.tool,
+        arguments = [out.path, ctx.attr.marker],
+        outputs = [out],
+        mnemonic = "Probe",
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+probe = rule(
+    implementation = _probe_impl,
+    attrs = {
+        "tool": attr.label(executable = True, cfg = "exec", allow_single_file = True),
+        "marker": attr.string(),
+    },
+)
+"""
+
+RUN_SH = "#!/bin/sh\necho ok > \"$1\"\n"
+
+
+def target(case, extra=""):
+    return ('load(":defs.bzl", "probe")\n\nprobe(\n    name = "t",\n    tool = "//tools:run.sh",\n'
+            '    marker = "PLATFORM_PROBE_%s",\n%s)\n' % (case, extra))
+
+
+def plat(name, body):
+    return "platform(\n    name = \"%s\",\n%s)\n\n" % (name, body)
+
+
+def rep(text):
+    # A Starlark triple-quoted string holding `text` verbatim (no backslash processing).
+    assert '"""' not in text
+    # A trailing newline keeps a text ending in `"` from touching the closing quotes.
+    return 'r"""%s\n"""' % text
+
+
+# name -> (BUILD text without the target, target extra attrs, extra flags)
+CASES = {}
+
+
+def case(name, platforms, target_extra="", flags=()):
+    CASES[name] = (platforms, target_extra, list(flags))
+
+
+case("one", plat("p", "    remote_execution_properties = %s,\n"
+                 % rep('properties { name: "image" value: "docker://x" }')))
+case("unsorted", plat("p", "    remote_execution_properties = %s,\n"
+                      % rep('properties { name: "zz" value: "1" }\n'
+                            'properties { name: "aa" value: "2" }\n'
+                            'properties { name: "mm" value: "3" }')))
+case("colon", plat("p", "    remote_execution_properties = %s,\n"
+                   % rep('properties: { name: "a" value: "1" }\nproperties: {}')))
+case("escapes", plat("p", "    remote_execution_properties = %s,\n"
+                     % rep('properties { name: "esc" value: "a\\tb\\nc\\x41\\101\\u00e9'
+                           '\\U0001F600\\\'\\"\\\\\\?\\a\\v\\f\\r\\b\\0" }\n'
+                           "properties { name: 'single' value: 'it''s' \"joined\" }")))
+case("comment", plat("p", "    remote_execution_properties = %s,\n"
+                     % rep('# leading comment\nproperties { # inside\n'
+                           '  name: "a" # after name\n  value: "1"\n} # trailing')))
+case("angle-separators", plat("p", "    remote_execution_properties = %s,\n"
+                              % rep("properties < name: 'b'; value: 'x', >;"
+                                    "properties { name: 'a', value: 'y'; },")))
+case("list", plat("p", "    remote_execution_properties = %s,\n"
+                  % rep('properties: [ { name: "b" value: "2" }, < name: "a" value: "1" > ]\n'
+                        'properties: []')))
+case("duplicate-name", plat("p", "    remote_execution_properties = %s,\n"
+                            % rep('properties { name: "a" name: "b" value: "1" }\n'
+                                  'properties { name: "b" value: "2" }')))
+case("unknown-field", plat("p", "    remote_execution_properties = %s,\n"
+                           % rep('properties { name: "a" value: "1" }\nfoo: "x"')))
+case("unknown-nested", plat("p", "    remote_execution_properties = %s,\n"
+                            % rep('properties { name: "a" value: "1" other { x: 1.5e3 y: -0x10 '
+                                  'z: [1, 2] w: inf } }\n[ext.field]: 3')))
+case("broken", plat("p", "    remote_execution_properties = %s,\n"
+                    % rep('properties { name "a" }')))
+case("broken-string", plat("p", "    remote_execution_properties = %s,\n"
+                           % rep('properties {\n  name: "a\\q" }')))
+case("broken-eof", plat("p", "    remote_execution_properties = %s,\n"
+                        % rep('properties { name: "a"')))
+case("broken-ident", plat("p", "    remote_execution_properties = %s,\n"
+                          % rep('properties { name: "a" } 42: "x"')))
+case("unterminated", plat("p", "    remote_execution_properties = %s,\n"
+                          % rep('properties { name: "a }')))
+case("invalid-value", plat("p", "    remote_execution_properties = %s,\n"
+                           % rep('foo: , properties { name: "a" value: "1" }')))
+case("bad-unicode", plat("p", "    remote_execution_properties = %s,\n"
+                         % rep('properties { name: "a" value: "\\ud800" }')))
+case("parent-inherit",
+     plat("parent", "    remote_execution_properties = %s,\n"
+          % rep('properties { name: "from-parent" value: "1" }'))
+     + plat("p", '    parents = [":parent"],\n'))
+case("parent-substitute",
+     plat("parent", "    remote_execution_properties = %s,\n"
+          % rep('properties { name: "from-parent" value: "1" }'))
+     + plat("p", '    parents = [":parent"],\n    remote_execution_properties = %s,\n'
+            % rep('{PARENT_REMOTE_EXECUTION_PROPERTIES}\nproperties { name: "child" value: "2" }')))
+case("exec-properties", plat("p", '    exec_properties = {"zz": "1", "aa": "2"},\n'))
+case("target-exec-properties",
+     plat("p", "    remote_execution_properties = %s,\n"
+          % rep('properties { name: "from-text" value: "1" }')),
+     target_extra='    exec_properties = {"from-target": "2"},\n')
+case("defaults-alone", plat("p", ""), flags=["--remote_default_exec_properties=k=v",
+                                               "--remote_default_exec_properties=a=b"])
+case("defaults-with-text",
+     plat("p", "    remote_execution_properties = %s,\n"
+          % rep('properties { name: "from-text" value: "1" }')),
+     flags=["--remote_default_exec_properties=k=v"])
+case("defaults-with-exec-properties", plat("p", '    exec_properties = {"from-platform": "1"},\n'),
+     flags=["--remote_default_exec_properties=k=v"])
+case("defaults-with-target", plat("p", ""),
+     target_extra='    exec_properties = {"from-target": "2"},\n',
+     flags=["--remote_default_exec_properties=k=v"])
+case("empty-text", plat("p", '    remote_execution_properties = "",\n'))
+case("os-linux", plat("p", '    constraint_values = ["@platforms//os:linux"],\n'
+                      "    remote_execution_properties = %s,\n"
+                      % rep('properties { name: "a" value: "1" }')))
+case("os-windows", plat("p", '    constraint_values = ["@platforms//os:windows"],\n'
+                        "    remote_execution_properties = %s,\n"
+                        % rep('properties { name: "a" value: "1" }')))
+case("os-macos", plat("p", '    constraint_values = ["@platforms//os:macos"],\n'))
+
+
+def rm(p):
+    if os.path.lexists(p):
+        subprocess.run(["chmod", "-R", "u+w", p])
+        shutil.rmtree(p)
+
+
+def write_ws(ws, name):
+    platforms, target_extra, _ = CASES[name]
+    os.makedirs(os.path.join(ws, "tools"))
+    files = {
+        "MODULE.bazel": 'bazel_dep(name = "platforms", version = "1.0.0")\n',
+        "defs.bzl": DEFS,
+        "BUILD": platforms + target(name, target_extra),
+        "tools/BUILD": 'exports_files(["run.sh"])\n',
+        "tools/run.sh": RUN_SH,
+    }
+    for rel, text in files.items():
+        with open(os.path.join(ws, rel), "w") as f:
+            f.write(text)
+    os.chmod(os.path.join(ws, "tools/run.sh"), 0o755)
+
+
+def run_binary(binary, our, ws, step, args):
+    full = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc", args[0],
+            "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args[1:]
+    unit = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
+            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "env", "-i",
+            "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin"]
+    with open(os.path.join(step, "stdout"), "wb") as so, \
+            open(os.path.join(step, "stderr"), "wb") as se:
+        return subprocess.run(unit + full, cwd=ws, stdout=so, stderr=se).returncode
+
+
+# --- minimal protobuf wire decoding (Action, Command, Platform) ---
+
+def varint(b, i):
+    r, s = 0, 0
+    while True:
+        c = b[i]
+        i += 1
+        r |= (c & 0x7F) << s
+        s += 7
+        if not c & 0x80:
+            return r, i
+
+
+def fields(b):
+    i, out = 0, []
+    while i < len(b):
+        key, i = varint(b, i)
+        num, wt = key >> 3, key & 7
+        if wt == 0:
+            v, i = varint(b, i)
+        elif wt == 2:
+            n, i = varint(b, i)
+            v = b[i:i + n]
+            if len(v) != n:
+                raise ValueError("truncated")
+            i += n
+        elif wt == 1:
+            v, i = b[i:i + 8], i + 8
+        elif wt == 5:
+            v, i = b[i:i + 4], i + 4
+        else:
+            raise ValueError("wire type %d" % wt)
+        out.append((num, wt, v))
+    return out
+
+
+def platform_props(b):
+    props = []
+    for num, wt, v in fields(b):
+        if num == 1 and wt == 2:
+            name = value = ""
+            for n2, w2, v2 in fields(v):
+                if n2 == 1 and w2 == 2:
+                    name = v2.decode("utf-8", "replace")
+                elif n2 == 2 and w2 == 2:
+                    value = v2.decode("utf-8", "replace")
+            props.append("%s=%s" % (name, value))
+    return props
+
+
+def show_props(props):
+    if props is None:
+        return "none"
+    return " ".join(repr(p)[1:-1] for p in props) or "none"
+
+
+def find_action(cas_root, marker):
+    blobs = {}
+    for d, _, files in os.walk(cas_root):
+        for f in files:
+            if re.fullmatch(r"[0-9a-f]{64}", f):
+                blobs[f] = os.path.join(d, f)
+    mark = marker.encode()
+    for h, p in blobs.items():
+        data = open(p, "rb").read()
+        try:
+            fs = fields(data)
+        except (ValueError, IndexError):
+            continue
+        cmd_hash = None
+        aplat = None
+        for num, wt, v in fs:
+            if num == 1 and wt == 2:
+                try:
+                    for n2, w2, v2 in fields(v):
+                        if n2 == 1 and w2 == 2 and re.fullmatch(rb"[0-9a-f]{64}", v2):
+                            cmd_hash = v2.decode()
+                except (ValueError, IndexError):
+                    pass
+            if num == 10 and wt == 2:
+                aplat = platform_props(v)
+        if cmd_hash is None or cmd_hash not in blobs:
+            continue
+        cdata = open(blobs[cmd_hash], "rb").read()
+        if mark not in cdata:
+            continue
+        try:
+            cfs = fields(cdata)
+        except (ValueError, IndexError):
+            continue
+        args = [v.decode("utf-8", "replace") for n, w, v in cfs if n == 1 and w == 2]
+        if marker not in args:
+            continue
+        cplat = None
+        for n, w, v in cfs:
+            if n == 5 and w == 2:
+                cplat = platform_props(v)
+        return aplat, cplat, args
+    return None
+
+
+def error_blocks(err, ws, worker):
+    """Each ERROR line with its continuation lines, joined by ` | `, paths normalised."""
+    out = []
+    i = 0
+    stop = ("ERROR:", "INFO:", "WARNING:", "Target ", "Use --", "FAILED:")
+    while i < len(err):
+        if err[i].startswith("ERROR:"):
+            block = [err[i]]
+            i += 1
+            while i < len(err) and not err[i].startswith(stop):
+                block.append(err[i])
+                i += 1
+            text = " | ".join(block)
+            text = text.replace(ws, "<ws>").replace(os.path.realpath(ws), "<ws>")
+            text = text.replace(os.path.join(WORK, "worker-" + worker), "<worker>")
+            text = re.sub(r"build-[0-9a-f-]{36}", "build-<uuid>", text)
+            out.append(text.replace("\t", "\\t"))
+        else:
+            i += 1
+    return out
+
+
+def run_cases(binary, tag, port, names):
+    root = os.path.join(WORK, tag + "-platform")
+    our = os.path.join(OUT_ROOT, tag + "-platform")
+    rm(our)
+    os.makedirs(root, exist_ok=True)
+    worker = tag if tag.startswith("td-") else "td-" + tag
+    for name in names:
+        subprocess.run([WORKER, "start", worker, str(port)], check=True,
+                       stdout=subprocess.DEVNULL)
+        step = os.path.join(root, name)
+        rm(step)
+        ws = os.path.join(step, "ws")
+        write_ws(ws, name)
+        args = ["build", "//:t", "--extra_execution_platforms=//:p",
+                "--remote_executor=grpc://localhost:%d" % port,
+                "--remote_grpc_log=" + os.path.join(step, "grpc.log")] + CASES[name][2]
+        code = run_binary(binary, our, ws, step, args)
+        err = open(os.path.join(step, "stderr"), errors="replace").read().splitlines()
+        errors = error_blocks(err, ws, worker)
+        found = find_action(os.path.join(WORK, "worker-" + worker, "cas", "cas"),
+                            "PLATFORM_PROBE_" + name)
+        lines = ["exit %d" % code, "error %s" % (errors[0] if errors else "-")]
+        if found is None:
+            lines += ["action-platform -", "command-platform -", "argv0 -"]
+        else:
+            aplat, cplat, args_ = found
+            lines += ["action-platform %s" % show_props(aplat),
+                      "command-platform %s" % show_props(cplat),
+                      "argv0 %s" % (args_[0] if args_ else "-")]
+        with open(os.path.join(step, "result.txt"), "w") as f:
+            f.write("\n".join(lines) + "\n")
+        with open(os.path.join(step, "exit"), "w") as f:
+            f.write("%d\n" % code)
+        print("== %s" % name)
+        for l in lines:
+            print("  " + l)
+        sys.stdout.flush()
+    subprocess.run([WORKER, "stop", worker], stdout=subprocess.DEVNULL)
+    return 0
+
+
+def parse_run_args(rest):
+    port = 9640
+    names = []
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--port":
+            port = int(rest[i + 1])
+            i += 2
+            continue
+        names.append(rest[i])
+        i += 1
+    for n in names:
+        if n not in CASES:
+            sys.exit("unknown case %s (see `platform-probe cases`)" % n)
+    return port, names or list(CASES)
+
+
+def cmd_compare(a, b):
+    same = True
+    for name in CASES:
+        pa = os.path.join(WORK, a + "-platform", name, "result.txt")
+        pb = os.path.join(WORK, b + "-platform", name, "result.txt")
+        if not (os.path.isfile(pa) and os.path.isfile(pb)):
+            continue
+        ta, tb = open(pa).read(), open(pb).read()
+        print("== %s %s" % (name, "SAME" if ta == tb else "DIFFERENT"))
+        if ta == tb:
+            for l in ta.splitlines():
+                print("  " + l)
+        else:
+            same = False
+            for la, lb in zip(ta.splitlines(), tb.splitlines()):
+                if la == lb:
+                    print("  " + la)
+                else:
+                    print("  %s: %s" % (a, la))
+                    print("  %s: %s" % (b, lb))
+    return 0 if same else 1
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    if args[0] == "cases":
+        for n, (_, t, fl) in CASES.items():
+            print("%-30s %s%s" % (n, " ".join(fl), " (target exec_properties)" if t else ""))
+        return 0
+    if args[0] == "oracle" and len(args) >= 2:
+        port, names = parse_run_args(args[2:])
+        return run_cases(ORACLE, args[1], port, names)
+    if args[0] == "run" and len(args) >= 3:
+        port, names = parse_run_args(args[3:])
+        return run_cases(os.path.abspath(os.path.expanduser(args[1])), args[2], port, names)
+    if args[0] == "compare" and len(args) == 3:
+        return cmd_compare(args[1], args[2])
+    print(USAGE, end="", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

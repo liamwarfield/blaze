@@ -14,6 +14,7 @@ use blaze_bep::buildeventstream::{
 use blaze_bep::runtime::BuildEventArtifactUploaderFactory;
 use blaze_events::{Event, ExtendedEventHandler};
 use blaze_exec::actions::FileStateType;
+use blaze_exec::exec::remote_action_file_system::RemoteActionFileSystem;
 use blaze_optdefs::misc::remote_build_event_upload_mode::RemoteBuildEventUploadMode;
 use blaze_util::check_state;
 use blaze_vfs::Path;
@@ -61,20 +62,17 @@ struct Inner {
 }
 
 /// Returns `true` if Bazel knows that the file is stored on a remote system.
-///
-/// PORT: Java asks whether the path's file system is a `RemoteActionFileSystem` and that file
-/// system whether the file is remote. `blaze_vfs::FileSystem` cannot be downcast (it has no
-/// `as_any`), so the port recognises the action file system by its `Debug` name and fails
-/// loudly there; the paths Blaze's build events refer to are on the output base's file system.
 // Java: com/google/devtools/build/lib/remote/ByteStreamBuildEventArtifactUploader.java:112 ByteStreamBuildEventArtifactUploader.isRemoteFile
 fn is_remote_file(file: &Path) -> io::Result<bool> {
-    let file_system = format!("{:?}", file.get_file_system());
-    if file_system.starts_with("RemoteActionFileSystem") {
-        blaze_util::unported!(
-            "ByteStreamBuildEventArtifactUploader.isRemoteFile (missing hook: blaze_vfs::FileSystem downcast to RemoteActionFileSystem)"
-        );
+    match file
+        .get_file_system()
+        .as_any()
+        .downcast_ref::<RemoteActionFileSystem>()
+    {
+        // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:293 RemoteActionFileSystem.isRemote
+        Some(remote_action_file_system) => remote_action_file_system.is_remote(file.as_fragment()),
+        None => Ok(false),
     }
-    Ok(false)
 }
 
 // Java: com/google/devtools/build/lib/remote/ByteStreamBuildEventArtifactUploader.java:117 ByteStreamBuildEventArtifactUploader.PathMetadata

@@ -31,36 +31,15 @@ impl Default for BulkTransferException {
     }
 }
 
-/// `LostInputsExecException.LostArtifacts`, as far as the remote package builds it: the lost
-/// inputs keyed by digest (`ImmutableSetMultimap<String, ActionInput>`).
-// Java: com/google/devtools/build/lib/actions/LostInputsExecException.java LostArtifacts
-#[derive(Debug, Clone, Default)]
-pub struct LostArtifacts {
-    /// `byDigest`.
-    pub by_digest: IndexMap<String, IndexSet<ActionInputRef>>,
-}
-
-impl LostArtifacts {
-    /// `LostArtifacts.EMPTY`.
-    pub fn empty() -> LostArtifacts {
-        LostArtifacts::default()
-    }
-
-    /// `isEmpty()`.
-    pub fn is_empty(&self) -> bool {
-        self.by_digest.is_empty()
-    }
-
-    /// `throwIfNotEmpty()`: throws a `LostInputsExecException`, which starts action rewinding.
-    // Java: com/google/devtools/build/lib/actions/LostInputsExecException.java LostArtifacts.throwIfNotEmpty
-    pub fn throw_if_not_empty(&self) {
-        if !self.is_empty() {
-            blaze_util::unported!(
-                "LostInputsExecException (action rewinding for lost remote inputs)"
-            );
-        }
-    }
-}
+/// `ImportantOutputHandler.LostArtifacts`: the lost inputs keyed by digest
+/// (`ImmutableSetMultimap<String, ActionInput>`), with `EMPTY` and `throwIfNotEmpty()`, which
+/// throws the `LostInputsExecException` that the action executor turns into the action's lost
+/// inputs (`ActionRewindStrategy.checkRewindingEnabled` without rewinding).
+///
+/// PORT: the type lives in `blaze_exec` (`lib/actions`), where Java has it; this module
+/// re-exports it under the name its users in `lib/remote` import.
+// Java: com/google/devtools/build/lib/actions/ImportantOutputHandler.java:141 ImportantOutputHandler.LostArtifacts
+pub use blaze_exec::actions::LostArtifacts;
 
 impl BulkTransferException {
     /// `new BulkTransferException()`.

@@ -177,8 +177,13 @@ pub fn convert_platform(action: &dyn Action) -> Option<PlatformInfo> {
     action.get_execution_platform().map(|p| PlatformInfo {
         label: p.label().clone(),
         exec_properties: p.exec_properties(),
-        // PORT: remoteExecutionProperties is only set by remote-execution platforms.
-        remote_execution_properties: String::new(),
+        // Java: com/google/devtools/build/lib/analysis/platform/PlatformInfo.java:130 PlatformInfo.remoteExecutionProperties
+        remote_execution_properties: p.remote_execution_properties(),
+        // Java: com/google/devtools/build/lib/analysis/constraints/ConstraintConstants.java:83 ConstraintConstants.getOsFromConstraintsOrHost
+        // (`platformInfo.constraints().get(OS_CONSTRAINT_SETTING)`; the setting has no default).
+        os_constraint: p.constraint_value(&blaze_cmdline::Label::parse_canonical_unchecked(
+            "@platforms//os:os",
+        )),
     })
 }
 

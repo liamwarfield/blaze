@@ -189,6 +189,11 @@ impl blaze_actions::PlatformInfo for PlatformInfo {
         PlatformInfo::exec_properties(self).clone()
     }
 
+    // Java: com/google/devtools/build/lib/analysis/platform/PlatformInfo.java:130 PlatformInfo.remoteExecutionProperties
+    fn remote_execution_properties(&self) -> String {
+        PlatformInfo::remote_execution_properties(self).to_owned()
+    }
+
     // Java: com/google/devtools/build/lib/analysis/platform/ConstraintCollection.java:208 ConstraintCollection.get
     fn constraint_value(&self, setting: &Label) -> Option<Label> {
         // `all_constraint_settings` is every setting this platform or a parent sets; for those

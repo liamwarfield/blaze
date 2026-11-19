@@ -4740,16 +4740,112 @@ fn build_remote_action_with_path_mapping() {
     );
 }
 
+/// `new SpawnBuilder("path/to/pkg/script.bat", "some/other/arg").withOutputs("out")
+/// .withPlatform(PlatformInfo.builder().addConstraint(OS_TO_DEFAULT_CONSTRAINT_VALUE.get(os))
+/// .build()).build()`, the constraint value given by its label (`None` for no constraint).
+///
+/// PORT: Java's builder leaves the label null; blaze_exec's `PlatformInfo` needs one.
+// Java: src/test/java/com/google/devtools/build/lib/exec/util/SpawnBuilder.java:66 SpawnBuilder.build
+fn script_spawn_on_platform(os_constraint: Option<&str>) -> Arc<dyn Spawn> {
+    let mut owner = FakeOwner::new(
+        "Mnemonic",
+        Some("progress message"),
+        Some(Label::parse_canonical("//dummy:label").unwrap()),
+    );
+    owner.platform = Some(blaze_exec::actions::PlatformInfo {
+        label: Label::parse_canonical("//dummy:platform").unwrap(),
+        exec_properties: IndexMap::new(),
+        remote_execution_properties: String::new(),
+        os_constraint: os_constraint.map(|l| Label::parse_canonical(l).unwrap()),
+    });
+    Arc::new(SimpleSpawn::new(
+        Arc::new(owner),
+        vec![
+            "path/to/pkg/script.bat".to_string(),
+            "some/other/arg".to_string(),
+        ],
+        IndexMap::new(),
+        IndexMap::new(),
+        NestedSetBuilder::empty_set(Order::STABLE_ORDER),
+        NestedSetBuilder::empty_set(Order::STABLE_ORDER),
+        vec![from_path("out")],
+        /* mandatoryOutputs= */ None,
+        Arc::new(ResourceSet::zero()),
+        PathMapper::NOOP,
+    ))
+}
+
+/// The body of `buildRemoteAction_executablePathConformsToPlatform` for one `executionOs`.
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionServiceTest.java:3136 RemoteExecutionServiceTest.buildRemoteAction_executablePathConformsToPlatform
+fn executable_path_conforms_to_platform(os_constraint: Option<&str>, expected_first_arg: &str) {
+    let f = Fixture::set_up();
+    let spawn = script_spawn_on_platform(os_constraint);
+    let context = f.new_spawn_execution_context(&spawn);
+    let service = f.new_remote_execution_service();
+
+    let remote_action = service.build_remote_action(&*spawn, &context).unwrap();
+
+    assert_eq!(
+        remote_action.get_command().arguments,
+        vec![expected_first_arg.to_string(), "some/other/arg".to_string()]
+    );
+}
+
+// `@TestParameter OS executionOs`, one test per value of `OS`, with
+// `ConstraintConstants.OS_TO_DEFAULT_CONSTRAINT_VALUE` (the first constraint value per OS).
+
+// Java: com/google/devtools/build/lib/remote/RemoteExecutionServiceTest.java:3136 RemoteExecutionServiceTest.buildRemoteAction_executablePathConformsToPlatform[DARWIN]
 #[test]
-#[ignore = "needs a hook: blaze_exec's PlatformInfo has no constraints (OS_TO_DEFAULT_CONSTRAINT_VALUE), and the Windows OsPathPolicy is not ported"]
-fn build_remote_action_executable_path_conforms_to_platform() {
-    // `@TestParameter OS executionOs`: Java builds the spawn
-    // `new SpawnBuilder("path/to/pkg/script.bat", "some/other/arg").withOutputs("out")
-    // .withPlatform(PlatformInfo.builder().addConstraint(OS_TO_DEFAULT_CONSTRAINT_VALUE.get(os))
-    // .build())` and expects the first argument to be "path\\to\\pkg\\script.bat" for Windows and
-    // "path/to/pkg/script.bat" otherwise.
-    blaze_util::unported!("PlatformInfo.builder().addConstraint (blaze_exec PlatformInfo)");
+fn build_remote_action_executable_path_conforms_to_platform_darwin() {
+    executable_path_conforms_to_platform(Some("@platforms//os:osx"), "path/to/pkg/script.bat");
+}
+
+// Java: com/google/devtools/build/lib/remote/RemoteExecutionServiceTest.java:3136 RemoteExecutionServiceTest.buildRemoteAction_executablePathConformsToPlatform[FREEBSD]
+#[test]
+fn build_remote_action_executable_path_conforms_to_platform_freebsd() {
+    executable_path_conforms_to_platform(Some("@platforms//os:freebsd"), "path/to/pkg/script.bat");
+}
+
+// Java: com/google/devtools/build/lib/remote/RemoteExecutionServiceTest.java:3136 RemoteExecutionServiceTest.buildRemoteAction_executablePathConformsToPlatform[OPENBSD]
+#[test]
+fn build_remote_action_executable_path_conforms_to_platform_openbsd() {
+    executable_path_conforms_to_platform(Some("@platforms//os:openbsd"), "path/to/pkg/script.bat");
+}
+
+// Java: com/google/devtools/build/lib/remote/RemoteExecutionServiceTest.java:3136 RemoteExecutionServiceTest.buildRemoteAction_executablePathConformsToPlatform[LINUX]
+#[test]
+fn build_remote_action_executable_path_conforms_to_platform_linux() {
+    executable_path_conforms_to_platform(Some("@platforms//os:linux"), "path/to/pkg/script.bat");
+}
+
+// Java: com/google/devtools/build/lib/remote/RemoteExecutionServiceTest.java:3136 RemoteExecutionServiceTest.buildRemoteAction_executablePathConformsToPlatform[WINDOWS]
+// Java expects "path\\to\\pkg\\script.bat"; blaze_vfs has no WindowsOsPathPolicy, so Blaze
+// fails loudly instead of sending another Command.
+#[test]
+#[should_panic(
+    expected = "blaze: not ported yet: WindowsOsPathPolicy.postProcessPathStringForExecution \
+                (Windows execution platform //dummy:platform)"
+)]
+fn build_remote_action_executable_path_conforms_to_platform_windows() {
+    executable_path_conforms_to_platform(
+        Some("@platforms//os:windows"),
+        "path\\to\\pkg\\script.bat",
+    );
+}
+
+// Java: com/google/devtools/build/lib/remote/RemoteExecutionServiceTest.java:3136 RemoteExecutionServiceTest.buildRemoteAction_executablePathConformsToPlatform[UNKNOWN]
+#[test]
+fn build_remote_action_executable_path_conforms_to_platform_unknown() {
+    executable_path_conforms_to_platform(Some("@platforms//os:none"), "path/to/pkg/script.bat");
+}
+
+/// Not in Java: an execution platform without an OS constraint uses the host's OS
+/// (`getOsFromConstraintsOrHost`), Linux here; and a constraint value Bazel does not know is
+/// `OS.UNKNOWN`. Both keep argv[0].
+#[test]
+fn build_remote_action_executable_path_without_or_with_unknown_os_constraint() {
+    executable_path_conforms_to_platform(None, "path/to/pkg/script.bat");
+    executable_path_conforms_to_platform(Some("@platforms//os:haiku"), "path/to/pkg/script.bat");
 }
 
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionServiceTest.java:3160 RemoteExecutionServiceTest.buildRemoteAction_codePointSorting

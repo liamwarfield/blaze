@@ -313,8 +313,9 @@ fn to_execution_bulk_transfer_error(e: io::Error) -> io::Error {
 }
 
 /// `RemoteOutputService.finalizeAction`: `actionInputFetcher.finalizeAction(action,
-/// outputMetadataStore)` (the lease service is not ported: `leaseService.finalizeAction()` is
-/// left out).
+/// outputMetadataStore)`. `leaseService.finalizeAction()` only starts the lease extension
+/// (`RemoteLeaseExtension`), which is not ported and fails loudly where it would be created
+/// (`LeaseService::new`), so it is left out here.
 // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:170 RemoteOutputService.finalizeAction
 impl blaze_exec::exec::action_execution_context::ActionFinalizer for RemoteActionInputFetcher {
     fn finalize_action(
@@ -322,7 +323,7 @@ impl blaze_exec::exec::action_execution_context::ActionFinalizer for RemoteActio
         action: &dyn blaze_exec::actions::ActionExecutionMetadata,
         outputs: &[blaze_exec::actions::ActionInputRef],
         output_metadata_store: &dyn blaze_exec::actions::cache::output_metadata_store::OutputMetadataStore,
-    ) -> std::io::Result<()> {
+    ) -> Result<(), blaze_exec::exec::action_execution_context::SpawnCacheError> {
         (self as &dyn AbstractActionInputPrefetcher).finalize_action(
             action,
             outputs,

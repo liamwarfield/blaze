@@ -599,7 +599,7 @@ impl MerkleTreeComputer {
                                 .get_input_metadata_provider()
                                 .get_input(exec_path)
                         })
-                        .throw_if_not_empty();
+                        .throw_if_not_empty()?;
                 }
                 Err(e.into())
             }

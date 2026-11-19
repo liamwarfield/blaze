@@ -90,6 +90,15 @@ pub struct LostInputsPolicy {
     /// `post(new LostInputsEvent(missingDigests))`: the subscribers' handler (the digests are
     /// `hash/size`).
     pub on_lost_inputs: Arc<dyn Fn(&[String]) + Send + Sync>,
+    /// With `rewinding_enabled`: removes the remote metadata from the persistent action cache
+    /// and writes it to disk (`LeaseService.handleMissingInputs` on the action cache), run
+    /// before the executor fails loudly on the action rewinding that Java would start.
+    ///
+    /// PORT: Java rewinds here (and creates no `LeaseService` when rewinding is enabled).
+    /// Rewinding is not ported and the build then crashes, so nothing saves the action cache
+    /// afterwards; without this purge a rerun would trust the same stale remote metadata again.
+    /// `None`: no purge (tests).
+    pub purge_before_unported_rewinding: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl fmt::Debug for LostInputsPolicy {

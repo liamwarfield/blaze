@@ -76,7 +76,6 @@ fn property(name: &str, value: &str) -> platform::Property {
 }
 
 #[test]
-#[ignore = "needs a protobuf text-format parser (TextFormat.getParser().merge) for PlatformInfo.remoteExecutionProperties; PlatformUtils.getPlatformProto(remote_execution_properties) is unported!"]
 fn test_parse_platform_legacy_options() {
     let expected = Platform {
         properties: vec![property("a", "1"), property("b", "2")],
@@ -87,6 +86,7 @@ fn test_parse_platform_legacy_options() {
         label: Label::parse_canonical_unchecked("//dummy:platform"),
         exec_properties: IndexMap::new(),
         remote_execution_properties: platform_options_string(),
+        os_constraint: None,
     };
     let s = spawn(Some(platform), &[]);
     assert_eq!(
@@ -155,4 +155,142 @@ fn get_platform_proto_target_exec_properties_conflict_with_platform_override() {
         platform_utils::get_platform_proto(&spawn, Some(&remote_options())).unwrap(),
         Some(expected)
     );
+}
+
+// The tests below are not in PlatformUtilsTest.java. Their expected values come from the oracle:
+// `scripts/remote/platform-probe oracle td-o1 <case>` (Bazel 9.3.2 against Bazel's remote
+// worker; the Platform of the Action and Command it sent, and its ERROR line). Each names its
+// probe case.
+
+/// The execution platform `//:p` with these `remote_execution_properties` and
+/// `exec_properties`.
+fn platform_p(remote_execution_properties: &str, exec_properties: &[(&str, &str)]) -> PlatformInfo {
+    PlatformInfo {
+        label: Label::parse_canonical_unchecked("//:p"),
+        exec_properties: exec_properties
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        remote_execution_properties: remote_execution_properties.to_string(),
+        os_constraint: None,
+    }
+}
+
+// Java: --remote_default_exec_properties=k=v
+#[allow(clippy::field_reassign_with_default)]
+fn remote_options_k_v() -> RemoteOptions {
+    let mut remote_options = RemoteOptions::default();
+    remote_options.remote_default_exec_properties = vec![("k".to_string(), "v".to_string())];
+    remote_options
+}
+
+/// Probe case `unsorted`: the parsed properties are sorted by name.
+#[test]
+fn oracle_remote_execution_properties_are_sorted() {
+    let text = "properties { name: \"zz\" value: \"1\" }\n\
+                properties { name: \"aa\" value: \"2\" }\n\
+                properties { name: \"mm\" value: \"3\" }\n";
+    let s = spawn(Some(platform_p(text, &[])), &[]);
+    let expected = Platform {
+        properties: vec![
+            property("aa", "2"),
+            property("mm", "3"),
+            property("zz", "1"),
+        ],
+    };
+    assert_eq!(
+        platform_utils::get_platform_proto(&s, None).unwrap(),
+        Some(expected)
+    );
+}
+
+/// Probe case `duplicate-name`: a repeated singular field keeps the last value, and a later
+/// property with the same name replaces the earlier one (`properties.put`).
+#[test]
+fn oracle_remote_execution_properties_duplicate_names() {
+    let text = "properties { name: \"a\" name: \"b\" value: \"1\" }\n\
+                properties { name: \"b\" value: \"2\" }\n";
+    let s = spawn(Some(platform_p(text, &[])), &[]);
+    assert_eq!(
+        platform_utils::get_platform_proto(&s, None).unwrap(),
+        Some(Platform {
+            properties: vec![property("b", "2")],
+        })
+    );
+}
+
+/// Probe case `broken`: the ParseException becomes a UserExecException with
+/// INVALID_REMOTE_EXECUTION_PROPERTIES. Oracle: `ERROR: <ws>/BUILD:8:6: Probe t.out failed:
+/// Failed to parse remote_execution_properties from platform //:p: 1:19: Expected ":".`
+#[test]
+fn oracle_remote_execution_properties_parse_error() {
+    let s = spawn(Some(platform_p("properties { name \"a\" }\n", &[])), &[]);
+    let e = platform_utils::get_platform_proto(&s, None).unwrap_err();
+    assert_eq!(
+        e.get_message(),
+        "Failed to parse remote_execution_properties from platform //:p: 1:19: Expected \":\"."
+    );
+    let detail = e.get_failure_detail(&e.get_message()).unwrap();
+    assert_eq!(
+        detail.category,
+        Some(
+            blaze_protos::failure_details::failure_detail::Category::Spawn(
+                blaze_protos::failure_details::Spawn {
+                    code:
+                        blaze_protos::failure_details::spawn::Code::InvalidRemoteExecutionProperties
+                            as i32,
+                    ..Default::default()
+                }
+            )
+        )
+    );
+}
+
+/// Probe case `target-exec-properties`: a target's exec_properties win over the platform's text
+/// (the text is not read at all).
+#[test]
+fn oracle_target_exec_properties_hide_remote_execution_properties() {
+    let text = "properties { name: \"from-text\" value: \"1\" }\n";
+    let s = spawn(Some(platform_p(text, &[])), &[("from-target", "2")]);
+    assert_eq!(
+        platform_utils::get_platform_proto(&s, None).unwrap(),
+        Some(Platform {
+            properties: vec![property("from-target", "2")],
+        })
+    );
+}
+
+/// Probe case `defaults-with-text`: --remote_default_exec_properties is not applied when the
+/// platform's text gives properties.
+#[test]
+fn oracle_defaults_not_applied_with_remote_execution_properties() {
+    let text = "properties { name: \"from-text\" value: \"1\" }\n";
+    let s = spawn(Some(platform_p(text, &[])), &[]);
+    assert_eq!(
+        platform_utils::get_platform_proto(&s, Some(&remote_options_k_v())).unwrap(),
+        Some(Platform {
+            properties: vec![property("from-text", "1")],
+        })
+    );
+}
+
+/// Probe case `defaults-with-target`: the defaults are merged under a target's exec_properties
+/// when the platform has no exec_properties.
+#[test]
+fn oracle_defaults_merged_with_target_exec_properties() {
+    let s = spawn(Some(platform_p("", &[])), &[("from-target", "2")]);
+    assert_eq!(
+        platform_utils::get_platform_proto(&s, Some(&remote_options_k_v())).unwrap(),
+        Some(Platform {
+            properties: vec![property("from-target", "2"), property("k", "v")],
+        })
+    );
+}
+
+/// Probe case `empty-text` (and `parent-inherit`, whose child has `remote_execution_properties`
+/// "" from the attribute's default): no platform at all.
+#[test]
+fn oracle_empty_remote_execution_properties_give_no_platform() {
+    let s = spawn(Some(platform_p("", &[])), &[]);
+    assert_eq!(platform_utils::get_platform_proto(&s, None).unwrap(), None);
 }
