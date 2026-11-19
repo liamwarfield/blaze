@@ -296,3 +296,12 @@ Each entry: date, decision, why, who decided.
   starlark-rust reporting an error, because a file only Bazel rejects must not be accepted. A
   differential test over 6,215 files of the corpus and Bazel's builtins guards the two front
   ends against disagreeing. Root.
+- 2026-11-19. The full-suite re-run `blaze-v0.1.0-r2` produced no result: after the 80-minute
+  deadlock its controlling command reached root's two-hour tool limit and was stopped 39
+  minutes into the outer job; the orphaned outer job keeps running and the next lock holder
+  waits for it, but nothing collects its logs, and salvaging them from the shared output root
+  after other runs is the mixed-provenance case the auditor rejected. The run is queued again
+  as a detached unit (`root-suite-v010-r3`, label `blaze-v0.1.0-r3`, log
+  `~/.cache/blaze/work/root-runs/v010-r3.log`) behind six other agents' runs. Harness gaps for
+  the auditor's next round: a killed `run` leaves its outer job running and its results
+  uncollected (A-6), and there is no way to adopt a finished outer job. Root.
