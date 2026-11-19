@@ -213,3 +213,119 @@
 - Gaps paragraph: B2 is stated accurately.
 - Evidence table: not re-measured (no oracle run). It has no row for a rebuild without `clean`
   (B2), none with a BEP file (B1), and none for an init failure (B3 to B5).
+
+# Round 2
+
+- Commit reviewed: `3bb3adf` against `3353c77` (`git diff 3353c77 3bb3adf`, `git show
+  3bb3adf:<path>`). All `file:line` references in this section are at `3bb3adf`.
+- Same reviewer role and rules: read-only, no Cargo, no build, no oracle run. The oracle rows
+  the response cites (`docs/reviews/2026-11-19-remote-wiring-response.md`, `docs/remote.md`
+  "Review round 1" table) were read, not re-measured.
+- The credential implementer's edits in the same diff (`blaze_repo_fetch`,
+  `blaze_remote/src/authandtls`, `commands/query.rs`) belong to another reviewer. Of them only
+  `grpc/channel.rs` and `util/utils.rs` were read, for their effect on the wiring.
+
+## Verdict
+
+**PASS**, bound to `3bb3adf`. B1 to B5 are resolved. No blocking finding. Five non-blocking
+findings (R2-1 to R2-5) are listed below; R2-1 should be answered with oracle evidence in the
+next round of this area.
+
+## B1 to B5
+
+- **B1: resolved by a loud refusal.** `remote_module.rs:851` sets the flag at the point Java
+  calls `buildEventArtifactUploaderFactoryDelegate.init` (`RemoteModule.java:906`), which is
+  after the disk/HTTP-only return, so a disk cache alone does not set it (Java's delegate
+  returns `LocalFilesArtifactUploader` there, `:1362-1365`). `build.rs:157-178` refuses when the
+  flag is set, a text, binary or JSON file is requested, and the strategy is unset or `remote`;
+  that is `BuildEventArtifactUploaderFactoryMap.select` (`:33-42`: null picks the only
+  registered factory, any other name falls back to local). Coverage asked for by the lead:
+  - Every case where Bazel writes `bytestream://` into a BEP file is refused. I found none that
+    slips through: the three file transports are the only consumers of the uploader in a
+    `build`/`test` without `--bes_backend` (which is refused separately).
+  - One case is refused where Bazel would not write `bytestream://`: see R2-2.
+- **B2: resolved.** `execution_tool.rs:496-520` stores output metadata exactly when the module
+  has a cache, which is when Java's output service is `RemoteOutputService`
+  (`RemoteModule.java:694-697`, `RemoteOutputService.java:181-188`).
+  `skyframe_action_executor.rs:1052-1057` checks entries with the module's `RemoteOutputChecker`
+  and falls back to `TrustLocalOnly`. `setCheckMetadataTtl` has no caller in the pinned Java, so
+  trusting in-memory outputs without a clock is Java's behaviour. The loader and the injection
+  on a hit (`action_cache_checker.rs:723, 953-960`) follow `ActionCacheChecker.java:315`. The
+  oracle row for the no-clean rebuild is in `docs/remote.md`.
+- **B3: resolved.** `remote_module.rs:866-887`: provider shutdown, temp directory deleted with
+  the failure ignored, then the log close with `Partially wrote RPC log file`,
+  `LOCAL_ENVIRONMENTAL_ERROR`, `RPC_LOG_FAILURE`; Java's order and text
+  (`RemoteModule.java:1140-1173`). The citations of methods that do not exist are gone.
+- **B4: resolved.** `spawn_strategy_registry.rs:26-51` carries the explicit code;
+  `remote_module.rs:166-181` takes it; the four call sites pass Java's values
+  (`handleInitFailure` 2; log directory, stale downloads and RPC log 36);
+  `build.rs:217-229` uses it at both places a `RemoteModule` exception becomes the result.
+- **B5: resolved.** `remote_module.rs:1058-1076` returns `ReferenceCountedChannel::failed`
+  instead of an error. In `channel.rs` the creation error is returned before the capability
+  gate (`:506-510`) and by `get_server_capabilities_async` (`:433-435`) unwrapped, so the text
+  has no `Failed to query remote execution capabilities:` prefix, which matches a failure of
+  `Single.fromCallable(newChannel)` before `getAndVerifyServerCapabilities`
+  (`GoogleChannelConnectionFactory.java:102-105`). The eager fetch is skipped for such a
+  channel. The carrier status is UNKNOWN with a `CallIoError` source, as for the gate, so no
+  call site that tests a status code can mistake it.
+
+## N1, N3, N10
+
+- **N1: resolved.** `remote_module.rs:300-319` prints Java's warning text
+  (`RemoteModule.java:1271-1278`) when both flags are set and a cache exists, and refuses the
+  lease extension alone. The `LeaseService` without an extension is left out with a `PORT:`
+  note; it only acts after lost inputs, which needs rewinding.
+- **N3: resolved.** `remote_output_tree.rs:214-224`.
+- **N10: resolved.** The "Wiring" paragraph of `docs/remote.md` now describes Java's order and
+  codes. N2, N4, N5, N6 are listed under gaps.
+
+## Interaction of the credential edits with the wiring
+
+- `channel.rs:529-538`: the UNAUTHENTICATED status now carries the credential error as its
+  source. `status_to_io_error` only unwraps a `CallIoError` source, so this status is not
+  confused with a gate or creation error.
+- Order in `start_call`: shutdown, creation error, capability gate, then credentials. Java
+  acquires the connection before the call credentials run, so the order is right.
+- `utils.rs:486-494` walks the status' cause chain for a credential helper message; gate and
+  creation errors never reach it as a status (they are unwrapped first). No bad interaction
+  found.
+
+## Non-blocking findings
+
+- **R2-1 (S2) The execution log option error is described as thrown by `ExecutionTool`'s
+  constructor, and outranks the registry error.** `build.rs:414-427` turns the
+  `SpawnLogModule` error into `executor_init_error`; `execution_tool.rs:576-590` gives it
+  priority over the spawn strategy registry error; the comment says "SpawnLogModule.executorInit
+  throws from ExecutionTool's constructor". Java does not throw there:
+  `bazel/SpawnLogModule.java:85-97, 194-200` call `env.getBlazeModuleEnvironment().exit(...)`,
+  the constructor goes on, and `spawnStrategyRegistryBuilder.build()`
+  (`buildtool/ExecutionTool.java:207`) throws first if it fails; the pending exception is
+  thrown at the next `env.throwPendingException()` (`AnalysisAndExecutionPhaseRunner.java:113`).
+  Scenario: `--spawn_strategy=bogus --execution_log_json_file=a --execution_log_binary_file=b`.
+  Bazel reports the strategy error, Blaze reports "Must specify at most one of ...". Two
+  command-line errors are needed at once and both exit 2, so it does not block. The response
+  does not mention this change and gives no oracle row for it. Wanted: the comment corrected,
+  the priority reversed, and an oracle row for the single-error case (where the error appears
+  relative to the analysis output).
+- **R2-2 (S3) The BEP refusal is wider than Bazel's use of the uploader.** With
+  `--nobuild_event_json_file_path_conversion` (and the text/binary twins) Java gives that
+  transport a `LocalFilesArtifactUploader` (`BuildEventServiceModule.java:838, 868, 898`) and
+  writes `file://`. `build.rs:157-178` does not read the path conversion options and refuses.
+  Loud, with a documented way around it, so honest; it should not refuse when every requested
+  file has path conversion off.
+- **R2-3 (S3) Other users of the same uploader are not covered by the refusal.**
+  `--experimental_stream_log_file_uploads` routes the profile and the Skyframe dump through
+  `getBuildEventArtifactUploaderFactoryMap().select(...)` (`BuildTool.java:733-739, 790-796`).
+  Blaze has no reader of that option outside `blaze_optdefs`, so with a gRPC cache it is a
+  silent no-op. Outside the BEP file case B1 was about.
+- **R2-4 (S4) `build.rs:862-875` drops `AbruptExitException.exit_code`.** The
+  `ExecutionTool` path computes the exit code from the failure detail only. No exception with
+  an explicit code reaches it today.
+- **R2-5 (S3) The action cache's remote metadata path has end-to-end evidence for files only.**
+  `load_cached_output_metadata` also handles tree artifacts and archived trees; the bench
+  workspace has none, and with `--remote_download_outputs=all` only in-memory files are remote,
+  so that branch is not reached today.
+
+Round 1's N2, N4, N5, N6, N7, N8 and N9 stand as written. N9's description of Java was
+imprecise: `ExecutionTool.<init>` runs `executorInit`, `registerActionContexts` and
+`registerSpawnStrategies` per module, in that order (`ExecutionTool.java:170-185`).

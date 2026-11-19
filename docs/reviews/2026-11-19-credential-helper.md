@@ -263,3 +263,132 @@ B1 and B2 fixed (or shown wrong with Java evidence), then this role re-reads the
 For B1 an oracle run of `--credential_helper=<missing>` should be recorded (exit code and
 stderr). For B2 the re-check is that a panic from the credentials becomes the status Java
 produces and that no header value is printed on the way.
+
+## Round 2 (commit 3bb3adf, fixes for the STOP on 3353c77)
+
+Verdict: **PASS**, bound to commit 3bb3adf, for the credential helper area.
+
+Same rules as round 1: read from the commit (`git show 3bb3adf:<path>`,
+`git diff 3353c77 3bb3adf`), nothing run. Test counts and the oracle record are the
+implementer's (`docs/reviews/2026-11-19-credential-helper-response.md`); I read the test sources,
+not their results. Gson's source is still not available, so the grammar check below is against
+`JsonReader` 2.11 as I know it (recalled). The implementer's `javap` evidence for google-auth
+and grpc-auth agrees with what I recalled in round 1.
+
+### B1: fixed
+
+- `crates/blaze_runtime/src/commands/query.rs:212-236` (`external_repos_detailed_exit_code`)
+  gives the message `Error initializing credential helper` the failure detail
+  `ExternalRepository.CREDENTIALS_INIT_FAILURE` through `DetailedExitCode::of`; the response
+  records the oracle run (exit 2, two `ERROR:` lines) and a byte-identical Blaze stderr.
+- Matching on the message text: acceptable for this finding. The match is exact equality with
+  a constant that only `setup.rs:522` produces, and no other set-up message can equal it (the
+  others carry a path or a parse error). It is marked `// PORT:`. It does not hide anything
+  that was visible before.
+- It does not fix the other exits of `BazelRepositoryModule.beforeCommand`, and the response
+  says so. They are wrong today and are not part of this area: `BAD_DOWNLOADER_CONFIG` and
+  the four `BAD_REPO_CONTENTS_CACHE` exits are exit code 2 in Bazel
+  (`failure_details.proto:259-262`, `BazelRepositoryModule.java:353-412`, `:440-446`) and 36
+  with `EXTERNAL_REPOSITORY_UNKNOWN` in Blaze. See R2-1.
+
+### B2: fixed
+
+- `credentialhelper/unchecked_exception.rs` (new), used at the four throw sites
+  (`credential_cache_expiry.rs:14-18`, `credential_helper.rs:169-171`, `wall_ticker.rs:36-38`,
+  `get_credentials_response.rs:104-111`); `blaze_remote/src/authandtls/google_auth_utils.rs:136-145`
+  wraps the blocking call in `catch_unchecked`; `grpc/channel.rs:533-538` builds
+  `UNAUTHENTICATED` with the description exactly `Failed computing credential metadata` and the
+  error as source; `util/utils.rs:260-271`, `:486-494` append the message of the first
+  `CredentialHelperException` in the cause chain, as `Utils.java:372-378`.
+- The panic hook (`unchecked_exception.rs:60-81`), questions from the lead:
+  - Can it swallow an unrelated panic or an `unported!`? No. A payload that is not an
+    `UncheckedException` goes to the previous hook unconditionally (`:64-66`), whatever
+    `CATCHING` is. `catch_unchecked` re-raises any other payload (`:112-115`).
+  - Can it swallow an `UncheckedException` on another thread while one thread is catching? No.
+    `CATCHING` is thread-local (`:53-56`); the hook runs on the panicking thread and reads that
+    thread's count.
+  - Is anything that it silences lost? No. Silence requires `CATCHING > 0` on the panicking
+    thread, and then the enclosing `catch_unchecked` on that thread receives the payload and
+    returns it as `Err`. The closure at `google_auth_utils.rs:137` is synchronous, so the count
+    cannot leak across an `.await`; the decrement at `:109` runs on both outcomes.
+  - Is the hook left replaced? Yes, permanently, from the first throw (`Once`). It delegates,
+    so the only lasting effect is the print format of an uncaught `UncheckedException`. The
+    workspace `Cargo.toml` has no `panic = "abort"` profile; with one, a caught throw would
+    abort silently, so that setting must not be added without revisiting this file. No other
+    production code sets a panic hook (`git grep set_hook`: tests and `starlark_conformance`
+    only). If a later hook replaces this one, an uncaught `UncheckedException` prints as an
+    opaque payload, which leaks nothing.
+- Uncaught on the downloader path the hook prints the exception's `toString()`, header values
+  included for the duplicate-name case. That is Bazel's behaviour there (crash with the same
+  text), as noted in round 1. `UncheckedException`'s `Debug` prints the class only (`:35-42`).
+- Cause chain: I traced `Status` (source `io::Error` holding the `IoException`) through
+  `status_to_io_error` and `StatusRuntimeException`, and found no place in `blaze_remote/src`
+  that rebuilds a status from code and message on this path. The unit test builds the status
+  by hand; there is still no end-to-end run with a failing helper against a gRPC endpoint, so
+  the printed line for that case rests on reading.
+
+### N1, the lenient reader (`gson.rs:176-343`)
+
+Compared with `JsonReader.doPeek`, `nextNonWhitespace`, `consumeNonExecutePrefix`,
+`peekKeyword`, `peekNumber`, `isLiteral`, `nextQuotedValue`, `readEscapeCharacter` (recalled).
+Structure, separators, comments, the non-execute prefix, missing array elements, the literal
+terminator set and the byte order mark agree.
+
+What becomes a header value: a double-quoted string, a single-quoted string, or an unquoted
+literal (token `STRING` in Gson too; includes `01`, `NaN`, `1.5.2`, `+1`). Numbers, booleans
+and `null` are rejected by the adapter in both. I found no input the port accepts as a header
+value that Gson rejects, except:
+
+- `:457`: a `\u` escape with a leading `+` (`\u+041`) is accepted; Gson fails with "Malformed
+  Unicode escape". Open from round 1 (N8), S4.
+
+Other differences, all S4 and none on a well-formed answer:
+
+- A document that is only the `)]}'` prefix line: Gson returns null ("process exited without
+  output"); the port fails the first peek ("error parsing output") (`:190-198`, `:604-612`).
+- Gson gives up on a number longer than its buffer (1024 characters) and reads it as an
+  unquoted string; the port reads a number.
+- The port parses a quoted string when it is peeked, Gson when it is consumed; an adapter type
+  error can therefore be replaced by a string syntax error. Both are `JsonSyntaxException`s
+  with the same outer message.
+- The response's "remaining difference" (numbers outside `long` read as literals by Gson) is
+  not one as far as I know: `peekNumber` returns `PEEKED_NUMBER` for those, a `NUMBER` token.
+
+### N2, N5, N12: fixed
+
+- N2: description and cause as above; the six comments now state the real reason the
+  `catch (CredentialHelperException)` clauses have no counterpart. `CredentialHelperException`
+  is `IoExceptionKind::CredentialHelperException` (`errors.rs:42-43`,
+  `credential_helper_exception.rs:60-64`).
+- N5: `credential_cache_expiry.rs:27-30`, `credential_module.rs:68-69` say the runtime calls
+  `before_command`.
+- N12: `authandtls/mod.rs:34-45`, `Debug` prints URIs and header names.
+
+### New findings (non-blocking)
+
+**R2-1 (S2). A new test takes its expectation from Blaze and pins a value Java contradicts.**
+`crates/blaze_runtime/src/commands/query.rs:376-380`
+(`other_repository_setup_failures_exit_36`) asserts exit code 36 for "could not acquire lock".
+Bazel's message is `could not acquire lock on repo contents cache` with
+`BAD_REPO_CONTENTS_CACHE`, exit code 2 (`BazelRepositoryModule.java:409-412`). The underlying
+wrong exit codes are an S1 in the repository set-up area (older code, disclosed in the
+response): `blaze build --downloader_config=<file with a syntax error> //x` exits 2 in Bazel and
+36 in Blaze. The lead should record that against the set-up area; the test should stop
+asserting 36 for a Java message, and the set-up should return a failure code with its message
+so that `query.rs` does not match text at all.
+
+**R2-2 (S4).** The new tests `lenient_syntax_is_read_like_gson`,
+`a_leading_byte_order_mark_is_skipped`, `standard_syntax_errors_stay_syntax_errors` have
+expectations from reading Gson, not from a Java test or the oracle (same class as N11). The
+cases I derived agree.
+
+### Still open from round 1
+
+N3 (no gRPC run with a failing helper; `docs/remote.md` has no helper row), N4 (honest gaps),
+N6 (`// Java:` line numbers), N7, N8 (`\u+`), N9, N10, N11.
+
+### Regressions
+
+None found in the credential files. `remote_module.rs`' credential wiring is unchanged between
+the two commits. The rest of 3bb3adf (lazy channel, action cache metadata, strategy registry,
+`build.rs`) belongs to the remote wiring review and was not reviewed here.
