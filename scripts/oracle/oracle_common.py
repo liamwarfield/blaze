@@ -170,3 +170,65 @@ def extractor_sha256():
     for name in ("normalise.py", "surfaces.py"):
         h.update(name.encode() + b"\0" + sha256_file(os.path.join(here, name)).encode() + b"\n")
     return h.hexdigest()
+
+
+def _iso(ts):
+    import datetime
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def binary_origin(binary, root=None):
+    """Whether `binary` can have been built from the checkout at `root` (default: this one).
+
+    Audit R2A-2: the commit in a manifest is the recorder's checkout, and `--binary` may be any
+    file. Without a commit stamped into the binary, the check is what the file system says:
+      * the binary's real path lies inside <root>/target (the checkout's Cargo target dir;
+        AGENTS.md forbids CARGO_TARGET_DIR), and
+      * the binary was modified at or after the checkout's HEAD commit time (a binary older than
+        HEAD was built from an earlier commit).
+    {"commit_verified": bool, "reasons": [why not], "binary_realpath", "target_dir",
+     "binary_mtime", "head_commit_time"}. Nothing here proves that a dirty tree's uncommitted state
+    is what was built: that is the dirty flag's business (scoreboard --write refuses it).
+    """
+    root = os.path.realpath(root or REPO_ROOT)
+    real = os.path.realpath(binary)
+    target = os.path.join(root, "target")
+    out = {"commit_verified": False, "reasons": [], "binary_realpath": real, "target_dir": target,
+           "binary_mtime": None, "head_commit_time": None}
+    if not (real + os.sep).startswith(target + os.sep):
+        out["reasons"].append("binary is not inside the recorder's checkout target dir %s" % target)
+    try:
+        mtime = os.stat(real).st_mtime
+        out["binary_mtime"] = _iso(mtime)
+    except OSError as e:
+        out["reasons"].append("cannot stat the binary: %s" % e)
+        mtime = None
+    ct = _git(root, "log", "-1", "--format=%ct", "HEAD")
+    if ct is None or not ct.strip():
+        out["reasons"].append("the recorder's checkout has no HEAD commit")
+    else:
+        head_time = int(ct.decode().strip())
+        out["head_commit_time"] = _iso(head_time)
+        if mtime is not None and mtime < head_time:
+            out["reasons"].append("binary (modified %s) is older than the checkout's HEAD commit (%s)" % (
+                out["binary_mtime"], out["head_commit_time"]))
+    out["commit_verified"] = not out["reasons"]
+    return out
+
+
+def head_version_differs(path):
+    """True when `path` (a file of this repository) differs from its version at HEAD or is not
+    committed; None when it is not inside this repository or git is unavailable."""
+    real = os.path.realpath(path)
+    root = os.path.realpath(REPO_ROOT)
+    if not real.startswith(root + os.sep):
+        return None
+    rel = os.path.relpath(real, root)
+    head = _git(root, "show", "HEAD:" + rel)
+    if head is None:
+        return True
+    try:
+        with open(real, "rb") as f:
+            return f.read() != head
+    except OSError:
+        return True

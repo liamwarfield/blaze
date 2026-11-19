@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Server-capabilities and connection-failure scenarios (review 2026-11-19, R3/R14), run with the
+# oracle or with Blaze on a one-genrule probe workspace.
+#
+# usage: scripts/remote/caps-matrix <oracle|BINARY> <tag> [scenario...]
+#        scripts/remote/caps-matrix help
+#
+# Each scenario runs `build //:a` with a fresh output base through scripts/remote/ws-run, as run
+# `ry-caps-<tag>-<scenario>`; results land in ~/.cache/blaze/work/remote/ry-caps-<tag>-<scenario>/
+# run1/{stdout,stderr,exit}. The probe workspace is ~/.cache/blaze/work/remote/ry-src (created
+# here when missing). Servers used (started here, stopped at the end):
+#   worker ry-caps   on localhost:9401 (Bazel's remote worker; reports no ZSTD compressor)
+#   worker ry-auth   on localhost:9402 (--expected_authorization_token=ry-token)
+#   python http.server on localhost:9403 (answers HTTP/1, not gRPC)
+# localhost:9499 is assumed closed (unreachable endpoint).
+#
+# Scenarios (default: all):
+#   unreach-cache          --remote_cache=grpc://localhost:9499
+#   unreach-cache-fb       ... --remote_local_fallback --incompatible_remote_local_fallback_for_remote_cache
+#   unreach-exec           --remote_executor=grpc://localhost:9499
+#   unreach-exec-fb        ... --remote_local_fallback
+#   zstd-cache             --remote_cache=grpc://localhost:9401 --remote_cache_compression
+#   zstd-exec              --remote_executor=grpc://localhost:9401 --remote_cache_compression
+#   auth-cache             --remote_cache=grpc://localhost:9402 (no credentials)
+#   http-cache             --remote_cache=grpc://localhost:9403
+#   badcert-cache          --remote_cache=grpcs://localhost:9401 --tls_certificate=/nonexistent
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+src="$HOME/.cache/blaze/work/remote/ry-src"
+
+if [[ $# -lt 1 || "$1" == help || "$1" == --help || "$1" == -h ]]; then
+  sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+binary="$1"
+tag="$2"
+shift 2
+all=(unreach-cache unreach-cache-fb unreach-exec unreach-exec-fb zstd-cache zstd-exec auth-cache
+  http-cache badcert-cache)
+scenarios=("$@")
+[[ ${#scenarios[@]} -eq 0 ]] && scenarios=("${all[@]}")
+
+if [[ ! -f "$src/MODULE.bazel" ]]; then
+  mkdir -p "$src"
+  echo 'module(name = "ry_probe")' >"$src/MODULE.bazel"
+  printf 'genrule(\n    name = "a",\n    outs = ["a.txt"],\n    cmd = "echo hello > $@",\n)\n' \
+    >"$src/BUILD.bazel"
+fi
+
+need_caps=0 need_auth=0 need_http=0
+for s in "${scenarios[@]}"; do
+  case "$s" in
+    zstd-*|badcert-*) need_caps=1 ;;
+    auth-*) need_auth=1 ;;
+    http-*) need_http=1 ;;
+  esac
+done
+http_pid=""
+cleanup() {
+  [[ $need_caps == 1 ]] && "$here/worker" stop ry-caps >/dev/null 2>&1 || true
+  [[ $need_auth == 1 ]] && "$here/worker" stop ry-auth >/dev/null 2>&1 || true
+  [[ -n "$http_pid" ]] && kill "$http_pid" 2>/dev/null || true
+}
+trap cleanup EXIT
+[[ $need_caps == 1 ]] && "$here/worker" start ry-caps 9401 >/dev/null
+[[ $need_auth == 1 ]] && "$here/worker" start ry-auth 9402 --expected_authorization_token=ry-token >/dev/null
+if [[ $need_http == 1 ]]; then
+  mkdir -p "$HOME/.cache/blaze/work/remote/ry-http"
+  (cd "$HOME/.cache/blaze/work/remote/ry-http" && exec python3 -I -m http.server 9403 --bind 127.0.0.1) \
+    >/dev/null 2>&1 &
+  http_pid=$!
+  sleep 1
+fi
+
+for s in "${scenarios[@]}"; do
+  case "$s" in
+    unreach-cache) opts=(--remote_cache=grpc://localhost:9499) ;;
+    unreach-cache-fb) opts=(--remote_cache=grpc://localhost:9499 --remote_local_fallback
+      --incompatible_remote_local_fallback_for_remote_cache) ;;
+    unreach-exec) opts=(--remote_executor=grpc://localhost:9499) ;;
+    unreach-exec-fb) opts=(--remote_executor=grpc://localhost:9499 --remote_local_fallback) ;;
+    zstd-cache) opts=(--remote_cache=grpc://localhost:9401 --remote_cache_compression) ;;
+    zstd-exec) opts=(--remote_executor=grpc://localhost:9401 --remote_cache_compression) ;;
+    auth-cache) opts=(--remote_cache=grpc://localhost:9402) ;;
+    http-cache) opts=(--remote_cache=grpc://localhost:9403) ;;
+    badcert-cache) opts=(--remote_cache=grpcs://localhost:9401 --tls_certificate=/nonexistent/ca.pem) ;;
+    *) echo "unknown scenario: $s" >&2; exit 2 ;;
+  esac
+  echo "== $s"
+  "$here/ws-run" "ry-caps-$tag-$s" "$src" "$binary" --fresh -- build //:a "${opts[@]}" || true
+done

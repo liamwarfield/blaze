@@ -73,8 +73,30 @@ pub trait ActionExecutionContext: ActionContextRegistry {
     fn get_input_metadata_provider(&self) -> &dyn InputMetadataProvider;
 
     /// `getActionFileSystem()`: `None` unless an action file system is in use.
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:376 ActionExecutionContext.getActionFileSystem
     fn get_action_file_system(&self) -> Option<FileSystemRef> {
+        self.get_remote_action_file_system()
+            .map(|fs| fs.as_file_system())
+    }
+
+    /// `getActionFileSystem()` when it is the `RemoteActionFileSystem` of build without the
+    /// bytes (the only action file system Blaze has): `RemoteOutputService.createActionFileSystem`.
+    /// `None` without the remote output service.
+    fn get_remote_action_file_system(
+        &self,
+    ) -> Option<Arc<crate::exec::remote_action_file_system::RemoteActionFileSystem>> {
         None
+    }
+
+    /// `getPathResolver().convertPath(path)`: `path` on the action file system
+    /// (`TransformResolver`), or `path` itself (`IdentityResolver`).
+    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:124 TransformResolver.convertPath
+    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:86 IdentityResolver.convertPath
+    fn convert_path(&self, path: &Path) -> Path {
+        match self.get_action_file_system() {
+            Some(file_system) => Path::create(path.as_fragment().clone(), &file_system),
+            None => path.clone(),
+        }
     }
 
     /// `getFileOutErr()`.
@@ -127,11 +149,11 @@ pub trait ActionExecutionContext: ActionContextRegistry {
         false
     }
 
-    /// `getInputPath(ActionInput)`: the path of `input` for this action (the execroot path; no
-    /// action file system).
+    /// `getInputPath(ActionInput)`: the path of `input` for this action (the execroot path, on
+    /// the action file system when there is one).
     // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:401 ActionExecutionContext.getInputPath
     fn get_input_path(&self, input: &dyn crate::actions::ActionInput) -> Path {
-        self.get_exec_root().get_relative(input.get_exec_path())
+        self.convert_path(&self.get_exec_root().get_relative(input.get_exec_path()))
     }
 
     /// `getVerboseFailures()` (`--verbose_failures`).
@@ -205,19 +227,20 @@ pub trait ActionFinalizer: Send + Sync {
     ) -> io::Result<()>;
 }
 
-/// The outputs of this build that exist only remotely (build without the bytes): what
-/// `RemoteExecutionService.downloadOutputs` injects instead of writing a file
-/// (`RemoteActionFileSystem.injectRemoteFile` into its remote output tree), keyed by absolute
-/// path. The output metadata store of an action consults it before the local file system, as
-/// `RemoteActionFileSystem.statInternal` stats the remote output tree before the local one, so
-/// the action's value (and every downstream input) carries the remote metadata.
+/// The remote output tree of a [`RemoteActionFileSystem`]: the outputs of one action that exist
+/// only remotely (build without the bytes), what `RemoteExecutionService.downloadOutputs`
+/// injects instead of writing a file (`RemoteActionFileSystem.injectRemoteFile`), keyed by
+/// absolute path. The action's output metadata store stats its outputs through the action file
+/// system, which consults this tree before the local file system.
 ///
-/// PORT: Java gives each action a `RemoteActionFileSystem` (the action file system of
-/// `RemoteOutputService`) whose remote output tree holds the injected outputs of that action.
-/// Blaze has no action file system; this one tree serves the whole build (one command per
-/// process, and every action executes at most once in it). Register it as the context
-/// `RemoteOutputTree`.
-// Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:308 RemoteActionFileSystem.injectRemoteFile
+/// One tree per action (Java's `RemoteInMemoryFileSystem` of the action's
+/// `RemoteActionFileSystem`), so an action result can only describe that action's outputs.
+/// A tree registered as the context `RemoteOutputTree` marks a build whose output service is
+/// the remote one (the executor then gives every action a [`RemoteActionFileSystem`]); it is
+/// also the injector of a spawn context without an action file system (tests, replay).
+///
+/// [`RemoteActionFileSystem`]: crate::exec::remote_action_file_system::RemoteActionFileSystem
+// Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:927 RemoteActionFileSystem.RemoteInMemoryFileSystem
 #[derive(Debug, Default)]
 pub struct RemoteOutputTree {
     files:
@@ -233,60 +256,75 @@ impl RemoteOutputTree {
     }
 
     /// `remoteOutputTree.injectFile(path, metadata)`.
-    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:316 RemoteActionFileSystem.injectRemoteFile
+    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:943 RemoteInMemoryFileSystem.injectFile
     pub fn inject_file(&self, path: blaze_vfs::PathFragment, metadata: FileArtifactValue) {
+        blaze_util::check_argument!(
+            metadata.is_remote(),
+            "metadata is not remote: {:?}",
+            metadata
+        );
         self.files.lock().insert(path, metadata);
     }
 
     /// The injected metadata of the output at the absolute `path`, if any
-    /// (`remoteOutputTree.statIfFound(path)` as a `FileStatusWithMetadata`).
+    /// (`remoteOutputTree.statIfFound(path, NOFOLLOW)` as a `FileStatusWithMetadata`).
     pub fn get_metadata(&self, path: &blaze_vfs::PathFragment) -> Option<FileArtifactValue> {
         self.files.lock().get(path).cloned()
     }
 
-    /// The metadata of the output at `path` as the action file system's stat finds it in the
-    /// remote output tree: the injected metadata of `path`, or, when `path` is a local symbolic
-    /// link (an output a local action created, such as a `SolibSymlinkAction`'s) whose chain
-    /// reaches an injected output, that output's metadata with the real path recorded
-    /// (`FileArtifactValue.createFromExistingWithResolvedPath`). `None` when the remote output
-    /// tree does not know the file.
-    ///
-    /// PORT: Java canonicalizes the path through the `RemoteActionFileSystem`
-    /// (`resolveSymbolicLinks`, which consults the remote output tree for every component) and
-    /// stats the real path there; the links followed here are local ones, each target resolved
-    /// against the link's directory.
-    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:667 RemoteActionFileSystem.statInternal
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:478 ActionOutputMetadataStore.fileArtifactValueFromArtifact
-    pub fn get_output_metadata(
-        &self,
-        path: &blaze_vfs::Path,
-    ) -> io::Result<Option<FileArtifactValue>> {
-        if let Some(value) = self.get_metadata(path.as_fragment()) {
-            return Ok(Some(value));
-        }
-        let mut current = path.clone();
-        for _ in 0..blaze_vfs::MAX_SYMLINKS {
-            let Some(stat) = current.stat_if_found(blaze_vfs::Symlinks::Nofollow)? else {
-                return Ok(None);
-            };
-            if !stat.is_symbolic_link() {
-                return Ok(None);
+    /// Whether `path` is a directory of the tree: an ancestor of an injected file
+    /// (`injectFile` creates the parent directories).
+    pub fn is_directory(&self, path: &blaze_vfs::PathFragment) -> bool {
+        self.files
+            .lock()
+            .keys()
+            .any(|p| p != path && p.starts_with(path))
+    }
+
+    /// `remoteOutputTree.getPath(path).readdir(NOFOLLOW)`: `None` when `path` is not a
+    /// directory of the tree.
+    pub fn readdir(&self, path: &blaze_vfs::PathFragment) -> Option<Vec<blaze_vfs::Dirent>> {
+        let files = self.files.lock();
+        let mut entries: std::collections::BTreeMap<String, blaze_vfs::DirentType> =
+            std::collections::BTreeMap::new();
+        for file in files.keys() {
+            if file == path || !file.starts_with(path) {
+                continue;
             }
-            let target = current.read_symbolic_link()?;
-            current = match current.get_parent_directory() {
-                Some(parent) => parent.get_relative(&target),
-                None => current.get_relative(&target),
+            let relative = file.relative_to(path);
+            let mut segments = relative.segments();
+            let Some(first) = segments.next() else {
+                continue;
             };
-            if let Some(value) = self.get_metadata(current.as_fragment()) {
-                return Ok(Some(
-                    FileArtifactValue::create_from_existing_with_resolved_path(
-                        value,
-                        current.as_fragment().clone(),
-                    ),
-                ));
-            }
+            let type_ = if segments.next().is_some() {
+                blaze_vfs::DirentType::Directory
+            } else {
+                blaze_vfs::DirentType::File
+            };
+            entries.insert(first.to_string(), type_);
         }
-        Ok(None)
+        if entries.is_empty() {
+            return None;
+        }
+        Some(
+            entries
+                .into_iter()
+                .map(|(name, type_)| blaze_vfs::Dirent::new(name, type_))
+                .collect(),
+        )
+    }
+
+    /// `remoteOutputTree.renameTo(src, dst)` for a file; false (Java's `FileNotFoundException`)
+    /// when the tree has no file at `src`.
+    pub fn rename(&self, src: &blaze_vfs::PathFragment, dst: &blaze_vfs::PathFragment) -> bool {
+        let mut files = self.files.lock();
+        match files.remove(src) {
+            Some(metadata) => {
+                files.insert(dst.clone(), metadata);
+                true
+            }
+            None => false,
+        }
     }
 
     /// The injected files below the directory `dir` (absolute), with their paths relative to
@@ -310,9 +348,10 @@ impl RemoteOutputTree {
         files
     }
 
-    /// Forgets the output at `path` (it was deleted or written locally).
-    pub fn remove(&self, path: &blaze_vfs::PathFragment) {
-        self.files.lock().remove(path);
+    /// Forgets the output at `path` (`remoteOutputTree.getPath(path).delete()`); true iff it
+    /// was there.
+    pub fn remove(&self, path: &blaze_vfs::PathFragment) -> bool {
+        self.files.lock().remove(path).is_some()
     }
 
     /// The tree registered as the context `RemoteOutputTree` (`context` is the registry's
@@ -335,222 +374,6 @@ impl RemoteOutputTree {
     /// Whether an output metadata store consults this tree.
     pub fn is_attached(&self) -> bool {
         self.attached.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-/// The local file system seen through the build's [`RemoteOutputTree`]: an output that was not
-/// downloaded is a regular file with the size and digest of its remote metadata, as in the
-/// `RemoteActionFileSystem` Java gives an action (`stat`, `getDigest`, `exists`, ...); every
-/// other operation is the local file system's.
-///
-/// PORT: Java's spawn log context reads the outputs of a spawn through
-/// `actionExecutionContext.getActionFileSystem()`; Blaze has no action file system, so
-/// `AbstractSpawnStrategy` gives the log context this view when a remote output tree is
-/// registered. Only the read side of the action file system is ported.
-// Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:106 RemoteActionFileSystem
-#[derive(Debug)]
-pub struct RemoteOutputTreeFileSystem {
-    local: FileSystemRef,
-    tree: Arc<RemoteOutputTree>,
-}
-
-impl RemoteOutputTreeFileSystem {
-    /// The view of `local` through `tree`.
-    pub fn create(local: FileSystemRef, tree: Arc<RemoteOutputTree>) -> FileSystemRef {
-        Arc::new(RemoteOutputTreeFileSystem { local, tree })
-    }
-
-    /// The remote metadata of `path` (following symbolic links when `follow_symlinks`).
-    fn remote_metadata(
-        &self,
-        path: &blaze_vfs::PathFragment,
-        follow_symlinks: bool,
-    ) -> Option<FileArtifactValue> {
-        if !follow_symlinks {
-            return self.tree.get_metadata(path);
-        }
-        let local_path = Path::create(path.clone(), &self.local);
-        self.tree.get_output_metadata(&local_path).ok().flatten()
-    }
-
-    /// `statFromMetadata(metadata)`: a regular file of the metadata's size.
-    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:709 RemoteActionFileSystem.statFromMetadata
-    fn stat_from_metadata(metadata: &FileArtifactValue) -> blaze_vfs::FileStatus {
-        // S_IFREG | r-xr-xr-x
-        blaze_vfs::FileStatus::new(0o100_555, 0, 0, metadata.get_size(), 0)
-    }
-}
-
-impl blaze_vfs::FileSystem for RemoteOutputTreeFileSystem {
-    fn get_digest_function(&self) -> blaze_vfs::DigestHashFunction {
-        self.local.get_digest_function()
-    }
-    fn supports_modifications(&self, path: &blaze_vfs::PathFragment) -> bool {
-        self.local.supports_modifications(path)
-    }
-    fn supports_symbolic_links_natively(&self, path: &blaze_vfs::PathFragment) -> bool {
-        self.local.supports_symbolic_links_natively(path)
-    }
-    fn supports_hard_links_natively(&self, path: &blaze_vfs::PathFragment) -> bool {
-        self.local.supports_hard_links_natively(path)
-    }
-    fn may_be_case_or_normalization_insensitive(&self) -> bool {
-        self.local.may_be_case_or_normalization_insensitive()
-    }
-    fn create_directory(&self, path: &blaze_vfs::PathFragment) -> io::Result<bool> {
-        self.local.create_directory(path)
-    }
-    fn create_directory_and_parents(&self, path: &blaze_vfs::PathFragment) -> io::Result<()> {
-        self.local.create_directory_and_parents(path)
-    }
-    fn get_file_size(
-        &self,
-        path: &blaze_vfs::PathFragment,
-        follow_symlinks: bool,
-    ) -> io::Result<i64> {
-        match self.remote_metadata(path, follow_symlinks) {
-            Some(metadata) => Ok(metadata.get_size()),
-            None => self.local.get_file_size(path, follow_symlinks),
-        }
-    }
-    fn delete(&self, path: &blaze_vfs::PathFragment) -> io::Result<bool> {
-        self.local.delete(path)
-    }
-    fn get_last_modified_time(
-        &self,
-        path: &blaze_vfs::PathFragment,
-        follow_symlinks: bool,
-    ) -> io::Result<i64> {
-        match self.remote_metadata(path, follow_symlinks) {
-            Some(_) => Ok(0),
-            None => self.local.get_last_modified_time(path, follow_symlinks),
-        }
-    }
-    fn set_last_modified_time(
-        &self,
-        path: &blaze_vfs::PathFragment,
-        new_time: i64,
-    ) -> io::Result<()> {
-        self.local.set_last_modified_time(path, new_time)
-    }
-    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:463 RemoteActionFileSystem.getFastDigest
-    fn get_fast_digest(&self, path: &blaze_vfs::PathFragment) -> io::Result<Option<Vec<u8>>> {
-        match self.remote_metadata(path, true) {
-            Some(metadata) => Ok(metadata.get_digest().map(<[u8]>::to_vec)),
-            None => self.local.get_fast_digest(path),
-        }
-    }
-    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:476 RemoteActionFileSystem.getDigest
-    fn get_digest(&self, path: &blaze_vfs::PathFragment) -> io::Result<Vec<u8>> {
-        match self.remote_metadata(path, true) {
-            Some(metadata) if metadata.get_digest().is_some() => {
-                Ok(metadata.get_digest().map(<[u8]>::to_vec).expect("checked"))
-            }
-            _ => self.local.get_digest(path),
-        }
-    }
-    fn resolve_one_link(
-        &self,
-        path: &blaze_vfs::PathFragment,
-    ) -> io::Result<Option<blaze_vfs::PathFragment>> {
-        self.local.resolve_one_link(path)
-    }
-    fn resolve_symbolic_links(
-        &self,
-        path: &blaze_vfs::PathFragment,
-    ) -> io::Result<blaze_vfs::PathFragment> {
-        self.local.resolve_symbolic_links(path)
-    }
-    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:631 RemoteActionFileSystem.stat
-    fn stat(
-        &self,
-        path: &blaze_vfs::PathFragment,
-        follow_symlinks: bool,
-    ) -> io::Result<blaze_vfs::FileStatus> {
-        match self.remote_metadata(path, follow_symlinks) {
-            Some(metadata) => Ok(Self::stat_from_metadata(&metadata)),
-            None => self.local.stat(path, follow_symlinks),
-        }
-    }
-    fn stat_if_found(
-        &self,
-        path: &blaze_vfs::PathFragment,
-        follow_symlinks: bool,
-    ) -> io::Result<Option<blaze_vfs::FileStatus>> {
-        match self.remote_metadata(path, follow_symlinks) {
-            Some(metadata) => Ok(Some(Self::stat_from_metadata(&metadata))),
-            None => self.local.stat_if_found(path, follow_symlinks),
-        }
-    }
-    fn create_symbolic_link(
-        &self,
-        link_path: &blaze_vfs::PathFragment,
-        target_fragment: &blaze_vfs::PathFragment,
-    ) -> io::Result<()> {
-        self.local.create_symbolic_link(link_path, target_fragment)
-    }
-    fn read_symbolic_link(
-        &self,
-        path: &blaze_vfs::PathFragment,
-    ) -> io::Result<blaze_vfs::PathFragment> {
-        self.local.read_symbolic_link(path)
-    }
-    fn exists(&self, path: &blaze_vfs::PathFragment, follow_symlinks: bool) -> bool {
-        self.remote_metadata(path, follow_symlinks).is_some()
-            || self.local.exists(path, follow_symlinks)
-    }
-    fn get_directory_entries(&self, path: &blaze_vfs::PathFragment) -> io::Result<Vec<String>> {
-        self.local.get_directory_entries(path)
-    }
-    fn is_readable(&self, path: &blaze_vfs::PathFragment) -> io::Result<bool> {
-        self.local.is_readable(path)
-    }
-    fn set_readable(&self, path: &blaze_vfs::PathFragment, readable: bool) -> io::Result<()> {
-        self.local.set_readable(path, readable)
-    }
-    fn is_writable(&self, path: &blaze_vfs::PathFragment) -> io::Result<bool> {
-        self.local.is_writable(path)
-    }
-    fn set_writable(&self, path: &blaze_vfs::PathFragment, writable: bool) -> io::Result<()> {
-        self.local.set_writable(path, writable)
-    }
-    fn is_executable(&self, path: &blaze_vfs::PathFragment) -> io::Result<bool> {
-        self.local.is_executable(path)
-    }
-    fn set_executable(&self, path: &blaze_vfs::PathFragment, executable: bool) -> io::Result<()> {
-        self.local.set_executable(path, executable)
-    }
-    fn chmod(&self, path: &blaze_vfs::PathFragment, mode: u32) -> io::Result<()> {
-        self.local.chmod(path, mode)
-    }
-    fn get_input_stream(
-        &self,
-        path: &blaze_vfs::PathFragment,
-    ) -> io::Result<Box<dyn std::io::Read + Send>> {
-        self.local.get_input_stream(path)
-    }
-    fn get_output_stream(
-        &self,
-        path: &blaze_vfs::PathFragment,
-        append: bool,
-        internal: bool,
-    ) -> io::Result<Box<dyn std::io::Write + Send>> {
-        self.local.get_output_stream(path, append, internal)
-    }
-    fn rename_to(
-        &self,
-        source_path: &blaze_vfs::PathFragment,
-        target_path: &blaze_vfs::PathFragment,
-    ) -> io::Result<()> {
-        self.local.rename_to(source_path, target_path)
-    }
-    fn create_fs_dependent_hard_link(
-        &self,
-        link_path: &blaze_vfs::PathFragment,
-        original_path: &blaze_vfs::PathFragment,
-    ) -> io::Result<()> {
-        self.local
-            .create_fs_dependent_hard_link(link_path, original_path)
     }
 }
 

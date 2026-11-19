@@ -75,6 +75,12 @@ pub trait CircuitBreaker: Send + Sync {
 
     /// Called after an execution succeeded.
     fn record_success(&self);
+
+    /// The circuit breaker as `Any`, for the tests' `isInstanceOf` checks (`None` for circuit
+    /// breakers that do not support it).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// Thrown if the call was stopped by a circuit breaker.
@@ -157,11 +163,12 @@ where
     }
 }
 
-/// `MILLISECONDS::sleep`, the sleeper of the public constructor.
+/// `MILLISECONDS::sleep`, the sleeper of the public constructor: interruptible (an interrupt of
+/// the sleeping thread ends it with an `InterruptedException`).
 // Java: java/util/concurrent/TimeUnit.java TimeUnit.sleep
 fn milliseconds_sleep(millis: i64) -> io::Result<()> {
     if millis > 0 {
-        std::thread::sleep(Duration::from_millis(millis as u64));
+        crate::runtime::sleep(Duration::from_millis(millis as u64))?;
     }
     Ok(())
 }
@@ -370,9 +377,9 @@ impl Retrier {
             if CircuitBreakerState::RejectCalls == circuit_state {
                 return Err(CircuitBreakerException::new().into());
             }
-            // PORT: `if (Thread.interrupted()) throw new InterruptedException()` has no
-            // counterpart: Blaze has no thread interruption flag (crate::runtime), an interrupted
-            // build surfaces as an `Interrupted` error from `call`.
+            if blaze_shell::thread_interrupt::interrupted() {
+                return Err(errors::interrupted());
+            }
             let e = match call() {
                 Ok(r) => {
                     self.circuit_breaker.record_success();

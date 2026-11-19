@@ -71,12 +71,33 @@ impl TemplateExpansionContext for LocalTemplateExpansionStrategy {
         ctx: &dyn ActionExecutionContext,
         template_metadata: &TemplateExpansionContextTemplateMetadata,
     ) -> Result<Vec<SpawnResult>, ExpandTemplateError> {
-        // PORT: Java passes `ctx.getPathResolver()`; without an action file system it is the
-        // identity resolver (`Artifact.getPath()`), which is what `Template::get_content` reads.
-        if ctx.get_action_file_system().is_some() {
-            blaze_util::unported!(
-                "LocalTemplateExpansionStrategy.expandTemplate (action file system)"
-            );
+        // Java passes `ctx.getPathResolver()`: `ArtifactTemplate.getContent` reads
+        // `resolver.toPath(templateArtifact)`. With the action file system that path's
+        // `getInputStream` (RemoteActionFileSystem.getInputStream) first downloads a template that
+        // exists only remotely; the bytes are then those of the local file, which is what
+        // `Template::get_content` reads.
+        // PORT: `Template::get_content` (blaze_actions) takes no resolver; the download step of
+        // the action file system's `getInputStream` is done here, with `getContent`'s message for
+        // its failure.
+        // Java: com/google/devtools/build/lib/analysis/actions/Template.java:103 ArtifactTemplate.getContent
+        if let blaze_actions::analysis::actions::template::Template::Artifact(template_artifact) =
+            &template_metadata.template
+        {
+            let template_path = super::get_input_path(ctx, template_artifact);
+            if let Some(file_system) = ctx.get_remote_action_file_system()
+                && let Err(e) = file_system.download_if_remote(template_path.as_fragment())
+            {
+                let cause = format!(
+                    "failed to load template file '{}' due to I/O error: {}",
+                    template_path.get_path_string(),
+                    e
+                );
+                return Err(ExecException::from(EnvironmentalExecException::with_cause(
+                    &cause,
+                    failure_detail("", execution_category(Code::LocalTemplateExpansionFailure)),
+                ))
+                .into());
+            }
         }
         let expanded_template = match get_expanded_template_unsafe(
             &template_metadata.template,

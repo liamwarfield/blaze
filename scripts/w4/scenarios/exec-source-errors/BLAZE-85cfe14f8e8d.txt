@@ -1,0 +1,125 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/blaze-anafix-r3b
+# sha256 85cfe14f8e8db7f1cccd8d03a7b51d54d85a428c78130e0f994041d89f8d922e
+# tree b4fc7edb3a49eebb414bbfc49f54e9976a552194 (clean)
+# date 2026-11-18T17:07:59
+=== 1: run build //p:missing.txt
+exit 1
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //p:missing.txt (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: <WS>/p/BUILD.bazel:5:14: //p:missing.txt: missing input file '//p:missing.txt'
+ERROR: <WS>/p/BUILD.bazel:5:14: 1 input file(s) do not exist
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
+=== 2: run build //p:existing.txt
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //p:existing.txt (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+WARNING: <WS>/p/BUILD.bazel:5:14: //p:existing.txt is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 3: run build //p:fg
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //p:fg (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+ERROR: <WS>/p/BUILD.bazel:36:10: //p:fg: missing input file '//p:missing_c.txt'
+ERROR: <WS>/p/BUILD.bazel:36:10: //p:fg: missing input file '//p:missing_d.txt'
+ERROR: <WS>/p/BUILD.bazel:36:10: 2 input file(s) do not exist
+Target //p:fg failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
+=== 4: run build //p:uses_missing
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //p:uses_missing (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: <WS>/p/BUILD.bazel:12:5: Action p/uses_missing.out failed: missing input file '//p:missing_input.txt'
+ERROR: <WS>/p/BUILD.bazel:12:5: Action p/uses_missing.out failed: 1 input file(s) do not exist
+Target //p:uses_missing failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+ERROR: <WS>/p/BUILD.bazel:12:5 Action p/uses_missing.out failed: 1 input file(s) do not exist
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
+=== 5: run build //p:uses_two_missing
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //p:uses_two_missing (5 packages loaded, 10 targets configured).
+INFO: Found 1 target...
+ERROR: <WS>/p/BUILD.bazel:17:5: Action p/uses_two_missing.out failed: missing input file '//p:missing_a.txt'
+ERROR: <WS>/p/BUILD.bazel:17:5: Action p/uses_two_missing.out failed: missing input file '//p:missing_b.txt'
+ERROR: <WS>/p/BUILD.bazel:17:5: Action p/uses_two_missing.out failed: 2 input file(s) do not exist
+Target //p:uses_two_missing failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+ERROR: <WS>/p/BUILD.bazel:17:5 Action p/uses_two_missing.out failed: 2 input file(s) do not exist
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
+=== 6: run build //p:above
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //p:above (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+ERROR: <WS>/p/BUILD.bazel:26:5: Action p/below.out failed: missing input file '//p:missing_below.txt'
+ERROR: <WS>/p/BUILD.bazel:26:5: Action p/below.out failed: 1 input file(s) do not exist
+Target //p:above failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+ERROR: <WS>/p/BUILD.bazel:26:5 Action p/below.out failed: 1 input file(s) do not exist
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
+=== 7: run build //p:gen
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //p:gen (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+ERROR: <WS>/p/BUILD.bazel:44:8: Executing genrule //p:gen failed: missing input file '//p:missing_gen.txt'
+ERROR: <WS>/p/BUILD.bazel:44:8: Executing genrule //p:gen failed: 1 input file(s) do not exist
+Target //p:gen failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+ERROR: <WS>/p/BUILD.bazel:44:8 Executing genrule //p:gen failed: 1 input file(s) do not exist
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
+=== 8: run build --keep_going //p:missing_kg.txt //p:uses_missing_kg //p:existing_kg.txt //p:fg_kg
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 4 targets (5 packages loaded, 13 targets configured).
+INFO: Found 4 targets...
+ERROR: <WS>/p/BUILD.bazel:51:5: Action p/uses_missing_kg.out failed: missing input file '//p:missing_input_kg.txt'
+ERROR: <WS>/p/BUILD.bazel:5:14: //p:missing_kg.txt: missing input file '//p:missing_kg.txt'
+ERROR: <WS>/p/BUILD.bazel:51:5: Action p/uses_missing_kg.out failed: 1 input file(s) do not exist
+ERROR: <WS>/p/BUILD.bazel:5:14: 1 input file(s) do not exist
+WARNING: <WS>/p/BUILD.bazel:5:14: //p:existing_kg.txt is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency
+ERROR: <WS>/p/BUILD.bazel:56:10: //p:fg_kg: missing input file '//p:missing_e.txt'
+ERROR: <WS>/p/BUILD.bazel:56:10: //p:fg_kg: missing input file '//p:missing_f.txt'
+ERROR: <WS>/p/BUILD.bazel:56:10: 2 input file(s) do not exist
+INFO: Build succeeded for only 1 of 4 top-level targets
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully

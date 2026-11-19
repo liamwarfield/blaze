@@ -1206,27 +1206,44 @@ impl RemoteExecutionService {
 
     /// `checkNotNull(remoteActionFileSystem).injectRemoteFile(path, digest, size, expirationTime,
     /// inMemoryOutput)`: the metadata of an output that is not downloaded is injected into the
-    /// action file system of the spawn.
+    /// action file system of the spawn, `action.getSpawnExecutionContext().getActionFileSystem()`
+    /// (one per action: a path that is not an output of this action is never read back by
+    /// another action).
     ///
-    /// PORT: two missing hooks. Java takes the file system at the top of `downloadOutputs`:
-    /// `action.getSpawnExecutionContext().getActionFileSystem()`, with
-    /// `checkState(actionFileSystem instanceof RemoteActionFileSystem, "expected the
-    /// ActionFileSystem to be a RemoteActionFileSystem")`. `blaze_exec`'s `SpawnExecutionContext`
-    /// has no action file system and `RemoteActionFileSystem` (the remote output tree) is not
-    /// ported: the injection goes through `crate::hooks::RemoteOutputInjector`, asked for here,
-    /// where the file system is first used: a download in
-    /// which every output is written to disk (`--remote_download_outputs=all` without an
-    /// in-memory output) never gets here.
+    /// PORT: Java takes the file system at the top of `downloadOutputs` (with
+    /// `checkState(actionFileSystem instanceof RemoteActionFileSystem, ...)`); it is asked for
+    /// here, where it is first used, so a download in which every output is written to disk
+    /// never needs one. A spawn context without an action file system (the replay tool and unit
+    /// tests) injects through `crate::hooks::RemoteOutputInjector` instead.
+    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1238 RemoteExecutionService.downloadOutputs
     // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:308 RemoteActionFileSystem.injectRemoteFile
     fn inject_remote_file(
         &self,
-        _action: &RemoteAction<'_>,
+        action: &RemoteAction<'_>,
         path: &PathFragment,
         digest: Vec<u8>,
         size: i64,
         expiration_time: SystemTime,
         in_memory_output: bool,
     ) -> io::Result<()> {
+        if let Some(action_file_system) = action
+            .get_spawn_execution_context()
+            .get_remote_action_file_system()
+        {
+            // `Instant` as `RemoteFileArtifactValue` keeps it: epoch milliseconds.
+            let expiration_time_millis =
+                match expiration_time.duration_since(SystemTime::UNIX_EPOCH) {
+                    Ok(d) => i64::try_from(d.as_millis()).unwrap_or(i64::MAX),
+                    Err(e) => -i64::try_from(e.duration().as_millis()).unwrap_or(i64::MAX),
+                };
+            return action_file_system.inject_remote_file(
+                path,
+                digest,
+                size,
+                Some(expiration_time_millis),
+                in_memory_output,
+            );
+        }
         self.hooks
             .inject_remote_file(path, digest, size, expiration_time, in_memory_output)
     }

@@ -318,6 +318,11 @@ impl ActionExecutionContext for DerivedActionExecutionContext<'_> {
     fn get_action_file_system(&self) -> Option<FileSystemRef> {
         self.inner.get_action_file_system()
     }
+    fn get_remote_action_file_system(
+        &self,
+    ) -> Option<Arc<crate::exec::remote_action_file_system::RemoteActionFileSystem>> {
+        self.inner.get_remote_action_file_system()
+    }
     fn get_file_out_err(&self) -> &FileOutErr {
         match &self.file_out_err {
             Some(f) => f,
@@ -728,7 +733,18 @@ impl StandaloneTestStrategy {
         // test.xml from test.log. We do this as a spawn rather than doing it locally in-process,
         // as the test.log file may only exist remotely (when remote execution is enabled), and we
         // do not want to have to download it.
-        if file_out_err.get_output_path().exists() && !xml_output_path.exists() {
+        // PORT: Java resolves `resolvedPaths` (and the test's FileOutErr) against
+        // `actionExecutionContext.getExecRoot()`, which is on the action file system when there
+        // is one: the existence checks see a `test.xml` (or `test.log`) that a cached or remote
+        // test produced but that was not downloaded. Blaze's paths are on the local file system,
+        // so both checks convert them (`getPathResolver().convertPath`).
+        if action_execution_context
+            .convert_path(file_out_err.get_output_path())
+            .exists()
+            && !action_execution_context
+                .convert_path(&xml_output_path)
+                .exists()
+        {
             let xml_generating_spawn = create_xml_generating_spawn(
                 test_action,
                 spawn.get_environment(),

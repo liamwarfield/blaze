@@ -155,6 +155,11 @@ impl Read for ChunkerInputStream<'_> {
     }
 }
 
+/// `java.lang.NullPointerException`, an unchecked exception of [`Chunker::seek`] (see
+/// [`Chunker::seek_or_null_pointer`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NullPointerException;
+
 /// Splits a data source into one or more [`Chunk`]s of at most `chunk_size` bytes.
 ///
 /// After a data source has been fully consumed, that is until [`Chunker::has_next`] returns
@@ -262,6 +267,21 @@ impl<'a> Chunker<'a> {
     ///   `write_offset` in REAPI.
     // Java: com/google/devtools/build/lib/remote/Chunker.java:151 Chunker.seek
     pub fn seek(&mut self, to_offset: i64) -> io::Result<()> {
+        match self.seek_or_null_pointer(to_offset) {
+            Ok(result) => result,
+            Err(NullPointerException) => panic!("NullPointerException"),
+        }
+    }
+
+    /// [`Chunker::seek`], with the unchecked `NullPointerException` it throws when the chunker
+    /// was consumed to the end (`data == null`) and is asked to stay there, as an `Err` instead
+    /// of a panic, for the caller that catches it (`ByteStreamUploader.Writer.run`, whose
+    /// exceptions gRPC turns into a cancelled call).
+    // Java: com/google/devtools/build/lib/remote/Chunker.java:151 Chunker.seek
+    pub(crate) fn seek_or_null_pointer(
+        &mut self,
+        to_offset: i64,
+    ) -> Result<io::Result<()>, NullPointerException> {
         // For compressed stream, we need to reinitialize the stream since the offset refers to the
         // uncompressed form.
         if self.initialized
@@ -271,23 +291,43 @@ impl<'a> Chunker<'a> {
         {
             let n = to_offset - self.offset;
             match self.data.as_mut() {
-                Some(data) => skip_fully(data, n)?,
+                Some(data) => {
+                    if let Err(e) = skip_fully(data, n) {
+                        return Ok(Err(e));
+                    }
+                }
                 // `ByteStreams.skipFully(null, n)` only touches the stream when `n > 0`.
                 None => {
                     if n > 0 {
-                        panic!("NullPointerException");
+                        return Err(NullPointerException);
                     }
                 }
             }
             self.offset = to_offset;
         } else {
-            self.reset()?;
-            self.initialize(to_offset)?;
+            if let Err(e) = self.reset() {
+                return Ok(Err(e));
+            }
+            if let Err(e) = self.initialize(to_offset) {
+                return Ok(Err(e));
+            }
         }
-        if self.uncompressed_size > 0 && self.data_mut().finished()? {
-            self.close_input()?;
+        if self.uncompressed_size > 0 {
+            // `data.finished()` dereferences `data` without a null check.
+            let Some(data) = self.data.as_mut() else {
+                return Err(NullPointerException);
+            };
+            match data.finished() {
+                Ok(true) => {
+                    if let Err(e) = self.close_input() {
+                        return Ok(Err(e));
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => return Ok(Err(e)),
+            }
         }
-        Ok(())
+        Ok(Ok(()))
     }
 
     /// `data`, which Java dereferences without a null check.

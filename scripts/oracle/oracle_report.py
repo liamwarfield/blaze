@@ -5,6 +5,7 @@ Everything here is derived from an oracle_compare.Comparison. Nothing in a score
 on when or where it was rendered, so the same recordings and referee always give the same bytes.
 """
 
+import hashlib
 import json
 import os
 
@@ -12,6 +13,8 @@ import oracle_common as oc
 import oracle_compare as ocmp
 
 SCORE_SCHEMA = 1
+# Hex digits of sha256(item key) kept per matching item in a score row (audit R2A-4).
+KEY_DIGEST_HEX = 10
 COUNT_KEYS = ("total", "compared", "matching", "allowed", "failed", "extra")
 
 
@@ -30,9 +33,36 @@ def tree_text(p):
     """'commit 0123456789ab clean' / '... DIRTY (diff 89abcdef0123, 4 paths)' / 'commit not recorded'."""
     if not p.get("repo_commit"):
         return "repo commit not recorded"
+    verified = p.get("commit_verified")
+    v = ("binary from that commit verified" if verified else "binary origin NOT VERIFIED" if verified is False
+         else "binary origin not checked")
     if p.get("repo_dirty"):
-        return "repo commit %s DIRTY (diff %s)" % (short(p["repo_commit"]), short(p.get("repo_dirty_diff_sha256")))
-    return "repo commit %s clean" % short(p["repo_commit"])
+        return "repo commit %s DIRTY (diff %s), %s" % (
+            short(p["repo_commit"]), short(p.get("repo_dirty_diff_sha256")), v)
+    return "repo commit %s clean, %s" % (short(p["repo_commit"]), v)
+
+
+def recording_problems(cmp):
+    """Why the candidate's recordings cannot back an accepted score (audit R2A-3): a project
+    recorded without a commit, from a dirty tree, or with a binary whose origin was not verified.
+    `scoreboard --write` refuses a score with any of these unless --allow-dirty "REASON"."""
+    out = []
+    for project in cmp.projects:
+        p = cmp.provenance[project]["b"]
+        if not p["recorded"]:
+            continue
+        where = "%s/%s" % (cmp.b, project)
+        if not p.get("repo_commit"):
+            out.append("%s: no recorded commit" % where)
+            continue
+        if p.get("repo_dirty"):
+            out.append("%s: recorded from a dirty tree (diff %s)" % (where, short(p.get("repo_dirty_diff_sha256"))))
+        if p.get("commit_verified") is None:
+            out.append("%s: binary origin not checked (recorded before binary_origin existed)" % where)
+        elif not p.get("commit_verified"):
+            out.append("%s: binary origin not verified: %s" % (
+                where, "; ".join(p.get("commit_unverified_reasons") or ["no reason recorded"])))
+    return out
 
 
 def provenance_lines(cmp):
@@ -62,11 +92,25 @@ def warning_lines(cmp):
             if len(values) > 1:
                 out.append("label %s mixes %s across projects: %s" % (
                     label, what, ", ".join(short(v) for v in values)))
+        for project in cmp.projects:
+            p = cmp.provenance[project][side]
+            if not p["recorded"]:
+                continue
+            if p.get("replaced"):
+                r = p["replaced"]
+                out.append("%s/%s was recorded with --force over an earlier recording (created %s, binary %s)" % (
+                    label, project, r.get("created"), short(r.get("binary_sha256"))))
+            for f in p.get("forced") or []:
+                out.append("%s/%s was recorded with --force despite: %s" % (label, project, f))
+            if side == "b" and p.get("repo_commit") and p.get("commit_verified") is False:
+                out.append("%s/%s: the recorded commit is not verified as the binary's origin: %s" % (
+                    label, project, "; ".join(p.get("commit_unverified_reasons") or [])))
         if side == "b":
             if any(p.get("repo_commit") is None for p in recorded):
                 out.append("label %s does not say which commit it was recorded from" % label)
             elif any(p.get("repo_dirty") for p in recorded):
                 out.append("label %s was recorded from a dirty tree: the commit alone does not reproduce it" % label)
+    out.extend(cmp.notes)
     current = oc.extractor_sha256()
     for project in cmp.projects:
         for side, label in (("a", cmp.a), ("b", cmp.b)):
@@ -152,8 +196,18 @@ def status_text(row):
 # the score document (corpus/scores/<label>.json and .md)
 
 
-def score_document(cmp, allow):
+def key_digests(keys):
+    """The compact form of a set of item keys stored in a score row: the first KEY_DIGEST_HEX hex
+    digits of sha256 of each key (UTF-8), sorted, space-separated. compare-scores ratchets these."""
+    return " ".join(sorted(hashlib.sha256(k.encode("utf-8")).hexdigest()[:KEY_DIGEST_HEX] for k in keys))
+
+
+def score_document(cmp, allow, allow_dirty=None):
+    """The score document. `allow_dirty`: the reason given to `scoreboard --allow-dirty`."""
     rows = cmp.rows()
+    for row, r in zip(rows, cmp.results):
+        # Names, not only counts (audit R2A-4): which reference items match.
+        row["matching_keys"] = key_digests(r.get("_matching", []) if row["status"] in ("MATCH", "DIFF") else [])
     prov = {}
     for project in cmp.projects:
         prov[project] = {}
@@ -184,6 +238,9 @@ def score_document(cmp, allow):
         "totals": cmp.totals(rows),
         "allowed_by": allow_usage(cmp, allow),
         "excluded": excluded(cmp),
+        "recording_problems": recording_problems(cmp),
+        "allow_dirty": allow_dirty,
+        "matching_keys_format": "sha256(key)[:%d], sorted, space-separated" % KEY_DIGEST_HEX,
     }
 
 
@@ -247,6 +304,10 @@ def score_text(doc):
                 project, len(surfaces), n, reason, ", ".join(surfaces)))
     else:
         out.append("excluded from the comparison: nothing")
+    for prob in doc["recording_problems"]:
+        out.append("NOT ACCEPTABLE AS IS: %s" % prob)
+    if doc.get("allow_dirty"):
+        out.append("accepted with --allow-dirty: %s" % doc["allow_dirty"])
     out.append("referee sha256 %s" % short(doc["referee_sha256"]))
     out.append("verdict: %s" % doc["verdict"])
     return "\n".join(out) + "\n"
@@ -266,6 +327,11 @@ def score_markdown(doc):
     out.append("")
     if doc["warnings"]:
         out += ["## Warnings", ""] + ["- %s" % w for w in doc["warnings"]] + [""]
+    if doc["recording_problems"]:
+        out += ["## Not acceptable without --allow-dirty", ""] + ["- %s" % w for w in doc["recording_problems"]]
+        if doc.get("allow_dirty"):
+            out.append("- accepted with `--allow-dirty`: %s" % doc["allow_dirty"])
+        out.append("")
     if doc["exceptions"]:
         out += ["## Declared recording exceptions", ""]
         for e in doc["exceptions"]:

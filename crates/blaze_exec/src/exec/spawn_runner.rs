@@ -74,6 +74,14 @@ pub trait SpawnExecutionContext: Send + Sync {
     }
     /// `getClientEnv()`.
     fn get_client_env(&self) -> &IndexMap<String, String>;
+    /// `getActionFileSystem()` when it is the `RemoteActionFileSystem` (see
+    /// `ActionExecutionContext::get_remote_action_file_system`); `None` without one.
+    // Java: com/google/devtools/build/lib/exec/SpawnRunner.java:269 SpawnRunner.SpawnExecutionContext.getActionFileSystem
+    fn get_remote_action_file_system(
+        &self,
+    ) -> Option<Arc<crate::exec::remote_action_file_system::RemoteActionFileSystem>> {
+        None
+    }
     /// `getContext(RemoteLocalFallbackRegistry.class)`: the action's `SpawnStrategyRegistry`
     /// (registered as `RemoteLocalFallbackRegistry`), `None` where Java's `getContext` returns
     /// null.

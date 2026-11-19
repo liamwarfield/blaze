@@ -2,10 +2,18 @@
 //!
 //! PORT: the Java class is built on RxJava `Single`s with reference-counted subscribers. Here
 //! the first caller of [`AsyncTaskCache::execute`] for a key drives the task itself and the
-//! other callers wait for its outcome; when the driver is dropped before the task finished
-//! (Java: the last subscriber disposes), a waiter takes the task over by running its own copy.
-//! The observable contract is the same: at most one execution of a key at a time, finished keys
-//! are not executed again unless `force`, an error is delivered to every waiter and forgotten.
+//! other callers wait for its outcome. Kept from Java: at most one execution of a key at a time,
+//! finished keys are not executed again unless `force`, an outcome is delivered to every waiter
+//! and an error is forgotten, `shutdownNow` cancels every running execution (its waiters get a
+//! `CancellationException`), and the cache only terminates when an execution ends, `shutdown`
+//! or `shutdownNow` finds nothing in progress (`maybeNotifyTermination`).
+//!
+//! Not kept (documented deviation, review 2026-11-19 R11): the tasks are futures that borrow
+//! from their callers, so an execution cannot outlive the caller that drives it. When that
+//! caller goes away while others still wait (Java: one of several subscribers disposes, and the
+//! execution continues for the others), the execution is cancelled and a waiting caller starts
+//! its own copy of the task. Keeping one execution for every subscriber needs `'static` tasks
+//! (owned inputs and a detached context), which the callers do not provide yet.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -13,10 +21,21 @@ use std::hash::Hash;
 use std::io;
 use std::sync::Arc;
 
+use futures::future::{AbortHandle, Abortable, Aborted};
 use parking_lot::Mutex;
 use tokio::sync::watch;
 
 use crate::common::errors::shared;
+
+/// `new CancellationException(message)`.
+///
+/// PORT: carried as an error of kind `Interrupted` whose message names the exception.
+fn cancellation_exception(message: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        format!("CancellationException: {message}"),
+    )
+}
 
 const STATE_ACTIVE: u8 = 0;
 const STATE_SHUTDOWN: u8 = 1;
@@ -28,6 +47,10 @@ struct Execution<V> {
     /// Unique per execution, so that a driver only removes its own entry.
     id: u64,
     rx: watch::Receiver<Outcome<V>>,
+    /// Delivers the outcome to the waiters (also used by `shutdownNow`'s `cancel()`).
+    tx: Arc<watch::Sender<Outcome<V>>>,
+    /// Stops the driver's task (`upstreamDisposable.dispose()`).
+    abort: AbortHandle,
     subscribers: Arc<()>,
 }
 
@@ -47,7 +70,8 @@ pub struct AsyncTaskCache<K, V> {
     idle: tokio::sync::Notify,
 }
 
-/// Removes the in-progress entry when the driving future is dropped before it finished.
+/// Removes the in-progress entry when the driving future is dropped before it finished
+/// (`Execution.remove` of the last observer: no termination notification).
 struct DriverGuard<'a, K: Eq + Hash + Clone, V: Clone> {
     cache: &'a AsyncTaskCache<K, V>,
     key: K,
@@ -148,7 +172,12 @@ impl<K: Eq + Hash + Clone, V: Clone> AsyncTaskCache<K, V> {
         enum Decision<V> {
             Finished(V),
             Wait(watch::Receiver<Outcome<V>>, Arc<()>),
-            Drive(watch::Sender<Outcome<V>>, u64, Arc<()>),
+            Drive(
+                Arc<watch::Sender<Outcome<V>>>,
+                futures::future::AbortRegistration,
+                u64,
+                Arc<()>,
+            ),
         }
 
         let mut force = force;
@@ -158,10 +187,7 @@ impl<K: Eq + Hash + Clone, V: Clone> AsyncTaskCache<K, V> {
             let decision = {
                 let mut inner = self.inner.lock();
                 if inner.state != STATE_ACTIVE {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "CancellationException: already shutdown",
-                    ));
+                    return Err(cancellation_exception("already shutdown"));
                 }
                 let cached = if force {
                     inner.finished.remove(&key);
@@ -177,6 +203,8 @@ impl<K: Eq + Hash + Clone, V: Clone> AsyncTaskCache<K, V> {
                         }
                         None => {
                             let (tx, rx) = watch::channel(None);
+                            let tx = Arc::new(tx);
+                            let (abort, registration) = AbortHandle::new_pair();
                             let id = inner.next_id;
                             inner.next_id += 1;
                             let subscribers = Arc::new(());
@@ -185,17 +213,19 @@ impl<K: Eq + Hash + Clone, V: Clone> AsyncTaskCache<K, V> {
                                 Execution {
                                     id,
                                     rx,
+                                    tx: tx.clone(),
+                                    abort,
                                     subscribers: subscribers.clone(),
                                 },
                             );
-                            Decision::Drive(tx, id, subscribers)
+                            Decision::Drive(tx, registration, id, subscribers)
                         }
                     },
                 }
             };
             match decision {
                 Decision::Finished(cached) => return Ok(cached),
-                Decision::Drive(tx, id, _subscription) => {
+                Decision::Drive(tx, registration, id, _subscription) => {
                     let mut guard = DriverGuard {
                         cache: self,
                         key: key.clone(),
@@ -203,17 +233,29 @@ impl<K: Eq + Hash + Clone, V: Clone> AsyncTaskCache<K, V> {
                         done: false,
                     };
                     let task = task.take().expect("a call drives at most once");
-                    let result = task.await;
+                    let result = match Abortable::new(task, registration).await {
+                        Ok(result) => result,
+                        Err(Aborted) => {
+                            // `cancel()` (shutdownNow) removed the execution and delivered the
+                            // CancellationException to the waiters; the task was dropped.
+                            guard.done = true;
+                            return Err(cancellation_exception("cancelled"));
+                        }
+                    };
                     let outcome = result.map_err(Arc::new);
                     {
                         let mut inner = self.inner.lock();
-                        inner.in_progress.remove(&key);
-                        if let Ok(value) = &outcome {
-                            inner.finished.insert(key.clone(), value.clone());
+                        // `if (!terminated)`: only the execution that is still registered.
+                        if inner.in_progress.get(&key).is_some_and(|e| e.id == id) {
+                            inner.in_progress.remove(&key);
+                            if let Ok(value) = &outcome {
+                                inner.finished.insert(key.clone(), value.clone());
+                            }
                         }
+                        let _ = tx.send(Some(outcome.clone()));
+                        Self::maybe_notify_termination(&mut inner);
                     }
                     guard.done = true;
-                    let _ = tx.send(Some(outcome.clone()));
                     self.idle.notify_waiters();
                     return outcome.map_err(|e| shared(&e));
                 }
@@ -244,9 +286,16 @@ impl<K: Eq + Hash + Clone, V: Clone> AsyncTaskCache<K, V> {
         let mut inner = self.inner.lock();
         if inner.state == STATE_ACTIVE {
             inner.state = STATE_SHUTDOWN;
-            if inner.in_progress.is_empty() {
-                inner.state = STATE_TERMINATED;
-            }
+            Self::maybe_notify_termination(&mut inner);
+        }
+        drop(inner);
+        self.idle.notify_waiters();
+    }
+
+    // Java: com/google/devtools/build/lib/remote/util/AsyncTaskCache.java:492 AsyncTaskCache.maybeNotifyTermination
+    fn maybe_notify_termination(inner: &mut Inner<K, V>) {
+        if inner.state == STATE_SHUTDOWN && inner.in_progress.is_empty() {
+            inner.state = STATE_TERMINATED;
         }
     }
 
@@ -265,23 +314,46 @@ impl<K: Eq + Hash + Clone, V: Clone> AsyncTaskCache<K, V> {
     /// Waits for the channel to become terminated.
     // Java: com/google/devtools/build/lib/remote/util/AsyncTaskCache.java:416 AsyncTaskCache.awaitTermination
     pub async fn await_termination(&self) {
-        self.await_in_progress_tasks().await;
-        let mut inner = self.inner.lock();
-        if inner.state == STATE_SHUTDOWN {
-            inner.in_progress = HashMap::new();
-            inner.finished.clear();
-            inner.state = STATE_TERMINATED;
+        loop {
+            let notified = self.idle.notified();
+            {
+                let mut inner = self.inner.lock();
+                if inner.state == STATE_TERMINATED {
+                    // Reduce retained size in case references to the cache are held after
+                    // shutdown.
+                    inner.in_progress = HashMap::new();
+                    inner.finished.clear();
+                    return;
+                }
+            }
+            notified.await;
         }
     }
 
     /// Initiates a forceful shutdown in which preexisting and new tasks are cancelled with
-    /// `CancellationException`.
-    ///
-    /// PORT: the running drivers are not cancelled from here (they belong to their callers,
-    /// which drop them); new tasks are refused.
+    /// `CancellationException`. Although forceful, the shutdown process is still not
+    /// instantaneous; [`AsyncTaskCache::is_terminated`] will likely return `false` immediately
+    /// after this method returns.
     // Java: com/google/devtools/build/lib/remote/util/AsyncTaskCache.java:458 AsyncTaskCache.shutdownNow
     pub fn shutdown_now(&self) {
         self.shutdown();
+
+        let mut inner = self.inner.lock();
+        if inner.state == STATE_SHUTDOWN {
+            // Java: AsyncTaskCache.Execution.cancel: dispose the upstream, then onError(new
+            // CancellationException("cancelled")).
+            let executions: Vec<K> = inner.in_progress.keys().cloned().collect();
+            for key in executions {
+                let execution = inner.in_progress.remove(&key).expect("listed above");
+                execution.abort.abort();
+                let _ = execution.tx.send(Some(Err(Arc::new(cancellation_exception(
+                    "cancelled",
+                )))));
+                Self::maybe_notify_termination(&mut inner);
+            }
+        }
+        drop(inner);
+        self.idle.notify_waiters();
     }
 
     /// Returns whether the cache is in shutdown state.

@@ -4460,7 +4460,6 @@ fn build_remote_action_for_remote_persistent_workers() {
 
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionServiceTest.java:3014 RemoteExecutionServiceTest.buildRemoteActionWithScrubbing
 #[test]
-#[ignore = "Scrubber.matches needs ActionOwner target kind and tool-configuration flags (missing hook in blaze_exec::actions::ActionOwner)"]
 fn build_remote_action_with_scrubbing() {
     let mut f = Fixture::set_up();
     let kept_input = create_artifact_str(&f.artifact_root, "kept_input");

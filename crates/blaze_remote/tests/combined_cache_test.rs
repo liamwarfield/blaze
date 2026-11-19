@@ -676,66 +676,11 @@ fn upload_failed_uploads_do_not_deduplicate() {
     );
 }
 
-#[test]
-#[ignore = "RemoteExecutionCache and MerkleTreeComputer are not ported in this crate yet"]
-fn ensure_inputs_present_missing_inputs_exception_has_lost_inputs() {
-    blaze_util::unported!(
-        "RemoteExecutionCache.ensureInputsPresent, RemoteExecutionCache.setRemotePathChecker, MerkleTreeComputer.buildForFiles"
-    );
-}
+// The seven `ensureInputsPresent_*` tests of CombinedCacheTest.java exercise
+// RemoteExecutionCache; they are ported, under the same names, in
+// tests/remote_execution_cache_test.rs.
 
 #[test]
-#[ignore = "RemoteExecutionCache and MerkleTreeComputer are not ported in this crate yet"]
-fn ensure_inputs_present_blobs_lost_after_upload_force_reuploads_directory_protos() {
-    blaze_util::unported!(
-        "RemoteExecutionCache.ensureInputsPresent, MerkleTreeComputer.buildForFiles"
-    );
-}
-
-#[test]
-#[ignore = "RemoteExecutionCache and MerkleTreeComputer are not ported in this crate yet"]
-fn ensure_inputs_present_shared_missing_digest_exceptions_have_own_lost_inputs() {
-    blaze_util::unported!(
-        "RemoteExecutionCache.ensureInputsPresent, RemoteExecutionCache.setRemotePathChecker, MerkleTreeComputer.buildForSpawn, FakeSpawnExecutionContext"
-    );
-}
-
-#[test]
-#[ignore = "RemoteExecutionCache and MerkleTreeComputer are not ported in this crate yet"]
-fn ensure_inputs_present_interrupted_during_upload_blobs_cancel_in_progress_upload_tasks() {
-    blaze_util::unported!(
-        "RemoteExecutionCache.ensureInputsPresent, MerkleTreeComputer.buildForFiles"
-    );
-}
-
-#[test]
-#[ignore = "RemoteExecutionCache and MerkleTreeComputer are not ported in this crate yet"]
-fn ensure_inputs_present_multiple_consumers_interrupted_one_during_find_missing_blobs_keep_and_finish_in_progress_upload_tasks()
- {
-    blaze_util::unported!(
-        "RemoteExecutionCache.ensureInputsPresent, MerkleTreeComputer.buildForFiles"
-    );
-}
-
-#[test]
-#[ignore = "RemoteExecutionCache and MerkleTreeComputer are not ported in this crate yet"]
-fn ensure_inputs_present_multiple_consumers_interrupted_one_during_upload_blobs_keep_in_progress_upload_tasks()
- {
-    blaze_util::unported!(
-        "RemoteExecutionCache.ensureInputsPresent, MerkleTreeComputer.buildForFiles"
-    );
-}
-
-#[test]
-#[ignore = "RemoteExecutionCache and MerkleTreeComputer are not ported in this crate yet"]
-fn ensure_inputs_present_upload_failed_propagate_errors() {
-    blaze_util::unported!(
-        "RemoteExecutionCache.ensureInputsPresent, MerkleTreeComputer.buildForFiles"
-    );
-}
-
-#[test]
-#[ignore = "AsyncTaskCache::shutdown_now does not cancel running uploads (PORT note in util/async_task_cache.rs): an upload is only cancelled by dropping its future"]
 fn shutdown_now_cancel_in_progress_uploads() {
     let f = Fixture::set_up();
     let remote_action_execution_context = f.remote_action_execution_context();

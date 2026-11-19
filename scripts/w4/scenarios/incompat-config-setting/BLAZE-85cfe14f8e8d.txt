@@ -1,0 +1,223 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/blaze-anafix-r3b
+# sha256 85cfe14f8e8db7f1cccd8d03a7b51d54d85a428c78130e0f994041d89f8d922e
+# tree b4fc7edb3a49eebb414bbfc49f54e9976a552194 (dirty)
+# date 2026-11-18T17:11:48
+=== 1: run build //pkg:cs_one
+exit 1
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:cs_one' failed; build aborted: Target //pkg:cs_one is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_one (a7a71f)   <-- target configuration didn't match config_setting //pkg:is_opt
+Target //pkg:cs_one failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 2: run build //pkg:cs_two
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:cs_two' failed; build aborted: Target //pkg:cs_two is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_two (a7a71f)   <-- target configuration didn't match config_settings [//pkg:is_dbg, //pkg:is_opt]
+Target //pkg:cs_two failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 3: run build //pkg:cs_mixed
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:cs_mixed' failed; build aborted: Target //pkg:cs_mixed is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_mixed (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint //pkg:vanilla and target configuration didn't match config_setting //pkg:is_opt
+Target //pkg:cs_mixed failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run build //pkg:cs_ok
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //pkg:cs_ok (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //pkg:cs_ok up-to-date (nothing to build)
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 5: run build //pkg:cs_one -c opt
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //pkg:cs_one (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //pkg:cs_one up-to-date (nothing to build)
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 6: run build //pkg:alias_to_cs_one
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:alias_to_cs_one' failed; build aborted: Target //pkg:alias_to_cs_one is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:alias_to_cs_one (e722a2)
+    //pkg:cs_one (a7a71f)   <-- target configuration didn't match config_setting //pkg:is_opt
+Target //pkg:alias_to_cs_one failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 7: run build //pkg:duplicate_setting
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/pkg/BUILD.bazel:56:10: Duplicate constraint values detected: constraint_setting //pkg:flavor has [//pkg:vanilla, //pkg:chocolate]
+ERROR: Analysis of target '//pkg:duplicate_setting' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 8: run build //pkg:uses_tool
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:uses_tool' failed; build aborted: Target //pkg:uses_tool is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:uses_tool (a7a71f)
+    //pkg:tool (04bf13)   <-- target platform (@@platforms//host:host) didn't satisfy constraint //pkg:vanilla
+Target //pkg:uses_tool failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 9: run build //pkg:a.txt //pkg:cs_ok
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 9 targets configured).
+INFO: Found 2 targets...
+WARNING: <WS>/pkg/BUILD.bazel:81:14: //pkg:a.txt is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency
+Target //pkg:cs_ok up-to-date (nothing to build)
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 10: run build //pkg:all
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/pkg/BUILD.bazel:56:10: Duplicate constraint values detected: constraint_setting //pkg:flavor has [//pkg:vanilla, //pkg:chocolate]
+ERROR: Analysis of target '//pkg:duplicate_setting' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 11: run cquery //pkg:all --output=label_kind
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/pkg/BUILD.bazel:56:10: Duplicate constraint values detected: constraint_setting //pkg:flavor has [//pkg:vanilla, //pkg:chocolate]
+ERROR: Analysis of target '//pkg:duplicate_setting' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 12: run cquery "deps(//pkg:uses_tool, 1)"
+exit 0
+--- stdout
+//pkg:uses_tool (a7a71fd)
+@bazel_tools//tools/genrule:genrule-setup.sh (null)
+@bazel_tools//tools:host_platform (3030ed4)
+//pkg:tool (04bf134)
+@platforms//host:host (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //pkg:uses_tool (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 13: run aquery //pkg:cs_two
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Target //pkg:cs_two is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_two (a7a71f)   <-- target configuration didn't match config_settings [//pkg:is_dbg, //pkg:is_opt]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 14: run aquery //pkg:all
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/pkg/BUILD.bazel:56:10: Duplicate constraint values detected: constraint_setting //pkg:flavor has [//pkg:vanilla, //pkg:chocolate]
+ERROR: Analysis of target '//pkg:duplicate_setting' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 15: run build //pkg:cs_one //pkg:cs_two --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: errors encountered while analyzing target '//pkg:cs_one', it will not be built.
+Target //pkg:cs_one is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_one (a7a71f)   <-- target configuration didn't match config_setting //pkg:is_opt
+WARNING: errors encountered while analyzing target '//pkg:cs_two', it will not be built.
+Target //pkg:cs_two is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_two (a7a71f)   <-- target configuration didn't match config_settings [//pkg:is_dbg, //pkg:is_opt]
+INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).
+INFO: Found 0 targets...
+Use --verbose_failures to see the command lines of failed build steps.
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
+=== 16: run aquery "//pkg:cs_one + //pkg:cs_two + //pkg:cs_ok" --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: Target //pkg:cs_one is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_one (a7a71f)   <-- target configuration didn't match config_setting //pkg:is_opt
+WARNING: Target //pkg:cs_two is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:cs_two (a7a71f)   <-- target configuration didn't match config_settings [//pkg:is_dbg, //pkg:is_opt]
+INFO: Analyzed 3 targets (5 packages loaded, 10 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 17: run cquery "//pkg:cs_one + //pkg:cs_two + //pkg:cs_ok" --keep_going
+exit 0
+--- stdout
+//pkg:cs_one (a7a71fd)
+//pkg:cs_two (a7a71fd)
+//pkg:cs_ok (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 3 targets (5 packages loaded, 10 targets configured).
+INFO: Found 3 targets...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions

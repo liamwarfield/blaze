@@ -81,6 +81,49 @@ class RepoStateTest(unittest.TestCase):
         self.assertIsInstance(state["dirty"], bool)
 
 
+class BinaryOriginTest(unittest.TestCase):
+    """Audit R2A-2: is the binary inside the recorder's checkout's target dir, and not older than
+    its HEAD commit?"""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="oracle-test-")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        git(self.root, "init", "-q")
+        write(os.path.join(self.root, "a.rs"), "fn a() {}\n")
+        git(self.root, "add", "a.rs")
+        git(self.root, "commit", "-q", "-m", "first")
+        self.head_time = int(git(self.root, "log", "-1", "--format=%ct"))
+        self.binary = os.path.join(self.root, "target", "debug", "blaze")
+        write(self.binary, "bin")
+
+    def test_binary_in_target_and_newer_than_head_is_verified(self):
+        os.utime(self.binary, (self.head_time + 60, self.head_time + 60))
+        o = oc.binary_origin(self.binary, self.root)
+        self.assertTrue(o["commit_verified"], o)
+        self.assertEqual(o["reasons"], [])
+
+    def test_binary_older_than_head_is_not_verified(self):
+        os.utime(self.binary, (self.head_time - 60, self.head_time - 60))
+        o = oc.binary_origin(self.binary, self.root)
+        self.assertFalse(o["commit_verified"])
+        self.assertIn("older than the checkout's HEAD commit", o["reasons"][0])
+
+    def test_binary_outside_the_checkout_is_not_verified(self):
+        other = tempfile.mkdtemp(prefix="oracle-test-")
+        self.addCleanup(shutil.rmtree, other, ignore_errors=True)
+        path = os.path.join(other, "blaze")
+        write(path, "bin")
+        o = oc.binary_origin(path, self.root)
+        self.assertFalse(o["commit_verified"])
+        self.assertIn("not inside the recorder's checkout target dir", o["reasons"][0])
+
+    def test_symlink_into_target_is_judged_by_its_target(self):
+        os.utime(self.binary, (self.head_time + 60, self.head_time + 60))
+        link = os.path.join(self.root, "blaze-link")
+        os.symlink(self.binary, link)
+        self.assertTrue(oc.binary_origin(link, self.root)["commit_verified"])
+
+
 class RecordRunTest(unittest.TestCase):
     """Runs `record` end to end with a stand-in binary on a scratch project."""
 
@@ -128,7 +171,11 @@ class RecordRunTest(unittest.TestCase):
         self.assertRegex(m["created"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00$")
         self.assertEqual(m["extractor_sha256"], oc.extractor_sha256())
         self.assertNotIn("replaced", m)
+        self.assertNotIn("forced", m)
         self.assertNotIn("renormalised", m)
+        # The stand-in binary is not in this checkout's target/: the commit is not its origin.
+        self.assertFalse(m["binary_origin"]["commit_verified"])
+        self.assertIn("not inside the recorder's checkout target dir", m["binary_origin"]["reasons"][0])
         self.assertEqual(m["surfaces"]["query_label_kind"], {"status": "OK", "items": 4})
         self.assertFalse(os.path.exists(os.path.join(oc.record_dir("blaze-x", "toy"), ".stage")))
         for name, digest in m["files"].items():
@@ -171,6 +218,18 @@ class RecordRunTest(unittest.TestCase):
         self.assertEqual(self.run_record("--binary", self.binary, "--label", "blaze-x", "--project", "toy2",
                                          "--surfaces", "query")[0], 0)
         self.assertEqual(oc.projects_in("blaze-x"), ["toy", "toy2"])
+        self.assertNotIn("forced", oc.load_manifest("blaze-x", "toy2"))
+
+    def test_force_with_another_binary_is_kept_in_the_manifest(self):
+        self.assertEqual(self.run_record("--binary", self.binary, "--label", "blaze-x", "--project", "toy",
+                                         "--surfaces", "query")[0], 0)
+        rc, _, err = self.run_record("--binary", self.other, "--label", "blaze-x", "--project", "toy2",
+                                     "--surfaces", "query", "--force")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("WARNING: --force: label blaze-x already holds toy", err)
+        forced = oc.load_manifest("blaze-x", "toy2")["forced"]
+        self.assertEqual(len(forced), 1)
+        self.assertIn("already holds toy recorded with another binary", forced[0])
 
     def test_renormalise_keeps_a_history_and_does_not_need_force(self):
         self.assertEqual(self.run_record("--binary", self.binary, "--label", "blaze-x", "--project", "toy",

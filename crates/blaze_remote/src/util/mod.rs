@@ -2,6 +2,7 @@
 
 pub mod async_task_cache;
 pub mod digest_util;
+pub mod rx_utils;
 pub mod temp_path_generator;
 pub mod tracing_metadata_utils;
 pub mod utils;

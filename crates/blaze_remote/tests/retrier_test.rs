@@ -218,7 +218,6 @@ fn circuit_breaker_half_open_is_not_retried() {
 }
 
 #[test]
-#[ignore = "needs thread interruption (Thread.currentThread().interrupt()): Blaze has no thread interruption flag, Retrier.execute cannot see one"]
 fn interrupts_should_not_be_retried_flag() {
     // Test that a call is not executed / retried if the current thread
     // is interrupted.
@@ -230,8 +229,7 @@ fn interrupts_should_not_be_retried_flag() {
     let r = Retrier::new(s, retry_all(), retry_service(), cb);
 
     let num_calls = AtomicI32::new(0);
-    // Missing: `Thread.currentThread().interrupt()`. Without it the call below runs and the
-    // assertions fail.
+    blaze_shell::thread_interrupt::interrupt_current();
     let e = r
         .execute(|| -> io::Result<i32> {
             num_calls.fetch_add(1, Ordering::SeqCst);

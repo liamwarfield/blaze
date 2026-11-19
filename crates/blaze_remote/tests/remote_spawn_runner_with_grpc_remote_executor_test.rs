@@ -1436,6 +1436,26 @@ fn pass_repeated_orphaned_cache_miss_error_with_stack_trace() {
     // see the file comment).
 }
 
+// The stack-trace assertions of the four `pass*WithStackTrace` tests: the failure message of a
+// verbose failure contains `Throwables.getStackTraceAsString(e)` in Java. The tests above keep
+// their other assertions; these hold the dropped ones (review 2026-11-19 R18).
+
+#[test]
+#[ignore = "Java stack traces (verboseFailures appends Throwables.getStackTraceAsString) have no counterpart: asserts the message contains \"com.google.devtools.build.lib.remote\""]
+fn pass_unavailable_error_with_stack_trace_stack_trace() {}
+
+#[test]
+#[ignore = "Java stack traces (verboseFailures appends Throwables.getStackTraceAsString) have no counterpart: asserts the message contains \"com.google.devtools.build.lib.remote\""]
+fn pass_internal_error_with_stack_trace_stack_trace() {}
+
+#[test]
+#[ignore = "Java stack traces (verboseFailures appends Throwables.getStackTraceAsString) have no counterpart: asserts the message contains \"RemoteSpawnRunnerWithGrpcRemoteExecutorTest.passCacheMissErrorWithStackTrace\""]
+fn pass_cache_miss_error_with_stack_trace_stack_trace() {}
+
+#[test]
+#[ignore = "Java stack traces (verboseFailures appends Throwables.getStackTraceAsString) have no counterpart: asserts the message contains \"passRepeatedOrphanedCacheMissErrorWithStackTrace\""]
+fn pass_repeated_orphaned_cache_miss_error_with_stack_trace_stack_trace() {}
+
 #[test]
 fn remotely_re_execute_orphaned_cached_actions() {
     let mut t = Fixture::set_up();

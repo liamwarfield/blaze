@@ -332,9 +332,11 @@ throws `ExecException`); `SimpleSpawn::get_local_resources` already returns a `R
 Analysis implementer, 2026-11-18. Covers the "Round 3" section of docs/reviews/2026-11-18-analysis.md
 (carried items S2-7 with the platforms-API fields, S2-8, R3-1, R3-2) and the adoption of the
 interpreter hooks of patches 0026-0031. State described: HEAD `5013a3f` plus the uncommitted
-working tree (the remote lead's in-flight edits in blaze_exec, blaze_sky_exec, blaze_buildtool,
-blaze_runtime `build_remote.rs` are in the same tree). Binary `~/.cache/blaze/int-bin/blaze-anafix-r3`
-(sha256 `8def70d5cac8`), built from that tree. Every expected value comes from the Java at the pin
+working tree; root committed `f45b55a` and `b4fc7ed` during the round, and the remote lead's
+in-flight edits (blaze_exec, blaze_sky_exec, blaze_buildtool, blaze_remote, blaze_runtime
+`build.rs`/`build_remote.rs`) are in the same tree. Final binary
+`~/.cache/blaze/int-bin/blaze-anafix-r3b` (sha256 `85cfe14f8e8d`), built from `f45b55a` plus the
+working tree at the end of the round. Every expected value comes from the Java at the pin
 or from an oracle transcript.
 
 ## Carried items
@@ -409,3 +411,41 @@ PORT notes: the remote module's contributions are not built (its support is priv
 cache/executor options are cleared for this check and validation is unchanged; the setup also
 recreates `<output_base>/action_outs` (blaze_buildtool exposes the constructor only with
 `prepareForExecution`).
+
+## Probe (R3-2)
+
+`scripts/w4/probe` now saves Blaze's transcript of every `compare` next to `ORACLE.txt` as
+`BLAZE-<sha12>.txt` (header: binary path, sha256, git commit and dirty flag, date), and
+`probe recount <sha12>` re-derives every count from the saved files without running anything.
+Each step is counted in three views: **full**, **masked** (the line classes Blaze cannot match by
+design, each listed with its reason by `probe masks`: the server start lines; the critical path
+suffix of `INFO: Elapsed time`; the package/target counts of `INFO: Analyzed ...` and the
+`discarding analysis cache` warnings of a warm server; the `0 processes.` / `1 process: 1
+internal.` line of a build without spawns; every pattern is a full-line match, the rest of the
+step is compared as is, in order) and **messages** (the round-2 view). New scenarios recorded
+from the oracle this round: `platforms-api`, `starlark-set-flag`, `load-unresolved-names`,
+`query-strategy-errors` (39 scenarios, 720 steps).
+
+With `blaze-anafix-r3b` (`probe recount 85cfe14f8e8d`): **full 102 / 720, masked 570 / 720,
+messages 239 / 720.** Analysis-owned scenarios in the masked view: `ctx-immutable` 29/29,
+`ctx-toolchains-string` 7/7 (S2-8 step 6 matches), `flags-transitions` 32/32 (tracebacks without
+the `<toplevel>` stripping), `transition-results` 4/4, `query-*` all, `ctx-errors` 29/34 (the five
+left are traceback columns of a builtin's parameter-type error, e.g. Java column 11 (the `=`) vs
+Blaze 29 (the call's `(`): the interpreter's error location, owner vendored crate),
+`platforms-api` 11/12 (step 2: `dir()`, see above), `load-unresolved-names` 0/4 (only the
+interpreter's "Variable `x` not found" text differs, ruled core-language text), `graph-order` 0/4
+(ruled known difference). The rest of the masked misses are execution, test and UI scenarios.
+
+## Evidence (Round 3)
+
+- Tests (`scripts/cargo-capped test`, tree above): blaze_starlark, blaze_analysis, blaze_rules,
+  blaze_sky_analysis, blaze_cquery, blaze_build_config, blaze_packages, blaze_sky_loading,
+  blaze_query, blaze_runtime: 1,468 passed, 0 failed, 1,236 ignored. clippy `-D warnings` clean on
+  the same packages (three new lints in blaze_sky_loading's `file_state.rs` and
+  `target_pattern_function.rs` fixed). rustfmt on every changed file.
+- `scripts/w3/query-compare`: brotli 162/162, re2 1091/1091, workerd 46371/46371 (label_kind and
+  jsonproto).
+- Referee, brotli, label `blaze-anafix-r3b` (binary `85cfe14f8e8d`; also `blaze-anafix-r3`,
+  `8def70d5cac8`, before the platform-API message fix): every row equals
+  `corpus/scores/blaze-12ca29ee95e0.md`'s brotli rows (12 of 13 surfaces MATCH, 997 of 1,001
+  compared items; the 4 BEP items are the known ones). No regression.

@@ -69,7 +69,11 @@ counted for every step:
             ERROR/WARNING/DEBUG/INFO/FAILED message and build-result line, as a sorted list.
 --masked / --messages make compare print the diff of that view (and decide the exit status).
 compare-all and recount print, per scenario, the three counts and the totals; compare-all exits 1
-on any difference in the chosen view (full by default).
+on any difference in the chosen view (full by default). The totals are split by step kind: steps
+that run the binary (`run`, `aquery`) and file checks (`cat`, `stat`, which read the workspace
+after the binary ran), so that a count of identical steps says how many of them ran the binary.
+Scenarios left out by --skip, and (recount) scenarios without a saved transcript, are named in the
+summary with their oracle step counts: they are not in the denominator.
 
 Every compare saves Blaze's transcript next to ORACLE.txt as BLAZE-<sha12>.txt, where <sha12>
 is the first 12 hex digits of the sha256 of the Blaze binary; the file starts with `#` lines
@@ -328,6 +332,14 @@ def masked_view(body):
 
 
 VIEWS = {"full": lambda body: body, "masked": masked_view, "messages": messages_view}
+# Step kinds (first word of a COMMANDS line): the ones that run the binary, and file checks.
+STEP_CLASSES = {"run": "binary", "aquery": "binary", "cat": "file", "stat": "file"}
+CLASS_TEXT = {"binary": "steps that run the binary (run, aquery)", "file": "file checks (cat, stat)"}
+
+
+def step_class(header):
+    m = re.match(r"^=== \d+: (\S+)", header)
+    return STEP_CLASSES.get(m.group(1) if m else "", "binary")
 
 
 def binary_id(path):
@@ -362,7 +374,11 @@ def count(want, got, view_shown=None, quiet=True):
     """Per view, the steps of `want` whose body equals `got`'s; prints MATCH/DIFF lines (and
     the diff of `view_shown` unless quiet)."""
     counts = {v: 0 for v in VIEWS}
+    # Per step class: {"steps": oracle steps, <view>: matching steps}.
+    counts["classes"] = {c: dict({"steps": 0}, **{v: 0 for v in VIEWS}) for c in CLASS_TEXT}
     for header, want_body in want.items():
+        cls = counts["classes"][step_class(header)]
+        cls["steps"] += 1
         got_body = got.get(header)
         if got_body is None:
             print("%s  DIFF (step missing from Blaze's transcript)" % header)
@@ -370,6 +386,7 @@ def count(want, got, view_shown=None, quiet=True):
         for v, f in VIEWS.items():
             if f(want_body) == f(got_body):
                 counts[v] += 1
+                cls[v] += 1
         if view_shown is None:
             continue
         a, b = VIEWS[view_shown](want_body), VIEWS[view_shown](got_body)
@@ -401,15 +418,20 @@ def compare(scenario, only=None, view="full", quiet=False):
     text = run.transcript(only)
     saved = save_transcript(scenario, run.binary, text, only)
     counts = count(want, split_steps(text), view, quiet)
-    print("probe %s: %d of %d steps match%s (masked %d, messages %d; saved %s)"
+    b = counts["classes"]["binary"]
+    print("probe %s: %d of %d steps match%s (masked %d, messages %d; of them running the binary: %d of %d; "
+          "saved %s)"
           % (scenario, counts[view], len(want), "" if view == "full" else " (%s view)" % view,
-             counts["masked"], counts["messages"], os.path.relpath(saved, ROOT)))
+             counts["masked"], counts["messages"], b[view], b["steps"], os.path.relpath(saved, ROOT)))
     return counts, len(want)
 
 
-def print_table(rows):
+def print_table(rows, left_out=()):
+    """rows: [(scenario, counts, oracle steps)]; left_out: [(scenario, why, oracle steps)] that are
+    not in the denominator."""
     print("%-28s %11s %11s %11s" % ("scenario", "full", "masked", "messages"))
     tot = {v: 0 for v in VIEWS}
+    classes = {c: dict({"steps": 0}, **{v: 0 for v in VIEWS}) for c in CLASS_TEXT}
     total_n = 0
     for name, counts, n in rows:
         print("%-28s %4d / %-4d %4d / %-4d %4d / %-4d %s"
@@ -417,16 +439,32 @@ def print_table(rows):
                  "MATCH" if counts["full"] == n else "DIFF"))
         for v in VIEWS:
             tot[v] += counts[v]
+        for c, k in counts["classes"].items():
+            for key in k:
+                classes[c][key] += k[key]
         total_n += n
     print("probe: %d scenarios, %d steps; full %d, masked %d, messages %d (%d scenarios fully match)"
           % (len(rows), total_n, tot["full"], tot["masked"], tot["messages"],
              sum(1 for _, c, n in rows if c["full"] == n)))
+    for c, text in CLASS_TEXT.items():
+        k = classes[c]
+        print("  %-42s %4d steps; full %d, masked %d, messages %d"
+              % (text + ":", k["steps"], k["full"], k["masked"], k["messages"]))
+    for name, why, n in left_out:
+        print("  not counted: %s (%s; %d oracle steps)" % (name, why, n))
+    tot["classes"] = classes
     return tot, total_n
 
 
 def recorded_scenarios(skip):
     return [name for name in sorted(os.listdir(SCENARIOS))
             if name not in skip and os.path.exists(os.path.join(SCENARIOS, name, "ORACLE.txt"))]
+
+
+def skipped_scenarios(skip):
+    """[(scenario, why, oracle steps)] for the recorded scenarios that --skip leaves out."""
+    return [(name, "--skip", len(read_oracle(name))) for name in sorted(skip)
+            if os.path.exists(os.path.join(SCENARIOS, name, "ORACLE.txt"))]
 
 
 def main(argv):
@@ -454,23 +492,25 @@ def main(argv):
         for name in recorded_scenarios(skip):
             counts, n = compare(name, view=view, quiet=True)
             rows.append((name, counts, n))
-        tot, total_n = print_table(rows)
+        tot, total_n = print_table(rows, skipped_scenarios(skip))
         return 0 if tot[view] == total_n else 1
     if cmd == "recount":
         if len(argv) < 3:
             die("missing <sha12>; see `probe help`")
         sha12 = argv[2]
         rows = []
+        left_out = skipped_scenarios(skip)
         for name in recorded_scenarios(skip):
             path = os.path.join(SCENARIOS, name, "BLAZE-%s.txt" % sha12)
             if not os.path.exists(path):
                 print("%s: no BLAZE-%s.txt" % (name, sha12))
+                left_out.append((name, "no saved transcript", len(read_oracle(name))))
                 continue
             with open(path) as f:
                 got = split_steps(f.read())
             want = read_oracle(name)
             rows.append((name, count(want, got), len(want)))
-        print_table(rows)
+        print_table(rows, left_out)
         return 0
     if len(argv) < 3:
         die("missing scenario; see `probe help`")

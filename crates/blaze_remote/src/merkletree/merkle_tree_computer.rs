@@ -1316,10 +1316,18 @@ fn get_output_path(
         .get_relative(&path_mapper.map(input.get_exec_path()))
 }
 
-/// `StringEncoding.internalToUnicode(s)`.
-// PORT: StringEncoding identity
+/// `StringEncoding.internalToUnicode(s)` of the internal string that `s` stands for.
+///
+/// Seam (decisions.md 2026-11-18 "Strings"): while
+/// `blaze_util::string_encoding::STRINGS_ARE_INTERNAL` is false Blaze's strings are Unicode
+/// already and this is the identity; once it is true it is `internal_to_unicode`.
+// Java: com/google/devtools/build/lib/util/StringEncoding.java:126 StringEncoding.internalToUnicode
 fn internal_to_unicode(s: &str) -> String {
-    s.to_string()
+    if blaze_util::string_encoding::strings_are_internal() {
+        blaze_util::string_encoding::internal_to_unicode(s).into_owned()
+    } else {
+        s.to_string()
+    }
 }
 
 /// An `ActionInput` that is a child of another one at a given relative path.

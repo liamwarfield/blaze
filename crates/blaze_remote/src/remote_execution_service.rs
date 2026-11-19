@@ -74,7 +74,7 @@ use crate::util::utils::{
 /// already and this is the identity; once it is true it is `internal_to_unicode`.
 // PORT: StringEncoding identity (until the strings switch).
 // Java: com/google/devtools/build/lib/util/StringEncoding.java:126 StringEncoding.internalToUnicode
-fn internal_to_unicode(s: &str) -> String {
+pub(crate) fn internal_to_unicode(s: &str) -> String {
     if blaze_util::string_encoding::strings_are_internal() {
         blaze_util::string_encoding::internal_to_unicode(s).into_owned()
     } else {
@@ -86,7 +86,7 @@ fn internal_to_unicode(s: &str) -> String {
 /// internal string (the same seam as [`internal_to_unicode`]).
 // PORT: StringEncoding identity (until the strings switch).
 // Java: com/google/devtools/build/lib/util/StringEncoding.java:137 StringEncoding.unicodeToInternal
-fn unicode_to_internal(s: &str) -> String {
+pub(crate) fn unicode_to_internal(s: &str) -> String {
     if blaze_util::string_encoding::strings_are_internal() {
         blaze_util::string_encoding::unicode_to_internal(s).into_owned()
     } else {
@@ -109,50 +109,75 @@ fn proto_string_comparator(a: &str, b: &str) -> Ordering {
 /// (`new Semaphore(permits, /* fair= */ true)`).
 // Java: java/util/concurrent/Semaphore.java Semaphore
 pub(crate) struct Semaphore {
-    state: Mutex<SemaphoreState>,
-    changed: Condvar,
+    /// The state and the condition its waiters wait on; shared with the interrupt listeners of
+    /// the waiters.
+    inner: Arc<(Mutex<SemaphoreState>, Condvar)>,
 }
 
 struct SemaphoreState {
     permits: usize,
-    /// The place in the queue the next `acquire` gets, and the place that is served next.
+    /// The place in the queue the next `acquire` gets.
     next_ticket: u64,
-    now_serving: u64,
+    /// The tickets of the waiting threads, in arrival order.
+    queue: std::collections::VecDeque<u64>,
 }
 
 impl Semaphore {
     fn new(permits: usize) -> Semaphore {
         Semaphore {
-            state: Mutex::new(SemaphoreState {
-                permits,
-                next_ticket: 0,
-                now_serving: 0,
-            }),
-            changed: Condvar::new(),
+            inner: Arc::new((
+                Mutex::new(SemaphoreState {
+                    permits,
+                    next_ticket: 0,
+                    queue: std::collections::VecDeque::new(),
+                }),
+                Condvar::new(),
+            )),
         }
     }
 
-    /// `acquire()`.
-    ///
-    /// PORT: not interruptible (the remote package has no thread interruption, see
-    /// `crate::runtime`).
-    fn acquire(&self) {
-        let mut state = self.state.lock();
+    /// `acquire()`: waits for a permit. An interrupt of the waiting thread
+    /// (`blaze_shell::thread_interrupt`) before or while it waits throws `InterruptedException`
+    /// (and clears the flag); the thread leaves the queue without a permit.
+    fn acquire(&self) -> io::Result<()> {
+        if blaze_shell::thread_interrupt::interrupted() {
+            return Err(errors::interrupted());
+        }
+        let (lock, changed) = &*self.inner;
+        // Wakes the waiters when this thread is interrupted. It takes the lock first, so that the
+        // wake-up cannot fall between a waiter's check of the flag and its wait.
+        let waker = self.inner.clone();
+        let _registration = blaze_shell::thread_interrupt::ThreadInterrupt::current()
+            .add_interrupt_listener(Arc::new(move || {
+                let _state = waker.0.lock();
+                waker.1.notify_all();
+            }));
+        let mut state = lock.lock();
         let ticket = state.next_ticket;
         state.next_ticket += 1;
-        while !(state.now_serving == ticket && state.permits > 0) {
-            self.changed.wait(&mut state);
+        state.queue.push_back(ticket);
+        while !(state.queue.front() == Some(&ticket) && state.permits > 0) {
+            if blaze_shell::thread_interrupt::is_current_interrupted() {
+                state.queue.retain(|t| *t != ticket);
+                drop(state);
+                changed.notify_all();
+                blaze_shell::thread_interrupt::interrupted();
+                return Err(errors::interrupted());
+            }
+            changed.wait(&mut state);
         }
+        state.queue.pop_front();
         state.permits -= 1;
-        state.now_serving += 1;
         drop(state);
-        self.changed.notify_all();
+        changed.notify_all();
+        Ok(())
     }
 
     /// `release()`.
     fn release(&self) {
-        self.state.lock().permits += 1;
-        self.changed.notify_all();
+        let (lock, changed) = &*self.inner;
+        lock.lock().permits += 1;
+        changed.notify_all();
     }
 }
 
@@ -1238,13 +1263,13 @@ impl RemoteExecutionService {
     }
 
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:421 RemoteExecutionService.maybeAcquireRemoteActionBuildingSemaphore
-    fn maybe_acquire_remote_action_building_semaphore(&self) {
+    fn maybe_acquire_remote_action_building_semaphore(&self) -> io::Result<()> {
         if !self.remote_options.throttle_remote_action_building {
-            return;
+            return Ok(());
         }
 
         // PORT: skipped, profiling ("acquiring semaphore").
-        self.remote_action_building_semaphore.acquire();
+        self.remote_action_building_semaphore.acquire()
     }
 
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:432 RemoteExecutionService.maybeReleaseRemoteActionBuildingSemaphore
@@ -1371,7 +1396,7 @@ impl RemoteExecutionService {
         context: &'a dyn SpawnExecutionContext,
         blob_policy: BlobPolicy,
     ) -> Result<RemoteAction<'a>, SpawnCacheError> {
-        self.maybe_acquire_remote_action_building_semaphore();
+        self.maybe_acquire_remote_action_building_semaphore()?;
         let _finally = RemoteActionBuildingSemaphoreRelease(self);
 
         // Create a remote path resolver that is aware of the spawn's path mapper, which rewrites
@@ -1878,7 +1903,7 @@ impl RemoteExecutionService {
         // concurrency. This prevents memory exhaustion. We assume that
         // ensureInputsPresent() provides enough parallelism to saturate the
         // network connection.
-        self.maybe_acquire_remote_action_building_semaphore();
+        self.maybe_acquire_remote_action_building_semaphore()?;
         let _finally = RemoteActionBuildingSemaphoreRelease(self);
 
         let recomputed_merkle_tree: MerkleTreeUploadable;

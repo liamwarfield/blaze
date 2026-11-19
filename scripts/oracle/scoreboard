@@ -14,6 +14,7 @@ import oracle_report as orep  # noqa: E402
 USAGE = """\
 usage: scripts/oracle/scoreboard <label> [--reference LABEL] [--project P]...
                                  [--markdown | --json] [--out PATH] [--write]
+                                 [--allow-dirty REASON]
        scripts/oracle/scoreboard help
 
 Scores recording <label> against the reference recording (default %s), per project and surface.
@@ -51,8 +52,18 @@ Options:
                      that are committed with an accepted score), and print the text table. Not
                      allowed with --project or --reference: a committed score covers the whole
                      scope against the reference.
+                     Refuses (exit 2, nothing written) when a candidate recording cannot back an
+                     accepted score: no recorded commit, a dirty tree, or a binary whose origin
+                     was not verified (manifest `binary_origin.commit_verified`, see `record
+                     help`; recordings older than that check count as not verified).
+  --allow-dirty REASON
+                     write anyway; REASON is stored in the score (`allow_dirty`) and printed with
+                     the problems it overrides (`recording_problems`, always in the score).
 
-The JSON and Markdown depend only on the two recordings and the referee, not on when or where
+Every score row also holds `matching_keys`: sha256(item key)[:10] of each matching reference
+item, sorted and space-separated, so that scripts/gate/compare-scores can ratchet item names.
+
+The JSON and Markdown depend only on the two recordings, the referee and --allow-dirty, not on when or where
 they are rendered. Exit status 0 always (it is a report); use `compare` for a pass/fail verdict.
 """ % oc.REFERENCE_LABEL
 
@@ -69,6 +80,7 @@ def main():
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--out")
     ap.add_argument("--write", action="store_true")
+    ap.add_argument("--allow-dirty", metavar="REASON")
     args = ap.parse_args()
     if args.markdown and args.json:
         oc.die("--markdown and --json exclude each other")
@@ -83,7 +95,13 @@ def main():
     except ocmp.AllowListError as e:
         oc.die(str(e))
     cmp = ocmp.compare_labels(args.reference, args.label, args.project, None, allow)
-    doc = orep.score_document(cmp, allow)
+    if args.allow_dirty is not None and not args.allow_dirty.strip():
+        oc.die("--allow-dirty needs a reason")
+    doc = orep.score_document(cmp, allow, args.allow_dirty)
+    if args.write and doc["recording_problems"] and not args.allow_dirty:
+        oc.die("refusing to write a score for %s: its recordings cannot back an accepted score:\n  %s\n"
+               "Record from a clean checkout with its own binary (docs/state/README.md), or pass "
+               "--allow-dirty \"REASON\" (stored in the score)." % (args.label, "\n  ".join(doc["recording_problems"])))
     if args.write:
         os.makedirs(oc.CORPUS_SCORES, exist_ok=True)
         base = os.path.join(oc.CORPUS_SCORES, args.label)

@@ -102,4 +102,8 @@ impl CircuitBreaker for FailureCircuitBreaker {
             self.schedule_decrement(&self.successes);
         }
     }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }

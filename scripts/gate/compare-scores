@@ -10,9 +10,16 @@ of <base>:
   * a surface that was MATCH is still MATCH;
   * `matching` did not decrease, and neither did the surface get a worse kind of status
     (MATCH > DIFF > FAILED, MISSING, NO_REFERENCE).
-A gain elsewhere never compensates. Rows are compared by count: an item that stopped matching
-while another started is not seen here; use `scripts/oracle/compare` on the two recordings for
-items.
+  * every item that matched in <base> still matches in <new> (audit R2A-4): each row holds
+    `matching_keys`, sha256(item key)[:10] of its matching items; a digest of <base> that is not
+    in <new> is a lost item, even when the count is the same (one lost, one gained).
+A gain elsewhere never compensates. Score files written before `matching_keys` existed are
+compared by count only, with a printed WARNING naming the rows; for them, use
+`scripts/oracle/compare` on the two recordings to see items.
+
+Also printed (not a failure here; `scoreboard --write` enforces it): a score's
+`recording_problems` (dirty tree, no commit, binary origin not verified) and its `allow_dirty`
+reason.
 
 The two scores must come from the same referee (`referee_sha256`) and the same reference
 recording: otherwise the totals mean different things and the tool exits 2. After a referee
@@ -68,7 +75,24 @@ def compare(base, new):
         elif b["status"] == "MATCH" and (n.get("exceptions") or n.get("allow_violations")) and not (
                 b.get("exceptions") or b.get("allow_violations")):
             bad.append("%s: was a clean MATCH, now under an exception or over an allow-list cap" % where)
+        elif isinstance(b.get("matching_keys"), str) and isinstance(n.get("matching_keys"), str):
+            lost = set(b["matching_keys"].split()) - set(n["matching_keys"].split())
+            if lost:
+                bad.append("%s: %d item%s that matched no longer match%s (matching %d -> %d; item key digests %s)" % (
+                    where, len(lost), "" if len(lost) == 1 else "s", "" if len(lost) != 1 else "es",
+                    b["matching"], n["matching"], ", ".join(sorted(lost)[:5]) + (" ..." if len(lost) > 5 else "")))
     return blockers, bad
+
+
+def count_only_rows(base, new):
+    """Rows of <base> whose item names cannot be compared: either score lacks matching_keys."""
+    rows = {(r["project"], r["surface"]): r for r in new["rows"]}
+    out = []
+    for b in base["rows"]:
+        n = rows.get((b["project"], b["surface"]))
+        if n is not None and not (isinstance(b.get("matching_keys"), str) and isinstance(n.get("matching_keys"), str)):
+            out.append("%s/%s" % (b["project"], b["surface"]))
+    return out
 
 
 def main(argv):
@@ -86,6 +110,11 @@ def main(argv):
         t = doc["totals"]
         print("%s: %s vs %s: matching %d of %d (allowed %d, failed %d); %s" % (
             name, doc["label"], doc["reference"], t["matching"], t["total"], t["allowed"], t["failed"], doc["verdict"]))
+    for name, doc in (("base", base), ("new", new)):
+        for p in doc.get("recording_problems") or []:
+            print("NOTE: %s score: %s" % (name, p))
+        if doc.get("allow_dirty"):
+            print("NOTE: %s score was written with --allow-dirty: %s" % (name, doc["allow_dirty"]))
     blockers, bad = compare(base, new)
     if blockers:
         for b in blockers:
@@ -93,6 +122,11 @@ def main(argv):
         return 2
     gained = sum(1 for b in base["rows"] for n in new["rows"]
                  if (b["project"], b["surface"]) == (n["project"], n["surface"]) and n["matching"] > b["matching"])
+    weak = count_only_rows(base, new)
+    if weak:
+        print("WARNING: %d of %d rows are compared by count only (a score without matching_keys, written "
+              "before they existed); items are not ratcheted there: %s" % (
+                  len(weak), len(base["rows"]), ", ".join(weak[:8]) + (" ..." if len(weak) > 8 else "")))
     for line in bad:
         print("  REGRESSION %s" % line)
     print("rows %d  gained %d  regressed %d" % (len(base["rows"]), gained, len(bad)))

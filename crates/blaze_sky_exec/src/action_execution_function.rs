@@ -351,7 +351,10 @@ impl ActionExecutionFunction {
             // PORT: previousAction.getResultOrDependOnFuture is the shared execution's OnceLock:
             // execute_action returns the first execution's result.
             let output_metadata_store =
-                Arc::new(executor.create_output_metadata_store(action.as_ref()));
+                Arc::new(executor.create_output_metadata_store(
+                    action.as_ref(),
+                    &state.input_artifact_data,
+                ));
             return executor.execute_action(
                 env,
                 action,
@@ -363,10 +366,14 @@ impl ActionExecutionFunction {
             );
         }
 
-        // PORT: ArtifactPathResolver.createPathResolver(null, execRoot) is the identity resolver
-        // (no action file system).
+        // The output metadata store resolves its paths through the action file system when the
+        // output service has one (ArtifactPathResolver.createPathResolver(actionFileSystem,
+        // execRoot)).
         let output_metadata_store =
-            Arc::new(executor.create_output_metadata_store(action.as_ref()));
+            Arc::new(executor.create_output_metadata_store(
+                    action.as_ref(),
+                    &state.input_artifact_data,
+                ));
 
         // We only need to check the action cache if we haven't done it on a previous run.
         state.token = executor.check_action_cache(
@@ -1343,8 +1350,9 @@ mod timestamp_builder_tests {
         ActionCacheChecker, ActionCacheCheckerCacheConfig, NoProxies, TrustAll, TrustLocalOnly,
     };
     use blaze_exec::actions::cache::{ActionCache, CompactPersistentActionCache};
-    use blaze_exec::actions::{FileArtifactValue, OutputChecker};
-    use blaze_exec::exec::action_execution_context::RemoteOutputTree;
+    use blaze_exec::actions::OutputChecker;
+    use blaze_exec::analysis::actions::file_write_action_context::FileWriteActionContext;
+    use blaze_exec::exec::action_execution_context::{ActionInputPrefetcher, RemoteOutputTree};
     use blaze_skyframe::{ComputeError, Environment, EvaluationContext, EvaluatorBuilder, SkyKey};
     use blaze_vfs::{DigestHashFunction, FileSystemExt, Path, PathFragment, Root, UnixFileSystem};
     use indexmap::IndexMap;
@@ -1547,6 +1555,18 @@ mod timestamp_builder_tests {
             output: &Artifact,
             remote: &RemoteSetup,
         ) -> (blaze_skyframe::EvaluationResult, Arc<StoredEventHandler>) {
+            self.evaluate_roots_with(actions, cache, &[output], remote)
+        }
+
+        /// [`Fixture::evaluate_with`] for the generating actions of several outputs, in one
+        /// evaluation (one build).
+        fn evaluate_roots_with(
+            &self,
+            actions: &[ActionRef],
+            cache: &Arc<dyn ActionCache>,
+            outputs: &[&Artifact],
+            remote: &RemoteSetup,
+        ) -> (blaze_skyframe::EvaluationResult, Arc<StoredEventHandler>) {
             blaze_exec::analysis::actions::register();
             let mut contexts = ActionContexts::default();
             for (type_id, ctx) in blaze_exec::analysis::actions::default_action_contexts("_main") {
@@ -1554,6 +1574,17 @@ mod timestamp_builder_tests {
             }
             if let Some(tree) = &remote.tree {
                 contexts.register_raw(std::any::TypeId::of::<RemoteOutputTree>(), tree.clone());
+                let prefetcher: Arc<dyn ActionInputPrefetcher> = Arc::new(NoPrefetch);
+                contexts.register_raw(
+                    std::any::TypeId::of::<Arc<dyn ActionInputPrefetcher>>(),
+                    Arc::new(prefetcher),
+                );
+            }
+            if let Some(file_write) = &remote.file_write {
+                contexts.register_raw(
+                    std::any::TypeId::of::<Arc<dyn FileWriteActionContext>>(),
+                    Arc::new(file_write.clone()),
+                );
             }
             let events = Arc::new(StoredEventHandler::new());
             let checker = Arc::new(ActionCacheChecker::new(
@@ -1603,10 +1634,15 @@ mod timestamp_builder_tests {
                 event_handler: events.clone(),
                 ..EvaluationContext::default()
             };
-            let root = SkyKey::new(ActionExecutionKey(
-                output.get_generating_action_key().clone(),
-            ));
-            let result = evaluator.evaluate(&[root], &ctx).unwrap();
+            let roots: Vec<SkyKey> = outputs
+                .iter()
+                .map(|output| {
+                    SkyKey::new(ActionExecutionKey(
+                        output.get_generating_action_key().clone(),
+                    ))
+                })
+                .collect();
+            let result = evaluator.evaluate(&roots, &ctx).unwrap();
             (result, events)
         }
     }
@@ -1618,6 +1654,108 @@ mod timestamp_builder_tests {
     struct RemoteSetup {
         output_checker: Option<Arc<dyn OutputChecker>>,
         tree: Option<Arc<RemoteOutputTree>>,
+        /// The `FileWriteActionContext` of the build, when not the local one; with
+        /// [`InjectingFileWrite`], file writes are remote cache hits that are not downloaded: the
+        /// output's metadata is injected into the action file system (as
+        /// `RemoteExecutionService.downloadOutputs` does) and no local file is written.
+        file_write: Option<Arc<dyn FileWriteActionContext>>,
+    }
+
+    /// `ActionInputPrefetcher.NONE`.
+    struct NoPrefetch;
+
+    impl ActionInputPrefetcher for NoPrefetch {
+        fn prefetch_files(
+            &self,
+            _action: &dyn blaze_exec::actions::ActionExecutionMetadata,
+            _inputs: &[blaze_exec::actions::ActionInputRef],
+            _metadata_provider: &dyn blaze_exec::actions::InputMetadataProvider,
+        ) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A `FileWriteActionContext` whose writes are remote: the content's metadata is injected
+    /// into the action file system instead of writing the file.
+    struct InjectingFileWrite;
+
+    /// A `FileWriteActionContext` for an action result that lists, besides the output of the
+    /// action writing `injector`, an extra output file at `victim` (the exec path of another
+    /// action's output) with a digest of its choice; every other write is local.
+    struct ForgingFileWrite {
+        injector: Artifact,
+        victim: Artifact,
+        local: Arc<dyn FileWriteActionContext>,
+    }
+
+    impl FileWriteActionContext for ForgingFileWrite {
+        fn write_output_to_file_with_output(
+            &self,
+            action: &dyn blaze_actions::actions::action::Action,
+            ctx: &dyn blaze_exec::exec::action_execution_context::ActionExecutionContext,
+            deterministic_writer: &dyn blaze_actions::analysis::actions::abstract_file_write_action::DeterministicWriter,
+            make_executable: bool,
+            is_remotable: bool,
+            output: &Artifact,
+        ) -> Result<Vec<blaze_exec::actions::SpawnResult>, blaze_exec::actions::ExecException> {
+            if output != &self.injector {
+                return self.local.write_output_to_file_with_output(
+                    action,
+                    ctx,
+                    deterministic_writer,
+                    make_executable,
+                    is_remotable,
+                    output,
+                );
+            }
+            let fs = ctx
+                .get_remote_action_file_system()
+                .expect("an action file system");
+            let result = InjectingFileWrite.write_output_to_file_with_output(
+                action,
+                ctx,
+                deterministic_writer,
+                make_executable,
+                is_remotable,
+                output,
+            );
+            fs.inject_remote_file(
+                self.victim.get_path().as_fragment(),
+                vec![0xAB; 32],
+                7,
+                None,
+                false,
+            )
+            .unwrap();
+            result
+        }
+    }
+
+    impl FileWriteActionContext for InjectingFileWrite {
+        fn write_output_to_file_with_output(
+            &self,
+            _action: &dyn blaze_actions::actions::action::Action,
+            ctx: &dyn blaze_exec::exec::action_execution_context::ActionExecutionContext,
+            deterministic_writer: &dyn blaze_actions::analysis::actions::abstract_file_write_action::DeterministicWriter,
+            _make_executable: bool,
+            _is_remotable: bool,
+            output: &Artifact,
+        ) -> Result<Vec<blaze_exec::actions::SpawnResult>, blaze_exec::actions::ExecException> {
+            use sha2::Digest as _;
+            let mut content = Vec::new();
+            deterministic_writer.write_to(&mut content).unwrap();
+            ctx.get_remote_action_file_system()
+                .expect("an action file system")
+                .inject_remote_file(
+                    output.get_path().as_fragment(),
+                    sha2::Sha256::digest(&content).to_vec(),
+                    content.len() as i64,
+                    None,
+                    false,
+                )
+                .unwrap();
+            Ok(vec![])
+        }
     }
 
     impl Fixture {
@@ -1643,18 +1781,6 @@ mod timestamp_builder_tests {
                     .count(),
             }
         }
-    }
-
-    /// The remote metadata of `content` as `RemoteExecutionService.downloadOutputs` injects it.
-    fn remote_metadata(content: &str) -> FileArtifactValue {
-        use sha2::Digest as _;
-        FileArtifactValue::create_for_remote_file_with_materialization_data(
-            sha2::Sha256::digest(content.as_bytes()).to_vec(),
-            content.len() as i64,
-            1,
-            None,
-            false,
-        )
     }
 
     /// Build without the bytes, second build: the first build's output exists only remotely (its
@@ -1683,30 +1809,23 @@ mod timestamp_builder_tests {
             let actions = f.register_actions(vec![write_action(&f, &hello, "content")]);
             let cache = f.create_cache("cache");
 
-            // Build 1: the output's metadata is the remote one (the remote output tree is
-            // consulted before the local file system).
-            let tree = Arc::new(RemoteOutputTree::new());
-            tree.inject_file(
-                hello.get_path().as_fragment().clone(),
-                remote_metadata("content"),
-            );
+            // Build 1: the action is a remote cache hit whose output is not downloaded: its
+            // metadata is injected into the action file system, which the output metadata
+            // store consults before the local file system.
             let first = RemoteSetup {
                 output_checker: output_checker.clone(),
-                tree: Some(tree),
+                tree: Some(Arc::new(RemoteOutputTree::new())),
+                file_write: Some(Arc::new(InjectingFileWrite)),
             };
             assert_eq!(f.build_with(&actions, &cache, &hello, &first), BUILT);
             // Not downloaded: no local file.
-            let p = std::path::Path::new(hello.get_path().get_path_string()).to_path_buf();
-            let mut perms = std::fs::metadata(&p).unwrap().permissions();
-            #[allow(clippy::permissions_set_readonly_false)]
-            perms.set_readonly(false);
-            std::fs::set_permissions(&p, perms).unwrap();
-            std::fs::remove_file(&p).unwrap();
+            assert!(!hello.get_path().exists());
 
             // Build 2, a new command: an empty remote output tree.
             let second = RemoteSetup {
                 output_checker: output_checker.clone(),
                 tree: Some(Arc::new(RemoteOutputTree::new())),
+                file_write: Some(Arc::new(InjectingFileWrite)),
             };
             assert_eq!(
                 f.build_with(&actions, &cache, &hello, &second),
@@ -1715,6 +1834,64 @@ mod timestamp_builder_tests {
                 output_checker.as_ref().map(|_| ())
             );
         }
+    }
+
+    /// R7: an action result may name paths the action does not own. The injection goes into
+    /// the injecting action's own `RemoteActionFileSystem` (Java: one per action), which only
+    /// that action's output metadata store reads, and only for its declared outputs: another
+    /// action that writes the forged path locally keeps the digest of its own output.
+    #[test]
+    fn injected_metadata_for_another_actions_output_does_not_replace_its_digest() {
+        use sha2::Digest as _;
+        let f = Fixture::new();
+        let a = f.create_derived_artifact("a");
+        let b = f.create_derived_artifact("b");
+        let actions =
+            f.register_actions(vec![write_action(&f, &a, "aaa"), write_action(&f, &b, "bbb")]);
+        let cache = f.create_cache("cache");
+
+        let local: Arc<dyn FileWriteActionContext> = {
+            let mut found = None;
+            for (type_id, ctx) in blaze_exec::analysis::actions::default_action_contexts("_main") {
+                if type_id == std::any::TypeId::of::<Arc<dyn FileWriteActionContext>>() {
+                    found = Some(
+                        (*ctx
+                            .downcast::<Arc<dyn FileWriteActionContext>>()
+                            .ok()
+                            .unwrap())
+                        .clone(),
+                    );
+                }
+            }
+            found.unwrap()
+        };
+        let forging: Arc<dyn FileWriteActionContext> = Arc::new(ForgingFileWrite {
+            injector: a.clone(),
+            victim: b.clone(),
+            local,
+        });
+        let remote = RemoteSetup {
+            output_checker: Some(Arc::new(TrustAll) as Arc<dyn OutputChecker>),
+            tree: Some(Arc::new(RemoteOutputTree::new())),
+            file_write: Some(forging),
+        };
+        let (result, _events) = f.evaluate_roots_with(&actions, &cache, &[&a, &b], &remote);
+        assert!(!result.has_error(), "{:?}", result.error_map());
+        let value_b = result
+            .get(&ActionExecutionKey(b.get_generating_action_key().clone()))
+            .unwrap();
+        let metadata_b = value_b.get_existing_file_artifact_value(&b).unwrap();
+        assert!(!metadata_b.is_remote(), "{metadata_b:?}");
+        assert_eq!(
+            metadata_b.get_digest().unwrap(),
+            sha2::Sha256::digest(b"bbb").as_slice()
+        );
+        // The injecting action's own output is its remote one.
+        let value_a = result
+            .get(&ActionExecutionKey(a.get_generating_action_key().clone()))
+            .unwrap();
+        let metadata_a = value_a.get_existing_file_artifact_value(&a).unwrap();
+        assert!(metadata_a.is_remote(), "{metadata_a:?}");
     }
 
     const BUILT: BuildCounts = BuildCounts {

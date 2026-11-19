@@ -426,12 +426,10 @@ pub fn prepare_for_execution_with_action_cache(
     })
     .with_action_cache(ActionCacheSetup {
         action_cache_checker: action_cache_checker.clone(),
-        // ExecutorBuilder.getActionExecutionSalt(): RemoteModule.executorInit sets it.
-        // PORT: Java sets the salt of a command without remote options too
-        // (computeActionExecutionSalt(false, {})); Blaze keeps the empty salt there, which only
-        // changes the bytes of the local action cache (the salt is constant per remote setup
-        // either way, so the invalidation between builds with and without a remote cache is
-        // Java's).
+        // ExecutorBuilder.getActionExecutionSalt(): RemoteModule.executorInit sets it for every
+        // command with RemoteOptions (computeActionExecutionSalt, also without a cache: the
+        // placeholder setup); "" only when no module set it.
+        // Java: com/google/devtools/build/lib/exec/ExecutorBuilder.java:72 ExecutorBuilder.getActionExecutionSalt
         action_execution_salt: config
             .remote
             .action_execution_salt

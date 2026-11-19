@@ -29,7 +29,10 @@ structured outputs, normalised, under ~/.cache/blaze/oracle-records/<label>/<pro
 
   manifest.json        sha256 of every file; the binary's path and sha256; the date; the Blaze
                        repository's commit (`git rev-parse HEAD` of this checkout), whether its
-                       tree was dirty and, if so, a sha256 of the uncommitted state; command
+                       tree was dirty and, if so, a sha256 of the uncommitted state; whether the
+                       binary can come from that commit (`binary_origin.commit_verified`: the
+                       binary lies in this checkout's target/ and is not older than its HEAD
+                       commit; a warning is printed when not); what --force overrode; command
                        lines, exit codes, durations
   raw/                 unnormalised outputs exactly as the binary wrote them
   norm/                normalised outputs (what humans read and diff)
@@ -56,7 +59,8 @@ A label is never reused. `record` refuses a label that already has a directory f
 (even an unfinished one), and refuses to add a project to a label whose other projects were
 recorded with a different binary: a label names one binary, and a score names a label. Use a new
 label (for Blaze: blaze-<commit, 12 hex digits>, plus -dirty-<first 8 of the diff sha256> for an
-uncommitted tree) or pass --force, which the new manifest then says (`replaced`).
+uncommitted tree) or pass --force, which the new manifest then says (`replaced`, `forced`), and
+which compare and scoreboard print.
 
 Options:
   --binary PATH     the bazel-compatible client binary
@@ -408,6 +412,9 @@ def record_project(args, project, spec, steps):
         "binary_sha256": oc.sha256_file(binary),
         # The Blaze repository this recorder ran from, read before the first command.
         "blaze_repo": args.repo_state,
+        # Whether the binary can come from that checkout (audit R2A-2): inside its target dir and
+        # not older than its HEAD commit. commit_verified false: the commit is the recorder's only.
+        "binary_origin": args.binary_origin,
         "checkout": checkout,
         "checkout_commit": spec.get("commit"),
         "workspace_fixups": fixed,
@@ -419,6 +426,9 @@ def record_project(args, project, spec, steps):
     }
     if replaced is not None:
         manifest["replaced"] = replaced
+    if args.forced:
+        # What --force overrode (audit R2A-5); compare and scoreboard print it.
+        manifest["forced"] = list(args.forced)
     oc.write_json(os.path.join(rd, "manifest.json"), manifest)
     finish(rd)
 
@@ -554,6 +564,13 @@ def main():
                "to replace it." % (args.label, "\n  ".join(conflicts)))
     maybe_reexec_in_scope(args)
     args.repo_state = oc.repo_state()
+    args.binary_origin = oc.binary_origin(oc.expand(args.binary))
+    args.forced = conflicts if args.force else []
+    if not args.binary_origin["commit_verified"]:
+        print("[record] WARNING: commit_verified false: the recorded commit %s may not be the binary's origin: %s"
+              % (args.repo_state.get("commit"), "; ".join(args.binary_origin["reasons"])), file=sys.stderr)
+    for c in args.forced:
+        print("[record] WARNING: --force: %s" % c, file=sys.stderr)
     for n in names:
         record_project(args, n, projects[n], steps)
         if summary:

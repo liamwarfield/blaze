@@ -10,6 +10,7 @@ pub mod executor_setup;
 pub mod expanded_spawn_log_context;
 pub mod io;
 pub mod local;
+pub mod remote_action_file_system;
 pub mod single_build_file_cache;
 pub mod spawn_input_expander;
 pub mod spawn_log_context;

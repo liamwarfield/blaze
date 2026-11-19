@@ -14,6 +14,8 @@ import oracle_report as orep
 from fixture_records import Records, load_tool, run_main
 
 REF = oc.REFERENCE_LABEL
+CLEAN = {"blaze_repo": {"commit": "e" * 40, "dirty": False, "dirty_paths": 0, "dirty_diff_sha256": None},
+         "binary_origin": {"commit_verified": True, "reasons": []}}
 QUERY = {"query_label_kind": {"pat //:a": "cc_library rule", "__order__ pat": ["//:a"]}}
 CQUERY = {"cquery_label_kind": {"deps //:a (abc)": "cc_library rule", "__order__ deps": ["deps //:a (abc)"]}}
 
@@ -206,6 +208,62 @@ class AllowCapTest(unittest.TestCase):
                                 "build-metrics-volatile-counters": {"brotli": 1, "re2": 1}})
 
 
+class AllowVolumeTest(unittest.TestCase):
+    """Audit R2A-1: many allowed differing paths must not hide one that is not allowed.
+
+    The auditor's case on the re2 reference buildMetrics event: change `count` and
+    `skyfunctionName` in the five allowed per-SkyFunction lists (244 allowed paths) and also
+    `targetMetrics` and `buildGraphMetrics.outputArtifactCount`. Before the fix diff_paths stopped
+    at 200 paths and the item was ALLOWED, the surface MATCH. Uses the real allow.json entry.
+    """
+
+    KEY = '{"buildMetrics":{}}'
+    LISTS = ("evaluatedValues", "builtValues", "changedValues", "cleanedValues", "dirtiedValues")
+
+    def event(self, n_per_list, tag):
+        graph = {name: [{"count": "%d%s" % (i, tag), "skyfunctionName": "FN_%d_%s" % (i, tag)}
+                        for i in range(n_per_list)] for name in self.LISTS}
+        graph["outputArtifactCount"] = "1000"
+        return {"buildMetrics": {"buildGraphMetrics": graph,
+                                 "targetMetrics": {"targetsConfigured": "357"},
+                                 "actionSummary": {"actionsExecuted": "780"}}}
+
+    def compare(self, a, b):
+        return ocmp.compare_surface("re2", "bep", {"status": "OK", "items": {self.KEY: a}},
+                                    {"status": "OK", "items": {self.KEY: b}}, ocmp.AllowList())
+
+    def test_auditor_case_more_than_200_allowed_paths_and_one_not_allowed_is_diff(self):
+        a, b = self.event(25, "a"), self.event(25, "b")  # 5 lists x 25 entries x 2 fields = 250 paths
+        b["buildMetrics"]["targetMetrics"]["targetsConfigured"] = "358"
+        b["buildMetrics"]["buildGraphMetrics"]["outputArtifactCount"] = "1001"
+        paths = ocmp.diff_paths(a, b)
+        self.assertEqual(len(paths), 252)
+        self.assertIn("buildMetrics.targetMetrics.targetsConfigured", paths)
+        r = self.compare(a, b)
+        self.assertEqual((r["status"], r["counts"]["DIFF"], r["counts"]["ALLOWED"]), ("DIFF", 1, 0))
+        self.assertEqual(r["details"][0]["paths_total"], 252)
+        self.assertEqual(len(r["details"][0]["paths"]), 50)  # what is stored for printing is cut
+        self.assertFalse(ocmp.is_clean(r))
+
+    def test_one_not_allowed_path_at_the_end_of_a_long_list(self):
+        # Sorted path order puts the extra path after every allowed one.
+        a, b = self.event(40, "a"), self.event(40, "b")
+        b["buildMetrics"]["targetMetrics"]["targetsConfigured"] = "358"
+        self.assertEqual(ocmp.diff_paths(a, b)[-1], "buildMetrics.targetMetrics.targetsConfigured")
+        self.assertEqual(self.compare(a, b)["status"], "DIFF")
+
+    def test_only_allowed_paths_are_still_excused_however_many(self):
+        r = self.compare(self.event(40, "a"), self.event(40, "b"))  # 400 allowed paths
+        self.assertEqual((r["status"], r["counts"]["ALLOWED"]), ("MATCH", 1))
+        self.assertEqual(r["details"][0]["paths_total"], 400)
+
+    def test_describe_diff_counts_every_path(self):
+        a, b = self.event(25, "a"), self.event(25, "b")
+        paths = ocmp.diff_paths(a, b)
+        lines = ocmp.describe_diff(a, b, paths[:50], total=len(paths))
+        self.assertEqual(lines[-1], "  ... 242 more differing paths")
+
+
 class IntegrityTest(unittest.TestCase):
     def setUp(self):
         self.rec = Records(self)
@@ -293,6 +351,122 @@ class ExceptionTest(unittest.TestCase):
         self.assertEqual([e["surfaces"] for e in excs], [list(oc.SURFACES), list(oc.SURFACES)])
 
 
+class AnchoredExceptionTest(unittest.TestCase):
+    """Audit R2A-5: the reference's exceptions come from the committed summary as well."""
+
+    EXC = {"id": "spliced", "kind": "spliced", "surfaces": ["query_label_kind"], "explanation": "by hand"}
+
+    def setUp(self):
+        self.rec = Records(self)
+        self.rec.add(REF, "brotli", QUERY, manifest={"exceptions": [self.EXC]})
+        self.rec.add("cand", "brotli", QUERY)
+        summary = os.path.join(oc.CORPUS_SUMMARIES, "brotli.json")
+        doc = oc.read_json(summary)
+        doc["exceptions"] = [self.EXC]
+        oc.write_json(summary, doc)
+
+    def test_exception_removed_from_the_manifest_still_applies(self):
+        m = oc.load_manifest(REF, "brotli")
+        m["exceptions"] = []
+        oc.write_json(os.path.join(oc.record_dir(REF, "brotli"), "manifest.json"), m)
+        cmp = ocmp.compare_labels(REF, "cand")
+        r = by_surface(cmp, "brotli")["query_label_kind"]
+        self.assertEqual(r["exceptions"], [{"side": "a", "id": "spliced"}])
+        self.assertFalse(cmp.clean())
+        self.assertTrue(any("differ from the committed summary" in w for w in orep.warning_lines(cmp)))
+
+    def test_same_exception_in_both_is_listed_once(self):
+        cmp = ocmp.compare_labels(REF, "cand")
+        self.assertEqual([e["id"] for _, _, _, e in cmp.exceptions()], ["spliced"])
+        self.assertEqual(cmp.notes, [])
+
+
+class ForceAndOriginTest(unittest.TestCase):
+    """Audit R2A-2, R2A-3, R2A-5: what --force overrode and whether the commit is the binary's
+    origin are printed, and scoreboard --write refuses what cannot back an accepted score."""
+
+    def setUp(self):
+        self.rec = Records(self)
+        self.rec.add(REF, "brotli", QUERY)
+        self.scoreboard = load_tool("scoreboard")
+
+    def test_force_is_printed(self):
+        self.rec.add("cand", "brotli", QUERY, manifest=dict(
+            CLEAN, replaced={"created": "2025-01-01", "binary_sha256": "9" * 64},
+            forced=["label cand already holds re2 recorded with another binary"]))
+        w = orep.warning_lines(ocmp.compare_labels(REF, "cand"))
+        self.assertIn("cand/brotli was recorded with --force over an earlier recording (created 2025-01-01, "
+                      "binary 999999999999)", w)
+        self.assertIn("cand/brotli was recorded with --force despite: label cand already holds re2 recorded "
+                      "with another binary", w)
+
+    def test_unverified_commit_is_printed(self):
+        self.rec.add("cand", "brotli", QUERY, manifest=dict(
+            CLEAN, binary_origin={"commit_verified": False, "reasons": ["binary is not inside x"]}))
+        cmp = ocmp.compare_labels(REF, "cand")
+        self.assertIn("binary origin NOT VERIFIED", orep.provenance_lines(cmp)[3])
+        self.assertIn("cand/brotli: the recorded commit is not verified as the binary's origin: binary is not "
+                      "inside x", orep.warning_lines(cmp))
+
+    def write(self, *extra):
+        return run_main(self.scoreboard, ["cand", "--write"] + list(extra))
+
+    def test_write_refuses_what_cannot_back_an_accepted_score(self):
+        dirty = {"commit": "e" * 40, "dirty": True, "dirty_paths": 1, "dirty_diff_sha256": "d" * 64}
+        cases = {
+            "no recorded commit": {},
+            "recorded from a dirty tree": dict(CLEAN, blaze_repo=dirty),
+            "binary origin not verified: older": dict(CLEAN, binary_origin={"commit_verified": False,
+                                                                           "reasons": ["older"]}),
+            "binary origin not checked": {"blaze_repo": CLEAN["blaze_repo"]},
+        }
+        for i, (why, manifest) in enumerate(cases.items()):
+            label = "cand%d" % i
+            self.rec.add(label, "brotli", QUERY, manifest=manifest)
+            rc, _, err = run_main(self.scoreboard, [label, "--write"])
+            self.assertEqual(rc, 2, why)
+            self.assertIn("refusing to write a score for %s" % label, err)
+            self.assertIn(why, err)
+            self.assertFalse(os.path.exists(os.path.join(oc.CORPUS_SCORES, label + ".json")))
+
+    def test_allow_dirty_writes_and_stores_the_reason(self):
+        self.rec.add("cand", "brotli", QUERY)
+        rc, _, err = self.write("--allow-dirty", " ")
+        self.assertEqual(rc, 2)
+        self.assertIn("--allow-dirty needs a reason", err)
+        rc, out, _ = self.write("--allow-dirty", "root ruling 7: binary deleted")
+        self.assertEqual(rc, 0, out)
+        doc = oc.read_json(os.path.join(oc.CORPUS_SCORES, "cand.json"))
+        self.assertEqual(doc["allow_dirty"], "root ruling 7: binary deleted")
+        self.assertEqual(doc["recording_problems"], ["cand/brotli: no recorded commit"])
+        self.assertIn("accepted with --allow-dirty: root ruling 7: binary deleted", out)
+        self.assertIn("accepted with `--allow-dirty`: root ruling 7", read(os.path.join(oc.CORPUS_SCORES, "cand.md")))
+
+    def test_clean_verified_recording_is_written(self):
+        self.rec.add("cand", "brotli", QUERY, manifest=CLEAN)
+        rc, out, err = self.write()
+        self.assertEqual(rc, 0, err)
+        doc = oc.read_json(os.path.join(oc.CORPUS_SCORES, "cand.json"))
+        self.assertEqual((doc["recording_problems"], doc["allow_dirty"]), ([], None))
+
+
+class MatchingKeysTest(unittest.TestCase):
+    """Audit R2A-4: a score row names its matching items (as digests)."""
+
+    def test_rows_hold_digests_of_the_matching_keys_only(self):
+        rec = Records(self)
+        rec.add(REF, "brotli", {"query_label_kind": {"a": 1, "b": 2, "c": 3}, "cquery_label_kind": {"x": 1}})
+        rec.add("cand", "brotli", {"query_label_kind": {"a": 1, "b": 9, "c": 3, "d": 4}})
+        doc = orep.score_document(ocmp.compare_labels(REF, "cand"), ocmp.AllowList(None))
+        rows = {r["surface"]: r for r in doc["rows"]}
+        self.assertEqual(rows["query_label_kind"]["matching_keys"], orep.key_digests(["a", "c"]))
+        self.assertEqual(rows["cquery_label_kind"]["matching_keys"], "")  # MISSING: nothing matches
+        self.assertEqual(len(rows["query_label_kind"]["matching_keys"].split()), rows["query_label_kind"]["matching"])
+        import hashlib
+        self.assertEqual(orep.key_digests(["c", "a"]), " ".join(sorted(
+            hashlib.sha256(k.encode()).hexdigest()[:10] for k in "ac")))
+
+
 class ScoreTest(unittest.TestCase):
     def setUp(self):
         self.rec = Records(self)
@@ -338,7 +512,11 @@ class ScoreTest(unittest.TestCase):
 
     def test_clean_tree_and_missing_commit(self):
         self.assertEqual(orep.tree_text({"repo_commit": "a" * 40, "repo_dirty": False}),
-                         "repo commit aaaaaaaaaaaa clean")
+                         "repo commit aaaaaaaaaaaa clean, binary origin not checked")
+        self.assertEqual(orep.tree_text({"repo_commit": "a" * 40, "repo_dirty": False, "commit_verified": True}),
+                         "repo commit aaaaaaaaaaaa clean, binary from that commit verified")
+        self.assertEqual(orep.tree_text({"repo_commit": "a" * 40, "repo_dirty": False, "commit_verified": False}),
+                         "repo commit aaaaaaaaaaaa clean, binary origin NOT VERIFIED")
         self.assertEqual(orep.tree_text({}), "repo commit not recorded")
 
     def test_warnings_for_mixed_binaries_and_stale_extraction(self):
@@ -418,7 +596,7 @@ class ToolsTest(unittest.TestCase):
 
     def test_scoreboard_formats_and_write(self):
         self.rec.add(REF, "brotli", QUERY)
-        self.rec.add("cand", "brotli", QUERY)
+        self.rec.add("cand", "brotli", QUERY, manifest=CLEAN)
         rc, text, _ = run_main(self.scoreboard, ["cand"])
         self.assertEqual(rc, 0)
         self.assertIn("scoreboard: cand vs reference %s" % REF, text)

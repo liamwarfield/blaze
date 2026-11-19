@@ -89,8 +89,17 @@ For each project (default: all):
      the fetched repos need.
 
 Writes ~/.cache/blaze/work/repos/<project>-report.json and prints per-project counts:
-repos MATCH / DIFF / MISSING (not fetched by Blaze) and the first N differences.
-Exits 0 iff every repo and both lockfiles match.
+repos MATCH / DIFF / MISSING (not fetched by Blaze) and the first N differences, then one
+`verdict <project>: PASS|FAIL (reasons)` line per project and one `result: PASS|FAIL` line.
+
+A project passes only when all of these hold:
+  * the fetch command exited 0, did not time out and its log has no Rust panic
+    ("panicked at"); with --no-run, the exit code is taken from the previous report, and a
+    missing one fails;
+  * every repo is MATCH (tree, and marker or predeclared input hash);
+  * the workspace MODULE.bazel.lock is byte-identical to the oracle's;
+  * the hidden lockfile <ob>/MODULE.bazel.lock is byte-identical to the oracle output base's.
+Exit status: 0 iff every project passes, 1 otherwise, 2 on usage errors.
 
 Options:
   --project NAME            brotli, re2 or all (default all)
@@ -287,13 +296,23 @@ def run_project(args, project, spec):
         print("[compare-repos] %s: fetching %d repos (log %s)" % (project, len(repos), log),
               flush=True)
         t0 = time.time()
+        timed_out = False
         with open(log, "wb") as out:
-            p = subprocess.run(argv, cwd=os.path.realpath(ws),
-                               env={"HOME": oc.HOME, "PATH": "/usr/bin:/bin"},
-                               stdout=out, stderr=subprocess.STDOUT, timeout=args.timeout)
-        run_info = {"argv": argv, "exit_code": p.returncode, "duration_s": round(time.time() - t0, 2)}
-        print("[compare-repos] %s: exit %d in %.1fs" % (project, p.returncode, run_info["duration_s"]),
+            try:
+                rc = subprocess.run(argv, cwd=os.path.realpath(ws),
+                                    env={"HOME": oc.HOME, "PATH": "/usr/bin:/bin"},
+                                    stdout=out, stderr=subprocess.STDOUT, timeout=args.timeout).returncode
+            except subprocess.TimeoutExpired:
+                rc, timed_out = -9, True
+        run_info = {"argv": argv, "exit_code": rc, "timed_out": timed_out,
+                    "duration_s": round(time.time() - t0, 2)}
+        print("[compare-repos] %s: exit %d in %.1fs" % (project, rc, run_info["duration_s"]),
               flush=True)
+    else:
+        previous = os.path.join(W5R, project + "-report.json")
+        if os.path.isfile(previous):
+            run_info = dict(oc.read_json(previous).get("run") or {}, reused_from=previous)
+    run_info["panic"] = log_panic(log)
 
     results = {}
     counts = {"MATCH": 0, "DIFF": 0, "MISSING": 0}
@@ -337,13 +356,16 @@ def run_project(args, project, spec):
     lock = compare_lockfile(oracle_lock, os.path.join(ws, "MODULE.bazel.lock"))
     hidden = compare_lockfile(os.path.join(oracle_ob, "MODULE.bazel.lock"),
                               os.path.join(ob, "MODULE.bazel.lock"))
+    failures = project_failures(run_info, counts, len(repos), lock, hidden)
     report = {"project": project, "run": run_info, "counts": counts, "repos": results,
-              "lockfile": lock, "hidden_lockfile": hidden}
+              "lockfile": lock, "hidden_lockfile": hidden, "verdict": "PASS" if not failures else "FAIL",
+              "failures": failures}
     oc.write_json(os.path.join(W5R, project + "-report.json"), report)
 
-    print("== %s: repos %d/%d MATCH (DIFF %d, MISSING %d); lockfile %s" % (
+    print("== %s: repos %d/%d MATCH (DIFF %d, MISSING %d); lockfile %s; hidden lockfile %s; fetch exit %s%s" % (
         project, counts["MATCH"], len(repos), counts["DIFF"], counts["MISSING"],
-        lock.get("status")))
+        lock.get("status"), hidden.get("status"), run_info.get("exit_code"),
+        ", PANIC" if run_info.get("panic") else ""))
     for name, r in results.items():
         if r["status"] != "MATCH":
             print("  %-70s %s %s" % (name, r["status"], json.dumps(
@@ -358,7 +380,43 @@ def run_project(args, project, spec):
     for k, v in exts.items():
         if v != "MATCH":
             print("  hidden %s: %s" % (k, json.dumps(v)[:300]))
-    return counts["MATCH"] == len(repos) and lock.get("status") == "MATCH"
+    if run_info.get("panic"):
+        print("  fetch log: %s" % run_info["panic"])
+    print("verdict %s: %s" % (project, "PASS" if not failures else "FAIL (%s)" % "; ".join(failures)))
+    return failures
+
+
+def log_panic(log):
+    """The first Rust panic line of the fetch log, or None."""
+    if not os.path.isfile(log):
+        return None
+    with open(log, "rb") as f:
+        for line in f.read().decode("utf-8", "replace").splitlines():
+            if "panicked at" in line:
+                return line.strip()[:300]
+    return None
+
+
+def project_failures(run_info, counts, n_repos, lock, hidden):
+    """Why a project does not pass (see USAGE); [] when it passes."""
+    why = []
+    rc = run_info.get("exit_code")
+    if rc is None:
+        why.append("fetch exit code unknown (no run recorded)")
+    elif run_info.get("timed_out"):
+        why.append("fetch timed out")
+    elif rc != 0:
+        why.append("fetch exited %d" % rc)
+    if run_info.get("panic"):
+        why.append("fetch panicked")
+    if counts["MATCH"] != n_repos:
+        why.append("repos %d/%d MATCH (DIFF %d, MISSING %d)" % (
+            counts["MATCH"], n_repos, counts["DIFF"], counts["MISSING"]))
+    if lock.get("status") != "MATCH":
+        why.append("workspace lockfile %s" % lock.get("status"))
+    if hidden.get("status") != "MATCH":
+        why.append("hidden lockfile %s" % hidden.get("status"))
+    return why
 
 
 def main():
@@ -379,10 +437,16 @@ def main():
     maybe_reexec_in_scope(args)
     projects = oc.load_projects()
     names = list(ORACLE_OUTPUT_BASES) if args.project == "all" else [args.project]
-    ok = True
     for name in names:
-        ok = run_project(args, name, projects[name]) and ok
-    return 0 if ok else 1
+        if name not in ORACLE_OUTPUT_BASES:
+            print("error: unknown project %r (have: %s)" % (name, ", ".join(ORACLE_OUTPUT_BASES)), file=sys.stderr)
+            return 2
+    failed = []
+    for name in names:
+        if run_project(args, name, projects[name]):
+            failed.append(name)
+    print("result: %s" % ("PASS (%s)" % ", ".join(names) if not failed else "FAIL (%s)" % ", ".join(failed)))
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

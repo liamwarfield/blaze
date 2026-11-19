@@ -151,6 +151,26 @@ pub(crate) fn before_command(
     }))
 }
 
+/// `RemoteModule.executorInit` when no cache and no remote execution is enabled: `setup` left
+/// the placeholder action context provider (`RemoteActionContextProvider.createForPlaceholder`),
+/// so `executorInit` does not return early and still sets the action execution salt,
+/// `computeActionExecutionSalt(remoteOptions)` (a fingerprint of `false` and the default exec
+/// properties), for every command that has `RemoteOptions`. Only a command without
+/// `RemoteOptions` (`remoteOptions == null`, `actionContextProvider == null`) keeps the
+/// executor's empty salt.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:526 RemoteModule.setup
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1241 RemoteModule.executorInit
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1308 RemoteModule.executorInit
+pub(crate) fn placeholder_contributions(
+    remote_options: Option<&RemoteOptions>,
+) -> RemoteModuleContributions {
+    RemoteModuleContributions {
+        action_execution_salt: remote_options
+            .map(|o| RemoteModule::compute_action_execution_salt(Some(o))),
+        ..RemoteModuleContributions::default()
+    }
+}
+
 impl RemoteSupport {
     /// `RemoteModule.registerSpawnStrategies` (`registerRemoteSpawnStrategy`),
     /// `registerActionContexts` (`registerSpawnCache`) and `executorInit`
@@ -165,7 +185,7 @@ impl RemoteSupport {
     ) -> RemoteModuleContributions {
         let module = self.module.lock();
         let Some(provider) = module.get_action_context_provider() else {
-            return RemoteModuleContributions::default();
+            return placeholder_contributions(remote_options);
         };
         let (strategy, _runner) = provider.get_remote_spawn_strategy();
         let remote_spawn_strategy: Arc<dyn SpawnStrategy> = Arc::new(strategy);

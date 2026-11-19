@@ -1,0 +1,16 @@
+{
+ "about": "Allowed DIFFERENT gRPC-log comparison steps of scripts/remote/matrix. Read by scripts/remote/matrix_verdict.py. An entry holds only when every unmatched RPC on either side belongs to an action whose mnemonic is in only_mnemonics, at most max_actions distinct actions are involved, and (same_count_per_method) both sides have as many RPCs of each method. Anything else DIFFERENT fails the matrix.",
+ "entries": [
+  {
+   "id": "re2-cold-test-actions",
+   "project": "re2",
+   "step": "C4 vs C1 gRPC log",
+   "only_mnemonics": ["TestRunner"],
+   "max_actions": 21,
+   "same_count_per_method": true,
+   "condition": "Cold remote-cache run on re2: every unmatched RPC (FindMissingBlobs, ByteStream/Write, UpdateActionResult) belongs to one of the 21 TestRunner actions, and both sides issue the same number of RPCs per method.",
+   "reason": "A test action's outputs (test.log, test.xml) carry run times, so the digests a cold run uploads and records for the 21 re2 tests differ between any two runs, Bazel against itself included. Measured on matrix-re2a: 82 unmatched RPCs per side, all TestRunner, 21 action ids.",
+   "source": "lead-reported in docs/STATUS.md (In flight, remote: 're2 cold run differs only in the 21 test actions'); to be documented in docs/remote.md by the remote lead"
+  }
+ ]
+}

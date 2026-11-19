@@ -33,10 +33,13 @@ fn experimental_grpc_result_classifier(e: &io::Error) -> ResultClassifierResult 
         return ResultClassifierResult::PermanentFailure;
     };
     match s.code() {
-        // PORT: Java answers PERMANENT_FAILURE when `Thread.currentThread().isInterrupted()`;
-        // Blaze has no thread interruption flag (crate::runtime), so a CANCELLED status is always
-        // the transient case.
-        tonic::Code::Cancelled => ResultClassifierResult::TransientFailure,
+        tonic::Code::Cancelled => {
+            if !blaze_shell::thread_interrupt::is_current_interrupted() {
+                ResultClassifierResult::TransientFailure
+            } else {
+                ResultClassifierResult::PermanentFailure
+            }
+        }
         tonic::Code::NotFound | tonic::Code::AlreadyExists => ResultClassifierResult::Success,
         tonic::Code::Unknown
         | tonic::Code::DeadlineExceeded

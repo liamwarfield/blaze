@@ -264,6 +264,10 @@ impl RemoteExecutionClient for GrpcRemoteExecutor {
         self.channel.get_server_capabilities()
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     // Execute has two components: the Execute call and (optionally) the WaitExecution call.
     // This is the simple flow without any errors:
     //

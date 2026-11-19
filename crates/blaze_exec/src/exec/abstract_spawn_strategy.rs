@@ -213,20 +213,10 @@ impl AbstractSpawnStrategy {
             let file_system = action_execution_context
                 .get_action_file_system()
                 .unwrap_or_else(|| {
-                    let local = action_execution_context
+                    action_execution_context
                         .get_exec_root()
                         .get_file_system()
-                        .clone();
-                    // The RemoteActionFileSystem of a build with a remote output tree (see
-                    // RemoteOutputTreeFileSystem).
-                    match crate::exec::action_execution_context::RemoteOutputTree::from_context(
-                        action_execution_context.get_context_any(std::any::TypeId::of::<
-                            crate::exec::action_execution_context::RemoteOutputTree,
-                        >()),
-                    ) {
-                        Some(tree) => crate::exec::action_execution_context::RemoteOutputTreeFileSystem::create(local, tree),
-                        None => local,
-                    }
+                        .clone()
                 });
             // PORT: Java wraps an IOException of logSpawn in an EnvironmentalExecException
             // ("IOException while logging spawn", SPAWN_LOG_IO_EXCEPTION); the seam's logSpawn
@@ -386,6 +376,14 @@ impl SpawnExecutionContext for SpawnExecutionContextImpl<'_> {
 
     fn get_input_metadata_provider(&self) -> &dyn InputMetadataProvider {
         self.action_execution_context.get_input_metadata_provider()
+    }
+
+    // Java: com/google/devtools/build/lib/exec/AbstractSpawnStrategy.java:400 SpawnExecutionContextImpl.getActionFileSystem
+    fn get_remote_action_file_system(
+        &self,
+    ) -> Option<Arc<crate::exec::remote_action_file_system::RemoteActionFileSystem>> {
+        self.action_execution_context
+            .get_remote_action_file_system()
     }
 
     // Java: com/google/devtools/build/lib/exec/AbstractSpawnStrategy.java:319 SpawnExecutionContextImpl.lockOutputFiles

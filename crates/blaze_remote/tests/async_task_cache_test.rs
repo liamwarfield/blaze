@@ -312,7 +312,7 @@ fn execute_dispose_cancelled() {
 }
 
 #[test]
-#[ignore = "depends on Rx reference-counted subscribers: in the Rust AsyncTaskCache the first caller drives the task, so disposing it cancels its copy of the task (disposed becomes true) and the remaining waiter runs its own copy; Rx keeps the one execution alive while any subscriber remains"]
+#[ignore = "an execution cannot outlive the caller that drives it (its task borrows from that caller; util/async_task_cache.rs module doc, review 2026-11-19 R11): disposing the first subscriber cancels the task and the remaining one runs its own copy, where Rx keeps one execution for every subscriber"]
 fn execute_dispose_when_multiple_subscriptions_not_cancelled() {
     let cache: Cache = Arc::new(AsyncTaskCache::create());
     let single = TestSingle::create();
@@ -529,7 +529,6 @@ fn execute_after_shutdown_get_cancellation_error() {
 }
 
 #[test]
-#[ignore = "AsyncTaskCache::shutdown_now does not cancel the running executions (PORT note on shutdown_now: the drivers belong to their callers); Rx cancels them, which is what lets awaitTermination return and the observer see a CancellationException here"]
 fn shutdown_now_cancel_in_progress_tasks() {
     let cache: Cache = Arc::new(AsyncTaskCache::create());
     let ob = TestObserver::subscribe_task(

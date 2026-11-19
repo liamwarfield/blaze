@@ -97,12 +97,14 @@ class AllowList:
 # diffing values
 
 
-def diff_paths(a, b, path="", out=None, limit=200):
-    """JSON paths of the leaves where a and b differ (lists of unequal length: the list path)."""
+def diff_paths(a, b, path="", out=None):
+    """JSON paths of every leaf where a and b differ (lists of unequal length: the list path).
+
+    Never truncated: the allow list judges a DIFF by all of its paths, so a cut-off list would let
+    many allowed paths hide one that is not allowed (audit R2A-1). Only what is printed is cut.
+    """
     if out is None:
         out = []
-    if len(out) >= limit:
-        return out
     if type(a) is not type(b):
         out.append(path or "$")
     elif isinstance(a, dict):
@@ -111,13 +113,13 @@ def diff_paths(a, b, path="", out=None, limit=200):
             if k not in a or k not in b:
                 out.append(p)
             else:
-                diff_paths(a[k], b[k], p, out, limit)
+                diff_paths(a[k], b[k], p, out)
     elif isinstance(a, list):
         if len(a) != len(b):
             out.append(path or "$")
         else:
             for i, (x, y) in enumerate(zip(a, b)):
-                diff_paths(x, y, "%s[%d]" % (path, i), out, limit)
+                diff_paths(x, y, "%s[%d]" % (path, i), out)
     elif a != b:
         out.append(path or "$")
     return out
@@ -140,8 +142,10 @@ def _short(v, n=160):
     return s if len(s) <= n else s[: n - 3] + "..."
 
 
-def describe_diff(a, b, paths, max_paths=8):
-    """Human-readable lines for one DIFF item."""
+def describe_diff(a, b, paths, max_paths=8, total=None):
+    """Human-readable lines for one DIFF item. `total`: how many paths differ in all, when
+    `paths` is a truncated list."""
+    total = len(paths) if total is None else total
     lines = []
     for p in paths[:max_paths]:
         va, vb = get_path(a, p), get_path(b, p)
@@ -166,8 +170,8 @@ def describe_diff(a, b, paths, max_paths=8):
             lines.append("  %s:" % p)
             lines.append("    - %s" % _short(va))
             lines.append("    + %s" % _short(vb))
-    if len(paths) > max_paths:
-        lines.append("  ... %d more differing paths" % (len(paths) - max_paths))
+    if total > min(max_paths, len(paths)):
+        lines.append("  ... %d more differing paths" % (total - min(max_paths, len(paths))))
     return lines
 
 
@@ -243,18 +247,21 @@ def compare_surface(project, surface, a, b, allow, exits_a=None, exits_b=None):
                           "b": {k: b.get(k) for k in ("error", "stderr_tail") if k in b}}
     ia, ib = a.get("items", {}), b.get("items", {})
     per_entry = {}
+    matching = []
     for key in sorted(set(ia) | set(ib)):
         if key in ia and key in ib:
             if oc.canonical(ia[key]) == oc.canonical(ib[key]):
                 res["counts"]["MATCH"] += 1
+                matching.append(key)
                 continue
             kind = "DIFF"
             paths = diff_paths(ia[key], ib[key])
         else:
             kind = "MISSING" if key in ia else "EXTRA"
             paths = []
+        # The allow list sees every differing path; only the stored and printed list is cut.
         entry = allow.match(project, surface, key, kind, paths)
-        detail = {"key": key, "kind": kind, "paths": paths[:50]}
+        detail = {"key": key, "kind": kind, "paths": paths[:50], "paths_total": len(paths)}
         if entry is not None:
             per_entry.setdefault(entry["id"], []).append(detail)
             detail["allowed_by"] = entry["id"]
@@ -280,7 +287,7 @@ def compare_surface(project, surface, a, b, allow, exits_a=None, exits_b=None):
     if "status" not in res:
         bad = res["counts"]["DIFF"] + res["counts"]["MISSING"] + res["counts"]["EXTRA"]
         res["status"] = "MATCH" if bad == 0 else "DIFF"
-    res["_a"], res["_b"] = ia, ib
+    res["_a"], res["_b"], res["_matching"] = ia, ib, matching
     return res
 
 
@@ -307,16 +314,47 @@ def provenance(label, project, manifest):
     if manifest is None:
         return {"label": label, "project": project, "recorded": False}
     repo = manifest.get("blaze_repo") or {}
+    origin = manifest.get("binary_origin")
     return {
         "label": label, "project": project, "recorded": True,
         "created": manifest.get("created"),
         "binary": manifest.get("binary"), "binary_sha256": manifest.get("binary_sha256"),
         "repo_commit": repo.get("commit"), "repo_dirty": repo.get("dirty"),
         "repo_dirty_diff_sha256": repo.get("dirty_diff_sha256"),
+        # None: recorded before the check existed (audit R2A-2).
+        "commit_verified": origin.get("commit_verified") if isinstance(origin, dict) else None,
+        "commit_unverified_reasons": list(origin.get("reasons") or []) if isinstance(origin, dict) else None,
+        "replaced": manifest.get("replaced"),
+        "forced": manifest.get("forced"),
         "extractor_sha256": manifest.get("extractor_sha256"),
         "steps": manifest.get("steps"),
         "exceptions": manifest_exceptions(manifest),
     }
+
+
+def reference_exceptions(manifest, summary):
+    """The reference's exceptions: those of the committed summary corpus/oracle/<project>.json
+    (hash-anchored, audit R2A-5) together with any the manifest in ~/.cache adds. An exception
+    only makes surfaces fail, so the union never lets a surface pass that either source covers;
+    an exception removed from the unanchored manifest still counts."""
+    out, seen = [], set()
+    for e in manifest_exceptions({"exceptions": (summary or {}).get("exceptions") or []}) + manifest_exceptions(manifest):
+        k = oc.canonical({k: v for k, v in e.items()})
+        if k not in seen:
+            seen.add(k)
+            out.append(e)
+    return out
+
+
+def exception_source_mismatch(manifest, summary):
+    """Why the reference manifest's exceptions differ from the committed summary's, or None."""
+    if summary is None:
+        return None
+    m = sorted(oc.canonical(e) for e in (manifest or {}).get("exceptions") or [])
+    c = sorted(oc.canonical(e) for e in summary.get("exceptions") or [])
+    return None if m == c else "manifest exceptions %s differ from the committed summary's %s" % (
+        [e.get("id") for e in (manifest or {}).get("exceptions") or [] if isinstance(e, dict)],
+        [e.get("id") for e in summary.get("exceptions") or [] if isinstance(e, dict)])
 
 
 def committed_summary(label, project, manifest):
@@ -351,6 +389,16 @@ def compare_labels(label_a, label_b, projects=None, surfaces=None, allow=None):
         ma, mb = oc.load_manifest(label_a, p), oc.load_manifest(label_b, p)
         cmp.provenance[p] = {"a": provenance(label_a, p, ma), "b": provenance(label_b, p, mb)}
         sa, sb = committed_summary(label_a, p, ma), committed_summary(label_b, p, mb)
+        for side, label, m, summ in (("a", label_a, ma, sa), ("b", label_b, mb, sb)):
+            if summ is not None:
+                cmp.provenance[p][side]["exceptions"] = reference_exceptions(m, summ)
+                why = exception_source_mismatch(m, summ)
+                if why:
+                    cmp.notes.append("%s/%s: %s; both are applied" % (label, p, why))
+                path = os.path.join(oc.CORPUS_SUMMARIES, p + ".json")
+                if os.path.isfile(path) and oc.head_version_differs(path):
+                    cmp.notes.append("%s differs from its committed version at HEAD: the reference is "
+                                     "checked against an uncommitted summary" % os.path.relpath(path, oc.REPO_ROOT))
         for s in oc.SURFACES:
             if p not in scope_projects or s not in scope_surfaces:
                 n = ((ma or {}).get("surfaces") or {}).get(s, {}).get("items", 0)
@@ -359,7 +407,7 @@ def compare_labels(label_a, label_b, projects=None, surfaces=None, allow=None):
             continue
         exits_a = load_surface(label_a, p, "exit_codes", ma, sa).get("items")
         exits_b = load_surface(label_b, p, "exit_codes", mb, sb).get("items")
-        excs = [("a", e) for e in manifest_exceptions(ma)] + [("b", e) for e in manifest_exceptions(mb)]
+        excs = [(side, e) for side in ("a", "b") for e in cmp.provenance[p][side].get("exceptions", [])]
         for s in scope_surfaces:
             r = compare_surface(p, s, load_surface(label_a, p, s, ma, sa), load_surface(label_b, p, s, mb, sb),
                                 allow, exits_a, exits_b)
@@ -379,6 +427,7 @@ class Comparison:
         self.restriction = {"projects": None, "surfaces": None}
         self.projects = []  # the projects in scope
         self.out_of_scope = []
+        self.notes = []  # warnings found while loading (exception sources, uncommitted summary)
 
     def __iter__(self):
         return iter(self.results)

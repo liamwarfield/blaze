@@ -1,0 +1,61 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/blaze-anafix-r3b
+# sha256 85cfe14f8e8db7f1cccd8d03a7b51d54d85a428c78130e0f994041d89f8d922e
+# tree b4fc7edb3a49eebb414bbfc49f54e9976a552194 (dirty)
+# date 2026-11-18T17:13:48
+=== 1: aquery //:good
+exit 0
+--- stdout
+{"actionKey": "c04631b81c50f24085c964c8940538b10aa629c7a5105532b29473e36eab8cf5", "argv": ["/bin/bash", "-c", "echo \"$@\" > bazel-out/k8-fastbuild/bin/good.out", "", "a.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["a.txt"], "mnemonic": "MapEach", "outputs": ["bazel-out/k8-fastbuild/bin/good.out"], "primaryOutput": "bazel-out/k8-fastbuild/bin/good.out", "ruleClass": "r", "target": "//:good"}
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:good (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 2: run aquery //:bad --output=jsonproto
+exit 8
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:bad (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: build interrupted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 3: run aquery "//:good + //:bad" --output=jsonproto
+exit 8
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 9 targets configured).
+INFO: Found 2 targets...
+ERROR: build interrupted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run aquery //:bad --output=jsonproto --keep_going
+exit 8
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:bad (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: build interrupted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 5: run cquery //:bad --output=label_kind
+exit 0
+--- stdout
+r rule //:bad (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:bad (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions

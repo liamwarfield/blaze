@@ -233,6 +233,9 @@ pub struct TestContext {
     pub spawn_strategy_registry: Option<Arc<SpawnStrategyRegistry>>,
     pub rich_artifact_data: Mutex<Option<Arc<RunfilesArtifactValue>>>,
     pub progress: Mutex<Vec<String>>,
+    /// `getActionFileSystem()`: the `RemoteActionFileSystem` of build without the bytes.
+    pub action_file_system:
+        Option<Arc<blaze_exec::exec::remote_action_file_system::RemoteActionFileSystem>>,
 }
 
 impl TestContext {
@@ -259,6 +262,7 @@ impl TestContext {
             spawn_strategy_registry: None,
             rich_artifact_data: Mutex::new(None),
             progress: Mutex::new(Vec::new()),
+            action_file_system: None,
         }
     }
 
@@ -303,6 +307,11 @@ impl ActionExecutionContext for TestContext {
     }
     fn set_rich_artifact_data(&self, data: Arc<RunfilesArtifactValue>) {
         *self.rich_artifact_data.lock() = Some(data);
+    }
+    fn get_remote_action_file_system(
+        &self,
+    ) -> Option<Arc<blaze_exec::exec::remote_action_file_system::RemoteActionFileSystem>> {
+        self.action_file_system.clone()
     }
 }
 

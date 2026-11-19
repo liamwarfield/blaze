@@ -100,6 +100,12 @@ pub trait RemoteCacheClient: MissingDigestsFinder {
     /// Returns the capabilities of the remote cache server.
     fn get_server_capabilities(&self) -> io::Result<ServerCapabilities>;
 
+    /// The client as `Any`, for the tests' `(GrpcCacheClient) client` casts (`None` for clients
+    /// that do not support it).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// `getAuthority()`.
     async fn get_authority(&self) -> io::Result<String>;
 

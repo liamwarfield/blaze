@@ -37,6 +37,12 @@ pub trait RemoteExecutionClient: Send + Sync {
     /// Returns the cache capabilities of the remote execution server.
     fn get_server_capabilities(&self) -> io::Result<ServerCapabilities>;
 
+    /// The client as `Any`, for the tests' `(GrpcRemoteExecutor) client` casts (`None` for
+    /// clients that do not support it).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Execute an action remotely using Remote Execution API (blocking).
     fn execute_remotely(
         &self,

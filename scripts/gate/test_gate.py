@@ -418,6 +418,64 @@ class CompareScoresTest(unittest.TestCase):
         self.assertEqual(run(self.tool, [paths[0]])[0], 2)
 
 
+def keyed(doc, keys):
+    """Give each row of a score document `matching_keys` from {(project, surface): [digest, ...]}."""
+    for r in doc["rows"]:
+        r["matching_keys"] = " ".join(sorted(keys.get((r["project"], r["surface"]), [])))
+    return doc
+
+
+class CompareScoreNamesTest(unittest.TestCase):
+    """Audit R2A-4: the ratchet is on item names, not only on counts."""
+
+    def setUp(self):
+        self.tool = load_tool("compare-scores")
+        self.base = keyed(score([("brotli", "query", "DIFF", 3, 2)]), {("brotli", "query"): ["aaa", "bbb"]})
+
+    def test_same_count_different_items_is_a_regression(self):
+        new = keyed(score([("brotli", "query", "DIFF", 3, 2)]), {("brotli", "query"): ["aaa", "ccc"]})
+        self.assertEqual(self.tool.compare(self.base, new)[1], [
+            "brotli/query: 1 item that matched no longer matches (matching 2 -> 2; item key digests bbb)"])
+
+    def test_superset_passes(self):
+        new = keyed(score([("brotli", "query", "MATCH", 3, 3)]), {("brotli", "query"): ["aaa", "bbb", "ccc"]})
+        self.assertEqual(self.tool.compare(self.base, new), ([], []))
+        self.assertEqual(self.tool.count_only_rows(self.base, new), [])
+
+    def test_old_scores_fall_back_to_counts_with_a_warning(self):
+        old = score([("brotli", "query", "DIFF", 3, 2)])
+        new = keyed(score([("brotli", "query", "DIFF", 3, 2)]), {("brotli", "query"): ["aaa", "ccc"]})
+        self.assertEqual(self.tool.compare(old, new), ([], []))
+        self.assertEqual(self.tool.count_only_rows(old, new), ["brotli/query"])
+        d = tempfile.mkdtemp(prefix="gate-test-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        paths = []
+        for name, doc in (("old.json", old), ("new.json", new), ("base.json", self.base)):
+            paths.append(os.path.join(d, name))
+            with open(paths[-1], "w") as f:
+                json.dump(doc, f)
+        rc, out, _ = run(self.tool, [paths[0], paths[1]])
+        self.assertEqual(rc, 0)
+        self.assertIn("WARNING: 1 of 1 rows are compared by count only", out)
+        rc, out, _ = run(self.tool, [paths[2], paths[1]])
+        self.assertEqual(rc, 1)
+        self.assertIn("REGRESSION brotli/query: 1 item that matched no longer matches", out)
+
+    def test_recording_problems_and_allow_dirty_are_printed(self):
+        new = dict(self.base, recording_problems=["blaze-x/re2: recorded from a dirty tree (diff 0123)"],
+                   allow_dirty="ruling 3")
+        d = tempfile.mkdtemp(prefix="gate-test-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        a, b = os.path.join(d, "a.json"), os.path.join(d, "b.json")
+        for path, doc in ((a, self.base), (b, new)):
+            with open(path, "w") as f:
+                json.dump(doc, f)
+        rc, out, _ = run(self.tool, [a, b])
+        self.assertEqual(rc, 0)
+        self.assertIn("NOTE: new score: blaze-x/re2: recorded from a dirty tree", out)
+        self.assertIn("NOTE: new score was written with --allow-dirty: ruling 3", out)
+
+
 class RunTestsTest(unittest.TestCase):
     def test_help(self):
         p = subprocess.run([os.path.join(HERE, "run-tests"), "help"], stdout=subprocess.PIPE)

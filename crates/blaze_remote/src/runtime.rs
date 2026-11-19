@@ -41,17 +41,30 @@ pub fn runtime() -> &'static Runtime {
 // Java: com/google/devtools/build/lib/remote/util/Utils.java:97 Utils.getFromFuture
 // Java: com/google/devtools/build/lib/remote/util/Utils.java:108 Utils.getFromFuture
 pub fn get_from_future<T>(f: impl Future<Output = io::Result<T>>) -> io::Result<T> {
+    match block_on_interruptibly(f) {
+        Some(result) => result,
+        // catch (InterruptedException e): `f.cancel(true)` (the future was dropped) and the
+        // exception rethrown.
+        None => Err(errors::interrupted()),
+    }
+}
+
+/// Runs `f` to completion on the calling thread, or until the thread is interrupted
+/// (`blaze_shell::thread_interrupt`: its own status or the one it adopted), before or while it
+/// waits. `None` is the interruption: `f` was dropped (cancelled) and the interrupt consumed, as
+/// a Java wait that throws `InterruptedException` clears the flag.
+pub fn block_on_interruptibly<T>(f: impl Future<Output = T>) -> Option<T> {
     check_not_in_runtime();
     // `f.get()` throws InterruptedException at once when the flag is set (and clears it).
     if blaze_shell::thread_interrupt::interrupted() {
-        // `f.cancel(true)`: `f` is dropped unpolled.
-        return Err(errors::interrupted());
+        // `f` is dropped unpolled.
+        return None;
     }
     let notify = Arc::new(tokio::sync::Notify::new());
     let listener_notify = notify.clone();
     // The listener runs on the interrupting thread: `notify_one` stores a permit when the waiter
     // is not polling yet, so an interrupt between the check above and the wait is not lost.
-    let interrupted_while_waiting = blaze_shell::thread_interrupt::with_interrupt_listener(
+    let result = blaze_shell::thread_interrupt::with_interrupt_listener(
         Arc::new(move || listener_notify.notify_one()),
         || {
             runtime().block_on(async {
@@ -63,14 +76,21 @@ pub fn get_from_future<T>(f: impl Future<Output = io::Result<T>>) -> io::Result<
             })
         },
     );
-    match interrupted_while_waiting {
-        Some(result) => result,
-        None => {
-            // catch (InterruptedException e): the wait threw, which cleared the flag; the future
-            // is cancelled (dropped by `select!`) and the exception rethrown.
-            blaze_shell::thread_interrupt::interrupted();
-            Err(errors::interrupted())
-        }
+    if result.is_none() {
+        // The wait threw InterruptedException, which cleared the flag.
+        blaze_shell::thread_interrupt::interrupted();
+    }
+    result
+}
+
+/// `Thread.sleep(millis)` / `TimeUnit.MILLISECONDS.sleep(millis)`: sleeps on the calling thread;
+/// an interrupt before or during the sleep ends it with an `InterruptedException` (and clears
+/// the flag).
+// Java: java/lang/Thread.java Thread.sleep
+pub fn sleep(duration: std::time::Duration) -> io::Result<()> {
+    match block_on_interruptibly(tokio::time::sleep(duration)) {
+        Some(()) => Ok(()),
+        None => Err(errors::interrupted()),
     }
 }
 

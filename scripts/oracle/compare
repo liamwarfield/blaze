@@ -100,7 +100,8 @@ def print_diffs(results, show):
             shown += 1
             print("\n== %s/%s %s %s" % (r["project"], r["surface"], d["kind"], d["key"][:200]))
             if d["kind"] == "DIFF":
-                for line in ocmp.describe_diff(r["_a"][d["key"]], r["_b"][d["key"]], d["paths"]):
+                for line in ocmp.describe_diff(r["_a"][d["key"]], r["_b"][d["key"]], d["paths"],
+                                               total=d.get("paths_total")):
                     print(line)
             else:
                 side = r["_a"] if d["kind"] == "MISSING" else r["_b"]

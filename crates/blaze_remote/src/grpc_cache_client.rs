@@ -703,10 +703,14 @@ impl RemoteCacheClient for GrpcCacheClient {
         self.channel.get_server_capabilities()
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     // Java: com/google/devtools/build/lib/remote/GrpcCacheClient.java:395 GrpcCacheClient.getAuthority
     async fn get_authority(&self) -> io::Result<String> {
         // channel.withChannelFuture(ch -> Futures.immediateFuture(ch.authority()))
-        Ok(self.channel.authority().to_string())
+        self.channel.get_authority_async().await
     }
 
     // Java: com/google/devtools/build/lib/remote/GrpcCacheClient.java:400 GrpcCacheClient.downloadActionResult

@@ -36,7 +36,6 @@ use indexmap::{IndexMap, IndexSet};
 use parking_lot::{Mutex, RwLock};
 
 use crate::combined_cache::CombinedCache;
-use crate::common::bulk_transfer_exception::BulkTransferException;
 use crate::common::cache_not_found_exception::CacheNotFoundException;
 use crate::common::errors;
 use crate::common::remote_action_execution_context::RemoteActionExecutionContext;
@@ -47,6 +46,7 @@ use crate::merkletree::{MerkleTreeUploadable, MerkleTreeUploader};
 use crate::reapi::Digest;
 use crate::runtime::get_from_future;
 use crate::util::digest_util::DigestUtil;
+use crate::util::rx_utils::{BulkTransferExceptionCollector, to_transfer_result};
 
 /// The outcome of a [`SharedTask`]: every call that waits for the task gets the same error
 /// (Java hands every observer the same exception object).
@@ -429,35 +429,13 @@ impl RemoteExecutionCache {
         // dropping `upload_tasks` disposes the ones that are still running.
         drop(upload_tasks);
 
-        // Java: com/google/devtools/build/lib/remote/util/RxUtils.java:133 RxUtils.mergeBulkTransfer
-        //
-        // PORT: Java collects the results in the order in which the uploads complete; the port
-        // takes them in the order of the digests, so that the suppressed exceptions of the
-        // `BulkTransferException` have a stable order.
-        completions.sort_by_key(|(index, _)| *index);
-        let mut bulk_transfer_exception: Option<BulkTransferException> = None;
-        let mut interrupted = false;
+        // `RxUtils.mergeBulkTransfer`: the results in the order in which the uploads completed.
+        // Java: com/google/devtools/build/lib/remote/util/RxUtils.java:142 RxUtils.mergeBulkTransfer
+        let mut collector = BulkTransferExceptionCollector::new();
         for (_, completion) in completions {
-            // Java: com/google/devtools/build/lib/remote/util/RxUtils.java:82 RxUtils.toTransferResult
-            match completion {
-                Ok(()) => {}
-                // A transfer is only ever canceled as part of tearing down the operation it
-                // belongs to, so this is reported as an interruption rather than propagated
-                // downstream.
-                Err(error) if errors::is_interrupted(&error) => interrupted = true,
-                Err(error) => bulk_transfer_exception
-                    .get_or_insert_with(BulkTransferException::new)
-                    .add(error),
-            }
+            collector.on_result(to_transfer_result(completion));
         }
-
-        if interrupted {
-            return Err(errors::interrupted());
-        }
-
-        if let Some(bulk_transfer_exception) = bulk_transfer_exception {
-            return Err(bulk_transfer_exception.into());
-        }
+        collector.into_result()?;
 
         Ok(())
     }

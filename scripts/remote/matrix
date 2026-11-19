@@ -21,8 +21,13 @@
 #                   long-running test operations, NOT_FOUND, so execution uses `build`)
 # port-base defaults to 9100 (uses port-base .. port-base+3). Needs
 # target/debug/blaze-remote-grpc-log (scripts/cargo-capped build -p blaze_remote --bins).
+# Verdict: at the end scripts/remote/matrix_verdict.py appends `verdict: PASS|FAIL (...)` to the
+# output and the script exits 0 only on PASS: every build step exited 0 with its processes line,
+# and every gRPC comparison is MATCH or DIFFERENT under a checked entry of
+# scripts/remote/matrix-allow.json. `scripts/remote/matrix_verdict.py <project> <tag>` judges an
+# existing run again.
 set -uo pipefail
-if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,22p' "$0"; exit 0; fi
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,28p' "$0"; exit 0; fi
 project="$1"; blaze="$2"; tag="$3"; port="${4:-9100}"
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 W="$HOME/.cache/blaze/work/remote"; out="$W/matrix-$tag.txt"; : > "$out"
@@ -66,3 +71,6 @@ run E2 "$t-e2" --fresh --binary "$blaze" --command "build $patterns" -- "--remot
 cmp "E2 vs E1 gRPC log" "$W/$t-e1/run1/grpc.log" "$W/$t-e2/run1/grpc.log"
 "$here/worker" stop "$t-d" >/dev/null
 echo "matrix $tag done" | tee -a "$out"
+python3 -I "$here/matrix_verdict.py" "$project" "$tag" > "$W/matrix-$tag.verdict" 2>&1; status=$?
+tee -a "$out" < "$W/matrix-$tag.verdict"
+exit "$status"

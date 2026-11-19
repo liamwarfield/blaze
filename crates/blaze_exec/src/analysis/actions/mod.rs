@@ -158,11 +158,11 @@ where
 /// which is Java's behaviour only for non-artifact inputs; this is the artifact case.
 // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:401 ActionExecutionContext.getInputPath
 // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:75 IdentityResolver.toPath
+// Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:107 TransformResolver.toPath
 pub fn get_input_path(ctx: &dyn ActionExecutionContext, artifact: &BlazeArtifact) -> Path {
-    if ctx.get_action_file_system().is_some() {
-        blaze_util::unported!("ArtifactPathResolver.TransformResolver.toPath (action file system)");
-    }
-    artifact.get_path()
+    // IdentityResolver: artifact.getPath(); TransformResolver (an action file system):
+    // fileSystem.getPath(artifact.getPath().asFragment()).
+    ctx.convert_path(&artifact.get_path())
 }
 
 /// `getEventHandler().post(new RunningActionEvent(action, strategy))`: `RunningActionEvent` is

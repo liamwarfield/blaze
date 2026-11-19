@@ -360,6 +360,8 @@ struct Fixture {
     context: RemoteActionExecutionContext<'static>,
     remote_path_resolver: Arc<dyn RemotePathResolver>,
     channels: Vec<ReferenceCountedChannel>,
+    /// `RemoteDownloadIdleTimeoutInterceptor` of the next client (`newClient(.., ImmutableList.of(idleTimeoutInterceptor))`).
+    download_idle_timeout: Option<Duration>,
 }
 
 impl Fixture {
@@ -409,6 +411,7 @@ impl Fixture {
             context,
             remote_path_resolver,
             channels: Vec::new(),
+            download_idle_timeout: None,
         }
     }
 
@@ -471,6 +474,12 @@ impl Fixture {
         let channel = self
             .fake_server
             .channel(interceptors, Some(capabilities_fetcher));
+        // The channel-level `RemoteDownloadIdleTimeoutInterceptor` (the innermost interceptor
+        // in Java), when the test installs one.
+        let channel = match self.download_idle_timeout {
+            Some(timeout) => channel.with_download_idle_timeout(timeout),
+            None => channel,
+        };
         self.channels.push(channel.clone());
         Arc::new(GrpcCacheClient::new_with_max_outbound_message_size(
             channel,
@@ -1437,9 +1446,54 @@ fn download_blob_is_retried_with_progress() {
 }
 
 #[test]
-#[ignore = "needs RemoteDownloadIdleTimeoutInterceptor, which is not ported"]
 fn download_blob_idle_timeout_is_retried_with_progress() {
-    panic!("not ported: RemoteDownloadIdleTimeoutInterceptor");
+    // Unexpected failures without progress should stop immediately. The idle-timeout retry below
+    // is allowed only because receiving the prefix resets ProgressiveBackoff.
+    let mut f = Fixture::set_up();
+    let mock_backoff = MockBackoff::new();
+    mock_backoff.then_return(-1);
+    // PORT: Java captures the interceptor's timer task and fires it by hand
+    // (`new RemoteDownloadIdleTimeoutInterceptor(idleTimeout, scheduler, nanoTime::get)`); the
+    // port's idle timeout is a timer of the channel (`with_download_idle_timeout`), so a short
+    // real timeout stands in for firing the 60-second one.
+    f.download_idle_timeout = Some(Duration::from_millis(300));
+    let client = f.new_client_with_backoff(&RemoteOptions::default(), mock_backoff.supplier());
+    let digest = digest_util().compute_as_utf8("abcdefg");
+    let read_calls = Arc::new(AtomicI32::new(0));
+    {
+        let digest = digest.clone();
+        let read_calls = read_calls.clone();
+        f.fake_server
+            .service_registry
+            .add_byte_stream(byte_stream_read(move |request| {
+                assert!(request.resource_name.contains(&digest.hash));
+                let data = b"abcdefg";
+                let offset = request.read_offset as usize;
+                let read_call = read_calls.fetch_add(1, Ordering::SeqCst);
+                if read_call == 0 {
+                    // Send a prefix without closing the stream. Only the idle-timeout
+                    // interceptor can terminate this attempt and cause GrpcCacheClient to retry.
+                    assert_eq!(offset, 0);
+                    return hanging_response_stream(
+                        vec![Ok(read_response(&data[0..1]))],
+                        Arc::new(AtomicBool::new(false)),
+                    );
+                }
+                // GrpcCacheClient must resume after the byte already written to the output
+                // stream.
+                assert_eq!(read_call, 1);
+                assert_eq!(offset, 1);
+                response_stream(vec![Ok(read_response(&data[offset..]))])
+            }));
+    }
+    f.fake_server.start();
+
+    assert_eq!(
+        String::from_utf8(download_blob(&f.context, &client, &digest).unwrap()).unwrap(),
+        "abcdefg"
+    );
+    assert_eq!(read_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(mock_backoff.times(), 0);
 }
 
 #[test]

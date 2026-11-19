@@ -246,7 +246,15 @@ pub type CapabilitiesFetcher =
     Arc<dyn Fn(ReferenceCountedChannel) -> CapabilitiesFuture + Send + Sync>;
 
 struct Inner {
-    channel: Channel,
+    /// The transport; `None` when it could not be built (see `connection_failure`).
+    channel: Option<Channel>,
+    /// The `IOException` of `ChannelFactory.newChannel` when the transport could not be built
+    /// (see [`ReferenceCountedChannel::failed_to_create`]).
+    connection_failure: Option<Arc<io::Error>>,
+    /// Whether every connection waits for (and fails with) the verified server capabilities
+    /// (`ServerCapabilitiesRequirement` other than `NONE`; see
+    /// [`ReferenceCountedChannel::with_server_capabilities_gate`]).
+    capabilities_gate: bool,
     authority: String,
     /// Whether the transport is TLS (`SecurityLevel.PRIVACY_AND_INTEGRITY`).
     tls: bool,
@@ -300,7 +308,9 @@ impl ReferenceCountedChannel {
     ) -> ReferenceCountedChannel {
         ReferenceCountedChannel {
             inner: Arc::new(Inner {
-                channel,
+                channel: Some(channel),
+                connection_failure: None,
+                capabilities_gate: false,
                 authority: authority.to_string(),
                 tls,
                 interceptors,
@@ -313,6 +323,71 @@ impl ReferenceCountedChannel {
                 shutdown: AtomicBool::new(false),
             }),
         }
+    }
+
+    /// A channel whose connections cannot be created: `ChannelFactory.newChannel` throws
+    /// `error` (an invalid `--tls_certificate`, proxy or target). Java builds connections
+    /// lazily (`GoogleChannelConnectionFactory.create` runs `newChannel` inside
+    /// `Single.fromCallable`), so the failure is not reported when the channel is created but by
+    /// every call, which fails with `error` before it starts.
+    // Java: com/google/devtools/build/lib/remote/GoogleChannelConnectionFactory.java:101 GoogleChannelConnectionFactory.create
+    pub fn failed_to_create(authority: &str, error: io::Error) -> ReferenceCountedChannel {
+        ReferenceCountedChannel {
+            inner: Arc::new(Inner {
+                channel: None,
+                connection_failure: Some(Arc::new(error)),
+                capabilities_gate: false,
+                authority: authority.to_string(),
+                tls: false,
+                interceptors: Vec::new(),
+                max_inbound_message_size: usize::MAX,
+                method_timeouts: Vec::new(),
+                download_idle_timeout: None,
+                capabilities_fetcher: None,
+                server_capabilities: tokio::sync::OnceCell::new(),
+                ref_cnt: AtomicI32::new(1),
+                shutdown: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    /// Makes every connection of the channel wait for the server capabilities, so that every
+    /// call except `GetCapabilities` itself fails with the error of the capabilities fetch (a
+    /// `RemoteExecutionCapabilitiesException`) before it starts. Must be called before the
+    /// channel is shared.
+    ///
+    /// PORT: Java creates each pooled connection through
+    /// `serverCapabilitiesSingle.map(sc -> new ChannelConnectionWithServerCapabilities(..))` when
+    /// the requirement is not `NONE`; the port has one connection, so the wait is at the start of
+    /// each call. `GetCapabilities` is exempt because Java sends it on the raw `ManagedChannel`
+    /// (`RemoteServerCapabilities.get(channel)`), not through the pool.
+    // Java: com/google/devtools/build/lib/remote/GoogleChannelConnectionFactory.java:101 GoogleChannelConnectionFactory.create
+    pub fn with_server_capabilities_gate(mut self) -> ReferenceCountedChannel {
+        match Arc::get_mut(&mut self.inner) {
+            Some(inner) => inner.capabilities_gate = true,
+            None => panic!("IllegalStateException: the channel is already shared"),
+        }
+        self
+    }
+
+    /// Obtains a connection for a call (`DynamicConnectionPool.create()` through
+    /// `withChannel`): fails with the `IOException` of a transport that cannot be built, or,
+    /// behind a capabilities gate, with the error of the capabilities fetch.
+    // Java: com/google/devtools/build/lib/remote/ReferenceCountedChannel.java:131 ReferenceCountedChannel.withChannel
+    pub async fn connection(&self) -> io::Result<()> {
+        if let Some(failure) = &self.inner.connection_failure {
+            return Err(crate::common::errors::shared(failure));
+        }
+        if self.inner.capabilities_gate {
+            self.get_server_capabilities_async().await?;
+        }
+        Ok(())
+    }
+
+    /// `withChannelFuture(channel -> immediateFuture(channel.authority()))`.
+    pub async fn get_authority_async(&self) -> io::Result<String> {
+        self.connection().await?;
+        Ok(self.inner.authority.clone())
     }
 
     /// `builder.defaultServiceConfig(serviceConfig)`: applies the `methodConfig[].timeout`
@@ -371,6 +446,9 @@ impl ReferenceCountedChannel {
     /// Returns the server capabilities of the connection, fetching them on first use.
     // Java: com/google/devtools/build/lib/remote/ReferenceCountedChannel.java:70 ReferenceCountedChannel.getServerCapabilities
     pub async fn get_server_capabilities_async(&self) -> io::Result<ServerCapabilities> {
+        if let Some(failure) = &self.inner.connection_failure {
+            return Err(crate::common::errors::shared(failure));
+        }
         let Some(fetcher) = self.inner.capabilities_fetcher.clone() else {
             return Err(io::Error::other(
                 "IllegalStateException: channel was created without a capabilities factory",
@@ -440,6 +518,19 @@ impl ReferenceCountedChannel {
     ) -> Result<(MetadataMap, Listeners), tonic::Status> {
         if self.is_shutdown() {
             return Err(tonic::Status::unavailable("Channel shutdown invoked"));
+        }
+        // The connection the call runs on (`withChannelFuture` / `withChannelBlocking`); the
+        // call itself, and so every interceptor, never starts when it cannot be obtained.
+        let connection = if *method == methods::GET_CAPABILITIES {
+            match &self.inner.connection_failure {
+                Some(failure) => Err(crate::common::errors::shared(failure)),
+                None => Ok(()),
+            }
+        } else {
+            self.connection().await
+        };
+        if let Err(e) = connection {
+            return Err(crate::common::errors::call_not_started(e));
         }
         let mut headers = MetadataMap::new();
         // Java: TracingMetadataUtils.attachMetadataInterceptor
@@ -513,7 +604,12 @@ impl ReferenceCountedChannel {
     }
 
     fn grpc(&self) -> Grpc<Channel> {
-        Grpc::new(self.inner.channel.clone())
+        Grpc::new(
+            self.inner
+                .channel
+                .clone()
+                .expect("start_call fails a call on a channel that could not be created"),
+        )
             .max_decoding_message_size(self.inner.max_inbound_message_size)
             .max_encoding_message_size(usize::MAX)
     }
@@ -775,15 +871,56 @@ fn effective_deadline(options: &CallOptions) -> Option<Duration> {
 }
 
 fn not_ready(e: tonic::transport::Error) -> tonic::Status {
-    // Java reports a connection that cannot be established as UNAVAILABLE.
+    // Java reports a connection that cannot be established as UNAVAILABLE, with the transport's
+    // `IOException` as the cause of the status.
     let mut message = e.to_string();
+    let mut io_cause: Option<io::Error> = None;
     let mut source = std::error::Error::source(&e);
     while let Some(s) = source {
         message.push_str(": ");
         message.push_str(&s.to_string());
+        if io_cause.is_none()
+            && let Some(io) = s.downcast_ref::<io::Error>()
+        {
+            io_cause = Some(io::Error::new(io.kind(), io.to_string()));
+        }
         source = s.source();
     }
-    tonic::Status::unavailable(message)
+    let mut status = tonic::Status::unavailable(message);
+    if let Some(io_cause) = io_cause {
+        status.set_source(Arc::new(TransportIoException(Arc::new(io_cause))));
+    }
+    status
+}
+
+/// The `IOException` of the transport that caused a status (`status.getCause()` when it is an
+/// `IOException`, as Netty's connection failures are).
+#[derive(Debug, Clone)]
+struct TransportIoException(Arc<io::Error>);
+
+impl std::fmt::Display for TransportIoException {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for TransportIoException {}
+
+/// `status.getCause()` when it is the transport's `IOException` (a connection that could not be
+/// established: the first `io::Error` in the source chain of a status tonic or
+/// [`ReferenceCountedChannel`] made from a transport error); `None` otherwise.
+pub fn transport_io_cause(status: &tonic::Status) -> Option<io::Error> {
+    let mut source = std::error::Error::source(status);
+    while let Some(s) = source {
+        if let Some(t) = s.downcast_ref::<TransportIoException>() {
+            return Some(io::Error::new(t.0.kind(), t.0.to_string()));
+        }
+        if let Some(io) = s.downcast_ref::<io::Error>() {
+            return Some(io::Error::new(io.kind(), io.to_string()));
+        }
+        source = s.source();
+    }
+    None
 }
 
 fn deadline_exceeded(after: Duration) -> tonic::Status {

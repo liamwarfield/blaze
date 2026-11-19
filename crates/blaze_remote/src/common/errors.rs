@@ -100,9 +100,43 @@ impl From<StatusRuntimeException> for io::Error {
     }
 }
 
-/// `new IOException(new StatusRuntimeException(status))`.
+/// `new IOException(new StatusRuntimeException(status))`; for the status of a call that never
+/// started ([`call_not_started`]), the `IOException` that stopped it, unchanged.
 pub fn status_to_io_error(status: tonic::Status) -> io::Error {
+    if let Some(not_started) = Error::source(&status).and_then(|s| s.downcast_ref::<CallNotStarted>())
+    {
+        return shared(&not_started.0);
+    }
     StatusRuntimeException::new(status).into()
+}
+
+/// The `IOException` that kept a call from starting (the channel's connection could not be
+/// obtained: `ChannelFactory.newChannel` failed, or the server capabilities check did), carried
+/// as the source of the call's `tonic::Status` so that [`status_to_io_error`] gives it back.
+///
+/// PORT: in Java the future of `withChannelFuture` fails with that exception itself; the
+/// channel methods of the port report failures as a `tonic::Status`.
+#[derive(Debug, Clone)]
+pub struct CallNotStarted(pub Arc<io::Error>);
+
+impl fmt::Display for CallNotStarted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl Error for CallNotStarted {}
+
+/// The status of a call that fails with `e` before it starts (see [`CallNotStarted`]). Its code
+/// is `Status.fromThrowable(e).getCode()`, which the callers that look at the code of a failed
+/// call (`Status.fromThrowable(e)` in Java) see.
+pub fn call_not_started(e: io::Error) -> tonic::Status {
+    let code = status_from_throwable(&e)
+        .map(|s| s.code())
+        .unwrap_or(tonic::Code::Unknown);
+    let mut status = tonic::Status::new(code, e.to_string());
+    status.set_source(Arc::new(CallNotStarted(Arc::new(e))));
+    status
 }
 
 /// `new IOException(message, cause)`: displays `message`; the cause stays reachable for
@@ -138,14 +172,21 @@ pub fn io_exception_with_cause(message: impl Into<String>, cause: io::Error) -> 
 }
 
 /// The first `T` in the cause chain of `e` (`e` itself included): what a Java loop over
-/// `getCause()` with `instanceof T` finds.
+/// `getCause()` with `instanceof T` finds. The chain runs through [`IoExceptionWithCause`] and
+/// `RemoteExecutionCapabilitiesException` (`new IOException(cause)`).
 pub fn find_cause<T: Error + Send + Sync + 'static>(e: &io::Error) -> Option<&T> {
     let mut current = e;
     loop {
         if let Some(t) = downcast_ref::<T>(current) {
             return Some(t);
         }
-        current = downcast_ref::<IoExceptionWithCause>(current)?.get_cause();
+        current = match downcast_ref::<IoExceptionWithCause>(current) {
+            Some(e) => e.get_cause(),
+            None => downcast_ref::<
+                crate::common::remote_execution_capabilities_exception::RemoteExecutionCapabilitiesException,
+            >(current)?
+            .get_cause(),
+        };
     }
 }
 

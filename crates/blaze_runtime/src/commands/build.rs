@@ -388,7 +388,15 @@ fn run_build_with_bep(
                     build_request_options.finalize_actions,
                 )
             })
-            .unwrap_or_default(),
+            // No remote option set: RemoteModule.setup's placeholder; executorInit still sets
+            // the salt.
+            .unwrap_or_else(|| {
+                build_remote::placeholder_contributions(
+                    options
+                        .get_options::<blaze_optdefs::misc::remote_options::RemoteOptions>()
+                        .as_ref(),
+                )
+            }),
     };
     let summary_for_contexts = Arc::new(test_summary_options.clone());
     let workspace_for_contexts = workspace.clone();

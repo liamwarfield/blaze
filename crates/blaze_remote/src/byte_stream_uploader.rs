@@ -506,7 +506,14 @@ impl<'w, 'a, 'c> Writer<'w, 'a, 'c> {
                 self.first = false;
                 // A failure here is `uploadResult.setException(e)` followed by
                 // `requestObserver.cancel("failed to seek chunk", e)`: the call is dropped.
-                self.seek_chunker()?;
+                // PORT: `Chunker.seek` throws the unchecked NullPointerException when the server
+                // asked to resume at the end of a blob that was read to its end (`data == null`);
+                // gRPC catches what the on-ready handler throws and cancels the call with this
+                // status (review 2026-11-19 R10).
+                // Java: io/grpc/internal/ClientCallImpl.java ClientStreamListenerImpl.onReady
+                if !self.seek_chunker()? {
+                    return Err(self.on_error(tonic::Status::cancelled("Failed to call onReady.")));
+                }
                 // Resource name only needs to be set on the first write for each file.
                 request.resource_name = self.resource_name.to_string();
             }
@@ -564,10 +571,15 @@ impl<'w, 'a, 'c> Writer<'w, 'a, 'c> {
     }
 
     /// PORT: `Err` is `uploadResult.setException(e)` plus the cancellation of the call (the
-    /// caller drops it).
+    /// caller drops it); `Ok(false)` is the `NullPointerException` `Chunker.seek` throws (see
+    /// `Chunker::seek_or_null_pointer`), which escapes `seekChunker` in Java.
     // Java: com/google/devtools/build/lib/remote/ByteStreamUploader.java:419 ByteStreamUploader.Writer.seekChunker
-    fn seek_chunker(&mut self) -> io::Result<()> {
-        if let Err(mut e) = self.chunker.seek(self.pos) {
+    fn seek_chunker(&mut self) -> io::Result<bool> {
+        let seek = match self.chunker.seek_or_null_pointer(self.pos) {
+            Ok(seek) => seek,
+            Err(crate::chunker::NullPointerException) => return Ok(false),
+        };
+        if let Err(mut e) = seek {
             // PORT: a failure of this reset is `e.addSuppressed(resetException)`, which an
             // `io::Error` cannot carry.
             let _ = self.chunker.reset();
@@ -589,7 +601,7 @@ impl<'w, 'a, 'c> Writer<'w, 'a, 'c> {
             }
             return Err(e);
         }
-        Ok(())
+        Ok(true)
     }
 
     // Java: com/google/devtools/build/lib/remote/ByteStreamUploader.java:446 ByteStreamUploader.Writer.onNext

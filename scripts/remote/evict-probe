@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# A blob lost from the remote cache (review R6): oracle vs Blaze on brotli.
+#
+# usage: scripts/remote/evict-probe seed
+#        scripts/remote/evict-probe run <oracle|BLAZE-BINARY> <label> <port> [extra options...]
+#        scripts/remote/evict-probe help
+#
+# `seed` starts Bazel's remote worker (as scripts/remote/worker does, name rx-evseed, port 9390,
+# with --noaction_cache_integrity_check so the action cache serves entries whose blobs are gone),
+# runs the oracle once (`build //...`, run name rx-evseed, --remote_cache), stops the worker and
+# then, in the worker's on-disk cache, deletes
+#   * the action cache entry of the CppLink action of bazel-out/k8-fastbuild/bin/brotli (so the
+#     link runs locally and needs its inputs), and
+#   * the CAS blob of its input bazel-out/k8-fastbuild/bin/_objs/brotli/brotli.pic.o (an output
+#     of a compile action whose action cache entry stays: a cache hit whose output is lost).
+# The result is kept in <W>/rx-evseed-cas (W = ~/.cache/blaze/work/remote).
+#
+# `run` copies <W>/rx-evseed-cas to the worker directory of worker rx-ev-<label>, starts that
+# worker on <port> (same flags, without wiping the copy), runs `build //...` through
+# scripts/remote/oracle-run with run name rx-ev-<label> in a fresh output base with
+# --remote_cache=grpc://localhost:<port> and the extra options, stops the worker, and prints
+# the exit code, the retry lines ("Found transient remote cache error, ...") and the ERROR
+# lines of the run's stderr.
+set -euo pipefail
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,23p' "$0"; exit 0; fi
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+W="$HOME/.cache/blaze/work/remote"
+java="$HOME/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9/embedded_tools/jdk/bin/java"
+jar="$HOME/.cache/blaze/work/upstream-src/bazel-bin/src/tools/remote/worker_deploy.jar"
+
+start_worker() { # name port (cas directory already in place)
+  local name="$1" port="$2" dir="$W/worker-$1" unit="blaze-remote-worker-$1"
+  systemctl --user stop "$unit" 2>/dev/null || true
+  systemctl --user reset-failed "$unit" 2>/dev/null || true
+  mkdir -p "$dir/work" "$dir/cas"
+  mkdir -p "$dir/runfiles/io_bazel/src/tools/remote/src/main/java/com/google/devtools/build/remote/worker"
+  systemd-run --user --collect --quiet --unit "$unit" -p MemoryMax=8G -p MemorySwapMax=0 \
+    --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin --setenv=RUNFILES_DIR="$dir/runfiles" \
+    -p StandardOutput="file:$dir/stdout" -p StandardError="file:$dir/stderr" \
+    "$java" -jar "$jar" --work_path="$dir/work" --cas_path="$dir/cas" --pid_file="$dir/pid" \
+    --listen_port="$port" --noaction_cache_integrity_check
+  for _ in $(seq 1 100); do
+    if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then return 0; fi
+    sleep 0.2
+  done
+  echo "worker $name did not start; see $dir/stderr" >&2; exit 1
+}
+
+case "$1" in
+  seed)
+    "$here/worker" start rx-evseed 9390 --noaction_cache_integrity_check
+    "$here/oracle-run" rx-evseed brotli --fresh -- --remote_cache=grpc://localhost:9390 | tail -2
+    "$here/worker" stop rx-evseed
+    rm -rf "$W/rx-evseed-cas"; cp -a "$W/worker-rx-evseed/cas" "$W/rx-evseed-cas"
+    python3 -I - "$W/rx-evseed/run1/execlog.json" "$W/rx-evseed-cas" <<'EOF'
+import json, os, sys
+log, cas = sys.argv[1], sys.argv[2]
+s = open(log).read(); d = json.JSONDecoder(); i = 0; ents = []
+while i < len(s):
+    while i < len(s) and s[i].isspace(): i += 1
+    if i >= len(s): break
+    o, i = d.raw_decode(s, i); ents.append(o)
+link = next(e for e in ents if e.get('mnemonic') == 'CppLink' and
+            [o['path'] for o in e['actualOutputs']] == ['bazel-out/k8-fastbuild/bin/brotli'])
+ac = link['digest']['hash']
+obj = next(x for x in link['inputs'] if x['path'] == 'bazel-out/k8-fastbuild/bin/_objs/brotli/brotli.pic.o')
+blob = obj['digest']['hash']
+os.remove(os.path.join(cas, 'ac', ac[:2], ac)); print('deleted AC entry of the brotli link:', ac)
+os.remove(os.path.join(cas, 'cas', blob[:2], blob)); print('deleted CAS blob of brotli.pic.o:', blob, obj['digest']['sizeBytes'])
+EOF
+    ;;
+  run)
+    bin="${2:?binary}"; label="${3:?label}"; port="${4:?port}"; shift 4
+    name="rx-ev-$label"
+    systemctl --user stop "blaze-remote-worker-$name" 2>/dev/null || true
+    chmod -R u+w "$W/worker-$name" 2>/dev/null || true
+    rm -rf "$W/worker-$name"; mkdir -p "$W/worker-$name"
+    cp -a "$W/rx-evseed-cas" "$W/worker-$name/cas"
+    start_worker "$name" "$port"
+    binopt=(); [[ "$bin" != oracle ]] && binopt=(--binary "$bin")
+    set +e
+    "$here/oracle-run" "$name" brotli --fresh "${binopt[@]}" -- \
+      "--remote_cache=grpc://localhost:$port" "$@" | tail -2
+    code=${PIPESTATUS[0]}
+    set -e
+    systemctl --user stop "blaze-remote-worker-$name" 2>/dev/null || true
+    step="$W/$name/run1"
+    echo "exit code: $code"
+    grep -E "Found transient remote cache error|^ERROR|^INFO: [0-9]+ process|^FAILED|^Build completed|Lost inputs" "$step/stderr" || true
+    ;;
+  *) echo "unknown command: $1" >&2; exit 2 ;;
+esac

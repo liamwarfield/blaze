@@ -712,7 +712,8 @@ pub fn should_upload_local_results_to_remote_cache(
 /// one after the other. Rust futures run only when polled, so the transfers are driven together
 /// here, on the calling thread, and their results are taken in the order of `transfers`. A
 /// transfer that ends with an interruption (`errors::is_interrupted`) is Java's
-/// `InterruptedException`: the transfers after it are dropped, which cancels them.
+/// `InterruptedException`: the transfers after it are dropped, which cancels them. So is an
+/// interrupt of the waiting thread (`blaze_shell::thread_interrupt`): every transfer is dropped.
 // Java: com/google/devtools/build/lib/remote/util/Utils.java:555 Utils.waitForBulkTransfer
 pub fn wait_for_bulk_transfer<I, F, T>(transfers: I) -> io::Result<()>
 where
@@ -722,7 +723,9 @@ where
     let mut bulk_transfer_exception: Option<BulkTransferException> = None;
     let mut interrupted_exception: Option<io::Error> = None;
     let mut pending: FuturesOrdered<F> = transfers.into_iter().collect();
-    crate::runtime::block_on(async {
+    // `getFromFuture(transfer)` throws InterruptedException when the waiting thread is
+    // interrupted.
+    let waited = crate::runtime::block_on_interruptibly(async {
         // Wait for all transfers to finish.
         while let Some(transfer) = pending.next().await {
             match transfer {
@@ -739,6 +742,9 @@ where
             }
         }
     });
+    if waited.is_none() {
+        interrupted_exception = Some(errors::interrupted());
+    }
     // `transfer.cancel(true)` for the remaining transfers.
     drop(pending);
     if let Some(interrupted_exception) = interrupted_exception {
