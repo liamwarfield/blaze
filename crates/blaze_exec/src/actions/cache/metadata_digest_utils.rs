@@ -91,6 +91,10 @@ pub fn get_modified_time(md: &FileArtifactValue) -> i64 {
         FileArtifactValue::Directory { mtime } => *mtime,
         // Java: FileArtifactValue.java:557 HashedDirectoryArtifactValue.getModifiedTime
         FileArtifactValue::HashedDirectory { .. } => 0,
+        // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:279 TreeArtifactCompositeFileArtifactValue.getModifiedTime
+        FileArtifactValue::TreeArtifactComposite { .. } => {
+            panic!("UnsupportedOperationException")
+        }
         // Java: FileArtifactValue.java:667 RegularFileArtifactValue.getModifiedTime
         FileArtifactValue::RegularFile { .. } => panic!(
             "UnsupportedOperationException: regular file's mtime should never be called. ({})",
@@ -170,6 +174,19 @@ pub fn file_artifact_value_to_string(md: &FileArtifactValue) -> String {
         FileArtifactValue::HashedDirectory { digest } => format!(
             "HashedDirectoryArtifactValue{{digest={}}}",
             bytes_to_string(Some(digest))
+        ),
+        // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:284 TreeArtifactCompositeFileArtifactValue.toString
+        FileArtifactValue::TreeArtifactComposite {
+            digest,
+            resolved_path,
+            ..
+        } => format!(
+            "TreeArtifactCompositeFileArtifactValue{{digest={}, resolvedPath={}}}",
+            hex::encode(digest),
+            match resolved_path {
+                Some(p) => p.get_path_string().to_string(),
+                None => "null".to_string(),
+            }
         ),
         // Java: FileArtifactValue.java:673 RegularFileArtifactValue.toString
         FileArtifactValue::RegularFile {

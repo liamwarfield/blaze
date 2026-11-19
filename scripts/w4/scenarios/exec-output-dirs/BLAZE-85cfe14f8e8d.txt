@@ -1,0 +1,118 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/blaze-anafix-r3b
+# sha256 85cfe14f8e8db7f1cccd8d03a7b51d54d85a428c78130e0f994041d89f8d922e
+# tree f45b55a23b2118c1a4d6cd58386eeef0fa487cb7 (dirty)
+# date 2026-11-18T17:07:17
+=== 1: run build //:foo_file
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:foo_file (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:foo_file up-to-date:
+  bazel-bin/foo
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
+=== 2: stat bazel-bin/foo
+file 555
+=== 3: run build //:foo_dir
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:foo_dir (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:foo_dir up-to-date:
+  bazel-bin/foo/bar.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
+=== 4: stat bazel-bin/foo
+dir 755
+=== 5: stat bazel-bin/foo/bar.txt
+file 555
+=== 6: cat bazel-bin/foo/bar.txt
+foo_dir
+=== 7: run build //:tree
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:tree (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:tree up-to-date:
+  bazel-bin/t
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
+=== 8: stat bazel-bin/t
+dir 555
+=== 9: stat bazel-bin/t/inner
+dir 555
+=== 10: run build //:in_tree
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:in_tree (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:in_tree up-to-date:
+  bazel-bin/t/inner/sub/x.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
+=== 11: stat bazel-bin/t
+dir 755
+=== 12: stat bazel-bin/t/inner
+dir 755
+=== 13: stat bazel-bin/t/inner/sub
+dir 755
+=== 14: cat bazel-bin/t/inner/sub/x.txt
+in_tree
+=== 15: run build //:link
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:link (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:link up-to-date:
+  bazel-bin/l
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 16: stat bazel-bin/l
+file 644
+=== 17: run build //:under_link
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:under_link (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:under_link up-to-date:
+  bazel-bin/l/y.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
+=== 18: stat bazel-bin/l
+dir 755
+=== 19: cat bazel-bin/l/y.txt
+under_link
+=== 20: run build //:foo_file
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:foo_file (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:foo_file up-to-date:
+  bazel-bin/foo
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
+=== 21: stat bazel-bin/foo
+file 555

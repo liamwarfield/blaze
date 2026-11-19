@@ -506,6 +506,8 @@ impl ReferenceCountedChannel {
                 listeners,
                 network_time: options.network_time.clone(),
                 closed: false,
+                blocking_stub: method.path == "/build.bazel.remote.execution.v2.Execution/Execute"
+                    || method.path == "/build.bazel.remote.execution.v2.Execution/WaitExecution",
             },
         ))
     }
@@ -885,6 +887,9 @@ struct Listeners {
     listeners: Vec<Box<dyn CallListener>>,
     network_time: Option<Arc<NetworkTime>>,
     closed: bool,
+    /// The call is one Java makes with a blocking stub (`Execution/Execute`,
+    /// `Execution/WaitExecution`: `GrpcRemoteExecutor` iterates a blocking server stream).
+    blocking_stub: bool,
 }
 
 impl Listeners {
@@ -920,6 +925,18 @@ impl Drop for Listeners {
         // A call dropped before it finished was cancelled by the client
         // (`ClientCall.cancel`), which Java's listeners see as CANCELLED.
         if !self.closed {
+            if self.blocking_stub && blaze_shell::thread_interrupt::is_current_interrupted() {
+                // The waiting thread was interrupted (`crate::runtime::get_from_future` drops the
+                // call on that thread): gRPC's blocking iterator cancels the call with
+                // `call.cancel("Thread interrupted", e)`.
+                // Java: io/grpc/stub/ClientCalls.java BlockingResponseStream.waitForNext
+                let mut status = tonic::Status::cancelled("Thread interrupted");
+                status.set_source(Arc::new(
+                    blaze_shell::thread_interrupt::InterruptedException,
+                ));
+                self.on_close(&status);
+                return;
+            }
             self.on_close(&tonic::Status::cancelled("Cancelled by client"));
         }
     }

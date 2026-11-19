@@ -161,6 +161,7 @@ impl RemoteSupport {
     pub(crate) fn contributions(
         &self,
         remote_options: Option<&RemoteOptions>,
+        finalize_actions: bool,
     ) -> RemoteModuleContributions {
         let module = self.module.lock();
         let Some(provider) = module.get_action_context_provider() else {
@@ -179,6 +180,23 @@ impl RemoteSupport {
             action_execution_salt: Some(RemoteModule::compute_action_execution_salt(
                 remote_options,
             )),
+            // RemoteModule.setup created a RemoteOutputService (no --experimental_remote_output_
+            // service: that one is unported) and executorInit gave it the RemoteOutputChecker.
+            // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1296 RemoteModule.executorInit
+            output_checker: module
+                .get_remote_output_checker()
+                .map(|c| c.clone() as Arc<dyn blaze_exec::actions::OutputChecker>),
+            // SkyframeActionExecutor: `if (finalizeActions) outputService.finalizeAction(..)`;
+            // RemoteOutputService.finalizeAction calls the action input fetcher's.
+            // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:170 RemoteOutputService.finalizeAction
+            action_finalizer: if finalize_actions {
+                module.get_action_input_fetcher().map(|f| {
+                    f.clone()
+                        as Arc<dyn blaze_exec::exec::action_execution_context::ActionFinalizer>
+                })
+            } else {
+                None
+            },
         }
     }
 

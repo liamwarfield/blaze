@@ -185,6 +185,26 @@ pub trait ActionInputPrefetcher: Send + Sync {
     ) -> io::Result<()>;
 }
 
+/// `OutputService.finalizeAction(action, outputMetadataStore)` of an output service that does
+/// something there (`RemoteOutputService`: `actionInputFetcher.finalizeAction`, which downloads
+/// the outputs the remote output checker wants local). `SkyframeActionExecutor` calls it after
+/// the outputs of an executed action are checked, when `--output_tree_tracking`
+/// (`BuildRequestOptions.finalizeActions`) is set; register it as the context
+/// `Arc<dyn ActionFinalizer>` only then. `LocalOutputService.finalizeAction` is a no-op (no
+/// context).
+// Java: com/google/devtools/build/lib/vfs/OutputService.java OutputService.finalizeAction
+// Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:170 RemoteOutputService.finalizeAction
+pub trait ActionFinalizer: Send + Sync {
+    /// `finalizeAction(action, outputMetadataStore)`; `outputs` is `action.getOutputs()`. An
+    /// `io::Error` of kind `Interrupted` is an `InterruptedException`.
+    fn finalize_action(
+        &self,
+        action: &dyn crate::actions::ActionExecutionMetadata,
+        outputs: &[ActionInputRef],
+        output_metadata_store: &dyn crate::actions::cache::output_metadata_store::OutputMetadataStore,
+    ) -> io::Result<()>;
+}
+
 /// The outputs of this build that exist only remotely (build without the bytes): what
 /// `RemoteExecutionService.downloadOutputs` injects instead of writing a file
 /// (`RemoteActionFileSystem.injectRemoteFile` into its remote output tree), keyed by absolute
@@ -267,6 +287,27 @@ impl RemoteOutputTree {
             }
         }
         Ok(None)
+    }
+
+    /// The injected files below the directory `dir` (absolute), with their paths relative to
+    /// `dir`, sorted by path: the remote part of a directory listing of the action file system
+    /// (`RemoteActionFileSystem.readdir` merges the remote output tree's entries with the local
+    /// ones), as `TreeArtifactValue.visitTree` sees it for a tree artifact whose files were not
+    /// downloaded.
+    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:831 RemoteActionFileSystem.readdir
+    pub fn get_files_under(
+        &self,
+        dir: &blaze_vfs::PathFragment,
+    ) -> Vec<(blaze_vfs::PathFragment, FileArtifactValue)> {
+        let mut files: Vec<(blaze_vfs::PathFragment, FileArtifactValue)> = self
+            .files
+            .lock()
+            .iter()
+            .filter(|(path, _)| path != &dir && path.starts_with(dir))
+            .map(|(path, metadata)| (path.relative_to(dir), metadata.clone()))
+            .collect();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        files
     }
 
     /// Forgets the output at `path` (it was deleted or written locally).

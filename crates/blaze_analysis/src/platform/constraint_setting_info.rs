@@ -4,6 +4,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use crate::platform::constraint_collection::{gated_get_attr, gated_has_attr, no_field_message};
 use allocative::Allocative;
 use blaze_cmdline::Label;
 use blaze_packages::rule_class::ProviderKey;
@@ -12,10 +13,9 @@ use blaze_starlark::label::LabelValue;
 use blaze_starlark::structs::StructureMarker;
 use blaze_util::Fingerprint;
 use starlark::any::ProvidesStaticType;
-use starlark::starlark_simple_value;
-use crate::platform::constraint_collection::{gated_get_attr, gated_has_attr};
 use starlark::collections::Hashed;
 use starlark::eval::Evaluator;
+use starlark::starlark_simple_value;
 use starlark::values::ValueLike;
 use starlark::values::{Demand, Heap, NoSerialize, StarlarkValue, Value, starlark_value};
 use starlark_map::StarlarkHasher;
@@ -185,6 +185,14 @@ impl<'v> StarlarkValue<'v> for ConstraintSettingInfo {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<bool> {
         gated_has_attr(self, &GATED, attribute, eval)
+    }
+
+    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
+        Some(no_field_message(
+            "ConstraintSettingInfo",
+            attribute,
+            &FIELDS,
+        ))
     }
 
     // PORT: Java's `dir` leaves out the GATED fields when the flag is off

@@ -464,7 +464,7 @@ impl RecursivePackageProvider for EnvironmentBackedRecursivePackageProvider<'_, 
         excluded_subdirectories: &[PathFragment],
     ) -> Result<(), ProviderError> {
         let mut env = self.env.borrow_mut();
-        let Some(package_locator) = PATH_PACKAGE_LOCATOR.get(&mut **env)? else {
+        let Some(package_locator) = PATH_PACKAGE_LOCATOR.get(&mut env)? else {
             return Err(TargetPatternEvalError::MissingDep.into());
         };
         let mut roots: Vec<Root> = Vec::new();
@@ -949,10 +949,10 @@ fn target_pattern_function_internal(
             for target in partial_result {
                 // TODO(b/156899726): This will go away as soon as we remove implicit outputs
                 // from cc_library completely.
-                if let Target::OutputFile(output_file) = &target {
-                    if output_file_generating_rule_class(output_file) == "cc_library" {
-                        continue;
-                    }
+                if let Target::OutputFile(output_file) = &target
+                    && output_file_generating_rule_class(output_file) == "cc_library"
+                {
+                    continue;
                 }
                 resolved_targets.insert(target.get_label().clone());
             }

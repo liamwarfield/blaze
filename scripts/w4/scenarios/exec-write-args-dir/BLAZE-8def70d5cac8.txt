@@ -1,0 +1,58 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/blaze-anafix-r3
+# sha256 8def70d5cac8792154f9c1b14a55bb277d4c04f99f3980e0c07dd0ea9c2ebd9b
+# tree 5013a3f132da844437e0e726da6e92f4e5c93aa0 (dirty)
+# date 2026-11-18T16:50:51
+=== 1: run build //:w
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:w (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:w up-to-date:
+  bazel-bin/w.params
+INFO: Elapsed time: <DUR>
+INFO: 3 processes: 2 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 3 total actions
+=== 2: cat bazel-bin/w.params
+--first
+bazel-out/k8-fastbuild/bin/w.dir/a.txt
+bazel-out/k8-fastbuild/bin/w.dir/c.txt
+bazel-out/k8-fastbuild/bin/w.dir/sub/b.txt
+--prefixed
+'in=bazel-out/k8-fastbuild/bin/w.dir/a.txt'
+'in=bazel-out/k8-fastbuild/bin/w.dir/c.txt'
+'in=bazel-out/k8-fastbuild/bin/w.dir/sub/b.txt'
+--dir
+bazel-out/k8-fastbuild/bin/w.dir
+=== 3: stat bazel-bin/w.dir
+dir 555
+=== 4: stat bazel-bin/w.dir/sub
+dir 555
+=== 5: stat bazel-bin/w.dir/a.txt
+file 555
+=== 6: run build //:w
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:w (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:w up-to-date:
+  bazel-bin/w.params
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 2 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 7: cat bazel-bin/w.params
+--first
+bazel-out/k8-fastbuild/bin/w.dir/a.txt
+bazel-out/k8-fastbuild/bin/w.dir/c.txt
+bazel-out/k8-fastbuild/bin/w.dir/sub/b.txt
+--prefixed
+'in=bazel-out/k8-fastbuild/bin/w.dir/a.txt'
+'in=bazel-out/k8-fastbuild/bin/w.dir/c.txt'
+'in=bazel-out/k8-fastbuild/bin/w.dir/sub/b.txt'
+--dir
+bazel-out/k8-fastbuild/bin/w.dir

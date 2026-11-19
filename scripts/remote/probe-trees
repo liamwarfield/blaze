@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Tree artifacts under build without the bytes: oracle vs Blaze on
+# ~/.cache/blaze/work/remote/probe-trees/src (a declare_directory rule //:tree, a cacheable
+# consumer //:cached and a no-cache consumer //:local that must fetch the tree's files).
+#
+# usage: scripts/remote/probe-trees <oracle|BLAZE-BINARY> <label> [extra options...]
+#        scripts/remote/probe-trees help
+#
+# Seeds a disk cache with the oracle once (<W>/pt-dc-seed, from `build //:tree //:cached`), copies
+# it to <W>/pt-<label>-dc and runs with run name pt-<label> (fresh output base for step 1),
+# --disk_cache=<copy> and the default download mode:
+#   run1  build //:cached //:local      (the tree is not top-level: its files stay remote)
+#   run2  the same again (no clean)
+#   run3  build //:tree                 (the tree is top-level now: its files are downloaded)
+# and prints for each step the `N processes:` line, the exit code and the files of bazel-bin
+# (sha256, path) into <step>/bazel-bin.txt, copied with the stderr to
+# <W>/pt-<label>/seq-run<N>.{bazel-bin.txt,stderr} for comparing two labels. <W> is
+# ~/.cache/blaze/work/remote.
+set -euo pipefail
+if [[ $# -lt 2 || $1 == help ]]; then sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+here=$(cd "$(dirname "$0")" && pwd)
+W=~/.cache/blaze/work/remote
+src=$W/probe-trees/src
+bin=$1; label=$2; shift 2
+if [[ ! -d $W/pt-dc-seed ]]; then
+  "$here/ws-run" pt-seed "$src" oracle --fresh -- build "--disk_cache=$W/pt-dc-seed" //:tree //:cached
+fi
+rm -rf "$W/pt-$label-dc"; cp -a "$W/pt-dc-seed" "$W/pt-$label-dc"
+step() {
+  local n=$1; shift
+  local out; out=$("$here/ws-run" "pt-$label" "$src" "$bin" "$@") || true
+  echo "$out" | grep -v '^step:' | sed "s/^/  /"
+  local s; s=$(echo "$out" | sed -n 's/^step: //p')
+  (cd "$W/pt-$label/ws/bazel-bin" 2>/dev/null && find . -type f -print0 | sort -z | xargs -0 -r sha256sum) > "$s/bazel-bin.txt" || true
+  cp "$s/bazel-bin.txt" "$W/pt-$label/seq-run$n.bazel-bin.txt"
+  cp "$s/stderr" "$W/pt-$label/seq-run$n.stderr"
+  echo "  bazel-bin: $(wc -l < "$s/bazel-bin.txt") files ($W/pt-$label/seq-run$n.bazel-bin.txt)"
+}
+dc="--disk_cache=$W/pt-$label-dc"
+echo "pt-$label run1"; step 1 --fresh -- build "$dc" "$@" //:cached //:local
+echo "pt-$label run2"; step 2 -- build "$dc" "$@" //:cached //:local
+echo "pt-$label run3"; step 3 -- build "$dc" "$@" //:tree

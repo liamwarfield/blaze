@@ -30,12 +30,7 @@ use crate::rule::prerequisites_collection::PrerequisitesCollection;
 use blaze_starlark::semantics::StarlarkSemantics;
 
 /// Java `StarlarkAttributesCollection.ERROR_MESSAGE_FOR_NO_ATTR`.
-// PORT: Java builds `ctx.attr` with `StructProvider.STRUCT.create(attrs, ERROR_MESSAGE_FOR_NO_ATTR)`
-// (a `StarlarkInfoWithMessage`), so `ctx.attr.nosuch` fails with this text. blaze_starlark's
-// `StarlarkInfo` has no unknown-field format yet (request: `StarlarkInfo::with_message`), so the
-// error is "'struct' value has no field or method 'nosuch'" plus the same "Available
-// attributes" line. An error either way; only the first sentence of the message differs.
-#[allow(dead_code)]
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributesCollection.java:67 StarlarkAttributesCollection.ERROR_MESSAGE_FOR_NO_ATTR
 pub(crate) const ERROR_MESSAGE_FOR_NO_ATTR: &str =
     "No attribute '%s' in attr. Make sure you declared a rule attribute with this name.";
 
@@ -54,9 +49,18 @@ pub struct StarlarkAttributesCollection<'v> {
 
 /// Allocates a `struct` with the given fields (Java `StructProvider.STRUCT.create(map,
 /// errorMessageFormat)`).
-pub(crate) fn alloc_struct<'v>(heap: Heap<'v>, fields: Vec<(String, Value<'v>)>) -> Value<'v> {
+// Java: com/google/devtools/build/lib/packages/StructProvider.java:50 StructProvider.create
+pub(crate) fn alloc_struct<'v>(
+    heap: Heap<'v>,
+    fields: Vec<(String, Value<'v>)>,
+    error_message_format_for_unknown_field: &str,
+) -> Value<'v> {
     let provider = heap.alloc(StructProvider);
-    heap.alloc(StarlarkInfo::new(provider, fields))
+    heap.alloc(StarlarkInfo::with_message(
+        provider,
+        fields,
+        error_message_format_for_unknown_field,
+    ))
 }
 
 /// Java `StarlarkAttributesCollection.Builder`.
@@ -427,10 +431,30 @@ impl<'a, 'v> StarlarkAttributesCollectionBuilder<'a, 'v> {
     pub fn build(self, rule_class_name: String) -> StarlarkAttributesCollection<'v> {
         let heap = self.heap;
         StarlarkAttributesCollection {
-            attr_object: alloc_struct(heap, self.attr_builder.into_iter().collect()),
-            executable_object: alloc_struct(heap, self.executable_builder.into_iter().collect()),
-            file_object: alloc_struct(heap, self.file_builder.into_iter().collect()),
-            files_object: alloc_struct(heap, self.files_builder.into_iter().collect()),
+            // Java: StarlarkAttributesCollection.java:81-96 (the constructor).
+            attr_object: alloc_struct(
+                heap,
+                self.attr_builder.into_iter().collect(),
+                ERROR_MESSAGE_FOR_NO_ATTR,
+            ),
+            executable_object: alloc_struct(
+                heap,
+                self.executable_builder.into_iter().collect(),
+                "No attribute '%s' in executable. Make sure there is a label type attribute \
+                 marked as 'executable' with this name",
+            ),
+            file_object: alloc_struct(
+                heap,
+                self.file_builder.into_iter().collect(),
+                "No attribute '%s' in file. Make sure there is a label type attribute marked as \
+                 'allow_single_file' with this name",
+            ),
+            files_object: alloc_struct(
+                heap,
+                self.files_builder.into_iter().collect(),
+                "No attribute '%s' in files. Make sure there is a label or label_list type \
+                 attribute with this name",
+            ),
             executable_runfiles_map: Arc::new(self.executable_runfiles_builder),
             rule_class_name,
             rule_variables: self.rule_variables_builder,

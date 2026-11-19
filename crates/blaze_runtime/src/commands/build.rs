@@ -384,6 +384,8 @@ fn run_build_with_bep(
                     options
                         .get_options::<blaze_optdefs::misc::remote_options::RemoteOptions>()
                         .as_ref(),
+                    // ExecutionTool: request.getBuildOptions().finalizeActions.
+                    build_request_options.finalize_actions,
                 )
             })
             .unwrap_or_default(),

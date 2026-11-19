@@ -204,14 +204,6 @@ pub fn call_subrule<'v>(
         actions,
         fragments,
         declared_subrules,
-        // The innermost .bzl while the subrule's implementation runs (see
-        // `starlark_toolchain_context`).
-        // Java: com/google/devtools/build/lib/packages/LabelConverter.java:41 LabelConverter.forBzlEvaluatingThread
-        package_context: blaze_packages::bzl_context::BazelModuleContext::of_function(
-            view.implementation,
-            eval,
-        )
-        .map(|module_context| module_context.package_context()),
     });
     AnalysisThreadPayload::from_or_fail(eval, &name)?
         .subrule_contexts
@@ -270,9 +262,6 @@ pub struct SubruleContext<'v> {
     /// Java `subrule.getDeclaredSubrules()` (identities).
     #[allocative(skip)]
     declared_subrules: Vec<(Label, String)>,
-    /// The package context for string toolchain keys.
-    #[allocative(skip)]
-    package_context: Option<blaze_cmdline::LabelPackageContext>,
 }
 
 /// The rule context behind a live `StarlarkActionContext` value: a rule `ctx` or a subrule
@@ -285,8 +274,7 @@ pub fn starlark_action_context_rule_context(
     if let Some(c) = super::starlark_rule_context::starlark_rule_context_from_value(v) {
         return Some(c.get_rule_context());
     }
-    v.downcast_ref::<SubruleContext>()
-        .map(|c| c.context.handle)
+    v.downcast_ref::<SubruleContext>().map(|c| c.context.handle)
 }
 
 impl<'v> SubruleContext<'v> {
@@ -428,7 +416,6 @@ fn subrule_ctx_methods(builder: &mut MethodsBuilder) {
             toolchain_context.target_description().to_owned(),
             &|l| rc.get_toolchain_info(l),
             labels,
-            c.package_context.clone(),
         ))
     }
 

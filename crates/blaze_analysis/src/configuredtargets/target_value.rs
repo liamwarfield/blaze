@@ -16,9 +16,12 @@ use std::hash::Hash;
 use allocative::Allocative;
 use blaze_packages::starlark_defs::builtin_providers::{OUTPUT_GROUP_INFO, builtin_provider_key};
 use blaze_packages::starlark_defs::provider::provider_view;
+use blaze_starlark::ThreadContext;
 use blaze_starlark::label::LabelValue;
 use blaze_starlark::structs::{DeeplyImmutable, ProviderInfo};
 use starlark::any::ProvidesStaticType;
+use starlark::collections::Hashed;
+use starlark::eval::Evaluator;
 use starlark::starlark_simple_value;
 use starlark::values::ValueLike;
 use starlark::values::{
@@ -31,7 +34,7 @@ use crate::configuredtargets::{get_default_info, get_info, get_legacy, get_rule_
 use crate::providers::default_info::DefaultInfo;
 use crate::rule::depsets::{artifacts_to_depset, depset_value};
 
-fn errorf(msg: String) -> starlark::Error {
+fn errorf(msg: impl fmt::Display) -> starlark::Error {
     starlark::Error::new_other(anyhow::anyhow!("{msg}"))
 }
 
@@ -202,6 +205,31 @@ impl StarlarkTarget {
         }
     }
 
+    /// Java `getValue(semantics, name)`: the errors for a field that is not special and for a
+    /// default-provider field under `--incompatible_disable_target_default_provider_fields`.
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:127 AbstractConfiguredTarget.getValue
+    fn get_value_with_semantics<'v>(
+        &self,
+        disable_target_default_provider_fields: bool,
+        name: &str,
+        heap: Heap<'v>,
+    ) -> starlark::Result<Option<Value<'v>>> {
+        if !SPECIAL_FIELD_NAMES.contains(&name) {
+            return Err(errorf(
+                "Accessing providers via the field syntax on structs is deprecated and removed.",
+            ));
+        } else if disable_target_default_provider_fields && DEFAULT_PROVIDER_FIELDS.contains(&name)
+        {
+            return Err(errorf(
+                "Accessing the default provider in this manner is deprecated and will be removed \
+                 soon. It may be temporarily re-enabled by setting \
+                 --incompatible_disable_target_default_provider_fields=false. See \
+                 https://github.com/bazelbuild/bazel/issues/20183 for details.",
+            ));
+        }
+        Ok(self.get_value(name, heap))
+    }
+
     /// Java `getFieldNames()`.
     // Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:189 AbstractConfiguredTarget.getFieldNames
     fn get_field_names(&self) -> Vec<String> {
@@ -290,47 +318,29 @@ impl<'v> StarlarkValue<'v> for StarlarkTarget {
         Ok(get_info(&self.target, &key).is_some())
     }
 
-    // Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:127 AbstractConfiguredTarget.getValue
+    /// Rust callers without an evaluator: Java's `getValue(semantics, name)` with the semantics
+    /// the value was created with, `None` where Java throws.
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
-        if !SPECIAL_FIELD_NAMES.contains(&attribute) {
-            // Java throws here; `StarlarkValue::get_attr` cannot return an error, so the field
-            // is reported missing and `get_attr_error_message` supplies Java's text.
-            // PORT: `getattr(target, name, default)` returns the default where Java still
-            // fails (it needs a fallible attribute hook in the vendored crate; requested).
-            return None;
-        }
-        if self.disable_target_default_provider_fields
-            && DEFAULT_PROVIDER_FIELDS.contains(&attribute)
-        {
-            // Java throws here; see above.
-            return None;
-        }
-        self.get_value(attribute, heap)
+        self.get_value_with_semantics(self.disable_target_default_provider_fields, attribute, heap)
+            .ok()
+            .flatten()
     }
 
-    /// The `EvalException`s of Java's `getValue(semantics, name)`, as the message of the failed
-    /// field access (vendored patch 0013).
     // Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:127 AbstractConfiguredTarget.getValue
-    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
-        if !SPECIAL_FIELD_NAMES.contains(&attribute) {
-            return Some(
-                "Accessing providers via the field syntax on structs is deprecated and removed."
-                    .to_owned(),
-            );
-        }
-        if self.disable_target_default_provider_fields
-            && DEFAULT_PROVIDER_FIELDS.contains(&attribute)
-        {
-            return Some(
-                "Accessing the default provider in this manner is deprecated and will be removed \
-                 soon. It may be temporarily re-enabled by setting \
-                 --incompatible_disable_target_default_provider_fields=false. See \
-                 https://github.com/bazelbuild/bazel/issues/20183 for details."
-                    .to_owned(),
-            );
-        }
-        // Java: `getErrorMessageForUnknownField` returns null (the generic message).
-        None
+    fn get_attr_fallible(
+        &self,
+        attribute: Hashed<&str>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Option<Value<'v>>> {
+        let disable_target_default_provider_fields = ThreadContext::get(eval)
+            .map_err(starlark::Error::new_other)?
+            .semantics
+            .incompatible_disable_target_default_provider_fields;
+        self.get_value_with_semantics(
+            disable_target_default_provider_fields,
+            attribute.key(),
+            eval.heap(),
+        )
     }
 
     // Java `Starlark.hasattr`: `((Structure) x).getValue(name) != null`, the one-argument

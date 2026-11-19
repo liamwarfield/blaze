@@ -1,0 +1,61 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/blaze-anafix-r3
+# sha256 8def70d5cac8792154f9c1b14a55bb277d4c04f99f3980e0c07dd0ea9c2ebd9b
+# tree 4a1b559c6cd543ae1e407326a154caffd0ec0b1a (dirty)
+# date 2026-11-18T16:57:20
+=== 1: run cquery --spawn_strategy=bogus //:g
+exit 2
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:g (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: 'bogus' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local, linux-sandbox]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 2: run aquery --spawn_strategy=bogus //:g
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:g (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: 'bogus' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local, linux-sandbox]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 3: run cquery --strategy=Genrule=bogus //:g
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:g (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: 'bogus' was requested for mnemonic Genrule but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local, linux-sandbox]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run cquery //:g
+exit 0
+--- stdout
+//:g (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:g (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 5: aquery //:g
+exit 0
+--- stdout
+{"actionKey": "208eb7637fce2d262e35caadbc419156f5761e4d686e14af502c7e4d3b80840d", "argv": ["/bin/bash", "-c", "source external/bazel_tools/tools/genrule/genrule-setup.sh; echo hi > bazel-out/k8-fastbuild/bin/g.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {"PATH": "/bin:/usr/bin:/usr/local/bin"}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["external/bazel_tools/tools/genrule/genrule-setup.sh"], "mnemonic": "Genrule", "outputs": ["bazel-out/k8-fastbuild/bin/g.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/g.txt", "ruleClass": "genrule", "target": "//:g"}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:g (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions

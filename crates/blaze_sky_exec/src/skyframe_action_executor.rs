@@ -23,7 +23,9 @@ use blaze_collect::{NestedSet, NestedSetBuilder};
 use blaze_events::{
     Clock, Event, EventHandler, EventKind, ExtendedEventHandler, JavaClock, OutputFilter, Postable,
 };
-use blaze_exec::actions::action_adapters::{artifact_input, as_blaze_artifact};
+use blaze_exec::actions::action_adapters::{
+    ActionMetadataSnapshot, artifact_input, as_blaze_artifact,
+};
 use blaze_exec::actions::action_cache_checker::{
     ActionCacheAwareAction, ActionCacheChecker, ActionCacheCheckerCacheConfig, ArtifactResolver,
     InterruptedException, NoProxies, PackageRootExceptionOrInterrupted, PackageRootResolver, Token,
@@ -44,7 +46,7 @@ use blaze_exec::analysis::actions::to_action_input_set;
 use blaze_exec::analysis::test::test_action_context::TestActionContext;
 use blaze_exec::analysis::test::test_runner_action::TestRunnerAction;
 use blaze_exec::exec::action_execution_context::{
-    ActionContextRegistry, ActionExecutionContext, RemoteOutputTree, SpawnCache,
+    ActionContextRegistry, ActionExecutionContext, ActionFinalizer, RemoteOutputTree, SpawnCache,
 };
 use blaze_exec::exec::evaluation_stack::on_evaluation_stack;
 use blaze_exec::exec::single_build_file_cache::SingleBuildFileCache;
@@ -172,6 +174,11 @@ pub struct ActionCacheSetup {
     pub explain: bool,
     /// See [`ContainingPackageRootLookup`].
     pub containing_package_root_lookup: Option<Arc<dyn ContainingPackageRootLookup>>,
+    /// `outputService.getOutputChecker()`: `None` is `LocalOutputService`'s
+    /// `OutputChecker.TRUST_LOCAL_ONLY`; the remote module's `RemoteOutputService` gives its
+    /// `RemoteOutputChecker`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:782 SkyframeActionExecutor.checkActionCache
+    pub output_checker: Option<Arc<dyn OutputChecker>>,
 }
 
 /// An execution failure of `SkyframeActionExecutor`: Java's `ActionExecutionException` or
@@ -311,6 +318,8 @@ pub struct SkyframeActionExecutor {
     action_execution_salt: String,
     explain: bool,
     containing_package_root_lookup: Option<Arc<dyn ContainingPackageRootLookup>>,
+    /// See [`ActionCacheSetup::output_checker`].
+    output_checker: Option<Arc<dyn OutputChecker>>,
     /// Java: `outputDirectoryHelper` (`SkyframeExecutor`'s `ActionOutputDirectoryHelper`).
     output_directory_helper: ActionOutputDirectoryHelper,
     /// The reporter's `OutputFilter` (`--output_filter` / `--auto_output_filter`); `None` is
@@ -352,6 +361,7 @@ impl SkyframeActionExecutor {
             action_execution_salt: String::new(),
             explain: false,
             containing_package_root_lookup: None,
+            output_checker: None,
             output_directory_helper: ActionOutputDirectoryHelper::new(),
             output_filter: None,
             show_subcommands: ShowSubcommands::FALSE,
@@ -371,6 +381,7 @@ impl SkyframeActionExecutor {
         self.action_execution_salt = setup.action_execution_salt;
         self.explain = setup.explain;
         self.containing_package_root_lookup = setup.containing_package_root_lookup;
+        self.output_checker = setup.output_checker;
         self
     }
 
@@ -793,8 +804,43 @@ impl SkyframeActionExecutor {
             );
             return Err(e);
         }
-        // PORT: finalizeActions / outputService.finalizeAction is a no-op for the local output
-        // service.
+        // if (finalizeActions) outputService.finalizeAction(action, outputMetadataStore): the
+        // context is registered only for an output service that does something there (the remote
+        // one) and only with finalizeActions; LocalOutputService.finalizeAction is a no-op.
+        if let Some(finalizer) = self
+            .contexts
+            .get_any(TypeId::of::<Arc<dyn ActionFinalizer>>())
+            .and_then(|c| c.downcast::<Arc<dyn ActionFinalizer>>().ok())
+        {
+            let outputs: Vec<ActionInputRef> =
+                action.get_outputs().iter().map(artifact_input).collect();
+            let metadata = ActionMetadataSnapshot::of(action.as_ref());
+            if let Err(e) =
+                finalizer.finalize_action(&*metadata, &outputs, &**output_metadata_store)
+            {
+                // PORT: LostInputsExecException (action rewinding) is not ported, and an
+                // InterruptedException cannot leave this method (it has no Interrupted result);
+                // both are reported as the failure to finalize.
+                // PORT: skipped, logging (logger.atWarning "unable to finalize action").
+                let e = self.to_action_execution_exception(
+                    "unable to finalize action",
+                    Some(&e),
+                    action.as_ref(),
+                    Some(out_err_buffer),
+                    execution::Code::ActionFinalizationFailure,
+                );
+                // Success in execution but failure in completion.
+                self.report_action_execution(
+                    listener,
+                    &primary_output_path,
+                    action,
+                    Some(e.clone()),
+                    out_err_buffer,
+                    ErrorTiming::AFTER_EXECUTION,
+                );
+                return Err(e);
+            }
+        }
         self.report_action_execution(
             listener,
             &primary_output_path,
@@ -1008,8 +1054,12 @@ impl SkyframeActionExecutor {
         let adapter = CacheCheckActionAdapter::new(action.as_ref(), &self.action_key_context);
         // Java passes state.actionInputMetadataProvider: the input map alone.
         let map_only = input_metadata_provider.action_input_map_only();
-        // LocalOutputService.getOutputChecker(): no remote output service is ported.
-        let output_checker = TrustLocalOnly;
+        // outputChecker = outputService.getOutputChecker(): LocalOutputService's
+        // TRUST_LOCAL_ONLY, or RemoteOutputService's RemoteOutputChecker.
+        let output_checker: &dyn OutputChecker = match &self.output_checker {
+            Some(checker) => &**checker,
+            None => &TrustLocalOnly,
+        };
         let handler: Option<&dyn EventHandler> = if self.explain {
             Some(&*self.reporter as &dyn EventHandler)
         } else {
@@ -1027,7 +1077,7 @@ impl SkyframeActionExecutor {
             &map_only,
             output_metadata_store,
             &self.action_execution_salt,
-            Some(&output_checker as &dyn OutputChecker),
+            Some(output_checker),
             use_archived_tree_artifacts,
         )?;
 
@@ -1048,7 +1098,7 @@ impl SkyframeActionExecutor {
                         &map_only,
                         output_metadata_store,
                         &self.action_execution_salt,
-                        Some(&output_checker as &dyn OutputChecker),
+                        Some(output_checker),
                         use_archived_tree_artifacts,
                     )?;
             }
@@ -1708,10 +1758,19 @@ impl ActionOutputMetadataStore {
 
         let stat = tree_dir.stat_if_found(Symlinks::Follow)?;
 
+        // With an action file system (RemoteActionFileSystem), the tree's files that were not
+        // downloaded are in the remote output tree: its `readdir` (which `visitTree` uses) adds
+        // them to the local entries, and its `stat` of the root finds the remote directory.
+        // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:831 RemoteActionFileSystem.readdir
+        let remote_files: Vec<(PathFragment, FileArtifactValue)> = match &self.remote_output_tree {
+            Some(remote_output_tree) => remote_output_tree.get_files_under(tree_dir.as_fragment()),
+            None => Vec::new(),
+        };
+
         // Make sure the tree artifact root exists and is a regular directory. Note that this is
         // how the action is initialized, so this should hold unless the action itself has deleted
         // the root.
-        if !stat.as_ref().is_some_and(|s| s.is_directory()) {
+        if !stat.as_ref().is_some_and(|s| s.is_directory()) && remote_files.is_empty() {
             if chmod {
                 self.set_path_permissions_if_file(&tree_dir)?;
             }
@@ -1720,26 +1779,42 @@ impl ActionOutputMetadataStore {
 
         // TreeArtifactValue.newBuilder(parent)
         let mut tree: Vec<(ActionInputRef, FileArtifactValue)> = Vec::new();
+        let mut visited: HashSet<PathFragment> = HashSet::new();
 
-        TreeArtifactValue::visit_tree(
-            &tree_dir,
-            &mut |parent_relative_path, type_, traversed_symlink| {
-                check_state!(type_ == DirentType::File || type_ == DirentType::Directory);
-                // Set the output permissions when the execution mode requires it, unless at least
-                // one symlink was traversed on the way to this entry, as it might have led
-                // outside of the root directory.
-                if chmod && !traversed_symlink {
-                    self.set_path_permissions(&tree_dir.get_relative(parent_relative_path))?;
-                }
-                if type_ == DirentType::Directory {
-                    return Ok(()); // The final TreeArtifactValue does not contain child directories.
-                }
-                let child = Artifact::create_tree_output(parent, parent_relative_path.clone());
-                let metadata = self.construct_file_artifact_value_from_filesystem(&child)?;
-                tree.push((artifact_input(&child), metadata));
-                Ok(())
-            },
-        )?;
+        if stat.as_ref().is_some_and(|s| s.is_directory()) {
+            TreeArtifactValue::visit_tree(
+                &tree_dir,
+                &mut |parent_relative_path, type_, traversed_symlink| {
+                    check_state!(type_ == DirentType::File || type_ == DirentType::Directory);
+                    // Set the output permissions when the execution mode requires it, unless at least
+                    // one symlink was traversed on the way to this entry, as it might have led
+                    // outside of the root directory.
+                    if chmod && !traversed_symlink {
+                        self.set_path_permissions(&tree_dir.get_relative(parent_relative_path))?;
+                    }
+                    if type_ == DirentType::Directory {
+                        return Ok(()); // The final TreeArtifactValue does not contain child directories.
+                    }
+                    let child = Artifact::create_tree_output(parent, parent_relative_path.clone());
+                    let metadata = self.construct_file_artifact_value_from_filesystem(&child)?;
+                    tree.push((artifact_input(&child), metadata));
+                    visited.insert(parent_relative_path.clone());
+                    Ok(())
+                },
+            )?;
+        }
+
+        // The files that exist only in the remote output tree (the remote half of the action
+        // file system's `readdir`); their permissions are those of `statFromMetadata`, so no chmod.
+        // PORT: Java visits the merged listing depth-first; `TreeArtifactValue.build` sorts the
+        // children, so the visiting order is not observable.
+        for (parent_relative_path, metadata) in remote_files {
+            if visited.contains(&parent_relative_path) {
+                continue;
+            }
+            let child = Artifact::create_tree_output(parent, parent_relative_path);
+            tree.push((artifact_input(&child), metadata));
+        }
 
         if self.archived_tree_artifacts_enabled {
             blaze_util::unported!("ArchivedTreeArtifact.createForTree");

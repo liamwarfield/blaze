@@ -163,6 +163,9 @@ pub struct StarlarkInfoGen<V: starlark::values::ValueLifetimeless> {
     provider: V,
     /// Sorted by name, names unique.
     fields: Vec<(String, V)>,
+    /// Java `StarlarkInfoWithMessage.unknownFieldError`: a format with one `%s` (the field
+    /// name); `None` for a plain struct (the provider's message).
+    unknown_field_error: Option<String>,
 }
 
 starlark_complex_value!(pub StarlarkInfo);
@@ -183,7 +186,26 @@ impl<'v> StarlarkInfo<'v> {
                 false
             }
         });
-        StarlarkInfoGen { provider, fields }
+        StarlarkInfoGen {
+            provider,
+            fields,
+            unknown_field_error: None,
+        }
+    }
+
+    /// Java `StarlarkInfoWithMessage.createWithCustomMessage(provider, values,
+    /// unknownFieldError)`: a struct whose unknown-field error is `unknown_field_error` (a format
+    /// with one `%s`, the field name), followed by the list of fields (`ctx.attr`, the `attr`
+    /// of a Starlark transition).
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithMessage.java:66 StarlarkInfoWithMessage.createWithCustomMessage
+    pub fn with_message(
+        provider: Value<'v>,
+        fields: Vec<(String, Value<'v>)>,
+        unknown_field_error: &str,
+    ) -> Self {
+        let mut info = Self::new(provider, fields);
+        info.unknown_field_error = Some(unknown_field_error.to_owned());
+        info
     }
 }
 
@@ -221,12 +243,21 @@ impl<'v, V: ValueLike<'v>> StarlarkInfoGen<V> {
         exported && self.fields.iter().all(|(_, v)| is_immutable(v.to_value()))
     }
 
-    /// Java: StructImpl.getErrorMessageForUnknownField (+ allAttributesSuffix).
+    /// Java: StructImpl.getErrorMessageForUnknownField (+ allAttributesSuffix), or
+    /// StarlarkInfoWithMessage's format.
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithMessage.java:51 StarlarkInfoWithMessage.getErrorMessageForUnknownField
     pub fn unknown_field_message(&self, name: &str) -> String {
+        let head = match &self.unknown_field_error {
+            // Java String.format(unknownFieldError, name): the formats have one `%s`.
+            Some(format) => format.replacen("%s", name, 1),
+            None => format!(
+                "'{}' value has no field or method '{}'",
+                self.printable_provider_name(),
+                name
+            ),
+        };
         format!(
-            "'{}' value has no field or method '{}'\nAvailable attributes: {}",
-            self.printable_provider_name(),
-            name,
+            "{head}\nAvailable attributes: {}",
             self.field_names().collect::<Vec<_>>().join(", ")
         )
     }
@@ -238,6 +269,7 @@ impl<'v> Freeze for StarlarkInfo<'v> {
         Ok(StarlarkInfoGen {
             provider: self.provider.freeze(freezer)?,
             fields: self.fields.freeze(freezer)?,
+            unknown_field_error: self.unknown_field_error,
         })
     }
 }
@@ -375,9 +407,11 @@ fn plus<'v, V: ValueLike<'v>>(
             .map(|(k, v)| (k.clone(), v.to_value())),
     );
     z.extend(y.fields[yi..].iter().map(|(k, v)| (k.clone(), *v)));
+    // Java StarlarkInfo.plus: a StarlarkInfoNoSchema (the provider's message).
     Ok(heap.alloc(StarlarkInfoGen {
         provider: x.provider.to_value(),
         fields: z,
+        unknown_field_error: None,
     }))
 }
 

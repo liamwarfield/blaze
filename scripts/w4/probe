@@ -20,9 +20,14 @@ USAGE = """\
 usage: scripts/w4/probe list
        scripts/w4/probe <oracle|blaze> <scenario> [--only N]   transcript on stdout
        scripts/w4/probe record <scenario>                      oracle transcript -> ORACLE.txt
-       scripts/w4/probe compare <scenario> [--only N] [--messages]
-                                                               runs Blaze, compares with ORACLE.txt
-       scripts/w4/probe compare-all [--messages] [--skip a,b]  compare for every recorded scenario
+       scripts/w4/probe compare <scenario> [--only N] [--messages|--masked]
+                                                               runs Blaze, compares with ORACLE.txt,
+                                                               saves Blaze's transcript (see below)
+       scripts/w4/probe compare-all [--messages|--masked] [--skip a,b]
+                                                               compare for every recorded scenario
+       scripts/w4/probe recount <sha12> [--skip a,b]           the three counts from saved transcripts
+                                                               (no run)
+       scripts/w4/probe masks                                  prints the masked line classes
        scripts/w4/probe help
 
 A scenario is a directory scripts/w4/scenarios/<name>/ with
@@ -54,11 +59,23 @@ stderr lines are only the rate-limited progress lines whose number and content d
 a step matches only when exit code, stdout and stderr are identical.
 
 compare prints one line per step (MATCH or DIFF, with a unified diff for each DIFF), then
-`probe <scenario>: M of N steps match` and exits 1 when any step differs. --messages compares a
-narrower view, reported as such: exit code, stdout, and the complete text (every line, not only
-the first) of each ERROR/WARNING/DEBUG/INFO/FAILED message and build-result line, as a sorted
-list. compare-all prints, per scenario, the steps matching in full and in the --messages view,
-and the totals; it exits 1 on any difference (in the --messages view when given).
+`probe <scenario>: M of N steps match` and exits 1 when any step differs. Three views are
+counted for every step:
+  full      the whole normalised transcript of the step.
+  masked    the full view with the line classes Blaze cannot match by design replaced on both
+            sides (each class is listed by `probe masks`, with the reason; nothing else changes,
+            order is kept).
+  messages  exit code, stdout, and the complete text (every line, not only the first) of each
+            ERROR/WARNING/DEBUG/INFO/FAILED message and build-result line, as a sorted list.
+--masked / --messages make compare print the diff of that view (and decide the exit status).
+compare-all and recount print, per scenario, the three counts and the totals; compare-all exits 1
+on any difference in the chosen view (full by default).
+
+Every compare saves Blaze's transcript next to ORACLE.txt as BLAZE-<sha12>.txt, where <sha12>
+is the first 12 hex digits of the sha256 of the Blaze binary; the file starts with `#` lines
+naming the binary, its sha256, the git commit (and whether the tree was dirty) and the date, so
+the counts can be re-derived with `probe recount <sha12>` (a run with --only N saves
+BLAZE-<sha12>.only-N.txt, which recount ignores).
 
 Each run copies ws/ to ~/.cache/blaze/work/probe-<scenario> (the same path for both binaries, so
 do not record and compare one scenario at the same time), uses the output user root
@@ -87,6 +104,40 @@ MESSAGE_DROP = re.compile(r"^INFO: (Elapsed time|Invocation ID|Streaming build r
                           r"|discarding analysis cache|^WARNING: Running Bazel server needs to be killed")
 # Action keys of these mnemonics fingerprint absolute paths (see scripts/oracle/README.md).
 PATH_DEPENDENT_KEYS = {"SourceSymlinkManifest", "SymlinkTree"}
+
+# The masked view (analysis review R3-2): line classes Blaze cannot match by design, each with
+# the reason. A stderr line that matches a class completely is replaced by the class's
+# placeholder (or dropped when the placeholder is None) in both transcripts; nothing else changes.
+MASKS = [
+    ("server start",
+     re.compile(r"(Extracting Bazel installation\.\.\.|"
+                r"Starting local Bazel server \(9\.3\.2\) and connecting to it\.\.\.)"),
+     None,
+     "Blaze has no persistent server until W8 (decisions.md 2026-11-18): every command starts "
+     "one, so the line appears on every step instead of the first."),
+    ("critical path",
+     re.compile(r"INFO: Elapsed time: <DUR>(, Critical Path: <DUR>)?"),
+     "INFO: Elapsed time: <DUR><masked: critical path>",
+     "The critical path is not computed (CriticalPathComponent is not ported)."),
+    ("warm-server counts",
+     re.compile(r"(INFO: Analyzed (target \S+|\d+ targets)) \(\d+ packages? loaded, \d+ targets? "
+                r"configured\)\."),
+     r"\1 (<masked: warm-server counts>).",
+     "Package and configured-target counts of a step depend on what the previous steps left in "
+     "the server's graph; Blaze starts cold on every step."),
+    ("warm-server analysis cache",
+     re.compile(r"WARNING: Build options? .* (has|have) changed, discarding analysis cache \(this "
+                r"can be expensive, see https://bazel\.build/advanced/performance/"
+                r"iteration-speed\)\."),
+     None,
+     "Printed when a warm server drops its analysis cache; Blaze has no cache across commands."),
+    ("failed-build process count",
+     re.compile(r"INFO: (0 processes|1 process: 1 internal)\."),
+     "INFO: <masked: process count of a build without spawns>",
+     "After a failed analysis Bazel prints `1 process: 1 internal.` where Blaze prints `0 "
+     "processes.` (the execution summary; execution owner). Both texts map to one placeholder, "
+     "so this view cannot tell them apart."),
+]
 
 
 def die(msg):
@@ -258,26 +309,71 @@ def messages_view(body):
     return head + sorted(kept)
 
 
-def compare(scenario, only=None, messages=False, quiet=False):
-    """Returns (matching steps, total steps, steps matching in the --messages view)."""
-    expected = os.path.join(SCENARIOS, scenario, "ORACLE.txt")
-    with open(expected) as f:
-        want = split_steps(f.read())
-    got = split_steps(Run("blaze", scenario).transcript(only))
-    if only is not None:
-        want = {h: b for h, b in want.items() if h.startswith("=== %d: " % only)}
-    matched = 0
-    matched_messages = 0
+def masked_view(body):
+    """The masked view: the stderr lines of a MASKS class replaced (or dropped)."""
+    if "--- stderr" not in body:
+        return body
+    i = body.index("--- stderr")
+    out = body[:i + 1]
+    for line in body[i + 1:]:
+        for _, pattern, placeholder, _ in MASKS:
+            m = pattern.fullmatch(line)
+            if m:
+                if placeholder is not None:
+                    out.append(m.expand(placeholder))
+                break
+        else:
+            out.append(line)
+    return out
+
+
+VIEWS = {"full": lambda body: body, "masked": masked_view, "messages": messages_view}
+
+
+def binary_id(path):
+    """(sha256 hex, first 12 hex digits) of the binary."""
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest(), h.hexdigest()[:12]
+
+
+def save_transcript(scenario, binary, text, only):
+    sha, sha12 = binary_id(binary)
+    git = lambda *a: subprocess.run(["git", "-C", ROOT] + list(a), stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL).stdout.decode().strip()
+    dirty = "dirty" if git("status", "--porcelain", "--untracked-files=no") else "clean"
+    import datetime
+    header = ["# probe transcript of Blaze (scripts/w4/probe compare)",
+              "# binary %s" % binary,
+              "# sha256 %s" % sha,
+              "# tree %s (%s)" % (git("rev-parse", "HEAD"), dirty),
+              "# date %s" % datetime.datetime.now().isoformat(timespec="seconds")]
+    name = "BLAZE-%s%s.txt" % (sha12, "" if only is None else ".only-%d" % only)
+    path = os.path.join(SCENARIOS, scenario, name)
+    with open(path, "w") as f:
+        f.write("\n".join(header) + "\n" + text)
+    return path
+
+
+def count(want, got, view_shown=None, quiet=True):
+    """Per view, the steps of `want` whose body equals `got`'s; prints MATCH/DIFF lines (and
+    the diff of `view_shown` unless quiet)."""
+    counts = {v: 0 for v in VIEWS}
     for header, want_body in want.items():
         got_body = got.get(header)
         if got_body is None:
             print("%s  DIFF (step missing from Blaze's transcript)" % header)
             continue
-        if messages_view(want_body) == messages_view(got_body):
-            matched_messages += 1
-        a, b = (messages_view(want_body), messages_view(got_body)) if messages else (want_body, got_body)
+        for v, f in VIEWS.items():
+            if f(want_body) == f(got_body):
+                counts[v] += 1
+        if view_shown is None:
+            continue
+        a, b = VIEWS[view_shown](want_body), VIEWS[view_shown](got_body)
         if a == b:
-            matched += 1
             if not quiet:
                 print("%s  MATCH" % header)
         else:
@@ -287,9 +383,50 @@ def compare(scenario, only=None, messages=False, quiet=False):
     for header in got:
         if header not in want:
             print("%s  DIFF (step not in ORACLE.txt)" % header)
-    view = " (--messages view)" if messages else ""
-    print("probe %s: %d of %d steps match%s" % (scenario, matched, len(want), view))
-    return matched, len(want), matched_messages
+    return counts
+
+
+def read_oracle(scenario, only=None):
+    with open(os.path.join(SCENARIOS, scenario, "ORACLE.txt")) as f:
+        want = split_steps(f.read())
+    if only is not None:
+        want = {h: b for h, b in want.items() if h.startswith("=== %d: " % only)}
+    return want
+
+
+def compare(scenario, only=None, view="full", quiet=False):
+    """Runs Blaze, saves its transcript; returns ({view: matching steps}, total steps)."""
+    want = read_oracle(scenario, only)
+    run = Run("blaze", scenario)
+    text = run.transcript(only)
+    saved = save_transcript(scenario, run.binary, text, only)
+    counts = count(want, split_steps(text), view, quiet)
+    print("probe %s: %d of %d steps match%s (masked %d, messages %d; saved %s)"
+          % (scenario, counts[view], len(want), "" if view == "full" else " (%s view)" % view,
+             counts["masked"], counts["messages"], os.path.relpath(saved, ROOT)))
+    return counts, len(want)
+
+
+def print_table(rows):
+    print("%-28s %11s %11s %11s" % ("scenario", "full", "masked", "messages"))
+    tot = {v: 0 for v in VIEWS}
+    total_n = 0
+    for name, counts, n in rows:
+        print("%-28s %4d / %-4d %4d / %-4d %4d / %-4d %s"
+              % (name, counts["full"], n, counts["masked"], n, counts["messages"], n,
+                 "MATCH" if counts["full"] == n else "DIFF"))
+        for v in VIEWS:
+            tot[v] += counts[v]
+        total_n += n
+    print("probe: %d scenarios, %d steps; full %d, masked %d, messages %d (%d scenarios fully match)"
+          % (len(rows), total_n, tot["full"], tot["masked"], tot["messages"],
+             sum(1 for _, c, n in rows if c["full"] == n)))
+    return tot, total_n
+
+
+def recorded_scenarios(skip):
+    return [name for name in sorted(os.listdir(SCENARIOS))
+            if name not in skip and os.path.exists(os.path.join(SCENARIOS, name, "ORACLE.txt"))]
 
 
 def main(argv):
@@ -297,34 +434,44 @@ def main(argv):
         sys.stdout.write(USAGE)
         return 0
     cmd = argv[1]
-    messages = "--messages" in argv
+    view = "messages" if "--messages" in argv else "masked" if "--masked" in argv else "full"
+    skip = set()
+    if "--skip" in argv:
+        skip = set(argv[argv.index("--skip") + 1].split(","))
     if cmd == "list":
         for name in sorted(os.listdir(SCENARIOS)):
             if os.path.isdir(os.path.join(SCENARIOS, name, "ws")):
                 recorded = os.path.exists(os.path.join(SCENARIOS, name, "ORACLE.txt"))
                 print("%s%s" % (name, "" if recorded else "  (no ORACLE.txt)"))
         return 0
+    if cmd == "masks":
+        for name, pattern, placeholder, reason in MASKS:
+            print("%s\n  line:   %s\n  becomes: %s\n  why:    %s"
+                  % (name, pattern.pattern, "(dropped)" if placeholder is None else placeholder, reason))
+        return 0
     if cmd == "compare-all":
-        skip = set()
-        if "--skip" in argv:
-            skip = set(argv[argv.index("--skip") + 1].split(","))
-        total_m = total_n = total_mm = 0
         rows = []
-        for name in sorted(os.listdir(SCENARIOS)):
-            if name in skip or not os.path.exists(os.path.join(SCENARIOS, name, "ORACLE.txt")):
+        for name in recorded_scenarios(skip):
+            counts, n = compare(name, view=view, quiet=True)
+            rows.append((name, counts, n))
+        tot, total_n = print_table(rows)
+        return 0 if tot[view] == total_n else 1
+    if cmd == "recount":
+        if len(argv) < 3:
+            die("missing <sha12>; see `probe help`")
+        sha12 = argv[2]
+        rows = []
+        for name in recorded_scenarios(skip):
+            path = os.path.join(SCENARIOS, name, "BLAZE-%s.txt" % sha12)
+            if not os.path.exists(path):
+                print("%s: no BLAZE-%s.txt" % (name, sha12))
                 continue
-            m, n, mm = compare(name, messages=messages, quiet=True)
-            rows.append((name, m, n, mm))
-            total_m += m
-            total_n += n
-            total_mm += mm
-        print("%-28s %11s %11s" % ("scenario", "full", "--messages"))
-        for name, m, n, mm in rows:
-            print("%-28s %4d / %-4d %4d / %-4d %s" % (name, m, n, mm, n, "MATCH" if m == n else "DIFF"))
-        print("probe: %d of %d steps match in %d scenarios (%d scenarios fully match); "
-              "--messages view: %d of %d"
-              % (total_m, total_n, len(rows), sum(1 for _, m, n, _ in rows if m == n), total_mm, total_n))
-        return 0 if (total_mm if messages else total_m) == total_n else 1
+            with open(path) as f:
+                got = split_steps(f.read())
+            want = read_oracle(name)
+            rows.append((name, count(want, got), len(want)))
+        print_table(rows)
+        return 0
     if len(argv) < 3:
         die("missing scenario; see `probe help`")
     scenario = argv[2]
@@ -342,8 +489,8 @@ def main(argv):
         print("wrote %s (%d lines)" % (expected, text.count("\n")))
         return 0
     if cmd == "compare":
-        m, n, _ = compare(scenario, only, messages)
-        return 0 if m == n else 1
+        counts, n = compare(scenario, only, view)
+        return 0 if counts[view] == n else 1
     die("unknown command %r; see `probe help`" % cmd)
 
 

@@ -58,6 +58,38 @@ pub struct PostAnalysisCommandEnvironment<'a> {
     pub stop_request: &'a dyn Fn(&DetailedExitCode),
     /// The command's options.
     pub options: &'a OptionsParser,
+    /// `new ExecutionTool(env, request)`: `Err` with the exit code of the `AbruptExitException`
+    /// its constructor throws (an unknown `--spawn_strategy` / `--strategy`, ...). The command
+    /// crate builds the executor setup, above this crate.
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:151 ExecutionTool.<init>
+    pub execution_tool: &'a dyn Fn() -> Result<(), DetailedExitCode>,
+}
+
+/// Java's `BuildTool.buildTargetsWithoutMergedAnalysisExecution` constructs the
+/// `ExecutionTool` after the analysis and before `analysisPostProcessor.process` (it sets up the
+/// tools' symlinks), for cquery and aquery too; an `AbruptExitException` from its constructor
+/// ends the request (`BuildTool.processRequest` reports its message).
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:520 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+struct ExecutionToolConstruction<'a> {
+    execution_tool: &'a dyn Fn() -> Result<(), DetailedExitCode>,
+    post_processor: &'a dyn blaze_sky_top::build_tool::AnalysisPostProcessor,
+}
+
+impl blaze_sky_top::build_tool::AnalysisPostProcessor for ExecutionToolConstruction<'_> {
+    fn process(
+        &self,
+        request: &blaze_sky_top::build_tool::BuildRequest,
+        skyframe_executor: &SkyframeExecutor,
+        analysis_result: &blaze_sky_top::build_view::AnalysisResult,
+    ) -> Result<(), blaze_sky_top::build_tool::BuildToolError> {
+        // executionTool = new ExecutionTool(env, request);
+        // PORT: Java's `catch (AbruptExitException e)` also sets the BuildResult's catastrophe
+        // flag; the post-analysis commands keep no BuildResult here (their stopRequest prints
+        // the summary from the exit code alone).
+        (self.execution_tool)().map_err(blaze_sky_top::build_tool::BuildToolError::Exit)?;
+        self.post_processor
+            .process(request, skyframe_executor, analysis_result)
+    }
 }
 
 /// `new BuildTool(env, processor).processRequest(request, null, options).getDetailedExitCode()`:
@@ -68,11 +100,15 @@ pub(crate) fn process_request(
     request: &blaze_sky_top::build_tool::BuildRequest,
     post_processor: &dyn blaze_sky_top::build_tool::AnalysisPostProcessor,
 ) -> DetailedExitCode {
+    let post_processor = ExecutionToolConstruction {
+        execution_tool: env.execution_tool,
+        post_processor,
+    };
     let detailed_exit_code = blaze_sky_top::build_tool::BuildTool::new(
         env.skyframe_executor,
         env.reporter.clone(),
         env.relative_working_directory.clone(),
-        post_processor,
+        &post_processor,
     )
     .process_request(request);
     (env.stop_request)(&detailed_exit_code);

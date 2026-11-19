@@ -127,8 +127,7 @@ const RULE_TRANSITION_NO_ATTR: &str = "No attribute '%s'. Either this attribute 
 
 impl TransitionAttrObject for TransitionAttributes {
     fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
-        // PORT: Java's struct carries `errorMessageForUnknownField`; Blaze's struct reports
-        // starlark-rust's missing-field error instead (decisions.md: Starlark error text).
+        // Java: StructProvider.STRUCT.create(attributes, errorMessageForUnknownField).
         let fields: Vec<(String, Value<'v>)> = self
             .entries
             .iter()
@@ -139,7 +138,11 @@ impl TransitionAttrObject for TransitionAttributes {
                 )
             })
             .collect();
-        heap.alloc(StarlarkInfo::new(heap.alloc(StructProvider), fields))
+        heap.alloc(StarlarkInfo::with_message(
+            heap.alloc(StructProvider),
+            fields,
+            self.no_attr_error,
+        ))
     }
 }
 

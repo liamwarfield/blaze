@@ -326,3 +326,86 @@ throws `ExecException`); `SimpleSpawn::get_local_resources` already returns a `R
   steps. (1)-(3) are outside the analysis crates (client, execution summary, critical path);
   (4) is the vendored interpreter. These numbers are the true counts; the round-1 "71/71" and
   scenario MATCHes were first-line comparisons.
+
+# Round 3 response
+
+Analysis implementer, 2026-11-18. Covers the "Round 3" section of docs/reviews/2026-11-18-analysis.md
+(carried items S2-7 with the platforms-API fields, S2-8, R3-1, R3-2) and the adoption of the
+interpreter hooks of patches 0026-0031. State described: HEAD `5013a3f` plus the uncommitted
+working tree (the remote lead's in-flight edits in blaze_exec, blaze_sky_exec, blaze_buildtool,
+blaze_runtime `build_remote.rs` are in the same tree). Binary `~/.cache/blaze/int-bin/blaze-anafix-r3`
+(sha256 `8def70d5cac8`), built from that tree. Every expected value comes from the Java at the pin
+or from an oracle transcript.
+
+## Carried items
+
+- **S2-7 (closed).** Natives now implement `get_attr_fallible` / `has_attr_fallible` where Java's
+  `getValue` throws or reads the semantics, so `getattr(x, name, default)` returns the default
+  only for a missing field, and `hasattr` propagates the error (Starlark.java:967, :978):
+  `ctx.fragments` (undeclared fragment: RuleContext.java:512), `ctx.outputs` and a closed
+  `ctx.outputs` (`checkMutable`, StarlarkRuleContext.java:394/441), `Target`
+  (AbstractConfiguredTarget.java:127, reading `--incompatible_disable_target_default_provider_fields`
+  from the thread's semantics). The `unported!` stops in `has_attr` are gone. Oracle:
+  `ctx-errors` steps 2-3 (`Error in getattr:` / `Error in hasattr:`). Unknown-field texts:
+  blaze_starlark `StarlarkInfo::with_message` (StarlarkInfoWithMessage.java:51) gives `ctx.attr`,
+  `ctx.executable`, `ctx.file`, `ctx.files`, `ctx.split_attr` and the transition `attr` struct
+  Java's formats (the two dead constants are used); oracle `ctx-errors` step 9.
+- **Platforms API (closed for fields).** `PlatformInfo.{label,constraints}`,
+  `ConstraintSettingInfo.{label,default_constraint_value}`, `ConstraintValueInfo.{label,constraint}`
+  and `ConstraintCollection.constraint_settings` are absent (field error, `getattr` default,
+  `hasattr` False) unless `--experimental_platforms_api` (CallUtils.java:137). New oracle scenario
+  `platforms-api` (12 steps, with and without the flag). Remaining: `dir()` still lists the gated
+  fields (no evaluator in `dir_attr`; Java `dir` is `[]` without the flag, oracle step 2), and the
+  gated *methods* `get`/`has`/`has_constraint_value` stay methods that fail with "function get()
+  is experimental"; they are reachable only through `PlatformInfo.constraints`, itself absent
+  without the flag, so the difference cannot be observed. Both need an interpreter hook
+  (`dir_attr` with the evaluator); requested.
+- **S2-8 (closed).** `StarlarkToolchainContext` overrides `at_with_eval` / `is_in_with_eval` and
+  converts a string key with the package context of `BazelModuleContext.of_innermost_bzl(eval)`
+  (LabelConverter.forBzlEvaluatingThread, StarlarkToolchainContext.java:106); the
+  implementation-function package context (and its plumbing through `ctx`, `ctx.exec_groups`,
+  subrule contexts) is removed. Oracle: `ctx-toolchains-string` step 6.
+- **R3-1 (closed).** Under `--noexperimental_enable_starlark_set`, `set` stays defined and a call
+  fails "Use of set() requires --experimental_enable_starlark_set" (MethodLibrary.java:691).
+  Oracle scenario `starlark-set-flag`; test `semantics_test::disabled_set_is_defined_and_fails_when_called`.
+- **R3-2 (closed).** See "Probe" below.
+
+## Interpreter hooks adopted
+
+- `<toplevel>` stripping removed from `native_call_stack` (blaze_analysis) and
+  `starlark_transition.rs`; tracebacks unchanged against the oracle (`ctx-immutable` step 2,
+  `flags-transitions` step 23 in the probe run below).
+- Name resolution (patch 0029): `bzl_load.rs` resolves the file against its predeclared globals
+  before any load is requested (Java BzlCompileFunction: `Program.compileFile`), reports every
+  error (a guarded symbol with the guard's message) and fails "compilation of module '...'
+  failed"; `package_function.rs` does the same in `compile_build_file` (PackageFunction.java:1407),
+  so an undefined name in a BUILD file is a SYNTAX_ERROR event and the file is not executed (the
+  `unported!` for guarded BUILD symbols is gone). No JUnit test of the pin has two undefined names
+  in one file; new oracle scenario `load-unresolved-names` and tests
+  `resolve_names_test::{every_unresolved_name_of_a_build_file_is_reported,
+  every_unresolved_name_of_a_bzl_file_is_reported, unresolved_names_are_reported_before_loads}`
+  (locations and order from the oracle; message text is starlark-rust's, ruled).
+- `TYPE_SYNTAX_NOT_PORTED_PREFIX` and its `unported!` in `bzl_compile.rs` removed (patch 0030).
+- `BazelModuleContextValue` prints the label (BazelModuleContext.java:133), so a def prints
+  `<function f from //pkg:defs.bzl>`; test `function_repr_names_its_bzl_label`.
+
+## Patch 0005 (`split()` / `rsplit()` without `sep`)
+
+`grep -P '\.r?split\(\s*(\)|maxsplit)'` over every `.bzl`/BUILD/MODULE file of the bundled
+`builtins_bzl`, the oracle install base's `embedded_tools`, the three corpus checkouts (brotli,
+re2, workerd) and the 1,041 external repositories of the 205 oracle output bases under
+`~/.cache/blaze/oracle-out`: no match (the pattern matches a positive control). Nothing real
+depends on the whitespace split.
+
+## Execution review R3 item (routed by root)
+
+cquery and aquery construct the ExecutionTool as Java does after the analysis
+(BuildTool.java:520): `PostAnalysisCommandEnvironment.execution_tool`, called before the
+post-processor; blaze_runtime `cquery.rs` builds the executor setup as `build` does and maps
+`check_execution_tool_created()`. New oracle scenario `query-strategy-errors` (exit 2 and Java's
+message for `--spawn_strategy=bogus` and `--strategy=Genrule=bogus`, on cquery and aquery).
+PORT notes: the remote module's contributions are not built (its support is private to
+`build.rs`); the remote strategy registers under the same name either way, so the remote
+cache/executor options are cleared for this check and validation is unchanged; the setup also
+recreates `<output_base>/action_outs` (blaze_buildtool exposes the constructor only with
+`prepareForExecution`).

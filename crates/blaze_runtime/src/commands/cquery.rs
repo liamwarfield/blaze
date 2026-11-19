@@ -3,7 +3,16 @@
 
 use blaze_build_config::bazel_rule_class_provider::BazelRuleClassProvider;
 use blaze_build_config::top_level::create_build_options;
+use blaze_buildtool::buildtool::execution_tool::{
+    ActionCacheOptions, ExecutionToolConfig, prepare_for_execution_with_action_cache,
+};
 use blaze_cquery::commands::PostAnalysisCommandEnvironment;
+use blaze_optdefs::command::build_request_options::BuildRequestOptions;
+use blaze_optdefs::command::execution_options::ExecutionOptions;
+use blaze_optdefs::fragment::test_configuration::TestConfigurationTestOptions;
+use blaze_optdefs::misc::local_execution_options::LocalExecutionOptions;
+use blaze_optdefs::misc::sandbox_options::SandboxOptions;
+use blaze_options::Options;
 
 use crate::command::{BlazeCommand, BlazeCommandResult, CommandAnnotation};
 use crate::command_environment::CommandEnvironment;
@@ -45,6 +54,8 @@ impl BlazeCommand for CqueryCommand {
             Err(result) => return result,
         };
         let _after_command = AfterCommand(&skyframe_executor);
+        // new ExecutionTool(env, request) (see `construct_execution_tool`).
+        let execution_tool = || construct_execution_tool(env, options);
         let command_env = PostAnalysisCommandEnvironment {
             skyframe_executor: &skyframe_executor,
             reporter: reporter(env),
@@ -58,8 +69,119 @@ impl BlazeCommand for CqueryCommand {
                 crate::commands::build::stop_request_without_execution(env, detailed_exit_code)
             },
             options,
+            execution_tool: &execution_tool,
         };
         let detailed_exit_code = blaze_cquery::commands::cquery_command::exec(&command_env);
         BlazeCommandResult::detailed_exit_code(to_runtime_detailed_exit_code(detailed_exit_code))
     }
+}
+
+fn options_or_default<T: blaze_options::OptionsClass>(options: &OptionsParsingResult) -> T {
+    options
+        .get_options::<T>()
+        .unwrap_or_else(Options::<T>::get_defaults)
+}
+
+/// `new ExecutionTool(env, request)` for cquery and aquery: Java constructs the tool after the
+/// analysis (BuildTool.java:520) and its constructor registers the spawn strategies, failing
+/// with an `AbruptExitException` for an unknown `--spawn_strategy` / `--strategy` value.
+/// The executor setup is built as `build` builds it (commands/build.rs).
+///
+/// PORT: blaze_buildtool exposes the constructor only together with `prepareForExecution`
+/// (`prepare_for_execution_with_action_cache`), which also recreates the action log directory
+/// (`<output_base>/action_outs`); the action cache is not loaded. No spawn log context, no
+/// test action context and no output filter are given: none of them takes part in the
+/// constructor's checks. The remote module's contributions are not built (its support is private
+/// to commands/build.rs): its strategy is registered under the same name, "remote", with or
+/// without remote caching or execution (RemoteActionContextProvider.registerRemoteSpawnStrategy),
+/// so the remote options are passed with the cache, executor, output service and downloader
+/// cleared (the placeholder provider) and the remote-local fallback identifier kept; the
+/// validation of strategy names is the same.
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:151 ExecutionTool.<init>
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:520 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+pub(crate) fn construct_execution_tool(
+    env: &CommandEnvironment,
+    options: &OptionsParsingResult,
+) -> Result<(), blaze_query_engine::DetailedExitCode> {
+    let build_request_options: BuildRequestOptions = options_or_default(options);
+    let execution_options: ExecutionOptions = options_or_default(options);
+    let test_options: TestConfigurationTestOptions = options_or_default(options);
+    let keep_going = options
+        .get_options::<blaze_optdefs::command::keep_going_option::KeepGoingOption>()
+        .map(|o| o.keep_going)
+        .unwrap_or(false);
+    let directories = env.get_directories();
+    let exec_root = env.get_exec_root();
+    let jobs = if build_request_options.jobs > 0 {
+        build_request_options.jobs as usize
+    } else {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    };
+    let remote_options = options
+        .get_options::<blaze_optdefs::misc::remote_options::RemoteOptions>()
+        .map(|mut o| {
+            o.remote_executor = None;
+            o.remote_cache = None;
+            o.disk_cache = None;
+            o.remote_output_service = None;
+            o.remote_downloader = None;
+            o
+        });
+    let config = ExecutionToolConfig {
+        file_system: env.get_output_base().get_file_system().clone(),
+        output_base: env.get_output_base().clone(),
+        exec_root: exec_root.clone(),
+        install_base: directories.get_install_base().clone(),
+        client_env: env.get_client_env().clone(),
+        keep_going,
+        verbose_failures: execution_options.verbose_failures,
+        jobs,
+        execution_options: Some(execution_options.clone()),
+        sandbox_options: Some(options_or_default::<SandboxOptions>(options)),
+        local_execution_options: Some(options_or_default::<LocalExecutionOptions>(options)),
+        remote_options,
+        dynamic_execution_options: options.get_options::<
+            blaze_optdefs::misc::dynamic_execution_options::DynamicExecutionOptions,
+        >(),
+        worker_options: options
+            .get_options::<blaze_optdefs::misc::worker_options::WorkerOptions>(),
+        package_path_entries: Vec::new(),
+        repo_contents_cache_path: None,
+        test_arguments: test_options.test_arguments.clone(),
+        action_temps_directory: directories.get_action_temps_directory(&exec_root),
+        writable_outputs: options
+            .get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
+            .map(|o| o.experimental_writable_outputs)
+            .unwrap_or(false),
+        output_filter: None,
+        remote: Default::default(),
+    };
+    let prepared = match prepare_for_execution_with_action_cache(
+        &config,
+        reporter(env),
+        None,
+        &|_, _| {},
+        ActionCacheOptions {
+            use_action_cache: false,
+            ..ActionCacheOptions::default()
+        },
+    ) {
+        Ok(prepared) => prepared,
+        // Not a constructor failure in Java (prepareForExecution runs only for builds).
+        Err(e) => panic!(
+            "cannot set up the executor for {}: {e}",
+            env.get_command_name()
+        ),
+    };
+    // catch (AbruptExitException e)
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:999 BuildTool.processRequest
+    prepared.check_execution_tool_created().map_err(|e| {
+        let failure_detail = e.failure_detail;
+        blaze_query_engine::DetailedExitCode::of_exit_code(
+            blaze_query_engine::DetailedExitCode::get_exit_code_for(&failure_detail),
+            failure_detail,
+        )
+    })
 }

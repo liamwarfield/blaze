@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
 
@@ -893,53 +893,6 @@ impl LocalExecution {
     }
 }
 
-/// The counter of [`child_out_err`].
-static CHILD_OUT_ERR_COUNT: AtomicI32 = AtomicI32::new(0);
-
-/// `outErr.childOutErr()`: `<out>-<n>` / `<err>-<n>`.
-///
-/// PORT: Java numbers the children per parent (`FileOutErr.childCount`). `blaze_exec`'s
-/// `FileOutErr` is a pair of paths without that counter and without `childOutErr()`, so the
-/// number comes from one counter for all the parents of this process: the names have Java's
-/// form and are distinct among the downloads, but the numbers are not Java's. (`blaze_exec`'s
-/// `StandaloneTestStrategy` keeps its own counter for the children it makes.)
-// Java: com/google/devtools/build/lib/util/io/FileOutErr.java:232 FileOutErr.childOutErr
-fn child_out_err(parent: &FileOutErr) -> FileOutErr {
-    let index = CHILD_OUT_ERR_COUNT.fetch_add(1, Ordering::SeqCst);
-    let out_path = parent.get_output_path();
-    let err_path = parent.get_error_path();
-    FileOutErr::new(
-        out_path
-            .get_parent_directory()
-            .expect("NullPointerException")
-            .get_relative_str(&format!("{}-{}", out_path.get_base_name(), index)),
-        err_path
-            .get_parent_directory()
-            .expect("NullPointerException")
-            .get_relative_str(&format!("{}-{}", err_path.get_base_name(), index)),
-    )
-}
-
-/// `FileOutErr.dump(from, to)`: writes the captured content to the given `FileOutErr`.
-///
-/// PORT: `blaze_exec`'s `FileOutErr` has no `dump`. Java streams the files and never throws: a
-/// failure to read or write is recorded in the stream (and printed with its output later);
-/// `blaze_exec`'s `FileOutErr` has no recorded error, so such a failure is dropped here. Java
-/// does not create the target file when there is nothing to write.
-// Java: com/google/devtools/build/lib/util/io/FileOutErr.java:218 FileOutErr.dump
-fn file_out_err_dump(from: &FileOutErr, to: &FileOutErr) {
-    // `from.dumpOutAsLatin1(to.getOutputStream())`
-    let out = from.out_as_bytes();
-    if !out.is_empty() {
-        let _ = to.write_out(&out);
-    }
-    // `from.dumpErrAsLatin1(to.getErrorStream())`
-    let err = from.err_as_bytes();
-    if !err.is_empty() {
-        let _ = to.write_err(&err);
-    }
-}
-
 /// `FileSystemUtils.copyTreesBelow(from, to)`.
 ///
 /// PORT: `blaze_repo_fetch::fs_utils` (the port of `FileSystemUtils` this crate uses) lacks it.
@@ -1476,7 +1429,7 @@ impl RemoteExecutionService {
         let out_err: &FileOutErr = action.get_spawn_execution_context().get_file_out_err();
 
         // Always download the action stdout/stderr.
-        tmp_out_err = child_out_err(out_err);
+        tmp_out_err = out_err.child_out_err();
         let out_err_downloads =
             combined_cache.download_out_err(&context, &result.action_result, &tmp_out_err);
         for future in out_err_downloads {
@@ -1494,7 +1447,7 @@ impl RemoteExecutionService {
             return Err(e.into());
         }
 
-        file_out_err_dump(&tmp_out_err, out_err);
+        FileOutErr::dump(&tmp_out_err, out_err);
 
         // Ensure that we are the only ones writing to the output files when using the dynamic
         // spawn strategy.
@@ -1783,7 +1736,7 @@ impl RemoteExecutionService {
         //  2. Java compilation actions may run a fallback spawn, but reset the FileOutErr before
         //     running it.
         //  If this changes, we will need to introduce a spawn-scoped OutErr.
-        file_out_err_dump(
+        FileOutErr::dump(
             &previous_execution.file_out_err,
             action.get_spawn_execution_context().get_file_out_err(),
         );

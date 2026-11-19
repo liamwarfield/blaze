@@ -13,9 +13,9 @@ use blaze_starlark::structs::StructureMarker;
 use blaze_util::Fingerprint;
 use indexmap::IndexMap;
 use starlark::any::ProvidesStaticType;
-use starlark::starlark_simple_value;
 use starlark::collections::Hashed;
 use starlark::eval::Evaluator;
+use starlark::starlark_simple_value;
 use starlark::values::ValueLike;
 use starlark::values::{Demand, Heap, NoSerialize, StarlarkValue, Value, starlark_value};
 use starlark_map::StarlarkHasher;
@@ -23,8 +23,8 @@ use starlark_map::StarlarkHasher;
 use crate::config::config_matching_provider::ConfigMatchingProvider;
 use crate::info::InfoProviderKey;
 use crate::platform::constraint_collection::{
-    gated_get_attr, gated_has_attr,
     ConstraintCollection, ConstraintCollectionBuilder, DuplicateConstraintException,
+    gated_get_attr, gated_has_attr, no_field_message,
 };
 use crate::platform::constraint_value_info::ConstraintValueInfo;
 use crate::platform::platform_constants;
@@ -529,6 +529,10 @@ impl<'v> StarlarkValue<'v> for PlatformInfo {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<bool> {
         gated_has_attr(self, &GATED, attribute, eval)
+    }
+
+    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
+        Some(no_field_message("PlatformInfo", attribute, &FIELDS))
     }
 
     // PORT: Java's `dir` leaves out the GATED fields when the flag is off

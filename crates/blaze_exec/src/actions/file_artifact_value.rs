@@ -153,7 +153,31 @@ pub enum FileArtifactValue {
     RunfilesTreeMarker,
     /// `MISSING_FILE_MARKER`.
     MissingFileMarker,
+    /// `TreeArtifactValue.TreeArtifactCompositeFileArtifactValue`: the metadata of a tree
+    /// artifact whose children are all remote or that has a resolved path.
+    ///
+    /// PORT: a local tree without a resolved path keeps [`FileArtifactValue::HashedDirectory`],
+    /// which answers every method the port reads as the composite value does.
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:224 TreeArtifactCompositeFileArtifactValue
+    TreeArtifactComposite {
+        digest: Vec<u8>,
+        is_remote: NotInEquality<bool>,
+        resolved_path: Option<PathFragment>,
+    },
 }
+
+/// A field that `equals` does not compare (Java's `TreeArtifactCompositeFileArtifactValue.equals`
+/// compares the digest and the resolved path only).
+#[derive(Clone, Copy, Debug)]
+pub struct NotInEquality<T>(pub T);
+
+impl<T> PartialEq for NotInEquality<T> {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> Eq for NotInEquality<T> {}
 
 impl FileArtifactValue {
     /// `getType()`.
@@ -162,6 +186,8 @@ impl FileArtifactValue {
             FileArtifactValue::RegularFile { .. } => FileStateType::RegularFile,
             FileArtifactValue::Directory { .. } => FileStateType::Directory,
             FileArtifactValue::HashedDirectory { .. } => FileStateType::Directory,
+            // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:253 TreeArtifactCompositeFileArtifactValue.getType
+            FileArtifactValue::TreeArtifactComposite { .. } => FileStateType::Directory,
             FileArtifactValue::UnresolvedSymlink { .. } => FileStateType::Symlink,
             FileArtifactValue::RemoteFile { .. } => FileStateType::RegularFile,
             FileArtifactValue::ResolvedSymlink { delegate, .. } => delegate.get_type(),
@@ -181,6 +207,7 @@ impl FileArtifactValue {
             FileArtifactValue::RegularFile { digest, .. } => digest.as_deref(),
             FileArtifactValue::Directory { .. } => None,
             FileArtifactValue::HashedDirectory { digest } => Some(digest),
+            FileArtifactValue::TreeArtifactComposite { digest, .. } => Some(digest),
             FileArtifactValue::UnresolvedSymlink { digest, .. } => Some(digest),
             FileArtifactValue::RemoteFile { digest, .. } => Some(digest),
             FileArtifactValue::ResolvedSymlink { delegate, .. } => delegate.get_digest(),
@@ -226,6 +253,8 @@ impl FileArtifactValue {
         match self {
             FileArtifactValue::RemoteFile { .. } => true,
             FileArtifactValue::ResolvedSymlink { delegate, .. } => delegate.is_remote(),
+            // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:297 TreeArtifactCompositeFileArtifactValue.isRemote
+            FileArtifactValue::TreeArtifactComposite { is_remote, .. } => is_remote.0,
             _ => false,
         }
     }
@@ -243,6 +272,10 @@ impl FileArtifactValue {
     pub fn get_resolved_path(&self) -> Option<&PathFragment> {
         match self {
             FileArtifactValue::ResolvedSymlink { resolved_path, .. } => Some(resolved_path),
+            // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:303 TreeArtifactCompositeFileArtifactValue.getResolvedPath
+            FileArtifactValue::TreeArtifactComposite { resolved_path, .. } => {
+                resolved_path.as_ref()
+            }
             _ => None,
         }
     }
@@ -421,6 +454,8 @@ impl FileArtifactValue {
             // consciously deferring work here as this code will most likely change again, and we're
             // already doing better than before by detecting inter-build modifications.
             FileArtifactValue::HashedDirectory { .. } => Ok(false),
+            // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:274 TreeArtifactCompositeFileArtifactValue.wasModifiedSinceDigest
+            FileArtifactValue::TreeArtifactComposite { .. } => Ok(false),
             // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1213 UnresolvedSymlinkArtifactValue.wasModifiedSinceDigest
             FileArtifactValue::UnresolvedSymlink { digest, .. } => {
                 match FileArtifactValue::create_for_unresolved_symlink(path) {

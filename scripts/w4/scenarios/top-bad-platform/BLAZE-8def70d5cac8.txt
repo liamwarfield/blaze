@@ -1,0 +1,292 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/blaze-anafix-r3
+# sha256 8def70d5cac8792154f9c1b14a55bb277d4c04f99f3980e0c07dd0ea9c2ebd9b
+# tree 4a1b559c6cd543ae1e407326a154caffd0ec0b1a (dirty)
+# date 2026-11-18T16:59:00
+=== 1: run build //:x --platforms=//:p
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+Target //:x up-to-date (nothing to build)
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 2: run build //:x --platforms=//:x
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Target //:x was referenced as a platform, but does not provide PlatformInfo
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 3: run build //:x --platforms=//:nosuch
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: com.google.devtools.build.lib.packages.NoSuchTargetException: no such target '//:nosuch': target 'nosuch' not declared in package '' defined by <WS>/BUILD.bazel
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run cquery //:x --platforms=//nopkg:p
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: com.google.devtools.build.lib.packages.BuildFileNotFoundException: no such package 'nopkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nopkg
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 5: run build //:x --host_platform=//:x
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Target //:x was referenced as a platform, but does not provide PlatformInfo
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 6: run build //:x --extra_toolchains=//:x
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:x up-to-date (nothing to build)
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 7: run build //:x --extra_toolchains=//:nosuch
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:x up-to-date (nothing to build)
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 8: run build //:x --extra_execution_platforms=//:x
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Misconfigured execution platforms: //:x is declared as a platform but has inappropriate dependencies. Execution platforms should not have dependencies that themselves require toolchain resolution.
+.-> //:x
+|   toolchain types
+|   RegisteredExecutionPlatforms
+`-- //:x
+ERROR: Analysis of target '//:x' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 9: run aquery //:x --platforms=//:x
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Target //:x was referenced as a platform, but does not provide PlatformInfo
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 10: run build //:needs_tt
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:18:9: While resolving toolchains for target //:needs_tt (a7a71fd): No matching toolchains found for types:
+  //:tt
+To debug, rerun with --toolchain_resolution_debug='//:tt'
+For more information on platforms or toolchains see https://bazel.build/concepts/platforms-intro.
+ERROR: Analysis of target '//:needs_tt' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 11: run build //:needs_tt --extra_toolchains=//:tc
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:needs_tt (78 packages loaded, 430 targets configured).
+INFO: Found 1 target...
+Target //:needs_tt up-to-date (nothing to build)
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 12: run build //:needs_tt --extra_toolchains=//:x
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:18:9: While resolving toolchains for target //:needs_tt (bdad6b7): invalid registered toolchain '//:x': target does not provide the DeclaredToolchainInfo provider
+ERROR: Analysis of target '//:needs_tt' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 13: run build //:needs_tt --extra_toolchains=//:nosuch
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:18:9: While resolving toolchains for target //:needs_tt (8ae1068): invalid registered toolchain '//:nosuch': no such target '//:nosuch': target 'nosuch' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: Analysis of target '//:needs_tt' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 14: run build //:needs_tt --extra_toolchains=//nopkg:tc
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:18:9: While resolving toolchains for target //:needs_tt (30db1ec): invalid registered toolchain '//nopkg:tc': no such package 'nopkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nopkg
+ERROR: Analysis of target '//:needs_tt' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 15: run build //:needs_tt --extra_toolchains=//:tc --extra_execution_platforms=//:nosuch
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:18:9: While resolving toolchains for target //:needs_tt (ca7896a): invalid registered execution platform '//:nosuch': no such target '//:nosuch': target 'nosuch' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: Analysis of target '//:needs_tt' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 16: run build //:needs_tt --extra_toolchains=//:tc --extra_execution_platforms=//:x
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Misconfigured execution platforms: //:x is declared as a platform but has inappropriate dependencies. Execution platforms should not have dependencies that themselves require toolchain resolution.
+.-> RegisteredExecutionPlatforms
+|   //:x
+|   toolchain types
+`-- RegisteredExecutionPlatforms
+ERROR: Analysis of target '//:needs_tt' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 17: run build //:needs_tt --extra_toolchains=//:tc --platforms=//:x
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Target //:x was referenced as a platform, but does not provide PlatformInfo
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 18: run build //:needs_tt //:x --extra_toolchains=//:x --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:18:9: While resolving toolchains for target //:needs_tt (bdad6b7): invalid registered toolchain '//:x': target does not provide the DeclaredToolchainInfo provider
+WARNING: errors encountered while analyzing target '//:needs_tt', it will not be built.
+INFO: Analyzed 2 targets (78 packages loaded, 429 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:x up-to-date (nothing to build)
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
+=== 19: run cquery //:needs_tt --extra_toolchains=//:nosuch
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:18:9: While resolving toolchains for target //:needs_tt (8ae1068): invalid registered toolchain '//:nosuch': no such target '//:nosuch': target 'nosuch' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: Analysis of target '//:needs_tt' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 20: run build //:x --platforms=//:x --keep_going
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Target //:x was referenced as a platform, but does not provide PlatformInfo
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 21: run build //:x --host_platform=//:nosuch
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: com.google.devtools.build.lib.packages.NoSuchTargetException: no such target '//:nosuch': target 'nosuch' not declared in package '' defined by <WS>/BUILD.bazel
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 22: run build //:dep_on_p
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:dep_on_p (6 packages loaded, 11 targets configured).
+INFO: Found 1 target...
+Target //:dep_on_p up-to-date (nothing to build)
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 23: run build //:dep_on_not_a_platform
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:28:9: Target //:x was referenced as a platform, but does not provide PlatformInfo
+ERROR: Analysis of target '//:dep_on_not_a_platform' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 24: run build //:dep_on_missing_platform
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:34:9: com.google.devtools.build.lib.packages.NoSuchTargetException: no such target '//:nosuch': target 'nosuch' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: Analysis of target '//:dep_on_missing_platform' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 25: run build //:dep_on_not_a_platform //:dep_on_missing_platform //:x --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:34:9: com.google.devtools.build.lib.packages.NoSuchTargetException: no such target '//:nosuch': target 'nosuch' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:28:9: Target //:x was referenced as a platform, but does not provide PlatformInfo
+WARNING: errors encountered while analyzing target '//:dep_on_not_a_platform', it will not be built.
+WARNING: errors encountered while analyzing target '//:dep_on_missing_platform', it will not be built.
+INFO: Analyzed 3 targets (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 3 top-level targets
+Target //:x up-to-date (nothing to build)
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
+=== 26: run cquery "deps(//:dep_on_not_a_platform)" --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:28:9: Target //:x was referenced as a platform, but does not provide PlatformInfo
+WARNING: errors encountered while analyzing target '//:dep_on_not_a_platform', it will not be built.
+INFO: Analyzed target //:dep_on_not_a_platform (6 packages loaded, 7 targets configured).
+INFO: Found 0 targets...
+INFO: Empty query results
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully

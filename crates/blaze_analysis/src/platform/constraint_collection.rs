@@ -9,11 +9,11 @@ use blaze_starlark::ThreadContext;
 use blaze_util::Fingerprint;
 use indexmap::{IndexMap, IndexSet};
 use starlark::any::ProvidesStaticType;
+use starlark::collections::Hashed;
 use starlark::environment::{Methods, MethodsBuilder, MethodsStatic};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::starlark_simple_value;
-use starlark::collections::Hashed;
 use starlark::values::ValueLike;
 use starlark::values::list::AllocList;
 use starlark::values::{Heap, NoSerialize, StarlarkValue, Value, starlark_value};
@@ -417,6 +417,21 @@ pub(crate) fn gated_get_attr<'v>(
     Ok(value.get_attr(attribute, eval.heap()))
 }
 
+/// Java's message for a missing field of a platform-API value (`Starlark.getattr`: these
+/// classes have no unknown-field message of their own). The spelling suggestion is over `fields`
+/// without `attribute` itself.
+/// PORT: Java suggests from `dir(x)`, which leaves out the gated fields when the flag is off;
+/// with no evaluator here the gated fields are candidates for a misspelled name whatever the
+/// flag (the name of a gated field itself is never suggested, as in Java without the flag).
+// Java: net/starlark/java/eval/Starlark.java:1015 Starlark.getattr
+pub(crate) fn no_field_message(type_name: &str, attribute: &str, fields: &[&str]) -> String {
+    let candidates: Vec<&str> = fields.iter().copied().filter(|f| *f != attribute).collect();
+    format!(
+        "'{type_name}' value has no field or method '{attribute}'{}",
+        blaze_packages::attribute::string_util::did_you_mean(attribute, &candidates)
+    )
+}
+
 /// `has_attr_fallible` for [`gated_get_attr`].
 pub(crate) fn gated_has_attr<'v>(
     value: &impl StarlarkValue<'v>,
@@ -527,6 +542,14 @@ impl<'v> StarlarkValue<'v> for ConstraintCollection {
         gated_has_attr(self, &["constraint_settings"], attribute, eval)
     }
 
+    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
+        Some(no_field_message(
+            "ConstraintCollection",
+            attribute,
+            &["constraint_settings", "get", "has", "has_constraint_value"],
+        ))
+    }
+
     // The methods are listed by `get_methods`.
     // PORT: Java's `dir` leaves out fields disabled by a flag (CallUtils.getAnnotatedMethods);
     // `dir_attr` has no evaluator, so the gated field is listed whatever the flag.
@@ -567,6 +590,27 @@ impl<'v> StarlarkValue<'v> for ConstraintCollection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Oracle: scripts/w4/scenarios/platforms-api steps 3-5 (no --experimental_platforms_api).
+    #[test]
+    fn gated_field_message_has_no_suggestion_of_itself() {
+        assert_eq!(
+            no_field_message("PlatformInfo", "label", &["constraints", "label"]),
+            "'PlatformInfo' value has no field or method 'label'"
+        );
+        assert_eq!(
+            no_field_message(
+                "ConstraintSettingInfo",
+                "label",
+                &[
+                    "default_constraint_value",
+                    "has_default_constraint_value",
+                    "label"
+                ]
+            ),
+            "'ConstraintSettingInfo' value has no field or method 'label'"
+        );
+    }
     use blaze_cmdline::Label;
 
     fn label(s: &str) -> Label {

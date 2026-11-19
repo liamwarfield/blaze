@@ -268,3 +268,22 @@ impl blaze_exec::exec::action_execution_context::ActionInputPrefetcher
         )
     }
 }
+
+/// `RemoteOutputService.finalizeAction`: `actionInputFetcher.finalizeAction(action,
+/// outputMetadataStore)` (the lease service is not ported: `leaseService.finalizeAction()` is
+/// left out).
+// Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:170 RemoteOutputService.finalizeAction
+impl blaze_exec::exec::action_execution_context::ActionFinalizer for RemoteActionInputFetcher {
+    fn finalize_action(
+        &self,
+        action: &dyn blaze_exec::actions::ActionExecutionMetadata,
+        outputs: &[blaze_exec::actions::ActionInputRef],
+        output_metadata_store: &dyn blaze_exec::actions::cache::output_metadata_store::OutputMetadataStore,
+    ) -> std::io::Result<()> {
+        (self as &dyn AbstractActionInputPrefetcher).finalize_action(
+            action,
+            outputs,
+            output_metadata_store,
+        )
+    }
+}

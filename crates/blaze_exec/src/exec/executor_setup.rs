@@ -60,6 +60,17 @@ pub struct RemoteModuleContributions {
     /// `RemoteModule.executorInit`: `builder.setActionExecutionSalt(computeActionExecutionSalt(
     /// remoteOptions))`; `None` keeps the executor's salt.
     pub action_execution_salt: Option<String>,
+    /// The command's output service is `RemoteOutputService` (`RemoteModule.setup` created it):
+    /// its `getOutputChecker()` (the `RemoteOutputChecker`), which the action cache checker and
+    /// `SkyframeActionExecutor.checkActionCache` use, and its
+    /// `shouldStoreRemoteOutputMetadataInActionCache()` is true. `None`: `LocalOutputService`
+    /// (`OutputChecker.TRUST_LOCAL_ONLY`, no remote metadata in the action cache).
+    // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:182 RemoteOutputService.shouldStoreRemoteOutputMetadataInActionCache
+    // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:187 RemoteOutputService.getOutputChecker
+    pub output_checker: Option<Arc<dyn crate::actions::OutputChecker>>,
+    /// `RemoteOutputService.finalizeAction` when `--output_tree_tracking` is set (see
+    /// [`ActionFinalizer`](crate::exec::action_execution_context::ActionFinalizer)).
+    pub action_finalizer: Option<Arc<dyn crate::exec::action_execution_context::ActionFinalizer>>,
 }
 
 impl RemoteModuleContributions {
@@ -87,6 +98,14 @@ impl RemoteModuleContributions {
         }
         if let Some(tree) = &self.remote_output_tree {
             register(std::any::TypeId::of::<RemoteOutputTree>(), tree.clone());
+        }
+        if let Some(finalizer) = &self.action_finalizer {
+            register(
+                std::any::TypeId::of::<
+                    Arc<dyn crate::exec::action_execution_context::ActionFinalizer>,
+                >(),
+                Arc::new(finalizer.clone()),
+            );
         }
     }
 }

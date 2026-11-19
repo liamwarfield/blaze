@@ -1339,8 +1339,12 @@ mod timestamp_builder_tests {
     use blaze_events::location::Location;
     use blaze_events::{JavaClock, NullEventHandler, StoredEventHandler};
     use blaze_exec::actions::CacheCheckAction;
-    use blaze_exec::actions::action_cache_checker::{ActionCacheChecker, NoProxies};
+    use blaze_exec::actions::action_cache_checker::{
+        ActionCacheChecker, ActionCacheCheckerCacheConfig, NoProxies, TrustAll, TrustLocalOnly,
+    };
     use blaze_exec::actions::cache::{ActionCache, CompactPersistentActionCache};
+    use blaze_exec::actions::{FileArtifactValue, OutputChecker};
+    use blaze_exec::exec::action_execution_context::RemoteOutputTree;
     use blaze_skyframe::{ComputeError, Environment, EvaluationContext, EvaluatorBuilder, SkyKey};
     use blaze_vfs::{DigestHashFunction, FileSystemExt, Path, PathFragment, Root, UnixFileSystem};
     use indexmap::IndexMap;
@@ -1532,10 +1536,24 @@ mod timestamp_builder_tests {
             cache: &Arc<dyn ActionCache>,
             output: &Artifact,
         ) -> (blaze_skyframe::EvaluationResult, Arc<StoredEventHandler>) {
+            self.evaluate_with(actions, cache, output, &RemoteSetup::default())
+        }
+
+        /// [`Fixture::evaluate`] with the remote module's output service (see [`RemoteSetup`]).
+        fn evaluate_with(
+            &self,
+            actions: &[ActionRef],
+            cache: &Arc<dyn ActionCache>,
+            output: &Artifact,
+            remote: &RemoteSetup,
+        ) -> (blaze_skyframe::EvaluationResult, Arc<StoredEventHandler>) {
             blaze_exec::analysis::actions::register();
             let mut contexts = ActionContexts::default();
             for (type_id, ctx) in blaze_exec::analysis::actions::default_action_contexts("_main") {
                 contexts.register_raw(type_id, ctx);
+            }
+            if let Some(tree) = &remote.tree {
+                contexts.register_raw(std::any::TypeId::of::<RemoteOutputTree>(), tree.clone());
             }
             let events = Arc::new(StoredEventHandler::new());
             let checker = Arc::new(ActionCacheChecker::new(
@@ -1543,7 +1561,12 @@ mod timestamp_builder_tests {
                 Arc::new(ArtifactFactoryResolver(None)),
                 Box::new(|_: &dyn CacheCheckAction| true),
                 Arc::new(NoProxies),
-                None,
+                Some(
+                    ActionCacheCheckerCacheConfig::builder()
+                        .set_enabled(true)
+                        .set_store_output_metadata(remote.output_checker.is_some())
+                        .build(),
+                ),
             ));
             let executor = Arc::new(
                 SkyframeActionExecutor::new(SkyframeActionExecutorConfig {
@@ -1565,6 +1588,7 @@ mod timestamp_builder_tests {
                     action_execution_salt: String::new(),
                     explain: false,
                     containing_package_root_lookup: None,
+                    output_checker: remote.output_checker.clone(),
                 }),
             );
             let evaluator = crate::register_execution_functions(
@@ -1584,6 +1608,112 @@ mod timestamp_builder_tests {
             ));
             let result = evaluator.evaluate(&[root], &ctx).unwrap();
             (result, events)
+        }
+    }
+
+    /// The remote module's part of a build: `RemoteOutputService` (`output_checker` is its
+    /// `getOutputChecker()`, and it stores remote output metadata in the action cache) and the
+    /// remote output tree of the build. The default is `LocalOutputService`.
+    #[derive(Default)]
+    struct RemoteSetup {
+        output_checker: Option<Arc<dyn OutputChecker>>,
+        tree: Option<Arc<RemoteOutputTree>>,
+    }
+
+    impl Fixture {
+        /// Like [`Fixture::build`] with [`Fixture::evaluate_with`].
+        fn build_with(
+            &self,
+            actions: &[ActionRef],
+            cache: &Arc<dyn ActionCache>,
+            output: &Artifact,
+            remote: &RemoteSetup,
+        ) -> BuildCounts {
+            let (result, events) = self.evaluate_with(actions, cache, output, remote);
+            assert!(!result.has_error(), "{:?}", result.error_map());
+            let posts = events.get_posts();
+            BuildCounts {
+                executed: posts
+                    .iter()
+                    .filter(|p| downcast_event::<ActionCompletionEvent>(p).is_some())
+                    .count(),
+                cached: posts
+                    .iter()
+                    .filter(|p| downcast_event::<CachedActionEvent>(p).is_some())
+                    .count(),
+            }
+        }
+    }
+
+    /// The remote metadata of `content` as `RemoteExecutionService.downloadOutputs` injects it.
+    fn remote_metadata(content: &str) -> FileArtifactValue {
+        use sha2::Digest as _;
+        FileArtifactValue::create_for_remote_file_with_materialization_data(
+            sha2::Sha256::digest(content.as_bytes()).to_vec(),
+            content.len() as i64,
+            1,
+            None,
+            false,
+        )
+    }
+
+    /// Build without the bytes, second build: the first build's output exists only remotely (its
+    /// metadata came from the remote output tree and the local file is gone). With
+    /// `RemoteOutputService` the action cache holds the remote metadata and the output checker
+    /// trusts it, so the second build is an action cache hit; with `LocalOutputService`
+    /// (`TRUST_LOCAL_ONLY`, no output metadata in the cache) the action runs again. Java:
+    /// `ExecutionTool.createBuilder` (`setStoreOutputMetadata(outputService
+    /// .shouldStoreRemoteOutputMetadataInActionCache())`) and `SkyframeActionExecutor
+    /// .checkActionCache` (`outputService.getOutputChecker()`).
+    #[test]
+    fn remote_output_metadata_in_the_action_cache_makes_a_second_build_a_cache_hit() {
+        for (output_checker, expected) in [
+            (
+                Some(Arc::new(TrustAll) as Arc<dyn OutputChecker>),
+                NOT_REBUILT,
+            ),
+            (
+                Some(Arc::new(TrustLocalOnly) as Arc<dyn OutputChecker>),
+                BUILT,
+            ),
+            (None, BUILT),
+        ] {
+            let f = Fixture::new();
+            let hello = f.create_derived_artifact("hello");
+            let actions = f.register_actions(vec![write_action(&f, &hello, "content")]);
+            let cache = f.create_cache("cache");
+
+            // Build 1: the output's metadata is the remote one (the remote output tree is
+            // consulted before the local file system).
+            let tree = Arc::new(RemoteOutputTree::new());
+            tree.inject_file(
+                hello.get_path().as_fragment().clone(),
+                remote_metadata("content"),
+            );
+            let first = RemoteSetup {
+                output_checker: output_checker.clone(),
+                tree: Some(tree),
+            };
+            assert_eq!(f.build_with(&actions, &cache, &hello, &first), BUILT);
+            // Not downloaded: no local file.
+            let p = std::path::Path::new(hello.get_path().get_path_string()).to_path_buf();
+            let mut perms = std::fs::metadata(&p).unwrap().permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            std::fs::set_permissions(&p, perms).unwrap();
+            std::fs::remove_file(&p).unwrap();
+
+            // Build 2, a new command: an empty remote output tree.
+            let second = RemoteSetup {
+                output_checker: output_checker.clone(),
+                tree: Some(Arc::new(RemoteOutputTree::new())),
+            };
+            assert_eq!(
+                f.build_with(&actions, &cache, &hello, &second),
+                expected,
+                "output checker {:?}",
+                output_checker.as_ref().map(|_| ())
+            );
         }
     }
 

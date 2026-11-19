@@ -84,6 +84,57 @@ pub fn as_blaze_artifact(input: &ActionInputRef) -> Option<&BlazeArtifact> {
     input.0.as_any().downcast_ref::<BlazeArtifact>()
 }
 
+/// The [`TreeArtifactFactory`](super::action_cache_checker::TreeArtifactFactory) of a build whose
+/// action inputs are `blaze_actions` artifacts: `TreeFileArtifact.createTreeOutput` and
+/// `TreeArtifactValue.Builder`.
+///
+/// PORT: archived tree artifacts (`--experimental_archived_tree_artifact_mnemonics_filter`) and
+/// proxy metadata (only a non-default `ProxyMetadataFactory` creates proxies; `LocalOutputService`
+/// and `RemoteOutputService` both give `NO_PROXIES`) are not ported and fail loudly.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ArtifactTreeArtifactFactory;
+
+impl super::action_cache_checker::TreeArtifactFactory for ArtifactTreeArtifactFactory {
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:1089 TreeFileArtifact.createTreeOutput
+    fn create_tree_output(
+        &self,
+        parent: &ActionInputRef,
+        parent_relative_path: &PathFragment,
+    ) -> ActionInputRef {
+        let parent = as_blaze_artifact(parent)
+            .unwrap_or_else(|| panic!("ClassCastException: {parent} is not a SpecialArtifact"));
+        artifact_input(&BlazeArtifact::create_tree_output(
+            parent,
+            parent_relative_path.clone(),
+        ))
+    }
+
+    fn create_archived_tree_artifact(&self, _parent: &ActionInputRef) -> ActionInputRef {
+        blaze_util::unported!("ArchivedTreeArtifact.createForTree")
+    }
+
+    fn build_tree_artifact_value(
+        &self,
+        _parent: &ActionInputRef,
+        children: Vec<(ActionInputRef, super::FileArtifactValue)>,
+        archived_representation: Option<(ActionInputRef, super::FileArtifactValue)>,
+    ) -> super::TreeArtifactValue {
+        // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:686 TreeArtifactValue.Builder.build
+        super::TreeArtifactValue::build(children, archived_representation, None)
+    }
+
+    fn construct_proxy_tree_metadata(
+        &self,
+        _parent: &ActionInputRef,
+        _proxy_metadata_factory: &dyn super::action_cache_checker::ProxyMetadataFactory,
+    ) -> Result<
+        super::TreeArtifactValue,
+        super::cache::output_metadata_store::IoOrInterruptedException,
+    > {
+        blaze_util::unported!("ActionCacheChecker.constructProxyTreeMetadata")
+    }
+}
+
 // Java: com/google/devtools/build/lib/actions/CommandLines.java:349 ParamFileActionInput (implements VirtualActionInput)
 impl ActionInput for ParamFileActionInput {
     fn get_exec_path(&self) -> &PathFragment {

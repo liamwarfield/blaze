@@ -119,8 +119,8 @@ impl TreeArtifactValue {
     /// PORT: `getMetadata()` is Java's `TreeArtifactCompositeFileArtifactValue(digest,
     /// entirelyRemote, resolvedPath)`. For a local tree without a resolved path it behaves as
     /// `FileArtifactValue::HashedDirectory { digest }` in every method the port reads (type
-    /// DIRECTORY, the digest, size 0, not remote, no resolved path); remote or resolved-path
-    /// trees are not ported.
+    /// DIRECTORY, the digest, size 0, not remote, no resolved path); a remote or resolved-path
+    /// tree gets [`FileArtifactValue::TreeArtifactComposite`].
     // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:686 TreeArtifactValue.Builder.build
     pub fn build(
         mut child_values: Vec<(ActionInputRef, FileArtifactValue)>,
@@ -174,16 +174,20 @@ impl TreeArtifactValue {
         }
 
         let digest = fingerprint.digest_and_reset();
-        if entirely_remote || resolved_path.is_some() {
-            blaze_util::unported!(
-                "TreeArtifactValue.getMetadata",
-                "TreeArtifactCompositeFileArtifactValue of a remote tree or one with a resolved path"
-            );
-        }
+        // Java: new TreeArtifactCompositeFileArtifactValue(digest, entirelyRemote, resolvedPath)
+        let metadata = if entirely_remote || resolved_path.is_some() {
+            FileArtifactValue::TreeArtifactComposite {
+                digest,
+                is_remote: super::file_artifact_value::NotInEquality(entirely_remote),
+                resolved_path: resolved_path.clone(),
+            }
+        } else {
+            FileArtifactValue::HashedDirectory { digest }
+        };
         TreeArtifactValue {
             child_values,
             archived_representation,
-            metadata: Some(FileArtifactValue::HashedDirectory { digest }),
+            metadata: Some(metadata),
             resolved_path,
         }
     }

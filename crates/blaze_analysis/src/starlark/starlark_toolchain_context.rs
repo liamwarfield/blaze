@@ -6,32 +6,25 @@
 //! its `ToolchainInfo` on each index; the lookup is pure, so the values are resolved when the
 //! context is created and held as frozen values.
 //!
-//! PORT: indexing with a string converts it with `LabelConverter.forBzlEvaluatingThread`
-//! (StarlarkToolchainContext.java:106), the package context of the innermost .bzl on the call
-//! stack. starlark-rust's `at` and `is_in` get no evaluator (no call stack), so the context is
-//! fixed when `ctx.toolchains` / `ctx.exec_groups` is read: the .bzl that defines the
-//! implementation function being run ([`implementation_package_context`]; the subrule's
-//! implementation for a subrule context). That is Java's answer whenever the string key is
-//! converted in a function of that .bzl. It differs when the conversion happens in a function of
-//! another .bzl with another repository, repository mapping or package (oracle scenario
-//! scripts/w4/scenarios/ctx-toolchains-string, step `//:helper`); an exact port needs the
-//! evaluator in the index operators of the vendored crate (request in the wave report).
+//! Indexing with a string converts it with `LabelConverter.forBzlEvaluatingThread`
+//! (StarlarkToolchainContext.java:106): the package context of the innermost .bzl on the call
+//! stack, read through the evaluator (`at_with_eval` / `is_in_with_eval`, starlark-rust patch
+//! 0027).
 
 use std::fmt;
 
 use allocative::Allocative;
-use blaze_cmdline::{Label, LabelPackageContext};
+use blaze_cmdline::Label;
 use blaze_packages::bzl_context::BazelModuleContext;
 use blaze_packages::rule_class::declared_exec_group::{
     DEFAULT_EXEC_GROUP_NAME, is_valid_identifier,
 };
-use blaze_packages::rule_class::rule_class::RuleClass;
 use blaze_packages::types::label_converter::LabelConverter;
-use blaze_starlark::defining_module::DefModule;
 use blaze_starlark::label::LabelValue;
 use indexmap::{IndexMap, IndexSet};
 use starlark::any::ProvidesStaticType;
 use starlark::environment::{Methods, MethodsBuilder, MethodsStatic};
+use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::starlark_simple_value;
 use starlark::values::ValueLike;
@@ -40,24 +33,6 @@ use starlark::values::{Heap, NoSerialize, OwnedFrozenValue, StarlarkValue, Value
 use super::util::{alloc_immutable_list, errorf};
 use crate::platform::toolchain_type_label_from_value;
 use crate::toolchains::{ResolvedToolchainContext, ToolchainCollection};
-
-/// The package context used to convert string toolchain type keys (see the module docs): Java
-/// `BazelModuleContext.of(fn.getModule()).packageContext()` of the implementation function of
-/// `rule_class`, the innermost .bzl on the call stack while that function's own body runs.
-/// `None` when the implementation is not a Starlark function of a .bzl module.
-// Java: com/google/devtools/build/lib/packages/LabelConverter.java:41 LabelConverter.forBzlEvaluatingThread
-// Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:163 BazelModuleContext.ofInnermostBzlOrThrow
-pub(crate) fn implementation_package_context(
-    rule_class: &RuleClass,
-) -> Option<LabelPackageContext> {
-    let implementation = rule_class.get_configured_target_function()?.value();
-    // The implementation comes from a frozen .bzl module, whose extra value is its
-    // BazelModuleContext (Java `Module.getClientData()`).
-    let module = DefModule::of_function(implementation.to_value())?;
-    let extra_value = module.frozen_extra_value()?;
-    BazelModuleContext::of_module_extra_value(extra_value.to_value())
-        .map(|module_context| module_context.package_context())
-}
 
 /// The value of `ctx.toolchains` (type `ToolchainContext`).
 // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkToolchainContext.java:40 StarlarkToolchainContext
@@ -73,8 +48,6 @@ pub enum StarlarkToolchainContext {
         /// Java `resolveToolchainFunc().apply(label)` for each resolved label.
         #[allocative(skip)]
         resolved: IndexMap<Label, Option<OwnedFrozenValue>>,
-        #[allocative(skip)]
-        package_context: Option<LabelPackageContext>,
     },
 }
 
@@ -119,7 +92,6 @@ impl StarlarkToolchainContext {
         target_description: String,
         resolve_toolchain_data_func: &dyn Fn(&Label) -> Option<OwnedFrozenValue>,
         resolved_toolchain_type_labels: IndexSet<Label>,
-        package_context: Option<LabelPackageContext>,
     ) -> StarlarkToolchainContext {
         let resolved = resolved_toolchain_type_labels
             .iter()
@@ -129,17 +101,13 @@ impl StarlarkToolchainContext {
             target_description,
             resolved_toolchain_type_labels,
             resolved,
-            package_context,
         }
     }
 
     /// The Starlark toolchain context of a resolved toolchain context (Java
     /// `StarlarkToolchainContext.create(ctx.targetDescription(), ctx::forToolchainType,
     /// ctx.requestedToolchainTypeLabels().keySet())`).
-    pub fn of_resolved(
-        toolchain_context: &ResolvedToolchainContext,
-        package_context: Option<LabelPackageContext>,
-    ) -> StarlarkToolchainContext {
+    pub fn of_resolved(toolchain_context: &ResolvedToolchainContext) -> StarlarkToolchainContext {
         StarlarkToolchainContext::create(
             toolchain_context.target_description().to_owned(),
             &|l| toolchain_context.for_toolchain_type(l),
@@ -148,12 +116,11 @@ impl StarlarkToolchainContext {
                 .keys()
                 .cloned()
                 .collect(),
-            package_context,
         )
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkToolchainContext.java:96 StarlarkToolchainContext.transformKey
-    fn transform_key(&self, key: Value) -> starlark::Result<Label> {
+    fn transform_key(&self, key: Value, eval: Option<&Evaluator>) -> starlark::Result<Label> {
         if let Some(label) = key.downcast_ref::<LabelValue>() {
             return Ok(label.label().clone());
         }
@@ -161,18 +128,19 @@ impl StarlarkToolchainContext {
             return Ok(label);
         }
         if let Some(s) = key.unpack_str() {
-            let package_context = match self {
-                StarlarkToolchainContext::Valid {
-                    package_context: Some(pc),
-                    ..
-                } => pc.clone(),
-                _ => blaze_util::unported!(
-                    "LabelConverter.forBzlEvaluatingThread",
-                    "no package context to convert toolchain type '{}'",
+            let Some(eval) = eval else {
+                // Only Rust callers index without an evaluator.
+                blaze_util::unported!(
+                    "StarlarkToolchainContext.transformKey",
+                    "string toolchain type '{}' without a Starlark thread",
                     s
-                ),
+                )
             };
-            let converter = LabelConverter::from_package_context(package_context);
+            // Java: LabelConverter.forBzlEvaluatingThread(starlarkThread):
+            // BazelModuleContext.ofInnermostBzlOrThrow (Preconditions.checkNotNull).
+            let module_context = BazelModuleContext::of_innermost_bzl(eval)
+                .expect("NullPointerException: BazelModuleContext.ofInnermostBzlOrThrow");
+            let converter = LabelConverter::from_package_context(module_context.package_context());
             return converter.convert(s).map_err(|e| {
                 errorf(format!(
                     "Unable to parse toolchain label '{s}': {}",
@@ -187,7 +155,7 @@ impl StarlarkToolchainContext {
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkToolchainContext.java:138 StarlarkToolchainContext.containsKey
-    fn contains_key(&self, key: Value) -> starlark::Result<bool> {
+    fn contains_key(&self, key: Value, eval: Option<&Evaluator>) -> starlark::Result<bool> {
         match self {
             // Java: TOOLCHAINS_NOT_VALID.containsKey
             StarlarkToolchainContext::NotValid => Ok(false),
@@ -195,14 +163,19 @@ impl StarlarkToolchainContext {
                 resolved_toolchain_type_labels,
                 ..
             } => {
-                let toolchain_type_label = self.transform_key(key)?;
+                let toolchain_type_label = self.transform_key(key, eval)?;
                 Ok(resolved_toolchain_type_labels.contains(&toolchain_type_label))
             }
         }
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkToolchainContext.java:116 StarlarkToolchainContext.getIndex
-    fn get_index<'v>(&self, key: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+    fn get_index<'v>(
+        &self,
+        key: Value<'v>,
+        heap: Heap<'v>,
+        eval: Option<&Evaluator>,
+    ) -> starlark::Result<Value<'v>> {
         let StarlarkToolchainContext::Valid {
             target_description,
             resolved_toolchain_type_labels,
@@ -213,8 +186,8 @@ impl StarlarkToolchainContext {
             // Java: TOOLCHAINS_NOT_VALID.getIndex
             return Err(errorf("Toolchains are not valid in this context"));
         };
-        let toolchain_type_label = self.transform_key(key)?;
-        if !self.contains_key(key)? {
+        let toolchain_type_label = self.transform_key(key, eval)?;
+        if !self.contains_key(key, eval)? {
             // TODO(bazel-configurability): The list of available toolchain types is confusing in
             // the presence of aliases, since it only contains the actual label, not the alias
             // passed to the rule definition.
@@ -249,11 +222,31 @@ impl<'v> StarlarkValue<'v> for StarlarkToolchainContext {
     }
 
     fn at(&self, index: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
-        self.get_index(index, heap)
+        self.get_index(index, heap, None)
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkToolchainContext.java:116 StarlarkToolchainContext.getIndex
+    // (StarlarkIndexable.Threaded: the thread converts string keys)
+    fn at_with_eval(
+        &self,
+        index: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Value<'v>> {
+        let heap = eval.heap();
+        self.get_index(index, heap, Some(eval))
     }
 
     fn is_in(&self, other: Value<'v>) -> starlark::Result<bool> {
-        self.contains_key(other)
+        self.contains_key(other, None)
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkToolchainContext.java:138 StarlarkToolchainContext.containsKey
+    fn is_in_with_eval(
+        &self,
+        other: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<bool> {
+        self.contains_key(other, Some(eval))
     }
 }
 
@@ -343,7 +336,6 @@ impl StarlarkExecGroupCollection {
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkExecGroupCollection.java:72 StarlarkExecGroupCollection.create
     pub fn create(
         toolchain_collection: &ToolchainCollection<ResolvedToolchainContext>,
-        package_context: Option<LabelPackageContext>,
     ) -> StarlarkExecGroupCollection {
         let exec_group_names: Vec<String> = toolchain_collection
             .get_exec_group_names()
@@ -355,12 +347,9 @@ impl StarlarkExecGroupCollection {
             .map(|name| {
                 (
                     name.clone(),
-                    toolchain_collection.get_toolchain_context(name).map(|tc| {
-                        std::sync::Arc::new(StarlarkToolchainContext::of_resolved(
-                            tc,
-                            package_context.clone(),
-                        ))
-                    }),
+                    toolchain_collection
+                        .get_toolchain_context(name)
+                        .map(|tc| std::sync::Arc::new(StarlarkToolchainContext::of_resolved(tc))),
                 )
             })
             .collect();
@@ -512,12 +501,10 @@ fn clone_toolchain_context(c: &StarlarkToolchainContext) -> StarlarkToolchainCon
             target_description,
             resolved_toolchain_type_labels,
             resolved,
-            package_context,
         } => StarlarkToolchainContext::Valid {
             target_description: target_description.clone(),
             resolved_toolchain_type_labels: resolved_toolchain_type_labels.clone(),
             resolved: resolved.clone(),
-            package_context: package_context.clone(),
         },
     }
 }

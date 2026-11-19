@@ -171,8 +171,9 @@ impl Drop for RemoteActionBuildingSemaphoreRelease<'_> {
 ///
 /// PORT: the tasks are [`OutputUpload`]s, the only thing Java submits. They run on platform
 /// threads: `UploadManifest::upload` is a blocking method, which must not run on a thread of the
-/// remote executor runtime (`crate::runtime::get_from_future`). There is no thread interruption,
-/// so `shutdownNow` cannot stop a running task; see [`RemoteExecutionService::shutdown`].
+/// remote executor runtime (`crate::runtime::get_from_future`). `shutdownNow` interrupts them
+/// through `blaze_shell::thread_interrupt`: their `get_from_future` then drops (cancels) the
+/// upload in flight.
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:201 RemoteExecutionService.backgroundTaskExecutor
 pub(crate) struct BackgroundTaskExecutor {
     state: Mutex<BackgroundTaskExecutorState>,
@@ -183,8 +184,11 @@ pub(crate) struct BackgroundTaskExecutor {
 struct BackgroundTaskExecutorState {
     /// `isShutdown()`.
     shutdown: bool,
-    /// The threads of the tasks that may still be running.
-    threads: Vec<std::thread::JoinHandle<()>>,
+    /// The threads of the tasks that may still be running, with their interrupt status.
+    threads: Vec<(
+        std::thread::JoinHandle<()>,
+        blaze_shell::thread_interrupt::ThreadInterrupt,
+    )>,
 }
 
 impl BackgroundTaskExecutor {
@@ -213,17 +217,26 @@ impl BackgroundTaskExecutor {
             return Err(task);
         }
         // Forget the threads that have ended, so that the list does not grow with the build.
-        state.threads.retain(|thread| !thread.is_finished());
+        state.threads.retain(|(thread, _)| !thread.is_finished());
         let name = format!(
             "remote-execution-bg-{}",
             self.next_thread.fetch_add(1, AtomicOrdering::SeqCst)
         );
+        let (interrupt_tx, interrupt_rx) = std::sync::mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
             .name(name)
-            .spawn(move || task.run())
+            .spawn(move || {
+                // The task's `Thread`, for `shutdownNow`.
+                let _ =
+                    interrupt_tx.send(blaze_shell::thread_interrupt::ThreadInterrupt::current());
+                task.run()
+            })
             // Java: an `OutOfMemoryError` ("unable to create native thread").
             .unwrap_or_else(|e| panic!("OutOfMemoryError: unable to create native thread: {e}"));
-        state.threads.push(thread);
+        let interrupt = interrupt_rx
+            .recv()
+            .expect("the task thread sends its interrupt status first");
+        state.threads.push((thread, interrupt));
         Ok(())
     }
 
@@ -232,26 +245,41 @@ impl BackgroundTaskExecutor {
         self.state.lock().shutdown = true;
     }
 
-    /// `shutdownNow()`.
-    ///
-    /// PORT: Java interrupts the running tasks. The port cannot (no thread interruption); the
-    /// running uploads end on their own, and sooner once the caller has shut the cache down
-    /// (`CombinedCache::shutdown_now` refuses new uploads).
+    /// `shutdownNow()`: no new tasks, and the running ones are interrupted
+    /// (`Thread.interrupt()` of each task thread).
     fn shutdown_now(&self) {
-        self.shutdown();
+        let mut state = self.state.lock();
+        state.shutdown = true;
+        for (_, interrupt) in &state.threads {
+            interrupt.interrupt();
+        }
     }
 
-    /// `close()`: initiates an orderly shutdown and waits for all tasks to finish.
+    /// `close()` (`ExecutorService.close`): initiates an orderly shutdown and waits for all
+    /// tasks to finish; if the waiting thread is interrupted (before or during the wait), the
+    /// running tasks are interrupted (`shutdownNow()`) and the interrupt status is restored at
+    /// the end.
+    // Java: java/util/concurrent/ExecutorService.java ExecutorService.close
     fn close(&self) {
-        let threads = {
-            let mut state = self.state.lock();
-            state.shutdown = true;
-            std::mem::take(&mut state.threads)
-        };
-        for thread in threads {
-            // A task that panicked has reported its panic on its own thread.
-            let _ = thread.join();
-        }
+        self.shutdown();
+        let threads = std::mem::take(&mut self.state.lock().threads);
+        let interrupts: Vec<blaze_shell::thread_interrupt::ThreadInterrupt> =
+            threads.iter().map(|(_, i)| i.clone()).collect();
+        // `awaitTermination` throws InterruptedException (an interrupt before or during the
+        // wait): `shutdownNow()` once.
+        let interrupt_tasks = Arc::new(move || {
+            for interrupt in &interrupts {
+                interrupt.interrupt();
+            }
+        });
+        blaze_shell::thread_interrupt::with_interrupt_listener(interrupt_tasks, || {
+            for (thread, _) in threads {
+                // A task that panicked has reported its panic on its own thread.
+                let _ = thread.join();
+            }
+        });
+        // PORT: Java clears the flag in `awaitTermination` and sets it again at the end; the
+        // flag is left set here, which is the same final state.
     }
 }
 
@@ -2062,9 +2090,6 @@ impl RemoteExecutionService {
 
         // Waits for all background tasks to finish and interrupts them if there is another
         // interrupt.
-        //
-        // PORT: the background tasks cannot be interrupted (see
-        // `BackgroundTaskExecutor::shutdown_now`); this waits for them to end.
         self.background_task_executor.close();
 
         // Release the cache only after background tasks are done as they might be using it.

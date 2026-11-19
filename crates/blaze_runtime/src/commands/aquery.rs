@@ -8,6 +8,7 @@ use blaze_cquery::commands::PostAnalysisCommandEnvironment;
 use crate::command::{BlazeCommand, BlazeCommandResult, CommandAnnotation};
 use crate::command_environment::CommandEnvironment;
 use crate::command_registry::AQUERY_COMMAND;
+use crate::commands::cquery::construct_execution_tool;
 use crate::commands::query::{
     AfterCommand, create_skyframe_executor, query_output_stream, reporter,
     to_runtime_detailed_exit_code,
@@ -45,6 +46,8 @@ impl BlazeCommand for AqueryCommand {
             Err(result) => return result,
         };
         let _after_command = AfterCommand(&skyframe_executor);
+        // new ExecutionTool(env, request) (see `construct_execution_tool`).
+        let execution_tool = || construct_execution_tool(env, options);
         let command_env = PostAnalysisCommandEnvironment {
             skyframe_executor: &skyframe_executor,
             reporter: reporter(env),
@@ -58,6 +61,7 @@ impl BlazeCommand for AqueryCommand {
                 crate::commands::build::stop_request_without_execution(env, detailed_exit_code)
             },
             options,
+            execution_tool: &execution_tool,
         };
         let detailed_exit_code = blaze_cquery::commands::aquery_command::exec(&command_env);
         BlazeCommandResult::detailed_exit_code(to_runtime_detailed_exit_code(detailed_exit_code))

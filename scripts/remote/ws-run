@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Run the oracle or Blaze on a probe workspace (not a corpus project). See `ws-run help`."""
+
+import glob
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+CACHE = os.path.expanduser("~/.cache/blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+WORK = os.path.join(CACHE, "work", "remote")
+OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-remote")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+
+USAGE = """\
+usage: scripts/remote/ws-run <run-name> <workspace> <oracle|BINARY> [--fresh] [--sigint-after S]
+                             [--sigint-on-glob GLOB] -- <command> [options and targets...]
+       scripts/remote/ws-run help
+
+Runs one command of the oracle (Bazel 9.3.2) or of another Bazel-compatible binary in a copy of
+<workspace> (a probe workspace, for example ~/.cache/blaze/work/remote/probe-trees/src):
+
+  workspace          ~/.cache/blaze/work/remote/<run-name>/ws  (copied from <workspace> when it
+                     does not exist yet, so edits made there between calls are kept)
+  output user root   ~/.cache/blaze/oracle-out/ur-remote/<run-name>
+  results            ~/.cache/blaze/work/remote/<run-name>/<step>/{stdout,stderr,exit}, <step> is
+                     run1, run2, ... (one per call)
+
+Startup options --output_user_root=<above> --nohome_rc --nosystem_rc; command options
+--repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no, then the given ones
+(`{step}` is replaced by the step directory). Environment: HOME and PATH=/usr/bin:/bin only.
+The command runs in `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`.
+
+  --fresh            delete the workspace copy and the output user root first
+  --sigint-after S   send SIGINT to the client process S seconds after it starts (the exit code
+                     is then the one the client exits with after the interrupt)
+  --sigint-on-glob G send SIGINT once a path matching the glob G exists (polled every 0.1 s;
+                     for example the work directory of a remote worker's running action), then
+                     print the seconds from the signal to the client's exit
+
+Prints the step directory, the last `N processes` / ERROR lines and the exit code.
+"""
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    if "--" not in args:
+        print(USAGE, end="", file=sys.stderr)
+        return 2
+    i = args.index("--")
+    args, cmd = args[:i], args[i + 1:]
+    if len(args) < 3 or not cmd:
+        print(USAGE, end="", file=sys.stderr)
+        return 2
+    name, src, binary = args[0], os.path.expanduser(args[1]), args[2]
+    binary = ORACLE if binary == "oracle" else os.path.abspath(os.path.expanduser(binary))
+    fresh = False
+    sigint_after = None
+    sigint_glob = None
+    rest = args[3:]
+    while rest:
+        a = rest.pop(0)
+        if a == "--fresh":
+            fresh = True
+        elif a == "--sigint-after":
+            sigint_after = float(rest.pop(0))
+        elif a == "--sigint-on-glob":
+            sigint_glob = os.path.expanduser(rest.pop(0))
+        else:
+            print("unknown option: " + a, file=sys.stderr)
+            return 2
+    run_dir = os.path.join(WORK, name)
+    ws = os.path.join(run_dir, "ws")
+    our = os.path.join(OUT_ROOT, name)
+    if fresh:
+        for p in (ws, our):
+            if os.path.lexists(p):
+                subprocess.run(["chmod", "-R", "u+w", p])
+                shutil.rmtree(p)
+    os.makedirs(run_dir, exist_ok=True)
+    if not os.path.isdir(ws):
+        shutil.copytree(src, ws, symlinks=True)
+    n = 1
+    while os.path.exists(os.path.join(run_dir, "run%d" % n)):
+        n += 1
+    step = os.path.join(run_dir, "run%d" % n)
+    os.makedirs(step)
+    full = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc", cmd[0],
+            "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"]
+    full += [c.replace("{step}", step) for c in cmd[1:]]
+    unit = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
+            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "env", "-i",
+            "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin"]
+    with open(os.path.join(step, "stdout"), "wb") as so, \
+            open(os.path.join(step, "stderr"), "wb") as se:
+        if sigint_after is None and sigint_glob is None:
+            code = subprocess.run(unit + full, cwd=ws, stdout=so, stderr=se).returncode
+        elif sigint_glob is not None:
+            unit_name = "ws-run-%s-%d" % (name, n)
+            unit = unit[:2] + ["--unit=" + unit_name] + unit[2:]
+            p = subprocess.Popen(unit + full, cwd=ws, stdout=so, stderr=se)
+            deadline = time.time() + 300
+            while p.poll() is None and not glob.glob(sigint_glob) and time.time() < deadline:
+                time.sleep(0.1)
+            if p.poll() is None:
+                sent = time.time()
+                subprocess.run(["systemctl", "--user", "kill", "--kill-whom=main", "-s",
+                                "SIGINT", unit_name + ".service"])
+                code = p.wait()
+                print("seconds from SIGINT to exit: %.1f" % (time.time() - sent))
+            else:
+                print("the client exited before the glob matched")
+                code = p.wait()
+        else:
+            # `--pipe` forwards nothing but stdio; the signal goes to the unit's main process.
+            unit_name = "ws-run-%s-%d" % (name, n)
+            unit = unit[:2] + ["--unit=" + unit_name] + unit[2:]
+            p = subprocess.Popen(unit + full, cwd=ws, stdout=so, stderr=se)
+            try:
+                p.wait(timeout=sigint_after)
+            except subprocess.TimeoutExpired:
+                subprocess.run(["systemctl", "--user", "kill", "--kill-whom=main", "-s",
+                                "SIGINT", unit_name + ".service"])
+            code = p.wait()
+    with open(os.path.join(step, "exit"), "w") as fh:
+        fh.write("%d\n" % code)
+    print("step: " + step)
+    for line in open(os.path.join(step, "stderr"), errors="replace"):
+        if " process" in line and line.startswith("INFO:") or line.startswith("ERROR:"):
+            print("  " + line.rstrip())
+    print("exit code: %d" % code)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

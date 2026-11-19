@@ -148,14 +148,13 @@ impl ExternalFilesHelper {
             return FileType::Internal;
         }
         let path = rooted_path.as_path();
-        if let Some(repo_contents_cache_path) = &self.repo_contents_cache_path {
-            if path.starts_with(repo_contents_cache_path)
-                && !path
-                    .relative_to(repo_contents_cache_path)
-                    .is_multi_segment()
-            {
-                return FileType::RepoContentsCacheDirs;
-            }
+        if let Some(repo_contents_cache_path) = &self.repo_contents_cache_path
+            && path.starts_with(repo_contents_cache_path)
+            && !path
+                .relative_to(repo_contents_cache_path)
+                .is_multi_segment()
+        {
+            return FileType::RepoContentsCacheDirs;
         }
         // The outputBase may be null if we're not actually running a build.
         let Some(output_base) = package_locator.get_output_base() else {

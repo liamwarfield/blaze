@@ -307,8 +307,11 @@ pub fn prepare_for_execution_with_action_cache(
         execution_options.test_check_up_to_date || action_cache_options.test_check_up_to_date,
         execution_options.check_up_to_date || action_cache_options.check_up_to_date,
     );
-    // LocalOutputService: no proxy metadata, no remote output metadata in the action cache.
-    let action_cache_checker = Arc::new(ActionCacheChecker::new(
+    // outputService.getProxyMetadataFactory() is NO_PROXIES for LocalOutputService and
+    // RemoteOutputService; outputService.shouldStoreRemoteOutputMetadataInActionCache() is true
+    // for RemoteOutputService (the remote module's output service) only.
+    let store_output_metadata = config.remote.output_checker.is_some();
+    let mut action_cache_checker = ActionCacheChecker::new(
         action_cache.clone(),
         Arc::new(ArtifactFactoryResolver(
             action_cache_options.artifact_factory.clone(),
@@ -318,10 +321,16 @@ pub fn prepare_for_execution_with_action_cache(
         Some(
             ActionCacheCheckerCacheConfig::builder()
                 .set_enabled(action_cache_options.use_action_cache)
-                .set_store_output_metadata(false)
+                .set_store_output_metadata(store_output_metadata)
                 .build(),
         ),
+    );
+    // PORT: TreeFileArtifact.createTreeOutput / TreeArtifactValue.Builder for the cached tree
+    // metadata of the action cache (only read when the output metadata is stored).
+    action_cache_checker.set_tree_artifact_factory(Arc::new(
+        blaze_exec::actions::action_adapters::ArtifactTreeArtifactFactory,
     ));
+    let action_cache_checker = Arc::new(action_cache_checker);
 
     let show_subcommands = execution_options.show_subcommands;
     let bin_tools = Arc::new(
@@ -430,6 +439,8 @@ pub fn prepare_for_execution_with_action_cache(
             .unwrap_or_default(),
         explain: action_cache_options.explain,
         containing_package_root_lookup: action_cache_options.containing_package_root_lookup,
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:782 SkyframeActionExecutor.checkActionCache
+        output_checker: config.remote.output_checker.clone(),
     })
     .with_show_subcommands(show_subcommands);
     if let Some(output_filter) = &config.output_filter {

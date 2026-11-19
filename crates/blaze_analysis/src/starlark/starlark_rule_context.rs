@@ -32,6 +32,7 @@ use blaze_starlark::label::LabelValue;
 use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
 use starlark::any::ProvidesStaticType;
+use starlark::collections::Hashed;
 use starlark::environment::{Methods, MethodsBuilder, MethodsStatic};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
@@ -54,9 +55,7 @@ use super::starlark_attributes_collection::{
 };
 use super::starlark_configuration::{StarlarkConfiguration, is_code_coverage_enabled};
 use super::starlark_runfiles::{StarlarkRunfiles, symlink_entry_from_value};
-use super::starlark_toolchain_context::{
-    StarlarkExecGroupCollection, StarlarkToolchainContext, implementation_package_context,
-};
+use super::starlark_toolchain_context::{StarlarkExecGroupCollection, StarlarkToolchainContext};
 use super::thread_payload::RuleContextHandle;
 use super::util::{
     alloc_immutable_dict, alloc_immutable_list, check_bool_param, depset_cast_artifacts, errorf,
@@ -482,13 +481,6 @@ impl<'v> StarlarkRuleContext<'v> {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// The package context for string toolchain keys (see `starlark_toolchain_context`): that
-    /// of the .bzl defining the implementation function of the rule class under evaluation
-    /// (the parent's while `ctx.super()` runs).
-    pub(crate) fn package_context(&self) -> Option<LabelPackageContext> {
-        implementation_package_context(&self.rule_class_under_evaluation.borrow())
-    }
-
     /// Java `close()`'s check: an extended rule must call `super`.
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:464 StarlarkRuleContext.close
     pub(crate) fn close(&self) {
@@ -674,11 +666,13 @@ fn build_split_attribute_info<'v>(
         ));
     }
 
-    // PORT: Java's struct carries the unknown-field format "No attribute '%s' in
-    // split_attr.This attribute is not defined with a split configuration."; blaze_starlark's
-    // `StarlarkInfo` has no such format yet (request: `StarlarkInfo::with_message`), so an
-    // unknown field fails with "'struct' value has no field or method '...'" instead.
-    alloc_struct(heap, split_attr_infos)
+    // Java: StarlarkRuleContext.java:579 (no space after "split_attr.", as in Java).
+    alloc_struct(
+        heap,
+        split_attr_infos,
+        "No attribute '%s' in split_attr.This attribute is not defined with a split \
+         configuration.",
+    )
 }
 
 /// Experimental: Calls parent's implementation function and returns its providers.
@@ -906,11 +900,7 @@ impl<'v> StarlarkValue<'v> for CtxOutputs<'v> {
         collector.push_str(&self.to_string());
     }
 
-    // PORT: starlark-rust's `get_attr` cannot fail, so Java's `checkMutable` error is reported
-    // through `get_attr_error_message` (vendored patch 0013). That covers `ctx.outputs.x` and
-    // `getattr(ctx.outputs, "x")`; `getattr(ctx.outputs, "x", default)` on a locked or closed
-    // `ctx.outputs` returns the default where Java throws, and `hasattr` can only stop loudly
-    // (request: a fallible attribute hook in the vendored crate).
+    /// Rust callers without an evaluator: `None` where Java's `getValue` throws.
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         if self.context.is_immutable() {
             return None;
@@ -918,29 +908,41 @@ impl<'v> StarlarkValue<'v> for CtxOutputs<'v> {
         self.get_value(attribute, heap)
     }
 
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:441 Outputs.checkMutable
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:408 Outputs.getErrorMessageForUnknownField
-    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:394 Outputs.getValue
+    fn get_attr_fallible(
+        &self,
+        attribute: Hashed<&str>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Option<Value<'v>>> {
+        // Java: checkMutable()
         if self.context.is_immutable() {
-            return Some(outputs_check_mutable_message(
+            return Err(errorf(outputs_check_mutable_message(
                 &self.context.rule_label_canonical_name,
-            ));
+            )));
         }
-        Some(outputs_error_message_for_unknown_field(attribute))
+        Ok(self.get_value(attribute.key(), eval.heap()))
     }
 
     // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr (`getValue(name) != null`,
-    // so `hasattr(ctx.outputs, "executable")` creates the default executable like a read does).
+    // so `hasattr(ctx.outputs, "executable")` creates the default executable like a read does,
+    // and a locked `ctx.outputs` fails)
+    fn has_attr_fallible(
+        &self,
+        attribute: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<bool> {
+        Ok(self
+            .get_attr_fallible(Hashed::new(attribute), eval)?
+            .is_some())
+    }
+
     fn has_attr(&self, attribute: &str, heap: Heap<'v>) -> bool {
-        if self.context.is_immutable() {
-            // Java: `getValue` throws (checkMutable); starlark-rust's `has_attr` cannot fail.
-            blaze_util::unported!(
-                "Starlark.hasattr",
-                "EvalException from Outputs.getValue: {}",
-                outputs_check_mutable_message(&self.context.rule_label_canonical_name)
-            );
-        }
-        self.get_value(attribute, heap).is_some()
+        self.get_attr(attribute, heap).is_some()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:408 Outputs.getErrorMessageForUnknownField
+    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
+        Some(outputs_error_message_for_unknown_field(attribute))
     }
 
     fn dir_attr(&self) -> Vec<String> {
@@ -956,22 +958,32 @@ impl<'v> StarlarkValue<'v> for ClosedCtxOutputs {
         collector.push_str(&self.to_string());
     }
 
-    // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr: `getValue` throws
-    // (checkMutable) on a closed `ctx.outputs`; starlark-rust's `has_attr` cannot fail.
-    fn has_attr(&self, _attribute: &str, _heap: Heap<'v>) -> bool {
-        blaze_util::unported!(
-            "Starlark.hasattr",
-            "EvalException from Outputs.getValue: {}",
-            outputs_check_mutable_message(&self.rule_label_canonical_name)
-        )
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:441 Outputs.checkMutable
+    // (every `getValue` of a closed `ctx.outputs` fails)
+    fn get_attr_fallible(
+        &self,
+        _attribute: Hashed<&str>,
+        _eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Option<Value<'v>>> {
+        Err(errorf(outputs_check_mutable_message(
+            &self.rule_label_canonical_name,
+        )))
     }
 
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:441 Outputs.checkMutable
-    // (every `getValue` of a closed `ctx.outputs` fails; see `CtxOutputs::get_attr`).
-    fn get_attr_error_message(&self, _attribute: &str) -> Option<String> {
-        Some(outputs_check_mutable_message(
+    // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr (`getValue` throws)
+    fn has_attr_fallible(
+        &self,
+        _attribute: &str,
+        _eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<bool> {
+        Err(errorf(outputs_check_mutable_message(
             &self.rule_label_canonical_name,
-        ))
+        )))
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:408 Outputs.getErrorMessageForUnknownField
+    fn get_attr_error_message(&self, attribute: &str) -> Option<String> {
+        Some(outputs_error_message_for_unknown_field(attribute))
     }
 }
 
@@ -1513,13 +1525,9 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
                 /* resolve_toolchain_data_func= */ &|l| rc.get_toolchain_info(l),
                 /* resolved_toolchain_type_labels= */
                 StarlarkRuleContext::get_requested_toolchain_type_labels_from_auto_exec_groups(&rc),
-                ctx.package_context(),
             ))
         } else {
-            Ok(StarlarkToolchainContext::of_resolved(
-                toolchain_context,
-                ctx.package_context(),
-            ))
+            Ok(StarlarkToolchainContext::of_resolved(toolchain_context))
         }
     }
 
@@ -1543,10 +1551,7 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
         let rc = ctx.context.handle.borrow();
         // Create a thin wrapper around the toolchain collection, to expose the Starlark API.
         match rc.get_toolchain_contexts() {
-            Some(toolchain_contexts) => Ok(StarlarkExecGroupCollection::create(
-                toolchain_contexts,
-                ctx.package_context(),
-            )),
+            Some(toolchain_contexts) => Ok(StarlarkExecGroupCollection::create(toolchain_contexts)),
             None => blaze_util::unported!(
                 "StarlarkExecGroupCollection.create",
                 "rule context without toolchain contexts"
@@ -1969,18 +1974,22 @@ mod tests {
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:441 Outputs.checkMutable
+    // (`getValue` and so `getattr` with a default and `hasattr` fail on a closed ctx.outputs).
     #[test]
     fn closed_outputs_report_check_mutable() {
         let o = ClosedCtxOutputs {
             rule_label_canonical_name: "//foo:bar".to_owned(),
         };
-        assert_eq!(
-            o.get_attr_error_message("out"),
-            Some(
-                "cannot access outputs of rule '//foo:bar' outside of its own rule \
-                 implementation function"
-                    .to_owned()
-            )
-        );
+        starlark::environment::Module::with_temp_heap(|module| {
+            let mut eval = Evaluator::new(&module);
+            let expected = "cannot access outputs of rule '//foo:bar' outside of its own rule \
+                            implementation function";
+            let e = o
+                .get_attr_fallible(Hashed::new("out"), &mut eval)
+                .unwrap_err();
+            assert_eq!(e.to_string(), expected);
+            let e = o.has_attr_fallible("out", &mut eval).unwrap_err();
+            assert_eq!(e.to_string(), expected);
+        });
     }
 }

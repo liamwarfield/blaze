@@ -1,15 +1,21 @@
 //! Port of `lib/util/io/FileOutErr.java`: an `OutErr` backed by two files.
 
 use std::io::{self, Read, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use blaze_vfs::Path;
 
 /// Stdout and stderr of a spawn, recorded in files.
 // Java: com/google/devtools/build/lib/util/io/FileOutErr.java:46 FileOutErr
+///
+/// PORT: a clone is the same Java object (it shares `childCount`).
 #[derive(Clone, Debug)]
 pub struct FileOutErr {
     output_path: Path,
     error_path: Path,
+    /// `childCount`.
+    child_count: Arc<AtomicI32>,
 }
 
 impl FileOutErr {
@@ -18,6 +24,49 @@ impl FileOutErr {
         FileOutErr {
             output_path: stdout,
             error_path: stderr,
+            child_count: Arc::new(AtomicI32::new(0)),
+        }
+    }
+
+    /// `childOutErr()`: a `FileOutErr` recording into `<stdout>-<n>` / `<stderr>-<n>`, `n`
+    /// counting the children of this one from 0.
+    ///
+    /// PORT: the `outPath == null || errPath == null` branch (a `FileOutErr` not backed by
+    /// files) does not exist here: this `FileOutErr` always has both files.
+    // Java: com/google/devtools/build/lib/util/io/FileOutErr.java:232 FileOutErr.childOutErr
+    pub fn child_out_err(&self) -> FileOutErr {
+        let index = self.child_count.fetch_add(1, Ordering::SeqCst);
+        let out_path = &self.output_path;
+        let err_path = &self.error_path;
+        FileOutErr::new(
+            out_path
+                .get_parent_directory()
+                .expect("NullPointerException: getParentDirectory()")
+                .get_relative_str(&format!("{}-{}", out_path.get_base_name(), index)),
+            err_path
+                .get_parent_directory()
+                .expect("NullPointerException: getParentDirectory()")
+                .get_relative_str(&format!("{}-{}", err_path.get_base_name(), index)),
+        )
+    }
+
+    /// `FileOutErr.dump(from, to)`: writes the captured content of `from` to `to`.
+    ///
+    /// PORT: Java streams the files and never throws: a failure to read or write is recorded in
+    /// the stream (and printed with its output later); this `FileOutErr` has no recorded error,
+    /// so such a failure is dropped. Like Java, nothing is written (and the target file is not
+    /// created) when there is nothing to copy.
+    // Java: com/google/devtools/build/lib/util/io/FileOutErr.java:218 FileOutErr.dump
+    pub fn dump(from: &FileOutErr, to: &FileOutErr) {
+        // `from.dumpOutAsLatin1(to.getOutputStream())`
+        let out = from.out_as_bytes();
+        if !out.is_empty() {
+            let _ = to.write_out(&out);
+        }
+        // `from.dumpErrAsLatin1(to.getErrorStream())`
+        let err = from.err_as_bytes();
+        if !err.is_empty() {
+            let _ = to.write_err(&err);
         }
     }
 

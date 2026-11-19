@@ -15,6 +15,7 @@ USAGE = """\
 usage: scripts/remote/second-build seed <tag> <project>
        scripts/remote/second-build run <tag> <project> <oracle|BLAZE-BINARY> <label> <mode>
                                    [-- <extra options>]
+       scripts/remote/second-build rehash <run-name> <step>
        scripts/remote/second-build help
 
 `seed` runs the oracle once in a fresh output base with --disk_cache=<WORK>/<tag>-dc-seed (a disk
@@ -32,7 +33,9 @@ with --disk_cache=<that copy> --remote_download_outputs=<mode> (toplevel, minima
 the extra options. For each step it prints the `N processes:` line, the action cache line of
 the oracle's / Blaze's `INFO:` output when present, and writes <step>/bazel-bin.sha256 (sha256
 and path of every regular file and symlink target under bazel-bin, sorted) for comparing the
-bazel-bin trees of two runs (`diff`).
+bazel-bin trees of two runs (`diff`); the run's workspace and output base are written <ws> and
+<ob> in symlink targets and in runfiles manifests. `rehash <run-name> <step>` rewrites that file
+for an existing step.
 
 WORK is ~/.cache/blaze/work/remote. Do not use the run names of other jobs.
 """
@@ -50,8 +53,22 @@ def oracle_run(*args):
     return step, out.returncode
 
 
-def tree_hashes(ws, step):
+def normaliser(name):
+    # The run's workspace and output base differ between two runs; replace both (and the output
+    # base's md5 directory) by <ws> / <ob> in symlink targets and file contents.
+    pat = re.compile(
+        r"(/home/[^\s]*?/oracle-out/ur-remote/%s/[0-9a-f]{32})|(/home/[^\s]*?/work/remote/%s/ws)"
+        % (re.escape(name), re.escape(name)))
+
+    def norm(text):
+        return pat.sub(lambda m: "<ob>" if m.group(1) else "<ws>", text)
+
+    return norm
+
+
+def tree_hashes(ws, step, name):
     root = os.path.join(ws, "bazel-bin")
+    norm = normaliser(name)
     lines = []
     if os.path.exists(root):
         real = os.path.realpath(root)
@@ -61,14 +78,15 @@ def tree_hashes(ws, step):
                 p = os.path.join(dirpath, f)
                 rel = os.path.relpath(p, real)
                 if os.path.islink(p):
-                    lines.append("link %s -> %s" % (rel, os.readlink(p)))
+                    lines.append("link %s -> %s" % (rel, norm(os.readlink(p))))
                     continue
-                h = hashlib.sha256()
                 try:
                     with open(p, "rb") as fh:
-                        for chunk in iter(lambda: fh.read(1 << 20), b""):
-                            h.update(chunk)
-                    lines.append("%s %s" % (h.hexdigest(), rel))
+                        data = fh.read()
+                    if p.endswith("_manifest") or p.endswith("MANIFEST"):
+                        data = norm(data.decode("utf-8", "surrogateescape")).encode(
+                            "utf-8", "surrogateescape")
+                    lines.append("%s %s" % (hashlib.sha256(data).hexdigest(), rel))
                 except OSError as e:
                     lines.append("error %s %s" % (rel, e))
     with open(os.path.join(step, "bazel-bin.sha256"), "w") as fh:
@@ -123,8 +141,13 @@ def main():
                     fh.write("\n// second-build probe\n")
             fresh = ["--fresh"] if n == 1 else []
             step, code = oracle_run(name, project, *(fresh + base + opts))
-            count = tree_hashes(ws, step)
+            count = tree_hashes(ws, step, name)
             print("%s run%d exit %d: %s [bazel-bin %d files]" % (name, n, code, summary(step), count))
+        return 0
+    if args[0] == "rehash" and len(args) == 3:
+        name, stepname = args[1], args[2]
+        step = os.path.join(WORK, name, stepname)
+        print("%s: %d entries" % (step, tree_hashes(os.path.join(WORK, name, "ws"), step, name)))
         return 0
     print(USAGE, end="", file=sys.stderr)
     return 2

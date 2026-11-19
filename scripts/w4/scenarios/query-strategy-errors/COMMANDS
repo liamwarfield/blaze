@@ -1,0 +1,7 @@
+# Execution review R3: cquery and aquery construct the ExecutionTool (BuildTool.java:520), so an
+# unknown strategy fails as in `build`.
+run cquery --spawn_strategy=bogus //:g
+run aquery --spawn_strategy=bogus //:g
+run cquery --strategy=Genrule=bogus //:g
+run cquery //:g
+aquery //:g
