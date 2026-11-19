@@ -781,6 +781,8 @@ def selftest(tool, run_pair=None, empty_selection=None, extra=None, mode="scope"
                     cls, detail = run_pair(ofake, bfake, wd)
                 except Refusal as e:
                     cls, detail = "REFUSED", str(e)
+                except Exception as e:  # noqa: BLE001 - a crash of the tool's path is a failure
+                    cls, detail = "CRASHED", "%s: %s" % (type(e).__name__, e)
                 finally:
                     _pin_override = None
                 st.check("tool: %s" % name, cls in want,
@@ -792,11 +794,19 @@ def selftest(tool, run_pair=None, empty_selection=None, extra=None, mode="scope"
                 st.check("tool: wrong oracle refused", False, "got %s" % cls)
             except Refusal as e:
                 st.check("tool: wrong oracle refused", True, str(e)[:80])
+            except Exception as e:  # noqa: BLE001
+                st.check("tool: wrong oracle refused", False, "crashed: %s" % e)
         if empty_selection is not None:
             rc = empty_selection()
             st.check("tool: empty selection fails", rc not in (0, None), "exit %s" % rc)
         if extra is not None:
-            extra(st)
+            try:
+                extra(st)
+            except Exception as e:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                st.check("tool-specific checks ran to the end", False, "%s: %s" % (
+                    type(e).__name__, e))
     finally:
         _pin_override = None
     return st.finish()

@@ -39,7 +39,7 @@ Partly ported:
 | `query` | `--output=graph` and other formatters that need the dependency graph, `--query_file`, SkyQuery (`--universe_scope`), definition and instantiation stacks in proto output, rule class info, native aspects |
 | `cquery` | `--show_config_fragments`, some output formats' start/process hooks |
 | `aquery` | `--skyframe_state`, the dump after a build (`--experimental_aquery_dump_after_build_format`) |
-| `run` | ported after v0.1.0 (exit code and program output equal to Bazel's in 20 of 20 comparison cases; 15 of 20 equal in every field, the others differ in stderr summary lines; upstream test counts to be re-measured under the fixed harness); missing: the Build Event Protocol for `run`, remote flags with `run` |
+| `run` | ported after v0.1.0 (exit code and program output equal to Bazel's in 20 of 20 comparison cases; 15 of 20 equal in every field, the others differ in stderr summary lines; upstream test counts to be re-measured under the fixed harness); missing: remote flags with `run` |
 | `shutdown` | there is no server to stop |
 
 ## Server and client
@@ -56,9 +56,12 @@ Partly ported:
 
 ## Loading and Starlark
 
-- Symbolic macros (`macro()`), lazy macro expansion.
-- Subrules (`subrule()`).
-- Materializer rules and dormant dependencies.
+- Symbolic macros, lazy macro expansion, subrule errors, and the loading side of materializer
+  rules and dormant dependencies: ported after v0.1.0 (45 of 52 oracle comparison cases match
+  by `scripts/macros/compare`, a tool not yet hardened; brotli and re2 score unchanged; workerd
+  cquery 38,892 of 38,892). Open: sibling macros evaluate in order where Bazel evaluates them
+  in parallel (the order of `print()` lines differs under lazy expansion); the analysis side of
+  materializers (`MaterializingDefault.resolve`).
 - Autoloads with a non-default `--incompatible_autoload_externally`.
 - `--experimental_starlark_type_checking`, `--max_computation_steps`.
 - `testing.analysis_test`, `testing.TestEnvironment`.
@@ -89,13 +92,12 @@ Partly ported:
 - `--toolchain_resolution_debug`.
 - Path mapping (`--experimental_output_paths=strip`).
 - Remote analysis caching (`--experimental_remote_analysis_cache_mode`).
-- Skipped (incompatible) top-level targets in the build event stream.
+- Skipped (incompatible) top-level targets in the build event stream (their analysis-failure
+  event is posted; the loading/analysis events around it are not, see "Build event stream").
 
 ## C++
 
 - Include scanning.
-- Compile action templates for tree artifacts (`createCppCompileActionTemplate`; 6 upstream
-  tests).
 - ThinLTO backend actions.
 - `expand_and_tokenize`, the STL computed default.
 
@@ -106,7 +108,10 @@ Partly ported:
 - Docker sandbox; sandbox cgroup and memory limits.
 - Action rewinding (Bazel's default for lost remote inputs; Blaze supports the
   `--norewind_lost_inputs` path).
-- `unused_inputs_list` (panics; 4 upstream tests).
+- `unused_inputs_list` and C++ compile action templates for tree artifacts: ported after
+  v0.1.0 (probe steps match Bazel by `scripts/exec2/compare`, a tool not yet hardened; brotli
+  and re2 score unchanged). Still missing: `SpawnActionTemplate` / `ctx.actions.map_directory`,
+  a shadowed action that discovers inputs.
 - Exclusive tests (`tags = ["exclusive"]`; 3 upstream tests).
 - `--test_output=streamed`; cancelling concurrent test attempts.
 - Filesets; archived tree artifacts.
@@ -139,10 +144,16 @@ in, not re-reviewed). Missing:
 - Text-format output: `--build_event_text_file` and `cquery --output=textproto` ported after
   v0.1.0 (printer byte-identical on brotli and re2); `aquery --output=proto` / `textproto` /
   `streamed_proto` still missing (only `jsonproto` works).
-- Build event stream for commands other than `build` and `test`, and for a command that stops
-  before it runs.
-- `--build_event_publish_all_actions`, target summary events, build tool logs.
-- 4 build-event items per project still differ on brotli and re2.
+- Build event stream: `run`, `fetch`, `query`, a command that stops before it runs, target
+  summaries, aspect events, failed patterns and analysis failures, and progress stdout/stderr
+  are ported (bep-wave-1); still missing: the stream of `cquery` / `aquery` (fails loudly), the
+  loading and analysis events when analysis fails or nothing executes (`fetch` with targets,
+  `--nobuild`), Skymeld's interleaving of `targetConfigured` / `targetCompleted` and the late
+  `convenienceSymlinksIdentified`, successful actions with `--build_event_publish_all_actions`
+  (fails loudly), `command.profile.gz` in `buildToolLogs` (no profiler).
+- 4 build-event items per project still differ on brotli and re2: `buildToolLogs` (no
+  `command.profile.gz`), and the three command lines (`--install_md5` is Blaze's own install
+  key; `--restart_reason=no_daemon` because Blaze starts a server per command).
 - Execution graph log, `--experimental_stats_summary`, auto output filter for packages.
 - Starlark debugger, workspace rules log.
 - Error locations and some error texts: 1 of 618 scenario steps matches Bazel in full.

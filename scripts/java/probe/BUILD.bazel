@@ -117,3 +117,25 @@ java_binary(
     main_class = "probe.Hello",
     deps = [":imported"],
 )
+
+# An API-generating plugin: header compilation runs it (javac-based JavacTurbine action).
+java_plugin(
+    name = "api_proc",
+    srcs = ["src/probe/proc/ProbeProcessor.java"],
+    generates_api = True,
+    processor_class = "probe.proc.ProbeProcessor",
+    deps = [":gen_annotation"],
+)
+
+java_library(
+    name = "api_annotated",
+    srcs = ["src/probe/app/Annotated.java"],
+    plugins = [":api_proc"],
+    deps = [":gen_annotation"],
+)
+
+java_library(
+    name = "uses_api",
+    srcs = ["src/probe/app/UsesApi.java"],
+    deps = [":api_annotated"],
+)

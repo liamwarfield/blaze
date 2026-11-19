@@ -5,19 +5,19 @@ syntax/IntLiteral.java:99	syntax/IntLiteral.java	99	scan	throw	NumberFormatExcep
 syntax/Lexer.java:145	syntax/Lexer.java	145	popParen	lexer	error("indentation error", pos - 1		matched	err_lex_indent_paren,err_lex_indent_pop,err_misc_type_annotation_bzl,err_parse_else_alone,err_parse_keyword_while,err_parse_type_annotation_disallowed,...	
 syntax/Lexer.java:220	syntax/Lexer.java	220	computeIndentation	lexer	error("Tab characters are not allowed for indentation. Use spaces instead.", pos		matched	lex_tab_blank_first_line,lex_tab_blank_line,lex_tab_comment_line,lex_tab_eof,lex_tab_first_line,lex_tab_indent	
 syntax/Lexer.java:256	syntax/Lexer.java	256	computeIndentation	lexer	error("indentation error", pos - 1		matched	err_lex_indent_paren,err_lex_indent_pop,err_misc_type_annotation_bzl,err_parse_else_alone,err_parse_keyword_while,err_parse_type_annotation_disallowed,...	
-syntax/Lexer.java:294	syntax/Lexer.java	294	escapedStringLiteral	lexer	error("unclosed string literal", literalStartPos		matched	err_lex_unclosed_raw,err_lex_unclosed_str,err_lex_unclosed_str_eof,err_lex_unclosed_triple	
-syntax/Lexer.java:301	syntax/Lexer.java	301	escapedStringLiteral	lexer	error("unclosed string literal", literalStartPos		matched	err_lex_unclosed_raw,err_lex_unclosed_str,err_lex_unclosed_str_eof,err_lex_unclosed_triple	
+syntax/Lexer.java:294	syntax/Lexer.java	294	escapedStringLiteral	lexer	error("unclosed string literal", literalStartPos		matched	err_call_json_decode_unclosed,err_lex_unclosed_raw,err_lex_unclosed_str,err_lex_unclosed_str_eof,err_lex_unclosed_triple	
+syntax/Lexer.java:301	syntax/Lexer.java	301	escapedStringLiteral	lexer	error("unclosed string literal", literalStartPos		matched	err_call_json_decode_unclosed,err_lex_unclosed_raw,err_lex_unclosed_str,err_lex_unclosed_str_eof,err_lex_unclosed_triple	
 syntax/Lexer.java:390	syntax/Lexer.java	390	escapedStringLiteral	lexer	error("octal escape sequence out of range (maximum is \\377)", pos - 1		matched	err_lex_octal_range	
-syntax/Lexer.java:392	syntax/Lexer.java	392	escapedStringLiteral	lexer	error("octal escape sequence denotes non-ASCII character", pos - 1		no-case		
+syntax/Lexer.java:392	syntax/Lexer.java	392	escapedStringLiteral	lexer	error("octal escape sequence denotes non-ASCII character", pos - 1		not-triggerable		only with FileOptions.stringLiteralsAreAsciiOnly (.scl files; blaze_starlark syntax::resolver ports the check)
 syntax/Lexer.java:402	syntax/Lexer.java	402	escapedStringLiteral	lexer	error("invalid escape sequence: \\" + c + ". Use '\\\\' to insert '\\'.", pos - 1		matched	err_call_json_decode_ctl,err_lex_invalid_escape,err_lex_multi_errors,str_int_unicode_digit	
-syntax/Lexer.java:423	syntax/Lexer.java	423	escapedStringLiteral	lexer	error("string literal contains non-ASCII character", pos - 1		no-case		
-syntax/Lexer.java:428	syntax/Lexer.java	428	escapedStringLiteral	lexer	error("unclosed string literal", literalStartPos		matched	err_lex_unclosed_raw,err_lex_unclosed_str,err_lex_unclosed_str_eof,err_lex_unclosed_triple	
-syntax/Lexer.java:459	syntax/Lexer.java	459	stringLiteral	lexer	error("unclosed string literal", literalStartPos		matched	err_lex_unclosed_raw,err_lex_unclosed_str,err_lex_unclosed_str_eof,err_lex_unclosed_triple	
-syntax/Lexer.java:491	syntax/Lexer.java	491	stringLiteral	lexer	error("string literal contains non-ASCII character", i		no-case		
-syntax/Lexer.java:508	syntax/Lexer.java	508	stringLiteral	lexer	error("unclosed string literal", literalStartPos		matched	err_lex_unclosed_raw,err_lex_unclosed_str,err_lex_unclosed_str_eof,err_lex_unclosed_triple	
+syntax/Lexer.java:423	syntax/Lexer.java	423	escapedStringLiteral	lexer	error("string literal contains non-ASCII character", pos - 1		not-triggerable		only with FileOptions.stringLiteralsAreAsciiOnly (.scl files; blaze_starlark syntax::resolver ports the check)
+syntax/Lexer.java:428	syntax/Lexer.java	428	escapedStringLiteral	lexer	error("unclosed string literal", literalStartPos		matched	err_call_json_decode_unclosed,err_lex_unclosed_raw,err_lex_unclosed_str,err_lex_unclosed_str_eof,err_lex_unclosed_triple	
+syntax/Lexer.java:459	syntax/Lexer.java	459	stringLiteral	lexer	error("unclosed string literal", literalStartPos		matched	err_call_json_decode_unclosed,err_lex_unclosed_raw,err_lex_unclosed_str,err_lex_unclosed_str_eof,err_lex_unclosed_triple	
+syntax/Lexer.java:491	syntax/Lexer.java	491	stringLiteral	lexer	error("string literal contains non-ASCII character", i		not-triggerable		only with FileOptions.stringLiteralsAreAsciiOnly (.scl files; blaze_starlark syntax::resolver ports the check)
+syntax/Lexer.java:508	syntax/Lexer.java	508	stringLiteral	lexer	error("unclosed string literal", literalStartPos		matched	err_call_json_decode_unclosed,err_lex_unclosed_raw,err_lex_unclosed_str,err_lex_unclosed_str_eof,err_lex_unclosed_triple	
 syntax/Lexer.java:876	syntax/Lexer.java	876	tokenize	lexer	error("invalid character: '" + c + "'", pos - 1		matched	err_lex_invalid_char,err_lex_multi_errors,lex_at_sign,lex_backtick,lex_bang,lex_dollar,...	
 syntax/Lexer.java:932	syntax/Lexer.java	932	scanNumberOrDotOrEllipsis	lexer	error("invalid hex literal", start		matched	err_lex_invalid_hex,err_lex_invalid_int_big_hex,lex_hex_empty	
-syntax/Lexer.java:949	syntax/Lexer.java	949	scanNumberOrDotOrEllipsis	lexer	error("invalid binary literal", start		no-case		
+syntax/Lexer.java:949	syntax/Lexer.java	949	scanNumberOrDotOrEllipsis	lexer	error("invalid binary literal", start		no-case		triggerable; no interp case yet
 syntax/Lexer.java:1007	syntax/Lexer.java	1007	scanNumberOrDotOrEllipsis	lexer	error("floating-point literal too large", start		matched	lex_float_too_large	
 syntax/Lexer.java:1010	syntax/Lexer.java	1010	scanNumberOrDotOrEllipsis	lexer	error("invalid float literal", start		matched	err_lex_invalid_float,lex_exp_no_digits	
 syntax/Lexer.java:1023	syntax/Lexer.java	1023	scanNumberOrDotOrEllipsis	lexer	error(ex.getMessage(), start		helper		IntLiteral.scan message (rows syntax/IntLiteral.java)
@@ -27,38 +27,38 @@ syntax/Parser.java:289	syntax/Parser.java	289	String	throw	SyntaxError.Exception
 syntax/Parser.java:331	syntax/Parser.java	331	syntaxError	syntaxError	syntaxError(token.start, token.kind, token.value, message		helper		syntaxError(String) delegates to Parser.java:334
 syntax/Parser.java:337	syntax/Parser.java	337	syntaxError	reportError	reportError(offset, "indentation error"		matched	err_lex_indent_paren,err_lex_indent_pop,err_misc_type_annotation_bzl,err_parse_else_alone,err_parse_keyword_while,err_parse_type_annotation_disallowed,...	
 syntax/Parser.java:339	syntax/Parser.java	339	syntaxError	reportError	reportError( offset, "syntax error at '%s': %s", tokenString(tokenKind, tokenValue), message		matched	err_lex_invalid_char,err_lex_invalid_int_big_hex,err_lex_multi_errors,err_misc_type_annotation_bzl,err_parse_bad_param,err_parse_colon_missing,...	
-syntax/Parser.java:350	syntax/Parser.java	350	expect	syntaxError	syntaxError("expected " + kind		matched	err_call_max_empty,err_call_max_noargs,err_call_min_empty,err_call_str_join_elem,err_parse_indented_block,str_join_nonstr	
-syntax/Parser.java:358	syntax/Parser.java	358	expectAndRecover	syntaxError	syntaxError("expected " + kind		matched	err_call_max_empty,err_call_max_noargs,err_call_min_empty,err_call_str_join_elem,err_parse_indented_block,str_join_nonstr	
+syntax/Parser.java:350	syntax/Parser.java	350	expect	syntaxError	syntaxError("expected " + kind		matched	err_call_json_decode_bad,err_call_json_decode_char,err_call_json_decode_eof,err_call_json_decode_trailing,err_call_json_indent_bad,err_call_len_unknown_kw,...	
+syntax/Parser.java:358	syntax/Parser.java	358	expectAndRecover	syntaxError	syntaxError("expected " + kind		matched	err_call_json_decode_bad,err_call_json_decode_char,err_call_json_decode_eof,err_call_json_decode_trailing,err_call_json_indent_bad,err_call_len_unknown_kw,...	
 syntax/Parser.java:425	syntax/Parser.java	425	checkForbiddenKeywords	reportError	reportError( token.start, "%s", switch (token.kind)		matched		forbidden keywords (0053), first line of err_parse_keyword_class/_reserved/_while equal; Java reports more errors
-syntax/Parser.java:597	syntax/Parser.java	597	parseArguments	syntaxError	syntaxError("Starlark does not support Python-style generator expressions"		no-case		
-syntax/Parser.java:619	syntax/Parser.java	619	parseSelectorSuffix	syntaxError	syntaxError("expected identifier after dot"		no-case		
+syntax/Parser.java:597	syntax/Parser.java	597	parseArguments	syntaxError	syntaxError("Starlark does not support Python-style generator expressions"		matched	err_parse_generator,err_parse_generator_paren	
+syntax/Parser.java:619	syntax/Parser.java	619	parseSelectorSuffix	syntaxError	syntaxError("expected identifier after dot"		no-case		triggerable; no interp case yet
 syntax/Parser.java:635	syntax/Parser.java	635	parseExprList	reportError	reportError(token.start, "Trailing comma is allowed only in parenthesized tuples."		matched	err_parse_trailing_comma	
 syntax/Parser.java:673	syntax/Parser.java	673	parseStringLiteral	reportError	reportError(token.start, "Implicit string concatenation is forbidden, use the + operator"		matched	err_parse_implicit_concat	
-syntax/Parser.java:751	syntax/Parser.java	751	parsePrimary	syntaxError	syntaxError("Starlark does not support Python-style generator expressions"		no-case		
-syntax/Parser.java:777	syntax/Parser.java	777	parsePrimary	syntaxError	syntaxError("ellipsis ('...') is not allowed outside type expressions"		no-case		
-syntax/Parser.java:786	syntax/Parser.java	786	parsePrimary	syntaxError	syntaxError("expected expression"		no-case		
-syntax/Parser.java:889	syntax/Parser.java	889	parseComprehensionSuffix	syntaxError	syntaxError("expected '" + closingBracket + "', 'for' or 'if'"		no-case		
-syntax/Parser.java:949	syntax/Parser.java	949	parseListMaker	syntaxError	syntaxError("expected ',', 'for' or ']'"		no-case		
-syntax/Parser.java:1015	syntax/Parser.java	1015	parseBinOpExpression	syntaxError	syntaxError("expected 'in'"		no-case		
+syntax/Parser.java:751	syntax/Parser.java	751	parsePrimary	syntaxError	syntaxError("Starlark does not support Python-style generator expressions"		matched	err_parse_generator,err_parse_generator_paren	
+syntax/Parser.java:777	syntax/Parser.java	777	parsePrimary	syntaxError	syntaxError("ellipsis ('...') is not allowed outside type expressions"		matched	lex_ellipsis	
+syntax/Parser.java:786	syntax/Parser.java	786	parsePrimary	syntaxError	syntaxError("expected expression"		matched	err_lex_multi_errors,err_parse_dict_missing_value,err_parse_double_star_expr,err_parse_else_alone,err_parse_eof_in_call,err_parse_expected_expr,...	
+syntax/Parser.java:889	syntax/Parser.java	889	parseComprehensionSuffix	syntaxError	syntaxError("expected '" + closingBracket + "', 'for' or 'if'"		matched	err_parse_comprehension_close	
+syntax/Parser.java:949	syntax/Parser.java	949	parseListMaker	syntaxError	syntaxError("expected ',', 'for' or ']'"		matched	err_parse_list_maker	
+syntax/Parser.java:1015	syntax/Parser.java	1015	parseBinOpExpression	syntaxError	syntaxError("expected 'in'"		no-case		triggerable; no interp case yet
 syntax/Parser.java:1028	syntax/Parser.java	1028	parseBinOpExpression	reportError	reportError( token.start, "Operator '%s' is not associative with operator '%s'. Use parens.", lastOp, op		matched	err_parse_not_assoc,err_parse_not_assoc_eq	
-syntax/Parser.java:1066	syntax/Parser.java	1066	checkAllowTypeSyntax	syntaxError	syntaxError(offset, tokenKind, tokenValue, "type annotations are disallowed"		no-case		
-syntax/Parser.java:1103	syntax/Parser.java	1103	parseTypeExpr	syntaxError	syntaxError("expected a type"		no-case		
-syntax/Parser.java:1150	syntax/Parser.java	1150	parseTypeArgument	syntaxError	syntaxError("expected a type argument"		no-case		
-syntax/Parser.java:1183	syntax/Parser.java	1183	parseTypeDictEntry	syntaxError	syntaxError(String.format("expected %s", TokenKind.STRING)		matched	err_call_max_empty,err_call_max_noargs,err_call_min_empty,err_call_str_join_elem,err_parse_indented_block,str_join_nonstr	
-syntax/Parser.java:1282	syntax/Parser.java	1282	parseTypeParameter	syntaxError	syntaxError(tokenStart, tokenKind, tokenValue, "duplicate type parameter"		no-case		
+syntax/Parser.java:1066	syntax/Parser.java	1066	checkAllowTypeSyntax	syntaxError	syntaxError(offset, tokenKind, tokenValue, "type annotations are disallowed"		matched	err_misc_type_annotation_bzl,err_parse_type_annotation_disallowed,lex_ellipsis_default,lex_ellipsis_in_type	
+syntax/Parser.java:1103	syntax/Parser.java	1103	parseTypeExpr	syntaxError	syntaxError("expected a type"		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
+syntax/Parser.java:1150	syntax/Parser.java	1150	parseTypeArgument	syntaxError	syntaxError("expected a type argument"		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
+syntax/Parser.java:1183	syntax/Parser.java	1183	parseTypeDictEntry	syntaxError	syntaxError(String.format("expected %s", TokenKind.STRING)		matched	err_call_json_decode_bad,err_call_json_decode_char,err_call_json_decode_eof,err_call_json_decode_trailing,err_call_json_indent_bad,err_call_len_unknown_kw,...	
+syntax/Parser.java:1282	syntax/Parser.java	1282	parseTypeParameter	syntaxError	syntaxError(tokenStart, tokenKind, tokenValue, "duplicate type parameter"		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
 syntax/Parser.java:1306	syntax/Parser.java	1306	parseTest	reportError	reportError(start, "missing else clause in conditional expression or semicolon before if"		matched	err_parse_missing_else	
-syntax/Parser.java:1383	syntax/Parser.java	1383	parseFileInput	reportError	reportError( token.end, "internal error: stack overflow in Starlark parser. Please report the bug and include" + " the text of %s.\n" + "%s", locs.file(), Throwables.getStackTraceAsString(ex)		no-case		
-syntax/Parser.java:1407	syntax/Parser.java	1407	parseLoadStatement	syntaxError	syntaxError("expected at least one symbol to load"		no-case		
-syntax/Parser.java:1437	syntax/Parser.java	1437	parseLoadSymbol	syntaxError	syntaxError("expected either a literal string or an identifier"		no-case		
-syntax/Parser.java:1457	syntax/Parser.java	1457	parseLoadSymbol	syntaxError	syntaxError("expected string"		no-case		
-syntax/Parser.java:1565	syntax/Parser.java	1565	parseSmallStatement	syntaxError	syntaxError( colonOffset, TokenKind.COLON, null, "type annotations must have a single identifier on the left-hand side"		no-case		
-syntax/Parser.java:1573	syntax/Parser.java	1573	parseSmallStatement	syntaxError	syntaxError( colonOffset, TokenKind.COLON, null, "type annotations not allowed on augmented assignment statements"		no-case		
-syntax/Parser.java:1586	syntax/Parser.java	1586	parseSmallStatement	syntaxError	syntaxError( colonOffset, TokenKind.COLON, null, "type annotations must have a single identifier on the left-hand side"		no-case		
+syntax/Parser.java:1383	syntax/Parser.java	1383	parseFileInput	reportError	reportError( token.end, "internal error: stack overflow in Starlark parser. Please report the bug and include" + " the text of %s.\n" + "%s", locs.file(), Throwables.getStackTraceAsString(ex)		not-triggerable		parser stack overflow (Blaze parses on a large stack)
+syntax/Parser.java:1407	syntax/Parser.java	1407	parseLoadStatement	syntaxError	syntaxError("expected at least one symbol to load"		matched	err_parse_load_no_symbol	
+syntax/Parser.java:1437	syntax/Parser.java	1437	parseLoadSymbol	syntaxError	syntaxError("expected either a literal string or an identifier"		matched	err_parse_load_bad_symbol	
+syntax/Parser.java:1457	syntax/Parser.java	1457	parseLoadSymbol	syntaxError	syntaxError("expected string"		matched	err_parse_load_bad_named	
+syntax/Parser.java:1565	syntax/Parser.java	1565	parseSmallStatement	syntaxError	syntaxError( colonOffset, TokenKind.COLON, null, "type annotations must have a single identifier on the left-hand side"		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
+syntax/Parser.java:1573	syntax/Parser.java	1573	parseSmallStatement	syntaxError	syntaxError( colonOffset, TokenKind.COLON, null, "type annotations not allowed on augmented assignment statements"		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
+syntax/Parser.java:1586	syntax/Parser.java	1586	parseSmallStatement	syntaxError	syntaxError( colonOffset, TokenKind.COLON, null, "type annotations must have a single identifier on the left-hand side"		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
 syntax/Parser.java:1688	syntax/Parser.java	1688	parseSuite	reportError	reportError(token.start, "expected an indented block"		matched	err_parse_indented_block	
 syntax/Program.java:105	syntax/Program.java	105	compileFile	throw	SyntaxError.Exception(file.errors())		helper		propagates a message produced at another row (or by Java's runtime); its text is checked at that row
 syntax/Program.java:111	syntax/Program.java	111	compileFile	throw	SyntaxError.Exception(file.errors())		helper		propagates a message produced at another row (or by Java's runtime); its text is checked at that row
 syntax/Resolver.java:447	syntax/Resolver.java	447	resolve	throw	Undefined(String.format("name '%s' is not defined", name), predeclared)		matched	err_call_isinstance,err_parse_dot_ident,err_parse_else_alone,err_parse_eof_in_call,err_parse_generator,err_parse_if_no_colon,...	
-syntax/Resolver.java:452	syntax/Resolver.java	452	resolveType	throw	Undefined("moduleWithPredeclared does not support types")		no-case		
+syntax/Resolver.java:452	syntax/Resolver.java	452	resolveType	throw	Undefined("moduleWithPredeclared does not support types")		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
 syntax/Resolver.java:528	syntax/Resolver.java	528	errorf	errorf	errorf(node.getStartLocation(), format, args		helper		errorf helper
 syntax/Resolver.java:610	syntax/Resolver.java	610	createBindings	errorf	errorf(orig, "symbol '%s' is private and cannot be imported", orig.getName()		different	err_res_private_load	Blaze reports the load-placement errors and stops (blaze_starlark syntax checks run before name resolution); Java reports this one too (interp-diff z_err_res_private_load)
 syntax/Resolver.java:619	syntax/Resolver.java	619	createBindings	errorf	errorf(local, "load statement defines '%s' more than once", local.getName()		different	err_res_load_twice	order of blaze_starlark static checks (interp-diff z_err_res_load_twice)
@@ -79,8 +79,8 @@ syntax/Resolver.java:775	syntax/Resolver.java	775	visit	errorf	errorf(node, "loa
 syntax/Resolver.java:783	syntax/Resolver.java	783	visit	errorf	errorf(node, "%s statement must be inside a for loop", node.getFlowKind()		matched	err_res_break_outside,err_res_continue_outside	
 syntax/Resolver.java:854	syntax/Resolver.java	854	visit	errorf	errorf( node, "if statements are not allowed at the top level. You may move it inside a function " + "or use an if expression (x if condition else y)."		matched	err_res_if_toplevel	
 syntax/Resolver.java:869	syntax/Resolver.java	869	visit	errorf	errorf( node.getOperatorLocation(), "cannot perform augmented assignment on a list or tuple expression"		matched	err_parse_bad_augassign_list,err_parse_bad_augassign_tuple,err_res_augassign_list	
-syntax/Resolver.java:902	syntax/Resolver.java	902	visit	errorf	errorf(node, "isinstance() is not yet supported"		no-case		
-syntax/Resolver.java:908	syntax/Resolver.java	908	visit	errorf	errorf(node, "type alias statement not at top level"		no-case		
+syntax/Resolver.java:902	syntax/Resolver.java	902	visit	errorf	errorf(node, "isinstance() is not yet supported"		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
+syntax/Resolver.java:908	syntax/Resolver.java	908	visit	errorf	errorf(node, "type alias statement not at top level"		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
 syntax/Resolver.java:945	syntax/Resolver.java	945	use	errorf	errorf(id, "contains syntax errors"		different	err_lex_indent_paren,err_lex_multi_errors,err_misc_type_annotation_bzl,err_parse_colon_missing,err_parse_comprehension_close,err_parse_dict_entry,...	"contains syntax errors" follows parser recovery, which is not ported (0054 limitation)
 syntax/Resolver.java:950	syntax/Resolver.java	950	use	errorf	errorf(id, "%s%s", ex.getMessage(), suggestion		helper		Module.resolve message + SpellChecker (rows eval/Module.java:256, 0049/0050)
 syntax/Resolver.java:952	syntax/Resolver.java	952	use	errorf	errorf(id, "%s", ex.getMessage()		helper		Module.resolve message (guarded value: eval/Module.java:241)
@@ -93,9 +93,9 @@ syntax/Resolver.java:1092	syntax/Resolver.java	1092	resolveFunction	errorf	error
 syntax/Resolver.java:1100	syntax/Resolver.java	1100	resolveFunction	errorf	errorf(param, "multiple ** parameters not allowed"		matched	err_res_multi_kwargs_param	
 syntax/Resolver.java:1111	syntax/Resolver.java	1111	resolveFunction	errorf	errorf(star, "bare * must be followed by keyword-only parameters"		matched	err_res_bare_star	
 syntax/Resolver.java:1146	syntax/Resolver.java	1146	bindParam	errorf	errorf(param, "duplicate parameter: %s", param.getName()		matched	err_res_dup_param	
-syntax/Resolver.java:1230	syntax/Resolver.java	1230	bind	errorf	errorf( id, "type annotation on '%s' may only appear at its first declaration", id.getName()		no-case		
-syntax/Resolver.java:1232	syntax/Resolver.java	1232	bind	errorf	errorf(bind.first, "'%s' first declared here", id.getName()		no-case		
-syntax/Resolver.java:1237	syntax/Resolver.java	1237	bind	errorf	errorf(id, "symbol '%s' cannot be annotated with a type", id.getName()		no-case		
+syntax/Resolver.java:1230	syntax/Resolver.java	1230	bind	errorf	errorf( id, "type annotation on '%s' may only appear at its first declaration", id.getName()		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
+syntax/Resolver.java:1232	syntax/Resolver.java	1232	bind	errorf	errorf(bind.first, "'%s' first declared here", id.getName()		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
+syntax/Resolver.java:1237	syntax/Resolver.java	1237	bind	errorf	errorf(id, "symbol '%s' cannot be annotated with a type", id.getName()		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
 syntax/Resolver.java:1247	syntax/Resolver.java	1247	toplevelRebinding	errorf	errorf(id, "'%s' redeclared at top level", id.getName()		matched	err_op_augassign_str,err_res_redeclared,err_res_redeclared_def	blaze_starlark syntax::resolver (interp-diff z_err_res_redeclared, z_err_res_redeclared_def, b_err_res_redeclared identical); the probe runs no Blaze static checks
 syntax/Resolver.java:1249	syntax/Resolver.java	1249	toplevelRebinding	errorf	errorf(prev.first, "'%s' previously declared here", id.getName()		matched	err_op_augassign_str,err_res_redeclared,err_res_redeclared_def	as syntax/Resolver.java:1247
 syntax/Resolver.java:1259	syntax/Resolver.java	1259	globalLocalConflict	errorf	errorf(id, "conflicting %s declaration of '%s'", newqual, id.getName()		different	err_res_conflict_load_global	order of blaze_starlark static checks (interp-diff z_err_res_conflict_load_global)
@@ -107,14 +107,14 @@ syntax/StringLiteral.java:85	syntax/StringLiteral.java	85	unquote	throw	IllegalA
 syntax/StringLiteral.java:88	syntax/StringLiteral.java	88	unquote	throw	IllegalArgumentException("invalid syntax")		internal		
 syntax/SyntaxError.java:78	syntax/SyntaxError.java	78	Exception	throw	IllegalArgumentException("no errors")		internal		
 syntax/TypeResolver.java:50	syntax/TypeResolver.java	50	errorf	errorf	errorf(node.getStartLocation(), format, args		helper		errorf helper
-syntax/TypeResolver.java:74	syntax/TypeResolver.java	74	evalTypeOrArg	errorf	errorf(expr, "binary operator '%s' is not supported", binop.getOperator()		no-case		
-syntax/TypeResolver.java:82	syntax/TypeResolver.java	82	evalTypeOrArg	errorf	errorf(expr, "type constructor '%s' is not defined", app.getConstructor().getName()		no-case		
-syntax/TypeResolver.java:86	syntax/TypeResolver.java	86	evalTypeOrArg	errorf	errorf( expr, "'%s' is not a type constructor, cannot be applied to '%s'", app.getConstructor().getName(), app.getArguments()		no-case		
+syntax/TypeResolver.java:74	syntax/TypeResolver.java	74	evalTypeOrArg	errorf	errorf(expr, "binary operator '%s' is not supported", binop.getOperator()		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
+syntax/TypeResolver.java:82	syntax/TypeResolver.java	82	evalTypeOrArg	errorf	errorf(expr, "type constructor '%s' is not defined", app.getConstructor().getName()		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
+syntax/TypeResolver.java:86	syntax/TypeResolver.java	86	evalTypeOrArg	errorf	errorf( expr, "'%s' is not a type constructor, cannot be applied to '%s'", app.getConstructor().getName(), app.getArguments()		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
 syntax/TypeResolver.java:99	syntax/TypeResolver.java	99	evalTypeOrArg	errorf	errorf(expr, "%s", e.getMessage()		not-triggerable		type checking (--experimental_starlark_type_checking) not ported
-syntax/TypeResolver.java:111	syntax/TypeResolver.java	111	evalTypeOrArg	errorf	errorf(expr, "type '%s' is not defined", id.getName()		no-case		
-syntax/TypeResolver.java:117	syntax/TypeResolver.java	117	evalTypeOrArg	errorf	errorf(expr, "unexpected expression '%s'", expr		no-case		
-syntax/TypeResolver.java:126	syntax/TypeResolver.java	126	evalType	errorf	errorf(expr, "expected type arguments after the type constructor '%s'", expr		no-case		
-syntax/TypeResolver.java:128	syntax/TypeResolver.java	128	evalType	errorf	errorf(expr, "expression '%s' is not a valid type.", expr		no-case		
+syntax/TypeResolver.java:111	syntax/TypeResolver.java	111	evalTypeOrArg	errorf	errorf(expr, "type '%s' is not defined", id.getName()		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
+syntax/TypeResolver.java:117	syntax/TypeResolver.java	117	evalTypeOrArg	errorf	errorf(expr, "unexpected expression '%s'", expr		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
+syntax/TypeResolver.java:126	syntax/TypeResolver.java	126	evalType	errorf	errorf(expr, "expected type arguments after the type constructor '%s'", expr		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
+syntax/TypeResolver.java:128	syntax/TypeResolver.java	128	evalType	errorf	errorf(expr, "expression '%s' is not a valid type.", expr		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
 syntax/TypeResolver.java:212	syntax/TypeResolver.java	212	evalTypeExpression	throw	SyntaxError.Exception(r.errors)		helper		propagates a message produced at another row (or by Java's runtime); its text is checked at that row
 syntax/TypeResolver.java:229	syntax/TypeResolver.java	229	setType	throw	IllegalArgumentException( String.format( "Expected type of binding %s to be null but was %s", binding, binding.getType()))		internal		
 syntax/TypeResolver.java:240	syntax/TypeResolver.java	240	setType	throw	IllegalArgumentException( String.format( "Expected type of resolved function %s to be null but was %s", resolved.getName(), resolved.getFunctionType()))		internal		
@@ -122,16 +122,16 @@ syntax/TypeResolver.java:316	syntax/TypeResolver.java	316	annotateFile	throw	Syn
 eval/BuiltinFunction.java:154	eval/BuiltinFunction.java	154	getPositionalOnlyArgumentVector	errorf	Starlark.errorf("%s() got unexpected positional argument", methodName)		matched	err_call_str_elems_args	
 eval/BuiltinFunction.java:156	eval/BuiltinFunction.java	156	getPositionalOnlyArgumentVector	errorf	Starlark.errorf( "%s() accepts no more than %d positional argument%s but got %d", methodName, argIndex, plural(argIndex), positional.length)		matched	err_call_bool_toomany,err_call_dict_ctor_toomany,err_call_len_two,err_call_range_toomany,err_call_str_method_toomany,err_call_str_toomany,...	
 eval/BuiltinFunction.java:335	eval/BuiltinFunction.java	335	addNamedArg	errorf	Starlark.errorf( "%s() got unexpected keyword argument '%s'%s", owner.methodName, name, SpellChecker.didYouMean(name, allNames)		matched	err_call_len_unknown_kw,err_call_str_method_kw_suggest,err_call_str_method_kw_unknown	
-eval/BuiltinFunction.java:343	eval/BuiltinFunction.java	343	addNamedArg	errorf	Starlark.errorf( "%s() got multiple values for keyword argument '%s'", owner.methodName, name		no-case		
+eval/BuiltinFunction.java:343	eval/BuiltinFunction.java	343	addNamedArg	errorf	Starlark.errorf( "%s() got multiple values for keyword argument '%s'", owner.methodName, name		no-case		triggerable; no interp case yet
 eval/BuiltinFunction.java:355	eval/BuiltinFunction.java	355	addNamedArg	errorf	Starlark.errorf( "%s() got named argument for positional-only parameter '%s'", owner.methodName, name		matched	err_call_len_named,err_call_positional_only_named,err_def_dup_kwargs_builtin,more_i_x_named,str_find_named,str_replace_named,...	
-eval/BuiltinFunction.java:363	eval/BuiltinFunction.java	363	addNamedArg	errorf	Starlark.errorf( "%s() got multiple values for keyword argument '%s'", owner.methodName, name		no-case		
-eval/BuiltinFunction.java:372	eval/BuiltinFunction.java	372	addNamedArg	errorf	Starlark.errorf( "in call to %s(), parameter '%s' is %s", owner.methodName, param.getName(), param.getDisabledErrorMessage()		no-case		
-eval/BuiltinFunction.java:382	eval/BuiltinFunction.java	382	addNamedArg	errorf	Starlark.errorf("%s() got multiple values for argument '%s'", owner.methodName, name		no-case		
+eval/BuiltinFunction.java:363	eval/BuiltinFunction.java	363	addNamedArg	errorf	Starlark.errorf( "%s() got multiple values for keyword argument '%s'", owner.methodName, name		no-case		triggerable; no interp case yet
+eval/BuiltinFunction.java:372	eval/BuiltinFunction.java	372	addNamedArg	errorf	Starlark.errorf( "in call to %s(), parameter '%s' is %s", owner.methodName, param.getName(), param.getDisabledErrorMessage()		no-case		triggerable; no interp case yet
+eval/BuiltinFunction.java:382	eval/BuiltinFunction.java	382	addNamedArg	errorf	Starlark.errorf("%s() got multiple values for argument '%s'", owner.methodName, name		no-case		triggerable; no interp case yet
 eval/BuiltinFunction.java:404	eval/BuiltinFunction.java	404	checkParamValue	errorf	Starlark.errorf( "in call to %s(), parameter '%s' got value of type '%s', want '%s'", owner.methodName, param.getName(), Starlark.type(value), param.getTypeErrorMessage()		matched	err_call_abs_type,err_call_all_type,err_call_any_type,err_call_float_type,err_call_getattr_type,err_call_hasattr_type,...	
 eval/BuiltinFunction.java:422	eval/BuiltinFunction.java	422	call	errorf	Starlark.errorf("%s() got unexpected positional argument", owner.methodName)		matched	err_call_str_elems_args	
 eval/BuiltinFunction.java:424	eval/BuiltinFunction.java	424	call	errorf	Starlark.errorf( "%s() accepts no more than %d positional argument%s but got %d", owner.methodName, argIndex, plural(argIndex), argIndex + unexpectedPositionalArgCount)		matched	err_call_bool_toomany,err_call_dict_ctor_toomany,err_call_len_two,err_call_range_toomany,err_call_str_method_toomany,err_call_str_toomany,...	
-eval/BuiltinFunction.java:479	eval/BuiltinFunction.java	479	applyDefaultsReportMissingArgs	errorf	Starlark.errorf( "%s() missing %d required positional argument%s: %s", methodName, missingPositional.size(), plural(missingPositional.size()), Joiner.on(", ").join(missingPositional))		no-case		
-eval/BuiltinFunction.java:487	eval/BuiltinFunction.java	487	applyDefaultsReportMissingArgs	errorf	Starlark.errorf( "%s() missing %d required named argument%s: %s", methodName, missingNamed.size(), plural(missingNamed.size()), Joiner.on(", ").join(missingNamed))		no-case		
+eval/BuiltinFunction.java:479	eval/BuiltinFunction.java	479	applyDefaultsReportMissingArgs	errorf	Starlark.errorf( "%s() missing %d required positional argument%s: %s", methodName, missingPositional.size(), plural(missingPositional.size()), Joiner.on(", ").join(missingPositional))		matched	err_call_dict_get_noargs,err_call_dir_noargs,err_call_int_noargs,err_call_len_noargs,err_call_list_append_noargs,err_call_range_noargs,...	
+eval/BuiltinFunction.java:487	eval/BuiltinFunction.java	487	applyDefaultsReportMissingArgs	errorf	Starlark.errorf( "%s() missing %d required named argument%s: %s", methodName, missingNamed.size(), plural(missingNamed.size()), Joiner.on(", ").join(missingNamed))		no-case		triggerable; no interp case yet
 eval/BuiltinFunction.java:515	eval/BuiltinFunction.java	515	checkParamValue	errorf	Starlark.errorf( "in call to %s(), parameter '%s' got value of type '%s', want '%s'", methodName, param.getName(), Starlark.type(value), param.getTypeErrorMessage())		matched	err_call_abs_type,err_call_all_type,err_call_any_type,err_call_float_type,err_call_getattr_type,err_call_hasattr_type,...	
 eval/CallUtils.java:147	eval/CallUtils.java	147	buildStarlarkClassDescriptor	throw	IllegalArgumentException( String.format("Class %s has two selfCall methods defined", clazz.getName()))		internal		
 eval/Dict.java:200	eval/Dict.java	200	checkHashable	errorf	Starlark.errorf("unhashable type: 'dict'")		matched	err_hash_dict_key,err_hash_set_add	
@@ -140,8 +140,8 @@ eval/Dict.java:291	eval/Dict.java	291	popitem	errorf	Starlark.errorf("popitem: e
 eval/Dict.java:365	eval/Dict.java	365	update	errorf	Starlark.errorf("in %s, got %s, want iterable", funcname, Starlark.type(pairs))		matched	err_call_dict_ctor_type,err_call_dict_update_type	
 eval/Dict.java:373	eval/Dict.java	373	update	errorf	Starlark.errorf( "in %s, dictionary update sequence element #%d is not iterable (%s)", funcname, pos, Starlark.type(item))		matched	err_call_dict_ctor_elem,err_call_dict_update_elem	
 eval/Dict.java:378	eval/Dict.java	378	update	errorf	Starlark.errorf( "in %s, item #%d has length %d, but exactly two elements are required", funcname, pos, pair.length)		matched	err_call_dict_ctor_len,err_call_dict_update_len	
-eval/Dict.java:663	eval/Dict.java	663	cast	errorf	Starlark.errorf("got %s for '%s', want dict", Starlark.type(x), what)		no-case		
-eval/Dict.java:671	eval/Dict.java	671	cast	errorf	Starlark.errorf( "got dict<%s, %s> for '%s', want dict<%s, %s>", Starlark.type(e.getKey()), Starlark.type(e.getValue()), what, Starlark.classType(keyType), Starlark.classType(valueType))		no-case		
+eval/Dict.java:663	eval/Dict.java	663	cast	errorf	Starlark.errorf("got %s for '%s', want dict", Starlark.type(x), what)		no-case		triggerable; no interp case yet
+eval/Dict.java:671	eval/Dict.java	671	cast	errorf	Starlark.errorf( "got dict<%s, %s> for '%s', want dict<%s, %s>", Starlark.type(e.getKey()), Starlark.type(e.getValue()), what, Starlark.classType(keyType), Starlark.classType(valueType))		no-case		triggerable; no interp case yet
 eval/Dict.java:696	eval/Dict.java	696	getIndex	errorf	Starlark.errorf("key %s not found in dictionary", Starlark.repr(key))		matched	err_ix_dict_missing,err_ix_dict_missing_int,err_ix_dict_unhashable	
 eval/Dict.java:759	eval/Dict.java	759	clear	throw	UnsupportedOperationException()		internal		
 eval/Dict.java:766	eval/Dict.java	766	put	throw	UnsupportedOperationException()		internal		
@@ -150,26 +150,26 @@ eval/Dict.java:779	eval/Dict.java	779	remove	throw	UnsupportedOperationException
 eval/Eval.java:126	eval/Eval.java	126	execAssignment	throw	ex		rethrow		
 eval/Eval.java:151	eval/Eval.java	151	execFor	throw	IllegalStateException("unreachable")		internal		
 eval/Eval.java:156	eval/Eval.java	156	execFor	throw	ex		rethrow		
-eval/Eval.java:191	eval/Eval.java	191	newFunction	errorf	Starlark.errorf( "%s(): parameter '%s' has default value of type '%s', declares '%s'", rfn.getName(), rfn.getParameterNames().get(i), TypeChecker.type(defaultValue), parameterType)		no-case		
+eval/Eval.java:191	eval/Eval.java	191	newFunction	errorf	Starlark.errorf( "%s(): parameter '%s' has default value of type '%s', declares '%s'", rfn.getName(), rfn.getParameterNames().get(i), TypeChecker.type(defaultValue), parameterType)		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
 eval/Eval.java:218	eval/Eval.java	218	newFunction	throw	IllegalStateException("unexpected: " + bind)		internal		
-eval/Eval.java:250	eval/Eval.java	250	execLoad	errorf	Starlark.errorf("load statements may not be executed in this thread")		no-case		
-eval/Eval.java:258	eval/Eval.java	258	execLoad	errorf	Starlark.errorf("module '%s' not found", moduleName)		no-case		
-eval/Eval.java:267	eval/Eval.java	267	execLoad	errorf	Starlark.errorf( "file '%s' does not contain symbol '%s'%s", moduleName, orig.getName(), SpellChecker.didYouMean(orig.getName(), module.getGlobals().keySet()))		no-case		
-eval/Eval.java:296	eval/Eval.java	296	exec	eval-exception	EvalException("Starlark computation cancelled: too many steps")		no-case		
+eval/Eval.java:250	eval/Eval.java	250	execLoad	errorf	Starlark.errorf("load statements may not be executed in this thread")		not-triggerable		not reachable from a Bazel file (every Bazel thread loads; every callable implements call)
+eval/Eval.java:258	eval/Eval.java	258	execLoad	errorf	Starlark.errorf("module '%s' not found", moduleName)		no-case		triggerable; no interp case yet
+eval/Eval.java:267	eval/Eval.java	267	execLoad	errorf	Starlark.errorf( "file '%s' does not contain symbol '%s'%s", moduleName, orig.getName(), SpellChecker.didYouMean(orig.getName(), module.getGlobals().keySet()))		no-case		triggerable; no interp case yet
+eval/Eval.java:296	eval/Eval.java	296	exec	eval-exception	EvalException("Starlark computation cancelled: too many steps")		not-triggerable		step limit (StarlarkThread.setMaxExecutionSteps), not set by Bazel
 eval/Eval.java:327	eval/Eval.java	327	exec	throw	IllegalArgumentException("unexpected statement: " + st.kind())		internal		
 eval/Eval.java:358	eval/Eval.java	358	assign	throw	ex		rethrow		
 eval/Eval.java:362	eval/Eval.java	362	assign	errorf	Starlark.errorf("cannot assign to '%s'", lhs)		matched	err_parse_bad_assign_call,err_parse_bad_assign_target	
 eval/Eval.java:379	eval/Eval.java	379	assignIdentifier	throw	IllegalStateException(bind.getScope().toString())		internal		
 eval/Eval.java:395	eval/Eval.java	395	assignSequence	errorf	Starlark.errorf( "got '%s' in sequence assignment (want %d-element sequence)", Starlark.type(x), nlhs)		matched	err_ev_cannot_assign,err_ev_unpack_type	
-eval/Eval.java:400	eval/Eval.java	400	assignSequence	errorf	Starlark.errorf( "too %s values to unpack (got %d, want %d)", nrhs < nlhs ? "few" : "many", nrhs, nlhs)		no-case		
+eval/Eval.java:400	eval/Eval.java	400	assignSequence	errorf	Starlark.errorf( "too %s values to unpack (got %d, want %d)", nrhs < nlhs ? "few" : "many", nrhs, nlhs)		matched	err_ev_unpack_few,err_ev_unpack_many,err_ev_unpack_nested,err_misc_star_iter	
 eval/Eval.java:426	eval/Eval.java	426	execAugmentedAssignment	throw	ex		rethrow		
 eval/Eval.java:443	eval/Eval.java	443	execAugmentedAssignment	throw	ex		rethrow		
 eval/Eval.java:449	eval/Eval.java	449	execAugmentedAssignment	throw	ex		rethrow		
 eval/Eval.java:470	eval/Eval.java	470	execAugmentedAssignment	throw	ex		rethrow		
 eval/Eval.java:475	eval/Eval.java	475	execAugmentedAssignment	throw	ex		rethrow		
-eval/Eval.java:481	eval/Eval.java	481	execAugmentedAssignment	errorf	Starlark.errorf("cannot perform augmented assignment on '%s'", lhs)		no-case		
-eval/Eval.java:548	eval/Eval.java	548	eval	eval-exception	EvalException("Starlark computation cancelled: too many steps")		no-case		
-eval/Eval.java:572	eval/Eval.java	572	eval	eval-exception	EvalException("isinstance() is not yet supported")		no-case		
+eval/Eval.java:481	eval/Eval.java	481	execAugmentedAssignment	errorf	Starlark.errorf("cannot perform augmented assignment on '%s'", lhs)		no-case		triggerable; no interp case yet
+eval/Eval.java:548	eval/Eval.java	548	eval	eval-exception	EvalException("Starlark computation cancelled: too many steps")		not-triggerable		step limit (StarlarkThread.setMaxExecutionSteps), not set by Bazel
+eval/Eval.java:572	eval/Eval.java	572	eval	eval-exception	EvalException("isinstance() is not yet supported")		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
 eval/Eval.java:606	eval/Eval.java	606	eval	throw	IllegalArgumentException("unexpected expression: " + expr.kind())		internal		
 eval/Eval.java:624	eval/Eval.java	624	evalBinaryOperator	throw	ex		rethrow		
 eval/Eval.java:646	eval/Eval.java	646	evalDict	throw	ex		rethrow		
@@ -220,8 +220,8 @@ eval/MethodDescriptor.java:295	eval/MethodDescriptor.java	295	call	eval-exceptio
 eval/MethodDescriptor.java:306	eval/MethodDescriptor.java	306	call	throw	methodInvocationReturnedNull(args)		internal		Java host-value / reflection plumbing
 eval/MethodDescriptor.java:313	eval/MethodDescriptor.java	313	call	throw	methodInvocationReturnedNull(args)		internal		Java host-value / reflection plumbing
 eval/MethodDescriptor.java:317	eval/MethodDescriptor.java	317	call	throw	IllegalStateException("unreachable: " + howToHandleReturn)		internal		
-eval/MethodDescriptor.java:421	eval/MethodDescriptor.java	421	checkEnabled	errorf	Starlark.errorf( "function %s() is experimental and thus unavailable with the current flags. It may be" + " enabled by setting --%s", name, conditionalCheck.enableOnlyWithFlag().substring(1))		no-case		
-eval/MethodDescriptor.java:427	eval/MethodDescriptor.java	427	checkEnabled	errorf	Starlark.errorf( "function %s() is deprecated and will be removed soon. It may be temporarily re-enabled" + " by setting --%s", name, conditionalCheck.disableWithFlag().substring(1))		no-case		
+eval/MethodDescriptor.java:421	eval/MethodDescriptor.java	421	checkEnabled	errorf	Starlark.errorf( "function %s() is experimental and thus unavailable with the current flags. It may be" + " enabled by setting --%s", name, conditionalCheck.enableOnlyWithFlag().substring(1))		not-triggerable		only when a flag disables the function (not at Bazel defaults for the core builtins)
+eval/MethodDescriptor.java:427	eval/MethodDescriptor.java	427	checkEnabled	errorf	Starlark.errorf( "function %s() is deprecated and will be removed soon. It may be temporarily re-enabled" + " by setting --%s", name, conditionalCheck.disableWithFlag().substring(1))		not-triggerable		only when a flag disables the function (not at Bazel defaults for the core builtins)
 eval/MethodLibrary.java:126	eval/MethodLibrary.java	126	findExtreme	throw	AssertionError("Got invalid ValueWithComparisonKey.KeyCallException", ex)		internal		
 eval/MethodLibrary.java:132	eval/MethodLibrary.java	132	findExtreme	eval-exception	EvalException(ex.getMessage())		helper		compareUnchecked message in min/max (err_call_max_mixed matched)
 eval/MethodLibrary.java:134	eval/MethodLibrary.java	134	findExtreme	eval-exception	EvalException("expected at least one item", ex)		matched	err_call_max_empty,err_call_max_noargs,err_call_min_empty	
@@ -235,18 +235,18 @@ eval/MethodLibrary.java:493	eval/MethodLibrary.java	493	floatForStarlark	errorf	
 eval/MethodLibrary.java:513	eval/MethodLibrary.java	513	floatForStarlark	errorf	Starlark.errorf("invalid float literal: %s", s)		matched	err_call_float_bad,err_call_float_bad_x	
 eval/MethodLibrary.java:524	eval/MethodLibrary.java	524	floatForStarlark	errorf	Starlark.errorf("floating-point number too large")		matched	err_call_float_too_large	
 eval/MethodLibrary.java:527	eval/MethodLibrary.java	527	floatForStarlark	errorf	Starlark.errorf("invalid float literal: %s", s)		matched	err_call_float_bad,err_call_float_bad_x	
-eval/MethodLibrary.java:546	eval/MethodLibrary.java	546	floatForStarlark	errorf	Starlark.errorf("got %s, want string, int, float, or bool", Starlark.type(x))		no-case		
+eval/MethodLibrary.java:546	eval/MethodLibrary.java	546	floatForStarlark	errorf	Starlark.errorf("got %s, want string, int, float, or bool", Starlark.type(x))		not-triggerable		unreachable: the parameter type check rejects other types first
 eval/MethodLibrary.java:619	eval/MethodLibrary.java	619	intForStarlark	errorf	Starlark.errorf("%s", ex.getMessage())		helper		StarlarkInt.parse messages (rows eval/StarlarkInt.java:103-164, patch 0044)
 eval/MethodLibrary.java:624	eval/MethodLibrary.java	624	intForStarlark	errorf	Starlark.errorf("can't convert non-string with explicit base")		matched	err_call_int_base_nonstr,str_int_base_with_int	
 eval/MethodLibrary.java:634	eval/MethodLibrary.java	634	intForStarlark	errorf	Starlark.errorf("can't convert float %s to int", x)		matched	err_call_int_float_inf,err_call_int_float_nan,more_i_float_str	
-eval/MethodLibrary.java:637	eval/MethodLibrary.java	637	intForStarlark	errorf	Starlark.errorf("got %s, want string, int, float, or bool", Starlark.type(x))		no-case		
-eval/MethodLibrary.java:692	eval/MethodLibrary.java	692	set	errorf	Starlark.errorf("Use of set() requires --experimental_enable_starlark_set")		no-case		
+eval/MethodLibrary.java:637	eval/MethodLibrary.java	637	intForStarlark	errorf	Starlark.errorf("got %s, want string, int, float, or bool", Starlark.type(x))		not-triggerable		unreachable: the parameter type check rejects other types first
+eval/MethodLibrary.java:692	eval/MethodLibrary.java	692	set	errorf	Starlark.errorf("Use of set() requires --experimental_enable_starlark_set")		not-triggerable		only when a flag disables the function (not at Bazel defaults for the core builtins)
 eval/MethodLibrary.java:779	eval/MethodLibrary.java	779	range	errorf	Starlark.errorf("step cannot be 0")		matched	err_call_range_step_zero	
 eval/MethodLibrary.java:914	eval/MethodLibrary.java	914	fail	eval-exception	EvalException(printer.toString(), null, includeStack)		matched		fail(): blaze_starlark env.rs (str_fail_*, err_call_fail_*)
 eval/Module.java:241	eval/Module.java	241	resolve	throw	Undefined(((GuardedValue) v).getErrorFromAttemptingAccess(name))		different		guarded symbol message: substituted by blaze_packages builtins::env::undefined_variable_name, which still parses the old text (follow-up for root)
 eval/Module.java:256	eval/Module.java	256	resolve	throw	Undefined(String.format("name '%s' is not defined", name), candidates)		matched	err_call_isinstance,err_parse_dot_ident,err_parse_else_alone,err_parse_eof_in_call,err_parse_generator,err_parse_if_no_colon,...	
 eval/Module.java:267	eval/Module.java	267	resolveType	throw	AssertionError(String.format("Unexpected scope: %s", scope))		internal		
-eval/Module.java:270	eval/Module.java	270	resolveType	throw	Undefined(String.format("%s symbol '%s' cannot be used as a type", scope, name))		no-case		
+eval/Module.java:270	eval/Module.java	270	resolveType	throw	Undefined(String.format("%s symbol '%s' cannot be used as a type", scope, name))		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
 eval/Mutability.java:165	eval/Mutability.java	165	updateIteratorCount	throw	IllegalStateException("zero value in this.iteratorCount")		internal		
 eval/Mutability.java:251	eval/Mutability.java	251	unsafeShallowFreeze	throw	UnsupportedOperationException()		internal		
 eval/Mutability.java:264	eval/Mutability.java	264	checkUnsafeShallowFreezePrecondition	throw	IllegalArgumentException( "cannot call unsafeShallowFreeze() on an object whose Mutability is already frozen")		internal		
@@ -266,14 +266,14 @@ eval/RangeList.java:117	eval/RangeList.java	117	get	throw	ArrayIndexOutOfBoundsE
 eval/RangeList.java:171	eval/RangeList.java	171	next	throw	NoSuchElementException()		internal		
 eval/RegularTuple.java:151	eval/RegularTuple.java	151	repeat	errorf	Starlark.errorf("excessive repeat (%d * %d elements)", elems.length, ni)		matched	err_op_list_repeat_excessive,err_op_tuple_repeat_excessive	
 eval/Sequence.java:87	eval/Sequence.java	87	compare	throw	IllegalStateException( String.format( "x.equals(y) yet x.compareTo(y)==%d (x: %s, y: %s)", cmp, Starlark.type(xelem), Starlark.type(yelem)))		internal		
-eval/Sequence.java:136	eval/Sequence.java	136	cast	errorf	Starlark.errorf("for %s, got %s, want sequence", what, Starlark.type(x))		no-case		
+eval/Sequence.java:136	eval/Sequence.java	136	cast	errorf	Starlark.errorf("for %s, got %s, want sequence", what, Starlark.type(x))		no-case		triggerable; no interp case yet
 eval/Sequence.java:141	eval/Sequence.java	141	cast	errorf	Starlark.errorf( "at index %d of %s, got element of type %s, want %s", i, what, Starlark.type(elem), Starlark.classType(elemType))		matched	err_call_str_endswith_tuple_elem,str_startswith_tuple_nonstr	
 eval/SingletonTuple.java:113	eval/SingletonTuple.java	113	repeat	errorf	Starlark.errorf("excessive repeat (%d * %d elements)", 1, ni)		matched	err_op_list_repeat_excessive,err_op_tuple_repeat_excessive	
 eval/Starlark.java:135	eval/Starlark.java	135	checkValid	throw	InvalidStarlarkValueException(x == null ? null : x.getClass())		internal		Java host-value / reflection plumbing
 eval/Starlark.java:165	eval/Starlark.java	165	isImmutable	throw	InvalidStarlarkValueException(x.getClass())		internal		Java host-value / reflection plumbing
 eval/Starlark.java:220	eval/Starlark.java	220	fromJava	throw	InvalidStarlarkValueException(x.getClass())		internal		Java host-value / reflection plumbing
 eval/Starlark.java:252	eval/Starlark.java	252	truth	throw	InvalidStarlarkValueException(x.getClass())		internal		Java host-value / reflection plumbing
-eval/Starlark.java:264	eval/Starlark.java	264	checkMutable	errorf	errorf("trying to mutate a frozen %s value", type(x))		no-case		
+eval/Starlark.java:264	eval/Starlark.java	264	checkMutable	errorf	errorf("trying to mutate a frozen %s value", type(x))		no-case		triggerable; no interp case yet
 eval/Starlark.java:267	eval/Starlark.java	267	checkMutable	errorf	errorf("%s value is temporarily immutable due to active for-loop iteration", type(x))		matched	err_mut_dict_during_iter,err_mut_dict_pop_during_iter,err_mut_list_comprehension_iter,err_mut_list_during_iter,err_mut_set_during_iter	
 eval/Starlark.java:284	eval/Starlark.java	284	toIterable	errorf	errorf("type '%s' is not iterable", type(x))		matched	err_call_enumerate_type,err_call_min_type,err_call_zip_type,err_misc_comprehension_int,err_misc_iter_int_def	
 eval/Starlark.java:453	eval/Starlark.java	453	classTypeFromJava	throw	InvalidStarlarkValueException(c)		internal		Java host-value / reflection plumbing
@@ -299,7 +299,7 @@ eval/Starlark.java:958	eval/Starlark.java	958	errorf	eval-exception	new EvalExce
 eval/Starlark.java:1008	eval/Starlark.java	1008	getattr	errorf	Starlark.errorf("%s", error)		helper		Structure.getErrorMessageForUnknownField (patch 0013, per type)
 eval/Starlark.java:1015	eval/Starlark.java	1015	getattr	errorf	Starlark.errorf( "'%s' value has no field or method '%s'%s", Starlark.type(x), name, SpellChecker.didYouMean(name, dir(mu, semantics, x)))		matched	err_attr_builtin,err_attr_dict_field,err_attr_dict_suggest,err_attr_function,err_attr_getattr_missing,err_attr_getattr_suggest,...	
 eval/Starlark.java:1088	eval/Starlark.java	1088	addMethods	throw	IllegalArgumentException( String.format("addMethods(%s): method %s has structField=true", cls.getName(), name))		internal		
-eval/StarlarkCallable.java:51	eval/StarlarkCallable.java	51	call	errorf	Starlark.errorf("function %s not implemented", getName())		no-case		
+eval/StarlarkCallable.java:51	eval/StarlarkCallable.java	51	call	errorf	Starlark.errorf("function %s not implemented", getName())		not-triggerable		not reachable from a Bazel file (every Bazel thread loads; every callable implements call)
 eval/StarlarkCallable.java:84	eval/StarlarkCallable.java	84	fastcall	errorf	Starlark.errorf("%s got multiple values for parameter '%s'", this, named[i])		matched	err_def_dup_kwargs,err_def_dup_param	
 eval/StarlarkCallable.java:148	eval/StarlarkCallable.java	148	pushCallableAndThrow	throw	e		rethrow		
 eval/StarlarkCallable.java:177	eval/StarlarkCallable.java	177	addNamedArg	errorf	Starlark.errorf("%s got multiple values for parameter '%s'", owner, name		matched	err_def_dup_kwargs,err_def_dup_param	
@@ -311,24 +311,24 @@ eval/StarlarkFloat.java:250	eval/StarlarkFloat.java	250	finiteDoubleToIntExact	t
 eval/StarlarkFloat.java:270	eval/StarlarkFloat.java	270	getMantissa	throw	IllegalArgumentException("not finite: " + x)		internal		
 eval/StarlarkFloat.java:289	eval/StarlarkFloat.java	289	getShift	throw	IllegalArgumentException("not finite: " + x)		internal		
 eval/StarlarkFunction.java:114	eval/StarlarkFunction.java	114	getDefaultValue	throw	IndexOutOfBoundsException()		internal		
-eval/StarlarkFunction.java:393	eval/StarlarkFunction.java	393	checkUnexpectedNamedArgs	errorf	Starlark.errorf( "%s() got unexpected keyword argument%s: %s%s", owner.getName(), plural(unexpectedNamedArgs.size()), Joiner.on(", ").join(unexpectedNamedArgs), unexpectedNamedArgs.size() == 1 ? SpellChecker.didYouMean( unexpectedNamedArgs.get(0), owner.getParameterNames().subList(0, owner.getNumNonResidualParameters())) : "")		matched	err_def_unexpected_kw2	
-eval/StarlarkFunction.java:443	eval/StarlarkFunction.java	443	applyDefaultsReportMissingArgs	errorf	Starlark.errorf( "%s() missing %d required positional argument%s: %s", owner.getName(), missingPositional.size(), plural(missingPositional.size()), Joiner.on(", ").join(missingPositional))		no-case		
-eval/StarlarkFunction.java:451	eval/StarlarkFunction.java	451	applyDefaultsReportMissingArgs	errorf	Starlark.errorf( "%s() missing %d required keyword-only argument%s: %s", owner.getName(), missingKwonly.size(), plural(missingKwonly.size()), Joiner.on(", ").join(missingKwonly))		no-case		
+eval/StarlarkFunction.java:393	eval/StarlarkFunction.java	393	checkUnexpectedNamedArgs	errorf	Starlark.errorf( "%s() got unexpected keyword argument%s: %s%s", owner.getName(), plural(unexpectedNamedArgs.size()), Joiner.on(", ").join(unexpectedNamedArgs), unexpectedNamedArgs.size() == 1 ? SpellChecker.didYouMean( unexpectedNamedArgs.get(0), owner.getParameterNames().subList(0, owner.getNumNonResidualParameters())) : "")		matched	err_def_unexpected_kw,err_def_unexpected_kw2,err_def_unexpected_kw_suggest	
+eval/StarlarkFunction.java:443	eval/StarlarkFunction.java	443	applyDefaultsReportMissingArgs	errorf	Starlark.errorf( "%s() missing %d required positional argument%s: %s", owner.getName(), missingPositional.size(), plural(missingPositional.size()), Joiner.on(", ").join(missingPositional))		matched	err_call_dict_get_noargs,err_call_dir_noargs,err_call_int_noargs,err_call_len_noargs,err_call_list_append_noargs,err_call_range_noargs,...	
+eval/StarlarkFunction.java:451	eval/StarlarkFunction.java	451	applyDefaultsReportMissingArgs	errorf	Starlark.errorf( "%s() missing %d required keyword-only argument%s: %s", owner.getName(), missingKwonly.size(), plural(missingKwonly.size()), Joiner.on(", ").join(missingKwonly))		matched	err_def_missing_kwonly,err_def_missing_kwonly1	
 eval/StarlarkFunction.java:484	eval/StarlarkFunction.java	484	throwDoubleDefinedKeywordArg	errorf	Starlark.errorf("%s() got multiple values for parameter '%s'", owner.getName(), name		matched	err_def_dup_kwargs,err_def_dup_param	
 eval/StarlarkFunction.java:513	eval/StarlarkFunction.java	513	call	errorf	Starlark.errorf( "%s() accepts no more than %d positional argument%s but got %d", owner.getName(), numOrdinaryParams, plural(numOrdinaryParams), numNonSurplusPositionalArgs)		matched	err_call_bool_toomany,err_call_dict_ctor_toomany,err_call_len_two,err_call_range_toomany,err_call_str_method_toomany,err_call_str_toomany,...	
 eval/StarlarkFunction.java:520	eval/StarlarkFunction.java	520	call	errorf	Starlark.errorf( "%s() does not accept positional arguments, but got %d", owner.getName(), numNonSurplusPositionalArgs)		matched	err_def_too_many_pos0,err_def_too_many_pos_kwonly	
 eval/StarlarkFunction.java:554	eval/StarlarkFunction.java	554	call	errorf	Starlark.errorf( "in call to %s(), parameter '%s' got value of type '%s', want '%s'", owner.getName(), owner.getParameterNames().get(i), TypeChecker.type(locals[i]), parameterType)		matched	err_call_abs_type,err_call_all_type,err_call_any_type,err_call_float_type,err_call_getattr_type,err_call_hasattr_type,...	
 eval/StarlarkFunction.java:573	eval/StarlarkFunction.java	573	call	errorf	Starlark.errorf("function '%s' called recursively", owner.getName())		matched	err_ev_recursion,err_ev_recursion_mutual	
-eval/StarlarkFunction.java:583	eval/StarlarkFunction.java	583	call	errorf	Starlark.errorf( "%s(): returns value of type '%s', declares '%s'", owner.getName(), TypeChecker.type(returnValue), functionType.getReturnType())		no-case		
+eval/StarlarkFunction.java:583	eval/StarlarkFunction.java	583	call	errorf	Starlark.errorf( "%s(): returns value of type '%s', declares '%s'", owner.getName(), TypeChecker.type(returnValue), functionType.getReturnType())		not-triggerable		needs type syntax with type checking (--experimental_starlark_types / type checking), not on by default; Blaze has no type checker (patch 0020 parses only)
 eval/StarlarkInt.java:103	eval/StarlarkInt.java	103	parse	throw	NumberFormatException("empty string")		matched	err_call_float_empty,str_int_empty	
 eval/StarlarkInt.java:141	eval/StarlarkInt.java	141	parse	throw	NumberFormatException( "cannot infer base when string begins with a 0: " + Starlark.repr(stringForErrors))		matched	str_int_base_plus,str_int_leading0	
 eval/StarlarkInt.java:147	eval/StarlarkInt.java	147	parse	throw	NumberFormatException( String.format("invalid base %d (want 2 <= base <= 36)", base))		matched	more_i_base_neg,str_int_base1,str_int_base37	
 eval/StarlarkInt.java:153	eval/StarlarkInt.java	153	parse	throw	NumberFormatException( String.format("invalid base-%d literal: %s", base, Starlark.repr(stringForErrors)))		matched	err_lex_invalid_hex,err_lex_invalid_int_big_hex,err_lex_invalid_octal_literal,lex_hex_empty,lex_octal_8,more_i_big_base0_octal,...	
 eval/StarlarkInt.java:164	eval/StarlarkInt.java	164	parse	throw	NumberFormatException( String.format("invalid base-%d literal: %s", base, Starlark.repr(stringForErrors)))		matched	err_lex_invalid_hex,err_lex_invalid_int_big_hex,err_lex_invalid_octal_literal,lex_hex_empty,lex_octal_8,more_i_big_base0_octal,...	
 eval/StarlarkInt.java:339	eval/StarlarkInt.java	339	toInt	errorf	Starlark.errorf("got %s for %s, want value in signed 32-bit range", this, what)		matched	err_ix_index_big_int,err_ix_slice_big_int,err_op_singleton_tuple_repeat,str_count_big	
-eval/StarlarkInt.java:344	eval/StarlarkInt.java	344	toLong	errorf	Starlark.errorf("got %s for %s, want value in the signed 64-bit range", this, what)		no-case		
+eval/StarlarkInt.java:344	eval/StarlarkInt.java	344	toLong	errorf	Starlark.errorf("got %s for %s, want value in the signed 64-bit range", this, what)		no-case		triggerable; no interp case yet
 eval/StarlarkInt.java:357	eval/StarlarkInt.java	357	toLongFast	throw	OVERFLOW		rethrow		
-eval/StarlarkInt.java:379	eval/StarlarkInt.java	379	toFiniteDouble	errorf	Starlark.errorf("int too large to convert to float")		no-case		
+eval/StarlarkInt.java:379	eval/StarlarkInt.java	379	toFiniteDouble	errorf	Starlark.errorf("int too large to convert to float")		no-case		triggerable; no interp case yet
 eval/StarlarkInt.java:398	eval/StarlarkInt.java	398	toIntUnchecked	throw	IllegalArgumentException("not a signed 32-bit value")		internal		
 eval/StarlarkInt.java:565	eval/StarlarkInt.java	565	multiply	throw	AssertionError( String.format( "bug in multiplication: %s * %s = %s, must be long multiplication", x, y, z))		internal		
 eval/StarlarkInt.java:575	eval/StarlarkInt.java	575	floordiv	errorf	Starlark.errorf("integer division by zero")		matched	err_op_float_floordiv_zero,err_op_floordiv_zero	
@@ -337,7 +337,7 @@ eval/StarlarkInt.java:628	eval/StarlarkInt.java	628	shiftRight	errorf	Starlark.e
 eval/StarlarkInt.java:649	eval/StarlarkInt.java	649	shiftLeft	errorf	Starlark.errorf("negative shift count: %d", yi)		matched	err_op_neg_shift_l,err_op_neg_shift_r	
 eval/StarlarkInt.java:651	eval/StarlarkInt.java	651	shiftLeft	errorf	Starlark.errorf("shift count too large: %d", yi)		matched	err_call_float_int_too_large,err_op_int_float_too_large,err_op_shift_too_large	
 eval/StarlarkList.java:126	eval/StarlarkList.java	126	checkHashable	errorf	Starlark.errorf("unhashable type: 'list'")		matched	err_hash_dict_get,err_hash_list_key,err_hash_set_elem,err_hash_tuple_with_list,err_op_in_unhashable_dict	
-eval/StarlarkList.java:227	eval/StarlarkList.java	227	addSizesAndFailIfExcessive	errorf	Starlark.errorf("excessive capacity requested (%d + %d elements)", xsize, ysize)		no-case		
+eval/StarlarkList.java:227	eval/StarlarkList.java	227	addSizesAndFailIfExcessive	errorf	Starlark.errorf("excessive capacity requested (%d + %d elements)", xsize, ysize)		no-case		triggerable; no interp case yet
 eval/StarlarkList.java:286	eval/StarlarkList.java	286	repeat	errorf	Starlark.errorf("excessive repeat (%d * %d elements)", size, ni)		matched	err_op_list_repeat_excessive,err_op_tuple_repeat_excessive	
 eval/StarlarkList.java:363	eval/StarlarkList.java	363	removeElement	errorf	Starlark.errorf("item %s not found in list", Starlark.repr(x))		matched	err_call_list_index_missing,err_call_list_remove_missing	
 eval/StarlarkList.java:424	eval/StarlarkList.java	424	index	errorf	Starlark.errorf("item %s not found in list", Starlark.repr(x))		matched	err_call_list_index_missing,err_call_list_remove_missing	
@@ -371,7 +371,7 @@ eval/StringModule.java:445	eval/StringModule.java	445	rsplit	errorf	Starlark.err
 eval/StringModule.java:497	eval/StringModule.java	497	partitionCommon	errorf	Starlark.errorf("empty separator")		matched	err_call_str_partition_empty,err_call_str_rpartition_empty,str_partition_empty	
 eval/StringModule.java:676	eval/StringModule.java	676	rindex	errorf	Starlark.errorf("substring not found")		matched	err_call_str_index_missing,err_call_str_rindex_missing,err_def_traceback_builtin_leaf,more_s_rindex_missing,str_index_missing	
 eval/StringModule.java:710	eval/StringModule.java	710	index	errorf	Starlark.errorf("substring not found")		matched	err_call_str_index_missing,err_call_str_rindex_missing,err_def_traceback_builtin_leaf,more_s_rindex_missing,str_index_missing	
-eval/Structure.java:80	eval/Structure.java	80	setField	errorf	Starlark.errorf("%s value does not support field assignment", Starlark.type(this))		no-case		
+eval/Structure.java:80	eval/Structure.java	80	setField	errorf	Starlark.errorf("%s value does not support field assignment", Starlark.type(this))		no-case		triggerable; no interp case yet
 eval/SymbolGenerator.java:115	eval/SymbolGenerator.java	115	LocalSymbol	throw	NullPointerException("Null owner")		internal		
 eval/Tuple.java:166	eval/Tuple.java	166	iterator	throw	UnsupportedOperationException()		internal		
 eval/TypeChecker.java:160	eval/TypeChecker.java	160	type	throw	IllegalArgumentException("Expected a valid Starlark value.")		internal		
@@ -379,28 +379,28 @@ lib/json/Json.java:128	lib/json/Json.java	128	encode	errorf	Starlark.errorf("nes
 lib/json/Json.java:164	lib/json/Json.java	164	encode	errorf	Starlark.errorf("cannot encode non-finite float %s", x)		matched	err_call_json_encode_float	
 lib/json/Json.java:176	lib/json/Json.java	176	encode	errorf	Starlark.errorf( "%s has %s key, want string", Starlark.type(x), Starlark.type(key))		matched	err_call_json_encode_key	
 lib/json/Json.java:193	lib/json/Json.java	193	encode	errorf	Starlark.errorf( "in %s key %s: %s", Starlark.type(x), Starlark.repr(key), ex.getMessage())		matched	err_call_json_encode_nested	
-lib/json/Json.java:212	lib/json/Json.java	212	encode	errorf	Starlark.errorf("at %s index %d: %s", Starlark.type(x), i, ex.getMessage())		no-case		
-lib/json/Json.java:248	lib/json/Json.java	248	encode	errorf	Starlark.errorf("in %s field .%s: %s", Starlark.type(x), field, ex.getMessage())		no-case		
-lib/json/Json.java:255	lib/json/Json.java	255	encode	errorf	Starlark.errorf("cannot encode %s as JSON", Starlark.type(x))		no-case		
+lib/json/Json.java:212	lib/json/Json.java	212	encode	errorf	Starlark.errorf("at %s index %d: %s", Starlark.type(x), i, ex.getMessage())		matched	err_call_json_encode_nested	
+lib/json/Json.java:248	lib/json/Json.java	248	encode	errorf	Starlark.errorf("in %s field .%s: %s", Starlark.type(x), field, ex.getMessage())		no-case		triggerable; no interp case yet
+lib/json/Json.java:255	lib/json/Json.java	255	encode	errorf	Starlark.errorf("cannot encode %s as JSON", Starlark.type(x))		matched	err_call_json_encode_nested	
 lib/json/Json.java:359	lib/json/Json.java	359	decode	throw	e		rethrow		
-lib/json/Json.java:387	lib/json/Json.java	387	decode	errorf	Starlark.errorf("unexpected character %s after value", quoteChar(s.charAt(i)))		no-case		
+lib/json/Json.java:387	lib/json/Json.java	387	decode	errorf	Starlark.errorf("unexpected character %s after value", quoteChar(s.charAt(i)))		matched	err_call_json_decode_trailing	
 lib/json/Json.java:391	lib/json/Json.java	391	decode	errorf	Starlark.errorf("nesting depth limit exceeded")		matched	err_call_json_decode_deep	
 lib/json/Json.java:393	lib/json/Json.java	393	decode	errorf	Starlark.errorf("at offset %d, %s", i, ex.getMessage())		matched	err_call_json_decode_bad,err_call_json_decode_char,err_call_json_decode_colon,err_call_json_decode_comma,err_call_json_decode_eof,err_call_json_decode_escape,...	
-lib/json/Json.java:439	lib/json/Json.java	439	parse	errorf	Starlark.errorf("got %s, want ',' or ']'", quoteChar(c))		no-case		
-lib/json/Json.java:459	lib/json/Json.java	459	parse	errorf	Starlark.errorf("got %s for object key, want string", Starlark.type(key))		no-case		
-lib/json/Json.java:463	lib/json/Json.java	463	parse	errorf	Starlark.errorf("after object key, got %s, want ':' ", quoteChar(c))		no-case		
-lib/json/Json.java:471	lib/json/Json.java	471	parse	errorf	Starlark.errorf("in object, got %s, want ',' or '}'", quoteChar(c))		no-case		
-lib/json/Json.java:488	lib/json/Json.java	488	parse	errorf	Starlark.errorf("unexpected character %s", quoteChar(c))		no-case		
-lib/json/Json.java:526	lib/json/Json.java	526	parseString	errorf	Starlark.errorf("invalid character '\\x%02x' in string literal", (int) c)		no-case		
-lib/json/Json.java:536	lib/json/Json.java	536	parseString	errorf	Starlark.errorf("incomplete escape")		no-case		
-lib/json/Json.java:549	lib/json/Json.java	549	parseString	errorf	Starlark.errorf("incomplete \\uXXXX escape")		no-case		
+lib/json/Json.java:439	lib/json/Json.java	439	parse	errorf	Starlark.errorf("got %s, want ',' or ']'", quoteChar(c))		matched	err_call_json_decode_list_comma	
+lib/json/Json.java:459	lib/json/Json.java	459	parse	errorf	Starlark.errorf("got %s for object key, want string", Starlark.type(key))		matched	err_call_json_decode_key	
+lib/json/Json.java:463	lib/json/Json.java	463	parse	errorf	Starlark.errorf("after object key, got %s, want ':' ", quoteChar(c))		matched	err_call_json_decode_colon	
+lib/json/Json.java:471	lib/json/Json.java	471	parse	errorf	Starlark.errorf("in object, got %s, want ',' or '}'", quoteChar(c))		matched	err_call_json_decode_comma	
+lib/json/Json.java:488	lib/json/Json.java	488	parse	errorf	Starlark.errorf("unexpected character %s", quoteChar(c))		matched	err_call_json_decode_char,err_call_json_decode_trailing	
+lib/json/Json.java:526	lib/json/Json.java	526	parseString	errorf	Starlark.errorf("invalid character '\\x%02x' in string literal", (int) c)		no-case		triggerable; no interp case yet
+lib/json/Json.java:536	lib/json/Json.java	536	parseString	errorf	Starlark.errorf("incomplete escape")		matched	err_call_json_decode_incomplete_escape	
+lib/json/Json.java:549	lib/json/Json.java	549	parseString	errorf	Starlark.errorf("incomplete \\uXXXX escape")		matched	err_call_json_decode_u_escape	
 lib/json/Json.java:567	lib/json/Json.java	567	parseString	throw	IllegalStateException(e)		internal		
-lib/json/Json.java:577	lib/json/Json.java	577	parseString	errorf	Starlark.errorf("invalid escape '\\%s'", c)		no-case		
-lib/json/Json.java:580	lib/json/Json.java	580	parseString	errorf	Starlark.errorf("unclosed string literal")		matched	err_lex_unclosed_raw,err_lex_unclosed_str,err_lex_unclosed_str_eof,err_lex_unclosed_triple	
-lib/json/Json.java:595	lib/json/Json.java	595	parseUnicodeEscape	errorf	Starlark.errorf("invalid hex char %s in \\uXXXX escape", quoteChar(c))		no-case		
-lib/json/Json.java:634	lib/json/Json.java	634	parseNumber	errorf	Starlark.errorf("invalid number: %s", num)		no-case		
-lib/json/Json.java:648	lib/json/Json.java	648	parseNumber	errorf	Starlark.errorf("invalid number: %s", num)		no-case		
-lib/json/Json.java:668	lib/json/Json.java	668	next	errorf	Starlark.errorf("unexpected end of file")		matched	err_call_json_indent_bad	
-lib/json/Json.java:697	lib/json/Json.java	697	indent	errorf	Starlark.errorf("input is not valid JSON")		no-case		
-lib/json/Json.java:811	lib/json/Json.java	811	indent	errorf	Starlark.errorf("unexpected character %s", quoteChar(c))		no-case		
-lib/json/Json.java:848	lib/json/Json.java	848	next	errorf	Starlark.errorf("unexpected end of file")		matched	err_call_json_indent_bad	
+lib/json/Json.java:577	lib/json/Json.java	577	parseString	errorf	Starlark.errorf("invalid escape '\\%s'", c)		matched	err_call_json_decode_escape	
+lib/json/Json.java:580	lib/json/Json.java	580	parseString	errorf	Starlark.errorf("unclosed string literal")		matched	err_call_json_decode_unclosed,err_lex_unclosed_raw,err_lex_unclosed_str,err_lex_unclosed_str_eof,err_lex_unclosed_triple	
+lib/json/Json.java:595	lib/json/Json.java	595	parseUnicodeEscape	errorf	Starlark.errorf("invalid hex char %s in \\uXXXX escape", quoteChar(c))		matched	err_call_json_decode_u_hex	
+lib/json/Json.java:634	lib/json/Json.java	634	parseNumber	errorf	Starlark.errorf("invalid number: %s", num)		matched	err_call_json_decode_number,err_call_json_decode_number2	
+lib/json/Json.java:648	lib/json/Json.java	648	parseNumber	errorf	Starlark.errorf("invalid number: %s", num)		matched	err_call_json_decode_number,err_call_json_decode_number2	
+lib/json/Json.java:668	lib/json/Json.java	668	next	errorf	Starlark.errorf("unexpected end of file")		matched	err_call_json_decode_bad,err_call_json_decode_eof,err_call_json_indent_bad	
+lib/json/Json.java:697	lib/json/Json.java	697	indent	errorf	Starlark.errorf("input is not valid JSON")		no-case		triggerable; no interp case yet
+lib/json/Json.java:811	lib/json/Json.java	811	indent	errorf	Starlark.errorf("unexpected character %s", quoteChar(c))		matched	err_call_json_decode_char,err_call_json_decode_trailing	
+lib/json/Json.java:848	lib/json/Json.java	848	next	errorf	Starlark.errorf("unexpected end of file")		matched	err_call_json_decode_bad,err_call_json_decode_eof,err_call_json_indent_bad	

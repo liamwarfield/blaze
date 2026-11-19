@@ -30,7 +30,7 @@ SIDES = ("A", "B")
 USAGE = """\
 usage: scripts/server/interop-client help
        scripts/server/interop-client list
-       scripts/server/interop-client run [CASE...] [--scenarios a,b,...]
+       scripts/server/interop-client run [CASE...] [--scenarios a,b,...] [--control]
 
 Runs every case (or the named ones) twice, on separate fresh output user roots and separate
 fresh copies of the same small workspace:
@@ -40,7 +40,9 @@ fresh copies of the same small workspace:
      starts and drives the same real Bazel server (the JVM of the install base).
 and compares, per step, the exit code, the stdout bytes and the stderr bytes. A difference is
 printed as a unified diff (A = oracle, B = blaze) and makes the tool exit 1. `--scenarios`
-limits the `scenarios` case to the named probe scenarios.
+limits the `scenarios` case to the named probe scenarios. `--control` runs the oracle client on
+both sides (B too): the differences it shows are the real server's own nondeterminism (timing
+of progress output, order of parallel errors), the noise floor of the A/B comparison.
 
 Setup (all scratch state under ~/.cache/blaze/work/server/s1):
   install/      a copy of the oracle's install base (read-only original:
@@ -51,7 +53,8 @@ Setup (all scratch state under ~/.cache/blaze/work/server/s1):
   ws/           the workspace, re-created from its template before each side (same path for A
                 and B, so the output base hash is the same).
   ur-A/, ur-B/  the output user roots, deleted and re-created for each case.
-  transcripts/  <case>-A.txt and <case>-B.txt: every normalised step of the last run.
+  transcripts/  <case>-A.txt and <case>-B.txt: every normalised step of the last run
+                (transcripts-control/ for --control).
 Both sides: cwd ws/, environment exactly HOME=$HOME PATH=/usr/bin:/bin BLAZE_SERVER_MODE=jvm
 (the oracle ignores the variable; setting it for both keeps --client_env equal), startup options
 --output_user_root=<ur> --install_base=<install> --nohome_rc --nosystem_rc, and for build,
@@ -212,10 +215,13 @@ def set_install_key(key):
 # --------------------------------------------------------------------------------------------
 # One side of a case.
 
+CONTROL = False
+
+
 class Side:
     def __init__(self, name):
         self.name = name
-        self.binary = ORACLE if name == "A" else blaze_binary()
+        self.binary = ORACLE if name == "A" or CONTROL else blaze_binary()
         self.ur = os.path.join(WORK, "ur-" + name)
         self.env = {"HOME": HOME, "PATH": "/usr/bin:/bin", "BLAZE_SERVER_MODE": "jvm"}
         self.steps = []  # (title, text)
@@ -615,6 +621,10 @@ def main(argv):
     if argv[1] != "run":
         die("unknown command %r; see `interop-client help`" % argv[1])
     args = argv[2:]
+    global CONTROL
+    if "--control" in args:
+        CONTROL = True
+        args.remove("--control")
     only = None
     if "--scenarios" in args:
         i = args.index("--scenarios")
@@ -636,7 +646,10 @@ def main(argv):
     signal.signal(signal.SIGHUP, on_signal)
 
     keys = prepare_install_base()
-    print("interop-client: oracle %s; blaze %s" % (ORACLE, blaze_binary()))
+    if CONTROL:
+        keys["B"] = keys["A"]
+    print("interop-client: oracle %s; blaze %s%s"
+          % (ORACLE, blaze_binary(), " (--control: B runs the oracle too)" if CONTROL else ""))
     results = []
     try:
         for name, f in selected:
@@ -653,7 +666,7 @@ def main(argv):
                 finally:
                     side.cleanup()
                 run[n] = side
-            tdir = os.path.join(WORK, "transcripts")
+            tdir = os.path.join(WORK, "transcripts-control" if CONTROL else "transcripts")
             os.makedirs(tdir, exist_ok=True)
             for n in SIDES:
                 with open(os.path.join(tdir, "%s-%s.txt" % (name, n)), "w", encoding="latin-1") as fh:

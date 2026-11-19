@@ -22,13 +22,13 @@ pub mod spawn_strategy_policy;
 pub mod spawn_strategy_registry;
 pub mod spawn_strategy_resolver;
 pub mod stable_sort;
-pub mod streamed_test_output;
 pub mod standalone_test_strategy;
+pub mod streamed_test_output;
 pub mod symlink_tree_helper;
 pub mod symlink_tree_strategy;
 pub mod test_log_helper;
-pub mod test_xml_output_parser;
 pub mod test_policy;
+pub mod test_xml_output_parser;
 pub mod tree_deleter;
 
 pub use bin_tools::BinTools;

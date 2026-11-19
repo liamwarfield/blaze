@@ -2,13 +2,19 @@
 """Capture Bazel 9.3.2 ground truth for byte-string semantics. See `run help`."""
 
 import glob
+import json
 import os
 import shutil
 import subprocess
 import sys
 
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
+import compare_common as cc  # noqa: E402
+
 USAGE = """\
 usage: scripts/bytes/run [--binary <path>] [--out <dir>] [--output-user-root <dir>]
+       scripts/bytes/run selftest
        scripts/bytes/run help
 
 Copies scripts/bytes/workspace to ~/.cache/blaze/work/bytes (plus aspect_tools_telemetry's
@@ -32,7 +38,16 @@ is deleted first, so that every run fetches @bytes_repo and prints its RCASE lin
   query_build.txt   `query //:all --output=build`
   query_label_kind.txt, query_jsonproto.txt, cquery_jsonproto.txt
   aquery_text.txt, aquery_jsonproto.txt (--include_file_write_contents)
-  exit_codes.txt
+  exit_codes.txt    one line per command: `<name> <code>` after a normal exit, otherwise
+                    `<name> <termination>` (`signal SIGPIPE`, `oom-kill (...)`, `timeout (...)`)
+  provenance.json   the binary's path and sha256 (and whether it is the pinned oracle), the
+                    repository HEAD and dirty flag, the date, every command line, and the
+                    recording key (this tool's sha256, argv and environment with the binary and
+                    output user root as placeholders, digest of the prepared workspaces):
+                    scripts/bytes/compare refuses two recordings whose keys differ.
+
+Every command runs through scripts/lib/compare_common.py in a --scope unit (MemoryMax=12G, the
+server stays up between commands) whose supervisor records how the command really ended.
 
 Compare a Blaze run with the oracle's: scripts/bytes/compare.
 
@@ -81,10 +96,18 @@ def prepare():
         shutil.copytree(os.path.join(HERE, "side", name), ws)
 
 
+def inputs_digest():
+    """Digest of the three prepared workspaces (after prepare())."""
+    return {"ws": cc.tree_digest(WS), "flagoff": cc.tree_digest(WS_FLAGOFF),
+            "rcimport": cc.tree_digest(WS_RC)}
+
+
 def main(argv):
     if argv[:1] == ["help"]:
         print(USAGE)
         return 0
+    if argv[:1] == ["selftest"]:
+        return selftest()
     binary, out, ur = ORACLE, None, None
     args = list(argv)
     while args:
@@ -98,7 +121,12 @@ def main(argv):
         else:
             print(USAGE)
             return 2
-    is_oracle = os.path.realpath(binary) == os.path.realpath(ORACLE)
+    if not os.path.isfile(binary):
+        sys.exit(f"binary {binary} does not exist")
+    binary_sha = cc.sha256_file(binary)
+    if os.path.realpath(binary) == os.path.realpath(ORACLE) and binary_sha != cc.pinned_sha256():
+        sys.exit(f"refused: {binary} is not the pinned oracle (sha256 {binary_sha})")
+    is_oracle = binary_sha == cc.pinned_sha256()
     if out is None:
         out = f"{HOME}/.cache/blaze/work/bytes-out" + ("" if is_oracle else "-blaze")
     if ur is None:
@@ -108,6 +136,7 @@ def main(argv):
     ):
         sys.exit("refusing to overwrite the saved oracle outputs with another binary's")
     prepare()
+    digest = inputs_digest()
     if os.path.exists(out):
         shutil.rmtree(out)
     # A fresh output user root every time: the repository rule of @bytes_repo prints its RCASE
@@ -120,17 +149,22 @@ def main(argv):
     startup = [binary, f"--output_user_root={ur}", "--nohome_rc", "--nosystem_rc"]
     common = [f"--repository_cache={REPO_CACHE}", "--color=no", "--curses=no"]
     codes = []
+    argvs = []
+
+    def code_text(term):
+        return str(term.code) if term.normal else str(term)
 
     def run(name, cmd, extra, save_stdout=None, cwd=WS):
-        p = subprocess.run(
-            startup + [cmd] + common + extra, cwd=cwd, env=env, capture_output=True
-        )
-        codes.append(f"{name} {p.returncode}")
+        argv_ = startup + [cmd] + common + extra
+        p = cc.run(argv_, cwd, mode="scope", tag="bytes-" + name)
+        codes.append(f"{name} {code_text(p.term)}")
+        argvs.append({"name": name, "cwd": cwd,
+                      "argv": ["<BINARY>", "--output_user_root=<UR>"] + argv_[2:]})
         with open(os.path.join(out, name + ".stderr"), "wb") as f:
-            f.write(p.stderr)
+            f.write(p.err)
         if save_stdout:
             with open(os.path.join(out, save_stdout), "wb") as f:
-                f.write(p.stdout)
+                f.write(p.out)
 
     run("build", "build", ["//:all", "@bytes_repo//:all"])
     run("labels", "build", ["//labels:all"])
@@ -149,18 +183,47 @@ def main(argv):
     run("aquery_jsonproto", "aquery",
         ["//:all", "--output=jsonproto", "--include_file_write_contents"],
         "aquery_jsonproto.txt")
-    p = subprocess.run(startup + ["info", "output_base"], cwd=WS, env=env, capture_output=True)
-    output_base = p.stdout.decode().strip()
+    p = cc.run(startup + ["info", "output_base"], WS, mode="scope", tag="bytes-info")
+    output_base = p.out.decode().strip()
     for f in glob.glob(os.path.join(WS, "bazel-bin", "*.txt")):
         shutil.copy(f, os.path.join(out, "outputs", os.path.basename(f)))
     for f in glob.glob(os.path.join(output_base, "external", "+bytes_repo+bytes_repo", "*.txt")):
         shutil.copy(f, os.path.join(out, "outputs", "repo_" + os.path.basename(f)))
+    shutdowns = {}
     for ws in (WS, WS_FLAGOFF, WS_RC):
-        subprocess.run(startup + ["shutdown"], cwd=ws, env=env, capture_output=True)
+        shutdowns[ws] = str(cc.run(startup + ["shutdown"], ws, mode="scope",
+                                   tag="bytes-shutdown").term)
     with open(os.path.join(out, "exit_codes.txt"), "w") as f:
         f.write("\n".join(codes) + "\n")
+    key = cc.cache_key(cc.tool_sha256(os.path.abspath(__file__)), None, argvs, env, digest)
+    with open(os.path.join(out, "provenance.json"), "w") as f:
+        json.dump({"binary": {"path": binary, "sha256": binary_sha,
+                              "is_pinned_oracle": is_oracle},
+                   "repo": cc.repo_state(), "output_user_root": ur, "shutdown": shutdowns,
+                   "key": key, "key_digest": cc.key_digest(key)}, f, indent=1)
     print("\n".join(codes))
     return 0
+
+
+def selftest():
+    def run_pair(ofake, bfake, wd):
+        cc.require_oracle(ofake)
+        texts = {}
+        for side, fake in (("oracle", ofake), ("blaze", bfake)):
+            p = cc.run([fake, "build"], wd, mode="scope", tag="selftest")
+            texts[side] = (p.term, p.out, p.err)
+        (ot, oo, oe), (bt, bo, be) = texts["oracle"], texts["blaze"]
+        return cc.judge(ot, bt, [n for n, a, b in (("stdout", oo, bo), ("stderr", oe, be))
+                                 if a != b], blaze_unported=cc.unported_message(be))
+
+    def extra(st):
+        # exit_codes.txt keeps the plain number for a normal exit and never a number otherwise.
+        for t, want in ((cc.Termination("exit", 0), "0"),
+                        (cc.Termination("signal", 141, "SIGPIPE"), "signal SIGPIPE")):
+            got = str(t.code) if t.normal else str(t)
+            st.check("exit_codes.txt line for %s" % t, got == want, got)
+
+    return cc.selftest("bytes/run", run_pair=run_pair, extra=extra, mode="scope")
 
 
 if __name__ == "__main__":

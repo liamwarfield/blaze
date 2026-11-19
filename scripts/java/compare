@@ -42,7 +42,8 @@ install base and $HOME by placeholders, scripts/oracle/normalise.py):
              the same for deps(//:app) / //:app under one flag: lang17
              (--java_language_version=17), tool21 (--tool_java_runtime_version=remotejdk_21),
              noturbine (--nojava_header_compilation), toolchain (the custom java_toolchain of
-             //toolchain, --extra_toolchains)
+             //toolchain, --extra_toolchains); and turbineapt
+             (--experimental_turbine_annotation_processing) on deps(//:uses_api) / //:uses_api
   aquery-proto
              `aquery 'deps(//proto:uses_proto)'` (java_proto_library; protoc is not built)
   test       `test //:greeter_test`: exit code, the processes line and the per-target result
@@ -77,6 +78,7 @@ JP = "--output=jsonproto"
 LANG17 = "--java_language_version=17"
 TOOL21 = "--tool_java_runtime_version=remotejdk_21"
 NOTURBINE = "--nojava_header_compilation"
+TURBINE_APT = "--experimental_turbine_annotation_processing"
 TOOLCHAIN = "--extra_toolchains=//toolchain:custom_definition"
 # (id, args). The kind of a step is its id up to the first "-" (cquery, aquery, build, test,
 # run); steps of one kind are compared alike.
@@ -92,6 +94,8 @@ STEPS = [
     ("build-noturbine", ["build", SB, NOTURBINE, "//:app"]),
     ("aquery-toolchain", ["aquery", JP, TOOLCHAIN, "deps(//:app)"]),
     ("build-toolchain", ["build", SB, TOOLCHAIN, "//:app"]),
+    ("aquery-turbineapt", ["aquery", JP, TURBINE_APT, "deps(//:uses_api)"]),
+    ("build-turbineapt", ["build", SB, TURBINE_APT, "//:uses_api"]),
     ("aquery-proto", ["aquery", JP, "deps(//proto:uses_proto)"]),
     ("test", ["test", SB, "//:greeter_test"]),
     ("run", ["run", SB, "//:hello", "--", "probe"]),

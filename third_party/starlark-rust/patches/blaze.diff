@@ -8844,7 +8844,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          payload: (),
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/parser_rd.rs starlark_syntax/src/syntax/parser_rd.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/syntax/parser_rd.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark_syntax/src/syntax/parser_rd.rs	2026-11-19 13:37:01.586412884 -0700
++++ starlark_syntax/src/syntax/parser_rd.rs	2026-11-19 14:11:22.838384752 -0700
 @@ -37,6 +37,7 @@
  use crate::lexer::Token;
  use crate::syntax::ast::*;
@@ -9225,7 +9225,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +                    let err = self.error_at( // BLAZE PATCH 0047
 +                        l, // BLAZE PATCH 0047
 +                        r, // BLAZE PATCH 0047
-+                        "ellipsis ('...') is not allowed outside type expressions".to_owned(), // BLAZE PATCH 0047
++                        "syntax error at '...': ellipsis ('...') is not allowed outside type expressions".to_owned(), // BLAZE PATCH 0047 0054: Java's syntaxError prefix
 +                    ); // BLAZE PATCH 0047
 +                    self.state.errors.push(err); // BLAZE PATCH 0047
 +                } // BLAZE PATCH 0047

@@ -7,8 +7,11 @@
 
 pub mod analysis_mock;
 pub mod build_view_test_case;
+pub mod configuration_test_case;
 pub mod mock_tools_config;
 pub mod scratch;
+
+pub use configuration_test_case::ConfigurationTestCase;
 
 pub use build_view_test_case::{
     AnalysisTestCase, BuildViewTestCase, Flag, FlagBuilder, assert_contains_exactly,

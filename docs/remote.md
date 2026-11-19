@@ -142,7 +142,7 @@ where Bazel would enter it; none is silently ignored.
 
 | Feature / flag | Where it fails |
 |---|---|
-| `--experimental_remote_scrubbing_config` (protobuf TextFormat for the scrubbing config; the reader in `blaze_protos::text_format` serves `Platform` only) | `scrubber.rs` `Scrubber.parse`, and `blaze_runtime` `build_remote.rs` before setup |
+| `--experimental_remote_scrubbing_config` (`Scrubber.parse` is not ported yet; `blaze_protos::text_format` now has the general parser it needs) | `scrubber.rs` `Scrubber.parse`, and `blaze_runtime` `build_remote.rs` before setup |
 | Credential helpers (`--credential_helper`) and Google credentials (`--google_credentials`, `--google_default_credentials`) | `authandtls/google_auth_utils.rs` |
 | HTTP/HTTPS remote cache (`--remote_cache=http(s)://`) | `combined_cache_client_factory.rs` `createHttp`, `remote_module.rs` `createCredentials` |
 | Content-defined chunking (`--experimental_remote_cache_chunking`) | `combined_cache.rs` `Chunking.*`, `uploadChunked`; `grpc_cache_client.rs` split/splice |
@@ -165,7 +165,6 @@ where Bazel would enter it; none is silently ignored.
 | X.509 v1 certificates | accepted | rejected | Ruling 2026-11-19, see "Security posture". |
 | Transport error causes | Netty/JDK texts (`finishConnect(..) failed: Connection refused: localhost/127.0.0.1:9499`; `General OpenSslEngine problem`) | the status line is Bazel's (`UNAVAILABLE: io exception`, `INTERNAL: http2 exception`, `UNAVAILABLE: ssl exception`, `Unable to resolve host <host>`, ported from grpc-netty `Utils.statusFromThrowable`); the connect cause is rebuilt in Netty's form, but Netty's choice between `127.0.0.1` and `[0:0:0:0:0:0:0:1]` for `localhost` varies between runs of Bazel itself, a certificate rejected locally prints rustls' text, and a server alert that arrives after the TLS 1.3 handshake (a required client certificate that was not sent) prints `received fatal alert: CertificateRequired` where Bazel prints `UNAVAILABLE: ssl exception` (the mapping covers an alert during the connect only) | exit codes are equal; not reproducible, except the last, which is open |
 | Lost top-level outputs (`RemoteImportantOutputHandler`, "Lost outputs no longer available remotely") | reported when a target becomes top-level after its action ran in an earlier command of the same server | not reached: Blaze has no server, top-level outputs are downloaded when their action is finalized or its cached result is checked | PORT: skipped, incremental |
-| Lost inputs during input discovery (`SkyframeActionExecutor.java:967,976`) | checked | not checked: the discovery context has no action file system (marked in `skyframe_action_executor.rs`) | no input-discovering action reads remote-only files in process today (include scanning is not ported) |
 | Connection pool | one connection per 100 concurrent calls (`DynamicConnectionPool`) | one HTTP/2 connection per endpoint | performance only with default flags; non-default values are loud |
 | `-1` ("unknown") permissions of a remote file's stat | `RemoteFileStatus.getPermissions() == -1` | the bits this file system's `isReadable/isWritable/isExecutable` answer | `blaze_vfs::FileStatus` has no unknown value |
 

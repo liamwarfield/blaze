@@ -1,8 +1,8 @@
 # probe transcript of Blaze (scripts/w4/probe compare)
-# binary /home/liamwarfield/.cache/blaze/work/blaze-after-errors
+# binary /home/liamwarfield/.cache/blaze/int-bin/ui-wave/blaze-after-2
 # sha256 315c21471b3926d83d023ee7d369f28dc47b9bbc1ff173fbd59aa00a019c68fe
-# tree 29f7510760145242aa5d13f9a82cd2674b6e4aba (dirty)
-# date 2026-11-19T14:12:23
+# tree 2454c6a9660d621e37eac443fbbfd8f6e01803c8 (dirty)
+# date 2026-11-19T14:13:23
 === 1: run cquery "somepath(//a:a, //b:b)"
 exit 0
 --- stdout

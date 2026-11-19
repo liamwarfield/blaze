@@ -23,3 +23,10 @@ thiserror.workspace = true
 indexmap.workspace = true
 parking_lot.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# The configuration test harness (ConfigurationTestCase); blaze_sky_top depends on this crate,
+# so only integration tests (tests/) use it.
+blaze_sky_top = { path = "../blaze_sky_top", features = ["testing"] }
+blaze_analysis = { path = "../blaze_analysis" }
+regex.workspace = true

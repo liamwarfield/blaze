@@ -27,6 +27,9 @@ Verdict per cell:
   identical-unordered  the oracle itself varies (A != B), or the cell's order comes from Java
                        identity hashes (see order_is_identity_hashed); Blaze's lines (and the
                        items of a factored graph node) equal A's as a multiset
+  oracle-varies        the oracle's two runs differ beyond line order (e.g. aquery's streamed
+                       formats number ids in parallel), Blaze has the same exit code and
+                       matches neither: no byte comparison is defined
   loud                 Blaze stopped at an `unported!` ("not ported yet") or panicked
   different            anything else (stdout or exit code differ)
 Results: ~/.cache/blaze/query-compare/<label>/{results.json,matrix.md,cells/<id>/...}.
@@ -351,13 +354,22 @@ def info_paths(side, project, binary):
     return paths
 
 
+def _normalise_node_label(m):
+    items = m.group(1).split("\\n")
+    t = re.match(r"\.\.\.and (\d+) more items$", items[-1])
+    if t:
+        # A truncated factored node: which items are shown depends on the class's (identity
+        # hash) order, so only the number of items is compared.
+        return '"<%d items>"' % (len(items) - 1 + int(t.group(1)))
+    return '"' + "\\n".join(sorted(items)) + '"'
+
+
 def normalise_unordered(data):
     """Order-insensitive form: sorted lines; items of a factored graph node sorted too."""
     text = data.decode("latin-1")
     lines = []
     for line in text.split("\n"):
-        line = re.sub(r'"([^"]*)"',
-                      lambda m: '"' + "\\n".join(sorted(m.group(1).split("\\n"))) + '"', line)
+        line = re.sub(r'"([^"]*)"', _normalise_node_label, line)
         lines.append(line)
     return sorted(lines)
 
@@ -385,6 +397,8 @@ def classify(cell, oa, ob, b):
     if ((orc_a, oout_a) != (orc_b, oout_b) or order_is_identity_hashed(cell)) and \
             brc == orc_a and normalise_unordered(bout) == normalise_unordered(oout_a):
         return "identical-unordered"
+    if (orc_a, oout_a) != (orc_b, oout_b) and brc in (orc_a, orc_b):
+        return "oracle-varies"
     return "different"
 
 
@@ -526,7 +540,7 @@ def write_matrix(label_dir, results, meta):
                  meta.get("binary"), meta.get("binary_sha256", "")[:12], meta.get("blaze_head"),
                  meta.get("date")), "",
              "Verdicts: identical (I), identical-unordered (U: the oracle varies between two "
-             "servers; same lines as a multiset), loud (L), different (D).", ""]
+             "servers; same lines as a multiset), oracle-varies (V), loud (L), different (D).", ""]
     for p in sorted(set(r["project"] for r in results)):
         for cmd in ("query", "cquery", "aquery"):
             rs = [r for r in results if r["project"] == p and r["command"] == cmd]
@@ -546,7 +560,8 @@ def write_matrix(label_dir, results, meta):
             if plain:
                 lines.append("| expression | " + " | ".join(fmts) + " |")
                 lines.append("|---|" + "---|" * len(fmts))
-                short = {"identical": "I", "identical-unordered": "U", "loud": "L", "different": "D"}
+                short = {"identical": "I", "identical-unordered": "U", "loud": "L", "different": "D",
+                         "oracle-varies": "V"}
                 for e in exprs:
                     row = []
                     for f in fmts:

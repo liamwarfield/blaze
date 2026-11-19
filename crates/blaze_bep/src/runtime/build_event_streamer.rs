@@ -431,12 +431,12 @@ impl BuildEventStreamer {
         self.close_with(Some(reason));
     }
 
-    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:452 BuildEventStreamer.close
+    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:455 BuildEventStreamer.close
     pub fn close(&self) {
         self.close_with(None);
     }
 
-    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:452 BuildEventStreamer.close
+    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:459 BuildEventStreamer.close
     fn close_with(&self, reason: Option<AbortReason>) {
         let guard = self.state.lock();
         {
@@ -546,7 +546,7 @@ impl BuildEventStreamer {
     /// to distinguish from replaceable events because when builds abort, pending replaceable
     /// events trigger while normal buffered events are dropped and noted with a matching
     /// AbortedEvent.
-    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:416 BuildEventStreamer.releaseReplaceableBuildEvent
+    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:550 BuildEventStreamer.releaseReplaceableBuildEvent
     pub fn release_replaceable_build_event(&self, event: &ReleaseReplaceableBuildEvent) -> bool {
         let mut replaceable: Option<Arc<dyn BuildEvent>> = None;
         let mut buffered_events_also_pending = false;
@@ -581,7 +581,7 @@ impl BuildEventStreamer {
         buffered_events_also_pending
     }
 
-    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:402 BuildEventStreamer.buildEvent
+    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:577 BuildEventStreamer.buildEvent
     pub fn build_event(&self, event: Arc<dyn BuildEvent>) {
         {
             let guard = self.state.lock();
@@ -703,7 +703,7 @@ impl BuildEventStreamer {
 
     /// Given an event that will be discarded (not buffered), publishes any events waiting on
     /// the given event.
-    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:592 BuildEventStreamer.maybePostPendingEventsBeforeDiscarding
+    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:707 BuildEventStreamer.maybePostPendingEventsBeforeDiscarding
     fn maybe_post_pending_events_before_discarding(&self, event: &Arc<dyn BuildEvent>) {
         if self.publish_target_summaries && is_vacuous_test_summary(event.as_ref()) {
             // Target summaries should "post after" test summaries, but we can't a priori know
@@ -808,7 +808,7 @@ impl BuildEventStreamer {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:470 BuildEventStreamer.clearEventsAndPostFinalProgress
+    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:859 BuildEventStreamer.clearEventsAndPostFinalProgress
     fn clear_events_and_post_final_progress(&self, event: Option<&Arc<dyn BuildEvent>>) {
         let guard = self.state.lock();
         self.clear_pending_events();
@@ -836,7 +836,7 @@ impl BuildEventStreamer {
         drop(guard);
     }
 
-    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:669 BuildEventStreamer.buildComplete
+    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:876 BuildEventStreamer.buildComplete
     fn build_complete(&self, event: &Arc<dyn BuildEvent>) {
         let guard = self.state.lock();
         self.clear_events_and_post_final_progress(Some(event));
@@ -992,14 +992,14 @@ impl BuildEventStreamer {
     /// In case of multiple abort reasons:
     /// - Only the most recent reason will be reported as the main `AbortReason` in BEP.
     /// - All previous reasons will appear in the `Aborted.description` message.
-    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:465 BuildEventStreamer.addAbortReason
+    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:1019 BuildEventStreamer.addAbortReason
     fn add_abort_reason(&self, reason: AbortReason) {
         let guard = self.state.lock();
         guard.borrow_mut().abort_reasons.insert(reason);
     }
 
     /// Returns the most recent `AbortReason` or `UNKNOWN` if no reason was set.
-    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:406 BuildEventStreamer.getLastAbortReason
+    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:1027 BuildEventStreamer.getLastAbortReason
     fn get_last_abort_reason(&self) -> AbortReason {
         let guard = self.state.lock();
         let st = guard.borrow();
@@ -1011,7 +1011,7 @@ impl BuildEventStreamer {
 
     /// Returns a detailed message explaining the most recent `AbortReason` (and possibly
     /// previous reasons).
-    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:407 BuildEventStreamer.getAbortReasonDetails
+    // Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:1035 BuildEventStreamer.getAbortReasonDetails
     fn get_abort_reason_details(&self) -> String {
         let guard = self.state.lock();
         let st = guard.borrow();
@@ -1134,7 +1134,7 @@ fn as_pairs(left: &[String], right: &[String]) -> Vec<(String, String)> {
     pairs.into_inner()
 }
 
-// Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:334 BuildEventStreamer.consumeAsPairsofStrings
+// Java: com/google/devtools/build/lib/runtime/BuildEventStreamer.java:837 BuildEventStreamer.consumeAsPairsofStrings
 fn consume_as_pairs_of_strings(
     left: &[String],
     right: &[String],

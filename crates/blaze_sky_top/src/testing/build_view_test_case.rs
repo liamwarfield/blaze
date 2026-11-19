@@ -198,13 +198,17 @@ pub enum TestCaseKind {
     BuildView,
     /// `AnalysisTestCase` (`defaultFlags()`: public visibility, `--cpu=k8`, product flags).
     Analysis,
+    /// `ConfigurationTestCase` (see `configuration_test_case.rs`): no default visibility, the
+    /// product flags, and only the target configuration is created with the executor.
+    Configuration,
 }
 
 /// The evaluator and the configurations of the current state.
 struct ExecutorState {
     executor: SkyframeExecutor,
     target_config: Arc<BuildConfigurationValue>,
-    exec_config: Arc<BuildConfigurationValue>,
+    /// `None` for [`TestCaseKind::Configuration`], which creates exec configurations on request.
+    exec_config: Option<Arc<BuildConfigurationValue>>,
     /// The options the configurations were created from (`AnalysisTestCase.buildOptions`).
     build_options: Arc<BuildOptions>,
     /// The parsed options (`AnalysisTestCase.optionsParser`).
@@ -239,6 +243,9 @@ pub struct BuildViewTestCase {
     configuration_args: Vec<String>,
     /// `setBuildLanguageOptions` arguments.
     build_language_options: Vec<String>,
+    /// Starlark options set directly on the parser (Java `OptionsParser.setStarlarkOptions`,
+    /// used by `ConfigurationTestCase.parseBuildOptions`).
+    starlark_options: std::collections::BTreeMap<String, blaze_options::Value>,
     /// `setPackageOptions` arguments.
     package_options: Vec<String>,
     /// `useLoadingOptions` arguments.
@@ -266,7 +273,7 @@ impl BuildViewTestCase {
         Self::create(TestCaseKind::Analysis)
     }
 
-    fn create(kind: TestCaseKind) -> BuildViewTestCase {
+    pub(crate) fn create(kind: TestCaseKind) -> BuildViewTestCase {
         // Java: FoundationTestCase.initializeFileSystemAndDirectories
         let directory = TestDirectory::new();
         let root_directory = directory.root.get_child("workspace");
@@ -319,6 +326,7 @@ impl BuildViewTestCase {
             module_root,
             configuration_args: Vec::new(),
             build_language_options: Vec::new(),
+            starlark_options: Default::default(),
             package_options: Vec::new(),
             loading_options: Vec::new(),
             default_visibility: "public".to_string(),
@@ -330,7 +338,9 @@ impl BuildViewTestCase {
             analysis_result: None,
         };
         // useConfiguration()
-        test_case.use_configuration(&[]);
+        if kind != TestCaseKind::Configuration {
+            test_case.use_configuration(&[]);
+        }
         test_case
     }
 
@@ -493,7 +503,8 @@ impl BuildViewTestCase {
     // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:632 BuildViewTestCase.getDefaultsForConfiguration
     fn get_defaults_for_configuration(&self) -> Vec<String> {
         match self.kind {
-            TestCaseKind::BuildView => PRODUCT_SPECIFIC_FLAGS
+            // Java: com/google/devtools/build/lib/analysis/util/ConfigurationTestCase.java:183 ConfigurationTestCase.parseBuildOptionsWithTestOptions
+            TestCaseKind::BuildView | TestCaseKind::Configuration => PRODUCT_SPECIFIC_FLAGS
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
@@ -549,6 +560,37 @@ impl BuildViewTestCase {
             // Java creates the configurations here.
             self.ensure_executor();
         }
+    }
+
+    /// `ConfigurationTestCase`: the options of the next configuration (Java parses them per
+    /// `create`), with Starlark options set directly on the parser; the next request builds a
+    /// new executor with them.
+    pub(crate) fn set_configuration_state(
+        &mut self,
+        args: &[&str],
+        starlark_options: std::collections::BTreeMap<String, blaze_options::Value>,
+    ) {
+        self.configuration_args = args.iter().map(|s| s.to_string()).collect();
+        self.starlark_options = starlark_options;
+        self.invalidate_executor();
+    }
+
+    /// The options parser of the current state with other configuration arguments and Starlark
+    /// options (Java `ConfigurationTestCase.parseBuildOptionsWithTestOptions`).
+    pub(crate) fn parse_options_with(
+        &mut self,
+        args: &[&str],
+        starlark_options: std::collections::BTreeMap<String, blaze_options::Value>,
+    ) -> OptionsParser {
+        let saved_args = std::mem::replace(
+            &mut self.configuration_args,
+            args.iter().map(|s| s.to_string()).collect(),
+        );
+        let saved_starlark = std::mem::replace(&mut self.starlark_options, starlark_options);
+        let parser = self.parse_options();
+        self.configuration_args = saved_args;
+        self.starlark_options = saved_starlark;
+        parser
     }
 
     /// `setBuildLanguageOptions`.
@@ -615,7 +657,7 @@ impl BuildViewTestCase {
     }
 
     /// Parses the options of the current state.
-    fn parse_options(&self) -> OptionsParser {
+    pub(crate) fn parse_options(&self) -> OptionsParser {
         let mut parser = OptionsParser::builder()
             .options_classes(&Self::options_classes())
             .skip_starlark_option_prefixes()
@@ -665,6 +707,9 @@ impl BuildViewTestCase {
         parse(&mut parser, &self.build_language_options);
         parse(&mut parser, &self.get_defaults_for_configuration());
         parse(&mut parser, &self.configuration_args);
+        if !self.starlark_options.is_empty() {
+            parser.set_starlark_options(self.starlark_options.clone());
+        }
         if !parser.get_skipped_args().is_empty() {
             blaze_util::unported!(
                 "StarlarkOptionsParser.parse",
@@ -678,11 +723,21 @@ impl BuildViewTestCase {
     /// Builds the executor and the configurations of the current state if there is none or a
     /// scratch file changed since.
     fn ensure_executor(&mut self) {
+        if let Err(e) = self.try_ensure_executor() {
+            panic!("InvalidConfigurationException: {}", e.get_message());
+        }
+    }
+
+    /// [`Self::ensure_executor`], returning the configuration error (Java's
+    /// `InvalidConfigurationException` of `createConfiguration`).
+    pub(crate) fn try_ensure_executor(
+        &mut self,
+    ) -> Result<(), blaze_build_config::fragment::InvalidConfigurationException> {
         if self.scratch.take_modified() {
             self.invalidate_executor();
         }
         if self.state.is_some() {
-            return;
+            return Ok(());
         }
         let options = Arc::new(self.parse_options());
         // Java: createBuildOptions (createBuildOptionsForTesting).
@@ -723,19 +778,24 @@ impl BuildViewTestCase {
             panic!("InvalidConfigurationException: Cannot find main repository mapping: {e:?}");
         }
         // Java: createConfiguration.
-        let target_config = executor
-            .create_configuration(self.event_handler(), build_options.clone(), false)
-            .unwrap_or_else(|e| panic!("InvalidConfigurationException: {}", e.get_message()));
-        // Java: AnalysisTestUtil.execOptions.
-        let exec_options = exec_options(&executor, target_config.get_options(), self.event_handler());
-        let exec_config = executor
-            .get_configuration(self.event_handler(), Arc::new(exec_options), false)
-            .unwrap_or_else(|e| panic!("InvalidConfigurationException: {}", e.get_message()));
-        // Java: createBuildView's precondition.
-        blaze_util::check_state!(
-            Arc::ptr_eq(&exec_config, &target_config) || exec_config.is_exec_configuration(),
-            "Exec configuration is not an exec configuration"
-        );
+        let target_config =
+            executor.create_configuration(self.event_handler(), build_options.clone(), false)?;
+        let exec_config = if self.kind == TestCaseKind::Configuration {
+            None
+        } else {
+            // Java: AnalysisTestUtil.execOptions.
+            let exec_options =
+                exec_options(&executor, target_config.get_options(), self.event_handler());
+            let exec_config = executor
+                .get_configuration(self.event_handler(), Arc::new(exec_options), false)
+                .unwrap_or_else(|e| panic!("InvalidConfigurationException: {}", e.get_message()));
+            // Java: createBuildView's precondition.
+            blaze_util::check_state!(
+                Arc::ptr_eq(&exec_config, &target_config) || exec_config.is_exec_configuration(),
+                "Exec configuration is not an exec configuration"
+            );
+            Some(exec_config)
+        };
         self.state = Some(ExecutorState {
             executor,
             target_config,
@@ -744,6 +804,7 @@ impl BuildViewTestCase {
             options,
         });
         self.check_fail_fast();
+        Ok(())
     }
 
     fn state(&mut self) -> &ExecutorState {
@@ -765,7 +826,10 @@ impl BuildViewTestCase {
     /// `getExecConfiguration()`.
     // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:1928 BuildViewTestCase.getExecConfiguration
     pub fn get_exec_configuration(&mut self) -> Arc<BuildConfigurationValue> {
-        self.state().exec_config.clone()
+        self.state()
+            .exec_config
+            .clone()
+            .expect("the exec configuration of a BuildViewTestCase")
     }
 
     /// `getConfiguration(ConfiguredTarget)`.
@@ -1566,7 +1630,11 @@ pub fn exec_options(
     // to the exec config.
     let scope_key = blaze_build_config::build_options_scope_value::BuildOptionsScopeKey::create(
         target_options.clone(),
-        target_options.get_starlark_options().keys().cloned().collect(),
+        target_options
+            .get_starlark_options()
+            .keys()
+            .cloned()
+            .collect(),
     );
     let starlark_flag_scope_info = skyframe_executor
         .evaluate(

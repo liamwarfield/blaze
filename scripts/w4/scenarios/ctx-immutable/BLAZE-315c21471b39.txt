@@ -1,0 +1,297 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/ui-wave/blaze-after-2
+# sha256 315c21471b3926d83d023ee7d369f28dc47b9bbc1ff173fbd59aa00a019c68fe
+# tree 8d77c3e706978b8cb7b94ce79c93d9e1b01a9883 (dirty)
+# date 2026-11-19T14:16:17
+=== 1: run build //:read_only
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:read_only (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+Target //:read_only up-to-date:
+  bazel-bin/read_only.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 2: run build //:files_append
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:files_append:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 8, column 30, in _mut_impl
+		ctx.files.srcs.append(ctx.files.srcs[0])
+Error in append: trying to mutate a frozen list value
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:files_append' (config: a7a71fd) failed
+ERROR: Analysis of target '//:files_append' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 3: run build //:files_empty_append
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:files_empty_append:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 11, column 31, in _mut_impl
+		ctx.files.empty.append(ctx.files.srcs[0])
+Error in append: trying to mutate a frozen list value
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:files_empty_append' (config: a7a71fd) failed
+ERROR: Analysis of target '//:files_empty_append' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run build //:attr_label_list_append
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:attr_label_list_append:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 29, in _mut_impl
+		ctx.attr.srcs.append(ctx.attr.srcs[0])
+Error in append: trying to mutate a frozen list value
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:attr_label_list_append' (config: a7a71fd) failed
+ERROR: Analysis of target '//:attr_label_list_append' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 5: run build //:attr_string_list_append
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:attr_string_list_append:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 17, column 29, in _mut_impl
+		ctx.attr.strs.append("x")
+Error in append: trying to mutate a frozen list value
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:attr_string_list_append' (config: a7a71fd) failed
+ERROR: Analysis of target '//:attr_string_list_append' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 6: run build //:attr_string_dict_set
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:attr_string_dict_set:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 20, column 30, in _mut_impl
+		ctx.attr.sdict["k2"] = "v2"
+Error: trying to mutate a frozen dict value
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:attr_string_dict_set' (config: a7a71fd) failed
+ERROR: Analysis of target '//:attr_string_dict_set' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 7: run build //:attr_label_keyed_string_dict_clear
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:attr_label_keyed_string_dict_clear:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 23, column 27, in _mut_impl
+		ctx.attr.lkd.clear()
+Error in clear: trying to mutate a frozen dict value
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:attr_label_keyed_string_dict_clear' (config: a7a71fd) failed
+ERROR: Analysis of target '//:attr_label_keyed_string_dict_clear' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 8: run build //:attr_string_keyed_label_dict_set
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:attr_string_keyed_label_dict_set:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 26, column 28, in _mut_impl
+		ctx.attr.skl["k2"] = None
+Error: trying to mutate a frozen dict value
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:attr_string_keyed_label_dict_set' (config: a7a71fd) failed
+ERROR: Analysis of target '//:attr_string_keyed_label_dict_set' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 9: run build //:outputs_list_append
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:outputs_list_append:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 29, column 32, in _mut_impl
+		ctx.outputs.outs.append(out)
+Error in append: trying to mutate a frozen list value
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:outputs_list_append' (config: a7a71fd) failed
+ERROR: Analysis of target '//:outputs_list_append' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 10: run build //:var_set
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:var_set:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 32, column 26, in _mut_impl
+		ctx.var["PROBE"] = "y"
+Error: trying to mutate a frozen dict value
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:var_set' (config: a7a71fd) failed
+ERROR: Analysis of target '//:var_set' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 11: run build //:tokenize_append
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:tokenize_append:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 36, column 17, in _mut_impl
+		t.append("c")
+Error in append: trying to mutate a frozen list value
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:tokenize_append' (config: a7a71fd) failed
+ERROR: Analysis of target '//:tokenize_append' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 12: run build //:features_append
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:features_append (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+Target //:features_append up-to-date:
+  bazel-bin/features_append.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 13: run build //:disabled_features_append
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:disabled_features_append (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+Target //:disabled_features_append up-to-date:
+  bazel-bin/disabled_features_append.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 14: run build //:toolchain_types_append
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:3:5: in mut rule //:toolchain_types_append:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 48, column 17, in _mut_impl
+		t.append(Label("//:x"))
+Error in append: trying to mutate a frozen list value
+ERROR: <WS>/BUILD.bazel:3:5: Analysis of target '//:toolchain_types_append' (config: a7a71fd) failed
+ERROR: Analysis of target '//:toolchain_types_append' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 15: run build //:cpp_copts_append
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:cpp_copts_append (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+Target //:cpp_copts_append up-to-date:
+  bazel-bin/cpp_copts_append.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 16: run build //:cpp_cxxopts_append
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:cpp_cxxopts_append (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+Target //:cpp_cxxopts_append up-to-date:
+  bazel-bin/cpp_cxxopts_append.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 17: run build //:cpp_conlyopts_append
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:cpp_conlyopts_append (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+Target //:cpp_conlyopts_append up-to-date:
+  bazel-bin/cpp_conlyopts_append.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 18: run build //:cpp_objccopts_append
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:cpp_objccopts_append (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+Target //:cpp_objccopts_append up-to-date:
+  bazel-bin/cpp_objccopts_append.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 19: run build //:cpp_linkopts_append
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:cpp_linkopts_append (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+Target //:cpp_linkopts_append up-to-date:
+  bazel-bin/cpp_linkopts_append.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 20: run build //:cpp_lto_backend_options_append
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:cpp_lto_backend_options_append (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+Target //:cpp_lto_backend_options_append up-to-date:
+  bazel-bin/cpp_lto_backend_options_append.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 21: cat bazel-bin/read_only.txt
+2 2 ["s"] {"k": "v"} ["a", "b c"]
+=== 22: cat bazel-bin/features_append.txt
+["probe_feature", "zz"] ["probe_feature"]
+=== 23: cat bazel-bin/disabled_features_append.txt
+["probe_disabled", "zz"] ["probe_disabled"]
+=== 24: cat bazel-bin/cpp_copts_append.txt
+["-DPROBE"] 0
+=== 25: cat bazel-bin/cpp_cxxopts_append.txt
+["-DPROBE"] 0
+=== 26: cat bazel-bin/cpp_conlyopts_append.txt
+["-DPROBE"] 0
+=== 27: cat bazel-bin/cpp_objccopts_append.txt
+["-DPROBE"] 0
+=== 28: cat bazel-bin/cpp_linkopts_append.txt
+["-DPROBE"] 0
+=== 29: cat bazel-bin/cpp_lto_backend_options_append.txt
+["-DPROBE"] 0
