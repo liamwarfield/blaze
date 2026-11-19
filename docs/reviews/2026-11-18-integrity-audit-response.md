@@ -206,3 +206,125 @@ score ratchet, and the hooks run by git in a scratch repository.
 - A number in README or STATUS cites its label (`corpus/scores/<label>.md`) or the baseline
   commit (`scripts/gate/baseline show`). Acceptance steps and rules: `docs/state/README.md`.
 ```
+
+---
+
+# Referee batch 2
+
+Date 2026-11-18. Implementer for root; Python standard library and bash only, no Rust, nothing
+committed by me. Root's checkpoint `12ec0c9` already contains most of these edits ("referee batch 2
+edits (not yet reviewed)"); the reviewable diff is `git diff 90c1e6d -- <paths below>` plus the
+untracked files `scripts/gate/check-oracle-tests`, `scripts/gate/test_evidence_tools.py`,
+`docs/state/oracle-test-sites.md` and the uncommitted README edits.
+
+Paths: `scripts/oracle/{oracle_compare.py,oracle_report.py,oracle_common.py,record,compare,scoreboard,
+test_compare.py,test_record.py,README.md}`, `scripts/gate/{compare-scores,test_gate.py,
+check-oracle-tests,test_evidence_tools.py}`, `scripts/w5r/compare-repos`,
+`scripts/remote/{matrix,matrix_verdict.py,matrix-allow.json}`, `scripts/w4/probe`,
+`docs/state/{README.md,oracle-test-sites.md}`. `normalise.py`, `surfaces.py`, `allow.json`,
+`corpus/` and the recordings are unchanged.
+
+## What changed
+
+- **R2A-1.** `diff_paths` has no limit any more; `compare_surface` hands the allow list every
+  differing path of a DIFF item and only cuts what it stores for printing (50 paths, plus
+  `paths_total`). `describe_diff` counts the hidden paths from `paths_total`. Tests
+  (`test_compare.AllowVolumeTest`, real `allow.json` entry): the auditor's case (250 allowed
+  paths in the five per-SkyFunction lists plus `targetMetrics` and `outputArtifactCount`) is
+  DIFF; one extra path sorted after 400 allowed ones is DIFF; 400 allowed paths alone are still
+  ALLOWED. The two volume tests fail on `oracle_compare.py` at `90c1e6d` (200 paths, ALLOWED).
+  Live check on the real re2 reference `buildMetrics` event with the same edit: old referee
+  `MATCH, ALLOWED 1` (200 paths seen), new referee `DIFF 1` (247 paths).
+- **R2A-2.** `record` writes `binary_origin` into the manifest: `commit_verified` is true only
+  when the binary's real path is inside `<recorder checkout>/target` and its mtime is not before
+  that checkout's HEAD commit time; `reasons` otherwise. It warns, it does not refuse (the oracle
+  binary is never in the checkout). `compare`/`scoreboard` print `binary from that commit
+  verified` / `binary origin NOT VERIFIED` / `binary origin not checked` after the commit, and a
+  warning with the reasons. Not done: stamping the commit into the binary (Rust).
+- **R2A-3.** `scoreboard --write` refuses (exit 2, nothing written) when a candidate project has
+  no commit, a dirty tree, or a binary origin that is unverified or not checked, unless
+  `--allow-dirty "REASON"`; the score always holds `recording_problems`, and `allow_dirty` holds
+  the reason.
+- **R2A-4.** Each score row holds `matching_keys` (sha256 of each matching item key, first 10 hex,
+  sorted). `compare-scores` reports a regression when any base digest is absent from the new
+  row, even at an equal count; for a score without digests it compares counts and prints a
+  WARNING naming the rows. It also prints both scores' `recording_problems` and `allow_dirty`.
+- **R2A-5.** For the reference label, exceptions come from the committed summary
+  `corpus/oracle/<project>.json` together with the manifest's (union, so deleting one from the
+  unanchored manifest does not remove it); a mismatch is a warning, and so is a summary that
+  differs from `HEAD:` (not a failure, so that a re-recorded reference can be reviewed before it
+  is committed). `--force` now also leaves `forced` (the overridden conflicts) in the manifest;
+  `compare`/`scoreboard` print `replaced` and `forced` as warnings.
+- **compare-repos.** Per project a `verdict <project>: PASS|FAIL (...)` line and a final
+  `result:` line; FAIL when the fetch exits non-zero, times out (now caught) or its log has a
+  Rust panic, when any repo differs, or when the workspace or the hidden lockfile is not
+  byte-identical. With `--no-run` the exit code comes from the previous report; none is a
+  failure. On the stored reports: brotli PASS; re2 FAIL (`fetch exited 1; fetch panicked;
+  hidden lockfile DIFF`), where the old tool said 81/81 MATCH and exited 0.
+- **matrix.** `scripts/remote/matrix_verdict.py` (called at the end of `matrix`, also runnable on
+  an existing run) appends `verdict: PASS|FAIL (...)` and `matrix` exits with its status. Build
+  steps must exit 0 with their processes line; a gRPC comparison must be MATCH, or DIFFERENT
+  under an entry of `scripts/remote/matrix-allow.json` whose condition is checked on the full
+  `compare-grpc-log --verbose` output (every unmatched RPC of an allowed mnemonic, at most
+  `max_actions` actions, equal RPC counts per method). One entry: `re2-cold-test-actions` (C4
+  vs C1 on re2, TestRunner only, 21 actions). docs/remote.md does not document it yet; its
+  source is STATUS's lead-reported line, and the lead should add it to docs/remote.md. Stored
+  runs: `brotli1` PASS; `re2a` FAIL, C4 vs C1 allowed (82 unmatched RPCs per side, all TestRunner,
+  21 actions), **E2 vs E1 DIFFERENT and not allowed** (CppCompile, CppLink, SolibSymlink,
+  CppArchive RPCs; ByteStream/Read 93 vs 27). Output names `matrix` reads or writes are
+  unchanged; new files are `matrix-<tag>.verdict` and `matrix-<tag>-<step>.unmatched.txt`.
+- **probe.** The totals of `compare-all` and `recount` are split into steps that run the binary
+  (`run`, `aquery`) and file checks (`cat`, `stat`), and name the scenarios left out by `--skip`
+  or for lack of a saved transcript. `recount 85cfe14f8e8d` (the transcripts root committed in
+  `12ec0c9`): 39 scenarios, 720 steps, full 102 / masked 570 / messages 239; **binary steps 618:
+  full 1, masked 469, messages 138; file checks 102: full 101.** The saved transcripts and the
+  masked view are untouched.
+- **S2-9.** `scripts/gate/check-oracle-tests` scans test files for print-and-return sites, maps
+  each to the paths it needs (a reviewed table in the script), and exits 1 when a path is
+  missing or a site is unregistered. It finds 22 sites in 15 files; on this machine one path is
+  missing: `blaze_client/tests/blaze_test.rs:224` (`oracle_cmdline_file_matches_recorded_list`)
+  passes today without comparing anything. The list is in `docs/state/oracle-test-sites.md`;
+  `docs/state/README.md` runs the check as step 0 of an acceptance.
+
+## Oracle against itself
+
+Working tree on `12ec0c9` (referee sha256 `fb73e9fbfaa8…`, was `26e4400ec7d2…`):
+`compare oracle-9.3.2 oracle-9.3.2-rerun --project brotli --project re2`, the same with `-check`,
+and `compare oracle-9.3.2-rerun oracle-9.3.2-check`: each exit 0, `100% MATCH`, 26 of 26
+surfaces, 13,916 = 13,858 matching + 58 allowed (runfiles-manifest-action-key 56,
+build-metrics-volatile-counters 2). Reports went to a scratch path, not under the recordings.
+
+## Accepted scores
+
+`scoreboard blaze-12ca29ee95e0 --json` and `blaze-ef66f55e904e --json` with the new referee,
+written to a scratch directory, not to `corpus/scores/` (append-only). **No number changes**:
+rows (without the new field), `totals`, `project_totals`, `verdict`, `failures`, `allowed_by`,
+`excluded` are identical to the committed files for both labels (13,850 matching of 13,858
+judged; 23 of 26 brotli+re2 surfaces MATCH). The files would still change: `referee_sha256`, the
+provenance gains `commit_verified: null` and the `replaced`/`forced` fields, rows gain
+`matching_keys`, and the document gains `recording_problems` (both projects of both labels:
+`binary origin not checked`), `allow_dirty: null` and `matching_keys_format`; the Markdown says
+`binary origin not checked` and lists the problems. `compare-scores` on the two rescored files:
+PASS, rows 39, regressed 0 (the same items match at both commits). The committed files and the
+new referee are not comparable (different referees), as before any referee change.
+
+For root to rule: `scoreboard --write` now refuses both labels (no `binary_origin`; the
+checkouts and binaries are deleted, so it cannot be recovered). Rescoring the last accepted
+label under this referee needs `--allow-dirty "<ruling>: recorded before binary_origin; R2A-2
+open for this label"`, and a new file name or an exception to `append-only corpus/scores/`.
+
+## Tests
+
+`python3 -I -m unittest discover -s scripts/oracle`: 113 OK (96 at `90c1e6d`; new: allow-list
+volume 4, anchored exceptions 2, force/origin/allow-dirty 5, matching keys 1, binary origin 4,
+forced manifest 1). `-s scripts/gate`: 61 OK (40 at `90c1e6d`; new: name ratchet 4,
+check-oracle-tests 5, compare-repos 4, matrix verdict 6, probe classes 2). Failed 0, skipped 0.
+
+## Open
+
+- R2A-2 is a file-system check; a commit stamp in the binary needs a Rust change.
+- `matrix` on re2 fails on E2 vs E1 until the remote lead fixes or documents (with a checkable
+  condition) the difference; docs/remote.md should carry the allowance the allow file cites.
+- The 22 S2-9 sites still need the Rust change (fail, with one opt-out variable).
+- R2A-6 (protected list additions, including `scripts/w5r`, `scripts/remote/matrix*`) is not
+  part of this batch.

@@ -643,3 +643,81 @@ increase includes the new loud guards and the not-ported test stubs).
 9. `matrix` needs an exit status; do not quote re2 remote execution as identical while its own
    comparison prints DIFFERENT. Remove the committed `.pyc` files. No upstream-tests run against
    Blaze yet.
+
+---
+
+# Round 2C: referee batch 2
+
+Date 2026-11-18, evening. Same auditor role, read-only, no Cargo. HEAD
+`7d935c15128b7adb6eedfd32d8d067694e2de2cc`. Reviewed: `git diff 90c1e6d` over `scripts/oracle`,
+`scripts/gate`, `scripts/w5r/compare-repos`, `scripts/remote/{matrix,matrix-allow.json,matrix_verdict.py}`,
+`scripts/w4/probe`, `docs/state`, `corpus` (the part swept into `12ec0c9`), plus the working-tree
+files `scripts/gate/check-oracle-tests`, `scripts/gate/test_evidence_tools.py`,
+`docs/state/oracle-test-sites.md` and the two README edits. Fingerprint of that state: sha256
+`8629b09f5b085851c97336a4521975aa496d8b00d0cbd01c4345f92a616c0124` (the diff, then
+`<path> <sha256>` of the three untracked files).
+
+**Verdict: PASS. Keep the committed part; commit the rest.** Nothing needs reverting.
+
+## Checked
+
+- **Nothing else changed in the judge.** `normalise.py`, `surfaces.py`, `allow.json`, `corpus/`,
+  `protected-paths.txt`, the hooks, `gate_lib.py`, `compare-tests`, `baseline`,
+  `parse_test_log.py`, `run-tests`, `protected.py`: no diff against `90c1e6d`.
+- **R2A-1 fixed, nothing loosened.** `diff_paths` has no limit; the allow list sees every path,
+  only the stored list is cut to 50 with `paths_total`. My round-2A demonstration on the real
+  re2 `buildMetrics` event (244 allowed paths plus `targetMetrics` and `outputArtifactCount`) is
+  now `DIFF` with 248 paths (was `MATCH, ALLOWED 1`). `AllowVolumeTest`: all 4 tests fail when the
+  old 200-path cut is put back, pass now; 400 allowed paths alone are still ALLOWED.
+- **Oracle against itself, run by me with this referee:** `oracle-9.3.2` vs `-rerun` and vs
+  `-check` (brotli, re2) and `-rerun` vs `-check` (unrestricted): exit 0, `100% MATCH`, 26 of 26
+  surfaces, 13,916 = 13,858 + 58 allowed. No file under the recordings or `corpus/` was written.
+- **Accepted scores are unchanged under the new referee.** `scoreboard --json` for
+  `blaze-12ca29ee95e0` and `blaze-ef66f55e904e`: rows (ignoring the new `matching_keys`),
+  totals and verdict equal the committed files; only `referee_sha256`, provenance fields and the
+  new keys differ. The remark that an event "now scores DIFF where the old referee said MATCH"
+  concerns the synthetic edit above, not a Blaze recording: both labels' `buildMetrics` events
+  differ in 6 and 7 paths, all allowed (round 2B). `compare-scores` on the two rescored files:
+  PASS, 39 rows, 0 regressed.
+- **R2A-2** `binary_origin` (binary inside the recorder checkout's `target/`, not older than its
+  HEAD commit): recorded, printed, warns. A file-system check only; the commit stamp stays open.
+  **R2A-3** `scoreboard --write` refuses no commit, dirty tree, unverified or unchecked origin
+  unless `--allow-dirty "REASON"`, which is stored. **R2A-4** `matching_keys` digests per row;
+  `compare-scores` fails on a lost item at equal count, and warns when it can only compare
+  counts. **R2A-5** reference exceptions are the union of the committed summary's and the
+  manifest's; an uncommitted summary and `--force` (`replaced`, `forced`) are printed.
+- **`compare-repos`**: FAIL on a non-zero or unknown fetch exit, timeout, panic in the log, any
+  repo not MATCH, workspace or hidden lockfile not identical; exit status follows.
+- **`matrix`**: verdict line and exit status; missing steps, missing processes lines, non-zero
+  exits and an unfinished run fail. The one allowance (`re2-cold-test-actions`: re2, `C4 vs C1`,
+  TestRunner only, at most 21 actions, equal RPC counts per method) is tight and is checked on
+  the full unmatched list; `E2 vs E1` on re2 stays a failure.
+- **probe**: totals split into steps that run the binary and file checks; skipped scenarios and
+  those without a transcript are named. No change to transcripts, views or masks.
+- **`check-oracle-tests`**, run by me: 22 sites in 15 files, 0 unregistered, 1 path missing
+  (`blaze_client/tests/blaze_test.rs:224`), exit 1. It makes vacuous passes visible; it does not
+  fix S2-9, as the response says.
+- Unit tests: `scripts/oracle` 113 OK, `scripts/gate` 61 OK; neither changes `git status`.
+
+## Rulings root proposed
+
+- (a) The two accepted score files stay as recorded: no objection; rescoring gives the same
+  numbers. One consequence to handle: `compare-scores` refuses the committed files against a
+  score from the new referee ("different referees"), so the next acceptance needs a base under
+  this referee. Write the rescored `blaze-ef66f55e904e` to a new file name with
+  `--allow-dirty "<ruling>: recorded before binary_origin"` and commit it as the ratchet base.
+- (b) Checkpoint commits exclude in-progress protected-path changes: agreed (already in
+  `7d935c1`). The installed hook should have asked for `BLAZE_PROTECTED_OK` on `12ec0c9`; say in
+  the rule that the variable is never set for a checkpoint.
+
+## Follow-ups (not blocking)
+
+1. The matrix allowance rests on reasoning, not on a measurement: compare two cold oracle runs
+   of re2 with `compare-grpc-log` and cite that in `docs/remote.md`; make the per-method count
+   condition fail when no count table is parsed. The verdict does not judge cache-hit counts
+   (the "43/43" claims): add them.
+2. Protect `scripts/w5r/`, `scripts/remote/matrix*`, `scripts/w4/probe` and the other per-wave
+   comparison scripts (R2A-6), now that they carry verdicts.
+3. S2-9 in Rust (fail, one opt-out variable); the commit stamp in the binary (R2A-2).
+4. Still open from 2A/2B: `shutdown` exit code, `_STDERR_KEEP`, `paths_only` boundary,
+   `artifactMetrics` dropped by the referee, STATUS wording, S2-5, S2-7, S2-8.

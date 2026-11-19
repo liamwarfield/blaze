@@ -11,7 +11,7 @@ scripts/oracle/record --binary ~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64 \
     --label oracle-9.3.2 --project all --force      # the reference exists; replacing it needs --force
 scripts/oracle/record --binary <blaze> --label blaze-<commit> --project all
 scripts/oracle/compare oracle-9.3.2 blaze-<commit> [--project re2] [--surface aquery_actions]
-scripts/oracle/scoreboard blaze-<commit> [--markdown | --json] [--write]
+scripts/oracle/scoreboard blaze-<commit> [--markdown | --json] [--write [--allow-dirty "REASON"]]
 python3 -I -m unittest discover -s scripts/oracle      # normaliser, comparer and recorder tests
 ```
 
@@ -42,6 +42,10 @@ and at least one was compared.
 - A surface named by a declared exception of a recording (below) is compared and marked `*`, and
   never passes.
 - An allow-list entry that excuses more items than its `max_items` for the project excuses none.
+- A DIFF item is excused only when every one of its differing JSON paths matches the entry's
+  `only_fields`: `diff_paths` collects all of them, without a limit (audit R2A-1: a limit of 200
+  let 200 allowed paths hide one that was not allowed). Only the printed and stored list is cut
+  (50 paths kept per item, `paths_total` gives the count).
 
 `compare` and `scoreboard` print, for both sides and each project, the binary's sha256 and path,
 the recording date and the Blaze repository commit with its dirty flag; then the denominators in
@@ -50,9 +54,19 @@ surfaces per status, and what was excluded and why. `match%` is `matching / (tot
 rounded down, so a missing surface lowers it and `100.0` means every item.
 
 `scoreboard <label> --write` writes `corpus/scores/<label>.json` and `.md`. They depend only on
-the two recordings and the referee (`referee_sha256`: `normalise.py`, `surfaces.py`,
-`oracle_compare.py`, `allow.json`), so they can be regenerated and diffed. A score is committed
-with the commit that accepts it; `scripts/gate/compare-scores` holds a later score against it.
+the two recordings, the referee (`referee_sha256`: `normalise.py`, `surfaces.py`,
+`oracle_compare.py`, `allow.json`) and `--allow-dirty`, so they can be regenerated and diffed. A
+score is committed with the commit that accepts it; `scripts/gate/compare-scores` holds a later
+score against it.
+
+- `--write` refuses (exit 2, nothing written) a candidate recording that cannot back an accepted
+  score: no recorded commit, a dirty tree, or a binary whose origin is not verified
+  (`binary_origin.commit_verified`, below; recordings made before that field existed count as
+  not checked). `--allow-dirty "REASON"` writes anyway and stores the reason (`allow_dirty`);
+  the problems are always in the score (`recording_problems`) and printed.
+- Every row holds `matching_keys`: the first 10 hex digits of sha256 of each matching reference
+  item key, sorted, space-separated. `compare-scores` uses them to require that every item that
+  matched still matches (audit R2A-4), not only that the count did not drop.
 
 ## Recording
 
@@ -94,7 +108,8 @@ on everything else.
 Layout of `~/.cache/blaze/oracle-records/<label>/<project>/`:
 
 - `manifest.json`: binary path and sha256, the date, `blaze_repo` (commit and dirty state of the
-  Blaze checkout the recorder ran from), checkout commit of the project, workspace fix-ups, the
+  Blaze checkout the recorder ran from), `binary_origin` (whether the binary can come from that
+  commit, below), `replaced`/`forced` (what `--force` overrode), checkout commit of the project, workspace fix-ups, the
   normaliser context (paths, user, host), every command line with exit code and duration, item
   counts per surface, `extractor_sha256` (the `normalise.py` and `surfaces.py` that built `norm/`
   and `items/`), and the sha256 of every file below.
@@ -126,10 +141,19 @@ A score names a label, and a label names one binary from one tree:
   --binary` plus path and content hash of every untracked file; null for a clean tree). It is
   the checkout `record` ran from: build the binary from that checkout. With `binary_sha256`,
   `binary` and `created` this is what `compare` and `scoreboard` print for both sides.
+- `binary_origin` (audit R2A-2): `commit_verified` is true only when the binary's real path lies
+  inside `<recorder's checkout>/target` (AGENTS.md forbids `CARGO_TARGET_DIR`) and the binary is
+  not older than that checkout's HEAD commit; `reasons` says why not. `record` warns when it is
+  false (always for the oracle binary, which is not built here). The commit is not stamped into
+  the binary (that needs a Rust change), so this is a file-system check: it catches a binary from
+  another checkout or an older build, not a binary rebuilt from a dirty tree and then cleaned.
+  `compare` and `scoreboard` print it with the commit (`binary from that commit verified`,
+  `binary origin NOT VERIFIED`, `binary origin not checked`).
 - `record` refuses to write to a label/project that exists (even an unfinished directory), and
   refuses to add a project to a label whose other projects were recorded with another binary.
   `--force` overrides both; the new manifest then has `replaced` (date, binary and tree of what
-  it replaced).
+  it replaced) and `forced` (the conflicts it overrode), and `compare`/`scoreboard` print both
+  as warnings (audit R2A-5).
 - Label convention for Blaze: `blaze-<commit, 12 hex digits>`, with `-dirty-<first 8 of
   dirty_diff_sha256>` for an uncommitted tree. An accepted score comes from a clean tree.
 - `compare` warns when a label mixes binaries or commits across projects, when the candidate
@@ -148,7 +172,11 @@ A recording that was not produced by the protocol above says so in its manifest:
 `id`, `kind`, `explanation` and a non-empty list of `surfaces` are required (`record` refuses a
 malformed entry; `compare` treats one as covering every surface). `compare` and `scoreboard`
 print every exception of both sides; the named surfaces are still compared, are marked `*`, and
-never count as a pass. `record --renormalise` keeps the field and copies it to the committed
+never count as a pass. For the reference label the exceptions are those of the committed
+summary `corpus/oracle/<project>.json` together with the manifest's (audit R2A-5: the manifest in
+`~/.cache` is not hash-anchored, so an exception deleted there still applies); a difference
+between the two is printed as a warning, and so is a summary that differs from its version at
+git `HEAD`. `record --renormalise` keeps the field and copies it to the committed
 summary. To declare one, add it to the record's `manifest.json` and renormalise.
 
 The one exception today is `workerd-aquery-spliced` in `oracle-9.3.2/workerd`: on a fresh output

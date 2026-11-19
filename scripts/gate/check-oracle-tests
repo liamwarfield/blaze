@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Rust tests that pass silently when the oracle evidence they read is absent (audit S2-9).
+
+Usage: scripts/gate/check-oracle-tests [--checkout DIR] [--list]
+       scripts/gate/check-oracle-tests help
+
+Some Rust tests compare against recordings and caches that live outside the repository
+(~/.cache/blaze/oracle-records, the oracle's output user roots and install base, the pinned
+Bazel source, the shared repository cache, scratch work directories). When such a file is
+missing they print "skipped" (or "SKIP", "absent", ...) and return, so `cargo test` reports
+them as passed without having compared anything. Until the Rust owners make those tests fail
+(docs/state/oracle-test-sites.md), the gate runs this check before scripts/gate/run-tests:
+
+  1. it scans every .rs file with a #[test] under DIR/crates (default: this checkout) for a
+     print whose text says skip/SKIP/skipped/skipping/absent/not present/not found/no oracle,
+     followed within 4 lines by `return`, `continue` or `None`: a print-and-return site;
+  2. it matches each site to the table SITES below (file and message), which names the
+     paths the site needs; `~` is $HOME and `*` is a glob;
+  3. it prints every site as `file:line  OK|MISSING  path` (with --list, also the test text).
+
+Exit status: 0 when every site is known and every path it needs exists on this machine;
+1 when a needed path is missing (that test would pass without evidence) or a site is not in
+the table (add it, with its paths, in a reviewed change); 2 on usage errors. A table entry
+whose site is gone is printed as STALE (not a failure: the test may have been fixed).
+"""
+
+import glob
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+
+REC = "~/.cache/blaze/oracle-records/oracle-9.3.2"
+AQUERY = ["%s/%s/raw/aquery_deps_jsonproto.stdout", "%s/%s/manifest.json"]
+INSTALL = "~/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9"
+
+
+def recording(projects, files=AQUERY):
+    return [f % (REC, p) for p in projects for f in files]
+
+
+# (file under crates/, a substring of the printed message, [paths the site needs], test names).
+# A site's paths are what the test's loader reads before it decides to skip.
+SITES = [
+    ("starlark_conformance/tests/script_test.rs", "skipping: {} not found",
+     ["~/.cache/blaze/src/bazel-9.3.2/src/test/java/net/starlark/java/eval/testdata"],
+     "bazel_script_tests_on_starlark_rust"),
+    ("starlark_conformance/tests/byte_strings.rs", "SKIP: run scripts/bytes/run first",
+     ["~/.cache/blaze/work/bytes/third_party/telemetry/sha1.bzl"], "byte_strings tests (2 sites)"),
+    ("blaze_repo_fetch/tests/decompressor_test.rs", "skipping: {} not found",
+     ["~/.cache/blaze/src/bazel-9.3.2/tools/build_defs/repo/http.bzl"], "http_bzl_documentation"),
+    ("blaze_repo_fetch/tests/oracle_extraction_test.rs", "no oracle extraction of @platforms",
+     ["~/.cache/blaze/oracle-out/ur*/*/external/platforms/BUILD"],
+     "platforms_tarball_from_shared_cache_matches_oracle_extraction"),
+    ("blaze_repo_fetch/tests/oracle_extraction_test.rs", "not in the shared repository cache",
+     ["~/.cache/blaze/repo-cache/content_addressable/sha256/"
+      "3384eb1c30762704fbe38e440204e114154086c8fc8a8c2e3e28441028c019a8/file"],
+     "platforms_tarball_from_shared_cache_matches_oracle_extraction"),
+    ("blaze_client/tests/blaze_test.rs", "skipping: {} not present",
+     ["~/.cache/blaze/oracle-out/ur-w1/73a93e10e881efba110a09db7263fe1d/server/cmdline"],
+     "oracle_cmdline_file_matches_recorded_list"),
+    ("blaze_exec/tests/spawn_log_oracle_test.rs", "skipping {project}: {} not found",
+     recording(["brotli", "re2"], ["%s/%s/raw/execlog.json"]), "spawn log oracle tests"),
+    ("blaze_exec/tests/sandbox_process_wrapper_sandboxed_spawn_runner_test.rs", "has no process-wrapper",
+     [INSTALL + "/process-wrapper"], "process-wrapper sandboxed runner tests"),
+    ("blaze_exec/tests/sandbox_linux_sandboxed_spawn_runner_test.rs", "has no linux-sandbox",
+     [INSTALL + "/linux-sandbox"], "linux-sandbox sandboxed runner tests"),
+    ("blaze_exec/tests/sandbox_linux_sandboxed_spawn_runner_test.rs", "linux-sandbox is not supported",
+     [INSTALL + "/linux-sandbox"], "linux-sandbox runner tests (also needs a machine that supports it)"),
+    ("blaze_exec/tests/analysis_actions_oracle_execution_test.rs", "SKIP: no brotli oracle recording",
+     recording(["brotli"], AQUERY + ["%s/%s/items/outputs.json"]), "brotli_execution_matches_oracle"),
+    ("blaze_exec/tests/analysis_actions_oracle_execution_test.rs", "SKIP: no re2 oracle recording",
+     recording(["re2"], AQUERY + ["%s/%s/items/outputs.json"]), "re2_execution_matches_oracle"),
+    ("blaze_actions/tests/oracle_platform_probe.rs", "no oracle recording; skipped",
+     recording(["brotli"]), "empty_platform/host_platform fingerprint tests (2 sites)"),
+    ("blaze_actions/tests/oracle_aquery_dump.rs", "no oracle recording for {project}; skipped",
+     recording(["brotli", "re2"]), "brotli_/re2_aquery_jsonproto_bytes_match_oracle"),
+    ("blaze_actions/tests/template_expansion_action_test.rs", "no oracle recording; skipped",
+     recording(["re2"]), "oracle_re2_template_expansion_keys"),
+    ("blaze_actions/tests/symlink_action_test.rs", "no oracle recording; skipped",
+     recording(["brotli", "re2"]), "oracle_symlink_keys, oracle_solib_symlink_keys_and_paths (2 sites)"),
+    ("blaze_actions/tests/oracle_action_keys.rs", "no oracle recording for {project}; skipped",
+     recording(["brotli", "re2"]), "oracle_action_keys_match"),
+    ("blaze_bep/tests/oracle_bep_test.rs", "oracle recording for {project} absent; skipped",
+     recording(["brotli", "re2"], ["%s/%s/raw/bep.json", "%s/%s/manifest.json"]),
+     "replay_brotli, replay_re2, reconstruct_brotli, reconstruct_re2 (2 sites)"),
+]
+
+PRINT = re.compile(r"\b(e?println!|e?print!)\s*\(")
+SKIP_WORDS = re.compile(r"skip|absent|not present|not found|no oracle", re.IGNORECASE)
+EXITS = re.compile(r"\breturn\b|\bcontinue\b|\bNone\b")
+
+
+def find_sites(crates):
+    """[(path relative to crates/, line number, line text)] of print-and-return sites."""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(crates):
+        dirnames[:] = sorted(d for d in dirnames if d != "target")
+        for fn in sorted(filenames):
+            if not fn.endswith(".rs"):
+                continue
+            path = os.path.join(dirpath, fn)
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+            if not any("#[test]" in l for l in lines):
+                continue
+            for i, line in enumerate(lines):
+                if line.lstrip().startswith("//") or not PRINT.search(line) or not SKIP_WORDS.search(line):
+                    continue
+                if any(EXITS.search(l) for l in lines[i + 1:i + 5]):
+                    out.append((os.path.relpath(path, crates), i + 1, line.strip()))
+    return out
+
+
+def classify(sites, table=SITES):
+    """[(site, entry or None)] and the table entries no site matched."""
+    used, res = set(), []
+    for rel, n, text in sites:
+        entry = next((e for e in table if e[0] == rel and e[1] in text), None)
+        if entry is not None:
+            used.add(id(entry))
+        res.append(((rel, n, text), entry))
+    return res, [e for e in table if id(e) not in used]
+
+
+def path_exists(pattern):
+    p = os.path.expanduser(pattern)
+    return bool(glob.glob(p)) if any(c in p for c in "*?[") else os.path.exists(p)
+
+
+def main(argv):
+    if argv and argv[0] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    root, show = ROOT, False
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == "--checkout" and args:
+            root = args.pop(0)
+        elif a == "--list":
+            show = True
+        else:
+            print("error: unknown argument %r (see `scripts/gate/check-oracle-tests help`)" % a, file=sys.stderr)
+            return 2
+    crates = os.path.join(root, "crates")
+    if not os.path.isdir(crates):
+        print("error: no crates/ under %s" % root, file=sys.stderr)
+        return 2
+    results, stale = classify(find_sites(crates))
+    missing, unknown = 0, 0
+    files = set()
+    for (rel, n, text), entry in results:
+        files.add(rel)
+        where = "crates/%s:%d" % (rel, n)
+        if entry is None:
+            unknown += 1
+            print("%-84s UNREGISTERED  (paths unknown: add the site to SITES)" % where)
+        else:
+            for p in entry[2]:
+                ok = path_exists(p)
+                missing += 0 if ok else 1
+                print("%-84s %-8s %s" % (where, "OK" if ok else "MISSING", p))
+        if show:
+            print("    %s%s" % (text, "" if entry is None else "  [%s]" % entry[3]))
+    for e in stale:
+        print("STALE table entry (no such site any more): crates/%s %r" % (e[0], e[1]))
+    print("sites %d in %d files; paths missing %d; unregistered sites %d" % (
+        len(results), len(files), missing, unknown))
+    bad = missing or unknown
+    print("result: %s" % ("FAIL (a listed test would pass without its evidence)" if missing else
+                          "FAIL (unregistered print-and-return site)" if unknown else
+                          "PASS (every print-and-return test has its evidence on this machine)"))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -82,7 +82,7 @@ Read them again after a context reset.
 - Checkpoint commits must not include in-progress changes to protected paths. Stage them out
   (`git add -A && git reset -q -- $(grep -v '^#' scripts/gate/protected-paths.txt | awk 'NF{print $NF}')`,
   then add back only reviewed or task-named protected files); referee and gate changes are
-  committed after the auditor's verdict.
+  committed after the auditor's verdict. `BLAZE_PROTECTED_OK` is never set for a checkpoint.
 
 ## Protected paths and accepted state
 
