@@ -2,6 +2,8 @@
 
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 
 use blaze_optdefs::misc::build_event_context::OutputGroupFileMode;
 use blaze_optdefs::misc::build_event_protocol_options::{
@@ -14,7 +16,9 @@ use blaze_protos::json::{JsonFormat, Printer, TypeRegistry};
 use blaze_protos::tools::protos::SpawnExec;
 use parking_lot::Mutex;
 
-use crate::buildeventstream::artifact_uploader::BuildEventArtifactUploader;
+use crate::buildeventstream::artifact_uploader::{
+    BuildEventArtifactUploader, PathConverterFuture, UploadFailure,
+};
 use crate::buildeventstream::build_event::BuildEvent;
 use crate::buildeventstream::build_event_context::{
     ArtifactGroupNamer, BuildEventContext, PathConverter,
@@ -33,28 +37,54 @@ struct WriterState {
     failure: Option<TransportCloseError>,
 }
 
+/// What the transport shares with its `bep-local-writer` thread.
+struct Shared<S: SerializeEvent> {
+    options: Arc<BuildEventProtocolOptions>,
+    uploader: Arc<dyn BuildEventArtifactUploader>,
+    writer: Mutex<WriterState>,
+    namer: Arc<dyn ArtifactGroupNamer>,
+    serializer: S,
+}
+
+/// An entry of `SequentialWriter.pendingWrites`: the event and the future of its path converter
+/// (Java queues the future of the event's proto, `Futures.transform` of the converter future);
+/// `None` is `CLOSE_EVENT_FUTURE`.
+type PendingWrite = Option<(Arc<dyn BuildEvent>, PathConverterFuture)>;
+
+/// `SequentialWriter`'s `bep-local-writer` thread: waits for each event's uploads, in send order,
+/// and writes the event.
+// Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:93 FileTransport.SequentialWriter
+struct SequentialWriter {
+    pending_writes: mpsc::Sender<PendingWrite>,
+    writer_thread: Option<std::thread::JoinHandle<()>>,
+}
+
 /// Non-blocking file transport.
 ///
 /// Implementors of this class need to implement [`SerializeEvent`], which serializes a build
 /// event to bytes.
 ///
-/// PORT: Java converts each event to its proto when it is sent (the local uploader's futures are
-/// immediate) and hands the bytes to a `bep-local-writer` thread (`SequentialWriter`). Here the
+/// PORT: Java converts each event to its proto once the event's uploads are done and hands the
+/// bytes to a `bep-local-writer` thread (`SequentialWriter`). While every upload future is
+/// already complete when it is returned and the uploader is not slow (the local uploader), the
 /// proto is converted and written on the sending thread, under a lock, in send order; the bytes
-/// are the same. The periodic flush (`EXPERIMENTAL_BEP_FILE_FLUSH_MILLIS`) is replaced by a
-/// flush after each event.
+/// are the same. From the first event whose upload is still pending, or from the start for an
+/// uploader that may be slow (the ByteStream uploader of a remote cache), a `bep-local-writer`
+/// thread waits for each event's uploads in send order and writes the events, as Java's does.
+/// The periodic flush (`EXPERIMENTAL_BEP_FILE_FLUSH_MILLIS`) is replaced by a flush after each
+/// event.
 // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:64 FileTransport
-pub struct FileTransport<S: SerializeEvent> {
-    options: Arc<BuildEventProtocolOptions>,
-    uploader: Arc<dyn BuildEventArtifactUploader>,
-    writer: Mutex<WriterState>,
-    namer: Arc<dyn ArtifactGroupNamer>,
+pub struct FileTransport<S: SerializeEvent + 'static> {
+    shared: Arc<Shared<S>>,
+    /// `writer.isClosed`.
+    is_closed: AtomicBool,
+    /// The writer thread, once one is needed. The lock also orders the sends.
+    sequential_writer: Mutex<Option<SequentialWriter>>,
     bes_upload_mode: BesUploadMode,
-    serializer: S,
     name: &'static str,
 }
 
-impl<S: SerializeEvent> FileTransport<S> {
+impl<S: SerializeEvent + 'static> FileTransport<S> {
     // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:78 FileTransport.<init>
     fn create(
         output_stream: Box<dyn Write + Send>,
@@ -65,7 +95,7 @@ impl<S: SerializeEvent> FileTransport<S> {
         serializer: S,
         name: &'static str,
     ) -> Self {
-        FileTransport {
+        let shared = Arc::new(Shared {
             options,
             uploader,
             writer: Mutex::new(WriterState {
@@ -73,35 +103,122 @@ impl<S: SerializeEvent> FileTransport<S> {
                 failure: None,
             }),
             namer,
-            bes_upload_mode,
             serializer,
+        });
+        FileTransport {
+            shared,
+            is_closed: AtomicBool::new(false),
+            sequential_writer: Mutex::new(None),
+            bes_upload_mode,
             name,
         }
     }
 
+    /// Starts the `bep-local-writer` thread.
+    // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:118 SequentialWriter.<init>
+    fn start_sequential_writer(shared: &Arc<Shared<S>>) -> SequentialWriter {
+        let (sender, receiver) = mpsc::channel::<PendingWrite>();
+        let thread_shared = shared.clone();
+        let handle = std::thread::Builder::new()
+            .name("bep-local-writer".to_string())
+            .spawn(move || Self::run(&thread_shared, &receiver))
+            .expect("failed to start the bep-local-writer thread");
+        SequentialWriter {
+            pending_writes: sender,
+            writer_thread: Some(handle),
+        }
+    }
+
     // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:283 FileTransport.asStreamProto
-    fn as_stream_proto(&self, event: &dyn BuildEvent) -> Option<bes::BuildEvent> {
-        let converter = self
-            .uploader
-            .upload_referenced_local_files(&event.referenced_local_files());
+    fn as_stream_proto(
+        shared: &Shared<S>,
+        event: &dyn BuildEvent,
+        converter: Box<dyn PathConverter>,
+    ) -> Option<bes::BuildEvent> {
         // Remote uploads are already resolved (see BuildEvent::remote_uploads).
         let context = FileTransportContext {
             path_converter: converter,
-            namer: self.namer.as_ref(),
-            options: &self.options,
-            output_group_modes: self.options.get_output_group_file_modes_mapping(),
+            namer: shared.namer.as_ref(),
+            options: &shared.options,
+            output_group_modes: shared.options.get_output_group_file_modes_mapping(),
         };
         // An interrupted conversion yields null, which the writer skips.
         event.as_stream_proto(&context).ok()
     }
 
+    /// Writes one event whose uploads are done; a failed upload ends the writer (`exitFailure`).
+    fn write_event(
+        shared: &Shared<S>,
+        event: &dyn BuildEvent,
+        converter: Result<Box<dyn PathConverter>, UploadFailure>,
+    ) {
+        let converter = match converter {
+            Ok(converter) => converter,
+            Err(failure) => {
+                let mut state = shared.writer.lock();
+                Self::exit_failure_with(
+                    &mut state,
+                    failure.get_message(),
+                    match failure {
+                        UploadFailure::Cancelled => "BES_FILE_WRITE_CANCELED",
+                        UploadFailure::Failed(_) => "BES_FILE_WRITE_IO_ERROR",
+                    },
+                );
+                return;
+            }
+        };
+        let Some(proto) = Self::as_stream_proto(shared, event, converter) else {
+            return;
+        };
+        let serialized = shared.serializer.serialize_event(&proto);
+        let mut state = shared.writer.lock();
+        let result = match state.out.as_mut() {
+            None => return,
+            Some(out) => out.write_all(&serialized).and_then(|()| out.flush()),
+        };
+        if let Err(e) = result {
+            Self::exit_failure(&mut state, &e);
+        }
+    }
+
+    /// The `bep-local-writer` thread: writes the pending events in order until the close entry.
+    // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:131 SequentialWriter.run
+    fn run(shared: &Shared<S>, pending_writes: &mpsc::Receiver<PendingWrite>) {
+        // A disconnected queue (the transport was dropped) closes as CLOSE_EVENT_FUTURE does.
+        while let Ok(Some((event, converter))) = pending_writes.recv() {
+            if shared.writer.lock().out.is_none() {
+                // exitFailure cleared the queue and ended the loop; later events are dropped.
+                continue;
+            }
+            Self::write_event(shared, event.as_ref(), converter.get());
+        }
+        Self::close_output(shared);
+    }
+
+    /// The `finally` of `SequentialWriter.run`: flush and close the stream, release the
+    /// uploader.
+    fn close_output(shared: &Shared<S>) {
+        let mut state = shared.writer.lock();
+        if let Some(mut out) = state.out.take()
+            && let Err(e) = out.flush()
+        {
+            // Java logs "Failed to close BEP file output stream." and still completes.
+            let _ = e;
+        }
+        drop(state);
+        shared.uploader.release();
+    }
+
     // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:156 SequentialWriter.exitFailure
     fn exit_failure(state: &mut WriterState, e: &std::io::Error) {
-        let message = format!("Unable to write all BEP events to file due to '{e}'");
-        state.failure = Some(TransportCloseError {
-            message,
-            code: "BES_FILE_WRITE_IO_ERROR",
-        });
+        Self::exit_failure_with(state, e.to_string(), "BES_FILE_WRITE_IO_ERROR");
+    }
+
+    /// `exitFailure(e)` with `e.getMessage()` and the code `getBuildProgressCode(e)` gives.
+    // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:156 SequentialWriter.exitFailure
+    fn exit_failure_with(state: &mut WriterState, e_message: String, code: &'static str) {
+        let message = format!("Unable to write all BEP events to file due to '{e_message}'");
+        state.failure = Some(TransportCloseError { message, code });
         state.out = None;
     }
 }
@@ -128,40 +245,61 @@ impl BuildEventContext for FileTransportContext<'_> {
     }
 }
 
-impl<S: SerializeEvent> BuildEventTransport for FileTransport<S> {
+impl<S: SerializeEvent + 'static> BuildEventTransport for FileTransport<S> {
     fn name(&self) -> String {
         self.name.to_string()
     }
 
     // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:257 FileTransport.sendBuildEvent
     fn send_build_event(&self, event: &Arc<dyn BuildEvent>) {
-        if self.writer.lock().out.is_none() {
+        if self.is_closed.load(Ordering::SeqCst) {
             return;
         }
-        let Some(proto) = self.as_stream_proto(event.as_ref()) else {
+        let mut sequential_writer = self.sequential_writer.lock();
+        let converter = self
+            .shared
+            .uploader
+            .upload_referenced_local_files(&event.referenced_local_files());
+        if sequential_writer.is_none() && !self.shared.uploader.may_be_slow() && converter.is_done()
+        {
+            if self.shared.writer.lock().out.is_none() {
+                return;
+            }
+            Self::write_event(&self.shared, event.as_ref(), converter.get());
             return;
-        };
-        let serialized = self.serializer.serialize_event(&proto);
-        let mut state = self.writer.lock();
-        let result = match state.out.as_mut() {
-            None => return,
-            Some(out) => out.write_all(&serialized).and_then(|()| out.flush()),
-        };
-        if let Err(e) = result {
-            Self::exit_failure(&mut state, &e);
         }
+        let sequential_writer =
+            sequential_writer.get_or_insert_with(|| Self::start_sequential_writer(&self.shared));
+        // The writer may already have ended; then the event is dropped.
+        let _ = sequential_writer
+            .pending_writes
+            .send(Some((event.clone(), converter)));
     }
 
     // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:225 FileTransport.close
     fn close(&self) -> Result<(), TransportCloseError> {
-        let mut state = self.writer.lock();
-        if let Some(mut out) = state.out.take()
-            && let Err(e) = out.flush()
-        {
-            // Java logs "Failed to close BEP file output stream." and still completes.
-            let _ = e;
+        let already_closed = self.is_closed.swap(true, Ordering::SeqCst);
+        let mut sequential_writer = self.sequential_writer.lock();
+        match sequential_writer.as_mut() {
+            Some(sequential_writer) => {
+                if !already_closed {
+                    let _ = sequential_writer.pending_writes.send(None);
+                }
+                if let Some(handle) = sequential_writer.writer_thread.take()
+                    && let Err(panic) = handle.join()
+                {
+                    // closeFuture.setException(e.getCause()) for a RuntimeException or Error.
+                    std::panic::resume_unwind(panic);
+                }
+            }
+            None => {
+                if !already_closed {
+                    Self::close_output(&self.shared);
+                }
+            }
         }
-        match &state.failure {
+        drop(sequential_writer);
+        match &self.shared.writer.lock().failure {
             Some(f) => Err(f.clone()),
             None => Ok(()),
         }
@@ -169,7 +307,7 @@ impl<S: SerializeEvent> BuildEventTransport for FileTransport<S> {
 
     // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:330 FileTransport.mayBeSlow
     fn may_be_slow(&self) -> bool {
-        self.uploader.may_be_slow()
+        self.shared.uploader.may_be_slow()
     }
 
     // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:335 FileTransport.getBesUploadMode
@@ -179,7 +317,7 @@ impl<S: SerializeEvent> BuildEventTransport for FileTransport<S> {
 
     // Java: com/google/devtools/build/lib/buildeventstream/transports/FileTransport.java:340 FileTransport.getUploader
     fn get_uploader(&self) -> Option<Arc<dyn BuildEventArtifactUploader>> {
-        Some(self.uploader.clone())
+        Some(self.shared.uploader.clone())
     }
 }
 

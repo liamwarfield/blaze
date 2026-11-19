@@ -318,6 +318,29 @@ impl FileArtifactValue {
         FileArtifactValue::Directory { mtime }
     }
 
+    /// `createForDirectoryWithHash(digest)`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:413 FileArtifactValue.createForDirectoryWithHash
+    pub fn create_for_directory_with_hash(digest: Vec<u8>) -> FileArtifactValue {
+        FileArtifactValue::HashedDirectory { digest }
+    }
+
+    /// `createForNormalFileUsingPath(path, size, xattrProvider)`: the digest is read from the
+    /// file (`DigestUtils.getDigestWithManualFallback`; Blaze's file systems have no fast
+    /// digests), with no contents proxy.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:407 FileArtifactValue.createForNormalFileUsingPath
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:364 FileArtifactValue.create
+    pub fn create_for_normal_file_using_path(
+        path: &Path,
+        size: i64,
+    ) -> io::Result<FileArtifactValue> {
+        let digest = path.get_digest()?;
+        Ok(FileArtifactValue::create_for_normal_file(
+            Some(digest),
+            /* proxy= */ None,
+            size,
+        ))
+    }
+
     /// `createForRemoteFile(digest, size, locationIndex)`.
     pub fn create_for_remote_file(
         digest: Vec<u8>,

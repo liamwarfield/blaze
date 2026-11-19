@@ -87,6 +87,29 @@ fn cc_error(e: blaze_cc_features::actions::CommandLineExpansionException) -> Map
     MapFnError::CommandLineExpansion(CommandLineExpansionException::new(e.message))
 }
 
+/// The command line of `CompileCommandLine.getFilteredFeatureConfigurationCommandLine`: exactly
+/// the same command line as the `CppCompileAction` (tool path and compiler options).
+// Java: com/google/devtools/build/lib/rules/cpp/CompileCommandLine.java:106 CompileCommandLine.getFilteredFeatureConfigurationCommandLine
+struct FilteredFeatureConfigurationCommandLine {
+    compile_command_line: CompileCommandLine,
+    overwritten_variables: CcToolchainVariablesRef,
+}
+
+impl std::fmt::Debug for FilteredFeatureConfigurationCommandLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FilteredFeatureConfigurationCommandLine")
+    }
+}
+
+impl blaze_actions::actions::command_line::CommandLine for FilteredFeatureConfigurationCommandLine {
+    // Java: com/google/devtools/build/lib/rules/cpp/CompileCommandLine.java:110 CompileCommandLine.getFilteredFeatureConfigurationCommandLine.arguments
+    fn arguments(&self) -> Result<Vec<String>, CommandLineError> {
+        self.compile_command_line
+            .get_filtered_feature_configuration_command_line(Some(&*self.overwritten_variables))
+            .map_err(cc_error)
+    }
+}
+
 /// Action that represents some kind of C++ compilation step.
 // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:120 CppCompileAction
 pub struct CppCompileAction {
@@ -919,10 +942,40 @@ impl Action for CppCompileAction {
     fn get_starlark_args(
         &self,
     ) -> Option<Vec<blaze_actions::analysis::starlark::args::RegisteredArgs>> {
-        // Java: Args.forRegisteredAction over
-        // compileCommandLine.getFilteredFeatureConfigurationCommandLine(this), with a GCC_QUOTED
-        // always-used params file when cppConfiguration().useArgsParamsFile().
-        blaze_util::unported!("CppCompileAction.getStarlarkArgs")
+        // ImmutableSet of the directory inputs, in getInputs().toList() order.
+        let mut directory_inputs: indexmap::IndexSet<Artifact> = indexmap::IndexSet::new();
+        for input in self.get_inputs().to_list().iter() {
+            if input.is_directory() {
+                directory_inputs.insert(input.clone());
+            }
+        }
+
+        let command_line: blaze_actions::actions::command_line::CommandLineRef =
+            Arc::new(FilteredFeatureConfigurationCommandLine {
+                compile_command_line: self.compile_command_line.clone(),
+                // PORT: Java's anonymous CommandLine asks the action for getOverwrittenVariables()
+                // each time it is expanded; the action is not reachable from an owned command
+                // line here, so the variables are taken when the Args is made.
+                overwritten_variables: self.get_overwritten_variables(),
+            });
+        let mut param_file_info = None;
+        if self.cpp_configuration().use_args_params_file() {
+            param_file_info = Some(
+                blaze_actions::actions::param_file_info::ParamFileInfo::builder(
+                    ParameterFileType::GCC_QUOTED,
+                )
+                .set_use_always(true)
+                .build(),
+            );
+        }
+
+        let args = blaze_actions::analysis::starlark::args::RegisteredArgs::for_registered_action(
+            command_line,
+            param_file_info,
+            directory_inputs.into_iter().collect(),
+        );
+
+        Some(vec![args])
     }
 }
 

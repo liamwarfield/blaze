@@ -17,6 +17,11 @@ use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::providers::file_provider::FilesToRunProvider;
 use blaze_analysis::providers::output_group_info::HIDDEN_TOP_LEVEL;
 use blaze_analysis::test::test_provider::{TestOutput, TestProvider};
+use blaze_bep::buildeventstream::{BuildEventArtifactUploader, LocalFilesArtifactUploader};
+use blaze_bep::runtime::{
+    BuildEventArtifactUploaderFactory, BuildEventArtifactUploaderFactoryMap,
+    BuildEventArtifactUploaderFactoryMapBuilder,
+};
 use blaze_events::{Event, EventHandler, ExtendedEventHandler, JavaClock};
 use blaze_exec::actions::action_adapters::artifact_input;
 use blaze_exec::actions::action_output_directory_helper::ActionOutputDirectoryHelper;
@@ -258,53 +263,101 @@ pub(crate) fn placeholder_after_command(env: &CommandEnvironment, options: &Opti
     let _ = temp_dir.delete_tree();
 }
 
-/// `BuildEventServiceModule.createBepTransports`'s `uploaderSupplier.get()` for each build
-/// event file transport (text, binary, JSON) whose `--build_event_*_file_path_conversion` is on:
-/// the uploader factory that `--experimental_build_event_upload_strategy` selects. Bazel
-/// registers one factory, RemoteModule's "remote" (`serverInit`), which `select(null)` also
-/// picks; any other name is the local uploader. The remote factory's `create` is
-/// `RemoteModule::create_build_event_artifact_uploader` (the ByteStream uploader with a gRPC
-/// cache, which fails loudly: Bazel writes `bytestream://` URIs there, Blaze's BEP only has the
-/// local uploader). Without a gRPC cache it is the local uploader the transports already have.
+/// The `tempPathGenerator` directory `RemoteModule.setup` created for a command other than
+/// build/test (see [`dispatcher_before_command`]), until `afterCommand` deletes it.
+static DISPATCHER_TEMP_DIR: Mutex<Option<blaze_vfs::Path>> = Mutex::new(None);
+
+/// `RemoteModule.beforeCommand(env)` for the commands other than `build` / `test` (which set the
+/// module up in `crate::commands::build`, see [`before_command`]): `RemoteOptions` is a common
+/// command option (`RemoteModule.getCommonCommandOptions`), so `setup` runs for every command
+/// and, when nothing remote is requested, returns with the placeholder provider after
+/// `tempPathGenerator = getTempPathGenerator(env)` ("Found stale downloads from previous build,
+/// deleting..."). `Err` is its `AbruptExitException`.
 ///
-/// PORT: Java creates the uploader while it creates the transports; `blaze_bep` takes no
-/// uploader from outside, so this runs right after the transports are created. The
-/// connectivity check (`ConnectivityStatus`, "local" when not OK) is always OK in Bazel.
-// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:366 BuildEventServiceModule.beforeCommand
-// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:827 BuildEventServiceModule.createBepTransports
-// Java: com/google/devtools/build/lib/runtime/BuildEventArtifactUploaderFactoryMap.java:33 BuildEventArtifactUploaderFactoryMap.select
-pub(crate) fn create_bep_file_transport_uploaders(
-    remote: &RemoteSupport,
-    options: &OptionsParsingResult,
-) {
-    use blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions;
-    use blaze_optdefs::misc::build_event_stream_options::BuildEventStreamOptions;
-    let Some(bep_options) = options.get_options::<BuildEventProtocolOptions>() else {
-        return;
-    };
-    let Some(bes_stream_options) = options.get_options::<BuildEventStreamOptions>() else {
-        return;
-    };
-    let remote_factory_selected = match bep_options.build_event_upload_strategy.as_deref() {
-        None => true,
-        Some(name) => name == "remote",
-    };
-    if !remote_factory_selected {
-        return;
+/// PORT: a command other than build/test with a remote option set does not set the remote
+/// module up in Blaze (see the module comment), so it does not run this either.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:403 RemoteModule.beforeCommand
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:524 RemoteModule.setup
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1341 RemoteModule.getCommonCommandOptions
+pub(crate) fn dispatcher_before_command(
+    env: &CommandEnvironment,
+) -> Result<(), crate::module::AbruptExitException> {
+    *DISPATCHER_TEMP_DIR.lock() = None;
+    if matches!(env.get_command_name(), "build" | "test") {
+        return Ok(());
     }
-    let uses_uploader = |file: &str, path_conversion: bool| !file.is_empty() && path_conversion;
-    if uses_uploader(
-        &bes_stream_options.build_event_text_file,
-        bes_stream_options.build_event_text_file_path_conversion,
-    ) || uses_uploader(
-        &bes_stream_options.build_event_binary_file,
-        bes_stream_options.build_event_binary_file_path_conversion,
-    ) || uses_uploader(
-        &bes_stream_options.build_event_json_file,
-        bes_stream_options.build_event_json_file_path_conversion,
+    let Some(remote_options) = env.get_options().get_options::<RemoteOptions>() else {
+        // Quit if no supported command is being used.
+        return Ok(());
+    };
+    if remote_requested(&remote_options) {
+        return Ok(());
+    }
+    let exec_root = env.get_exec_root();
+    match blaze_remote::remote_module::get_temp_path_generator(
+        &env.get_directories().get_action_temps_directory(&exec_root),
+        env.get_reporter().as_ref(),
     ) {
-        let _local_uploader: Option<std::convert::Infallible> =
-            remote.module.lock().create_build_event_artifact_uploader();
+        Ok(temp_path_generator) => {
+            *DISPATCHER_TEMP_DIR.lock() = Some(temp_path_generator.get_temp_dir().clone());
+            Ok(())
+        }
+        Err(e) => Err(crate::module::AbruptExitException::new(
+            crate::commands::build::abrupt_exit_detailed_exit_code(e),
+        )),
+    }
+}
+
+/// `RemoteModule.afterCommand` for a command [`dispatcher_before_command`] set up:
+/// `afterCommandTask` deletes the `tempPathGenerator` directory, ignoring failures.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1097 RemoteModule.afterCommand
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1139 RemoteModule.afterCommandTask
+pub(crate) fn dispatcher_after_command() {
+    if let Some(temp_dir) = DISPATCHER_TEMP_DIR.lock().take() {
+        // Intentionally ignored.
+        let _ = temp_dir.delete_tree();
+    }
+}
+
+/// The runtime's `BuildEventArtifactUploaderFactoryMap` (`BlazeRuntime
+/// .getBuildEventArtifactUploaderFactoryMap`): Bazel registers one factory, RemoteModule's
+/// "remote" (`serverInit`), the delegate whose `create` is
+/// `RemoteModule::create_build_event_artifact_uploader` (the ByteStream uploader when `setup`
+/// found a gRPC cache, else the local uploader). The build event module selects from it with
+/// `--experimental_build_event_upload_strategy` (`select(null)` is "remote" too).
+///
+/// PORT: Java's map lives as long as the server and the delegate is re-initialised by each
+/// command's `RemoteModule.setup`; Blaze creates the module per command, so the map is built per
+/// command from the command's [`RemoteSupport`] (`None` when no remote option is set: Java's
+/// delegate then has no factory and creates a `LocalFilesArtifactUploader`).
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:228 RemoteModule.serverInit
+// Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java BlazeRuntime.getBuildEventArtifactUploaderFactoryMap
+pub(crate) fn build_event_artifact_uploader_factory_map(
+    remote: Option<&Arc<RemoteSupport>>,
+) -> BuildEventArtifactUploaderFactoryMap {
+    BuildEventArtifactUploaderFactoryMapBuilder::new()
+        .add(
+            "remote",
+            Arc::new(BuildEventArtifactUploaderFactoryDelegate {
+                remote: remote.cloned(),
+            }),
+        )
+        .build()
+}
+
+/// `RemoteModule.BuildEventArtifactUploaderFactoryDelegate`.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1344 RemoteModule.BuildEventArtifactUploaderFactoryDelegate
+struct BuildEventArtifactUploaderFactoryDelegate {
+    remote: Option<Arc<RemoteSupport>>,
+}
+
+impl BuildEventArtifactUploaderFactory for BuildEventArtifactUploaderFactoryDelegate {
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1361 BuildEventArtifactUploaderFactoryDelegate.create
+    fn create(&self) -> Arc<dyn BuildEventArtifactUploader> {
+        match &self.remote {
+            None => Arc::new(LocalFilesArtifactUploader),
+            Some(remote) => remote.module.lock().create_build_event_artifact_uploader(),
+        }
     }
 }
 

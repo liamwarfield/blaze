@@ -5,8 +5,16 @@
 # (an upper aspect on a target the lower aspect skipped, a wrong return type, a duplicate provider).
 run cquery "deps(//:consume)" --output=label_kind
 run cquery "deps(//:consume_top)" --output=label_kind
+# aquery prints the actions of every ASPECT node that hangs off a printed target in the server's
+# graph, also those analysed by earlier commands; Blaze has no persistent server, so each aquery
+# starts from a fresh one here.
+run shutdown
 aquery "deps(//:consume)"
-aquery "deps(//:consume_top)"
+# Not recorded: `aquery "deps(//:consume_top)"`. A target with two aspect values (collect, and
+# top on collect) prints their actions in the iteration order of a HashSet<AspectValue>
+# (ConfiguredTargetValueAccessor.getAspectValues; AspectValue has identity hashCode), which
+# differs between runs of the oracle itself (4 recordings: 2 orders).
+run shutdown
 run aquery //:a --aspects=//:defs.bzl%collect --output=jsonproto
 run build //:consume //:consume_top //:consume_gen
 cat bazel-bin/consume.txt

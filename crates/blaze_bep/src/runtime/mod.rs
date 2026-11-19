@@ -1,6 +1,7 @@
 //! Ports from `lib/runtime`: the streamer, the artifact group namer and the runtime's build
 //! events.
 
+pub mod build_event_artifact_uploader_factory;
 pub mod build_event_streamer;
 pub mod command_line_event;
 pub mod counting_artifact_group_namer;
@@ -9,6 +10,10 @@ pub mod named_artifact_group;
 pub mod runtime_events;
 pub mod test_summary_event;
 
+pub use build_event_artifact_uploader_factory::{
+    BuildEventArtifactUploaderFactory, BuildEventArtifactUploaderFactoryMap,
+    BuildEventArtifactUploaderFactoryMapBuilder, LocalFilesUploaderFactory,
+};
 pub use build_event_streamer::{
     BuildEventStreamer, Builder as BuildEventStreamerJavaBuilder, OutErrProvider,
     ReleaseReplaceableBuildEvent,

@@ -8,13 +8,15 @@ use blaze_collect::{NestedSet, NestedSetBuilder, NestedSetNode};
 use blaze_exec::actions::action_adapters::as_blaze_artifact;
 use blaze_exec::actions::{ActionExecutionException, FileArtifactValue, TreeArtifactValue};
 use blaze_skyframe::{ComputeError, Environment, SkyFunctionException, SkyKey, Transience};
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 
 use crate::action_execution_value::ActionExecutionValue;
-use crate::analysis_seam::{AnalysisSeam, ConfiguredTargetView};
+use crate::analysis_seam::{AnalysisSeam, ConfiguredAspectView, ConfiguredTargetView};
 use crate::artifact_function::{ArtifactValue, SourceArtifactException};
-use crate::events::{ArtifactsInOutputGroup, CompletionRootCause, TargetCompleteEvent};
-use crate::keys::{TargetCompletionKey, artifact_key};
+use crate::events::{
+    ArtifactsInOutputGroup, AspectCompleteEvent, CompletionRootCause, TargetCompleteEvent,
+};
+use crate::keys::{AspectCompletionKey, TargetCompletionKey, artifact_key};
 use crate::skyframe_action_executor::SkyframeActionExecutor;
 
 /// The (marker) value of a completed top-level target.
@@ -29,7 +31,14 @@ pub fn get_all_artifacts_to_build(
     target: &dyn ConfiguredTargetView,
     output_groups: &[String],
 ) -> Vec<(String, Vec<Artifact>)> {
-    let groups = target.get_output_groups();
+    get_all_artifacts_to_build_of(&target.get_output_groups(), output_groups)
+}
+
+// Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:192 TopLevelArtifactHelper.getAllArtifactsToBuild
+fn get_all_artifacts_to_build_of(
+    groups: &IndexMap<String, NestedSet<Artifact>>,
+    output_groups: &[String],
+) -> Vec<(String, Vec<Artifact>)> {
     let mut result = Vec::new();
     for name in output_groups {
         if let Some(set) = groups.get(name) {
@@ -126,30 +135,239 @@ pub(crate) fn create_source_error_code_and_message_of(
 }
 
 /// `CompletionFunction.handleSourceFileError`: records the input's `LabelCause` and reports
-/// `TargetCompletor.getRootCauseError` (`<label>: <cause message>` at the target's location).
+/// the completor's `getRootCauseError`.
 // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:346 CompletionFunction.handleSourceFileError
 fn handle_source_file_error(
     skyframe_action_executor: &SkyframeActionExecutor,
+    completor: &dyn Completor,
     input: &Artifact,
     failure_detail: &blaze_protos::failure_details::FailureDetail,
     root_causes_builder: &mut Vec<CompletionRootCause>,
-    env: &Environment<'_>,
+    env: &mut Environment<'_>,
     key_label: &blaze_cmdline::Label,
-    location: &blaze_events::Location,
-) {
+) -> Result<(), ComputeError> {
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1160 ActionExecutionFunction.createLabelCauseNullOwnerOk
     let cause = CompletionRootCause::Label {
         label: input.get_owner().unwrap_or_else(|| key_label.clone()),
         failure_detail: failure_detail.clone(),
     };
     push_unique(root_causes_builder, cause);
-    // Java: com/google/devtools/build/lib/skyframe/TargetCompletor.java:65 TargetCompletor.getRootCauseError
     // LabelCause.getMessage(): the failure detail's message.
-    env.listener().handle(&blaze_events::Event::error_at(
-        Some(location.clone()),
-        format!("{}: {}", key_label, failure_detail.message),
-    ));
+    let event = completor.get_root_cause_error(&failure_detail.message, env)?;
+    env.listener().handle(&event);
     skyframe_action_executor.record_execution_error();
+    Ok(())
+}
+
+/// What `Completor.getLocationIdentifier` returns: a `Location` (targets) or a string prefix
+/// (aspects).
+pub(crate) enum LocationIdentifier {
+    Location(blaze_events::Location),
+    Prefix(String),
+}
+
+/// What the completion hands the completor's `createFailed` / `createSucceeded`.
+pub(crate) struct CompletionOutcome {
+    /// Labels of the root causes (`None` for a cause without an owner label).
+    root_causes: Vec<Option<blaze_cmdline::Label>>,
+    root_cause_details: Vec<CompletionRootCause>,
+    /// The requested output groups and their artifacts (`ArtifactsToBuild`).
+    artifacts_to_build: Vec<(String, Vec<Artifact>)>,
+    /// `getAllArtifactsByOutputGroup()` (succeeded) or the built outputs (failed).
+    artifacts_by_output_group: Vec<(String, ArtifactsInOutputGroup)>,
+    important_input_map: ImportantInputMap,
+}
+
+/// The parts of `CompletionFunction` that differ for targets and aspects.
+// Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:85 CompletionFunction.Completor
+pub(crate) trait Completor {
+    /// `key.actionLookupKey().getLabel()`.
+    fn key_label(&self) -> blaze_cmdline::Label;
+
+    /// Creates an event reporting an absent input artifact.
+    fn get_root_cause_error(
+        &self,
+        root_cause_message: &str,
+        env: &mut Environment<'_>,
+    ) -> Result<blaze_events::Event, ComputeError>;
+
+    /// The identifier of the completed value that prefixes (or locates) the source error message.
+    fn get_location_identifier(&self) -> LocationIdentifier;
+
+    /// Creates a failed completion value.
+    fn create_failed(&self, outcome: CompletionOutcome) -> Arc<dyn blaze_events::Postable>;
+
+    /// Creates a succeeded completion value.
+    fn create_succeeded(
+        &self,
+        outcome: CompletionOutcome,
+        env: &mut Environment<'_>,
+    ) -> Arc<dyn blaze_events::Postable>;
+}
+
+/// Manages completing builds for configured targets.
+// Java: com/google/devtools/build/lib/skyframe/TargetCompletor.java:37 TargetCompletor
+struct TargetCompletor<'a> {
+    key: &'a TargetCompletionKey,
+    value: &'a dyn ConfiguredTargetView,
+}
+
+impl Completor for TargetCompletor<'_> {
+    fn key_label(&self) -> blaze_cmdline::Label {
+        self.key.action_lookup_key.get_label().unwrap_or_else(|| {
+            panic!(
+                "NullPointerException: label of {}",
+                self.key.action_lookup_key
+            )
+        })
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TargetCompletor.java:65 TargetCompletor.getRootCauseError
+    fn get_root_cause_error(
+        &self,
+        root_cause_message: &str,
+        _env: &mut Environment<'_>,
+    ) -> Result<blaze_events::Event, ComputeError> {
+        Ok(blaze_events::Event::error_at(
+            Some(self.value.get_location()),
+            format!("{}: {}", self.key_label(), root_cause_message),
+        ))
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TargetCompletor.java:74 TargetCompletor.getLocationIdentifier
+    fn get_location_identifier(&self) -> LocationIdentifier {
+        LocationIdentifier::Location(self.value.get_location())
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TargetCompletor.java:84 TargetCompletor.createFailed
+    fn create_failed(&self, outcome: CompletionOutcome) -> Arc<dyn blaze_events::Postable> {
+        Arc::new(TargetCompleteEvent {
+            label: self.value.get_label(),
+            configuration_checksum: self.value.get_configuration_checksum(),
+            root_causes: outcome.root_causes.iter().flatten().cloned().collect(),
+            output_groups: outcome.artifacts_to_build,
+            is_test: self.key.will_test,
+            failed: true,
+            artifacts_by_output_group: outcome.artifacts_by_output_group,
+            important_input_map: outcome.important_input_map.files,
+            important_tree_artifacts: outcome.important_input_map.trees,
+            root_cause_details: outcome.root_cause_details,
+        })
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TargetCompletor.java:104 TargetCompletor.createSucceeded
+    fn create_succeeded(
+        &self,
+        outcome: CompletionOutcome,
+        env: &mut Environment<'_>,
+    ) -> Arc<dyn blaze_events::Postable> {
+        // PORT: `target instanceof InputFileConfiguredTarget` is the view's kind `source file`
+        // (an input file's target kind).
+        if !self.key.will_test && self.value.get_rule_class_or_kind() == "source file" {
+            env.listener().handle(&blaze_events::Event::warn_at(
+                Some(self.value.get_location()),
+                format!(
+                    "{} is a source file, nothing will be built for it. If you want to build a \
+                     target that consumes this file, try --compile_one_dependency",
+                    self.value.get_label()
+                ),
+            ));
+        }
+        Arc::new(TargetCompleteEvent {
+            label: self.value.get_label(),
+            configuration_checksum: self.value.get_configuration_checksum(),
+            root_causes: Vec::new(),
+            output_groups: outcome.artifacts_to_build,
+            is_test: self.key.will_test,
+            failed: false,
+            artifacts_by_output_group: outcome.artifacts_by_output_group,
+            important_input_map: outcome.important_input_map.files,
+            important_tree_artifacts: outcome.important_input_map.trees,
+            root_cause_details: Vec::new(),
+        })
+    }
+}
+
+/// Manages completing builds for aspects.
+// Java: com/google/devtools/build/lib/skyframe/AspectCompletor.java:37 AspectCompletor
+struct AspectCompletor<'a> {
+    seam: &'a dyn AnalysisSeam,
+    key: &'a AspectCompletionKey,
+    value: &'a dyn ConfiguredAspectView,
+}
+
+impl Completor for AspectCompletor<'_> {
+    fn key_label(&self) -> blaze_cmdline::Label {
+        self.value.get_label()
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/AspectCompletor.java:58 AspectCompletor.getRootCauseError
+    fn get_root_cause_error(
+        &self,
+        root_cause_message: &str,
+        env: &mut Environment<'_>,
+    ) -> Result<blaze_events::Event, ComputeError> {
+        // Skyframe lookups here should not have large effect on the number of dependency edges as
+        // they are only needed for failed top-level aspects.
+        let base_target_value = self
+            .seam
+            .get_configured_target(&self.value.get_base_configured_target_key(), env)?
+            .unwrap_or_else(|| {
+                panic!("NullPointerException: Base configured target value should be ready!")
+            });
+        Ok(blaze_events::Event::error_at(
+            Some(base_target_value.get_location()),
+            format!(
+                "{}, aspect {}: {}",
+                self.value.get_label(),
+                self.value.get_aspect_class_name(),
+                root_cause_message
+            ),
+        ))
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/AspectCompletor.java:86 AspectCompletor.getLocationIdentifier
+    fn get_location_identifier(&self) -> LocationIdentifier {
+        LocationIdentifier::Prefix(format!(
+            "{}, aspect {}",
+            self.value.get_label(),
+            self.value.get_aspect_class_name()
+        ))
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/AspectCompletor.java:97 AspectCompletor.createFailed
+    fn create_failed(&self, outcome: CompletionOutcome) -> Arc<dyn blaze_events::Postable> {
+        // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:83 AspectCompleteEvent.createFailed
+        blaze_util::check_argument!(!outcome.root_cause_details.is_empty());
+        Arc::new(self.event(outcome))
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/AspectCompletor.java:108 AspectCompletor.createSucceeded
+    fn create_succeeded(
+        &self,
+        outcome: CompletionOutcome,
+        _env: &mut Environment<'_>,
+    ) -> Arc<dyn blaze_events::Postable> {
+        // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:73 AspectCompleteEvent.createSuccessful
+        Arc::new(self.event(outcome))
+    }
+}
+
+impl AspectCompletor<'_> {
+    // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:52 AspectCompleteEvent.<init>
+    fn event(&self, outcome: CompletionOutcome) -> AspectCompleteEvent {
+        AspectCompleteEvent {
+            aspect_key: self.key.action_lookup_key.clone(),
+            label: self.value.get_label(),
+            aspect_name: self.value.get_aspect_class_name(),
+            root_causes: outcome.root_causes.iter().flatten().cloned().collect(),
+            root_cause_details: outcome.root_cause_details,
+            artifacts_by_output_group: outcome.artifacts_by_output_group,
+            important_input_map: outcome.important_input_map.files,
+            important_tree_artifacts: outcome.important_input_map.trees,
+            print_to_master_log: self.value.get_writes_output_to_master_log(),
+        }
+    }
 }
 
 /// `OutputGroupInfo.HIDDEN_OUTPUT_GROUP_PREFIX`.
@@ -161,10 +379,9 @@ const HIDDEN_OUTPUT_GROUP_PREFIX: &str = "_";
 /// important.
 // Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:204 TopLevelArtifactHelper.getAllArtifactsToBuild
 fn get_all_artifacts_by_output_group(
-    target: &dyn ConfiguredTargetView,
+    groups: &IndexMap<String, NestedSet<Artifact>>,
     output_groups: &[String],
 ) -> Vec<(String, ArtifactsInOutputGroup)> {
-    let groups = target.get_output_groups();
     let mut all_output_groups = Vec::new();
     for output_group in output_groups {
         // The view leaves out groups that have no artifacts.
@@ -435,7 +652,7 @@ impl<'a> SuccessfulArtifactFilter<'a> {
     }
 }
 
-/// `CompletionFunction.compute` for targets.
+/// `CompletionFunction.compute` with the `TargetCompletor` (`TARGET_COMPLETION`).
 // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:153 CompletionFunction.compute
 pub fn compute_target_completion(
     skyframe_action_executor: &SkyframeActionExecutor,
@@ -447,8 +664,69 @@ pub fn compute_target_completion(
     let Some(value) = seam.get_configured_target(&key.action_lookup_key, env)? else {
         return Ok(None);
     };
-    let artifacts_to_build = get_all_artifacts_to_build(&*value, &key.output_groups);
-    let artifacts_by_output_group = get_all_artifacts_by_output_group(&*value, &key.output_groups);
+    let groups = value.get_output_groups();
+    let completor = TargetCompletor {
+        key,
+        value: &*value,
+    };
+    Ok(compute_completion(
+        skyframe_action_executor,
+        &completor,
+        &groups,
+        &key.output_groups,
+        env,
+    )?
+    .map(|()| TargetCompletionValue))
+}
+
+/// The (marker) value of a completed top-level aspect.
+// Java: com/google/devtools/build/lib/skyframe/AspectCompletionValue.java:30 AspectCompletionValue
+#[derive(Clone, Debug, Default)]
+pub struct AspectCompletionValue;
+
+/// `CompletionFunction.compute` with the `AspectCompletor` (`ASPECT_COMPLETION`).
+// Java: com/google/devtools/build/lib/skyframe/AspectCompletor.java:41 AspectCompletor.aspectCompletionFunction
+// Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:153 CompletionFunction.compute
+pub fn compute_aspect_completion(
+    skyframe_action_executor: &SkyframeActionExecutor,
+    seam: &dyn AnalysisSeam,
+    key: &AspectCompletionKey,
+    env: &mut Environment<'_>,
+) -> Result<Option<AspectCompletionValue>, ComputeError> {
+    // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:364 CompletionFunction.getValueAndArtifactsToBuild
+    let Some(value) = seam.get_configured_aspect(&key.action_lookup_key, env)? else {
+        return Ok(None);
+    };
+    let groups = value.get_output_groups();
+    let completor = AspectCompletor {
+        seam,
+        key,
+        value: &*value,
+    };
+    Ok(compute_completion(
+        skyframe_action_executor,
+        &completor,
+        &groups,
+        &key.output_groups,
+        env,
+    )?
+    .map(|()| AspectCompletionValue))
+}
+
+/// The generic part of `CompletionFunction.compute`, after `getValueAndArtifactsToBuild`:
+/// `groups` are the value's output groups, `requested_output_groups` the key's
+/// `TopLevelArtifactContext`. `Ok(Some(()))` is `completor.getResult()`.
+// Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:153 CompletionFunction.compute
+fn compute_completion(
+    skyframe_action_executor: &SkyframeActionExecutor,
+    completor: &dyn Completor,
+    groups: &IndexMap<String, NestedSet<Artifact>>,
+    requested_output_groups: &[String],
+    env: &mut Environment<'_>,
+) -> Result<Option<()>, ComputeError> {
+    let artifacts_to_build = get_all_artifacts_to_build_of(groups, requested_output_groups);
+    let artifacts_by_output_group =
+        get_all_artifacts_by_output_group(groups, requested_output_groups);
     if env.values_missing() {
         return Ok(None);
     }
@@ -477,14 +755,7 @@ pub fn compute_target_completion(
     let mut important_input_map = ImportantInputMap::default();
     let mut built_artifacts: HashSet<Artifact> = HashSet::new();
     // key.actionLookupKey().getLabel().
-    let key_label = key
-        .action_lookup_key
-        .get_label()
-        .unwrap_or_else(|| panic!("NullPointerException: label of {}", key.action_lookup_key));
-    // TargetCompletor.getLocationIdentifier: the target's location, read where Java reads it
-    // (for an error or the source file warning).
-    // Java: com/google/devtools/build/lib/skyframe/TargetCompletor.java:74 TargetCompletor.getLocationIdentifier
-    let get_location_identifier = || value.get_location();
+    let key_label = completor.key_label();
     // NestedSetBuilder<Cause>.stableOrder(): the exceptions' causes (transitive) come before the
     // label causes (direct) when the set is flattened; equal causes are kept once.
     let mut action_causes: Vec<CompletionRootCause> = Vec::new();
@@ -517,13 +788,13 @@ pub fn compute_target_completion(
                 root_causes.push(input.get_owner());
                 handle_source_file_error(
                     skyframe_action_executor,
+                    completor,
                     input,
                     m.get_failure_detail(),
                     &mut label_causes,
                     env,
                     &key_label,
-                    &get_location_identifier(),
-                );
+                )?;
             }
             Ok(Some(input_value)) => {
                 built_artifacts.insert(input.clone());
@@ -566,13 +837,13 @@ pub fn compute_target_completion(
                 root_causes.push(input.get_owner());
                 handle_source_file_error(
                     skyframe_action_executor,
+                    completor,
                     input,
                     e.get_failure_detail(),
                     &mut label_causes,
                     env,
                     &key_label,
-                    &get_location_identifier(),
-                );
+                )?;
             }
         }
     }
@@ -589,18 +860,14 @@ pub fn compute_target_completion(
         for cause in &label_causes {
             push_unique(&mut root_cause_details, cause.clone());
         }
-        env.listener().post(Arc::new(TargetCompleteEvent {
-            label: value.get_label(),
-            configuration_checksum: value.get_configuration_checksum(),
-            root_causes: root_causes.iter().flatten().cloned().collect(),
-            output_groups: artifacts_to_build.clone(),
-            is_test: key.will_test,
-            failed: true,
-            artifacts_by_output_group: built_outputs,
-            important_input_map: important_input_map.files,
-            important_tree_artifacts: important_input_map.trees,
-            root_cause_details: root_cause_details.clone(),
-        }));
+        env.listener()
+            .post(completor.create_failed(CompletionOutcome {
+                root_causes: root_causes.clone(),
+                root_cause_details: root_cause_details.clone(),
+                artifacts_to_build: artifacts_to_build.clone(),
+                artifacts_by_output_group: built_outputs,
+                important_input_map,
+            }));
         if let Some(e) = first_action_execution_exception {
             // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:467 CompletionFunctionException.<init>
             // isCatastrophic(): actionException != null && actionException.isCatastrophe().
@@ -615,12 +882,21 @@ pub fn compute_target_completion(
         // Without an ActionExecutionException every root cause is a source file's LabelCause.
         let (detailed_exit_code, message) =
             create_source_error_code_and_message(&root_cause_details);
-        // The location identifier of a target is its Location (`locationPrefix instanceof
-        // Location`), so the message carries no prefix.
-        env.listener().handle(&blaze_events::Event::error_at(
-            Some(get_location_identifier()),
-            message.clone(),
-        ));
+        let message = match completor.get_location_identifier() {
+            LocationIdentifier::Location(location) => {
+                env.listener().handle(&blaze_events::Event::error_at(
+                    Some(location),
+                    message.clone(),
+                ));
+                message
+            }
+            LocationIdentifier::Prefix(location_prefix) => {
+                let message = format!("{} {}", location_prefix, message);
+                env.listener()
+                    .handle(&blaze_events::Event::error(message.clone()));
+                message
+            }
+        };
         // CompletionFunctionException(InputFileErrorException): isCatastrophic() is false.
         return Err(SkyFunctionException::new(
             InputFileErrorException {
@@ -637,32 +913,18 @@ pub fn compute_target_completion(
         return Ok(None);
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/TargetCompletor.java:104 TargetCompletor.createSucceeded
-    // PORT: `target instanceof InputFileConfiguredTarget` is the view's kind `source file` (an
-    // input file's target kind).
-    if !key.will_test && value.get_rule_class_or_kind() == "source file" {
-        env.listener().handle(&blaze_events::Event::warn_at(
-            Some(get_location_identifier()),
-            format!(
-                "{} is a source file, nothing will be built for it. If you want to build a target \
-                 that consumes this file, try --compile_one_dependency",
-                value.get_label()
-            ),
-        ));
-    }
-    env.listener().post(Arc::new(TargetCompleteEvent {
-        label: value.get_label(),
-        configuration_checksum: value.get_configuration_checksum(),
-        root_causes: Vec::new(),
-        output_groups: artifacts_to_build,
-        is_test: key.will_test,
-        failed: false,
-        artifacts_by_output_group,
-        important_input_map: important_input_map.files,
-        important_tree_artifacts: important_input_map.trees,
-        root_cause_details: Vec::new(),
-    }));
-    Ok(Some(TargetCompletionValue))
+    let event = completor.create_succeeded(
+        CompletionOutcome {
+            root_causes: Vec::new(),
+            root_cause_details: Vec::new(),
+            artifacts_to_build,
+            artifacts_by_output_group,
+            important_input_map,
+        },
+        env,
+    );
+    env.listener().post(event);
+    Ok(Some(()))
 }
 
 /// `NestedSetBuilder.add`: an element already present is kept once.

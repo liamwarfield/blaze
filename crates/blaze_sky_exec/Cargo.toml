@@ -18,6 +18,8 @@ blaze_actions = { path = "../blaze_actions" }
 blaze_exec = { path = "../blaze_exec" }
 blaze_options = { path = "../blaze_options" }
 blaze_optdefs = { path = "../blaze_optdefs" }
+blaze_packages = { path = "../blaze_packages" }
+blaze_sky_loading = { path = "../blaze_sky_loading" }
 indexmap.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
@@ -26,5 +28,6 @@ hex.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+blaze_starlark = { path = "../blaze_starlark" }
 tempfile.workspace = true
 serde_json.workspace = true

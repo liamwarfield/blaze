@@ -761,7 +761,6 @@ fn required_config_fragment_matcher() {
 
 // Java: ConfigSettingTest.matchesIfFlagValuesAndValuesBothMatch
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn matches_if_flag_values_and_values_both_match() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&[
@@ -796,7 +795,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.matchesIfFlagValuesMatchAndValuesAreEmpty
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn matches_if_flag_values_match_and_values_are_empty() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&[
@@ -851,7 +849,6 @@ fn matches_if_values_match_and_flag_values_are_empty() {
 
 // Java: ConfigSettingTest.doesNotMatchIfNeitherFlagValuesNorValuesMatches
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_match_if_neither_flag_values_nor_values_matches() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&[
@@ -889,7 +886,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.doesNotMatchIfFlagValuesDoNotMatchAndValuesAreEmpty
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_match_if_flag_values_do_not_match_and_values_are_empty() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--enforce_transitive_configs_for_config_feature_flag"]);
@@ -922,7 +918,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.doesNotMatchIfFlagValuesDoNotMatchButValuesDo
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_match_if_flag_values_do_not_match_but_values_do() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&[
@@ -982,7 +977,6 @@ fn does_not_match_if_values_do_not_match_and_flag_values_are_empty() {
 
 // Java: ConfigSettingTest.doesNotMatchIfValuesDoNotMatchButFlagValuesDo
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_match_if_values_do_not_match_but_flag_values_do() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&[
@@ -1020,7 +1014,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.doesNotMatchIfEvenOneFlagValueDoesNotMatch
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_match_if_even_one_flag_value_does_not_match() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--enforce_transitive_configs_for_config_feature_flag"]);
@@ -1162,7 +1155,6 @@ fn refines_with_flags(build_file: &str, refined: &str, other: &str) -> bool {
 
 // Java: ConfigSettingTest.doesNotRefineSettingWithSameValuesAndSameFlagValuesAndSameConstraintValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_refine_setting_with_same_values_and_same_flag_values_and_same_constraint_values() {
     assert!(!refines_with_flags(
         r#"constraint_setting(name = "setting_a")
@@ -1235,7 +1227,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.doesNotRefineSettingWithDifferentValuesAndSameFlagValuesAndSameConstraintValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_refine_setting_with_different_values_and_same_flag_values_and_same_constraint_values() {
     assert!(!refines_with_flags(
         r#"constraint_setting(name = "setting_a")
@@ -1306,7 +1297,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.doesNotRefineSettingWithSameValuesAndSameConstraintValuesAndDifferentFlagValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_refine_setting_with_same_values_and_same_constraint_values_and_different_flag_values() {
     assert!(!refines_with_flags(
         r#"constraint_setting(name = "setting_a")
@@ -1371,7 +1361,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.doesNotRefineSettingWithDifferentValuesAndDifferentFlagValuesAndDifferentConstraintValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_refine_setting_with_different_values_and_different_flag_values_and_different_constraint_values()
  {
     assert!(!refines_with_flags(
@@ -1442,7 +1431,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.doesNotRefineSettingWithDifferentValuesAndSubsetFlagValuesAndSubsetConstraintValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_refine_setting_with_different_values_and_subset_flag_values_and_subset_constraint_values()
  {
     assert!(!refines_with_flags(
@@ -1518,7 +1506,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.doesNotRefineSettingWithSubsetValuesAndSubsetFlagValuesAndDifferentConstraintValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_refine_setting_with_subset_values_and_subset_flag_values_and_different_constraint_values()
  {
     assert!(!refines_with_flags(
@@ -1598,7 +1585,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.doesNotRefineSettingWithSubsetValuesAndSubsetConstraintValuesAndDifferentFlagValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_refine_setting_with_subset_values_and_subset_constraint_values_and_different_flag_values()
  {
     assert!(!refines_with_flags(
@@ -1671,7 +1657,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.doesNotRefineSettingIfThereIsNoOverlap
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn does_not_refine_setting_if_there_is_no_overlap() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&[
@@ -1723,7 +1708,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.refinesSettingWithSubsetValuesAndSubsetConstraintValuesAndSameFlagValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn refines_setting_with_subset_values_and_subset_constraint_values_and_same_flag_values() {
     assert!(refines_with_flags(
         r#"constraint_setting(name = "setting_a")
@@ -1803,7 +1787,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.refinesSettingWithSameValuesAndSubsetFlagValuesAndSubsetConstraintValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn refines_setting_with_same_values_and_subset_flag_values_and_subset_constraint_values() {
     assert!(refines_with_flags(
         r#"constraint_setting(name = "setting_a")
@@ -1880,7 +1863,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.refinesSettingWithSubsetValuesAndSubsetFlagValuesAndConstraintValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn refines_setting_with_subset_values_and_subset_flag_values_and_constraint_values() {
     assert!(refines_with_flags(
         r#"constraint_setting(name = "setting_a")
@@ -2081,7 +2063,6 @@ config_setting(
 
 // Java: ConfigSettingTest.matchesAliasedFlagsInFlagValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn matches_aliased_flags_in_flag_values() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--enforce_transitive_configs_for_config_feature_flag"]);
@@ -2119,7 +2100,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.aliasedFlagsAreCountedInRefining
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn aliased_flags_are_counted_in_refining() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--enforce_transitive_configs_for_config_feature_flag"]);
@@ -2177,7 +2157,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.referencingSameFlagViaMultipleAliasesFails
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn referencing_same_flag_via_multiple_aliases_fails() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--enforce_transitive_configs_for_config_feature_flag"]);
@@ -2211,7 +2190,6 @@ fn referencing_same_flag_via_multiple_aliases_fails() {
 
 // Java: ConfigSettingTest.requiresValidValueForFlagValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn requires_valid_value_for_flag_values() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--enforce_transitive_configs_for_config_feature_flag"]);
@@ -2239,7 +2217,6 @@ fn requires_valid_value_for_flag_values() {
 
 // Java: ConfigSettingTest.usesAliasLabelWhenReportingErrorInFlagValues
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn uses_alias_label_when_reporting_error_in_flag_values() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--enforce_transitive_configs_for_config_feature_flag"]);
@@ -2604,7 +2581,6 @@ default_info_rule(name = "cheese")
 
 // Java: ConfigSettingTest.buildsettingsMatch_featureFlagsMatch
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn buildsettings_match_feature_flags_match() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--enforce_transitive_configs_for_config_feature_flag"]);
@@ -2650,7 +2626,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.buildsettingsMatch_featureFlagsDontMatch
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn buildsettings_match_feature_flags_dont_match() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--enforce_transitive_configs_for_config_feature_flag"]);
@@ -2699,7 +2674,6 @@ config_feature_flag(
 
 // Java: ConfigSettingTest.buildsettingsDontMatch_featureFlagsMatch
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (ConfigFeatureFlagTaggedTrimmingTransition.patch with --enforce_transitive_configs_for_config_feature_flag, crates/blaze_analysis/src/config/transitions.rs)"]
 fn buildsettings_dont_match_feature_flags_match() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--enforce_transitive_configs_for_config_feature_flag"]);

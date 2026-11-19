@@ -1320,6 +1320,11 @@ fn starlark_option_to_value<'v>(v: &StarlarkOptionValue, heap: Heap<'v>) -> Valu
         StarlarkOptionValue::Int(i) => heap.alloc(*i),
         StarlarkOptionValue::Str(s) => heap.alloc_str(s).to_value(),
         StarlarkOptionValue::Label(l) => heap.alloc(LabelValue(l.clone())),
+        // PORT: Starlark.fromJava rejects a FeatureFlagValue (not a Starlark value); not reached
+        // by any ported caller.
+        StarlarkOptionValue::FeatureFlag(v) => {
+            blaze_util::unported!("Starlark.fromJava", "FeatureFlagValue {}", v)
+        }
         StarlarkOptionValue::List(items) => {
             let elems: Vec<Value<'v>> = items
                 .iter()

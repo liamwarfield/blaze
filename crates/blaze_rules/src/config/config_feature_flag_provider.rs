@@ -32,7 +32,7 @@ pub type ValidityPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 #[derive(Clone, ProvidesStaticType, NoSerialize, Allocative)]
 pub struct ConfigFeatureFlagProvider {
     #[allocative(skip)]
-    value: String,
+    value: Option<String>,
     #[allocative(skip)]
     potential_error: Option<String>,
     #[allocative(skip)]
@@ -54,7 +54,7 @@ impl ConfigFeatureFlagProvider {
     /// Creates a new ConfigFeatureFlagProvider with the given value and valid value predicate.
     // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagProvider.java:70 ConfigFeatureFlagProvider.create
     pub fn create(
-        value: String,
+        value: Option<String>,
         potential_error: Option<String>,
         is_valid_value: ValidityPredicate,
     ) -> ConfigFeatureFlagProvider {
@@ -88,7 +88,7 @@ impl ConfigFeatureFlagProvider {
         {
             return None;
         }
-        Some(&self.value)
+        self.value.as_deref()
     }
 
     /// Gets the current value of the flag in the flag's current configuration.
@@ -229,7 +229,7 @@ fn feature_flag_info_constructor<'v>(
         )));
     };
     Ok(eval.heap().alloc(ConfigFeatureFlagProvider::create(
-        value.to_owned(),
+        Some(value.to_owned()),
         None,
         Arc::new(|_| true),
     )))

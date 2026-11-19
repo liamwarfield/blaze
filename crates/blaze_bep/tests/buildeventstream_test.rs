@@ -26,7 +26,7 @@ mod local_files_artifact_uploader_test {
             path.clone(),
             LocalFile::new(path.clone(), type_, /* artifact_metadata= */ None),
         );
-        let path_converter = artifact_uploader.upload(files);
+        let path_converter = artifact_uploader.upload(files).get().unwrap();
         path_converter.apply(path)
     }
 

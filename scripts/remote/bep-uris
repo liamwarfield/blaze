@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""bep-uris: compare the `uri` fields of two --build_event_json_file outputs.
+
+usage: scripts/remote/bep-uris <reference.json> <candidate.json> [--verbose]
+       scripts/remote/bep-uris help
+
+The reference is real Bazel's BEP, the candidate Blaze's. Every `File` message with a `uri`
+(anywhere in an event: namedSetOfFiles.files, completed.importantOutput, testResult
+.testActionOutput, buildToolLogs.log, ...) is keyed by its event id (JSON), the path of the
+field inside the event, and the file's `pathPrefix` + `name`; the ids of `namedSet` events are
+replaced by `<n>` (the numbering follows the posting order, see scripts/bep-compare for the
+event structure), and files that occur several times under one key are compared as sorted
+lists. URIs are normalised:
+
+  bytestream://localhost:<port>/    -> bytestream://localhost:<port>/
+  file://<anything>/execroot/<ws>/  -> file://<execroot>/
+  file://<anything>/                -> file://<path>/ for other absolute paths (kept after the
+                                       last `/execroot/` or `/external/` component when present)
+
+Prints, per URI scheme, the number of keys whose URIs are equal, differ, or exist on one side
+only, and a final `RESULT: <equal>/<total reference> equal` line; exit 1 on any difference.
+--verbose lists the differing keys. Python 3 standard library only.
+"""
+import json
+import re
+import sys
+
+
+def usage(code):
+    print(__doc__.strip())
+    sys.exit(code)
+
+
+def normalise(uri):
+    uri = re.sub(r"^bytestream://localhost:\d+/", "bytestream://localhost:<port>/", uri)
+    m = re.match(r"^file://(.*)$", uri)
+    if m:
+        path = m.group(1)
+        i = path.find("/execroot/")
+        if i >= 0:
+            rest = path[i + len("/execroot/"):]
+            rest = rest.split("/", 1)[1] if "/" in rest else ""
+            return "file://<execroot>/" + rest
+        return "file://<path>/" + path.rsplit("/", 1)[-1]
+    return uri
+
+
+def collect(path):
+    out = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            event = json.loads(line)
+            event_id = event.get("id") or {}
+            if "namedSet" in event_id:
+                event_id = {"namedSet": {"id": "<n>"}}
+            eid = json.dumps(event_id, sort_keys=True)
+
+            def walk(node, where):
+                if isinstance(node, dict):
+                    if "uri" in node and isinstance(node["uri"], str):
+                        name = "/".join(node.get("pathPrefix", [])) + "|" + node.get("name", "")
+                        out.setdefault((eid, where, name), []).append(normalise(node["uri"]))
+                    for k, v in node.items():
+                        if k != "id":
+                            walk(v, where + "." + k)
+                elif isinstance(node, list):
+                    for v in node:
+                        walk(v, where + "[]")
+
+            walk(event, "")
+    return {k: " ".join(sorted(v)) for k, v in out.items()}
+
+
+def scheme(uri):
+    return uri.split(":", 1)[0]
+
+
+def main(argv):
+    if len(argv) >= 1 and argv[0] in ("help", "--help", "-h"):
+        usage(0)
+    verbose = "--verbose" in argv
+    args = [a for a in argv if a != "--verbose"]
+    if len(args) != 2:
+        usage(2)
+    ref, cand = collect(args[0]), collect(args[1])
+    counts = {}
+    diffs = []
+    for key in sorted(set(ref) | set(cand)):
+        r, c = ref.get(key), cand.get(key)
+        s = scheme(r if r is not None else c)
+        bucket = counts.setdefault(s, {"equal": 0, "differ": 0, "reference only": 0,
+                                       "candidate only": 0})
+        if r is None:
+            bucket["candidate only"] += 1
+            diffs.append(("candidate only", key, None, c))
+        elif c is None:
+            bucket["reference only"] += 1
+            diffs.append(("reference only", key, r, None))
+        elif r == c:
+            bucket["equal"] += 1
+        else:
+            bucket["differ"] += 1
+            diffs.append(("differ", key, r, c))
+    for s, b in sorted(counts.items()):
+        print(f"{s}: " + ", ".join(f"{k} {v}" for k, v in b.items()))
+    if verbose:
+        for kind, key, r, c in diffs:
+            print(f"{kind}: {key[0]} {key[1]} {key[2]}\n  reference: {r}\n  candidate: {c}")
+    equal = sum(b["equal"] for b in counts.values())
+    print(f"RESULT: {equal}/{len(ref)} reference uris equal, {len(diffs)} differences")
+    return 1 if diffs else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

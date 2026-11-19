@@ -814,19 +814,91 @@ impl StarlarkExecTransitionLoadingException {
     }
 }
 
+/// Interface for loading the .bzl file of the exec transition (Java `BzlFileLoader`: callers load
+/// `BzlLoadValue`s through their own Skyframe environment).
+///
+/// PORT: Java's key is `BzlLoadValue.keyForBuiltins(bzlFile)` for a file in `@_builtins` and
+/// `BzlLoadValue.keyForBuild(bzlFile)` otherwise (`for_builtins`); `BzlLoadValue` lives in
+/// `blaze_sky_loading`, which this crate does not depend on, so the loader returns the module.
+/// `Ok(None)` means Skyframe deps need loading (Java `null`); `Err` carries
+/// `BzlLoadFailedException.getMessage()`.
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkExecTransitionLoader.java:55 StarlarkExecTransitionLoader.BzlFileLoader
+pub trait BzlFileLoader {
+    fn get_value(
+        &self,
+        bzl_file: &Label,
+        for_builtins: bool,
+    ) -> Result<Option<FrozenModule>, String>;
+}
+
+/// The loader of [`load_starlark_exec_transition`]: the bundled `@_builtins` files only.
+struct BundledBuiltinsLoader<'a> {
+    semantics: &'a Arc<StarlarkSemantics>,
+    user_ref: &'a str,
+}
+
+impl BzlFileLoader for BundledBuiltinsLoader<'_> {
+    fn get_value(
+        &self,
+        bzl_file: &Label,
+        for_builtins: bool,
+    ) -> Result<Option<FrozenModule>, String> {
+        if !for_builtins {
+            // PORT: BzlLoadValue.keyForBuild needs BZL_LOAD (blaze_sky_loading); callers that can
+            // request it use `load_starlark_exec_transition_with_loader`.
+            blaze_util::unported!(
+                "StarlarkExecTransitionLoader.loadStarlarkExecTransition",
+                "--experimental_exec_config outside @_builtins: {}",
+                self.user_ref
+            );
+        }
+        load_builtins_bzl(bzl_file, self.semantics).map(Some)
+    }
+}
+
 // Java: com/google/devtools/build/lib/analysis/config/StarlarkExecTransitionLoader.java:78 StarlarkExecTransitionLoader.loadStarlarkExecTransition
 /// Loads the Starlark transition that implements execution transition logic according to
 /// `CoreOptions.starlarkExecConfig`. Returns `None` if the build implements the exec transition
 /// with native logic (empty options).
+///
+/// Loads with the bundled `@_builtins` files only; see
+/// [`load_starlark_exec_transition_with_loader`].
 pub fn load_starlark_exec_transition(
     options: Option<&crate::build_options::BuildOptions>,
     semantics: &Arc<StarlarkSemantics>,
 ) -> Result<Option<Arc<StarlarkDefinedConfigTransition>>, StarlarkExecTransitionLoadingException> {
+    let user_ref = options
+        .filter(|o| **o != *crate::transitions::EMPTY_OPTIONS)
+        .and_then(|o| o.get::<blaze_optdefs::fragment::core_options::CoreOptions>())
+        .map(|c| c.starlark_exec_config.clone())
+        .unwrap_or_default();
+    let loader = BundledBuiltinsLoader {
+        semantics,
+        user_ref: &user_ref,
+    };
+    Ok(load_starlark_exec_transition_with_loader(options, &loader)?
+        .expect("the bundled loader never needs Skyframe deps"))
+}
+
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkExecTransitionLoader.java:78 StarlarkExecTransitionLoader.loadStarlarkExecTransition
+/// Loads the Starlark transition that implements execution transition logic according to
+/// `CoreOptions.starlarkExecConfig`, loading its .bzl file with `bzl_file_loader`.
+///
+/// Returns `Ok(None)` if Skyframe deps need loading, `Ok(Some(Some(_)))` if this build
+/// implements the exec transition with a Starlark transition, and `Ok(Some(None))` if it
+/// implements it with native logic.
+pub fn load_starlark_exec_transition_with_loader(
+    options: Option<&crate::build_options::BuildOptions>,
+    bzl_file_loader: &dyn BzlFileLoader,
+) -> Result<
+    Option<Option<Arc<StarlarkDefinedConfigTransition>>>,
+    StarlarkExecTransitionLoadingException,
+> {
     let Some(options) = options else {
-        return Ok(None);
+        return Ok(Some(None));
     };
     if *options == *crate::transitions::EMPTY_OPTIONS {
-        return Ok(None);
+        return Ok(Some(None));
     }
     let user_ref = options
         .get::<blaze_optdefs::fragment::core_options::CoreOptions>()
@@ -835,17 +907,16 @@ pub fn load_starlark_exec_transition(
         .clone();
     let flag_name = "--experimental_exec_config";
     let (bzl_file, symbol) = transition_reference_create(&user_ref, flag_name)?;
-    if bzl_file.get_repository() != &*blaze_cmdline::repository_name::BUILTINS {
-        // PORT: BzlLoadValue.keyForBuild needs BZL_LOAD (blaze_sky_loading).
-        blaze_util::unported!(
-            "StarlarkExecTransitionLoader.loadStarlarkExecTransition",
-            "--experimental_exec_config outside @_builtins: {}",
-            user_ref
-        );
-    }
-    let module = load_builtins_bzl(&bzl_file, semantics).map_err(|e| {
-        StarlarkExecTransitionLoadingException::with_context(flag_name, &user_ref, &e)
-    })?;
+    let for_builtins = bzl_file.get_repository() == &*blaze_cmdline::repository_name::BUILTINS;
+    let module = match bzl_file_loader.get_value(&bzl_file, for_builtins) {
+        Ok(Some(module)) => module,
+        Ok(None) => return Ok(None),
+        Err(e) => {
+            return Err(StarlarkExecTransitionLoadingException::with_context(
+                flag_name, &user_ref, &e,
+            ));
+        }
+    };
     let transition = module.get(&symbol).map_err(|_| {
         StarlarkExecTransitionLoadingException::with_context(
             flag_name,
@@ -854,7 +925,7 @@ pub fn load_starlark_exec_transition(
         )
     })?;
     match StarlarkDefinedConfigTransition::from_frozen(transition) {
-        Some(t) => Ok(Some(Arc::new(t))),
+        Some(t) => Ok(Some(Some(Arc::new(t)))),
         None => Err(StarlarkExecTransitionLoadingException::with_context(
             flag_name,
             &user_ref,

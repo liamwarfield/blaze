@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use blaze_actions::{ActionLookupKeyRef, Artifact};
-use blaze_cmdline::Label;
 use blaze_collect::NestedSet;
 use blaze_collect::nestedset::NestedSetBuilder;
 use blaze_events::{Event, EventHandler, OutErr};
@@ -44,20 +43,9 @@ pub struct TopLevelArtifactContext {
     pub output_groups: BTreeSet<String>,
 }
 
-/// A configured aspect as `BuildResultPrinter` reads it, with the parts of its `AspectKey`.
-///
-/// PORT: neither `AspectKey` nor `ConfiguredAspect` is ported; the analysis crates implement this
-/// view (the key itself is an [`ActionLookupKeyRef`]).
-pub trait ConfiguredAspectView: Send + Sync {
-    /// `AspectKey.getLabel()`.
-    fn get_label(&self) -> Label;
-    /// `AspectKey.getAspectClass().getName()`.
-    fn get_aspect_class_name(&self) -> String;
-    /// `AspectKey.getBaseConfiguredTargetKey()`.
-    fn get_base_configured_target_key(&self) -> ActionLookupKeyRef;
-    /// The aspect's `OutputGroupInfo`, in insertion order.
-    fn get_output_groups(&self) -> IndexMap<String, NestedSet<Artifact>>;
-}
+/// A configured aspect as `BuildResultPrinter` reads it. Defined with the execution phase's
+/// analysis seam, which reads the same view (`AspectCompletor`, `BuildDriverFunction`).
+pub use blaze_sky_exec::analysis_seam::ConfiguredAspectView;
 
 /// What `BuildResultPrinter.filterTargetsToPrint` reads from an `OutputFileConfiguredTarget` and
 /// its generating rule.

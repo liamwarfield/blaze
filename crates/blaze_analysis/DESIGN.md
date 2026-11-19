@@ -242,3 +242,58 @@ wrong against Java is reported to the lead, not patched around.
 - W5 → W6: `ASPECT` nodes with `AspectValue`s in the graph; `TOP_LEVEL_ASPECTS` and
   `LOAD_ASPECTS` functions (`register` in each file; `AspectCreationException` lives in
   `blaze_sky_analysis::producers::errors`, next to `Cause`).
+
+## Aspects wave: what exists now
+
+Ported (each file names its Java class and lines):
+
+- `blaze_packages::aspect`: `Aspect`, `AspectClass`, `NativeAspectClass`, `StarlarkAspectClass`,
+  `AspectDescriptor`, `AspectParameters`, `AspectDefinition` (+ builder),
+  `AspectPropagationEdgesSupplier`, `AspectPropagationPredicate`; on `StarlarkDefinedAspect`:
+  `getDefinition` with its cache, `getAspectClass`, top-level parameter extraction;
+  `AspectsList.getAspects` / `buildAspects`, `Attribute.getAspects`,
+  `Rule.getAspectLabelsSuperset`; `License` as a Starlark value.
+- `blaze_analysis`: `AspectKeyCreator` (`AspectKey`, `TopLevelAspectsKey`, `LoadAspectsKey`),
+  `AspectValue`, `ConfiguredAspect` (+ builder), `ConfiguredAspectFactory`, `AspectCollection`,
+  `AspectResolutionHelpers`, `InconsistentAspectOrderException`, `AspectContext`,
+  `AspectAwareAttributeMapper`, `AspectBaseTargetResolvedToolchainContext`,
+  `MergedConfiguredTarget`, `BaseTargetPrerequisitesSupplier`, `ConfiguredTargetFactory.createAspect`,
+  the aspect half of `RuleContext`, `StarlarkAspectFactory`, `StarlarkAspectPropagationContext`,
+  `ctx.rule` / `ctx.aspect_ids` / aspect `ctx.attr`, base-target toolchains
+  (`ctx.rule.toolchains`), `target.actions` with the Starlark `Action` value.
+- `blaze_sky_analysis`: `AspectFunction`, `ToplevelStarlarkAspectFunction`, `LoadAspectsFunction`
+  (`BuildTopLevelAspectsDetailsFunction` does not exist at the pin), `ConfiguredAspectProducer`,
+  the aspect parts of `DependencyResolver`, `DependencyMapProducer`, `DependencyProducer`,
+  `PrerequisitesProducer`, `ConfiguredTargetAndDataProducer`, `DependencyResolutionHelpers`,
+  `AspectCreationException`; `PlatformValue` carries the `PlatformInfo` (no CONFIGURED_TARGET
+  edge from `PlatformProducer`'s caller).
+- `blaze_sky_top`: registration, `BuildView.createTopLevelAspectKeys` and `setArtifactRoots`,
+  aspect keys in `configureTargets`, conflict finding, the traversal counts, error processing,
+  cycle reporting, the execution seam for aspect-owned artifacts.
+- `blaze_cquery`: `targetifyValues` over ASPECT nodes, `CqueryNode` for `AspectKey`, Java hash
+  codes of aspect keys, aquery `getAspectValues` / `dumpAspect`, the summary output.
+
+Loud (`unported!`), none reached by workerd's default build: native aspect classes
+(`NativeAspectClass.create`, the native aspect class map for `--aspects=Name`), top-level
+aspects on the build path (`BuildDriverFunction` for `TopLevelAspectsKey`, `AspectCompletor`:
+execution owner), `ConfiguredAspect.Builder.createExtraActionProvider`,
+`RequiredFragmentsUtil.getAspectRequiredFragmentsIfEnabled`, `DefaultInfo` files of a top-level
+aspect, materializers, the cquery output formats that were not ported before.
+
+Deviations that cannot be closed (Bazel itself is not deterministic there): the order of
+several top-level aspect keys of one target (`AspectCollection.createAspectKeys`: a `HashMap`
+keyed through `BzlLoadValue.Key.hashCode`, which mixes in `getClass().hashCode()`), and the
+order in which aquery prints the actions of several aspect values of one target
+(`ConfiguredTargetValueAccessor.getAspectValues`: a `HashSet` of identity-hashed values; four
+oracle recordings of `scripts/w4/scenarios/aspects` gave two orders).
+
+## Analysis test harness
+
+`blaze_sky_top::testing` (feature `testing`; `BuildViewTestCase` / `AnalysisTestCase` with
+Java's `BazelAnalysisMock` workspace, hermetic) and the tests in `blaze_sky_top/src/tests/`
+(one file per Java class; the stubs they supersede were removed from the upstream crates).
+Environment gaps, each named in the affected tests' `#[ignore]` reason: no mock `rules_cc` /
+`rules_java` / `rules_python` contents (Java copies the real rule sets from runfiles), no
+`TestRuleClassProvider` (`TestAspects`, `MockRule`), no `getRuleContext`, no extra SkyFunctions,
+no Starlark flags in `use_configuration`. A test that fails for a product reason is
+`#[ignore = "BLAZE BUG: ..."]` or `"BLAZE GAP: ..."` with its diagnosis; expectations are Java's.

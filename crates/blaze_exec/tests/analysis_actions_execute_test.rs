@@ -513,6 +513,37 @@ mod other_symlink_actions {
         );
     }
 
+    // Java: com/google/devtools/build/lib/analysis/starlark/UnresolvedSymlinkActionTest.java:138 UnresolvedSymlinkActionTest.testSymlink
+    #[test]
+    fn test_symlink() {
+        let dirs = TestDirs::new();
+        let output_artifact =
+            dirs.special_artifact("dir/output.link", SpecialArtifactType::UNRESOLVED_SYMLINK);
+        let output = output_artifact.get_path();
+        output
+            .get_parent_directory()
+            .unwrap()
+            .create_directory_and_parents()
+            .unwrap();
+        let action = UnresolvedSymlinkAction::create(
+            null_action_owner(),
+            output_artifact.clone(),
+            "../some/relative/path",
+            SymlinkTargetType::UNSPECIFIED,
+            "Creating unresolved symlink",
+        );
+        let ctx = dirs.context();
+        let action_result = execute(&ctx, &action).unwrap();
+        assert!(action_result.spawn_results().is_empty());
+        assert!(output.is_symbolic_link());
+        assert_eq!(
+            output.read_symbolic_link().unwrap(),
+            PathFragment::create("../some/relative/path")
+        );
+        assert!(action.get_primary_input().is_none());
+        assert_eq!(action.get_primary_output(), output_artifact);
+    }
+
     #[test]
     fn runfiles_tree_action_sets_rich_artifact_data() {
         let dirs = TestDirs::new();

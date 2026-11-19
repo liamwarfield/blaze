@@ -16,12 +16,14 @@ use std::fmt;
 use std::sync::{Arc, LazyLock};
 
 use blaze_build_config::build_options::{BuildOptions, BuildOptionsView};
+use blaze_build_config::feature_flag_value::FeatureFlagValue;
 use blaze_build_config::fragment_options_class::{
     CONFIG_FEATURE_FLAG_OPTIONS, CORE_OPTIONS, FragmentOptionsClass,
 };
 use blaze_build_config::function_transition_util::{
     TransitionAttrObject, apply_and_validate_with_attrs, exec_transition_patch,
-    exec_transition_required_fragments,
+    exec_transition_required_fragments, get_affected_by_starlark_transition_via_diff,
+    update_affected_by_starlark_transition,
 };
 use blaze_build_config::starlark_transition::{
     StarlarkDefinedConfigTransition, TransitionData, TransitionKind,
@@ -35,6 +37,7 @@ use blaze_config::transitions::{
 };
 use blaze_events::{Event, EventHandler};
 use blaze_optdefs::fragment::config_feature_flag_options::ConfigFeatureFlagOptions;
+use blaze_optdefs::fragment::core_options::{CoreOptions, CoreOptionsOutputDirectoryNamingScheme};
 use blaze_optdefs::fragment::test_configuration::TestConfigurationTestOptions;
 use blaze_packages::attribute::{
     Attribute, AttributeMap, NonconfigurableAttributeMapper, NonconfiguredAttributeMapper,
@@ -579,11 +582,26 @@ impl ConfigurationTransition {
                 if !config_feature_flag_options.enforce_transitive_configs_for_config_feature_flag {
                     return options.underlying().clone();
                 }
-                blaze_util::unported!(
-                    "FeatureFlagValue.trimFlagValues",
-                    "--enforce_transitive_configs_for_config_feature_flag with flags {:?}",
-                    flags
-                )
+                let mut to_options =
+                    FeatureFlagValue::trim_flag_values(options.underlying(), flags);
+                // In legacy mode, need to update `affected by Starlark transition` to include
+                // changed flags.
+                if to_options
+                    .get::<CoreOptions>()
+                    .expect("CoreOptions")
+                    .output_directory_naming_scheme
+                    == CoreOptionsOutputDirectoryNamingScheme::LEGACY
+                {
+                    let changed = get_affected_by_starlark_transition_via_diff(
+                        &to_options,
+                        options.underlying(),
+                    );
+                    update_affected_by_starlark_transition(
+                        to_options.get_mut::<CoreOptions>().expect("CoreOptions"),
+                        &changed,
+                    );
+                }
+                to_options
             }
             // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:238 FunctionPatchTransition.patch
             ConfigurationTransition::Starlark(t) => {

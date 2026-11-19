@@ -31,6 +31,7 @@ pub mod build_options;
 pub mod build_options_scope_value;
 pub mod config_output;
 pub mod core_option_converters;
+pub mod feature_flag_value;
 pub mod flag_aliases;
 pub mod fragment;
 pub mod fragment_options_class;

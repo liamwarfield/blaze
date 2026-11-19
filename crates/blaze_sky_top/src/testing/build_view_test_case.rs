@@ -46,6 +46,8 @@ use std::sync::Arc;
 
 use blaze_actions::actions::artifact::Artifact;
 use blaze_actions::analysis::runfiles::Runfiles;
+use blaze_analysis::aspect_key_creator::AspectKey;
+use blaze_analysis::aspect_value::AspectValue;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_and_data::ConfiguredTargetAndData;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
@@ -352,7 +354,9 @@ impl BuildViewTestCase {
         self.reporter.clone()
     }
 
-    fn check_fail_fast(&self) {
+    /// The fail-fast check (Java `failFastHandler`, installed on the reporter unless a test
+    /// called `reporter.removeHandler(failFastHandler)`): fails the test on an error event.
+    pub fn check_fail_fast(&self) {
         self.fail_fast.check();
     }
 
@@ -1230,6 +1234,22 @@ impl BuildViewTestCase {
         self.update_with(&flags, aspects, labels)
     }
 
+    /// `AnalysisTestCase.update(aspects, aspectsParameters, labels...)`.
+    // Java: com/google/devtools/build/lib/analysis/util/AnalysisTestCase.java:478 AnalysisTestCase.update
+    pub fn update_with_aspects_parameters(
+        &mut self,
+        aspects: &[&str],
+        aspects_parameters: &[(&str, &str)],
+        labels: &[&str],
+    ) -> Result<&AnalysisResult, BuildViewError> {
+        let flags = self.default_flags();
+        let aspects_parameters: IndexMap<String, String> = aspects_parameters
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        self.update_with_parameters(&flags, aspects, &aspects_parameters, labels)
+    }
+
     /// `AnalysisTestCase.update(eventBus, config, explicitTargetPatterns, aspects,
     /// aspectsParameters, labels...)`.
     ///
@@ -1242,6 +1262,19 @@ impl BuildViewTestCase {
         aspects: &[&str],
         labels: &[&str],
     ) -> Result<&AnalysisResult, BuildViewError> {
+        self.update_with_parameters(config, aspects, &IndexMap::new(), labels)
+    }
+
+    /// `AnalysisTestCase.update(eventBus, config, explicitTargetPatterns, aspects,
+    /// aspectsParameters, labels...)` with `aspectsParameters`.
+    // Java: com/google/devtools/build/lib/analysis/util/AnalysisTestCase.java:364 AnalysisTestCase.update
+    fn update_with_parameters(
+        &mut self,
+        config: &FlagBuilder,
+        aspects: &[&str],
+        aspects_parameters: &IndexMap<String, String>,
+        labels: &[&str],
+    ) -> Result<&AnalysisResult, BuildViewError> {
         let keep_going = config.contains(Flag::KeepGoing);
         // Java: update(String...) posts to a new EventBus.
         self.event_bus.clear();
@@ -1251,6 +1284,7 @@ impl BuildViewTestCase {
         let result = self.update_internal(
             &labels.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
             aspects,
+            aspects_parameters,
             keep_going,
             LOADING_PHASE_THREADS,
         );
@@ -1273,6 +1307,7 @@ impl BuildViewTestCase {
         let result = self.update_internal(
             &targets.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
             aspects,
+            &IndexMap::new(),
             keep_going,
             loading_phase_threads,
         );
@@ -1286,6 +1321,7 @@ impl BuildViewTestCase {
         &mut self,
         targets: &[String],
         aspects: &[&str],
+        aspects_parameters: &IndexMap<String, String>,
         keep_going: bool,
         loading_phase_threads: usize,
     ) -> Result<AnalysisResult, BuildViewError> {
@@ -1337,11 +1373,24 @@ impl BuildViewTestCase {
             include_execution_phase: false,
         };
         let build_options = state.target_config.get_options().clone();
-        build_view::update(
+        // Java passes AnalysisTestUtil.TOP_LEVEL_ARTIFACT_CONTEXT (output groups
+        // OutputGroupInfo.DEFAULT_GROUPS) to BuildView.update as `topLevelOptions`.
+        // PORT: Blaze's BuildView.update reads it from the executor (see
+        // `SkyframeExecutor::set_top_level_artifact_context_for_conflict_pruning`).
+        // Java: com/google/devtools/build/lib/analysis/util/AnalysisTestUtil.java:82 AnalysisTestUtil.TOP_LEVEL_ARTIFACT_CONTEXT
+        state
+            .executor
+            .set_top_level_artifact_context_for_conflict_pruning(
+                blaze_analysis::providers::output_group_info::default_groups()
+                    .into_iter()
+                    .collect(),
+            );
+        build_view::update_with_aspects_parameters(
             &state.executor,
             &loading_result,
             &build_options,
             &options,
+            aspects_parameters,
             handler,
         )
     }
@@ -1375,6 +1424,117 @@ impl BuildViewTestCase {
             .unwrap_or_else(|_| panic!("InterruptedException"));
         self.check_fail_fast();
         result
+    }
+
+    /// `AnalysisTestCase.getStarlarkProvider(ConfiguredTarget target, String providerSymbol)`:
+    /// the provider defined by the .bzl file of the target's rule class.
+    ///
+    /// PORT: Java overloads `getStarlarkProvider`; this overload is named after its argument.
+    // Java: com/google/devtools/build/lib/analysis/util/AnalysisTestCase.java:702 AnalysisTestCase.getStarlarkProvider
+    // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:882 BuildViewTestCase.getStarlarkProvider
+    pub fn get_starlark_provider_by_symbol(
+        &mut self,
+        target: &ConfiguredTarget,
+        provider_symbol: &str,
+    ) -> Option<starlark::values::OwnedFrozenValue> {
+        let rule_target = self
+            .get_target(&target.get_label().to_string())
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let rule = rule_target
+            .get_associated_rule()
+            .expect("NullPointerException: getAssociatedRule")
+            .clone();
+        let bzl = rule
+            .get_rule_class_object()
+            .get_rule_definition_environment_label()
+            .expect("NullPointerException: getRuleDefinitionEnvironmentLabel")
+            .to_string();
+        Self::get_starlark_provider(target, &bzl, provider_symbol)
+    }
+
+    /// `AnalysisTestCase.getStarlarkProvider(ProviderCollection target, String label, String
+    /// providerSymbol)` for an aspect.
+    // Java: com/google/devtools/build/lib/analysis/util/AnalysisTestCase.java:715 AnalysisTestCase.getStarlarkProvider
+    pub fn get_starlark_provider_of_aspect(
+        aspect: &AspectValue,
+        bzl_label: &str,
+        provider_symbol: &str,
+    ) -> Option<starlark::values::OwnedFrozenValue> {
+        let key = blaze_packages::rule_class::ProviderKey::Starlark {
+            extension_label: parse_label(bzl_label),
+            exported_name: provider_symbol.to_string(),
+        };
+        aspect.get_providers().get(&key).cloned()
+    }
+
+    /// `BuildViewTestCase.getAspect(label)`: the only done aspect node whose aspect name is
+    /// `label`.
+    // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:1205 BuildViewTestCase.getAspect
+    pub fn get_aspect(&mut self, label: &str) -> Arc<AspectValue> {
+        let ev = self.get_evaluator();
+        let values: Vec<Arc<AspectValue>> = ev
+            .get_all_keys_for_testing()
+            .into_iter()
+            .filter(|k| {
+                k.downcast::<AspectKey>()
+                    .is_some_and(|a| a.get_aspect_name() == label)
+            })
+            .filter_map(|k| ev.get_existing_value(&k))
+            .map(|v| {
+                v.downcast::<AspectValue>()
+                    .unwrap_or_else(|_| panic!("ClassCastException: AspectValue"))
+            })
+            .collect();
+        assert_eq!(
+            values.len(),
+            1,
+            "onlyElement: {} aspect values named {label}",
+            values.len()
+        );
+        values.into_iter().next().unwrap()
+    }
+
+    /// `BuildViewTestCase.getDirectPrerequisites(target)` (Java
+    /// `BuildViewForTesting.getDirectPrerequisitesForTesting`).
+    ///
+    /// PORT: Java re-resolves the target's dependencies with `DependencyResolver`; here they are
+    /// the configured targets of the `ConfiguredTargetKey` edges of the target's node in the
+    /// graph, in edge order.
+    // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:744 BuildViewTestCase.getDirectPrerequisites
+    pub fn get_direct_prerequisites(&mut self, target: &ConfiguredTarget) -> Vec<ConfiguredTarget> {
+        let key = SkyKey::new(
+            ConfiguredTargetKey::builder()
+                .set_label(target.get_label())
+                .set_configuration_key(target.get_configuration_key())
+                .build(),
+        );
+        let graph = self.skyframe_executor().get_walkable_graph();
+        let mut result = Vec::new();
+        for dep in graph.get_direct_deps(&key) {
+            if dep.downcast::<ConfiguredTargetKey>().is_none() {
+                continue;
+            }
+            if let Some(value) =
+                crate::skyframe_executor::get_configured_target_value(&*graph, &dep)
+            {
+                result.push(value.get_configured_target().clone());
+            }
+        }
+        result
+    }
+
+    /// `BuildViewTestCase.getDirectPrerequisite(target, label)`: the first direct prerequisite
+    /// whose original label is `label`.
+    // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:753 BuildViewTestCase.getDirectPrerequisite
+    pub fn get_direct_prerequisite(
+        &mut self,
+        target: &ConfiguredTarget,
+        label: &str,
+    ) -> Option<ConfiguredTarget> {
+        let candidate_label = parse_label(label);
+        self.get_direct_prerequisites(target)
+            .into_iter()
+            .find(|candidate| candidate.get_original_label() == candidate_label)
     }
 
     /// `getStarlarkProvider(target, providerSymbol)` with the provider's key (`load(bzl,

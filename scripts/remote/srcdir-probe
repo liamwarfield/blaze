@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""Source-directory inputs (TrackSourceDirectoriesFlag): oracle vs Blaze. See `srcdir-probe help`."""
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+CACHE = os.path.expanduser("~/.cache/blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+WORK = os.path.join(CACHE, "work", "probe-srcdir")
+TEMPLATE = os.path.join(WORK, "src")
+OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-probe-srcdir")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+
+USAGE = """\
+usage: scripts/remote/srcdir-probe init
+       scripts/remote/srcdir-probe run <name> <oracle|BLAZE-BINARY>
+       scripts/remote/srcdir-probe interchange <name> <writer-name> <oracle|BLAZE-BINARY>
+       scripts/remote/srcdir-probe compare <name-a> <name-b>
+       scripts/remote/srcdir-probe help
+
+A genrule whose `srcs` is a source directory (`//:data`, no glob), as workerd's `sysroot`.
+Bazel tracks source directories by default (TrackSourceDirectoriesFlag): the directory's
+metadata is a hash over every file under it, so there is no "dependency checking of directories
+is unsound" warning and a change inside the directory re-runs the action.
+
+`init` writes the template workspace <WORK>/src (MODULE.bazel, BUILD, data/ with a file, a
+subdirectory, an empty directory, a symlink to a file and a symlink to a directory). `run` and
+`interchange` call it when the template is missing.
+
+`run <name> BINARY` copies the template to <WORK>/<name>/ws (fresh), uses the output user root
+<OUT_ROOT>/<name> (fresh) and the disk cache <WORK>/<name>/dc (fresh), and runs
+`build //:g --disk_cache=<dc> --execution_log_json_file=<step>/exec.json` five times:
+  s1  cold
+  s2  nothing changed                    (Bazel: the action is not re-run)
+  s3  `touch -m data/sub/b.txt`          (mtime only; Bazel: not re-run, the digest is the same)
+  s4  append a line to data/sub/b.txt    (Bazel: re-run)
+  s5  add data/sub/c.txt                 (Bazel: re-run)
+Each step directory <WORK>/<name>/<step> holds stdout, stderr, exit, exec.json and out.sha256
+(sha256 of bazel-bin/out.txt).
+
+`interchange <name> <writer-name> BINARY` copies the disk cache written by run <writer-name>
+(after its s1, saved as <WORK>/<writer-name>/dc-s1) and builds the template once with it in a
+fresh output base: the `processes:` line shows whether the action was a disk cache hit.
+
+`compare <a> <b>` prints, per step, both `processes:` lines, the WARNING lines, the output digest
+and whether the execution logs are equal (after dropping timing fields and replacing the run's
+paths), with a diff of the first difference.
+
+Every Bazel/Blaze call runs in `systemd-run --user --collect --wait -p MemoryMax=12G
+-p MemorySwapMax=0` with HOME and PATH=/usr/bin:/bin only, startup options
+--output_user_root=<OUT_ROOT>/<name> --nohome_rc --nosystem_rc, and --repository_cache,
+--color=no --curses=no. WORK is ~/.cache/blaze/work/probe-srcdir, OUT_ROOT
+~/.cache/blaze/oracle-out/ur-probe-srcdir.
+"""
+
+BUILD = """\
+genrule(
+    name = "g",
+    srcs = ["data"],
+    outs = ["out.txt"],
+    cmd = "(cd $(location data) && find . | LC_ALL=C sort && find . -type f | LC_ALL=C sort | xargs cat) > $@",
+)
+"""
+
+STEPS = ["s1", "s2", "s3", "s4", "s5"]
+
+
+def init():
+    if os.path.isdir(TEMPLATE):
+        return
+    os.makedirs(os.path.join(TEMPLATE, "data", "sub"))
+    os.makedirs(os.path.join(TEMPLATE, "data", "empty"))
+    with open(os.path.join(TEMPLATE, "MODULE.bazel"), "w") as f:
+        f.write("")
+    with open(os.path.join(TEMPLATE, "BUILD"), "w") as f:
+        f.write(BUILD)
+    with open(os.path.join(TEMPLATE, "data", "a.txt"), "w") as f:
+        f.write("a\n")
+    with open(os.path.join(TEMPLATE, "data", "sub", "b.txt"), "w") as f:
+        f.write("b\n")
+    os.symlink("a.txt", os.path.join(TEMPLATE, "data", "link_a"))
+    os.symlink("sub", os.path.join(TEMPLATE, "data", "link_sub"))
+
+
+def rm(p):
+    if os.path.lexists(p):
+        subprocess.run(["chmod", "-R", "u+w", p])
+        shutil.rmtree(p)
+
+
+def run_binary(binary, name, ws, step, args):
+    our = os.path.join(OUT_ROOT, name)
+    os.makedirs(step, exist_ok=True)
+    full = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc", args[0],
+            "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args[1:]
+    unit = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
+            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "env", "-i",
+            "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin"]
+    with open(os.path.join(step, "stdout"), "wb") as so, \
+            open(os.path.join(step, "stderr"), "wb") as se:
+        code = subprocess.run(unit + full, cwd=ws, stdout=so, stderr=se).returncode
+    with open(os.path.join(step, "exit"), "w") as f:
+        f.write("%d\n" % code)
+    out = os.path.join(ws, "bazel-bin", "out.txt")
+    with open(os.path.join(step, "out.sha256"), "w") as f:
+        if os.path.isfile(out):
+            f.write(hashlib.sha256(open(out, "rb").read()).hexdigest() + "\n")
+        else:
+            f.write("missing\n")
+    return code
+
+
+def summary(step):
+    err = open(os.path.join(step, "stderr"), errors="replace").read().splitlines()
+    procs = [l for l in err if "processes:" in l or re.search(r"\d+ process:", l)]
+    warns = [l for l in err if l.startswith("WARNING:") or l.startswith("ERROR:")]
+    return procs, warns
+
+
+def cmd_run(name, binary):
+    init()
+    binary = ORACLE if binary == "oracle" else os.path.abspath(os.path.expanduser(binary))
+    run_dir = os.path.join(WORK, name)
+    rm(run_dir)
+    rm(os.path.join(OUT_ROOT, name))
+    ws = os.path.join(run_dir, "ws")
+    shutil.copytree(TEMPLATE, ws, symlinks=True)
+    dc = os.path.join(run_dir, "dc")
+    for s in STEPS:
+        if s == "s3":
+            subprocess.run(["touch", "-m", os.path.join(ws, "data", "sub", "b.txt")])
+        elif s == "s4":
+            with open(os.path.join(ws, "data", "sub", "b.txt"), "a") as f:
+                f.write("more\n")
+        elif s == "s5":
+            with open(os.path.join(ws, "data", "sub", "c.txt"), "w") as f:
+                f.write("c\n")
+        step = os.path.join(run_dir, s)
+        code = run_binary(binary, name, ws, step, [
+            "build", "//:g", "--disk_cache=" + dc,
+            "--execution_log_json_file=" + os.path.join(step, "exec.json")])
+        if s == "s1":
+            shutil.copytree(dc, os.path.join(run_dir, "dc-s1"))
+        procs, warns = summary(step)
+        print("%s exit %d %s warnings=%d" % (s, code, " | ".join(procs), len(warns)))
+    run_binary(binary, name, ws, os.path.join(run_dir, "shutdown"), ["shutdown"])
+    return 0
+
+
+def cmd_interchange(name, writer, binary):
+    init()
+    binary = ORACLE if binary == "oracle" else os.path.abspath(os.path.expanduser(binary))
+    run_dir = os.path.join(WORK, name)
+    rm(run_dir)
+    rm(os.path.join(OUT_ROOT, name))
+    ws = os.path.join(run_dir, "ws")
+    shutil.copytree(TEMPLATE, ws, symlinks=True)
+    dc = os.path.join(run_dir, "dc")
+    shutil.copytree(os.path.join(WORK, writer, "dc-s1"), dc)
+    step = os.path.join(run_dir, "s1")
+    code = run_binary(binary, name, ws, step, [
+        "build", "//:g", "--disk_cache=" + dc,
+        "--execution_log_json_file=" + os.path.join(step, "exec.json")])
+    procs, warns = summary(step)
+    print("s1 exit %d %s warnings=%d" % (code, " | ".join(procs), len(warns)))
+    run_binary(binary, name, ws, os.path.join(run_dir, "shutdown"), ["shutdown"])
+    return 0
+
+
+def read_log(path, name):
+    if not os.path.isfile(path):
+        return None
+    text = open(path, errors="replace").read()
+    ws = os.path.join(WORK, name, "ws")
+    text = text.replace(ws, "<ws>").replace(os.path.join(OUT_ROOT, name), "<our>")
+    text = re.sub(r"<our>/[0-9a-f]{32}", "<ob>", text)
+    dec = json.JSONDecoder()
+    i, out = 0, []
+    while True:
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text):
+            break
+        obj, i = dec.raw_decode(text, i)
+        for k in ("walltime", "metrics"):
+            obj.pop(k, None)
+        out.append(obj)
+    return out
+
+
+def cmd_compare(a, b):
+    same_all = True
+    for s in STEPS:
+        sa, sb = os.path.join(WORK, a, s), os.path.join(WORK, b, s)
+        if not (os.path.isdir(sa) and os.path.isdir(sb)):
+            continue
+        pa, wa = summary(sa)
+        pb, wb = summary(sb)
+        oa = open(os.path.join(sa, "out.sha256")).read().strip()
+        ob = open(os.path.join(sb, "out.sha256")).read().strip()
+        la, lb = read_log(os.path.join(sa, "exec.json"), a), read_log(os.path.join(sb, "exec.json"), b)
+        print("== %s" % s)
+        print("  %-8s processes: %s" % (a, " | ".join(pa)))
+        print("  %-8s processes: %s" % (b, " | ".join(pb)))
+        print("  warnings/errors: %s %d, %s %d%s" % (a, len(wa), b, len(wb),
+                                                     "" if wa == wb else "  DIFFERENT"))
+        for w in (wa + wb)[:6]:
+            print("    " + w)
+        print("  out.txt: %s" % ("same" if oa == ob else "DIFFERENT %s %s" % (oa, ob)))
+        if la == lb:
+            print("  exec log: equal (%d entries)" % (len(la or [])))
+        else:
+            same_all = False
+            print("  exec log: DIFFERENT")
+            ja = json.dumps(la, indent=1, sort_keys=True).splitlines()
+            jb = json.dumps(lb, indent=1, sort_keys=True).splitlines()
+            import difflib
+            for line in list(difflib.unified_diff(ja, jb, a, b, lineterm="", n=2))[:60]:
+                print("    " + line)
+        if oa != ob or wa != wb or pa != pb:
+            same_all = False
+    return 0 if same_all else 1
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    if args[0] == "init" and len(args) == 1:
+        init()
+        print(TEMPLATE)
+        return 0
+    if args[0] == "run" and len(args) == 3:
+        return cmd_run(args[1], args[2])
+    if args[0] == "interchange" and len(args) == 4:
+        return cmd_interchange(args[1], args[2], args[3])
+    if args[0] == "compare" and len(args) == 3:
+        return cmd_compare(args[1], args[2])
+    print(USAGE, end="", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

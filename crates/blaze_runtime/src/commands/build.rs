@@ -134,7 +134,7 @@ fn options_or_default<T: blaze_options::OptionsClass>(options: &OptionsParsingRe
 /// `ExitCode` when the module passed one (`DetailedExitCode.of(exitCode, failureDetail)`, e.g.
 /// `RemoteModule.createExitException`), else the failure detail's metadata.
 // Java: com/google/devtools/build/lib/util/AbruptExitException.java:46 AbruptExitException.getDetailedExitCode
-fn abrupt_exit_detailed_exit_code(
+pub(crate) fn abrupt_exit_detailed_exit_code(
     e: blaze_exec::exec::spawn_strategy_registry::AbruptExitException,
 ) -> DetailedExitCode {
     match e.exit_code {
@@ -171,12 +171,11 @@ fn run_build(
         }
     };
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
-    let bep = BepCommandSupport::before_command(env, options);
-    if bep.is_some()
-        && let Some(remote) = &remote
-    {
-        build_remote::create_bep_file_transport_uploaders(remote, options);
-    }
+    let bep = BepCommandSupport::before_command(
+        env,
+        options,
+        &build_remote::build_event_artifact_uploader_factory_map(remote.as_ref()),
+    );
     let result = run_build_with_bep(env, options, run_tests, bep.as_ref(), remote.as_ref());
     // BlazeRuntime.afterCommand: CommandPrecompleteEvent, then each module's afterCommand
     // (RemoteModule before BuildEventServiceModule); an AbruptExitException of a module replaces

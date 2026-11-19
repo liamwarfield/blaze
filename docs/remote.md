@@ -70,6 +70,15 @@ class; top-level classes of `lib/remote` are top-level modules). Tests are
 
 (Filled in by the crate lead as phases land.)
 
+- Build event artifact uploader (review R12, 2026-11-19): `byte_stream_build_event_artifact_uploader.rs`
+  ports `ByteStreamBuildEventArtifactUploader(Factory)`; `RemoteModule::create_build_event_artifact_uploader`
+  is the "remote" factory delegate, selected by `--experimental_build_event_upload_strategy`
+  through `blaze_bep::runtime::BuildEventArtifactUploaderFactoryMap` (built per command in
+  `blaze_runtime` `build_remote.rs`). With a gRPC cache the BEP files name their files
+  `bytestream://<authority or --remote_bytestream_uri_prefix>[/<instance>]/blobs/[<fn>/]<hash>/<size>`;
+  `--remote_build_event_upload=minimal|all` decides which files are uploaded. Evidence (brotli
+  `build //...`, cold and warm, both modes): docs/reviews/2026-11-19-remote-response.md, R12.
+
 ## Security posture
 
 Root ruling 2026-11-19 (docs/decisions.md): for output symlink paths, Tree node names and
@@ -103,7 +112,7 @@ where Bazel would enter it; none is silently ignored.
 | Content-defined chunking (`--experimental_remote_cache_chunking`) | `combined_cache.rs` `Chunking.*`, `uploadChunked`; `grpc_cache_client.rs` split/splice |
 | Remote output service (`--experimental_remote_output_service`); the "must be used with a cache" exit and the `--disk_cache` warning are ported | `remote_module.rs` setup, at Java's channel creation for it |
 | Remote downloader (`--experimental_remote_downloader`) | `remote_module.rs` setup |
-| Build event artifact uploader (`ByteStreamBuildEventArtifactUploader`) with a gRPC cache; `--remote_build_event_upload` (old name `--experimental_remote_build_event_upload`) other than `minimal`; `--remote_bytestream_uri_prefix` | `remote_module.rs` setup (flags), `RemoteModule::create_build_event_artifact_uploader`, called by `blaze_runtime` `build_remote.rs` `create_bep_file_transport_uploaders` for each BEP file transport with path conversion when the "remote" upload strategy is selected (the default) |
+| Build event artifacts on a `RemoteActionFileSystem` path (`isRemoteFile`; Blaze's build events refer to output-base paths, so it is not reached) | `byte_stream_build_event_artifact_uploader.rs` `is_remote_file` |
 | `--remote_max_connections` / `--remote_max_concurrency_per_connection` other than 100 (one HTTP/2 connection per endpoint, no `DynamicConnectionPool`) | `remote_module.rs` setup, gRPC path |
 | `--experimental_remote_cache_lease_extension` (without `--rewind_lost_inputs`) | `remote_module.rs` setup (Java: `executorInit`) |
 | Disk cache garbage collection (`--experimental_disk_cache_gc_max_size` / `_max_age`, with `_idle_delay`): a server idle task, and Blaze has no server | `remote_module.rs` setup |

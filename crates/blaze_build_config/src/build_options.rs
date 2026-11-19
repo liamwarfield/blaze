@@ -218,6 +218,8 @@ pub enum StarlarkOptionValue {
     Label(Label),
     /// A Java collection; see [`JavaCollectionClass`].
     List(StarlarkOptionList),
+    /// A `config_feature_flag` value (`rules/config/FeatureFlagValue`).
+    FeatureFlag(crate::feature_flag_value::FeatureFlagValue),
 }
 
 impl StarlarkOptionValue {
@@ -258,6 +260,7 @@ impl StarlarkOptionValue {
             StarlarkOptionValue::Int(i) => i.to_string(),
             StarlarkOptionValue::Str(s) => s.clone(),
             StarlarkOptionValue::Label(l) => l.to_string(),
+            StarlarkOptionValue::FeatureFlag(v) => v.to_string(),
             StarlarkOptionValue::List(l) => match l.class() {
                 // Java: java/util/AbstractCollection.java AbstractCollection.toString
                 JavaCollectionClass::List | JavaCollectionClass::Set => {
@@ -284,6 +287,9 @@ impl StarlarkOptionValue {
                 "Label({})",
                 blaze_starlark::printer::quote(&l.get_canonical_form())
             ),
+            // Java: net/starlark/java/eval/Printer.java:216 Printer.repr (a non-Starlark value
+            // prints its `toString()`).
+            StarlarkOptionValue::FeatureFlag(v) => v.to_string(),
             StarlarkOptionValue::List(l) => {
                 let elems: Vec<String> = l.iter().map(StarlarkOptionValue::starlark_repr).collect();
                 match l.class() {
@@ -321,6 +327,7 @@ impl StarlarkOptionValue {
             (StarlarkOptionValue::Int(a), StarlarkOptionValue::Int(b)) => a == b,
             (StarlarkOptionValue::Str(a), StarlarkOptionValue::Str(b)) => a == b,
             (StarlarkOptionValue::Label(a), StarlarkOptionValue::Label(b)) => a == b,
+            (StarlarkOptionValue::FeatureFlag(a), StarlarkOptionValue::FeatureFlag(b)) => a == b,
             (StarlarkOptionValue::List(a), StarlarkOptionValue::List(b)) => {
                 let same_elems =
                     || a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.java_equals(y));

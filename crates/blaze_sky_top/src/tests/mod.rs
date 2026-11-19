@@ -6,6 +6,7 @@ mod aspect_auto_exec_groups_test;
 mod aspect_aware_attribute_mapper_test;
 mod aspect_test;
 mod build_view_test;
+mod config_feature_flag_test;
 mod config_setting_test;
 mod configured_attribute_mapper_test;
 mod constraint_collection_api_test;

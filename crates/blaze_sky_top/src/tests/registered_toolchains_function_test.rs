@@ -661,9 +661,6 @@ fn test_registered_toolchains_target_setting_debug() {
 
 // Java: RegisteredToolchainsFunctionTest.testRegisteredToolchains_targetSetting_error
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (blaze_analysis \
-            config/transitions.rs ConfigFeatureFlagTaggedTrimming panics under \
-            --enforce_transitive_configs_for_config_feature_flag)"]
 fn test_registered_toolchains_target_setting_error() {
     let mut t = ToolchainTestCase::new();
     // Add an extra toolchain with a target_setting

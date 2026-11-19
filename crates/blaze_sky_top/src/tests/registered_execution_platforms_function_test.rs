@@ -543,9 +543,6 @@ fn test_registered_execution_platforms_required_settings_debug() {
 
 // Java: RegisteredExecutionPlatformsFunctionTest.testRegisteredExecutionPlatforms_requiredSettings_config_error
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (blaze_analysis \
-            config/transitions.rs ConfigFeatureFlagTaggedTrimming panics under \
-            --enforce_transitive_configs_for_config_feature_flag)"]
 fn test_registered_execution_platforms_required_settings_config_error() {
     let mut t = ToolchainTestCase::new();
     // Add an extra platform with a required_setting

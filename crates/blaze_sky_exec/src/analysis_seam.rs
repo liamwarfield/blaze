@@ -105,6 +105,34 @@ pub trait ConfiguredTargetView: Send + Sync + fmt::Debug {
     }
 }
 
+/// A configured aspect (an `AspectKey` with its `AspectValue`) as the execution phase
+/// (`BuildDriverFunction`, `AspectCompletor`) and `BuildResultPrinter` read it.
+///
+/// PORT: `AspectKey` and `AspectValue` live in the analysis crates, above this one; they
+/// implement this view.
+pub trait ConfiguredAspectView: Send + Sync {
+    /// `AspectKey.getLabel()`.
+    fn get_label(&self) -> Label;
+    /// `AspectKey.getAspectClass().getName()`.
+    fn get_aspect_class_name(&self) -> String;
+    /// `AspectKey.getBaseConfiguredTargetKey()`.
+    fn get_base_configured_target_key(&self) -> ActionLookupKeyRef;
+    /// The aspect's `OutputGroupInfo`, in insertion order
+    /// (`TopLevelArtifactHelper.getAllArtifactsToBuild` over the `AspectValue`).
+    fn get_output_groups(&self) -> IndexMap<String, NestedSet<Artifact>>;
+
+    /// The `AspectKey` itself (the key of the `AspectCompletionKey`).
+    fn get_aspect_key(&self) -> ActionLookupKeyRef {
+        blaze_util::unported!("ConfiguredAspectView.get_aspect_key (AspectKey of the view)")
+    }
+
+    /// `AspectValue.getWritesOutputToMasterLog()` (`AspectCompleteEvent`).
+    // Java: com/google/devtools/build/lib/analysis/AspectValue.java:105 AspectValue.getWritesOutputToMasterLog
+    fn get_writes_output_to_master_log(&self) -> bool {
+        blaze_util::unported!("AspectValue.getWritesOutputToMasterLog (view)")
+    }
+}
+
 /// How the execution SkyFunctions reach analysis values.
 pub trait AnalysisSeam: Send + Sync {
     /// `env.getValue(actionLookupKey)` as an `ActionLookupValue` (`CONFIGURED_TARGET`, `ASPECT`,
@@ -121,4 +149,27 @@ pub trait AnalysisSeam: Send + Sync {
         key: &ActionLookupKeyRef,
         env: &mut Environment<'_>,
     ) -> Result<Option<Arc<dyn ConfiguredTargetView>>, ComputeError>;
+
+    /// `env.getValue(topLevelAspectsKey)` as the views of
+    /// `TopLevelAspectsValue.getTopLevelAspectsMap()`, in the map's order. `Ok(None)` when the
+    /// value is missing.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:323 BuildDriverFunction.compute
+    fn get_top_level_aspects(
+        &self,
+        key: &ActionLookupKeyRef,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<Vec<Arc<dyn ConfiguredAspectView>>>, ComputeError> {
+        blaze_util::unported!("AnalysisSeam.get_top_level_aspects", "{key}")
+    }
+
+    /// `env.getValue(aspectKey)` as an aspect view (`CompletionFunction
+    /// .getValueAndArtifactsToBuild` with an `AspectCompletionKey`). `Ok(None)` when missing.
+    // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:364 CompletionFunction.getValueAndArtifactsToBuild
+    fn get_configured_aspect(
+        &self,
+        key: &ActionLookupKeyRef,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<Arc<dyn ConfiguredAspectView>>, ComputeError> {
+        blaze_util::unported!("AnalysisSeam.get_configured_aspect", "{key}")
+    }
 }

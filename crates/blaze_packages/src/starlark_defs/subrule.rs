@@ -121,6 +121,12 @@ where
         }
     }
 
+    /// The name in tracebacks and "Error in <name>:" (Java `StarlarkCallable.getName`).
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkSubrule.java:101 StarlarkSubrule.getName
+    fn name_for_call_stack(&self, _me: Value<'v>) -> String {
+        self.get_name()
+    }
+
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkSubrule.java:126 StarlarkSubrule.hashCode
     fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
         match self.data.exported.get() {

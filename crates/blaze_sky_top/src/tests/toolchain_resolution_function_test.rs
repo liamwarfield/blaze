@@ -1318,9 +1318,6 @@ fn resolve_force_execution_platform_no_required_toolchains() {
 
 // Java: ToolchainResolutionFunctionTest.errorProperlyReportedWhenInvalidConfigurationConfiguration
 #[test]
-#[ignore = "BLAZE GAP: unported FeatureFlagValue.trimFlagValues (blaze_analysis \
-            config/transitions.rs ConfigFeatureFlagTaggedTrimming panics under \
-            --enforce_transitive_configs_for_config_feature_flag)"]
 fn error_properly_reported_when_invalid_configuration_configuration() {
     let mut t = ToolchainTestCase::new();
     // It would be absolutely insane for a user to have a toolchain w/ a config_setting that reads a

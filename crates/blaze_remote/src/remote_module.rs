@@ -24,9 +24,9 @@ use blaze_exec::exec::action_execution_context::{RemoteOutputTree, SpawnCache};
 use blaze_exec::exec::spawn_strategy_registry::AbruptExitException;
 use blaze_optdefs::command::execution_options::ExecutionOptions;
 use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
-use blaze_optdefs::misc::remote_build_event_upload_mode::RemoteBuildEventUploadMode;
 use blaze_optdefs::misc::remote_options::RemoteOptions;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail};
+use blaze_util::check_state;
 use blaze_vfs::{DigestHashFunction, FileSystemRef, Path};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
@@ -34,6 +34,7 @@ use parking_lot::Mutex;
 use crate::authandtls::call_credentials_provider::CallCredentialsProvider;
 use crate::authandtls::google_auth_utils::{self, CredentialHelperEnvironment};
 use crate::authandtls::headers;
+use crate::byte_stream_build_event_artifact_uploader::ByteStreamBuildEventArtifactUploaderFactory;
 use crate::circuitbreaker::circuit_breaker_factory;
 use crate::combined_cache::CombinedCache;
 use crate::combined_cache_client_factory;
@@ -138,8 +139,9 @@ pub struct RemoteModule {
     /// `env.getBuildRequestId()` / `env.getCommandId()`, for `createActionInputFetcher`.
     build_request_id: String,
     command_id: String,
-    /// Whether `setup` installed the ByteStream build event artifact uploader (a gRPC cache).
-    byte_stream_build_event_artifact_uploader: bool,
+    /// `buildEventArtifactUploaderFactoryDelegate`'s factory: the ByteStream build event artifact
+    /// uploader factory `setup` installed (a gRPC cache), until `afterCommand` resets it.
+    build_event_artifact_uploader_factory: Option<Arc<ByteStreamBuildEventArtifactUploaderFactory>>,
 }
 
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1370 RemoteModule.createOptionsExitException
@@ -249,7 +251,7 @@ impl RemoteModule {
             exec_root: Some(env.exec_root.clone()),
             build_request_id: env.build_request_id.clone(),
             command_id: env.command_id.clone(),
-            byte_stream_build_event_artifact_uploader: false,
+            build_event_artifact_uploader_factory: None,
         };
         // PORT: `knownMissingCasDigests` survives across commands in the Bazel server (cleared
         // by `clean`); one command per process here.
@@ -328,19 +330,27 @@ impl RemoteModule {
     }
 
     /// `BuildEventArtifactUploaderFactoryDelegate.create(env)`: the uploader of the files the
-    /// build event protocol refers to. Without a gRPC cache it is Java's
-    /// `LocalFilesArtifactUploader` (`None`: the caller keeps its local uploader); with one Java
-    /// creates a `ByteStreamBuildEventArtifactUploader`, which is not ported and fails loudly.
-    /// Call it wherever a build event transport takes its uploader.
-    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1350 RemoteModule.BuildEventArtifactUploaderFactoryDelegate.create
-    pub fn create_build_event_artifact_uploader(&self) -> Option<std::convert::Infallible> {
-        if self.byte_stream_build_event_artifact_uploader {
-            blaze_util::unported!(
-                "ByteStreamBuildEventArtifactUploaderFactory.create",
-                "build event artifacts with a gRPC remote cache (bytestream:// URIs)"
-            );
+    /// build event protocol refers to: the ByteStream uploader when `setup` found a gRPC cache,
+    /// else a `LocalFilesArtifactUploader`. The build event module calls it through the
+    /// "remote" factory it registers (`serverInit`), once per command for the first transport
+    /// with path conversion.
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1361 RemoteModule.BuildEventArtifactUploaderFactoryDelegate.create
+    pub fn create_build_event_artifact_uploader(
+        &self,
+    ) -> Arc<dyn blaze_bep::buildeventstream::BuildEventArtifactUploader> {
+        use blaze_bep::runtime::BuildEventArtifactUploaderFactory;
+        match &self.build_event_artifact_uploader_factory {
+            None => Arc::new(blaze_bep::buildeventstream::LocalFilesArtifactUploader),
+            Some(uploader_factory) => uploader_factory.create(),
         }
-        None
+    }
+
+    /// The ByteStream build event artifact uploader factory of this command, if `setup`
+    /// installed one (`buildEventArtifactUploaderFactoryDelegate.uploaderFactory`).
+    pub fn get_build_event_artifact_uploader_factory(
+        &self,
+    ) -> Option<&Arc<ByteStreamBuildEventArtifactUploaderFactory>> {
+        self.build_event_artifact_uploader_factory.as_ref()
     }
 
     /// `actionInputFetcher`.
@@ -925,22 +935,26 @@ impl RemoteModule {
         // (`RemoteModule::create_action_input_fetcher`); `initRepoHelpersAndOverlayFs` is not
         // ported.
 
-        // Java: `buildEventArtifactUploaderFactoryDelegate.init(new
-        // ByteStreamBuildEventArtifactUploaderFactory(...))`: the build event artifact uploader
-        // of every command with a gRPC cache. It is not ported (review 2026-11-19 R12): the
-        // build event integration asks [`RemoteModule::create_build_event_artifact_uploader`],
-        // which fails loudly, and the options only that uploader reads fail loudly here when
-        // set.
         // Java: com/google/devtools/build/lib/remote/RemoteModule.java:905 RemoteModule.setup
-        self.byte_stream_build_event_artifact_uploader = true;
-        if remote_options_arc.remote_build_event_upload_mode != RemoteBuildEventUploadMode::MINIMAL
-            || remote_options_arc.remote_bytestream_uri_prefix.is_some()
-        {
-            blaze_util::unported!(
-                "ByteStreamBuildEventArtifactUploaderFactory",
-                "--remote_build_event_upload / --remote_bytestream_uri_prefix"
-            );
-        }
+        let combined_cache = self
+            .action_context_provider
+            .as_ref()
+            .and_then(|provider| provider.get_combined_cache().cloned())
+            .expect("actionContextProvider.getCombinedCache()");
+        check_state!(self.build_event_artifact_uploader_factory.is_none());
+        self.build_event_artifact_uploader_factory =
+            Some(Arc::new(ByteStreamBuildEventArtifactUploaderFactory::new(
+                reporter.clone(),
+                // Java: `verboseFailures = executionOptions.verboseFailures` (RemoteModule.java:446).
+                execution_options.verbose_failures,
+                combined_cache,
+                remote_options_arc.remote_instance_name.clone(),
+                remote_options_arc.remote_bytestream_uri_prefix.clone(),
+                build_request_id.clone(),
+                // invocationId
+                command_id.clone(),
+                remote_options_arc.remote_build_event_upload_mode,
+            )));
 
         if enable_remote_downloader {
             blaze_util::unported!(
@@ -975,7 +989,8 @@ impl RemoteModule {
         let rpc_log_file = self.rpc_log_file.take();
         self.remote_output_checker = None;
         self.action_input_fetcher = None;
-        self.byte_stream_build_event_artifact_uploader = false;
+        // buildEventArtifactUploaderFactoryDelegate.reset()
+        self.build_event_artifact_uploader_factory = None;
 
         if let Some(rpc_log_file) = rpc_log_file
             && rpc_log_file.close().is_err()

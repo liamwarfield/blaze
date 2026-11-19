@@ -64,6 +64,48 @@ removed (`scripts/workerd/compare-repos --ascii-readme`, `work/workerd-blaze`); 
 `~/.cache/blaze/corpus`. The telemetry repo's `report.json` therefore differs from the oracle's by
 design.
 
+### Scope of the byte-string dependence (survey of 2026-11-18)
+
+Question: is the telemetry hash the only place in workerd's closure whose result depends on
+Bazel's byte semantics? Read-only survey of the checkout, the 1,017 external repositories of
+the oracle's output base (symlinks followed), the embedded `@bazel_tools` and `@_builtins`, the
+396 registry files of the lockfile and the files recorded as repository inputs (1,016
+`.marker` / `.recorded_inputs` files). **Answer: yes, it is the only one.**
+
+| site | operation | non-ASCII input | output | reached by |
+| --- | --- | --- | --- | --- |
+| `aspect_tools_telemetry+` 0.5.2 `collectors/dedup.bzl:88` (`repository_ctx.read(readme_file).split("\n")[:4]`), `sha1.bzl:37-38` (`for char in input.elems(): message_bytes_list.append(ord(char))`, bazel_lib's `ord` is a dict over `"\0".."\377"`), `sha1.bzl:79` (`block[t*4] << 24`) | `elems` + per-unit table lookup | `//:README.md` line 1: the emoji F0 9F 91 B7 (the file's only 4 non-ASCII bytes) | `id_day` in the telemetry `report.json` | fetching alone (`@aspect_tools_telemetry_report` is loaded by `aspect_rules_js+/npm/defs.bzl:4` and `aspect_rules_esbuild+/esbuild/extensions.bzl:3`), so every build that loads rules_js or rules_esbuild |
+
+Touching non-ASCII text but with the same result under either semantics, provided I/O
+converts bytes correctly: comments (94 files), docstrings (21), `doc = "..."` attribute strings
+(6 files), two metadata strings (package_metadata SPDX `full_name`, rules_android
+`copyright_notice`), one `rctx.template` without substitutions (rules_kotlin
+`capabilities.bzl`), one native `ctx.patch` (V8 patch 0013), two non-ASCII file names in a V8
+`glob(["test/**"])` (not in workerd's build graph), `json.decode` of `@types/node`'s
+`package.json` (only the ASCII `bin` is used), an ASCII-needle `in` test on
+`markupsafe/__init__.py`, and workerd's own `build/python_metadata.bzl:11-12`
+(`s += chr(int(chunk, 16))` then `base64.encode(s)`: chars `\200`..`\377` built from escapes;
+correct as long as `"\NNN"` stays one unit).
+
+Counts: `.bzl` 3,128 scanned / 52 with non-ASCII bytes; `BUILD*` 7,971 / 67; `MODULE` 270 / 2;
+`REPO.bazel` 920 / 0; `WORKSPACE*` 386 / 0; bazelrc 210 / 37 (comments). Only 12 Starlark files
+have non-ASCII inside a non-docstring string literal, none of them measured or indexed.
+Builtins zip 28 files / 0; registry files 396 / 0; recorded file inputs 165 / 3 (README, the V8
+patch, kotlin capabilities).
+
+Latent (byte-sensitive code whose input is ASCII in this workspace): aspect_rules_js
+`utils.hash` (`str(hash(s))`, Java `String.hashCode`) over pnpm-lock.yaml / package.json /
+.npmrc; workerd `sysroot.bzl:27` md5sums and `.lower()`; toolchains_llvm `_strip_jsonc`;
+rules_python `parse_requirements_txt`; `hash(path)` in rules_cc / rules_rust / protobuf /
+skylib; package_metadata's `purl` string tests (they assert byte semantics, test-only).
+
+Not checked: `execute().stdout` values other than through the generated files (all ASCII),
+`oci.pull` manifests and repositories the oracle did not fetch, and module-extension reads that
+are not recorded (covered by grep for read sites, not by a trace).
+
+So for workerd the migration is needed for exactly one hash; the referee's protocol numbers for
+cquery and aquery are blocked by it only because the recorder uses the pristine README.
+
 ## Triage
 
 | # | phase | crate | Java | gap | first error | status |
@@ -87,8 +129,9 @@ design.
 | 17 | cquery | blaze_sky_top | `SkyframeErrorProcessor.processAnalysisErrors` | analysis errors end in a panic | `not ported yet: SkyframeErrorProcessor.processAnalysisErrors` | open (integration lead) |
 | 18 | oracle | — | — | aquery exits 8 on a fresh output base | `ERROR: build interrupted` | oracle behaviour; recorded aquery comes from the built base |
 
-Counts: 18 items; 11 fixed (1–4, 6–12 with #12's sky_top call pending), 7 open (#5 root,
-#13/#17 integration lead, #15/#16 blaze_rules, #14 blaze_build_config, #18 oracle-only).
+Counts at the end of the aspects wave: 28 items (the table continues under "Triage,
+continued"); #12 to #17 were fixed between the two waves; open: #5 (root, byte strings), #18
+(oracle behaviour), #24 to #28 (execution owner and build wiring).
 
 ## Aspects wave (2026-11-18, aspects lead)
 
@@ -136,7 +179,8 @@ ASCII-README copy, with the tools above (the referee's extractors; development a
 | cquery_label_kind (`cquery-compare`) | 38,892 of 38,892 items, the `__order__` item included |
 | cquery_jsonproto | 4 of 4 items, both order items included |
 | aquery_actions (`aquery-compare --full --order --make-unresolved-symlinks`) | 13,416 actions on both sides, none missing, none extra; 13,160 identical in every field; 256 differ only in `actionKey`: 128 `SourceSymlinkManifest` and 128 `SymlinkTree` runfiles actions (allow-listed kind `runfiles-manifest-action-key`). All nine `__order__` items equal: actions 13,416, action ids 13,416, artifacts 49,857, depSetOfFiles 22,250, pathFragments 55,226, targets 2,242, configuration 4, ruleClasses 48, aspectDescriptors 2 |
-| build of a sub-target | `build //src/workerd/server:malloc --jobs=8`: 314 actions (169 linux-sandbox); its 485 objects, archives, shared objects, module maps, `.d` and `.params` files are byte-identical to the oracle's files at the same paths |
+| build of sub-targets | `build //src/workerd/server:malloc --jobs=8`: 314 actions (169 linux-sandbox); its 485 objects, archives, shared objects, module maps, `.d` and `.params` files are byte-identical to the oracle's files at the same paths. Also complete (exit 0): `//src/rust/cxx:cxxbridge-macro` (378 actions), `//src/workerd/server:workerd_capnp_rust_gen` (205), `@capnp-cpp//src/capnp:capnpc-capnp` (156), the cxx bridge genrule (118), `@v8//:icu/generated_torque_files` (794), the tokio / rustls / hyper / regex / serde_json crates (173) and eight first-party Rust crates (203). Stopped by #27: `@v8//:code_generator`, `//src/pyodide:pyodide_static@tsproject`; by #28: `//src/workerd/server:workerd_capnp_rust` and three more |
+| full build | not started: #27 and #28 are in its closure |
 
 Referee protocol: `scripts/oracle/record --project workerd` runs on a pristine copy (README with
 the emoji), so Blaze's cquery and aquery commands fail there at `aspect_tools_telemetry` until
@@ -153,6 +197,8 @@ byte strings are ported (#5); the label recorded for this state is `blaze-aspect
 | 23 | build | blaze_sky_top (`build_view.rs`) | `BuildView.setArtifactRoots` | `ArtifactFactory.packageRoots` never set | `NullPointerException: packageRoots` in `CppCompileAction` `.d` input discovery | fixed |
 | 24 | build | blaze_sky_exec (execution owner) | `TrackSourceDirectoriesFlag` | default assumed false; Bazel's is true | 676 `input 'sysroot' ... is a directory; dependency checking of directories is unsound` warnings for one cc sub-target (oracle: none in the whole build) | open, reported to root |
 | 26 | UI | blaze_runtime (dispatcher / build wiring) + blaze_sky_top (`build_tool.rs`) | `SkyframeExecutor.preparePackageLoading` (`packageProgress.reset()`, SkyframeExecutor.java:1742) before `BlazeOptionHandler.parseStarlarkOptions` | Blaze loads the packages of the Starlark flags of the command line and `.bazelrc` (10 on workerd) in an evaluator of their own before the build, resets the counter when the build starts (`build_tool.rs`), then loads 9 of them again; `@@rules_rust+//` (only needed for `--@rules_rust//:extra_rustc_flag` etc.) is never loaded by the build itself. Java loads each once, in the one graph, after the reset | `736 packages loaded` vs the oracle's `737` | open, reported to root (fix: one evaluator, or reset before the flags are parsed and count a package once per command) |
+| 27 | build | blaze_sky_exec (execution owner) | `FileArtifactValue.createForUnresolvedSymlink` | output metadata of `declare_symlink` outputs | `not ported yet: FileArtifactValue.createForUnresolvedSymlink` (`build @v8//:code_generator`, `//src/pyodide:pyodide_static@tsproject`; 14 `UnresolvedSymlink` actions in the oracle's build) | open, reported to root: **blocks the full build** |
+| 28 | build | blaze_buildtool / blaze_sky_exec (execution owner) | `ActionExecutionFunction.PackageRootResolverWithEnvironment.findPackageRootsForFiles` | the `ContainingPackageRootLookup` seam is never supplied (`execution_tool.rs`: `None`) | `not ported yet: ... (no ContainingPackageRootLookup given to the executor)` (`build //src/workerd/server:workerd_capnp_rust ...`) | open, reported to root: **blocks the full build** |
 | 25 | build (`--aspects`) | blaze_sky_exec (execution owner) | `BuildDriverFunction` for `TopLevelAspectsKey`, `AspectCompletor` | top-level aspects on the build path | `unported!` (not reached by workerd's default configuration) | open, reported to root |
 
 ## Regression checks (brotli, re2)
@@ -167,8 +213,18 @@ After all fixes, on the working tree of 2026-11-18 (HEAD bd9694d plus uncommitte
 
 ## Next for workerd
 
-1. blaze_sky_top: call `get_flag_aliases_from_dep_graph` (#12).
-2. blaze_runtime: port `parseStarlarkOptions` (#13); then blaze_build_config flag scoping (#14).
-3. blaze_rules: identity `write_hash` for `HeaderInfo` and other native infos (#15); genrule (#16).
-4. Byte-string semantics (#5) for parity of the telemetry repo and anything else that walks
-   non-ASCII text byte by byte.
+Items 1 to 3 of the earlier list (#12 to #16) are done; the whole target analyses and cquery and
+aquery match the oracle on the ASCII-README copy. In order:
+
+1. Execution owner: `FileArtifactValue.createForUnresolvedSymlink` (#27) and the
+   `ContainingPackageRootLookup` seam (#28). Both are in the closure of
+   `//src/workerd/server:workerd`; until they land the full build is not attempted (the oracle
+   needs about 18 minutes and 9,713 actions for it). Then `TrackSourceDirectoriesFlag` (#24).
+2. Byte strings (#5): one site in the whole closure (the survey above). It gates every referee
+   number of workerd's cquery and aquery surfaces, because `scripts/oracle/record` uses the
+   pristine README. Under the protocol today (label `blaze-aspects-4`): query surfaces partly
+   match (the telemetry repository fails under `--keep_going`), cquery and aquery FAILED.
+3. Top-level aspects on the build path (#25) and the packages-loaded count (#26): not needed by
+   workerd's default build; UI and `--aspects` parity.
+4. After a full build exists: record the build surfaces (`build_stderr`, `execlog`, `bep`,
+   `outputs`) for workerd on both sides; none is recorded for the oracle yet either.

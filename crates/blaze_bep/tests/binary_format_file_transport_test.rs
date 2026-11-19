@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use blaze_bep::buildeventstream::transports::BinaryFormatFileTransport;
 use blaze_bep::buildeventstream::{
     ArtifactGroupNamer, ArtifactGroupNode, BuildEvent, BuildEventArtifactUploader,
     BuildEventContext, BuildEventTransport, FileUriPathConverter, Interrupted, LocalFile,
-    LocalFileType, LocalFilesArtifactUploader, NoConversion, PathConverter,
+    LocalFileType, LocalFilesArtifactUploader, NoConversion, PathConverter, PathConverterFuture,
 };
 use blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions;
 use blaze_optdefs::misc::build_event_service_options::BesUploadMode;
@@ -158,14 +159,33 @@ fn test_creates_file_and_writes_proto_binary_format() {
 }
 
 #[test]
-#[ignore = "needs asynchronous artifact uploads: BuildEventArtifactUploader.upload returns a \
-            plain PathConverter in the port, so an upload cannot be cancelled \
-            (Futures.immediateCancelledFuture)"]
 fn test_cancelled_upload() {
-    // Java: an uploader whose upload() returns an immediately cancelled future; close().get()
-    // then throws an ExecutionException containing
-    // "Unable to write all BEP events to file due to 'Task was cancelled.'" and the file is
-    // empty.
+    let fs = file_system();
+    let file1 = Path::create_from_str("/foo", &fs);
+    let event1: Arc<dyn BuildEvent> = Arc::new(WithLocalFilesEvent::new(vec![file1]));
+
+    let uploader = Arc::new(TestUploader::new(
+        |_files: &HashMap<Path, LocalFile>| PathConverterFuture::immediate_cancelled(),
+        false,
+    ));
+
+    let output = Output::new();
+    let transport = transport(&output, uploader);
+    transport.send_build_event(&event1);
+
+    let expected = transport.close().unwrap_err();
+    assert!(
+        expected
+            .message
+            .contains("Unable to write all BEP events to file due to 'Task was cancelled.'"),
+        "{}",
+        expected.message
+    );
+
+    let bytes = output.read();
+    let mut input: &[u8] = &bytes;
+    assert_eq!(parse_next(&mut input), None);
+    assert_eq!(input.len(), 0);
 }
 
 #[test]
@@ -212,22 +232,37 @@ fn test_write_when_transport_closed() {
 }
 
 /// An uploader whose `upload` is the given closure (Java: an anonymous
-/// `BuildEventArtifactUploaderWithRefCounting`).
+/// `BuildEventArtifactUploaderWithRefCounting`, spied on for `release()`).
 struct TestUploader<F> {
     upload: F,
     may_be_slow: bool,
+    releases: AtomicUsize,
+}
+
+impl<F> TestUploader<F> {
+    fn new(upload: F, may_be_slow: bool) -> Self {
+        TestUploader {
+            upload,
+            may_be_slow,
+            releases: AtomicUsize::new(0),
+        }
+    }
 }
 
 impl<F> BuildEventArtifactUploader for TestUploader<F>
 where
-    F: Fn(&HashMap<Path, LocalFile>) -> Box<dyn PathConverter> + Send + Sync,
+    F: Fn(&HashMap<Path, LocalFile>) -> PathConverterFuture + Send + Sync,
 {
-    fn upload(&self, files: HashMap<Path, LocalFile>) -> Box<dyn PathConverter> {
+    fn upload(&self, files: HashMap<Path, LocalFile>) -> PathConverterFuture {
         (self.upload)(&files)
     }
 
     fn may_be_slow(&self) -> bool {
         self.may_be_slow
+    }
+
+    fn release(&self) {
+        self.releases.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -242,17 +277,17 @@ fn test_writes_with_upload_delays() {
     let event1: Arc<dyn BuildEvent> = Arc::new(WithLocalFilesEvent::new(vec![file1.clone()]));
     let event2: Arc<dyn BuildEvent> = Arc::new(WithLocalFilesEvent::new(vec![file2.clone()]));
 
-    let uploader = Arc::new(TestUploader {
-        upload: move |files: &HashMap<Path, LocalFile>| -> Box<dyn PathConverter> {
+    let uploader = Arc::new(TestUploader::new(
+        move |files: &HashMap<Path, LocalFile>| {
             if files.contains_key(&file1) {
                 std::thread::sleep(Duration::from_millis(200));
             }
-            Box::new(FileUriPathConverter)
+            PathConverterFuture::immediate(Box::new(FileUriPathConverter))
         },
-        may_be_slow: true,
-    });
+        true,
+    ));
     let output = Output::new();
-    let transport = transport(&output, uploader);
+    let transport = transport(&output, uploader.clone());
     transport.send_build_event(&event1);
     transport.send_build_event(&event2);
     transport.close().unwrap();
@@ -263,8 +298,7 @@ fn test_writes_with_upload_delays() {
     assert_eq!(parse_next(&mut input), Some(as_stream_proto_null(&event2)));
     assert_eq!(input.len(), 0);
 
-    // PORT: `verify(uploader).release()` is not ported: the uploader is not reference-counted
-    // (see `BuildEventArtifactUploader`).
+    assert_eq!(uploader.releases.load(Ordering::SeqCst), 1);
 }
 
 /// Regression test for b/207287675
@@ -275,12 +309,12 @@ fn test_handles_duplicate_files() {
     let event1: Arc<dyn BuildEvent> =
         Arc::new(WithLocalFilesEvent::new(vec![file1.clone(), file1.clone()]));
 
-    let uploader = Arc::new(TestUploader {
-        upload: |_files: &HashMap<Path, LocalFile>| -> Box<dyn PathConverter> {
-            Box::new(FileUriPathConverter)
+    let uploader = Arc::new(TestUploader::new(
+        |_files: &HashMap<Path, LocalFile>| {
+            PathConverterFuture::immediate(Box::new(FileUriPathConverter))
         },
-        may_be_slow: false,
-    });
+        false,
+    ));
     let output = Output::new();
     let transport = transport(&output, uploader);
     transport.send_build_event(&event1);
@@ -300,28 +334,34 @@ fn test_close_waits_for_writes_to_finish() {
     let file1 = Path::create_from_str("/file1", &fs);
     let event: Arc<dyn BuildEvent> = Arc::new(WithLocalFilesEvent::new(vec![file1]));
 
-    // PORT: Java's upload returns a `SettableFuture` that is set to `PathConverter.NO_CONVERSION`
-    // only after `close()` was called. The port's uploads complete synchronously, so the upload
-    // returns `NO_CONVERSION` at once; the assertion that the event is in the file after close
-    // is kept.
-    let uploader = Arc::new(TestUploader {
-        upload: |_files: &HashMap<Path, LocalFile>| -> Box<dyn PathConverter> {
-            Box::new(NoConversion)
+    let (upload, upload_future) = PathConverterFuture::create();
+    let upload_future = Mutex::new(Some(upload_future));
+    let uploader = Arc::new(TestUploader::new(
+        move |_files: &HashMap<Path, LocalFile>| {
+            upload_future.lock().unwrap().take().expect("one upload")
         },
-        may_be_slow: false,
-    });
+        false,
+    ));
 
     let output = Output::new();
-    let transport = transport(&output, uploader);
+    let transport = transport(&output, uploader.clone());
     transport.send_build_event(&event);
+    // PORT: Java's close() returns a future and the test completes the upload after it;
+    // the port's close() blocks, so the upload is completed from another thread while close()
+    // waits.
+    let setter = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        upload.set(Box::new(NoConversion));
+    });
     transport.close().unwrap();
+    setter.join().unwrap();
 
     let bytes = output.read();
     let mut input: &[u8] = &bytes;
     assert_eq!(parse_next(&mut input), Some(as_stream_proto_null(&event)));
     assert_eq!(input.len(), 0);
 
-    // PORT: `verify(uploader).release()` is not ported (no reference counting).
+    assert_eq!(uploader.releases.load(Ordering::SeqCst), 1);
 }
 
 /// `event.asStreamProto(null)`: [`WithLocalFilesEvent`] ignores its context.

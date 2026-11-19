@@ -412,6 +412,8 @@ pub fn prepare_for_execution_with_action_cache(
     let mut executor = SkyframeActionExecutor::new(SkyframeActionExecutorConfig {
         exec_root: config.exec_root.clone(),
         action_out_dir,
+        // Java: directories.getOutputBase().getRelative(LabelConstants.EXTERNAL_PATH_PREFIX)
+        external_directory: config.output_base.get_child("external"),
         reporter,
         contexts,
         client_env: config.client_env.clone(),

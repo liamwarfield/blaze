@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# usage: scripts/remote/stale-probe <run-name> <oracle|BINARY> [<command> ...]
+#        scripts/remote/stale-probe help
+#
+# The stale-downloads cleanup of RemoteModule (`getTempPathGenerator`: "Found stale downloads
+# from previous build, deleting...", and afterCommand's deletion) for each command. In a copy of
+# the brotli checkout (scripts/remote/ws-run <run-name> ~/.cache/blaze/corpus/brotli, fresh
+# output base first, `info output_base` to find it), for each command (default:
+# "query //..." "build //..." "info" "clean"):
+#   1. create <output_base>/execroot/_main/bazel-out/_tmp/actions/remote/x/stale and delete the
+#      bazel-* symlinks of the workspace copy (the checkout's point at other output bases)
+#   2. run the command (no remote flags)
+#   3. print the command, its exit code, the stderr lines mentioning "stale", and whether the
+#      `remote` directory exists afterwards.
+# Results of each step are in ~/.cache/blaze/work/remote/<run-name>/run<N>/.
+set -euo pipefail
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ $# -lt 2 || "$1" == help || "$1" == --help ]]; then sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+run="$1"; bin="$2"; shift 2
+cmds=("$@"); [[ ${#cmds[@]} -eq 0 ]] && cmds=("query //..." "build //..." "info" "clean")
+src="$HOME/.cache/blaze/corpus/brotli"
+step=$("$here/ws-run" "$run" "$src" "$bin" --fresh -- info output_base | sed -n 's/^step: //p')
+ob=$(tail -1 "$step/stdout")
+dir="$ob/execroot/_main/bazel-out/_tmp/actions/remote"
+echo "output base: $ob"
+for c in "${cmds[@]}"; do
+  mkdir -p "$dir/x"; echo junk > "$dir/x/stale"
+  find "$HOME/.cache/blaze/work/remote/$run/ws" -maxdepth 1 -name 'bazel-*' -type l -delete
+  # shellcheck disable=SC2086
+  out=$("$here/ws-run" "$run" "$src" "$bin" -- $c || true)
+  s=$(echo "$out" | sed -n 's/^step: //p'); code=$(echo "$out" | sed -n 's/^exit code: //p')
+  echo "== $c: exit $code"
+  grep -i "stale" "$s/stderr" | sed 's/^/   /' || echo "   (no stale-downloads line)"
+  if [[ -e "$dir" ]]; then echo "   remote dir: exists"; else echo "   remote dir: gone"; fi
+done

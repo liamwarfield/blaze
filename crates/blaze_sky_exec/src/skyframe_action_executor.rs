@@ -137,6 +137,10 @@ pub struct SkyframeActionExecutorConfig {
     /// `<output_base>/action_outs`, where action stdout/stderr buffers live
     /// (`ActionLogBufferPathGenerator`).
     pub action_out_dir: Path,
+    /// `<output_base>/external` (Java `directories.getOutputBase().getRelative(
+    /// LabelConstants.EXTERNAL_PATH_PREFIX)`), which `SkyframeExecutor.skyFunctions` hands
+    /// `RecursiveFilesystemTraversalFunction`.
+    pub external_directory: Path,
     pub reporter: Arc<dyn ExtendedEventHandler>,
     pub contexts: ActionContexts,
     pub client_env: IndexMap<String, String>,
@@ -314,6 +318,7 @@ impl Postable for CachedActionEvent {}
 pub struct SkyframeActionExecutor {
     exec_root: Path,
     action_out_dir: Path,
+    external_directory: Path,
     reporter: Arc<dyn ExtendedEventHandler>,
     contexts: ActionContexts,
     client_env: IndexMap<String, String>,
@@ -359,6 +364,7 @@ impl SkyframeActionExecutor {
         SkyframeActionExecutor {
             exec_root: config.exec_root,
             action_out_dir: config.action_out_dir,
+            external_directory: config.external_directory,
             reporter: config.reporter,
             contexts: config.contexts,
             client_env: config.client_env,
@@ -550,6 +556,11 @@ impl SkyframeActionExecutor {
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:405 SkyframeActionExecutor.getExecRoot
     pub fn get_exec_root(&self) -> &Path {
         &self.exec_root
+    }
+
+    /// See [`SkyframeActionExecutorConfig::external_directory`].
+    pub fn get_external_directory(&self) -> &Path {
+        &self.external_directory
     }
 
     pub fn get_client_env(&self) -> &IndexMap<String, String> {
@@ -1076,11 +1087,15 @@ impl SkyframeActionExecutor {
                     };
                     if output.is_tree_artifact() {
                         report_output_tree_artifact_errors(action, &output, &*self.reporter, &e);
+                    } else if output.is_symlink() && blaze_vfs::NotASymlinkException::is(&e) {
+                        self.reporter.handle(&Event::error_at(
+                            Some(action.get_owner().get_location().clone()),
+                            format!(
+                                "declared output '{}' is not a symlink",
+                                output.pretty_print()
+                            ),
+                        ));
                     } else {
-                        // PORT: the `output.isSymlink() && e instanceof NotASymlinkException`
-                        // branch ("declared output '%s' is not a symlink") is unreachable: the
-                        // metadata of a declared symlink output
-                        // (FileArtifactValue.createForUnresolvedSymlink) fails with unported!.
                         // Are all other exceptions caught due to missing files?
                         report_missing_output_file(
                             action,
@@ -1127,8 +1142,9 @@ impl SkyframeActionExecutor {
         action: &dyn Action,
         metadata_provider: &dyn InputMetadataProvider,
     ) -> Result<(), ActionExecutionException> {
-        // TrackSourceDirectoriesFlag.trackSourceDirectories() is false by default (the startup
-        // flag that sets it is not ported).
+        if crate::recursive_filesystem_traversal_function::TrackSourceDirectoriesFlag::track_source_directories() {
+            return Ok(());
+        }
 
         if action.get_mnemonic() == "FilesetTraversal" {
             // Omit warning for filesets (b/1437948).
@@ -2201,7 +2217,15 @@ fn file_artifact_value_from_artifact(
     // If we expect a symlink, we can readlink it directly and handle errors appropriately - there
     // is no need for the stat below.
     if artifact.is_symlink() {
-        blaze_util::unported!("FileArtifactValue.createForUnresolvedSymlink");
+        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:394 FileArtifactValue.createForUnresolvedSymlink
+        let file_artifact_value =
+            FileArtifactValue::create_for_unresolved_symlink(&path_no_follow)?;
+        return Ok(FileArtifactStatAndValue {
+            path_no_follow,
+            real_path: None,
+            stat_no_follow: None,
+            file_artifact_value,
+        });
     }
 
     // Stat the file. All output artifacts of an action are deleted before execution, so if a file
@@ -3709,6 +3733,89 @@ mod action_output_metadata_store_tests {
         // Let the temporary directory be deleted.
         chmod(&tree_path, 0o755);
         chmod(&format!("{tree_path}/sub"), 0o755);
+    }
+
+    /// A declared symlink output (`ctx.actions.declare_symlink`) of a fresh execroot.
+    fn create_symlink_artifact() -> (tempfile::TempDir, Artifact) {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+        let exec_root = fs.get_path(dir.path().to_str().unwrap());
+        let output_root = ArtifactRoot::as_derived_root(&exec_root, RootType::OUTPUT, &["out"]);
+        let exec_path = output_root.get_exec_path().get_relative_str("foo/link");
+        let owner = ActionLookupKeyRef::new(Key("//foo:bar".to_string()));
+        let artifact = Artifact::create_special_artifact(
+            output_root,
+            exec_path,
+            owner.clone(),
+            SpecialArtifactType::UNRESOLVED_SYMLINK,
+        );
+        artifact.set_generating_action_key(ActionLookupData::create(owner, 0));
+        artifact
+            .get_path()
+            .get_parent_directory()
+            .unwrap()
+            .create_directory_and_parents()
+            .unwrap();
+        (dir, artifact)
+    }
+
+    /// The metadata of a declared symlink output is read with `readlink`, never by following the
+    /// link: a dangling target is fine.
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:487 ActionOutputMetadataStore.fileArtifactValueFromArtifact
+    #[test]
+    fn declared_symlink_output_has_unresolved_symlink_metadata() {
+        let (_dir, symlink) = create_symlink_artifact();
+        std::os::unix::fs::symlink(
+            "../nonexistent/dangling",
+            symlink.get_path().get_path_string(),
+        )
+        .unwrap();
+        let store = create_store(&symlink);
+
+        let metadata = get_output_metadata(&store, &symlink).unwrap();
+
+        assert_eq!(
+            metadata.get_type(),
+            blaze_exec::actions::FileStateType::Symlink
+        );
+        assert_eq!(
+            metadata.get_unresolved_symlink_target(),
+            Some("../nonexistent/dangling")
+        );
+        assert_eq!(
+            metadata,
+            blaze_exec::actions::FileArtifactValue::create_for_unresolved_symlink(
+                &symlink.get_path()
+            )
+            .unwrap()
+        );
+        assert_eq!(store.get_all_artifact_data().get(&symlink), Some(&metadata));
+    }
+
+    /// A declared symlink output that the action wrote as a regular file fails with
+    /// `NotASymlinkException` ("declared output '...' is not a symlink" in `checkOutputs`).
+    #[test]
+    fn declared_symlink_output_written_as_file_is_not_a_symlink() {
+        let (_dir, symlink) = create_symlink_artifact();
+        let path = scratch_file(&symlink, "text");
+        let store = create_store(&symlink);
+
+        let e = get_output_metadata(&store, &symlink).unwrap_err();
+
+        assert!(blaze_vfs::NotASymlinkException::is(&e), "{e}");
+        assert_eq!(e.to_string(), format!("{path} is not a symlink"));
+    }
+
+    /// A declared symlink output that the action did not create fails with a missing-file error.
+    #[test]
+    fn declared_symlink_output_not_created_is_missing() {
+        let (_dir, symlink) = create_symlink_artifact();
+        let store = create_store(&symlink);
+
+        let e = get_output_metadata(&store, &symlink).unwrap_err();
+
+        assert!(!blaze_vfs::NotASymlinkException::is(&e), "{e}");
+        assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
     }
 }
 

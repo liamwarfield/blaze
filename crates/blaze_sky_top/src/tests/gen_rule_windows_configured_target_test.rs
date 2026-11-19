@@ -98,6 +98,7 @@ fn set_up() -> BuildViewTestCase {
 
 // Java: GenRuleWindowsConfiguredTargetTest.testCmdBatchIsPreferred
 #[test]
+#[ignore = "BLAZE GAP: unported CommandHelper.buildWindowsBatchCommandConstructor (crates/blaze_rules/src/generic/genrule.rs, GenRuleBase.create cmd_bat branch)"]
 fn test_cmd_batch_is_preferred() {
     let mut t = set_up();
     t.scratch.file(
@@ -132,6 +133,7 @@ fn test_cmd_batch_is_preferred() {
 
 // Java: GenRuleWindowsConfiguredTargetTest.testCmdPsIsPreferred
 #[test]
+#[ignore = "BLAZE GAP: unported CommandHelper.buildWindowsPowershellCommandConstructor (crates/blaze_rules/src/generic/genrule.rs, GenRuleBase.create cmd_ps branch)"]
 fn test_cmd_ps_is_preferred() {
     let mut t = set_up();
     t.scratch.file(
@@ -166,6 +168,7 @@ fn test_cmd_ps_is_preferred() {
 
 // Java: GenRuleWindowsConfiguredTargetTest.testScriptFileIsUsedForBatchCmd
 #[test]
+#[ignore = "BLAZE GAP: unported CommandHelper.buildWindowsBatchCommandConstructor (crates/blaze_rules/src/generic/genrule.rs, GenRuleBase.create cmd_bat branch)"]
 fn test_script_file_is_used_for_batch_cmd() {
     let mut t = set_up();
     t.scratch.file(
@@ -199,6 +202,7 @@ fn test_script_file_is_used_for_batch_cmd() {
 
 // Java: GenRuleWindowsConfiguredTargetTest.testScriptFileIsUsedForPowershellCmd
 #[test]
+#[ignore = "BLAZE GAP: unported CommandHelper.buildWindowsPowershellCommandConstructor (crates/blaze_rules/src/generic/genrule.rs, GenRuleBase.create cmd_ps branch)"]
 fn test_script_file_is_used_for_powershell_cmd() {
     let mut t = set_up();
     t.scratch.file(

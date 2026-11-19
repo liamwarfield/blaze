@@ -125,10 +125,10 @@ MASKS = [
      "The critical path is not computed (CriticalPathComponent is not ported)."),
     ("warm-server counts",
      re.compile(r"(INFO: Analyzed (target \S+|\d+ targets)) \(\d+ packages? loaded, \d+ targets? "
-                r"configured\)\."),
+                r"configured(, \d+ aspect applications?)?\)\."),
      r"\1 (<masked: warm-server counts>).",
-     "Package and configured-target counts of a step depend on what the previous steps left in "
-     "the server's graph; Blaze starts cold on every step."),
+     "Package, configured-target and aspect-application counts of a step depend on what the "
+     "previous steps left in the server's graph; Blaze starts cold on every step."),
     ("warm-server analysis cache",
      re.compile(r"WARNING: Build options? .* (has|have) changed, discarding analysis cache \(this "
                 r"can be expensive, see https://bazel\.build/advanced/performance/"

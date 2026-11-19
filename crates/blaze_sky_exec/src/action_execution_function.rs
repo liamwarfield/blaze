@@ -1603,6 +1603,11 @@ mod timestamp_builder_tests {
                         .get_parent_directory()
                         .unwrap()
                         .get_child("action_outs"),
+                    external_directory: self
+                        .exec_root
+                        .get_parent_directory()
+                        .unwrap()
+                        .get_child("external"),
                     reporter: events.clone(),
                     contexts,
                     client_env: IndexMap::new(),
@@ -1619,8 +1624,30 @@ mod timestamp_builder_tests {
                 })
                 .with_lost_inputs_policy(remote.lost_inputs_policy.clone()),
             );
+            let mut builder = EvaluatorBuilder::new();
+            if remote.loading {
+                let root = self.exec_root.get_parent_directory().unwrap();
+                let config =
+                    blaze_sky_loading::skyframe_executor::LoadingFunctionsConfig::for_bazel_default(
+                        blaze_sky_loading::directories::LoadingDirectories {
+                            workspace: self.exec_root.clone(),
+                            output_base: root.get_child("output_base"),
+                            install_base: root.get_child("install_base"),
+                        },
+                        Arc::new(NoRepos),
+                    );
+                builder = blaze_sky_loading::skyframe_executor::register_loading_functions(
+                    builder, &config,
+                );
+                builder = blaze_sky_loading::skyframe_executor::inject_loading_precomputed(
+                    builder,
+                    &config,
+                    blaze_starlark::StarlarkSemantics::from_flags(&Default::default()).unwrap(),
+                    IndexMap::new(),
+                );
+            }
             let evaluator = crate::register_execution_functions(
-                EvaluatorBuilder::new(),
+                builder,
                 executor,
                 Arc::new(Seam(Arc::new(Target(actions.to_vec())))),
                 None,
@@ -1658,6 +1685,39 @@ mod timestamp_builder_tests {
         file_write: Option<Arc<dyn FileWriteActionContext>>,
         /// `rewindingEnabled` / `invocationRetriesEnabled` and the `LostInputsEvent` handler.
         lost_inputs_policy: Option<blaze_exec::exec::executor_setup::LostInputsPolicy>,
+        /// Registers the loading functions (FILE, DIRECTORY_LISTING, PACKAGE_LOOKUP, ...) with
+        /// the exec root as the workspace: a source directory input needs them
+        /// (RecursiveFilesystemTraversalFunction).
+        loading: bool,
+    }
+
+    /// No external repository (the loading functions of [`RemoteSetup::loading`]).
+    struct NoRepos;
+
+    impl blaze_sky_loading::repos::ExternalRepos for NoRepos {
+        fn compute_repository_mapping(
+            &self,
+            _repository_name: &blaze_cmdline::RepositoryName,
+            _env: &mut blaze_skyframe::Environment<'_>,
+        ) -> Result<Option<blaze_sky_loading::repos::RepositoryMappingValue>, ComputeError>
+        {
+            Ok(Some(
+                blaze_sky_loading::repos::RepositoryMappingValue::value_for_empty_root_module(),
+            ))
+        }
+
+        fn compute_repository_directory(
+            &self,
+            repository_name: &blaze_cmdline::RepositoryName,
+            _env: &mut blaze_skyframe::Environment<'_>,
+        ) -> Result<Option<blaze_sky_loading::repos::RepositoryDirectoryValue>, ComputeError>
+        {
+            Ok(Some(
+                blaze_sky_loading::repos::RepositoryDirectoryValue::Failure {
+                    error_msg: format!("Repository '{}' is not defined", repository_name),
+                },
+            ))
+        }
     }
 
     /// A `FileWriteActionContext` whose action loses an input: a `LostInputsExecException`
@@ -1847,6 +1907,7 @@ mod timestamp_builder_tests {
                 tree: Some(Arc::new(RemoteOutputTree::new())),
                 file_write: Some(Arc::new(InjectingFileWrite)),
                 lost_inputs_policy: None,
+                loading: false,
             };
             assert_eq!(f.build_with(&actions, &cache, &hello, &first), BUILT);
             // Not downloaded: no local file.
@@ -1858,6 +1919,7 @@ mod timestamp_builder_tests {
                 tree: Some(Arc::new(RemoteOutputTree::new())),
                 file_write: Some(Arc::new(InjectingFileWrite)),
                 lost_inputs_policy: None,
+                loading: false,
             };
             assert_eq!(
                 f.build_with(&actions, &cache, &hello, &second),
@@ -1909,6 +1971,7 @@ mod timestamp_builder_tests {
             tree: Some(Arc::new(RemoteOutputTree::new())),
             file_write: Some(forging),
             lost_inputs_policy: None,
+            loading: false,
         };
         let (result, _events) = f.evaluate_roots_with(&actions, &cache, &[&a, &b], &remote);
         assert!(!result.has_error(), "{:?}", result.error_map());
@@ -1962,6 +2025,7 @@ mod timestamp_builder_tests {
                         seen_in_handler.lock().extend(digests.iter().cloned())
                     }),
                 }),
+                loading: false,
             };
             let (result, events) = f.evaluate_with(&actions, &cache, &out, &remote);
             assert!(result.has_error());
@@ -2137,9 +2201,15 @@ mod timestamp_builder_tests {
         assert_eq!(f.build(&actions, &cache, &hello), NOT_REBUILT);
     }
 
-    /// `SkyframeActionExecutor.checkForUnsoundDirectoryInputs` warns about a source directory
-    /// input and `checkForUnsoundDirectoryOutput` fails an output that is a directory although it
-    /// was not declared as one (Java texts).
+    /// `SkyframeActionExecutor.checkForUnsoundDirectoryOutput` fails an output that is a
+    /// directory although it was not declared as one (Java text, DirectoryArtifactWarningTest).
+    /// `checkForUnsoundDirectoryInputs` does not warn about the source directory input: Bazel
+    /// tracks source directories by default (TrackSourceDirectoriesFlag).
+    ///
+    /// PORT: Java's DirectoryArtifactWarningTest runs with
+    /// `-DBAZEL_TRACK_SOURCE_DIRECTORIES=0` and expects the input warning ("input 'x/dir' of //x:x
+    /// is a directory; dependency checking of directories is unsound"); Blaze has no JVM
+    /// property, so the warning cannot be produced.
     #[test]
     fn unsound_directory_input_and_output() {
         let f = Fixture::new();
@@ -2154,7 +2224,15 @@ mod timestamp_builder_tests {
         ));
         let actions = f.register_actions(vec![symlink]);
         let cache = f.create_cache("cache");
-        let (result, events) = f.evaluate(&actions, &cache, &link);
+        let (result, events) = f.evaluate_with(
+            &actions,
+            &cache,
+            &link,
+            &RemoteSetup {
+                loading: true,
+                ..RemoteSetup::default()
+            },
+        );
         assert!(result.has_error());
         let messages: Vec<(blaze_events::EventKind, String)> = events
             .get_events()
@@ -2162,7 +2240,7 @@ mod timestamp_builder_tests {
             .map(|e| (e.get_kind(), e.get_message().to_string()))
             .collect();
         assert!(
-            messages.contains(&(
+            !messages.contains(&(
                 blaze_events::EventKind::Warning,
                 "input 'pkg/dir' of //pkg:t is a directory; dependency checking of directories \
                  is unsound"

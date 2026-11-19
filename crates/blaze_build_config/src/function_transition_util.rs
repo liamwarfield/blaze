@@ -573,6 +573,13 @@ fn starlark_option_to_java(v: &StarlarkOptionValue) -> JavaObject {
         StarlarkOptionValue::Int(i) => JavaObject::Int(*i),
         StarlarkOptionValue::Str(s) => JavaObject::Str(s.clone()),
         StarlarkOptionValue::Label(l) => JavaObject::Label(l.clone()),
+        // PORT: Java hands the FeatureFlagValue object to Starlark.fromJava, which rejects a
+        // non-Starlark class; not reached by any ported caller.
+        StarlarkOptionValue::FeatureFlag(v) => blaze_util::unported!(
+            "FunctionTransitionUtil.findStarlarkOptionValue",
+            "feature flag value {} as a transition input",
+            v
+        ),
         StarlarkOptionValue::List(l) => {
             let items = l.iter().map(starlark_option_to_java).collect();
             match l.class() {
@@ -1012,9 +1019,21 @@ pub fn exec_transition_patch(
     }
 
     // Remove any FeatureFlags that were set.
-    // PORT: FeatureFlagValue (config_feature_flag) Starlark options are not ported; none can be
-    // present without them.
+    let feature_flags: Vec<Label> = exec_options
+        .get_starlark_options()
+        .iter()
+        .filter(|(_, value)| matches!(value, StarlarkOptionValue::FeatureFlag(_)))
+        .map(|(key, _)| key.clone())
+        .collect();
+
     let mut result = exec_options;
+    if !feature_flags.is_empty() {
+        let mut result_builder = result.to_builder();
+        for flag in &feature_flags {
+            result_builder.remove_starlark_option(flag);
+        }
+        result = result_builder.build();
+    }
 
     let underlying_core = options
         .underlying()

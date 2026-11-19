@@ -3,6 +3,7 @@
 pub mod abstract_action_input_prefetcher;
 pub mod api_version;
 pub mod authandtls;
+pub mod byte_stream_build_event_artifact_uploader;
 pub mod byte_stream_uploader;
 pub mod chunker;
 pub mod circuitbreaker;

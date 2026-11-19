@@ -1,21 +1,50 @@
 //! `BuildDriverFunction`: drives the analysis and execution of a top-level target (Skymeld).
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::Arc;
 
 use blaze_events::Postable;
 use blaze_skyframe::{ComputeError, Environment, SkyKey};
 use parking_lot::Mutex;
 
-use crate::analysis_seam::{AnalysisSeam, ConfiguredTargetView};
+use crate::analysis_seam::{AnalysisSeam, ConfiguredAspectView, ConfiguredTargetView};
 use crate::events::{TestAnalyzedEvent, TopLevelTargetPendingExecutionEvent};
-use crate::keys::{BuildDriverKey, TargetCompletionKey, TestCompletionKey, TestType};
+use crate::keys::{
+    AspectCompletionKey, BuildDriverKey, TargetCompletionKey, TestCompletionKey, TestType,
+};
 
-/// The value of a [`BuildDriverKey`]: the analyzed top-level target and whether it was skipped.
+/// The analyzed top-level value of a [`BuildDriverKey`]: a configured target or the aspects of a
+/// `TopLevelAspectsValue`.
+#[derive(Clone)]
+pub enum TopLevelSkyValue {
+    /// A `ConfiguredTargetValue`.
+    ConfiguredTarget(Arc<dyn ConfiguredTargetView>),
+    /// A `TopLevelAspectsValue` (`getTopLevelAspectsMap()`, in order).
+    TopLevelAspects(Vec<Arc<dyn ConfiguredAspectView>>),
+}
+
+impl fmt::Debug for TopLevelSkyValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TopLevelSkyValue::ConfiguredTarget(ct) => write!(f, "{ct:?}"),
+            TopLevelSkyValue::TopLevelAspects(aspects) => {
+                let keys: Vec<String> = aspects
+                    .iter()
+                    .map(|a| format!("{}, aspect {}", a.get_label(), a.get_aspect_class_name()))
+                    .collect();
+                write!(f, "TopLevelAspectsValue{keys:?}")
+            }
+        }
+    }
+}
+
+/// The value of a [`BuildDriverKey`]: the analyzed top-level value and whether it was skipped.
 // Java: com/google/devtools/build/lib/skyframe/BuildDriverValue.java:24 BuildDriverValue
 #[derive(Clone, Debug)]
 pub struct BuildDriverValue {
-    pub configured_target: Arc<dyn ConfiguredTargetView>,
+    /// `getLastEvaluatedTopLevelSkyValue()`.
+    pub top_level_sky_value: TopLevelSkyValue,
     pub skipped: bool,
 }
 
@@ -81,6 +110,9 @@ impl BuildDriverFunction {
         key: &BuildDriverKey,
         env: &mut Environment<'_>,
     ) -> Result<Option<BuildDriverValue>, ComputeError> {
+        if key.is_top_level_aspect_driver() {
+            return self.compute_top_level_aspects(key, env);
+        }
         let Some(configured_target) = self
             .seam
             .get_configured_target(&key.action_lookup_key, env)?
@@ -149,7 +181,65 @@ impl BuildDriverFunction {
         // If we get to this point, the execution of this target/aspect succeeded.
         self.remove_states_for_key(key);
         Ok(Some(BuildDriverValue {
-            configured_target,
+            top_level_sky_value: TopLevelSkyValue::ConfiguredTarget(configured_target),
+            skipped: false,
+        }))
+    }
+
+    /// `BuildDriverFunction.compute` for a `TopLevelAspectsKey` (the `else` branch of
+    /// `topLevelSkyValue instanceof ConfiguredTargetValue`).
+    ///
+    /// PORT: as for configured targets, BUILD_ID, the action conflict check, extra actions
+    /// (`addExtraActionsIfRequested`), `TopLevelTargetReadyForSymlinkPlanting`,
+    /// `TopLevelEntityAnalysisConcludedEvent`, `SomeExecutionStartedEvent` and
+    /// `additionalPostAnalysisDepsRequestedAndAvailable` are not ported here; the
+    /// `announceTopLevelAspectAnalyzed` events (`ToplevelAspectsIdentifiedEvent`,
+    /// `AspectConfiguredEvent`, `AspectAnalyzedEvent`) are posted by the analysis side
+    /// (blaze_sky_top `build_view`).
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:155 BuildDriverFunction.compute
+    fn compute_top_level_aspects(
+        &self,
+        key: &BuildDriverKey,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<BuildDriverValue>, ComputeError> {
+        let Some(top_level_aspects) = self
+            .seam
+            .get_top_level_aspects(&key.action_lookup_key, env)?
+        else {
+            return Ok(None);
+        };
+        if env.values_missing() {
+            return Ok(None);
+        }
+        // Java: state.testType = NOT_TEST for a TopLevelAspectsValue.
+        blaze_util::check_state!(key.test_type == TestType::NOT_TEST);
+
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:323 BuildDriverFunction.compute
+        let mut aspect_completion_keys: Vec<SkyKey> = Vec::new();
+        // Do not trigger Skyframe restarts in this loop.
+        for aspect in &top_level_aspects {
+            aspect_completion_keys.push(SkyKey::new(AspectCompletionKey::create(
+                aspect.get_aspect_key(),
+                key.output_groups.clone(),
+            )));
+        }
+
+        // Request the execution of the collected aspects.
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:650 BuildDriverFunction.declareDependenciesAndCheckValues
+        let result = env.get_values_and_exceptions(&aspect_completion_keys)?;
+        for k in &aspect_completion_keys {
+            if result.get(k).is_none() {
+                break;
+            }
+        }
+        if env.values_missing() {
+            return Ok(None);
+        }
+
+        // If we get to this point, the execution of this target/aspect succeeded.
+        self.remove_states_for_key(key);
+        Ok(Some(BuildDriverValue {
+            top_level_sky_value: TopLevelSkyValue::TopLevelAspects(top_level_aspects),
             skipped: false,
         }))
     }

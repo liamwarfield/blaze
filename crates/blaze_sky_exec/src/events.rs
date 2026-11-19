@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use blaze_actions::actions::action::ActionRef;
-use blaze_actions::{ActionLookupData, Artifact};
+use blaze_actions::{ActionLookupData, ActionLookupKeyRef, Artifact};
 use blaze_cmdline::Label;
 use blaze_events::Postable;
 use blaze_exec::actions::file_artifact_value::FileArtifactValue;
@@ -96,6 +96,43 @@ pub struct TargetCompleteEvent {
     pub root_cause_details: Vec<CompletionRootCause>,
 }
 
+/// This event is fired as soon as a top-level aspect is either built or fails.
+// Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:44 AspectCompleteEvent
+#[derive(Clone, Debug)]
+pub struct AspectCompleteEvent {
+    /// `getAspectKey()`.
+    pub aspect_key: ActionLookupKeyRef,
+    /// `getLabel()` (`aspectKey.getLabel()`).
+    pub label: Label,
+    /// `getAspectName()` (`aspectKey.getAspectDescriptor().getAspectClass().getName()`).
+    pub aspect_name: String,
+    /// Labels of the root causes of a failure, empty on success.
+    pub root_causes: Vec<Label>,
+    /// `getRootCauses()` with their failure details (failed aspects).
+    pub root_cause_details: Vec<CompletionRootCause>,
+    /// The outputs (`artifactOutputGroups`): `artifactsToBuild.getAllArtifactsByOutputGroup()`
+    /// (succeeded) or the `SuccessfulArtifactFilter`-filtered groups (failed), in order.
+    pub artifacts_by_output_group: Vec<(String, ArtifactsInOutputGroup)>,
+    /// The `CompletionContext`'s important input map: metadata of the built important artifacts.
+    pub important_input_map: Vec<(Artifact, FileArtifactValue)>,
+    /// Important tree artifacts with their metadata and their children's.
+    pub important_tree_artifacts: Vec<(
+        Artifact,
+        FileArtifactValue,
+        Vec<(Artifact, FileArtifactValue)>,
+    )>,
+    /// `printToMasterLog` (`AspectValue.getWritesOutputToMasterLog()`).
+    pub print_to_master_log: bool,
+}
+
+impl AspectCompleteEvent {
+    /// Determines whether the target has failed or succeeded.
+    // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:100 AspectCompleteEvent.failed
+    pub fn failed(&self) -> bool {
+        !self.root_cause_details.is_empty()
+    }
+}
+
 /// `TargetCompleteEvent.ArtifactsInOutputGroup`: an output group's artifacts.
 // Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:85 TopLevelArtifactHelper.ArtifactsInOutputGroup
 #[derive(Clone, Debug)]
@@ -181,6 +218,7 @@ postable! {
 }
 
 impl Postable for TargetCompleteEvent {}
+impl Postable for AspectCompleteEvent {}
 impl Postable for TopLevelTargetPendingExecutionEvent {}
 impl Postable for TopLevelTargetBuiltEvent {}
 impl Postable for TestAnalyzedEvent {}

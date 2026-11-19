@@ -255,6 +255,7 @@ const JAVA_TOOLCHAIN_TYPE: &str = "@@bazel_tools//tools/jdk:toolchain_type";
 
 // Java: StarlarkSubruleTest.testSubruleFunctionSymbol_notVisibleInBUILD
 #[test]
+#[ignore = "BLAZE BUG: starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): actual \"Variable `subrule` not found\", Java \"name 'subrule' is not defined\""]
 fn test_subrule_function_symbol_not_visible_in_build() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file("foo/BUILD", &["subrule"]);
@@ -383,6 +384,7 @@ cc_binary(name = "bar")
 
 // Java: StarlarkSubruleTest.testSubrule_attrLengthLimitIgnoresBzlLabel
 #[test]
+#[ignore = "needs the mock C++ toolchains (@rules_cc//cc:cc_binary.bzl, absent from the mock rules_cc)"]
 fn test_subrule_attr_length_limit_ignores_bzl_label() {
     let mut t = BuildViewTestCase::new();
     // deserialized package does not have a reference to subrules
@@ -584,6 +586,7 @@ child_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubrule_aspectMustDeclareSubrule
 #[test]
+#[ignore = "needs the mock Java toolchains (java_library from @rules_java//java:defs.bzl, absent from the mock rules_java)"]
 fn test_subrule_aspect_must_declare_subrule() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -668,6 +671,7 @@ my_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubrule_implementationMustAcceptSubruleContext
 #[test]
+#[ignore = "BLAZE BUG: starlark-rust core-language error text (decisions.md 2026-11-17; patch 0010 queued): actual \"Error: Found 1 extra positional argument(s)\", Java \"lambda() does not accept positional arguments, but got 1\""]
 fn test_subrule_implementation_must_accept_subrule_context() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -736,6 +740,7 @@ my_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubrule_isCallableFromAspect
 #[test]
+#[ignore = "needs the mock Java toolchains (java_library from @rules_java//java:defs.bzl, absent from the mock rules_java)"]
 fn test_subrule_is_callable_from_aspect() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(

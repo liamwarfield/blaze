@@ -75,6 +75,9 @@ use crate::events::buildtool_events::{
 use crate::events::pkgcache_events::TargetParsingCompleteEvent;
 use crate::events::target_complete_event::TargetCompleteEvent;
 use crate::metrics::metrics_collector::BuildMetricsEvent;
+use crate::runtime::build_event_artifact_uploader_factory::{
+    BuildEventArtifactUploaderFactory, LocalFilesUploaderFactory,
+};
 use crate::runtime::build_event_streamer::{
     BuildEventStreamer, Builder, OutErrProvider, ReleaseReplaceableBuildEvent,
 };
@@ -217,12 +220,38 @@ impl BuildEventStreamerBuilder {
     /// when no file transport is requested; `Err` with Bazel's message when a file cannot be
     /// opened (`Unable to write to '<path>'. Omitting --build_event_json_file.`), which Bazel
     /// reports as an error (`BES_LOCAL_WRITE_ERROR`) while the command continues without it.
+    ///
+    /// Every transport uses the local uploader (`--experimental_build_event_upload_strategy`
+    /// selecting no registered factory); see [`Self::from_options_with_uploader_factory`].
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:825 BuildEventServiceModule.createBepTransports
     pub fn from_options(
         bep_options: &BuildEventProtocolOptions,
         bes_stream_options: &BuildEventStreamOptions,
         ctx: &BepCommandContext,
     ) -> (Option<BepStreamer>, Vec<String>) {
+        Self::from_options_with_uploader_factory(
+            bep_options,
+            bes_stream_options,
+            ctx,
+            Arc::new(LocalFilesUploaderFactory),
+        )
+    }
+
+    /// [`Self::from_options`] with the uploader factory that
+    /// `BuildEventArtifactUploaderFactoryMap.select(--experimental_build_event_upload_strategy)`
+    /// chose (`BuildEventServiceModule.beforeCommand`). The factory's uploader is created once,
+    /// for the first transport whose `--build_event_*_file_path_conversion` is on, and shared
+    /// (retained) by the others (`ThrowingBuildEventArtifactUploaderSupplier`); a transport
+    /// without path conversion has a `LocalFilesArtifactUploader`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:390 BuildEventServiceModule.beforeCommand
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:825 BuildEventServiceModule.createBepTransports
+    pub fn from_options_with_uploader_factory(
+        bep_options: &BuildEventProtocolOptions,
+        bes_stream_options: &BuildEventStreamOptions,
+        ctx: &BepCommandContext,
+        uploader_factory: Arc<dyn BuildEventArtifactUploaderFactory>,
+    ) -> (Option<BepStreamer>, Vec<String>) {
+        let uploader_supplier = ThrowingBuildEventArtifactUploaderSupplier::new(uploader_factory);
         let bep_options = Arc::new(bep_options.clone());
         let artifact_group_namer = Arc::new(CountingArtifactGroupNamer::new());
         let mut transports: Vec<Arc<dyn BuildEventTransport>> = Vec::new();
@@ -239,7 +268,8 @@ impl BuildEventStreamerBuilder {
                 Ok(out) => transports.push(Arc::new(BinaryFormatFileTransport::new(
                     out,
                     bep_options.clone(),
-                    local_file_uploader(bes_stream_options.build_event_binary_file_path_conversion),
+                    uploader_supplier
+                        .uploader_for(bes_stream_options.build_event_binary_file_path_conversion),
                     artifact_group_namer.clone(),
                     bes_stream_options.build_event_binary_file_upload_mode,
                 ))),
@@ -257,7 +287,8 @@ impl BuildEventStreamerBuilder {
                 Ok(out) => transports.push(Arc::new(JsonFormatFileTransport::new(
                     out,
                     bep_options.clone(),
-                    local_file_uploader(bes_stream_options.build_event_json_file_path_conversion),
+                    uploader_supplier
+                        .uploader_for(bes_stream_options.build_event_json_file_path_conversion),
                     artifact_group_namer.clone(),
                     JsonFormatFileTransport::bep_type_registry(),
                     bes_stream_options.build_event_json_file_upload_mode,
@@ -288,10 +319,48 @@ impl BuildEventStreamerBuilder {
     }
 }
 
-/// `pathConversion` selects the configured uploader; Blaze's only uploader is the local one
-/// (`--experimental_build_event_upload_strategy=local`).
-fn local_file_uploader(_path_conversion: bool) -> Arc<dyn BuildEventArtifactUploader> {
-    Arc::new(LocalFilesArtifactUploader)
+/// Memoizes the uploader of the selected factory: created by the first `get`, retained by each
+/// later one.
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:979 BuildEventServiceModule.ThrowingBuildEventArtifactUploaderSupplier
+struct ThrowingBuildEventArtifactUploaderSupplier {
+    factory: Arc<dyn BuildEventArtifactUploaderFactory>,
+    memoized_value: Mutex<Option<Arc<dyn BuildEventArtifactUploader>>>,
+}
+
+impl ThrowingBuildEventArtifactUploaderSupplier {
+    fn new(factory: Arc<dyn BuildEventArtifactUploaderFactory>) -> Self {
+        ThrowingBuildEventArtifactUploaderSupplier {
+            factory,
+            memoized_value: Mutex::new(None),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:988 ThrowingBuildEventArtifactUploaderSupplier.get
+    fn get(&self) -> Arc<dyn BuildEventArtifactUploader> {
+        let mut memoized_value = self.memoized_value.lock();
+        match &*memoized_value {
+            Some(uploader) => {
+                uploader.retain();
+                uploader.clone()
+            }
+            None => {
+                let uploader = self.factory.create();
+                *memoized_value = Some(uploader.clone());
+                uploader
+            }
+        }
+    }
+
+    /// `besStreamOptions.buildEvent*FilePathConversion ? uploaderSupplier.get() : new
+    /// LocalFilesArtifactUploader()`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:854 BuildEventServiceModule.createBepTransports
+    fn uploader_for(&self, path_conversion: bool) -> Arc<dyn BuildEventArtifactUploader> {
+        if path_conversion {
+            self.get()
+        } else {
+            Arc::new(LocalFilesArtifactUploader)
+        }
+    }
 }
 
 // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:1029 BuildEventOutputStreamFactoryImpl.create

@@ -64,6 +64,7 @@ impl Fixture {
         let executor = Arc::new(SkyframeActionExecutor::new(SkyframeActionExecutorConfig {
             exec_root: self.root.clone(),
             action_out_dir: self.root.get_child("action_outs"),
+            external_directory: self.root.get_child("external"),
             reporter: Arc::new(StoredEventHandler::new()),
             contexts: ActionContexts::default(),
             client_env: IndexMap::new(),

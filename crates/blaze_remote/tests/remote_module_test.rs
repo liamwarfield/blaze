@@ -749,27 +749,40 @@ fn remote_max_connections_fails_loudly() {
     let _ = before_command(&env, remote_options);
 }
 
+/// Review 2026-11-19 R12: with a gRPC cache, `setup` installs the ByteStream uploader factory
+/// (`RemoteModule.java:905`) with `--remote_build_event_upload`; the delegate creates the
+/// ByteStream uploader (slow: `mayBeSlow() == true`) once.
 #[test]
-#[should_panic(expected = "not ported yet: ByteStreamBuildEventArtifactUploaderFactory")]
-fn remote_build_event_upload_all_fails_loudly() {
+fn remote_build_event_upload_all_installs_byte_stream_uploader() {
     let env = TestEnv::new();
     let (cache_server, _impl) = create_fake_server(cache_only_caps());
     let remote_options = parse_remote_options(&[
         &format!("--remote_cache={}", target(&cache_server)),
         "--remote_build_event_upload=all",
+        "--remote_bytestream_uri_prefix=host/instance2",
     ]);
-    let _ = before_command(&env, remote_options);
+    let remote_module = before_command(&env, remote_options).unwrap();
+    assert!(
+        remote_module
+            .get_build_event_artifact_uploader_factory()
+            .is_some()
+    );
 }
 
 #[test]
-#[should_panic(expected = "not ported yet: ByteStreamBuildEventArtifactUploaderFactory.create")]
-fn build_event_artifact_uploader_with_grpc_cache_fails_loudly() {
+fn build_event_artifact_uploader_with_grpc_cache_is_byte_stream() {
     let env = TestEnv::new();
     let (cache_server, _impl) = create_fake_server(cache_only_caps());
     let mut remote_options = Options::<RemoteOptions>::get_defaults();
     remote_options.remote_cache = Some(target(&cache_server));
     let remote_module = before_command(&env, remote_options).unwrap();
-    let _ = remote_module.create_build_event_artifact_uploader();
+    let uploader = remote_module.create_build_event_artifact_uploader();
+    assert!(uploader.may_be_slow());
+    let factory = remote_module
+        .get_build_event_artifact_uploader_factory()
+        .unwrap();
+    assert!(factory.get().is_some());
+    uploader.release();
 }
 
 #[test]
@@ -783,8 +796,13 @@ fn build_event_artifact_uploader_without_grpc_cache_is_local() {
     let remote_module = before_command(&env, remote_options).unwrap();
     assert!(
         remote_module
-            .create_build_event_artifact_uploader()
+            .get_build_event_artifact_uploader_factory()
             .is_none()
+    );
+    assert!(
+        !remote_module
+            .create_build_event_artifact_uploader()
+            .may_be_slow()
     );
 }
 

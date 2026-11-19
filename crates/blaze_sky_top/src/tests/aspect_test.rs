@@ -1322,7 +1322,6 @@ aspect2 = aspect(implementation = _aspect2_impl)";
 
 // Java: AspectTest.topLevelConflictDetected
 #[test]
-#[ignore = "BLAZE GAP: analysis harness never sets SkyframeExecutor.set_top_level_artifact_context_for_conflict_pruning (Java BuildView.update receives topLevelArtifactContext from AnalysisTestCase.update; only analysis_phase_runner.rs sets it), so action-conflict pruning panics at skyframe_build_view.rs:327 NullPointerException: topLevelArtifactContextForConflictPruning"]
 fn top_level_conflict_detected() {
     let mut t = new_test();
     let bzl_file = |arg: &str| TOP_LEVEL_CONFLICT_BZL_TEMPLATE.replacen("%s", arg, 1);
@@ -1391,7 +1390,6 @@ fn top_level_conflict_detected() {
 
 // Java: AspectTest.conflictBetweenTargetAndAspect
 #[test]
-#[ignore = "BLAZE GAP: analysis harness never sets SkyframeExecutor.set_top_level_artifact_context_for_conflict_pruning (Java BuildView.update receives topLevelArtifactContext from AnalysisTestCase.update; only analysis_phase_runner.rs sets it), so action-conflict pruning panics at skyframe_build_view.rs:327 NullPointerException: topLevelArtifactContextForConflictPruning"]
 fn conflict_between_target_and_aspect() {
     let mut t = new_test();
     t.scratch.file(

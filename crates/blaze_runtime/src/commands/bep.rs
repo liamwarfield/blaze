@@ -53,6 +53,7 @@ use blaze_bep::metrics::metrics_collector::{
     AnalysisPhaseCompleteInfo, BuildMetricsFinishInputs, JvmMemoryFacts, MetricsCollector,
     RemoteAnalysisCachingFacts, SkyframeStats, TotalAndConfiguredTargetOnlyMetric,
 };
+use blaze_bep::runtime::BuildEventArtifactUploaderFactoryMap;
 use blaze_bep::runtime::ReleaseReplaceableBuildEvent;
 use blaze_bep::runtime::command_line_event::{
     CanonicalCommandLineEvent, OriginalCommandLineEvent, OriginalUnstructuredCommandLineEvent,
@@ -683,9 +684,14 @@ impl BepCommandSupport {
     /// this first thing in `exec`. The stream's order does not depend on it: every event posted
     /// here waits for `BuildStartingEvent` (`postedAfter`).
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
+    ///
+    /// `uploader_factory_map` is the runtime's `BuildEventArtifactUploaderFactoryMap`, from which
+    /// `--experimental_build_event_upload_strategy` selects the uploader of the file transports
+    /// with path conversion.
     pub fn before_command(
         env: &CommandEnvironment,
         options: &OptionsParsingResult,
+        uploader_factory_map: &BuildEventArtifactUploaderFactoryMap,
     ) -> Option<Arc<BepCommandSupport>> {
         let parsing_result = env.get_options();
         let bep_options: BuildEventProtocolOptions = parsing_result
@@ -709,13 +715,19 @@ impl BepCommandSupport {
                 "InstrumentationOutputFactory.createInstrumentationOutput (no workspace: home directory)"
             ),
         };
-        let (streamer, errors) = BuildEventStreamerBuilder::from_options(
+        // The connectivity status (ConnectivityStatusProvider) is always OK in Bazel, so the
+        // strategy is --experimental_build_event_upload_strategy.
+        // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:366 BuildEventServiceModule.beforeCommand
+        let uploader_factory =
+            uploader_factory_map.select(bep_options.build_event_upload_strategy.as_deref());
+        let (streamer, errors) = BuildEventStreamerBuilder::from_options_with_uploader_factory(
             &bep_options,
             &bes_stream_options,
             &BepCommandContext {
                 workspace_or_home,
                 oom_message: common_options.oom_message.clone(),
             },
+            uploader_factory,
         );
         if let Some(error) = errors.first() {
             // Java reports the IOException's message and exits the command through the module

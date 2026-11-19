@@ -15,7 +15,7 @@ use blaze_skyframe::{Key, SkyFunctionName, SkyKey};
 use crate::action_execution_value::ActionExecutionValue;
 use crate::artifact_function::ArtifactValue;
 use crate::build_driver_function::BuildDriverValue;
-use crate::completion_function::TargetCompletionValue;
+use crate::completion_function::{AspectCompletionValue, TargetCompletionValue};
 use crate::test_completion_function::TestCompletionValue;
 
 /// `SkyFunctions.ACTION_EXECUTION`: an `ActionLookupData` as a key.
@@ -154,6 +154,45 @@ impl Key for TargetCompletionKey {
     const FUNCTION: SkyFunctionName = SkyFunctionName("TARGET_COMPLETION");
 }
 
+/// `AspectCompletionKey`: a top-level aspect whose requested output groups must be built.
+// Java: com/google/devtools/build/lib/skyframe/AspectCompletionValue.java:41 AspectCompletionValue.AspectCompletionKey
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct AspectCompletionKey {
+    /// `topLevelArtifactContext().outputGroups()` (the requested output groups, in order).
+    pub output_groups: Vec<String>,
+    /// `actionLookupKey()` (the `AspectKey`).
+    pub action_lookup_key: ActionLookupKeyRef,
+}
+
+impl AspectCompletionKey {
+    // Java: com/google/devtools/build/lib/skyframe/AspectCompletionValue.java:43 AspectCompletionKey.create
+    pub fn create(
+        aspect_key: ActionLookupKeyRef,
+        output_groups: Vec<String>,
+    ) -> AspectCompletionKey {
+        AspectCompletionKey {
+            output_groups,
+            action_lookup_key: aspect_key,
+        }
+    }
+}
+
+impl fmt::Debug for AspectCompletionKey {
+    // AutoValue toString.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "AspectCompletionKey{{topLevelArtifactContext=TopLevelArtifactContext{{outputGroups={:?}}}, actionLookupKey={}}}",
+            self.output_groups, self.action_lookup_key.0
+        )
+    }
+}
+
+impl Key for AspectCompletionKey {
+    type Value = AspectCompletionValue;
+    const FUNCTION: SkyFunctionName = SkyFunctionName("ASPECT_COMPLETION");
+}
+
 /// `TestCompletionKey`: all runs and shards of a test target.
 // Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:45 TestCompletionValue.TestCompletionKey
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -215,6 +254,46 @@ pub struct BuildDriverKey {
     pub extra_action_top_level_only: bool,
     /// `getTestType()`.
     pub test_type: TestType,
+}
+
+/// `SkyFunctions.TOP_LEVEL_ASPECTS`: the function name of a `TopLevelAspectsKey`.
+pub const TOP_LEVEL_ASPECTS: &str = "TOP_LEVEL_ASPECTS";
+
+impl BuildDriverKey {
+    /// A key for a `TopLevelAspectsKey`.
+    ///
+    /// PORT: Java's `isTopLevelAspectDriver` field is not carried (adding a field would change
+    /// every struct literal of this key); [`BuildDriverKey::is_top_level_aspect_driver`] derives
+    /// it from the kind of the action lookup key, which Java's two factories pair the same way.
+    /// The test type of an aspect driver is `NOT_TEST` (Java: `state.testType = NOT_TEST` for a
+    /// `TopLevelAspectsValue`). Java's `keepGoing` is the evaluation's.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:55 BuildDriverKey.ofTopLevelAspect
+    pub fn of_top_level_aspect(
+        action_lookup_key: ActionLookupKeyRef,
+        output_groups: Vec<String>,
+        explicitly_requested: bool,
+        skip_incompatible_explicit_targets: bool,
+        extra_action_top_level_only: bool,
+    ) -> BuildDriverKey {
+        blaze_util::check_argument!(
+            action_lookup_key.function_name() == TOP_LEVEL_ASPECTS,
+            "{} is not a TopLevelAspectsKey",
+            action_lookup_key
+        );
+        BuildDriverKey {
+            action_lookup_key,
+            output_groups,
+            explicitly_requested,
+            skip_incompatible_explicit_targets,
+            extra_action_top_level_only,
+            test_type: TestType::NOT_TEST,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:103 BuildDriverKey.isTopLevelAspectDriver
+    pub fn is_top_level_aspect_driver(&self) -> bool {
+        self.action_lookup_key.function_name() == TOP_LEVEL_ASPECTS
+    }
 }
 
 impl fmt::Debug for BuildDriverKey {

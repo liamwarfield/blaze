@@ -204,6 +204,11 @@ impl Fixture {
                 .get_parent_directory()
                 .unwrap()
                 .get_child("action_outs"),
+            external_directory: self
+                .exec_root
+                .get_parent_directory()
+                .unwrap()
+                .get_child("external"),
             reporter: self.events.clone(),
             contexts,
             client_env: IndexMap::new(),

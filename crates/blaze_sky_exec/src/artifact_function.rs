@@ -11,10 +11,15 @@ use blaze_skyframe::{
     ComputeError, Environment, SkyError, SkyFunctionException, SkyKey, SkyframeLookupResult,
     Transience,
 };
-use blaze_vfs::Symlinks;
+use blaze_util::fingerprint::Fingerprint;
+use blaze_vfs::{RootedPath, Symlinks};
 
 use crate::action_execution_value::ActionExecutionValue;
 use crate::keys::{ActionExecutionKey, ArtifactKey, ArtifactNestedSetKey, ArtifactNestedSetValue};
+use crate::recursive_filesystem_traversal_function::{
+    DirectTraversalRoot, DirectoryArtifactTraversalRequest, RecursiveFilesystemTraversalException,
+    RecursiveFilesystemTraversalExceptionType, TrackSourceDirectoriesFlag,
+};
 
 /// The value of an [`ArtifactKey`]: a `FileArtifactValue` (source files), `MissingArtifactValue`
 /// or a `TreeArtifactValue`.
@@ -65,6 +70,23 @@ impl SourceArtifactException {
                     "{}: {}",
                     construct_error_message(artifact, "error reading file"),
                     e
+                ),
+                execution::Code::SourceInputIoException,
+            ),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:546 SourceArtifactException.create
+    pub fn create_for_traversal(
+        artifact: &Artifact,
+        e: &RecursiveFilesystemTraversalException,
+    ) -> SourceArtifactException {
+        SourceArtifactException {
+            failure_detail: execution_failure(
+                format!(
+                    "{}: {}",
+                    construct_error_message(artifact, "error traversing directory"),
+                    e.get_message()
                 ),
                 execution::Code::SourceInputIoException,
             ),
@@ -192,17 +214,89 @@ fn create_source_value(
     if stat.is_directory() {
         // PORT: skipped, Google-internal (SourceDirectoryEvent has no subscriber in Bazel).
     }
-    // TrackSourceDirectoriesFlag.trackSourceDirectories() is false by default: directories get a
-    // plain directory value.
-    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:183 FileArtifactValue.createForSourceArtifact
-    match FileArtifactValue::create_from_stat(&path, &stat) {
-        Ok(v) => Ok(Some(ArtifactValue::File(v))),
-        Err(e) => Err(SkyFunctionException::new(
-            SourceArtifactException::create(artifact, &e),
-            Transience::Transient,
-        )
-        .into()),
+
+    if !stat.is_directory() || !TrackSourceDirectoriesFlag::track_source_directories() {
+        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:183 FileArtifactValue.createForSourceArtifact
+        return match FileArtifactValue::create_from_stat(&path, &stat) {
+            Ok(v) => Ok(Some(ArtifactValue::File(v))),
+            Err(e) => Err(SkyFunctionException::new(
+                SourceArtifactException::create(artifact, &e),
+                Transience::Transient,
+            )
+            .into()),
+        };
     }
+    // For directory artifacts that are not Filesets, we initiate a directory traversal here, and
+    // compute a hash from the directory structure.
+    // We rely on the guarantees of RecursiveFilesystemTraversalFunction for correctness.
+    //
+    // This approach may have unexpected interactions with --package_path. In particular, the exec
+    // root is set up from the loading / analysis phase, and it is now too late to change it;
+    // therefore, this may traverse a different set of files depending on which targets are built
+    // at the same time and what the package-path layout is (this may be moot if there is only one
+    // entry). Or this may return a set of files that's inconsistent with those actually available
+    // to the action (for local execution).
+    //
+    // In the future, we need to make this result the source of truth for the files available to
+    // the action so that we at least have consistency.
+    let rooted_path =
+        RootedPath::to_rooted_path_from_path(artifact.get_root().get_root().clone(), &path);
+    let request = DirectoryArtifactTraversalRequest::create(
+        DirectTraversalRoot::for_rooted_path(&rooted_path),
+        /* skip_testing_for_subpackage= */ true,
+        artifact.clone(),
+    );
+    let value = match env
+        .get_value_or_throw::<DirectoryArtifactTraversalRequest, RecursiveFilesystemTraversalException>(
+            request.clone(),
+        )? {
+        Ok(v) => v,
+        Err(e) => {
+            use RecursiveFilesystemTraversalExceptionType as Type;
+            // Use a match to guarantee that if a new type is added, this stops compiling.
+            match e.get_type() {
+                Type::DanglingSymlink
+                | Type::FileOperationFailure
+                | Type::SymlinkCycleOrInfiniteExpansion
+                | Type::CannotTraverseSourceDirectory
+                | Type::CannotCrossPackageBoundary => {
+                    return Err(SkyFunctionException::new(
+                        SourceArtifactException::create_for_traversal(artifact, &e),
+                        Transience::Persistent,
+                    )
+                    .into());
+                }
+                Type::InconsistentFilesystem | Type::DetailedIoException => {
+                    return Err(SkyFunctionException::new(
+                        SourceArtifactException::create_for_traversal(artifact, &e),
+                        Transience::Transient,
+                    )
+                    .into());
+                }
+                Type::GeneratedPathConflict => {
+                    panic!(
+                        "IllegalStateException: Generated conflict in source tree: {} {:?} {:?}: {}",
+                        artifact, stat, request, e
+                    );
+                }
+            }
+        }
+    };
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let mut fp = Fingerprint::new();
+    for file in value.get_transitive_files().to_list().iter() {
+        fp.add_string(file.get_name_in_symlink_tree().get_path_string());
+        fp.add_bytes(
+            file.get_metadata()
+                .get_digest()
+                .unwrap_or_else(|| panic!("NullPointerException: digest of {file:?}")),
+        );
+    }
+    Ok(Some(ArtifactValue::File(
+        FileArtifactValue::create_for_directory_with_hash(fp.digest_and_reset()),
+    )))
 }
 
 /// One `Pair<SkyKey, Exception>` of [`ArtifactNestedSetEvalException::get_nested_exceptions`]: a

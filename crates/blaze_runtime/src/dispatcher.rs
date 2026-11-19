@@ -638,6 +638,9 @@ impl BlazeCommandDispatcher {
             return Err(e);
         }
         self.runtime.before_command();
+        // RemoteModule.beforeCommand for the commands that do not set the remote module up
+        // themselves (crate::commands::build::build_remote::dispatcher_before_command).
+        crate::commands::build::build_remote::dispatcher_before_command(env)?;
         Ok(())
     }
 
@@ -650,6 +653,9 @@ impl BlazeCommandDispatcher {
         out_err: &OutErr,
     ) -> BlazeCommandResult {
         let mut module_exit_code: Option<DetailedExitCode> = None;
+        // RemoteModule.afterCommand of a command set up by env_before_command
+        // (crate::commands::build::build_remote::dispatcher_after_command).
+        crate::commands::build::build_remote::dispatcher_after_command();
         for module in self.runtime.get_blaze_modules() {
             if let Err(e) = module.after_command() {
                 env.get_reporter().handle(&Event::error(e.get_message()));

@@ -1,8 +1,11 @@
-//! Port of `skyframe/FileArtifactValueTest.java` (the equality part; the other tests need the
-//! file-system fixtures of `FileArtifactValue.createForTesting` and are not ported here).
+//! Port of `skyframe/FileArtifactValueTest.java` (the equality part and the unresolved symlink
+//! tests, on a temporary directory of the Unix file system instead of Java's in-memory one; the
+//! other tests need the file-system fixtures of `FileArtifactValue.createForTesting` and the
+//! manual clock, and are not ported here).
 
 use blaze_exec::actions::FileArtifactValue;
-use blaze_vfs::PathFragment;
+use blaze_exec::actions::file_artifact_value::FileStateType;
+use blaze_vfs::{DigestHashFunction, FileSystemExt, PathFragment, UnixFileSystem};
 
 fn to_bytes(hex: &str) -> Vec<u8> {
     hex::decode(hex).unwrap()
@@ -87,4 +90,78 @@ fn test_equals_and_hash_code() {
         vec![FileArtifactValue::RunfilesTreeMarker],
         // PORT: the `"a string"` group has no counterpart (Rust equality is typed).
     ]);
+}
+
+/// A fresh directory of the Unix file system standing for Java's in-memory file system root.
+fn scratch_root() -> (tempfile::TempDir, blaze_vfs::Path) {
+    let dir = tempfile::tempdir().unwrap();
+    let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+    let root = fs.get_path(dir.path().to_str().unwrap());
+    (dir, root)
+}
+
+// Java: com/google/devtools/build/lib/skyframe/FileArtifactValueTest.java:190 FileArtifactValueTest.testUnresolvedSymlink
+#[test]
+fn test_unresolved_symlink() {
+    let (_dir, root) = scratch_root();
+    // scratchSymlink("/sym", "/some/path")
+    let path = root.get_relative_str("sym");
+    path.create_symbolic_link_to_fragment(&PathFragment::create("/some/path"))
+        .unwrap();
+    let value = FileArtifactValue::create_for_unresolved_symlink(&path).unwrap();
+    let value2 = FileArtifactValue::create_for_unresolved_symlink(&path).unwrap();
+    assert_eq!(value.get_type(), FileStateType::Symlink);
+    assert_eq!(value.get_unresolved_symlink_target(), Some("/some/path"));
+    test_equals(&[vec![value, value2]]);
+}
+
+// Java: com/google/devtools/build/lib/skyframe/FileArtifactValueTest.java:441 FileArtifactValueTest.testUptodateUnresolvedSymlink
+#[test]
+fn test_uptodate_unresolved_symlink() {
+    let (_dir, root) = scratch_root();
+    let path = root.get_relative_str("dir/symlink");
+    path.get_parent_directory()
+        .unwrap()
+        .create_directory_and_parents()
+        .unwrap();
+    path.create_symbolic_link_to_fragment(&PathFragment::create("target_path"))
+        .unwrap();
+    let value = FileArtifactValue::create_for_unresolved_symlink(&path).unwrap();
+
+    // PORT: clock.advanceMillis(1) has no counterpart (the digest does not depend on time).
+    assert!(!value.was_modified_since_digest(&path).unwrap());
+
+    path.delete().unwrap();
+    path.create_symbolic_link_to_fragment(&PathFragment::create("modified_target_path"))
+        .unwrap();
+
+    assert!(value.was_modified_since_digest(&path).unwrap());
+}
+
+/// The digest is the digest of the target string with its first byte inverted, so a symlink and
+/// a file holding the target text differ (`UnresolvedSymlinkArtifactValue.<init>`).
+// Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1149 UnresolvedSymlinkArtifactValue.<init>
+#[test]
+fn unresolved_symlink_digest_is_tweaked_target_digest() {
+    let (_dir, root) = scratch_root();
+    let path = root.get_relative_str("sym");
+    path.create_symbolic_link_to_fragment(&PathFragment::create("data.txt"))
+        .unwrap();
+    let value = FileArtifactValue::create_for_unresolved_symlink(&path).unwrap();
+    let mut expected = DigestHashFunction::Sha256
+        .hash_reader(&mut &b"data.txt"[..])
+        .unwrap();
+    expected[0] ^= 0xff;
+    assert_eq!(value.get_digest(), Some(&expected[..]));
+    assert_eq!(value.get_size(), 0);
+
+    // A path that is not a symlink: NotASymlinkException.
+    let file = root.get_relative_str("file");
+    std::fs::write(file.get_path_string(), "data.txt").unwrap();
+    let e = FileArtifactValue::create_for_unresolved_symlink(&file).unwrap_err();
+    assert!(blaze_vfs::NotASymlinkException::is(&e), "{e}");
+    assert_eq!(
+        e.to_string(),
+        format!("{} is not a symlink", file.get_path_string())
+    );
 }

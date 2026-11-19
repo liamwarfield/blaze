@@ -9,7 +9,10 @@ pub mod generic_build_event;
 pub mod transport;
 pub mod transports;
 
-pub use artifact_uploader::{BuildEventArtifactUploader, LocalFilesArtifactUploader};
+pub use artifact_uploader::{
+    BuildEventArtifactUploader, LocalFilesArtifactUploader, PathConverterFuture,
+    PathConverterPromise, UploadFailure,
+};
 pub use build_completing_event::{BuildCompletingEvent, BuildToolLogs, FetchEvent, LogFileEntry};
 pub use build_event::{
     BuildCompleteResultFacts, BuildEvent, BuildEventClass, Interrupted, LocalFile,

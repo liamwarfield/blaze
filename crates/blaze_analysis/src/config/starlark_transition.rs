@@ -286,6 +286,11 @@ fn starlark_type_of(value: &StarlarkOptionValue) -> &'static str {
         StarlarkOptionValue::Int(_) => "int",
         StarlarkOptionValue::Str(_) => "string",
         StarlarkOptionValue::Label(_) => "Label",
+        // PORT: Starlark.classType of a FeatureFlagValue class (not a Starlark value); not
+        // reached by any ported caller.
+        StarlarkOptionValue::FeatureFlag(v) => {
+            blaze_util::unported!("Starlark.classType", "FeatureFlagValue {}", v)
+        }
         StarlarkOptionValue::List(l) => match l.class() {
             JavaCollectionClass::StarlarkList => "list",
             JavaCollectionClass::Tuple => "tuple",

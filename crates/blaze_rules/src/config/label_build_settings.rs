@@ -45,6 +45,9 @@ pub fn resolve_actual(
                 StarlarkOptionValue::Str(_) => "string",
                 StarlarkOptionValue::List(_) => "list",
                 StarlarkOptionValue::Label(_) => "Label",
+                // PORT: Starlark.type of a FeatureFlagValue class (not a Starlark value).
+                StarlarkOptionValue::FeatureFlag(v) =>
+                    blaze_util::unported!("Starlark.type", "FeatureFlagValue {}", v),
             }
         ),
     }

@@ -1,0 +1,375 @@
+#!/usr/bin/env python3
+"""Unresolved symlink artifacts (declare_symlink): oracle vs Blaze. See `symlink-probe help`."""
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+CACHE = os.path.expanduser("~/.cache/blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+WORK = os.path.join(CACHE, "work", "probe-symlink")
+TEMPLATE = os.path.join(WORK, "src")
+OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-probe-symlink")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+
+USAGE = """\
+usage: scripts/remote/symlink-probe init
+       scripts/remote/symlink-probe run <name> <oracle|BLAZE-BINARY>
+       scripts/remote/symlink-probe interchange <name> <writer-name> <oracle|BLAZE-BINARY>
+       scripts/remote/symlink-probe compare <name-a> <name-b>
+       scripts/remote/symlink-probe help
+
+Unresolved symlink artifacts (`ctx.actions.declare_symlink`), as rules_python venvs and
+aspect_rules_js use them. The template workspace has:
+  //:rel       declare_symlink + ctx.actions.symlink(target_path = "data.txt")  (UnresolvedSymlink)
+  //:dangling  same, target_path = "../nonexistent/dangling"
+  //:spawned   declare_symlink created by a run_shell spawn (`ln -s some/relative/target`)
+  //:r         run_shell taking the three symlinks as inputs, writing `readlink` of each
+  //:run       executable rule whose runfiles hold the three symlinks (runfiles tree, MANIFEST)
+  //:t         run_shell using //:run as a tool: reads the symlinks through its runfiles tree
+(allow_unresolved_symlinks is true by default at the pin.)
+
+`init` writes the template <WORK>/src. `run` and `interchange` call it when it is missing.
+
+`run <name> BINARY` copies the template to <WORK>/<name>/ws (fresh), uses the output user root
+<OUT_ROOT>/<name> (fresh) and the disk cache <WORK>/<name>/dc (fresh), and runs
+`build //:r //:t //:run --disk_cache=<dc> --execution_log_json_file=<step>/exec.json`:
+  s1  cold
+  s2  nothing changed                         (Bazel: nothing re-run, action cache hits)
+  s3  //:rel target_path changed to other.txt (Bazel: rel, r, the manifest and t re-run)
+  s4  //:spawned target changed               (Bazel: spawned, r, t re-run)
+  s5  bazel-bin/dangling replaced by a symlink to "elsewhere" (output changed behind Bazel's back)
+  s6  `build //:notlink`: a declared symlink output that a spawn writes as a regular file
+  s7  `build //:missing`: a declared symlink output that a spawn does not create
+      (s6 and s7 are separate builds so that the error order is deterministic)
+Each step directory <WORK>/<name>/<step> holds stdout, stderr, exit, exec.json and outputs.txt
+(readlink of each symlink output and of the runfiles entries, r.txt, t.txt, the MANIFEST).
+
+`interchange <name> <writer-name> BINARY` copies the disk cache written by run <writer-name>
+(after its s1, saved as <WORK>/<writer-name>/dc-s1) and builds the template once with it in a
+fresh output base: the `processes:` line shows the disk cache hits.
+
+`compare <a> <b>` prints, per step, both `processes:` lines, the WARNING/ERROR lines, whether
+outputs.txt is equal and whether the execution logs are equal (after dropping timing fields and
+replacing the run's paths), with a diff of the first difference.
+
+Every Bazel/Blaze call runs in `systemd-run --user --collect --wait -p MemoryMax=12G
+-p MemorySwapMax=0` with HOME and PATH=/usr/bin:/bin only, startup options
+--output_user_root=<OUT_ROOT>/<name> --nohome_rc --nosystem_rc, and --repository_cache,
+--color=no --curses=no. WORK is ~/.cache/blaze/work/probe-symlink, OUT_ROOT
+~/.cache/blaze/oracle-out/ur-probe-symlink.
+"""
+
+DEFS = """\
+def _sym_impl(ctx):
+    out = ctx.actions.declare_symlink(ctx.attr.name)
+    ctx.actions.symlink(output = out, target_path = ctx.attr.target)
+    return [DefaultInfo(files = depset([out]))]
+
+sym = rule(implementation = _sym_impl, attrs = {"target": attr.string()})
+
+def _spawn_sym_impl(ctx):
+    out = ctx.actions.declare_symlink(ctx.attr.name)
+    ctx.actions.run_shell(
+        outputs = [out],
+        command = "ln -s '%s' %s" % (ctx.attr.target, out.path),
+        mnemonic = "MakeLink",
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+spawn_sym = rule(implementation = _spawn_sym_impl, attrs = {"target": attr.string()})
+
+def _readlinks_impl(ctx):
+    out = ctx.actions.declare_file(ctx.attr.name + ".txt")
+    ctx.actions.run_shell(
+        inputs = ctx.files.links,
+        outputs = [out],
+        command = "for f in %s; do if test -L $f; then echo \\"$f -> $(readlink $f)\\"; else echo \\"$f NOT_A_LINK\\"; fi; done > %s" % (
+            " ".join([f.path for f in ctx.files.links]),
+            out.path,
+        ),
+        mnemonic = "ReadLinks",
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+readlinks = rule(implementation = _readlinks_impl, attrs = {"links": attr.label_list()})
+
+def _runner_impl(ctx):
+    exe = ctx.actions.declare_file(ctx.attr.name + ".sh")
+    names = " ".join([f.short_path for f in ctx.files.links])
+    ctx.actions.write(
+        exe,
+        "#!/bin/sh\\ncd \\"$0.runfiles/_main\\" || exit 1\\nfor f in %s; do if test -L $f; then echo \\"$f -> $(readlink $f)\\"; else echo \\"$f NOT_A_LINK\\"; fi; done\\n" % names,
+        is_executable = True,
+    )
+    return [DefaultInfo(executable = exe, runfiles = ctx.runfiles(files = ctx.files.links))]
+
+runner = rule(implementation = _runner_impl, attrs = {"links": attr.label_list()}, executable = True)
+
+def _use_tool_impl(ctx):
+    out = ctx.actions.declare_file(ctx.attr.name + ".txt")
+    ctx.actions.run_shell(
+        outputs = [out],
+        tools = [ctx.executable.tool],
+        command = "%s > %s" % (ctx.executable.tool.path, out.path),
+        mnemonic = "UseTool",
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+def _bad_impl(ctx):
+    out = ctx.actions.declare_symlink(ctx.attr.name)
+    ctx.actions.run_shell(
+        outputs = [out],
+        command = ctx.attr.cmd.replace("OUT", out.path),
+        mnemonic = "BadLink",
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+bad_sym = rule(implementation = _bad_impl, attrs = {"cmd": attr.string()})
+
+use_tool = rule(
+    implementation = _use_tool_impl,
+    attrs = {"tool": attr.label(executable = True, cfg = "exec")},
+)
+"""
+
+BUILD = """\
+load(":defs.bzl", "bad_sym", "readlinks", "runner", "spawn_sym", "sym", "use_tool")
+
+sym(name = "rel", target = "data.txt")
+
+sym(name = "dangling", target = "../nonexistent/dangling")
+
+spawn_sym(name = "spawned", target = "some/relative/target")
+
+readlinks(name = "r", links = [":rel", ":dangling", ":spawned"])
+
+runner(name = "run", links = [":rel", ":dangling", ":spawned"])
+
+use_tool(name = "t", tool = ":run")
+
+bad_sym(name = "notlink", cmd = "echo text > OUT")
+
+bad_sym(name = "missing", cmd = "true")
+"""
+
+TARGETS = ["//:r", "//:t", "//:run"]
+STEPS = ["s1", "s2", "s3", "s4", "s5", "s6", "s7"]
+
+
+def init():
+    if os.path.isdir(TEMPLATE):
+        return
+    os.makedirs(TEMPLATE)
+    for name, text in (("MODULE.bazel", ""), ("defs.bzl", DEFS), ("BUILD", BUILD)):
+        with open(os.path.join(TEMPLATE, name), "w") as f:
+            f.write(text)
+
+
+def rm(p):
+    if os.path.lexists(p):
+        subprocess.run(["chmod", "-R", "u+w", p])
+        shutil.rmtree(p)
+
+
+def run_binary(binary, name, ws, step, args):
+    our = os.path.join(OUT_ROOT, name)
+    os.makedirs(step, exist_ok=True)
+    full = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc", args[0],
+            "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args[1:]
+    unit = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
+            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "env", "-i",
+            "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin"]
+    with open(os.path.join(step, "stdout"), "wb") as so, \
+            open(os.path.join(step, "stderr"), "wb") as se:
+        code = subprocess.run(unit + full, cwd=ws, stdout=so, stderr=se).returncode
+    with open(os.path.join(step, "exit"), "w") as f:
+        f.write("%d\n" % code)
+    if args[0] == "build":
+        record_outputs(ws, step)
+    return code
+
+
+def summary(step):
+    err = open(os.path.join(step, "stderr"), errors="replace").read().splitlines()
+    procs = [l for l in err if "processes:" in l or re.search(r"\d+ process:", l)]
+    warns = [re.sub(r"/\S*/(probe-symlink|ur-probe-symlink)/[^/ ]+/", "<run>/", l)
+             for l in err if l.startswith("WARNING:") or l.startswith("ERROR:")]
+    return procs, warns
+
+
+
+def record_outputs(ws, step):
+    bin_ = os.path.join(ws, "bazel-bin")
+    lines = []
+    for rel in ["rel", "dangling", "spawned", "run.sh.runfiles/_main/rel",
+                "run.sh.runfiles/_main/dangling", "run.sh.runfiles/_main/spawned"]:
+        p = os.path.join(bin_, rel)
+        if os.path.islink(p):
+            lines.append("%s -> %s" % (rel, os.readlink(p)))
+        elif os.path.lexists(p):
+            lines.append("%s NOT_A_LINK" % rel)
+        else:
+            lines.append("%s missing" % rel)
+    for rel in ["r.txt", "t.txt", "run.sh.runfiles/MANIFEST", "run.sh.runfiles_manifest"]:
+        p = os.path.join(bin_, rel)
+        lines.append("== %s" % rel)
+        if os.path.isfile(p):
+            text = open(p, errors="replace").read()
+            text = text.replace(os.path.realpath(os.path.join(ws, "bazel-out")), "<bazel-out>")
+            lines.extend(re.sub(r"/[^ ]*/execroot/_main/", "<execroot>/", l)
+                         for l in text.splitlines())
+        else:
+            lines.append("missing")
+    with open(os.path.join(step, "outputs.txt"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def mutate(ws, s):
+    if s == "s3":
+        b = os.path.join(ws, "BUILD")
+        text = open(b).read().replace('target = "data.txt"', 'target = "other.txt"')
+        open(b, "w").write(text)
+    elif s == "s4":
+        b = os.path.join(ws, "BUILD")
+        text = open(b).read().replace("some/relative/target", "changed/target")
+        open(b, "w").write(text)
+    elif s == "s5":
+        p = os.path.realpath(os.path.join(ws, "bazel-bin")) + "/dangling"
+        os.unlink(p)
+        os.symlink("elsewhere", p)
+
+
+def build_args(dc, step, s="s1"):
+    if s in ("s6", "s7"):
+        return ["build", "//:notlink" if s == "s6" else "//:missing", "--disk_cache=" + dc,
+                "--execution_log_json_file=" + os.path.join(step, "exec.json")]
+    return ["build"] + TARGETS + ["--disk_cache=" + dc,
+                                  "--execution_log_json_file=" + os.path.join(step, "exec.json")]
+
+
+def cmd_run(name, binary):
+    init()
+    binary = ORACLE if binary == "oracle" else os.path.abspath(os.path.expanduser(binary))
+    run_dir = os.path.join(WORK, name)
+    rm(run_dir)
+    rm(os.path.join(OUT_ROOT, name))
+    ws = os.path.join(run_dir, "ws")
+    shutil.copytree(TEMPLATE, ws, symlinks=True)
+    dc = os.path.join(run_dir, "dc")
+    for s in STEPS:
+        mutate(ws, s)
+        step = os.path.join(run_dir, s)
+        code = run_binary(binary, name, ws, step, build_args(dc, step, s))
+        if s == "s1":
+            shutil.copytree(dc, os.path.join(run_dir, "dc-s1"), symlinks=True)
+        procs, warns = summary(step)
+        print("%s exit %d %s warnings=%d" % (s, code, " | ".join(procs), len(warns)))
+    run_binary(binary, name, ws, os.path.join(run_dir, "shutdown"), ["shutdown"])
+    return 0
+
+
+def cmd_interchange(name, writer, binary):
+    init()
+    binary = ORACLE if binary == "oracle" else os.path.abspath(os.path.expanduser(binary))
+    run_dir = os.path.join(WORK, name)
+    rm(run_dir)
+    rm(os.path.join(OUT_ROOT, name))
+    ws = os.path.join(run_dir, "ws")
+    shutil.copytree(TEMPLATE, ws, symlinks=True)
+    dc = os.path.join(run_dir, "dc")
+    shutil.copytree(os.path.join(WORK, writer, "dc-s1"), dc, symlinks=True)
+    step = os.path.join(run_dir, "s1")
+    code = run_binary(binary, name, ws, step, build_args(dc, step))
+    procs, warns = summary(step)
+    print("s1 exit %d %s warnings=%d" % (code, " | ".join(procs), len(warns)))
+    run_binary(binary, name, ws, os.path.join(run_dir, "shutdown"), ["shutdown"])
+    return 0
+
+
+def read_log(path, name):
+    if not os.path.isfile(path):
+        return None
+    text = open(path, errors="replace").read()
+    ws = os.path.join(WORK, name, "ws")
+    text = text.replace(ws, "<ws>").replace(os.path.join(OUT_ROOT, name), "<our>")
+    text = re.sub(r"<our>/[0-9a-f]{32}", "<ob>", text)
+    dec = json.JSONDecoder()
+    i, out = 0, []
+    while True:
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text):
+            break
+        obj, i = dec.raw_decode(text, i)
+        for k in ("walltime", "metrics"):
+            obj.pop(k, None)
+        out.append(obj)
+    return out
+
+
+def cmd_compare(a, b):
+    import difflib
+    same_all = True
+    for s in STEPS:
+        sa, sb = os.path.join(WORK, a, s), os.path.join(WORK, b, s)
+        if not (os.path.isdir(sa) and os.path.isdir(sb)):
+            continue
+        pa, wa = summary(sa)
+        pb, wb = summary(sb)
+        oa = open(os.path.join(sa, "outputs.txt")).read()
+        ob = open(os.path.join(sb, "outputs.txt")).read()
+        la, lb = read_log(os.path.join(sa, "exec.json"), a), read_log(os.path.join(sb, "exec.json"), b)
+        print("== %s" % s)
+        print("  %-8s processes: %s" % (a, " | ".join(pa)))
+        print("  %-8s processes: %s" % (b, " | ".join(pb)))
+        print("  warnings/errors: %s %d, %s %d%s" % (a, len(wa), b, len(wb),
+                                                     "" if wa == wb else "  DIFFERENT"))
+        for w in (wa + wb)[:6]:
+            print("    " + w)
+        if oa == ob:
+            print("  outputs: same")
+        else:
+            print("  outputs: DIFFERENT")
+            for line in list(difflib.unified_diff(oa.splitlines(), ob.splitlines(), a, b,
+                                                  lineterm="", n=1))[:30]:
+                print("    " + line)
+        if la == lb:
+            print("  exec log: equal (%d entries)" % (len(la or [])))
+        else:
+            same_all = False
+            print("  exec log: DIFFERENT")
+            ja = json.dumps(la, indent=1, sort_keys=True).splitlines()
+            jb = json.dumps(lb, indent=1, sort_keys=True).splitlines()
+            for line in list(difflib.unified_diff(ja, jb, a, b, lineterm="", n=2))[:60]:
+                print("    " + line)
+        if oa != ob or wa != wb or pa != pb:
+            same_all = False
+    return 0 if same_all else 1
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    if args[0] == "init" and len(args) == 1:
+        init()
+        print(TEMPLATE)
+        return 0
+    if args[0] == "run" and len(args) == 3:
+        return cmd_run(args[1], args[2])
+    if args[0] == "interchange" and len(args) == 4:
+        return cmd_interchange(args[1], args[2], args[3])
+    if args[0] == "compare" and len(args) == 3:
+        return cmd_compare(args[1], args[2])
+    print(USAGE, end="", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
