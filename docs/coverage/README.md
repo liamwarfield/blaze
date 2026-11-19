@@ -179,7 +179,7 @@ Methods marked by name only whose name has overloads in the same class (a marker
 "By name (line elsewhere)" is mostly not stale: of these markers, about 2,360 point 1 to 15 lines
 above the method (its Javadoc), about 1,020 within 50 lines, and about 390 further away (another
 overload, or a stale line). Library markers (`com/google/protobuf/TextFormat.java`, `java/util/…`)
-cite third-party sources and are not errors. The 31 UNRESOLVED markers are listed in
+cite third-party sources and are not errors. The 33 UNRESOLVED markers (and 1 ambiguous one) are listed in
 `markers-unresolved.tsv`: inherited methods (`OrderedSetMultimap.put`), implicit enum methods
 (`values`, `valueOf`), prose after `Java:`, and a few stale names.
 

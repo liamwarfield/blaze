@@ -201,3 +201,19 @@ Each entry: date, decision, why, who decided.
   a new crate; D14 invocation policy later. Not ported, per the plan: action rewinding stays
   as ruled, restart-model devices, JVM memory machinery, Skyfocus, remote analysis caching.
   Root.
+- 2026-11-19. Coverage map (`docs/coverage/`, `scripts/coverage/java-map`, at a79275e): of
+  3,037 Java files (406k lines of code), 1,156 are PORTED, and 1,470 NEEDED files are not
+  fully ported, about 139k ± 15k lines of code. This replaces the "2,052 files touched" count.
+  The map's `cluster` column is the work list for the waves that complete the port; a wave
+  closes a cluster by porting every unmarked method of its NEEDED files or by a ruling. Root.
+- 2026-11-19. Rulings on the map's contract conflicts. (1) Remote analysis caching and its
+  serialization (136 files, about 13k lines; runs only with
+  `--experimental_remote_analysis_cache_mode`): not ported, stays a loud failure; it is outside
+  "complete" unless the user says otherwise. (2) The literal Skyframe engine classes the
+  blocking evaluator replaced by design (AbstractParallelEvaluator and the restart-model
+  devices; D5) and the `concurrent` executors they need are not ported as classes; what the
+  incremental lead ports is named in docs/skyframe-incremental.md. (3) Profiling: PORTING.md's
+  "skip profiling" stays for instrumentation, but the files Bazel writes on every command
+  (`command.profile.gz`) and the critical path are NEEDED, scheduled late. (4) Incremental
+  plumbing is NEEDED since the server decision; PORTING.md's "skipped, incremental" rule is
+  superseded for packages S and I. Root.
