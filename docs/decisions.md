@@ -137,3 +137,12 @@ Each entry: date, decision, why, who decided.
   auditor is reviewing it as round 2C, and AGENTS.md "Commits" now keeps in-progress protected
   changes out of checkpoints. Accepted score files stay as recorded; the next accepted label
   uses the new referee with commit verification. Root.
+- 2026-11-19. TLS for remote endpoints: no hand-written certificate verifier. rustls/webpki
+  rejects X.509 v1 certificates, which Bazel (JDK/Netty) accepts; Blaze fails closed and lists
+  it as a known deviation (docs/remote.md). Root, on the remote lead's recommendation.
+- 2026-11-19. Lost remote inputs: action rewinding (Bazel's default) is not ported and stays a
+  loud failure naming `--norewind_lost_inputs`; with that flag every lost-input source must
+  purge stale entries and fail with Bazel's message and exit 39. Root.
+- 2026-11-19. First run of Bazel's own remote shell tests against Blaze (baseline binary before
+  the round-2 fixes): 110 of 253 oracle-passing functions pass; causes classified in
+  docs/remote.md. Root (recording the remote lead's measurement).
