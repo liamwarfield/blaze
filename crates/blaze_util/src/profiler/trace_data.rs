@@ -151,9 +151,9 @@ impl TraceData for TaskData {
         }
         json_writer.name("name")?.value_str(&self.description)?;
         json_writer.name("ph")?.value_str(event_type)?;
-        json_writer
-            .name("ts")?
-            .value_long(nanos_to_micros(self.start_time_nanos - profile_start_time_nanos))?;
+        json_writer.name("ts")?.value_long(nanos_to_micros(
+            self.start_time_nanos - profile_start_time_nanos,
+        ))?;
         if self.duration_nanos != 0 {
             json_writer
                 .name("dur")?
@@ -179,7 +179,9 @@ impl TraceData for TaskData {
                     json_writer.name("mnemonic")?.value_str(mnemonic)?;
                 }
                 if let Some(configuration) = &action_task_data.configuration {
-                    json_writer.name("configuration")?.value_str(configuration)?;
+                    json_writer
+                        .name("configuration")?
+                        .value_str(configuration)?;
                 }
                 json_writer.end_object()?;
             }
@@ -190,13 +192,13 @@ impl TraceData for TaskData {
             json_writer.name("tid")?.value_long(self.thread_id)?;
             json_writer.end_object()?;
         }
-        json_writer
-            .name("tid")?
-            .value_long(if self.type_ == Some(ProfilerTask::CRITICAL_PATH_COMPONENT) {
+        json_writer.name("tid")?.value_long(
+            if self.type_ == Some(ProfilerTask::CRITICAL_PATH_COMPONENT) {
                 CRITICAL_PATH_THREAD_ID
             } else {
                 self.thread_id
-            })?;
+            },
+        )?;
         json_writer.end_object()?;
         Ok(())
     }

@@ -35,16 +35,16 @@ start: no worker, worker ids from 1).
 Compared per case (after replacing the workspace copy, output base, execroot, output user root,
 install base and $HOME by placeholders, scripts/oracle/normalise.py):
   termination  how the build ended (exit code, signal, OOM kill, timeout)
-  stderr       the whole stderr, line by line, after removing only named lines: the
-               "INFO: Elapsed time" line, progress lines the UI repaints on a timer
-               ("Loading: ...", "Analyzing: ...", "Computing main repo mapping: ...",
-               "[N / M] ...", "Fetching ...", empty lines), and the Java stack frames
-               ("\\tat ..." and "\\t... N more") of the oracle's "Exception details", which Blaze
-               cannot print (declared normalisation: blaze_exec::worker::error_message);
-               normalised: the worker key hash (it hashes the execroot path, which differs
-               between the two output roots; that it equals Bazel's for equal paths is checked by
-               the `samehash` case). "stderr order" when the same lines come in another order
-               (the order the actions ran in, which is the executor's).
+  stdout       the whole stdout, after the same rules as stderr
+  stderr       the whole stderr, line by line, after the exclusion rules (RULES; the report
+               lists each with its reason and the lines it changed or removed on each side):
+               compare_common's VOLATILE_RULES (timer-driven progress lines, times), the bare
+               "Loading:" lines, blank lines, the worker key hash (it hashes the execroot path,
+               which differs between the two output roots; that it equals Bazel's for equal
+               paths is checked by the `samehash` case), and the Java stack frames ("\\tat ..."
+               and "\\t... N more") of the oracle's "Exception details", which Blaze cannot
+               print (declared normalisation: blaze_exec::worker::error_message). "stderr order"
+               when the same lines come in another order (a difference all the same).
   outputs      sha256 of every bazel-bin/*.out and bazel-bin/java/*.jar
   logs         the names of <output_base>/bazel-workers/*.log and the contents of each
   execlog      every spawn of --execution_log_json_file, normalised as the referee does
@@ -53,7 +53,9 @@ install base and $HOME by placeholders, scripts/oracle/normalise.py):
                outputs, execution info
 The `samehash` case runs both binaries one after the other in one workspace and one output user
 root (oracle, shutdown, then a fresh action cache for Blaze), so that the execroot and thus the key
-hashes are equal; it compares the raw "Created new ..." lines.
+hashes are equal; it compares the raw "Created new ..." lines as a set, so its class is
+IDENTICAL-REDUCED at best (it never counts as IDENTICAL). The terminations of `clean`, `info`
+and `shutdown` are listed (an abnormal one fails the run).
 
 Guards (scripts/lib/compare_common.py): every command runs under a supervisor in a memory-capped
 systemd scope that records how it really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout`).
@@ -128,13 +130,18 @@ SAMEHASH_TARGETS = ["//:ok_proto", "//:ok_json", "//:ok_mx"]
 # Flags every build gets.
 BUILD_FLAGS = ["--jobs=1", "--worker_verbose"]
 
-# The lines removed before the whole stderr is compared: written on a timer (progress the UI
-# repaints while a phase runs) or holding a duration.
-TIMER_LINE_RE = re.compile(r"^(INFO: Elapsed time: .*|Loading: .*|Loading:|Analyzing: .*|"
-                           r"Computing main repo mapping: .*|Computing main repo mapping:|"
-                           r"\[\d+ / \d+\] .*|Fetching .*|)$")
+# The exclusion rules of the whole stdout and stderr (counted per side in the report): the
+# module's volatile rules (timer-driven progress lines, times), plus this tool's own.
 KEY_HASH_RE = re.compile(r"key hash -?\d+")
-JAVA_FRAME_RE = re.compile(r"^\t(at |\.\.\. \d+ more)")
+RULES = cc.VOLATILE_RULES + [
+    cc.Rule("progress_bare", r"^(Loading:|Computing main repo mapping:)$",
+            "the bare first line of a timer-driven progress message"),
+    cc.Rule("worker_key_hash", r"key hash -?\d+", "the worker key hash hashes the execroot path, "
+            "which differs between the two output roots (the samehash case checks it)",
+            repl="key hash <H>", streams=("stdout", "stderr")),
+    cc.Rule("java_frames", r"^\t(at |\.\.\. \d+ more)", "the Java stack frames of the "
+            "oracle's \"Exception details\", which Blaze cannot print (declared normalisation: "
+            "blaze_exec::worker::error_message)")]
 
 
 def make_writable_and_remove(path):
@@ -203,6 +210,9 @@ def collect(ws, output_base, outdir, cid):
     return res
 
 
+AUX = []
+
+
 def side_run(side, binary, label, cases):
     ws, our, outdir = side_paths(side, label)
     make_writable_and_remove(ws)
@@ -215,9 +225,10 @@ def side_run(side, binary, label, cases):
     tag = "workers-" + side
     paths = None
     for cid, args, _ in selected(cases):
-        run_cmd(binary, ws, our, ["clean"], tag)
+        AUX.append(("%s clean before %s" % (side, cid), run_cmd(binary, ws, our, ["clean"], tag)[0]))
         # Both sides start the build cold (Blaze has no persistent server yet).
-        run_cmd(binary, ws, our, ["shutdown"], tag)
+        AUX.append(("%s shutdown before %s" % (side, cid),
+                    run_cmd(binary, ws, our, ["shutdown"], tag)[0]))
         execlog = os.path.join(outdir, cid + ".execlog.json")
         term, out, err = run_cmd(binary, ws, our, build_args(args, execlog), tag)
         with open(os.path.join(outdir, cid + ".stderr"), "wb") as f:
@@ -225,6 +236,7 @@ def side_run(side, binary, label, cases):
         with open(os.path.join(outdir, cid + ".stdout"), "wb") as f:
             f.write(out)
         _t, ob, _e = run_cmd(binary, ws, our, ["info", "output_base"], tag)
+        AUX.append(("%s info output_base after %s" % (side, cid), _t))
         output_base = ob.decode("latin-1").strip()
         if paths is None and output_base:
             _t, er, _e = run_cmd(binary, ws, our, ["info", "execution_root"], tag)
@@ -235,7 +247,8 @@ def side_run(side, binary, label, cases):
         entry = {"termination": term.to_dict(), "unported": cc.unported_message(err)}
         entry.update(collect(ws, output_base, outdir, cid))
         results["cases"][cid] = entry
-        run_cmd(binary, ws, our, ["shutdown"], tag)
+        AUX.append(("%s shutdown after %s" % (side, cid),
+                    run_cmd(binary, ws, our, ["shutdown"], tag)[0]))
     results["paths"] = paths or {"workspace": ws, "output_user_root": our, "home": HOME}
     with open(os.path.join(outdir, "results.json"), "w") as f:
         json.dump(results, f, indent=1, sort_keys=True)
@@ -265,25 +278,14 @@ def samehash_run(blaze, oracle, label):
                 make_writable_and_remove(ob)
         term, _out, err = run_cmd(binary, ws, our,
                                   ["build"] + BUILD_FLAGS + SAMEHASH_TARGETS, "workers-samehash")
-        run_cmd(binary, ws, our, ["shutdown"], "workers-samehash")
+        AUX.append(("samehash %s shutdown" % side,
+                    run_cmd(binary, ws, our, ["shutdown"], "workers-samehash")[0]))
         text = err.decode("latin-1")
         # The scheduling order of the three actions is not a worker property: compare the set.
         lines[side] = sorted(re.sub(r"\(id \d+, ", "(id N, ", re.sub(r"-\d+-Probe", "-N-Probe", l))
                              for l in text.splitlines() if l.startswith("INFO: Created new "))
         terms[side] = term
     return lines, terms
-
-
-def stderr_lines(ctx, text):
-    """The whole stderr, normalised, without the named lines that depend on timing: the elapsed
-    time line, the progress lines the UI repaints on a timer, and the Java stack frames of the
-    oracle's "Exception details" (see USAGE)."""
-    out = []
-    for line in text.splitlines():
-        if JAVA_FRAME_RE.match(line) or TIMER_LINE_RE.match(line):
-            continue
-        out.append(norm(ctx, line))
-    return out
 
 
 def norm(ctx, s):
@@ -315,9 +317,14 @@ def compare_case(cid, declared, o, b, odir, bdir, octx, bctx):
     differing = []
     oerr = open(os.path.join(odir, cid + ".stderr"), "rb").read().decode("latin-1")
     berr = open(os.path.join(bdir, cid + ".stderr"), "rb").read().decode("latin-1")
-    ol_ = stderr_lines(octx, oerr)
-    bl_ = stderr_lines(bctx, berr)
+    ol_ = NORM.apply(oerr, "oracle", "stderr", octx._pairs).text.splitlines()
+    bl_ = NORM.apply(berr, "blaze", "stderr", bctx._pairs).text.splitlines()
     details = []
+    eq_out, _ = NORM.compare(open(os.path.join(odir, cid + ".stdout"), "rb").read(),
+                             open(os.path.join(bdir, cid + ".stdout"), "rb").read(), "stdout",
+                             octx._pairs, bctx._pairs)
+    if not eq_out:
+        differing.append("stdout")
     if ol_ != bl_:
         if sorted(ol_) == sorted(bl_):
             # The same lines in another order: the actions ran in another order (the
@@ -379,17 +386,36 @@ def compare(label, cases, report, samehash=None):
         cls, detail, details = compare_case(cid, declared, o, b, odir, bdir, octx, bctx)
         report.add(cid, cls, detail, details=details)
     if samehash is not None:
-        lines, terms = samehash
-        differing = [] if lines["oracle"] == lines["blaze"] else ["key hash lines"]
-        cls, detail = cc.judge(terms["oracle"], terms["blaze"], differing)
-        report.add("samehash", cls, detail, details=[lines])
+        add_samehash(report, samehash)
+
+
+SAMEHASH_REDUCED = ("only the \"INFO: Created new ...\" lines, as a set (the key hashes); the "
+                    "rest of the output is compared by the other cases")
+
+
+def add_samehash(report, samehash):
+    lines, terms = samehash
+    differing = [] if lines["oracle"] == lines["blaze"] else ["key hash lines"]
+    cls, detail = cc.judge(terms["oracle"], terms["blaze"], differing, reduced=SAMEHASH_REDUCED)
+    report.add("samehash", cls, detail, details=[lines])
+
+
+NORM = cc.Normaliser(RULES, path_reason="each side's workspace copy, output base, execroot, "
+                     "output user root, install base and $HOME (scripts/oracle/normalise.py)")
 
 
 def selftest():
-    def run_pair(fake_oracle, fake_blaze, workdir):
-        return None
-    return cc.selftest(TOOL, run_pair=None, empty_selection=lambda: main(
-        ["--binary", "/bin/true", "--case", "no-such-case"]) == 1)
+    first = CASES[0][0]
+
+    def argv(blaze, label):
+        return ["--binary", blaze, "--case", first, "--label", label]
+
+    return cc.selftest_tool(
+        TOOL, THIS, argv,
+        empty=lambda b, l: ["--binary", b, "--case", "no-such-case", "--label", l],
+        reuse=lambda b, l: argv(b, l) + ["--skip-oracle"],
+        oracle_outputs=lambda home, l: [os.path.join(home, ".cache", "blaze", "workers-compare",
+                                                     l, "oracle", first + ".stderr")])
 
 
 def main(argv):
@@ -444,7 +470,12 @@ def main(argv):
     if "samehash" in argv and not cases:
         cases = ["-none-"]
     report = cc.Report(TOOL, blaze=blaze, oracle={"path": oracle_path, "sha256": oracle_sha},
-                       selection=" ".join(argv), tool_files=[THIS])
+                       selection=" ".join(argv), tool_files=[THIS],
+                       compared="per case: termination, the whole stdout and stderr after the "
+                                "exclusion rules listed at the end (\"stderr order\" when only "
+                                "the order of lines differs, still a difference), outputs, "
+                                "worker logs, the execution log; samehash: see its row")
+    report.add_normaliser(NORM)
     report.print_header()
     run_cases = [c for c in cases if c != "-none-"] if cases != ["-none-"] else None
     if run_cases is None:
@@ -465,10 +496,9 @@ def main(argv):
     if cases != ["-none-"]:
         compare(label, sel, report, samehash)
     elif samehash is not None:
-        lines, terms = samehash
-        differing = [] if lines["oracle"] == lines["blaze"] else ["key hash lines"]
-        cls, detail = cc.judge(terms["oracle"], terms["blaze"], differing)
-        report.add("samehash", cls, detail, details=[lines])
+        add_samehash(report, samehash)
+    for what, term in AUX:
+        report.add_aux(what, term)
     report.print_rows()
     report.print_footer()
     out = os.path.join(CACHE, "workers-compare", label, "results.json")

@@ -185,8 +185,9 @@ impl ExecutionProgressReceiverSetup {
             .is_ok()
         {
             // TODO(leba): count test actions
-            let execution_progress_receiver =
-                Arc::new(ExecutionProgressReceiver::new(/* exclusive_tests_count= */ 0));
+            let execution_progress_receiver = Arc::new(ExecutionProgressReceiver::new(
+                /* exclusive_tests_count= */ 0,
+            ));
             self.event_bus
                 .post(Arc::new(ExecutionProgressReceiverAvailableEvent::new(
                     execution_progress_receiver.clone(),

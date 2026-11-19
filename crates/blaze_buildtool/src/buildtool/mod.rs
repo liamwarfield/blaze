@@ -1,5 +1,6 @@
 //! `lib/buildtool`.
 
+pub mod action_execution_status_reporter;
 pub mod build_result;
 pub mod build_result_printer;
 pub mod build_tool;

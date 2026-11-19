@@ -429,6 +429,8 @@ impl SkyframeExecutor {
                 main_repository_mapping: Arc::new(MainRepositoryMappingFromSkyframe),
             });
             builder = register_configuration_functions(builder).client(client.clone());
+            // Java: SkyFunctions.FLAG_SET (FlagSetFunction), requested by Project.applySclConfig.
+            builder = blaze_sky_analysis::flag_set_function::register(builder);
             // Java: SkyFunctions.PARSED_FLAGS (ParsedFlagsFunction), requested by
             // PLATFORM_MAPPING and PLATFORM (platform-based flags).
             builder = blaze_sky_analysis::parsed_flags_function::register(
@@ -498,9 +500,8 @@ impl SkyframeExecutor {
         // PORT: installed only for a command that executes: it forwards only to the execution
         // progress receiver (see SkyframeProgressReceiver), and a receiver makes the evaluator
         // hand every node's direct deps to it.
-        let progress_receiver = Arc::new(
-            crate::skyframe_progress_receiver::SkyframeProgressReceiver::new(),
-        );
+        let progress_receiver =
+            Arc::new(crate::skyframe_progress_receiver::SkyframeProgressReceiver::new());
         if execution.is_some() {
             builder = builder.progress_receiver(progress_receiver.clone());
         }
@@ -957,11 +958,9 @@ impl SkyframeExecutor {
     ) -> Result<TargetPatternPhaseValue, TargetPatternPhaseDetailedError> {
         // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3210 SkyframeExecutor.getTargetPatternPhaseValue
         event_handler.post(Arc::new(
-            blaze_buildtool::buildtool::buildevent::LoadingPhaseStartedEvent::new(Arc::new(
-                crate::skyframe_progress_receiver::PackageProgressReceiverView(
-                    &blaze_sky_loading::package_progress_receiver::PACKAGE_PROGRESS,
-                ),
-            )),
+            blaze_sky_loading::package_progress_receiver::LoadingPhaseStartedEvent::new(
+                &blaze_sky_loading::package_progress_receiver::PACKAGE_PROGRESS,
+            ),
         ));
         // PORT: TargetParsingPhaseTimeEvent feeds the build metrics; the command measures the
         // phase itself (blaze_runtime).

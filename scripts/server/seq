@@ -76,6 +76,7 @@ usage: scripts/server/seq help
        scripts/server/seq list [--project P]
        scripts/server/seq run --project brotli|re2 [--control] [--reference cold|default]
                               [--steps a,b,...] [--fresh-reference] [--keep-raw]
+       scripts/server/seq recompare --a DIR --b DIR
        scripts/server/seq clean
 
 Runs one sequence of commands (below) on a corpus project (corpus/projects.json; brotli and
@@ -136,7 +137,9 @@ Compared per step (each a field; any difference makes the step DIFFERENT):
             postInvocationSkyframeNodeCount (they differ between two oracle runs; the referee's
             allow.json drops the same counters).
   outputs   build/test: every file under bazel-bin: path, size, sha256 (contents
-            path-normalised as record does), exec bit; symlinks by target.
+            path-normalised as record does), exec bit; symlinks by target (scripts/oracle/record
+            walk_outputs, imported). Files under bazel-testlogs (test results carry times) by
+            path and type only.
   server    the server relation of the step: before/after as S1, S2, ... (distinct server pids
             of the side in order of appearance) or `none`.
 Step classes: IDENTICAL; SAME-FAILURE (equal, but a side failed: the compile-error step is
@@ -161,6 +164,10 @@ Options:
                        list are errors; the steps' file actions still apply)
   --fresh-reference    do not use a cached side A
   --keep-raw           keep each step's raw execution log and BEP file (large for re2)
+`recompare` compares two recorded sides again (a refcache/<key> directory and a
+runs/<...>/B directory, or any two side directories with the same step list) with the current
+comparison code, without running anything; it prints the binaries' sha256 again (when the
+staged copy is gone it says so: the original run's report names it).
 `clean` deletes <project>/ws, <project>/ur and stale private binary copies under the tool's own root
 (~/.cache/blaze/work/server/tools); runs/ and refcache/ are kept unless named:
 `clean --runs`, `clean --refcache`.
@@ -471,8 +478,12 @@ def views(rec, out, ctx):
         v["spawns"] = "".join(s + "\n" for s in rec["spawns"]) if rec.get("spawns") is not None \
             else "no execution log\n"
         v["metrics"] = json.dumps(rec.get("metrics"), indent=1, sort_keys=True) + "\n"
-        v["outputs"] = "".join(C.oc.canonical(e) + "\n" for e in rec["outputs"]["entries"]) \
-            if rec.get("outputs") else "no outputs walk\n"
+        # record.walk_outputs also walks bazel-testlogs; those files carry test times, so they
+        # are compared by path and type only (as surfaces.py TESTLOGS_RE does for the referee).
+        v["outputs"] = "".join(
+            C.oc.canonical({k: x for k, x in e.items() if k in ("path", "type")}
+                           if e["path"].startswith("testlogs/") else e) + "\n"
+            for e in rec["outputs"]["entries"]) if rec.get("outputs") else "no outputs walk\n"
     v["server"] = "%s -> %s\n" % (rec["server_before"], rec["server_after"])
     return v
 
@@ -692,6 +703,42 @@ def cmd_run(args):
     return rc
 
 
+def cmd_recompare(args):
+    """Compares two recorded sides again (after a change of the comparison, not of the
+    recording): --a DIR --b DIR (a refcache/<key> and a runs/<...>/B directory)."""
+    if len(args) != 4 or args[0] != "--a" or args[2] != "--b":
+        die("usage: seq recompare --a DIR --b DIR")
+    a_out, b_out = os.path.abspath(args[1]), os.path.abspath(args[3])
+    for d in (a_out, b_out):
+        if not os.path.exists(os.path.join(d, "spec.json")):
+            die("%s holds no recorded side (spec.json)" % d)
+    sa, sb = json.load(open(os.path.join(a_out, "spec.json"))), json.load(open(os.path.join(b_out, "spec.json")))
+    if [s["name"] for s in sa["steps"]] != [s["name"] for s in sb["steps"]]:
+        die("the two sides ran different step lists")
+    lines = []
+
+    def report(line):
+        print(line, flush=True)
+        lines.append(line)
+    for role, spec in (("A", sa), ("B", sb)):
+        report("%s: recompare: side %s binary %s sha256 %s, reference %s, unit %s" % (
+            TOOL, role, spec["binary"], C.sha256_file(spec["binary"]) if os.path.exists(
+                spec["binary"]) else "(binary no longer present)", spec["reference"],
+            open(os.path.join(a_out if role == "A" else b_out, "unit-status")).read().strip()
+            if os.path.exists(os.path.join(a_out if role == "A" else b_out, "unit-status"))
+            else "?"))
+    report("%s: tool sha256 %s" % (TOOL, C.tools_sha256(["seq", "common.py"])))
+    counts = compare(sa["steps"], a_out, b_out, report)
+    report("%s: denominator: %d steps; %d identical, %d same-failure (equal, a side failed; not "
+           "matches), %d different, %d not run" % (TOOL, len(sa["steps"]), counts[C.IDENTICAL],
+                                                   counts[C.SAME_FAILURE], counts[C.DIFFERENT],
+                                                   counts[C.NOT_RUN]))
+    # Equal failures are listed, never a pass (audit round 4, rule (d)): exit 0 only when every
+    # step is IDENTICAL.
+    return 0 if counts[C.DIFFERENT] == 0 and counts[C.NOT_RUN] == 0 and \
+        counts[C.SAME_FAILURE] == 0 and counts[C.IDENTICAL] > 0 else 1
+
+
 def cmd_clean(args):
     pdirs = [os.path.join(WORK, p) for p in PROJECTS]
     for p in pdirs:
@@ -738,6 +785,8 @@ def main(argv):
         return cmd_run(argv[2:])
     if argv[1] == "clean":
         return cmd_clean(argv[2:])
+    if argv[1] == "recompare":
+        return cmd_recompare(argv[2:])
     die("unknown command %r; see `seq help`" % argv[1])
 
 

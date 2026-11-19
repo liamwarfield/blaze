@@ -56,7 +56,16 @@ fn min_max_iter<'v>(
             let mut cached = key.invoke_pos(&[max], eval)?;
             for i in it {
                 let keyi = key.invoke_pos(&[i], eval)?;
-                if cached.compare(keyi)? == update_max_ordering {
+                // BLAZE PATCH 0056: with a key, Java's min is `Stream.max` with
+                // `Starlark.ORDERING.reverse()`, which compares the new key with the kept one
+                // (MethodLibrary.java:119 findExtreme); max and min without key compare the
+                // kept one with the new one (Guava Ordering.max / Ordering.min).
+                let update = if min {
+                    keyi.compare(cached)? == Ordering::Less
+                } else {
+                    cached.compare(keyi)? == update_max_ordering
+                };
+                if update {
                     max = i;
                     cached = keyi;
                 }
@@ -109,7 +118,7 @@ pub(crate) fn register_min_max(globals: &mut GlobalsBuilder) {
         key: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
-        let key = key.filter(|k| !k.is_none()); // BLAZE PATCH 0052: Java's `key` is callable or NoneType
+        let key = crate::values::unpack::java_check_callable_or_none("max", "key", key)?; // BLAZE PATCH 0056
         min_max(args, key, eval, false)
     }
 
@@ -135,7 +144,7 @@ pub(crate) fn register_min_max(globals: &mut GlobalsBuilder) {
         key: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
-        let key = key.filter(|k| !k.is_none()); // BLAZE PATCH 0052: Java's `key` is callable or NoneType
+        let key = crate::values::unpack::java_check_callable_or_none("min", "key", key)?; // BLAZE PATCH 0056
         min_max(args, key, eval, true)
     }
 }

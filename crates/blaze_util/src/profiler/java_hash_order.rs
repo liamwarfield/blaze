@@ -88,7 +88,11 @@ mod tests {
             "Network Up usage (total)",
             "Network Down usage (total)",
         ];
-        let order = java_hash_map_order(&inserted, |s| string_hash_code(s), Insertion::ComputeIfAbsent);
+        let order = java_hash_map_order(
+            &inserted,
+            |s| string_hash_code(s),
+            Insertion::ComputeIfAbsent,
+        );
         assert_eq!(
             order,
             vec![

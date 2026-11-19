@@ -324,6 +324,20 @@ impl BazelParamTypeError {
                 }
             }
         }
+        // BLAZE PATCH 0056: the builtin's name in its duplicate keyword error.
+        if let crate::ErrorKind::Function(a) = e.kind() {
+            if let Some(crate::eval::runtime::arguments::FunctionError::RepeatedKwarg {
+                function: None,
+                name,
+            }) = a.downcast_ref()
+            {
+                return crate::eval::runtime::arguments::FunctionError::RepeatedKwarg {
+                    function: Some(function.to_owned()),
+                    name: name.clone(),
+                }
+                .into();
+            }
+        }
         e
     }
 }
@@ -418,4 +432,24 @@ pub(crate) fn java_check_iterable<'v>(
         "in call to {function}(), parameter '{param}' got value of type '{}', want 'iterable'",
         value.get_type()
     )))
+}
+
+/// BLAZE PATCH 0056: Java's check of a builtin parameter declared
+/// `allowedTypes = {StarlarkCallable, NoneType}` (`key` of sorted, min, max):
+/// "in call to F(), parameter 'P' got value of type 'T', want 'callable or NoneType'"
+/// (BuiltinFunction.java:404 checkParamValue). Returns the callable, `None` for `None`.
+pub(crate) fn java_check_callable_or_none<'v>(
+    function: &str,
+    param: &str,
+    value: Option<Value<'v>>,
+) -> crate::Result<Option<Value<'v>>> {
+    match value {
+        None => Ok(None),
+        Some(v) if v.is_none() => Ok(None),
+        Some(v) if v.vtable().starlark_value.HAS_invoke => Ok(Some(v)),
+        Some(v) => Err(crate::Error::new_other(anyhow::anyhow!(
+            "in call to {function}(), parameter '{param}' got value of type '{}', want 'callable or NoneType'",
+            v.get_type()
+        ))),
+    }
 }

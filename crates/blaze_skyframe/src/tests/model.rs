@@ -22,9 +22,10 @@
 //!
 //! # Driver contract
 //!
-//! Written against `docs/skyframe-incremental.md` section 3. The driver (not written yet) does,
+//! Written against `docs/skyframe-incremental.md` section 3. The driver ([`driver`], notes in
+//! `docs/skyframe-incremental.d/model-test.md`) does,
 //! for each `Scenario` from [`generate::generate`] (or `generate_with`; the number of seeds comes
-//! from an environment variable the driver reads, e.g. `BLAZE_SKYFRAME_MODEL_SEEDS`):
+//! from the environment variables `BLAZE_SKYFRAME_MODEL_SEEDS` and `BLAZE_SKYFRAME_MODEL_SEED_START`):
 //!
 //! **Keys and functions.** Two key types, both `Debug` as `n{id}`, `Value = i64`,
 //! `HERMETICITY = Some(FunctionHermeticity::Nonhermetic)` (Java's `GraphTester.NonHermeticKey`;
@@ -100,8 +101,7 @@
 //! [`ModelGraph`]: graph::ModelGraph
 //! [`ModelRun`]: graph::ModelRun
 
-#![allow(dead_code)] // I1 phase 1: the driver against the real evaluator comes later
-
+mod driver;
 pub(crate) mod error_model;
 pub(crate) mod generate;
 pub(crate) mod graph;

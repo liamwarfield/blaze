@@ -170,6 +170,10 @@ pub struct ModelRun {
     pub deleted: BTreeSet<MKey>,
     /// Spec nodes in the graph (done or dirty) after the start-of-evaluation invalidation.
     pub present_at_start: BTreeSet<NodeId>,
+    /// No keep_going, not every root done, and a root done with an error: the evaluation
+    /// returns the cached errors and evaluates nothing (ParallelEvaluator.java:668-690). An
+    /// annotation for the driver (it counts these), not a rule.
+    pub cached_error_stop: bool,
 }
 
 impl ModelRun {
@@ -680,6 +684,7 @@ impl ModelGraph {
                 .map(|r| (*r, self.done_result(MKey::Node(*r), req.keep_going)))
                 .collect();
         } else if !cached_errors.is_empty() {
+            run.cached_error_stop = true;
             results = roots
                 .iter()
                 .map(|r| {

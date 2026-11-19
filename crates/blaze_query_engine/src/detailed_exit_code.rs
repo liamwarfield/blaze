@@ -70,7 +70,10 @@ impl DetailedExitCode {
 
     /// Returns a `DetailedExitCode` combining the provided `FailureDetail` and `ExitCode`.
     // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:78 DetailedExitCode.of
-    pub fn of_code(exit_code: blaze_util::ExitCode, failure_detail: FailureDetail) -> DetailedExitCode {
+    pub fn of_code(
+        exit_code: blaze_util::ExitCode,
+        failure_detail: FailureDetail,
+    ) -> DetailedExitCode {
         DetailedExitCode {
             exit_code,
             failure_detail: Some(failure_detail),

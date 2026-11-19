@@ -85,26 +85,6 @@ pub fn compile(kind: FileKind, file_name: &str, source: String) -> Result<Compil
     compile_with_options(kind, kind.file_options(), file_name, source)
 }
 
-// TEMPORARY timing counter (root's measurement of the Java front end's share; removed after).
-static FE_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static FE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-fn fe_timed<T>(f: impl FnOnce() -> T) -> T {
-    let t = std::time::Instant::now();
-    let r = f();
-    let n = FE_NANOS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed)
-        + t.elapsed().as_nanos() as u64;
-    let c = FE_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-    if c % 16 == 0 {
-        let path = format!(
-            "{}/.cache/blaze/work/java-fe-timing/{}.txt",
-            std::env::var("HOME").unwrap_or_default(),
-            std::process::id()
-        );
-        let _ = std::fs::write(path, format!("{n} {c}\n"));
-    }
-    r
-}
-
 /// Java's static errors of a file before the resolver: the scanner's and parser's errors (every
 /// one, with Java's recovery) and, for BUILD and the other `.bazel` files,
 /// `DotBazelFileSyntaxChecker`'s. Also returns the parsed Java tree.
@@ -196,11 +176,11 @@ pub fn compile_with_options(
     file_name: &str,
     source: String,
 ) -> Result<CompiledFile, EvalError> {
-    let (parsed, errors) = fe_timed(|| java_static_errors(kind, options, file_name, &source));
+    let (parsed, errors) = java_static_errors(kind, options, file_name, &source);
     if !errors.is_empty() {
         return Err(EvalError::syntax(errors));
     }
-    let errors = fe_timed(|| java_resolver_errors(&parsed, &EveryNamePredeclared, options));
+    let errors = java_resolver_errors(&parsed, &EveryNamePredeclared, options);
     if !errors.is_empty() {
         return Err(EvalError::syntax(errors));
     }
@@ -224,7 +204,7 @@ pub fn compile_and_resolve(
     guarded: &dyn Fn(&str) -> Option<String>,
 ) -> Result<CompiledFile, EvalError> {
     let module = crate::syntax::java::PredeclaredModule::new(names, guarded);
-    let (parsed, mut errors) = fe_timed(|| java_static_errors(kind, options, file_name, &source));
+    let (parsed, mut errors) = java_static_errors(kind, options, file_name, &source);
     // Java: PackageFunction.java:1367 returns a BUILD file's parse errors alone; for a .bzl
     // file, compileFile resolves the partial tree and adds the resolver's errors
     // (BzlCompileFunction.java:234).
@@ -232,7 +212,7 @@ pub fn compile_and_resolve(
     if !errors.is_empty() && (kind.dot_bazel_checker_config().is_some() || !parse_failed) {
         return Err(EvalError::syntax(errors));
     }
-    errors.extend(fe_timed(|| java_resolver_errors(&parsed, &module, options)));
+    errors.extend(java_resolver_errors(&parsed, &module, options));
     if !errors.is_empty() {
         return Err(EvalError::syntax(errors));
     }
@@ -303,13 +283,11 @@ pub fn resolve(compiled: &CompiledFile, globals: &Globals) -> Result<(), EvalErr
                 options.allow_type_syntax =
                     ast.dialect().enable_types == starlark::syntax::DialectTypes::ParseOnly;
             }
-            fe_timed(|| {
-                crate::syntax::java::parse_file(
-                    &file_name,
-                    &source,
-                    crate::syntax::java::JavaOptions::from_file_options(options),
-                )
-            })
+            crate::syntax::java::parse_file(
+                &file_name,
+                &source,
+                crate::syntax::java::JavaOptions::from_file_options(options),
+            )
         }
     };
     let no_guard = |_: &str| None;
@@ -317,7 +295,7 @@ pub fn resolve(compiled: &CompiledFile, globals: &Globals) -> Result<(), EvalErr
         globals.names().map(|n| n.as_str().to_owned()).collect(),
         &no_guard,
     );
-    let errors = fe_timed(|| java_resolver_errors(&parsed, &module, options));
+    let errors = java_resolver_errors(&parsed, &module, options);
     if errors.is_empty() {
         Ok(())
     } else {

@@ -8,6 +8,8 @@ use crate::differencer::{
 use crate::environment::{BubbleErrorInfo, EnvState, Environment, PendingDep};
 use crate::evaluation_result::EvaluationResult;
 use crate::event_filter::EventFilter;
+#[cfg(test)]
+use crate::graph_listener::Context;
 use crate::in_memory_graph::InMemoryGraphImpl;
 pub(crate) use crate::in_memory_graph::{DoneEntry, DoneKind, Node};
 use crate::invalidation::{DeletingInvalidationState, EagerInvalidator, InvalidationState};
@@ -811,6 +813,37 @@ impl Evaluator {
         self.graph.get_if_present(key)
     }
 
+    /// Test hook: with [`Evaluator::deterministic_for_testing`], the reverse deps that `setValue`
+    /// and `markClean` return are in alphabetical order, as Java tests get them from
+    /// `DeterministicHelper.DeterministicNodeEntry`.
+    // Java: src/test/java/com/google/devtools/build/skyframe/DeterministicHelper.java:146 DeterministicNodeEntry.setValue
+    #[cfg(test)]
+    pub(crate) fn deterministic_rdeps(&self, rdeps: IndexSet<SkyKey>) -> IndexSet<SkyKey> {
+        if !self.deterministic_for_testing.load(Ordering::SeqCst) {
+            return rdeps;
+        }
+        // Java: DeterministicHelper.ALPHABETICAL_SKYKEY_COMPARATOR
+        let mut rdeps = rdeps;
+        rdeps.sort_by(|a, b| {
+            (format!("{:?}", a.argument()), a.function_name().0)
+                .cmp(&(format!("{:?}", b.argument()), b.function_name().0))
+        });
+        rdeps
+    }
+
+    /// Test hook: [`Evaluator::deterministic_rdeps`] for `markClean`.
+    // Java: src/test/java/com/google/devtools/build/skyframe/DeterministicHelper.java:155 DeterministicNodeEntry.markClean
+    #[cfg(test)]
+    pub(crate) fn deterministic_mark_clean(
+        &self,
+        r: crate::node_entry::NodeValueAndRdepsToSignal,
+    ) -> crate::node_entry::NodeValueAndRdepsToSignal {
+        crate::node_entry::NodeValueAndRdepsToSignal::new(
+            r.get_value().clone(),
+            self.deterministic_rdeps(r.get_rdeps_to_signal().clone()),
+        )
+    }
+
     fn is_done(&self, key: &SkyKey) -> bool {
         self.committed_entry(key).is_some()
     }
@@ -1028,6 +1061,16 @@ impl<'e> Run<'e> {
             .filter(|k| seen.insert((*k).clone()))
             .cloned()
             .collect();
+        // Java: graph.getBatch(null, Reason.PRE_OR_POST_EVALUATION, skyKeySet)
+        #[cfg(test)]
+        for key in &roots {
+            self.ev.graph.listeners_for_testing.notify(
+                key,
+                crate::graph_listener::EventType::GetBatch,
+                crate::graph_listener::Order::Before,
+                Context::Reason(crate::graph_listener::Reason::PreOrPostEvaluation),
+            );
+        }
         let done_before_evaluation: Vec<Option<Arc<DoneEntry>>> =
             roots.iter().map(|k| self.ev.committed_entry(k)).collect();
 
@@ -1324,6 +1367,29 @@ impl<'e> Run<'e> {
     // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:171 Evaluate.enqueueChild
     pub(crate) fn eval_dep(&self, key: &SkyKey, requester: Option<&Requester<'_>>) -> Requested {
         let node = self.ev.graph.create_if_absent(key);
+        // Test hook: the event of the call below (Java's NotifyingNodeEntry).
+        #[cfg(test)]
+        let (listened_call, listened_context) = match requester {
+            Some(r) if r.old_deps.contains(key) => (
+                crate::graph_listener::EventType::CheckIfDone,
+                Context::Key(r.key.clone()),
+            ),
+            Some(r) => (
+                crate::graph_listener::EventType::AddReverseDep,
+                Context::Key(r.key.clone()),
+            ),
+            None => (
+                crate::graph_listener::EventType::AddReverseDep,
+                Context::Null,
+            ),
+        };
+        #[cfg(test)]
+        self.ev.graph.listeners_for_testing.notify(
+            key,
+            listened_call,
+            crate::graph_listener::Order::Before,
+            listened_context.clone(),
+        );
         let mut state = node.lock();
         let dependency_state = match requester {
             None => state.entry.add_reverse_dep_and_check_if_done(None),
@@ -1334,13 +1400,40 @@ impl<'e> Run<'e> {
                 .entry
                 .add_reverse_dep_and_check_if_done(Some(r.key.clone())),
         };
+        // Test hook: the AFTER event, once the node's lock is released.
+        #[cfg(test)]
+        let notify_after = || {
+            self.ev.graph.listeners_for_testing.notify(
+                key,
+                listened_call,
+                crate::graph_listener::Order::After,
+                listened_context.clone(),
+            )
+        };
         match dependency_state {
             DependencyState::Done => {
                 let snapshot = state.snapshot.clone().expect("done entry has a snapshot");
                 drop(state);
+                #[cfg(test)]
+                notify_after();
                 if let Some(r) = requester {
+                    notify_graph_listener!(
+                        self.ev.graph,
+                        r.key,
+                        Signal,
+                        Before,
+                        Context::Key(key.clone())
+                    );
                     let mut parent = r.node.lock();
                     parent.entry.signal_dep(snapshot.version, Some(key));
+                    drop(parent);
+                    notify_graph_listener!(
+                        self.ev.graph,
+                        r.key,
+                        Signal,
+                        After,
+                        Context::Key(key.clone())
+                    );
                 }
                 Requested {
                     entry: snapshot,
@@ -1350,7 +1443,15 @@ impl<'e> Run<'e> {
             DependencyState::NeedsScheduling => {
                 state.owner = Some(std::thread::current().id());
                 state.outcome = None;
+                // PORT: blocking engine. Like `outcome`, the requesters that closed a cycle
+                // through the node belong to one evaluation: a node committed by the cycle
+                // detector stays in the graph, and when it is evaluated again (dirty or
+                // changed) its old cycle requesters must not be dropped from the reverse deps
+                // its error bubbles up to (`rdeps_to_bubble_up_to` below).
+                state.cycle_rdeps.clear();
                 drop(state);
+                #[cfg(test)]
+                notify_after();
                 self.enqueue_evaluation(key);
                 let entry = if DEPTH.with(Cell::get) >= self.ctx.max_inline_depth {
                     self.compute_on_fresh_thread(key, &node)
@@ -1363,10 +1464,13 @@ impl<'e> Run<'e> {
                 }
             }
             DependencyState::AlreadyEvaluating => {
-                if let Some(outcome) = &state.outcome {
+                if let Some(outcome) = state.outcome.clone() {
+                    drop(state);
+                    #[cfg(test)]
+                    notify_after();
                     // It ended in this evaluation without finishing.
                     return Requested {
-                        entry: outcome.clone(),
+                        entry: outcome,
                         was_done: false,
                     };
                 }
@@ -1377,6 +1481,8 @@ impl<'e> Run<'e> {
                     state.entry
                 );
                 drop(state);
+                #[cfg(test)]
+                notify_after();
                 Requested {
                     entry: self.wait_for(key, &node, requester.map(|r| r.key)),
                     was_done: false,
@@ -1508,12 +1614,13 @@ impl<'e> Run<'e> {
     // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:415 Evaluate.run
     fn evaluate_node(&self, key: &SkyKey, node: &Arc<Node>) -> Arc<DoneEntry> {
         // PORT: Java's `!nodeEntry.isReadyToEvaluate()` check is for partial reevaluation (not
-        // ported): a node is claimed here once, ready.
+        // ported): a node is claimed here once, ready. The test hook still sees the call.
+        notify_graph_listener!(self.ev.graph, key, IsReady, Before, Context::Entry);
         let dirty_outcome = {
             let _state = StateGuard::new(self.progress(), key, NodeState::CheckDirty);
             let outcome = self.maybe_handle_dirty_node(key, node);
             if let DirtyOutcome::AlreadyProcessed(_) = &outcome
-                && node.lock().entry.get_lifecycle_state() == LifecycleState::Done
+                && self.get_lifecycle_state(key, node) == LifecycleState::Done
             {
                 self.progress().change_pruned(key);
             }
@@ -1553,6 +1660,27 @@ impl<'e> Run<'e> {
         self.resolve(key, node, env, r)
     }
 
+    /// `nodeEntry.getLifecycleState()`, with the test hook's events.
+    #[cfg_attr(not(test), allow(unused_variables))]
+    fn get_lifecycle_state(&self, sky_key: &SkyKey, node: &Node) -> LifecycleState {
+        notify_graph_listener!(
+            self.ev.graph,
+            sky_key,
+            GetLifecycleState,
+            Before,
+            Context::Entry
+        );
+        let lifecycle_state = node.lock().entry.get_lifecycle_state();
+        notify_graph_listener!(
+            self.ev.graph,
+            sky_key,
+            GetLifecycleState,
+            After,
+            Context::LifecycleState(lifecycle_state)
+        );
+        lifecycle_state
+    }
+
     /// Returns true if this depGroup consists of the error transience value and the error
     /// transience value is newer than the entry, meaning that the entry must be re-evaluated.
     // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:221 Evaluate.invalidatedByErrorTransience
@@ -1580,7 +1708,7 @@ impl<'e> Run<'e> {
     /// evaluation, and the node ends with that dep's kind (still dirty, in flight).
     // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:233 Evaluate.maybeHandleDirtyNode
     fn maybe_handle_dirty_node(&self, sky_key: &SkyKey, node: &Arc<Node>) -> DirtyOutcome {
-        while node.lock().entry.get_lifecycle_state() == LifecycleState::CheckDependencies {
+        while self.get_lifecycle_state(sky_key, node) == LifecycleState::CheckDependencies {
             // Evaluating a dirty node for the first time, and checking its children to see if any
             // of them have changed. Note that there must be dirty children for this to happen.
 
@@ -1611,6 +1739,13 @@ impl<'e> Run<'e> {
                 // dep, which would be incorrect if, for instance, the value re-evaluated to a
                 // non-error.
                 node.lock().entry.force_rebuild();
+                notify_graph_listener!(
+                    self.ev.graph,
+                    &ERROR_TRANSIENCE_KEY,
+                    RemoveReverseDep,
+                    Before,
+                    Context::Key(sky_key.clone())
+                );
                 self.ev
                     .graph
                     .get_if_present(&ERROR_TRANSIENCE_KEY)
@@ -1618,6 +1753,13 @@ impl<'e> Run<'e> {
                     .lock()
                     .entry
                     .remove_reverse_dep(sky_key.clone());
+                notify_graph_listener!(
+                    self.ev.graph,
+                    &ERROR_TRANSIENCE_KEY,
+                    RemoveReverseDep,
+                    After,
+                    Context::Key(sky_key.clone())
+                );
                 return DirtyOutcome::NeedsEvaluation;
             }
             if !self.ctx.keep_going {
@@ -1656,14 +1798,42 @@ impl<'e> Run<'e> {
                     node.lock()
                         .entry
                         .add_singleton_temporary_direct_dep(key_to_check.clone());
+                    notify_graph_listener!(
+                        self.ev.graph,
+                        key_to_check,
+                        CheckIfDone,
+                        Before,
+                        Context::Key(sky_key.clone())
+                    );
                     node_entry_to_check
                         .lock()
                         .entry
                         .check_if_done_for_dirty_reverse_dep(sky_key.clone());
+                    notify_graph_listener!(
+                        self.ev.graph,
+                        key_to_check,
+                        CheckIfDone,
+                        After,
+                        Context::Key(sky_key.clone())
+                    );
                     // Perform the necessary bookkeeping for any deps that are not being used.
                     for (dep_key, dep_node) in direct_deps_to_check.iter().zip(&entries_to_check) {
                         if dep_key != key_to_check {
+                            notify_graph_listener!(
+                                self.ev.graph,
+                                dep_key,
+                                RemoveReverseDep,
+                                Before,
+                                Context::Key(sky_key.clone())
+                            );
                             dep_node.lock().entry.remove_reverse_dep(sky_key.clone());
+                            notify_graph_listener!(
+                                self.ev.graph,
+                                dep_key,
+                                RemoveReverseDep,
+                                After,
+                                Context::Key(sky_key.clone())
+                            );
                         }
                     }
                     if !self.prevent_new_evaluations() {
@@ -1735,6 +1905,7 @@ impl<'e> Run<'e> {
             }
             // If we're here, then we may proceed to the rest of the method and continue
             // processing the node intra-thread.
+            notify_graph_listener!(self.ev.graph, sky_key, IsReady, Before, Context::Entry);
             let ready = node.lock().entry.is_ready_to_evaluate();
             check_state!(
                 ready,
@@ -1743,11 +1914,12 @@ impl<'e> Run<'e> {
                 node.lock().entry
             );
         }
-        let lifecycle_state = node.lock().entry.get_lifecycle_state();
+        let lifecycle_state = self.get_lifecycle_state(sky_key, node);
         match lifecycle_state {
             LifecycleState::VerifiedClean => {
                 // No child has a changed value. This node can be marked done and its parents
                 // signaled without any re-evaluation.
+                notify_graph_listener!(self.ev.graph, sky_key, MarkClean, Before, Context::Entry);
                 let (node_value_and_rdeps, error, version) = {
                     let mut state = node.lock();
                     let r = state.entry.mark_clean();
@@ -1755,6 +1927,9 @@ impl<'e> Run<'e> {
                     let error = state.entry.get_error_info().cloned();
                     (r, error, state.entry.get_version())
                 };
+                notify_graph_listener!(self.ev.graph, sky_key, MarkClean, After, Context::Entry);
+                #[cfg(test)]
+                let node_value_and_rdeps = self.ev.deterministic_mark_clean(node_value_and_rdeps);
                 let r_deps_to_signal = node_value_and_rdeps.get_rdeps_to_signal();
                 let value_maybe_with_metadata = node_value_and_rdeps.get_value();
                 // Replay events once change-pruned.
@@ -1867,6 +2042,19 @@ impl<'e> Run<'e> {
         let pending = deps;
         let mut versions: Vec<Version> = Vec::with_capacity(pending.len());
         for dep in pending.iter() {
+            #[cfg(test)]
+            let listened_call = if requester.old_deps.contains(&dep.key) {
+                crate::graph_listener::EventType::CheckIfDone
+            } else {
+                crate::graph_listener::EventType::AddReverseDep
+            };
+            #[cfg(test)]
+            self.ev.graph.listeners_for_testing.notify(
+                &dep.key,
+                listened_call,
+                crate::graph_listener::Order::Before,
+                Context::Key(requester.key.clone()),
+            );
             let mut dep_state = dep.node.lock();
             let tri_state = if requester.old_deps.contains(&dep.key) {
                 dep_state
@@ -1887,13 +2075,41 @@ impl<'e> Run<'e> {
                 );
             }
             versions.push(dep_state.entry.get_version());
+            drop(dep_state);
+            #[cfg(test)]
+            self.ev.graph.listeners_for_testing.notify(
+                &dep.key,
+                listened_call,
+                crate::graph_listener::Order::After,
+                Context::Key(requester.key.clone()),
+            );
         }
         let mut self_signalled = false;
+        #[cfg(test)]
+        for dep in pending.iter() {
+            notify_graph_listener!(
+                self.ev.graph,
+                requester.key,
+                Signal,
+                Before,
+                Context::Key(dep.key.clone())
+            );
+        }
         {
             let mut state = requester.node.lock();
             for (dep, version) in pending.iter().zip(versions) {
                 self_signalled = state.entry.signal_dep(version, Some(&dep.key));
             }
+        }
+        #[cfg(test)]
+        for dep in pending.iter() {
+            notify_graph_listener!(
+                self.ev.graph,
+                requester.key,
+                Signal,
+                After,
+                Context::Key(dep.key.clone())
+            );
         }
         self_signalled
     }
@@ -2173,6 +2389,19 @@ impl<'e> Run<'e> {
                 node.lock()
                     .entry
                     .add_singleton_temporary_direct_dep(child_error_key.clone());
+                #[cfg(test)]
+                let listened_call = if st.old_deps.contains(&child_error_key) {
+                    crate::graph_listener::EventType::CheckIfDone
+                } else {
+                    crate::graph_listener::EventType::AddReverseDep
+                };
+                #[cfg(test)]
+                self.ev.graph.listeners_for_testing.notify(
+                    &child_error_key,
+                    listened_call,
+                    crate::graph_listener::Order::Before,
+                    Context::Key(key.clone()),
+                );
                 let child_error_state = {
                     let mut state = child_error_entry.lock();
                     if st.old_deps.contains(&child_error_key) {
@@ -2183,6 +2412,13 @@ impl<'e> Run<'e> {
                             .add_reverse_dep_and_check_if_done(Some(key.clone()))
                     }
                 };
+                #[cfg(test)]
+                self.ev.graph.listeners_for_testing.notify(
+                    &child_error_key,
+                    listened_call,
+                    crate::graph_listener::Order::After,
+                    Context::Key(key.clone()),
+                );
                 if child_error_state != DependencyState::Done {
                     // The child in error may have transitioned from done to dirty between when
                     // this node discovered the error and now. Java notifies the graph
@@ -2275,6 +2511,19 @@ impl<'e> Run<'e> {
                 "Null error value? {:?}",
                 sky_key
             );
+            #[cfg(test)]
+            let listened_call = if old_deps.contains(&*ERROR_TRANSIENCE_KEY) {
+                crate::graph_listener::EventType::CheckIfDone
+            } else {
+                crate::graph_listener::EventType::AddReverseDep
+            };
+            #[cfg(test)]
+            self.ev.graph.listeners_for_testing.notify(
+                &ERROR_TRANSIENCE_KEY,
+                listened_call,
+                crate::graph_listener::Order::Before,
+                Context::Key(sky_key.clone()),
+            );
             let tri_state = {
                 let mut state = error_transience_node.lock();
                 if old_deps.contains(&*ERROR_TRANSIENCE_KEY) {
@@ -2287,12 +2536,26 @@ impl<'e> Run<'e> {
                         .add_reverse_dep_and_check_if_done(Some(sky_key.clone()))
                 }
             };
+            #[cfg(test)]
+            self.ev.graph.listeners_for_testing.notify(
+                &ERROR_TRANSIENCE_KEY,
+                listened_call,
+                crate::graph_listener::Order::After,
+                Context::Key(sky_key.clone()),
+            );
             check_state!(
                 tri_state == DependencyState::Done,
                 "{:?} {:?} {:?}",
                 sky_key,
                 tri_state,
                 error_info
+            );
+            notify_graph_listener!(
+                self.ev.graph,
+                sky_key,
+                Signal,
+                Before,
+                Context::Key(ERROR_TRANSIENCE_KEY.clone())
             );
             let mut state = node.lock();
             state
@@ -2301,6 +2564,14 @@ impl<'e> Run<'e> {
             state
                 .entry
                 .signal_dep(self.graph_version, Some(&ERROR_TRANSIENCE_KEY));
+            drop(state);
+            notify_graph_listener!(
+                self.ev.graph,
+                sky_key,
+                Signal,
+                After,
+                Context::Key(ERROR_TRANSIENCE_KEY.clone())
+            );
         }
     }
 
@@ -2375,15 +2646,36 @@ impl<'e> Run<'e> {
         };
         for key in &deps_to_remove {
             let old_dep_entry = check_not_null!(self.ev.graph.get_if_present(key), "{:?}", key);
+            notify_graph_listener!(
+                self.ev.graph,
+                key,
+                RemoveReverseDep,
+                Before,
+                Context::Key(sky_key.clone())
+            );
             old_dep_entry
                 .lock()
                 .entry
                 .remove_reverse_dep(sky_key.clone());
+            notify_graph_listener!(
+                self.ev.graph,
+                key,
+                RemoveReverseDep,
+                After,
+                Context::Key(sky_key.clone())
+            );
         }
 
         // If this entry is dirty, setValue may not actually change it, if it determines that the
         // data being written now is the same as the data already present in the entry. We detect
         // this case by comparing versions before and after setting the value.
+        notify_graph_listener!(
+            self.ev.graph,
+            sky_key,
+            SetValue,
+            Before,
+            Context::Value(value.clone())
+        );
         let (reverse_deps, snapshot, changed) = {
             let mut state = node.lock();
             let previous_version = state.entry.get_version();
@@ -2401,6 +2693,15 @@ impl<'e> Run<'e> {
                 current_version != previous_version,
             )
         };
+        notify_graph_listener!(
+            self.ev.graph,
+            sky_key,
+            SetValue,
+            After,
+            Context::Value(value.clone())
+        );
+        #[cfg(test)]
+        let reverse_deps = self.ev.deterministic_rdeps(reverse_deps);
 
         // Tell the receiver that this value was built. If currentVersion.equals(evaluationVersion),
         // it was evaluated this run, and so was changed. Otherwise, it is less than
@@ -2433,7 +2734,21 @@ impl<'e> Run<'e> {
     ) {
         for parent in parents {
             let entry = check_not_null!(self.ev.graph.get_if_present(parent), "{:?}", parent);
+            notify_graph_listener!(
+                self.ev.graph,
+                parent,
+                Signal,
+                Before,
+                Context::Key(sky_key.clone())
+            );
             entry.lock().entry.signal_dep(version, Some(sky_key));
+            notify_graph_listener!(
+                self.ev.graph,
+                parent,
+                Signal,
+                After,
+                Context::Key(sky_key.clone())
+            );
         }
     }
 
@@ -2449,7 +2764,24 @@ impl<'e> Run<'e> {
             let mut state = entry.lock();
             if !state.entry.is_done() {
                 // In cycles, we can have parents that are already done.
+                // Test hook: the BEFORE event is emitted under the parent's lock here (the
+                // doneness check and the signal are one step).
+                notify_graph_listener!(
+                    self.ev.graph,
+                    parent,
+                    Signal,
+                    Before,
+                    Context::Key(sky_key.clone())
+                );
                 state.entry.signal_dep(version, Some(sky_key));
+                drop(state);
+                notify_graph_listener!(
+                    self.ev.graph,
+                    parent,
+                    Signal,
+                    After,
+                    Context::Key(sky_key.clone())
+                );
             }
         }
     }

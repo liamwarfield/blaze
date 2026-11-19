@@ -220,7 +220,11 @@ impl<W: Write> JsonWriter<W> {
             match replacement {
                 Some(r) => buf.extend_from_slice(r.as_bytes()),
                 // OutputStreamWriter(ISO_8859_1): one byte per char, '?' when unmappable.
-                None => buf.push(if (c as u32) <= 0xff { c as u32 as u8 } else { b'?' }),
+                None => buf.push(if (c as u32) <= 0xff {
+                    c as u32 as u8
+                } else {
+                    b'?'
+                }),
             }
         }
         buf.push(b'"');

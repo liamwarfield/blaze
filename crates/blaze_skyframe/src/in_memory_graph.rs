@@ -247,6 +247,9 @@ pub(crate) struct InMemoryGraphImpl {
     shards: Vec<Mutex<HashMap<SkyKey, Arc<Node>>>>,
     hasher: std::collections::hash_map::RandomState,
     keep_edges: bool,
+    /// Test hook: Java's `NotifyingHelper` graph transformers (`graph_listener`).
+    #[cfg(test)]
+    pub(crate) listeners_for_testing: crate::graph_listener::GraphListeners,
 }
 
 impl InMemoryGraphImpl {
@@ -257,6 +260,8 @@ impl InMemoryGraphImpl {
             shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
             hasher: Default::default(),
             keep_edges,
+            #[cfg(test)]
+            listeners_for_testing: Default::default(),
         }
     }
 
@@ -284,6 +289,14 @@ impl InMemoryGraphImpl {
     /// Java: `createIfAbsentBatch` for one key.
     // Java: com/google/devtools/build/skyframe/InMemoryGraphImpl.java:217 InMemoryGraphImpl.createIfAbsent
     pub(crate) fn create_if_absent(&self, sky_key: &SkyKey) -> Arc<Node> {
+        // Java: NotifyingHelper.NotifyingProcessableGraph.createIfAbsentBatch
+        notify_graph_listener!(
+            self,
+            sky_key,
+            CreateIfAbsent,
+            Before,
+            crate::graph_listener::Context::Null
+        );
         let mut shard = self.shard(sky_key).lock();
         if let Some(node) = shard.get(sky_key) {
             return node.clone();

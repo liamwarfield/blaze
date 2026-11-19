@@ -458,6 +458,13 @@ impl DirtyAndInflightTrackingProgressReceiver {
         self.dirty_keys.snapshot()
     }
 
+    /// The keys in flight (enqueued and not done), without clearing them. Test access for the
+    /// model driver's graph invariants.
+    #[cfg(test)]
+    pub(crate) fn inflight_keys_for_testing(&self) -> HashSet<SkyKey> {
+        self.inflight_keys.snapshot()
+    }
+
     // Java: com/google/devtools/build/skyframe/DirtyAndInflightTrackingProgressReceiver.java:174 DirtyAndInflightTrackingProgressReceiver.addToDirtySet
     fn add_to_dirty_set(&self, sky_key: &SkyKey, dirty_type: DirtyType) {
         if dirty_type == DirtyType::Rewind {

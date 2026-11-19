@@ -227,11 +227,7 @@ impl<'t> Resolver<'_, 't> {
                         is_syntactic: true,
                         first_start: id.start,
                     });
-                    self.blocks
-                        .last_mut()
-                        .unwrap()
-                        .bindings
-                        .insert(name, bind);
+                    self.blocks.last_mut().unwrap().bindings.insert(name, bind);
                 }
                 Some(&b) => bind = b,
             }

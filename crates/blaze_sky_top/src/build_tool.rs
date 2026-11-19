@@ -10,7 +10,9 @@
 
 use std::sync::Arc;
 
+use blaze_build_config::build_options::BuildOptions;
 use blaze_build_config::fragment::InvalidConfigurationException;
+use blaze_cmdline::Label;
 use blaze_cmdline::TargetParsingException;
 use blaze_events::{Event, ExtendedEventHandler};
 use blaze_optdefs::command::analysis_options::AnalysisOptions;
@@ -26,6 +28,7 @@ use blaze_protos::failure_details::{
 };
 use blaze_query_engine::DetailedExitCode;
 use blaze_vfs::PathFragment;
+use indexmap::{IndexMap, IndexSet};
 
 use crate::analysis_phase_runner;
 use crate::build_view::AnalysisResult;
@@ -75,6 +78,26 @@ pub struct BuildRequest {
     /// to the first pattern of a `somepath()` / `allpaths()` query; `None` otherwise).
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:262 BuildTool.buildTargets
     pub targets_for_project_resolution: Option<Vec<String>>,
+    /// What `Project.applySclConfig` reads from the command: `getUserOptions()`, the names of
+    /// every option (BuildTool.buildTargets) and `env.getConfigFlagDefinitions()`.
+    pub project_options_context: crate::project::ProjectOptionsContext,
+    /// Applies a project file's flags to the command's options (BuildTool.buildTargets); `None`
+    /// for a command that does not provide it.
+    pub project_options_applier: Option<Arc<dyn ProjectOptionsApplier>>,
+}
+
+/// The part of `BuildTool.buildTargets` that parses the flags of a project file into the
+/// command's options parser and recreates the build options
+/// (`runtime.createBuildOptions(optionsParser)`): the options parser belongs to the command
+/// (blaze_runtime).
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:352 BuildTool.buildTargets
+pub trait ProjectOptionsApplier: Send + Sync {
+    fn apply(
+        &self,
+        project_file: &Label,
+        options: &IndexSet<String>,
+        skyframe_executor: &SkyframeExecutor,
+    ) -> Result<BuildOptions, BuildToolError>;
 }
 
 /// `ExtendedEventHandler.NOOP` as an owned handler (blaze_events' `NullEventHandler` has only a
@@ -147,7 +170,50 @@ impl BuildRequest {
             needs_instrumentation_filter: false,
             merged_analysis_and_execution: false,
             targets_for_project_resolution: None,
+            project_options_context: crate::project::ProjectOptionsContext {
+                all_option_names: Arc::new(Self::all_option_names(options)),
+                user_options: Arc::new(Self::user_options(options)),
+                config_flag_definitions: Arc::default(),
+            },
+            project_options_applier: None,
         }
+    }
+
+    /// `options.getUserOptions()` in the iteration order of Java's map.
+    ///
+    /// PORT: java-hash-order. `OptionsParser.getUserOptions` fills a `HashMap` and returns
+    /// `ImmutableMap.copyOf` of it, so `BuildRequest.userOptions` iterates in the `HashMap`'s
+    /// order (seen in `FlagSetFunction.validateNoExtraFlagsSet`'s "Found [...]" list). Blaze's
+    /// `get_user_options` keeps insertion order; it is reordered here.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:225 BuildRequest.<init>
+    fn user_options(options: &OptionsParser) -> IndexMap<String, String> {
+        let user_options = options.get_user_options();
+        let keys: Vec<String> = user_options.keys().cloned().collect();
+        blaze_util::profiler::java_hash_order::java_hash_map_order(
+            &keys,
+            |k| blaze_util::profiler::java_hash_order::string_hash_code(k),
+            blaze_util::profiler::java_hash_order::Insertion::Put,
+        )
+        .into_iter()
+        .map(|k| {
+            let v = user_options[&k].clone();
+            (k, v)
+        })
+        .collect()
+    }
+
+    /// The names of every option the parser recognizes, plus `no<name>` for boolean options.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:331 BuildTool.buildTargets
+    fn all_option_names(options: &OptionsParser) -> IndexSet<String> {
+        let mut all_option_names = IndexSet::new();
+        for option_definition in options.get_options_sorted_by_category().values().flatten() {
+            all_option_names.insert(option_definition.get_option_name().to_owned());
+            // --no[flag_name] is a valid flag only if [flag_name] is a boolean flag.
+            if option_definition.uses_boolean_value_syntax() {
+                all_option_names.insert(format!("no{}", option_definition.get_option_name()));
+            }
+        }
+        all_option_names
     }
 
     /// The aspects of the request: `--aspects`, and the validation aspect when
@@ -594,7 +660,13 @@ impl<'a> BuildTool<'a> {
         // PORT: BuildStartingEvent and ExecRootEvent are posted by the command, which builds
         // the build event stream (blaze_runtime commands/bep.rs); initializeOutputFilter belongs
         // to the UI.
-        let target_pattern_phase_value = self.evaluate_target_patterns(request)?;
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:298 BuildTool.buildTargets
+        blaze_util::profiler::Profiler::instance()
+            .mark_phase(blaze_util::profiler::ProfilePhase::TARGET_PATTERN_EVAL);
+        let c = blaze_util::profiler::Profiler::instance().profile_info("evaluateTargetPatterns");
+        let target_pattern_phase_value = self.evaluate_target_patterns(request);
+        drop(c);
+        let target_pattern_phase_value = target_pattern_phase_value?;
         if let Some(hooks) = self.build_event_hooks {
             hooks.target_patterns_evaluated(
                 request,
@@ -634,15 +706,46 @@ impl<'a> BuildTool<'a> {
             .as_ref()
             .unwrap_or(&target_pattern_phase_value);
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:343 BuildTool.buildTargets
-        crate::project::evaluate_project_file(
+        let project_evaluation_result = crate::project::evaluate_project_file(
             request.get_remote_analysis_caching_options(),
             request.get_build_options(),
             &build_options,
             target_patterns_for_project_resolution.get_non_expanded_labels(),
+            &request.project_options_context,
             self.skyframe_executor,
             self.reporter.clone(),
         )
-        .map_err(BuildToolError::LoadingFailed)?;
+        .map_err(|e| match e {
+            crate::project::ProjectEvaluationError::LoadingFailed(e) => {
+                BuildToolError::LoadingFailed(e)
+            }
+            crate::project::ProjectEvaluationError::InvalidConfiguration(e) => {
+                BuildToolError::InvalidConfiguration(e)
+            }
+        })?;
+        let mut build_options = build_options;
+        if !project_evaluation_result.build_options.is_empty() {
+            // First parse the native options from the project file, then its Starlark options;
+            // buildOptions = runtime.createBuildOptions(optionsParser).
+            // PORT: the CanonicalCommandLineEvent / UpdateOptionsEvent posts belong to the
+            // command's build event stream (blaze_runtime), which the applier does not post.
+            let project_file = project_evaluation_result
+                .project_file
+                .as_ref()
+                .expect("projectFile().get()");
+            build_options = match &request.project_options_applier {
+                Some(applier) => Arc::new(applier.apply(
+                    project_file,
+                    &project_evaluation_result.build_options,
+                    self.skyframe_executor,
+                )?),
+                None => blaze_util::unported!(
+                    "BuildTool.buildTargets",
+                    "project file options for the {} command",
+                    request.command_name
+                ),
+            };
+        }
         if let Some(hooks) = self.build_event_hooks {
             hooks.project_evaluated();
         }
@@ -683,16 +786,6 @@ impl<'a> BuildTool<'a> {
                         &analysis_result,
                     )?,
                     None => blaze_util::unported!("ExecutionTool.executeBuild"),
-                }
-                // AnalysisAndExecutionPhaseRunner.execute reports the targets once the merged
-                // phase returned (analysis_phase_runner::execute did not).
-                // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:135 AnalysisAndExecutionPhaseRunner.execute
-                if request.with_merged_analysis_and_execution_source_of_truth() {
-                    analysis_phase_runner::report_analyzed_targets(
-                        self.reporter.as_ref(),
-                        request,
-                        &analysis_result,
-                    );
                 }
             } else if let Some(hooks) = self.build_event_hooks {
                 // env.getReporter().post(new NoExecutionEvent())

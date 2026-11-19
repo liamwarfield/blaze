@@ -59,6 +59,11 @@ impl BlazeCommand for FetchCommand {
                 Some(env.get_command_id().to_string()),
             );
         }
+        // The UI's subscriber of NoBuildEvent (showProgress = true).
+        // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:777 UiEventHandler.noBuild
+        if let Some(handler) = env.get_ui_event_handler() {
+            handler.no_build(true);
+        }
 
         let fetch_options: FetchOptions = options.get_options().expect("FetchOptions");
         let mut repo_precomputed = RepoPrecomputedValues::default();
@@ -263,6 +268,10 @@ fn post_no_build_request_finished_event(
             use blaze_events::Clock as _;
             blaze_events::JavaClock.current_time_millis()
         });
+    }
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:788 UiEventHandler.noBuildFinished
+    if let Some(handler) = env.get_ui_event_handler() {
+        handler.no_build_finished();
     }
     result
 }

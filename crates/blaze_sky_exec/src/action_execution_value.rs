@@ -1,12 +1,12 @@
 //! `ActionExecutionValue`: the metadata of an executed action's outputs.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use blaze_actions::Artifact;
 use blaze_actions::actions::action::Action;
 use blaze_actions::actions::artifact::OwnerlessArtifactWrapper;
-use blaze_exec::actions::action_adapters::artifact_input;
+use blaze_exec::actions::action_adapters::{artifact_input, as_blaze_artifact};
 use blaze_exec::actions::{FileArtifactValue, RunfilesArtifactValue, TreeArtifactValue};
 use indexmap::IndexMap;
 
@@ -25,13 +25,96 @@ pub struct ActionExecutionValue {
     rich_artifact_metadata: Option<FileArtifactValue>,
 }
 
+/// `TreeArtifactValue.MISSING_TREE_ARTIFACT`: a value that represents a missing tree artifact.
+///
+/// PORT: Java's marker is an anonymous `TreeArtifactValue` subclass whose `getChildValues`,
+/// `getChildren`, `getMetadata` and `getDigest` throw `UnsupportedOperationException` and whose
+/// `equals` is identity. Blaze's `TreeArtifactValue` (in `blaze_exec`) has no marker variant, so
+/// the marker is this one shared instance, recognized by pointer identity
+/// ([`is_missing_tree_artifact`]); code that would call one of the throwing methods on it checks
+/// for it first and panics with Java's text.
+// Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:428 TreeArtifactValue.MISSING_TREE_ARTIFACT
+pub static MISSING_TREE_ARTIFACT: LazyLock<Arc<TreeArtifactValue>> = LazyLock::new(|| {
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:431 TreeArtifactValue.createMarker
+    Arc::new(TreeArtifactValue {
+        child_values: Vec::new(),
+        archived_representation: None,
+        metadata: None,
+        resolved_path: None,
+    })
+});
+
+/// `TreeArtifactValue.MISSING_TREE_ARTIFACT.equals(value)` (identity).
+pub fn is_missing_tree_artifact(value: &Arc<TreeArtifactValue>) -> bool {
+    Arc::ptr_eq(value, &MISSING_TREE_ARTIFACT)
+}
+
+/// The argument checks at the start of `ActionExecutionValue.create(artifactData,
+/// treeArtifactData, richArtifactData, discoveredModules)`, in Java's order.
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:69 ActionExecutionValue.create
+fn check_output_data(
+    artifact_data: &IndexMap<Artifact, FileArtifactValue>,
+    tree_artifact_data: &IndexMap<Artifact, Arc<TreeArtifactValue>>,
+) {
+    // Use forEach instead of entrySet to avoid instantiating an EntrySet in ImmutableMap.
+    for (artifact, value) in artifact_data {
+        blaze_util::check_argument!(
+            !artifact.is_child_of_declared_directory(),
+            "{} should only be stored in a TreeArtifactValue",
+            artifact
+        );
+        blaze_util::check_argument!(
+            !value.get_type().is_file() || value.get_digest().is_some(),
+            "Missing digest for {}",
+            artifact
+        );
+    }
+    for (tree, tree_value) in tree_artifact_data {
+        // MISSING_TREE_ARTIFACT.getChildValues() throws.
+        // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:445 TreeArtifactValue.createMarker
+        if is_missing_tree_artifact(tree_value) {
+            panic!("UnsupportedOperationException: MISSING_TREE_ARTIFACT");
+        }
+        for (child, child_value) in &tree_value.child_values {
+            // Ignore symlinks to directories, which don't have a digest.
+            if !(!child_value.get_type().is_file() || child_value.get_digest().is_some()) {
+                // PORT: the child is a `TreeFileArtifact`; its `toString` is the blaze_actions
+                // artifact's `Display` (the execution-layer input's `Display` is only the exec
+                // path).
+                let child = match as_blaze_artifact(child) {
+                    Some(artifact) => artifact.to_string(),
+                    None => child.to_string(),
+                };
+                panic!(
+                    "IllegalArgumentException: Missing digest for file {} in tree artifact {}",
+                    child, tree
+                );
+            }
+        }
+    }
+}
+
 impl ActionExecutionValue {
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:93 ActionExecutionValue.create
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:63 ActionExecutionValue.create
     pub fn create(
         artifact_data: IndexMap<Artifact, FileArtifactValue>,
         tree_artifact_data: IndexMap<Artifact, Arc<TreeArtifactValue>>,
         rich_artifact_data: Option<Arc<RunfilesArtifactValue>>,
     ) -> ActionExecutionValue {
+        check_output_data(&artifact_data, &tree_artifact_data);
+        if rich_artifact_data.is_some() {
+            blaze_util::check_argument!(
+                artifact_data.len() == 1,
+                "actions with rich artifact data should have a single output file (the \
+                 manifest): {:?}",
+                artifact_data
+            );
+            blaze_util::check_argument!(
+                tree_artifact_data.is_empty(),
+                "actions with rich artifact data do not output tree artifacts: {:?}",
+                tree_artifact_data
+            );
+        }
         ActionExecutionValue {
             artifact_data,
             tree_artifact_data,
@@ -48,6 +131,7 @@ impl ActionExecutionValue {
         tree_artifact_data: IndexMap<Artifact, Arc<TreeArtifactValue>>,
         rich_artifact_data: Option<(Arc<RunfilesArtifactValue>, FileArtifactValue)>,
     ) -> ActionExecutionValue {
+        check_output_data(&artifact_data, &tree_artifact_data);
         if rich_artifact_data.is_some() {
             blaze_util::check_argument!(
                 artifact_data.len() == 1,
@@ -337,6 +421,223 @@ mod transform_for_shared_action_tests {
                 .unwrap()
                 .get_artifact_owner()
                 == second.get_artifact_owner()
+        );
+    }
+}
+
+#[cfg(test)]
+mod action_execution_value_test {
+    //! Port of `ActionExecutionValueTest`
+    //! (src/test/java/com/google/devtools/build/lib/skyframe/ActionExecutionValueTest.java): its
+    //! two `@Test` methods, `equality` (:62) and `serialization` (:135), both ignored (see the
+    //! reasons). Neither covers the "Missing digest" checks of `ActionExecutionValue.create`
+    //! (skyframe/ActionExecutionValue.java:70-93); the tests below them check those against the
+    //! Java lines and are marked as not from Java.
+
+    use std::any::Any;
+    use std::fmt;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::panic::AssertUnwindSafe;
+    use std::sync::Arc;
+
+    use blaze_actions::actions::action_lookup::ActionLookupKey;
+    use blaze_actions::actions::artifact::SpecialArtifactType;
+    use blaze_actions::{ActionLookupData, ActionLookupKeyRef, Artifact, ArtifactRoot, RootType};
+    use blaze_cmdline::Label;
+    use blaze_exec::actions::action_adapters::artifact_input;
+    use blaze_exec::actions::{FileArtifactValue, TreeArtifactValue};
+    use blaze_vfs::{DigestHashFunction, FileSystemExt, FileSystemRef, UnixFileSystem};
+    use indexmap::IndexMap;
+
+    use super::{ActionExecutionValue, MISSING_TREE_ARTIFACT};
+
+    /// `ActionsTestUtil.NULL_ARTIFACT_OWNER`.
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct NullArtifactOwner;
+
+    impl fmt::Display for NullArtifactOwner {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("NULL_ARTIFACT_OWNER")
+        }
+    }
+
+    impl ActionLookupKey for NullArtifactOwner {
+        fn get_label(&self) -> Option<Label> {
+            None
+        }
+        fn get_configuration_checksum(&self) -> Option<String> {
+            None
+        }
+        fn function_name(&self) -> &'static str {
+            "NULL_ARTIFACT_OWNER"
+        }
+        fn key_equals(&self, other: &dyn ActionLookupKey) -> bool {
+            other.as_any().downcast_ref::<NullArtifactOwner>().is_some()
+        }
+        fn key_hash(&self) -> u64 {
+            let mut h = DefaultHasher::new();
+            self.hash(&mut h);
+            h.finish()
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    // Java: ActionExecutionValueTest.java:58 ActionExecutionValueTest.OUTPUT_ROOT
+    fn output_root() -> ArtifactRoot {
+        let fs: FileSystemRef = UnixFileSystem::create(DigestHashFunction::Sha256);
+        ArtifactRoot::as_derived_root(&fs.get_path("/execroot"), RootType::OUTPUT, &["out"])
+    }
+
+    // Java: ActionExecutionValueTest.java:214 ActionExecutionValueTest.output
+    fn output(root: &ArtifactRoot, root_relative_path: &str) -> Artifact {
+        Artifact::create_derived_artifact(
+            root.clone(),
+            root.get_exec_path().get_relative_str(root_relative_path),
+            ActionLookupKeyRef::new(NullArtifactOwner),
+        )
+    }
+
+    // Java: ActionExecutionValueTest.java:229 ActionExecutionValueTest.tree
+    fn tree(root: &ArtifactRoot, root_relative_path: &str) -> Artifact {
+        let result = Artifact::create_special_artifact(
+            root.clone(),
+            root.get_exec_path().get_relative_str(root_relative_path),
+            ActionLookupKeyRef::new(NullArtifactOwner),
+            SpecialArtifactType::TREE,
+        );
+        // ACTION_LOOKUP_DATA_1 = ActionLookupData.create(KEY, 1)
+        result.set_generating_action_key(ActionLookupData::create(
+            ActionLookupKeyRef::new(NullArtifactOwner),
+            1,
+        ));
+        result
+    }
+
+    fn panic_message(f: impl FnOnce()) -> String {
+        let payload = std::panic::catch_unwind(AssertUnwindSafe(f))
+            .expect_err("expected a panic, nothing was thrown");
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default()
+    }
+
+    // Java: ActionExecutionValueTest.java:62 ActionExecutionValueTest.equality
+    #[test]
+    #[ignore = "ActionExecutionValue.equals (the equals of Java's SingleOutputFile, \
+                MultiOutputFile, SingleTree, MultiTree, WithRichData and ModuleDiscovering \
+                subclasses), FilesetOutputTree rich data and discoveredModules are not ported"]
+    fn equality() {
+        blaze_util::unported!("ActionExecutionValue.equals");
+    }
+
+    // Java: ActionExecutionValueTest.java:135 ActionExecutionValueTest.serialization
+    #[test]
+    #[ignore = "Skyframe serialization (SerializationTester, the ActionExecutionValue codecs) is \
+                not ported"]
+    fn serialization() {
+        blaze_util::unported!("SerializationTester");
+    }
+
+    /// Not a Java test: the first `checkArgument` of `ActionExecutionValue.create`
+    /// (skyframe/ActionExecutionValue.java:72-75).
+    #[test]
+    fn create_rejects_tree_child_in_artifact_data() {
+        let root = output_root();
+        let tree = tree(&root, "tree");
+        let child = Artifact::create_tree_output_str(&tree, "file1");
+        let mut data = IndexMap::new();
+        data.insert(
+            child.clone(),
+            FileArtifactValue::create_for_remote_file(vec![1], 1, 1),
+        );
+        assert_eq!(
+            panic_message(|| {
+                ActionExecutionValue::create(data, IndexMap::new(), None);
+            }),
+            format!(
+                "IllegalArgumentException: {child} should only be stored in a TreeArtifactValue"
+            )
+        );
+    }
+
+    /// Not a Java test: the "Missing digest" check of `ActionExecutionValue.create` for an output
+    /// file (skyframe/ActionExecutionValue.java:76-79).
+    #[test]
+    fn create_rejects_file_without_digest() {
+        let root = output_root();
+        let file = output(&root, "file1");
+        let mut data = IndexMap::new();
+        data.insert(
+            file.clone(),
+            FileArtifactValue::create_for_normal_file(None, None, 1),
+        );
+        assert_eq!(
+            panic_message(|| {
+                ActionExecutionValue::create(data, IndexMap::new(), None);
+            }),
+            format!("IllegalArgumentException: Missing digest for {file}")
+        );
+    }
+
+    /// Not a Java test: a value that is not a file needs no digest
+    /// (skyframe/ActionExecutionValue.java:77 `!value.getType().isFile()`).
+    #[test]
+    fn create_accepts_non_file_without_digest() {
+        let root = output_root();
+        let mut data = IndexMap::new();
+        data.insert(
+            output(&root, "dir"),
+            FileArtifactValue::create_for_directory_with_mtime(0),
+        );
+        let value = ActionExecutionValue::create(data, IndexMap::new(), None);
+        assert_eq!(value.get_all_file_values().len(), 1);
+    }
+
+    /// Not a Java test: the "Missing digest" check for a tree artifact child
+    /// (skyframe/ActionExecutionValue.java:80-92).
+    #[test]
+    fn create_rejects_tree_child_without_digest() {
+        let root = output_root();
+        let tree = tree(&root, "tree");
+        let child = Artifact::create_tree_output_str(&tree, "file1");
+        let tree_value = TreeArtifactValue {
+            child_values: vec![(
+                artifact_input(&child),
+                FileArtifactValue::create_for_normal_file(None, None, 1),
+            )],
+            archived_representation: None,
+            metadata: None,
+            resolved_path: None,
+        };
+        let mut tree_data = IndexMap::new();
+        tree_data.insert(tree.clone(), Arc::new(tree_value));
+        assert_eq!(
+            panic_message(|| {
+                ActionExecutionValue::create(IndexMap::new(), tree_data, None);
+            }),
+            format!(
+                "IllegalArgumentException: Missing digest for file {child} in tree artifact {tree}"
+            )
+        );
+    }
+
+    /// Not a Java test: `MISSING_TREE_ARTIFACT.getChildValues()` throws
+    /// (skyframe/TreeArtifactValue.java:445) when `ActionExecutionValue.create` visits the tree
+    /// values (skyframe/ActionExecutionValue.java:81-83).
+    #[test]
+    fn create_with_missing_tree_artifact_throws() {
+        let root = output_root();
+        let mut tree_data = IndexMap::new();
+        tree_data.insert(tree(&root, "tree"), MISSING_TREE_ARTIFACT.clone());
+        assert_eq!(
+            panic_message(|| {
+                ActionExecutionValue::create(IndexMap::new(), tree_data, None);
+            }),
+            "UnsupportedOperationException: MISSING_TREE_ARTIFACT"
         );
     }
 }

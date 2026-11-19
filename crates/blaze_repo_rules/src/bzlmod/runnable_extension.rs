@@ -560,15 +560,23 @@ impl RegularRunnableExtension {
                                 require_repo_extension_metadata_mode,
                                 extension_id,
                             ) {
-                                // PORT: `extension.implementation().getLocation()` (the location of
-                                // the function definition) is not available from starlark-rust.
-                                blaze_util::unported!(
-                                    "StarlarkFunction.getLocation",
-                                    "module extension {} did not return extension_metadata, but \
-                                 --incompatible_require_repo_extension_metadata={} requires it",
-                                    extension_id,
-                                    require_repo_extension_metadata_mode
-                                );
+                                // Java: RegularRunnableExtension.java:309.
+                                return Err(BodyError::ExternalDeps(
+                                    ExternalDepsException::with_message(
+                                        ExternalDepsCode::ExtensionEvalError,
+                                        format!(
+                                            "module extension {} did not return extension_metadata \
+                                             (implementation at {}), but \
+                                             --incompatible_require_repo_extension_metadata={} \
+                                             requires it",
+                                            extension_id,
+                                            crate::repository::repository_fetch_function::implementation_location(
+                                                &extension.implementation,
+                                            ),
+                                            require_repo_extension_metadata_mode
+                                        ),
+                                    ),
+                                ));
                             }
                             ModuleExtensionMetadata::default_metadata()
                         }

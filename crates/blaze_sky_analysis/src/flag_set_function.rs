@@ -55,6 +55,29 @@ pub struct ConfigValue {
 }
 
 impl ConfigFlagDefinitions {
+    /// `hashCode()`: `definitions.hashCode()`, an `ImmutableListMultimap`'s `asMap().hashCode()`
+    /// (the sum of `key.hashCode() ^ list.hashCode()`); a `ConfigDefinition` record hashes as
+    /// `31 * flags.hashCode() + rcSource.hashCode()`.
+    // Java: com/google/devtools/build/lib/runtime/ConfigFlagDefinitions.java:145 ConfigFlagDefinitions.hashCode
+    pub fn java_hash_code(&self) -> i32 {
+        let list_hash = |items: &mut dyn Iterator<Item = i32>| {
+            items.fold(1i32, |h, x| h.wrapping_mul(31).wrapping_add(x))
+        };
+        let mut grouped: IndexMap<&str, Vec<&ConfigDefinition>> = IndexMap::new();
+        for (name, definition) in &self.definitions {
+            grouped.entry(name).or_default().push(definition);
+        }
+        grouped.iter().fold(0i32, |h, (name, definitions)| {
+            let definitions_hash = list_hash(&mut definitions.iter().map(|d| {
+                let flags = list_hash(&mut d.flags.iter().map(|f| java_hash::string_hash_code(f)));
+                flags
+                    .wrapping_mul(31)
+                    .wrapping_add(java_hash::string_hash_code(&d.rc_source))
+            }));
+            h.wrapping_add(java_hash::string_hash_code(name) ^ definitions_hash)
+        })
+    }
+
     // Java: com/google/devtools/build/lib/runtime/ConfigFlagDefinitions.java:46 ConfigFlagDefinitions.<init>
     pub fn new(definitions: Vec<(String, ConfigDefinition)>) -> Self {
         ConfigFlagDefinitions { definitions }
@@ -70,7 +93,10 @@ impl ConfigFlagDefinitions {
 
     // Java: com/google/devtools/build/lib/runtime/ConfigFlagDefinitions.java:63 ConfigFlagDefinitions.get
     /// `Err` is the `OptionsParsingException` message.
-    pub fn get(config_name: &str, definitions: &ConfigFlagDefinitions) -> Result<ConfigValue, String> {
+    pub fn get(
+        config_name: &str,
+        definitions: &ConfigFlagDefinitions,
+    ) -> Result<ConfigValue, String> {
         if definitions.get_definitions(config_name).is_empty() {
             return Err(format!("--config={} doesn't exist", config_name));
         }
@@ -180,6 +206,86 @@ impl Hash for FlagSetKey {
     }
 }
 
+impl FlagSetKey {
+    /// The record's `hashCode()` (`ObjectMethods`: `31 * result + hash(component)` from 0, in
+    /// component order). Callers that iterate a `HashMap` keyed by `FlagSetValue.Key` (the
+    /// `EvaluationResult` of `Project.applySclConfig`) order by it.
+    // Java: com/google/devtools/build/lib/skyframe/config/FlagSetValue.java:47 FlagSetValue.Key
+    pub fn java_hash_code(&self) -> i32 {
+        use java_hash::*;
+        // ImmutableSet: the sum of the elements' hashes.
+        let targets = self
+            .targets
+            .iter()
+            .fold(0i32, |h, l| h.wrapping_add(label_hash_code(l)));
+        // BuildOptions.hashCode: 31 + checksum().hashCode().
+        let target_options = 31i32.wrapping_add(string_hash_code(self.target_options.checksum()));
+        let all_option_names = self
+            .all_option_names
+            .iter()
+            .fold(0i32, |h, n| h.wrapping_add(string_hash_code(n)));
+        // ImmutableMap: the sum of key.hashCode() ^ value.hashCode().
+        let user_options = self.user_options.iter().fold(0i32, |h, (k, v)| {
+            h.wrapping_add(string_hash_code(k) ^ string_hash_code(v))
+        });
+        let config_flag_definitions = self.config_flag_definitions.java_hash_code();
+        let enforce_canonical = if self.enforce_canonical { 1231 } else { 1237 };
+        [
+            targets,
+            label_hash_code(&self.project_file),
+            string_hash_code(&self.scl_config),
+            target_options,
+            all_option_names,
+            user_options,
+            config_flag_definitions,
+            enforce_canonical,
+        ]
+        .iter()
+        .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(*c))
+    }
+}
+
+/// `hashCode()` of the Java types in `FlagSetValue.Key`.
+mod java_hash {
+    use blaze_cmdline::Label;
+
+    /// `String.hashCode()` (UTF-16 code units).
+    pub fn string_hash_code(value: &str) -> i32 {
+        blaze_util::profiler::java_hash_order::string_hash_code(value)
+    }
+
+    /// `HashCodes.hashObjects(o1, ..., on)`.
+    // Java: com/google/devtools/build/lib/util/HashCodes.java:46 HashCodes.hashObjects
+    fn hash_objects(hashes: &[i32]) -> i32 {
+        hashes
+            .iter()
+            .fold(1i32, |h, x| h.wrapping_mul(31).wrapping_add(*x))
+    }
+
+    /// `Label.hashCode()`: `hashCode(name, packageIdentifier)`;
+    /// `PackageIdentifier.hashCode()`: `hashObjects(repository, pkgName)`;
+    /// `RepositoryName.hashCode()`: `hashObjects(name, contextRepoIfNotVisible,
+    /// didYouMeanSuffix)`.
+    ///
+    /// PORT: the labels here are targets and project files of the build, in visible
+    /// repositories (`contextRepoIfNotVisible` and `didYouMeanSuffix` are null).
+    // Java: com/google/devtools/build/lib/cmdline/Label.java:642 Label.hashCode
+    pub fn label_hash_code(label: &Label) -> i32 {
+        let package_identifier = label.get_package_identifier();
+        let repository = hash_objects(&[
+            string_hash_code(package_identifier.get_repository().get_name()),
+            0,
+            0,
+        ]);
+        let package = hash_objects(&[
+            repository,
+            string_hash_code(package_identifier.get_package_fragment().get_path_string()),
+        ]);
+        let result = 31i32.wrapping_add(string_hash_code(label.get_name()));
+        31i32.wrapping_mul(result).wrapping_add(package)
+    }
+}
+
 impl fmt::Debug for FlagSetKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -263,7 +369,10 @@ fn before_equals(s: &str) -> &str {
 }
 
 // Java: com/google/devtools/build/lib/skyframe/config/FlagSetFunction.java:74 FlagSetFunction.compute
-fn compute(key: &FlagSetKey, env: &mut Environment<'_>) -> Result<Option<FlagSetValue>, ComputeError> {
+fn compute(
+    key: &FlagSetKey,
+    env: &mut Environment<'_>,
+) -> Result<Option<FlagSetValue>, ComputeError> {
     if !key.enforce_canonical {
         if !key.scl_config.is_empty() {
             env.listener().handle(&Event::info(format!(
@@ -319,7 +428,9 @@ fn get_scl_config(
         // check that all targets resolves to the same set of flags.
         // orders of flags should not matter here.
         let resolved_default_buildable_unit =
-            resolve_single_matching_default_buildable_unit_for_all_targets(&default_buildable_units);
+            resolve_single_matching_default_buildable_unit_for_all_targets(
+                &default_buildable_units,
+            );
         if resolved_default_buildable_unit.len() > 1 {
             return Err(flag_set_function_exception(
                 "Building target(s) with different configurations are not supported.".to_owned(),
@@ -419,8 +530,11 @@ fn get_scl_config(
     }
 
     // Replace --config=foo entries with their expanded definitions.
-    let scl_config_value =
-        expand_config_flags(scl_config_name, &scl_config_value, &key.config_flag_definitions)?;
+    let scl_config_value = expand_config_flags(
+        scl_config_name,
+        &scl_config_value,
+        &key.config_flag_definitions,
+    )?;
     // TODO: b/388289978 - Fail on unrecognized options from --config and warn when ignoring
     //     recognized options that are filtered out here.
     let options_to_apply = filter_options(&scl_config_value, &build_options_as_strings);
@@ -489,8 +603,7 @@ fn filter_projects<'a>(
 fn resolve_single_matching_default_buildable_unit_for_all_targets<'a>(
     default_buildable_units_for_all_targets: &[&'a BuildableUnit],
 ) -> Vec<&'a BuildableUnit> {
-    let mut flags_to_first_buildable_unit: IndexMap<&[String], &'a BuildableUnit> =
-        IndexMap::new();
+    let mut flags_to_first_buildable_unit: IndexMap<&[String], &'a BuildableUnit> = IndexMap::new();
     for buildable_unit in default_buildable_units_for_all_targets {
         flags_to_first_buildable_unit
             .entry(buildable_unit.flags())
@@ -508,11 +621,16 @@ fn resolve_single_matching_default_buildable_unit_for_all_targets<'a>(
 
 // Java: com/google/devtools/build/lib/skyframe/config/FlagSetFunction.java:310 FlagSetFunction.doesBuildableUnitMatchTarget
 /// Returns `true` iff the `specific_target` matches the target patterns in the buildable unit.
-pub fn does_buildable_unit_match_target(buildable_unit: &BuildableUnit, specific_target: &Label) -> bool {
+pub fn does_buildable_unit_match_target(
+    buildable_unit: &BuildableUnit,
+    specific_target: &Label,
+) -> bool {
     if buildable_unit.target_pattern_matcher().is_empty() {
         return true;
     }
-    buildable_unit.target_pattern_matcher().contains(specific_target)
+    buildable_unit
+        .target_pattern_matcher()
+        .contains(specific_target)
 }
 
 // Java: com/google/devtools/build/lib/skyframe/config/FlagSetFunction.java:317 FlagSetFunction.getBuildOptionsAsStrings
@@ -624,8 +742,9 @@ fn validate_starlark_flags(
     let mut flag_labels: IndexMap<Label, String> = IndexMap::new();
     let mut bad_flags: IndexSet<String> = IndexSet::new();
     // Get the context we need to properly parse labels that may come from other repos.
-    let Some(main_repo_mapping) =
-        env.get_value(RepositoryMappingKey::key(blaze_cmdline::repository_name::MAIN.clone()))?
+    let Some(main_repo_mapping) = env.get_value(RepositoryMappingKey::key(
+        blaze_cmdline::repository_name::MAIN.clone(),
+    ))?
     else {
         return Ok(false);
     };
@@ -652,7 +771,10 @@ fn validate_starlark_flags(
     for label in flag_labels.keys() {
         package_keys.insert(PackageKey::key(label.get_package_identifier().clone()));
     }
-    let sky_keys: Vec<SkyKey> = package_keys.iter().map(|k| SkyKey::new(k.clone())).collect();
+    let sky_keys: Vec<SkyKey> = package_keys
+        .iter()
+        .map(|k| SkyKey::new(k.clone()))
+        .collect();
     let evaluated = env.get_values_and_exceptions(&sky_keys)?;
     if env.values_missing() {
         return Ok(false);
@@ -660,17 +782,14 @@ fn validate_starlark_flags(
     // Check that they're real, flag-typed targets.
     for (label, given) in &flag_labels {
         let key = PackageKey::key(label.get_package_identifier().clone());
-        let is_build_setting = match evaluated
-            .get_or_throw_typed::<PackageKey, NoSuchPackageException>(&key)
-        {
-            Ok(Some(pkg)) => match pkg.get_package().get_target(label.get_name()) {
-                Ok(target) => target
-                    .as_rule()
-                    .is_some_and(|rule| rule.is_build_setting()),
-                Err(_) => false,
-            },
-            _ => false,
-        };
+        let is_build_setting =
+            match evaluated.get_or_throw_typed::<PackageKey, NoSuchPackageException>(&key) {
+                Ok(Some(pkg)) => match pkg.get_package().get_target(label.get_name()) {
+                    Ok(target) => target.as_rule().is_some_and(|rule| rule.is_build_setting()),
+                    Err(_) => false,
+                },
+                _ => false,
+            };
         if !is_build_setting {
             bad_flags.insert(given.clone());
         }
@@ -722,9 +841,10 @@ fn expand_config_flags(
         }
         // TODO: b/388289978 - fail when a --config sets non-BuildOptions flags.
         let name = &flag[flag.find('=').unwrap() + 1..];
-        let expanded_flags = ConfigFlagDefinitions::get(name, config_flag_definitions).map_err(
-            |e| flag_set_function_exception(format!("--scl_config={}: {}", scl_config_name, e)),
-        )?;
+        let expanded_flags =
+            ConfigFlagDefinitions::get(name, config_flag_definitions).map_err(|e| {
+                flag_set_function_exception(format!("--scl_config={}: {}", scl_config_name, e))
+            })?;
         for rc_source in &expanded_flags.rc_sources {
             if !GlobalRcUtils::is_global_rc_file(rc_source) {
                 return Err(flag_set_function_exception(format!(
@@ -754,7 +874,9 @@ fn validate_no_extra_flags_set(
     for (option, expanded_from) in user_options {
         // Remove options that aren't part of BuildOptions. This section can be removed once
         // we only include BuildOptions in the passed userOptions.
-        let name = before_equals(option).replacen("--", "", 1).replace('\'', "");
+        let name = before_equals(option)
+            .replacen("--", "", 1)
+            .replace('\'', "");
         if !build_options_as_strings.contains(&name) {
             continue;
         }
@@ -825,7 +947,10 @@ fn validate_no_extra_flags_set(
 
 // Java: com/google/devtools/build/lib/skyframe/config/FlagSetFunction.java:681 FlagSetFunction.supportedConfigsDesc
 /// Returns a user-friendly description of project-supported configurations.
-fn supported_configs_desc(project_file: &Label, configs: &IndexMap<String, BuildableUnit>) -> String {
+fn supported_configs_desc(
+    project_file: &Label,
+    configs: &IndexMap<String, BuildableUnit>,
+) -> String {
     let mut ans = "\nThis project supports:\n".to_owned();
     let longest_name_length = configs.keys().map(|k| k.chars().count()).max().unwrap();
     for (name, unit) in configs {

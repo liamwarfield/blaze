@@ -108,6 +108,35 @@ impl PackageProgressReceiver {
     }
 }
 
+/// This event is fired before the loading phase starts.
+///
+/// PORT: the receiver is the process's [`PACKAGE_PROGRESS`] (module comment).
+// Java: com/google/devtools/build/lib/skyframe/LoadingPhaseStartedEvent.java:21 LoadingPhaseStartedEvent
+#[derive(Debug)]
+pub struct LoadingPhaseStartedEvent {
+    package_progress: &'static PackageProgressReceiver,
+}
+
+impl LoadingPhaseStartedEvent {
+    // Java: com/google/devtools/build/lib/skyframe/LoadingPhaseStartedEvent.java:30 LoadingPhaseStartedEvent.<init>
+    pub fn new(package_progress: &'static PackageProgressReceiver) -> LoadingPhaseStartedEvent {
+        LoadingPhaseStartedEvent { package_progress }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/LoadingPhaseStartedEvent.java:34 LoadingPhaseStartedEvent.getPackageProgressReceiver
+    pub fn get_package_progress_receiver(&self) -> &'static PackageProgressReceiver {
+        self.package_progress
+    }
+}
+
+impl blaze_events::Postable for LoadingPhaseStartedEvent {}
+
+impl std::fmt::Debug for PackageProgressReceiver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PackageProgressReceiver")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::PackageProgressReceiver;

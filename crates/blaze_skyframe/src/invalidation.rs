@@ -447,27 +447,66 @@ impl<'a> DirtyingNodeVisitor<'a> {
         };
 
         let is_changed = invalidation_type == InvalidationType::Changed;
+        // The entry's calls are separate steps, as Java's `synchronized` methods are (a node
+        // another visitor dirties in between makes `markDirty` return null, handled below).
+        notify_graph_listener!(
+            self.graph,
+            &key,
+            IsChanged,
+            Before,
+            crate::graph_listener::Context::Entry
+        );
+        let entry_is_changed = node.lock().entry.is_changed();
+        let already_marked = entry_is_changed
+            || (!is_changed && {
+                notify_graph_listener!(
+                    self.graph,
+                    &key,
+                    IsDirty,
+                    Before,
+                    crate::graph_listener::Context::Entry
+                );
+                node.lock().entry.is_dirty()
+            });
+        if already_marked {
+            // If this node is already marked changed, or we are only marking this node dirty,
+            // and it already is, move along.
+            self.pending_visitations.pending_values.shift_remove(&pair);
+            return;
+        }
+
+        let dirty_type = if is_changed {
+            DirtyType::Change
+        } else {
+            DirtyType::Dirty
+        };
+
+        // This entry remains in the graph in this dirty state until it is re-evaluated.
+        notify_graph_listener!(
+            self.graph,
+            &key,
+            MarkDirty,
+            Before,
+            crate::graph_listener::Context::DirtyType(dirty_type)
+        );
         let marked_dirty_result = {
             let mut state = node.lock();
-            if state.entry.is_changed() || (!is_changed && state.entry.is_dirty()) {
-                // If this node is already marked changed, or we are only marking this node
-                // dirty, and it already is, move along.
-                drop(state);
-                self.pending_visitations.pending_values.shift_remove(&pair);
-                return;
-            }
-
-            let dirty_type = if is_changed {
-                DirtyType::Change
-            } else {
-                DirtyType::Dirty
-            };
-
-            // This entry remains in the graph in this dirty state until it is re-evaluated.
             let r = state.entry.mark_dirty(dirty_type);
             state.refresh_snapshot();
             r.map(|r| (r, dirty_type))
         };
+        notify_graph_listener!(
+            self.graph,
+            &key,
+            MarkDirty,
+            After,
+            crate::graph_listener::Context::MarkDirtyAfter(
+                crate::graph_listener::MarkDirtyAfterContext {
+                    dirty_type,
+                    actually_dirtied: marked_dirty_result.is_some(),
+                }
+            )
+        );
         let Some((marked_dirty_result, dirty_type)) = marked_dirty_result else {
             // Another thread has already dirtied this node. Don't do anything in this thread.
             self.pending_visitations.pending_values.shift_remove(&pair);

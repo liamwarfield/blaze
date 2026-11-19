@@ -2255,3 +2255,7 @@ impl FileSystem for RemoteInMemoryFileSystem {
         inodes.insert_or_throw(link_parent, link_path.get_base_name(), original, link_path)
     }
 }
+
+#[cfg(test)]
+#[path = "path_canonicalizer_tests.rs"]
+mod path_canonicalizer_tests;

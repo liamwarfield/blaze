@@ -287,6 +287,17 @@ fn new_query_environment(
     main_repo_target_parser: TargetPatternParser,
     label_printer: LabelPrinter,
 ) -> Box<dyn AbstractBlazeQueryEnvironment> {
+    // PORT: the receiver is the process's PACKAGE_PROGRESS (Java:
+    // env.getSkyframeExecutor().getPackageProgressReceiver(), never null in Bazel).
+    // Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:256 QueryEnvironmentBasedCommand.newQueryEnvironment
+    let progress_receiver = &blaze_sky_loading::package_progress_receiver::PACKAGE_PROGRESS;
+    progress_receiver.reset();
+    env.reporter.post(Arc::new(
+        blaze_sky_loading::package_progress_receiver::LoadingPhaseStartedEvent::new(
+            progress_receiver,
+        ),
+    ));
+
     // Java: com/google/devtools/build/lib/query2/QueryEnvironmentFactory.java:41 QueryEnvironmentFactory.create
     // canUseSkyQuery(orderedResults, universeScope, packagePath, strictScope=true, ALL_LABELS)
     if !ordered_results && !universe_scope_is_empty {

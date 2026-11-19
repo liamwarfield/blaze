@@ -571,10 +571,24 @@ impl EvalError {
                 .collect::<Vec<_>>()
                 .join("\n");
         }
-        let mut n = self.callstack.len();
         if !self.include_stack {
             return self.message.clone();
         }
+        // Java formatCallStack reads each frame's source line with the SourceReader when it
+        // formats (EvalException.java:225); a frame of a stack assembled without them (a builtin's
+        // `StarlarkThread.getCallStack`, a recorded call stack) gets it here.
+        if self
+            .callstack
+            .iter()
+            .any(|e| e.source_line.is_none() && e.location.as_ref().is_some_and(|l| l.line != 0))
+        {
+            let mut filled = self.clone();
+            filled.read_missing_source_lines();
+            if filled.callstack != self.callstack {
+                return filled.message_with_stack();
+            }
+        }
+        let mut n = self.callstack.len();
         if n == 0 {
             return format!("Error: {}", self.message);
         }

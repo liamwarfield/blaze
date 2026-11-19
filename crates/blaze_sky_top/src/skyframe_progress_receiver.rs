@@ -61,23 +61,14 @@ impl EvaluationProgressReceiver for SkyframeProgressReceiver {
         direct_deps: Option<&GroupedDeps>,
     ) {
         if let Some(execution_progress_receiver) = self.execution_progress_receiver() {
-            execution_progress_receiver.evaluated(sky_key, state, new_value, new_error, direct_deps);
+            execution_progress_receiver.evaluated(
+                sky_key,
+                state,
+                new_value,
+                new_error,
+                direct_deps,
+            );
         }
-    }
-}
-
-/// The process's `PackageProgressReceiver` as the UI reads it (`LoadingPhaseStartedEvent`).
-///
-/// PORT: the receiver lives in `blaze_sky_loading` and the UI's view of it in
-/// `blaze_buildtool`; this crate joins the two.
-pub struct PackageProgressReceiverView(
-    pub &'static blaze_sky_loading::package_progress_receiver::PackageProgressReceiver,
-);
-
-impl blaze_buildtool::runtime::ui_state_tracker::PackageProgress for PackageProgressReceiverView {
-    // Java: com/google/devtools/build/lib/skyframe/PackageProgressReceiver.java:55 PackageProgressReceiver.progressState
-    fn progress_state(&self) -> (String, String) {
-        self.0.progress_state()
     }
 }
 
@@ -87,9 +78,7 @@ pub struct AnalysisProgressReceiverView(
     pub &'static blaze_sky_analysis::analysis_progress_receiver::AnalysisProgressReceiver,
 );
 
-impl blaze_buildtool::runtime::ui_state_tracker::AnalysisProgress
-    for AnalysisProgressReceiverView
-{
+impl blaze_buildtool::runtime::ui_state_tracker::AnalysisProgress for AnalysisProgressReceiverView {
     // Java: com/google/devtools/build/lib/skyframe/AnalysisProgressReceiver.java:67 AnalysisProgressReceiver.getProgressString
     fn get_progress_string(&self) -> String {
         self.0.get_progress_string()

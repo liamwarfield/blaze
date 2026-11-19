@@ -2,6 +2,7 @@
 """Blaze client against a server, compared with the oracle client and server: see `help`."""
 
 import difflib
+import fcntl
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -52,7 +53,8 @@ The tool runs itself inside `systemd-run --user --collect --wait --pipe -p Memor
 unit), unless --no-unit (for a caller that is already in a unit). Every server it starts is
 shut down by its own client and, failing that, killed (pid from
 <output_user_root>/*/server/server.pid.txt, only if alive and its command line names that
-root), after each case and on any failure or interrupt.
+root), after each case and on any failure or interrupt. One run at a time: a second run
+refuses while ~/.cache/blaze/work/server/s1/run.lock is held.
 
 Setup (scratch state under ~/.cache/blaze/work/server/s1, deleted per case except transcripts):
   install/      (--mode jvm) a copy of the oracle's install base, used by both sides through
@@ -698,6 +700,11 @@ def main(argv):
             return rc
 
     os.makedirs(WORK, exist_ok=True)
+    lock = open(os.path.join(WORK, "run.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        die("another interop-client run holds %s" % os.path.join(WORK, "run.lock"))
     staged = None
     if CONTROL:
         BINARIES.update(A=oracle, B=oracle)

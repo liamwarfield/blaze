@@ -57,6 +57,12 @@ impl BlazeCommand for AqueryCommand {
         }
         // The build event stream's posting points (BuildTool's events).
         let bep = env.get_bep().cloned();
+        let build_event_hooks = crate::commands::cquery::PostAnalysisBuildEventHooks {
+            ui_event_handler: env.get_ui_event_handler().cloned(),
+            bep: bep
+                .as_deref()
+                .map(|b| b as &dyn blaze_sky_top::build_tool::BuildEventHooks),
+        };
         let command_env = PostAnalysisCommandEnvironment {
             skyframe_executor: &skyframe_executor,
             reporter: reporter(env),
@@ -75,9 +81,7 @@ impl BlazeCommand for AqueryCommand {
             },
             options,
             execution_tool: &execution_tool,
-            build_event_hooks: bep
-                .as_deref()
-                .map(|b| b as &dyn blaze_sky_top::build_tool::BuildEventHooks),
+            build_event_hooks: Some(&build_event_hooks),
         };
         let detailed_exit_code = blaze_cquery::commands::aquery_command::exec(&command_env);
         BlazeCommandResult::detailed_exit_code(to_runtime_detailed_exit_code(detailed_exit_code))

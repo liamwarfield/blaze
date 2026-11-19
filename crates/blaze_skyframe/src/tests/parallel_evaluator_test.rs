@@ -235,6 +235,101 @@ fn interrupted_evaluator_thread() {
     });
 }
 
+// Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:419 ParallelEvaluatorTest.interruptedEvaluatorThreadAfterEnqueueBeforeWaitForCompletionAndConstructResult
+// PORT: Java spies (Mockito) on B's entry and makes `addReverseDepAndCheckIfDone(null)` wait
+// and then throw the InterruptedException it sees; here the graph listener (`graph_listener`,
+// the test hook at that call) waits, sees the interrupt of the evaluating thread (the
+// evaluator's interrupt flag) and returns, and the evaluation of B then stops on the interrupt.
+#[test]
+fn interrupted_evaluator_thread_after_enqueue_before_wait_for_completion_and_construct_result() {
+    use crate::graph_listener::{Context as ListenerContext, EventType, Order};
+    // This is a regression test for a crash bug in
+    // AbstractExceptionalParallelEvaluator#doMutatingEvaluation in a very specific window of time
+    // between enqueueing one top-level node for evaluation and checking if another top-level
+    // node is done.
+
+    // When we have two top-level nodes, A and B,
+    let key_a = k("a");
+    let key_b = k("b");
+
+    // And rig the graph and node entries, such that B's addReverseDepAndCheckIfDone waits for A
+    // to start computing and then tries to observe an interrupt (which will happen on the
+    // calling thread, aka the main Skyframe evaluation thread),
+    let key_a_started_computing_latch = Latch::new(1);
+    let key_b_add_reverse_dep_and_check_if_done_latch = Latch::new(1);
+    let key_b_add_reverse_dep_and_check_if_done_interrupted = Arc::new(AtomicBool::new(false));
+    let key_a_compute_interrupted = Arc::new(AtomicBool::new(false));
+    let tester = new_tester();
+    // And A's SkyFunction tries to observe an interrupt after it starts computing,
+    {
+        let (started, interrupted) = (
+            key_a_started_computing_latch.clone(),
+            key_a_compute_interrupted.clone(),
+        );
+        tester.set_builder("a", move |_, _| {
+            started.count_down();
+            match java_sleep(Duration::from_secs(60)) {
+                Err(e) => {
+                    interrupted.store(true, Ordering::SeqCst);
+                    Err(e.into())
+                }
+                Ok(()) => panic!("IllegalStateException: shouldn't get here"),
+            }
+        });
+    }
+    let ev = tester_evaluator(tester);
+    {
+        let key_b = key_b.clone();
+        let (a_started, b_latch, b_interrupted) = (
+            key_a_started_computing_latch.clone(),
+            key_b_add_reverse_dep_and_check_if_done_latch.clone(),
+            key_b_add_reverse_dep_and_check_if_done_interrupted.clone(),
+        );
+        // Java: Thread.sleep in the main evaluation thread, interrupted by evalThread.interrupt().
+        let main_thread_interrupt = ev.interrupt_flag();
+        ev.graph.listeners_for_testing.inject(Arc::new(
+            move |key: &SkyKey, event_type: EventType, order: Order, context: &ListenerContext| {
+                if *key == key_b
+                    && event_type == EventType::AddReverseDep
+                    && order == Order::Before
+                    && matches!(context, ListenerContext::Null)
+                {
+                    a_started.wait("A did not start computing");
+                    b_latch.count_down();
+                    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                    while std::time::Instant::now() < deadline {
+                        if main_thread_interrupt.load(Ordering::SeqCst) {
+                            b_interrupted.store(true, Ordering::SeqCst);
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    panic!("IllegalStateException: shouldn't get here");
+                }
+            },
+        ));
+    }
+
+    // And we have a dedicated thread that kicks off the evaluation of A and B together (in that
+    // order).
+    std::thread::scope(|scope| {
+        let eval_thread = scope.spawn(|| ev.evaluate(&[key_a, key_b], &ctx(true, 8)));
+        // Then when we start that thread, we (the thread running the test) are able to observe
+        // that B's addReverseDepAndCheckIfDone has just been called (implying that A has started
+        // to be computed).
+        key_b_add_reverse_dep_and_check_if_done_latch.wait("B's addReverseDepAndCheckIfDone");
+        // Then when we interrupt the evaluation thread,
+        ev.interrupt();
+        // The evaluation thread eventually terminates.
+        let r = eval_thread.join().expect("no crash");
+        assert!(matches!(r, Err(Interrupted)), "{r:?}");
+    });
+    // And we are able to verify both that A's SkyFunction had observed an interrupt,
+    assert!(key_a_compute_interrupted.load(Ordering::SeqCst));
+    // And also that B's addReverseDepAndCheckIfDoneInterrupted had observed an interrupt.
+    assert!(key_b_add_reverse_dep_and_check_if_done_interrupted.load(Ordering::SeqCst));
+}
+
 // Java: ParallelEvaluatorTest.unrecoverableError
 #[test]
 fn unrecoverable_error() {
@@ -621,32 +716,42 @@ fn root_cause_with_no_keep_going() {
     );
 }
 
-// Java: ParallelEvaluatorTest.errorBubblesToParentsOfTopLevelValue
+// Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:1286 ParallelEvaluatorTest.errorBubblesToParentsOfTopLevelValue
 #[test]
 fn error_bubbles_to_parents_of_top_level_value() {
+    use crate::graph_listener::{Context as ListenerContext, EventType, Order};
     for _ in 0..20 {
-        let tester = new_tester();
-        // Java: a graph listener releases the latch when "parent" has added itself as a reverse
-        // dep of "error". Here "parent" counts it down just before it requests "error"; the
-        // request registers the reverse dep before "error" can finish only if "error" has not
-        // committed yet, so "error" also waits until "parent" is blocked on it or computing it.
+        let parent_key = k("parent");
+        let error_key = k("error");
         let latch = Latch::new(1);
-        let l = latch.clone();
-        tester
-            .set_builder("error", move |_, _| {
-                l.wait("parent did not request error");
-                // Let "parent" reach its request (it either claims "error" itself, and then this
-                // function runs under it, or it finds "error" in progress and registers).
-                std::thread::sleep(Duration::from_millis(20));
-                Err(SkyFunctionException::persistent(SomeErrorException("oops".into())).into())
-            })
-            .set_builder("parent", move |_, env| {
-                latch.count_down();
-                let v = env.get_value(T("error"))?;
-                Ok(v.map(|v| (*v).clone()))
-            });
+        let tester = new_tester();
+        tester.set_chained(
+            "error",
+            Chained {
+                wait_to_finish: Some(latch.clone()),
+                ..Chained::default()
+            },
+        );
+        tester.add_dependency("parent", "error");
         let ev = tester_evaluator(tester);
-        let r = eval(&ev, false, 4, &[k("parent"), k("error")]);
+        {
+            let (parent_key, error_key) = (parent_key.clone(), error_key.clone());
+            ev.graph.listeners_for_testing.inject(Arc::new(
+                move |key: &SkyKey,
+                      event_type: EventType,
+                      order: Order,
+                      context: &ListenerContext| {
+                    if *key == error_key
+                        && context.key() == Some(&parent_key)
+                        && event_type == EventType::AddReverseDep
+                        && order == Order::After
+                    {
+                        latch.count_down();
+                    }
+                },
+            ));
+        }
+        let r = eval(&ev, false, 8, &[parent_key, error_key]);
         assert_eq!(r.error_map().len(), 2, "{r:?}");
     }
 }
@@ -1430,16 +1535,17 @@ fn run_dep_on_error_halts_no_keep_going_build_eagerly() {
     }
 }
 
-// Java: ParallelEvaluatorTest.raceConditionWithNoKeepGoingErrors_FutureError
-// PORT: Java holds the commit of "errorKey" (a graph listener on SET_VALUE) until "otherParentKey"
-// was signalled, to show the evaluator does not restart it. There is no restart to race with
-// here; "otherKey" waits until the evaluation has failed instead, which keeps the assertions:
-// each parent runs once in normal evaluation, and only "errorParentKey" is re-run, in error
-// bubbling.
+// Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:2741 ParallelEvaluatorTest.raceConditionWithNoKeepGoingErrors_FutureError
 #[test]
 fn race_condition_with_no_keep_going_errors_future_error() {
+    use crate::graph_listener::{Context as ListenerContext, EventType, Order};
     for _ in 0..10 {
+        let error_committed = Latch::new(1);
         let other_started = Latch::new(1);
+        let other_parent_signaled = Latch::new(1);
+        let error_parent_key = k("errorParentKey");
+        let error_key = k("errorKey");
+        let other_parent_key = k("otherParentKey");
         let num_other_parent_invocations = Arc::new(AtomicUsize::new(0));
         let num_error_parent_invocations = Arc::new(AtomicUsize::new(0));
         let tester = new_tester();
@@ -1452,10 +1558,10 @@ fn race_condition_with_no_keep_going_errors_future_error() {
             });
         }
         {
-            let other_started = other_started.clone();
-            tester.set_builder("otherKey", move |_, env| {
+            let (other_started, error_committed) = (other_started.clone(), error_committed.clone());
+            tester.set_builder("otherKey", move |_, _| {
                 other_started.count_down();
-                wait_for_exception(env, "error didn't get committed to the graph in time");
+                error_committed.wait("error didn't get committed to the graph in time");
                 Ok(Some("other".into()))
             });
         }
@@ -1489,11 +1595,35 @@ fn race_condition_with_no_keep_going_errors_future_error() {
             });
         }
         let ev = tester_evaluator(tester);
-        let r = eval(&ev, false, 4, &[k("otherParentKey"), k("errorParentKey")]);
+        {
+            let (error_key, other_parent_key) = (error_key.clone(), other_parent_key.clone());
+            ev.graph.listeners_for_testing.inject(Arc::new(
+                move |key: &SkyKey, event_type: EventType, order: Order, _: &ListenerContext| {
+                    if *key == error_key
+                        && event_type == EventType::SetValue
+                        && order == Order::After
+                    {
+                        error_committed.count_down();
+                        other_parent_signaled.wait("otherParent didn't get signaled in time");
+                        // We try to give some time for ParallelEvaluator to incorrectly
+                        // re-evaluate 'otherParentKey'. This test case is testing for a real race
+                        // condition and the 10ms time was chosen experimentally to give a true
+                        // positive rate of 99.8% (without a sleep it has a 1% true positive
+                        // rate). There's no good way to do this without sleeping.
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    if *key == other_parent_key
+                        && event_type == EventType::Signal
+                        && order == Order::After
+                    {
+                        other_parent_signaled.count_down();
+                    }
+                },
+            ));
+        }
+        let r = eval(&ev, false, 8, &[other_parent_key, error_parent_key.clone()]);
         assert!(r.has_error());
-        assert!(r.get_error(&k("errorParentKey")).is_some());
-        assert_eq!(num_other_parent_invocations.load(Ordering::SeqCst), 1);
-        assert_eq!(num_error_parent_invocations.load(Ordering::SeqCst), 2);
+        assert!(r.get_error(&error_parent_key).is_some(), "{r:?}");
     }
 }
 
@@ -1883,6 +2013,76 @@ fn run_partial_result_on_interruption() {
                 receiver.evaluated_keys(),
                 HashSet::from([k("fast"), k("leaf")])
             );
+        }
+    }
+}
+
+// Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:2880 ParallelEvaluatorTest.declaresDifferentDepsAfterRestart
+/// Explicit test that we tolerate a SkyFunction that declares different [sequences of] deps each
+/// restart. Such behavior from a SkyFunction isn't desired, but Bazel-on-Skyframe does indeed do
+/// this.
+#[test]
+#[ignore = "restart model (lib.rs `Model`): the test's function declares a dep, expects it \
+            missing (`checkState(env.valuesMissing())`) and returns null, three runs in a row; \
+            the blocking engine computes the dep in the request (values are not missing) and \
+            never restarts a function"]
+fn declares_different_deps_after_restart() {
+    let tester = new_tester();
+    tester.set("grandChild1", "grandChild1");
+    tester
+        .add_dependency("child1", "grandChild1")
+        .with("child1", |s| s.value = Some("child1".into()));
+    tester.set("grandChild2", "grandChild2");
+    tester.set("child2", "child2");
+    let num_computes = Arc::new(AtomicUsize::new(0));
+    {
+        let num_computes = num_computes.clone();
+        tester.set_builder("parent", move |_, env| {
+            match num_computes.fetch_add(1, Ordering::SeqCst) + 1 {
+                1 => {
+                    env.get_value(T("child1"))?;
+                    blaze_util::check_state!(env.values_missing());
+                    Ok(None)
+                }
+                2 => {
+                    env.get_value(T("child2"))?;
+                    blaze_util::check_state!(env.values_missing());
+                    Ok(None)
+                }
+                3 => Ok(Some("the third time's the charm!".into())),
+                _ => panic!("IllegalStateException"),
+            }
+        });
+    }
+    let ev = tester_evaluator(tester);
+    // Java: DeterministicHelper.DeterministicProcessableGraph.
+    ev.deterministic_for_testing.store(true, Ordering::SeqCst);
+    let r = eval(&ev, false, 8, &[k("parent")]);
+    assert!(!r.has_error(), "{r:?}");
+    assert_eq!(*r.get(&T("parent")).unwrap(), "the third time's the charm!");
+}
+
+// Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:4239 ParallelEvaluatorTest.customKeepGoingPredicate_sameForAllKeys
+// PORT: the predicate is the same for every key, which is the evaluation's keep_going flag (the
+// per-key predicate is not ported, lib.rs `Not ported`).
+#[test]
+fn custom_keep_going_predicate_same_for_all_keys() {
+    for keep_going in [false, true] {
+        let receiver = Arc::new(RecordingReceiver::default());
+        let tester = new_tester();
+        tester.set_has_error("error", true);
+        tester.add_dependency("parent", "mid");
+        tester.add_dependency("mid", "error");
+        let ev = full_storage_evaluator(tester, Some(receiver.clone()));
+
+        let r = eval(&ev, keep_going, 8, &[k("parent")]);
+
+        assert!(r.has_error());
+        if keep_going {
+            assert_eq!(receiver.evaluated_keys().len(), 3, "{keep_going}");
+        } else {
+            // errorKey
+            assert_eq!(receiver.evaluated_keys().len(), 1, "{keep_going}");
         }
     }
 }

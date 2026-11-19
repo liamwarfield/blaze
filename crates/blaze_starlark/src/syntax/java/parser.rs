@@ -450,8 +450,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_string_literal(&mut self) -> Expr {
-        let value = match &self.lexer.value {
-            TokenValue::Str(s) => s.clone(),
+        // The token's value is moved out: nothing reads it after `next_token`.
+        let value = match std::mem::replace(&mut self.lexer.value, TokenValue::None) {
+            TokenValue::Str(s) => s,
             _ => String::new(),
         };
         let start = self.lexer.start;
@@ -470,8 +471,8 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self) -> Expr {
         match self.kind() {
             T::Int => {
-                let value = match &self.lexer.value {
-                    TokenValue::Int(s) => s.clone(),
+                let value = match std::mem::replace(&mut self.lexer.value, TokenValue::None) {
+                    TokenValue::Int(s) => s,
                     _ => "0".to_owned(),
                 };
                 let start = self.lexer.start;
@@ -739,8 +740,8 @@ impl<'a> Parser<'a> {
             };
             return id;
         }
-        let name = match &self.lexer.value {
-            TokenValue::Str(s) => s.clone(),
+        let name = match std::mem::replace(&mut self.lexer.value, TokenValue::None) {
+            TokenValue::Str(s) => s,
             _ => String::new(),
         };
         let start = self.next_token();

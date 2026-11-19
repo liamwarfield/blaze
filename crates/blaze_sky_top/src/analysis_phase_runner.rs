@@ -59,8 +59,9 @@ pub fn execute(
 
         // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:156 AnalysisPhaseRunner.execute
         // PORT: with merged analysis and execution, AnalysisAndExecutionPhaseRunner.execute
-        // reports the targets after the execution phase returned (it does not when the
-        // execution phase throws): `report_analyzed_targets`, called by BuildTool.
+        // reports the targets after the merged phase returned (not when it threw), before the
+        // finally block of BuildTool shows the results: the build command's execution phase
+        // does it (blaze_runtime commands/build.rs).
         if !request.with_merged_analysis_and_execution_source_of_truth() {
             report_analyzed_targets(reporter.as_ref(), request, &result);
         }
@@ -311,7 +312,7 @@ fn get_explicit_target_patterns(
 }
 
 // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:494 AnalysisPhaseRunner.reportTargetsWithTests
-fn report_targets_with_tests(
+pub fn report_targets_with_tests(
     reporter: &dyn ExtendedEventHandler,
     targets_to_build: usize,
     test_count: usize,
@@ -347,7 +348,7 @@ fn report_targets_with_tests(
 }
 
 // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:519 AnalysisPhaseRunner.reportTargets
-fn report_targets(reporter: &dyn ExtendedEventHandler, target_count: usize) {
+pub fn report_targets(reporter: &dyn ExtendedEventHandler, target_count: usize) {
     reporter.handle(&Event::info(format!(
         "Found {}{}",
         target_count,
@@ -359,12 +360,9 @@ fn report_targets(reporter: &dyn ExtendedEventHandler, target_count: usize) {
     )));
 }
 
-/// The `reportTargetsWithTests` / `reportTargets` of `AnalysisPhaseRunner.execute` (and, with
-/// merged analysis and execution, of `AnalysisAndExecutionPhaseRunner.execute`, after the
-/// execution phase returned).
+/// The `reportTargetsWithTests` / `reportTargets` of `AnalysisPhaseRunner.execute`.
 // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:156 AnalysisPhaseRunner.execute
-// Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:135 AnalysisAndExecutionPhaseRunner.execute
-pub fn report_analyzed_targets(
+fn report_analyzed_targets(
     reporter: &dyn ExtendedEventHandler,
     request: &BuildRequest,
     result: &AnalysisResult,

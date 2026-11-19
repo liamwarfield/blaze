@@ -65,6 +65,12 @@ impl BlazeCommand for CqueryCommand {
         }
         // The build event stream's posting points (BuildTool's events).
         let bep = env.get_bep().cloned();
+        let build_event_hooks = crate::commands::cquery::PostAnalysisBuildEventHooks {
+            ui_event_handler: env.get_ui_event_handler().cloned(),
+            bep: bep
+                .as_deref()
+                .map(|b| b as &dyn blaze_sky_top::build_tool::BuildEventHooks),
+        };
         let command_env = PostAnalysisCommandEnvironment {
             skyframe_executor: &skyframe_executor,
             reporter: reporter(env),
@@ -83,12 +89,76 @@ impl BlazeCommand for CqueryCommand {
             },
             options,
             execution_tool: &execution_tool,
-            build_event_hooks: bep
-                .as_deref()
-                .map(|b| b as &dyn blaze_sky_top::build_tool::BuildEventHooks),
+            build_event_hooks: Some(&build_event_hooks),
         };
         let detailed_exit_code = blaze_cquery::commands::cquery_command::exec(&command_env);
         BlazeCommandResult::detailed_exit_code(to_runtime_detailed_exit_code(detailed_exit_code))
+    }
+}
+
+/// The subscribers of `BuildTool`'s events for the commands whose `BuildTool` is constructed in
+/// `blaze_cquery` (`cquery`, `aquery`): the UI's (`UiEventHandler.buildStarted` on
+/// `BuildStartingEvent`), then the build event stream's.
+pub(crate) struct PostAnalysisBuildEventHooks<'a> {
+    pub(crate) ui_event_handler: Option<std::sync::Arc<blaze_events::ui::UiEventHandler>>,
+    pub(crate) bep: Option<&'a dyn blaze_sky_top::build_tool::BuildEventHooks>,
+}
+
+impl blaze_sky_top::build_tool::BuildEventHooks for PostAnalysisBuildEventHooks<'_> {
+    fn build_starting(&self, request: &blaze_sky_top::build_tool::BuildRequest) {
+        // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:658 UiEventHandler.buildStarted
+        if let Some(handler) = &self.ui_event_handler {
+            handler.build_started();
+        }
+        if let Some(bep) = self.bep {
+            bep.build_starting(request);
+        }
+    }
+
+    fn target_patterns_evaluated(
+        &self,
+        request: &blaze_sky_top::build_tool::BuildRequest,
+        skyframe_executor: &blaze_sky_top::skyframe_executor::SkyframeExecutor,
+        target_pattern_phase_value: &blaze_sky_top::target_pattern_phase::TargetPatternPhaseValue,
+    ) {
+        if let Some(bep) = self.bep {
+            bep.target_patterns_evaluated(request, skyframe_executor, target_pattern_phase_value);
+        }
+    }
+
+    fn project_evaluated(&self) {
+        if let Some(bep) = self.bep {
+            bep.project_evaluated();
+        }
+    }
+
+    fn ensure_build_info_posted(&self) {
+        if let Some(bep) = self.bep {
+            bep.ensure_build_info_posted();
+        }
+    }
+
+    fn no_execution(&self) {
+        if let Some(bep) = self.bep {
+            bep.no_execution();
+        }
+    }
+
+    fn analysis_complete(
+        &self,
+        request: &blaze_sky_top::build_tool::BuildRequest,
+        skyframe_executor: &blaze_sky_top::skyframe_executor::SkyframeExecutor,
+        target_pattern_phase_value: &blaze_sky_top::target_pattern_phase::TargetPatternPhaseValue,
+        analysis_result: &blaze_sky_top::build_view::AnalysisResult,
+    ) {
+        if let Some(bep) = self.bep {
+            bep.analysis_complete(
+                request,
+                skyframe_executor,
+                target_pattern_phase_value,
+                analysis_result,
+            );
+        }
     }
 }
 

@@ -26,16 +26,6 @@ mod parallel_evaluator_test {
         unimplemented!("not ported: ParallelEvaluatorTest.dependsOnKeyAndFuture")
     }
 
-    // Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:419 ParallelEvaluatorTest.interruptedEvaluatorThreadAfterEnqueueBeforeWaitForCompletionAndConstructResult
-    #[test]
-    #[ignore = "needs a graph listener (NotifyingHelper), which the graph here does not have"]
-    fn interrupted_evaluator_thread_after_enqueue_before_wait_for_completion_and_construct_result()
-    {
-        unimplemented!(
-            "not ported: ParallelEvaluatorTest.interruptedEvaluatorThreadAfterEnqueueBeforeWaitForCompletionAndConstructResult"
-        )
-    }
-
     // Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:2406 ParallelEvaluatorTest.declareDependenciesAndCheckIfValuesMissing
     #[test]
     #[ignore = "GraphTraversingHelper is not ported"]
@@ -56,28 +46,22 @@ mod parallel_evaluator_test {
 
     // Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:2488 ParallelEvaluatorTest.validateExceptionTypeInDifferentPosition
     #[test]
-    #[ignore = "SkyFunctionException.validateExceptionType checks Java exception classes; \
-                get_value_or_throw takes one concrete Rust error type"]
+    #[ignore = "SkyFunctionException.validateExceptionType checks the Java exception classes given to \
+                getValueOrThrow (a supertype of RuntimeException is an IllegalStateException); \
+                get_value_or_throw takes one concrete Rust error type, there is no class to check"]
     fn validate_exception_type_in_different_position() {
         unimplemented!("not ported: ParallelEvaluatorTest.validateExceptionTypeInDifferentPosition")
     }
 
     // Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:2527 ParallelEvaluatorTest.validateExceptionTypeWithDifferentException
     #[test]
-    #[ignore = "SkyFunctionException.validateExceptionType checks Java exception classes; \
-                get_value_or_throw takes one concrete Rust error type"]
+    #[ignore = "SkyFunctionException.validateExceptionType checks the Java exception classes given to \
+                getValueOrThrow (Exception, NullPointerException, InterruptedException); \
+                get_value_or_throw takes one concrete Rust error type, there is no class to check"]
     fn validate_exception_type_with_different_exception() {
         unimplemented!(
             "not ported: ParallelEvaluatorTest.validateExceptionTypeWithDifferentException"
         )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:2880 ParallelEvaluatorTest.declaresDifferentDepsAfterRestart
-    #[test]
-    #[ignore = "needs the restart model: functions are not restarted in normal evaluation, a \
-                request computes the dep"]
-    fn declares_different_deps_after_restart() {
-        unimplemented!("not ported: ParallelEvaluatorTest.declaresDifferentDepsAfterRestart")
     }
 
     // Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:3014 ParallelEvaluatorTest.skyKeyComputeState
@@ -155,8 +139,9 @@ mod parallel_evaluator_test {
 
     // Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:4151 ParallelEvaluatorTest.testParallelSkyFunctionComputation_runnablesOnBothCurrentAndExternalThreads
     #[test]
-    #[ignore = "needs an injected QuiescingExecutor (ParallelEvaluator's executor parameter), \
-                not ported"]
+    #[ignore = "Environment.getParallelEvaluationExecutor and an injected QuiescingExecutor \
+                (ParallelEvaluator's executor parameter) are not ported: the blocking engine has \
+                no executor a function can submit to"]
     fn test_parallel_sky_function_computation_runnables_on_both_current_and_external_threads() {
         unimplemented!(
             "not ported: ParallelEvaluatorTest.testParallelSkyFunctionComputation_runnablesOnBothCurrentAndExternalThreads"
@@ -165,24 +150,19 @@ mod parallel_evaluator_test {
 
     // Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:4206 ParallelEvaluatorTest.testParallelSkyFunctionComputation_runnablesOnExternalThreadsOnly
     #[test]
-    #[ignore = "needs an injected QuiescingExecutor (ParallelEvaluator's executor parameter), \
-                not ported"]
+    #[ignore = "Environment.getParallelEvaluationExecutor and an injected QuiescingExecutor \
+                (ParallelEvaluator's executor parameter) are not ported: the blocking engine has \
+                no executor a function can submit to"]
     fn test_parallel_sky_function_computation_runnables_on_external_threads_only() {
         unimplemented!(
             "not ported: ParallelEvaluatorTest.testParallelSkyFunctionComputation_runnablesOnExternalThreadsOnly"
         )
     }
 
-    // Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:4239 ParallelEvaluatorTest.customKeepGoingPredicate_sameForAllKeys
-    #[test]
-    #[ignore = "the per-key keep_going predicate is not ported"]
-    fn custom_keep_going_predicate_same_for_all_keys() {
-        unimplemented!("not ported: ParallelEvaluatorTest.customKeepGoingPredicate_sameForAllKeys")
-    }
-
     // Java: src/test/java/com/google/devtools/build/skyframe/ParallelEvaluatorTest.java:4283 ParallelEvaluatorTest.customKeepGoingPredicate_differentPerKey
     #[test]
-    #[ignore = "the per-key keep_going predicate is not ported"]
+    #[ignore = "the per-key keep_going predicate (ParallelEvaluatorContext.keepGoing(SkyKey)) is not \
+                ported (lib.rs `Not ported`): keep_going is one flag per evaluation"]
     fn custom_keep_going_predicate_different_per_key() {
         unimplemented!("not ported: ParallelEvaluatorTest.customKeepGoingPredicate_differentPerKey")
     }
@@ -191,128 +171,13 @@ mod parallel_evaluator_test {
 mod memoizing_evaluator_test {
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:186 MemoizingEvaluatorTest.injectGraphTransformer_transformedGraphUsedForInMemoryGraph
     #[test]
-    #[ignore = "graph transformers for testing (injectGraphTransformerForTesting) are not ported"]
+    #[ignore = "the graph is the concrete InMemoryGraphImpl; injectGraphTransformerForTesting is \
+                ported as a listener hook on it (graph_listener.rs), so getInMemoryGraph cannot \
+                return a substituted (mock) graph"]
     fn inject_graph_transformer_transformed_graph_used_for_in_memory_graph() {
         unimplemented!(
             "not ported: MemoizingEvaluatorTest.injectGraphTransformer_transformedGraphUsedForInMemoryGraph"
         )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:209 MemoizingEvaluatorTest.injectGraphTransformer_transformedGraphUsedForEvaluation
-    #[test]
-    #[ignore = "graph transformers for testing (injectGraphTransformerForTesting) are not ported"]
-    fn inject_graph_transformer_transformed_graph_used_for_evaluation() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.injectGraphTransformer_transformedGraphUsedForEvaluation"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:223 MemoizingEvaluatorTest.injectGraphTransformer_multipleTransformersAppliedInOrder
-    #[test]
-    #[ignore = "graph transformers for testing (injectGraphTransformerForTesting) are not ported"]
-    fn inject_graph_transformer_multiple_transformers_applied_in_order() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.injectGraphTransformer_multipleTransformersAppliedInOrder"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:843 MemoizingEvaluatorTest.alreadyAnalyzedBadTarget
-    #[test]
-    #[ignore = "needs a graph listener (NotifyingHelper), which the graph here does not have"]
-    fn already_analyzed_bad_target() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.alreadyAnalyzedBadTarget")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:875 MemoizingEvaluatorTest.receiverToldOfVerifiedValueDependingOnCycle
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn receiver_told_of_verified_value_depending_on_cycle() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.receiverToldOfVerifiedValueDependingOnCycle"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:1096 MemoizingEvaluatorTest.changeCycle_NoKeepGoing
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn change_cycle_no_keep_going() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.changeCycle_NoKeepGoing")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:1101 MemoizingEvaluatorTest.changeCycle_KeepGoing
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn change_cycle_keep_going() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.changeCycle_KeepGoing")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:1180 MemoizingEvaluatorTest.cycleAndSelfEdgeWithDirtyValue
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn cycle_and_self_edge_with_dirty_value() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.cycleAndSelfEdgeWithDirtyValue")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:1393 MemoizingEvaluatorTest.cycleAndErrorAndReady
-    #[test]
-    #[ignore = "needs a graph listener (NotifyingHelper), which the graph here does not have"]
-    fn cycle_and_error_and_ready() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.cycleAndErrorAndReady")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:1546 MemoizingEvaluatorTest.nodeInvalidatedThenDoubleCycle
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn node_invalidated_then_double_cycle() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.nodeInvalidatedThenDoubleCycle")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:1708 MemoizingEvaluatorTest.incompleteDirectDepsAreClearedBeforeInvalidation
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn incomplete_direct_deps_are_cleared_before_invalidation() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.incompleteDirectDepsAreClearedBeforeInvalidation"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:1866 MemoizingEvaluatorTest.incompleteDirectDepsForDirtyValue
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn incomplete_direct_deps_for_dirty_value() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.incompleteDirectDepsForDirtyValue")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2340 MemoizingEvaluatorTest.dirtyChildEnqueuesParentDuringCheckDependencies_ThrowDoesntEnqueue
-    #[test]
-    #[ignore = "needs a graph listener (NotifyingHelper), which the graph here does not have"]
-    fn dirty_child_enqueues_parent_during_check_dependencies_throw_doesnt_enqueue() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.dirtyChildEnqueuesParentDuringCheckDependencies_ThrowDoesntEnqueue"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2346 MemoizingEvaluatorTest.dirtyChildEnqueuesParentDuringCheckDependencies_NoThrow
-    #[test]
-    #[ignore = "needs a graph listener (NotifyingHelper), which the graph here does not have"]
-    fn dirty_child_enqueues_parent_during_check_dependencies_no_throw() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.dirtyChildEnqueuesParentDuringCheckDependencies_NoThrow"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2351 MemoizingEvaluatorTest.removeReverseDepFromRebuildingNode
-    #[test]
-    #[ignore = "needs a graph listener (NotifyingHelper), which the graph here does not have"]
-    fn remove_reverse_dep_from_rebuilding_node() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.removeReverseDepFromRebuildingNode")
     }
 
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2444 MemoizingEvaluatorTest.resetSelfOnly_singleDep_initialBuild
@@ -429,218 +294,6 @@ mod memoizing_evaluator_test {
         unimplemented!(
             "not ported: MemoizingEvaluatorTest.evaluationAbortedWithRewoundNodeOnInvalidationPath_inflight"
         )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:3478 MemoizingEvaluatorTest.dirtyAndChangedValueIsChanged
-    #[test]
-    #[ignore = "needs a graph listener (NotifyingHelper), which the graph here does not have"]
-    fn dirty_and_changed_value_is_changed() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.dirtyAndChangedValueIsChanged")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:3568 MemoizingEvaluatorTest.singleValueDependsOnManyDirtyValues
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn single_value_depends_on_many_dirty_values() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.singleValueDependsOnManyDirtyValues")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:3708 MemoizingEvaluatorTest.dirtyChildrenProperlyRemovedWithInvalidateRemoveError
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn dirty_children_properly_removed_with_invalidate_remove_error() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.dirtyChildrenProperlyRemovedWithInvalidateRemoveError"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:3714 MemoizingEvaluatorTest.dirtyChildrenProperlyRemovedWithInvalidateKeepError
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn dirty_children_properly_removed_with_invalidate_keep_error() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.dirtyChildrenProperlyRemovedWithInvalidateKeepError"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:3720 MemoizingEvaluatorTest.dirtyChildrenProperlyRemovedWithReevaluateRemoveError
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn dirty_children_properly_removed_with_reevaluate_remove_error() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.dirtyChildrenProperlyRemovedWithReevaluateRemoveError"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:3726 MemoizingEvaluatorTest.dirtyChildrenProperlyRemovedWithReevaluateKeepError
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn dirty_children_properly_removed_with_reevaluate_keep_error() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.dirtyChildrenProperlyRemovedWithReevaluateKeepError"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:3816 MemoizingEvaluatorTest.manyDirtyValuesClearChildrenOnError
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn many_dirty_values_clear_children_on_error() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.manyDirtyValuesClearChildrenOnError")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:3825 MemoizingEvaluatorTest.manyDirtyValuesClearChildrenOnInterrupt
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn many_dirty_values_clear_children_on_interrupt() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.manyDirtyValuesClearChildrenOnInterrupt")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:4140 MemoizingEvaluatorTest.changedBuildAfterFailedThenSuccessfulBuild
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn changed_build_after_failed_then_successful_build() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.changedBuildAfterFailedThenSuccessfulBuild"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:4177 MemoizingEvaluatorTest.manyDirtyValuesClearChildrenOnSecondFail
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn many_dirty_values_clear_children_on_second_fail() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.manyDirtyValuesClearChildrenOnSecondFail"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:4231 MemoizingEvaluatorTest.failedDirtyBuildInBuilder
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn failed_dirty_build_in_builder() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.failedDirtyBuildInBuilder")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:4289 MemoizingEvaluatorTest.dirtyWithOwnErrorDependsOnTransientErrorTurningGood
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn dirty_with_own_error_depends_on_transient_error_turning_good() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.dirtyWithOwnErrorDependsOnTransientErrorTurningGood"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:4394 MemoizingEvaluatorTest.dirtyWithRecoveryErrorDependsOnErrorTurningGood
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn dirty_with_recovery_error_depends_on_error_turning_good() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.dirtyWithRecoveryErrorDependsOnErrorTurningGood"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:4469 MemoizingEvaluatorTest.raceClearingIncompleteValues
-    #[test]
-    #[ignore = "needs a graph listener (NotifyingHelper), which the graph here does not have"]
-    fn race_clearing_incomplete_values() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.raceClearingIncompleteValues")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:4712 MemoizingEvaluatorTest.changePruningWithIntermittentEvent
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn change_pruning_with_intermittent_event() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.changePruningWithIntermittentEvent")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:4775 MemoizingEvaluatorTest.depEventPredicate
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn dep_event_predicate() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.depEventPredicate")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:4915 MemoizingEvaluatorTest.twoRailLeftRightDependenciesWithFailure
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn two_rail_left_right_dependencies_with_failure() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.twoRailLeftRightDependenciesWithFailure")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5205 MemoizingEvaluatorTest.shutDownBuildOnCachedError_Done
-    #[test]
-    #[ignore = "needs a graph listener (NotifyingHelper), which the graph here does not have"]
-    fn shut_down_build_on_cached_error_done() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.shutDownBuildOnCachedError_Done")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5274 MemoizingEvaluatorTest.shutDownBuildOnCachedError_Verified
-    #[test]
-    #[ignore = "needs a graph listener (NotifyingHelper), which the graph here does not have"]
-    fn shut_down_build_on_cached_error_verified() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.shutDownBuildOnCachedError_Verified")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5396 MemoizingEvaluatorTest.cachedErrorCausesRestart
-    #[test]
-    #[ignore = "needs a graph listener (NotifyingHelper), which the graph here does not have"]
-    fn cached_error_causes_restart() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.cachedErrorCausesRestart")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5559 MemoizingEvaluatorTest.removedNodeComesBackAndInvalidates
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn removed_node_comes_back_and_invalidates() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.removedNodeComesBackAndInvalidates")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5572 MemoizingEvaluatorTest.removedNodeComesBackAndOtherInvalidates
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn removed_node_comes_back_and_other_invalidates() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.removedNodeComesBackAndOtherInvalidates")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5586 MemoizingEvaluatorTest.removedInvalidatedNodeComesBackAndOtherInvalidates
-    #[test]
-    #[ignore = "not ported yet: left for the next part of package I1 (the engine has incremental \
-                evaluation, docs/skyframe-incremental.d/engine.md)"]
-    fn removed_invalidated_node_comes_back_and_other_invalidates() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.removedInvalidatedNodeComesBackAndOtherInvalidates"
-        )
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5624 MemoizingEvaluatorTest.cleanReverseDepFromDirtyNodeNotInBuild
-    #[test]
-    #[ignore = "needs a graph listener (NotifyingHelper), which the graph here does not have"]
-    fn clean_reverse_dep_from_dirty_node_not_in_build() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.cleanReverseDepFromDirtyNodeNotInBuild")
-    }
-
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5692 MemoizingEvaluatorTest.duplicateUnfinishedDeps_NoKeepGoing
-    #[test]
-    #[ignore = "needs the restart model: functions are not restarted in normal evaluation, a \
-                request computes the dep"]
-    fn duplicate_unfinished_deps_no_keep_going() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.duplicateUnfinishedDeps_NoKeepGoing")
     }
 
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5702 MemoizingEvaluatorTest.externalDep

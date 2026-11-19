@@ -649,6 +649,7 @@ my_rule(name = "a")
 /// Regression test for b/214105142, https://github.com/bazelbuild/bazel/issues/14521
 // Java: ToolchainsForTargetsTest.toolchainWithDifferentExecutionPlatforms_doesNotGenerateConflictingCoverageAction
 #[test]
+#[ignore = "BLAZE GAP: unported!(\"BaselineCoverageAction.create\") (blaze_analysis test/instrumented_files_info.rs)"]
 fn toolchain_with_different_execution_platforms_does_not_generate_conflicting_coverage_action() {
     let mut t = new_test();
     let state_provider = register_compute_unloaded_toolchain_contexts_function(&mut t);

@@ -172,14 +172,16 @@ pub fn stop_and_publish_profile(
 /// before BuildCompleteEvent is emitted or BlazeModule#completeCommand() is called. So we still
 /// need to try to stop the profiler here. Returns the error message to report, if any.
 // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:871 BlazeCommandDispatcher.execExclusively
-pub fn stop_and_clear(profiler_started_event: &ProfilerStartedEvent) -> Option<String> {
+pub fn stop_and_clear_current() -> Option<String> {
+    let profiler_started_event = PROFILE_EVENT.lock().clone().unwrap_or_default();
     let mut error = None;
-    let result = Profiler::instance().stop().and_then(|()| {
-        match profiler_started_event.get_profile() {
-            Some(profile) => profile.make_convenience_link(),
-            None => Ok(()),
-        }
-    });
+    let result =
+        Profiler::instance()
+            .stop()
+            .and_then(|()| match profiler_started_event.get_profile() {
+                Some(profile) => profile.make_convenience_link(),
+                None => Ok(()),
+            });
     if let Err(e) = result {
         error = Some(format!("Error while writing profile file: {e}"));
     }
@@ -196,7 +198,7 @@ pub fn manage_profiles(dir: &Path, command_id: &str, retention_window: i32) -> i
     let prefix = "command-";
     let suffix = ".profile.gz";
     let mut old: Vec<(Path, i64)> = Vec::new();
-    for dirent in dir.readdir(Symlinks::FOLLOW)? {
+    for dirent in dir.readdir(Symlinks::Follow)? {
         if dirent.get_name().starts_with(prefix) && dirent.get_name().ends_with(suffix) {
             let path = dir.get_child(dirent.get_name());
             let mtime = path.stat()?.get_last_modified_time();
@@ -215,7 +217,11 @@ pub fn manage_profiles(dir: &Path, command_id: &str, retention_window: i32) -> i
 
 /// Whether the command records a profile (`tracerEnabled`).
 // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:424 BlazeCommandDispatcher.execExclusively
-pub fn tracer_enabled(common_options: &CommonCommandOptions, command_name: &str, analyzes: bool) -> bool {
+pub fn tracer_enabled(
+    common_options: &CommonCommandOptions,
+    command_name: &str,
+    analyzes: bool,
+) -> bool {
     use blaze_options::TriState;
     let mut tracer_enabled = false;
     if common_options.enable_tracer == TriState::YES {
@@ -347,9 +353,8 @@ pub fn init_profiler(
             }
             for task in &command_options.additional_profile_tasks {
                 use blaze_options::converters::JavaEnum;
-                profiled_tasks_builder.add(
-                    ProfilerTask::value_of(task.name()).expect("ProfilerTask constant"),
-                );
+                profiled_tasks_builder
+                    .add(ProfilerTask::value_of(task.name()).expect("ProfilerTask constant"));
             }
             if command_options.record_full_profiler_data {
                 for t in ProfilerTask::VALUES {
@@ -376,7 +381,8 @@ pub fn init_profiler(
             }
             let profiler = Profiler::instance();
             let worker_process_metrics_collector =
-                blaze_exec::worker::worker_process_metrics::WorkerProcessMetricsCollector::instance();
+                blaze_exec::worker::worker_process_metrics::WorkerProcessMetricsCollector::instance(
+                );
             worker_process_metrics_collector.set_clock(Arc::new(blaze_events::JavaClock));
 
             let clock: Arc<dyn blaze_util::profiler::Clock> = Arc::new(ProfilerClock);

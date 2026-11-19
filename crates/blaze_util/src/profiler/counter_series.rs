@@ -168,13 +168,11 @@ impl TimeSeries {
         // ----------------------------------
         // we cannot just add value to each affected bucket but have to correct the values for the
         // first and last bucket by calculating the size of 's' and 'e'.
-        let mut missing_start_fraction = (to_millis(
-            range_start - (bucket as i128 * start_position as i128) * 1_000_000,
-        ) as f64)
-            / bucket as f64;
-        let mut missing_end_fraction = ((bucket * (end_position as i64 + 1)
-            - to_millis(range_end)) as f64)
-            / bucket as f64;
+        let mut missing_start_fraction =
+            (to_millis(range_start - (bucket as i128 * start_position as i128) * 1_000_000) as f64)
+                / bucket as f64;
+        let mut missing_end_fraction =
+            ((bucket * (end_position as i64 + 1) - to_millis(range_end)) as f64) / bucket as f64;
 
         if start_position < 0 {
             start_position = 0;
@@ -293,8 +291,7 @@ impl TraceData for CounterSeriesTraceData {
         // for how counter series are represented in the Chrome Trace Event format.
         let mut recorded = false;
         for i in 0..self.len.max(0) {
-            let time_nanos =
-                self.profile_start + self.bucket_duration.as_nanos() as i64 * i as i64;
+            let time_nanos = self.profile_start + self.bucket_duration.as_nanos() as i64 * i as i64;
             json_writer.set_indent("  ");
             json_writer.begin_object()?;
             json_writer.set_indent("");

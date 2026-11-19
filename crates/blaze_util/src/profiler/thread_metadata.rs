@@ -71,7 +71,11 @@ impl ThreadMetadata {
     }
 
     // Java: com/google/devtools/build/lib/profiler/ThreadMetadata.java:35 ThreadMetadata.<init>
-    pub fn with_sort_index(readable_name: impl Into<String>, thread_id: i64, sort_index: i64) -> Self {
+    pub fn with_sort_index(
+        readable_name: impl Into<String>,
+        thread_id: i64,
+        sort_index: i64,
+    ) -> Self {
         ThreadMetadata {
             readable_name: readable_name.into(),
             thread_id,
@@ -222,7 +226,9 @@ impl TraceData for ThreadMetadata {
         json_writer.name("args")?;
 
         json_writer.begin_object()?;
-        json_writer.name("sort_index")?.value_long(self.sort_index)?;
+        json_writer
+            .name("sort_index")?
+            .value_long(self.sort_index)?;
         json_writer.end_object()?;
 
         json_writer.end_object()?;

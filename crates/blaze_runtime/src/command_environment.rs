@@ -57,6 +57,9 @@ pub struct CommandEnvironment {
     /// `beforeCommand` (Java: `BlazeModuleEnvironment.pendingException`).
     pending_exception: Option<AbruptExitException>,
     has_synced_package_loading: bool,
+    /// Java `configFlagDefinitions`: the `--config` definitions of the rc files for this
+    /// command.
+    config_flag_definitions: Arc<blaze_sky_analysis::flag_set_function::ConfigFlagDefinitions>,
     ui_event_handler: Option<Arc<blaze_events::ui::UiEventHandler>>,
     /// The `@Subscribe` methods of `ui_event_handler`, registered on the event bus with it.
     ui_event_subscriber:
@@ -244,6 +247,7 @@ impl CommandEnvironment {
             visible_test_env,
             pending_exception,
             has_synced_package_loading: false,
+            config_flag_definitions: Arc::default(),
             ui_event_handler: None,
             ui_event_subscriber: None,
             bep: None,
@@ -572,6 +576,22 @@ impl CommandEnvironment {
         &self.working_directory
     }
 
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:540 CommandEnvironment.getConfigFlagDefinitions
+    pub fn get_config_flag_definitions(
+        &self,
+    ) -> &Arc<blaze_sky_analysis::flag_set_function::ConfigFlagDefinitions> {
+        &self.config_flag_definitions
+    }
+
+    /// Java: the `configFlagDefinitions` constructor argument (BlazeCommandDispatcher passes
+    /// what `parseOptionsAndGetConfigDefinitions` returned).
+    pub fn set_config_flag_definitions(
+        &mut self,
+        definitions: blaze_sky_analysis::flag_set_function::ConfigFlagDefinitions,
+    ) {
+        self.config_flag_definitions = Arc::new(definitions);
+    }
+
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:644 CommandEnvironment.getRelativeWorkingDirectory
     pub fn get_relative_working_directory(&self) -> &PathFragment {
         &self.relative_working_directory
@@ -602,7 +622,10 @@ impl CommandEnvironment {
         handler: Arc<blaze_events::ui::UiEventHandler>,
         subscriber: Arc<blaze_buildtool::runtime::ui_event_subscriber::UiEventSubscriber>,
     ) {
-        blaze_util::check_state!(self.ui_event_handler.is_none(), "UiEventHandler already set");
+        blaze_util::check_state!(
+            self.ui_event_handler.is_none(),
+            "UiEventHandler already set"
+        );
         self.ui_event_handler = Some(handler);
         self.event_bus.register(subscriber.clone());
         self.ui_event_subscriber = Some(subscriber);

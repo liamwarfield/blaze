@@ -1113,7 +1113,6 @@ fn test_subrule_attrs_cannot_have_native_transitions() {
 
 // Java: StarlarkSubruleTest.testSubruleAttrs_notVisibleInRuleCtx
 #[test]
-#[ignore = "needs BuildViewTestCase.getRuleContext (getRuleContext(target).getRule().getRuleClassObject())"]
 fn test_subrule_attrs_not_visible_in_rule_ctx() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -1146,9 +1145,18 @@ my_rule(name = "foo")
 "#],
     );
 
-    // Java: ruleClassAttributes = getRuleContext(getConfiguredTarget("//subrule_testing:foo"))
-    //     .getRule().getRuleClassObject().getAttributeProvider().getAttributes() names;
-    //     assertThat(ruleClassAttributes).contains(ruleAttrName);
+    let foo = t
+        .get_configured_target("//subrule_testing:foo")
+        .expect("//subrule_testing:foo");
+    let rule_class_attributes: Vec<String> = t
+        .get_rule_context(&foo)
+        .get_rule()
+        .get_rule_class_object()
+        .get_attribute_provider()
+        .get_attributes()
+        .iter()
+        .map(|a| a.get_name().to_string())
+        .collect();
     let provider = get_provider(
         &mut t,
         "//subrule_testing:foo",
@@ -1159,6 +1167,7 @@ my_rule(name = "foo")
     let attributes_visible_to_starlark = string_list_value(&provider, "result");
     let rule_attr_name = rule_attr_name("//subrule_testing:myrule.bzl", "_my_subrule", "_foo");
 
+    assert!(rule_class_attributes.contains(&rule_attr_name));
     assert!(!attributes_visible_to_starlark.contains(&rule_attr_name));
 }
 
@@ -1787,7 +1796,6 @@ my_rule(
 
 // Java: StarlarkSubruleTest.testSubruleToolchains_noToolchainIsSuppliedToAction
 #[test]
-#[ignore = "needs BuildViewTestCase.getRuleContext (getRuleContext(target).getActionOwner())"]
 fn test_subrule_toolchains_no_toolchain_is_supplied_to_action() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--incompatible_auto_exec_groups"]);
@@ -1824,8 +1832,13 @@ my_rule(name = "foo")
         .expect("configured target");
     let action = t.get_generating_action_for_output(&target, "subrule_testing/foo.out");
 
-    assert!(action.is_some());
-    // Java: assertThat(action.getOwner()).isEqualTo(getRuleContext(target).getActionOwner());
+    let action = action.expect("action");
+    // PORT: ActionOwner has no equality; Debug prints every field (the execution platform by
+    // label).
+    assert_eq!(
+        format!("{:?}", action.get_owner()),
+        format!("{:?}", t.get_rule_context(&target).get_action_owner())
+    );
 }
 
 // Java: StarlarkSubruleTest.testSubruleToolchains_requestedToolchainIsSuppliedToAction
@@ -1867,9 +1880,18 @@ my_rule(name = "foo")
         .expect("configured target");
     let action = t.get_generating_action_for_output(&target, "subrule_testing/foo.out");
 
-    assert!(action.is_some());
-    // Java: assertThat(action.getOwner())
-    //     .isEqualTo(getRuleContext(target).getActionOwner(TestConstants.JAVA_TOOLCHAIN_TYPE));
+    let action = action.expect("action");
+    // PORT: ActionOwner has no equality; Debug prints every field (the execution platform by
+    // label).
+    assert_eq!(
+        format!("{:?}", action.get_owner()),
+        format!(
+            "{:?}",
+            t.get_rule_context(&target)
+                .get_action_owner_for(JAVA_TOOLCHAIN_TYPE)
+                .expect("getActionOwner(JAVA_TOOLCHAIN_TYPE)")
+        )
+    );
 }
 
 // Java: StarlarkSubruleTest.testSubruleFragments_errorForInvalidFragments

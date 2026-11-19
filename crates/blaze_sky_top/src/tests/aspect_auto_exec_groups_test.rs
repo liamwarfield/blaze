@@ -603,7 +603,6 @@ fn automatic_execution_groups_enabled_and_attribute_not_set_enabled_run_shell() 
 const CUSTOM_EXEC_GROUPS: &str = "    'aspect_custom_exec_group': exec_group(\n      exec_compatible_with = ['//platforms:constraint_1'],\n      toolchains = ['//rule:toolchain_type_1'],\n    ),\n";
 
 // Java: AspectAutoExecGroupsTest.execGroups_customAspectOnCustomRule
-#[allow(unreachable_code, unused_variables, clippy::diverging_sub_expression)]
 fn exec_groups_custom_aspect_on_custom_rule(action: &str) {
     let custom_exec_groups = CUSTOM_EXEC_GROUPS;
     let mut t = new_test();
@@ -625,17 +624,34 @@ fn exec_groups_custom_aspect_on_custom_rule(action: &str) {
     );
     use_configuration(&mut t, &["--incompatible_auto_exec_groups"]);
 
-    let target = t.get_configured_target("//test:custom_rule_name");
-    // Java: ConfiguredTarget targetDep = (ConfiguredTarget) getRuleContext(target).getPrerequisite("deps");
-    blaze_util::unported!("BuildViewTestCase.getRuleContext");
+    let target = t
+        .get_configured_target("//test:custom_rule_name")
+        .expect("//test:custom_rule_name");
+    let target_dep = t
+        .get_rule_context(&target)
+        .get_prerequisite("deps")
+        .expect("getPrerequisite(deps)");
     let configured_aspect = get_aspect(&mut t, "//test:aspect.bzl%custom_aspect");
     let aspect_exec_groups = get_exec_groups_from_aspect_provider(&configured_aspect);
 
-    // Java:
-    //   assertThat(getRuleContext(target).getExecGroups().execGroups().keySet())
-    //       .containsExactly("//rule:toolchain_type_1");
-    //   assertThat(getRuleContext(targetDep).getExecGroups().execGroups().keySet())
-    //       .containsExactly("//rule:toolchain_type_1");
+    let exec_group_names = |t: &mut crate::testing::AnalysisTestCase,
+                            ct: &blaze_analysis::configured_target::ConfiguredTarget|
+     -> Vec<String> {
+        t.get_rule_context(ct)
+            .get_exec_groups()
+            .exec_groups()
+            .keys()
+            .cloned()
+            .collect()
+    };
+    assert_contains_exactly(
+        &exec_group_names(&mut t, &target),
+        &["//rule:toolchain_type_1"],
+    );
+    assert_contains_exactly(
+        &exec_group_names(&mut t, &target_dep),
+        &["//rule:toolchain_type_1"],
+    );
     assert_contains_exactly(
         &aspect_exec_groups,
         &[
@@ -647,19 +663,16 @@ fn exec_groups_custom_aspect_on_custom_rule(action: &str) {
 }
 
 #[test]
-#[ignore = "needs BuildViewTestCase.getRuleContext (RuleContext of a configured target: getPrerequisite, getExecGroups)"]
 fn exec_groups_custom_aspect_on_custom_rule_run() {
     exec_groups_custom_aspect_on_custom_rule(action_of(false));
 }
 
 #[test]
-#[ignore = "needs BuildViewTestCase.getRuleContext (RuleContext of a configured target: getPrerequisite, getExecGroups)"]
 fn exec_groups_custom_aspect_on_custom_rule_run_shell() {
     exec_groups_custom_aspect_on_custom_rule(action_of(true));
 }
 
 // Java: AspectAutoExecGroupsTest.execPlatforms_customAspectOnCustomRule
-#[allow(unreachable_code, unused_variables, clippy::diverging_sub_expression)]
 fn exec_platforms_custom_aspect_on_custom_rule(action: &str) {
     let custom_exec_groups = CUSTOM_EXEC_GROUPS;
     let mut t = new_test();
@@ -684,9 +697,10 @@ fn exec_platforms_custom_aspect_on_custom_rule(action: &str) {
     let target = t
         .get_configured_target("//test:custom_rule_name")
         .expect("//test:custom_rule_name");
-    // Java: ConfiguredTarget targetDep = (ConfiguredTarget) getRuleContext(target).getPrerequisite("deps");
-    let target_dep: blaze_analysis::configured_target::ConfiguredTarget =
-        blaze_util::unported!("BuildViewTestCase.getRuleContext");
+    let target_dep = t
+        .get_rule_context(&target)
+        .get_prerequisite("deps")
+        .expect("getPrerequisite(deps)");
     let configured_aspect = get_aspect(&mut t, "//test:aspect.bzl%custom_aspect");
     let target_action = t
         .get_generating_action_for_output(&target, "test/custom_rule_name_dummy_output.jar")
@@ -723,13 +737,11 @@ fn exec_platforms_custom_aspect_on_custom_rule(action: &str) {
 }
 
 #[test]
-#[ignore = "needs BuildViewTestCase.getRuleContext (RuleContext of a configured target: getPrerequisite)"]
 fn exec_platforms_custom_aspect_on_custom_rule_run() {
     exec_platforms_custom_aspect_on_custom_rule(action_of(false));
 }
 
 #[test]
-#[ignore = "needs BuildViewTestCase.getRuleContext (RuleContext of a configured target: getPrerequisite)"]
 fn exec_platforms_custom_aspect_on_custom_rule_run_shell() {
     exec_platforms_custom_aspect_on_custom_rule(action_of(true));
 }

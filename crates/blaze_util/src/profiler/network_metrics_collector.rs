@@ -252,9 +252,7 @@ fn get_loopback_interface_names() -> io::Result<HashSet<String>> {
         if ifa.ifa_flags & (libc::IFF_LOOPBACK as u32) != 0 && !ifa.ifa_name.is_null() {
             // SAFETY: ifa_name is a NUL-terminated string owned by the list.
             let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) };
-            result.insert(
-                crate::string_encoding::latin1_decode(name.to_bytes()).into_owned(),
-            );
+            result.insert(crate::string_encoding::latin1_decode(name.to_bytes()).into_owned());
         }
         cur = ifa.ifa_next;
     }

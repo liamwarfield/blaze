@@ -16,5 +16,8 @@ regex.workspace = true
 flate2.workspace = true
 parking_lot.workspace = true
 libc.workspace = true
+# JsonProfile / TraceEvent (reading a profile back).
+serde_json.workspace = true
+indexmap.workspace = true
 # FailureDetail for DetailedExitCode (blaze_protos does not depend on blaze_util: acyclic).
 blaze_protos = { path = "../blaze_protos" }

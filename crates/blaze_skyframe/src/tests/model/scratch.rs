@@ -47,7 +47,8 @@ pub enum Allowed {
     Exactly(RootResult),
     /// No keep_going with an exception reachable: the root is absent, or has its keep_going
     /// value (only when that value carries no error), or an error whose exception comes from a
-    /// node it reaches that throws (any transience), or a cycle error when it reaches a cycle.
+    /// node it reaches that throws (any transience; in keep_going, or in error bubbling, see
+    /// [`eval_from_scratch`]), or a cycle error when it reaches a cycle.
     Loose {
         value: Option<i64>,
         exception_origins: BTreeSet<NodeId>,
@@ -89,6 +90,7 @@ pub struct Expected {
     /// Nodes the roots reach (keep_going requests).
     pub closure: BTreeSet<NodeId>,
     /// Nodes of the closure that throw (keep_going).
+    #[allow(dead_code)] // part of the from-scratch answer; read by no check yet
     pub throwers: BTreeSet<NodeId>,
     /// Warnings a fresh evaluator reports (keep_going: every completed run; each node runs to
     /// completion at most once).
@@ -345,6 +347,19 @@ pub fn eval_from_scratch(spec: &GraphSpec, roots: &[NodeId], keep_going: bool) -
         // reports exactly the roots done with an error (ParallelEvaluator.java:670-690, "Errors,
         // even cached ones, should halt evaluations not in keepGoing mode"). With exceptions the
         // first one thrown wins (scheduling). Hence a set.
+        // Error bubbling (ParallelEvaluator.java:290-470 `bubbleErrorUp`) re-runs each parent on
+        // the path from the failed node up to a root with the errors built so far
+        // (`SkyFunctionEnvironment.createForError`, :414-420); `getValueOrThrow` hands it a
+        // bubbled exception (SkyFunctionEnvironment.java:464-467, :767-791 `handleError`:
+        // "The exception may only propagate in keepGoing mode or during error bubbling"), and a
+        // parent that catches it and throws its own exception replaces the error on the way up
+        // (ParallelEvaluator.java:433-447). Such a parent need not throw in keep_going: there it
+        // may wait on a cycle through another dep, which bubbling never evaluates. So an
+        // origin is a keep_going thrower or any node that can throw and reaches one.
+        let may_throw_in_bubbling = |n: NodeId| {
+            spec.program(n).is_some_and(|p| p.throws.is_some())
+                && !s.closure_of(n).is_disjoint(&s.throwers)
+        };
         for r in &roots {
             let c = s.closure_of(*r);
             let value = match s.memo[r] {
@@ -355,7 +370,11 @@ pub fn eval_from_scratch(spec: &GraphSpec, roots: &[NodeId], keep_going: bool) -
                 *r,
                 Allowed::Loose {
                     value,
-                    exception_origins: c.intersection(&s.throwers).copied().collect(),
+                    exception_origins: c
+                        .iter()
+                        .copied()
+                        .filter(|n| s.throwers.contains(n) || may_throw_in_bubbling(*n))
+                        .collect(),
                     cycle: c.iter().any(|n| s.memo[n] == Kg::Stuck),
                 },
             ));

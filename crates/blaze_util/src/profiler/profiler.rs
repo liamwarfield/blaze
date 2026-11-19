@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 
-use super::counter_series::{CounterSeriesTask, CounterSeriesTaskColor, CounterSeriesTraceData, TimeSeries};
+use super::counter_series::{
+    CounterSeriesTask, CounterSeriesTaskColor, CounterSeriesTraceData, TimeSeries,
+};
 use super::java_hash_order::{Insertion, java_hash_map_order, string_hash_code};
 use super::json_trace_file_writer::{JsonTraceFileWriter, ProfileOutputStream, QueuedTraceData};
 use super::profile_phase::ProfilePhase;
@@ -145,7 +147,9 @@ const SIZE: usize = 30;
 impl SlowestTaskAggregator {
     fn new() -> Self {
         SlowestTaskAggregator {
-            extrema_aggregators: (0..SHARDS).map(|_| Mutex::new(MaxExtrema::new(SIZE))).collect(),
+            extrema_aggregators: (0..SHARDS)
+                .map(|_| Mutex::new(MaxExtrema::new(SIZE)))
+                .collect(),
         }
     }
 
@@ -372,8 +376,10 @@ impl Profiler {
         for task in ProfilerTask::VALUES {
             if task.is_vfs() {
                 let vfs_heuristics = vfs_type_heuristics();
-                let mut recorders: Vec<(Box<dyn StatRecorder>, super::stat_recorder::StringPredicate)> =
-                    Vec::with_capacity(vfs_heuristics.len());
+                let mut recorders: Vec<(
+                    Box<dyn StatRecorder>,
+                    super::stat_recorder::StringPredicate,
+                )> = Vec::with_capacity(vfs_heuristics.len());
                 for (key, predicate) in vfs_heuristics {
                     recorders.push((
                         Box::new(SingleStatRecorder::new(
@@ -398,7 +404,10 @@ impl Profiler {
     /// `stop`, or the returned recorders are all empty. The stat recorders are indexed by
     /// `ProfilerTask#ordinal`.
     // Java: com/google/devtools/build/lib/profiler/Profiler.java:425 Profiler.getTasksHistograms
-    pub fn with_tasks_histograms<R>(&self, f: impl FnOnce(&[Option<Box<dyn StatRecorder>>]) -> R) -> R {
+    pub fn with_tasks_histograms<R>(
+        &self,
+        f: impl FnOnce(&[Option<Box<dyn StatRecorder>>]) -> R,
+    ) -> R {
         let _sync = self.sync.lock();
         crate::check_state!(self.is_active());
         f(&self.tasks_histograms.read())
@@ -492,16 +501,24 @@ impl Profiler {
         bazel_version: String,
     ) -> io::Result<()> {
         let _sync = self.sync.lock();
-        crate::check_state!(!self.active.load(Ordering::SeqCst), "Profiler already active");
+        crate::check_state!(
+            !self.active.load(Ordering::SeqCst),
+            "Profiler already active"
+        );
 
         self.init_histograms();
 
         let bits = profiled_tasks.bits();
         self.profiled_tasks_lo.store(bits as u64, Ordering::SeqCst);
-        self.profiled_tasks_hi.store((bits >> 64) as u64, Ordering::SeqCst);
+        self.profiled_tasks_hi
+            .store((bits >> 64) as u64, Ordering::SeqCst);
         let action_count_start_time = clock.nano_time();
-        let new_series =
-            || Some(Arc::new(TimeSeries::new_nanos(action_count_start_time, ACTION_COUNT_BUCKET_DURATION)));
+        let new_series = || {
+            Some(Arc::new(TimeSeries::new_nanos(
+                action_count_start_time,
+                ACTION_COUNT_BUCKET_DURATION,
+            )))
+        };
 
         let mut writer = None;
         if let (Some(stream), Some(format)) = (stream, format) {
@@ -582,7 +599,8 @@ impl Profiler {
                 series.to_double_array(len),
             ));
         }
-        let action_cache_count_time_series = self.inner.write().action_cache_count_time_series.take();
+        let action_cache_count_time_series =
+            self.inner.write().action_cache_count_time_series.take();
         if let Some(series) = action_cache_count_time_series {
             counter_series_map.push((
                 CounterSeriesTask::new("action count", "local action cache", None),
@@ -598,7 +616,8 @@ impl Profiler {
         }
 
         let mut local_counter_series_map: CounterSeriesMap = Vec::new();
-        let local_action_count_time_series = self.inner.write().local_action_count_time_series.take();
+        let local_action_count_time_series =
+            self.inner.write().local_action_count_time_series.take();
         if let Some(series) = local_action_count_time_series {
             local_counter_series_map.push((
                 CounterSeriesTask::new(
@@ -755,7 +774,13 @@ impl Profiler {
     /// Adds task directly to the main queue bypassing task stack. Used for simple tasks that are
     /// known to not have any subtasks.
     // Java: com/google/devtools/build/lib/profiler/Profiler.java:730 Profiler.logTask
-    fn log_task(&self, start_time_nanos: i64, mut duration: i64, type_: ProfilerTask, description: &str) {
+    fn log_task(
+        &self,
+        start_time_nanos: i64,
+        mut duration: i64,
+        type_: ProfilerTask,
+        description: &str,
+    ) {
         // PORT: borrowLane() is null on a platform thread; Rust threads are never virtual.
         crate::check_state!(!description.is_empty(), "No description -> not helpful");
         if duration < 0 {
@@ -1101,7 +1126,12 @@ impl Profiler {
     /// PORT: Java adds a listener to a `ListenableFuture`; the caller drops the returned scope
     /// where the future completes.
     // Java: com/google/devtools/build/lib/profiler/Profiler.java:1187 Profiler.profileFuture
-    pub fn profile_future(&self, prefix: &str, type_: ProfilerTask, description: &str) -> LaneScope {
+    pub fn profile_future(
+        &self,
+        prefix: &str,
+        type_: ProfilerTask,
+        description: &str,
+    ) -> LaneScope {
         let Some(lane) = self.multi_lane_generator.acquire(self, prefix) else {
             return LaneScope { inner: None };
         };
@@ -1228,7 +1258,12 @@ pub struct LaneScope {
 impl Drop for LaneScope {
     fn drop(&mut self) {
         if let Some((lane, start_time_nanos, type_, description)) = self.inner.take() {
-            Profiler::instance().complete_task_on_lane(lane.id, start_time_nanos, type_, description);
+            Profiler::instance().complete_task_on_lane(
+                lane.id,
+                start_time_nanos,
+                type_,
+                description,
+            );
             lane.generator.release(lane.id);
         }
     }

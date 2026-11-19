@@ -342,7 +342,11 @@ struct LocalCpuUsageCollector {
 }
 
 fn local_cpu_usage() -> CounterSeriesTask {
-    CounterSeriesTask::new("CPU usage (Bazel)", "cpu", Some(CounterSeriesTaskColor::GOOD))
+    CounterSeriesTask::new(
+        "CPU usage (Bazel)",
+        "cpu",
+        Some(CounterSeriesTaskColor::GOOD),
+    )
 }
 
 impl LocalCpuUsageCollector {
@@ -660,7 +664,8 @@ impl CounterSeriesCollector for PressureStallIndicatorCollector {
         let pressure_stall_some_memory = read_pressure_stall_indicator("memory", "some");
         let pressure_stall_some_cpu = read_pressure_stall_indicator("cpu", "some");
 
-        let task = |lane: &str, series: &str, color| CounterSeriesTask::new(lane, series, Some(color));
+        let task =
+            |lane: &str, series: &str, color| CounterSeriesTask::new(lane, series, Some(color));
         consumer(
             &task(
                 "I/O pressure stall level",

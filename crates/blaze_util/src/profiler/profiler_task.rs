@@ -224,7 +224,10 @@ mod tests {
     #[test]
     fn fits_in_the_bit_set() {
         assert!(ProfilerTask::VALUES.len() <= 128);
-        assert_eq!(ProfilerTask::UNKNOWN.ordinal(), ProfilerTask::VALUES.len() - 1);
+        assert_eq!(
+            ProfilerTask::UNKNOWN.ordinal(),
+            ProfilerTask::VALUES.len() - 1
+        );
     }
 
     #[test]

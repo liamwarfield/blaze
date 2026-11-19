@@ -1481,7 +1481,9 @@ mod server_commands {
             run(&slow_dispatch, &slow_args, &slow_out_err)
         });
         let slow_thread = thread_rx.recv().unwrap();
-        await_err_containing(&out_err, "INFO: Found 1 target...");
+        // The progress line of the running genrule (Bazel prints "Found 1 target..." only once
+        // the merged analysis and execution phase returned).
+        await_err_containing(&out_err, "Executing genrule //:slow");
         std::thread::sleep(Duration::from_secs(2));
         slow_thread.interrupt();
         let result = slow.join().unwrap();

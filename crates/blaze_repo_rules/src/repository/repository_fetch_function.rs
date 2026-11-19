@@ -345,12 +345,16 @@ enum FetchBodyError {
 /// What the body of the try-with-resources block in `fetch` computes.
 type FetchBody = (RepoMetadata, Vec<RepoRecordedInputWithValue>);
 
-/// Java `StarlarkFunction.getLocation()` of the implementation function.
-fn implementation_location(_implementation: &OwnedFrozenValue) -> String {
-    unported!(
-        "StarlarkFunction.getLocation",
-        "the definition location of a repository rule implementation"
+/// Java `StarlarkFunction.getLocation()` of the implementation function, as
+/// `Location.toString()`: the start of the function's name (starlark-rust BLAZE PATCH 0024,
+/// `DefModule::declaration_span`).
+// Java: net/starlark/java/eval/StarlarkFunction.java:172 StarlarkFunction.getLocation
+pub(crate) fn implementation_location(implementation: &OwnedFrozenValue) -> String {
+    let span = blaze_starlark::defining_module::DefModule::declaration_span(
+        implementation.value().to_value(),
     )
+    .expect("ClassCastException: the implementation is a StarlarkFunction");
+    blaze_starlark::error::Location::of_span_start(&span).to_string()
 }
 
 /// The result of [`RepositoryFetchFunction::fetch`].

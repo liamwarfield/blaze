@@ -91,6 +91,7 @@ impl GenConfig {
 }
 
 /// `generate_with(seed, &GenConfig::default())`.
+#[allow(dead_code)] // model API named by the driver contract; the driver uses `generate_with`
 pub fn generate(seed: u64) -> Scenario {
     generate_with(seed, &GenConfig::default())
 }

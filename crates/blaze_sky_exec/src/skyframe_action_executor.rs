@@ -1260,19 +1260,18 @@ impl SkyframeActionExecutor {
             }
         }
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1389 ActionRunner.actuallyCompleteAction
-        let primary_output_metadata = match output_metadata_store
-            .get_output_metadata(&artifact_input(&primary_output))
-        {
-            Ok(Some(metadata)) => metadata,
-            Ok(None) => panic!(
-                "IllegalStateException: Metadata already obtained for {}",
-                primary_output
-            ),
-            Err(e) => panic!(
-                "IllegalStateException: Metadata already obtained for {}: {:?}",
-                primary_output, e
-            ),
-        };
+        let primary_output_metadata =
+            match output_metadata_store.get_output_metadata(&artifact_input(&primary_output)) {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) => panic!(
+                    "IllegalStateException: Metadata already obtained for {}",
+                    primary_output
+                ),
+                Err(e) => panic!(
+                    "IllegalStateException: Metadata already obtained for {}: {:?}",
+                    primary_output, e
+                ),
+            };
         self.report_action_execution(
             listener,
             &primary_output_path,
@@ -2013,7 +2012,8 @@ impl SkyframeActionExecutor {
             if let Some(start_time) = spawn_result.get_start_time() {
                 // startTime.plusMillis(wallTimeInMs)
                 let wall_time_in_ms = spawn_result.get_wall_time_in_ms();
-                let wall_time = std::time::Duration::from_millis(wall_time_in_ms.unsigned_abs() as u64);
+                let wall_time =
+                    std::time::Duration::from_millis(wall_time_in_ms.unsigned_abs() as u64);
                 let end_time = if wall_time_in_ms >= 0 {
                     start_time + wall_time
                 } else {
@@ -2318,14 +2318,28 @@ impl ActionOutputMetadataStore {
         result
     }
 
-    /// `getAllTreeArtifactData()`.
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:142 ActionOutputMetadataStore.getAllTreeArtifactData
+    /// `getAllTreeArtifactData()`: data for tree artifacts that was computed during execution.
+    /// May contain copies of `TreeArtifactValue.MISSING_TREE_ARTIFACT`
+    /// ([`crate::action_execution_value::MISSING_TREE_ARTIFACT`], the store's `None`).
+    ///
+    /// PORT: Java copies a `ConcurrentHashMap`; the entries are returned in the action's output
+    /// order here, then any other key, as `get_all_artifact_data`.
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:144 ActionOutputMetadataStore.getAllTreeArtifactData
     pub fn get_all_tree_artifact_data(&self) -> IndexMap<Artifact, Arc<TreeArtifactValue>> {
         let data = self.tree_artifact_data.lock();
+        let value_of = |v: &Option<Arc<TreeArtifactValue>>| match v {
+            Some(v) => v.clone(),
+            None => crate::action_execution_value::MISSING_TREE_ARTIFACT.clone(),
+        };
         let mut result = IndexMap::new();
         for output in &self.outputs {
-            if let Some(Some(v)) = data.get(output) {
-                result.insert(output.clone(), v.clone());
+            if let Some(v) = data.get(output) {
+                result.insert(output.clone(), value_of(v));
+            }
+        }
+        for (k, v) in data.iter() {
+            if !result.contains_key(k) {
+                result.insert(k.clone(), value_of(v));
             }
         }
         result
@@ -3762,12 +3776,10 @@ impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
                 }))
             }
             // Java: com/google/devtools/build/lib/exec/SpawnExecutingEvent.java:41 SpawnExecutingEvent.postTo
-            ProgressStatus::Executing(name) => {
-                event_handler.post(Arc::new(RunningActionEvent {
-                    action,
-                    strategy: name.clone(),
-                }))
-            }
+            ProgressStatus::Executing(name) => event_handler.post(Arc::new(RunningActionEvent {
+                action,
+                strategy: name.clone(),
+            })),
             // Java: com/google/devtools/build/lib/exec/SpawnCheckingCacheEvent.java:34 SpawnCheckingCacheEvent.postTo
             ProgressStatus::CheckingCache(name) => {
                 event_handler.post(Arc::new(CachingActionEvent {

@@ -89,7 +89,9 @@ fn test_parallelism() {
             ts2.add_range_value(ms((2 * i + 1) * 100), ms((2 * i + 2) * 100), 2.0);
         }
     });
-    let expected: Vec<f64> = (0..100).map(|i| if i % 2 == 0 { 1.0 } else { 2.0 }).collect();
+    let expected: Vec<f64> = (0..100)
+        .map(|i| if i % 2 == 0 { 1.0 } else { 2.0 })
+        .collect();
     thread1.join().unwrap();
     thread2.join().unwrap();
     assert_close(&time_series.to_double_array(100), &expected);

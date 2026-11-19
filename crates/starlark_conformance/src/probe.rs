@@ -19,9 +19,7 @@ use std::sync::Mutex;
 
 use blaze_starlark::EvalError;
 use blaze_starlark::error::EvalErrorKind;
-use starlark::PrintHandler;
 use starlark::environment::GlobalsBuilder;
-use starlark::environment::LibraryExtension;
 use starlark::environment::Module;
 use starlark::eval::Evaluator;
 use starlark::syntax::AstModule;
@@ -50,10 +48,15 @@ pub fn escape(s: &str) -> String {
 #[derive(Default)]
 struct Collect(Mutex<Vec<String>>);
 
-impl PrintHandler for Collect {
-    fn println(&self, text: &str) -> starlark::Result<()> {
-        self.0.lock().unwrap().push(escape(text));
-        Ok(())
+/// The probe's print handler: Bazel's own `print` (blaze_starlark's universe) reports a DEBUG
+/// event; the probe writes its message as `StarlarkProbe`'s print handler does.
+impl blaze_starlark::thread::StarlarkEvents for Collect {
+    fn debug(&self, _location: Option<&blaze_starlark::error::Location>, message: &str) {
+        self.0.lock().unwrap().push(escape(message));
+    }
+
+    fn warn(&self, _location: Option<&blaze_starlark::error::Location>, message: &str) {
+        panic!("the probe got a warning: {message}");
     }
 }
 
@@ -100,12 +103,15 @@ pub fn run(name: &str, bytes: &[u8], mode: ScriptMode) -> Vec<String> {
         .spawn(move || {
             let semantics = blaze_starlark::semantics::StarlarkSemantics::default();
             let mut builder: GlobalsBuilder = blaze_starlark::env::universe_builder(&semantics)
-                .with(blaze_starlark::json::register_json)
-                // The probe's print handler (Blaze's own `print` reports a DEBUG event).
-                .with(|b| LibraryExtension::Print.add(b));
+                .with(blaze_starlark::json::register_json);
             builder.set("_utf8_byte_strings", mode.utf8_byte_strings());
             let globals = builder.build();
-            let out = Collect::default();
+            let out = std::sync::Arc::new(Collect::default());
+            let cx = blaze_starlark::thread::ThreadContext::new(
+                blaze_starlark::thread::Phase::BzlLoad,
+                std::sync::Arc::new(semantics.clone()),
+                out.clone(),
+            );
             // Bazel's static errors (every one, in Java's order): Java's front end
             // (blaze_starlark::syntax::java), Program.compileFile with FileOptions.DEFAULT.
             let java_options = blaze_starlark::syntax::java::JavaOptions::DEFAULT;
@@ -135,10 +141,10 @@ pub fn run(name: &str, bytes: &[u8], mode: ScriptMode) -> Vec<String> {
                 let mut eval = Evaluator::new(&module);
                 eval.set_forbid_recursion(true);
                 eval.set_utf8_byte_strings(mode.utf8_byte_strings());
-                eval.set_print_handler(&out);
+                eval.extra = Some(&cx);
                 eval.eval_module(ast, &globals).map(|_| ())
             });
-            let mut lines = out.0.into_inner().unwrap();
+            let mut lines = std::mem::take(&mut *out.0.lock().unwrap());
             if let Err(e) = result {
                 let err = EvalError::from_starlark(&e);
                 lines.push(escape(&format!("EVAL {}", err.message)));

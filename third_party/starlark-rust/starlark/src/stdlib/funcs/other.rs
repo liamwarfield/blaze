@@ -18,7 +18,6 @@
 //! A module with the standard function and constants that are by default in all
 //! dialect of Starlark
 
-use std::cmp::Ordering;
 
 use starlark_derive::starlark_module;
 
@@ -364,7 +363,7 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     ) -> starlark::Result<AllocList<impl IntoIterator<Item = Value<'v>> + use<'v>>> {
         let x = iterable; // BLAZE PATCH 0052: Java parameter name `iterable`
         crate::values::unpack::java_check_iterable("sorted", "iterable", x.get(), eval.heap())?; // BLAZE PATCH 0052
-        let key = key.filter(|k| !k.is_none()); // BLAZE PATCH 0052: Java's `key` is callable or NoneType
+        let key = crate::values::unpack::java_check_callable_or_none("sorted", "key", key)?; // BLAZE PATCH 0056
         let it = x.get().iterate(eval.heap())?;
         let mut it = match key {
             None => it.map(|x| (x, x)).collect(),
@@ -377,24 +376,19 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
             }
         };
 
-        let mut compare_ok = Ok(());
-
-        it.sort_by(|x: &(Value, Value), y: &(Value, Value)| {
-            let ord_or_err = if reverse {
-                x.1.compare(y.1).map(Ordering::reverse)
-            } else {
-                x.1.compare(y.1)
-            };
-            match ord_or_err {
-                Ok(r) => r,
-                Err(e) => {
-                    compare_ok = Err(e);
-                    Ordering::Equal // does not matter
+        // BLAZE PATCH 0056: Java's Arrays.sort (TimSort) with Starlark.ORDERING, or its
+        // `reversed()` (which compares the pair the other way round); the first comparison
+        // that fails is the error (MethodLibrary.java:277 sorted).
+        crate::stdlib::funcs::java_timsort::sort(
+            &mut it,
+            &mut |x: (Value<'v>, Value<'v>), y: (Value<'v>, Value<'v>)| {
+                if reverse {
+                    y.1.compare(x.1)
+                } else {
+                    x.1.compare(y.1)
                 }
-            }
-        });
-
-        compare_ok?;
+            },
+        )?;
 
         Ok(AllocList(it.into_iter().map(|x| x.0)))
     }

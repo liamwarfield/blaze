@@ -426,6 +426,8 @@ fn maybe_handle_verified_clean_node(
         state.refresh_snapshot();
         (rdeps, state.entry.get_version())
     };
+    #[cfg(test)]
+    let rdeps = ctx.ev.deterministic_rdeps(rdeps);
     ctx.signal_parents_on_abort(key, &rdeps, version);
     // PORT: Java reports a BugReport (not a crash) when the error has no cycle ("Entry was
     // unchanged from last build, but cycle was found this time and not last time"); bug reports

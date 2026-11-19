@@ -16,6 +16,7 @@
  */
 
 pub(crate) mod globals;
+pub(crate) mod java_timsort; // BLAZE PATCH 0056
 pub(crate) mod min_max;
 pub(crate) mod other;
 pub(crate) mod zip;

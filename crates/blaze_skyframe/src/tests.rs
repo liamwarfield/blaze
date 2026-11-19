@@ -410,7 +410,14 @@ struct Spec {
     builder: Option<Builder>,
     /// Java: TestFunction.tag (extractTag).
     tag: Option<String>,
+    /// Java: `setComputedValue(ValueComputer)`: computes the value from the deps' values (in
+    /// request order) when there is no constant value; `None` is Java's `CONCATENATE`.
+    computer: Option<Computer>,
 }
+
+/// Java: `GraphTester.ValueComputer`.
+type Computer =
+    Arc<dyn Fn(&[(SkyKey, String)], &mut Environment<'_>) -> ComputeResultT + Send + Sync>;
 
 /// Java: `GraphTester`: the functions of the test keys, by key.
 #[derive(Default)]
@@ -511,7 +518,11 @@ impl Tester {
     }
     /// Java: TestFunction.setBuilder(ChainedFunction).
     fn set_chained(&self, name: &'static str, f: Chained) -> &Self {
-        self.set_builder(name, move |t, env| f.compute(t, env))
+        self.set_chained_key(k(name), f)
+    }
+    /// Java: `getOrCreate(key).setBuilder(new ChainedFunction(...))` for any test key.
+    fn set_chained_key(&self, key: SkyKey, f: Chained) -> &Self {
+        self.set_builder_key(key, move |t, env| f.compute(t, env))
     }
     fn set_builder(
         &self,
@@ -579,7 +590,7 @@ impl SkyFunction for TestFunction {
         if let Some(p) = &spec.postable {
             env.listener().post(p.clone());
         }
-        let mut deps = vec![];
+        let mut deps: Vec<(SkyKey, String)> = vec![];
         if spec.batch {
             let keys: Vec<SkyKey> = spec.deps.iter().map(|(d, _)| d.clone()).collect();
             let result = env.get_values_and_exceptions(&keys)?;
@@ -592,7 +603,7 @@ impl SkyFunction for TestFunction {
                     },
                 };
                 if let Some(v) = v {
-                    deps.push(v);
+                    deps.push((d.clone(), v));
                 }
             }
         } else {
@@ -607,7 +618,7 @@ impl SkyFunction for TestFunction {
                 };
                 match v {
                     None => one_missing = true,
-                    Some(v) => deps.push(v),
+                    Some(v) => deps.push((d.clone(), v)),
                 }
                 assert_eq!(one_missing, env.values_missing(), "{d:?} {one_missing}");
             }
@@ -628,8 +639,13 @@ impl SkyFunction for TestFunction {
         if let Some(v) = spec.value {
             return Ok(Some(Arc::new(v)));
         }
+        if let Some(computer) = &spec.computer {
+            return Ok(computer(&deps, env)?.map(|v| Arc::new(v) as SkyValue));
+        }
         // CONCATENATE
-        Ok(Some(Arc::new(deps.concat())))
+        Ok(Some(Arc::new(
+            deps.into_iter().map(|(_, v)| v).collect::<String>(),
+        )))
     }
 
     // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:163 GraphTester.extractTag
@@ -2117,12 +2133,51 @@ impl MemoizingTester {
     /// Java: `tester.eval(keepGoing, keys)` (100 threads; here 8), or the interrupt.
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5961 MemoizingEvaluatorTester.eval
     fn try_eval(&self, keep_going: bool, keys: &[SkyKey]) -> Result<EvaluationResult, Interrupted> {
+        let reporter: Arc<dyn blaze_events::ExtendedEventHandler> =
+            self.event_collector.lock().clone();
+        self.try_eval_with_reporter(keep_going, keys, reporter)
+    }
+
+    /// [`MemoizingTester::try_eval`] with the test's own `reporter` (Java tests replace the
+    /// `reporter` field, e.g. with a `DelegatingEventHandler` around it).
+    fn try_eval_with_reporter(
+        &self,
+        keep_going: bool,
+        keys: &[SkyKey],
+        reporter: Arc<dyn blaze_events::ExtendedEventHandler>,
+    ) -> Result<EvaluationResult, Interrupted> {
         assert!(self.get_modified_values().is_empty());
         let ctx = EvaluationContext {
-            event_handler: self.event_collector.lock().clone(),
+            event_handler: reporter,
             ..ctx(keep_going, 8)
         };
         self.evaluator.evaluate(keys, &ctx)
+    }
+
+    /// Java: `injectGraphListenerForTesting(listener, deterministic)`: the listener is told of
+    /// the calls on the graph's node entries (`graph_listener`), and with `deterministic` the
+    /// graph hands out reverse deps in alphabetical order (`DeterministicHelper`).
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5490 MemoizingEvaluatorTest.injectGraphListenerForTesting
+    fn inject_graph_listener_for_testing(
+        &self,
+        listener: impl crate::graph_listener::Listener + 'static,
+        deterministic: bool,
+    ) {
+        self.evaluator
+            .graph
+            .listeners_for_testing
+            .inject(Arc::new(listener));
+        if deterministic {
+            self.make_graph_deterministic();
+        }
+    }
+
+    /// Java: `makeGraphDeterministic()`.
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5495 MemoizingEvaluatorTest.makeGraphDeterministic
+    fn make_graph_deterministic(&self) {
+        self.evaluator
+            .deterministic_for_testing
+            .store(true, Ordering::SeqCst);
     }
 
     fn eval(&self, keep_going: bool, keys: &[SkyKey]) -> EvaluationResult {

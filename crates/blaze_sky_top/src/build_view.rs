@@ -586,7 +586,12 @@ fn check_target_compatibility_of_build_driver_keys(
     for configured_target in skyframe_analysis_result.get_configured_targets() {
         // At this point, the target is considered "analyzed".
         // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:415 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
-        announce_top_level_target_configured(&*graph, configured_target, target_lookup, event_handler);
+        announce_top_level_target_configured(
+            &*graph,
+            configured_target,
+            target_lookup,
+            event_handler,
+        );
         event_handler.post(Arc::new(TopLevelTargetAnalyzedEvent::create(
             configured_target.clone(),
         )));

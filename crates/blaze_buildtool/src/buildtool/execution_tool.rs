@@ -889,8 +889,8 @@ pub fn run_exclusive_test_skymeld(
 ///
 /// PORT: the build tool log values ("elapsed time", "critical path", "process stats") are added
 /// by the command's BEP side, which owns the `BuildToolLogCollection`
-/// ([`ExecutionEventCollector::critical_path_tool_log`]). The profiler (`ProfilerStartedEvent`,
-/// `Profiler.instance().stop()`, the critical path profile tasks) is not ported. The logger
+/// ([`ExecutionEventCollector::critical_path_tool_log`]); so are the profiler's stop and the
+/// profile's tool log entry (blaze_runtime `profiler_init::stop_and_publish_profile`). The logger
 /// lines go to the server log, which is not ported.
 // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:153 BuildSummaryStatsModule.buildComplete
 pub fn report_build_summary_stats(
@@ -908,10 +908,27 @@ pub fn report_build_summary_stats(
     let mut critical_path = AggregatedCriticalPath::empty();
     let critical_path_computer = collector.critical_path_computer.lock().clone();
     if let Some(critical_path_computer) = &critical_path_computer {
+        // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:168 BuildSummaryStatsModule.buildComplete
+        let _c = blaze_util::profiler::Profiler::instance().profile(
+            blaze_util::profiler::ProfilerTask::CRITICAL_PATH,
+            "Critical path",
+        );
         critical_path = critical_path_computer.aggregate();
         reporter.post(Arc::new(CriticalPathEvent::new(critical_path.clone())));
         items.push(critical_path.to_string_summary_no_remote());
         *collector.critical_path_tool_log.lock() = Some(critical_path.to_string());
+        // We reverse the critical path because the profiler expect events ordered by the time
+        // when the actions were executed while critical path computation is stored in the
+        // reverse way.
+        // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:184 BuildSummaryStatsModule.buildComplete
+        for stat in critical_path.components().iter().rev() {
+            blaze_util::profiler::Profiler::instance().log_simple_task_duration(
+                stat.get_start_time_nanos(),
+                stat.get_elapsed_time(),
+                blaze_util::profiler::ProfilerTask::CRITICAL_PATH_COMPONENT,
+                &stat.pretty_print_action(),
+            );
+        }
     }
 
     let spawn_summary = collector.spawn_stats.get_summary();

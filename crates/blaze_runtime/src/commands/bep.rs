@@ -1663,8 +1663,13 @@ impl BepCommandSupport {
                 .get_build_tool_log_collection()
                 .add_direct_value("critical path", critical_path.as_bytes());
         }
-        // PORT: the profiler does not run, so there is no profile file ("command.profile.gz",
-        // ProfilerStartedEvent.getProfile().publish) to list.
+        // Stop the profiler and list its file ("command.profile.gz").
+        // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:196 BuildSummaryStatsModule.buildComplete
+        if let Some(message) = crate::profiler_init::stop_and_publish_profile(
+            build_result.get_build_tool_log_collection(),
+        ) {
+            self.reporter.handle(&Event::error(message));
+        }
         let spawn_summary_string =
             SpawnStats::convert_summary_to_string(&collector.spawn_stats.get_summary());
         build_result
@@ -2013,13 +2018,26 @@ pub(crate) fn exec_with_no_build_events(
             None,
         );
     }
+    // The UI's subscriber of NoBuildEvent (showProgress = true).
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:777 UiEventHandler.noBuild
+    if let Some(handler) = env.get_ui_event_handler() {
+        handler.no_build(true);
+    }
     let result = exec_internal(env);
-    // PORT: skipped, profiling: Profiler.markPhase(ProfilePhase.FINISH).
+    // Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:91 QueryEnvironmentBasedCommand.exec
+    // PORT: FetchCommand and ModCommand do not mark the phase; neither analyzes, so the profiler
+    // is inactive for them (tracerEnabled) and this is a no-op.
+    blaze_util::profiler::Profiler::instance()
+        .mark_phase(blaze_util::profiler::ProfilePhase::FINISH);
     if let Some(bep) = env.get_bep() {
         bep.post_no_build_request_finished_event(
             result.get_exit_code(),
             JavaClock.current_time_millis(),
         );
+    }
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:788 UiEventHandler.noBuildFinished
+    if let Some(handler) = env.get_ui_event_handler() {
+        handler.no_build_finished();
     }
     result
 }

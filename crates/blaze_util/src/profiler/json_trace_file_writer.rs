@@ -354,18 +354,24 @@ fn run(
             writer.begin_object()?;
             writer.name("otherData")?;
             writer.begin_object()?;
-            writer.name("bazel_version")?.value_str(&config.bazel_version)?;
+            writer
+                .name("bazel_version")?
+                .value_str(&config.bazel_version)?;
             writer.name("build_id")?.value_str(&config.build_id)?;
             writer.name("output_base")?.value_str(&config.output_base)?;
-            writer.name("date")?.value_str(&instant_to_string(start_date))?;
+            writer
+                .name("date")?
+                .value_str(&instant_to_string(start_date))?;
             writer.name("profile_start_ts")?.value_long(start_date)?;
             writer.end_object()?;
             writer.name("traceEvents")?;
             writer.begin_array()?;
 
             // Generate metadata event for the critical path as thread 0 in disguise.
-            let critical_path_metadata = ThreadMetadata::create_fake_thread_metadata_for_critical_path();
-            critical_path_metadata.write_trace_data(&mut writer, config.profile_start_time_nanos)?;
+            let critical_path_metadata =
+                ThreadMetadata::create_fake_thread_metadata_for_critical_path();
+            critical_path_metadata
+                .write_trace_data(&mut writer, config.profile_start_time_nanos)?;
 
             // PORT: java-hash-order: Java iterates a HashMap<Long, MergedEvent> at the end;
             // `order` keeps the insertion order the iteration is computed from.

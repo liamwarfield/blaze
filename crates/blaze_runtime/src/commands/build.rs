@@ -551,6 +551,8 @@ fn run_build_with_bep(
 
     // BuildTool.buildTargets: runtime.createBuildOptions(request).
     let build_options = create_build_options(&BazelRuleClassProvider::create(), options);
+    let project_base_build_options = build_options.clone();
+    let options_arc = env.get_options().clone();
     let skyframe_executor = match create_skyframe_executor_with_execution(
         env,
         env.get_options().clone(),
@@ -603,6 +605,17 @@ fn run_build_with_bep(
     // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:88 BuildRequest.Builder
     let mut request = BuildRequest::new(command_name, options, targets, true, true);
     request.set_run_tests(run_tests);
+    // BuildTool.buildTargets: the project file's options go through the command's parser.
+    request.project_options_context.config_flag_definitions =
+        env.get_config_flag_definitions().clone();
+    request.project_options_applier = Some(Arc::new(
+        crate::project_options::BuildProjectOptionsApplier {
+            options: options_arc.clone(),
+            relative_working_directory: env.get_relative_working_directory().clone(),
+            reporter: reporter.clone(),
+            base_build_options: project_base_build_options.clone(),
+        },
+    ));
     // SkymeldModule.beforeCommand: env.setMergedAnalysisAndExecution(...)
     let merged_analysis_and_execution = determine_if_merging_analysis_execution(
         options,
@@ -861,6 +874,9 @@ fn run_build_with_bep(
     build_result.set_detailed_exit_code(Arc::new(to_util_detailed_exit_code(&detailed_exit_code)));
     // The stop time has to be captured before we send the BuildCompleteEvent.
     build_result.set_stop_time(JavaClock.current_time_millis());
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1174 BuildTool.stopRequest
+    blaze_util::profiler::Profiler::instance()
+        .mark_phase(blaze_util::profiler::ProfilePhase::FINISH);
     // The BuildCompleteEvent subscribers: AggregatingTestListener, BuildSummaryStatsModule, the
     // UI.
     // The TestSummary events that AggregatingTestListener.buildCompleteEvent posts (targets that
@@ -1001,6 +1017,9 @@ pub(crate) fn stop_request_without_execution(
     let mut result = BuildResult::new(env.get_command_start_time());
     // The stop time has to be captured before we send the BuildCompleteEvent.
     result.set_stop_time(JavaClock.current_time_millis());
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1174 BuildTool.stopRequest
+    blaze_util::profiler::Profiler::instance()
+        .mark_phase(blaze_util::profiler::ProfilePhase::FINISH);
     // No action ran: the counters of BuildSummaryStatsModule and of the UI are zero.
     report_build_summary_stats(
         reporter.as_ref(),
@@ -2224,6 +2243,32 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                     num_successful, num_targets_to_analyze
                 );
                 reporter.handle(&Event::info(msg));
+            }
+        }
+
+        // AnalysisAndExecutionPhaseRunner.execute after runAnalysisAndExecutionPhase returned
+        // (it does not when processErrors threw; a delayed --keep_going failure is thrown after
+        // the finally block): reportTargetsWithTests / reportTargets with the targets and tests
+        // of the BuildResultListener.
+        // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:135 AnalysisAndExecutionPhaseRunner.execute
+        if request.with_merged_analysis_and_execution_source_of_truth()
+            && !analyze_and_execute_threw
+        {
+            let analyzed_targets = self.build_result_listener.get_analyzed_targets().len();
+            if request.should_run_tests() {
+                blaze_sky_top::analysis_phase_runner::report_targets_with_tests(
+                    reporter.as_ref(),
+                    analyzed_targets,
+                    analysis_result
+                        .get_targets_to_test()
+                        .expect("NullPointerException: analyzed tests")
+                        .len(),
+                );
+            } else {
+                blaze_sky_top::analysis_phase_runner::report_targets(
+                    reporter.as_ref(),
+                    analyzed_targets,
+                );
             }
         }
 

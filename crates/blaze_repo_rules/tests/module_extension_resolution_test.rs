@@ -1494,7 +1494,6 @@ fn import_non_existent_repo() {
 
 // Java: ModuleExtensionResolutionTest.invalidAttributeValue
 #[test]
-#[ignore = "BLAZE GAP (finding): the Starlark traceback of a repository rule call error lacks the source line of each frame; Bazel prints the line text under every File line (expected event text is the Java test's)"]
 fn invalid_attribute_value() {
     let mut t = new_test();
     t.scratch.overwrite_file(
@@ -1563,7 +1562,6 @@ fn bad_repo_name_in_extension_impl_function() {
 
 // Java: ModuleExtensionResolutionTest.nonVisibleLabelInLabelAttr
 #[test]
-#[ignore = "BLAZE GAP (finding): the Starlark traceback of a repository rule call error lacks the source line of each frame; Bazel prints the line text under every File line (expected event text is the Java test's)"]
 fn non_visible_label_in_label_attr() {
     let mut t = new_test();
     t.scratch.overwrite_file(
@@ -1603,7 +1601,6 @@ Error: in call to 'data_repo' repo rule with name 'ext', no repository visible a
 
 // Java: ModuleExtensionResolutionTest.nonVisibleLabelInLabelAttrNonRootModule
 #[test]
-#[ignore = "BLAZE GAP (finding): the Starlark traceback of a repository rule call error lacks the source line of each frame; Bazel prints the line text under every File line (expected event text is the Java test's)"]
 fn non_visible_label_in_label_attr_non_root_module() {
     let mut t = new_test();
     t.registry().add_module(
@@ -1652,7 +1649,6 @@ Error: in call to 'data_repo' repo rule with name 'ext', no repository visible a
 
 // Java: ModuleExtensionResolutionTest.nonVisibleLabelInLabelAttrForwardedFromTag
 #[test]
-#[ignore = "BLAZE GAP (finding): the Starlark traceback of a repository rule call error lacks the source line of each frame; Bazel prints the line text under every File line (expected event text is the Java test's)"]
 fn non_visible_label_in_label_attr_forwarded_from_tag() {
     let mut t = new_test();
     t.scratch.overwrite_file(
@@ -1698,7 +1694,6 @@ Error: in 'label' tag, no repository visible as '@other_repo' to the root module
 
 // Java: ModuleExtensionResolutionTest.nonVisibleLabelInLabelListAttr
 #[test]
-#[ignore = "BLAZE GAP (finding): the Starlark traceback of a repository rule call error lacks the source line of each frame; Bazel prints the line text under every File line (expected event text is the Java test's)"]
 fn non_visible_label_in_label_list_attr() {
     let mut t = new_test();
     t.scratch.overwrite_file(
@@ -1738,7 +1733,6 @@ Error: in call to 'data_repo' repo rule with name 'ext', no repository visible a
 
 // Java: ModuleExtensionResolutionTest.nonVisibleLabelInLabelKeyedStringDictAttr
 #[test]
-#[ignore = "BLAZE GAP (finding): the Starlark traceback of a repository rule call error lacks the source line of each frame; Bazel prints the line text under every File line (expected event text is the Java test's)"]
 fn non_visible_label_in_label_keyed_string_dict_attr() {
     let mut t = new_test();
     t.scratch.overwrite_file(
@@ -1778,7 +1772,6 @@ Error: in call to 'data_repo' repo rule with name 'ext', no repository visible a
 
 // Java: ModuleExtensionResolutionTest.nonVisibleLabelInLabelListDictAttr
 #[test]
-#[ignore = "BLAZE GAP (finding): the Starlark traceback of a repository rule call error lacks the source line of each frame; Bazel prints the line text under every File line (expected event text is the Java test's)"]
 fn non_visible_label_in_label_list_dict_attr() {
     let mut t = new_test();
     t.scratch.overwrite_file(
@@ -2946,7 +2939,6 @@ fn require_repo_extension_metadata_default_allows_module_extension_default() {
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_allErrorsForModuleExtensionDefault
 #[test]
-#[ignore = "BLAZE GAP: unported!(\"StarlarkFunction.getLocation\") in production (runnable_extension.rs / repository_fetch_function.rs) on the --incompatible_require_repo_extension_metadata error path"]
 fn require_repo_extension_metadata_all_errors_for_module_extension_default() {
     let mut t = new_test();
     set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::All);
@@ -2962,7 +2954,6 @@ fn require_repo_extension_metadata_all_errors_for_module_extension_default() {
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_rootErrorsForRootModuleExtensionDefault
 #[test]
-#[ignore = "BLAZE GAP: unported!(\"StarlarkFunction.getLocation\") in production (runnable_extension.rs / repository_fetch_function.rs) on the --incompatible_require_repo_extension_metadata error path"]
 fn require_repo_extension_metadata_root_errors_for_root_module_extension_default() {
     let mut t = new_test();
     set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::Root);
@@ -3020,7 +3011,6 @@ fn require_repo_extension_metadata_all_allows_explicit_module_extension_metadata
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_allErrorsForRepoRuleDefault
 #[test]
-#[ignore = "BLAZE GAP: unported!(\"StarlarkFunction.getLocation\") in production (runnable_extension.rs / repository_fetch_function.rs) on the --incompatible_require_repo_extension_metadata error path"]
 fn require_repo_extension_metadata_all_errors_for_repo_rule_default() {
     let mut t = new_test();
     set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::All);
@@ -3034,7 +3024,6 @@ fn require_repo_extension_metadata_all_errors_for_repo_rule_default() {
 
 // Java: ModuleExtensionResolutionTest.requireRepoExtensionMetadata_rootErrorsForRootRepoRuleDefault
 #[test]
-#[ignore = "BLAZE GAP: unported!(\"StarlarkFunction.getLocation\") in production (runnable_extension.rs / repository_fetch_function.rs) on the --incompatible_require_repo_extension_metadata error path"]
 fn require_repo_extension_metadata_root_errors_for_root_repo_rule_default() {
     let mut t = new_test();
     set_require_repo_extension_metadata_mode(&mut t, RequireRepoExtensionMetadataMode::Root);
@@ -3454,7 +3443,6 @@ fn innate_no_such_value_if_private() {
 
 // Java: ModuleExtensionResolutionTest.innate_invalidAttributeValue
 #[test]
-#[ignore = "BLAZE GAP (finding): the Starlark traceback of a repository rule call error lacks the source line of each frame; Bazel prints the line text under every File line (expected event text is the Java test's)"]
 fn innate_invalid_attribute_value() {
     let mut t = new_test();
     t.scratch.overwrite_file(

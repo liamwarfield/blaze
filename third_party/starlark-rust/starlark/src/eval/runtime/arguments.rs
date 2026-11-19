@@ -66,6 +66,14 @@ pub(crate) enum FunctionError {
     /// BLAZE PATCH 0052: an argument error with Java's text.
     #[error("{0}")]
     Bazel(String),
+    /// BLAZE PATCH 0056: a name given twice to a builtin's `**kwargs` (Java
+    /// BuiltinFunction.java:343 addNamedArg); the call names the builtin
+    /// (`BazelParamTypeError::with_function`).
+    #[error("{}() got multiple values for keyword argument '{name}'", .function.as_deref().unwrap_or("function"))]
+    RepeatedKwarg {
+        function: Option<String>,
+        name: String,
+    },
 }
 
 impl From<FunctionError> for crate::Error {
@@ -319,7 +327,8 @@ impl<'v, 'a> Arguments<'v, 'a> {
                         let k = Hashed::new_unchecked(k.hash(), s);
                         let old = result.insert_hashed(k, v);
                         if unlikely(old.is_some()) {
-                            return Err(FunctionError::RepeatedArg {
+                            return Err(FunctionError::RepeatedKwarg { // BLAZE PATCH 0056
+                                function: None, // BLAZE PATCH 0056
                                 name: s.as_str().to_owned(),
                             }
                             .into());

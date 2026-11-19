@@ -119,8 +119,14 @@ impl<'v> StarlarkValue<'v> for StructProvider {
         args: &Arguments<'v, '_>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
-        // Java: StructProvider.createStruct(Dict kwargs)
-        args.no_positional_args(eval.heap())?;
+        // Java: StructProvider.createStruct(Dict kwargs): `struct` takes no positional
+        // parameter, so any positional argument is rejected by the builtin's argument check.
+        // Java: net/starlark/java/eval/BuiltinFunction.java:154 BuiltinFunction.getArgumentVector
+        if args.positions(eval.heap())?.next().is_some() {
+            return Err(starlark::Error::new_other(anyhow::anyhow!(
+                "struct() got unexpected positional argument"
+            )));
+        }
         let fields = args
             .names_map()?
             .into_iter()
@@ -303,6 +309,15 @@ where
 
     fn dir_attr(&self) -> Vec<String> {
         self.field_names().map(str::to_owned).collect()
+    }
+
+    // Java: net/starlark/java/eval/Structure.java:80 Structure.setField (StarlarkInfo does not
+    // override it; reached from EvalUtils.setField because a struct is a Structure).
+    fn set_attr(&self, _attribute: &str, _new_value: Value<'v>) -> starlark::Result<()> {
+        Err(starlark::Error::new_other(anyhow::anyhow!(
+            "{} value does not support field assignment",
+            Self::TYPE
+        )))
     }
 
     // Java: com/google/devtools/build/lib/packages/StructImpl.java:86 StructImpl.getErrorMessageForUnknownField

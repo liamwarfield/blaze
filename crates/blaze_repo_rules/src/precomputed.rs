@@ -45,12 +45,12 @@ pub enum RequireRepoExtensionMetadataMode {
 }
 
 impl std::fmt::Display for RequireRepoExtensionMetadataMode {
-    // Java enum `toString` (the enum constant's name).
+    // Java: com/google/devtools/build/lib/bazel/repository/RepositoryOptions.java:421 RequireRepoExtensionMetadataMode.toString
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            RequireRepoExtensionMetadataMode::False => "FALSE",
-            RequireRepoExtensionMetadataMode::Root => "ROOT",
-            RequireRepoExtensionMetadataMode::All => "ALL",
+            RequireRepoExtensionMetadataMode::False => "false",
+            RequireRepoExtensionMetadataMode::Root => "root",
+            RequireRepoExtensionMetadataMode::All => "all",
         })
     }
 }

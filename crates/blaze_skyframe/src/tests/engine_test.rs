@@ -4,6 +4,7 @@
 //! how).
 
 use super::*;
+use crate::node_entry::NodeEntry;
 use blaze_events::Postable;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -761,4 +762,118 @@ fn keep_edges_false_memoizes_and_injects_without_edges() {
     // Java: DelegatingWalkableGraph.getDirectDeps on a node that keeps no edges.
     let deps = catch_unwind(AssertUnwindSafe(|| ev.get_direct_deps(&k("top"))));
     assert!(deps.is_err());
+}
+
+// PORT: Blaze only. A probe of the engine's documented deviation at the "Threw" path of
+// `Run::resolve` (engine.md (b), `AbstractParallelEvaluator.java:494-520`): a function that throws
+// although it is not the first error keeps the reverse-dep registrations of the deps it saw not
+// done, where Java's node would have registered nothing. The node stays in flight; the next
+// evaluation deletes it (`AbstractInMemoryMemoizingEvaluator.evaluate` deletes the in-flight
+// keys) and must take it out of the reverse deps of those deps, here a dep that finished (done)
+// after the thrower saw it not done. Expected values: Java's graph has no edge from "d" to "p"
+// (p registered nothing), so the invalidation of "d" dirties nothing but "d", and "p" rebuilds.
+#[test]
+fn thrower_after_first_error_leaves_no_reverse_dep_after_in_flight_deletion() {
+    for _ in 0..10 {
+        let tester = MemoizingTester::new();
+        let error = k("error");
+        let d = nk("d");
+        let p = k("p");
+        let d_started = Latch::new(1);
+        tester.set_chained_key(
+            error.clone(),
+            Chained {
+                wait_to_finish: Some(d_started.clone()),
+                ..Chained::default()
+            },
+        );
+        tester.set_builder_key(d.clone(), move |_, env| {
+            d_started.count_down();
+            // d finishes after the evaluation has failed: p, blocked in its request, sees it
+            // not done.
+            wait_for_exception(env, "error not thrown");
+            Ok(Some("d".into()))
+        });
+        {
+            let d = d.clone();
+            tester.set_builder_key(p.clone(), move |_, env| {
+                let v = env.get_value_dyn(&d)?;
+                if v.is_some() {
+                    return Ok(dep_string(v));
+                }
+                // Not the first error: dropped.
+                Err(SkyFunctionException::persistent(SomeErrorException("p".into())).into())
+            });
+        }
+        let r = tester.eval(false, &[error.clone(), p.clone()]);
+        assert!(r.has_error(), "{r:?}");
+        // The next evaluation deletes the in-flight nodes and dirties "d".
+        tester.with_key(d.clone(), |s| s.builder = None);
+        tester.set_key(d.clone(), "d2");
+        tester.invalidate();
+        let r = tester.eval(false, std::slice::from_ref(&d));
+        assert_eq!(*r.get(&N("d")).unwrap(), "d2");
+        assert!(tester.evaluator.node(&p).is_none());
+        let rdeps = tester.evaluator.get_reverse_deps(std::slice::from_ref(&d));
+        assert!(
+            rdeps.iter().all(|(_, r)| !r.contains(&p)),
+            "stale reverse dep: {rdeps:?}"
+        );
+        let r = tester.eval(false, std::slice::from_ref(&p));
+        assert_eq!(*r.get(&T("p")).unwrap(), "d2");
+    }
+}
+
+// PORT: Blaze only. A probe of in-flight deletion when the in-flight node was dirty
+// (`InvalidatingNodeVisitor.java:229-400`, `DeletingNodeVisitor`): "mid" is dirty and is
+// interrupted while it rebuilds; its parent "top" is dirty and is not requested. The next
+// evaluation deletes "mid" (in flight) and, with it, its reverse transitive closure ("top"); a
+// later evaluation of "top" builds both from scratch. Expected values: Java deletes the reverse
+// transitive closure of an in-flight key (`DeletingNodeVisitor.visit`), and the functions' values.
+#[test]
+fn in_flight_dirty_node_is_deleted_with_its_dirty_parents() {
+    let tester = MemoizingTester::new();
+    let top = k("top");
+    let mid = nk("mid");
+    let leaf = nk("leaf");
+    tester.add_dependency_key(top.clone(), mid.clone());
+    tester.add_dependency_key(mid.clone(), leaf.clone());
+    tester.set_key(leaf.clone(), "leaf");
+    assert_eq!(tester.eval_and_get(false, &top), "leaf");
+    // mid is changed and interrupted while it rebuilds; top is dirty and not requested.
+    tester.get_or_create(mid.clone(), /* mark_as_modified= */ true);
+    let interrupt = tester.evaluator.interrupt_flag();
+    tester.set_builder_key(mid.clone(), move |_, env| {
+        interrupt.store(true, Ordering::SeqCst);
+        env.check_interrupted()?;
+        panic!("not interrupted");
+    });
+    tester.invalidate();
+    assert_eq!(
+        tester.try_eval(false, std::slice::from_ref(&mid)).err(),
+        Some(Interrupted)
+    );
+    tester.evaluator.clear_interrupt();
+    assert!(
+        tester
+            .evaluator
+            .node(&top)
+            .is_some_and(|n| n.lock().entry.is_dirty())
+    );
+    // The next evaluation deletes mid, in flight, and its reverse transitive closure.
+    tester.with_key(mid.clone(), |s| s.builder = None);
+    let r = tester.eval(false, std::slice::from_ref(&leaf));
+    assert_eq!(*r.get(&N("leaf")).unwrap(), "leaf");
+    assert!(tester.evaluator.node(&mid).is_none());
+    assert!(tester.evaluator.node(&top).is_none());
+    assert!(
+        tester
+            .evaluator
+            .get_reverse_deps(std::slice::from_ref(&leaf))
+            .iter()
+            .all(|(_, r)| r.is_empty())
+    );
+    tester.set_key(leaf, "leaf2");
+    tester.invalidate();
+    assert_eq!(tester.eval_and_get(false, &top), "leaf2");
 }

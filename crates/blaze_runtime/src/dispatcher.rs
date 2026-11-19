@@ -271,6 +271,10 @@ impl BlazeCommandDispatcher {
                 let result = match exec {
                     Ok(result) => result,
                     Err(result) => {
+                        // execExclusively's finally also runs on a crash: stop and clear the
+                        // profiler (the reporter is gone with the environment).
+                        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:871 BlazeCommandDispatcher.execExclusively
+                        let _ = crate::profiler_init::stop_and_clear_current();
                         // We are crashing: the command's environment is gone.
                         self.runtime.clear_env();
                         // Swallow IOException, as we are already in a finally clause
@@ -327,13 +331,19 @@ impl BlazeCommandDispatcher {
         quiet: bool,
         _command_name: &str,
         command: Arc<dyn BlazeCommand>,
-        // PORT: Java adds it to `--wait_time` in `CommandEnvironment.waitTime`, which nothing
-        // reads at the pin (`getWaitTime` has no caller).
-        _wait_time_in_ms: i64,
+        // PORT: Java also adds it to `--wait_time` in `CommandEnvironment.waitTime`, which
+        // nothing reads at the pin (`getWaitTime` has no caller); initProfiler reads it.
+        wait_time_in_ms: i64,
         startup_options_tagged_with_bazel_rc: Option<Vec<(String, String)>>,
         attempt_number: i32,
         attempted_commands: i32,
     ) -> BlazeCommandResult {
+        // Record the start time for the profiler. Do not put anything before this!
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:382 BlazeCommandDispatcher.execExclusively
+        let exec_start_time_nanos = {
+            use blaze_events::Clock;
+            blaze_events::JavaClock.nano_time()
+        };
         let command_annotation = command.annotation();
         let workspace = self.runtime.get_workspace().clone();
 
@@ -344,6 +354,8 @@ impl BlazeCommandDispatcher {
         // checkCwdInWorkspace (Java does both inside parseOptionsInternal).
         let all_options_classes = self.runtime.get_all_command_options_classes();
         let valid_commands: Vec<String> = self.runtime.get_command_map().keys().cloned().collect();
+        let mut config_flag_definitions =
+            blaze_sky_analysis::flag_set_function::ConfigFlagDefinitions::default();
         let mut early_exit_code: Option<DetailedExitCode> =
             Some(self.check_cwd_in_workspace(command.as_ref(), &mut stored_event_handler));
         let rcfile_notes: Vec<String>;
@@ -366,9 +378,11 @@ impl BlazeCommandDispatcher {
             if early_exit_code.as_ref().unwrap().is_success() {
                 // `invocationPolicyFlagListBuilder= ImmutableList.builder()`: the first pass's
                 // list is dropped.
-                let (result, _config_definitions) = option_handler
+                let (result, definitions) = option_handler
                     .parse_options_and_get_config_definitions(args, &mut stored_event_handler);
                 early_exit_code = Some(options_parse_result_exit_code(result));
+                config_flag_definitions =
+                    crate::project_options::config_flag_definitions(&definitions);
             }
             rcfile_notes = option_handler.get_rcfile_notes().to_vec();
         }
@@ -384,6 +398,7 @@ impl BlazeCommandDispatcher {
             &mut command_env_warnings,
         );
         env.set_client_command_line(args.to_vec(), startup_options_tagged_with_bazel_rc.clone());
+        env.set_config_flag_definitions(config_flag_definitions);
 
         // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:419 BlazeCommandDispatcher.execExclusively
         if attempt_number > 1 {
@@ -393,8 +408,27 @@ impl BlazeCommandDispatcher {
         let common_options = options
             .get_options::<CommonCommandOptions>()
             .expect("CommonCommandOptions");
-        // PORT: skipped, profiling: the profiler (--profile, --generate_json_trace_profile) and
-        // the Starlark CPU profiler (--starlark_cpu_profile) are not started.
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:422 BlazeCommandDispatcher.execExclusively
+        let tracer_enabled = crate::profiler_init::tracer_enabled(
+            &common_options,
+            command_annotation.name(),
+            command_annotation.build_phase.analyzes(),
+        );
+        // TODO(ulfjack): Move the profiler initialization as early in the startup sequence as
+        // possible. Profiler setup and shutdown must always happen in pairs. Shutdown is
+        // currently performed in the afterCommand call in the finally block below.
+        let profiler_started_event = crate::profiler_init::init_profiler(
+            tracer_enabled,
+            &mut stored_event_handler,
+            &options,
+            &env,
+            exec_start_time_nanos,
+            wait_time_in_ms,
+            &crate::version_info::BlazeVersionInfo::instance().get_release_name(),
+        );
+        crate::profiler_init::profile_starting(profiler_started_event);
+        // PORT: skipped, profiling: the Starlark CPU profiler (--starlark_cpu_profile) is not
+        // started.
 
         let reporter = env.get_reporter().clone();
         // Both the call to env.decideKeepIncrementalState() and module.beforeCommand() may emit
@@ -410,6 +444,11 @@ impl BlazeCommandDispatcher {
             env.exit(e);
         }
         for module in self.runtime.get_blaze_modules().to_vec() {
+            // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:492 BlazeCommandDispatcher.execExclusively
+            let _closeable = blaze_util::profiler::Profiler::instance()
+                .profile_with(blaze_util::profiler::ProfilerTask::INFO, || {
+                    format!("{}.beforeCommand", module.name())
+                });
             if let Err(e) = module.before_command(&mut env) {
                 // Don't let one module's complaints prevent the other modules from doing
                 // necessary setup.
@@ -470,6 +509,9 @@ impl BlazeCommandDispatcher {
         }
 
         // Setup the event handler.
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:526 BlazeCommandDispatcher.execExclusively
+        let setup_event_handler =
+            blaze_util::profiler::Profiler::instance().profile_info("setup event handler");
         let event_handler_options = options.get_options::<UiOptions>().expect("UiOptions");
         let mut out_err = out_err;
         if !event_handler_options.use_color() {
@@ -525,9 +567,14 @@ impl BlazeCommandDispatcher {
         // switched to by the `run` command (Reporter.switchToAnsiAllowingHandler), whose `exec`
         // is not ported and fails loudly.
 
+        drop(setup_event_handler);
+
         // PORT: warnIfUsingUnusupportedEncoding: the in-process server's sun.jnu.encoding is the
         // ISO-8859-1 the client forces (see InfoItem character-encoding), which is supported.
 
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:579 BlazeCommandDispatcher.execExclusively
+        let replay_stored_events =
+            blaze_util::profiler::Profiler::instance().profile_info("replay stored events");
         // Now we're ready to replay the events.
         for event in stored_event_handler.get_events() {
             reporter.handle(&to_event(event));
@@ -537,6 +584,11 @@ impl BlazeCommandDispatcher {
             reporter.handle(&Event::warn(warning.clone()));
         }
 
+        drop(replay_stored_events);
+
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:587 BlazeCommandDispatcher.execExclusively
+        let announce_rc_options =
+            blaze_util::profiler::Profiler::instance().profile_info("announce rc options");
         if common_options.announce_rc_options {
             if let Some(tagged) = &startup_options_tagged_with_bazel_rc {
                 let mut last_blazerc = String::new();
@@ -574,9 +626,16 @@ impl BlazeCommandDispatcher {
             }
         }
 
+        drop(announce_rc_options);
+
         // Notify the BlazeRuntime, so it can do some initial setup.
         // Java: CommandEnvironment.beforeCommand
-        if let Err(e) = self.env_before_command(&mut env) {
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:632 BlazeCommandDispatcher.execExclusively
+        let closeable =
+            blaze_util::profiler::Profiler::instance().profile_info("CommandEnv.beforeCommand");
+        let env_before_command = self.env_before_command(&mut env);
+        drop(closeable);
+        if let Err(e) = env_before_command {
             reporter.handle(&Event::error(e.get_message()));
             let result = BlazeCommandResult::detailed_exit_code(e.get_detailed_exit_code().clone());
             return self.after_command(&mut env, result, &out_err);
@@ -623,7 +682,6 @@ impl BlazeCommandDispatcher {
                 boolean_option_value(&options, "incompatible_remove_ctx_bazel_py_fragment");
             // Compute the repo mapping of the main repo and re-parse options so that we get correct
             // values for label-typed options.
-            // PORT: skipped, profiling: the profiler task.
             // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:701 BlazeCommandDispatcher.execExclusively
             // env.getEventBus().post(new MainRepoMappingComputationStartingEvent()): its only
             // subscriber is UiEventHandler.mainRepoMappingComputationStarted (an event of
@@ -642,6 +700,11 @@ impl BlazeCommandDispatcher {
             let mut options_parser: Option<OptionsParser> = None;
             // getMainRepoMapping(eventHandler) is getMainRepoMapping(false, DEFAULT_THREAD_COUNT,
             // eventHandler).
+            // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:702 BlazeCommandDispatcher.execExclusively
+            let compute_main_repo_mapping = blaze_util::profiler::Profiler::instance().profile(
+                blaze_util::profiler::ProfilerTask::BZLMOD,
+                "compute main repo mapping",
+            );
             match skyframe_executor.get_main_repo_mapping(
                 false,
                 blaze_sky_top::skyframe_executor::DEFAULT_THREAD_COUNT,
@@ -697,6 +760,7 @@ impl BlazeCommandDispatcher {
                     );
                 }
             }
+            drop(compute_main_repo_mapping);
             if !early_exit_code.is_success() {
                 post_no_build_event(&env);
                 let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
@@ -704,7 +768,10 @@ impl BlazeCommandDispatcher {
             }
             let mut options_parser = options_parser.expect("the options parser was rebuilt");
             // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:739 BlazeCommandDispatcher.execExclusively
-            // PORT: skipped, profiling: the profiler task.
+            let reparse_options = blaze_util::profiler::Profiler::instance().profile(
+                blaze_util::profiler::ProfilerTask::BZLMOD,
+                "reparse options with main repo mapping",
+            );
             let mut stored_second_pass_event_handler = StoredEventHandler::default();
             let (early_exit_code, invocation_policy_flags) = self.parse_options(
                 &command,
@@ -719,6 +786,7 @@ impl BlazeCommandDispatcher {
                 }
             }
             env.set_invocation_policy_flags(invocation_policy_flags);
+            drop(reparse_options);
             if !early_exit_code.is_success() {
                 post_no_build_event(&env);
                 let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
@@ -734,6 +802,11 @@ impl BlazeCommandDispatcher {
             // computed the main repository mapping; like that computation, its events are
             // stored and reported only if the command stops here (the command's own executor
             // reports them when it loads the same packages).
+            // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:766 BlazeCommandDispatcher.execExclusively
+            let parse_starlark_options_scope = blaze_util::profiler::Profiler::instance().profile(
+                blaze_util::profiler::ProfilerTask::BZLMOD,
+                "parse starlark options",
+            );
             let early_exit_code = parse_starlark_options(
                 &env,
                 &skyframe_executor,
@@ -741,6 +814,7 @@ impl BlazeCommandDispatcher {
                 &mut options_parser,
                 args,
             );
+            drop(parse_starlark_options_scope);
             drop(skyframe_executor);
             if !early_exit_code.is_success() {
                 post_no_build_event(&env);
@@ -824,6 +898,14 @@ impl BlazeCommandDispatcher {
         command_result: BlazeCommandResult,
         out_err: &OutErr,
     ) -> BlazeCommandResult {
+        // execExclusively's finally, before it calls afterCommand: profiler might still be
+        // running when an exception is thrown before BuildCompleteEvent is emitted or
+        // BlazeModule#completeCommand() is called. So we still need to try to stop the profiler
+        // here.
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:871 BlazeCommandDispatcher.execExclusively
+        if let Some(message) = crate::profiler_init::stop_and_clear_current() {
+            env.get_reporter().handle(&Event::error(message));
+        }
         // this.env = null
         self.runtime.clear_env();
         let mut module_exit_code: Option<DetailedExitCode> = None;

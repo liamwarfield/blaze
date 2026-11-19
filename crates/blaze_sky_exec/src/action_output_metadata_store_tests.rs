@@ -1031,3 +1031,42 @@ fn file_artifact_value_for_symlink_read_from_cache() {
     let hit_count: u64 = blaze_util::unported!("DigestUtils.getCacheStats");
     assert_eq!(hit_count, 1);
 }
+
+/// Not a Java test: no `ActionOutputMetadataStoreTest` method covers `getAllTreeArtifactData`
+/// with a missing tree. Java `ActionOutputMetadataStore.getAllTreeArtifactData`
+/// (skyframe/ActionOutputMetadataStore.java:144) returns `ImmutableMap.copyOf(treeArtifactData)`,
+/// which "may contain copies of `TreeArtifactValue.MISSING_TREE_ARTIFACT`": the marker
+/// `getTreeArtifactValue` stores (:241) when `constructTreeArtifactValueFromFilesystem` finds no
+/// directory (:258). `ActionExecutionValue.create` (skyframe/ActionExecutionValue.java:81) calls
+/// `getChildValues()` on each tree value, which the marker answers with
+/// `UnsupportedOperationException` (skyframe/TreeArtifactValue.java:445).
+#[test]
+fn get_all_tree_artifact_data_contains_missing_tree_artifact_marker() {
+    let f = Fixture::new();
+    let tree_artifact = create_tree_artifact_with_generating_action(&f.output_root, "foo/bar");
+    let store = f.create_store(std::slice::from_ref(&tree_artifact));
+    store.prepare_for_action_execution();
+
+    let e = get_output_metadata(&store, &tree_artifact).unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::NotFound, "{e}");
+
+    let all_tree_artifact_data = store.get_all_tree_artifact_data();
+    assert_eq!(
+        all_tree_artifact_data.keys().cloned().collect::<Vec<_>>(),
+        vec![tree_artifact.clone()]
+    );
+    assert!(crate::action_execution_value::is_missing_tree_artifact(
+        all_tree_artifact_data.get(&tree_artifact).unwrap()
+    ));
+
+    assert_throws(
+        "UnsupportedOperationException: MISSING_TREE_ARTIFACT",
+        || {
+            ActionExecutionValue::create(
+                store.get_all_artifact_data(),
+                store.get_all_tree_artifact_data(),
+                None,
+            );
+        },
+    );
+}

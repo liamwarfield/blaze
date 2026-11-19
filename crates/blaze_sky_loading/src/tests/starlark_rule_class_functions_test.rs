@@ -543,7 +543,6 @@ fn test_label_get_relative_syntax_error() {
 // Java: StarlarkRuleClassFunctionsTest.testStructFields
 // (`x.getValue("a")` is `StarlarkInt.of(1)`: here `repr(x.a)`.)
 #[test]
-#[ignore = "starlark-rust core-language error text still differs after patches 0049-0055: Blaze 'cannot set .a field of struct value', Java 'struct value does not support field assignment'"]
 fn test_struct_fields() {
     let ev = Ev::new();
     ev.exec(&["x = struct(a = 1, b = 2)"]);
@@ -670,7 +669,6 @@ fn test_struct_accessing_function_field_with_args() {
 
 // Java: StarlarkRuleClassFunctionsTest.testStructPosArgs
 #[test]
-#[ignore = "starlark-rust core-language error text still differs after patches 0049-0055: Blaze 'Error in <function struct>: Wrong number of positional arguments, expected 0, got 1', Java 'struct() got unexpected positional argument'"]
 fn test_struct_pos_args() {
     let ev = Ev::new();
     ev.check_eval_error_contains(

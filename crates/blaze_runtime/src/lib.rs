@@ -36,6 +36,8 @@ pub mod interrupt;
 pub mod jvm_signals;
 pub mod module;
 pub mod options_result;
+pub mod profiler_init;
+pub mod project_options;
 pub mod runtime;
 pub mod workspace;
 

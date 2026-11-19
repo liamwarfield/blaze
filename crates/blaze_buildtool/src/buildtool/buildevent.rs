@@ -1,8 +1,8 @@
-//! The phase events the UI (`UiEventHandler`) subscribes to: `LoadingPhaseStartedEvent`,
-//! `LoadingPhaseCompleteEvent`, `ConfigurationPhaseStartedEvent`, `AnalysisPhaseCompleteEvent`,
+//! The phase events the UI (`UiEventHandler`) subscribes to: `LoadingPhaseCompleteEvent`, `ConfigurationPhaseStartedEvent`, `AnalysisPhaseCompleteEvent`,
 //! `TestFilteringCompleteEvent` and `ExecutionProgressReceiverAvailableEvent`
 //! (`TopLevelStatusEvents.SomeExecutionStartedEvent` is posted by `BuildDriverFunction` and lives
-//! in `blaze_sky_exec::events`).
+//! in `blaze_sky_exec::events`; `LoadingPhaseStartedEvent`, posted by the query command too, lives
+//! beside its receiver in `blaze_sky_loading::package_progress_receiver`).
 //!
 //! PORT: Java keeps them in `lib/skyframe`, `lib/pkgcache`, `lib/analysis` and
 //! `lib/buildtool/buildevent`. The crates that post them (`blaze_sky_top`) sit above this one, and
@@ -17,25 +17,7 @@ use std::sync::Arc;
 use blaze_cmdline::{Label, RepositoryMapping};
 use blaze_events::Postable;
 
-use crate::runtime::ui_state_tracker::{AnalysisProgress, ExecutionProgress, PackageProgress};
-
-/// This event is fired before the loading phase starts.
-// Java: com/google/devtools/build/lib/skyframe/LoadingPhaseStartedEvent.java:21 LoadingPhaseStartedEvent
-pub struct LoadingPhaseStartedEvent {
-    package_progress: Arc<dyn PackageProgress>,
-}
-
-impl LoadingPhaseStartedEvent {
-    // Java: com/google/devtools/build/lib/skyframe/LoadingPhaseStartedEvent.java:30 LoadingPhaseStartedEvent.<init>
-    pub fn new(package_progress: Arc<dyn PackageProgress>) -> LoadingPhaseStartedEvent {
-        LoadingPhaseStartedEvent { package_progress }
-    }
-
-    // Java: com/google/devtools/build/lib/skyframe/LoadingPhaseStartedEvent.java:34 LoadingPhaseStartedEvent.getPackageProgressReceiver
-    pub fn get_package_progress_receiver(&self) -> &Arc<dyn PackageProgress> {
-        &self.package_progress
-    }
-}
+use crate::runtime::ui_state_tracker::{AnalysisProgress, ExecutionProgress};
 
 /// This event is fired after the loading phase is complete.
 ///
@@ -171,7 +153,6 @@ macro_rules! postable {
 }
 
 postable! {
-    LoadingPhaseStartedEvent => "LoadingPhaseStartedEvent",
     LoadingPhaseCompleteEvent => "LoadingPhaseCompleteEvent",
     ConfigurationPhaseStartedEvent => "ConfigurationPhaseStartedEvent",
     AnalysisPhaseCompleteEvent => "AnalysisPhaseCompleteEvent",
@@ -179,7 +160,6 @@ postable! {
     ExecutionProgressReceiverAvailableEvent => "ExecutionProgressReceiverAvailableEvent",
 }
 
-impl Postable for LoadingPhaseStartedEvent {}
 impl Postable for LoadingPhaseCompleteEvent {
     // Java: com/google/devtools/build/lib/pkgcache/LoadingPhaseCompleteEvent.java:68 LoadingPhaseCompleteEvent.storeForReplay
     fn store_for_replay(&self) -> bool {

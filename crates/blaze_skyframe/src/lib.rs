@@ -172,6 +172,21 @@ macro_rules! check_not_null {
     };
 }
 
+/// Test hook: tells the graph's injected listeners (`graph_listener`, Java's `NotifyingHelper`)
+/// about a call on a node entry. Expands to nothing outside `cfg(test)`. Use it as a statement:
+/// `notify_graph_listener!(graph, key, EventType, Order, context)`.
+macro_rules! notify_graph_listener {
+    ($graph:expr, $key:expr, $event_type:ident, $order:ident, $context:expr) => {
+        #[cfg(test)]
+        $graph.listeners_for_testing.notify(
+            $key,
+            crate::graph_listener::EventType::$event_type,
+            crate::graph_listener::Order::$order,
+            $context,
+        );
+    };
+}
+
 mod abstract_in_memory_node_entry;
 mod cycle_info;
 mod differencer;
@@ -182,6 +197,8 @@ mod evaluation_result;
 mod evaluator;
 mod event_filter;
 mod function_hermeticity;
+#[cfg(test)]
+mod graph_listener;
 mod grouped_deps;
 mod in_memory_graph;
 mod in_memory_node_entry;

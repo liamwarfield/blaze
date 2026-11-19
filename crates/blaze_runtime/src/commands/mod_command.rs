@@ -55,153 +55,168 @@ impl BlazeCommand for ModCommand {
     }
 
     // PORT: `exec` posts `NoBuildEvent` before and `NoBuildRequestFinishedEvent` after
-    // `execInternal`; their only visible effect is `UiEventHandler.completeBuild` (a newline on
-    // stderr when stdout ended without one, e.g. `show_repo --output=streamed_proto`), which
-    // fails loudly in blaze_events (`UiStateTracker.setBuildComplete`). Not posted here.
+    // `execInternal`; the UI's subscribers (`noBuild`, `noBuildFinished`) are called here, the
+    // build event stream's are not (no build event stream subscriber of `mod` is ported).
     // Java: com/google/devtools/build/lib/bazel/commands/ModCommand.java:124 ModCommand.exec
-    // Java: com/google/devtools/build/lib/bazel/commands/ModCommand.java:216 ModCommand.execInternal
     fn exec(
         &self,
         env: &mut CommandEnvironment,
         options: &OptionsParsingResult,
     ) -> BlazeCommandResult {
-        let reporter = reporter(env);
-        let mod_options: ModOptions = options.get_options().expect("ModOptions");
-        let residue = options.get_residue();
-        let request = match exec_before_evaluation(&residue, &mod_options, reporter.as_ref()) {
-            Ok(r) => r,
-            Err(r) => return to_command_result(r),
-        };
-        let subcommand = request.subcommand;
-        let repo_mapping_keys: Vec<RepositoryMappingKey> = request
-            .repo_mapping_repo_names
+        // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:777 UiEventHandler.noBuild
+        if let Some(handler) = env.get_ui_event_handler() {
+            handler.no_build(true);
+        }
+        let result = mod_exec_internal(env, options);
+        // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:788 UiEventHandler.noBuildFinished
+        if let Some(handler) = env.get_ui_event_handler() {
+            handler.no_build_finished();
+        }
+        result
+    }
+}
+
+// Java: com/google/devtools/build/lib/bazel/commands/ModCommand.java:216 ModCommand.execInternal
+fn mod_exec_internal(
+    env: &mut CommandEnvironment,
+    options: &OptionsParsingResult,
+) -> BlazeCommandResult {
+    let reporter = reporter(env);
+    let mod_options: ModOptions = options.get_options().expect("ModOptions");
+    let residue = options.get_residue();
+    let request = match exec_before_evaluation(&residue, &mod_options, reporter.as_ref()) {
+        Ok(r) => r,
+        Err(r) => return to_command_result(r),
+    };
+    let subcommand = request.subcommand;
+    let repo_mapping_keys: Vec<RepositoryMappingKey> = request
+        .repo_mapping_repo_names
+        .iter()
+        .cloned()
+        .map(RepositoryMappingKey::key)
+        .collect();
+    let threads = options
+        .get_options::<LoadingPhaseThreadsOption>()
+        .map(|o| o.threads.max(1) as usize)
+        .unwrap_or(blaze_sky_top::skyframe_executor::DEFAULT_THREAD_COUNT);
+
+    // env.syncPackageLoading(options)
+    let skyframe_executor = match create_skyframe_executor(env, None) {
+        Ok(e) => e,
+        Err(result) => return result,
+    };
+    let _after_command = AfterCommand(&skyframe_executor);
+
+    // ImmutableSet.Builder<SkyKey>: duplicates collapse, first occurrence wins.
+    let mut keys: Vec<SkyKey> = Vec::new();
+    if subcommand == ModSubcommand::DUMP_REPO_MAPPING {
+        for k in &repo_mapping_keys {
+            let key = SkyKey::new(k.clone());
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    } else if subcommand == ModSubcommand::TIDY {
+        keys.push(SkyKey::new(BazelModTidyKey));
+    } else {
+        keys.push(SkyKey::new(BazelDepGraphKey));
+        keys.push(SkyKey::new(BazelModuleInspectorKey));
+    }
+    let evaluation_result = match skyframe_executor.evaluate(
+        &keys,
+        /* keep_going= */ true,
+        threads,
+        reporter.clone(),
+    ) {
+        Ok(r) => r,
+        Err(_) => return interrupted_result(env, "mod command interrupted: null"),
+    };
+    if evaluation_result.has_error() {
+        // PORT: the CyclesReporter (BzlmodRepoCycleReporter, BzlLoadCycleReporter) is not
+        // ported; cycles report the generic message.
+        let message = evaluation_result
+            .get_first_error()
+            .and_then(|e| e.get_exception())
+            .map(|e| e.to_string());
+        return to_command_result(report_evaluation_error(
+            reporter.as_ref(),
+            message.as_deref(),
+        ));
+    }
+
+    let out_err = env.get_reporter_out_err().clone();
+    let mut out = crate::commands::query::ReporterStdout(out_err.get_output_stream().clone());
+
+    // Handle commands that do not require BazelModuleInspectorValue.
+    if subcommand == ModSubcommand::DUMP_REPO_MAPPING {
+        let repo_mapping_values: Vec<_> = repo_mapping_keys
             .iter()
-            .cloned()
-            .map(RepositoryMappingKey::key)
+            .map(|k| {
+                evaluation_result
+                    .get(k)
+                    .expect("RepositoryMappingValue without error")
+            })
             .collect();
-        let threads = options
-            .get_options::<LoadingPhaseThreadsOption>()
-            .map(|o| o.threads.max(1) as usize)
-            .unwrap_or(blaze_sky_top::skyframe_executor::DEFAULT_THREAD_COUNT);
-
-        // env.syncPackageLoading(options)
-        let skyframe_executor = match create_skyframe_executor(env, None) {
-            Ok(e) => e,
-            Err(result) => return result,
-        };
-        let _after_command = AfterCommand(&skyframe_executor);
-
-        // ImmutableSet.Builder<SkyKey>: duplicates collapse, first occurrence wins.
-        let mut keys: Vec<SkyKey> = Vec::new();
-        if subcommand == ModSubcommand::DUMP_REPO_MAPPING {
-            for k in &repo_mapping_keys {
-                let key = SkyKey::new(k.clone());
-                if !keys.contains(&key) {
-                    keys.push(key);
+        let mappings: Vec<Option<&RepositoryMapping>> = repo_mapping_values
+            .iter()
+            .map(|v| {
+                if v.is_not_found() {
+                    None
+                } else {
+                    Some(v.repository_mapping().expect("repository mapping"))
                 }
-            }
-        } else if subcommand == ModSubcommand::TIDY {
-            keys.push(SkyKey::new(BazelModTidyKey));
-        } else {
-            keys.push(SkyKey::new(BazelDepGraphKey));
-            keys.push(SkyKey::new(BazelModuleInspectorKey));
-        }
-        let evaluation_result = match skyframe_executor.evaluate(
-            &keys,
-            /* keep_going= */ true,
-            threads,
-            reporter.clone(),
-        ) {
-            Ok(r) => r,
-            Err(_) => return interrupted_result(env, "mod command interrupted: null"),
-        };
-        if evaluation_result.has_error() {
-            // PORT: the CyclesReporter (BzlmodRepoCycleReporter, BzlLoadCycleReporter) is not
-            // ported; cycles report the generic message.
-            let message = evaluation_result
-                .get_first_error()
-                .and_then(|e| e.get_exception())
-                .map(|e| e.to_string());
-            return to_command_result(report_evaluation_error(
-                reporter.as_ref(),
-                message.as_deref(),
-            ));
-        }
-
-        let out_err = env.get_reporter_out_err().clone();
-        let mut out = crate::commands::query::ReporterStdout(out_err.get_output_stream().clone());
-
-        // Handle commands that do not require BazelModuleInspectorValue.
-        if subcommand == ModSubcommand::DUMP_REPO_MAPPING {
-            let repo_mapping_values: Vec<_> = repo_mapping_keys
-                .iter()
-                .map(|k| {
-                    evaluation_result
-                        .get(k)
-                        .expect("RepositoryMappingValue without error")
-                })
-                .collect();
-            let mappings: Vec<Option<&RepositoryMapping>> = repo_mapping_values
-                .iter()
-                .map(|v| {
-                    if v.is_not_found() {
-                        None
-                    } else {
-                        Some(v.repository_mapping().expect("repository mapping"))
-                    }
-                })
-                .collect();
-            let result = exec_dump_repo_mapping(
-                &request.repo_mapping_repo_names,
-                &mappings,
-                &mod_options,
-                reporter.as_ref(),
-                &mut out,
-            );
-            return to_command_result(result);
-        } else if subcommand == ModSubcommand::TIDY {
-            // tidy doesn't take extra arguments.
-            if !request.args.is_empty() {
-                return to_command_result(report_and_create_failure_result(
-                    reporter.as_ref(),
-                    "the 'tidy' command doesn't take extra arguments",
-                    ModCommandCode::TOO_MANY_ARGUMENTS,
-                ));
-            }
-            let mod_tidy_value = evaluation_result
-                .get(&BazelModTidyKey)
-                .expect("BazelModTidyValue without error");
-            return run_tidy(env, reporter.as_ref(), &mod_tidy_value);
-        }
-
-        let dep_graph = evaluation_result
-            .get(&BazelDepGraphKey)
-            .expect("BazelDepGraphValue without error");
-        let inspector = evaluation_result
-            .get(&BazelModuleInspectorKey)
-            .expect("BazelModuleInspectorValue without error");
-        let mut show_repo_backend = RepoDefinitions {
-            skyframe_executor: &skyframe_executor,
-            threads,
-            event_handler: reporter.clone(),
-            values: HashMap::new(),
-        };
-        let result = exec_after_evaluation(
-            subcommand,
-            &request.args,
+            })
+            .collect();
+        let result = exec_dump_repo_mapping(
+            &request.repo_mapping_repo_names,
+            &mappings,
             &mod_options,
-            &dep_graph,
-            &inspector,
             reporter.as_ref(),
             &mut out,
-            Some(&mut show_repo_backend),
         );
-        let _ = out.flush();
-        if let ModCommandResult::Interrupted { message } = result {
-            return interrupted_detailed_exit_code(message);
+        return to_command_result(result);
+    } else if subcommand == ModSubcommand::TIDY {
+        // tidy doesn't take extra arguments.
+        if !request.args.is_empty() {
+            return to_command_result(report_and_create_failure_result(
+                reporter.as_ref(),
+                "the 'tidy' command doesn't take extra arguments",
+                ModCommandCode::TOO_MANY_ARGUMENTS,
+            ));
         }
-        to_command_result(result)
+        let mod_tidy_value = evaluation_result
+            .get(&BazelModTidyKey)
+            .expect("BazelModTidyValue without error");
+        return run_tidy(env, reporter.as_ref(), &mod_tidy_value);
     }
+
+    let dep_graph = evaluation_result
+        .get(&BazelDepGraphKey)
+        .expect("BazelDepGraphValue without error");
+    let inspector = evaluation_result
+        .get(&BazelModuleInspectorKey)
+        .expect("BazelModuleInspectorValue without error");
+    let mut show_repo_backend = RepoDefinitions {
+        skyframe_executor: &skyframe_executor,
+        threads,
+        event_handler: reporter.clone(),
+        values: HashMap::new(),
+    };
+    let result = exec_after_evaluation(
+        subcommand,
+        &request.args,
+        &mod_options,
+        &dep_graph,
+        &inspector,
+        reporter.as_ref(),
+        &mut out,
+        Some(&mut show_repo_backend),
+    );
+    let _ = out.flush();
+    if let ModCommandResult::Interrupted { message } = result {
+        return interrupted_detailed_exit_code(message);
+    }
+    to_command_result(result)
 }
 
 // Java: com/google/devtools/build/lib/bazel/commands/ModCommand.java:690 ModCommand.runTidy

@@ -113,7 +113,10 @@ impl TraceEvent {
                         .iter()
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect();
-                    target_label = map.get("target").and_then(|t| t.as_str()).map(str::to_string);
+                    target_label = map
+                        .get("target")
+                        .and_then(|t| t.as_str())
+                        .map(str::to_string);
                     mnemonic = map
                         .get("mnemonic")
                         .and_then(|t| t.as_str())

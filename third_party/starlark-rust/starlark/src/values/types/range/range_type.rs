@@ -159,28 +159,28 @@ impl<'v> StarlarkValue<'v> for Range {
         stride: Option<Value>,
         heap: Heap<'v>,
     ) -> crate::Result<Value<'v>> {
-        let (start, stop, step) = convert_slice_indices(self.length()?, start, stop, stride)?;
+        let (start, mut stop, step) = convert_slice_indices(self.length()?, start, stop, stride)?;
+        // BLAZE PATCH 0056: Java's RangeList.getSlice (RangeList.java:182): 64-bit slice step,
+        // clamped to one element when it leaves the 32-bit range; `at(i)` is 32-bit arithmetic
+        // (a clamped `stop` may wrap; the range then still has its one element).
+        let mut slice_step = step as i64 * self.step.get() as i64;
+        if slice_step != slice_step as i32 as i64 {
+            slice_step = if slice_step > 0 {
+                i32::MAX as i64
+            } else {
+                i32::MIN as i64
+            };
+            if stop > start {
+                stop = start + 1;
+            } else if stop < start {
+                stop = start - 1;
+            }
+        }
+        let at = |i: i32| self.start.wrapping_add(self.step.get().wrapping_mul(i));
         return Ok(heap.alloc(Range {
-            start: self
-                .start
-                .checked_add(
-                    start
-                        .checked_mul(self.step.get())
-                        .ok_or(ValueError::IntegerOverflow)?,
-                )
-                .ok_or(ValueError::IntegerOverflow)?,
-            stop: self
-                .start
-                .checked_add(
-                    stop.checked_mul(self.step.get())
-                        .ok_or(ValueError::IntegerOverflow)?,
-                )
-                .ok_or(ValueError::IntegerOverflow)?,
-            step: NonZeroI32::new(
-                step.checked_mul(self.step.get())
-                    .ok_or(ValueError::IntegerOverflow)?,
-            )
-            .unwrap(),
+            start: at(start),
+            stop: at(stop),
+            step: NonZeroI32::new(slice_step as i32).unwrap(),
         }));
     }
 

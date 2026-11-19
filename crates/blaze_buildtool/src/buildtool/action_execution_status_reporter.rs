@@ -59,7 +59,7 @@ impl ActionExecutionStatusReporter {
         })
     }
 
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:102 ActionExecutionStatusReporter.setStatus
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:104 ActionExecutionStatusReporter.setStatus
     fn set_status(&self, action: &ActionRef, message: String) {
         self.action_status.lock().insert(
             action_id(action),
@@ -70,17 +70,17 @@ impl ActionExecutionStatusReporter {
     /// Remove action from the list of active actions. Action must be present.
     ///
     /// PORT: `BugReport.sendNonFatalBugReport` of a missing action is not ported (it logs).
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:107 ActionExecutionStatusReporter.remove
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:109 ActionExecutionStatusReporter.remove
     pub fn remove(&self, action: &ActionRef) {
         self.action_status.lock().remove(&action_id(action));
     }
 
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:150 ActionExecutionStatusReporter.getCount
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:151 ActionExecutionStatusReporter.getCount
     pub fn get_count(&self) -> usize {
         self.action_status.lock().len()
     }
 
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:154 ActionExecutionStatusReporter.appendGroupStatus
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:155 ActionExecutionStatusReporter.appendGroupStatus
     fn append_group_status(
         buffer: &mut String,
         status_map: &[(ActionRef, String, i64)],
@@ -126,7 +126,7 @@ impl ActionExecutionStatusReporter {
     }
 
     /// Get message showing currently executing actions.
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:186 ActionExecutionStatusReporter.getExecutionStatusMessage
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:192 ActionExecutionStatusReporter.getExecutionStatusMessage
     fn get_execution_status_message(&self, status_map: &[(ActionRef, String, i64)]) -> String {
         let count = status_map.len();
         let mut s = if count != 1 {
@@ -152,7 +152,7 @@ impl ActionExecutionStatusReporter {
     }
 
     /// Show currently executing actions.
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:208 ActionExecutionStatusReporter.showCurrentlyExecutingActions
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:216 ActionExecutionStatusReporter.showCurrentlyExecutingActions
     pub fn show_currently_executing_actions(&self, progress_percentage_message: &str) {
         let status_map = self.snapshot();
         if !status_map.is_empty() {
@@ -165,7 +165,7 @@ impl ActionExecutionStatusReporter {
 
     /// Warn about actions that are still being executed.
     /// Method is used to produce informative message when build is interrupted.
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:221 ActionExecutionStatusReporter.warnAboutCurrentlyExecutingActions
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:229 ActionExecutionStatusReporter.warnAboutCurrentlyExecutingActions
     pub fn warn_about_currently_executing_actions(&self) {
         let mut status_map = self.snapshot();
         if status_map.is_empty() {
@@ -195,7 +195,7 @@ impl ActionExecutionStatusReporter {
     /// `user_specified_progress_interval`: value of the --progress_report_interval flag; 0 means
     /// use default 10, then 30, then 60 seconds wait times. `previous_wait_time`: previous value
     /// returned by this method.
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:258 ActionExecutionStatusReporter.getWaitTime
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:261 ActionExecutionStatusReporter.getWaitTime
     pub fn get_wait_time(user_specified_progress_interval: i32, previous_wait_time: i32) -> i32 {
         if user_specified_progress_interval > 0 {
             return user_specified_progress_interval;
@@ -219,19 +219,19 @@ impl ActionExecutionStatusReporter {
 impl EventBus for ActionExecutionStatusReporter {
     fn post(&self, event: Arc<dyn Postable>) {
         if let Some(e) = downcast_event::<ActionStartedEvent>(&event) {
-            // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:117 ActionExecutionStatusReporter.updateStatus
+            // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:119 ActionExecutionStatusReporter.updateStatus
             self.set_status(&e.action, PREPARING_MESSAGE.to_owned());
         } else if let Some(e) = downcast_event::<ScanningActionEvent>(&event) {
-            // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:124 ActionExecutionStatusReporter.updateStatus
+            // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:126 ActionExecutionStatusReporter.updateStatus
             self.set_status(&e.action, "Scanning".to_owned());
         } else if let Some(e) = downcast_event::<SchedulingActionEvent>(&event) {
-            // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:131 ActionExecutionStatusReporter.updateStatus
+            // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:133 ActionExecutionStatusReporter.updateStatus
             self.set_status(&e.action, "Scheduling".to_owned());
         } else if let Some(e) = downcast_event::<RunningActionEvent>(&event) {
-            // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:138 ActionExecutionStatusReporter.updateStatus
+            // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:140 ActionExecutionStatusReporter.updateStatus
             self.set_status(&e.action, format!("Running ({})", e.strategy));
         } else if let Some(e) = downcast_event::<StoppedScanningActionEvent>(&event) {
-            // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:145 ActionExecutionStatusReporter.updateStatus
+            // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:147 ActionExecutionStatusReporter.updateStatus
             self.remove(&e.action);
         }
     }

@@ -24,10 +24,13 @@ use blaze_sky_exec::events::{
 };
 use parking_lot::{Mutex, RwLock};
 
+use blaze_sky_loading::package_progress_receiver::{
+    LoadingPhaseStartedEvent, PackageProgressReceiver,
+};
+
 use crate::buildtool::buildevent::{
     AnalysisPhaseCompleteEvent, ConfigurationPhaseStartedEvent,
-    ExecutionProgressReceiverAvailableEvent, LoadingPhaseCompleteEvent, LoadingPhaseStartedEvent,
-    TestFilteringCompleteEvent,
+    ExecutionProgressReceiverAvailableEvent, LoadingPhaseCompleteEvent, TestFilteringCompleteEvent,
 };
 
 use crate::runtime::test_summary::TestSummary;
@@ -58,6 +61,16 @@ pub fn test_summary_provides_new_information(summary: &TestSummary) -> bool {
         return summary.get_failed_logs().len() != 1;
     }
     true
+}
+
+/// The `PackageProgressReceiver` of a `LoadingPhaseStartedEvent` as the tracker reads it.
+struct PackageProgressReceiverView(&'static PackageProgressReceiver);
+
+impl PackageProgress for PackageProgressReceiverView {
+    // Java: com/google/devtools/build/lib/skyframe/PackageProgressReceiver.java:55 PackageProgressReceiver.progressState
+    fn progress_state(&self) -> (String, String) {
+        self.0.progress_state()
+    }
 }
 
 /// The UI's subscriber on the command's event bus.
@@ -322,7 +335,9 @@ impl UiEventSubscriber {
 
     fn dispatch(&self, event: &Arc<dyn Postable>) {
         if let Some(e) = downcast_event::<LoadingPhaseStartedEvent>(event) {
-            self.loading_started(Some(e.get_package_progress_receiver().clone()));
+            self.loading_started(Some(Arc::new(PackageProgressReceiverView(
+                e.get_package_progress_receiver(),
+            ))));
         } else if let Some(e) = downcast_event::<ConfigurationPhaseStartedEvent>(event) {
             self.configuration_started(Some(e.get_analysis_progress_receiver().clone()));
         } else if let Some(e) = downcast_event::<LoadingPhaseCompleteEvent>(event) {

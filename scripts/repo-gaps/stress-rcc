@@ -17,6 +17,8 @@ usage: scripts/repo-gaps/stress-rcc --binary <blaze|bazel> [--workers N] [--iter
                                     [--reset-after SECONDS]
        scripts/repo-gaps/stress-rcc help
 
+--workers, --iterations, --runs and --files below 1 are refused (exit 2): no work is no evidence.
+
 Starts N processes of <binary> at once (default 6). Each has its own copy of a small workspace
 and its own output user root; all share one --repository_cache (so one repo contents cache,
 <cache>/contents), as Bazel's integration tests do with $REPOSITORY_CACHE. The workspace has
@@ -144,6 +146,11 @@ def main():
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--reset-after", type=float)
     a = ap.parse_args()
+    zero = [n for n in ("workers", "iterations", "runs", "files") if getattr(a, n) <= 0]
+    if zero:
+        # Zero work proves nothing (audit round 4, N5): refuse rather than report a pass.
+        print("stress-rcc: refused: --%s must be at least 1" % ", --".join(zero), file=sys.stderr)
+        return 2
     a.binary = os.path.abspath(a.binary)
     out = subprocess.run([a.binary, "--version"], stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL).stdout.decode("latin-1")
