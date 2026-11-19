@@ -475,3 +475,171 @@ to R2A-6 below belong in the next protected batch; R2A-1 first.
   `_STDERR_KEEP`, `paths_only` boundary; no Blaze label from a clean commit yet; the baseline
   contains one failing test at HEAD (`blaze_sky_exec … file_write_then_symlink_builds_and_sets_output_permissions`),
   so "tests green" is not true at `88dbfa6`.
+
+---
+
+# Round 2B: baseline move, round-1 findings outside the referee, new evidence tools
+
+Date 2026-11-18, 16:00-17:15 MST. Same auditor role, read-only, no Cargo. Code read at commit
+`ef66f55e904e846e6b40c8d7e436d6b5d7ea5475` (`git show`/`git grep`, not the dirty working tree);
+README.md and docs/STATUS.md at HEAD `b4fc7edb3a49eebb414bbfc49f54e9976a552194` (HEAD moved from
+`5013a3f` during the round). Three read-only sub-reviewers (Fable 5.2) did the line-by-line name
+map audit, the re-check of S2-5/S2-7/S2-8/S2-9, and the review of the new evidence tools; I
+re-ran the comparisons, checked the score files, the claims and the seams myself.
+
+**Verdict for the audit as a whole: PASS.** The round-1 STOP is lifted: its blocking findings
+(S1-1 to S1-4 and the claims that the evidence contradicted) are fixed or withdrawn, and the
+published score is now bound to a clean commit, reproducible and stated with its denominators.
+No finding below shows an expectation taken from Blaze, a hardcoded answer or a loosened judge.
+The open S2 items are listed in priority order at the end; none inflates a published number.
+
+**Baseline move to ef66f55: APPROVE** (`scripts/gate/baseline ~/.cache/blaze/work/tests-ef66f55e904e.json
+--name-map docs/state/name-map-ef66f55e904e.tsv`, then commit `docs/state` and `corpus/scores`).
+
+## A. Name maps and scores
+
+**Name maps** (all 35 lines read against the old body at `88dbfa6`, the new body at `ef66f55`
+and the Java original): acceptable as they are; no line hides lost coverage.
+- Every old name is `pass` in the baseline and absent from the new results; every new name is
+  `pass`; no duplicate old or new names. Without the map `compare-tests` fails with exactly these
+  35 names; with it: `retained 3973 recovered 87 new-pass 1454 lost 0 absent 0`, exit 0 (my run).
+- Lines 1-27 are de-duplications, not renames: the new name already passed in the baseline, so
+  one test now stands for two. Justified: the duplicate implementation in
+  `blaze_bzlmod/src/registry_fetcher/{http,download_cache}.rs` is gone at `ef66f55` and delegates
+  to `blaze_repo_fetch`; the three target test files are unchanged between the commits.
+- Classification: 5 equivalent, 19 changed but still covering the Java behaviour, 9 stronger
+  (28, 30-35 and three download-cache tests), 2 slightly weaker:
+  line 6 (`…missing_in_redirect_throws`): the message assert "Remote redirect missing Location."
+  is gone, only `is_err()` remains (Java also only expects `IOException`); line 15
+  (`format_grouped_uses_commas`): three cases became one (`10,590,000`).
+- Lines 32-35 (`deviation_*` → `bazel_*`): the Bazel values asserted now were already written
+  in the old tests' comments at `88dbfa6` and agree with the Java (`BuiltinFunction.java:38,201`,
+  `StarlarkSet.java:218`, `string_split.star:6`, `StarlarkFloat.java:144`); they are not copied
+  from the patched interpreter.
+- Also checked: 0 names went pass → ignored; the baseline's one failing test passes; 298
+  baseline-ignored names are absent, all accounted for (293 moved from `blaze_packages` to
+  `blaze_sky_loading::lib::tests::*`, 251 of them now passing; 3 to `blaze_client`; 2 in
+  `blaze_bzlmod`).
+- Notes, not blocking: `name-map-12ca29ee95e0.md` still calls line 31 "No equivalent" (stale);
+  restore the two dropped assertions of lines 6 and 15; the ratchet cannot see body changes under
+  an unchanged name (`blaze_bzlmod/tests/registry_fetcher_test.rs` changed +114/-177).
+
+**Scores.** `corpus/scores/blaze-12ca29ee95e0.*` and `blaze-ef66f55e904e.*`:
+- Manifests of `blaze-ef66f55e904e/{brotli,re2}`: `blaze_repo.commit` `ef66f55e904e…`, `dirty`
+  false, binary `~/.cache/blaze/work/accept-ef66f55e904e/target/debug/blaze` sha256
+  `2e240cc098ae…`, all five steps, no `replaced`, no `renormalised`. The checkout and the binary
+  have since been deleted, so the hash cannot be re-derived from a file (R2A-2 stays open).
+- `scoreboard blaze-ef66f55e904e --json` reproduces the committed-to-be JSON byte for byte.
+- My run of `compare oracle-9.3.2 blaze-ef66f55e904e --project brotli --project re2`: exit 1,
+  26 surfaces = 23 MATCH + 3 DIFF, 13,916 = 13,850 matching + 58 allowed + 8 failed, 1 extra;
+  the differences are 4 BEP events per project (`buildToolLogs`, both `structuredCommandLine`,
+  `unstructuredCommandLine`) and one extra re2 warning line. Nothing written to the recordings.
+- `cquery_label_kind` and `aquery_actions` are MATCH including every `__order__` item: **S1-1 is
+  fixed** and the referee now shows it.
+- The R2A-1 hole does not affect either score: the `buildMetrics` events differ in 6 and 7
+  paths, all on the allow list.
+- Referee and gate are unchanged since the 2A-reviewed commit `5c2b5be` except three added
+  protected paths (`docs/reviews/` among them); hooks are installed; unit tests 96 and 40 pass.
+
+## B. Round-1 findings outside the referee, at ef66f55
+
+| finding | state | evidence |
+|---|---|---|
+| S1-1 cquery/aquery order | **fixed** | above |
+| S1-2 Starlark flags dropped | **fixed** | `blaze_runtime/src/dispatcher.rs:544,804`, `starlark_options_parser.rs`; command line and rc go through the same parser, errors exit with `StarlarkOptionsParseFailure`; values reach `BuildOptions` (`build_options.rs:715`). `docs/workerd.md:83` still says "silently dropped" (stale). Not re-measured on workerd |
+| S1-3 HEAD does not build | **fixed, rule added** | AGENTS.md "Commits"; clean-checkout test run at `ef66f55` (`cargo_exit` 0, no problems) and clean-checkout score binaries at `12ca29e`, `ef66f55`; my static check finds the unresolved `mod external_repos` at `e437975` and none among 1,456 `mod` declarations at `ef66f55` and HEAD |
+| S1-4 keyless `info`, README claim | **claim withdrawn**; behaviour is S3 | README: "`info` matches for 42 of 57 compared cases; the other 15 … fail loudly"; on disk 42 of 57 equal per project (recorded 10:47 from the working-tree binary); demo uses `info release output_base` |
+| S2-1 "39/39 comparable" | **fixed** in README; STATUS line 26 still has the older "39 of 57; 18 unported" | |
+| S2-4 oracle seams in the binary | **closed** | no `BLAZE_ORACLE_REPOS` / `BLAZE_W4_ORACLE_PLATFORMS` read at `12ca29e`, `ef66f55`, HEAD; `OracleRepos`/`OraclePlatforms` are used only by `blaze-query-dev`/`blaze-config-dev`; the only env switches left are `BLAZE_ORACLE_INSTALL_BASE` (build script) and `BLAZE_W4_DEBUG` (dev binary) |
+| S2-5 silent "not ported" sites | **reduced, not closed** | 152 by the round-1 method (196 at `0e68a79`). All six named examples are fixed or loud (`--target_pattern_file`, `--subcommands`, PROJECT.scl, `rctx.attr`, SIGINT, Starlark flags); new `unported_options.rs` fails loudly for unsupported flags. Sample of 40 in 13 crates: 16 legitimate skips, 20 loud elsewhere, **4 silent behaviour**: BEP `buildMetrics.artifactMetrics` never filled (`blaze_sky_exec/src/skyframe_action_executor.rs:852`; the referee drops that sub-message, so it is masked), cycle descriptions not reported (`blaze_sky_loading/src/package_manager.rs:214,287,603`), no `RepositoryFailedEvent` hint (`bazel_modules.rs:469`), disk-cache GC flags accepted without effect (`blaze_remote/src/disk/mod.rs:3`) |
+| S2-7 ignored tests | **partly fixed** | 2,075 of 7,562 ignored. New `PackageLoadingTestCase` harness in `blaze_sky_loading` (423 passing); `blaze_packages` ignores 554 → 259. Buckets: needs a harness 1,270; unported infrastructure 513; incremental 101; Java-specific 98; starlark-rust difference 28; other-OS 5; opt-in 3; other 49. Still no analysis or query harness (sky_analysis 7 pass / 101 ignored, query 11 / 181, rules 60 / 138, analysis 143 / 303). About 320 reasons are stale (query 181 "needs package loading … from blaze_sky_loading"; "needs analysis" about 60; exec Runfiles/SpawnInputExpander 33; and smaller groups). About 1,000 ignored stubs have empty bodies and would pass under `--ignored` |
+| S2-8 weakened tests | **unchanged** in blaze_starlark and blaze_client; fixed in blaze_skyframe coverage | `depset_test.rs:319` (dropped `depset([(x,)])` assertion), `:250`, `:191`; `traceback_test.rs:91`; `logging_test.rs:252-258,298-302`; skyframe `many_paths_to_cycle` still 20 deps. `ParallelEvaluatorTest` 91 = 64 live + 27 stubs, `MemoizingEvaluatorTest` 154 = 59 + 95, `GroupedDepsTest` ported. Still no port or stubs: `FileSystemTest`, `FingerprintTest`, `MethodLibraryTest` (53 of 58), blaze_config |
+| S2-9 oracle tests pass without evidence | **unchanged** | 22 print-and-return sites in 13 test files, no switch |
+| S2-10 stale STATUS numbers | **partly** | see claims 18-20, 27 below |
+
+Counts at `ef66f55`: 979 `unported!`, 180 `unimplemented!` call sites (754 / 93 in round 1; the
+increase includes the new loud guards and the not-ported test stubs).
+
+## C. New evidence tools
+
+- **`scripts/w4/probe`** is an honest comparator: `ORACLE.txt` of all 39 scenarios is written
+  only by its `record` mode from the real oracle; the denominator is the oracle's step count; a
+  crash or empty output cannot count as identical. Recounted from stored transcripts (binary
+  `blaze-anafix-r3`, a dirty-tree build): 35 scenarios, 694 steps: full 95, messages 226, masked
+  549. **Of the full matches all but one are `cat`/`stat` file checks; 1 of 618 steps that run
+  the binary has an identical transcript** (exit codes 618/618 and stdout 614/618 match; the
+  differences are in stderr). STATUS quotes "94 of 694 … 225 on message text", which is
+  consistent but leaves out that reading and the binary. Watch: the new `masked` view maps
+  Blaze's `INFO: 0 processes.` and Bazel's `INFO: 1 process: 1 internal.` to one placeholder;
+  `--skip` and `recount` can shrink the denominator. README does not mention the probe.
+- **`scripts/w5r/compare-repos`** returns success on `repos MATCH and workspace lockfile MATCH`
+  only (line 361), against its own usage text; the candidate's exit code and the hidden lockfile
+  are ignored. Live in the stored re2 report: the fetch panicked (`apple_common.dotted_version`),
+  the hidden lockfile differs, the verdict says 81/81 MATCH. Candidate is the dev binary
+  `blaze-fetch-dev`.
+- **`scripts/remote/*`**: the counterpart is Bazel's own remote worker built from the pin, a real
+  server. `matrix` has no verdict and exits 0 with `RESULT: DIFFERENT` lines (re2: C4 vs C1 and
+  E2 vs E1 DIFFERENT; replay 529 of 551 digests). STATUS's brotli line (43/43 both ways, gRPC
+  MATCH, 43 remote) is supported; the `b4fc7ed` commit message "529/529 … identical Execute
+  calls" is a selective reading. Read-side hits are reported by Blaze itself; write-side hits by
+  the oracle.
+- `scripts/execlog-compact`, `actions-probe`, `bytes`, `string-encoding`, `w5r/java-probe`,
+  `w4/interrupt-probe`: record or compare oracle data; sound; no unit tests. `b4fc7ed` commits two
+  `.pyc` files.
+
+## Claims (README.md and docs/STATUS.md at b4fc7ed)
+
+| # | claim | status | note |
+|---|---|---|---|
+| 1 | README score table at `12ca29e`, clean checkout, own fetching, no oracle shortcuts | VERIFIED | every cell equals `corpus/scores/blaze-12ca29ee95e0.json`; manifest clean; no seam in source |
+| 2 | 23 of 26 surfaces; 13,850 of 13,858 | VERIFIED | |
+| 3 | allowed items also differ between two runs of Bazel | VERIFIED | round 2A |
+| 4 | workerd counts as missing | VERIFIED | 8 MISSING surfaces in the score |
+| 5 | README: analysis and execution "awaiting re-review" | STALE | both PASS since; understates |
+| 6 | scores comparable only on a 16-CPU machine | UNVERIFIED | stated in the analysis review; no second-machine recording |
+| 7 | aspects, symbolic macros, fetch/sync, coverage, credential helper fail loudly | VERIFIED | by reading (`unported!` on each path sampled) |
+| 8 | remote caching and execution in progress | VERIFIED | remote review round 1 is STOP |
+| 9 | `info` 42 of 57, 15 fail loudly | VERIFIED | on disk; working-tree binary, not commit-bound |
+| 10 | `0388d76`..`078b27a` do not build, `0e68a79` and later do | VERIFIED for `88dbfa6`, `12ca29e`, `ef66f55`; others not checked | |
+| 11 | demo commands | VERIFIED | `info release output_base` case equals the oracle |
+| 12 | STATUS: both scores | VERIFIED | re-run |
+| 13 | tests 5,487 / 0 / 2,075; 35 renames; no baseline name lost | VERIFIED | re-run of `compare-tests` |
+| 14 | probe: 94 of 694 identical, 225 on message text | UNVERIFIED, misleading by omission | no transcript for that binary; 95/226 for a newer one; the matches are file checks |
+| 15 | every code area PASS in its last round | VERIFIED | verdict lines of the six review files; remote is STOP, as stated |
+| 16 | "Done (committed, tests green)" | VERIFIED at `ef66f55` | |
+| 17 | brotli 53 actions, re2 21/21 on the oracle | VERIFIED | |
+| 18 | blaze_collect 98 tests, blaze_events 66, vfs+cmdline 163 | STALE | baseline names: 113, 82, 175 |
+| 19 | ScriptTest 86.8% | UNVERIFIED | as round 1 |
+| 20 | `info` 39 of 57; 18 unported | STALE | disk and README: 42 of 57 |
+| 21-23 | mod graph, configuration checksums, CppCompile argv | VERIFIED | |
+| 24 | action keys 238/238 (W5) | UNVERIFIED | as round 1; superseded by the score |
+| 25-26 | spawn replay; query | VERIFIED | |
+| 27 | repos 67/67, **74/74**, markers pending | WRONG (stale) | disk: 81/81; and the re2 run behind it crashed (C) |
+| 28-29 | execution replay; old-referee counts through the binary | VERIFIED | historical, superseded by the score |
+| 30 | upstream baseline 211/237, 2,878 | VERIFIED | |
+| 31 | remote, brotli, real binary: 43/43 both ways, gRPC MATCH, 43 remote | VERIFIED | `matrix-brotli1.txt`; dirty-tree binary, "lead-reported" |
+
+31 claims: 23 VERIFIED, 4 UNVERIFIED, 4 STALE or WRONG (none of the four overstates a result).
+
+## D. Open items, in priority order
+
+1. **R2A-1** (referee): `diff_paths(limit=200)` still lets 200 allowed differences hide one that
+   is not allowed; reproduced again at HEAD. Fix before the BEP surface is next used as a gate.
+2. **`compare-repos` verdict** (new): must fail on a non-zero candidate exit and on a hidden
+   lockfile difference; then correct STATUS line 33.
+3. **S2-9**: oracle-driven tests must fail, not skip, when their recording is absent (one
+   documented opt-out variable).
+4. **R2A-4**: `compare-scores` should ratchet item names, not counts. **R2A-3**: `scoreboard
+   --write` should refuse a dirty or unrecorded commit. **R2A-2**: check the binary against the
+   recorded commit (stamp the commit into the binary); keep accepted binaries or their build log.
+5. **STATUS wording**: probe line (say that the identical steps are file checks, name the
+   binary), lines 18-20, 27; README review paragraph; `docs/workerd.md:83`.
+6. **S2-5 remainder**: the four silent behaviours of the sample, and a sweep of the other 112
+   sites; `artifactMetrics` also needs the referee to stop dropping it once Blaze fills it.
+7. **S2-8**: restore the dropped blaze_starlark and blaze_client assertions (failing or ignored
+   with the reason), and the two of name-map lines 6 and 15.
+8. **S2-7**: analysis and query test harness; refresh about 320 stale ignore reasons; make empty
+   ignored stubs fail (`unimplemented!`) so `--ignored` cannot pass them.
+9. `matrix` needs an exit status; do not quote re2 remote execution as identical while its own
+   comparison prints DIFFERENT. Remove the committed `.pyc` files. No upstream-tests run against
+   Blaze yet.

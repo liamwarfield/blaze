@@ -1,51 +1,61 @@
 # Status
 
-Updated 2026-11-18 (root).
+Updated 2026-11-19 (root). Numbers cite their evidence; history is in `git log` and
+`docs/decisions.md`.
 
-**Evidence.** Scores from clean checkouts: `corpus/scores/blaze-12ca29ee95e0.md` and
-`corpus/scores/blaze-ef66f55e904e.md` (the latter with remote execution integrated): brotli and
-re2, 23 of 26 surfaces MATCH, 13,850 of 13,858 compared items; open: 4 BEP items per project,
-1 extra re2 stderr line. Rust tests at ef66f55 (clean): 5,487 pass, 0 fail, 2,075 ignored; with
-the name map (35 renames) no baseline name is lost. Error/UI probe (35 scenarios, full
-transcripts): 94 of 694 steps identical to Bazel, 225 on message text.
+## Accepted state
 
-**Reviews** (docs/reviews/, Fable 5.2): every code area has PASS in its last round: referee/gate
-(2A), skyframe (2), loading (3), actions (2), bzlmod/repos/client (4), analysis (3), execution
-(4, at ef66f55). In progress: remote review (2026-11-19-remote.md), integrity audit round 2B
-(incl. approval of the baseline move to ef66f55).
+- **Baseline commit:** `ef66f55` (builds from a clean checkout).
+- **Oracle score** (`corpus/scores/blaze-ef66f55e904e.md`; clean-checkout binary; brotli
+  `build //...` and re2 `test //:all //python:all`): 23 of 26 surfaces MATCH, 13,850 of 13,858
+  compared items, 58 allow-listed. Open: 4 build-event items per project, 1 extra stderr line on
+  re2. workerd is recorded on the oracle only and counts as MISSING in the score file.
+- **Rust tests** (`docs/state/tests-baseline.json.gz`, `scripts/gate/baseline show`): 5,487
+  pass, 0 fail, 2,075 ignored (about 320 ignore reasons are stale; there is still no test
+  harness for analysis and query tests).
+- **Error and UI scenarios** (`scripts/w4/probe`, 35 scenarios with oracle transcripts): 94 of
+  694 steps identical, but all except one of those are file checks; of the 618 steps that run
+  the binary, 1 is identical in full and about 225 agree on message text. Known causes: no
+  critical-path line, no persistent server, process counts after failed analysis, error
+  locations.
 
-## Done (committed, tests green)
-- Oracle pinned (Bazel 9.3.2), corpus: brotli builds (53 actions), re2 tests 21/21 on the oracle.
-- Research: 01–06 in docs/research (Theo notes, Bazel tests, recommendations, native API inventory,
-  starlark-rust audit, architecture map + crate DAG + wave plan).
-- Crates: blaze_util, blaze_skyframe (blocking evaluator), blaze_collect (NestedSet, 98 tests),
-  blaze_events (66), blaze_vfs + blaze_cmdline (163), starlark_conformance (ScriptTest 86.8% asserts).
-- blaze_options: framework + rc handling ported; OptionsParserTest still being ported.
+## Reviews (docs/reviews/, Fable 5.2, read-only)
 
-## Milestones reached against the oracle (2026-11-18)
-- `version`, `info` (39 of 57 compared cases; 18 unported), `clean`, `shutdown`, rc/`--config`: match (W1).
-- `mod graph --output=json`: byte-identical for brotli and re2; lockfile resolution part matches (W2).
-- Every build configuration checksum (top-level, test-trimmed, exec, no-config) matches (W4 config).
-- CppCompile argv for brotli dictionary.c equals the oracle's (blaze_cc_features).
-- Action keys: 238/238 rebuilt oracle actions match; aquery dump replay byte-identical (W5).
-- Spawn replay: 43/43 brotli, 551/551 re2 spawns match through Blaze's linux-sandbox runner (W6).
-- `query`: brotli 162/162, re2 1091/1091 (label_kind + streamed_jsonproto, incl. deps()) (W3).
-- Repos: every fetched repo tree identical to the oracle (brotli 67/67, re2 74/74); marker files
-  and one lockfile entry per project pending Label() repo-mapping recording.
-- Execution replay: brotli action graph reproduces all 96 outputs; re2 tests 21/21.
-- Through the real `blaze` binary, both projects: query 162/162 + 1091/1091, cquery label_kind
-  176/176 + 3295/3295, cquery jsonproto 16/16 + 37/37, aquery actions 60/60 + 1420/1420 (allow-
-  listed runfiles-manifest keys only). Lockfiles byte-identical (both projects).
-- Upstream integration tests: harness ready; oracle baseline 211/237 targets, 2,878 functions.
+| Area | Last round | Verdict |
+| --- | --- | --- |
+| Referee and gate scripts | 2A | PASS |
+| Integrity audit (whole) | 2B | PASS; baseline move approved |
+| Evaluator (blaze_skyframe) | 2 | PASS |
+| Loading, query, Starlark bridge | 3 | PASS |
+| Actions, action keys, C++ feature engine | 2 | PASS |
+| Bzlmod, repositories, downloader, client | 4 | PASS |
+| Analysis, configuration, cquery/aquery | 3 | PASS |
+| Execution, sandbox, build driver | 4 (at ef66f55) | PASS |
+| Remote cache and execution | 1 (at ef66f55) | STOP: six S1 in the handling of remote-only outputs |
+
+Open items the reviewers left as non-blocking are listed at the end of each report.
 
 ## In flight
-- Remote lead (Fable; Opus workers): re2 through the real binary for remote cache/execution,
-  build without the bytes, the resource_set call. Lead-reported so far (brotli, real binary):
-  cache interchange with Bazel 43/43 both ways, gRPC log MATCH, 43 actions executed remotely.
-- Opus fixer: adopting interpreter patches 0026-0031 in analysis/loading, cquery/aquery strategy
-  validation, probe transcripts.
-- Reviewers: remote; auditor round 2B.
+
+- **Remote lead** (Fable; Opus workers): fixes for the remote review (R1–R18). Lead-reported
+  real-binary matrix against Bazel's worker (`scripts/remote/matrix`; not yet a verdict-giving
+  tool): disk and remote cache interchange with real Bazel matches Bazel's own hit lines on
+  brotli (43) and re2 (550); gRPC logs match (re2 cold run differs only in the 21 test actions);
+  remote execution issues identical Execute calls (43 and 529); build without the bytes matches
+  on brotli. Design and gaps: `docs/remote.md`.
+- **Opus fixer:** adopting interpreter patches 0026–0031 in analysis and loading, strategy
+  validation in cquery/aquery, saved probe transcripts.
 
 ## Next
-Byte-strings migration (docs/research/07), then workerd end to end (aspects are its next
-blocker), the remaining BEP items, the upstream integration-test hill, and auditor round 2B.
+
+1. Auditor's open list for the referee: allowed diffs can hide a non-allowed one past 200
+   (`diff_paths` limit); `compare-repos` and `remote/matrix` exit 0 on differences; name-level
+   score ratchet; refuse dirty trees for `scoreboard --write`; oracle-driven Rust tests that
+   pass when recordings are missing.
+2. Byte-strings migration (`docs/research/07-byte-strings.md`), then workerd end to end (aspects
+   are its next blocker; `docs/workerd.md`).
+3. Remaining build-event items, critical path, persistent server (W8).
+4. Bazel's own integration suite against Blaze (`scripts/upstream-tests`; oracle passes 211 of
+   237 targets on this host).
+5. Test harness for analysis and query tests; stale ignore reasons; remaining silent
+   "not ported" sites (152, of which a sample of 40 found 4 silent).

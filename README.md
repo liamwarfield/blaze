@@ -13,9 +13,9 @@ Two real projects are the targets: [brotli](https://github.com/google/brotli) (s
 `build //...`) and [re2](https://github.com/google/re2) (C++ with abseil, a pybind11 Python
 extension via rules_python, googletest; `test //:all //python:all`).
 
-**Score** at commit `12ca29e`, from a binary built on a clean checkout, with Blaze's own
-repository fetching and no oracle shortcuts (label `blaze-12ca29ee95e0`; full table in
-`corpus/scores/blaze-12ca29ee95e0.md`):
+**Score** at commit `ef66f55`, from a binary built on a clean checkout, with Blaze's own
+repository fetching and no oracle shortcuts (label `blaze-ef66f55e904e`; full table in
+`corpus/scores/blaze-ef66f55e904e.md`):
 
 | Surface | brotli | re2 |
 | --- | --- | --- |
@@ -34,17 +34,22 @@ repository fetching and no oracle shortcuts (label `blaze-12ca29ee95e0`; full ta
 action keys and volatile build-metric counters, which also differ between two runs of real Bazel.
 A third project, workerd, is recorded on the oracle only and counts as missing in the score file.
 
-**Reviews.** Independent reviewers (read-only, on a different footing from the implementers) read
-the code against Bazel's Java; reports and verdicts are in `docs/reviews/`. Round 1 returned STOP
-on all seven areas. After fixes: evaluator, loading, actions, Bzlmod/repositories/client and the
-referee scripts have PASS; analysis and execution are fixed and awaiting re-review; the integrity
-audit is open outside the referee.
+**Outside the happy path.** On 35 small error and UI scenarios compared as full transcripts
+(`scripts/w4/probe`), only 1 of 618 steps that run the binary is identical to Bazel, and about
+225 agree on message text: Blaze has no critical-path line and no persistent server, and error
+locations and some texts differ.
+
+**Reviews.** Independent read-only reviewers compare the code with Bazel's Java; reports and
+verdicts are in `docs/reviews/`. Round 1 returned STOP on all seven areas. After fixes every one
+of them has PASS in its last round, including the integrity audit. The newer remote cache and
+execution code is at STOP after its first review (six blocking findings in the handling of
+outputs that exist only in the remote cache); fixes are in progress.
 
 Known limits: Linux x86-64 only, and scores are only comparable on a 16-CPU machine (Bazel's
 `cquery` order depends on the CPU count); one command per process (no persistent server);
 `linux-sandbox`, `process-wrapper` and `@bazel_tools` come from Bazel 9.3.2's install base;
 aspects, symbolic macros, `fetch`/`sync`, coverage and the credential helper are not ported and
-fail loudly; remote caching and execution are in progress; non-ASCII strings do not yet follow
+fail loudly; remote caching and execution work on the two projects but are under review (see above); non-ASCII strings do not yet follow
 Bazel's byte semantics (UTF-8 text in action keys does). `info` matches for 42 of 57 compared
 cases; the other 15 (among them `info` with no key and JVM-only keys) fail loudly.
 
