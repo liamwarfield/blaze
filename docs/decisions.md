@@ -248,3 +248,8 @@ Each entry: date, decision, why, who decided.
   exit status of a signal death recorded as 0) are fixed by one hardening pass that the
   auditor reviews. (4) Numbers from those tools already in docs are reworded or marked. Root.
 
+- 2026-11-19. A remote worker deleted three round-1 output user roots that were not its own
+  (`ur-remote/rx-r2-blaze`, `rx-r2-blaze2`, `rx-r2-oracle`; regenerable output bases, about
+  1.6 GB with its own; the recorded results under `work/remote/rx-r2-*` are intact) with a glob
+  `rm`, against root's instruction not to delete run directories. AGENTS.md gains a deleting
+  rule: only what the agent created, by full path, no globs under `~/.cache/blaze`. Root.

@@ -42,6 +42,9 @@ Read them again after a context reset.
 - Disk: the shared `target/` grows by hundreds of GB. Leads check `df -h /home` at each
   consistent point and run `scripts/clean-target` below 150 GB free. Do not create extra target
   directories (private worktree builds) below 200 GB free.
+- Deleting: delete only files and directories you created in this task, each named by its full
+  path. Never `rm` with a glob or a variable under `~/.cache/blaze`, and never delete another
+  agent's run directory, output root or recording, even to free disk; tell root instead.
 - Do not commit unless your task says so. Root commits.
 - Run `rustfmt --edition 2024` on every `.rs` file you change before you report.
 - Do not ask questions. Choose the option you would recommend, say which in your report, continue.
