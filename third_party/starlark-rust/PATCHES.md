@@ -47,6 +47,18 @@ by adding.
 | 0034 | applied | the byte-strings semantics flag on the evaluator (`Evaluator::set_utf8_byte_strings`, default true); `strip`/`lstrip`/`rstrip` whitespace by the flag |
 | 0035 | applied | string repr escapes only `"`, `\` and chars below 0x20 (`\xNN`) |
 | 0036 | applied | the string repeat limit counts chars |
+| 0037 | applied | lexer whitespace: tabs and carriage returns between tokens ignored; a tab anywhere in indentation (blank and comment lines, end of file included) is an error with Java's text; a comment runs to the line feed |
+| 0038 | applied | number literals: no binary literals, Java's "invalid octal literal" for a leading 0, "floating-point literal too large" |
+| 0039 | applied | `async` and `await` are identifiers |
+| 0040 | applied | `Dialect::enable_bytes_literals` (Bazel: none; `b"x"` is the identifier `b` and a string) |
+| 0041 | applied | `start`/`end` of `find`, `rfind`, `index`, `rindex`, `count`, `startswith`, `endswith` clamped as Java's `substringIndices` |
+| 0042 | applied | string slices accept `None` bounds |
+| 0043 | applied | no `str.codepoints` |
+| 0044 | applied | `int(x[, base])`: `x` required, base 10 by default, Java's `StarlarkInt.parse` (no `_`, no base inference from a leading 0) and texts |
+| 0045 | applied | `str.format` fields as Java's FormatParser: no `!r`/`!s` conversions, Java's numeric-field rule; f-strings apply `repr` themselves |
+| 0046 | applied | `strip`/`lstrip`/`rstrip` accept `chars = None` |
+| 0047 | applied | under type syntax `...` only inside a type annotation |
+| 0048 | applied | under type syntax `cast(...)` / `isinstance(...)` in call arguments are cast/isinstance expressions; neither is a load name |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -70,6 +82,8 @@ so it is the column that matters; `ScriptTest` runs with the flag off.
 | through 0031 (same) | ScriptTest_Latin1 | 37/95 | 2487 | 2561/2773 | 0 |
 | + 0032–0036, blaze_starlark `json.decode` bytes (same tree + this work) | ScriptTest | 37/95 | 2494 | 2567/2773 | 0 |
 | + 0032–0036, blaze_starlark `json.decode` bytes (same) | ScriptTest_Latin1 | 38/95 | 2495 | 2569/2773 | 0 |
+| + 0037–0048, probe harness `fail` (working tree of 2026-11-19 on `3ab3b35`, other agents' uncommitted changes included) | ScriptTest | 37/95 | 2515 | 2588/2773 | 0 |
+| + 0037–0048 (same) | ScriptTest_Latin1 | 38/95 | 2516 | 2590/2773 | 0 |
 
 Known gap left by 0002: GC tracing, freezing and equality of very deep values still recurse on
 the native stack; Blaze runs evaluation on threads with large stacks
@@ -655,3 +669,147 @@ the native stack; Blaze runs evaluation on threads with large stacks
   length differed.
 - Fix: `values/types/string/str_type.rs` `mul` counts chars (`fast_string::len`).
 - Test: `patch_0036_repeat_limit_counts_chars`.
+
+## 0037 — lexer whitespace
+
+- Gap: starlark-rust lexed a tab between tokens as an error token ("tabs are not allowed": `x =\t1`,
+  `x = 1\t# c`, a tab after a line continuation or inside brackets); Java ignores tabs, spaces
+  and carriage returns between tokens (net/starlark/java/syntax/Lexer.java:824-828; inside
+  brackets newlineInsideExpression, :191). Java rejects a tab anywhere in the indentation it
+  scans (Lexer.computeIndentation, :217-220), which includes blank lines, lines holding only a
+  comment and whitespace at the end of the file; starlark-rust only rejected tabs before a
+  token. A lone carriage return (between tokens, in a comment, `\r\r\n`, inside brackets) was
+  "invalid input"; Java skips it, and a comment runs to the line feed (scanToNewline, :555).
+- Fix: `starlark_syntax/src/lexer.rs`: `Token::Tabs` is skipped in `next()`; `calculate_indent`
+  remembers the first tab of the whole scan and fails at the position after it (Java's
+  position) on every exit; `#[logos(skip r"\r")]`; the comment regex is `#[^\n]*` (a trailing CR
+  of a CRLF line is still dropped from the content); `LexemeError::InvalidTab` has Java's text
+  "Tab characters are not allowed for indentation. Use spaces instead.".
+- Tests: `patch_0037_lexer_whitespace`; `java_recorded_interp` (tests/data/interp/lex_tab_*,
+  lex_cr_*, recorded on Bazel's interpreter); `scripts/starlark/interp-diff binary` (the same
+  cases as BUILD and .bzl files on the oracle and Blaze). Vendored test updated:
+  `tests/uncategorized.rs` `test_tabs_fail`.
+
+## 0038 — number literals
+
+- Gap: `0b101` / `0B1` were binary literals; Bazel's lexer scans them (Lexer.java:945-953) and
+  IntLiteral.scan rejects every `0` prefix but `0x`/`0o` ("invalid octal literal: 0b101 (use
+  '0ob101')", IntLiteral.java:69-84). A float literal beyond the double range (`1e999`) was
+  `+inf`; Java: "floating-point literal too large" (Lexer.java:1005-1008).
+- Fix: `starlark_syntax/src/lexer.rs`: `RawBinInt` and a decimal with a leading 0 fail with
+  `LexemeError::BlazeInvalidOctalLiteral` (Java's text, also for `01`, which was "integer cannot
+  have leading 0"); a non-finite `Float` fails with `BlazeFloatTooLarge`.
+- Tests: `patch_0038_number_literals`; interp cases lex_binary_literal*, lex_int_00,
+  lex_float_too_large. Vendored golden `lexer_tests/int_lit` updated (binary literals removed,
+  the leading-0 text).
+
+## 0039 — `async` and `await`
+
+- Gap: starlark-rust reserved `async` and `await`; Java's keywordMap (Lexer.java:569-599) has
+  neither, so `async = 1` is valid in Bazel.
+- Fix: `starlark_syntax/src/lexer.rs` `Token::Reserved` regex without them.
+- Test: `patch_0039_async_await_identifiers`; interp case lex_async_ident.
+
+## 0040 — no bytes literals in Bazel's dialect
+
+- Gap: `b"abc"`, `br'..'`, `rb".."` were bytes literals; Bazel has no bytes type and its lexer
+  reads `b` as an identifier followed by a string literal (Lexer.java:855-877), a syntax error.
+- Fix: `starlark_syntax/src/dialect.rs`: `Dialect::enable_bytes_literals` (true in `Standard`,
+  `Extended`, `AllOptionsInternal`: upstream behaviour). `lexer.rs`: when false, the prefix is an
+  `Identifier` and the quote starts an ordinary (non-raw) string literal
+  (`bytes_prefix_as_identifier`), exactly Java's token stream.
+- Users: blaze_starlark `FileKind::dialect_with_options` sets it false for every file kind.
+- Test: `patch_0040_no_bytes_literals`; interp cases lex_bytes_*.
+
+## 0041 — string index clamping
+
+- Bug: `convert_str_indices` returned `None` ("not found" / `False` / 0) when `start` was past
+  the end or after `end`; Java StringModule.substringIndices (StringModule.java:111-126) clamps
+  each index (EvalUtils.toIndex) and moves an end before the start to the start, so an empty
+  needle is found there: `"abc".find("", 5)` 3 (was -1), `"abc".count("", 2, 1)` 1 (was 0),
+  `"abc".startswith("", 5)` True (was False).
+- Fix: `starlark_syntax/src/fast_string.rs` `convert_str_indices` is Java's algorithm and always
+  returns `Some` (signature unchanged); `convert_str_indices_slow` is unused. Affects `find`,
+  `rfind`, `index`, `rindex`, `count`, `startswith`, `endswith` and `s[a:b]` (same clamping as
+  Java Starlark.slice for step 1).
+- Test: `patch_0041_string_index_clamping`; interp case str_values (with every method's clamping).
+
+## 0042 — `None` bounds in string slices
+
+- Bug: `"abc"[None:2]` failed (the string fast path unpacked the bound as an int); Java
+  Starlark.slice treats `None` as the default (Starlark.java:692, :698). Lists, tuples and the
+  string stride path already did.
+- Fix: `values/types/string/str_type.rs` `slice`.
+- Test: `patch_0042_string_slice_none_bounds`; interp case str_values.
+
+## 0043 — no `codepoints`
+
+- Gap: strings had a `codepoints` method; Java's StringModule has none (`dir("")` differed and
+  `"abc".codepoints()` was accepted).
+- Fix: `values/types/string/methods.rs`: method removed; `iter.rs` `iterate_codepoints` unused.
+- Test: `patch_0043_no_codepoints`; interp cases str_codepoints, str_values (`dir("")`).
+
+## 0044 — `int()`
+
+- Gap: `int()` returned 0 (Java: `x` is required, MethodLibrary.java:551-570); a string was
+  parsed with base 0 (prefix inference) by default (Java: 10, so `int("0x10")` fails);
+  `int("010", 0)` and `int("00", 0)` were 10 and 0 (Java: "cannot infer base when string begins
+  with a 0"); `int("1_000")` was 1000 (num-bigint accepts `_`; Java's Long.parseLong /
+  BigInteger do not). Texts were starlark-rust's.
+- Fix: `values/types/int/globals.rs`: `x` required; `java_parse_int` ports StarlarkInt.parse
+  (StarlarkInt.java:99-168) with its texts ("empty string", "invalid base N (want 2 <= base <=
+  36)", "invalid base-N literal: \"s\"", "cannot infer base ..."), as value errors; "can't
+  convert non-string with explicit base" (MethodLibrary.java:624). Digits are
+  `Character.digit`, which for chars up to U+00FF (every char of an internal string) is ASCII
+  only; chars above (Unicode digits Java accepts, unreachable from Blaze) are rejected.
+  `StarlarkInt::from_str_radix` is unused.
+- Test: `patch_0044_int_parse`; interp cases str_int_*, more_i_*, more_values.
+
+## 0045 — `str.format` fields
+
+- Gap: `"{!r}".format(1)` and `"{0!r}".format("a")` used Python's conversions; Java's
+  FormatParser has none: the whole field (`!r`, `0!r`, `x!s`, `:d`) is the key, so these fail
+  "Missing argument" (FormatParser.java:193 getFieldName). A field of digits and `-` is an index
+  when Integer.parseInt accepts it (`{-0}` is index 0, `{-1}` fails "No replacement found",
+  `{99999999999}` is a keyword), FormatParser.java:85-100.
+- Fix: `starlark_syntax/src/dot_format_parser.rs`: `FormatParser::new` has no conversions;
+  `new_with_conversions` (upstream) is used only for f-strings. `values/types/string/dot_format.rs`
+  `format_capture` / `FormatArgs::by_index` take Java's numeric rule (i32 index). f-strings
+  desugar to `.format`, so `eval/compiler/expr.rs` turns an f-string's `{!r}` field into `{}`
+  with the argument `"%r" % (x,)` (`fstring_repr_fields`); f-strings are disabled in Bazel's
+  dialect, this keeps upstream's.
+- Tests: `patch_0045_format_fields`; interp cases str_format_*, more_f_*; vendored
+  `dot_format_parser` tests (`test_parser_bazel_fields_have_no_conversions`) and
+  `test_parse_format_one` updated, `format` doc example changed.
+
+## 0046 — `strip(None)`
+
+- Bug: `" a ".strip(None)` (and `lstrip`, `rstrip`) failed; Java's `chars` is String or
+  NoneType, default None (StringModule.java:243-320).
+- Fix: `values/types/string/methods.rs`: `chars: NoneOr<&str>`.
+- Test: `patch_0046_strip_none_chars`; interp case str_values.
+
+## 0047 — `...` only in type expressions
+
+- Gap: with Bazel's type syntax (0020) `x = ...` and `def f(x = ...)` were accepted in .bzl
+  files; Java's Parser rejects an ellipsis outside a type expression ("ellipsis ('...') is not
+  allowed outside type expressions", Parser.java:775-778; insideTypeExpr is set by
+  parseTypeExprWithFallback, :1084-1095, and cleared, not restored, after it). Found by
+  `scripts/starlark/interp-diff binary` (oracle rejects the .bzl).
+- Fix: `starlark_syntax/src/syntax/parser_rd.rs`: `in_type_expr` set by `parse_type_expr`; an
+  `Ellipsis` atom under `type_syntax` outside it is an error (recorded, parsing continues, as in
+  Java). `DialectTypes::Disable` (validate.rs) and `Enable` are unchanged.
+- Test: `patch_0047_ellipsis_only_in_type_expressions`; interp-diff cases lex_ellipsis,
+  lex_ellipsis_in_type, lex_ellipsis_default (.bzl packages).
+
+## 0048 — `cast` and `isinstance` in call arguments
+
+- Bug: under type syntax a call argument starting with `cast` / `isinstance` was parsed as a
+  call of a name (`parse_argument` consumed the identifier before 0020's keyword check), so
+  `print(cast(int, 3))` failed "Variable `cast` not found" (Bazel prints 3) and `f(cast = 1)` was
+  a named argument; `load(":x.bzl", cast = "y")` bound `cast`. In Java both words are keywords
+  (Lexer.java:615) and parseArgument / parseLoadStatement expect an IDENTIFIER.
+- Fix: `starlark_syntax/src/syntax/parser_rd.rs` `parse_argument` and `parse_load_symbol` take the
+  identifier path only when `at_type_keyword()` is `None`.
+- Test: `patch_0048_type_keywords_in_arguments`; interp-diff cases lex_cast_argument,
+  lex_cast_named_argument (.bzl packages).
