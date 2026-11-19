@@ -493,7 +493,14 @@ impl BuildEventArtifactUploader for ByteStreamBuildEventArtifactUploader {
         crate::runtime::runtime().spawn(async move {
             match inner.do_upload(files).await {
                 Ok(converter) => promise.set(Box::new(converter)),
-                Err(e) => promise.set_exception(e),
+                // The Java class of the failure travels to the BEP transport, which prints the
+                // exception's `toString()` (review 2026-11-19 N7).
+                Err(e) => promise.set_exception(io::Error::new(
+                    e.kind(),
+                    blaze_bep::buildeventstream::JavaThrowable::new(
+                        crate::common::errors::java_to_string(&e),
+                    ),
+                )),
             }
         });
         future

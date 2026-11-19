@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# usage: scripts/remote/pathcheck-probe <run-name> <oracle|BINARY> [port]
+#        scripts/remote/pathcheck-probe help
+#
+# RemoteExecutionCache.remotePathChecker (an input on the RemoteActionFileSystem that is only in
+# the disk cache is downloaded from there before it is uploaded for remote execution). The
+# scenario of upstream remote_execution_test.sh genrule_combined_disk_remote_exec, CASE 5, with
+# default flags (--remote_download_toplevel):
+#   1. start Bazel's remote worker on localhost:<port> (default 9680), fresh
+#   2. build //a:test  (--spawn_strategy=remote --genrule_strategy=remote --disk_cache=D
+#      --remote_cache=grpc://X --remote_executor=grpc://X): populates the disk cache
+#   3. restart the worker (empty remote cache), `clean`
+#   4. build //a:test2, which cats //a:test's output
+# Prints each step's exit code and its "processes:" line, the other ERROR lines, and the content
+# of bazel-bin/a/test2.txt. Bazel 9.3.2 prints for step 4: "3 processes: 1 disk cache hit,
+# 1 internal, 1 remote." The workspace is ~/.cache/blaze/work/remote/<run-name>/ws (ws-run),
+# the disk cache ~/.cache/blaze/work/remote/<run-name>-dc.
+set -euo pipefail
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ $# -lt 2 || "$1" == help || "$1" == --help ]]; then sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+run="$1"; bin="$2"; port="${3:-9680}"
+work="$HOME/.cache/blaze/work/remote"
+src="$work/$run-src"; dc="$work/$run-dc"
+rm -rf "$src" "$dc"; mkdir -p "$src/a" "$dc"
+touch "$src/MODULE.bazel"
+cat > "$src/a/BUILD" <<'EOF'
+package(default_visibility = ["//visibility:public"])
+genrule(
+  name = 'test',
+  cmd = 'echo "Hello world" > $@',
+  outs = ['test.txt'],
+)
+
+genrule(
+  name = 'test2',
+  srcs = [':test'],
+  cmd = 'cat $(SRCS) > $@',
+  outs = ['test2.txt'],
+)
+EOF
+flags=(--spawn_strategy=remote --genrule_strategy=remote "--disk_cache=$dc"
+       "--remote_cache=grpc://localhost:$port" "--remote_executor=grpc://localhost:$port")
+step() {
+  local label="$1"; shift
+  out=$("$here/ws-run" "$run" "$src" "$bin" "$@" || true)
+  s=$(echo "$out" | sed -n 's/^step: //p'); code=$(echo "$out" | sed -n 's/^exit code: //p')
+  echo "== $label: exit $code"
+  grep -E 'processes' "$s/stderr" | sed 's/^/   /' || echo "   (no processes line)"
+  grep -E '^ERROR' "$s/stderr" | sed 's/^/   /' || true
+}
+"$here/worker" start "$run" "$port" >/dev/null
+trap '"$here/worker" stop "$run" >/dev/null 2>&1 || true' EXIT
+step "build //a:test" --fresh -- build "${flags[@]}" //a:test
+"$here/worker" start "$run" "$port" >/dev/null
+step "clean" -- clean
+step "build //a:test2" -- build "${flags[@]}" //a:test2
+f="$work/$run/ws/bazel-bin/a/test2.txt"
+if [[ -f "$f" ]]; then echo "test2.txt: $(cat "$f")"; else echo "test2.txt: missing"; fi

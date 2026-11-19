@@ -849,13 +849,21 @@ impl<'t> dyn AbstractActionInputPrefetcher + 't {
         &self.base().download_cache
     }
 
-    /// PORT: Java retries `awaitTermination` after `shutdownNow` when the thread is interrupted;
-    /// Blaze has no thread interruption, so the wait is not interrupted.
+    /// Shuts the download cache down and waits until it has terminated; an interrupt during the
+    /// wait cancels the downloads still running (`shutdownNow`) and the wait starts again.
     // Java: com/google/devtools/build/lib/remote/AbstractActionInputPrefetcher.java:837 AbstractActionInputPrefetcher.shutdown
     pub fn shutdown(&self) {
         let download_cache = &self.base().download_cache;
         download_cache.shutdown();
-        block_on(download_cache.await_termination());
+        loop {
+            // try { downloadCache.awaitTermination(); break; }
+            if crate::runtime::block_on_interruptibly(download_cache.await_termination()).is_some()
+            {
+                break;
+            }
+            // catch (InterruptedException ignored) { downloadCache.shutdownNow(); }
+            download_cache.shutdown_now();
+        }
     }
 
     /// Downloads the outputs of `action` that the remote output checker wants downloaded.

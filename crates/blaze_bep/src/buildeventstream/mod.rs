@@ -10,7 +10,7 @@ pub mod transport;
 pub mod transports;
 
 pub use artifact_uploader::{
-    BuildEventArtifactUploader, LocalFilesArtifactUploader, PathConverterFuture,
+    BuildEventArtifactUploader, JavaThrowable, LocalFilesArtifactUploader, PathConverterFuture,
     PathConverterPromise, UploadFailure,
 };
 pub use build_completing_event::{BuildCompletingEvent, BuildToolLogs, FetchEvent, LogFileEntry};

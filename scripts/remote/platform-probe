@@ -53,6 +53,9 @@ Per case it prints and writes result.txt:
                   when the Action has no Platform)
   command-platform <...> (same for the Command)
   argv0 <Command.arguments[0]>
+  processes <the `N processes: ...` line>
+  then-exit/then-error/then-processes  for a case with a second build (`then` flags in `cases`):
+                  the same workspace, output base and worker, built again with those flags
 
 `compare <a> <b>` prints both result.txt per case and SAME/DIFFERENT; exit 0 iff all equal.
 `cases` lists the cases with their flags.
@@ -106,8 +109,8 @@ def rep(text):
 CASES = {}
 
 
-def case(name, platforms, target_extra="", flags=()):
-    CASES[name] = (platforms, target_extra, list(flags))
+def case(name, platforms, target_extra="", flags=(), then=None):
+    CASES[name] = (platforms, target_extra, list(flags), None if then is None else list(then))
 
 
 case("one", plat("p", "    remote_execution_properties = %s,\n"
@@ -185,6 +188,16 @@ case("os-linux", plat("p", '    constraint_values = ["@platforms//os:linux"],\n'
 case("os-windows", plat("p", '    constraint_values = ["@platforms//os:windows"],\n'
                         "    remote_execution_properties = %s,\n"
                         % rep('properties { name: "a" value: "1" }')))
+# remote_execution_test.sh test_platform_default_properties_invalidation_with_platform_remote_
+# execution_properties: the same platform text, --remote_default_exec_properties=build=1234, then
+# a second build (same output base, same worker) with build=88888. Bazel: the second build is
+# `1 remote cache hit` (the defaults are superseded by the platform's text, so the Action is the
+# same). The target is the probe rule instead of the test's genrule.
+case("upstream-default-invalidation",
+     plat("p", "    remote_execution_properties = %s,\n"
+          % rep('properties: {name: "foo" value: "baz"}')),
+     flags=["--remote_default_exec_properties=build=1234"],
+     then=["--remote_default_exec_properties=build=88888"])
 case("os-macos", plat("p", '    constraint_values = ["@platforms//os:macos"],\n'))
 
 
@@ -195,7 +208,7 @@ def rm(p):
 
 
 def write_ws(ws, name):
-    platforms, target_extra, _ = CASES[name]
+    platforms, target_extra, _, _ = CASES[name]
     os.makedirs(os.path.join(ws, "tools"))
     files = {
         "MODULE.bazel": 'bazel_dep(name = "platforms", version = "1.0.0")\n',
@@ -363,9 +376,25 @@ def run_cases(binary, tag, port, names):
         code = run_binary(binary, our, ws, step, args)
         err = open(os.path.join(step, "stderr"), errors="replace").read().splitlines()
         errors = error_blocks(err, ws, worker)
+        procs = [l for l in err if re.search(r"\d+ process(es)?:", l)]
+        then_lines = []
+        if CASES[name][3] is not None:
+            step2 = os.path.join(step, "then")
+            os.makedirs(step2)
+            args2 = ["build", "//:t", "--extra_execution_platforms=//:p",
+                     "--remote_executor=grpc://localhost:%d" % port,
+                     "--remote_grpc_log=" + os.path.join(step2, "grpc.log")] + CASES[name][3]
+            code2 = run_binary(binary, our, ws, step2, args2)
+            err2 = open(os.path.join(step2, "stderr"), errors="replace").read().splitlines()
+            procs2 = [l for l in err2 if re.search(r"\d+ process(es)?:", l)]
+            errors2 = error_blocks(err2, ws, worker)
+            then_lines = ["then-exit %d" % code2,
+                          "then-error %s" % (errors2[0] if errors2 else "-"),
+                          "then-processes %s" % (procs2[0] if procs2 else "-")]
         found = find_action(os.path.join(WORK, "worker-" + worker, "cas", "cas"),
                             "PLATFORM_PROBE_" + name)
-        lines = ["exit %d" % code, "error %s" % (errors[0] if errors else "-")]
+        lines = ["exit %d" % code, "error %s" % (errors[0] if errors else "-"),
+                 "processes %s" % (procs[0] if procs else "-")]
         if found is None:
             lines += ["action-platform -", "command-platform -", "argv0 -"]
         else:
@@ -373,6 +402,7 @@ def run_cases(binary, tag, port, names):
             lines += ["action-platform %s" % show_props(aplat),
                       "command-platform %s" % show_props(cplat),
                       "argv0 %s" % (args_[0] if args_ else "-")]
+        lines += then_lines
         with open(os.path.join(step, "result.txt"), "w") as f:
             f.write("\n".join(lines) + "\n")
         with open(os.path.join(step, "exit"), "w") as f:
@@ -431,8 +461,9 @@ def main():
         print(USAGE, end="")
         return 0
     if args[0] == "cases":
-        for n, (_, t, fl) in CASES.items():
-            print("%-30s %s%s" % (n, " ".join(fl), " (target exec_properties)" if t else ""))
+        for n, (_, t, fl, then) in CASES.items():
+            print("%-30s %s%s%s" % (n, " ".join(fl), " (target exec_properties)" if t else "",
+                                    "" if then is None else "; then " + " ".join(then)))
         return 0
     if args[0] == "oracle" and len(args) >= 2:
         port, names = parse_run_args(args[2:])

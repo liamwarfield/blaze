@@ -727,13 +727,28 @@ impl SkyframeActionExecutor {
 
     /// `ActionLogBufferPathGenerator.generate`: fresh stdout/stderr files for one action.
     // Java: com/google/devtools/build/lib/exec/ActionLogBufferPathGenerator.java:42 ActionLogBufferPathGenerator.generate
-    fn generate_file_out_err(&self) -> FileOutErr {
+    ///
+    /// `action_file_system` is the resolver (`createPathResolver(actionFileSystem, execRoot)`):
+    /// the paths are converted to it when there is one.
+    // Java: com/google/devtools/build/lib/actions/ActionLogBufferPathGenerator.java:36 ActionLogBufferPathGenerator.generate
+    fn generate_file_out_err(
+        &self,
+        action_file_system: Option<&Arc<RemoteActionFileSystem>>,
+    ) -> FileOutErr {
         let action_id = self.action_uniquifier.fetch_add(1, Ordering::SeqCst) + 1;
+        let convert_path = |path: Path| match action_file_system {
+            Some(file_system) => file_system.get_path(path.as_fragment()),
+            None => path,
+        };
         FileOutErr::new(
-            self.action_out_dir
-                .get_child(&format!("stdout-{action_id}")),
-            self.action_out_dir
-                .get_child(&format!("stderr-{action_id}")),
+            convert_path(
+                self.action_out_dir
+                    .get_child(&format!("stdout-{action_id}")),
+            ),
+            convert_path(
+                self.action_out_dir
+                    .get_child(&format!("stderr-{action_id}")),
+            ),
         )
     }
 
@@ -913,7 +928,8 @@ impl SkyframeActionExecutor {
             executor: self,
             input_metadata: input_metadata.clone(),
             output_metadata_store: Some(output_metadata_store.clone()),
-            file_out_err: self.generate_file_out_err(),
+            file_out_err: self
+                .generate_file_out_err(output_metadata_store.get_action_file_system()),
             rich_artifact_data: Mutex::new(None),
             clock: JavaClock,
         };
@@ -923,9 +939,6 @@ impl SkyframeActionExecutor {
             nano_time_start: action_start_time,
         }));
         let result: Result<ActionExecutionValue, ExecutionFailure> = (|| {
-            // This call generally deletes any files at locations that are declared outputs of the
-            // action, although some actions perform additional work, while others intentionally
-            // keep previous outputs in place.
             let Some(executable) = as_executable(action.as_ref()) else {
                 blaze_util::unported!(&format!(
                     "{}.execute (no ExecutableAction registered for mnemonic {})",
@@ -933,7 +946,22 @@ impl SkyframeActionExecutor {
                     action.get_mnemonic()
                 ));
             };
-            if let Err(e) = executable.prepare(&self.exec_root) {
+            // actionFileSystemType(): the remote output service answers REMOTE_FILE_SYSTEM when
+            // it gives actions a file system (RemoteOutputService.java:86), and an output service
+            // without one DISABLED; the action's output metadata store holds that file system.
+            // Both answer true to shouldDoEagerActionPrep() (OutputService.java:93); only
+            // REMOTE_FILE_SYSTEM answers true to inMemoryFileSystem() (OutputService.java:82).
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1128 ActionRunner.run
+            let action_file_system = output_metadata_store.get_action_file_system();
+            // if (actionFileSystemType().shouldDoEagerActionPrep()):
+            // This call generally deletes any files at locations that are declared outputs of the
+            // action, although some actions perform additional work, while others intentionally
+            // keep previous outputs in place.
+            // PORT: `prepare` takes only the exec root (`actionExecutionContext.getExecRoot()`);
+            // Java also passes the path resolver (to delete the outputs on the action file system,
+            // whose remote output tree is still empty here), the bulk deleter and
+            // cleanupArchivedArtifacts.
+            if let Err(e) = executable.prepare(context.get_exec_root()) {
                 return Err(self
                     .to_action_execution_exception(
                         "failed to delete output files before executing action",
@@ -944,7 +972,17 @@ impl SkyframeActionExecutor {
                     )
                     .into());
             }
-            self.create_output_directories(action.as_ref())?;
+            if let Some(action_file_system) = action_file_system {
+                // There's nothing to delete when the action file system is used, but we must
+                // ensure that the output directories for stdout and stderr exist.
+                setup_action_fs_file_out_err(context.get_file_out_err(), action.as_ref())?;
+                self.create_action_fs_output_directories(
+                    action.as_ref(),
+                    &action_file_system.as_file_system(),
+                )?;
+            } else {
+                self.create_output_directories(action.as_ref())?;
+            }
             self.execute_action_inner(env.listener(), action, &context)
         })();
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1199 ActionRunner.notifyActionCompletion
@@ -1279,6 +1317,34 @@ impl SkyframeActionExecutor {
     }
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1469 SkyframeActionExecutor.createOutputDirectories
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1453 SkyframeActionExecutor.createActionFsOutputDirectories
+    fn create_action_fs_output_directories(
+        &self,
+        action: &dyn Action,
+        artifact_path_resolver: &blaze_vfs::FileSystemRef,
+    ) -> Result<(), ActionExecutionException> {
+        if let Err(e) = self
+            .output_directory_helper
+            .create_action_fs_output_directories(
+                &action.get_outputs(),
+                Some(artifact_path_resolver),
+            )
+        {
+            return Err(self.to_action_execution_exception(
+                &format!(
+                    "failed to create output directory '{}': {}",
+                    e.get_directory_path(),
+                    e.get_cause()
+                ),
+                Some(e.get_cause()),
+                action,
+                None,
+                execution::Code::ActionFsOutputDirectoryCreationFailure,
+            ));
+        }
+        Ok(())
+    }
+
     fn create_output_directories(
         &self,
         action: &dyn Action,
@@ -1643,7 +1709,7 @@ impl SkyframeActionExecutor {
             input_metadata,
             // ActionExecutionContext.forInputDiscovery has no output metadata store.
             output_metadata_store: None,
-            file_out_err: self.generate_file_out_err(),
+            file_out_err: self.generate_file_out_err(None),
             rich_artifact_data: Mutex::new(None),
             clock: JavaClock,
         };
@@ -1846,6 +1912,46 @@ fn has_tree_artifact_outputs(action: &dyn Action) -> bool {
 }
 
 // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1823 SkyframeActionExecutor.createDetailedExitCode
+/// Creates the parent directories of the action's stdout and stderr files (on the action file
+/// system).
+// Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1495 SkyframeActionExecutor.setupActionFsFileOutErr
+fn setup_action_fs_file_out_err(
+    file_out_err: &FileOutErr,
+    action: &dyn Action,
+) -> Result<(), ActionExecutionException> {
+    let result = (|| -> std::io::Result<()> {
+        file_out_err
+            .get_output_path()
+            .get_parent_directory()
+            .expect("stdout file has a parent directory")
+            .create_directory_and_parents()?;
+        file_out_err
+            .get_error_path()
+            .get_parent_directory()
+            .expect("stderr file has a parent directory")
+            .create_directory_and_parents()
+    })();
+    if let Err(e) = result {
+        let message = format!(
+            "failed to create output directory for output streams '{}': {}",
+            file_out_err.get_error_path(),
+            e
+        );
+        let code = create_detailed_exit_code(
+            &message,
+            execution::Code::ActionFsOutErrDirectoryCreationFailure,
+        );
+        return Err(ActionExecutionException::with_cause(
+            message,
+            &e,
+            Some(action),
+            false,
+            Some(code),
+        ));
+    }
+    Ok(())
+}
+
 fn create_detailed_exit_code(message: &str, detailed_code: execution::Code) -> FailureDetail {
     execution_failure(message.to_string(), detailed_code)
 }
@@ -4257,12 +4363,12 @@ mod action_output_metadata_store_tests {
                 let output_artifact =
                     f.create_artifact_with_root_relative_path(&f.output_root, "output");
 
-                let file_metadata = blaze_exec::actions::FileArtifactValue::create_for_normal_file(
-                    Some(vec![1, 2, 3]),
-                    None,
-                    123,
-                );
-                let mut input_metadata = file_metadata.clone();
+                let mut input_metadata =
+                    blaze_exec::actions::FileArtifactValue::create_for_normal_file(
+                        Some(vec![1, 2, 3]),
+                        None,
+                        123,
+                    );
                 if resolved_artifact != input_artifact {
                     input_metadata =
                         blaze_exec::actions::FileArtifactValue::create_from_existing_with_resolved_path(
@@ -4288,16 +4394,11 @@ mod action_output_metadata_store_tests {
                     .create_symbolic_link_to_fragment(input_artifact.get_path().as_fragment())
                     .unwrap();
 
-                // FileArtifactValue.createFromExistingWithResolvedPath(inputMetadata, resolvedPath):
-                // `new ResolvedSymlinkArtifactValue(delegate, resolvedPath)`, whose constructor
-                // keeps the delegate of a delegate that is itself a ResolvedSymlinkArtifactValue
-                // (FileArtifactValue.java:958-961).
-                // PORT: blaze_exec's `create_from_existing_with_resolved_path` does not unwrap
-                // (reported; not this test's file), so the Java value is written out here.
-                let expected = blaze_exec::actions::FileArtifactValue::ResolvedSymlink {
-                    delegate: Box::new(file_metadata),
-                    resolved_path: resolved_artifact.get_path().as_fragment().clone(),
-                };
+                let expected =
+                    blaze_exec::actions::FileArtifactValue::create_from_existing_with_resolved_path(
+                        input_metadata,
+                        resolved_artifact.get_path().as_fragment().clone(),
+                    );
                 assert_eq!(
                     get_output_metadata(&store, &output_artifact).unwrap(),
                     expected,

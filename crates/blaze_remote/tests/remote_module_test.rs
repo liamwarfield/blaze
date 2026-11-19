@@ -981,9 +981,45 @@ fn remote_cache_lease_extension_fails_loudly() {
         &format!("--disk_cache={}", disk_cache_dir.get_path_string()),
         "--experimental_remote_cache_lease_extension",
     ]);
-    let remote_module = before_command(&env, remote_options).unwrap();
+    let mut remote_module = before_command(&env, remote_options).unwrap();
+    create_action_input_fetcher(&mut remote_module);
     // RemoteModule.executorInit, without --rewind_lost_inputs.
     remote_module.executor_init(env.reporter.as_ref(), false);
+}
+
+/// The end of `setup`: `actionInputFetcher = createActionInputFetcher(combinedCache)` (the
+/// integrator's call, see `RemoteModule::create_action_input_fetcher`).
+fn create_action_input_fetcher(remote_module: &mut RemoteModule) {
+    remote_module.create_action_input_fetcher(
+        blaze_events::Reporter::new(None),
+        blaze_exec::actions::cache::OutputPermissions::Readonly,
+        None,
+    );
+}
+
+/// Not in the Java test (lead, round 2): `RemoteActionContextProvider.afterCommand` shuts the
+/// action input fetcher down before the combined cache is released
+/// (`RemoteActionContextProvider.java:243-247`): after `afterCommand` the fetcher's download
+/// cache accepts no new downloads.
+#[test]
+fn after_command_shuts_the_action_input_fetcher_down() {
+    let env = TestEnv::new();
+    let disk_cache_dir = env.root.get_relative_str("disk_cache");
+    let remote_options = parse_remote_options(&[&format!(
+        "--disk_cache={}",
+        disk_cache_dir.get_path_string()
+    )]);
+    let mut remote_module = before_command(&env, remote_options).unwrap();
+    create_action_input_fetcher(&mut remote_module);
+    remote_module.executor_init(env.reporter.as_ref(), true);
+    let fetcher = remote_module.get_action_input_fetcher().unwrap().clone();
+    let prefetcher: &dyn blaze_remote::abstract_action_input_prefetcher::AbstractActionInputPrefetcher =
+        fetcher.as_ref();
+    assert!(!prefetcher.get_download_cache().is_shutdown());
+
+    remote_module.after_command().unwrap();
+
+    assert!(prefetcher.get_download_cache().is_shutdown());
 }
 
 /// Review 2026-11-19 round 2 R13 (a), not in the Java test: with `--rewind_lost_inputs`,
@@ -997,7 +1033,8 @@ fn remote_cache_lease_extension_with_rewind_lost_inputs_warns() {
         &format!("--disk_cache={}", disk_cache_dir.get_path_string()),
         "--experimental_remote_cache_lease_extension",
     ]);
-    let remote_module = before_command(&env, remote_options).unwrap();
+    let mut remote_module = before_command(&env, remote_options).unwrap();
+    create_action_input_fetcher(&mut remote_module);
 
     remote_module.executor_init(env.reporter.as_ref(), true);
 

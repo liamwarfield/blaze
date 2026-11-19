@@ -73,6 +73,66 @@ impl ActionOutputDirectoryHelper {
         }
     }
 
+    /// Creates output directories, including missing ancestor directories, for the given set of
+    /// action outputs.
+    ///
+    /// This method should only be used with an action filesystem
+    /// (`OutputService.ActionFileSystemType`). Otherwise, please use call
+    /// [`Self::create_output_directories`] to avoid recreating output directories shared by
+    /// multiple actions.
+    ///
+    /// `artifact_path_resolver` is `ArtifactPathResolver.createPathResolver(actionFileSystem,
+    /// execRoot)`, given by its action file system (`None`: `IDENTITY`).
+    // Java: com/google/devtools/build/lib/actions/ActionOutputDirectoryHelper.java:79 ActionOutputDirectoryHelper.createActionFsOutputDirectories
+    pub fn create_action_fs_output_directories(
+        &self,
+        action_outputs: &[Artifact],
+        artifact_path_resolver: Option<&blaze_vfs::FileSystemRef>,
+    ) -> Result<(), CreateOutputDirectoryException> {
+        // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:86 IdentityResolver.convertPath
+        // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:124 TransformResolver.convertPath
+        let convert_path = |path: &Path| -> Path {
+            match artifact_path_resolver {
+                Some(file_system) => Path::create(path.as_fragment().clone(), file_system),
+                None => path.clone(),
+            }
+        };
+        let mut done: HashSet<Path> = HashSet::new(); // avoid redundant calls for the same directory.
+        for output_file in action_outputs {
+            // artifactPathResolver.toPath(outputFile): an Artifact's path on the resolver's file
+            // system (ArtifactPathResolver.java:75,107).
+            let output_dir = if output_file.is_tree_artifact() {
+                convert_path(&output_file.get_path())
+            } else {
+                convert_path(&output_file.get_path())
+                    .get_parent_directory()
+                    .expect("output has a parent directory")
+            };
+
+            if done.insert(output_dir.clone()) {
+                match output_dir
+                    .create_directory_and_parents()
+                    .and_then(|()| output_dir.set_writable(true))
+                {
+                    Ok(()) => continue,
+                    Err(_) => { /* Fall through to plan B. */ }
+                }
+
+                let root_path = convert_path(
+                    output_file
+                        .get_root()
+                        .get_root()
+                        .as_path()
+                        .expect("output root is a path"),
+                )
+                .as_fragment()
+                .clone();
+                self.force_create_directory_and_parents(&output_dir, &root_path)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Invalidates the cached creation of tree artifact directories when an action is going to
     /// be rewound.
     // Java: com/google/devtools/build/lib/actions/ActionOutputDirectoryHelper.java:110 ActionOutputDirectoryHelper.invalidateTreeArtifactDirectoryCreation

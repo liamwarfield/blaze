@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# A failing test with --flaky_test_attempts=2 under remote execution and build without the bytes
+# (upstream build_without_the_bytes_test.sh test_multiple_test_attempts): oracle vs Blaze.
+#
+# usage: scripts/remote/attempts-probe <oracle|BLAZE-BINARY> <label> [port]
+#        scripts/remote/attempts-probe help
+#
+# Workspace: ~/.cache/blaze/work/remote/attempts-probe/src (written by this script when missing),
+# //:f, a Starlark test rule whose script prints a line and exits 1.
+# Starts a fresh Bazel remote worker (scripts/remote/worker, name ap-<label>, port default 9600),
+# runs, in a fresh output base (run name ap-<label>):
+#   test //:f --remote_executor=grpc://localhost:<port> --remote_download_minimal
+#        --flaky_test_attempts=2 --build_event_json_file=<step>/bep.json
+# stops the worker, and prints the test summary lines (times masked), the `N processes:` line,
+# the exit code, the bazel-testlogs/f listing (files and symlinks) and the BEP TestResult events
+# (attempt, status, and each testActionOutput as name=<scheme>, the URI scheme only, since the
+# bytestream host and digest are the worker's), saved as <W>/ap-<label>/summary.txt.
+# <W> is ~/.cache/blaze/work/remote.
+set -euo pipefail
+if [[ $# -lt 2 || $1 == help ]]; then sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+here=$(cd "$(dirname "$0")" && pwd)
+W=~/.cache/blaze/work/remote
+src=$W/attempts-probe/src
+bin=$1; label=$2; port=${3:-9600}
+if [[ ! -f $src/BUILD.bazel ]]; then
+  mkdir -p "$src"
+  echo 'module(name = "attempts_probe")' > "$src/MODULE.bazel"
+  cat > "$src/defs.bzl" <<'EOF'
+def _impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(out, "#!/bin/sh\necho failing\nexit 1\n", is_executable = True)
+    return [DefaultInfo(executable = out)]
+
+failing_test = rule(implementation = _impl, test = True)
+EOF
+  printf 'load(":defs.bzl", "failing_test")\n\nfailing_test(name = "f")\n' > "$src/BUILD.bazel"
+fi
+run=ap-$label
+"$here/worker" start "$run" "$port" >/dev/null
+trap '"$here/worker" stop "$run" >/dev/null 2>&1 || true' EXIT
+out=$("$here/ws-run" "$run" "$src" "$bin" --fresh -- test "--remote_executor=grpc://localhost:$port" \
+  --remote_download_minimal --flaky_test_attempts=2 '--build_event_json_file={step}/bep.json' //:f) || true
+s=$(echo "$out" | sed -n 's/^step: //p')
+code=$(echo "$out" | sed -n 's/^exit code: //p')
+{
+  echo "summary lines:"
+  grep -E '^//:|PASSED|FAILED|NO STATUS|Executed|INFO: [0-9]+ process|^ERROR|test\.log|attempt_' "$s/stderr" "$s/stdout" 2>/dev/null \
+    | sed 's#^/[^:]*/s\(td\(out\|err\)\):##; s/ in [0-9.]*s/ in <t>s/g; s/(Total: .*s)/<times>/; s#/[^ ]*/execroot/#<execroot>/#g; s#/[^ ]*/testlogs/#<testlogs>/#g' || true
+  echo "exit code: $code"
+  echo "bazel-testlogs:"
+  (cd "$W/$run/ws/bazel-testlogs/f" 2>/dev/null && find . \( -type f -o -type l \) | sort | sed 's#^\.#  f#') || echo "  f: (missing)"
+  echo "BEP TestResult:"
+  python3 -I - "$s/bep.json" <<'PY' || echo "  (no BEP file)"
+import json, sys
+rows = []
+for line in open(sys.argv[1]):
+    ev = json.loads(line)
+    if "testResult" not in ev.get("id", {}):
+        continue
+    i = ev["id"]["testResult"]
+    r = ev.get("testResult", {})
+    outs = ["%s=%s" % (o.get("name"), o.get("uri", "").split(":", 1)[0]) for o in r.get("testActionOutput", [])]
+    rows.append("  %s attempt=%s status=%s outputs=[%s]" % (i.get("label"), i.get("attempt"), r.get("status"), ", ".join(outs)))
+print("\n".join(sorted(rows)))
+PY
+} > "$W/$run/summary.txt"
+sed 's/^/  /' "$W/$run/summary.txt"

@@ -5,10 +5,11 @@
 //! `blaze_remote::remote_module`.
 //!
 //! PORT: Java's `BlazeCommandDispatcher` / `BlazeRuntime` call the module hooks for every
-//! command; Blaze calls them from the build command (`crate::commands::build`). Other commands
-//! that accept the remote options do not set the module up (`crate::unported_options` fails
-//! loudly for the ones that execute actions). A command without any remote option keeps the
-//! placeholder provider of `blaze_exec::exec::executor_setup` and does not call the module.
+//! command; Blaze calls them from the build command (`crate::commands::build`) for build/test and
+//! from the dispatcher ([`dispatcher_before_command`]) for the other commands, which get
+//! `beforeCommand` / `afterCommand` only (the commands other than build/test that execute
+//! actions refuse the remote options loudly in `crate::unported_options`). A command without
+//! any remote option keeps the placeholder provider of `blaze_exec::exec::executor_setup`.
 
 use std::sync::Arc;
 
@@ -84,85 +85,13 @@ pub(crate) fn before_command(
     env: &CommandEnvironment,
     options: &OptionsParsingResult,
 ) -> Result<Option<RemoteSupport>, AbruptExitException> {
-    let Some(remote_options) = options.get_options::<RemoteOptions>() else {
-        // Quit if no supported command is being used.
+    let Some(module) = set_up_module(env, options)? else {
         return Ok(None);
     };
-    if !remote_requested(&remote_options) {
-        // `setup` still runs `tempPathGenerator = getTempPathGenerator(env)` before it returns
-        // with the placeholder provider ("Found stale downloads from previous build,
-        // deleting..."); `afterCommand` deletes the directory again (see
-        // `placeholder_after_command`).
-        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:524 RemoteModule.setup
-        let exec_root = env.get_exec_root();
-        blaze_remote::remote_module::get_temp_path_generator(
-            &env.get_directories().get_action_temps_directory(&exec_root),
-            env.get_reporter().as_ref(),
-        )?;
-        return Ok(None);
-    }
-    if remote_options.scrubber.is_some() {
-        // RemoteOptions.ScrubberConverter parses the file (Scrubber.parse, TextFormat).
-        blaze_util::unported!("Scrubber.parse", "--experimental_remote_scrubbing_config");
-    }
-    let auth_and_tls_options = options
-        .get_options::<AuthAndTLSOptions>()
-        .unwrap_or_else(blaze_options::Options::<AuthAndTLSOptions>::get_defaults);
-    let execution_options = options
-        .get_options::<ExecutionOptions>()
-        .unwrap_or_else(blaze_options::Options::<ExecutionOptions>::get_defaults);
     let build_request_options = options.get_options::<BuildRequestOptions>();
-    let build_language_options = options
-        .get_options::<BuildLanguageOptions>()
-        .unwrap_or_else(blaze_options::Options::<BuildLanguageOptions>::get_defaults);
-    let writable_outputs = options
-        .get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
-        .is_some_and(|o| o.experimental_writable_outputs);
-
-    let exec_root = env.get_exec_root();
-    let directories = env.get_directories();
-    let build_request_id = build_request_id(options);
-    let reporter: Arc<dyn ExtendedEventHandler> = env.get_reporter().clone();
-    let lease_extension_requested = remote_options.remote_cache_lease_extension;
-    let mut module = RemoteModule::before_command(RemoteModuleEnvironment {
-        command_name: env.get_command_name().to_owned(),
-        remote_options,
-        auth_and_tls_options,
-        execution_options: Arc::new(execution_options),
-        rewind_lost_inputs: build_request_options.as_ref().map(|o| o.rewind_lost_inputs),
-        experimental_sibling_repository_layout: build_language_options
-            .experimental_sibling_repository_layout,
-        reporter,
-        file_system: env.get_output_base().get_file_system().clone(),
-        output_base: env.get_output_base().clone(),
-        exec_root: exec_root.clone(),
-        working_directory: env.get_working_directory().clone(),
-        workspace: env.get_workspace().cloned(),
-        workspace_name: env.get_workspace_name().to_owned(),
-        action_temps_directory: directories.get_action_temps_directory(&exec_root),
-        build_request_id,
-        command_id: env.get_command_id().to_owned(),
-        product_name: env.get_runtime().get_product_name().to_owned(),
-        tool_version: BlazeVersionInfo::instance().get_version(),
-        client_env: env.get_client_env().clone(),
-        clock: Arc::new(JavaClock),
-        scrubber: None,
-        hooks: RemoteHooks::new(),
-    })?;
-    // RemoteModule.setup ends with `actionInputFetcher = createActionInputFetcher(combinedCache)`.
-    let output_permissions = if writable_outputs {
-        blaze_exec::actions::cache::OutputPermissions::Writable
-    } else {
-        blaze_exec::actions::cache::OutputPermissions::Readonly
-    };
-    module.create_action_input_fetcher(
-        env.get_reporter().clone(),
-        output_permissions,
-        // env.getOutputDirectoryHelper() (the command has BuildRequestOptions).
-        build_request_options
-            .is_some()
-            .then(|| Arc::new(ActionOutputDirectoryHelper::new())),
-    );
+    let lease_extension_requested = options
+        .get_options::<RemoteOptions>()
+        .is_some_and(|o| o.remote_cache_lease_extension);
     // The digests earlier attempts of this command learnt from LostInputsEvents (see
     // KNOWN_MISSING_CAS_DIGESTS) are in the module's knownMissingCasDigests.
     if let Some(provider) = module.get_action_context_provider() {
@@ -235,6 +164,117 @@ fn purge_persistent_action_cache(
             "I/O error while writing action log: {e}"
         )));
     }
+}
+
+/// `RemoteModule.beforeCommand(env)` up to the end of `setup` (including
+/// `createActionInputFetcher`), for any command: `Ok(None)` when no remote option is set
+/// (after `getTempPathGenerator`'s stale-downloads cleanup).
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:403 RemoteModule.beforeCommand
+fn set_up_module(
+    env: &CommandEnvironment,
+    options: &OptionsParsingResult,
+) -> Result<Option<RemoteModule>, AbruptExitException> {
+    let Some(remote_options) = options.get_options::<RemoteOptions>() else {
+        // Quit if no supported command is being used.
+        return Ok(None);
+    };
+    if !remote_requested(&remote_options) {
+        // `setup` still runs `tempPathGenerator = getTempPathGenerator(env)` before it returns
+        // with the placeholder provider ("Found stale downloads from previous build,
+        // deleting..."); `afterCommand` deletes the directory again (see
+        // `placeholder_after_command`).
+        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:524 RemoteModule.setup
+        let exec_root = env.get_exec_root();
+        blaze_remote::remote_module::get_temp_path_generator(
+            &env.get_directories().get_action_temps_directory(&exec_root),
+            env.get_reporter().as_ref(),
+        )?;
+        return Ok(None);
+    }
+    if remote_options.scrubber.is_some() {
+        // RemoteOptions.ScrubberConverter parses the file (Scrubber.parse, TextFormat).
+        blaze_util::unported!("Scrubber.parse", "--experimental_remote_scrubbing_config");
+    }
+    let auth_and_tls_options = options
+        .get_options::<AuthAndTLSOptions>()
+        .unwrap_or_else(blaze_options::Options::<AuthAndTLSOptions>::get_defaults);
+    let execution_options = options
+        .get_options::<ExecutionOptions>()
+        .unwrap_or_else(blaze_options::Options::<ExecutionOptions>::get_defaults);
+    let build_request_options = options.get_options::<BuildRequestOptions>();
+    let build_language_options = options
+        .get_options::<BuildLanguageOptions>()
+        .unwrap_or_else(blaze_options::Options::<BuildLanguageOptions>::get_defaults);
+    let writable_outputs = options
+        .get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
+        .is_some_and(|o| o.experimental_writable_outputs);
+
+    let exec_root = env.get_exec_root();
+    let directories = env.get_directories();
+    let build_request_id = build_request_id(options);
+    let reporter: Arc<dyn ExtendedEventHandler> = env.get_reporter().clone();
+    let mut module = RemoteModule::before_command(RemoteModuleEnvironment {
+        command_name: env.get_command_name().to_owned(),
+        remote_options,
+        auth_and_tls_options,
+        execution_options: Arc::new(execution_options),
+        rewind_lost_inputs: build_request_options.as_ref().map(|o| o.rewind_lost_inputs),
+        experimental_sibling_repository_layout: build_language_options
+            .experimental_sibling_repository_layout,
+        reporter,
+        file_system: env.get_output_base().get_file_system().clone(),
+        output_base: env.get_output_base().clone(),
+        exec_root: exec_root.clone(),
+        working_directory: env.get_working_directory().clone(),
+        workspace: env.get_workspace().cloned(),
+        workspace_name: env.get_workspace_name().to_owned(),
+        action_temps_directory: directories.get_action_temps_directory(&exec_root),
+        build_request_id,
+        command_id: env.get_command_id().to_owned(),
+        product_name: env.get_runtime().get_product_name().to_owned(),
+        tool_version: BlazeVersionInfo::instance().get_version(),
+        client_env: env.get_client_env().clone(),
+        clock: Arc::new(JavaClock),
+        scrubber: None,
+        hooks: RemoteHooks::new(),
+    })?;
+    // RemoteModule.setup ends with `actionInputFetcher = createActionInputFetcher(combinedCache)`.
+    let output_permissions = if writable_outputs {
+        blaze_exec::actions::cache::OutputPermissions::Writable
+    } else {
+        blaze_exec::actions::cache::OutputPermissions::Readonly
+    };
+    module.create_action_input_fetcher(
+        env.get_reporter().clone(),
+        output_permissions,
+        // env.getOutputDirectoryHelper() (the command has BuildRequestOptions).
+        build_request_options
+            .is_some()
+            .then(|| Arc::new(ActionOutputDirectoryHelper::new())),
+    );
+    // RemoteModule.setup ends both cache paths with initRepoHelpersAndOverlayFs: with a combined
+    // cache it installs RepositoryRemoteHelpersFactoryImpl, whose RemoteRepoContentsCacheImpl
+    // serves and stores repositories when the output base is on the RemoteExternalOverlayFileSystem
+    // that the startup option --experimental_remote_repo_contents_cache selects
+    // (RemoteModule.getFileSystemForBuildArtifacts). Neither is ported.
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:358 RemoteModule.initRepoHelpersAndOverlayFs
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:219 RemoteModule.getFileSystemForBuildArtifacts
+    let use_remote_repo_contents_cache = env
+        .get_runtime()
+        .get_startup_options_provider()
+        .get_options::<blaze_optdefs::misc::remote_startup_options::RemoteStartupOptions>()
+        .is_some_and(|o| o.use_remote_repo_contents_cache);
+    if use_remote_repo_contents_cache
+        && module
+            .get_action_context_provider()
+            .and_then(|provider| provider.get_combined_cache())
+            .is_some()
+    {
+        blaze_util::unported!(
+            "RemoteRepoContentsCacheImpl (--experimental_remote_repo_contents_cache with a remote or disk cache)"
+        );
+    }
+    Ok(Some(module))
 }
 
 /// `CommandEnvironment.buildRequestId`: `--build_request_id`, else the dispatcher's
@@ -311,18 +351,24 @@ pub(crate) fn placeholder_after_command(env: &CommandEnvironment, options: &Opti
 }
 
 /// The `tempPathGenerator` directory `RemoteModule.setup` created for a command other than
-/// build/test (see [`dispatcher_before_command`]), until `afterCommand` deletes it.
+/// build/test that requests nothing remote (see [`dispatcher_before_command`]), until
+/// `afterCommand` deletes it.
 static DISPATCHER_TEMP_DIR: Mutex<Option<blaze_vfs::Path>> = Mutex::new(None);
+
+/// The `RemoteModule` [`dispatcher_before_command`] set up for a command other than build/test
+/// that requests remote functionality, until `afterCommand`.
+static DISPATCHER_MODULE: Mutex<Option<RemoteModule>> = Mutex::new(None);
 
 /// `RemoteModule.beforeCommand(env)` for the commands other than `build` / `test` (which set the
 /// module up in `crate::commands::build`, see [`before_command`]): `RemoteOptions` is a common
-/// command option (`RemoteModule.getCommonCommandOptions`), so `setup` runs for every command
-/// and, when nothing remote is requested, returns with the placeholder provider after
-/// `tempPathGenerator = getTempPathGenerator(env)` ("Found stale downloads from previous build,
-/// deleting..."). `Err` is its `AbruptExitException`.
-///
-/// PORT: a command other than build/test with a remote option set does not set the remote
-/// module up in Blaze (see the module comment), so it does not run this either.
+/// command option (`RemoteModule.getCommonCommandOptions`), so `beforeCommand` runs for every
+/// command. When nothing remote is requested, `setup` returns with the placeholder provider
+/// after `tempPathGenerator = getTempPathGenerator(env)` ("Found stale downloads from previous
+/// build, deleting..."); otherwise it sets the module up as for a build (the eager capabilities
+/// check, the caches, the stale-downloads cleanup). `executorInit` and the build hooks are not
+/// called for these commands, as in Java (`crate::unported_options` refuses the remote options
+/// for the commands that execute actions other than build/test). `Err` is its
+/// `AbruptExitException`.
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:403 RemoteModule.beforeCommand
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:524 RemoteModule.setup
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1341 RemoteModule.getCommonCommandOptions
@@ -330,6 +376,7 @@ pub(crate) fn dispatcher_before_command(
     env: &CommandEnvironment,
 ) -> Result<(), crate::module::AbruptExitException> {
     *DISPATCHER_TEMP_DIR.lock() = None;
+    *DISPATCHER_MODULE.lock() = None;
     if matches!(env.get_command_name(), "build" | "test") {
         return Ok(());
     }
@@ -337,7 +384,14 @@ pub(crate) fn dispatcher_before_command(
         // Quit if no supported command is being used.
         return Ok(());
     };
+    let to_module_exception = |e: AbruptExitException| {
+        crate::module::AbruptExitException::new(
+            crate::commands::build::abrupt_exit_detailed_exit_code(e),
+        )
+    };
     if remote_requested(&remote_options) {
+        let module = set_up_module(env, env.get_options()).map_err(to_module_exception)?;
+        *DISPATCHER_MODULE.lock() = module;
         return Ok(());
     }
     let exec_root = env.get_exec_root();
@@ -349,21 +403,29 @@ pub(crate) fn dispatcher_before_command(
             *DISPATCHER_TEMP_DIR.lock() = Some(temp_path_generator.get_temp_dir().clone());
             Ok(())
         }
-        Err(e) => Err(crate::module::AbruptExitException::new(
-            crate::commands::build::abrupt_exit_detailed_exit_code(e),
-        )),
+        Err(e) => Err(to_module_exception(e)),
     }
 }
 
-/// `RemoteModule.afterCommand` for a command [`dispatcher_before_command`] set up:
-/// `afterCommandTask` deletes the `tempPathGenerator` directory, ignoring failures.
+/// `RemoteModule.afterCommand` for a command [`dispatcher_before_command`] set up: the module's
+/// `afterCommand` (its `AbruptExitException`, which the dispatcher reports as it reports the
+/// other modules'), or, with the placeholder provider, `afterCommandTask`'s deletion of the
+/// `tempPathGenerator` directory, ignoring failures.
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1097 RemoteModule.afterCommand
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1139 RemoteModule.afterCommandTask
-pub(crate) fn dispatcher_after_command() {
+pub(crate) fn dispatcher_after_command() -> Option<crate::module::AbruptExitException> {
+    if let Some(mut module) = DISPATCHER_MODULE.lock().take() {
+        return module.after_command().err().map(|e| {
+            crate::module::AbruptExitException::new(
+                crate::commands::build::abrupt_exit_detailed_exit_code(e),
+            )
+        });
+    }
     if let Some(temp_dir) = DISPATCHER_TEMP_DIR.lock().take() {
         // Intentionally ignored.
         let _ = temp_dir.delete_tree();
     }
+    None
 }
 
 /// The runtime's `BuildEventArtifactUploaderFactoryMap` (`BlazeRuntime

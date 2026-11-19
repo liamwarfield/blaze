@@ -2229,6 +2229,62 @@ mod timestamp_builder_tests {
         }
     }
 
+    /// Review 2026-11-19 N5: with `--rewind_lost_inputs` (Bazel's default) Java rewinds the
+    /// action; rewinding is not ported, so the executor fails loudly with a message that names
+    /// `--norewind_lost_inputs`, after purging the persistent action cache (the policy's
+    /// `purge_before_unported_rewinding`, a PORT) and without posting a `LostInputsEvent`
+    /// (`ActionRewindStrategy.checkRewindingEnabled` returns before posting when rewinding is
+    /// enabled).
+    #[test]
+    fn lost_inputs_with_rewinding_purge_the_action_cache_before_failing_loudly() {
+        let f = Fixture::new();
+        let lost = f.create_derived_artifact("lost.o");
+        let out = f.create_derived_artifact("out");
+        let actions = f.register_actions(vec![write_action(&f, &out, "content")]);
+        let cache = f.create_cache("cache");
+        let seen: Arc<parking_lot::Mutex<Vec<String>>> = Arc::default();
+        let seen_in_handler = seen.clone();
+        let purged = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let purged_in_policy = purged.clone();
+        let remote = RemoteSetup {
+            output_checker: None,
+            tree: Some(Arc::new(RemoteOutputTree::new())),
+            file_write: Some(Arc::new(LosingFileWrite {
+                lost: lost.clone(),
+                digest: "0f3d/40520".to_string(),
+            })),
+            lost_inputs_policy: Some(blaze_exec::exec::executor_setup::LostInputsPolicy {
+                rewinding_enabled: true,
+                invocation_retries_enabled: true,
+                on_lost_inputs: Arc::new(move |digests: &[String]| {
+                    seen_in_handler.lock().extend(digests.iter().cloned())
+                }),
+                purge_before_unported_rewinding: Some(Arc::new(move || {
+                    purged_in_policy.store(true, std::sync::atomic::Ordering::SeqCst)
+                })),
+            }),
+            loading: false,
+        };
+        let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f.evaluate_with(&actions, &cache, &out, &remote)
+        })) else {
+            panic!("action rewinding is not ported: the build must fail loudly");
+        };
+        let message = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
+        assert!(
+            message.contains(
+                "blaze: not ported yet: ActionRewindStrategy.prepareRewindPlanForLostInputs"
+            ) && message.contains("--norewind_lost_inputs"),
+            "{message}"
+        );
+        assert!(purged.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(seen.lock().is_empty());
+    }
+
     const BUILT: BuildCounts = BuildCounts {
         executed: 1,
         cached: 0,

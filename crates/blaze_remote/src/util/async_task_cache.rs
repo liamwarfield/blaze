@@ -348,13 +348,32 @@ where
         }
     }
 
-    /// Waits for the in-progress tasks to finish.
+    /// Waits for the in-progress tasks to finish: the executions in progress when it is called
+    /// (`ImmutableList.copyOf(inProgress.values())`); tasks submitted later are not waited for.
     // Java: com/google/devtools/build/lib/remote/util/AsyncTaskCache.java:386 AsyncTaskCache.awaitInProgressTasks
     pub async fn await_in_progress_tasks(&self) {
+        let executions: Vec<(K, u64)> = {
+            let inner = self.state.inner.lock();
+            inner
+                .in_progress
+                .iter()
+                .map(|(key, execution)| (key.clone(), execution.id))
+                .collect()
+        };
+        // `Single.fromObservable(e.completion)` for each: an execution is complete once it is no
+        // longer registered under its key.
         loop {
             let notified = self.state.idle.notified();
-            if self.state.inner.lock().in_progress.is_empty() {
-                return;
+            {
+                let inner = self.state.inner.lock();
+                if executions.iter().all(|(key, id)| {
+                    inner
+                        .in_progress
+                        .get(key)
+                        .is_none_or(|execution| execution.id != *id)
+                }) {
+                    return;
+                }
             }
             notified.await;
         }

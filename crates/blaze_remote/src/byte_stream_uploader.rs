@@ -531,10 +531,10 @@ impl<'w, 'a, 'c> Writer<'w, 'a, 'c> {
                 Err(e) => {
                     // requestObserver.cancel("Failed to read next chunk.", e), which comes back
                     // as `onError(CANCELLED)`.
-                    // NEEDS(channel): optional. A way to cancel a call with a description and a
-                    // cause (`ClientCall.cancel(message, cause)`), so that the channel-level
-                    // listeners (the gRPC log) see this status instead of the "Cancelled by
-                    // client" of a dropped call.
+                    // PORT: the channel cannot cancel a call with a description and a cause
+                    // (`ClientCall.cancel(message, cause)`): the call is dropped, so the
+                    // channel-level listeners (the gRPC log) see the "Cancelled by client" of a
+                    // dropped call instead of this status.
                     let mut status = tonic::Status::cancelled("Failed to read next chunk.");
                     status.set_source(Arc::new(e));
                     return Err(self.on_error(status));

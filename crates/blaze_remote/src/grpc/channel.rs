@@ -157,7 +157,16 @@ impl AttachHeadersInterceptor {
                     )
                 },
             )?;
-            let value = AsciiMetadataValue::try_from(value.as_str()).map_err(|_| {
+            // `AsciiKey.toBytes`: `value.getBytes(US_ASCII)`, which replaces every character
+            // outside ASCII with '?'.
+            // Java: io/grpc/Metadata.java:981 AsciiKey.toBytes
+            let ascii: String = value
+                .chars()
+                .map(|c| if c.is_ascii() { c } else { '?' })
+                .collect();
+            // PORT: a control character other than a tab is sent as is by Java; the HTTP/2
+            // library of the port refuses it, which fails here.
+            let value = AsciiMetadataValue::try_from(ascii.as_str()).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("Invalid character in the value of header {name}"),
@@ -903,6 +912,8 @@ enum TransportThrowable {
     Io(io::Error),
     /// A protocol violation this side detected (Netty's `Http2Exception`).
     Http2,
+    /// A `DecoderException` caused by an `SSLException` (a TLS alert from the server).
+    Ssl,
 }
 
 /// Classifies the error that made tonic fail a call (the source chain of a `tonic::Status`
@@ -932,7 +943,18 @@ fn classify_transport_error(status: &tonic::Status, host: &str) -> Option<Transp
             // the OS error as its source), or the `io::Error` of the TLS handshake.
             let connector_error = e.source()?;
             if connector_error.downcast_ref::<io::Error>().is_some() {
-                // A TLS handshake failure: the `SSLException` Netty reports is not reproduced.
+                // A TLS handshake failure. A fatal alert from the server reaches Netty's
+                // `SslHandler` as a `DecoderException` caused by an `SSLException` (oracle:
+                // "UNAVAILABLE: ssl exception" for a server that requires a client certificate,
+                // scripts/remote/tls-probe row mtls-noclient). A failure this side detects (the
+                // server's certificate) is an `SSLHandshakeException` (an `IOException`) whose
+                // JDK/OpenSSL text is not reproduced: rustls' text is kept.
+                if connector_error
+                    .to_string()
+                    .starts_with("received fatal alert: ")
+                {
+                    return Some(TransportThrowable::Ssl);
+                }
                 return None;
             }
             if connector_error.to_string() == "dns error" {
@@ -1018,7 +1040,13 @@ fn annotated_connect_exception(
         ),
         None => format!("finishConnect(..) failed: {strerror}"),
     };
-    io::Error::new(os_error.kind(), message)
+    io::Error::new(
+        os_error.kind(),
+        crate::common::errors::JavaException {
+            class_name: "io.netty.channel.AbstractChannel$AnnotatedConnectException",
+            message,
+        },
+    )
 }
 
 /// `InetSocketAddress.toString()` of `address` resolved from `host`.
@@ -1062,6 +1090,7 @@ fn authority_host(authority: &str) -> &str {
 /// * a connection that cannot be established, or an I/O error: UNAVAILABLE "io exception"
 ///   with the `IOException` as its cause ([`transport_io_cause`]);
 /// * a protocol error (Netty's `Http2Exception`): INTERNAL "http2 exception";
+/// * a TLS alert from the server during the handshake: UNAVAILABLE "ssl exception";
 /// * a host that does not resolve: grpc's `DnsNameResolver` fails the call with UNAVAILABLE
 ///   "Unable to resolve host <host>" (the oracle shows no `IOException` cause for it).
 ///
@@ -1083,6 +1112,11 @@ fn transport_status(status: tonic::Status, authority: &str) -> tonic::Status {
         TransportThrowable::Connect(cause) | TransportThrowable::Io(cause) => {
             let mut mapped = tonic::Status::unavailable("io exception");
             mapped.set_source(Arc::new(TransportIoException(Arc::new(cause))));
+            mapped
+        }
+        TransportThrowable::Ssl => {
+            let mut mapped = tonic::Status::unavailable("ssl exception");
+            mapped.set_source(Arc::new(TransportException(status.to_string())));
             mapped
         }
         TransportThrowable::Http2 => {
@@ -1127,6 +1161,13 @@ pub fn transport_io_cause(status: &tonic::Status) -> Option<io::Error> {
     let mut source = std::error::Error::source(status);
     while let Some(s) = source {
         if let Some(t) = s.downcast_ref::<TransportIoException>() {
+            // Keep the Java class of the exception (`errors::java_to_string`).
+            if let Some(java) =
+                t.0.get_ref()
+                    .and_then(|r| r.downcast_ref::<crate::common::errors::JavaException>())
+            {
+                return Some(io::Error::new(t.0.kind(), java.clone()));
+            }
             return Some(io::Error::new(t.0.kind(), t.0.to_string()));
         }
         if let Some(io) = s.downcast_ref::<io::Error>() {
@@ -1348,7 +1389,9 @@ pub fn io_result<T>(result: Result<T, tonic::Status>) -> io::Result<T> {
     result.map_err(status_to_io_error)
 }
 
-/// Channels for the in-process fake servers of the tests (Java: `InProcessChannelBuilder`).
+/// Channels for the in-process fake servers of the tests (Java: `InProcessChannelBuilder`);
+/// only with the `testing` feature, which the crate's own tests enable.
+#[cfg(any(test, feature = "testing"))]
 pub mod testing {
     use super::*;
 
@@ -1430,6 +1473,20 @@ mod tests {
         assert_eq!(
             java_inet_socket_address("[::1]", &v6),
             "/[0:0:0:0:0:0:0:1]:9499"
+        );
+    }
+
+    /// `--remote_header=x=é` (oracle `tc-hdr-o` run1: builds): `getBytes(US_ASCII)` sends '?';
+    /// `--remote_header='bad name=v'` (run2: Bazel crashes, exit 37) is refused.
+    #[test]
+    fn header_values_are_sent_as_us_ascii() {
+        let interceptor =
+            AttachHeadersInterceptor::new(&[("x".to_string(), "aé".to_string())]).unwrap();
+        let mut headers = MetadataMap::new();
+        let _ = interceptor.intercept_call(&methods::GET_CAPABILITIES, &mut headers);
+        assert_eq!(headers.get("x").unwrap().to_str().unwrap(), "a?");
+        assert!(
+            AttachHeadersInterceptor::new(&[("bad name".to_string(), "v".to_string())]).is_err()
         );
     }
 

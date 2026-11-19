@@ -49,6 +49,13 @@ tonic-build.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# The integration tests use `grpc::channel::testing` (review 2026-11-19 round 2: not part of the
+# production API).
+blaze_remote = { path = ".", features = ["testing"] }
+
+[features]
+# `grpc::channel::testing`: channels for the in-process fake servers of the tests.
+testing = []
 
 # Test harness of scripts/remote/replay (see docs/remote.md).
 [[bin]]

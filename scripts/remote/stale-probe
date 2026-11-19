@@ -26,7 +26,7 @@ if [[ ${#cmds[@]} -eq 1 && "${cmds[0]}" == remote-variants ]]; then
   dc="--disk_cache=$HOME/.cache/blaze/work/remote/$run-dc"
   rc="--remote_cache=grpc://localhost:9499"
   cmds=()
-  for c in "query //:brotlicommon" "cquery //:brotlicommon" "aquery //:brotlicommon" "info release"; do
+  for c in "query //:brotlicommon" "cquery //:brotlicommon" "aquery //:brotlicommon --output=jsonproto" "info release"; do
     cmds+=("$c $dc" "$c $rc" "$c $dc $rc")
   done
 fi

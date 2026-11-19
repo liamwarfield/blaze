@@ -16,9 +16,11 @@ use crate::grpc::AttachHeadersInterceptor;
 /// `Metadata.put` and `Metadata.merge` append, so the result holds the entries of `headers` and
 /// then those of `more`, in order, duplicates included.
 ///
-/// PORT: `Metadata.Key.of(name, ASCII_STRING_MARSHALLER)` throws an `IllegalArgumentException`
-/// for an invalid header name (and `Metadata.put` for an invalid value when the call starts);
-/// both are a panic here, when the interceptor is built.
+/// `Metadata.Key.of(name, ASCII_STRING_MARSHALLER)` throws an `IllegalArgumentException` for an
+/// invalid header name, which crashes Bazel (oracle: `--remote_header='bad name=v'` exits 37
+/// with no message, run `tc-hdr-o`); a panic here. A value outside ASCII is sent with '?' in
+/// place of each such character (oracle: `--remote_header=x=é` builds). PORT: a value with a
+/// control character (other than a tab) panics here (see `AttachHeadersInterceptor::new`).
 // Java: com/google/devtools/build/lib/remote/util/TracingMetadataUtils.java:129 TracingMetadataUtils.newMetadataForHeaders
 fn new_attach_headers_interceptor(
     headers: &[(String, String)],

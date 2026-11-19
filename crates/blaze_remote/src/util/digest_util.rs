@@ -56,6 +56,15 @@ impl DigestUtil {
         DigestUtil::build_digest_from_bytes(&self.hash(blob), blob.len() as i64)
     }
 
+    // PORT: `compute(byte[] data, int offset, int length)` (DigestUtil.java:89) is
+    // `compute(&data[offset..offset + length])`, and `compute(ByteString blob)`
+    // (DigestUtil.java:94) is `compute(&blob)`: a slice covers both.
+    // PORT: the static `compute(DeterministicWriter input, HashFunction hashFunction)`
+    // (DigestUtil.java:125) is folded into `compute_virtual_action_input` (the instance
+    // overload, DigestUtil.java:136), its only caller; `hashCodeToString(HashCode)`
+    // (DigestUtil.java:186) has no counterpart, the hashes are bytes here (`build_digest_from_bytes`
+    // encodes them in lower-case hexadecimal).
+
     /// Computes a digest for a file.
     ///
     /// Prefer calling [`DigestUtil::compute_path_with_status`] when a recently obtained
@@ -246,9 +255,11 @@ impl<W: Write> DigestOutputStream<W> {
 impl<W: Write> Write for DigestOutputStream<W> {
     // Java: com/google/devtools/build/lib/remote/util/DigestOutputStream.java:49 DigestOutputStream.write
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.out.write_all(buf)?;
-        self.hasher.update(buf);
+        // size += len; hasher.putBytes(bytes, off, len); out.write(bytes, off, len): the bytes
+        // count and are hashed even when the write to the wrapped stream fails.
         self.size += buf.len() as i64;
+        self.hasher.update(buf);
+        self.out.write_all(buf)?;
         Ok(buf.len())
     }
 

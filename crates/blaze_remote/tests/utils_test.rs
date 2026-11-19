@@ -252,3 +252,17 @@ fn wait_for_bulk_transfer_interrupted_cancels_transfers() {
     assert!(errors::is_interrupted(&e), "{e:?}");
     assert!(!blaze_shell::thread_interrupt::is_current_interrupted());
 }
+
+/// Not in the Java test (review 2026-11-19 round 2, R4 residual): a thread interrupted before
+/// `waitForBulkTransfer` gets the `InterruptedException` and keeps its interrupt status
+/// (`Utils.java:560,574-577`: `interrupted` is read on entry and restored).
+#[test]
+fn wait_for_bulk_transfer_restores_the_interrupt_of_the_caller() {
+    blaze_shell::thread_interrupt::interrupt_current();
+    let pending = || async { futures::future::pending::<io::Result<()>>().await };
+
+    let e = utils::wait_for_bulk_transfer([pending(), pending()]).unwrap_err();
+
+    assert!(errors::is_interrupted(&e), "{e:?}");
+    assert!(blaze_shell::thread_interrupt::interrupted());
+}

@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# TLS and mutual TLS against Bazel's remote worker (review 2026-11-19 round 2, lead's item 1).
+#
+# usage: scripts/remote/tls-probe <oracle|BINARY> <tag> [scenario...]
+#        scripts/remote/tls-probe help
+#
+# Generates (once) X.509 v3 certificates with openssl in ~/.cache/blaze/work/remote/tls-probe-certs:
+# a CA (ca.crt), a server certificate for localhost/127.0.0.1/::1 signed by it (server.crt,
+# server.key), a client certificate signed by it (client.crt, client.key), and an unrelated CA
+# (other-ca.crt). Starts Bazel's worker tls-probe on localhost:9624 with
+# --tls_certificate=server.crt --tls_private_key=server.key --tls_ca_certificate=ca.crt (the
+# worker then requires a client certificate), and runs `build //:a` on the probe workspace of
+# scripts/remote/caps-matrix through scripts/remote/ws-run as run `tls-<tag>-<scenario>`.
+#
+# Scenarios (default: all):
+#   mtls-ok          --remote_cache=grpcs://localhost:9624 --tls_certificate=ca.crt
+#                    --tls_client_certificate=client.crt --tls_client_key=client.key; then
+#                    `clean` and the same build again (run3: the remote cache hit)
+#   mtls-noclient    the same without the client certificate (the server refuses the handshake)
+#   untrusted-mtls   --tls_certificate=other-ca.crt with the client certificate
+#   untrusted-tls    --tls_certificate=other-ca.crt without it
+#   untrusted-mtls-fb  untrusted-mtls with --remote_local_fallback
+#                    --incompatible_remote_local_fallback_for_remote_cache
+# Prints each step's exit code and its ERROR/WARNING/processes lines.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+if [[ $# -lt 2 || "$1" == help || "$1" == --help || "$1" == -h ]]; then
+  sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+binary="$1"; tag="$2"; shift 2
+all=(mtls-ok mtls-noclient untrusted-mtls untrusted-tls untrusted-mtls-fb)
+scenarios=("$@"); [[ ${#scenarios[@]} -eq 0 ]] && scenarios=("${all[@]}")
+src="$HOME/.cache/blaze/work/remote/ry-src"
+if [[ ! -f "$src/MODULE.bazel" ]]; then
+  mkdir -p "$src"
+  echo 'module(name = "ry_probe")' >"$src/MODULE.bazel"
+  printf 'genrule(\n    name = "a",\n    outs = ["a.txt"],\n    cmd = "echo hello > $@",\n)\n' \
+    >"$src/BUILD.bazel"
+fi
+
+c="$HOME/.cache/blaze/work/remote/tls-probe-certs"
+if [[ ! -f "$c/other-ca.crt" ]]; then
+  mkdir -p "$c"
+  (
+    cd "$c"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=tls-probe CA" \
+      -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+      -keyout ca.key -out ca.crt 2>/dev/null
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=tls-probe other CA" \
+      -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+      -keyout other-ca.key -out other-ca.crt 2>/dev/null
+    for who in server client; do
+      openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" -keyout "$who.key" -out "$who.csr" 2>/dev/null
+      if [[ $who == server ]]; then eku=serverAuth; else eku=clientAuth; fi
+      printf 'basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=%s\nsubjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1\n' "$eku" >"$who.ext"
+      openssl x509 -req -in "$who.csr" -CA ca.crt -CAkey ca.key -CAcreateserial -days 3650 \
+        -extfile "$who.ext" -out "$who.crt" 2>/dev/null
+    done
+  )
+fi
+
+cleanup() { "$here/worker" stop tls-probe >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+"$here/worker" start tls-probe 9624 --tls_certificate="$c/server.crt" \
+  --tls_private_key="$c/server.key" --tls_ca_certificate="$c/ca.crt" >/dev/null
+
+report() {
+  local out="$1" s
+  s=$(echo "$out" | sed -n 's/^step: //p')
+  echo "  $(basename "$s"): exit $(cat "$s/exit")"
+  grep -E '^(ERROR|WARNING)|processes' "$s/stderr" | sed 's/^/    /' || true
+}
+client=(--tls_client_certificate="$c/client.crt" --tls_client_key="$c/client.key")
+for s in "${scenarios[@]}"; do
+  case "$s" in
+    mtls-ok) opts=(--tls_certificate="$c/ca.crt" "${client[@]}") ;;
+    mtls-noclient) opts=(--tls_certificate="$c/ca.crt") ;;
+    untrusted-mtls) opts=(--tls_certificate="$c/other-ca.crt" "${client[@]}") ;;
+    untrusted-tls) opts=(--tls_certificate="$c/other-ca.crt") ;;
+    untrusted-mtls-fb) opts=(--tls_certificate="$c/other-ca.crt" "${client[@]}"
+      --remote_local_fallback --incompatible_remote_local_fallback_for_remote_cache) ;;
+    *) echo "unknown scenario: $s" >&2; exit 2 ;;
+  esac
+  echo "== $s"
+  run="tls-$tag-$s"
+  report "$("$here/ws-run" "$run" "$src" "$binary" --fresh -- build //:a \
+    --remote_cache=grpcs://localhost:9624 "${opts[@]}" || true)"
+  if [[ $s == mtls-ok ]]; then
+    "$here/ws-run" "$run" "$src" "$binary" -- clean >/dev/null || true
+    report "$("$here/ws-run" "$run" "$src" "$binary" -- build //:a \
+      --remote_cache=grpcs://localhost:9624 "${opts[@]}" || true)"
+  fi
+done

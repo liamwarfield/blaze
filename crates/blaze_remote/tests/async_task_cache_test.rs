@@ -596,3 +596,30 @@ fn await_termination_after_shutdown_complete() {
     assert!(cache.is_shutdown());
     assert!(cache.is_terminated());
 }
+
+/// Not in the Java test (review 2026-11-19 round 2, S4): `awaitInProgressTasks` waits for the
+/// executions in progress when it is called (`ImmutableList.copyOf(inProgress.values())`), not
+/// for tasks submitted afterwards.
+#[test]
+fn await_in_progress_tasks_ignores_tasks_submitted_later() {
+    let cache: Cache = Arc::new(AsyncTaskCache::create());
+    let first = TestSingle::create();
+    let first_observer = TestObserver::subscribe(&cache, "key1", &first, false);
+    wait_for_subscribers(&cache, "key1", 1);
+    let waiter = {
+        let cache = cache.clone();
+        runtime().spawn(async move { cache.await_in_progress_tasks().await })
+    };
+    // Give the waiter time to take its snapshot.
+    std::thread::sleep(Duration::from_millis(50));
+    let second = TestSingle::create();
+    let second_observer = TestObserver::subscribe(&cache, "key2", &second, false);
+    wait_for_subscribers(&cache, "key2", 1);
+
+    first.emitter().on_success("value1");
+
+    block_on(waiter).unwrap();
+    first_observer.assert_value("value1");
+    second_observer.assert_empty();
+    second_observer.dispose();
+}

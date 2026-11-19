@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# usage: scripts/remote/outpath-symlink-probe <run-name> <oracle|BINARY> [remote|local|local-moved] [port]
+#        scripts/remote/outpath-symlink-probe help
+#
+# OutputService.startBuild with an output path (`bazel info output_path`, <execroot>/bazel-out)
+# that is a symbolic link (upstream build_without_the_bytes_test.sh test_output_path_is_symlink).
+# One genrule //:foo. Steps: build //:foo; replace the output path with a symlink to /nonexistent;
+# build //:foo again. Flags per mode:
+#   remote       --remote_executor=grpc://localhost:<port> --remote_download_minimal
+#                (RemoteOutputService: deletes the link)
+#   local        no remote flag (LocalOutputService: deletes the link, then moves
+#                <output_base>/bazel-out to the output path if it exists)
+#   local-moved  as local, and before the second build <output_base>/bazel-out is created with
+#                a file marker.txt in it
+# Prints each build's exit code, its ERROR lines, what the output path is after the second
+# build (link / directory / missing), whether bazel-out/marker.txt is there, and whether
+# <output_base>/bazel-out still exists. Default port 9684.
+set -euo pipefail
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ $# -lt 2 || "$1" == help || "$1" == --help ]]; then sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+run="$1"; bin="$2"; mode="${3:-remote}"; port="${4:-9684}"
+work="$HOME/.cache/blaze/work/remote"
+src="$work/$run-src"
+rm -rf "$src"; mkdir -p "$src"; touch "$src/MODULE.bazel"
+cat > "$src/BUILD" <<'EOT'
+genrule(
+  name = "foo",
+  outs = ["bar"],
+  cmd = "touch $@",
+)
+EOT
+flags=()
+if [[ "$mode" == remote ]]; then
+  flags=("--remote_executor=grpc://localhost:$port" --remote_download_minimal)
+  "$here/worker" start "$run" "$port" >/dev/null
+  trap '"$here/worker" stop "$run" >/dev/null 2>&1 || true' EXIT
+fi
+step() {
+  local label="$1"; shift
+  out=$("$here/ws-run" "$run" "$src" "$bin" "$@" || true)
+  s=$(echo "$out" | sed -n 's/^step: //p'); code=$(echo "$out" | sed -n 's/^exit code: //p')
+  echo "== $label: exit $code"
+  grep -E '^ERROR' "$s/stderr" | sed 's/^/   /' || true
+}
+step "build 1" --fresh -- build "${flags[@]}" //:foo
+out=$("$here/ws-run" "$run" "$src" "$bin" -- info output_path output_base || true)
+s=$(echo "$out" | sed -n 's/^step: //p')
+op=$(sed -n 's/^output_path: //p' "$s/stdout"); ob=$(sed -n 's/^output_base: //p' "$s/stdout")
+chmod -R u+w "$op"; rm -rf "$op"; ln -s /nonexistent "$op"
+if [[ "$mode" == local-moved ]]; then mkdir -p "$ob/bazel-out"; echo m > "$ob/bazel-out/marker.txt"; fi
+step "build 2" -- build "${flags[@]}" //:foo
+if [[ -L "$op" ]]; then echo "output path: link -> $(readlink "$op")"
+elif [[ -d "$op" ]]; then echo "output path: directory"; else echo "output path: missing"; fi
+if [[ -f "$op/marker.txt" ]]; then echo "marker.txt: in output path"; else echo "marker.txt: not in output path"; fi
+if [[ -e "$ob/bazel-out" ]]; then echo "<output_base>/bazel-out: exists"; else echo "<output_base>/bazel-out: absent"; fi

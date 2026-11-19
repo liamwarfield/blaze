@@ -246,3 +246,103 @@ pub fn is_interrupted(e: &io::Error) -> bool {
 pub fn io_exception(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
 }
+
+/// An exception of a class the port has no type for (a transport's exception such as Netty's
+/// `AnnotatedConnectException`), carried with its Java class name so that `Throwable.toString()`
+/// ([`java_to_string`]) can be reproduced; it displays its message.
+#[derive(Debug, Clone)]
+pub struct JavaException {
+    /// `getClass().getName()`.
+    pub class_name: &'static str,
+    /// `getMessage()`.
+    pub message: String,
+}
+
+impl fmt::Display for JavaException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for JavaException {}
+
+/// `Throwable.toString()` of the exception `e` stands for: `<class name>: <message>`. Known
+/// classes: `RemoteExecutionCapabilitiesException` (whose message is its cause's `toString()`),
+/// [`JavaException`], and the `StatusRuntimeException` a capabilities failure has as its cause;
+/// every other error is an `IOException`.
+// Java: java/lang/Throwable.java Throwable.toString
+pub fn java_to_string(e: &io::Error) -> String {
+    use crate::common::remote_execution_capabilities_exception::RemoteExecutionCapabilitiesException;
+    if let Some(rece) = downcast_ref::<RemoteExecutionCapabilitiesException>(e) {
+        // new IOException(cause): getMessage() is cause.toString().
+        return format!(
+            "com.google.devtools.build.lib.remote.common.RemoteExecutionCapabilitiesException: {}",
+            java_cause_to_string(rece.get_cause())
+        );
+    }
+    if let Some(java) = downcast_ref::<JavaException>(e) {
+        return format!("{}: {}", java.class_name, java.message);
+    }
+    format!("java.io.IOException: {e}")
+}
+
+/// [`java_to_string`] of a cause: the `StatusRuntimeException` of a failed `GetCapabilities`
+/// is carried as an [`IoExceptionWithCause`] holding it (see
+/// `remote_module::capabilities_failure_cause`).
+fn java_cause_to_string(cause: &io::Error) -> String {
+    if let Some(with_cause) = downcast_ref::<IoExceptionWithCause>(cause)
+        && downcast_ref::<StatusRuntimeException>(with_cause.get_cause()).is_some()
+    {
+        return format!("io.grpc.StatusRuntimeException: {with_cause}");
+    }
+    java_to_string(cause)
+}
+
+/// Not from a Java test: `Throwable.toString()` texts of review 2026-11-19 N7; the expected
+/// line is the oracle's ("Unable to write all BEP events to file due to '...'", run
+/// `tc-bep-o`: an unreachable `--remote_cache` with `--build_event_json_file`).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::remote_execution_capabilities_exception::RemoteExecutionCapabilitiesException;
+
+    #[test]
+    fn capabilities_exception_of_a_connect_exception() {
+        let cause = io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            JavaException {
+                class_name: "io.netty.channel.AbstractChannel$AnnotatedConnectException",
+                message: "finishConnect(..) failed: Connection refused: localhost/127.0.0.1:9499"
+                    .to_string(),
+            },
+        );
+        let e: io::Error = RemoteExecutionCapabilitiesException::new(cause).into();
+        assert_eq!(
+            java_to_string(&e),
+            "com.google.devtools.build.lib.remote.common.RemoteExecutionCapabilitiesException: io.netty.channel.AbstractChannel$AnnotatedConnectException: finishConnect(..) failed: Connection refused: localhost/127.0.0.1:9499"
+        );
+    }
+
+    #[test]
+    fn capabilities_exception_of_a_status_runtime_exception() {
+        let sre: io::Error =
+            StatusRuntimeException::new(tonic::Status::not_found("instance not found")).into();
+        let cause = io_exception_with_cause("NOT_FOUND: instance not found", sre);
+        let e: io::Error = RemoteExecutionCapabilitiesException::new(cause).into();
+        assert_eq!(
+            java_to_string(&e),
+            "com.google.devtools.build.lib.remote.common.RemoteExecutionCapabilitiesException: io.grpc.StatusRuntimeException: NOT_FOUND: instance not found"
+        );
+    }
+
+    #[test]
+    fn other_errors_are_io_exceptions() {
+        let sre: io::Error =
+            StatusRuntimeException::new(tonic::Status::unavailable("io exception")).into();
+        assert_eq!(
+            java_to_string(&sre),
+            "java.io.IOException: io.grpc.StatusRuntimeException: UNAVAILABLE: io exception"
+        );
+        assert_eq!(java_to_string(&io_exception("x")), "java.io.IOException: x");
+    }
+}

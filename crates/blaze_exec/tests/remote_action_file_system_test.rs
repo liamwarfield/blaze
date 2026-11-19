@@ -1948,8 +1948,6 @@ fn delete_invalidates_resolve_symbolic_links_cache() {
 }
 
 #[test]
-#[ignore = "needs ActionOutputDirectoryHelper.createActionFsOutputDirectories and ArtifactPathResolver.createPathResolver, which are not ported"]
-#[allow(clippy::never_loop)] // The loop body stops at the unported call.
 fn create_output_directories_after_missing_parent_delete() {
     for output_path in ["ns/a", "ns/nested/a"] {
         let f = Fixture::new();
@@ -1971,18 +1969,20 @@ fn create_output_directories_after_missing_parent_delete() {
         // helper.createActionFsOutputDirectories(
         //     ImmutableList.of(ActionsTestUtil.createArtifact(outputRoot, outputPath)),
         //     ArtifactPathResolver.createPathResolver(actionFs, execRoot));
-        blaze_util::unported!("ActionOutputDirectoryHelper.createActionFsOutputDirectories");
+        helper
+            .create_action_fs_output_directories(
+                &[f.dirs.bin_artifact(output_path)],
+                Some(&action_fs.as_file_system()),
+            )
+            .unwrap();
 
-        #[allow(unreachable_code)]
-        {
-            assert!(
-                action_fs
-                    .get_path(&f.get_output_path(output_path))
-                    .get_parent_directory()
-                    .unwrap()
-                    .is_directory()
-            );
-        }
+        assert!(
+            action_fs
+                .get_path(&f.get_output_path(output_path))
+                .get_parent_directory()
+                .unwrap()
+                .is_directory()
+        );
     }
 }
 

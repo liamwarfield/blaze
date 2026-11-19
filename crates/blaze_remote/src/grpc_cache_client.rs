@@ -289,10 +289,9 @@ impl GrpcCacheClient {
     /// The decoration every stub of this client gets: the request metadata of the context, the
     /// network time interceptor and the current call credentials.
     ///
-    /// NEEDS(channel): Java sets no deadline on these stubs; the deadline of a call comes from
-    /// the channel's default service config (`RemoteGrpcServiceConfig`: `--remote_timeout` per
-    /// method), which `ReferenceCountedChannel` does not apply yet (see
-    /// `authandtls::ManagedChannel::service_config`).
+    /// Java sets no deadline on these stubs; the deadline of a call comes from the channel's
+    /// default service config (`RemoteGrpcServiceConfig`: `--remote_timeout` per method), which
+    /// `ReferenceCountedChannel::with_service_config` applies.
     fn stub(&self, context: &RemoteActionExecutionContext<'_>) -> CallOptions {
         CallOptions::new()
             .with_request_metadata(context.get_request_metadata().clone())
@@ -687,10 +686,9 @@ impl MissingDigestsFinder for GrpcCacheClient {
                 let message = errors::downcast_ref::<StatusRuntimeException>(&e)
                     .map(|sre| StatusRuntimeException::format_throwable_message(&sre.status));
                 match message {
-                    // NEEDS(errors): `crate::common::errors::io_exception_with_cause(message,
-                    // cause)` is `new IOException(message, cause)`: an `io::Error` that displays
-                    // `message` and that `errors::downcast_ref` (so `status_from_throwable`)
-                    // looks through to `cause`, as `Status.fromThrowable` walks the cause chain.
+                    // `new IOException(message, cause)`: displays `message`;
+                    // `errors::status_from_throwable` walks to `cause`, as `Status.fromThrowable`
+                    // walks the cause chain.
                     Some(message) => Err(errors::io_exception_with_cause(
                         format!(
                             "findMissingBlobs({}) for {}: {}",
@@ -736,11 +734,11 @@ impl RemoteCacheClient for GrpcCacheClient {
         inline_out_err: bool,
         inline_output_files: &HashSet<String>,
     ) -> io::Result<Option<ActionResult>> {
-        // PORT: java-hash-order. `addAllInlineOutputFiles(inlineOutputFiles)` adds the names in
-        // the iteration order of the caller's set; the Rust set has no stable order, so the
-        // names are sent sorted (the order of this hint does not change its meaning).
-        let mut inline_output_files: Vec<String> = inline_output_files.iter().cloned().collect();
-        inline_output_files.sort();
+        // `addAllInlineOutputFiles(inlineOutputFiles)`, in the iteration order of the caller's
+        // set. PORT: the only production caller passes at most one name
+        // (`RemoteExecutionService.java:785-790`, `ImmutableSet.of(..)`), so that order is the
+        // insertion order; a set of several names iterates in Rust's hash order.
+        let inline_output_files: Vec<String> = inline_output_files.iter().cloned().collect();
         let request = GetActionResultRequest {
             instance_name: self.options.remote_instance_name.clone(),
             digest_function: self.digest_util.get_digest_function() as i32,
@@ -868,7 +866,7 @@ impl RemoteCacheClient for GrpcCacheClient {
         if code == tonic::Code::InvalidArgument
             && let Some(blob_description) = blob_description
         {
-            // NEEDS(errors): see `find_missing_digests`.
+            // new IOException("while uploading ...", e)
             return Err(errors::io_exception_with_cause(
                 format!("while uploading {blob_description}: {e}"),
                 e,

@@ -54,10 +54,13 @@ impl SymlinkTreeHelper {
         //     symlink tree without having to rebuild. Therefore, if a snapshotting file system is
         //     used, we must use the underlying non-snapshotting file system instead to create the
         //     symlink tree.
+        // PORT: `remote_action_file_system::for_host_file_system` is `Path.forHostFileSystem`
+        // for a path on the action file system (blaze_vfs has no getHostFileSystem).
+        use crate::exec::remote_action_file_system::for_host_file_system;
         SymlinkTreeHelper {
-            input_manifest: input_manifest.for_host_file_system(),
-            output_manifest: output_manifest.for_host_file_system(),
-            symlink_tree_root: symlink_tree_root.for_host_file_system(),
+            input_manifest: for_host_file_system(input_manifest),
+            output_manifest: for_host_file_system(output_manifest),
+            symlink_tree_root: for_host_file_system(symlink_tree_root),
             workspace_name: workspace_name.into(),
         }
     }

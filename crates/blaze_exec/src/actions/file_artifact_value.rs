@@ -373,11 +373,46 @@ impl FileArtifactValue {
         }
     }
 
-    /// `createFromExistingWithResolvedPath(delegate, resolvedPath)`.
+    /// `createFromExistingWithResolvedPath(delegate, resolvedPath)`: `new
+    /// ResolvedSymlinkArtifactValue(delegate, resolvedPath)`, whose constructor keeps the delegate
+    /// of a delegate that is itself a `ResolvedSymlinkArtifactValue`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:444 FileArtifactValue.createFromExistingWithResolvedPath
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:951 ResolvedSymlinkArtifactValue.<init>
     pub fn create_from_existing_with_resolved_path(
         delegate: FileArtifactValue,
         resolved_path: PathFragment,
     ) -> FileArtifactValue {
+        // Singleton: SingletonMarkerValue (RUNFILES_TREE_MARKER, MISSING_FILE_MARKER) and
+        // ConstantMetadataValue.
+        blaze_util::check_argument!(
+            !matches!(
+                delegate,
+                FileArtifactValue::RunfilesTreeMarker
+                    | FileArtifactValue::MissingFileMarker
+                    | FileArtifactValue::ConstantMetadata
+            ),
+            "delegate is a singleton: {}",
+            delegate
+        );
+        blaze_util::check_argument!(
+            resolved_path.is_absolute(),
+            "resolved path is not absolute: {}",
+            resolved_path
+        );
+        blaze_util::check_argument!(
+            delegate
+                .get_resolved_path()
+                .is_none_or(|p| *p == resolved_path),
+            "delegate has a different resolved path: {}",
+            delegate
+        );
+        let delegate = match delegate {
+            FileArtifactValue::ResolvedSymlink {
+                delegate: resolved_delegate,
+                ..
+            } => *resolved_delegate,
+            other => other,
+        };
         FileArtifactValue::ResolvedSymlink {
             delegate: Box::new(delegate),
             resolved_path,
@@ -407,12 +442,15 @@ impl FileArtifactValue {
     pub fn create_for_unresolved_symlink(symlink: &Path) -> io::Result<FileArtifactValue> {
         let symlink_target = symlink.read_symbolic_link()?.get_path_string().to_owned();
 
-        // PORT: `hashString(symlinkTarget, ISO_8859_1)` of the internal (Latin-1) form is the hash
-        // of the target's bytes (StringEncoding identity).
+        // `hashString(symlinkTarget, ISO_8859_1)`: the bytes of the internal string
+        // (`internal_string_bytes`, the strings seam).
+        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1157 UnresolvedSymlinkArtifactValue.<init>
         let mut digest = symlink
             .get_file_system()
             .get_digest_function()
-            .hash_reader(&mut symlink_target.as_bytes())?;
+            .hash_reader(&mut &*blaze_util::string_encoding::internal_string_bytes(
+                &symlink_target,
+            ))?;
 
         // We need to be able to tell the difference between a symlink and a file containing the
         // same text. So we transform the digest a bit. This works because if one wants to craft

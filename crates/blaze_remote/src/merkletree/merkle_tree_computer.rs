@@ -257,14 +257,36 @@ static LAST_SCRUBBER: LazyLock<Mutex<Option<Scrubber>>> = LazyLock::new(|| Mutex
 // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:30 ArtifactPathResolver
 #[derive(Clone, Debug)]
 pub(super) enum ArtifactPathResolver {
-    /// `ArtifactPathResolver.forExecRoot(execRoot)`.
-    ///
-    /// PORT: ArtifactPathResolver is the exec root (missing hook:
-    /// SpawnExecutionContext.getPathResolver); a spawn that runs on an action file system would
-    /// have a `TransformResolver` in Java.
+    /// `ArtifactPathResolver.forExecRoot(execRoot)` (`IdentityResolver`).
     ExecRoot(Path),
+    /// `TransformResolver`: every result on the action file system of the exec root
+    /// (`ArtifactPathResolver.createPathResolver(actionFs, execRoot)` with an action file
+    /// system). The path is the exec root on that file system.
+    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:95 ArtifactPathResolver.TransformResolver
+    Transform(Path),
     /// `MerkleTreeComputer.PATH_ACTION_INPUT_RESOLVER`.
     PathActionInput,
+}
+
+/// `spawnExecutionContext.getPathResolver()`: `ArtifactPathResolver.createPathResolver(
+/// actionFileSystem, execRoot)`, a `TransformResolver` onto the spawn's action file system when
+/// it has one (`RemoteActionFileSystem`), else the exec root itself.
+///
+/// PORT: `blaze_exec`'s `SpawnExecutionContext` has no `getPathResolver()`; it is built here from
+/// `getActionFileSystem()` and the exec root, as `ActionExecutionContext.getPathResolver` builds
+/// it.
+// Java: com/google/devtools/build/lib/exec/SpawnRunner.java SpawnRunner.SpawnExecutionContext.getPathResolver
+// Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:45 ArtifactPathResolver.createPathResolver
+pub(super) fn spawn_path_resolver(
+    spawn_execution_context: &dyn SpawnExecutionContext,
+    exec_root: &Path,
+) -> ArtifactPathResolver {
+    match spawn_execution_context.get_remote_action_file_system() {
+        Some(action_file_system) => {
+            ArtifactPathResolver::Transform(action_file_system.get_path(exec_root.as_fragment()))
+        }
+        None => ArtifactPathResolver::ExecRoot(exec_root.clone()),
+    }
 }
 
 // Java: com/google/devtools/build/lib/remote/merkletree/MerkleTreeComputer.java:459 MerkleTreeComputer.PATH_ACTION_INPUT_RESOLVER
@@ -291,6 +313,17 @@ fn artifact_path_resolver_to_path(
             // `getPath()` and is resolved against the exec root like a plain input.
             if let Some(artifact) = action_input.as_any().downcast_ref::<BlazeArtifact>() {
                 return artifact.get_path();
+            }
+            exec_root.get_relative(action_input.get_exec_path())
+        }
+        // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:106 ArtifactPathResolver.TransformResolver.toPath
+        ArtifactPathResolver::Transform(exec_root) => {
+            // PORT: `input instanceof Artifact artifact` is a `blaze_actions` artifact, as above.
+            if let Some(artifact) = action_input.as_any().downcast_ref::<BlazeArtifact>() {
+                return Path::create(
+                    artifact.get_path().as_fragment().clone(),
+                    exec_root.get_file_system(),
+                );
             }
             exec_root.get_relative(action_input.get_exec_path())
         }
@@ -385,8 +418,8 @@ pub struct MerkleTreeComputer {
     // PORT: no in-flight deduplication; sub-trees are computed on the calling task
     // (`inFlightComputations` and `inFlightComputationSequence` do not exist).
     //
-    // PORT: ArtifactPathResolver is the exec root (missing hook:
-    // SpawnExecutionContext.getPathResolver).
+    // PORT: the exec root, from which `spawn_path_resolver` builds the spawn's
+    // `getPathResolver()`.
     exec_root: Path,
 }
 
@@ -428,8 +461,8 @@ impl MerkleTreeComputer {
     /// `new MerkleTreeComputer(digestUtil, remoteExecutionCache, buildRequestId, commandId,
     /// workspaceName)`.
     ///
-    /// PORT: takes the exec root, which stands for the `ArtifactPathResolver` of the spawn
-    /// execution contexts (missing hook: SpawnExecutionContext.getPathResolver).
+    /// PORT: takes the exec root, from which the `ArtifactPathResolver` of a spawn execution
+    /// context is built (`spawn_path_resolver`).
     // Java: com/google/devtools/build/lib/remote/merkletree/MerkleTreeComputer.java:187 MerkleTreeComputer.<init>
     pub fn new(
         digest_util: DigestUtil,
@@ -574,7 +607,9 @@ impl MerkleTreeComputer {
             Some(scrubber) => scrubber.for_spawn(spawn),
             None => None,
         };
-        let artifact_path_resolver = ArtifactPathResolver::ExecRoot(self.exec_root.clone());
+        // spawnExecutionContext.getPathResolver()
+        // Java: com/google/devtools/build/lib/remote/merkletree/MerkleTreeComputer.java:386 MerkleTreeComputer.buildForSpawn
+        let artifact_path_resolver = spawn_path_resolver(spawn_execution_context, &self.exec_root);
         // PORT: Java's private `getFromFuture` (MerkleTreeComputer.java:1048) unwraps the
         // `WrappedException`s of its executor tasks; errors are `io::Error` values here.
         let result = get_from_future(self.build(
@@ -1072,22 +1107,33 @@ impl MerkleTreeComputer {
             if metadata.get_type() != FileStateType::Directory {
                 return Ok(None);
             }
-            Ok(Some(self.compute_if_absent(
-                SubTreeCacheKey::SourceDirectory {
-                    metadata,
-                    path: artifact_path_resolver.to_path(&**input),
-                },
-                // Source artifacts are not path mapped.
-                /* unmapped_exec_path= */
-                None,
-                Box::new(move || explode_directory(input, artifact_path_resolver)),
-                is_tool_input(mapped_exec_path),
-                metadata_provider,
-                artifact_path_resolver,
-                remote_action_execution_context,
-                remote_path_resolver,
-                blob_policy,
-            )))
+            Ok(Some(
+                self.compute_if_absent(
+                    SubTreeCacheKey::SourceDirectory {
+                        metadata,
+                        // PORT: the key's path is on the local file system: a path on a spawn's
+                        // action file system would keep that file system alive in this never-purged
+                        // memo (Java keys this entry by the metadata alone).
+                        path: Path::create(
+                            artifact_path_resolver
+                                .to_path(&**input)
+                                .as_fragment()
+                                .clone(),
+                            self.exec_root.get_file_system(),
+                        ),
+                    },
+                    // Source artifacts are not path mapped.
+                    /* unmapped_exec_path= */
+                    None,
+                    Box::new(move || explode_directory(input, artifact_path_resolver)),
+                    is_tool_input(mapped_exec_path),
+                    metadata_provider,
+                    artifact_path_resolver,
+                    remote_action_execution_context,
+                    remote_path_resolver,
+                    blob_policy,
+                ),
+            ))
         } else {
             Ok(None)
         }

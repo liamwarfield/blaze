@@ -622,6 +622,7 @@ dependencies = [
  "blaze_optdefs",
  "blaze_options",
  "blaze_protos",
+ "blaze_remote",
  "blaze_repo_fetch",
  "blaze_shell",
  "blaze_util",

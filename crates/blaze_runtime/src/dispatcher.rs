@@ -655,7 +655,13 @@ impl BlazeCommandDispatcher {
         let mut module_exit_code: Option<DetailedExitCode> = None;
         // RemoteModule.afterCommand of a command set up by env_before_command
         // (crate::commands::build::build_remote::dispatcher_after_command).
-        crate::commands::build::build_remote::dispatcher_after_command();
+        if let Some(e) = crate::commands::build::build_remote::dispatcher_after_command() {
+            env.get_reporter().handle(&Event::error(e.get_message()));
+            module_exit_code = DetailedExitCode::choose_more_important_with_first_if_tie(
+                module_exit_code,
+                Some(e.get_detailed_exit_code().clone()),
+            );
+        }
         for module in self.runtime.get_blaze_modules() {
             if let Err(e) = module.after_command() {
                 env.get_reporter().handle(&Event::error(e.get_message()));

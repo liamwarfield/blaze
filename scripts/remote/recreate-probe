@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# usage: scripts/remote/recreate-probe <run-name> <oracle|BINARY> [tree|non-tree] [port]
+#        scripts/remote/recreate-probe help
+#
+# The prefetcher re-creating an output directory that was externally modified between builds
+# (upstream build_without_the_bytes_test.sh do_test_prefetcher_recreate_dir, with
+# test_prefetcher_recreate_tree_dir's tree rule or test_prefetcher_recreate_non_tree_dir's
+# genrule). A test tagged no-remote has bazel-bin/some/nested/file (a tree artifact `some`, or a
+# plain output some/nested/file) in its runfiles; it is built remotely with
+# --remote_executor=grpc://localhost:<port> (default 9682), default download mode. Steps:
+#   1. test //:test
+#   2. rm -rf bazel-bin/some; test --nocache_test_results
+#   3. bazel-bin/some an empty read-only directory; test again
+#   4. bazel-bin/some a read-only regular file; test again
+# After each step: the exit code, ERROR lines and whether bazel-bin/some/nested/file is a file.
+# Workspace ~/.cache/blaze/work/remote/<run-name>/ws (ws-run).
+set -euo pipefail
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ $# -lt 2 || "$1" == help || "$1" == --help ]]; then sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+run="$1"; bin="$2"; kind="${3:-tree}"; port="${4:-9682}"
+work="$HOME/.cache/blaze/work/remote"
+src="$work/$run-src"
+rm -rf "$src"; mkdir -p "$src"
+echo 'bazel_dep(name = "rules_shell", version = "0.6.1")' > "$src/MODULE.bazel"
+if [[ "$kind" == tree ]]; then
+cat > "$src/defs.bzl" <<'EOT'
+def _impl(ctx):
+  d = ctx.actions.declare_directory("some")
+  ctx.actions.run_shell(
+    outputs = [d],
+    command = "mkdir -p $DIR/nested && touch $DIR/nested/file",
+    env = {"DIR": d.path},
+  )
+  return DefaultInfo(files = depset([d]))
+
+tree = rule(_impl)
+EOT
+cat > "$src/BUILD" <<'EOT'
+load(":defs.bzl", "tree")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+tree(
+  name = "gen",
+)
+
+sh_test(
+  name = "test",
+  srcs = ["test.sh"],
+  data = [":gen"],
+  tags = ["no-remote"],
+)
+EOT
+else
+cat > "$src/BUILD" <<'EOT'
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+genrule(
+  name = "gen",
+  outs = ["some/nested/file"],
+  cmd = "touch $@",
+)
+
+sh_test(
+  name = "test",
+  srcs = ["test.sh"],
+  data = [":gen"],
+  tags = ["no-remote"],
+)
+EOT
+fi
+touch "$src/test.sh"; chmod +x "$src/test.sh"
+ws="$work/$run/ws"
+flags=("--remote_executor=grpc://localhost:$port")
+step() {
+  local label="$1"; shift
+  out=$("$here/ws-run" "$run" "$src" "$bin" "$@" || true)
+  s=$(echo "$out" | sed -n 's/^step: //p'); code=$(echo "$out" | sed -n 's/^exit code: //p')
+  echo "== $label: exit $code"
+  grep -E '^ERROR' "$s/stderr" | sed 's/^/   /' || true
+  if [[ -f "$ws/bazel-bin/some/nested/file" ]]; then echo "   some/nested/file: file"; else echo "   some/nested/file: MISSING"; fi
+}
+"$here/worker" start "$run" "$port" >/dev/null
+trap '"$here/worker" stop "$run" >/dev/null 2>&1 || true' EXIT
+step "1 test" --fresh -- test "${flags[@]}" //:test
+chmod -R +w "$ws/bazel-bin/some"; rm -rf "$ws/bazel-bin/some"
+step "2 directory deleted" -- test "${flags[@]}" --nocache_test_results //:test
+chmod -R +w "$ws/bazel-bin/some"; rm -rf "$ws/bazel-bin/some"; mkdir "$ws/bazel-bin/some"; chmod -w "$ws/bazel-bin/some"
+step "3 empty read-only directory" -- test "${flags[@]}" --nocache_test_results //:test
+chmod -R +w "$ws/bazel-bin/some"; rm -rf "$ws/bazel-bin/some"; touch "$ws/bazel-bin/some"; chmod -w "$ws/bazel-bin/some"
+step "4 read-only regular file" -- test "${flags[@]}" --nocache_test_results //:test

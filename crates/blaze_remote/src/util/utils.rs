@@ -722,6 +722,7 @@ where
 {
     let mut bulk_transfer_exception: Option<BulkTransferException> = None;
     let mut interrupted_exception: Option<io::Error> = None;
+    let mut interrupted = blaze_shell::thread_interrupt::is_current_interrupted();
     let mut pending: FuturesOrdered<F> = transfers.into_iter().collect();
     // `getFromFuture(transfer)` throws InterruptedException when the waiting thread is
     // interrupted.
@@ -742,11 +743,19 @@ where
             }
         }
     });
+    if interrupted_exception.is_some() || waited.is_none() {
+        // catch (InterruptedException e): interrupted = Thread.interrupted() || interrupted;
+        interrupted = blaze_shell::thread_interrupt::interrupted() || interrupted;
+    }
     if waited.is_none() {
         interrupted_exception = Some(errors::interrupted());
     }
     // `transfer.cancel(true)` for the remaining transfers.
     drop(pending);
+    if interrupted {
+        // Thread.currentThread().interrupt(): the caller sees the interrupt it had on entry.
+        blaze_shell::thread_interrupt::interrupt_current();
+    }
     if let Some(interrupted_exception) = interrupted_exception {
         // PORT: `interruptedException.addSuppressed(bulkTransferException)` has no counterpart.
         return Err(interrupted_exception);

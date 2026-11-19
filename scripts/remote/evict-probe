@@ -43,17 +43,31 @@
 # worker and prints the exit code, the "Lost inputs" / retry / ERROR / process lines and the
 # content of the built outputs. Scenarios (CAS = a blob deleted, AC = an action result deleted):
 #   none      //:b1, nothing deleted        (a warm output base for --again; a1.txt stays remote)
+#   none-l    //:l, nothing deleted         (the control of finalize)
 #   local     //:b1, CAS a1.txt, AC b1      b1 runs locally, prefetching a1.txt fails (S-a)
 #   remote    //:b1, CAS a1.txt, AC b1,     b1 runs remotely; uploading a1.txt (remote only)
 #             adds --remote_executor        fails (S-b)
 #   inprocess //:expanded, CAS tmpl.txt     the template expansion reads tmpl.txt (S-c)
 #   finalize  //:l, CAS a3.txt              finalizeAction downloads the top-level symlink l.txt
 #                                           to a3.txt (S-d)
-#   exit39    //:b2 --jobs=1, CAS a1.txt    attempt 1 loses a1.txt (b1), attempt 2 loses a2.txt
-#             a2.txt, AC b1 b2              (b2): with one retry the build exits 39
+#   exit39    //:b2, CAS a1.txt a2.txt,     attempt 1 loses a1.txt (b1), attempt 2 loses a2.txt
+#             AC b1 b2                      (b2 runs after b1, its input): with
+#                                           --experimental_remote_cache_eviction_retries=1 the
+#                                           build exits 39 (--jobs=1 is not needed; with it the
+#                                           `N processes` line of an attempt depends on how many
+#                                           internal actions finished before the failure)
 # The remote cache is --remote_cache=grpc://localhost:<port> (and --remote_executor for remote).
+#
+# usage: scripts/remote/evict-probe disk <oracle|BLAZE-BINARY> <label> [extra options...]
+#
+# `disk` (after ws-seed) seeds a disk cache once with the oracle (<W>/te-evdisk-seed, `build
+# //:b1 --disk_cache`), copies it to <W>/te-evd-<label>-dc, deletes the CAS blob of a1.txt and
+# the AC entry of b1 from the copy and runs `build //:b1 --disk_cache=<copy>` with run name
+# te-evd-<label> in a fresh output base (no remote cache). Under the default
+# --rewind_lost_inputs Bazel skips the disk cache's action result integrity check
+# (RemoteModule.checkDiskCacheActionResultIntegrity), so a1's entry is a hit whose output is gone.
 set -euo pipefail
-if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,54p' "$0"; exit 0; fi
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,68p' "$0"; exit 0; fi
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 W="$HOME/.cache/blaze/work/remote"
 java="$HOME/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9/embedded_tools/jdk/bin/java"
@@ -206,11 +220,12 @@ EOF
     extra=(); ac=(); cas=()
     case "$scenario" in
       none) targets=(//:b1) ;;
+      none-l) targets=(//:l) ;;
       local) targets=(//:b1); ac=(b1); cas=($'a1\n') ;;
       remote) targets=(//:b1); ac=(b1); cas=($'a1\n'); extra=("--remote_executor=grpc://localhost:$port") ;;
       inprocess) targets=(//:expanded); cas=($'hello {NAME}\n') ;;
       finalize) targets=(//:l); cas=($'a3\n') ;;
-      exit39) targets=(//:b2); ac=(b1 b2); cas=($'a1\n' $'a2\n'); extra=(--jobs=1) ;;
+      exit39) targets=(//:b2); ac=(b1 b2); cas=($'a1\n' $'a2\n') ;;
       *) echo "unknown scenario: $scenario" >&2; exit 2 ;;
     esac
     name="te-ev-$label"
@@ -248,6 +263,38 @@ EOF
     for f in $(find "$ob" -path '*k8-fastbuild/bin/*.txt' 2>/dev/null | sort); do
       printf '%s: ' "${f##*/bin/}"; tr '\n' '|' < "$f" 2>/dev/null || printf '(unreadable)'; echo
     done
+    ;;
+  disk)
+    bin="${2:?binary}"; label="${3:?label}"; shift 3
+    [[ -d "$W/te-evict/src" ]] || { echo "run '$0 ws-seed' first" >&2; exit 2; }
+    if [[ ! -d "$W/te-evdisk-seed" ]]; then
+      "$here/ws-run" te-evdisk "$W/te-evict/src" oracle --fresh -- build \
+        "--disk_cache=$W/te-evdisk-seed" "--execution_log_json_file={step}/execlog.json" //:b1 >/dev/null
+    fi
+    name="te-evd-$label"
+    chmod -R u+w "$W/$name-dc" 2>/dev/null || true
+    rm -rf "$W/$name-dc"; cp -a "$W/te-evdisk-seed" "$W/$name-dc"
+    python3 -I - "$W/$name-dc" "$W/te-evdisk/run1/execlog.json" <<'EOF'
+import hashlib, json, os, sys
+dc, log = sys.argv[1], sys.argv[2]
+s = open(log).read(); d = json.JSONDecoder(); i = 0
+while i < len(s):
+    while i < len(s) and s[i].isspace(): i += 1
+    if i >= len(s): break
+    o, i = d.raw_decode(s, i)
+    if [x['path'] for x in o.get('actualOutputs', [])] == ['bazel-out/k8-fastbuild/bin/b1.txt']:
+        h = o['digest']['hash']; os.remove(os.path.join(dc, 'ac', h[:2], h)); print('deleted AC entry of b1:', h)
+h = hashlib.sha256(b'a1\n').hexdigest()
+os.remove(os.path.join(dc, 'cas', h[:2], h)); print('deleted CAS blob of a1.txt:', h)
+EOF
+    set +e
+    "$here/ws-run" "$name" "$W/te-evict/src" "$bin" --fresh -- build "--disk_cache=$W/$name-dc" "$@" //:b1 >/dev/null
+    code=$?
+    set -e
+    step=$(ls -d "$W/$name"/run* | sort -V | tail -1)
+    echo "step: $step"
+    echo "exit code: $code"
+    grep -E "Found transient remote cache error|^ERROR|^INFO: [0-9]+ process|^FAILED|Lost inputs|lost inputs|not ported yet|panicked" "$step/stderr" || true
     ;;
   *) echo "unknown command: $1" >&2; exit 2 ;;
 esac

@@ -131,8 +131,7 @@ cquery and aquery are blocked by it only because the recorder uses the pristine 
 
 Counts at the end of the aspects wave: 29 items (the table continues under "Triage,
 continued"); #12 to #17 were fixed between the two waves; open: #5 (root, byte strings), #18
-(oracle behaviour) and the build loop (#29 onwards, see "Build loop: how to continue"); #24 to
-#28 were fixed during the wave.
+(oracle behaviour); #24 to #29 were fixed during the wave, and the full build completes.
 
 ## Aspects wave (2026-11-18, aspects lead)
 
@@ -181,7 +180,7 @@ ASCII-README copy, with the tools above (the referee's extractors; development a
 | cquery_jsonproto | 4 of 4 items, both order items included |
 | aquery_actions (`aquery-compare --full --order --make-unresolved-symlinks`) | 13,416 actions on both sides, none missing, none extra; 13,160 identical in every field; 256 differ only in `actionKey`: 128 `SourceSymlinkManifest` and 128 `SymlinkTree` runfiles actions (allow-listed kind `runfiles-manifest-action-key`). All nine `__order__` items equal: actions 13,416, action ids 13,416, artifacts 49,857, depSetOfFiles 22,250, pathFragments 55,226, targets 2,242, configuration 4, ruleClasses 48, aspectDescriptors 2 |
 | build of sub-targets | `build //src/workerd/server:malloc --jobs=8`: 314 actions (169 linux-sandbox); its 485 objects, archives, shared objects, module maps, `.d` and `.params` files are byte-identical to the oracle's files at the same paths. Also complete (exit 0): `//src/rust/cxx:cxxbridge-macro` (378 actions), `//src/workerd/server:workerd_capnp_rust_gen` (205), `@capnp-cpp//src/capnp:capnpc-capnp` (156), the cxx bridge genrule (118), `@v8//:icu/generated_torque_files` (794), the tokio / rustls / hyper / regex / serde_json crates (173) and eight first-party Rust crates (203). Stopped by #27: `@v8//:code_generator`, `//src/pyodide:pyodide_static@tsproject`; by #28: `//src/workerd/server:workerd_capnp_rust` and three more |
-| full build | `build //src/workerd/server:workerd --jobs=10` (binary sha256 `45247cb92712`, HEAD d294400 plus the working tree): analysis completes with the oracle's line (737 packages loaded, 44464 targets configured, 9 aspect applications), then the process stops after 52 s at #29 |
+| full build | **completes.** `clean`, then `build //src/workerd/server:workerd --jobs=10` (binary sha256 `b54ac4d0074c`, HEAD 0aba181 plus the working tree; log `~/.cache/blaze/work/workerd-logs/blaze.build.full.log`): exit 0, `INFO: 9713 processes: 3333 internal, 6379 linux-sandbox, 1 local.`, `Build completed successfully, 9713 total actions` (the oracle's line and counts), 1,377 s on a shared machine (oracle 1,090 s). `bazel-bin/src/workerd/server/workerd`: sha256 `cdedf3f9d513653fb833978ff489dbca1696aeb02342567c7eec2b544d2fc9e9` on both sides. Whole `bazel-out`: no file only one side has; more than 22,000 files identical; different, all path- or time-dependent: 74 `*.runfiles_manifest` (equal after substituting the output base), 82 `__pycache__/*.pyc` written by the one local Python action (mtime header, absolute path), 31 outputs of ring's cargo build script (sandbox paths), `stable-status.txt`, `volatile-status.txt`. WARNING / ERROR lines equal (the one sqlite3.h warning); the `Elapsed time` line lacks `, Critical Path: ...` (not ported) |
 
 Referee protocol: `scripts/oracle/record --project workerd` runs on a pristine copy (README with
 the emoji), so Blaze's cquery and aquery commands fail there at `aspect_tools_telemetry` until
@@ -200,13 +199,14 @@ byte strings are ported (#5); the label recorded for this state is `blaze-aspect
 | 26 | UI | blaze_runtime (dispatcher / build wiring) + blaze_sky_top (`build_tool.rs`) | `SkyframeExecutor.preparePackageLoading` (`packageProgress.reset()`, SkyframeExecutor.java:1742) before `BlazeOptionHandler.parseStarlarkOptions` | Blaze loads the packages of the Starlark flags of the command line and `.bazelrc` (10 on workerd) in an evaluator of their own before the build, resets the counter when the build starts (`build_tool.rs`), then loads 9 of them again; `@@rules_rust+//` (only needed for `--@rules_rust//:extra_rustc_flag` etc.) is never loaded by the build itself. Java loads each once, in the one graph, after the reset | `736 packages loaded` vs the oracle's `737` | fixed on this side (the receiver counts a package once per command, the reset in `build_tool.rs` is gone): Blaze prints 737 / 44464 / 9 like the oracle; with a persistent server the dispatcher needs the reset at its `syncPackageLoading` port |
 | 27 | build | blaze_sky_exec (execution owner) | `FileArtifactValue.createForUnresolvedSymlink` | output metadata of `declare_symlink` outputs | `not ported yet: FileArtifactValue.createForUnresolvedSymlink` (`build @v8//:code_generator`, `//src/pyodide:pyodide_static@tsproject`; 14 `UnresolvedSymlink` actions in the oracle's build) | fixed by the execution owner (d294400) |
 | 28 | build | blaze_buildtool / blaze_sky_exec (execution owner) | `ActionExecutionFunction.PackageRootResolverWithEnvironment.findPackageRootsForFiles` | the `ContainingPackageRootLookup` seam is never supplied (`execution_tool.rs`: `None`) | `not ported yet: ... (no ContainingPackageRootLookup given to the executor)` (`build //src/workerd/server:workerd_capnp_rust ...`) | fixed by the execution owner (working tree after d294400: the sub-target builds) |
-| 29 | build | blaze_exec (execution owner) | `RunfilesTreeUpdater.updateRunfiles` | the local spawn runner cannot create a tool's runfiles tree | `not ported yet: RunfilesTreeUpdater.updateRunfiles` at `local_spawn_runner.rs:87`: the one `local`-tagged action of the build, `Genrule @@+http_archive+v8//:generated_inspector_files` (its tool is the `py_binary` `@v8//:code_generator`) | open, reported to root: **stops the full build after 52 s** |
+| 29 | build | blaze_exec (execution owner) | `RunfilesTreeUpdater.updateRunfiles` | the local spawn runner cannot create a tool's runfiles tree | `not ported yet: RunfilesTreeUpdater.updateRunfiles` at `local_spawn_runner.rs:87`: the one `local`-tagged action of the build, `Genrule @@+http_archive+v8//:generated_inspector_files` (its tool is the `py_binary` `@v8//:code_generator`) | fixed (`blaze_exec/src/exec/runfiles_tree_updater.rs`; Java skips any tree under the default `--build_runfile_links`). It was the last stop: the full build completes |
 | 25 | build (`--aspects`) | blaze_sky_exec, blaze_runtime (`commands/build.rs`), blaze_sky_top | `BuildDriverFunction` for `TopLevelAspectsKey`, `AspectCompletor`, `SkyframeBuildView.analyzeAndExecuteTargets` (`BuildDriverKey.ofTopLevelAspect`), `ExecutionTool.determineSuccessfulAspects` | top-level aspects on the build path | `unported!` (not reached by workerd's default configuration) | fixed: scenario `aspects` 21 of 22 steps in the masked view (the last one prints `3 action cache hit` because Blaze starts a cold server per step; the oracle prints the same line when its server is restarted) |
 
 ## Build loop: how to continue (handover, 2026-11-18)
 
-State: analysis, cquery and aquery of `//src/workerd/server:workerd` match the oracle; the
-build loop is the remaining work. Everything below works from a cold start.
+State: analysis, cquery, aquery and the full build of `//src/workerd/server:workerd` match the
+oracle (see "After the aspect port"). This section says how to rerun and re-check it from a
+cold start, for the next change in execution code.
 
 Run:
 
@@ -288,9 +288,10 @@ working tree (committed by root as d294400):
 Items 1 to 3 of the earlier list (#12 to #16) are done; the whole target analyses and cquery and
 aquery match the oracle on the ASCII-README copy. In order:
 
-1. Execution owner: `RunfilesTreeUpdater.updateRunfiles` for the local spawn runner (#29), the
-   first stop of the full build (#24, #27 and #28 are fixed). The oracle needs about 18 minutes
-   and 9,713 actions for the build; more execution gaps may follow, each one a loud stop.
+1. The build is done (#29 was the last stop). Next: record the referee's build surfaces for
+   workerd on both sides (`build_stderr`, `execlog`, `bep`, `outputs`; none recorded yet, the
+   oracle needs about 18 minutes), and the critical path in the `Elapsed time` line
+   (`CriticalPathComputer`, `blaze_buildtool/src/buildtool/execution_tool.rs`).
 2. Byte strings (#5): one site in the whole closure (the survey above). It gates every referee
    number of workerd's cquery and aquery surfaces, because `scripts/oracle/record` uses the
    pristine README. Under the protocol today (label `blaze-aspects-4`): query surfaces partly
@@ -300,3 +301,29 @@ aquery match the oracle on the ASCII-README copy. In order:
    aspects) and the native aspect class map for `--aspects=<NativeName>`.
 4. After a full build exists: record the build surfaces (`build_stderr`, `execlog`, `bep`,
    `outputs`) for workerd on both sides; none is recorded for the oracle yet either.
+
+## Handed over, not workerd (from root, 2026-11-18; none started)
+
+In the order root gave, for the successor of this lead (owner of the analysis and, since the
+execution lead handed back, the execution crates):
+
+1. blaze_vfs: `posix_error` builds an `io::Error` without the raw errno, so `is_not_found` never
+   sees ENOTDIR and `UnixFileSystem::stat_if_found` fails with "Not a directory" where Java
+   returns null (`unix_jni.cc:659`: ENOENT and ENOTDIR). Port the JNI's errno handling; add a
+   "-1 = unknown" permissions value to `FileStatus` (Java `RemoteFileStatus`); tests.
+2. From the first run of Bazel's remote shell tests against Blaze (110 of 253 oracle-passing
+   functions pass), causes outside the remote crates, by tests unblocked: `mod
+   dump_repo_mapping` (33; blaze_bzlmod modcommand); `--build_event_text_file` (13; needs a
+   TextFormat printer, best in blaze_protos; the remote lead adds a reader in
+   `blaze_remote/src/text_format.rs`); `createCppCompileActionTemplate` (6);
+   `expand_java_opts` (4); the `fetch` command (4); `StarlarkAction` `unused_inputs_list`
+   panics "Not an input-discovering action" as a plain panic (4; a bug, not an honest gap);
+   exclusive tests (3); missing `command.profile.gz` / critical-path `buildToolLogs` entries in
+   BEP (remote_build_event_uploader_test dies at its first function).
+3. Left open by the aspects wave (each loud or documented): native aspect classes; the result
+   display after an analysis failure with top-level aspects (`build.rs`); the analysis test
+   harness's missing mocks (`rules_cc` / `rules_java` / `rules_python` contents,
+   `TestRuleClassProvider`, `getRuleContext`, extra SkyFunctions, Starlark flags in
+   `use_configuration`: about 250 ignored tests name them); `StarlarkExecTransitionLoader` for a
+   `.bzl` outside `@_builtins` (the loader API exists, three call sites must pass a BZL_LOAD
+   loader); materializers; `BaselineCoverageAction`; the `extra_action` rule.

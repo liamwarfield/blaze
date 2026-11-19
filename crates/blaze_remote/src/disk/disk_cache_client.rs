@@ -489,16 +489,20 @@ impl DiskCacheClient {
 
 /// Flushes a file's contents to stable storage, where the filesystem supports it.
 ///
-/// PORT: Java opens `path.getInputStream()` and syncs its descriptor when the stream is a
-/// `FileInputStream`. The VFS stream does not expose its file, so the file is opened by its path
-/// string; a path that the operating system cannot open (a file system that is not disk-backed,
-/// Java's "not a FileInputStream") is not synced.
+/// PORT: Java opens `path.getInputStream()` (whose failure is thrown) and syncs its descriptor
+/// when the stream is a `FileInputStream`. The VFS stream does not expose its file, so after the
+/// VFS open succeeded the file is opened again by its path string to sync it; a path that the
+/// operating system cannot open (a file system that is not disk-backed, Java's "not a
+/// FileInputStream") is not synced.
 // Java: com/google/devtools/build/lib/remote/disk/DiskCacheClient.java:455 DiskCacheClient.syncFile
 fn sync_file(path: &Path) -> io::Result<()> {
-    match std::fs::File::open(path.get_path_string()) {
+    let input_stream = path.get_input_stream()?;
+    let synced = match std::fs::File::open(path.get_path_string()) {
         Ok(file) => file.sync_all(),
         Err(_) => Ok(()),
-    }
+    };
+    drop(input_stream);
+    synced
 }
 
 /// `e instanceof FileNotFoundException` (the native layer raises it for ENOENT).

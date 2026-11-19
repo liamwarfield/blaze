@@ -155,6 +155,31 @@ fn with_suppressed(local: io::Error, remote: io::Error) -> io::Error {
     io::Error::new(local.kind(), format!("{local}\n\tSuppressed: {remote}"))
 }
 
+/// `path.forHostFileSystem()`: the same path on the host file system. For a path on a
+/// [`RemoteActionFileSystem`] that is its local file system (`getHostFileSystem()` is
+/// `localFs.getHostFileSystem()`); any other path is returned as it is.
+///
+/// PORT: `blaze_vfs` has no `FileSystem.getHostFileSystem()` (its `Path::for_host_file_system` is
+/// the identity), so callers that may hold a path on this file system use this function. The
+/// exact port is a `get_host_file_system` method on the `FileSystem` trait that this file system
+/// overrides.
+// Java: com/google/devtools/build/lib/vfs/Path.java:262 Path.forHostFileSystem
+// Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:257 RemoteActionFileSystem.getHostFileSystem
+pub fn for_host_file_system(path: &Path) -> Path {
+    match path
+        .get_file_system()
+        .as_any()
+        .downcast_ref::<RemoteActionFileSystem>()
+    {
+        Some(remote_action_file_system) => Path::create(
+            path.as_fragment().clone(),
+            remote_action_file_system.get_local_file_system(),
+        )
+        .for_host_file_system(),
+        None => path.for_host_file_system(),
+    }
+}
+
 /// The action file system of build without the bytes: the local file system, with the metadata
 /// of the action's inputs and of its own remote outputs layered on top.
 ///
@@ -248,6 +273,14 @@ impl RemoteActionFileSystem {
 
     /// This file system as a [`FileSystemRef`].
     pub fn as_file_system(&self) -> FileSystemRef {
+        self.this
+            .upgrade()
+            .expect("RemoteActionFileSystem used after it was dropped")
+    }
+
+    /// This file system as an `Arc` (for work that outlives a borrow, such as a download run on
+    /// its own thread).
+    pub fn as_arc(&self) -> Arc<RemoteActionFileSystem> {
         self.this
             .upgrade()
             .expect("RemoteActionFileSystem used after it was dropped")
@@ -374,11 +407,24 @@ impl RemoteActionFileSystem {
         let fetcher = self.input_fetcher.as_ref().expect(
             "NullPointerException: RemoteActionFileSystem has no input fetcher for a remote file",
         );
-        fetcher.prefetch_files(
-            &*action,
-            std::slice::from_ref(&input),
-            &*self.input_artifact_data,
-        )
+        // PORT: Java returns the prefetch future and its callers wait with `getFromFuture`. The
+        // blocking prefetcher seam waits on the remote crate's runtime, which panics when the
+        // calling thread is inside that runtime (an upload reads its file through this file
+        // system: `uploadFile` -> `getInputStream`). The wait therefore runs on a thread of its
+        // own; the calling thread blocks until it ends, as Java's caller does.
+        let input_artifact_data = &*self.input_artifact_data;
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    fetcher.prefetch_files(
+                        &*action,
+                        std::slice::from_ref(&input),
+                        input_artifact_data,
+                    )
+                })
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        })
     }
 
     /// `checkForLostInputs(action)`: the inputs that `getInputStream` found lost (their blobs are

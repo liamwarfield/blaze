@@ -8,7 +8,9 @@ use blaze_exec::actions::{ActionInputRef, FileArtifactValue};
 use futures::future::BoxFuture;
 use indexmap::IndexMap;
 
-use super::merkle_tree_computer::{ArtifactPathResolver, PATH_ACTION_INPUT_RESOLVER};
+use super::merkle_tree_computer::{
+    ArtifactPathResolver, PATH_ACTION_INPUT_RESOLVER, spawn_path_resolver,
+};
 use super::merkle_tree_uploader::MerkleTreeUploader;
 use crate::common::remote_action_execution_context::RemoteActionExecutionContext;
 use crate::common::remote_path_resolver::RemotePathResolver;
@@ -258,9 +260,9 @@ pub struct MerkleTreeUploadable {
     /// `ImmutableSortedMap</* Digest | FileArtifactValue */ Object, /* byte[] | ActionInput */
     /// Object>`: two flat arrays sorted by `DIGEST_AND_METADATA_COMPARATOR`.
     blobs: Vec<(BlobKey, MerkleTreeBlob)>,
-    // PORT: ArtifactPathResolver is the exec root (missing hook:
-    // SpawnExecutionContext.getPathResolver). Java asks the spawn execution context of the
-    // upload for its resolver; the tree carries the resolver of the computer that built it.
+    // PORT: Java asks the spawn execution context of the upload for its resolver
+    // (`getPathResolver()`); the tree carries the exec root it was computed for, which `upload`
+    // turns into that resolver (see `spawn_path_resolver`).
     exec_root_path_resolver: ArtifactPathResolver,
 }
 
@@ -362,8 +364,16 @@ impl MerkleTreeUploadable {
                 // MerkleTreeComputer#buildForFiles, which only happens for remote repo execution
                 // and tests. Only the latter actually reach this code path since remote repo
                 // execution doesn't upload any inputs.
-                let path = if spawn_execution_context.is_some() {
-                    self.exec_root_path_resolver.to_path(&**action_input)
+                let path = if let Some(spawn_execution_context) = spawn_execution_context {
+                    // spawnExecutionContext.getPathResolver(): the exec root the tree was
+                    // computed for, on the spawn's action file system when it has one.
+                    match &self.exec_root_path_resolver {
+                        ArtifactPathResolver::ExecRoot(exec_root) => {
+                            spawn_path_resolver(spawn_execution_context, exec_root)
+                                .to_path(&**action_input)
+                        }
+                        other => other.to_path(&**action_input),
+                    }
                 } else {
                     PATH_ACTION_INPUT_RESOLVER.to_path(&**action_input)
                 };

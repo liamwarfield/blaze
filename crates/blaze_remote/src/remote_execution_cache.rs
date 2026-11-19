@@ -27,6 +27,7 @@ use std::task::Poll;
 
 use async_trait::async_trait;
 use blaze_exec::actions::VirtualActionInput;
+use blaze_exec::exec::remote_action_file_system::RemoteActionFileSystem;
 use blaze_optdefs::misc::remote_options::ChunkingFunctionValue;
 use blaze_vfs::Path;
 use futures::FutureExt;
@@ -152,15 +153,41 @@ impl RemotePathChecker for DefaultRemotePathChecker {
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionCache.java:102 RemoteExecutionCache.remotePathChecker.isAvailableLocally
     async fn is_available_locally(
         &self,
-        _context: &RemoteActionExecutionContext<'_>,
-        _path: &Path,
+        context: &RemoteActionExecutionContext<'_>,
+        path: &Path,
     ) -> io::Result<bool> {
-        // PORT: `RemoteActionFileSystem` (the action file system of build without the bytes) is
-        // not ported, so no `Path` belongs to one and `fs instanceof RemoteActionFileSystem` is
-        // false for every path. The rest of the Java method (download the file from the disk
-        // cache if the read policy allows it, then ask the host file system whether it exists)
-        // only runs for such a file system.
-        Ok(true)
+        let fs = path.get_file_system();
+        let Some(remote_action_file_system) = fs.as_any().downcast_ref::<RemoteActionFileSystem>()
+        else {
+            return Ok(true);
+        };
+        // If the file is available in the disk cache, we can attempt to download it from there.
+        if context.get_read_cache_policy().allow_disk_cache() {
+            // PORT: `downloadIfRemote` is the blocking form in `blaze_exec` (it waits for the
+            // prefetcher, which blocks on the runtime); it runs on a thread of its own so that
+            // this task does not block the runtime.
+            let remote_action_file_system = remote_action_file_system.as_arc();
+            let fragment = path.as_fragment().clone();
+            let (sender, receiver) = futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = sender.send(remote_action_file_system.download_if_remote(&fragment));
+            });
+            match receiver.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) if e.kind() == io::ErrorKind::Interrupted => return Err(e),
+                // Futures.catchingAsync(..., IOException.class, e -> { logger.atWarning()
+                // .withCause(e).log("Failed to download %s", path); return immediateVoidFuture(); })
+                // PORT: skipped, logging (the warning goes to the Java log only).
+                Ok(Err(_)) => {}
+                Err(_canceled) => return Err(errors::interrupted()),
+            }
+        }
+        // remoteActionFileSystem.getHostFileSystem().exists(path.asFragment())
+        // PORT: the host file system of the action file system is its local file system
+        // (`getHostFileSystem()` delegates to `localFs.getHostFileSystem()`, which is itself).
+        Ok(remote_action_file_system
+            .get_local_file_system()
+            .exists(path.as_fragment(), true))
     }
 }
 

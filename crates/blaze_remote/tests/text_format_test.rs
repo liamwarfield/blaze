@@ -374,3 +374,30 @@ fn oracle_broken_ident() {
             .to_string())
     );
 }
+
+/// Case `unterminated`: the string token ends at the end of the line.
+#[test]
+fn oracle_unterminated() {
+    assert_eq!(
+        parse("properties { name: \"a }\n"),
+        Err("1:20: String missing ending quote.".to_string())
+    );
+}
+
+/// Case `invalid-value`: an unknown scalar field whose value is not a value.
+#[test]
+fn oracle_invalid_value() {
+    assert_eq!(
+        parse("foo: , properties { name: \"a\" value: \"1\" }\n"),
+        Err("1:6: Invalid field value: ,".to_string())
+    );
+}
+
+/// Case `bad-unicode`.
+#[test]
+fn oracle_bad_unicode() {
+    assert_eq!(
+        parse("properties { name: \"a\" value: \"\\ud800\" }\n"),
+        Err("1:31: Invalid escape sequence: '\\u' refers to a surrogate".to_string())
+    );
+}

@@ -279,6 +279,13 @@ impl RemoteModule {
         if action_context_provider.get_combined_cache().is_none() {
             return;
         }
+        // checkNotNull(actionInputFetcher); actionContextProvider.setActionInputFetcher(..)
+        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1257 RemoteModule.executorInit
+        let action_input_fetcher = self
+            .action_input_fetcher
+            .clone()
+            .unwrap_or_else(|| panic!("NullPointerException: actionInputFetcher must not be null"));
+        action_context_provider.set_action_input_fetcher(action_input_fetcher);
         let remote_options = &action_context_provider.remote_options;
         if rewind_lost_inputs {
             // Action rewinding regenerates lost inputs within the build, so there is no need for
@@ -1276,6 +1283,8 @@ pub struct RemoteActionContextProvider {
     remote_execution_service: Mutex<Option<Arc<RemoteExecutionService>>>,
     remote_output_checker: Option<Arc<RemoteOutputChecker>>,
     known_missing_cas_digests: Arc<Mutex<HashSet<Digest>>>,
+    /// `actionInputFetcher`, set by `RemoteModule.executorInit` (`setActionInputFetcher`).
+    action_input_fetcher: Mutex<Option<Arc<RemoteActionInputFetcher>>>,
 }
 
 impl RemoteActionContextProvider {
@@ -1304,6 +1313,7 @@ impl RemoteActionContextProvider {
             log_dir,
             temp_path_generator,
             remote_execution_service: Mutex::new(None),
+            action_input_fetcher: Mutex::new(None),
             remote_output_checker,
             known_missing_cas_digests,
         }
@@ -1416,7 +1426,20 @@ impl RemoteActionContextProvider {
 
     /// `afterCommand()`.
     // Java: com/google/devtools/build/lib/remote/RemoteActionContextProvider.java:243 RemoteActionContextProvider.afterCommand
+    /// `setActionInputFetcher(actionInputFetcher)`.
+    // Java: com/google/devtools/build/lib/remote/RemoteActionContextProvider.java:148 RemoteActionContextProvider.setActionInputFetcher
+    pub fn set_action_input_fetcher(&self, action_input_fetcher: Arc<RemoteActionInputFetcher>) {
+        *self.action_input_fetcher.lock() = Some(action_input_fetcher);
+    }
+
     pub fn after_command(&self) {
+        // actionInputFetcher uses combinedCache to prefetch inputs, so it must be shut down first.
+        let action_input_fetcher = self.action_input_fetcher.lock().take();
+        if let Some(action_input_fetcher) = action_input_fetcher {
+            (action_input_fetcher.as_ref()
+                as &dyn crate::abstract_action_input_prefetcher::AbstractActionInputPrefetcher)
+                .shutdown();
+        }
         let service = self.remote_execution_service.lock().take();
         match service {
             Some(service) => service.shutdown(),

@@ -23,14 +23,47 @@ impl UploadFailure {
     /// `Throwable.getMessage()` of the exception `Future.get()` throws: `"Task was cancelled."`
     /// for a `CancellationException`; for an `ExecutionException` its message, which is the
     /// cause's `toString()`.
-    // PORT: Throwable.toString of an IOException cause: "java.io.IOException: <message>".
+    // PORT: Throwable.toString of the cause: the uploader's [`JavaThrowable`] when it gave one,
+    // else an IOException ("java.io.IOException: <message>").
     pub fn get_message(&self) -> String {
         match self {
             UploadFailure::Cancelled => "Task was cancelled.".to_string(),
-            UploadFailure::Failed(e) => format!("java.io.IOException: {e}"),
+            UploadFailure::Failed(e) => {
+                match e.get_ref().and_then(|r| r.downcast_ref::<JavaThrowable>()) {
+                    Some(java) => java.to_string.clone(),
+                    None => format!("java.io.IOException: {e}"),
+                }
+            }
         }
     }
 }
+
+/// The payload of an `io::Error` an uploader fails with when it knows the Java class of the
+/// exception: its `Throwable.toString()` (`<class name>: <message>`); it displays the message
+/// after the class name.
+#[derive(Debug, Clone)]
+pub struct JavaThrowable {
+    /// `Throwable.toString()`.
+    pub to_string: String,
+}
+
+impl JavaThrowable {
+    /// The exception whose `toString()` is `to_string`.
+    pub fn new(to_string: String) -> JavaThrowable {
+        JavaThrowable { to_string }
+    }
+}
+
+impl std::fmt::Display for JavaThrowable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.to_string.split_once(": ") {
+            Some((_, message)) => f.write_str(message),
+            None => Ok(()),
+        }
+    }
+}
+
+impl std::error::Error for JavaThrowable {}
 
 type UploadResult = Result<Box<dyn PathConverter>, UploadFailure>;
 

@@ -288,6 +288,10 @@ pub fn prepare_for_execution_with_action_cache(
     register_contexts: &dyn Fn(&mut ActionContexts, &ExecCommandEnvironment),
     action_cache_options: ActionCacheOptions,
 ) -> Result<PreparedExecution, String> {
+    // outputService.startBuild(...) (startBuildAndDetermineModifiedOutputFiles), before the
+    // action log directory is created under the output path.
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:291 ExecutionTool.prepareForExecution
+    start_build(config)?;
     let action_out_dir = create_action_log_directory(config)?;
 
     let mut action_cache: Option<Arc<dyn ActionCache>> = None;
@@ -459,6 +463,54 @@ pub fn prepare_for_execution_with_action_cache(
         action_cache_checker,
         spawn_strategy_registry_error,
     })
+}
+
+/// `outputService.startBuild(buildId, workspaceName, eventHandler, finalizeActions)` of the
+/// command's output service: `RemoteOutputService` when the remote module created one (it gave
+/// the executor its output checker), else `LocalOutputService`. Both make sure the output path
+/// (`directories.getOutputPath(workspaceName)`, `<execroot>/bazel-out`) is not a symbolic link
+/// left by another output service. An `Err` is Java's `AbruptExitException` with
+/// `Execution.Code.LOCAL_OUTPUT_DIRECTORY_SYMLINK_FAILURE`.
+///
+/// PORT: the returned `ModifiedFileSet` (`EVERYTHING_MODIFIED` for both) is not used: Blaze has
+/// no incremental output-file checking. The product name is "bazel" (the relative output path is
+/// `bazel-out`).
+// Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:125 RemoteOutputService.startBuild
+// Java: com/google/devtools/build/lib/vfs/LocalOutputService.java:59 LocalOutputService.startBuild
+fn start_build(config: &ExecutionToolConfig) -> Result<(), String> {
+    // Java: com/google/devtools/build/lib/analysis/BlazeDirectories.java:232 BlazeDirectories.getRelativeOutputPath
+    let output_path = config.exec_root.get_relative_str("bazel-out");
+    if config.remote.output_checker.is_some() {
+        // One of the responsibilities of OutputService.startBuild() is that it ensures the output
+        // path is valid. If the previous OutputService redirected the output path to a remote
+        // location, we must undo this.
+        if output_path.is_symbolic_link()
+            && let Err(e) = output_path.delete()
+        {
+            return Err(format!("Couldn't remove output path symlink: {e}"));
+        }
+        return Ok(());
+    }
+    // directories.getLocalOutputPath(): outputBase.getRelative(getRelativeOutputPath())
+    // Java: com/google/devtools/build/lib/analysis/BlazeDirectories.java:117 BlazeDirectories.<init>
+    let local_output_path = config.output_base.get_relative_str("bazel-out");
+    if output_path.is_symbolic_link() {
+        let result = (|| -> std::io::Result<()> {
+            // Remove the existing symlink first.
+            output_path.delete()?;
+            if local_output_path.exists() {
+                // Pre-existing local output directory. Move to outputPath.
+                local_output_path.rename_to(&output_path)?;
+            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            return Err(format!(
+                "Couldn't handle local output directory symlinks: {e}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Creates the directory for the actions' stdout/stderr files, deleting an existing one.
