@@ -33,10 +33,10 @@ repository fetching and no oracle shortcuts (label `blaze-ef66f55e904e`; full ta
 23 of 26 surfaces match; 13,850 of 13,858 compared items. "Allowed" items are runfiles-manifest
 action keys and volatile build-metric counters, which also differ between two runs of real Bazel.
 A third project, [workerd](https://github.com/cloudflare/workerd), builds end to end with Blaze
-on a copy with one emoji removed from its README: 9,713 actions, Bazel's exact summary line, and
-an output binary byte-identical to Bazel's (same sha256). On the untouched checkout Blaze still
-fails at one rule that depends on Bazel's byte-string semantics, so workerd counts as missing in
-the score file; see `docs/workerd.md`.
+on its untouched checkout: 9,713 actions, Bazel's exact summary line, and an output binary with
+the same sha256 as Bazel's; `query` and `cquery` match in full. That was measured with a binary
+built from an uncommitted tree, so workerd still counts as missing in the score file; see
+`docs/workerd.md`. What is not ported is listed in `docs/missing-features.md`.
 
 **Outside the happy path.** On 35 small error and UI scenarios compared as full transcripts
 (`scripts/w4/probe`), only 1 of 618 steps that run the binary is identical to Bazel, and about
@@ -46,15 +46,13 @@ locations and some texts differ.
 **Reviews.** Independent read-only reviewers compare the code with Bazel's Java; reports and
 verdicts are in `docs/reviews/`. Round 1 returned STOP on all seven areas. After fixes every one
 of them has PASS in its last round, including the integrity audit. The newer remote cache and
-execution code is at STOP after its first review (six blocking findings in the handling of
-outputs that exist only in the remote cache); fixes are in progress.
+execution code is at STOP after its second review; fixes are in and the re-review is pending.
 
 Known limits: Linux x86-64 only, and scores are only comparable on a 16-CPU machine (Bazel's
 `cquery` order depends on the CPU count); one command per process (no persistent server);
 `linux-sandbox`, `process-wrapper` and `@bazel_tools` come from Bazel 9.3.2's install base;
-aspects, symbolic macros, `fetch`/`sync`, coverage and the credential helper are not ported and
-fail loudly; remote caching and execution work on the two projects but are under review (see above); non-ASCII strings do not yet follow
-Bazel's byte semantics (UTF-8 text in action keys does). `info` matches for 42 of 57 compared
+native aspects, symbolic macros, `run`, `fetch`, coverage and the credential helper are not ported and
+fail loudly; remote caching and execution work on the two projects but are under review (see above); `info` matches for 42 of 57 compared
 cases; the other 15 (among them `info` with no key and JVM-only keys) fail loudly.
 
 ## Build

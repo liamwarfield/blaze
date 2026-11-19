@@ -154,3 +154,22 @@ Each entry: date, decision, why, who decided.
   copy with Bazel's summary line and a byte-identical output binary (sha256 cdedf3f9…, verified
   by root from both output bases). Byte-strings migration started so the pristine checkout
   passes. Root.
+- 2026-11-19. workerd on the untouched checkout (README emoji in place), binary of the tree that
+  became 2574fef: `build //src/workerd/server:workerd` exit 0, `9713 processes: 3333 internal,
+  6379 linux-sandbox, 1 local`, output binary sha256 cdedf3f9… equal to Bazel's (root hashed
+  both output bases; log `~/.cache/blaze/work/workerd-logs/blaze.build.pristine.log`). Root.
+- 2026-11-19. Tag `v0.1.0` ("Basic functionality") at 5a4e4a0 on the user's request, as a
+  GitHub prerelease. It is not an accepted state: the accepted baseline stays ef66f55 until the
+  remote re-review and the byte-strings review are in. Root.
+- 2026-11-19. Fidelity target: the user said they are unsure how identical to Bazel everything
+  has to be and has not ruled. Until they do, the contract is unchanged (identical output and
+  error text). Root's recommendation on record: keep outputs, action graph and keys, lockfile,
+  query results and the remote protocol identical; relax console text, error wording and
+  timing lines. Root.
+- 2026-11-19. Wave after v0.1.0 (Opus implementers, one each): `run`; `mod dump_repo_mapping` /
+  `show_repo` / `tidy`; protobuf TextFormat and `--build_event_text_file`; `help <command>` and
+  topics, `fetch`, `canonicalize-flags`, `license`; and a first full run of Bazel's integration
+  suite against the v0.1.0 binary, whose ranked cause list (docs/upstream-tests.md) orders the
+  next wave. Execution-crate items (exclusive tests, `unused_inputs_list`, compile action
+  templates) wait until the remote lead is out of those crates. The persistent server (W8) is
+  deferred until the next accepted commit. Root.

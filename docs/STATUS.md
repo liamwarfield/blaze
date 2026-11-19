@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-11-19 (root). Numbers cite their evidence; history is in `git log` and
+Updated 2026-11-19, after tag v0.1.0 (root). Numbers cite their evidence; history is in `git log` and
 `docs/decisions.md`.
 
 ## Accepted state
@@ -31,41 +31,48 @@ Updated 2026-11-19 (root). Numbers cite their evidence; history is in `git log` 
 | Bzlmod, repositories, downloader, client | 4 | PASS |
 | Analysis, configuration, cquery/aquery | 3 | PASS |
 | Execution, sandbox, build driver | 4 (at ef66f55) | PASS |
-| Remote cache and execution | 1 (at ef66f55) | STOP: six S1 in the handling of remote-only outputs |
+| Remote cache and execution | 2 | STOP: N1-N4 (tree values and exec root through the action file system, capabilities, execution properties); fixes in, re-review pending |
+| Byte strings (2574fef) | 1 | in progress |
 
 Open items the reviewers left as non-blocking are listed at the end of each report.
 
 ## workerd (third project, user request)
 
-At checkpoint a602a17's tree, on a work copy with one emoji removed from README.md:
-`blaze build //src/workerd/server:workerd` exits 0 with Bazel's summary line (9,713 processes:
-3,333 internal, 6,379 linux-sandbox, 1 local); `bazel-bin/src/workerd/server/workerd` has the
-same sha256 as Bazel's (cdedf3f9…, re-hashed by root from both output bases); cquery 38,892 of
-38,892 with order; aquery 13,416 actions, 13,160 identical, 256 allow-listed runfiles keys
-(lead's comparisons with the referee's extractors; not referee recordings). On the pristine
-checkout cquery/aquery fail at one telemetry rule that needs Bazel's byte-string semantics.
-Details: `docs/workerd.md`.
+On the untouched checkout, with the binary of the tree that became `2574fef` (not a
+clean-checkout binary, not a referee recording): `blaze build //src/workerd/server:workerd`
+exits 0 with Bazel's summary line (9,713 processes: 3,333 internal, 6,379 linux-sandbox, 1
+local); `bazel-bin/src/workerd/server/workerd` has the same sha256 as Bazel's (cdedf3f9…,
+hashed by root from both output bases); query 46,371 of 46,371 and cquery 38,892 of 38,892
+under the referee protocol. aquery was last compared on the ASCII-README copy (13,416 actions,
+13,160 identical, 256 allow-listed runfiles keys) and not rerun since. Details:
+`docs/workerd.md`.
+
+## Not accepted yet
+
+Everything after `ef66f55`: workerd fixes, Starlark aspects, the byte-strings migration, the
+remote round-2 fixes. Last test gate on an uncommitted tree: 6,601 pass, 6 fail (all in
+`crates/blaze_remote/tests/remote_execution_service_test.rs`). Tag `v0.1.0` (5a4e4a0) marks
+this state; it is not an acceptance.
 
 ## In flight
 
-- **Byte-strings lead** (Fable; Opus workers): mirror Bazel's internal string form
-  (`docs/research/07-byte-strings.md`), so workerd passes the referee protocol unmodified.
-- **Remote lead** (Fable; five Opus workers): remote review round-2 STOP (N1-N4 and S2s);
-  first run of Bazel's remote shell tests against Blaze: 110 of 253 oracle-passing functions.
-- Unassigned, from that run: `mod dump_repo_mapping` (33 tests), `--build_event_text_file`
-  (13), createCppCompileActionTemplate (6), `fetch` (4), `unused_inputs_list` panic (4),
-  exclusive tests (3), command.profile.gz / critical path in BEP; blaze_vfs ENOTDIR handling.
+- **Remote lead** (Fable): finishing round 2 (byte-string sites in the remote files, the 6
+  failing tests, final evidence), then re-review round 3.
+- **Byte-strings reviewer** (Fable, read-only): review of `2574fef`.
+- **Opus implementers**, one each: `run`; `mod dump_repo_mapping` / `show_repo` / `tidy`;
+  protobuf TextFormat and `--build_event_text_file`; `help` topics, `fetch`,
+  `canonicalize-flags`, `license`.
+- **Measurement** (Opus): first full run of Bazel's integration suite against the v0.1.0
+  binary; result and ranked causes go to `docs/upstream-tests.md`.
+
+Missing features: `docs/missing-features.md`.
 
 ## Next
 
-1. Auditor's open list for the referee: allowed diffs can hide a non-allowed one past 200
-   (`diff_paths` limit); `compare-repos` and `remote/matrix` exit 0 on differences; name-level
-   score ratchet; refuse dirty trees for `scoreboard --write`; oracle-driven Rust tests that
-   pass when recordings are missing.
-2. Byte-strings migration (`docs/research/07-byte-strings.md`), then workerd end to end (aspects
-   are its next blocker; `docs/workerd.md`).
-3. Remaining build-event items, critical path, persistent server (W8).
-4. Bazel's own integration suite against Blaze (`scripts/upstream-tests`; oracle passes 211 of
-   237 targets on this host).
-5. Test harness for analysis and query tests; stale ignore reasons; remaining silent
-   "not ported" sites (152, of which a sample of 40 found 4 silent).
+1. Remote re-review, byte-strings verdict, then a new accepted commit (clean-checkout score
+   including workerd, test gate, auditor approval, baseline move).
+2. Next wave ordered by `docs/upstream-tests.md`; execution-crate items (exclusive tests,
+   `unused_inputs_list`, compile action templates) once the remote lead is out of those crates.
+3. Persistent server (W8), critical path, remaining build-event items.
+4. Auditor's open list for the referee; test harness for analysis and query tests; stale ignore
+   reasons; remaining silent "not ported" sites.
