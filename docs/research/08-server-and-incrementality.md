@@ -1,10 +1,15 @@
 # 08. Persistent server and incremental evaluation: plan
 
-Written 2026-11-19 by the planning lead (Fable 5.2, read-only), on the tree after `3ab3b35`
-(uncommitted work of other agents present). Nothing here was compiled or run. Three Opus
-sub-agents did bounded reading (global state, value equality, upstream tests and the referee);
-their counts are marked "(sub-agent)" and give the command that produced them. Everything else I
-read myself. Where something was not read, the text says so.
+Written 2026-11-19 by the planning lead (Fable 5.2, read-only). The tree moved while this was
+written: my own reading started at `3ab3b35`, the sub-agents' counts are from `78de6e8`, both
+with uncommitted work of other agents present; `HEAD` was `ee9ecce` at the end. Line numbers in
+Rust files are from those trees and may have shifted; Java and C++ line numbers are at the pin
+and do not move. Nothing here was compiled or run. Three Opus sub-agents did bounded reading
+(global state, value equality, upstream tests and the referee); their counts are marked
+"(sub-agent)" with the command or method that produced them, and I spot-checked the claims the
+plan leans on (the `set_build_info` panic, `KEEP_ALIVE`, the sticky interrupt flag, the derived
+`PartialEq` on `ArtifactNestedSetValue`). Everything else I read myself. Where something was
+not read, the text says so.
 
 Paths: `J:` is `~/.cache/blaze/src/bazel-9.3.2/src/main/java/com/google/devtools/build/`,
 `C:` is `~/.cache/blaze/src/bazel-9.3.2/src/main/cpp/`. Rust paths are relative to the checkout.
@@ -38,9 +43,28 @@ state; 4 verification; 5 wave plan; 6 decisions for root.
   (`crates/blaze_sky_top/src/skyframe_executor.rs:188-400`). A kept graph needs each captured
   input to be either a `PrecomputedValue` dependency, server-constant, or a per-command cell
   that Java also has. Section 2.5 and 3 list them.
-- Recommended order: S1 to S4 (usable server, no graph kept), in parallel I1 to I3 (evaluator,
-  value equality, invalidation sources) behind a flag, then I4 to I6 switch the graph on per
-  phase (loading, then analysis, then execution) with the stress test as the gate.
+- Recommended order: S1, S2, S2b, S3, S5 (usable server, no graph kept), in parallel I1 to I3
+  (evaluator, value equality, invalidation sources) behind a switch, then I4 to I6 turn the
+  graph on per phase (loading, then analysis, then execution) with the stress test as the gate.
+  S4 (idle tasks) and I7 (`--watchfs`, `dump`, `config`) come after.
+
+Counts measured for this plan:
+
+| What | Count | Section |
+| --- | ---: | --- |
+| `PORT: skipped, incremental` comments (exact phrase / any wording) | 28 / 35 in 10 crates | 2.6 |
+| of those 35: need work / out of scope / optional / nothing to do | 30 / 3 / 1 / 1 | 2.6 |
+| Skyframe keys in production code (91 `impl Key` with tests) | 76, with 72 value types | 2.5 |
+| values whose Rust equality already agrees with Java / must be written / has a `PartialEq` that must not be used / Java never compares | 37 / 13 / 8 / 18 | 2.5 G3 |
+| file-system reads that bypass a `FileValue` dependency | 8 sites in 4 files | 2.5 G2 |
+| structs that capture per-command inputs into SkyFunctions | 6, plus the reporter | 2.5 G1 |
+| static items in non-test code | 359 (154 lazy), 9 `thread_local!` | 3.1 |
+| verdicts: fine / interner or cache / reset per command / move / unsure | 323 / 9 / 16 / 9 / 2 | 3.1 |
+| things that stop a second command in one process today | 7 | 3.2 |
+| upstream test functions that need a server or kept state (lower bound) | 263 in S1 to S4, about 248 passing on the oracle; 185 more are edit-and-rebuild sequences | 4.3 |
+| ignored evaluator tests that Track I turns on | 80 of 122 | 4.4 |
+| `J:lib/server` | 12 files, 2,138 lines, 46 JUnit tests | 1.2, 4.4 |
+| Java that exists only for incrementality in `J:skyframe` | about 4,100 lines in 24 classes | 5.2 |
 
 ## 1. Client and server protocol
 
@@ -186,7 +210,7 @@ the default handler; an `ExecRequest` is run as a child process and its exit cod
 
 ### 1.2 What is ported and what is missing
 
-`crates/blaze_client` (11 files, 5,413 lines) ports option processing, rc files, startup
+`crates/blaze_client` (9 files in `src/`, 5,413 lines, plus `src/util/`) ports option processing, rc files, startup
 options, the workspace layout, archive extraction, the file locks
 (`platform.rs:391-640`), `verify_server_process` (`platform.rs:1004`),
 `get_server_exe_args` (`blaze.rs:461`), `build_run_request` (`blaze.rs:414`),
@@ -456,7 +480,7 @@ they depend on the `FILE` nodes of BUILD files, which step 3 dirties.
 
 ### 2.3 What has to change in `blaze_skyframe`
 
-The crate is 4,796 lines without tests. The model in `src/lib.rs:1-136` stays. Changes, each a
+The crate is 4,729 lines without its test files. The model in `src/lib.rs:1-136` stays. Changes, each a
 literal port of the Java named:
 
 | # | Change | Java | Rust site today |
@@ -523,7 +547,114 @@ rule that Starlark evaluation cannot suspend, PORTING.md "Skyframe") is written 
 blocking environment. Recommendation D5: keep one evaluator and port the node-entry state
 machine into it.
 
-@@SECTION-2-5@@
+### 2.5 What every SkyFunction and value type must guarantee
+
+Today a function's result is used by one command and then the process ends. With a kept graph
+it is used by every later command until something invalidates it. Seven guarantees follow.
+The audit numbers are from a sub-agent that opened every `impl Key` (command:
+`grep -rnE "impl\s*(<[^>]*>)?\s*(blaze_skyframe::)?Key\s+for" crates --include=*.rs`, 91 hits,
+of which 15 are in tests) at `78de6e8` plus uncommitted work.
+
+**76 production keys, 72 distinct value types**, by crate: blaze_sky_loading 25, blaze_bzlmod
+13, blaze_sky_exec 8, blaze_analysis 7, blaze_sky_top 7, blaze_build_config 6,
+blaze_repo_rules 6, blaze_sky_analysis 3, blaze_skyframe 1.
+
+**G1. A function reads only its key, its requested deps and server constants.** Not true
+today. Per-command inputs captured at registration instead of requested as deps:
+
+| Captured struct | Per-command content | Java |
+| --- | --- | --- |
+| `LoadingFunctionsConfig` (`crates/blaze_sky_loading/src/skyframe_executor.rs:89`) | `pkg_locator` and `deleted_packages` cells (Java has the same `AtomicReference`s and invalidates when they change); `external_repos`; `show_loading_progress` | cells: same. Rest: constructor arguments of a server-lifetime executor |
+| `AnalysisServices` (`crates/blaze_analysis/src/analysis_services.rs:39`) | `starlark_semantics`, `keep_going`, `main_repo_mapping`, `workspace_status: OnceLock` (computed once per services object, `crates/blaze_sky_top/src/skyframe_executor.rs:371, 428`), user and host name | `STARLARK_SEMANTICS` is a precomputed dep; `keep_going` is per evaluation; workspace status is the `BUILD_INFO` node |
+| `ConfigurationEnvironment` (`crates/blaze_build_config/src/skyframe.rs:171`, read through `env.client()`) | `starlark_semantics`, `package_path_roots`, `baseline_configuration`, `baseline_exec_configuration` | `PrecomputedValue.BASELINE_CONFIGURATION` / `BASELINE_EXEC_CONFIGURATION` (`SkyframeExecutor.java:1539-1540`) |
+| `BzlmodConfig` (`crates/blaze_bzlmod/src/skyframe/config.rs:105`) | `client_env`, `builtin_modules`, `registry_fetcher`, the package and repository lookup seams, `last_registry_invalidation = now()` (`config.rs:359`) | client env: injected per variable (2.2 step 3); the rest per server |
+| `RepoServices` (`crates/blaze_repo_rules/src/services.rs:18`) | `repo_env`, `nonstrict_repo_env`, download manager, timeout scaling, process wrapper | repo env: injected per variable; the rest are module state reset in `beforeCommand` |
+| action conflicts cell (`crates/blaze_sky_top/src/action_lookup_conflict_finding_function.rs:213`) | the current conflicts | `PrecomputedValue` `action_conflicts` (`ArtifactConflictFinder.java:43`) |
+| reporter (`SkyframeExecutorInputs.reporter`, handed to the repository setup at `crates/blaze_sky_top/src/skyframe_executor.rs:261`) | the command's event handler | per-evaluation handler; functions report through `env.getListener()` |
+
+Precomputed keys: Rust declares 24 distinct names, all of which exist in Java; Java has 27
+`new Precomputed<>(` sites. Missing as precomputed in Rust: `build_id`, `action_env`,
+`coverage_report_actions`, and the three captured ones in the table. Also: there are two
+separate `PrecomputedKey` types (`crates/blaze_sky_loading/src/precomputed.rs:51`,
+`crates/blaze_bzlmod/src/skyframe/precomputed.rs:62`), so `starlark_semantics` is two graph
+nodes where Java has one. Harmless per command; with injection per command both must be
+injected and compared, or the types merged (recommended: merge into `blaze_skyframe` or the
+lower crate).
+
+Rule for package I2: each captured field is classified as (a) server constant (directories,
+rule class provider, file system): stays captured, the executor is built once per server; (b)
+Java precomputed: becomes a `Precomputed` dep; (c) Java per-command cell with explicit
+invalidation: stays a cell, and the invalidation is ported; (d) per-evaluation (`keep_going`,
+reporter): moves to the `EvaluationContext`.
+
+**G2. File contents enter only through `FILE_STATE` and `DIRECTORY_LISTING_STATE`** (or a
+function Java marks non-hermetic and re-checks). Sites that read the file system where Java
+requests a `FileValue`, each already marked `// PORT:` (sub-agent):
+`crates/blaze_bzlmod/src/skyframe/module_file_function.rs:228, 466, 475, 1219` (root
+`MODULE.bazel`, includes, patch files), `:675-706` (builtin package lookup),
+`crates/blaze_bzlmod/src/skyframe/lock_file.rs:48` (the lockfile),
+`crates/blaze_build_config/src/skyframe.rs:221` (platform mappings),
+`crates/blaze_sky_exec/src/artifact_function.rs:199` (source artifacts). **8 sites in 4
+files.** With a kept graph each is a wrong build: editing `MODULE.bazel` would not re-run
+module resolution. They are the first work items of I2.
+
+**G3. Value equality is exactly Java's.** Per key (76):
+
+| Verdict | Count | Meaning |
+| --- | ---: | --- |
+| EQ-OK | 37 | Rust `PartialEq` agrees with the Java `equals`/record/AutoValue: opt in |
+| EQ-DERIVABLE | 10 | Java has value equality, Rust has none yet but can derive or write it (`ActionExecutionValue`, `ArtifactValue`, the completion and conflict singletons, `RepoPackageArgsValue`, two bzlmod values with exception lists) |
+| EQ-HARD | 3 | Java has value equality, Rust cannot yet: both `PrecomputedValue`s (`Arc<dyn Any>`; needs an equality function stored with the value) and `RepoFileValue` (holds an `OwnedFrozenValue`) |
+| IDENTITY | 18 | Java uses identity or `NotComparableSkyValue`: stay with the default (never equal). Includes `PackageValue`, `BzlLoadValue`, `BzlCompileValue`, `ConfiguredTargetValue`, `AspectValue` |
+| RUST-STRONGER | 7 | Rust derives `PartialEq` where Java never prunes: `RepositoryDirectoryValue`, `ArtifactNestedSetValue`, `RepoDefinitionValue` (all three `NotComparableSkyValue` in Java, the first two with comments saying pruning would be wrong), `RecursivePkgValue`, `TargetPatternValue`, and one variant each of `ContainingPackageLookupValue` and `PackageLookupValue` |
+| mixed | 1 | `PlatformValue`: compares `platform_info` by pointer (weaker than Java) and ignores parsed flag contents in one case (stronger) |
+
+So 45 of 76 values have `PartialEq` today and 31 do not, but the useful number is: **37 can opt
+in as they are, 13 need equality written, 8 must not use the `PartialEq` they have.** This is
+why E6 is an explicit opt-in per key and not a `Value: PartialEq` bound: a bound would prune on
+the eight wrong ones automatically. Java's full `NotComparableSkyValue` list is in the
+sub-agent's report (configured targets and aspects, `Registry`, `RepoDefinitionValue`,
+`RepositoryDirectoryValue`, `ArtifactNestedSetValue`, `BzlCompileValue`, `PackageoidValue`,
+and the two wrappers in `ValueWithMetadata.java:140, 152`).
+
+Keys: 14 key types have a manual `Eq` or `Hash`; the sub-agent found each consistent with the
+Java key (list in its report). `TargetPatternErrorKey` compares more fields than Java does
+(`crates/blaze_sky_top/src/target_pattern_phase.rs:178`), which only makes two keys distinct
+that Java would merge.
+
+**G4. Values are immutable once returned.** 12 value types contain interior mutability one
+level down. Nine are lazy memos (the `BuildOptions` checksum `OnceLock`, the `NestedSet`
+`toList` cache, the `IndexRegistry` fetch memo, `GlobalsCache`): fine. Two need a decision:
+`Artifact.generating_action_key: OnceLock` (`crates/blaze_actions/src/actions/artifact.rs:66`),
+set after construction and read by `Artifact::eq`, as in Java's `setGeneratingActionKey`; and
+`PackageDeclarations` (`crates/blaze_packages/src/package/package.rs:227-235`: `RwLock`s and
+`AtomicBool`s that are builder state). Whether anything writes to a `Package` after the
+`PACKAGE` value is returned was not checked; I2 must check it.
+
+**G5. Events go through `env.listener()` only**, so that E8 can store and replay them. A
+function that prints directly, or posts to a handler captured at registration, loses its
+warning on every later command. Sites: the reporter row of G1, and the direct-output sites
+of 1.2.
+
+**G6. No cache outside the graph that the graph's invalidation does not reach.** Section 3
+lists them; the ones consulted inside functions are `StarlarkTransitionCache`
+(`crates/blaze_analysis/src/config/starlark_transition.rs:622`; `clear()` exists at `:772` and
+nothing calls it, Java clears it at `SkyframeBuildView.java:392, 1419, 1444`), the exec
+transition cache `LOADED` (`crates/blaze_sky_analysis/src/dependency_resolver.rs:666`, loaded
+outside Skyframe, keyed by the flag text only), `BzlLoadFunction.bzl_compile_cache`
+(`crates/blaze_sky_loading/src/bzl_load.rs:775`; Java has the same inlining cache and its
+reset was not read), and the address-keyed memos of section 3.3.
+
+**G7. Side effects are repeatable.** A function may now run again in a later command (dirty)
+or not run at all (clean). Repository fetch marker files, the lockfile update in
+`afterCommand`, the action cache and action outputs already follow Java's rules for this;
+`module_file_function.rs:1250-1331` writes patched files to the real file system where Java
+uses an in-memory one, and must be read again under this rule.
+
+Function hermeticity (E11): Java marks 17 function names non-hermetic and 3 semi-hermetic
+(`J:lib/skyframe/SkyFunctions.java`; list in the sub-agent's report). The marking documents
+which functions are allowed to break G1 and G2 and is the checklist for the dirtiness
+checkers of I3.
 
 ### 2.6 The `PORT: skipped, incremental` sites
 
@@ -549,7 +680,154 @@ needs nothing. The marked sites are the small part: the per-command construction
 executor (section 2.5, G1) is not marked anywhere because it was a design choice
 (`docs/decisions.md` 2026-11-18, "one evaluator per command").
 
-@@SECTION-3@@
+## 3. State that is per process today and becomes per server
+
+### 3.1 Inventory (sub-agent, every site outside FINE-CONST opened)
+
+Method: a walk over `crates/*/src/**/*.rs` with comments stripped, matching
+`^\s*(pub(\([^)]*\))?\s+)?static\s+(mut\s+)?[A-Za-z_]\w*\s*:` (this also finds statics inside
+functions and `thread_local!` blocks). Excluded and counted apart: `src/bin` (4), `#[cfg(test)]`
+items (4), test-only files (3); `crates/*/tests` (23) and `starlark_conformance` are outside.
+359 + 4 + 4 + 3 = 370 = the raw grep over `crates/*/src`. There is no `static mut` and no
+`lazy_static!`. Tree: `78de6e8` plus uncommitted work.
+
+**359 static items in non-test code** (154 of them `OnceLock`/`LazyLock`), 9 `thread_local!`
+blocks, 2 `Box::leak` sites. Verdicts:
+
+| Verdict | Count | |
+| --- | ---: | --- |
+| Fine, constant | 323 | immutable tables, regexes, method tables, command annotations, precomputed key names; also RAII-scoped thread-locals and mutable statics that copy a Java `static` of server lifetime (each listed in the sub-agent's report) |
+| Fine, interner or keyed cache | 9 | three weak interners in `blaze_cmdline` (label, package identifier, repository name; swept, bounded by the live set); `OPTIONS_DATA_CACHE`; `Aspect` definition cache; `MODULE_BAZEL_ENVS` (keyed by full semantics); two Merkle subtree caches (their `SourceDirectory` keys are strong and never collected); a regex cache |
+| Must reset per command | 16 | below |
+| Must move into the runtime, the command environment or the graph | 9 | below |
+| Unsure | 2 | `blaze_shell/src/thread_interrupt.rs:67, 69`: a per-thread interrupt status; safe only if each command runs on a fresh thread, as Java's `grpc-command-%d` threads do, or the status is cleared at command start |
+
+Per crate (static items; reset; move): blaze_actions 23; 1; 0. blaze_analysis 39; 4; 1.
+blaze_client 8; 2; 0. blaze_exec 22; 1; 0. blaze_packages 40; 1; 1. blaze_rules 33; 1; 0.
+blaze_runtime 33; 2; 6. blaze_sky_analysis 2; 2; 0. blaze_sky_loading 11; 1; 1. blaze_sky_top
+1; 1; 0. All other crates have only "fine" sites: blaze 1, blaze_bep 1, blaze_build_config 17,
+blaze_buildtool 1, blaze_bzlmod 13, blaze_bzlmod_model 7, blaze_cc_features 3, blaze_cmdline
+23, blaze_collect 1, blaze_cquery 1, blaze_events 6, blaze_optdefs 3, blaze_options 9,
+blaze_protos 2, blaze_remote 19, blaze_repo_fetch 4, blaze_repo_rules 15, blaze_shell 11 (2
+unsure), blaze_sky_exec 1, blaze_skyframe 2, blaze_starlark 4, blaze_vfs 3; blaze_util,
+blaze_query, blaze_query_engine and blaze_config have none.
+
+**Reset (16).**
+
+| Site | Holds | Problem in a server |
+| --- | --- | --- |
+| `blaze_runtime/src/interrupt.rs:63` `COMMAND_THREAD` | sticky `interrupted` flag and the evaluators' flags | after one Ctrl-C every later command starts interrupted. Belongs to the `RunningCommand` |
+| `blaze_runtime/src/interrupt.rs:78` `SIGINT_PIPE_WRITE` | pipe of `capture_sigint` | two fds and a thread leaked per batch command |
+| `blaze_client/src/signal_handler.rs:38, 41` | SIGPIPE marker, SIGINT count | fine once the client is its own process again |
+| `blaze_analysis/src/rule/depsets.rs:70, 74, 122` `MEMO`, `FROZEN_TO_SET`, `KEPT_HEAPS` | converted depsets by address; every rule implementation heap, forever | unbounded; correct only while no heap is ever freed |
+| `blaze_analysis/src/config/transitions.rs:897` `CONVERTED` | transitions by the address of a frozen value | same; an address reused after a free returns the wrong transition |
+| `blaze_actions/src/analysis/starlark/starlark_custom_command_line.rs:1784` `MAP_EACH_ADAPTORS` | leaked adaptor per `map_each` callable (`Box::leak` at `:1810`) | every edited `.bzl` adds entries and pins its old heap |
+| `blaze_exec/src/analysis/actions/mod.rs:268` `ACTION_INPUT_SETS` | every action-input nested set, strong keys | unbounded |
+| `blaze_rules/src/cpp/header_info.rs:338` `MEMO` | one entry per loading-phase header info | unbounded |
+| `blaze_packages/src/package/rule_factory.rs:214` `GENERATOR_NAME_HEAPS` | a frozen heap per generator name | grows on every package reload |
+| `blaze_sky_analysis/src/dependency_resolver.rs:666` `LOADED` | exec transition provider by flag text | stale after the `.bzl` is edited (also G6) |
+| `blaze_sky_analysis/src/analysis_progress_receiver.rs:20`, `blaze_sky_loading/src/package_progress_receiver.rs:34`, `blaze_sky_top/src/execution_seam.rs:850` | progress counters | the second command prints cumulative counts or checks the previous build's count |
+
+**Move (9).** `blaze_sky_loading/src/bzl_load.rs:732` `KEEP_ALIVE` (every `FrozenModule` ever
+loaded; see 3.3); `blaze_packages/src/bzl_context.rs:65` `BY_FILENAME` (module context by file
+name, last writer wins, read by `blaze_repo_rules/src/starlark/repository_module.rs:531, 603`);
+`blaze_analysis/src/config/starlark_transition.rs:622` (the transition cache, per
+`SkyframeBuildView` in Java); five statics of `blaze_runtime/src/commands/build_remote.rs`
+(`:312, 316, 356, 360, 484`: build request id override, the current command's `RemoteModule`
+and temp dir, known missing CAS digests: fields of the server's `RemoteModule` or locals of
+`exec`); `blaze_runtime/src/server_log.rs:389` (the `java.log` handler, re-opened by
+`new_runtime` for every command).
+
+`OnceLock` fields that cannot be reset and whose owner would now outlive a command:
+`blaze_runtime/src/runtime.rs:48` (`workspace`),
+`blaze_sky_exec/src/skyframe_action_executor.rs:349` (`per_build_file_cache`; Java resets it
+per build), `blaze_analysis/src/analysis_services.rs:55, 63`.
+
+### 3.2 Things that stop a second command today
+
+1. `BlazeVersionInfo::set_build_info` panics when called twice
+   (`crates/blaze_runtime/src/version_info.rs:117-121`), and `crates/blaze/src/main.rs:17-34`
+   calls it per command. Java calls it once in `Bazel.main`.
+2. The runtime is built per request (`server_main_single_command`,
+   `crates/blaze_runtime/src/runtime.rs:288-300` → `new_runtime`): new file system object,
+   `java.log` reopened, modules re-initialised.
+3. `BlazeWorkspace::reset_evaluator` is a no-op by design
+   (`crates/blaze_runtime/src/workspace.rs:69-72`): there is no executor in the workspace.
+4. The sticky interrupt flag (3.1).
+5. The repository contents cache lock is taken per command and never released
+   (`crates/blaze_repo_rules/src/setup.rs:420-428`; Java releases it in `afterCommand`).
+6. The process's working directory and environment are the first client's. Java's server is
+   in the same position (it is started in the workspace, with `PrepareEnvironmentForJvm`'s
+   environment) and takes everything per command from `--client_env` and `--client_cwd`;
+   Blaze's 7 `env::var*` and 3 `current_dir()` sites outside the client (1.2) must be checked
+   against that. `BAZEL_SH` is read from the server environment in both.
+7. `blaze_options/src/parser.rs:363, 379` can call `process::exit`; nothing calls that function
+   today.
+
+Not found (good): no global current options, workspace, event handler, Starlark semantics or
+evaluator.
+
+### 3.3 Starlark heaps and frozen modules
+
+Decision 2026-11-18 (W3) says "frozen .bzl heaps live for the process". The code relies on it:
+besides the five globals that pin heaps (`KEEP_ALIVE`, `KEPT_HEAPS`, `GENERATOR_NAME_HEAPS`,
+`MAP_EACH_ADAPTORS`, and `MODULE_BAZEL_ENVS` which is fine), the sub-agent found `unsafe`
+accesses in 15 files whose soundness comment is that the heap is never freed
+(`unchecked_frozen_value` and empty-owner `OwnedFrozenValue`:
+`crates/blaze_packages/src/rule_class/starlark_callable.rs:51`,
+`crates/blaze_analysis/src/config/transitions.rs:932`,
+`crates/blaze_analysis/src/configuredtargets/target_value.rs:8, 154`,
+`crates/blaze_analysis/src/rule/depsets.rs:162-500`,
+`crates/blaze_packages/src/starlark_defs/aspect.rs:774`, and others in its report).
+
+Consequences:
+
+- **Server without a kept graph (Track S).** Every command loads its `.bzl` files again and
+  pins the new heaps forever, so memory grows by one full set of loaded modules, rule heaps and
+  memo entries per command. This must be solved before S5, or the server leaks faster than it
+  helps. Two ways: (a) give the pinned heaps an owner, an "analysis arena" object that the
+  `SkyframeExecutor` holds and that is dropped with the evaluator, with the address-keyed memos
+  inside it; every `unsafe` site then states "the arena outlives this value" and the arena is
+  dropped only after the graph. (b) Make values own their heaps (`FrozenHeapRef` in every
+  holder). (a) is a contained change (the five globals plus four memos move into one struct;
+  the `unsafe` comments change from "process" to "arena"); (b) is the right end state and
+  touches every site. Recommended: (a) now, as package S2b; (b) only if eviction of single
+  nodes is ever wanted.
+- **Kept graph (Track I).** With (a), deleting a `BZL_LOAD` node does not free its module; the
+  arena grows until the evaluator is reset. That is bounded by what the user edits, it is what
+  a JVM without a GC cycle looks like, and it resets on `clean`, on an analysis-cache discard
+  and on `--notrack_incremental_state`. Bazel's own answer to growth is no better defined (3.4).
+  Address-keyed memos stay correct because nothing in the arena is freed while it lives.
+
+### 3.4 Memory growth and what Bazel does about it
+
+Bazel's tools, and what each means for Blaze:
+
+| Bazel | Where | Blaze |
+| --- | --- | --- |
+| JVM garbage collection; `GcAndInternerShrinkingIdleTask` | `J:lib/server/GcAndInternerShrinkingIdleTask.java` | no collector. Memory is freed when the evaluator and the arena are dropped. The idle task's interner shrinking has an equivalent (the weak interners sweep on insert) |
+| Reset the evaluator | `--notrack_incremental_state`, `--nokeep_state_after_build`, `clean`, `SequencedSkyframeExecutor.java:274-293` | port (I3); this is the main lever |
+| Drop analysis | `--discard_analysis_cache` (`SkyframeExecutor.java:1245-1360`), `handleAnalysisInvalidatingChange` | port (I5) |
+| Dirty node GC | `--version_window_for_dirty_node_gc`, `deleteOldNodes` (`SequencedSkyframeExecutor.java:779`) | port (I1 `delete_dirty`, I5 call) |
+| Idle shutdown, low system memory shutdown | `ServerWatcherRunnable.java` | port (S3) |
+| Heap-based: `MemoryPressureModule`, `GcThrashingDetector`, `--skyframe_high_water_mark_*`, `--iff_heap_size_greater_than` | `J:lib/runtime/MemoryPressureModule.java`, `GcThrashingDetector.java` | JVM only. Not ported (PORTING.md "Skip only": memory instrumentation); the flags stay loud failures. A Blaze-only RSS limit that resets the evaluator at the end of a command is possible and would be a deviation: decision D8 |
+| OOM | the client reads the OOM file and exits 33 | a Rust allocation failure aborts; the client then reports "Server terminated abruptly" and exit 37 unless the abort handler writes `exit_code_to_use_on_abrupt_exit`. Port that file protocol in S3 |
+
+### 3.5 Options and module hooks
+
+Java builds the runtime once (`BlazeRuntime.newRuntime`) and runs, per command:
+`BlazeCommandDispatcher.execExclusively` → `BlazeWorkspace.initCommand` → modules'
+`beforeCommand` → option parsing → `CommandEnvironment.beforeCommand` → the command →
+`BlazeRuntime.afterCommand` (modules' `afterCommand`, then `commandComplete`,
+`BlazeRuntime.java:750-847`); at server exit `blazeShutdown`, on a crash
+`blazeShutdownOnCrash`. The Rust trait has `global_init`, `server_init`, `before_command`,
+`after_command`, `blaze_shutdown` (`crates/blaze_runtime/src/module.rs:52-97`), and
+`crates/blaze_runtime/src/bazel_modules.rs` documents four modules whose `beforeCommand`,
+`workspaceInit` or `commandComplete` bodies were skipped as incremental (`:164, 315, 553,
+827`). Package S2 adds the missing hooks (`blaze_startup`, `workspace_init`,
+`get_output_listener`, `command_complete`, `blaze_shutdown_on_crash`) and ports those bodies:
+they are where Java resets per-command state, so they are also where the "reset" rows of 3.1
+get their reset.
 
 ## 4. Verification
 
@@ -746,5 +1024,138 @@ MemorySwapMax=0` (AGENTS.md). Gate for switching a phase on (I4, I5, I6): N seed
 generated workspace and on both corpus projects, N chosen by root; I suggest 200 seeds of 30
 steps per phase as a first bar, and a standing nightly run afterwards.
 
-@@SECTION-5@@
+## 5. Wave plan
+
+Sizes are Java or C++ lines at the pin for the classes named (`wc -l`, comments included), as
+a measure of how much there is to read and port, not of Rust output. "Evidence" is what closes
+the package; every package also ends with a Fable review (AGENTS.md "Reviewers").
+
+### 5.1 Track S: a usable server that keeps no graph
+
+| Pkg | Scope | Crate and files | Size | Depends on | Evidence |
+| --- | --- | --- | ---: | --- | --- |
+| **S1** client | `ExecuteDaemon`, `SocketBlazeServerStartup`, `ConnectOrDie`, `Connect`/`TryConnect`, `Communicate` (streaming, lock release, broken pipe, abrupt exit, termination wait, exec request), `KillRunningServer`, `KillServerProcess`, `AwaitServerProcessTermination`, `AreStartupOptionsDifferent`, `KillRunningServerIfDifferentStartupOptions`, `GetProcessCWD`, `RunServerMode`, signals (third SIGINT, SIGQUIT, SIGWINCH) | `blaze_client`: `blaze.rs`, `platform.rs`, `signal_handler.rs`, `server.rs` | about 1,250 C++ (`blaze.cc:842-1262, 1735-2224`; `blaze_util_posix.cc:144-235, 367-510, 764-780`; `blaze_util_linux.cc:116-230`) | none; needs a server to talk to, so its tests use the real Bazel server (1.4) | `blaze_util_test.cc` 28 and `blaze_util_posix_test.cc` 3 ported; `scripts/server/interop client`: Blaze client against the oracle's server, byte-equal output and exit codes on the 41 probe scenarios; kill, option-change and cancel cases |
+| **S2** runtime per command | build the runtime once (`newRuntime`), `set_build_info` once; module hooks `blazeStartup`, `workspaceInit`, `getOutputListener`, `commandComplete`, `blazeShutdownOnCrash` and the four skipped module bodies; the command lock with `WAIT`; shutdown reason; `CommandLogModule`; `info server_pid`, `server_log`, `command_log`; `BlazeWorkspace` state; the 8 reset/move statics of `blaze_runtime`; every direct-output, `env::var`, `current_dir` and `process::exit` site of 1.2 | `blaze_runtime`: `runtime.rs`, `dispatcher.rs`, `module.rs`, `bazel_modules.rs`, `workspace.rs`, `interrupt.rs`, `server_log.rs`, `commands/build_remote.rs` (with the remote lead), `commands/info/`; one-line fixes in `blaze_options`, `blaze_events`, `blaze_rules`, `blaze_analysis`, `blaze_repo_rules`, `blaze_starlark` | about 1,200 Java (`BlazeModule.java` hooks, `CommandLogModule.java` 135, `BlazeCommandDispatcher.java:228-339`, `BlazeWorkspace.java` 509, `BlazeRuntime.java:636-847`) | none | `BlazeCommandDispatcherTest` 21, `CommandInterruptionTest` 9; an in-process test that runs 3 commands through one runtime; `bazel_command_log_test.sh` 5 |
+| **S2b** heap arena and per-build state | the 5 heap-pinning globals and 4 address-keyed memos move into one arena owned by the executor (3.3 a); `StarlarkTransitionCache`, `LOADED`, `BY_FILENAME` move with it; the three progress receivers become per-executor; the two `OnceLock` fields become resettable; the repo contents cache lock is released in `after_command` | `blaze_sky_loading`, `blaze_packages`, `blaze_analysis`, `blaze_actions`, `blaze_exec`, `blaze_rules`, `blaze_sky_analysis`, `blaze_sky_top`, `blaze_repo_rules` (one sub-worker per crate, the arena type first) | no Java; 16 statics and the soundness comments of 15 files | none | a test that runs the same analysis 50 times in one process with a new executor each time and checks resident memory stops growing; all existing tests |
+| **S3** server | `GrpcServerImpl`, `CommandManager`, `ServerWatcherRunnable`, `PidFileWatcher`, `ShutdownHooks`, `TerminalSizeMonitor`, `CommandDispatcher`, `BlazeCommandResult`; `BlazeRuntime.serverMain`; `main` recognising the server argument vector; the abrupt-exit file; a panic in a command becomes Java's crash path (exit code file, `blazeShutdownOnCrash`, process exit) | new `blaze_server`; `blaze_runtime/src/runtime.rs` (`server_main`); `blaze/src/main.rs` | about 1,700 Java (`lib/server` without the idle tasks and install base GC, plus `BlazeRuntime.java:1200-1271`) | `blaze_protos` only; S2 for real commands | the 34 `lib/server` tests that are not idle-task or GC tests (`GrpcServerTest` 17, `PidFileWatcherTest` 6, `ServerWatcherRunnableTest` 5, `CommandManagerTest` 4, `ShutdownHooksTest` 2); `scripts/server/interop server`: the real Bazel client driving Blaze through `--server_javabase` (1.4) |
+| **S5** switch on | `blaze` is client plus daemon by default, `--batch` stays in-process; the Blaze-only in-process locking and foreign-server check are removed; probe transcripts re-recorded against reference 2 (4.1) and the warm-server masks dropped; upstream suite rerun | `blaze`, `blaze_client`, `blaze_runtime`; `scripts/w4/probe`; `docs/` | small | S1, S2, S2b, S3 | `client_test.sh` 47, `startup_options_test.sh` 6, `client_sigint_test.sh` 2, `bazel_server_mode_test.py` 2, `run_test.sh` 29 pass; probe step counts with reference 2; corpus score unchanged; a 200-command soak on re2 with flat memory |
+| **S4** idle work | `IdleTaskManager`, `IdleTask`, `InstallBaseGarbageCollector` and its task, the disk cache and action cache GC tasks, `LocalRepoContentsCache` GC, low-memory shutdown test coverage; `InvocationPolicyParser` and `InvocationPolicyEnforcer` | `blaze_server`, `blaze_remote`, `blaze_exec`, `blaze_repo_fetch`, `blaze_options` | about 530 Java in `lib/server`, 906 for `InvocationPolicyEnforcer`; the task bodies in other packages were not read | S3 | `IdleTaskManagerTest` 5, `InstallBaseGarbageCollectorTest` 7, `DiskCacheGarbageCollectorTest` 10; `bazel/client_test.sh` 2 GC functions, `disk_cache_test.sh` `test_garbage_collection`, `repo_contents_cache_test.py` 3 |
+
+S1, S2, S2b, S3 are disjoint in files (S2 and S3 meet only at `server_main`) and can run at
+once. S1 and S3 do not need each other until S5, because each is tested against the real
+counterpart. After S5 the server is correct by construction (each command starts from an empty
+graph, as today) and the "Server and client" list of `docs/missing-features.md` is closed
+except idle tasks and invocation policy.
+
+### 5.2 Track I: incremental builds
+
+| Pkg | Scope | Crate and files | Size | Depends on | Evidence |
+| --- | --- | --- | ---: | --- | --- |
+| **I1** evaluator | E1 to E11 of 2.3 | `blaze_skyframe` (all of `evaluator.rs`, `environment.rs`, `lib.rs`, new `node_entry.rs`, `invalidation.rs`, `differencer.rs`, `progress.rs`, `value_with_metadata.rs`) | about 4,100 Java in 24 classes that exist only for this (`IncrementalInMemoryNodeEntry` 539, `InvalidatingNodeVisitor` 570, `AbstractInMemoryMemoizingEvaluator` 513, `ReverseDepsUtility` 412, `DirtyBuildingState` 306, `ValueWithMetadata` 253, the progress receivers, versions, differencers) plus about 500 lines inside `AbstractParallelEvaluator`, `ParallelEvaluator`, `SkyFunctionEnvironment` | none | the 80 ignored stubs of `tests/not_ported.rs` named in 4.4 green; `IncrementalInMemoryNodeEntryTest` 32, `EagerInvalidatorTest` 14; the evaluator stress of 4.5; every existing test of every crate unchanged (the default stays "one evaluation, nothing dirty") |
+| **I2** functions and values | G1 to G7 of 2.5: the 8 file-system sites become `FileValue` deps; the captured per-command inputs of 6 structs become precomputed deps, cells or evaluation context; the two `PrecomputedKey` types merge; `values_equal` opt-in for 37 keys, equality written for 13, the 8 wrong `PartialEq`s kept out; `Package` mutation check; hermeticity marks | six sub-workers, one each: `blaze_sky_loading`; `blaze_bzlmod` + `blaze_repo_rules`; `blaze_build_config`; `blaze_analysis` + `blaze_sky_analysis`; `blaze_sky_exec`; `blaze_sky_top` | 76 keys, 72 Java value classes to read for `equals` | I1 for the trait method (lands first, as a default method, so the crates compile at every step) | per key a line in the review file: Java `equals` location, Rust opt-in, verdict; reviewer checks each against Java |
+| **I3** invalidation sources | one `SkyframeExecutor` per server workspace with `sync` per command; `decideKeepIncrementalState` and evaluator reset; precomputed injection with pruning; `FilesystemValueChecker.getDirtyKeys`, `DirtinessCheckerUtils`, `SkyValueDirtinessChecker`; `ExternalFilesHelper` knowledge; `handleDiffs` without diff awareness; environment injection; `setDeletedPackages`, package path change; `TimestampGranularityMonitor`; `BlazeWorkspace` holding the executor | `blaze_sky_loading` (`skyframe_executor.rs`, `file_state.rs`, new `filesystem_value_checker.rs`), `blaze_sky_top/src/skyframe_executor.rs`, `blaze_runtime` (`command_environment.rs`, `workspace.rs`), `blaze_util` (TSGM) | about 2,600 Java (`FilesystemValueChecker` 804, `DirtinessCheckerUtils` 246, `SkyValueDirtinessChecker` 178, `TimestampGranularityMonitor` 206, `ModifiedFileSet` 165, and about 1,000 lines of `SkyframeExecutor` and `SequencedSkyframeExecutor`) | I1; S2 (hooks) | `FilesystemValueCheckerTest` 52, `DirtinessCheckerUtilsTest` 10, `SequencedSkyframeExecutorTest` 35, `IncrementalLoadingTest` 19 |
+| **I4** keep the loading graph | the switch (5.3) at level "loading": files, packages, `.bzl`, bzlmod and repository nodes survive; analysis and execution nodes are deleted at the start of each command | wiring in `blaze_sky_top`, `blaze_runtime`; `blaze_query` (`query_transitive_package_preloader.rs:162`) | small | I1, I2 (loading, bzlmod, repo parts), I3, S5 | build-level stress (4.5) on `query` and on full builds; the 185 "M" upstream functions stay green; `external_correctness_test.sh` 12, `bazel_lockfile_test.py`, `starlark_repository_test.sh` |
+| **I5** keep analysis | `SkyframeBuildView` state: `setConfiguration` with `OptionsDiff` and the "discarding analysis cache" messages, `handleAnalysisInvalidatingChange`, `clearAnalysisCache`, `--discard_analysis_cache`, `dropConfiguredTargetsNow`, conflict-check reuse and the deletion of conflict nodes, `ArtifactFactory` incremental state, the progress receivers behind "targets configured", `deleteOldNodes`; the 5 `blaze_sky_top` and 1 `blaze_cquery` skip sites | `blaze_sky_top`, `blaze_sky_analysis`, `blaze_analysis`, `blaze_build_config`, `blaze_cquery` | about 1,200 Java (`SequencedSkyframeExecutor.java:466-800`, `SkyframeExecutor.java:1218-1480`, the incremental parts of `SkyframeBuildView.java`) | I4, S2b | stress with flag changes; probe scenarios with the analysis-cache warning unmasked (101 occurrences in 6 scenarios today); `discard_analysis_cache_test.sh` 5, `discard_graph_edges_test.sh` 25, `nonincremental_builds_test.sh` 2 of 4 |
+| **I6** keep execution | `ACTION_EXECUTION` and artifact nodes survive; `detectModifiedOutputFiles` and `getDirtyActionValues`; `--experimental_check_output_files`; `ActionExecutionValue` and `ArtifactValue` equality; `BUILD_ID`; execution salt; last execution time range; `per_build_file_cache` reset; remote: `RemoteOutputChecker.maybeInvalidateSkyframeValues`, lease expiry deletion, known missing digests | `blaze_sky_exec`, `blaze_buildtool`, `blaze_exec`, `blaze_remote`, `blaze_sky_top/src/execution_phase.rs` | about 800 Java read (`FilesystemValueChecker.java:213-420`, `SequencedSkyframeExecutor.java:481-520`, `SkyframeExecutor.java:2063-2071`); the incremental parts of `ExecutionTool` and of the remote module were not read | I5 | stress with output tampering; sequence comparison with reference 1: spawn sets and "N processes" lines equal per step; `OutputsInvalidationIntegrationTest` 9, `TimestampBuilderTest` 11; the remote and build-without-the-bytes sequences (33 + 6 process-count assertions in those two files) |
+| **I7** what needs the kept graph | `--watchfs` (`DiffAwarenessManager` 240, `LocalDiffAwareness` 221, `WatchServiceDiffAwareness` 337, `FileSystemValueCheckerInferringAncestors` 496); `dump` (`DumpCommand.java` 719: `--skyframe`, `--packages`, `--rules`, `--action_cache`; not the memory options); `config` (`ConfigCommand.java` 468); `aquery --skyframe_state` | `blaze_sky_loading`, `blaze_runtime/src/commands`, `blaze_cquery` | about 2,500 Java | I4 (`watchfs`), I5 (`config`, `dump`), I6 (`--skyframe_state`) | `watchfs_test.sh` 4, `check_external_files_test.sh` 10, `aquery_test.sh` 10 functions, `dump_test.sh` 2 of 7, the 4 `config` functions |
+
+I1 is disjoint from everything and can start with Track S. I2's six parts are disjoint from
+each other. I3 needs I1's API. I4, I5, I6 are gates in sequence: each turns one more phase on
+and is accepted only with its stress bar and a reviewer PASS.
+
+**Prerequisites for incremental correctness:** I1, I2, I3 and S2b, all of them; none is
+optional and none gives a correct kept graph alone. **A usable server early:** S1, S2, S2b, S3,
+S5. S4 and I7 are features on top.
+
+### 5.3 Order and the switch
+
+1. Now, without waiting for the next accepted commit (new or otherwise untouched files): I1
+   (`blaze_skyframe`), S3 (new crate), S1 (`blaze_client`), the probe's edit steps and
+   `scripts/server/interop`. I1 changes a crate with a PASS verdict, so its review is a new
+   round for the evaluator.
+2. After the next accepted commit (decision 2026-11-19 defers W8 until then because the
+   runtime and execution crates are in flight): S2, S2b, then S5.
+3. I2 (six sub-workers) and I3, then I4.
+4. I5, I6, each with its gate. S4 and I7 alongside, by the order `docs/upstream-tests.md`
+   gives once it exists.
+
+Until I6 is accepted the kept graph is behind a switch. Bazel has the flag for "off"
+(`--notrack_incremental_state`); what is needed is "how much is on". Recommended (D6): an
+environment variable of the server process, `BLAZE_INCREMENTAL=none|loading|analysis|all`,
+default `none` until I4 is accepted, then raised with each gate, removed after I6. It is read
+once at server start and listed as a `// PORT:` deviation. The user-visible flags keep Bazel's
+meaning throughout.
+
+### 5.4 Risks
+
+1. **Hidden non-hermetic reads.** 2.5 lists the ones marked `// PORT:`.
+   `docs/missing-features.md` says 4 of 40 sampled "not ported" comments were silent, so there
+   are unmarked ones. Only the stress test finds them. This is why I4 to I6 are gated per phase.
+2. **The heap arena** (3.3). `unsafe` code whose argument is "never freed" becomes "freed when
+   the evaluator is dropped". One wrong holder that outlives the arena is a use after free.
+   Mitigation: the arena is dropped last, by the same owner that drops the graph, and S2b's
+   soak test runs under a memory checker if one is available to the implementer.
+3. **Counts that differ by construction.** The blocking evaluator records the deps of one run,
+   Java the union over restarts; Java's `buildGraphMetrics` counters and, in corner cases, the
+   set of nodes dirtied can differ. The "N processes" and "targets configured" lines should
+   not, since they count actions and configured targets, not engine steps. Decision D9.
+4. **One server per test shard** (4.2). Upstream shell tests share a server across functions,
+   so a state leak fails a later, unrelated function. Expect the suite's pass count to drop at
+   S5 before it rises; classify by "passes alone, fails in sequence".
+5. **Threads between commands.** The evaluator spawns helper threads and big-stack threads
+   (`crates/blaze_skyframe/src/lib.rs:94-104`), the remote module owns a process tokio runtime,
+   the interrupt status is per thread (3.1 "unsure"). Java gives each command a fresh thread;
+   S3 should too.
+6. **Crashes.** Today a panic ends the process and the command. In a server it must end the
+   server the way Java's `BugReport.handleCrash` does, with the exit code file for the client
+   (S3). A panic that only kills a worker thread and leaves the command lock held would hang
+   every later client.
+7. **gRPC interop and backpressure.** `BlockingStreamObserver` blocks the command thread on
+   client flow control and ignores interrupts (`GrpcServerImpl.java:161-206`). The tonic
+   equivalent (a bounded channel the command thread blocks on) must keep that property, or a
+   slow terminal makes the server buffer without bound.
+8. **In-flight work.** The remote lead and the post-v0.1.0 implementers are in
+   `blaze_runtime`, `blaze_exec`, `blaze_sky_exec`. S2 and I6 touch the same files; hence the
+   order in 5.3.
+9. **Memory** (3.4). No collector; reset is the only release. A long session on a large
+   workspace grows until `clean`, a flag change or idle shutdown. Measure at S5 and at each
+   gate; decide D8 with numbers.
+
+### 5.5 What I would not port, and what each omission costs
+
+| Not ported | Why | User-visible cost |
+| --- | --- | --- |
+| Action rewinding, `SkyFunction.Reset`, `DirtyType.REWIND` (`J:lib/skyframe/rewinding/`, 1,708 lines) | decided 2026-11-19; needs evaluator support that only this feature uses | a lost remote input fails the build (exit 39) instead of being rebuilt; `--norewind_lost_inputs` path only. 14 evaluator tests stay ignored |
+| `SkyKeyComputeState`, partial reevaluation, `dependOnFuture`, `registerDependencies` | devices of the restarting evaluator | none; 13 evaluator tests stay ignored |
+| JVM memory machinery: `MemoryPressureModule`, `GcThrashingDetector`, high-water-mark flags, `--iff_heap_size_greater_than`, heap `info` keys, `dump --memory`, the `jmap` tests | no JVM (PORTING.md "Skip only") | those flags and `info` keys fail loudly; `dump_test.sh` 5 functions, `nonincremental_builds_test.sh` 2, `info_test.sh` up to 4 cannot pass |
+| Thread dump on SIGQUIT | JVM feature; the client still forwards the signal | the server ignores SIGQUIT (it must not die of it). `client_test.sh` `test_sigquit` (1 function; I did not read what it asserts) |
+| Skyfocus | experimental; its test target is manual and not in the oracle list | none measured (12 functions outside the pass list) |
+| Remote analysis caching | experimental, already listed as missing | none new (3 skip sites stay) |
+| `daemonize` | taken from the oracle install base like `linux-sandbox` | Blaze still needs Bazel's install base for one more tool |
+| Command extensions, `run_in_user_cgroup` wrapper | Google-internal; the systemd wrapper path was not read | extensions ignored (as the proto allows); the cgroup flags stay loud failures if they are today (not checked) |
+| macOS and Windows diff awareness | platform | none on Linux |
+| `--watchfs` before I7 | optional path in Bazel too | the flag fails loudly until I7; every command stats every known file, as Bazel does without the flag |
+
+Ported although tempting to skip: `preemptible` (a few lines in `CommandManager`),
+`UpdateTerminalSize` (the real client calls it on SIGWINCH), `PidFileWatcher`, `exec-server`,
+the low-memory shutdown.
+
+## 6. Decisions for root
+
+| # | Decision | Recommendation |
+| --- | --- | --- |
+| D1 | Is the server wire-compatible with Bazel's client (`command_server.proto`, the `server/` files, cookies, `cmdline`)? | **Yes.** No extra cost, and it gives the two interop oracles of 1.4. The alternative (a private socket protocol) saves nothing and loses both. |
+| D2 | Does the first server release discard the graph between commands? | **Yes.** It is Bazel's `--notrack_incremental_state` behaviour, has an oracle (4.1 reference 2), and fixes the lock, shutdown, `command.log`, idle and startup items with no correctness risk. State the performance plainly in the release: no faster than today except for process start and the install base check. |
+| D3 | Where does `lib/server` live? | **New crate `blaze_server`** below `blaze_runtime`, owning `CommandDispatcher` and `BlazeCommandResult` (re-exported). Deviates from `docs/research/06` section 5 (which says `blaze_runtime`); needs a line in `docs/crates.md`. |
+| D4 | `daemonize`: port or reuse the oracle's? | **Reuse** for now (decision 2026-11-17 precedent); port `daemonize.cc` (445 lines) with `linux-sandbox` and `process-wrapper` later. |
+| D5 | One evaluator, or port `InMemoryMemoizingEvaluator` and the restarting `ParallelEvaluator` literally? | **Keep the blocking evaluator** and port the node-entry state machine, invalidators, versions and stored events into it (2.3, 2.4). A second evaluator would mean re-validating every ported SkyFunction under restarts for no gain in fidelity that the oracle can see. |
+| D6 | How is the kept graph switched on before it is trusted? | **Server environment variable** with levels (5.3), default off, raised per accepted gate, removed after I6. |
+| D7 | Frozen Starlark heaps: arena (3.3 a) or owning references (b)? | **Arena now** (S2b), because Track S needs bounded memory and (b) touches every Starlark-holding type. Supersedes the "for the process" wording of decision 2026-11-18 (W3) with "for the evaluator". |
+| D8 | Memory policy without a garbage collector | **Port only Bazel's non-JVM levers** (reset, discard, dirty GC, idle and low-system-memory shutdown). Do not invent an RSS limit yet; measure at S5 and I5 and decide then. |
+| D9 | In an incremental build, which numbers must equal Bazel's? | **Equal:** which actions ran (spawn set), the "N processes" line, "(P packages loaded, T targets configured)", analysis-cache messages. **Not required:** `buildGraphMetrics` node counters (already allow-listed for the cold build). This is one instance of the fidelity question the user left open on 2026-11-19; it needs their ruling or root's. |
+| D10 | Value equality mechanism | **Opt-in method on `Key`** (`values_equal`, default "not comparable"), not a `PartialEq` bound: 8 value types have a `PartialEq` that Java's semantics forbid using. |
+| D11 | Who owns the sequence and stress tools, and when do they become protected? | New `scripts/server/` outside the protected paths during development; `scripts/w4/probe` gains edit steps; the auditor reviews both before any number from them is cited in STATUS, then they join `protected-paths.txt`. `scripts/oracle` is untouched until a `sequence` surface is wanted. |
+| D12 | The referee's recorded build is the second command of a warm server, and the README says "fresh server" (4.2) | Root to decide whether to fix the README or the script (protected path). With a Blaze server the Blaze side becomes a warm sequence too, so the wording matters from S5 on. |
+| D13 | Start I1, S1, S3 before the next accepted commit? | **Yes**: they touch `blaze_skyframe`, `blaze_client` and a new crate only. S2, S2b and everything in the execution crates wait, as decided on 2026-11-19. |
+| D14 | Invocation policy (`--invocation_policy`, 906 + lines) | **Later (S4)**; it is independent of the server and fails loudly today. |
 

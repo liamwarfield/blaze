@@ -181,3 +181,23 @@ Each entry: date, decision, why, who decided.
   incremental evaluation (`docs/research/08-server-and-incrementality.md`, Fable lead, read-only).
   Byte-strings review round 1 is STOP at 2574fef (six S1 at boundary sites); two Opus fixers
   started (byte-string findings; interpreter differences in lexer and string methods). Root.
+- 2026-11-19. Persistent server and incremental builds: plan accepted
+  (`docs/research/08-server-and-incrementality.md`, decisions D1-D14 there). Root rules as the
+  plan recommends: D1 the server is wire-compatible with Bazel's client (interop tests both
+  ways); D2 the first server discards the graph between commands (Bazel's
+  `--notrack_incremental_state` behaviour is the oracle); D3 `lib/server` goes to a new crate
+  `blaze_server` below `blaze_runtime`; D4 `daemonize` comes from the oracle's install base for
+  now; D5 the blocking evaluator stays and gains Java's node-entry state machine (versions,
+  dirtiness, change pruning); D6 the kept graph is behind a server environment variable with
+  levels, off by default, raised per accepted gate; D7 frozen Starlark heaps live in an arena
+  owned by the executor; D8 only Bazel's non-JVM memory levers are ported; D9 incremental
+  numbers that must equal Bazel's: the set of actions run, "N processes", "packages loaded,
+  targets configured", analysis-cache messages (not graph-metric node counters); D10 value
+  equality for change pruning is an opt-in method on `Key`, default "not comparable"; D11
+  sequence and stress tools under `scripts/server/`, protected after the auditor reviews them;
+  D12 (referee README says fresh server, script records on a warm one) goes to the auditor;
+  D13 packages I1 (evaluator), S1 (client daemon and gRPC) and S3 (`blaze_server`) start now,
+  before the next accepted commit, because they touch only `blaze_skyframe`, `blaze_client` and
+  a new crate; D14 invocation policy later. Not ported, per the plan: action rewinding stays
+  as ruled, restart-model devices, JVM memory machinery, Skyfocus, remote analysis caching.
+  Root.
