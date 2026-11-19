@@ -36,7 +36,8 @@ A third project, [workerd](https://github.com/cloudflare/workerd), builds end to
 on its untouched checkout: 9,713 actions, Bazel's exact summary line, and an output binary with
 the same sha256 as Bazel's; `query` and `cquery` match in full. That was measured with a binary
 built from an uncommitted tree, so workerd still counts as missing in the score file; see
-`docs/workerd.md`. 
+`docs/workerd.md`.
+
 ## Feature status
 
 Updated 2026-11-19. Three columns, three different claims:
