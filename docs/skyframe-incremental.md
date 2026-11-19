@@ -349,3 +349,123 @@ clear_direct_deps_for_skyfocus, consolidate_reverse_deps}`, `InflightOnlyTrackin
 `remove_from_inflight`, a few entry accessors used only by tests. The phase-1
 `#![allow(dead_code)]` lines are removed except in `tests/model.rs` (the model driver is not
 written yet).
+
+## 7. Tests
+
+All numbers: `scripts/cargo-capped test -p blaze_skyframe` on the final I1 tree (base `de5a476`
+plus the uncommitted phase-3 work; the tree of the hand-back). Expected values come from the Java
+tests; the model's expectations are derived from the Java algorithm (`tests/model/`, citations at
+each rule). Whole crate: **426 passed, 0 failed, 153 ignored**. Before I1 (`48b61bb`): 204 passed,
+124 ignored.
+
+| Java test class (`@Test` methods) | Rust file under `src/tests/` | Passing | Ignored, with reason |
+| --- | --- | --- | --- |
+| `MemoizingEvaluatorTest` (155) | `memoizing_evaluator_test.rs`, stubs in `not_ported.rs` | 134 | 5 with the body kept: 2 `dirtyChildEnqueuesParentDuringCheckDependencies_*` and `cachedErrorCausesRestart` (restart model: Java counts restarts or lets two restarts race), `dirtyAndChangedValueIsChanged` (needs concurrent invalidation), `duplicateUnfinishedDeps_NoKeepGoing` (the request evaluates the child whose function crashes by design). 16 stubs: rewinding, partial reevaluation, `SkyKeyComputeState`, `dependOnFuture`, graph transformer over a mock graph, `validateExceptionType` |
+| `ParallelEvaluatorTest` (91; `grep -c @Test` says 117 because it counts `@TestParameter`) | `parallel_evaluator_test.rs`, stubs in `not_ported.rs` | 71 | 1 with the body kept (`declaresDifferentDepsAfterRestart`, restart model); 19 stubs: rewinding, partial reevaluation, `SkyKeyComputeState`, `dependOnFuture`, `GraphTraversingHelper`, an executor a function can submit to, per-key keep_going predicate |
+| `InMemoryNodeEntryTest` (24, each with `isPartialReevaluation` false and true, run on both entry classes: 96 cases) | `in_memory_node_entry_test.rs`, `non_incremental_in_memory_node_entry_test.rs` | 32 | 64: every `isPartialReevaluation = true` case (48), rewinding and reset cases, `signalExternalDep` |
+| `IncrementalInMemoryNodeEntryTest` (29, each ×2: 58 cases) | `incremental_in_memory_node_entry_test.rs` | 25 | 33: partial reevaluation (29), rewinding and reset (4 more) |
+| `ReverseDepsUtilityTest` (7) | `reverse_deps_utility_test.rs` | 7 | 0 |
+| `EagerInvalidatorTest` (14: 11 base × deleting and dirtying suites, 3 suite-specific) | `eager_invalidator_test.rs` | 18 (+1 check of the suites' default type) | 7: the four interruption cases × suites (invalidation is not interruptible here), `interruptDuringRewind_parentAlreadySignaled` |
+| `GraphTest` (9, on the normal and the edgeless graph) | `graph_test.rs` | 16 | 2: `testDoneToDirty` on the edgeless graph (Java's own `assumeTrue`) |
+| `InMemoryGraphTest` (4 own) | `in_memory_graph_test.rs` | 0 | 4: key and label interning not ported |
+| `GroupedDepsTest`, engine tests, stress tests (existing) | `grouped_deps_test.rs`, `engine_test.rs`, `tests.rs` | unchanged, all passing | |
+| (no Java class) progress receivers | `progress_receiver_test.rs` | 10 | 0 |
+| (no Java class) the model | `model/self_tests.rs`, `model/table.rs`, `model/driver.rs` | 4 randomized self-tests, 17 table tests (19 hand-derived scenarios), the driver and 2 regression seeds | 0 |
+
+Of the 122 ignored stubs the plan counted before I1, 81 now pass, 6 are ported and ignored with
+their body (legitimate differences of the blocking engine, each reason naming the documented
+deviation) and 35 remain stubs (29 by ruling, 6 with exact reasons). Ledger with every name:
+`docs/skyframe-incremental.d/evaluator-tests.md`.
+
+**The model test** (`tests/model/`, details and narrowed comparisons with their counts in
+`docs/skyframe-incremental.d/model-test.md` and `support-and-model.md`). Per seed: a random graph
+(leaves, function nodes with value-dependent dep groups, persistent and transient errors, error
+recovery, warnings and stored events), random edits (inject, program change with `invalidate`,
+`invalidate`, `delete`, `delete_dirty`, `invalidate_transient_errors`, failures switched on and
+off, cycles made and broken), random roots, keep_going, parallelism 1 and more, interrupts; run
+in four modes (parallelism × `NO_STORAGE` / `FULL_STORAGE`). After every evaluation: the
+incremental evaluator equals a fresh evaluator on the same graph (values, errors, cycle presence,
+stored events as a set) wherever the outcome is unique and both lie in the model's allowed set
+elsewhere; the engine equals the model (results, the set of functions that ran, change-pruned
+and marked-clean sets, dirtied and deleted keys, the whole graph with versions and dep groups)
+wherever the model is exact; graph invariants (reverse deps mirror deps, version ordering,
+in-flight set). The set of functions that ran is exact for keep_going evaluations and for
+no-keep-going evaluations that do not stop at an error, without interrupt, while every earlier
+evaluation was exact; otherwise bounds. Fixed seeds in the normal run: 0..500 (2,000 scenario
+runs, 14,656 evaluations, 13,552 exact). Long mode (`BLAZE_SKYFRAME_MODEL_SEEDS`,
+`BLAZE_SKYFRAME_MODEL_SEED_START`; run the test binary directly, `scripts/cargo-capped` does not
+pass the environment): seeds 0..24,000, 704,000 evaluations, 654,890 exact, 0 failures on the
+worker's tree. It found one engine defect (section 5.3, `cycle_rdeps`) and one gap of the model
+(a parent re-run in error bubbling may throw its own exception), both fixed with Java proof and
+kept as single-seed regression tests.
+
+Known gaps of the evidence: cycle content is compared only as "a real cycle of the current
+graph" when the incremental and the fresh evaluator report different cycles (Java's detector
+depends on graph state, `J:SimpleCycleDetector.java:196-257`); with `FULL_STORAGE` the set of
+functions that ran is checked by bounds (the model does not simulate stored-event equality,
+`J:ValueWithMetadata.java:105-124`); interrupts come from inside a function only; catastrophes,
+`keep_edges(false)` and hermetic keys are not generated; the six restart-model tests above.
+
+## 8. Invariants SkyFunctions must keep (input to I2)
+
+The engine relies on these exactly as Java does; a kept graph is wrong when one is broken.
+
+1. **Deterministic deps.** Given the same dep values a function requests the same deps in the
+   same order and groups. The dirty check walks the groups of the last build in order and
+   `markClean` asserts the deps are those of the last build (`J:DirtyBuildingState.java:225`,
+   `J:IncrementalInMemoryNodeEntry.java:336-348`).
+2. **Nothing read outside dependencies** (plan 2.5 G1, G2), unless the key is non-hermetic and
+   is invalidated when that outside state changes. A node marked clean is never re-run, so a
+   captured option, environment variable, file read or clock is frozen into its value.
+3. **Value equality is exactly Java's** (G3, D10). `Key::values_equal` is opted into only where
+   the Java value class has value equality and is not a `NotComparableSkyValue`; identity
+   equality is `std::ptr::eq(old, new)` or the default. An equal value keeps the node's
+   last-changed version, so every dependent may be skipped.
+4. **Values are immutable once returned** (G4).
+5. **Events only through `env.listener()`** (G5); stored events are replayed for nodes that are
+   not re-run, anything printed directly is lost on the next command.
+6. **No cache outside the graph** that invalidation does not reach (G6); **side effects are
+   repeatable** (G7): a function may run again in a later command or not at all.
+7. **A function that returns null with every dep done requests nothing new when re-run**: Java
+   restarts it and commits its child errors; Blaze commits without the re-run.
+8. **A function that throws although a dep is missing throws the same when the dep is present**
+   (`J:AbstractParallelEvaluator.java:946-951`).
+9. **Deps are requested before work that must not be repeated** (error bubbling re-runs the
+   function); unchanged from before I1.
+10. **Hermeticity is declared truthfully** (`Key::HERMETICITY`): a key that declares
+    `Some(Hermetic)` can never be injected or invalidated (panic with Java's text).
+
+The I2 work list (six groups by crate, per key the Java value class and its `equals`, the
+captured inputs, the file-system reads that bypass `FILE_STATE`, cross-group items X1 to X10) is
+`docs/skyframe-incremental.d/i2-worklist.md`.
+
+## 9. Decisions for root
+
+1. **`Key::HERMETICITY` is `Option`, default `None`** (not declared; the "hermetic functions
+   cannot be marked changed" check is skipped). A default of `Hermetic` would make every existing
+   `inject` over an existing node panic. I2 declares all 84 keys; then the default can go.
+2. **Default event filter is `NO_STORAGE`** (what the crate did before, Bazel's choice without
+   incremental state). The kept graph needs `DEFAULT_EVENT_FILTER_WITH_ACTIONS`
+   (`J:../lib/skyframe/SkyframeExecutor.java:1150-1165`) set by `blaze_sky_top` in I3; with it
+   equal stored events are reported once per command (`EmittedEventState`), which the crate did
+   not do before.
+3. **In-flight nodes stay in the graph until the next `evaluate`**, as in Java (before: dropped
+   at the end of the call). Visible only through `get_all_keys_for_testing`.
+4. **`Evaluator::inject` is deferred to the next `evaluate`**, as in Java. No caller outside the
+   crate reads back before evaluating.
+5. **Invalidation is sequential and not interruptible** (Java: fork-join pool, resumable). Cost
+   grows with the dirtied closure; to be measured in I4 on real graphs before deciding to port
+   the pool.
+6. **Open deviation for the reviewer**: a function that throws although it is not the first error
+   keeps its reverse-dep registrations on deps it saw not done, a state Java cannot reach
+   (state 3(b) of the 2026-11-18 review). The next evaluation's in-flight deletion removes them
+   (probe `engine_test::thrower_after_first_error_leaves_no_reverse_dep_after_in_flight_deletion`).
+7. **`PORTING.md` "Skyframe"** (protected) still lists `EvaluationProgressReceiver` and
+   `EventFilter` as absent and says "single-build-per-process"; root to update.
+8. **One `Precomputed<T: PartialEq>` in `blaze_skyframe`** is the I2 survey's recommendation
+   (X1): two precomputed key types exist today and neither value has equality, so every
+   per-command injection would dirty all readers. It lands in this crate, so it is an I1-side
+   decision; I recommend yes, as the first I2 item.
+9. **`scripts/cargo-capped` drops the environment**, so the model's long mode runs the test
+   binary directly under `systemd-run --setenv`; root may want the two `BLAZE_SKYFRAME_MODEL_*`
+   variables passed through.

@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Memory soak: N commands on ONE server, resident memory of the server after each command.
+#
+# Usage:
+#   scripts/server/soak help
+#   scripts/server/soak run --name NAME --binary PATH --project brotli|re2 [--count N]
+#                           [--oracle] [--fresh] -- <command> [args...]
+#
+# Copies the corpus checkout (~/.cache/blaze/corpus/<project>, read-only) with
+# `rsync -a --exclude=/bazel-* --exclude=/.git` to ROOT/NAME/ws, and runs <command> N times
+# (default 12) with `<binary> --output_user_root=ROOT/NAME/ur --nohome_rc --nosystem_rc
+# <command> --repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no [args...]`,
+# environment HOME, PATH=/usr/bin:/bin, BLAZE_SERVER_MODE=daemon (the oracle ignores it).
+# --oracle: <binary> is the oracle; --notrack_incremental_state --nokeep_state_after_build
+# are added to every command (Bazel discards its graph between commands, as Blaze's server).
+#
+# All commands run inside ONE `systemd-run --user --collect --wait --pipe -p MemoryMax=12G
+# -p MemorySwapMax=0` unit, so the daemon lives exactly as long as the run. After each command
+# it records the command's exit status (as seen inside the unit), the server's VmRSS, RssAnon
+# and VmHWM (/proc/<pid>/status, pid from <output_base>/server/server.pid.txt), and the
+# summary lines of stderr (INFO: Analyzed / Found / N processes / Build completed, ERROR,
+# FATAL). Results: ROOT/NAME/report.tsv (one row per command), ROOT/NAME/logs/<i>.{out,err}.
+# At the end (also on error or signal) the server is shut down with `shutdown`, and killed
+# through its pid file when it is still alive after that.
+#
+# ROOT is ~/.cache/blaze/work/server/soak. The tool deletes nothing outside ROOT: --fresh
+# removes ROOT/NAME (only that directory, after checking it lies inside ROOT) before the run;
+# without --fresh an existing ROOT/NAME is refused.
+set -euo pipefail
+
+ROOT="$HOME/.cache/blaze/work/server/soak"
+REPO_CACHE="$HOME/.cache/blaze/repo-cache"
+SELF="$(readlink -f -- "${BASH_SOURCE[0]}")"
+
+usage() { sed -n '2,29p' "$SELF" | sed 's/^# \{0,1\}//'; }
+die() { echo "soak: $*" >&2; exit 2; }
+
+# Deletes $1 only when it lies strictly inside ROOT.
+safe_rm() {
+  local target real_root real_target
+  target="$1"
+  mkdir -p "$ROOT"
+  real_root="$(readlink -f -- "$ROOT")"
+  real_target="$(readlink -f -- "$target")"
+  case "$real_target" in
+    "$real_root"/?*) ;;
+    *) die "refusing to delete $target: not inside $real_root" ;;
+  esac
+  chmod -R u+w -- "$real_target" 2>/dev/null || true
+  rm -rf -- "$real_target"
+}
+
+pid_file() { find "$1" -mindepth 3 -maxdepth 3 -path '*/server/server.pid.txt' 2>/dev/null | head -1; }
+
+mem_of() {
+  local pid="$1" f="/proc/$1/status"
+  if [[ -z "$pid" || ! -r "$f" ]]; then echo -e "-\t-\t-"; return; fi
+  awk '/^VmRSS:/{r=$2} /^RssAnon:/{a=$2} /^VmHWM:/{h=$2} END{printf "%s\t%s\t%s\n", r, a, h}' "$f"
+}
+
+inner() {
+  # Globals on purpose: the EXIT trap runs after this function has returned.
+  dir="$1" binary="$2" oracle="$3" count="$4"; shift 4
+  ws="$dir/ws" ur="$dir/ur" logs="$dir/logs" report="$dir/report.tsv"
+  env=(env -i HOME="$HOME" PATH=/usr/bin:/bin BLAZE_SERVER_MODE=daemon)
+  startup=("$binary" "--output_user_root=$ur" --nohome_rc --nosystem_rc)
+  local verb="$1"; shift
+  local cmd=("$verb" "--repository_cache=$REPO_CACHE" --color=no --curses=no)
+  if [[ "$oracle" == 1 ]]; then cmd+=(--notrack_incremental_state --nokeep_state_after_build); fi
+  cmd+=("$@")
+  mkdir -p "$logs"
+  cleanup() {
+    set +e
+    local pf pid
+    pf="$(pid_file "$ur")"
+    if [[ -n "$pf" ]]; then
+      (cd "$ws" && timeout 120 "${env[@]}" "${startup[@]}" shutdown >"$logs/shutdown.out" 2>"$logs/shutdown.err")
+      echo "shutdown exit $?" >>"$dir/run.log"
+      pid="$(cat "$pf" 2>/dev/null)"
+      for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -n "$pid" && -d /proc/$pid ]] || break; sleep 1; done
+      if [[ -n "$pid" && -d /proc/$pid ]]; then
+        echo "server $pid alive after shutdown: SIGKILL" >>"$dir/run.log"
+        kill -9 "$pid" 2>/dev/null
+      fi
+    fi
+  }
+  trap cleanup EXIT
+  trap 'exit 130' INT TERM HUP
+  printf 'i\tstatus\tpid\tVmRSS_kB\tRssAnon_kB\tVmHWM_kB\twall_s\tsummary\n' >"$report"
+  echo "argv: ${startup[*]} ${cmd[*]}" >>"$dir/run.log"
+  local i st pid pf t0 t1 summary
+  for ((i = 1; i <= count; i++)); do
+    t0=$(date +%s.%N)
+    set +e
+    (cd "$ws" && "${env[@]}" "${startup[@]}" "${cmd[@]}" >"$logs/$i.out" 2>"$logs/$i.err")
+    st=$?
+    set -e
+    t1=$(date +%s.%N)
+    pf="$(pid_file "$ur")"
+    pid=""
+    [[ -n "$pf" ]] && pid="$(cat "$pf" 2>/dev/null || true)"
+    summary="$(grep -E '^(INFO: (Analyzed|Found|[0-9]+ process|Build completed|Elapsed)|ERROR|FATAL|Loading: )' "$logs/$i.err" \
+      | sed -E 's/[0-9]+\.[0-9]+s/<DUR>/g' | tr '\n' '|' || true)"
+    summary="$summary stdout_lines=$(wc -l <"$logs/$i.out")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$i" "exit $st" "${pid:--}" "$(mem_of "$pid")" \
+      "$(echo "$t1 - $t0" | bc)" "$summary" >>"$report"
+    tail -1 "$report"
+  done
+}
+
+cmd_run() {
+  local name="" binary="" project="" count=12 oracle=0 fresh=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --binary) binary="$2"; shift 2 ;;
+      --project) project="$2"; shift 2 ;;
+      --count) count="$2"; shift 2 ;;
+      --oracle) oracle=1; shift ;;
+      --fresh) fresh=1; shift ;;
+      --) shift; break ;;
+      *) die "unknown argument $1 (see: soak help)" ;;
+    esac
+  done
+  [[ -n "$name" && -n "$binary" && -n "$project" && $# -gt 0 ]] || die "missing argument (see: soak help)"
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || die "bad --name $name"
+  [[ "$project" == brotli || "$project" == re2 ]] || die "project must be brotli or re2"
+  [[ "$count" =~ ^[0-9]+$ ]] || die "bad --count"
+  binary="$(readlink -f -- "$binary")"
+  [[ -x "$binary" ]] || die "not executable: $binary"
+  local dir="$ROOT/$name"
+  if [[ -e "$dir" ]]; then
+    [[ "$fresh" == 1 ]] || die "$dir exists (use --fresh to replace it)"
+    safe_rm "$dir"
+  fi
+  mkdir -p "$dir"
+  rsync -a --exclude='/bazel-*' --exclude=/.git "$HOME/.cache/blaze/corpus/$project/" "$dir/ws/"
+  {
+    echo "binary: $binary sha256 $(sha256sum "$binary" | cut -d' ' -f1)"
+    echo "project: $project count: $count oracle: $oracle"
+    echo "started: $(date -Is)"
+  } >"$dir/run.log"
+  set +e
+  systemd-run --user --collect --wait --pipe --quiet -p MemoryMax=12G -p MemorySwapMax=0 \
+    bash "$SELF" __inner "$dir" "$binary" "$oracle" "$count" "$@"
+  local st=$?
+  set -e
+  echo "unit exit $st" >>"$dir/run.log"
+  echo "report: $dir/report.tsv"
+  return $st
+}
+
+case "${1:-help}" in
+  help | --help | -h) usage ;;
+  run) shift; cmd_run "$@" ;;
+  __inner) shift; inner "$@" ;;
+  *) usage; exit 2 ;;
+esac

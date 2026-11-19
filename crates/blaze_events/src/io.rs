@@ -156,6 +156,12 @@ impl OutErr {
         OutErr { out, err }
     }
 
+    /// Returns a [`SystemPatcher`] that uses this instance's out and err streams.
+    // Java: com/google/devtools/build/lib/util/io/OutErr.java:57 OutErr.getSystemPatcher
+    pub fn get_system_patcher(&self) -> SystemPatcher {
+        SystemPatcher::new(self.out.clone(), self.err.clone())
+    }
+
     // Java: com/google/devtools/build/lib/util/io/OutErr.java:45 OutErr.close
     pub fn close(&self) -> io::Result<()> {
         // Ensure that we close both out and err even if one throws.
@@ -204,6 +210,242 @@ impl OutErr {
     // Java: com/google/devtools/build/lib/util/io/OutErr.java:140 OutErr.printErrLn
     pub fn print_err_ln(&self, s: &str) {
         self.print_err(&format!("{s}\n"));
+    }
+}
+
+/// `java.lang.System.out` and `System.err`: the streams that code which writes "to the
+/// process's stdout or stderr" uses. Unlike [`OutErr::system_out_err`] (Java's
+/// `OutErr.SYSTEM_OUT_ERR`, created once from the streams the JVM started with), these are
+/// switched by [`SystemPatcher`] while a command runs (`BlazeCommandDispatcher.execExclusively`),
+/// so that their output reaches the command's client through its reporter.
+///
+/// When nothing is patched they are the process's own stdout and stderr, the same streams as
+/// [`OutErr::system_out_err`].
+// Java: java/lang/System.java System.out, System.err (JDK)
+struct SystemStreams {
+    out: Arc<dyn OutputStream>,
+    err: Arc<dyn OutputStream>,
+}
+
+static SYSTEM_STREAMS: LazyLock<parking_lot::RwLock<SystemStreams>> = LazyLock::new(|| {
+    let system_out_err = OutErr::system_out_err();
+    parking_lot::RwLock::new(SystemStreams {
+        out: system_out_err.get_output_stream().clone(),
+        err: system_out_err.get_error_stream().clone(),
+    })
+});
+
+/// `System.out`: the current standard output stream of this process (see [`SystemPatcher`]).
+// Java: java/lang/System.java System.out (JDK)
+pub fn system_out() -> Arc<dyn OutputStream> {
+    SYSTEM_STREAMS.read().out.clone()
+}
+
+/// `System.err`: the current standard error stream of this process (see [`SystemPatcher`]).
+// Java: java/lang/System.java System.err (JDK)
+pub fn system_err() -> Arc<dyn OutputStream> {
+    SYSTEM_STREAMS.read().err.clone()
+}
+
+/// `System.err.println(s)`: `s` encoded with the server's default charset (ISO-8859-1, so an
+/// internal string leaves as its bytes), then the line separator. A `PrintStream` swallows
+/// `IOException`s; so does this.
+///
+/// PORT: `PrintStream.println(String)` of a `PrintStream` subclass (the patched stream,
+/// `SwitchingPrintStream`) writes the string and the newline as two writes; the JVM's own
+/// `System.err` writes them as one. Both are two writes here; the bytes are the same.
+// Java: java/io/PrintStream.java PrintStream.println (JDK)
+pub fn system_err_println(s: &str) {
+    let err = system_err();
+    let _ = err.write(&blaze_util::string_encoding::latin1_encode_lossy(s));
+    let _ = err.write(b"\n");
+}
+
+// Java: java/lang/System.java System.setOut (JDK)
+fn system_set_out(out: Arc<dyn OutputStream>) {
+    SYSTEM_STREAMS.write().out = out;
+}
+
+// Java: java/lang/System.java System.setErr (JDK)
+fn system_set_err(err: Arc<dyn OutputStream>) {
+    SYSTEM_STREAMS.write().err = err;
+}
+
+/// Temporarily patches [`system_out`] and [`system_err`] (`System.out`, `System.err`) with
+/// custom streams.
+///
+/// [`SystemPatcher::start`] is called to signal the beginning of the scope of the patch.
+/// [`SystemPatcher::close`] ends the scope of the patch, returning `System.out` and `System.err`
+/// to what they were when this instance was instantiated.
+// Java: com/google/devtools/build/lib/util/io/OutErr.java:68 OutErr.SystemPatcher
+pub struct SystemPatcher {
+    saved_out: Arc<dyn OutputStream>,
+    saved_err: Arc<dyn OutputStream>,
+    out_patch: Arc<SwitchingPrintStream>,
+    err_patch: Arc<SwitchingPrintStream>,
+}
+
+impl SystemPatcher {
+    // Java: com/google/devtools/build/lib/util/io/OutErr.java:74 SystemPatcher.<init>
+    fn new(override_out: Arc<dyn OutputStream>, override_err: Arc<dyn OutputStream>) -> Self {
+        SystemPatcher {
+            saved_out: system_out(),
+            saved_err: system_err(),
+            out_patch: Arc::new(SwitchingPrintStream::new(override_out)),
+            err_patch: Arc::new(SwitchingPrintStream::new(override_err)),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/util/io/OutErr.java:81 SystemPatcher.start
+    pub fn start(&self) {
+        system_set_out(self.out_patch.clone());
+        system_set_err(self.err_patch.clone());
+    }
+
+    // Java: com/google/devtools/build/lib/util/io/OutErr.java:87 SystemPatcher.close
+    pub fn close(&self) {
+        system_set_out(self.saved_out.clone());
+        system_set_err(self.saved_err.clone());
+        self.out_patch.switch_back_to(self.saved_out.clone());
+        self.err_patch.switch_back_to(self.saved_err.clone());
+    }
+}
+
+/// Starts by streaming to `override`, then switches back to `saved`.
+///
+/// The switching strategy is used to guard against memory leaks. For example, if `override` is
+/// passed directly to `System.setErr`, anyone may retain a reference to it via `System.err`.
+/// Instead, they will get a reference to this class, which frees up `override` in
+/// `switch_back_to`.
+///
+/// A `PrintStream` with `autoFlush`: every write is followed by a flush, and `IOException`s are
+/// swallowed (`PrintStream.checkError` is not ported: nothing reads it).
+// Java: com/google/devtools/build/lib/util/io/OutErr.java:103 OutErr.SwitchingPrintStream
+struct SwitchingPrintStream {
+    out: Mutex<Arc<dyn OutputStream>>,
+}
+
+impl SwitchingPrintStream {
+    // Java: com/google/devtools/build/lib/util/io/OutErr.java:105 SwitchingPrintStream.<init>
+    fn new(override_: Arc<dyn OutputStream>) -> Self {
+        SwitchingPrintStream {
+            out: Mutex::new(override_),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/util/io/OutErr.java:109 SwitchingPrintStream.switchBackTo
+    fn switch_back_to(&self, saved: Arc<dyn OutputStream>) {
+        *self.out.lock() = saved;
+    }
+
+    fn current(&self) -> Arc<dyn OutputStream> {
+        // PORT: PrintStream writes while holding its own monitor; the stream is read under the
+        // lock and written outside it, so that a write that comes back to this stream (a reporter
+        // handler writing to System.err) cannot deadlock (Java's monitor is reentrant).
+        self.out.lock().clone()
+    }
+}
+
+impl OutputStream for SwitchingPrintStream {
+    // Java: java/io/PrintStream.java PrintStream.write(byte[], int, int) (JDK)
+    fn write(&self, bytes: &[u8]) -> io::Result<()> {
+        let out = self.current();
+        if out.write(bytes).is_ok() {
+            // if (autoFlush) out.flush()
+            let _ = out.flush();
+        }
+        Ok(())
+    }
+
+    // Java: java/io/PrintStream.java PrintStream.flush (JDK)
+    fn flush(&self) -> io::Result<()> {
+        let _ = self.current().flush();
+        Ok(())
+    }
+
+    // Java: java/io/PrintStream.java PrintStream.close (JDK)
+    fn close(&self) -> io::Result<()> {
+        let _ = self.current().close();
+        Ok(())
+    }
+}
+
+/// The class implements a buffered output stream. By setting up such an output stream, an
+/// application can write bytes to the underlying output stream without necessarily causing a
+/// call to the underlying system for each byte written. Port of `java.io.BufferedOutputStream`
+/// (`BlazeCommandDispatcher.bufferOut` / `bufferErr` wrap the command's streams in it).
+///
+/// PORT: the JDK's buffer may start smaller and grow up to its size; what reaches the
+/// underlying stream (when, and in which pieces) is that of a buffer of the full size.
+// Java: java/io/BufferedOutputStream.java BufferedOutputStream (JDK)
+pub struct BufferedOutputStream {
+    out: Arc<dyn OutputStream>,
+    buf: Mutex<Vec<u8>>,
+    size: usize,
+}
+
+impl BufferedOutputStream {
+    /// `DEFAULT_MAX_BUFFER_SIZE`.
+    pub const DEFAULT_SIZE: usize = 8192;
+
+    // Java: java/io/BufferedOutputStream.java BufferedOutputStream.<init>(OutputStream) (JDK)
+    pub fn new(out: Arc<dyn OutputStream>) -> Self {
+        Self::with_size(out, Self::DEFAULT_SIZE)
+    }
+
+    // Java: java/io/BufferedOutputStream.java BufferedOutputStream.<init>(OutputStream, int) (JDK)
+    pub fn with_size(out: Arc<dyn OutputStream>, size: usize) -> Self {
+        blaze_util::check_argument!(size > 0, "Buffer size <= 0");
+        BufferedOutputStream {
+            out,
+            buf: Mutex::new(Vec::with_capacity(size)),
+            size,
+        }
+    }
+
+    /// Flush the internal buffer.
+    // Java: java/io/BufferedOutputStream.java BufferedOutputStream.flushBuffer (JDK)
+    fn flush_buffer(&self, buf: &mut Vec<u8>) -> io::Result<()> {
+        if !buf.is_empty() {
+            let r = self.out.write(buf);
+            // count = 0 only after a successful write in Java; on failure the bytes stay.
+            r?;
+            buf.clear();
+        }
+        Ok(())
+    }
+}
+
+impl OutputStream for BufferedOutputStream {
+    // Java: java/io/BufferedOutputStream.java BufferedOutputStream.write(byte[], int, int) (JDK)
+    fn write(&self, b: &[u8]) -> io::Result<()> {
+        let mut buf = self.buf.lock();
+        if b.len() >= self.size {
+            // If the request length exceeds the max size of the output buffer, flush the output
+            // buffer and then write the data directly. In this way buffered streams will cascade
+            // harmlessly.
+            self.flush_buffer(&mut buf)?;
+            return self.out.write(b);
+        }
+        if b.len() > self.size - buf.len() {
+            self.flush_buffer(&mut buf)?;
+        }
+        buf.extend_from_slice(b);
+        Ok(())
+    }
+
+    // Java: java/io/BufferedOutputStream.java BufferedOutputStream.flush (JDK)
+    fn flush(&self) -> io::Result<()> {
+        let mut buf = self.buf.lock();
+        self.flush_buffer(&mut buf)?;
+        self.out.flush()
+    }
+
+    // Java: java/io/FilterOutputStream.java FilterOutputStream.close (JDK)
+    fn close(&self) -> io::Result<()> {
+        let flushed = self.flush();
+        let closed = self.out.close();
+        flushed.and(closed)
     }
 }
 
@@ -478,6 +720,142 @@ mod tests {
             BROKEN_PIPES.load(std::sync::atomic::Ordering::SeqCst),
             before + 1
         );
+    }
+
+    /// `System.out` / `System.err` go to the patcher's streams between `start` and `close`, and
+    /// back to the saved ones after; a stream obtained while patched writes to the saved stream
+    /// once the patch is closed (`SwitchingPrintStream.switchBackTo`).
+    // Java: com/google/devtools/build/lib/util/io/OutErr.java:68 OutErr.SystemPatcher
+    #[test]
+    fn system_patcher_switches_system_out_and_err() {
+        let before_out = system_out();
+        let before_err = system_err();
+        let recording = RecordingOutErr::new();
+        let patcher = recording.out_err().get_system_patcher();
+        patcher.start();
+        let retained_err = system_err();
+        system_out().write(b"to out").unwrap();
+        system_err_println("to err \u{e9}");
+        patcher.close();
+        assert_eq!(recording.out_as_latin1(), "to out");
+        assert_eq!(
+            recording.get_error_stream().to_byte_array(),
+            b"to err \xe9\n"
+        );
+        assert!(Arc::ptr_eq(&system_out(), &before_out));
+        assert!(Arc::ptr_eq(&system_err(), &before_err));
+        // The retained patch now writes to the saved stream (here the process's stderr), not to
+        // the recording.
+        let _ = retained_err.flush();
+        assert_eq!(
+            recording.get_error_stream().to_byte_array(),
+            b"to err \xe9\n"
+        );
+    }
+
+    /// `BufferedOutputStream`: small writes are collected until the buffer would overflow or the
+    /// stream is flushed; a write of at least the buffer's size goes straight through after the
+    /// buffer.
+    // Java: java/io/BufferedOutputStream.java BufferedOutputStream.write(byte[], int, int) (JDK)
+    #[test]
+    fn buffered_output_stream_write_granularity() {
+        #[derive(Default)]
+        struct Writes(Mutex<Vec<Vec<u8>>>);
+        impl OutputStream for Writes {
+            fn write(&self, bytes: &[u8]) -> io::Result<()> {
+                self.0.lock().push(bytes.to_vec());
+                Ok(())
+            }
+        }
+        let writes = Arc::new(Writes::default());
+        let buffered = BufferedOutputStream::with_size(writes.clone(), 4);
+        buffered.write(b"ab").unwrap();
+        buffered.write(b"c").unwrap();
+        assert!(writes.0.lock().is_empty());
+        buffered.write(b"de").unwrap();
+        assert_eq!(*writes.0.lock(), vec![b"abc".to_vec()]);
+        buffered.write(b"fghij").unwrap();
+        assert_eq!(
+            *writes.0.lock(),
+            vec![b"abc".to_vec(), b"de".to_vec(), b"fghij".to_vec()]
+        );
+        buffered.write(b"k").unwrap();
+        buffered.flush().unwrap();
+        assert_eq!(writes.0.lock().last().unwrap(), b"k");
+        buffered.flush().unwrap();
+        assert_eq!(writes.0.lock().len(), 4);
+    }
+
+    mod out_err_test {
+        //! Port of `src/test/java/com/google/devtools/build/lib/util/io/OutErrTest.java`.
+        use super::*;
+
+        fn set_up() -> (Arc<ByteArrayOutputStream>, Arc<ByteArrayOutputStream>, OutErr) {
+            let out = Arc::new(ByteArrayOutputStream::new());
+            let err = Arc::new(ByteArrayOutputStream::new());
+            let out_err = OutErr::create(out.clone(), err.clone());
+            (out, err, out_err)
+        }
+
+        // Java: src/test/java/com/google/devtools/build/lib/util/io/OutErrTest.java:31 OutErrTest.testRetainsOutErr
+        #[test]
+        fn test_retains_out_err() {
+            let (out, err, out_err) = set_up();
+            let out: Arc<dyn OutputStream> = out;
+            let err: Arc<dyn OutputStream> = err;
+            assert!(Arc::ptr_eq(out_err.get_output_stream(), &out));
+            assert!(Arc::ptr_eq(out_err.get_error_stream(), &err));
+        }
+
+        // Java: src/test/java/com/google/devtools/build/lib/util/io/OutErrTest.java:37 OutErrTest.testPrintsToOut
+        #[test]
+        fn test_prints_to_out() {
+            let (out, _err, out_err) = set_up();
+            out_err.print_out("Hello, world.");
+            assert_eq!(latin1(&out.to_byte_array()), "Hello, world.");
+        }
+
+        // Java: src/test/java/com/google/devtools/build/lib/util/io/OutErrTest.java:43 OutErrTest.testPrintsToErr
+        #[test]
+        fn test_prints_to_err() {
+            let (_out, err, out_err) = set_up();
+            out_err.print_err("Hello, moon.");
+            assert_eq!(latin1(&err.to_byte_array()), "Hello, moon.");
+        }
+
+        // Java: src/test/java/com/google/devtools/build/lib/util/io/OutErrTest.java:49 OutErrTest.testPrintsToOutWithANewline
+        #[test]
+        fn test_prints_to_out_with_a_newline() {
+            let (out, _err, out_err) = set_up();
+            out_err.print_out_ln("With a newline.");
+            assert_eq!(latin1(&out.to_byte_array()), "With a newline.\n");
+        }
+
+        // Java: src/test/java/com/google/devtools/build/lib/util/io/OutErrTest.java:55 OutErrTest.testPrintsToErrWithANewline
+        #[test]
+        fn test_prints_to_err_with_a_newline() {
+            let (_out, err, out_err) = set_up();
+            out_err.print_err_ln("With a newline.");
+            assert_eq!(latin1(&err.to_byte_array()), "With a newline.\n");
+        }
+
+        // Java: src/test/java/com/google/devtools/build/lib/util/io/OutErrTest.java:61 OutErrTest.testPrintsTwoLinesToOut
+        #[test]
+        fn test_prints_two_lines_to_out() {
+            let (out, _err, out_err) = set_up();
+            out_err.print_out_ln("line 1");
+            out_err.print_out_ln("line 2");
+            assert_eq!(latin1(&out.to_byte_array()), "line 1\nline 2\n");
+        }
+
+        // Java: src/test/java/com/google/devtools/build/lib/util/io/OutErrTest.java:68 OutErrTest.testPrintsTwoLinesToErr
+        #[test]
+        fn test_prints_two_lines_to_err() {
+            let (_out, err, out_err) = set_up();
+            out_err.print_err_ln("line 1");
+            out_err.print_err_ln("line 2");
+            assert_eq!(latin1(&err.to_byte_array()), "line 1\nline 2\n");
+        }
     }
 
     const ESCAPE: &str = "\u{1b}[";
