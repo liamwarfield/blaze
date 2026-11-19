@@ -35,16 +35,26 @@ Updated 2026-11-19 (root). Numbers cite their evidence; history is in `git log` 
 
 Open items the reviewers left as non-blocking are listed at the end of each report.
 
+## workerd (third project, user request)
+
+At checkpoint a602a17's tree, on a work copy with one emoji removed from README.md:
+`blaze build //src/workerd/server:workerd` exits 0 with Bazel's summary line (9,713 processes:
+3,333 internal, 6,379 linux-sandbox, 1 local); `bazel-bin/src/workerd/server/workerd` has the
+same sha256 as Bazel's (cdedf3f9…, re-hashed by root from both output bases); cquery 38,892 of
+38,892 with order; aquery 13,416 actions, 13,160 identical, 256 allow-listed runfiles keys
+(lead's comparisons with the referee's extractors; not referee recordings). On the pristine
+checkout cquery/aquery fail at one telemetry rule that needs Bazel's byte-string semantics.
+Details: `docs/workerd.md`.
+
 ## In flight
 
-- **Remote lead** (Fable; Opus workers): fixes for the remote review (R1–R18). Lead-reported
-  real-binary matrix against Bazel's worker (`scripts/remote/matrix`; not yet a verdict-giving
-  tool): disk and remote cache interchange with real Bazel matches Bazel's own hit lines on
-  brotli (43) and re2 (550); gRPC logs match (re2 cold run differs only in the 21 test actions);
-  remote execution issues identical Execute calls (43 and 529); build without the bytes matches
-  on brotli. Design and gaps: `docs/remote.md`.
-- **Opus fixer:** adopting interpreter patches 0026–0031 in analysis and loading, strategy
-  validation in cquery/aquery, saved probe transcripts.
+- **Byte-strings lead** (Fable; Opus workers): mirror Bazel's internal string form
+  (`docs/research/07-byte-strings.md`), so workerd passes the referee protocol unmodified.
+- **Remote lead** (Fable; five Opus workers): remote review round-2 STOP (N1-N4 and S2s);
+  first run of Bazel's remote shell tests against Blaze: 110 of 253 oracle-passing functions.
+- Unassigned, from that run: `mod dump_repo_mapping` (33 tests), `--build_event_text_file`
+  (13), createCppCompileActionTemplate (6), `fetch` (4), `unused_inputs_list` panic (4),
+  exclusive tests (3), command.profile.gz / critical path in BEP; blaze_vfs ENOTDIR handling.
 
 ## Next
 

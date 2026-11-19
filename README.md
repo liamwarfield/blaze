@@ -32,7 +32,11 @@ repository fetching and no oracle shortcuts (label `blaze-ef66f55e904e`; full ta
 
 23 of 26 surfaces match; 13,850 of 13,858 compared items. "Allowed" items are runfiles-manifest
 action keys and volatile build-metric counters, which also differ between two runs of real Bazel.
-A third project, workerd, is recorded on the oracle only and counts as missing in the score file.
+A third project, [workerd](https://github.com/cloudflare/workerd), builds end to end with Blaze
+on a copy with one emoji removed from its README: 9,713 actions, Bazel's exact summary line, and
+an output binary byte-identical to Bazel's (same sha256). On the untouched checkout Blaze still
+fails at one rule that depends on Bazel's byte-string semantics, so workerd counts as missing in
+the score file; see `docs/workerd.md`.
 
 **Outside the happy path.** On 35 small error and UI scenarios compared as full transcripts
 (`scripts/w4/probe`), only 1 of 618 steps that run the binary is identical to Bazel, and about
