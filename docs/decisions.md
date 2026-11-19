@@ -313,3 +313,13 @@ Each entry: date, decision, why, who decided.
   not continued while the count is above ten, except where its hand-back leaves the shared
   tree broken or another agent blocked; the full-suite run that counts as the outer measure is
   taken only when the load average is under 16. Root.
+- 2026-11-19. Memory pressure, second cause found: `/tmp` is RAM-backed (tmpfs, 16 GB) and
+  root's session scratchpad held 11 GB of files left by agents that finished on 2026-11-18,
+  7.1 GB of it 23 stale copies of the Blaze binary. Root deleted those 23 files (old ELF
+  copies only; notes and logs kept): available memory went from 6 GB to 15 GB. Binaries and
+  run outputs belong under `~/.cache/blaze/work`, never in a scratchpad under `/tmp`
+  (AGENTS.md already says tools never live in `/tmp`; this extends it to binaries). Root.
+- 2026-11-19. The "files vanish from the shared repo contents cache" family of the first suite
+  run is confirmed as a harness effect by a second route: a stress tool with six Blaze
+  processes on one cache passes, and with the old harness's mid-run cache reset both Bazel and
+  Blaze fail the same way. Not a Blaze bug. Root.

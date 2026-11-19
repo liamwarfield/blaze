@@ -62,7 +62,12 @@ Partly ported:
   cquery 38,892 of 38,892). Open: sibling macros evaluate in order where Bazel evaluates them
   in parallel (the order of `print()` lines differs under lazy expansion); the analysis side of
   materializers (`MaterializingDefault.resolve`).
-- Autoloads with a non-default `--incompatible_autoload_externally`.
+- Autoloads (`--incompatible_autoload_externally`, all values): ported after v0.1.0, with
+  `--experimental_sibling_repository_layout`, `--nofetch`, PAX sparse tar entries and the
+  mapping of every failure-detail category to its exit code (errors such as a yanked module
+  version used to panic). On the 20 upstream targets these blocked, 389 of 528 oracle-passing
+  functions pass (run `repo-gaps-1`, under the harness lock; the v0.1.0 figure for the same
+  targets comes from the withdrawn run and is not quoted).
 - `--experimental_starlark_type_checking`, `--max_computation_steps`.
 - `testing.analysis_test`, `testing.TestEnvironment`.
 - Implicit outputs computed by a Starlark callback.
