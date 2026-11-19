@@ -287,3 +287,12 @@ Each entry: date, decision, why, who decided.
   reviewed in the auditor's next round. The owner of the wrapper was asked to stop it (root's
   attempt to stop another agent's process was refused by the harness's permission check and
   not repeated). No suite total exists yet for v0.1.0 under the fixed harness. Root.
+- 2026-11-19. Syntax errors: Bazel's scanner, parser (with error recovery), resolver error
+  reporting and BUILD-file checks are ported into `crates/blaze_starlark/src/syntax/java` and
+  run on every BUILD and `.bzl` file before starlark-rust parses it for execution, so Blaze
+  reports every syntax error Bazel reports, in its order. Cost, measured in a release build
+  under load: about 2.6% of wall time on the workerd `deps()` query, about 0.1 s on re2 (10 to
+  13% of a run under one second). Ruling: accepted; the front end is not made conditional on
+  starlark-rust reporting an error, because a file only Bazel rejects must not be accepted. A
+  differential test over 6,215 files of the corpus and Bazel's builtins guards the two front
+  ends against disagreeing. Root.
