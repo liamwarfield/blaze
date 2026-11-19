@@ -36,9 +36,9 @@ Partly ported:
 | `mod` | `dump_repo_mapping`, `show_repo` and `tidy` ported after v0.1.0 (exit code and stdout equal to Bazel's in 133 of 133 cases, 44 of them equal failures; stderr differs in 96; upstream tests not run yet); missing: `show_repo` proto output for three attribute types |
 | `help`, `fetch`, `canonicalize-flags`, `license` | ported after v0.1.0 (137 invocations, equal after normalisation: 120 identical, 13 of them by declared exit code, 16 fail identically on both sides, 1 different; binary sha256 `315c2147…`; upstream test counts to be re-measured); missing: `fetch --force` with target patterns |
 | `info` | 15 of 57 compared cases: `info` with no key, JVM-only keys (heap sizes, `java-home`), `build-language`, `peak-heap-size`, `starlark-semantics` |
-| `query` | `--output=graph` and other formatters that need the dependency graph, `--query_file`, SkyQuery (`--universe_scope`), definition and instantiation stacks in proto output, rule class info, native aspects |
-| `cquery` | `--show_config_fragments`, some output formats' start/process hooks |
-| `aquery` | `--skyframe_state`, the dump after a build (`--experimental_aquery_dump_after_build_format`) |
+| `query` | ported after v0.1.0: `Digraph`, the `graph`, `minrank`, `maxrank` and `xml` outputs, `--order_output`, `--graph:*`, `--query_file`, definition and instantiation stacks, the synthetic attribute hash, `loadfiles()`; missing: `--proto:rule_classes`, SkyQuery (`--universe_scope`), native aspects. Comparison by an unaudited tool, upstream tests not run |
+| `cquery` | `build`, `graph`, `files` outputs ported after v0.1.0; missing: `--output=starlark`, `--output=transitions`, `--show_config_fragments` (stops in analysis) |
+| `aquery` | `--output=proto`, `streamed_proto`, `textproto` ported after v0.1.0; missing: `--skyframe_state`, the dump after a build (`--experimental_aquery_dump_after_build_format`) |
 | `run` | ported after v0.1.0 (exit code and program output equal to Bazel's in 20 of 20 cases; a filtered set of summary lines equal in 15, 7 of them declared failures; other stderr is not compared and differs; upstream test counts to be re-measured); missing: remote flags with `run` |
 | `shutdown` | there is no server to stop |
 
@@ -147,8 +147,8 @@ in, not re-reviewed). Missing:
 - The cursor-control progress bar (`--curses=yes`).
 - Text-format output: `--build_event_text_file` and `cquery --output=textproto` ported after
   v0.1.0 (on Bazel's own brotli and re2 outputs: build events identical per record, cquery
-  byte-identical, aquery by reprint only); `aquery --output=proto` / `textproto` /
-  `streamed_proto` still missing (only `jsonproto` works).
+  byte-identical, aquery by reprint only); `aquery --output=proto`, `textproto` and
+  `streamed_proto` ported since.
 - Build event stream: `run`, `fetch`, `query`, a command that stops before it runs, target
   summaries, aspect events, failed patterns and analysis failures, and progress stdout/stderr
   are ported (bep-wave-1); still missing: the stream of `cquery` / `aquery` (fails loudly), the
