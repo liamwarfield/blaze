@@ -261,6 +261,9 @@ struct Inner {
     /// Whether every call waits for the verified server capabilities (see
     /// [`ReferenceCountedChannel::with_capabilities_gate`]).
     capabilities_gate: bool,
+    /// The `IOException` of `channelFactory.newChannel` (see
+    /// [`ReferenceCountedChannel::failed`]): every call fails with it.
+    creation_error: Option<Arc<io::Error>>,
     ref_cnt: AtomicI32,
     shutdown: AtomicBool,
 }
@@ -313,10 +316,43 @@ impl ReferenceCountedChannel {
                 capabilities_fetcher,
                 server_capabilities: tokio::sync::OnceCell::new(),
                 capabilities_gate: false,
+                creation_error: None,
                 ref_cnt: AtomicI32::new(1),
                 shutdown: AtomicBool::new(false),
             }),
         }
+    }
+
+    /// A channel whose transport could not be created: every call (and the server capabilities)
+    /// fails with `error`.
+    ///
+    /// PORT: Java creates the transport inside the connection factory
+    /// (`Single.fromCallable(() -> channelFactory.newChannel(...))`), so an `IOException` of
+    /// `newChannel` (a bad `--tls_certificate`, a malformed target) fails each call's future,
+    /// not the command. The transport given to tonic is a lazy placeholder that is never used.
+    // Java: com/google/devtools/build/lib/remote/GoogleChannelConnectionFactory.java:103 GoogleChannelConnectionFactory.create
+    pub fn failed(
+        authority: &str,
+        error: io::Error,
+        capabilities_fetcher: Option<CapabilitiesFetcher>,
+    ) -> ReferenceCountedChannel {
+        let placeholder = {
+            let _guard = crate::runtime::runtime().enter();
+            tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy()
+        };
+        let mut channel = ReferenceCountedChannel::new(
+            placeholder,
+            authority,
+            false,
+            Vec::new(),
+            usize::MAX,
+            capabilities_fetcher,
+        );
+        match Arc::get_mut(&mut channel.inner) {
+            Some(inner) => inner.creation_error = Some(Arc::new(error)),
+            None => unreachable!("a new channel is not shared"),
+        }
+        channel
     }
 
     /// `builder.defaultServiceConfig(serviceConfig)`: applies the `methodConfig[].timeout`
@@ -394,6 +430,9 @@ impl ReferenceCountedChannel {
     /// Returns the server capabilities of the connection, fetching them on first use.
     // Java: com/google/devtools/build/lib/remote/ReferenceCountedChannel.java:70 ReferenceCountedChannel.getServerCapabilities
     pub async fn get_server_capabilities_async(&self) -> io::Result<ServerCapabilities> {
+        if let Some(e) = &self.inner.creation_error {
+            return Err(crate::common::errors::shared(e));
+        }
         let Some(fetcher) = self.inner.capabilities_fetcher.clone() else {
             return Err(io::Error::other(
                 "IllegalStateException: channel was created without a capabilities factory",
@@ -464,6 +503,11 @@ impl ReferenceCountedChannel {
         if self.is_shutdown() {
             return Err(tonic::Status::unavailable("Channel shutdown invoked"));
         }
+        if let Some(e) = &self.inner.creation_error {
+            return Err(crate::common::errors::io_error_status(
+                crate::common::errors::shared(e),
+            ));
+        }
         // Java: com/google/devtools/build/lib/remote/ReferenceCountedChannel.java:156 ReferenceCountedChannel.withChannelConnection
         if self.inner.capabilities_gate
             && *method != methods::GET_CAPABILITIES
@@ -482,8 +526,15 @@ impl ReferenceCountedChannel {
         // Java: io.grpc.auth.GoogleAuthLibraryCallCredentials.applyRequestMetadata
         if let Some(credentials) = &options.call_credentials {
             let uri = service_uri(&self.inner.authority, method);
+            // GoogleAuthLibraryCallCredentials' callback (onFailure, for an error that is not
+            // `Retryable`): `Status.UNAUTHENTICATED.withDescription("Failed computing credential
+            // metadata").withCause(e)`. `Utils.grpcAwareErrorMessage` shows the cause's message
+            // only for a `CredentialHelperException`.
             let metadata = credentials.get_request_metadata(&uri).await.map_err(|e| {
-                tonic::Status::unauthenticated(format!("Failed computing credential metadata: {e}"))
+                let mut status =
+                    tonic::Status::unauthenticated("Failed computing credential metadata");
+                status.set_source(Arc::new(e));
+                status
             })?;
             for (name, values) in metadata {
                 let lower = name.to_ascii_lowercase();

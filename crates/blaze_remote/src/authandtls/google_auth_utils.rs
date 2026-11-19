@@ -537,12 +537,20 @@ impl CallCredentials for GoogleAuthLibraryCallCredentials {
         // runs the blocking getRequestMetadata(URI) on the executor: it may run a credential
         // helper (a subprocess), which must not block the async runtime.
         let creds = self.creds.clone();
-        let metadata: Headers =
-            match tokio::task::spawn_blocking(move || creds.get_request_metadata(&uri)).await {
-                Ok(metadata) => metadata.map_err(io::Error::other)?,
-                Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-                Err(e) => return Err(io::Error::other(e)),
-            };
+        // Credentials.blockingGetToCallback catches every Throwable and hands it to the
+        // callback, so an unchecked exception from the credentials fails the call like an
+        // IOException does (the caller turns either into the call's status, with the error as
+        // its cause).
+        let metadata: Headers = match tokio::task::spawn_blocking(move || {
+            credentialhelper::catch_unchecked(|| creds.get_request_metadata(&uri))
+        })
+        .await
+        {
+            Ok(Ok(metadata)) => metadata.map_err(io::Error::other)?,
+            Ok(Err(unchecked)) => return Err(io::Error::other(unchecked)),
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            Err(e) => return Err(io::Error::other(e)),
+        };
         Ok(metadata.into_iter().collect())
     }
 }

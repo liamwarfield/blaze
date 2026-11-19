@@ -12,7 +12,6 @@ use blaze_events::{
     Event, EventBus, EventHandler, ExtendedEventHandler, JavaClock, OutputFilter, Postable,
 };
 use blaze_exec::actions::CacheCheckAction;
-use blaze_exec::actions::FileArtifactValue;
 use blaze_exec::actions::action_cache_checker::{
     ActionCacheChecker, ActionCacheCheckerCacheConfig, ExecutionFilter, NoProxies,
 };
@@ -20,6 +19,7 @@ use blaze_exec::actions::cache::{
     ActionCache, ActionCacheStatistics, CompactPersistentActionCache, PostableActionCacheStats,
 };
 use blaze_exec::actions::resource_manager::{ResourceManager, configure_resource_manager};
+use blaze_exec::actions::{FileArtifactValue, OutputChecker};
 use blaze_exec::exec::bin_tools::BinTools;
 use blaze_exec::exec::exec_command_environment::ExecCommandEnvironment;
 use blaze_exec::exec::executor_setup::{
@@ -94,6 +94,9 @@ pub struct ExecutionToolConfig {
     /// The command's `RemoteModule` after `beforeCommand` ([`remote_module_before_command`]);
     /// `None` (test harnesses) registers the placeholder "remote" strategy and no spawn cache.
     pub remote_module: Option<Arc<CommandRemoteModule>>,
+    /// The `AbruptExitException` a module's `executorInit` threw (`SpawnLogModule`'s option
+    /// check), which `ExecutionTool.<init>` throws before it registers the spawn strategies.
+    pub executor_init_error: Option<AbruptExitException>,
 }
 
 /// What `RemoteModule.beforeCommand` reads from the command's `CommandEnvironment`.
@@ -245,6 +248,14 @@ impl CommandRemoteModule {
             Some(mut module) => module.after_command(),
             None => Ok(()),
         }
+    }
+
+    /// See `RemoteModule::uses_byte_stream_build_event_artifact_uploader`.
+    pub fn uses_byte_stream_build_event_artifact_uploader(&self) -> bool {
+        self.module
+            .lock()
+            .as_ref()
+            .is_some_and(|m| m.uses_byte_stream_build_event_artifact_uploader())
     }
 
     /// The `BuildCompleteEvent` subscriber (`RemoteExecutionService.onBuildComplete`).
@@ -477,7 +488,23 @@ pub fn prepare_for_execution_with_action_cache(
         execution_options.test_check_up_to_date || action_cache_options.test_check_up_to_date,
         execution_options.check_up_to_date || action_cache_options.check_up_to_date,
     );
-    // LocalOutputService: no proxy metadata, no remote output metadata in the action cache.
+    // The output service: RemoteOutputService when the remote module set up a cache
+    // (RemoteModule.setup), else LocalOutputService. Neither has proxy metadata; the remote one
+    // stores remote output metadata in the action cache and checks it with the
+    // RemoteOutputChecker.
+    // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:182 RemoteOutputService.shouldStoreRemoteOutputMetadataInActionCache
+    // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:187 RemoteOutputService.getOutputChecker
+    let remote_output_checker: Option<Arc<dyn OutputChecker>> = config
+        .remote_module
+        .as_ref()
+        .and_then(|m| {
+            m.module
+                .lock()
+                .as_ref()
+                .filter(|module| module.cache_available())
+                .and_then(|module| module.get_remote_output_checker().cloned())
+        })
+        .map(|checker| checker as Arc<dyn OutputChecker>);
     let action_cache_checker = Arc::new(ActionCacheChecker::new(
         action_cache.clone(),
         Arc::new(ArtifactFactoryResolver(
@@ -488,7 +515,7 @@ pub fn prepare_for_execution_with_action_cache(
         Some(
             ActionCacheCheckerCacheConfig::builder()
                 .set_enabled(action_cache_options.use_action_cache)
-                .set_store_output_metadata(false)
+                .set_store_output_metadata(remote_output_checker.is_some())
                 .build(),
         ),
     ));
@@ -546,7 +573,7 @@ pub fn prepare_for_execution_with_action_cache(
     let mut sandbox_module = SandboxModule::new();
     sandbox_module.before_command(&env);
     let mut contexts = ActionContexts::default();
-    let mut spawn_strategy_registry_error = None;
+    let mut spawn_strategy_registry_error = config.executor_init_error.clone();
     let remote_module_guard = config.remote_module.as_ref().map(|m| m.module.lock());
     let remote_module: Option<&RemoteModule> =
         remote_module_guard.as_ref().and_then(|g| g.as_ref());
@@ -556,7 +583,11 @@ pub fn prepare_for_execution_with_action_cache(
         remote_module.map(|m| m as &dyn RemoteModuleSpawnStrategies),
     ) {
         Ok(registry) => contexts.spawn_strategy_registry = Some(Arc::new(registry)),
-        Err(e) => spawn_strategy_registry_error = Some(e),
+        Err(e) => {
+            if spawn_strategy_registry_error.is_none() {
+                spawn_strategy_registry_error = Some(e);
+            }
+        }
     }
     contexts.spawn_log_context = spawn_log_context.clone();
     // Java: NoSpawnCacheModule registers SpawnCache.NO_CACHE ("no-cache"); RemoteModule,
@@ -614,6 +645,9 @@ pub fn prepare_for_execution_with_action_cache(
     }
     if let Some(remote_output_tree) = remote_output_tree {
         executor = executor.with_remote_output_tree(remote_output_tree);
+    }
+    if let Some(remote_output_checker) = remote_output_checker {
+        executor = executor.with_output_checker(remote_output_checker);
     }
     let executor = Arc::new(executor);
     Ok(PreparedExecution {

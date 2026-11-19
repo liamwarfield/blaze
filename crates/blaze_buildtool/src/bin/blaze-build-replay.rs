@@ -698,6 +698,7 @@ fn main() -> ExitCode {
         writable_outputs: false,
         output_filter: None,
         remote_module: None,
+        executor_init_error: None,
     };
     let ws_for_status = workspace.clone();
     let prepared = match prepare_for_execution(&config, reporter.clone(), None, &|contexts, env| {

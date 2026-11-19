@@ -149,8 +149,8 @@ pub(crate) fn create_skyframe_executor_reporting_to(
                     failure_details::ExternalRepository {
                         code: failure_details::external_repository::Code::from_str_name(code)
                             .unwrap_or(
-                                failure_details::external_repository::Code::ExternalRepositoryUnknown,
-                            ) as i32,
+                            failure_details::external_repository::Code::ExternalRepositoryUnknown,
+                        ) as i32,
                     },
                 )),
             },
@@ -167,8 +167,7 @@ pub(crate) fn create_skyframe_executor_reporting_to(
                     FailureDetail {
                         message: message.clone(),
                         category: Some(Category::ActionCache(failure_details::ActionCache {
-                            code: failure_details::action_cache::Code::InitializationFailure
-                                as i32,
+                            code: failure_details::action_cache::Code::InitializationFailure as i32,
                         })),
                     }
                 } else {
@@ -195,22 +194,45 @@ pub(crate) fn create_skyframe_executor_reporting_to(
             }
             // Java: BazelRepositoryModule.beforeCommand / BzlmodConfig errors (caches, overrides).
             SkyframeExecutorCreationError::ExternalRepos(message) => {
-                return BlazeCommandResult::detailed_exit_code(DetailedExitCode::of_exit_code(
-                    ExitCode::LOCAL_ENVIRONMENTAL_ERROR,
-                    FailureDetail {
-                        message: message.clone(),
-                        category: Some(Category::ExternalRepository(
-                            failure_details::ExternalRepository {
-                                code: failure_details::external_repository::Code::ExternalRepositoryUnknown
-                                    as i32,
-                            },
-                        )),
-                    },
+                return BlazeCommandResult::detailed_exit_code(external_repos_detailed_exit_code(
+                    message,
                 ));
             }
         };
         BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(failure_detail))
     })
+}
+
+/// The exit of a failed repository set-up (`SkyframeExecutorCreationError::ExternalRepos`).
+///
+/// PORT: the set-up returns its `AbruptExitException` as the message only. The credential
+/// helper's message is fixed in Java, so it is recognised here and gets Java's failure detail
+/// (`ExternalRepository.CREDENTIALS_INIT_FAILURE`, exit code 2); every other message keeps
+/// exit code 36 with `EXTERNAL_REPOSITORY_UNKNOWN`.
+pub(crate) fn external_repos_detailed_exit_code(message: &str) -> DetailedExitCode {
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:473 BazelRepositoryModule.beforeCommand
+    if message == "Error initializing credential helper" {
+        return DetailedExitCode::of(FailureDetail {
+            message: message.to_string(),
+            category: Some(Category::ExternalRepository(
+                failure_details::ExternalRepository {
+                    code: failure_details::external_repository::Code::CredentialsInitFailure as i32,
+                },
+            )),
+        });
+    }
+    DetailedExitCode::of_exit_code(
+        ExitCode::LOCAL_ENVIRONMENTAL_ERROR,
+        FailureDetail {
+            message: message.to_string(),
+            category: Some(Category::ExternalRepository(
+                failure_details::ExternalRepository {
+                    code: failure_details::external_repository::Code::ExternalRepositoryUnknown
+                        as i32,
+                },
+            )),
+        },
+    )
 }
 
 /// A query-engine `DetailedExitCode` as the runtime's.
@@ -328,5 +350,32 @@ impl BlazeCommand for QueryCommand {
         );
         let _ = env.get_reporter_out_err().get_output_stream().flush();
         BlazeCommandResult::detailed_exit_code(to_runtime_detailed_exit_code(detailed_exit_code))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:473 BazelRepositoryModule.beforeCommand
+    // (the oracle exits 2 for `--credential_helper=<not on PATH>`).
+    #[test]
+    fn credential_helper_init_failure_exits_2() {
+        let detailed = external_repos_detailed_exit_code("Error initializing credential helper");
+        assert_eq!(detailed.get_exit_code().get_numeric_exit_code(), 2);
+        assert_eq!(
+            detailed.get_failure_detail().unwrap().category,
+            Some(Category::ExternalRepository(
+                failure_details::ExternalRepository {
+                    code: failure_details::external_repository::Code::CredentialsInitFailure as i32,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn other_repository_setup_failures_exit_36() {
+        let detailed = external_repos_detailed_exit_code("could not acquire lock");
+        assert_eq!(detailed.get_exit_code().get_numeric_exit_code(), 36);
     }
 }

@@ -212,6 +212,15 @@ impl FileSystem for RemoteActionFileSystem {
         self.delegate.set_executable(path, executable)
     }
     fn get_input_stream(&self, path: &PathFragment) -> io::Result<Box<dyn Read + Send>> {
+        if self.remote(path).is_some() {
+            // Java downloads the file first (`downloadIfRemote`, through the action input
+            // fetcher), which is not ported.
+            blaze_util::unported!(
+                "RemoteActionFileSystem.getInputStream (download of a remote-only file)",
+                "{}",
+                path.get_path_string()
+            );
+        }
         self.delegate.get_input_stream(path)
     }
     fn get_output_stream(

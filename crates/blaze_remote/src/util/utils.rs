@@ -432,6 +432,23 @@ fn grpc_status_to_string(status: Option<&tonic::Status>) -> String {
     }
 }
 
+/// `t instanceof CredentialHelperException ? t.getMessage() : null` for one link of a status'
+/// cause chain. A `CredentialHelperException` is a `blaze_repo_fetch` `IoException` of kind
+/// `CredentialHelperException`, directly or inside an `io::Error` (whose `source()` skips the
+/// error it wraps, so it is looked into here).
+fn credential_helper_exception_message<'a>(
+    t: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a str> {
+    use blaze_repo_fetch::errors::{IoException, IoExceptionKind};
+    let e = t.downcast_ref::<IoException>().or_else(|| {
+        t.downcast_ref::<io::Error>()
+            .and_then(|e| e.get_ref())
+            .and_then(|inner| inner.downcast_ref::<IoException>())
+    })?;
+    (e.kind == IoExceptionKind::CredentialHelperException)
+        .then(|| e.message.as_deref().unwrap_or("null"))
+}
+
 // Java: com/google/devtools/build/lib/remote/util/Utils.java:352 Utils.grpcAwareErrorMessage
 fn grpc_aware_error_message_of_io_exception(e: &io::Error) -> String {
     let err_status = execution_status_exception::status_from_throwable(e);
@@ -466,9 +483,15 @@ fn grpc_aware_error_message_of_io_exception(e: &io::Error) -> String {
         }
         // If the error originated from a credential helper, print additional debugging
         // information.
-        // PORT: `CredentialHelperException` (lib/authandtls/credentialhelper) is not ported, so
-        // no status can have one in its cause chain; when it is, append `": " + getMessage()`
-        // of the first one found in `err_status.source()` here.
+        let mut cause = std::error::Error::source(err_status);
+        while let Some(t) = cause {
+            if let Some(message) = credential_helper_exception_message(t) {
+                sb.push_str(": ");
+                sb.push_str(message);
+                break;
+            }
+            cause = t.source();
+        }
         return sb;
     }
     e.to_string()
@@ -795,8 +818,8 @@ where
 
 /// `createExecExceptionForCredentialHelperException(e)`.
 ///
-/// PORT: `CredentialHelperException` (lib/authandtls/credentialhelper) is not ported; the
-/// exception is taken as anything that prints its message.
+/// PORT: no caller yet (see `remote_spawn_runner`'s module comment); the exception is taken as
+/// anything that prints its message.
 // Java: com/google/devtools/build/lib/remote/util/Utils.java:637 Utils.createExecExceptionForCredentialHelperException
 pub fn create_exec_exception_for_credential_helper_exception(
     e: &dyn fmt::Display,

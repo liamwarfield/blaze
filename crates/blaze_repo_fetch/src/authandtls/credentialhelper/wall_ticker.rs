@@ -5,6 +5,7 @@ use std::sync::Arc;
 use blaze_events::ui::Clock;
 
 use super::credential_cache::Ticker;
+use super::unchecked_exception::UncheckedException;
 
 /// WallTicker is a [`Ticker`] which reports wall time since the unix epoch.
 ///
@@ -32,6 +33,8 @@ impl Ticker for WallTicker {
         self.clock
             .current_time_millis()
             .checked_mul(1_000_000)
-            .unwrap_or_else(|| panic!("ArithmeticException: long overflow"))
+            .unwrap_or_else(|| {
+                UncheckedException::throw("java.lang.ArithmeticException", "long overflow")
+            })
     }
 }

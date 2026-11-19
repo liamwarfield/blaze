@@ -1,7 +1,7 @@
 //! Port of `src/test/java/com/google/devtools/build/lib/authandtls/credentialhelper/GetCredentialsResponseTest.java`.
 
 use blaze_repo_fetch::authandtls::credentialhelper::{
-    GetCredentialsResponse, Instant, JsonSyntaxException,
+    GetCredentialsResponse, Instant, JsonSyntaxException, catch_unchecked,
 };
 
 fn from_json(json: &str) -> Result<Option<GetCredentialsResponse>, JsonSyntaxException> {
@@ -195,7 +195,74 @@ fn parse_expires_resolves_leniently() {
 }
 
 #[test]
-#[should_panic(expected = "Multiple entries with same key: a=")]
 fn duplicate_header_names_are_an_illegal_argument() {
-    let _ = from_json("{\"headers\": {\"a\": [\"1\"], \"a\": [\"2\"]}}");
+    let e = catch_unchecked(|| from_json("{\"headers\": {\"a\": [\"1\"], \"a\": [\"2\"]}}"))
+        .unwrap_err();
+    assert_eq!(e.get_class_name(), "java.lang.IllegalArgumentException");
+    assert_eq!(
+        e.get_message(),
+        "Multiple entries with same key: a=[1] and a=[2]"
+    );
+}
+
+#[test]
+fn a_leading_byte_order_mark_is_skipped() {
+    assert_eq!(
+        parse("\u{feff}{\"headers\": {\"a\": [\"b\"]}}"),
+        parse("{\"headers\": {\"a\": [\"b\"]}}")
+    );
+    assert_eq!(from_json("\u{feff}"), Ok(None));
+}
+
+/// `new Gson().fromJson` reads leniently (Gson's `JsonReader` with `Strictness.LENIENT`).
+#[test]
+fn lenient_syntax_is_read_like_gson() {
+    let expected = parse("{\"headers\": {\"a\": [\"b\", \"c\"]}}");
+    for json in [
+        "{'headers': {'a': ['b', 'c']}}",
+        "{headers: {a: [b, c]}}",
+        "{\"headers\" = {\"a\" => [\"b\"; \"c\"]}}",
+        "{\"foo\": 1; \"headers\": {\"a\": [\"b\", \"c\"]}}",
+        "/* c */ {\"headers\": {\"a\": [\"b\", \"c\"]}} // c",
+        "# c\n{\"headers\": {\"a\": [\"b\", \"c\"]} # c\n}",
+        ")]}'\n{\"headers\": {\"a\": [\"b\", \"c\"]}}",
+        "{\"foo\": [1,,2,], \"bar\": NaN, \"baz\": TRUE, \"headers\": {\"a\": [\"b\", \"c\"]}}",
+    ] {
+        assert_eq!(parse(json), expected, "{json}");
+    }
+    // Unquoted literals are strings, so they pass the adapter's type checks.
+    assert_eq!(
+        parse("{\"headers\": {\"a\": [01, NaN]}}"),
+        parse("{\"headers\": {\"a\": [\"01\", \"NaN\"]}}")
+    );
+    // A missing array element is null.
+    assert_eq!(
+        from_json("{\"headers\": {\"a\": [\"b\",]}}")
+            .unwrap_err()
+            .message,
+        "Expected value 1 of 'a' header to be a string, got NULL"
+    );
+    // A document of comments only is empty.
+    assert_eq!(from_json("# nothing\n// here\n"), Ok(None));
+    // An unquoted top-level literal is a string, which the adapter rejects with its own message.
+    assert_eq!(
+        from_json("not json").unwrap_err().message,
+        "Expected object, got STRING"
+    );
+}
+
+#[test]
+fn standard_syntax_errors_stay_syntax_errors() {
+    for json in [
+        "{\"headers\": {}",
+        "{\"headers\" {}}",
+        "{\"foo\": 1,}",
+        "{\"foo\": 1 \"bar\": 2}",
+        "{\"foo\": }",
+        "{\"foo\": \"bar}",
+        "{\"foo\": [1 2]}",
+        "{,}",
+    ] {
+        assert!(from_json(json).is_err(), "{json}");
+    }
 }

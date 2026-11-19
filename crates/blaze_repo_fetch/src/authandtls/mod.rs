@@ -26,9 +26,22 @@ pub trait Credentials: Send + Sync {
 
 /// Implementation of [`Credentials`] which provides a static set of credentials.
 // Java: com/google/devtools/build/lib/authandtls/StaticCredentials.java:27 StaticCredentials
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct StaticCredentials {
     credentials: HashMap<JavaUri, Headers>,
+}
+
+impl std::fmt::Debug for StaticCredentials {
+    /// The URIs and header names only: the header values are credentials.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map()
+            .entries(
+                self.credentials
+                    .iter()
+                    .map(|(uri, headers)| (uri.as_str(), headers.keys().collect::<Vec<_>>())),
+            )
+            .finish()
+    }
 }
 
 impl StaticCredentials {

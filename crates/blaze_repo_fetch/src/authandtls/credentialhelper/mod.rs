@@ -21,6 +21,7 @@ pub mod get_credentials_request;
 pub mod get_credentials_response;
 pub mod gson;
 pub mod java_time;
+pub mod unchecked_exception;
 pub mod wall_ticker;
 
 pub use credential_cache::{CacheEntry, CredentialCache, Ticker};
@@ -37,4 +38,5 @@ pub use get_credentials_request::{GetCredentialsRequest, GetCredentialsRequestBu
 pub use get_credentials_response::{GetCredentialsResponse, GetCredentialsResponseBuilder};
 pub use gson::JsonSyntaxException;
 pub use java_time::Instant;
+pub use unchecked_exception::{UncheckedException, catch_unchecked};
 pub use wall_ticker::WallTicker;

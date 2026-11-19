@@ -1448,9 +1448,11 @@ impl RemoteExecutionService {
             Ok(merkle_tree) => merkle_tree,
             Err(SpawnCacheError::Io(e)) => {
                 // PORT: `catch (CredentialHelperException e) { throw
-                // createExecExceptionForCredentialHelperException(e); }` has no port:
-                // `CredentialHelperException` (lib/authandtls/credentialhelper) is not ported, so
-                // no error is one.
+                // createExecExceptionForCredentialHelperException(e); }` has no port: a
+                // `CredentialHelperException` (a `blaze_repo_fetch` `IoException` of kind
+                // `CredentialHelperException`) arrives over gRPC only as the cause of an
+                // UNAUTHENTICATED status, where this catch does not fire in Java either; the paths
+                // that throw it directly (HTTP cache, remote downloader) are not ported.
                 if let Some(e) = errors::downcast_ref::<RemoteExecutionCapabilitiesException>(&e) {
                     return Err(
                         create_exec_exception_from_remote_execution_capabilities_exception(e)

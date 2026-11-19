@@ -9,17 +9,18 @@
 //! - `fromJson` reads with `Strictness.LENIENT`, returns `null` for an empty document (only
 //!   whitespace), and fails with "JSON document was not fully consumed." when a second value
 //!   follows the first. The `@JsonAdapter` adapter is null-safe: a top-level `null` reads as `null`.
-//! - The reader accepts standard JSON (RFC 8259). Gson's lenient-only syntax (unquoted or
-//!   single-quoted names and strings, comments, `=`/`=>`/`;` separators, the `)]}'` prefix,
-//!   omitted array elements, `NaN`) is a [`JsonSyntaxException`] here. In `CredentialHelper` every
-//!   `JsonSyntaxException` gives the same message ("error parsing output"), so the difference only
-//!   shows for a helper that prints non-standard JSON.
+//! - The reader reads Gson's lenient syntax: unquoted and single-quoted names and strings,
+//!   `#`, `//` and `/* */` comments, `=`/`=>` name separators, `;` separators, the `)]}'\n`
+//!   prefix, missing array elements as `null`, case-insensitive `true`/`false`/`null`; and it
+//!   skips a leading byte order mark (`JsonReader.fillBuffer`).
+//! - Numbers follow JSON's grammar, except that Gson's own number reader also has limits on
+//!   `long` values; anything that is not a number is read as an unquoted literal (`NaN`, `01`).
 //! - A `\u` escape that leaves an unpaired UTF-16 surrogate becomes U+FFFD (Rust strings cannot
 //!   hold one; Java keeps it).
 //! - The texts of Gson's own syntax errors (with their `at line N column M path $...` suffix) are
 //!   not reproduced; no Bazel output prints them (the adapters' own messages are kept exactly).
 //! - The writer is html-safe, as `new Gson()` is: `<`, `>`, `&`, `=` and `'` are written as
-//!   `<`, `>`, `&`, `=` and `'`.
+//!   `\u003c`, `\u003e`, `\u0026`, `\u003d` and `\u0027`.
 
 use std::fmt;
 
@@ -134,6 +135,28 @@ pub struct JsonReader<'a> {
     peeked: Option<Peeked>,
 }
 
+/// Gson `JsonReader.isLiteral(c)`: whether `c` may be part of an unquoted literal.
+fn is_literal(c: u8) -> bool {
+    !matches!(
+        c,
+        b'/' | b'\\'
+            | b';'
+            | b'#'
+            | b'='
+            | b'{'
+            | b'}'
+            | b'['
+            | b']'
+            | b':'
+            | b','
+            | b' '
+            | b'\t'
+            | 0x0c
+            | b'\r'
+            | b'\n'
+    )
+}
+
 fn malformed(message: &str) -> JsonSyntaxException {
     JsonSyntaxException::new(format!(
         "com.google.gson.stream.MalformedJsonException: {message}"
@@ -152,30 +175,64 @@ fn illegal_state(expected: JsonToken, was: JsonToken) -> JsonSyntaxException {
 
 impl<'a> JsonReader<'a> {
     pub fn new(input: &'a str) -> JsonReader<'a> {
+        // JsonReader.fillBuffer: a byte order mark at the start is skipped.
+        let pos = if input.starts_with('\u{feff}') { 3 } else { 0 };
         JsonReader {
             input: input.as_bytes(),
-            pos: 0,
+            pos,
             stack: vec![JsonScope::EmptyDocument],
             peeked: None,
         }
     }
 
-    /// Whether the document holds nothing but whitespace (`Gson.fromJson`'s `isEmpty`, the case
-    /// in which the first `peek` throws an `EOFException`).
+    /// Whether the document holds nothing but whitespace and comments (`Gson.fromJson`'s
+    /// `isEmpty`, the case in which the first `peek` throws an `EOFException`).
     fn is_empty_document(&self) -> bool {
-        self.input
-            .iter()
-            .all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+        let mut probe = JsonReader {
+            input: self.input,
+            pos: self.pos,
+            stack: Vec::new(),
+            peeked: None,
+        };
+        matches!(probe.next_non_whitespace(), Ok(None))
     }
 
-    fn next_non_whitespace(&mut self) -> Option<u8> {
+    /// Gson `JsonReader.nextNonWhitespace` (lenient): skips whitespace and `/* */`, `//` and
+    /// `#` comments; returns the next character, consumed, or `None` at the end.
+    fn next_non_whitespace(&mut self) -> Result<Option<u8>, JsonSyntaxException> {
         while let Some(&c) = self.input.get(self.pos) {
             self.pos += 1;
-            if !matches!(c, b' ' | b'\t' | b'\n' | b'\r') {
-                return Some(c);
+            match c {
+                b' ' | b'\t' | b'\n' | b'\r' => {}
+                b'/' => match self.input.get(self.pos) {
+                    Some(b'*') => {
+                        // skip a /* c-style comment */
+                        let end = self.input[self.pos + 1..]
+                            .windows(2)
+                            .position(|w| w == b"*/")
+                            .ok_or_else(|| malformed("Unterminated comment"))?;
+                        self.pos += 1 + end + 2;
+                    }
+                    // skip a // end-of-line comment
+                    Some(b'/') => self.skip_to_end_of_line(),
+                    _ => return Ok(Some(c)),
+                },
+                // skip a # hash end-of-line comment
+                b'#' => self.skip_to_end_of_line(),
+                _ => return Ok(Some(c)),
             }
         }
-        None
+        Ok(None)
+    }
+
+    // Gson JsonReader.skipToEndOfLine
+    fn skip_to_end_of_line(&mut self) {
+        while let Some(&c) = self.input.get(self.pos) {
+            self.pos += 1;
+            if c == b'\n' || c == b'\r' {
+                break;
+            }
+        }
     }
 
     fn scope(&mut self) -> &mut JsonScope {
@@ -187,54 +244,88 @@ impl<'a> JsonReader<'a> {
         let peek_stack = *self.scope();
         match peek_stack {
             JsonScope::EmptyArray => *self.scope() = JsonScope::NonemptyArray,
-            JsonScope::NonemptyArray => match self.next_non_whitespace() {
+            JsonScope::NonemptyArray => match self.next_non_whitespace()? {
                 Some(b']') => return Ok(Peeked::EndArray),
-                Some(b',') => {}
+                // Lenient: `;` separates elements too.
+                Some(b';' | b',') => {}
                 Some(_) => return Err(malformed("Unterminated array")),
                 None => return Err(end_of_input()),
             },
             JsonScope::EmptyObject | JsonScope::NonemptyObject => {
                 *self.scope() = JsonScope::DanglingName;
                 if peek_stack == JsonScope::NonemptyObject {
-                    match self.next_non_whitespace() {
+                    match self.next_non_whitespace()? {
                         Some(b'}') => return Ok(Peeked::EndObject),
-                        Some(b',') => {}
+                        Some(b';' | b',') => {}
                         Some(_) => return Err(malformed("Unterminated object")),
                         None => return Err(end_of_input()),
                     }
                 }
-                return match self.next_non_whitespace() {
-                    Some(b'"') => Ok(Peeked::Name(self.next_quoted_value()?)),
+                return match self.next_non_whitespace()? {
+                    Some(b'"') => Ok(Peeked::Name(self.next_quoted_value(b'"')?)),
+                    Some(b'\'') => Ok(Peeked::Name(self.next_quoted_value(b'\'')?)),
                     Some(b'}') if peek_stack != JsonScope::NonemptyObject => Ok(Peeked::EndObject),
-                    Some(_) => Err(malformed("Expected name")),
+                    Some(b'}') => Err(malformed("Expected name")),
+                    Some(c) => {
+                        self.pos -= 1;
+                        if is_literal(c) {
+                            Ok(Peeked::Name(self.next_unquoted_value()))
+                        } else {
+                            Err(malformed("Expected name"))
+                        }
+                    }
                     None => Err(end_of_input()),
                 };
             }
             JsonScope::DanglingName => {
                 *self.scope() = JsonScope::NonemptyObject;
-                match self.next_non_whitespace() {
+                match self.next_non_whitespace()? {
                     Some(b':') => {}
+                    // Lenient: `=` or `=>` separates a name from its value.
+                    Some(b'=') => {
+                        if self.input.get(self.pos) == Some(&b'>') {
+                            self.pos += 1;
+                        }
+                    }
                     Some(_) => return Err(malformed("Expected ':'")),
                     None => return Err(end_of_input()),
                 }
             }
-            JsonScope::EmptyDocument => *self.scope() = JsonScope::NonemptyDocument,
-            JsonScope::NonemptyDocument => match self.next_non_whitespace() {
+            JsonScope::EmptyDocument => {
+                // Lenient: JsonReader.consumeNonExecutePrefix.
+                if self.next_non_whitespace()?.is_some() {
+                    self.pos -= 1;
+                }
+                if self.input[self.pos..].starts_with(b")]}'\n") {
+                    self.pos += 5;
+                }
+                *self.scope() = JsonScope::NonemptyDocument
+            }
+            JsonScope::NonemptyDocument => match self.next_non_whitespace()? {
                 None => return Ok(Peeked::EndDocument),
                 // Lenient: a further top-level value.
                 Some(_) => self.pos -= 1,
             },
         }
 
-        let c = match self.next_non_whitespace() {
+        let c = match self.next_non_whitespace()? {
             Some(c) => c,
             None => return Err(end_of_input()),
         };
         match c {
             b']' if peek_stack == JsonScope::EmptyArray => Ok(Peeked::EndArray),
+            // In an array, a missing element (`[1,,2]`, `[1,]`) reads as null.
+            b']' | b';' | b','
+                if matches!(peek_stack, JsonScope::EmptyArray | JsonScope::NonemptyArray) =>
+            {
+                self.pos -= 1;
+                Ok(Peeked::Null)
+            }
+            b']' | b';' | b',' => Err(malformed("Unexpected value")),
+            b'\'' => Ok(Peeked::String(self.next_quoted_value(b'\'')?)),
+            b'"' => Ok(Peeked::String(self.next_quoted_value(b'"')?)),
             b'[' => Ok(Peeked::BeginArray),
             b'{' => Ok(Peeked::BeginObject),
-            b'"' => Ok(Peeked::String(self.next_quoted_value()?)),
             _ => {
                 self.pos -= 1;
                 if let Some(p) = self.peek_keyword() {
@@ -243,32 +334,27 @@ impl<'a> JsonReader<'a> {
                 if let Some(p) = self.peek_number() {
                     return Ok(p);
                 }
-                Err(malformed("Expected value"))
+                if !is_literal(self.input[self.pos]) {
+                    return Err(malformed("Expected value"));
+                }
+                Ok(Peeked::String(self.next_unquoted_value()))
             }
         }
     }
 
-    fn is_literal_end(&self, at: usize) -> bool {
-        match self.input.get(at) {
-            None => true,
-            Some(c) => matches!(
-                c,
-                b' ' | b'\t'
-                    | b'\n'
-                    | b'\r'
-                    | b','
-                    | b':'
-                    | b'['
-                    | b']'
-                    | b'{'
-                    | b'}'
-                    | b'/'
-                    | b'\\'
-                    | b';'
-                    | b'#'
-                    | b'='
-            ),
+    // Gson JsonReader.nextUnquotedValue: the characters up to the first non-literal one.
+    fn next_unquoted_value(&mut self) -> String {
+        let start = self.pos;
+        while self.input.get(self.pos).is_some_and(|&c| is_literal(c)) {
+            self.pos += 1;
         }
+        String::from_utf8_lossy(&self.input[start..self.pos]).into_owned()
+    }
+
+    /// Whether a keyword or number may end before `at` (Gson: the next character is not part of
+    /// an unquoted literal).
+    fn is_literal_end(&self, at: usize) -> bool {
+        self.input.get(at).is_none_or(|&c| !is_literal(c))
     }
 
     fn peek_keyword(&mut self) -> Option<Peeked> {
@@ -302,6 +388,12 @@ impl<'a> JsonReader<'a> {
         if self.input.get(i) == Some(&b'-') {
             i += 1;
         }
+        // Gson: a leading '0' followed by a digit is not a number (it could be octal); the text
+        // is then an unquoted literal.
+        if self.input.get(i) == Some(&b'0') && self.input.get(i + 1).is_some_and(u8::is_ascii_digit)
+        {
+            return None;
+        }
         if !digits(&mut i, self.input) {
             return None;
         }
@@ -329,8 +421,9 @@ impl<'a> JsonReader<'a> {
         ))
     }
 
-    /// Reads a double-quoted string whose opening quote was consumed.
-    fn next_quoted_value(&mut self) -> Result<String, JsonSyntaxException> {
+    /// Reads a string quoted with `quote` (`"`, or `'` in lenient mode) whose opening quote was
+    /// consumed.
+    fn next_quoted_value(&mut self, quote: u8) -> Result<String, JsonSyntaxException> {
         let mut units: Vec<u16> = Vec::new();
         let mut out = String::new();
         let flush = |units: &mut Vec<u16>, out: &mut String| {
@@ -344,7 +437,7 @@ impl<'a> JsonReader<'a> {
             };
             self.pos += 1;
             match c {
-                b'"' => {
+                c if c == quote => {
                     flush(&mut units, &mut out);
                     return Ok(out);
                 }

@@ -3,9 +3,13 @@
 //! PORT notes for the whole file:
 //! - Profiling (`Profiler`, `profileAccounting`, `logProfileTask`) is skipped (PORTING.md:
 //!   profiling).
-//! - `CredentialHelperException` (lib/authandtls/credentialhelper) is not ported, so its two
-//!   `catch` clauses have no counterpart; `utils::create_exec_exception_for_credential_helper_exception`
-//!   is the place they would call.
+//! - The two `catch (CredentialHelperException e)` clauses have no counterpart: a
+//!   `CredentialHelperException` (a `blaze_repo_fetch` `IoException` of kind
+//!   `CredentialHelperException`) arrives over gRPC only as the cause of an UNAUTHENTICATED
+//!   status, where these catches do not fire in Java either; the paths that throw it directly
+//!   (HTTP cache, remote downloader) are not ported.
+//!   `utils::create_exec_exception_for_credential_helper_exception` is the place they would
+//!   call.
 //! - `SpawnRunner::exec` has no `IOException` channel: an `IOException` that Java's `exec` throws
 //!   is returned as `abstract_spawn_strategy::exec_io_exception(e)`, which is what
 //!   `AbstractSpawnStrategy.exec` makes of it. Inside this file `IOException | ExecException |

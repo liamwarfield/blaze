@@ -9,6 +9,7 @@ use super::credential_helper_environment::CredentialHelperEnvironment;
 use super::credential_helper_exception::CredentialHelperException;
 use super::get_credentials_request::GetCredentialsRequest;
 use super::get_credentials_response::GetCredentialsResponse;
+use super::unchecked_exception::UncheckedException;
 use crate::errors::IoException;
 use crate::uri::JavaUri;
 
@@ -165,8 +166,9 @@ impl CredentialHelper {
             .set_env(Some(environment.client_environment().clone()))
             // Duration.toMillis()
             .set_timeout_millis(
-                i64::try_from(environment.helper_execution_timeout().as_millis())
-                    .unwrap_or_else(|_| panic!("ArithmeticException: long overflow")),
+                i64::try_from(environment.helper_execution_timeout().as_millis()).unwrap_or_else(
+                    |_| UncheckedException::throw("java.lang.ArithmeticException", "long overflow"),
+                ),
             );
         builder.start()
     }

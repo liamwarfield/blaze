@@ -39,6 +39,8 @@ pub enum IoExceptionKind {
     MissingChecksumException,
     /// `DecompressorValue.Decompressor.CouldNotFindPrefixException`
     CouldNotFindPrefixException,
+    /// `authandtls.credentialhelper.CredentialHelperException`
+    CredentialHelperException,
 }
 
 impl IoExceptionKind {
@@ -66,6 +68,9 @@ impl IoExceptionKind {
             }
             IoExceptionKind::CouldNotFindPrefixException => {
                 "com.google.devtools.build.lib.bazel.repository.decompressor.DecompressorValue$Decompressor$CouldNotFindPrefixException"
+            }
+            IoExceptionKind::CredentialHelperException => {
+                "com.google.devtools.build.lib.authandtls.credentialhelper.CredentialHelperException"
             }
         }
     }

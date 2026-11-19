@@ -31,6 +31,7 @@ use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
 use blaze_optdefs::misc::remote_options::RemoteOptions;
 use blaze_optdefs::misc::remote_outputs_mode::RemoteOutputsMode;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail};
+use blaze_util::ExitCode;
 use blaze_util::fingerprint::Fingerprint;
 use blaze_vfs::{FileSystemRef, Path};
 use indexmap::IndexMap;
@@ -139,6 +140,11 @@ pub struct RemoteModule {
     temp_path_generator: Option<Arc<TempPathGenerator>>,
     rpc_log_file: Option<Arc<dyn LogEntrySink>>,
     cache_available: bool,
+    /// Whether `buildEventArtifactUploaderFactoryDelegate.init(new
+    /// ByteStreamBuildEventArtifactUploaderFactory(...))` ran (the gRPC cache path of `setup`).
+    byte_stream_build_event_artifact_uploader: bool,
+    /// `BuildRequestOptions.rewindLostInputs` (read again by `executorInit`).
+    rewind_lost_inputs: bool,
 }
 
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1370 RemoteModule.createOptionsExitException
@@ -159,28 +165,36 @@ fn create_options_exit_exception(
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1381 RemoteModule.createExitException
 fn create_exit_exception(
     message: impl Into<String>,
+    exit_code: ExitCode,
     remote_execution_code: failure_details::remote_execution::Code,
 ) -> AbruptExitException {
-    AbruptExitException::new(FailureDetail {
-        message: message.into(),
-        category: Some(failure_detail::Category::RemoteExecution(
-            failure_details::RemoteExecution {
-                code: remote_execution_code as i32,
-            },
-        )),
-    })
+    AbruptExitException::with_exit_code(
+        exit_code.get_numeric_exit_code(),
+        FailureDetail {
+            message: message.into(),
+            category: Some(failure_detail::Category::RemoteExecution(
+                failure_details::RemoteExecution {
+                    code: remote_execution_code as i32,
+                },
+            )),
+        },
+    )
 }
 
 /// `handleInitFailure(env, e, code)`: reports the error and makes the command exit with
 /// "Error initializing RemoteModule" (`ExitCode.COMMAND_LINE_ERROR`).
-// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1048 RemoteModule.handleInitFailure
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1021 RemoteModule.handleInitFailure
 fn handle_init_failure(
     reporter: &dyn EventHandler,
     e: &io::Error,
     remote_execution_code: failure_details::remote_execution::Code,
 ) -> AbruptExitException {
     reporter.handle(&Event::error(e.to_string()));
-    create_exit_exception("Error initializing RemoteModule", remote_execution_code)
+    create_exit_exception(
+        "Error initializing RemoteModule",
+        ExitCode::COMMAND_LINE_ERROR,
+        remote_execution_code,
+    )
 }
 
 fn is_null_or_empty(s: &Option<String>) -> bool {
@@ -214,6 +228,8 @@ impl RemoteModule {
             temp_path_generator: None,
             rpc_log_file: None,
             cache_available: false,
+            byte_stream_build_event_artifact_uploader: false,
+            rewind_lost_inputs: env.rewind_lost_inputs.unwrap_or(false),
         };
         // PORT: `knownMissingCasDigests` survives across commands in the Bazel server (cleared
         // by `clean`); one command per process here.
@@ -224,6 +240,16 @@ impl RemoteModule {
     /// Whether any cache (disk or remote) is enabled (the result of `setup`).
     pub fn cache_available(&self) -> bool {
         self.cache_available
+    }
+
+    /// Whether the build event artifact uploader factory this module registers ("remote", the
+    /// one `BuildEventArtifactUploaderFactoryMap.select` picks when
+    /// `--experimental_build_event_upload_strategy` is unset) creates a
+    /// `ByteStreamBuildEventArtifactUploader` for this command (gRPC cache or remote execution);
+    /// otherwise its `create` returns a `LocalFilesArtifactUploader`.
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1360 RemoteModule.BuildEventArtifactUploaderFactoryDelegate.create
+    pub fn uses_byte_stream_build_event_artifact_uploader(&self) -> bool {
+        self.byte_stream_build_event_artifact_uploader
     }
 
     /// `actionContextProvider`.
@@ -270,6 +296,27 @@ impl RemoteModule {
                     _ => "toplevel",
                 }
             );
+        }
+        if provider.get_combined_cache().is_some() {
+            if self.rewind_lost_inputs {
+                // Action rewinding regenerates lost inputs within the build, so there is no need
+                // for the lease service to extend leases or to discard all remote metadata after
+                // a build that encountered lost inputs.
+                if remote_options.remote_cache_lease_extension {
+                    provider.env.reporter.handle(&Event::warn(
+                        "--experimental_remote_cache_lease_extension has no effect since \
+                         --rewind_lost_inputs is enabled, which recovers from lost remote cache \
+                         entries as they are encountered.",
+                    ));
+                }
+            } else if remote_options.remote_cache_lease_extension {
+                blaze_util::unported!(
+                    "RemoteModule.executorInit (RemoteLeaseExtension)",
+                    "--experimental_remote_cache_lease_extension"
+                );
+            }
+            // PORT: the LeaseService without a lease extension only discards remote metadata
+            // after a build that lost inputs, which needs action rewinding (not ported).
         }
         Some(compute_action_execution_salt(Some(remote_options)))
     }
@@ -797,8 +844,12 @@ impl RemoteModule {
             ));
         }
 
-        // PORT: not ported: `createActionInputFetcher`, `initRepoHelpersAndOverlayFs`, the
-        // ByteStream build event artifact uploader.
+        // PORT: not ported: `createActionInputFetcher`, `initRepoHelpersAndOverlayFs`.
+        // The ByteStream build event artifact uploader is registered here in Java; it is not
+        // ported, and the command fails loudly when it would be used (see
+        // `uses_byte_stream_build_event_artifact_uploader`).
+        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:906 RemoteModule.setup
+        self.byte_stream_build_event_artifact_uploader = true;
         if enable_remote_downloader {
             blaze_util::unported!(
                 "RemoteModule.setup (--experimental_remote_downloader: GrpcRemoteDownloader)"
@@ -807,44 +858,32 @@ impl RemoteModule {
         Ok(true)
     }
 
-    /// `afterCommand()`: shuts the services down (waiting for background uploads), closes the
-    /// gRPC log and deletes the download temp directory.
+    /// `afterCommand()` with its `afterCommandTask` (which Java submits to the
+    /// `BlockWaitingModule`, run after every other module's `afterCommand`): shuts the services
+    /// down (waiting for background uploads), deletes the download temp directory, closes the gRPC
+    /// log.
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1097 RemoteModule.afterCommand
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1140 RemoteModule.afterCommandTask
     pub fn after_command(&mut self) -> Result<(), AbruptExitException> {
-        let mut failure: Option<AbruptExitException> = None;
         if let Some(provider) = self.action_context_provider.take() {
             provider.after_command();
         }
-        // Java: RemoteModule.closeRpcLogFile
+        if let Some(temp_path_generator) = self.temp_path_generator.take() {
+            let temp_dir = temp_path_generator.get_temp_dir();
+            // Intentionally ignored.
+            let _ = temp_dir.delete_tree();
+        }
+        self.remote_output_checker = None;
         if let Some(rpc_log_file) = self.rpc_log_file.take()
-            && let Err(e) = rpc_log_file.close()
+            && rpc_log_file.close().is_err()
         {
-            failure = Some(create_exit_exception(
-                format!("Failed to close the remote gRPC log: {e}"),
+            return Err(create_exit_exception(
+                "Partially wrote RPC log file",
+                ExitCode::LOCAL_ENVIRONMENTAL_ERROR,
                 failure_details::remote_execution::Code::RpcLogFailure,
             ));
         }
-        // Java: RemoteModule.deleteDownloadedInputs
-        if let Some(temp_path_generator) = self.temp_path_generator.take() {
-            let temp_dir = temp_path_generator.get_temp_dir();
-            if let Err(e) = temp_dir.delete_tree()
-                && e.kind() != io::ErrorKind::NotFound
-            {
-                failure = Some(create_exit_exception(
-                    format!(
-                        "Failed to delete downloaded inputs in '{}': {}",
-                        temp_dir.get_path_string(),
-                        e
-                    ),
-                    failure_details::remote_execution::Code::DownloadedInputsDeletionFailure,
-                ));
-            }
-        }
-        self.remote_output_checker = None;
-        match failure {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
+        Ok(())
     }
 }
 
@@ -904,6 +943,7 @@ fn get_temp_path_generator(
         if let Err(e) = temp_dir.delete_tree() {
             return Err(create_exit_exception(
                 format!("Failed to delete stale downloads: {e}"),
+                ExitCode::LOCAL_ENVIRONMENTAL_ERROR,
                 failure_details::remote_execution::Code::DownloadedInputsDeletionFailure,
             ));
         }
@@ -927,6 +967,7 @@ fn clean_and_create_remote_logs_dir(log_dir: &Path) -> Result<(), AbruptExitExce
                 "Could not create base directory for remote logs: {}",
                 log_dir.get_path_string()
             ),
+            ExitCode::LOCAL_ENVIRONMENTAL_ERROR,
             failure_details::remote_execution::Code::LogDirCleanupFailure,
         )
     })
@@ -1014,13 +1055,25 @@ fn create_channel(
     }
 
     // Java: com/google/devtools/build/lib/remote/GoogleChannelConnectionFactory.java:86 GoogleChannelConnectionFactory.create
-    let managed = google_auth_utils::new_channel(
+    let managed = match google_auth_utils::new_channel(
         target,
         proxy,
         auth_and_tls_options,
         Some(interceptors),
         Some(service_config),
-    )?;
+    ) {
+        Ok(managed) => managed,
+        // `channelFactory.newChannel` runs inside the connection factory's
+        // `Single.fromCallable`: its IOException fails every call on the channel.
+        Err(e) => {
+            let channel = ReferenceCountedChannel::failed(target, e, None);
+            return Ok(if requirement != ServerCapabilitiesRequirement::None {
+                channel.with_capabilities_gate()
+            } else {
+                channel
+            });
+        }
+    };
 
     // Java: com/google/devtools/build/lib/remote/GoogleChannelConnectionFactory.java:106 GoogleChannelConnectionFactory.getAndVerifyServerCapabilities
     let options = remote_options.clone();

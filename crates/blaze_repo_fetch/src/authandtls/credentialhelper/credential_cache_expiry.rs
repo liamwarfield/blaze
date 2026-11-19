@@ -7,11 +7,14 @@ use parking_lot::Mutex;
 use super::credential_cache::Expiry;
 use super::get_credentials_response::GetCredentialsResponse;
 use super::java_time::Instant;
+use super::unchecked_exception::UncheckedException;
 use crate::uri::JavaUri;
 
 /// Java `Duration.toNanos()`: fails with an `ArithmeticException` outside a `long`.
 fn to_nanos(nanos: i128) -> i64 {
-    i64::try_from(nanos).unwrap_or_else(|_| panic!("ArithmeticException: long overflow"))
+    i64::try_from(nanos).unwrap_or_else(|_| {
+        UncheckedException::throw("java.lang.ArithmeticException", "long overflow")
+    })
 }
 
 /// The expiration policy of the credential cache: a response expires at its `expires` time, or
@@ -22,9 +25,9 @@ pub struct CredentialCacheExpiry {
     /// value before every command.
     ///
     /// PORT: `None` until the first `set_default_cache_duration`, i.e. until
-    /// `CredentialModule.before_command` ran. Blaze's runtime does not call it yet (see
-    /// [`super::CredentialModule::before_command`]), and Java's `ZERO` would silently disable
-    /// the cache (one helper run per request); a response without `expires` then fails loudly.
+    /// `CredentialModule.before_command` ran (`blaze_runtime`'s `CredentialModule` calls it for
+    /// every command). A caller that skips it would get Java's `ZERO` silently (one helper run
+    /// per request); here a response without `expires` then fails loudly.
     default_cache_duration: Mutex<Option<Duration>>,
 }
 
@@ -49,10 +52,10 @@ impl CredentialCacheExpiry {
             return match default_cache_duration {
                 Some(duration) => to_nanos(duration.as_nanos() as i128),
                 None => blaze_util::unported!(
-                    "CredentialModule.beforeCommand (missing hook: the runtime's CredentialModule \
-                     must call blaze_repo_fetch::authandtls::credentialhelper::CredentialModule::\
+                    "CredentialModule.beforeCommand (missing hook: \
+                     blaze_repo_fetch::authandtls::credentialhelper::CredentialModule::\
                      instance().before_command(command name, --credential_helper_cache_duration) \
-                     before any credential is cached)"
+                     was not called before a credential was cached)"
                 ),
             };
         };

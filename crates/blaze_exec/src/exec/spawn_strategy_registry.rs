@@ -25,12 +25,29 @@ use crate::exec::spawn_strategy_policy::SpawnStrategyPolicy;
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbruptExitException {
     pub failure_detail: FailureDetail,
+    /// The explicit `ExitCode` of `DetailedExitCode.of(exitCode, failureDetail)` (its numeric
+    /// value); `None` for `DetailedExitCode.of(failureDetail)`, whose exit code is the failure
+    /// detail's metadata.
+    pub exit_code: Option<i32>,
 }
 
 impl AbruptExitException {
     /// `new AbruptExitException(DetailedExitCode.of(failureDetail))`.
     pub fn new(failure_detail: FailureDetail) -> AbruptExitException {
-        AbruptExitException { failure_detail }
+        AbruptExitException {
+            failure_detail,
+            exit_code: None,
+        }
+    }
+
+    /// `new AbruptExitException(DetailedExitCode.of(exitCode, failureDetail))`; `exit_code` is
+    /// `exitCode.getNumericExitCode()`.
+    // Java: com/google/devtools/build/lib/util/DetailedExitCode.java DetailedExitCode.of
+    pub fn with_exit_code(exit_code: i32, failure_detail: FailureDetail) -> AbruptExitException {
+        AbruptExitException {
+            failure_detail,
+            exit_code: Some(exit_code),
+        }
     }
 
     /// `getMessage()`.

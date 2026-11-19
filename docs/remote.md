@@ -80,11 +80,19 @@ module (`blaze_runtime::commands::build::run_build` →
 `registerSpawnStrategies` (`"remote"` + the remote-local fallback identifier, through
 `blaze_exec::exec::executor_setup::RemoteModuleSpawnStrategies`), `registerActionContexts`
 (`RemoteSpawnCache` when a cache is available, else `NO_CACHE`) and `executorInit` (the action
-execution salt, `computeActionExecutionSalt`, for every build) do. `afterCommand` (await
-`--remote_cache_async` uploads, close the gRPC log, delete downloads) runs after the command,
-before the BES module; its `AbruptExitException` becomes the exit code unless the command's is
-an infrastructure failure. `RemoteExecutionService.onBuildComplete/onBuildInterrupted` are called
-where the events are posted.
+execution salt, `computeActionExecutionSalt`, for every build) do. With a cache the output
+service is `RemoteOutputService` as far as the action cache goes: remote output metadata is
+stored in it and checked with the `RemoteOutputChecker` (`shouldTrustMetadata`), so a rebuild
+without `clean` has action cache hits for compiles whose `.d` stayed in memory. `afterCommand`
+and its `afterCommandTask` run after the command, before the BES module, in Java's order: the
+services shut down (waiting for `--remote_cache_async` uploads), the download temp directory
+is deleted (a failure is ignored), the gRPC log is closed (a failure is `Partially wrote RPC log
+file`, exit 36, which replaces the command's exit code unless that is an infrastructure
+failure). `AbruptExitException`s carry Java's explicit exit code (`DetailedExitCode.of(exitCode,
+failureDetail)`). A channel whose transport cannot be created (bad `--tls_certificate`, ...)
+fails each call, not the command (`GoogleChannelConnectionFactory.create`).
+`RemoteExecutionService.onBuildComplete/onBuildInterrupted` are called where the events are
+posted.
 
 In-memory outputs (`internal-inline-outputs`, the `.d` files of C++ compiles) are never written
 to disk, as in Bazel: their metadata goes to `blaze_sky_exec::remote_output_tree` (the remote
@@ -110,7 +118,13 @@ RemoteOutputService: Build without the Bytes): --remote_download_outputs=topleve
 or disk cache; pass --remote_download_outputs=all`; HTTP caches (`RemoteModule.createCredentials
 (HTTP remote cache)` / `CombinedCacheClientFactory.createHttp`);
 `--experimental_remote_output_service`, `--experimental_remote_downloader` and the remote flags
-for commands other than `build`/`test` (`blaze_runtime::unported_options`); `--bes_backend`.
+for commands other than `build`/`test` (`blaze_runtime::unported_options`); `--bes_backend`;
+a `--build_event_*_file` together with a gRPC cache or remote execution while
+`--experimental_build_event_upload_strategy` is unset or `remote` (Bazel's
+`ByteStreamBuildEventArtifactUploader` names the files `bytestream://...`; `local` works);
+`--experimental_remote_cache_lease_extension` (`RemoteLeaseExtension`; with
+`--rewind_lost_inputs` Java's warning is printed instead); reading the contents of a remote-only
+file through the action file system (`RemoteActionFileSystem.getInputStream`).
 
 **Evidence** (tree e297ee3 + this change, `target/debug/blaze` vs
 `~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64`, each with its own `--output_base`,
@@ -136,15 +150,52 @@ spawns (13 with `test`); server: Bazel's remote worker built from the pin,
 | worker `--unavailable`, `--remote_executor --remote_local_fallback --remote_retries=0` | `WARNING: Remote Cache: UNAVAILABLE: null`, 11 local | same | - | - | - |
 | `--remote_cache_compression` against the worker (no zstd) | `Failed to query remote execution capabilities: --remote_cache_compression requested but remote does not support compression` | same text | - | - | - |
 
+Review round 1 (STOP on 3353c77) rows, same setup:
+
+| scenario | oracle | Blaze |
+|---|---|---|
+| rebuild without `clean` after a cache build (`--remote_cache`, `--remote_executor`, `--disk_cache`) | `1 process: 20 action cache hit, 1 internal.`, no exec log entry, gRPC log: 1 `GetCapabilities` | same (gRPC log MATCH 1/1, 0/0 exec log entries) |
+| `--remote_cache=grpcs://localhost:18981 --tls_certificate=/missing.pem` | `WARNING: Remote Cache: Failed to init TLS infrastructure using '/missing.pem' as root certificate: File does not contain valid certificates: /missing.pem`, 11 processwrapper-sandbox, exit 0 | same |
+| same with `--remote_executor ... --remote_local_fallback` | 11 local, exit 0 | same |
+| `--remote_grpc_log=/dev/full` | `ERROR: Partially wrote RPC log file`, exit 36 | same |
+| stale `<action_temps>/remote` that cannot be deleted (parent read-only) | `ERROR: Failed to delete stale downloads: [unix_jni.cc:660] <path> (Permission denied)`, exit 36 | `ERROR: Failed to delete stale downloads: <path> (Permission denied)`, exit 36 (the text of the I/O error is blaze_vfs's, without the JNI location) |
+| `--build_event_json_file` with `--remote_cache=grpc://` | NamedSetOfFiles URIs `bytestream://localhost:18981/blobs/<hash>/<size>` | fails loudly (`ByteStreamBuildEventArtifactUploader`) |
+
 The compact execution log is written in every mode; its content was not compared (no `protoc`
 or Python `zstandard` on the measuring machine for `scripts/execlog-compact`).
 
-**Gaps (phase 1).** `RemoteOutputService`/`RemoteActionFileSystem` are only the read view above:
-the action cache does not store remote output metadata (`setStoreOutputMetadata(false)`,
-`TRUST_LOCAL_ONLY`), so a rebuild without `clean` re-runs a C++ compile whose `.d` is in memory
-through the remote cache, where Bazel has an action cache hit. No `RemoteActionInputFetcher`
-(nothing is remote with `all`). One HTTP/2 connection per endpoint (`--remote_max_connections`
+**Gaps (phase 1).** `RemoteOutputService`/`RemoteActionFileSystem` are the read view above and
+the action cache configuration; no `RemoteActionInputFetcher` (nothing is remote with `all`).
+On interrupt the background uploads are waited for, where Java cancels them
+(`RemoteExecutionService.shutdown`, a `PORT:` note there). A `beforeCommand` failure returns
+before the BES module is set up, so a requested BEP file is not written (Java still runs every
+module's `beforeCommand`/`afterCommand`). `cquery`/`aquery` with remote options have no
+`RemoteModule` (Bazel prints `Invocation ID` and creates `bazel-remote-logs`). The capability
+gate and the remote output tree have no unit tests (end-to-end rows only). One HTTP/2 connection per endpoint (`--remote_max_connections`
 does not size a pool). Disk cache garbage collection (an idle task) does not run. The process
 count of a build that fails early can differ by the internal actions that finished before the
 failure (a race in both tools).
 
+
+### Evidence on a real RBE (Stairwell's Aspect Workflows deployment, 2026-11-19)
+
+Binary: `target/release/blaze` built from 3353c77. Reference: the oracle (Bazel 9.3.2). Both run
+through `scripts/remote/rbe-bench` (same flags: `grpcs://` cache and executor, BLAKE3 digests,
+`--credential_helper=<host>=aspect`, `--remote_download_outputs=all`, `--bes_backend=`, the
+depot's base exec properties, the `//bench_rbe` cc toolchain for the worker container; cold =
+a new `BENCH_SALT` action env value, warm = same salt after `clean`). Run records:
+`~/.cache/blaze/bench/runs/` on the measuring machine.
+
+| project, mode | oracle summary | Blaze summary | outputs (sha256) | gRPC calls by method and status (`grpc-log-methods`) |
+|---|---|---|---|---|
+| brotli `build //...`, cold | 53 processes: 10 internal, 43 remote | same | 44/45 equal | equal: 43 Execute, 43 FindMissingBlobs, 43 GetActionResult (NOT_FOUND), 115 Read, 86 Write |
+| brotli, warm | 43 remote cache hit, 10 internal | same | 44/45 equal | equal: 43 GetActionResult, 115 Read |
+| re2 `test //:all //python:all`, cold | 716 processes: 165 internal, 1 processwrapper-sandbox, 550 remote; 21/21 tests pass | same | 576/599 equal | equal: 550 Execute, 571 FindMissingBlobs, 550 GetActionResult (NOT_FOUND), 782 Read, 1100 Write |
+| re2, warm | 550 remote cache hit, 165 internal, 1 processwrapper-sandbox | same | 576/599 equal | equal: 550 GetActionResult, 782 Read |
+| Blaze, warm, with the oracle's salt (entries written by Bazel) | - | brotli 43/43 and re2 550/550 remote cache hits | as above | equal to the oracle's warm run |
+
+The files that differ are the `*.runfiles_manifest` files (1 in brotli, 23 in re2), which hold
+absolute paths under each tool's output base; with the output base name replaced they are
+identical. `compare-grpc-log` cannot decode these logs (the server attaches Buildbarn `Any`
+types the dumper does not know), so the gRPC comparison here is by counts only. The Stairwell
+depot itself is not measured: Bazel 9.3.2 cannot analyse it (docs/decisions.md 2026-11-19).

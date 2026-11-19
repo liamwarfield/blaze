@@ -626,3 +626,104 @@ fn new_credentials_wrap_netrc_in_the_credential_helper() {
     );
     assert_eq!(std::fs::read_to_string(&counter).unwrap(), "x\nx\n");
 }
+
+/// Credentials whose `getRequestMetadata` throws an unchecked exception.
+struct ThrowingCredentials;
+
+impl blaze_repo_fetch::authandtls::Credentials for ThrowingCredentials {
+    fn get_request_metadata(
+        &self,
+        _uri: &JavaUri,
+    ) -> Result<Headers, blaze_repo_fetch::errors::IoException> {
+        credentialhelper::UncheckedException::throw(
+            "java.lang.IllegalArgumentException",
+            "Multiple entries with same key: a=[PLACEHOLDER-1] and a=[PLACEHOLDER-2]",
+        )
+    }
+}
+
+impl Credentials for ThrowingCredentials {
+    fn refresh(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `Credentials.blockingGetToCallback` catches every `Throwable`: an unchecked exception from the
+/// credentials fails the call (its error is the status' cause), it does not panic.
+#[test]
+fn call_credentials_turn_unchecked_exceptions_into_errors() {
+    use blaze_remote::authandtls::GoogleAuthLibraryCallCredentials;
+    use blaze_remote::grpc::CallCredentials;
+
+    let call_credentials = GoogleAuthLibraryCallCredentials::new(Arc::new(ThrowingCredentials));
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let e = runtime
+        .block_on(call_credentials.get_request_metadata(
+            "https://remote.example.com/build.bazel.remote.execution.v2.ContentAddressableStorage",
+        ))
+        .unwrap_err();
+    let unchecked = e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<credentialhelper::UncheckedException>())
+        .unwrap();
+    assert_eq!(
+        unchecked.get_class_name(),
+        "java.lang.IllegalArgumentException"
+    );
+}
+
+/// The status `GoogleAuthLibraryCallCredentials` fails a call with, as `grpc/channel.rs` builds
+/// it: `UNAUTHENTICATED`, description `Failed computing credential metadata`, the error as cause.
+fn credentials_failure(cause: std::io::Error) -> std::io::Error {
+    let mut status = tonic::Status::unauthenticated("Failed computing credential metadata");
+    status.set_source(Arc::new(cause));
+    blaze_remote::common::errors::status_to_io_error(status)
+}
+
+// Java: com/google/devtools/build/lib/remote/util/Utils.java:367 Utils.grpcAwareErrorMessage
+#[test]
+fn grpc_aware_error_message_shows_only_credential_helper_causes() {
+    use blaze_remote::util::utils::grpc_aware_error_message;
+
+    let helper_failure: blaze_repo_fetch::errors::IoException =
+        credentialhelper::CredentialHelperException::new(
+            "Failed to get credentials for 'https://x' from helper '/h': process timed out",
+        )
+        .into();
+    assert_eq!(
+        grpc_aware_error_message(
+            &credentials_failure(std::io::Error::other(helper_failure)),
+            false
+        ),
+        "UNAUTHENTICATED: Failed computing credential metadata: Failed to get credentials for \
+         'https://x' from helper '/h': process timed out"
+    );
+
+    // Any other cause (an IOException of the fallback, an unchecked exception) is not shown.
+    let unchecked = credentialhelper::catch_unchecked(|| {
+        credentialhelper::UncheckedException::throw(
+            "java.lang.IllegalArgumentException",
+            "Multiple entries with same key: a=[PLACEHOLDER-1] and a=[PLACEHOLDER-2]",
+        )
+    })
+    .unwrap_err();
+    assert_eq!(
+        grpc_aware_error_message(
+            &credentials_failure(std::io::Error::other(unchecked)),
+            false
+        ),
+        "UNAUTHENTICATED: Failed computing credential metadata"
+    );
+    assert_eq!(
+        grpc_aware_error_message(
+            &credentials_failure(std::io::Error::other(
+                blaze_repo_fetch::errors::IoException::new("Failed to parse /home/.netrc: x")
+            )),
+            false
+        ),
+        "UNAUTHENTICATED: Failed computing credential metadata"
+    );
+}

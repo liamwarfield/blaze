@@ -10,7 +10,7 @@ use std::time::Duration;
 use blaze_events::{EventHandler, NullEventHandler};
 use blaze_repo_fetch::authandtls::credentialhelper::{
     CredentialHelper, CredentialHelperCredentials, CredentialHelperEnvironment,
-    CredentialHelperProvider, CredentialModule, GetCredentialsResponse,
+    CredentialHelperProvider, CredentialModule, GetCredentialsResponse, catch_unchecked,
 };
 use blaze_repo_fetch::authandtls::google_auth_utils::new_credential_helper_provider;
 use blaze_repo_fetch::authandtls::{Credentials, Headers, StaticCredentials};
@@ -389,6 +389,59 @@ fn credentials_report_helper_errors() {
             .get_credential_cache()
             .get_entry_if_present_quietly(&uri)
             .is_none()
+    );
+}
+
+/// An unchecked exception raised by the helper's answer (Java `ArithmeticException` from
+/// `Duration.toNanos()` for an `expires` centuries ahead) leaves the credentials as an
+/// `UncheckedException`, which the gRPC path catches.
+#[test]
+fn far_future_expires_is_an_arithmetic_exception() {
+    let f = Fixture::new();
+    let module = CredentialModule::new();
+    module.before_command("build", Duration::from_secs(1800));
+    let helper = format!("{}/far_future_helper", f.workspace);
+    std::fs::write(
+        &helper,
+        "#!/bin/sh\ncat > /dev/null\n\
+         echo '{\"headers\":{\"a\":[\"b\"]},\"expires\":\"9999-12-31T23:59:59Z\"}'\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let provider = CredentialHelperProvider::builder()
+        .add(Path::create_from_str(&helper, &f.fs))
+        .build();
+    let creds = credentials(&f, &module, provider, None);
+    let uri = JavaUri::create("https://example.com").unwrap();
+
+    let e = catch_unchecked(|| creds.get_request_metadata(&uri)).unwrap_err();
+    assert_eq!(e.get_class_name(), "java.lang.ArithmeticException");
+    assert_eq!(e.get_message(), "long overflow");
+}
+
+/// Run with `--nocapture`: inside `catch_unchecked` the panic hook prints nothing, so the
+/// header values of an `IllegalArgumentException` never reach stderr on the gRPC path.
+#[test]
+fn caught_unchecked_exception_prints_nothing() {
+    let e = catch_unchecked(|| {
+        GetCredentialsResponse::from_json(
+            "{\"headers\": {\"a\": [\"PLACEHOLDER-VALUE-1\"], \"a\": [\"PLACEHOLDER-VALUE-2\"]}}",
+        )
+    })
+    .unwrap_err();
+    assert_eq!(e.get_class_name(), "java.lang.IllegalArgumentException");
+    // Debug output names the class only.
+    assert!(!format!("{e:?}").contains("PLACEHOLDER-VALUE"));
+}
+
+/// Outside `catch_unchecked` (the downloader path, where Bazel crashes) the exception is a panic,
+/// and the hook prints it as an uncaught Java exception (`toString()`), message included.
+#[test]
+#[should_panic]
+fn uncaught_unchecked_exception_is_a_panic() {
+    let _ = GetCredentialsResponse::from_json(
+        "{\"headers\": {\"a\": [\"PLACEHOLDER-UNCAUGHT-1\"], \"a\": [\"PLACEHOLDER-UNCAUGHT-2\"]}}",
     );
 }
 

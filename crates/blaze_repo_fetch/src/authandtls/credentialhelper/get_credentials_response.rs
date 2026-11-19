@@ -4,6 +4,7 @@ use indexmap::IndexMap;
 
 use super::gson::{self, JsonReader, JsonSyntaxException, JsonToken, JsonWriter};
 use super::java_time::{self, Instant};
+use super::unchecked_exception::UncheckedException;
 
 /// Response from the `get` command of the
 /// [Credential Helper Protocol](https://github.com/bazelbuild/proposals/blob/main/designs/2022-06-07-bazel-credential-helpers.md#proposal).
@@ -94,15 +95,19 @@ impl GetCredentialsResponseBuilder {
     /// Returns the newly constructed [`GetCredentialsResponse`].
     ///
     /// `ImmutableMap.Builder.build()` (`buildOrThrow`) throws an `IllegalArgumentException` for a
-    /// header name given twice; Gson does not catch it, so it is a panic.
+    /// header name given twice; Gson does not catch it. Its message holds the header values, as
+    /// Java's does (see `unchecked_exception` for where it is printed).
     pub fn build(&self) -> GetCredentialsResponse {
         let mut headers: IndexMap<String, Vec<String>> = IndexMap::new();
         for (name, values) in &self.headers {
             if let Some(existing) = headers.get(name) {
-                panic!(
-                    "IllegalArgumentException: Multiple entries with same key: {name}=[{}] and {name}=[{}]",
-                    existing.join(", "),
-                    values.join(", ")
+                UncheckedException::throw(
+                    "java.lang.IllegalArgumentException",
+                    format!(
+                        "Multiple entries with same key: {name}=[{}] and {name}=[{}]",
+                        existing.join(", "),
+                        values.join(", ")
+                    ),
                 );
             }
             headers.insert(name.clone(), values.clone());

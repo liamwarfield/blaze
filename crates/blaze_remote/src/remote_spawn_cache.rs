@@ -165,9 +165,11 @@ impl RemoteSpawnCache {
                 {
                     // PORT: `catch (CredentialHelperException e) { if (thisExecution != null) {
                     // thisExecution.close(); } throw
-                    // createExecExceptionForCredentialHelperException(e); }` has no port:
-                    // `CredentialHelperException` (lib/authandtls/credentialhelper) is not
-                    // ported, so no error is one.
+                    // createExecExceptionForCredentialHelperException(e); }` has no port: a
+                    // `CredentialHelperException` (a `blaze_repo_fetch` `IoException` of kind
+                    // `CredentialHelperException`) arrives over gRPC only as the cause of an
+                    // UNAUTHENTICATED status, where this catch does not fire in Java either; the
+                    // paths that throw it directly (HTTP cache, remote downloader) are not ported.
                     let should_local_fallback = self.options.remote_local_fallback_for_remote_cache
                         && self.options.remote_local_fallback;
                     if !should_local_fallback {

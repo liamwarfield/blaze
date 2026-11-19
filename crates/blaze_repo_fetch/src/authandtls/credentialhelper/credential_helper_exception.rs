@@ -2,13 +2,14 @@
 
 use std::fmt;
 
-use crate::errors::IoException;
+use crate::errors::{IoException, IoExceptionKind};
 
 /// An exception thrown while invoking a credential helper.
 ///
-/// PORT: Java's class extends `IOException`; it converts into an [`IoException`] (kind
-/// `IOException`: `errors::IoExceptionKind` has no entry for this class, and no Bazel output
-/// prints its class name) with the same message.
+/// PORT: Java's class extends `IOException`; it converts into an [`IoException`] of kind
+/// `IoExceptionKind::CredentialHelperException` with the same message, which is how callers
+/// test `instanceof CredentialHelperException` (`Utils.grpcAwareErrorMessage`). The cause is
+/// kept here only; Java prints it only in a `--verbose_failures` stack trace.
 // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialHelperException.java:20 CredentialHelperException
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CredentialHelperException {
@@ -58,6 +59,6 @@ impl std::error::Error for CredentialHelperException {}
 
 impl From<CredentialHelperException> for IoException {
     fn from(e: CredentialHelperException) -> IoException {
-        IoException::new(e.message)
+        IoException::of(IoExceptionKind::CredentialHelperException, e.message)
     }
 }

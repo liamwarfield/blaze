@@ -147,9 +147,35 @@ fn run_build(
         Err(e) => {
             env.get_reporter()
                 .handle(&Event::error(e.get_message().to_owned()));
-            return BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(e.failure_detail));
+            return BlazeCommandResult::detailed_exit_code(abrupt_exit_detailed_exit_code(e));
         }
     };
+    // BuildEventServiceModule: the file transports' artifact uploader is
+    // `uploaderFactoryMap.select(--experimental_build_event_upload_strategy)`; unset (the
+    // default) or "remote" selects RemoteModule's, which with a gRPC cache is a
+    // ByteStreamBuildEventArtifactUploader (`bytestream://` URIs, uploads of the files the
+    // events name). It is not ported.
+    // Java: com/google/devtools/build/lib/runtime/BuildEventArtifactUploaderFactoryMap.java:33 BuildEventArtifactUploaderFactoryMap.select
+    if remote_module.uses_byte_stream_build_event_artifact_uploader()
+        && options
+            .get_options::<blaze_optdefs::misc::build_event_stream_options::BuildEventStreamOptions>()
+            .is_some_and(|o| {
+                !o.build_event_text_file.is_empty()
+                    || !o.build_event_binary_file.is_empty()
+                    || !o.build_event_json_file.is_empty()
+            })
+        && options
+            .get_options::<blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions>()
+            .is_none_or(|o| {
+                o.build_event_upload_strategy.is_none()
+                    || o.build_event_upload_strategy.as_deref() == Some("remote")
+            })
+    {
+        blaze_util::unported!(
+            "ByteStreamBuildEventArtifactUploader (RemoteModule.BuildEventArtifactUploaderFactoryDelegate.create)",
+            "--build_event_*_file with a gRPC remote cache or remote execution (Bazel names the files bytestream://...); pass --experimental_build_event_upload_strategy=local"
+        );
+    }
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
     let bep = BepCommandSupport::before_command(env, options);
     let mut result = run_build_with_bep(env, options, run_tests, bep.as_ref(), &remote_module);
@@ -164,7 +190,7 @@ fn run_build(
         env.get_reporter()
             .handle(&Event::error(e.get_message().to_owned()));
         if !result.get_exit_code().is_infrastructure_failure() {
-            result = BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(e.failure_detail));
+            result = BlazeCommandResult::detailed_exit_code(abrupt_exit_detailed_exit_code(e));
         }
     }
     let Some(bep) = bep else {
@@ -182,6 +208,21 @@ fn run_build(
                 BlazeCommandResult::detailed_exit_code(e.detailed_exit_code)
             }
         }
+    }
+}
+
+/// `e.getDetailedExitCode()` of an `AbruptExitException`: the explicit exit code when the
+/// exception was created with one (`DetailedExitCode.of(exitCode, failureDetail)`), else the
+/// failure detail's.
+fn abrupt_exit_detailed_exit_code(
+    e: blaze_exec::exec::spawn_strategy_registry::AbruptExitException,
+) -> DetailedExitCode {
+    match e.exit_code {
+        Some(code) => DetailedExitCode::of_exit_code(
+            ExitCode::for_code(code).expect("a registered exit code"),
+            e.failure_detail,
+        ),
+        None => DetailedExitCode::of(e.failure_detail),
     }
 }
 
@@ -371,11 +412,21 @@ fn run_build_with_bep(
             reporter: env.get_reporter().clone() as Arc<dyn EventHandler>,
         },
     ) {
-        Ok(c) => c,
-        Err(e) => {
-            return BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(e.failure_detail));
-        }
+        Ok(c) => (c, None),
+        // SpawnLogModule.executorInit throws from ExecutionTool's constructor, before the
+        // spawn strategies are registered: the build fails where Java constructs the
+        // ExecutionTool (see PreparedExecution::check_execution_tool_created).
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:171 ExecutionTool.<init>
+        Err(e) => (
+            None,
+            Some(
+                blaze_exec::exec::spawn_strategy_registry::AbruptExitException::new(
+                    e.failure_detail,
+                ),
+            ),
+        ),
     };
+    let (spawn_log_context, executor_init_error) = spawn_log_context;
 
     // OutputFilteringModule: the reporter's filter (see `output_filter`).
     let reporter_output_filter = output_filter(options, &build_request_options);
@@ -417,6 +468,7 @@ fn run_build_with_bep(
             .unwrap_or(false),
         output_filter: reporter_output_filter.clone(),
         remote_module: Some(remote_module.clone()),
+        executor_init_error,
     };
     let summary_for_contexts = Arc::new(test_summary_options.clone());
     let workspace_for_contexts = workspace.clone();

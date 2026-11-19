@@ -65,9 +65,8 @@ impl CredentialModule {
     /// * `default_cache_duration`: `env.getOptions().getOptions(AuthAndTLSOptions.class)
     ///   .credentialHelperCacheTimeout` (`--credential_helper_cache_duration`).
     ///
-    /// PORT: the runtime's module loop must call this on [`CredentialModule::instance`] (missing
-    /// hook in `blaze_runtime::bazel_modules::CredentialModule`); until it does, caching a
-    /// response without `expires` fails loudly (see `CredentialCacheExpiry`).
+    /// `blaze_runtime::bazel_modules::CredentialModule::before_command` calls this on
+    /// [`CredentialModule::instance`] for every command.
     // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialModule.java:61 CredentialModule.beforeCommand
     pub fn before_command(&self, command_name: &str, default_cache_duration: Duration) {
         let default_cache_duration_changed = {

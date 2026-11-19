@@ -338,6 +338,9 @@ pub struct SkyframeActionExecutor {
     /// PORT: one instance for the build (a `Path`'s identity includes its file system, so
     /// every action must see the same one); Java creates one per action.
     remote_action_file_system: Option<blaze_vfs::FileSystemRef>,
+    /// `outputService.getOutputChecker()`: the `RemoteOutputChecker` with a remote output
+    /// service, `None` for `LocalOutputService` (`OutputChecker.TRUST_LOCAL_ONLY`).
+    output_checker: Option<Arc<dyn OutputChecker>>,
 }
 
 impl SkyframeActionExecutor {
@@ -369,7 +372,18 @@ impl SkyframeActionExecutor {
             action_uniquifier: AtomicU64::new(0),
             remote_output_tree: None,
             remote_action_file_system: None,
+            output_checker: None,
         }
+    }
+
+    /// Sets `outputService.getOutputChecker()` (the remote output service's
+    /// `RemoteOutputChecker`).
+    pub fn with_output_checker(
+        mut self,
+        output_checker: Arc<dyn OutputChecker>,
+    ) -> SkyframeActionExecutor {
+        self.output_checker = Some(output_checker);
+        self
     }
 
     /// Sets the remote output tree the actions' output metadata stores and action file systems
@@ -1035,8 +1049,12 @@ impl SkyframeActionExecutor {
         let adapter = CacheCheckActionAdapter::new(action.as_ref(), &self.action_key_context);
         // Java passes state.actionInputMetadataProvider: the input map alone.
         let map_only = input_metadata_provider.action_input_map_only();
-        // LocalOutputService.getOutputChecker(): no remote output service is ported.
-        let output_checker = TrustLocalOnly;
+        // outputService.getOutputChecker(): LocalOutputService's is TRUST_LOCAL_ONLY.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:782 SkyframeActionExecutor.checkActionCache
+        let output_checker: &dyn OutputChecker = match &self.output_checker {
+            Some(checker) => checker.as_ref(),
+            None => &TrustLocalOnly,
+        };
         let handler: Option<&dyn EventHandler> = if self.explain {
             Some(&*self.reporter as &dyn EventHandler)
         } else {
@@ -1054,7 +1072,7 @@ impl SkyframeActionExecutor {
             &map_only,
             output_metadata_store,
             &self.action_execution_salt,
-            Some(&output_checker as &dyn OutputChecker),
+            Some(output_checker),
             use_archived_tree_artifacts,
         )?;
 
@@ -1075,7 +1093,7 @@ impl SkyframeActionExecutor {
                         &map_only,
                         output_metadata_store,
                         &self.action_execution_salt,
-                        Some(&output_checker as &dyn OutputChecker),
+                        Some(output_checker),
                         use_archived_tree_artifacts,
                     )?;
             }
