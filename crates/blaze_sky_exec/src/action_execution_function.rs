@@ -7,16 +7,25 @@ use std::time::Instant;
 
 use blaze_actions::actions::action::{Action, ActionRef};
 use blaze_actions::{ActionLookupData, Artifact};
+use blaze_cmdline::PackageIdentifier;
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
 use blaze_exec::actions::action_adapters::artifact_input;
 use blaze_exec::actions::action_cache_checker::{
-    PackageRootExceptionOrInterrupted, PackageRootResolver, Token,
+    InterruptedException, PackageRootException, PackageRootExceptionOrInterrupted,
+    PackageRootResolver, Token,
 };
 use blaze_exec::actions::action_execution::{ActionFailed, FailedActionInfo};
 use blaze_exec::actions::{
     ActionExecutionException, ActionInputRef, FileArtifactValue, TreeArtifactValue,
 };
-use blaze_protos::failure_details::{FailureDetail, execution};
+use blaze_packages::exceptions::{FailureCode, NoSuchPackageException, NoSuchPackageKind};
+use blaze_protos::failure_details::{
+    FailureDetail, IncludeScanning, PackageLoading, execution, failure_detail, include_scanning,
+    package_loading,
+};
+use blaze_sky_loading::containing_package_lookup::ContainingPackageLookupKey;
+use blaze_sky_loading::io::IOException;
+use blaze_sky_loading::precomputed::STARLARK_SEMANTICS;
 use blaze_skyframe::{
     ComputeError, Environment, Interrupted, SkyFunctionException, SkyKey, SkyValue,
     SkyframeLookupResult, Transience,
@@ -163,6 +172,168 @@ impl PackageRootResolver for PackageRootResolverWithEnvironment<'_, '_> {
         let mut env = self.env.borrow_mut();
         lookup.find_package_roots_for_files(exec_paths, &mut env)
     }
+}
+
+/// The Skyframe lookups of `PackageRootResolverWithEnvironment.findPackageRootsForFiles` after its
+/// `checkState`: `PrecomputedValue.STARLARK_SEMANTICS` and one `CONTAINING_PACKAGE_LOOKUP` per
+/// package discovered from the exec paths. The [`ContainingPackageRootLookup`] the build gives
+/// the executor (`ExecutionTool`).
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:591 ActionExecutionFunction.PackageRootResolverWithEnvironment
+pub struct SkyframeContainingPackageRootLookup;
+
+/// The exceptions `findPackageRootsForFiles` catches from `ContainingPackageLookupValue`s.
+enum ContainingPackageLookupException {
+    /// `BuildFileNotFoundException`.
+    BuildFileNotFound(NoSuchPackageException),
+    /// `InconsistentFilesystemException`.
+    InconsistentFilesystem(IOException),
+}
+
+impl ContainingPackageRootLookup for SkyframeContainingPackageRootLookup {
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:602 PackageRootResolverWithEnvironment.findPackageRootsForFiles
+    fn find_package_roots_for_files(
+        &self,
+        exec_paths: &[PathFragment],
+        env: &mut Environment<'_>,
+    ) -> Result<Option<HashMap<PathFragment, Option<Root>>>, PackageRootExceptionOrInterrupted>
+    {
+        let starlark_semantics = match STARLARK_SEMANTICS.get(env) {
+            Ok(Some(s)) => s,
+            Ok(None) => return Ok(None),
+            Err(Interrupted) => return Err(InterruptedException.into()),
+        };
+
+        let sibling_repository_layout = starlark_semantics.experimental_sibling_repository_layout;
+
+        // Create SkyKeys list based on execPaths.
+        let mut dep_keys: HashMap<PathFragment, ContainingPackageLookupKey> = HashMap::new();
+        // PORT: request order. Java requests `depKeys.values()` (HashMap order); the keys are
+        // requested here in the order of `execPaths` (each once).
+        let mut requested: IndexSet<ContainingPackageLookupKey> = IndexSet::new();
+        for path in exec_paths {
+            let parent = path
+                .get_parent_directory()
+                .expect("Must pass in files, not root directory");
+            blaze_util::check_argument!(!parent.is_absolute(), "{}", path);
+            let pkg_id =
+                PackageIdentifier::discover_from_exec_path(path, true, sibling_repository_layout);
+            if let Some(pkg_id) = pkg_id {
+                let dep_key = ContainingPackageLookupKey::key(pkg_id);
+                requested.insert(dep_key.clone());
+                dep_keys.insert(path.clone(), dep_key);
+            }
+        }
+
+        let request: Vec<SkyKey> = requested.into_iter().map(SkyKey::new).collect();
+        let values = env
+            .get_values_and_exceptions(&request)
+            .map_err(|Interrupted| InterruptedException)?;
+        let mut result: HashMap<PathFragment, Option<Root>> = HashMap::new();
+        for path in exec_paths {
+            let Some(dep_key) = dep_keys.get(path) else {
+                continue;
+            };
+            let value = match values.get_or_throw_with(dep_key, |e| {
+                if let Some(nspe) = e.downcast_ref::<NoSuchPackageException>()
+                    && nspe.kind() == NoSuchPackageKind::BuildFileNotFound
+                {
+                    return Some(ContainingPackageLookupException::BuildFileNotFound(
+                        nspe.clone(),
+                    ));
+                }
+                e.downcast_ref::<IOException>()
+                    .filter(|io| io.is_inconsistent_filesystem())
+                    .map(|io| ContainingPackageLookupException::InconsistentFilesystem(io.clone()))
+            }) {
+                Ok(value) => value,
+                Err(ContainingPackageLookupException::BuildFileNotFound(e)) => {
+                    return Err(package_root_exception_for_build_file_not_found(path, &e).into());
+                }
+                Err(ContainingPackageLookupException::InconsistentFilesystem(e)) => {
+                    return Err(package_root_exception_for_inconsistent_filesystem(path, &e).into());
+                }
+            };
+            match value {
+                Some(value) if value.has_containing_package() => {
+                    // We have found corresponding root for current execPath.
+                    result.insert(
+                        path.clone(),
+                        Some(value.get_containing_package_root().clone()),
+                    );
+                }
+                _ => {
+                    // We haven't found corresponding root for current execPath.
+                    result.insert(path.clone(), None);
+                }
+            }
+        }
+        Ok(if env.values_missing() {
+            None
+        } else {
+            Some(result)
+        })
+    }
+}
+
+/// `PackageRootException.create(execPath, BuildFileNotFoundException)`.
+// Java: com/google/devtools/build/lib/actions/PackageRootResolver.java:62 PackageRootException.create
+pub fn package_root_exception_for_build_file_not_found(
+    exec_path: &PathFragment,
+    e: &NoSuchPackageException,
+) -> PackageRootException {
+    let detailed_exit_code = e.get_detailed_exit_code();
+    let package_loading_code = match &detailed_exit_code.code {
+        FailureCode::PackageLoading(code) => *code,
+        FailureCode::Other(name) => blaze_util::unported!(
+            "PackageRootException.create (BuildFileNotFoundException with a non-PackageLoading \
+             DetailedExitCode)",
+            "{name}"
+        ),
+    };
+    let failure_detail = FailureDetail {
+        message: detailed_exit_code.message.clone(),
+        category: Some(failure_detail::Category::PackageLoading(PackageLoading {
+            code: package_loading_code as i32,
+        })),
+    };
+    let code = if e.has_explicit_detailed_exit_code() {
+        if blaze_util::DetailedExitCode::get_exit_code_of(&failure_detail)
+            .is_infrastructure_failure()
+        {
+            include_scanning::Code::SystemPackageLoadFailure
+        } else {
+            include_scanning::Code::UserPackageLoadFailure
+        }
+    } else {
+        include_scanning::Code::UndifferentiatedPackageLoadFailure
+    };
+    // PORT: skipped, bug reports (BugReport.sendBugReport when the code is
+    // PACKAGE_LOADING_UNKNOWN).
+    PackageRootException::new(
+        exec_path,
+        IncludeScanning {
+            code: code as i32,
+            package_loading_code: package_loading_code as i32,
+        },
+        &e.get_message(),
+    )
+}
+
+/// `PackageRootException.create(execPath, InconsistentFilesystemException)`.
+// Java: com/google/devtools/build/lib/actions/PackageRootResolver.java:86 PackageRootException.create
+pub fn package_root_exception_for_inconsistent_filesystem(
+    exec_path: &PathFragment,
+    e: &IOException,
+) -> PackageRootException {
+    PackageRootException::new(
+        exec_path,
+        IncludeScanning {
+            code: include_scanning::Code::SystemPackageLoadFailure as i32,
+            package_loading_code: package_loading::Code::PersistentInconsistentFilesystemError
+                as i32,
+        },
+        e.get_message(),
+    )
 }
 
 impl ActionExecutionFunction {

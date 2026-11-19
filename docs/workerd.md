@@ -211,6 +211,22 @@ After all fixes, on the working tree of 2026-11-18 (HEAD bd9694d plus uncommitte
   `--project re2`: 81/81, lockfile MATCH, hidden 20/21 (`provisioning_profile_repository_extension`:
   `apple_common.dotted_version` is a loading stub; untouched by these changes).
 
+Aspects wave (2026-11-18), binary sha256 `7546139d63d8` built from HEAD 4e9d079 plus the
+working tree (committed by root as d294400):
+
+- Referee, label `blaze-aspects-4` (dirty tree, binary copied out of `target/`, so the label is
+  evidence for the wave and not an accepted score): `scripts/gate/compare-scores
+  corpus/scores/blaze-ef66f55e904e.referee2.json`: rows 39, gained 3, regressed 0, PASS; brotli
+  and re2 are unchanged at 13,850 matching items (23 of 26 surfaces MATCH). Earlier points of
+  the wave: `blaze-aspects-1`, `-2`, `-3`, each PASS with 0 regressed.
+- Test gate on the working tree (`scripts/gate/run-tests`, `compare-tests` against
+  `docs/state/tests-baseline.json.gz`): pass 6,345 (baseline 5,487), fail 0, ignored 2,029;
+  retained 5,487, lost 0, absent 0, new-pass 851, recovered 7.
+- `scripts/w4/probe compare-all`: 39 scenarios, 720 steps; full 102, masked 570, messages 239,
+  equal to the saved transcripts of the previous binary. New scenario `aspects` (recorded on the
+  oracle): 19 of 22 steps match in the masked view; the other 3 are top-level aspects on the
+  build path (#25).
+
 ## Next for workerd
 
 Items 1 to 3 of the earlier list (#12 to #16) are done; the whole target analyses and cquery and

@@ -3,11 +3,12 @@
 //! Java: com/google/devtools/build/lib/actions/{FileStateValue,FileStateType,
 //! FileContentsProxy}.java. Not ported: `RegularFileStateValueWithMetadata` (needs
 //! `FileArtifactValue`, only produced by `FileStatusWithMetadata` file systems such as remote
-//! output services), `getValueFingerprint` and `compareContents` (PORT: skipped, incremental),
+//! output services), `compareContents` (PORT: skipped, incremental),
 //! `TimestampGranularityMonitor` notifications (PORT: skipped, incremental).
 
 use std::fmt;
 
+use blaze_util::fingerprint::Fingerprint;
 use blaze_vfs::{FileStatus, PathFragment, RootedPath, Symlinks};
 
 use crate::io::IOException;
@@ -110,6 +111,15 @@ impl FileContentsProxy {
     pub fn is_modified(&self, other: &FileContentsProxy) -> bool {
         // true if nodeId are different or inode has a new mtime
         self.node_id != other.node_id || self.mtime != other.mtime
+    }
+
+    /// PORT: package-private in Java; public here for `FileStateValue.getValueFingerprint`'s
+    /// callers in other crates.
+    // Java: com/google/devtools/build/lib/actions/FileContentsProxy.java:86 FileContentsProxy.addToFingerprint
+    pub fn add_to_fingerprint(&self, fp: &mut Fingerprint) {
+        fp.add_long(self.ctime);
+        fp.add_long(self.mtime);
+        fp.add_long(self.node_id);
     }
 
     // Java: com/google/devtools/build/lib/actions/FileContentsProxy.java:96 FileContentsProxy.prettyPrint
@@ -329,6 +339,47 @@ impl FileStateValue {
             FileStateValue::Directory | FileStateValue::Nonexistent => {
                 panic!("UnsupportedOperationException")
             }
+        }
+    }
+
+    /// Returns a fingerprint of this value (Java: the abstract method and its implementations).
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:291 FileStateValue.getValueFingerprint
+    pub fn get_value_fingerprint(&self) -> Vec<u8> {
+        match self {
+            // Java: com/google/devtools/build/lib/actions/FileStateValue.java:351 RegularFileStateValueWithDigest.getValueFingerprint
+            FileStateValue::RegularFileWithDigest { size, digest } => {
+                let mut fp = Fingerprint::new();
+                fp.add_long(*size);
+                fp.add_bytes(digest);
+                fp.digest_and_reset()
+            }
+            // Java: com/google/devtools/build/lib/actions/FileStateValue.java:423 RegularFileStateValueWithContentsProxy.getValueFingerprint
+            FileStateValue::RegularFileWithContentsProxy {
+                size,
+                contents_proxy,
+            } => {
+                let mut fp = Fingerprint::new();
+                fp.add_long(*size);
+                contents_proxy.add_to_fingerprint(&mut fp);
+                fp.digest_and_reset()
+            }
+            // Java: com/google/devtools/build/lib/actions/FileStateValue.java:573 SpecialFileStateValue.getValueFingerprint
+            FileStateValue::SpecialFile { contents_proxy } => {
+                let mut fp = Fingerprint::new();
+                contents_proxy.add_to_fingerprint(&mut fp);
+                fp.digest_and_reset()
+            }
+            // Java: com/google/devtools/build/lib/actions/FileStateValue.java:618 DirectoryFileStateValue.getValueFingerprint
+            FileStateValue::Directory => b"DirectoryFileStateValue".to_vec(),
+            // Java: com/google/devtools/build/lib/actions/FileStateValue.java:664 SymlinkFileStateValue.getValueFingerprint
+            FileStateValue::Symlink { symlink_target } => {
+                let mut fp = Fingerprint::new();
+                // Java: Fingerprint.addPath(PathFragment) = addString(getPathString()).
+                fp.add_string(symlink_target.get_path_string());
+                fp.digest_and_reset()
+            }
+            // Java: com/google/devtools/build/lib/actions/FileStateValue.java:710 NonexistentFileStateValue.getValueFingerprint
+            FileStateValue::Nonexistent => b"NonexistentFileStateValue".to_vec(),
         }
     }
 

@@ -35,6 +35,7 @@ use blaze_optdefs::misc::remote_options::RemoteOptions;
 use blaze_optdefs::misc::sandbox_options::SandboxOptions;
 use blaze_optdefs::misc::worker_options::WorkerOptions;
 use blaze_options::Options;
+use blaze_sky_exec::action_execution_function::SkyframeContainingPackageRootLookup;
 use blaze_sky_exec::events::{
     ActionCompletionEvent, ActionResultReceivedEvent, TargetCompleteEvent, downcast_event,
 };
@@ -222,7 +223,8 @@ pub struct ActionCacheOptions {
     /// input-discovering actions (C++ compiles) recorded in the action cache.
     pub artifact_factory: Option<Arc<ArtifactFactory>>,
     /// The `CONTAINING_PACKAGE_LOOKUP` requests of `PackageRootResolverWithEnvironment`, needed
-    /// when a cached input is not a source artifact analysis already created.
+    /// when a cached input is not a source artifact analysis already created. The default is the
+    /// Skyframe port ([`SkyframeContainingPackageRootLookup`]).
     pub containing_package_root_lookup: Option<Arc<dyn ContainingPackageRootLookup>>,
 }
 
@@ -234,7 +236,8 @@ impl Default for ActionCacheOptions {
             check_up_to_date: false,
             test_check_up_to_date: false,
             artifact_factory: None,
-            containing_package_root_lookup: None,
+            // ActionExecutionFunction always resolves through PackageRootResolverWithEnvironment.
+            containing_package_root_lookup: Some(Arc::new(SkyframeContainingPackageRootLookup)),
         }
     }
 }

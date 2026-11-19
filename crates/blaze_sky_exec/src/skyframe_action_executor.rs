@@ -154,10 +154,11 @@ pub struct SkyframeActionExecutorConfig {
 /// `STARLARK_SEMANTICS`) that `ActionExecutionFunction` needs to resolve the source inputs an
 /// input-discovering action recorded in the action cache.
 ///
-/// Seam: `ContainingPackageLookupValue` is computed in `blaze_sky_loading`, which this crate does
-/// not depend on. The implementation ports the body of
-/// `ActionExecutionFunction.PackageRootResolverWithEnvironment.findPackageRootsForFiles`
-/// (ActionExecutionFunction.java:590-647) after its `checkState`.
+/// The build's implementation is
+/// [`crate::action_execution_function::SkyframeContainingPackageRootLookup`], which ports the body
+/// of `ActionExecutionFunction.PackageRootResolverWithEnvironment.findPackageRootsForFiles`
+/// (ActionExecutionFunction.java:602-662) after its `checkState`. `None` (tests without loading
+/// functions) fails loudly when an action cache entry has source paths to resolve.
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:578 ActionExecutionFunction.PackageRootResolverWithEnvironment
 pub trait ContainingPackageRootLookup: Send + Sync {
     #[allow(clippy::type_complexity)]
@@ -1439,12 +1440,22 @@ impl SkyframeActionExecutor {
             }
             Err(PackageRootExceptionOrInterrupted::PackageRoot(e)) => {
                 self.print_error(&e.message, action, None);
-                // PORT: the exception's FailureDetails.IncludeScanning code (from the
-                // BuildFileNotFoundException / InconsistentFilesystemException) is not carried by
-                // the ported PackageRootException.
-                blaze_util::unported!(
-                    "SkyframeActionExecutor.getActionCachedInputs (PackageRootException.getError)"
-                );
+                Err(ExecutionFailure::Exception(
+                    ActionExecutionException::already_reported(ActionExecutionException::with_cause(
+                        e.message.clone(),
+                        &e,
+                        Some(action),
+                        /* catastrophe= */ false,
+                        Some(blaze_protos::failure_details::FailureDetail {
+                            message: e.message.clone(),
+                            category: Some(
+                                blaze_protos::failure_details::failure_detail::Category::IncludeScanning(
+                                    *e.get_error(),
+                                ),
+                            ),
+                        }),
+                    )),
+                ))
             }
         }
     }
@@ -2662,11 +2673,10 @@ impl ArtifactResolver for ArtifactFactoryResolver {
                     .collect(),
             )),
             Ok(None) => Ok(None),
-            Err(message) => Err(bridge.error.borrow_mut().take().unwrap_or(
-                PackageRootExceptionOrInterrupted::PackageRoot(
-                    blaze_exec::actions::action_cache_checker::PackageRootException { message },
-                ),
-            )),
+            // ArtifactFactory.resolveSourceArtifacts throws only what the resolver throws.
+            Err(message) => Err(bridge.error.borrow_mut().take().unwrap_or_else(|| {
+                panic!("IllegalStateException: resolver error not recorded: {message}")
+            })),
         }
     }
 }

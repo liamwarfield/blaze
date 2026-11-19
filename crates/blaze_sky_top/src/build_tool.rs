@@ -485,7 +485,11 @@ impl<'a> BuildTool<'a> {
 
         // PORT: the progress receivers are process-wide (one command per process); Java resets
         // them when the build's loading starts (SkyframeExecutor / SkyframeBuildView).
-        blaze_sky_loading::package_progress_receiver::PACKAGE_PROGRESS.reset();
+        // PORT: the package progress is not reset here: Java resets it in
+        // SkyframeExecutor.preparePackageLoading, before the build settings of the command line
+        // are loaded (BlazeOptionHandler.parseStarlarkOptions), and counts those packages too
+        // (blaze_sky_loading::package_progress_receiver, module comment).
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1742 SkyframeExecutor.preparePackageLoading
         blaze_sky_analysis::analysis_progress_receiver::ANALYSIS_PROGRESS.reset();
         // PORT: BuildStartingEvent and ExecRootEvent are posted by the command, which builds
         // the build event stream (blaze_runtime commands/bep.rs); initializeOutputFilter belongs

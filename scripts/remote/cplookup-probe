@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""Cached discovered inputs resolved through CONTAINING_PACKAGE_LOOKUP: oracle vs Blaze.
+See `cplookup-probe help`."""
+
+import difflib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+CACHE = os.path.expanduser("~/.cache/blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+WORK = os.path.join(CACHE, "work", "probe-cplookup")
+TEMPLATE = os.path.join(WORK, "src")
+OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-probe-cplookup")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+
+USAGE = """\
+usage: scripts/remote/cplookup-probe init
+       scripts/remote/cplookup-probe run <name> <oracle|BLAZE-BINARY>
+       scripts/remote/cplookup-probe compare <name-a> <name-b>
+       scripts/remote/cplookup-probe help
+
+ActionExecutionFunction.PackageRootResolverWithEnvironment.findPackageRootsForFiles: a C++
+compile (an input-discovering action) whose action cache entry records discovered headers
+(from the .d file) that the current analysis does not declare. On the next build
+ActionCacheChecker.getCachedInputs resolves those exec paths as source artifacts; the ones
+analysis did not create ask CONTAINING_PACKAGE_LOOKUP for their package root.
+
+`init` writes the template <WORK>/src: ws/ (MODULE.bazel with rules_cc 0.2.17 and a
+`local_repository` `ext` at ../extrepo; //:a = cc_library a.cc including "inc/x.h" and "ext.h",
+deps //inc:x and @ext//:ext) and extrepo/ (REPO.bazel, BUILD with cc_library ext, ext.h).
+
+`run <name> BINARY` copies the template to <WORK>/<name>/ (fresh), uses the output user root
+<OUT_ROOT>/<name> (fresh), and runs `build //:a --execution_log_json_file=<step>/exec.json`:
+  s1  cold
+  s2  nothing changed
+  s3  drop //inc:x from deps (a.cc still includes inc/x.h; the cached input inc/x.h is resolved
+      through CONTAINING_PACKAGE_LOOKUP(//inc))
+  s4  drop @ext//:ext from deps too (external/+local_repository+ext/ext.h, CONTAINING_PACKAGE_LOOKUP
+      of @@+local_repository+ext//)
+  s5  a.cc includes neither header; inc/BUILD and inc/x.h deleted (re-runs the compile; inc/x.h
+      resolves to the root package //)
+  s6  nothing changed
+Each step directory <WORK>/<name>/<step> holds stdout, stderr, exit and exec.json. The server is
+shut down at the end.
+
+`compare <a> <b>` prints per step both exit codes and `processes:` lines, whether the
+WARNING/ERROR lines and the execution logs (timing fields dropped, run paths replaced) are equal,
+with a diff of the first difference. Exit 0 when every step matches.
+
+Every call runs in `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0` with
+HOME and PATH=/usr/bin:/bin only, startup options --output_user_root=<OUT_ROOT>/<name>
+--nohome_rc --nosystem_rc, and --repository_cache, --color=no --curses=no. WORK is
+~/.cache/blaze/work/probe-cplookup, OUT_ROOT ~/.cache/blaze/oracle-out/ur-probe-cplookup.
+"""
+
+MODULE = """\
+bazel_dep(name = "rules_cc", version = "0.2.17")
+
+local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
+
+local_repository(
+    name = "ext",
+    path = "../extrepo",
+)
+"""
+
+BUILD_A = """\
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+cc_library(
+    name = "a",
+    srcs = ["a.cc"],
+    deps = [%s],
+)
+"""
+
+BUILD_INC = """\
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+cc_library(
+    name = "x",
+    hdrs = ["x.h"],
+    visibility = ["//visibility:public"],
+)
+"""
+
+BUILD_EXT = """\
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+cc_library(
+    name = "ext",
+    hdrs = ["ext.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+"""
+
+A_CC = """\
+#include "inc/x.h"
+#include "ext.h"
+int a() { return X + EXT; }
+"""
+
+A_CC_PLAIN = """\
+int a() { return 3; }
+"""
+
+STEPS = ["s1", "s2", "s3", "s4", "s5", "s6"]
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def init():
+    if os.path.isdir(TEMPLATE):
+        return
+    ws = os.path.join(TEMPLATE, "ws")
+    write(os.path.join(ws, "MODULE.bazel"), MODULE)
+    write(os.path.join(ws, "BUILD"), BUILD_A % '"//inc:x", "@ext//:ext"')
+    write(os.path.join(ws, "a.cc"), A_CC)
+    write(os.path.join(ws, "inc", "BUILD"), BUILD_INC)
+    write(os.path.join(ws, "inc", "x.h"), "#define X 1\n")
+    ext = os.path.join(TEMPLATE, "extrepo")
+    write(os.path.join(ext, "REPO.bazel"), "")
+    write(os.path.join(ext, "BUILD"), BUILD_EXT)
+    write(os.path.join(ext, "ext.h"), "#define EXT 2\n")
+
+
+def rm(p):
+    if os.path.lexists(p):
+        subprocess.run(["chmod", "-R", "u+w", p])
+        shutil.rmtree(p)
+
+
+def run_binary(binary, name, ws, step, args):
+    our = os.path.join(OUT_ROOT, name)
+    os.makedirs(step, exist_ok=True)
+    full = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc", args[0],
+            "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args[1:]
+    unit = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
+            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "env", "-i",
+            "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin"]
+    with open(os.path.join(step, "stdout"), "wb") as so, \
+            open(os.path.join(step, "stderr"), "wb") as se:
+        code = subprocess.run(unit + full, cwd=ws, stdout=so, stderr=se).returncode
+    with open(os.path.join(step, "exit"), "w") as f:
+        f.write("%d\n" % code)
+    return code
+
+
+def summary(step):
+    err = open(os.path.join(step, "stderr"), errors="replace").read().splitlines()
+    procs = [l for l in err if "processes:" in l or re.search(r"\d+ process:", l)]
+    warns = [l for l in err if l.startswith("WARNING:") or l.startswith("ERROR:")]
+    return procs, warns
+
+
+def cmd_run(name, binary):
+    init()
+    binary = ORACLE if binary == "oracle" else os.path.abspath(os.path.expanduser(binary))
+    run_dir = os.path.join(WORK, name)
+    rm(run_dir)
+    rm(os.path.join(OUT_ROOT, name))
+    shutil.copytree(TEMPLATE, run_dir, symlinks=True)
+    ws = os.path.join(run_dir, "ws")
+    for s in STEPS:
+        if s == "s3":
+            write(os.path.join(ws, "BUILD"), BUILD_A % '"@ext//:ext"')
+        elif s == "s4":
+            write(os.path.join(ws, "BUILD"), BUILD_A % "")
+        elif s == "s5":
+            write(os.path.join(ws, "a.cc"), A_CC_PLAIN)
+            os.remove(os.path.join(ws, "inc", "BUILD"))
+            os.remove(os.path.join(ws, "inc", "x.h"))
+        step = os.path.join(run_dir, s)
+        code = run_binary(binary, name, ws, step, [
+            "build", "//:a", "--execution_log_json_file=" + os.path.join(step, "exec.json")])
+        procs, warns = summary(step)
+        print("%s exit %d %s warnings/errors=%d" % (s, code, " | ".join(procs), len(warns)))
+    run_binary(binary, name, ws, os.path.join(run_dir, "shutdown"), ["shutdown"])
+    return 0
+
+
+def read_log(path, name):
+    if not os.path.isfile(path):
+        return None
+    text = open(path, errors="replace").read()
+    text = text.replace(os.path.join(WORK, name), "<run>")
+    text = text.replace(os.path.join(OUT_ROOT, name), "<our>")
+    text = re.sub(r"<our>/[0-9a-f]{32}", "<ob>", text)
+    dec = json.JSONDecoder()
+    i, out = 0, []
+    while True:
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text):
+            break
+        obj, i = dec.raw_decode(text, i)
+        for k in ("walltime", "metrics"):
+            obj.pop(k, None)
+        out.append(obj)
+    return out
+
+
+def normalize(lines, name):
+    return [l.replace(os.path.join(WORK, name), "<run>")
+            .replace(os.path.join(OUT_ROOT, name), "<our>") for l in lines]
+
+
+def cmd_compare(a, b):
+    same_all = True
+    for s in STEPS:
+        sa, sb = os.path.join(WORK, a, s), os.path.join(WORK, b, s)
+        if not (os.path.isdir(sa) and os.path.isdir(sb)):
+            continue
+        pa, wa = summary(sa)
+        pb, wb = summary(sb)
+        wa, wb = normalize(wa, a), normalize(wb, b)
+        ea = open(os.path.join(sa, "exit")).read().strip()
+        eb = open(os.path.join(sb, "exit")).read().strip()
+        la = read_log(os.path.join(sa, "exec.json"), a)
+        lb = read_log(os.path.join(sb, "exec.json"), b)
+        print("== %s" % s)
+        print("  %-8s exit %s processes: %s" % (a, ea, " | ".join(pa)))
+        print("  %-8s exit %s processes: %s" % (b, eb, " | ".join(pb)))
+        print("  warnings/errors: %s %d, %s %d%s" % (a, len(wa), b, len(wb),
+                                                     "" if wa == wb else "  DIFFERENT"))
+        for w in (wa if wa == wb else wa + wb)[:8]:
+            print("    " + w)
+        if la == lb:
+            print("  exec log: equal (%d entries)" % (len(la or [])))
+        else:
+            same_all = False
+            print("  exec log: DIFFERENT")
+            ja = json.dumps(la, indent=1, sort_keys=True).splitlines()
+            jb = json.dumps(lb, indent=1, sort_keys=True).splitlines()
+            for line in list(difflib.unified_diff(ja, jb, a, b, lineterm="", n=2))[:60]:
+                print("    " + line)
+        if ea != eb or wa != wb or pa != pb:
+            same_all = False
+    return 0 if same_all else 1
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    if args[0] == "init" and len(args) == 1:
+        init()
+        print(TEMPLATE)
+        return 0
+    if args[0] == "run" and len(args) == 3:
+        return cmd_run(args[1], args[2])
+    if args[0] == "compare" and len(args) == 3:
+        return cmd_compare(args[1], args[2])
+    print(USAGE, end="", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

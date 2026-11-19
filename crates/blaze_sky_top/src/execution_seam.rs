@@ -10,6 +10,7 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use blaze_actions::analysis::workspace_status_action::BUILD_INFO_FUNCTION_NAME;
 use blaze_actions::{ActionLookupKeyRef, ActionRef, Artifact};
@@ -199,18 +200,10 @@ impl AnalysisSeam for SkyframeAnalysisSeam {
         key: &ActionLookupKeyRef,
         env: &mut Environment<'_>,
     ) -> Result<Option<Arc<dyn ConfiguredTargetView>>, ComputeError> {
+        // PORT: a top-level aspect is read through [`AnalysisSeam::get_top_level_aspects`] /
+        // [`AnalysisSeam::get_configured_aspect`] (BuildDriverFunction, AspectCompletor).
+        check_top_level_aspect_drivers_created();
         let Some(ct_key) = as_configured_target_key(key) else {
-            if key.function_name() == ASPECT.0 || key.function_name() == TOP_LEVEL_ASPECTS.0 {
-                // PORT: Java's BuildDriverFunction requests the TopLevelAspectsValue and one
-                // AspectCompletionKey per aspect (AspectCompletor, SkyFunctions.ASPECT_COMPLETION)
-                // instead of reading a configured target; the execution side has no aspect
-                // completion entry point yet. The aspect half of the reads is
-                // [`get_top_level_aspects`] / [`get_all_artifacts_to_build_of_aspect`].
-                unported!(
-                    "BuildDriverFunction.compute (TopLevelAspectsKey) / AspectCompletor.getValueAndArtifactsToBuild",
-                    "{key}"
-                );
-            }
             panic!("ClassCastException: {key} is not a ConfiguredTargetKey");
         };
         let Some(value) = env.get_value(ct_key.clone())? else {
@@ -234,6 +227,54 @@ impl AnalysisSeam for SkyframeAnalysisSeam {
             configuration_mnemonic,
             location,
         }) as Arc<dyn ConfiguredTargetView>))
+    }
+
+    /// `env.getValue(topLevelAspectsKey)` as `BuildDriverFunction` reads it for a
+    /// `TopLevelAspectsKey`: the top-level `AspectValue`s by key, in their order. `Ok(None)` when
+    /// the value is missing.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:323 BuildDriverFunction.compute
+    fn get_top_level_aspects(
+        &self,
+        key: &ActionLookupKeyRef,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<Vec<Arc<dyn ConfiguredAspectView>>>, ComputeError> {
+        let top_level_key = key
+            .as_any()
+            .downcast_ref::<TopLevelAspectsKey>()
+            .unwrap_or_else(|| panic!("ClassCastException: {key} is not a TopLevelAspectsKey"));
+        let Some(value) = env.get_value(top_level_key.clone())? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            value
+                .get_top_level_aspects_map()
+                .iter()
+                .map(|(k, v)| {
+                    Arc::new(SkyframeConfiguredAspectView::new(k.clone(), v.clone()))
+                        as Arc<dyn ConfiguredAspectView>
+                })
+                .collect(),
+        ))
+    }
+
+    /// `AspectCompletor.getValueAndArtifactsToBuild` (`CompletionFunction
+    /// .getValueAndArtifactsToBuild` with an `AspectCompletionKey`): the `AspectValue` of
+    /// `key` as an aspect view. `Ok(None)` when the value is missing.
+    // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:364 CompletionFunction.getValueAndArtifactsToBuild
+    fn get_configured_aspect(
+        &self,
+        key: &ActionLookupKeyRef,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<Arc<dyn ConfiguredAspectView>>, ComputeError> {
+        let aspect_key = as_aspect_key(key)
+            .unwrap_or_else(|| panic!("ClassCastException: {key} is not an AspectKey"));
+        let Some(value) = env.get_value(aspect_key.clone())? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            Arc::new(SkyframeConfiguredAspectView::new(aspect_key.clone(), value))
+                as Arc<dyn ConfiguredAspectView>,
+        ))
     }
 }
 
@@ -466,59 +507,6 @@ pub fn configured_target_views(targets: &[ConfiguredTarget]) -> Vec<Arc<dyn Conf
 // -------------------------------------------------------------------------------------------
 // Top-level aspects
 
-impl SkyframeAnalysisSeam {
-    /// `env.getValue(topLevelAspectsKey)` as `BuildDriverFunction` reads it for a
-    /// `TopLevelAspectsKey`: the top-level `AspectValue`s by key, in their order. `Ok(None)` when
-    /// the value is missing.
-    ///
-    /// PORT: the execution side's `BuildDriverFunction` has no aspect branch yet; this is the
-    /// analysis half of it (see [`AnalysisSeam::get_configured_target`]).
-    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:323 BuildDriverFunction.compute
-    pub fn get_top_level_aspects(
-        &self,
-        key: &ActionLookupKeyRef,
-        env: &mut Environment<'_>,
-    ) -> Result<Option<Vec<Arc<dyn ConfiguredAspectView>>>, ComputeError> {
-        let top_level_key = key
-            .as_any()
-            .downcast_ref::<TopLevelAspectsKey>()
-            .unwrap_or_else(|| panic!("ClassCastException: {key} is not a TopLevelAspectsKey"));
-        let Some(value) = env.get_value(top_level_key.clone())? else {
-            return Ok(None);
-        };
-        Ok(Some(
-            value
-                .get_top_level_aspects_map()
-                .iter()
-                .map(|(k, v)| {
-                    Arc::new(SkyframeConfiguredAspectView::new(k.clone(), v.clone()))
-                        as Arc<dyn ConfiguredAspectView>
-                })
-                .collect(),
-        ))
-    }
-
-    /// `AspectCompletor.getValueAndArtifactsToBuild` (`CompletionFunction
-    /// .getValueAndArtifactsToBuild` with an `AspectCompletionKey`): the `AspectValue` of
-    /// `key` as an aspect view. `Ok(None)` when the value is missing.
-    // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:364 CompletionFunction.getValueAndArtifactsToBuild
-    pub fn get_configured_aspect(
-        &self,
-        key: &ActionLookupKeyRef,
-        env: &mut Environment<'_>,
-    ) -> Result<Option<Arc<dyn ConfiguredAspectView>>, ComputeError> {
-        let aspect_key = as_aspect_key(key)
-            .unwrap_or_else(|| panic!("ClassCastException: {key} is not an AspectKey"));
-        let Some(value) = env.get_value(aspect_key.clone())? else {
-            return Ok(None);
-        };
-        Ok(Some(
-            Arc::new(SkyframeConfiguredAspectView::new(aspect_key.clone(), value))
-                as Arc<dyn ConfiguredAspectView>,
-        ))
-    }
-}
-
 /// [`ConfiguredAspectView`] over an `AspectValue` and its `AspectKey` (an entry of
 /// `AnalysisResult.getAspectsMap()` or of a `TopLevelAspectsValue`).
 pub struct SkyframeConfiguredAspectView {
@@ -546,12 +534,6 @@ impl SkyframeConfiguredAspectView {
     // Java: com/google/devtools/build/lib/packages/AspectDescriptor.java AspectDescriptor.getDescription
     pub fn get_aspect_description(&self) -> String {
         self.key.get_aspect_descriptor().get_description()
-    }
-
-    /// `AspectValue.getWritesOutputToMasterLog()` (`AspectCompleteEvent`).
-    // Java: com/google/devtools/build/lib/analysis/AspectValue.java:105 AspectValue.getWritesOutputToMasterLog
-    pub fn get_writes_output_to_master_log(&self) -> bool {
-        self.value.get_writes_output_to_master_log()
     }
 
     /// `AspectKey.getLabel() + ", aspect " + getAspectClass().getName()`.
@@ -589,6 +571,16 @@ impl ConfiguredAspectView for SkyframeConfiguredAspectView {
 
     fn get_output_groups(&self) -> IndexMap<String, NestedSet<Artifact>> {
         get_all_artifacts_to_build_of_aspect(&self.value)
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:330 BuildDriverFunction.compute (`entry.getKey()`)
+    fn get_aspect_key(&self) -> ActionLookupKeyRef {
+        ActionLookupKeyRef::new(self.key.clone())
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AspectValue.java:105 AspectValue.getWritesOutputToMasterLog
+    fn get_writes_output_to_master_log(&self) -> bool {
+        self.value.get_writes_output_to_master_log()
     }
 }
 
@@ -837,4 +829,82 @@ pub fn build_driver_keys(
         });
     }
     build_driver_ct_keys.into_iter().collect()
+}
+
+/// Whether the build command created the `BuildDriverKey.ofTopLevelAspect` keys of this
+/// command's top-level aspects.
+///
+/// PORT: Java creates the configured-target and the aspect driver keys in one method
+/// (`SkyframeBuildView.analyzeAndExecuteTargets`). In Blaze the build command creates them from
+/// the analysis result in two calls ([`build_driver_keys`], [`build_driver_aspect_keys`]); a
+/// command that analyzed top-level aspects for a build and then starts the execution phase
+/// without the second call would build no aspect and still report success. That fails loudly
+/// here (one command per process, like the other process-wide receivers).
+struct TopLevelAspectDrivers {
+    /// The number of `TopLevelAspectsKey`s `BuildView.update` analyzed with the execution phase.
+    analyzed: std::sync::atomic::AtomicUsize,
+    /// [`build_driver_aspect_keys`] was called.
+    created: std::sync::atomic::AtomicBool,
+}
+
+static TOP_LEVEL_ASPECT_DRIVERS: TopLevelAspectDrivers = TopLevelAspectDrivers {
+    analyzed: std::sync::atomic::AtomicUsize::new(0),
+    created: std::sync::atomic::AtomicBool::new(false),
+};
+
+/// `BuildView.update` analyzed `count` `TopLevelAspectsKey`s for a build with an execution
+/// phase.
+pub(crate) fn note_top_level_aspects_analyzed_for_execution(count: usize) {
+    TOP_LEVEL_ASPECT_DRIVERS
+        .analyzed
+        .store(count, Ordering::SeqCst);
+    TOP_LEVEL_ASPECT_DRIVERS
+        .created
+        .store(false, Ordering::SeqCst);
+}
+
+/// Called when the execution phase first asks for a top-level configured target.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:680 SkyframeBuildView.analyzeAndExecuteTargets
+fn check_top_level_aspect_drivers_created() {
+    let analyzed = TOP_LEVEL_ASPECT_DRIVERS.analyzed.load(Ordering::SeqCst);
+    if analyzed > 0 && !TOP_LEVEL_ASPECT_DRIVERS.created.load(Ordering::SeqCst) {
+        unported!(
+            "SkyframeBuildView.analyzeAndExecuteTargets",
+            "the build command did not create the BuildDriverKey.ofTopLevelAspect keys \
+             (execution_seam::build_driver_aspect_keys) of {} top-level aspect key(s)",
+            analyzed
+        );
+    }
+}
+
+/// Creates the `BuildDriverKey`s of the top-level aspects of a build request (the
+/// `buildDriverAspectKeys` of `SkyframeBuildView.analyzeAndExecuteTargets`), one per
+/// `TopLevelAspectsKey` (`AnalysisResult::get_top_level_aspects_keys`), in their order. Java's
+/// `topLevelKeys` is the union of the configured-target keys ([`build_driver_keys`]) and these.
+///
+/// The arguments are those of [`build_driver_keys`]: `explicit_target_patterns`
+/// ([`get_explicit_target_patterns`]), `output_groups` ([`top_level_output_groups`]),
+/// `skip_incompatible_explicit_targets` and `extra_action_top_level_only`.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:680 SkyframeBuildView.analyzeAndExecuteTargets
+pub fn build_driver_aspect_keys(
+    top_level_aspects_keys: &[TopLevelAspectsKey],
+    explicit_target_patterns: &IndexSet<Label>,
+    output_groups: &[String],
+    skip_incompatible_explicit_targets: bool,
+    extra_action_top_level_only: bool,
+) -> Vec<BuildDriverKey> {
+    TOP_LEVEL_ASPECT_DRIVERS
+        .created
+        .store(true, Ordering::SeqCst);
+    let mut build_driver_aspect_keys: IndexSet<BuildDriverKey> = IndexSet::new();
+    for k in top_level_aspects_keys {
+        build_driver_aspect_keys.insert(BuildDriverKey::of_top_level_aspect(
+            ActionLookupKeyRef::new(k.clone()),
+            output_groups.to_vec(),
+            /* explicitly_requested= */ explicit_target_patterns.contains(k.get_label()),
+            skip_incompatible_explicit_targets,
+            extra_action_top_level_only,
+        ));
+    }
+    build_driver_aspect_keys.into_iter().collect()
 }

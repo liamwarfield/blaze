@@ -68,7 +68,30 @@ class; top-level classes of `lib/remote` are top-level modules). Tests are
 
 ## Phases, evidence, gaps
 
-(Filled in by the crate lead as phases land.)
+All evidence is against Bazel 9.3.2 (the oracle) and Bazel's own remote worker
+(`scripts/remote/worker`), through the real `blaze` binary unless a line says "harness"
+(`blaze-remote-replay`, which replays the spawns of an oracle exec log through `blaze_remote`).
+Tools: `scripts/remote/{oracle-run,worker,replay,compare-grpc-log,matrix,second-build,ws-run,
+probe-trees,probe-inprocess,evict-probe,caps-matrix,bep-uris,stale-probe,symlink-probe,
+srcdir-probe,cplookup-probe}` (each prints `help`). Numbers are from the working tree on top of
+c74f487 (binary recorded as `blaze-c74f4870286a-dirty-6cb9e325`) unless noted.
+
+| phase | what | evidence |
+|---|---|---|
+| P1 disk cache | DiskCacheClient, CombinedCache, UploadManifest, MerkleTreeComputer, RemoteExecutionService, RemoteSpawnCache | brotli: 43/43 action digests equal Bazel's; Bazel's cache read by Blaze `43 disk cache hit`, Blaze's cache read by Bazel `53 processes: 43 disk cache hit, 10 internal`; both caches hold the same 43 `ac` and 165 `cas` names, ActionResults equal except execution timestamps. re2 (`test`): both directions `716 processes: 550 disk cache hit, 165 internal, 1 linux-sandbox`, which is what Bazel prints on its own cache. |
+| P2 remote cache | channel, capabilities, GrpcCacheClient, ByteStreamUploader, RequestMetadata, LoggingInterceptor | `--remote_grpc_log` vs Bazel's, RPC by RPC after normalisation: brotli cold 295/295, warm 51/51; re2 warm 600/600; re2 cold 3453/3535 (the other 82 RPCs all belong to the 21 TestRunner actions, whose outputs are timing-dependent). Interchange through the worker, both directions: brotli 43/43, re2 550/550 `remote cache hit`. |
+| P3 remote execution | GrpcRemoteExecutor, RemoteExecutionCache, RemoteSpawnRunner | brotli: `53 processes: 10 internal, 43 remote` on both, outputs equal to local execution, log MATCH (504 RPCs each, attribution-insensitive). re2 with `build //:all //python:all` (Bazel's worker drops long test operations; the oracle itself fails `test` with `NOT_FOUND: Operation not found`): `695 processes: 165 internal, 1 linux-sandbox, 529 remote` on both, log MATCH (6095 RPCs each). |
+| P4 build without the bytes | RemoteOutputChecker, AbstractActionInputPrefetcher, RemoteActionInputFetcher, RemoteActionFileSystem (a per-action overlay file system in `blaze_exec`), remote metadata in the action cache | brotli with an oracle-seeded disk cache, toplevel / minimal / all: build, build again, build after one source edit print the oracle's lines (`43 disk cache hit, 10 internal`; `1 process: 52 action cache hit, 1 internal`; `2 processes: 51 action cache hit, 1 internal, 1 linux-sandbox`) with identical `bazel-bin` after all 9 steps; tree artifacts (`probe-trees`), in-process readers (`probe-inprocess`), a remote-only `test.xml`: identical. |
+| default path | no remote flag | referee unchanged; `scripts/gate/compare-scores corpus/scores/blaze-ef66f55e904e.referee2.json <new>`: rows 39, gained 0, regressed 0, PASS. One intended change: the action cache salt is Java's (review R16), so Blaze reuses a Bazel-written output base (52 action cache hits where 43 actions re-ran before). |
+
+Gaps that are loud: see "Not ported (loud)". Gaps that are not loud are listed in
+docs/reviews/2026-11-19-remote-response.md ("Open after this round"): action rewinding (Bazel's
+default answer to an input lost from the remote cache under build without the bytes: Blaze
+matches Bazel only with `--norewind_lost_inputs`, and fails with `unported!` otherwise),
+`RemoteLeaseExtension`, exit code 39 after exhausted eviction retries not reproduced end to end,
+`argv[0]` conversion for a Windows execution platform (needs the platform's OS constraint),
+remote flags for commands other than build/test, the connection pool
+(`--remote_max_connections`: one multiplexed HTTP/2 connection).
 
 - Build event artifact uploader (review R12, 2026-11-19): `byte_stream_build_event_artifact_uploader.rs`
   ports `ByteStreamBuildEventArtifactUploader(Factory)`; `RemoteModule::create_build_event_artifact_uploader`

@@ -59,6 +59,9 @@ pub struct AnalysisResult {
     targets_to_test: Option<Vec<ConfiguredTarget>>,
     targets_to_skip: Vec<ConfiguredTarget>,
     aspects: IndexMap<AspectKey, Arc<AspectValue>>,
+    /// The `TopLevelAspectsKey`s `BuildView.update` analyzed (Java's `aspectKeys`, passed on to
+    /// `SkyframeBuildView.analyzeAndExecuteTargets`).
+    top_level_aspects_keys: Vec<TopLevelAspectsKey>,
     failure_detail: Option<FailureDetail>,
     walkable_graph: Arc<dyn WalkableGraph>,
     top_level_targets_with_configs: Vec<TargetAndConfiguration>,
@@ -128,6 +131,17 @@ impl AnalysisResult {
     // Java: com/google/devtools/build/lib/analysis/AnalysisResult.java:116 AnalysisResult.getAspectsMap
     pub fn get_aspects_map(&self) -> &IndexMap<AspectKey, Arc<AspectValue>> {
         &self.aspects
+    }
+
+    /// The `TopLevelAspectsKey`s of the request, in order: the keys Java's `BuildView.update`
+    /// hands `SkyframeBuildView.analyzeAndExecuteTargets` for its
+    /// `BuildDriverKey.ofTopLevelAspect`s (`execution_seam::build_driver_aspect_keys`).
+    ///
+    /// PORT: Java's `AnalysisResult` does not carry them; Blaze runs the execution phase after
+    /// `BuildView.update` returns, so the keys travel with the result.
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:372 BuildView.update
+    pub fn get_top_level_aspects_keys(&self) -> &[TopLevelAspectsKey] {
+        &self.top_level_aspects_keys
     }
 }
 
@@ -328,19 +342,12 @@ pub fn update_with_aspects_parameters(
                 ),
             ));
         }
-        // Java: SkyframeBuildView.analyzeAndExecuteTargets also creates a
-        // `BuildDriverKey.ofTopLevelAspect` per TopLevelAspectsKey, whose BuildDriverFunction
-        // requests one AspectCompletionKey per aspect (AspectCompletor). The execution side has
-        // no aspect entry point yet (`execution_seam::build_driver_keys` creates configured
-        // target keys only), so a build with top-level aspects fails here instead of silently
-        // not building them.
-        if !skyframe_analysis_result.get_aspects().is_empty() {
-            blaze_util::unported!(
-                "SkyframeBuildView.analyzeAndExecuteTargets",
-                "BuildDriverKey.ofTopLevelAspect / AspectCompletor for {} top-level aspect(s)",
-                skyframe_analysis_result.get_aspects().len()
-            );
-        }
+        // PORT: Java's SkyframeBuildView.analyzeAndExecuteTargets creates a
+        // `BuildDriverKey.ofTopLevelAspect` per TopLevelAspectsKey next to the configured-target
+        // keys; the build command creates them from the analysis result
+        // (`AnalysisResult::get_top_level_aspects_keys`,
+        // `execution_seam::build_driver_aspect_keys`).
+        crate::execution_seam::note_top_level_aspects_analyzed_for_execution(aspect_keys.len());
     }
 
     let num_targets_to_analyze = label_to_target_map.len();
@@ -423,6 +430,7 @@ pub fn update_with_aspects_parameters(
         loading_result,
         top_level_config,
         skyframe_analysis_result,
+        aspect_keys,
         targets_to_skip,
         analysis_phase_complete_stats,
     ))
@@ -764,6 +772,7 @@ fn create_result(
     loading_result: &TargetPatternPhaseValue,
     configuration: Arc<BuildConfigurationValue>,
     skyframe_analysis_result: SkyframeAnalysisResult,
+    top_level_aspects_keys: Vec<TopLevelAspectsKey>,
     targets_to_skip: Vec<ConfiguredTarget>,
     analysis_phase_complete_stats: AnalysisPhaseCompleteStats,
 ) -> AnalysisResult {
@@ -783,6 +792,7 @@ fn create_result(
         targets_to_test: all_targets_to_test,
         targets_to_skip,
         aspects: skyframe_analysis_result.get_aspects().clone(),
+        top_level_aspects_keys,
         failure_detail,
         walkable_graph: skyframe_analysis_result.get_walkable_graph().clone(),
         top_level_targets_with_configs: skyframe_analysis_result

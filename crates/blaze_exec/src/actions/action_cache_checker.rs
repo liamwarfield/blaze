@@ -202,12 +202,39 @@ pub trait PackageRootResolver {
     ) -> Result<Option<HashMap<PathFragment, Option<Root>>>, PackageRootExceptionOrInterrupted>;
 }
 
-/// Port of `PackageRootResolver.PackageRootException` (message only).
+/// Port of `PackageRootResolver.PackageRootException`: its message (`"Unable to resolve <exec
+/// path> as an artifact: <cause message>"`) and its `FailureDetails.IncludeScanning` error. The
+/// `create` factories live with the exception types they read (blaze_sky_exec,
+/// `ActionExecutionFunction`'s `PackageRootResolverWithEnvironment`).
 // Java: com/google/devtools/build/lib/actions/PackageRootResolver.java:51 PackageRootResolver.PackageRootException
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[error("{message}")]
 pub struct PackageRootException {
     pub message: String,
+    pub error: blaze_protos::failure_details::IncludeScanning,
+}
+
+impl PackageRootException {
+    // Java: com/google/devtools/build/lib/actions/PackageRootResolver.java:54 PackageRootException.<init>
+    pub fn new(
+        exec_path: &PathFragment,
+        error: blaze_protos::failure_details::IncludeScanning,
+        cause_message: &str,
+    ) -> PackageRootException {
+        PackageRootException {
+            message: format!(
+                "Unable to resolve {} as an artifact: {}",
+                exec_path.get_path_string(),
+                cause_message
+            ),
+            error,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/actions/PackageRootResolver.java:98 PackageRootException.getError
+    pub fn get_error(&self) -> &blaze_protos::failure_details::IncludeScanning {
+        &self.error
+    }
 }
 
 /// `throws PackageRootResolver.PackageRootException, InterruptedException`.
