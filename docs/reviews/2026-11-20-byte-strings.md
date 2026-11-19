@@ -290,3 +290,128 @@ blaze_vfs and all process launches through blaze_shell. Open items: the five (b)
 Basic encoder as read, not run; if root shows with a run that the JDK sends other bytes, it
 drops out. The S2 items and the record corrections of S2-7 do not block. Section 3 is not part
 of this verdict.
+
+---
+
+# Round 2 (re-check of the fixes)
+
+Same reviewer role (Fable 5.2), read-only, no sub-reviewers. **Commit read: `780fceb`**
+(`git diff 2574fef..780fceb`, read from a `git archive` extract), limited to what
+`docs/reviews/2026-11-20-byte-strings-response.md` names. No Cargo was run; the fixer's test
+counts (3622 passed, 0 failed, 1117 ignored in 15 crates) are the fixer's. Run by me:
+`scripts/bytes/compare` of `780fceb` on the oracle recording of 2026-11-19 12:10 against the
+fixer's Blaze recording (`~/.cache/blaze/work/bytes-fixer`): **114 / 115**, the one DIFF is
+`flagoff_rule_json`. That Blaze recording is from the fixer's working-tree binary; I could not
+rebuild at `780fceb`.
+
+**Verdict: PASS at `780fceb`.** All six S1 are fixed the way the Java (or C++) does it, each
+with a test whose expectation comes from Java or the oracle. Nothing left open blocks. Open
+items are listed in R2.4; one of them carries a condition (R2.2).
+
+## R2.1 The S1 fixes
+
+| id | fix read | same as Java | expectation from |
+|---|---|---|---|
+| S1-1 | `rc_file.rs:39` `internal_to_platform` before `exists()` | yes (`workspace_layout.cc:80`, `PathExists` on raw bytes) | unit test by construction; oracle item `rc_import.txt` (workspace `bytes_rc_é`, `import` and `try-import` both resolve) matches |
+| S1-2 | `command_failure_utils.rs:67` `chars().count()` on both operands | yes (`CommandFailureUtils.java:105-106`) | oracle item `failmsg:fail.stderr:1` matches |
+| S1-3 | `printer::quote` at all four providers; prefix `struct(` | yes (`NativeInfo.java:125-138`) | oracle `providers.stderr`: I read the six `CASE prov_*` lines; all four print `struct(` with the raw bytes. The unit tests quote that output |
+| S1-4 | `socket_transport.rs:521` `latin1_encode_lossy(internal_to_unicode(user) + ":" + internal_to_unicode(password))` | yes (`ProxyHelper.java:330-333` plus the JDK's Basic encoder) | the fixer's run of the oracle's JDK against a fake proxy (`Basic 6Tpwdw==`), which is the value round 1 derived by reading. Not end to end |
+| S1-5 | `url_rewriter.rs:431` `latin1_encode_lossy` | yes (`UrlRewriter.java:178`) | Java semantics of `getBytes(ISO_8859_1)` |
+| S1-6 | `gson.rs`: four UTF-16 units, each an ASCII hex digit (`hex4`); one leading U+FEFF skipped; the surrogate look-ahead uses the same check | yes | messages recorded from Gson 2.11.0 in the oracle's jar. The slice `rest()[2..]` is after an ASCII `\u`, so it cannot split a char; the panic is gone |
+
+S1-3: the prefix change is right. Round 1 flagged `ExecutionInfo(` / `RunEnvironmentInfo(` as
+unchecked; the oracle settles it.
+
+## R2.2 S2-1 and the `flagoff_rule_json` difference: ruling
+
+The three evaluators now set the flag from the thread's semantics. I checked every
+`Evaluator::new` in `crates/*/src` at `780fceb`: the four in `blaze_starlark/src/eval.rs` and
+these three set it; the others are in test modules. The only readers of the evaluator flag are
+the strip family and `json.decode`, as in Java. Removing the old `unported!` guard in
+`blaze_build_config/src/top_level.rs` is therefore right in principle: the reason it gave
+(code-point strings) no longer exists. Five of six flag-off oracle cases match.
+
+The remaining case: with the flag off, Java's `json.decode` builds a UTF-16 string
+(`Json.java:563-575`), so `"😀"` has length 2; Blaze pushes one `char`
+(`crates/blaze_starlark/src/json.rs:481-484`), length 1. A Rust `String` cannot hold the pair
+as two chars, so this cannot be made equal in that branch.
+
+**Ruling: not blocking, S2, with a condition.** It needs a hidden flag turned off and an
+escaped character above U+FFFF, and it stays visible: `scripts/bytes/compare` has no allow-list
+(checked) and reports it as DIFF. But a PORT note is not the form AGENTS.md allows for a value
+Blaze cannot produce ("anything not yet ported calls `unported!`"). The guard that was removed
+was loud; what replaced it for this case is silent. The interpreter fixer should close it with
+`unported!` in the flag-off branch for a decoded char above U+FFFF (one line at `json.rs:484`),
+which turns it into an honest S3. Until then the item must stay a counted DIFF (114 of 115),
+not be excluded.
+
+## R2.3 Section 3, tar `rename_files`: who is right
+
+Java, re-read: `CompressedTarFunction.java:86` opens the stream with `MarkedIso88591Charset`;
+its decoder appends the marker at the end of every header name (`:238-246`); `:111`
+`entry.isDirectory()` is Commons Compress's "directory type, or `getName().endsWith("/")`", and
+`getName()` still carries the marker there (it is removed only by `toRawBytesString` at `:89`).
+So a regular-typed entry whose header name ends in `/` is not a directory in Bazel; only the
+directory type or a PAX `path` (decoded as UTF-8, no marker) makes one. **The fixer's reading
+is right**, and the oracle run agrees (both `d` and `w` are files).
+
+Round 1 said: `isDirectory()` uses the original entry, and for `x` renamed to `d/` Bazel
+writes file `d`. That part is correct and is what the oracle did. Round 1 did not see the
+marker and so missed that the old Rust comment ("also true for a name ending in '/'") was wrong
+for header names as well. The fix at `compressed_tar.rs:353`
+(`is_dir() || (raw name ends with '/' && name is a PAX path)`) is the Java. No test covers the
+PAX branch (S4).
+
+## R2.4 The rest
+
+Fixed and read, same as Java: S2-2 (`path_fragment.rs:382`, test wraps literals as
+`PathFragmentTest.java:475-480` does), S2-4 (`jni_latin1_chars`, per UTF-16 unit, at the three
+sites; `replace_fs_unsafe_chars`), S2-5 (`JavaStringKey`), S2-6 URI index, path-mapper length,
+attribute-name keys, NUL separator (`strings.cc:187,234`), status-line trim; S2-7 seam removed
+(no reference to any seam name is left in `crates/` or `third_party/`), guard rewritten with the
+ASCII check on bundled Starlark sources, the five exec-site lines and the host-name line; S3
+`BasicHttpAuthenticationEncoderTest` ported (7 tests, names and values as the Java test; round
+1 miscounted 5).
+
+Open, none blocking:
+
+- **S2-1b** `flagoff_rule_json`: see R2.2 (interpreter fixer).
+- **S2-3** `crates/blaze_protos/src/text_format.rs:702,1729` still decode with
+  `String::from_utf8_lossy`, and the in-progress rewrite adds the same call at
+  `text_format/printer.rs:203,304,436,439` and `dynamic_message.rs:793`. The PORT comment at
+  `text_format.rs:699` still says the two decoders are equal; they are not. For the TextFormat
+  implementer's review.
+- **S2-5 residue** `overall_map` keeps code-point order (PORT-marked; consumer in blaze_exec).
+- **S2-6** embedded NUL in a path: accepted as a recorded deviation. Java itself is not uniform
+  (JNI truncates, the JDK stream constructors reject), and Blaze's error is the safe side.
+- **S2, older than the migration, security-relevant:** the CONNECT tunnel sends
+  `Proxy-Authorization: Basic` before any challenge. The JDK sends it only after a 407 that
+  offers `Basic`. With a proxy that asks for another scheme, Bazel never puts the password on
+  the wire in Basic form and Blaze does, in clear text to an `http://` proxy. This is more than
+  an emulation choice; it belongs to the downloader's owner.
+- **S4** `byte_strings.rs` passes as SKIP without its recording (root to decide whether the gate
+  records it); `artifact_factory.rs:88` (Windows only); no test for the PAX directory branch;
+  `blaze_runtime/src/blaze_command_utils.rs:53` uses `String::from_utf8_lossy` where the comment
+  says `new String(bytes, UTF_8)` (bundled resources, valid UTF-8 today).
+- **Record (root's):** `07-byte-strings.md` sections 7.2/7.4/7.5 and `07-byte-strings-rules.md`
+  (lines 5, 72-80) still describe `STRINGS_ARE_INTERNAL`, the seam functions and
+  `add_internal_string`, which no longer exist; the 7.5 additions of round 1 S2-7 are not made.
+- Section 3 of round 1 (interpreter items: tabs, empty needle, `[None:2]`, `fail()`,
+  `codepoints`, `b""`, `{!r}`, `int("1_000")`) was assigned elsewhere and is not part of this
+  verdict.
+
+## R2.5 Other work in the range
+
+`2574fef..780fceb` also holds other implementers' work (run command, mod subcommands,
+TextFormat, help/fetch, interpreter lexer fixes). Not reviewed. I scanned its added lines in
+`crates/*/src` (blaze_remote excluded) for the boundary patterns of rules section 2
+(`from_utf8*`, `to_string_lossy`, direct `std::fs`/`Path::new`, `env::var`, `trim()`,
+case mapping, `char::is_*`). Nothing breaks a byte-strings rule except the `from_utf8_lossy`
+calls listed under S2-3 and S4 above. The client's run request
+(`blaze_client/src/blaze.rs:396`) uses the client's own byte-path type and `cstr`, which is
+right; `commands/license.rs` works on platform paths and converts with `platform_to_internal`.
+
+## R2.6 Verdict
+
+**PASS at `780fceb`.** Carried, not blocking: S2-1b with the condition of R2.2, S2-3, the
+proxy pre-emptive credentials, the S4 items and the record corrections.

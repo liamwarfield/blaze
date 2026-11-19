@@ -31,8 +31,8 @@ Updated 2026-11-19, after tag v0.1.0 (root). Numbers cite their evidence; histor
 | Bzlmod, repositories, downloader, client | 4 | PASS |
 | Analysis, configuration, cquery/aquery | 3 | PASS |
 | Execution, sandbox, build driver | 4 (at ef66f55) | PASS |
-| Remote cache and execution | 2 | STOP: N1-N4 (tree values and exec root through the action file system, capabilities, execution properties); fixes in, re-review pending |
-| Byte strings (2574fef) | 1 | in progress |
+| Remote cache and execution | 2 | STOP: N1-N4 (tree values and exec root through the action file system, capabilities, execution properties); fixes in, re-review (round 3, at e370bf9) in progress |
+| Byte strings | 2 (at 780fceb) | PASS |
 
 Open items the reviewers left as non-blocking are listed at the end of each report.
 
