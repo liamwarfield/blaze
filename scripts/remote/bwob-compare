@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Compare two scripts/remote/bwob-run step directories (the oracle's and Blaze's).
+#
+# usage: scripts/remote/bwob-compare <oracle-step-dir> <blaze-step-dir>
+#        scripts/remote/bwob-compare help
+#
+# Prints one line per aspect, each `MATCH` or `DIFF` with counts, then the differences:
+#   exit      the exit codes
+#   summary   the `N processes: ...` line and the `Executed ...` test line
+#   files     files.txt without bazel-out/_tmp/actions/* (per-action stdout/stderr buffers) and
+#             bazel-out/{stable,volatile}-status.txt (host name, time); the contents of a
+#             test.cache_status (start time and duration of the test) are not compared
+#   execlog   the JSON execution log entries without `metrics`
+#   grpc      scripts/remote/compare-grpc-log (only when both steps have a grpc.log)
+# Exits 0 when everything matches, 1 otherwise.
+set -u
+if [[ $# -lt 2 || $1 == help ]]; then
+  sed -n '2,/^set -u/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+here=$(cd "$(dirname "$0")" && pwd)
+python3 -I - "$1" "$2" "$here/compare-grpc-log" <<'EOF'
+import json, os, re, subprocess, sys
+o, b, grpc = sys.argv[1], sys.argv[2], sys.argv[3]
+ok = True
+
+def read(p):
+    try:
+        with open(p) as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
+
+def report(name, same, detail, diff_lines=()):
+    global ok
+    ok &= same
+    print("%-8s %s %s" % (name, "MATCH" if same else "DIFF ", detail))
+    for line in list(diff_lines)[:40]:
+        print("    " + line)
+
+eo, eb = read(os.path.join(o, "exit")).strip(), read(os.path.join(b, "exit")).strip()
+report("exit", eo == eb, "%s / %s" % (eo, eb))
+
+def summary(d):
+    lines = []
+    for line in read(os.path.join(d, "stderr")).splitlines() + read(os.path.join(d, "stdout")).splitlines():
+        if re.search(r"\d+ process(es)?[:.]", line) or line.startswith("Executed "):
+            lines.append(line.strip())
+    return lines
+so, sb = summary(o), summary(b)
+report("summary", so == sb, " | ".join(so), ["oracle: " + x for x in so if x not in sb] + ["blaze:  " + x for x in sb if x not in so])
+
+def files(d):
+    rows = []
+    for line in read(os.path.join(d, "files.txt")).splitlines():
+        path = line.split(" ")[-1]
+        if path.startswith("bazel-out/_tmp/actions/") or path in ("bazel-out/stable-status.txt", "bazel-out/volatile-status.txt"):
+            continue
+        if path.endswith("/test.cache_status"):
+            # A serialized TestResultData with the start time and duration of the run.
+            line = "f <volatile> " + path
+        rows.append(line)
+    return rows
+fo, fb = files(o), files(b)
+so_, sb_ = set(fo), set(fb)
+report("files", fo == fb, "%d / %d entries, %d equal" % (len(fo), len(fb), len(so_ & sb_)),
+       ["oracle only: " + x for x in fo if x not in sb_] + ["blaze only:  " + x for x in fb if x not in so_])
+
+def execlog(d):
+    s = read(os.path.join(d, "execlog.json"))
+    dec, i, out = json.JSONDecoder(), 0, []
+    while i < len(s):
+        while i < len(s) and s[i].isspace():
+            i += 1
+        if i >= len(s):
+            break
+        obj, i = dec.raw_decode(s, i)
+        obj.pop("metrics", None)
+        out.append(json.dumps(obj, sort_keys=True))
+    return out
+lo, lb = execlog(o), execlog(b)
+same = sum(1 for x, y in zip(lo, lb) if x == y)
+diffs = []
+for x, y in zip(lo, lb):
+    if x != y:
+        xo, yo = json.loads(x), json.loads(y)
+        for k in sorted(set(xo) | set(yo)):
+            if xo.get(k) != yo.get(k):
+                diffs.append("%s %s: oracle=%s blaze=%s" % (xo.get("targetLabel"), k, json.dumps(xo.get(k))[:300], json.dumps(yo.get(k))[:300]))
+report("execlog", lo == lb, "%d / %d entries, %d identical" % (len(lo), len(lb), same), diffs)
+
+go, gb = os.path.join(o, "grpc.log"), os.path.join(b, "grpc.log")
+if os.path.exists(go) and os.path.exists(gb):
+    r = subprocess.run([grpc, go, gb], capture_output=True, text=True)
+    out = (r.stdout + r.stderr).strip().splitlines()
+    head = [l for l in out if "MATCH" in l or "DIFF" in l or "MISMATCH" in l]
+    report("grpc", r.returncode == 0, head[0] if head else (out[-1] if out else ""), out[1:20] if r.returncode else [])
+sys.exit(0 if ok else 1)
+EOF

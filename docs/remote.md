@@ -199,3 +199,112 @@ absolute paths under each tool's output base; with the output base name replaced
 identical. `compare-grpc-log` cannot decode these logs (the server attaches Buildbarn `Any`
 types the dumper does not know), so the gRPC comparison here is by counts only. The Stairwell
 depot itself is not measured: Bazel 9.3.2 cannot analyse it (docs/decisions.md 2026-11-19).
+
+### Phase 2: Build without the Bytes (`--remote_download_outputs=toplevel|minimal`, 2026-11-19)
+
+**Wiring.** `RemoteModule::executor_init` no longer refuses `toplevel`/`minimal`; with a cache it
+creates the `RemoteActionInputFetcher` (`remote_action_input_fetcher.rs` over
+`abstract_action_input_prefetcher.rs`, ports of the Java classes) and returns it with the salt
+(`RemoteExecutorInit`). `ExecutionTool` hands it to the executor
+(`SkyframeActionExecutor::with_remote_output_tree(tree, prefetcher)`), where it is the three
+things Java makes of it: the executor's `ActionInputPrefetcher` (`blaze_exec::actions::
+action_input_prefetcher`, reached by local and sandboxed runners through
+`ActionExecutionContext::prefetch_files`, with `SpawnExecutionContextImpl.prefetchInputs`'s
+`BulkTransferException` handler), `RemoteOutputService.finalizeAction` (called in
+`actually_complete_action` after `check_outputs`; a failure is `unable to finalize action`,
+`ACTION_FINALIZATION_FAILURE`) and the fetcher of the action file system
+(`RemoteActionFileSystem.getInputStream` downloads a remote file, `downloadIfRemote`). The
+`RemoteOutputChecker` learns the top-level outputs from `TopLevelTargetAnalysisWatcher`
+(`blaze_runtime::commands::build`, registered on the command's event bus): each
+`TopLevelTargetAnalyzedEvent` calls `CommandRemoteModule::after_top_level_target_analysis`
+(important output groups of the requested `TopLevelArtifactContext`, the runfiles when
+`_hidden_top_level_INTERNAL_` is requested), each `TestAnalyzedEvent`
+`after_single_test_analysis` (`TestProvider` outputs). `--remote_download_regex` patterns are
+built by `RemoteOutputChecker::patterns_to_download` in `beforeCommand` for both modes.
+
+The build-wide remote output tree (`blaze_sky_exec::remote_output_tree`) now also holds the
+remote outputs of actions that hit the action cache (`ActionOutputMetadataStore.injectFile`/
+`injectTree` with remote metadata), standing in for the input metadata of Java's per-action
+`RemoteActionFileSystem`; its `stat` follows local symlinks to remote files, its `readdir` merges
+the remote entries (sorted, as `getDirectoryContents`), and directories that exist only remotely
+stat as directories. An output that is a local symlink to a remote file (`SymlinkAction`,
+`SolibSymlinkAction`) gets the remote metadata with its resolved path, as
+`fileArtifactValueFromArtifact` does with a `FileStatusWithMetadata`. Remote tree artifacts are
+ported: the store lists a tree's remote children, `TreeArtifactValue`'s metadata is
+`TreeArtifactCompositeFileArtifactValue` (`FileArtifactValue::TreeArtifactComposite`) when the
+tree is entirely remote, and cached remote tree metadata is rebuilt with
+`SkyframeTreeArtifactFactory` (`TreeFileArtifact.createTreeOutput`).
+
+**Evidence** (tree 3bb3adf + this change, `target/debug/blaze` vs the oracle, identical flags,
+`--batch --nosystem_rc --nohome_rc`, one `--output_base` per tool and scenario; workspace
+`~/.cache/blaze/bench/remote-ws-bwob`: the phase 1 workspace plus a `no-remote` genrule reading a
+remote intermediate (`//:local_consumer`), a `ctx.actions.symlink` target consumed remotely and
+locally (`//:use_sym`, `//:use_sym_local`), a tree artifact consumed remotely and locally
+(`//:tree_consumer`, `//:tree_consumer_local`) and a top-level tree (`//:tree_top`); build targets
+`//:hello //:local_consumer //:use_sym //:use_sym_local //:tree_top //:tree_consumer
+//:tree_consumer_local`, test target `//:hello_test` (dynamically linked: `_solib_k8` symlink,
+runfiles tree, `test.xml` generation spawn). Tools: `scripts/remote/bwob-matrix` (a fresh worker
+per tool and scenario; cold, warm after `clean`, rebuild without `clean`), `bwob-run`,
+`bwob-compare`. "files" is the set and sha256 of every file, symlink (target) and directory under
+`bazel-out`, without `_tmp/actions` and `{stable,volatile}-status.txt` (host name, time), and
+with `test.cache_status` compared by presence (it holds the test's start time); runs in
+`~/.cache/blaze/bench/bwob-runs/m3`.)
+
+| scenario | oracle summary (cold / warm / rebuild) | Blaze | files cold / warm / rebuild | exec log | gRPC log |
+|---|---|---|---|---|---|
+| `build --remote_cache --remote_download_outputs=toplevel` | 13 processwrapper-sandbox / 10 remote cache hit, 3 processwrapper-sandbox / 18 action cache hit (+ internal) | same | 38/38, 32/32, 32/32 | 13/13, 13/13, 0/0 | MATCH ×3 |
+| same, `minimal` | same | same | 38/38, 26/26, 26/26 | same | MATCH ×3 |
+| `build --remote_executor`, `toplevel` | 3 processwrapper-sandbox, 10 remote / 10 remote cache hit, 3 processwrapper-sandbox / 18 action cache hit | same | 32/32 ×3 | 13/13, 13/13, 0/0 | MATCH ×3 |
+| same, `minimal` | same | same | 26/26 ×3 | same | MATCH ×3 |
+| `test --remote_cache`, `toplevel` | 9 processwrapper-sandbox / 9 remote cache hit / 13 action cache hit; 1 test passes | same | 37/37, 26/26, 26/26 | 9/9, 9/9, 0/0 | MATCH ×3 |
+| same, `minimal` | same | same | 37/37, 25/25, 25/25 | same | MATCH ×3 |
+| `test --remote_executor`, `toplevel` | 9 remote / 9 remote cache hit / 13 action cache hit | same | 26/26 ×3 | same | MATCH ×3 |
+| same, `minimal` | same | same | 25/25 ×3 | same | MATCH ×3 |
+| `build --remote_executor --remote_download_outputs=minimal --remote_download_regex=.*/generated\.h --remote_download_regex=.*/tree_dir/sub/.*` | as `minimal` | same | 27/27 ×3 | 13/13, 13/13, 0/0 | MATCH ×3 |
+| `test --remote_cache --remote_download_outputs=toplevel --remote_download_regex=.*/_objs/.*\.o` | as `toplevel` | same | 37/37, 28/28, 28/28 | 9/9, 9/9, 0/0 | MATCH ×3 |
+| `build --disk_cache --remote_download_outputs=toplevel` | 13 processwrapper-sandbox / 13 disk cache hit / 18 action cache hit | same | 38/38, 27/27, 27/27 | 13/13, 13/13, 0/0 | - |
+| `build //:sym --remote_executor`, `toplevel` (finalizeAction downloads the symlink's target) | 1 remote / 1 remote cache hit / 2 action cache hit | same | 7/7 ×3 | 1/1, 1/1, 0/0 | MATCH ×3 |
+| `build //:hello`, then `build //:hello //:b.txt` without `clean` (`toplevel`, remote exec; a remote output becomes top-level) | 6 remote / 9 action cache hit, 1 remote cache hit | same | 16/16, 17/17 | 6/6, 1/1 | MATCH ×2 |
+| regression: `build --remote_cache`, `test --remote_executor`, `--remote_download_outputs=all` | as phase 1 | same | 38/38, 35/35, 35/35; 33/33 ×3 | all identical | MATCH ×6 |
+
+**Fails loudly (phase 2):** a remote cache that lost a blob before it was downloaded:
+`LostInputsExecException (action rewinding for lost remote inputs)` (inputs of a local spawn) and
+`LostInputsExecException (AbstractActionInputPrefetcher.finalizeAction: action rewinding for lost
+remote outputs)` (top-level outputs); `--experimental_remote_cache_lease_extension` without
+`--rewind_lost_inputs` (`RemoteModule.executorInit (RemoteLeaseExtension)`, unchanged);
+`ArchivedTreeArtifact.createForTree` and `ActionCacheChecker.constructProxyTreeMetadata` when the
+action cache rebuilds such tree metadata.
+
+**Gaps (phase 2).** `RemoteImportantOutputHandler` is not ported: Blaze posts every
+`TopLevelTargetAnalyzedEvent` before the first action runs, so the checker knows the top-level
+outputs when they are produced; the handler's runfiles download at target completion is covered
+by the checker's `addRunfiles` only. `FileArtifactValue.setContentsProxy` after a download or an
+up-to-date check is not ported (Blaze's values are immutable): later checks hash the file again.
+The prefetcher creates directories with `createDirectoryAndParents` (Java's branch for a null
+`ActionOutputDirectoryHelper`; Blaze's executor owns its helper). Download progress events are not
+posted. The prefetcher's `shutdown` is not called in `afterCommand` (Blaze's downloads are
+synchronous, nothing is pending). An output symlink to a local input gets no resolved path (only
+remote targets do). `--experimental_finalize_actions` is not read (true by default). Local tree
+artifacts keep `HashedDirectory` metadata where Java has a non-remote
+`TreeArtifactCompositeFileArtifactValue` with the same digest. `getInputStream` of a remote file
+that is not an input of the action is downloaded (Java's `downloadIfRemote` only fetches the
+action's inputs; the build-wide tree has no per-action inputs). Unit tests:
+`tests/remote_action_input_fetcher_test.rs` ports 12 tests of `ActionInputPrefetcherTestBase`,
+`RemoteActionInputFetcherTest` and `RemoteOutputCheckerTest`; 19 are `#[ignore]` (spied or
+overlay file systems, interruption, rewinding, partial/resolved trees).
+
+**Review round 2 follow-ups** (same binary, oracle first): R2-1, `build //:gen_a
+--execution_log_json_file=a --execution_log_binary_file=b --spawn_strategy=bogus`: both print
+`ERROR: 'bogus' was requested for explicit default strategies but no strategy with that
+identifier was registered. ...`, exit 2 (the registry error now outranks the `SpawnLogModule`
+exit). Without `--spawn_strategy`: both print `ERROR: Must specify at most one of
+--execution_log_binary_file, --execution_log_json_file and --execution_log_compact_file`, exit 2,
+but Bazel reports it after `Loading: 0 packages loaded` and Blaze after `INFO: Analyzed target
+//:gen_a ...` / `INFO: Found 1 target...` (open: Blaze checks the ExecutionTool's errors after
+analysis, `blaze_sky_top`'s `BuildTool` post-processing hook; the same holds for the registry
+error). R2-2: `--remote_cache=grpc://... --build_event_json_file=f
+--nobuild_event_json_file_path_conversion` builds and names `a.txt` `file://...` in both (Bazel
+also lists its `command-*.profile.gz`, which Blaze does not write). R2-3:
+`--experimental_stream_log_file_uploads` with a gRPC cache fails loudly in Blaze
+(`ByteStreamBuildEventArtifactUploader (BlazeRuntime.newUploader:
+--experimental_stream_log_file_uploads)`); Bazel streams the profile to the cache.

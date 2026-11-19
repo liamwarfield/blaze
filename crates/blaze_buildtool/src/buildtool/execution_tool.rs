@@ -265,6 +265,45 @@ impl CommandRemoteModule {
         }
     }
 
+    /// `RemoteModule.afterTopLevelTargetAnalysis(env, request, buildOptions, configuredTarget)`,
+    /// which `AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher` calls for each
+    /// `TopLevelTargetAnalyzedEvent`. `rule_class_string` is the configured target's
+    /// `getRuleClassString()` when it is a `RuleConfiguredTarget`.
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1035 RemoteModule.afterTopLevelTargetAnalysis
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:321 TopLevelTargetAnalysisWatcher.handleTopLevelTargetAnalysisConcluded
+    pub fn after_top_level_target_analysis(
+        &self,
+        rule_class_string: Option<&str>,
+        target: &dyn blaze_remote::remote_output_checker::TopLevelTarget,
+    ) {
+        if let Some(checker) = self.remote_output_checker() {
+            checker.after_top_level_target_analysis(rule_class_string, target);
+        }
+    }
+
+    /// `RemoteModule.afterSingleTestAnalysis(request, configuredTarget)`, which the watcher
+    /// calls for each `TestAnalyzedEvent`.
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1054 RemoteModule.afterSingleTestAnalysis
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:337 TopLevelTargetAnalysisWatcher.handleTestAnalyzed
+    pub fn after_single_test_analysis(
+        &self,
+        target: &dyn blaze_remote::remote_output_checker::TargetUnderTest,
+    ) {
+        if let Some(checker) = self.remote_output_checker() {
+            checker.after_test_analyzed_event(target);
+        }
+    }
+
+    /// `remoteOutputChecker` (`null` before `beforeCommand` set it up or after `afterCommand`).
+    fn remote_output_checker(
+        &self,
+    ) -> Option<Arc<blaze_remote::remote_output_checker::RemoteOutputChecker>> {
+        self.module
+            .lock()
+            .as_ref()
+            .and_then(|m| m.get_remote_output_checker().cloned())
+    }
+
     /// The `BuildInterruptedEvent` subscriber (`RemoteExecutionService.onBuildInterrupted`).
     pub fn on_build_interrupted(&self) {
         if let Some(module) = self.module.lock().as_ref() {
@@ -505,7 +544,7 @@ pub fn prepare_for_execution_with_action_cache(
                 .and_then(|module| module.get_remote_output_checker().cloned())
         })
         .map(|checker| checker as Arc<dyn OutputChecker>);
-    let action_cache_checker = Arc::new(ActionCacheChecker::new(
+    let mut action_cache_checker = ActionCacheChecker::new(
         action_cache.clone(),
         Arc::new(ArtifactFactoryResolver(
             action_cache_options.artifact_factory.clone(),
@@ -518,7 +557,13 @@ pub fn prepare_for_execution_with_action_cache(
                 .set_store_output_metadata(remote_output_checker.is_some())
                 .build(),
         ),
+    );
+    // The `TreeFileArtifact`s of cached remote tree metadata (`ActionCacheChecker
+    // .getCachedOutputMetadata`).
+    action_cache_checker.set_tree_artifact_factory(Arc::new(
+        blaze_sky_exec::skyframe_action_executor::SkyframeTreeArtifactFactory,
     ));
+    let action_cache_checker = Arc::new(action_cache_checker);
 
     let show_subcommands = execution_options.show_subcommands;
     let bin_tools = Arc::new(
@@ -573,7 +618,7 @@ pub fn prepare_for_execution_with_action_cache(
     let mut sandbox_module = SandboxModule::new();
     sandbox_module.before_command(&env);
     let mut contexts = ActionContexts::default();
-    let mut spawn_strategy_registry_error = config.executor_init_error.clone();
+    let mut spawn_strategy_registry_error = None;
     let remote_module_guard = config.remote_module.as_ref().map(|m| m.module.lock());
     let remote_module: Option<&RemoteModule> =
         remote_module_guard.as_ref().and_then(|g| g.as_ref());
@@ -583,12 +628,14 @@ pub fn prepare_for_execution_with_action_cache(
         remote_module.map(|m| m as &dyn RemoteModuleSpawnStrategies),
     ) {
         Ok(registry) => contexts.spawn_strategy_registry = Some(Arc::new(registry)),
-        Err(e) => {
-            if spawn_strategy_registry_error.is_none() {
-                spawn_strategy_registry_error = Some(e);
-            }
-        }
+        Err(e) => spawn_strategy_registry_error = Some(e),
     }
+    // A module's pending exit (`SpawnLogModule`'s `env.getBlazeModuleEnvironment().exit(...)`)
+    // does not stop the constructor: `spawnStrategyRegistryBuilder.build()` throws first, and the
+    // pending exit is thrown later (`env.throwPendingException()`).
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:207 ExecutionTool.<init>
+    let spawn_strategy_registry_error =
+        spawn_strategy_registry_error.or_else(|| config.executor_init_error.clone());
     contexts.spawn_log_context = spawn_log_context.clone();
     // Java: NoSpawnCacheModule registers SpawnCache.NO_CACHE ("no-cache"); RemoteModule,
     // registered later, replaces it with its RemoteSpawnCache ("remote-cache").
@@ -603,11 +650,20 @@ pub fn prepare_for_execution_with_action_cache(
     });
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1241 RemoteModule.executorInit
     // (ExecutorBuilder.getActionExecutionSalt(): RemoteModule is the only module that sets one).
-    let action_execution_salt = match (remote_module, &config.remote_module) {
-        (Some(m), Some(command_module)) => m
-            .executor_init(&command_module.remote_options)
-            .unwrap_or_default(),
-        _ => String::new(),
+    let executor_init = match (remote_module, &config.remote_module) {
+        (Some(m), Some(command_module)) => m.executor_init(
+            &command_module.remote_options,
+            if config.writable_outputs {
+                blaze_remote::abstract_action_input_prefetcher::OutputPermissions::WRITABLE
+            } else {
+                blaze_remote::abstract_action_input_prefetcher::OutputPermissions::READONLY
+            },
+        ),
+        _ => None,
+    };
+    let (action_execution_salt, action_input_fetcher) = match executor_init {
+        Some(init) => (init.action_execution_salt, init.action_input_fetcher),
+        None => (String::new(), None),
     };
     // The RemoteOutputService's action file systems, when a cache is available.
     let remote_output_tree = match (remote_module, &config.remote_module) {
@@ -644,7 +700,12 @@ pub fn prepare_for_execution_with_action_cache(
         executor = executor.with_output_filter(output_filter.clone());
     }
     if let Some(remote_output_tree) = remote_output_tree {
-        executor = executor.with_remote_output_tree(remote_output_tree);
+        executor = executor.with_remote_output_tree(
+            remote_output_tree,
+            action_input_fetcher.map(|f| {
+                f as Arc<dyn blaze_exec::actions::action_input_prefetcher::ActionInputPrefetcher>
+            }),
+        );
     }
     if let Some(remote_output_checker) = remote_output_checker {
         executor = executor.with_output_checker(remote_output_checker);

@@ -125,6 +125,17 @@ pub enum FileArtifactValue {
     Directory { mtime: i64 },
     /// `HashedDirectoryArtifactValue`.
     HashedDirectory { digest: Vec<u8> },
+    /// `TreeArtifactValue.TreeArtifactCompositeFileArtifactValue` of a tree whose children are
+    /// all remote or that has a resolved path.
+    ///
+    /// PORT: the metadata of a local tree without a resolved path, also a
+    /// `TreeArtifactCompositeFileArtifactValue` in Java, is a `HashedDirectory` with the same
+    /// digest (`TreeArtifactValue::build`).
+    TreeArtifactComposite {
+        digest: Vec<u8>,
+        is_remote: bool,
+        resolved_path: Option<PathFragment>,
+    },
     /// `UnresolvedSymlinkArtifactValue`.
     UnresolvedSymlink { target: String, digest: Vec<u8> },
     /// `RemoteFileArtifactValue` / `RemoteFileArtifactValueWithMaterializationData`.
@@ -162,6 +173,7 @@ impl FileArtifactValue {
             FileArtifactValue::RegularFile { .. } => FileStateType::RegularFile,
             FileArtifactValue::Directory { .. } => FileStateType::Directory,
             FileArtifactValue::HashedDirectory { .. } => FileStateType::Directory,
+            FileArtifactValue::TreeArtifactComposite { .. } => FileStateType::Directory,
             FileArtifactValue::UnresolvedSymlink { .. } => FileStateType::Symlink,
             FileArtifactValue::RemoteFile { .. } => FileStateType::RegularFile,
             FileArtifactValue::ResolvedSymlink { delegate, .. } => delegate.get_type(),
@@ -181,6 +193,7 @@ impl FileArtifactValue {
             FileArtifactValue::RegularFile { digest, .. } => digest.as_deref(),
             FileArtifactValue::Directory { .. } => None,
             FileArtifactValue::HashedDirectory { digest } => Some(digest),
+            FileArtifactValue::TreeArtifactComposite { digest, .. } => Some(digest),
             FileArtifactValue::UnresolvedSymlink { digest, .. } => Some(digest),
             FileArtifactValue::RemoteFile { digest, .. } => Some(digest),
             FileArtifactValue::ResolvedSymlink { delegate, .. } => delegate.get_digest(),
@@ -225,6 +238,7 @@ impl FileArtifactValue {
     pub fn is_remote(&self) -> bool {
         match self {
             FileArtifactValue::RemoteFile { .. } => true,
+            FileArtifactValue::TreeArtifactComposite { is_remote, .. } => *is_remote,
             FileArtifactValue::ResolvedSymlink { delegate, .. } => delegate.is_remote(),
             _ => false,
         }
@@ -243,6 +257,9 @@ impl FileArtifactValue {
     pub fn get_resolved_path(&self) -> Option<&PathFragment> {
         match self {
             FileArtifactValue::ResolvedSymlink { resolved_path, .. } => Some(resolved_path),
+            FileArtifactValue::TreeArtifactComposite { resolved_path, .. } => {
+                resolved_path.as_ref()
+            }
             _ => None,
         }
     }

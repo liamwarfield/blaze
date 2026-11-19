@@ -39,13 +39,20 @@ message). Opus fixers are on both. Integrity audit: open outside the referee.
   and `--remote_executor=grpc[s]://` for build and test with `--remote_download_outputs=all`, and
   `--credential_helper`. Against Bazel's remote worker: outputs, process summary, JSON exec log and
   gRPC log match the oracle in 13 scenarios; cache interchange with real Bazel 11/11 both ways.
-  Build without the bytes and `--bes_backend` fail loudly. Evidence and gaps: docs/remote.md.
+  Evidence and gaps: docs/remote.md.
+- Remote, phase 2 (2026-11-19): build without the bytes. `--remote_download_outputs=toplevel|
+  minimal` and `--remote_download_regex` work for build and test with gRPC cache, disk cache and
+  remote execution, remote tree artifacts included; the oracle matches on files present and
+  absent (sha256), summaries, exec logs and gRPC logs in 14 scenarios. On a real RBE (BLAKE3,
+  credential helper, TLS) brotli and re2 match the oracle and read its cache entries
+  (docs/remote.md). Still loud: `--bes_backend`, BEP files with a gRPC cache, action rewinding
+  for lost blobs, the lease extension, archived trees.
 - Upstream integration tests: harness ready; oracle baseline 211/237 targets, 2,878 functions.
 
 ## In flight
 - Fixers (Opus): analysis round 2; execution round 2 (+ no_proxy split found by the gate).
-- Remote lead (Fable; Opus workers): phase 2, build without the bytes
-  (`--remote_download_outputs=toplevel|minimal`); Fable review of the phase 1 wiring.
+- Remote: phase 1 wiring and credential helper reviews PASS at 3bb3adf (round 2); phase 2
+  review pending.
 - Gate: name map covers 30 of 31 absent names; the last is the no_proxy divergence (being fixed).
 
 ## Next

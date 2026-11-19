@@ -1,6 +1,7 @@
 //! Port of `com.google.devtools.build.lib.remote` (see docs/remote.md).
 #![allow(clippy::too_many_arguments, clippy::new_without_default)]
 
+pub mod abstract_action_input_prefetcher;
 pub mod api_version;
 pub mod authandtls;
 pub mod byte_stream_uploader;
@@ -22,6 +23,7 @@ pub mod merkletree;
 pub mod platform_utils;
 pub mod reapi;
 pub mod remote_action;
+pub mod remote_action_input_fetcher;
 pub mod remote_execution_cache;
 // Java still reads and writes the deprecated REAPI fields (output_files, platform, ...).
 #[allow(deprecated)]

@@ -363,8 +363,9 @@ impl SpawnExecutionContext for SpawnExecutionContextImpl<'_> {
                 .values()
                 .cloned()
                 .collect();
-            // PORT: the BulkTransferException handling (lost remote inputs) belongs to the
-            // remote prefetcher, which is not ported.
+            // PORT: the BulkTransferException handler (`catchingAsync`) is the prefetcher's
+            // (`ActionInputPrefetcher::bulk_transfer_exception_to_exec_exception`), applied by
+            // the action execution context: the exception type lives in `blaze_remote`.
             return self.action_execution_context.prefetch_files(
                 self.spawn.get_resource_owner(),
                 &inputs,

@@ -30,6 +30,7 @@ use blaze_exec::actions::action_cache_checker::{
     TrustLocalOnly,
 };
 use blaze_exec::actions::action_execution::ActionContextRef;
+use blaze_exec::actions::action_input_prefetcher::ActionInputPrefetcher;
 use blaze_exec::actions::action_output_directory_helper::ActionOutputDirectoryHelper;
 use blaze_exec::actions::cache::{IoOrInterruptedException, OutputMetadataStore};
 use blaze_exec::actions::exec_exception::{EnvironmentalExecException, ExecException};
@@ -56,7 +57,7 @@ use blaze_optdefs::command::action_execution_context::ShowSubcommands;
 use blaze_protos::failure_details::{FailureDetail, execution};
 use blaze_skyframe::Environment;
 use blaze_util::check_state;
-use blaze_vfs::{DirentType, Path, PathFragment, Root, Symlinks};
+use blaze_vfs::{DirentType, FileSystemExt, Path, PathFragment, Root, Symlinks};
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::{Mutex, RwLock};
 
@@ -341,6 +342,10 @@ pub struct SkyframeActionExecutor {
     /// `outputService.getOutputChecker()`: the `RemoteOutputChecker` with a remote output
     /// service, `None` for `LocalOutputService` (`OutputChecker.TRUST_LOCAL_ONLY`).
     output_checker: Option<Arc<dyn OutputChecker>>,
+    /// `executorBuilder.setActionInputPrefetcher(...)` (the remote module's
+    /// `RemoteActionInputFetcher`), which is also the `RemoteOutputService`'s fetcher
+    /// (`finalizeAction`); `None` is `ActionInputPrefetcher.NONE` with the local output service.
+    action_input_prefetcher: Option<Arc<dyn ActionInputPrefetcher>>,
 }
 
 impl SkyframeActionExecutor {
@@ -373,6 +378,7 @@ impl SkyframeActionExecutor {
             remote_output_tree: None,
             remote_action_file_system: None,
             output_checker: None,
+            action_input_prefetcher: None,
         }
     }
 
@@ -388,17 +394,24 @@ impl SkyframeActionExecutor {
 
     /// Sets the remote output tree the actions' output metadata stores and action file systems
     /// read (see [`crate::remote_output_tree`]).
+    /// `action_input_prefetcher` is the remote module's `RemoteActionInputFetcher`: the
+    /// executor's `ActionInputPrefetcher`, the fetcher of the action file systems
+    /// (`RemoteActionFileSystem.downloadIfRemote`) and of `RemoteOutputService.finalizeAction`.
     pub fn with_remote_output_tree(
         mut self,
         remote_output_tree: Arc<crate::remote_output_tree::RemoteOutputTree>,
+        action_input_prefetcher: Option<Arc<dyn ActionInputPrefetcher>>,
     ) -> SkyframeActionExecutor {
         self.remote_action_file_system = Some(Arc::new(
             crate::remote_output_tree::RemoteActionFileSystem::new(
                 self.exec_root.get_file_system().clone(),
+                self.exec_root.as_fragment().clone(),
                 remote_output_tree.clone(),
+                action_input_prefetcher.clone(),
             ),
         ));
         self.remote_output_tree = Some(remote_output_tree);
+        self.action_input_prefetcher = action_input_prefetcher;
         self
     }
 
@@ -544,7 +557,9 @@ impl SkyframeActionExecutor {
             action.get_outputs(),
         );
         match &self.remote_output_tree {
-            Some(tree) => store.with_remote_output_tree(tree.clone()),
+            Some(tree) => {
+                store.with_remote_output_tree(tree.clone(), self.exec_root.as_fragment().clone())
+            }
             None => store,
         }
     }
@@ -660,6 +675,8 @@ impl SkyframeActionExecutor {
         action_lookup_data: &ActionLookupData,
         postprocessing: &mut ActionPostprocessing<'_>,
     ) -> SharedResult {
+        // The first source of the action file system's `statInternal` (the action's inputs).
+        output_metadata_store.set_input_metadata(input_metadata.clone());
         let context = ActionExecutionContextImpl {
             executor: self,
             input_metadata: input_metadata.clone(),
@@ -834,8 +851,46 @@ impl SkyframeActionExecutor {
             );
             return Err(e);
         }
-        // PORT: finalizeActions / outputService.finalizeAction is a no-op for the local output
-        // service.
+        // PORT: `finalizeActions` (`--experimental_finalize_actions`) is true by default and the
+        // option is not read: the output service is the remote one when a prefetcher is set,
+        // whose `finalizeAction` downloads the outputs to download; the local output service's
+        // is a no-op.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1340 ActionRunner.actuallyCompleteAction
+        if let Some(prefetcher) = &self.action_input_prefetcher {
+            let outputs: Vec<ActionInputRef> =
+                action.get_outputs().iter().map(artifact_input).collect();
+            let action_metadata =
+                blaze_exec::actions::action_adapters::ActionMetadataSnapshot::of(action.as_ref());
+            if let Err(e) = prefetcher.finalize_action(
+                &*action_metadata,
+                &outputs,
+                output_metadata_store.as_ref(),
+            ) {
+                // The remote cache losing an output before it is downloaded
+                // (LostInputsExecException) fails loudly in the prefetcher (no rewinding).
+                let e = self.to_action_execution_exception(
+                    "unable to finalize action",
+                    Some(&e),
+                    action.as_ref(),
+                    if output_already_dumped {
+                        None
+                    } else {
+                        Some(out_err_buffer)
+                    },
+                    execution::Code::ActionFinalizationFailure,
+                );
+                // Success in execution but failure in completion.
+                self.report_action_execution(
+                    listener,
+                    &primary_output_path,
+                    action,
+                    Some(e.clone()),
+                    out_err_buffer,
+                    ErrorTiming::AFTER_EXECUTION,
+                );
+                return Err(e);
+            }
+        }
         self.report_action_execution(
             listener,
             &primary_output_path,
@@ -1615,6 +1670,11 @@ pub struct ActionOutputMetadataStore {
     /// Java: `artifactPathResolver` over the action's `RemoteActionFileSystem` (see
     /// [`crate::remote_output_tree`]); `None` without one.
     remote_output_tree: Option<Arc<crate::remote_output_tree::RemoteOutputTree>>,
+    /// The input metadata of the action (`RemoteActionFileSystem.inputArtifactData`, the first
+    /// source of its `statInternal`), set when the action runs.
+    input_metadata: OnceLock<Arc<ActionInputMetadata>>,
+    /// The exec root of the action file system (set with the remote output tree).
+    exec_root: PathFragment,
 }
 
 impl ActionOutputMetadataStore {
@@ -1633,15 +1693,85 @@ impl ActionOutputMetadataStore {
             artifact_data: Mutex::new(HashMap::new()),
             tree_artifact_data: Mutex::new(HashMap::new()),
             remote_output_tree: None,
+            input_metadata: OnceLock::new(),
+            exec_root: PathFragment::empty_fragment(),
         }
+    }
+
+    /// Sets the input metadata of the action, which its action file system reads first.
+    pub fn set_input_metadata(&self, input_metadata: Arc<ActionInputMetadata>) {
+        let _ = self.input_metadata.set(input_metadata);
+    }
+
+    /// The remote metadata that the action file system's `statInternal` (`FOLLOW_ALL`) gives an
+    /// output that is a local symlink (created in-process, e.g. by a `SymlinkAction`) to a remote
+    /// file: the metadata of the input, or of the remote output, it resolves to, with the path
+    /// it was resolved through (`fileArtifactValueFromArtifact`: a `FileStatusWithMetadata`
+    /// real stat records the real path).
+    ///
+    /// PORT: only metadata of a remote file is returned; a symlink to a local file is statted
+    /// on the local file system as without an action file system.
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:513 ActionOutputMetadataStore.fileArtifactValueFromArtifact
+    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:667 RemoteActionFileSystem.statInternal
+    fn remote_symlink_target_metadata(
+        &self,
+        artifact: &Artifact,
+    ) -> std::io::Result<Option<FileArtifactValue>> {
+        let Some(tree) = &self.remote_output_tree else {
+            return Ok(None);
+        };
+        let mut path = artifact.get_path();
+        let exec_root = &self.exec_root;
+        for _ in 0..32 {
+            let Some(stat) = path.stat_if_found(Symlinks::Nofollow)? else {
+                return Ok(None);
+            };
+            if !stat.is_symbolic_link() {
+                return Ok(None);
+            }
+            let target = path.read_symbolic_link()?;
+            path = if target.is_absolute() {
+                path.get_file_system().get_path_fragment(&target)
+            } else {
+                path.get_parent_directory()
+                    .expect("a symlink has a parent")
+                    .get_relative(&target)
+            };
+            let real_path = path.as_fragment().clone();
+            let input_metadata = match self.input_metadata.get() {
+                Some(inputs) if real_path.starts_with(exec_root) => {
+                    let inputs = inputs.action_input_map_only();
+                    match inputs.get_input(&real_path.relative_to(exec_root)) {
+                        Some(input) => inputs.get_input_metadata(&input)?,
+                        None => None,
+                    }
+                }
+                _ => None,
+            };
+            let metadata = input_metadata.or_else(|| tree.get(&real_path));
+            if let Some(metadata) = metadata {
+                if !metadata.is_remote() {
+                    return Ok(None);
+                }
+                if metadata.get_resolved_path().is_some() {
+                    return Ok(Some(metadata));
+                }
+                return Ok(Some(
+                    FileArtifactValue::create_from_existing_with_resolved_path(metadata, real_path),
+                ));
+            }
+        }
+        Ok(None)
     }
 
     /// Stats the outputs through the action file system's remote output tree first.
     pub fn with_remote_output_tree(
         mut self,
         remote_output_tree: Arc<crate::remote_output_tree::RemoteOutputTree>,
+        exec_root: PathFragment,
     ) -> ActionOutputMetadataStore {
         self.remote_output_tree = Some(remote_output_tree);
+        self.exec_root = exec_root;
         self
     }
 
@@ -1793,6 +1923,24 @@ impl ActionOutputMetadataStore {
             },
         )?;
 
+        // The remote output tree's entries under the root: `TreeArtifactValue.visitTree` lists
+        // the directory through the action file system, whose `readdir` merges them in.
+        // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:835 RemoteActionFileSystem.getDirectoryContents
+        if let Some(remote_output_tree) = &self.remote_output_tree {
+            for (parent_relative_path, metadata) in
+                remote_output_tree.files_under(tree_dir.as_fragment())
+            {
+                if tree
+                    .iter()
+                    .any(|(child, _)| child.get_exec_path().ends_with(&parent_relative_path))
+                {
+                    continue;
+                }
+                let child = Artifact::create_tree_output(parent, parent_relative_path);
+                tree.push((artifact_input(&child), metadata));
+            }
+        }
+
         if self.archived_tree_artifacts_enabled {
             blaze_util::unported!("ArchivedTreeArtifact.createForTree");
         }
@@ -1844,6 +1992,9 @@ impl ActionOutputMetadataStore {
         if let Some(tree) = &self.remote_output_tree
             && let Some(value) = tree.get(artifact.get_path().as_fragment())
         {
+            return Ok(value);
+        }
+        if let Some(value) = self.remote_symlink_target_metadata(artifact)? {
             return Ok(value);
         }
         let stat_and_value = file_artifact_value_from_artifact(artifact)?;
@@ -2061,6 +2212,13 @@ impl OutputMetadataStore for ActionOutputMetadataStore {
             "Tree artifacts and their children must be injected via injectTree: {}",
             output
         );
+        // PORT: the build-wide remote output tree also holds the remote outputs of actions that
+        // hit the action cache (see `crate::remote_output_tree`).
+        if metadata.is_remote()
+            && let Some(tree) = &self.remote_output_tree
+        {
+            tree.inject_file(output.get_path().as_fragment().clone(), metadata.clone());
+        }
         self.put_artifact_data(output, metadata);
     }
 
@@ -2077,6 +2235,22 @@ impl OutputMetadataStore for ActionOutputMetadataStore {
             "Output must be a tree artifact: {}",
             output
         );
+        // PORT: as in `inject_file`, the remote children go to the build-wide remote output tree.
+        if let Some(remote_output_tree) = &self.remote_output_tree {
+            let root = output.get_path();
+            for (child, metadata) in &tree.child_values {
+                if metadata.is_remote() {
+                    let relative = child
+                        .as_artifact()
+                        .and_then(|a| a.get_parent_relative_path())
+                        .expect("a tree artifact child has a parent-relative path");
+                    remote_output_tree.inject_file(
+                        root.get_relative(&relative).as_fragment().clone(),
+                        metadata.clone(),
+                    );
+                }
+            }
+        }
         self.tree_artifact_data
             .lock()
             .insert(output.clone(), Some(Arc::new(tree)));
@@ -3000,6 +3174,36 @@ impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
     fn set_rich_artifact_data(&self, data: Arc<RunfilesArtifactValue>) {
         *self.rich_artifact_data.lock() = Some(data);
     }
+    // Java: com/google/devtools/build/lib/exec/AbstractSpawnStrategy.java:273 SpawnExecutionContextImpl.prefetchInputs
+    // Java: com/google/devtools/build/lib/exec/SpawnRunner.java:170 SpawnExecutionContext.prefetchInputsAndWait
+    fn prefetch_files(
+        &self,
+        owner: &dyn ActionExecutionMetadata,
+        inputs: &[ActionInputRef],
+        input_metadata_provider: &dyn InputMetadataProvider,
+    ) -> Result<(), ExecException> {
+        let Some(prefetcher) = &self.executor.action_input_prefetcher else {
+            // ActionInputPrefetcher.NONE.
+            return Ok(());
+        };
+        match prefetcher.prefetch_files(
+            Some(owner),
+            inputs,
+            input_metadata_provider,
+            blaze_exec::actions::action_input_prefetcher::Priority::MEDIUM,
+            blaze_exec::actions::action_input_prefetcher::Reason::INPUTS,
+        ) {
+            Ok(()) => Ok(()),
+            Err(e) => match prefetcher
+                .bulk_transfer_exception_to_exec_exception(&e, &*self.input_metadata)
+            {
+                Some(exec_exception) => Err(exec_exception),
+                // `prefetchInputsAndWait` rethrows the IOException, which
+                // AbstractSpawnStrategy.exec turns into "Exec failed due to IOException".
+                None => Err(blaze_exec::exec::abstract_spawn_strategy::exec_io_exception(&e)),
+            },
+        }
+    }
     // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:570 ActionExecutionContext.withOutputsAsInputs
     fn get_output_metadata(&self, output: &dyn ActionInput) -> std::io::Result<FileArtifactValue> {
         let Some(store) = &self.output_metadata_store else {
@@ -3020,6 +3224,52 @@ impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
                 Err(std::io::Error::other("interrupted"))
             }
         }
+    }
+}
+
+/// The [`blaze_exec::actions::action_cache_checker::TreeArtifactFactory`] over `blaze_actions`
+/// artifacts, which the action cache checker uses to rebuild the tree artifact values of cache
+/// entries with remote output metadata.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SkyframeTreeArtifactFactory;
+
+impl blaze_exec::actions::action_cache_checker::TreeArtifactFactory
+    for SkyframeTreeArtifactFactory
+{
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:1418 TreeFileArtifact.createTreeOutput
+    fn create_tree_output(
+        &self,
+        parent: &ActionInputRef,
+        parent_relative_path: &PathFragment,
+    ) -> ActionInputRef {
+        let parent = as_blaze_artifact(parent)
+            .unwrap_or_else(|| panic!("ClassCastException: {parent} is not a SpecialArtifact"));
+        artifact_input(&Artifact::create_tree_output(
+            parent,
+            parent_relative_path.clone(),
+        ))
+    }
+
+    fn create_archived_tree_artifact(&self, _parent: &ActionInputRef) -> ActionInputRef {
+        blaze_util::unported!("ArchivedTreeArtifact.createForTree")
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:686 TreeArtifactValue.Builder.build
+    fn build_tree_artifact_value(
+        &self,
+        _parent: &ActionInputRef,
+        children: Vec<(ActionInputRef, FileArtifactValue)>,
+        archived_representation: Option<(ActionInputRef, FileArtifactValue)>,
+    ) -> TreeArtifactValue {
+        TreeArtifactValue::build(children, archived_representation, None)
+    }
+
+    fn construct_proxy_tree_metadata(
+        &self,
+        _parent: &ActionInputRef,
+        _proxy_metadata_factory: &dyn blaze_exec::actions::action_cache_checker::ProxyMetadataFactory,
+    ) -> Result<TreeArtifactValue, IoOrInterruptedException> {
+        blaze_util::unported!("ActionCacheChecker.constructProxyTreeMetadata")
     }
 }
 

@@ -44,8 +44,9 @@ Known limits: Linux x86-64 only, and scores are only comparable on a 16-CPU mach
 `cquery` order depends on the CPU count); one command per process (no persistent server);
 `linux-sandbox`, `process-wrapper` and `@bazel_tools` come from Bazel 9.3.2's install base;
 aspects, symbolic macros, `fetch`/`sync` and coverage are not ported and fail loudly; remote
-caching and execution work for `build`/`test` with `--remote_download_outputs=all` only (build
-without the bytes and the Build Event Service upload fail loudly; `docs/remote.md`); non-ASCII strings do not yet follow
+caching and execution work for `build`/`test`, including build without the bytes (the Build
+Event Service upload, action rewinding and BEP files with a gRPC cache fail loudly;
+`docs/remote.md`); non-ASCII strings do not yet follow
 Bazel's byte semantics (UTF-8 text in action keys does). `info` matches for 42 of 57 compared
 cases; the other 15 (among them `info` with no key and JVM-only keys) fail loudly.
 

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Run Build-without-the-Bytes scenarios with the oracle and Blaze and compare them.
+#
+# usage: scripts/remote/bwob-matrix <out-root> <scenario>...
+#        scripts/remote/bwob-matrix help
+#
+# A scenario is `<name>:<command>:<options>` with `,` separating the options, e.g.
+#   tl-cache-build:build:--remote_cache=grpc://localhost:18981,--remote_download_outputs=toplevel
+# `<command>` is `build` (targets $BWOB_BUILD_TARGETS) or `test` (targets $BWOB_TEST_TARGETS).
+# `@TOOL@` in an option is replaced by `oracle` or `blaze` (e.g. a disk cache per tool).
+# For each scenario and each tool (oracle first): a fresh worker (`scripts/remote/worker start
+# bwob 18981`), a fresh output base `bwob-<name>-<tool>`, then three steps recorded with
+# scripts/remote/bwob-run under <out-root>/<name>/<tool>-<step>:
+#   cold     first build
+#   warm     after `clean` (same server: cache hits)
+#   rebuild  the same command again without `clean`
+# and the worker is stopped. Then scripts/remote/bwob-compare prints each step's comparison
+# (also written to <out-root>/<name>/<step>.compare).
+set -u
+if [[ $# -lt 1 || $1 == help ]]; then
+  sed -n '2,/^set -u/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+here=$(cd "$(dirname "$0")" && pwd)
+out_root=$1
+shift
+: "${BWOB_BUILD_TARGETS:=//:hello //:local_consumer //:use_sym //:use_sym_local //:tree_top //:tree_consumer //:tree_consumer_local}"
+: "${BWOB_TEST_TARGETS:=//:hello_test}"
+for scenario in "$@"; do
+  IFS=: read -r name command opts <<<"$scenario"
+  IFS=, read -r -a options <<<"$opts"
+  if [[ $command == test ]]; then targets=$BWOB_TEST_TARGETS; else targets=$BWOB_BUILD_TARGETS; fi
+  read -r -a targets <<<"$targets"
+  for tool in oracle blaze; do
+    ob=bwob-$name-$tool
+    obdir=$HOME/.cache/blaze/bench/bwob-ob/$ob
+    if [[ -d $obdir ]]; then chmod -R u+w "$obdir" 2>/dev/null; rm -rf "$obdir"; fi
+    "$here/worker" start bwob 18981 >/dev/null || exit 1
+    tool_options=("${options[@]//@TOOL@/$tool}")
+    "$here/bwob-run" "$tool" "$out_root/$name/$tool-cold" "$ob" -- "$command" "${targets[@]}" "${tool_options[@]}" >/dev/null
+    "$here/bwob-run" "$tool" "$out_root/$name/$tool-warm" "$ob" --clean -- "$command" "${targets[@]}" "${tool_options[@]}" >/dev/null
+    "$here/bwob-run" "$tool" "$out_root/$name/$tool-rebuild" "$ob" -- "$command" "${targets[@]}" "${tool_options[@]}" >/dev/null
+    "$here/worker" stop bwob >/dev/null
+  done
+  for step in cold warm rebuild; do
+    echo "== $name $step"
+    "$here/bwob-compare" "$out_root/$name/oracle-$step" "$out_root/$name/blaze-$step" | tee "$out_root/$name/$step.compare"
+  done
+done

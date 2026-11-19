@@ -968,6 +968,8 @@ fn was_modified_since_digest(metadata: &FileArtifactValue, path: &Path) -> io::R
         // consciously deferring work here as this code will most likely change again, and we're
         // already doing better than before by detecting inter-build modifications.
         FileArtifactValue::HashedDirectory { .. } => Ok(false),
+        // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:275 TreeArtifactCompositeFileArtifactValue.wasModifiedSinceDigest
+        FileArtifactValue::TreeArtifactComposite { .. } => Ok(false),
         // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1213 UnresolvedSymlinkArtifactValue.wasModifiedSinceDigest
         FileArtifactValue::UnresolvedSymlink { .. } => blaze_util::unported!(
             "FileArtifactValue.UnresolvedSymlinkArtifactValue.wasModifiedSinceDigest (missing hook: blaze_exec::actions::FileArtifactValue::create_for_unresolved_symlink)"

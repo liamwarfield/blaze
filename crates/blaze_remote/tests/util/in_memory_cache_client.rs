@@ -253,6 +253,12 @@ impl Deref for InMemoryCombinedCache {
 }
 
 impl InMemoryCombinedCache {
+    /// The combined cache as the `Arc` its users hold, with the in-memory client (to count its
+    /// downloads).
+    pub fn into_parts(self) -> (Arc<CombinedCache>, Option<Arc<InMemoryCacheClient>>) {
+        (Arc::new(self.combined_cache), self.in_memory_cache_client)
+    }
+
     fn create(
         in_memory_cache_client: InMemoryCacheClient,
         digest_util: DigestUtil,

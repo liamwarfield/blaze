@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Run one Build-without-the-Bytes step with the oracle or Blaze and record what it left on disk.
+#
+# usage: scripts/remote/bwob-run <tool> <out-dir> <ob-name> [--clean] -- <command> [options...]
+#        scripts/remote/bwob-run help
+#
+#   <tool>     `oracle` (~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64) or `blaze`
+#              (target/debug/blaze of this checkout)
+#   <out-dir>  where the step's records go (created)
+#   <ob-name>  the output base, ~/.cache/blaze/bench/bwob-ob/<ob-name> (the same name for the
+#              steps of one scenario: cold, then --clean (warm), then a rebuild)
+#   --clean    run `clean` (same startup options) before the command
+#
+# Workspace: ~/.cache/blaze/bench/remote-ws-bwob. Startup options: --batch --nosystem_rc
+# --nohome_rc --output_base=<above> (the oracle also gets its install base under
+# ~/.cache/blaze/oracle-out). Command options added after the given ones:
+# --repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no
+# --execution_log_json_file=<out-dir>/execlog.json --execution_log_sort
+# --remote_grpc_log=<out-dir>/grpc.log (only when the options name --remote_cache or
+# --remote_executor). The run is under `systemd-run --user --collect --wait -p MemoryMax=9G
+# -p MemorySwapMax=0`, so the server dies with it.
+#
+# Records in <out-dir>: stdout, stderr, exit, execlog.json, grpc.log and files.txt: one line
+# per entry under <execroot>/bazel-out, sorted: `f <sha256> <path>`, `l <target> <path>`,
+# `d <path>`; the output base in a symlink target or in a file's contents (runfiles
+# manifests) is replaced by `<OB>` before hashing.
+set -u
+if [[ $# -lt 1 || $1 == help || $1 == -h || $1 == --help ]]; then
+  sed -n '2,/^set -u/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+tool=$1 out=$2 ob_name=$3
+shift 3
+clean=0
+if [[ ${1:-} == --clean ]]; then clean=1; shift; fi
+[[ ${1:-} == -- ]] && shift
+ws=$HOME/.cache/blaze/bench/remote-ws-bwob
+ob=$HOME/.cache/blaze/bench/bwob-ob/$ob_name
+mkdir -p "$out" "$(dirname "$ob")"
+out=$(cd "$out" && pwd)
+case $tool in
+  oracle)
+    bin=$HOME/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64
+    startup=(--batch --nosystem_rc --nohome_rc "--output_base=$ob"
+      "--install_base=$HOME/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9")
+    ;;
+  blaze)
+    bin=$root/target/debug/blaze
+    startup=(--batch --nosystem_rc --nohome_rc "--output_base=$ob")
+    ;;
+  *) echo "unknown tool $tool" >&2; exit 2 ;;
+esac
+cmd=("$@")
+extra=(--repository_cache=$HOME/.cache/blaze/repo-cache --color=no --curses=no
+  "--execution_log_json_file=$out/execlog.json" --execution_log_sort)
+if printf '%s\n' "${cmd[@]}" | grep -q -e '^--remote_cache' -e '^--remote_executor'; then
+  extra+=("--remote_grpc_log=$out/grpc.log")
+fi
+run() {
+  systemd-run --user --collect --wait --pipe --quiet -p MemoryMax=9G -p MemorySwapMax=0 \
+    --working-directory="$ws" -E HOME="$HOME" -E PATH=/usr/bin:/bin "$@"
+}
+if [[ $clean == 1 ]]; then
+  run "$bin" "${startup[@]}" clean >"$out/clean.out" 2>&1
+fi
+run "$bin" "${startup[@]}" "${cmd[@]}" "${extra[@]}" >"$out/stdout" 2>"$out/stderr"
+rc=$?
+echo "$rc" >"$out/exit"
+execroot=$ob/execroot/_main
+python3 -I - "$execroot" "$ob" >"$out/files.txt" <<'EOF'
+import hashlib, os, sys
+execroot, ob = sys.argv[1], sys.argv[2]
+top = os.path.join(execroot, "bazel-out")
+rows = []
+for dirpath, dirnames, filenames in os.walk(top):
+    for name in sorted(dirnames + filenames):
+        p = os.path.join(dirpath, name)
+        rel = os.path.relpath(p, execroot)
+        if os.path.islink(p):
+            rows.append("l %s %s" % (os.readlink(p).replace(ob, "<OB>"), rel))
+        elif os.path.isdir(p):
+            rows.append("d %s" % rel)
+        else:
+            with open(p, "rb") as f:
+                data = f.read().replace(ob.encode(), b"<OB>")
+            rows.append("f %s %s" % (hashlib.sha256(data).hexdigest(), rel))
+for r in sorted(rows, key=lambda r: r.split(" ")[-1]):
+    print(r)
+EOF
+echo "$out exit=$rc"
+exit "$rc"

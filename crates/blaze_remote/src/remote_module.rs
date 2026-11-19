@@ -29,7 +29,6 @@ use blaze_exec::exec::spawn_strategy_registry::{
 use blaze_optdefs::command::execution_options::ExecutionOptions;
 use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
 use blaze_optdefs::misc::remote_options::RemoteOptions;
-use blaze_optdefs::misc::remote_outputs_mode::RemoteOutputsMode;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail};
 use blaze_util::ExitCode;
 use blaze_util::fingerprint::Fingerprint;
@@ -37,6 +36,7 @@ use blaze_vfs::{FileSystemRef, Path};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 
+use crate::abstract_action_input_prefetcher::OutputPermissions;
 use crate::authandtls::call_credentials_provider::CallCredentialsProvider;
 use crate::authandtls::google_auth_utils::{self, CredentialHelperEnvironment};
 use crate::authandtls::headers;
@@ -59,6 +59,7 @@ use crate::hooks::RemoteHooks;
 use crate::logging::logging_interceptor::LoggingInterceptor;
 use crate::logging::{FileLogEntrySink, LogEntrySink};
 use crate::reapi::{Digest, digest_function};
+use crate::remote_action_input_fetcher::RemoteActionInputFetcher;
 use crate::remote_execution_cache::RemoteExecutionCache;
 use crate::remote_execution_service::RemoteExecutionService;
 use crate::remote_grpc_service_config;
@@ -130,6 +131,15 @@ pub struct RemoteModuleEnvironment {
     pub scrubber: Option<Arc<Scrubber>>,
     /// The integration seams of this build (`crate::hooks`).
     pub hooks: RemoteHooks,
+}
+
+/// What `RemoteModule.executorInit` sets on the `ExecutorBuilder`.
+pub struct RemoteExecutorInit {
+    /// `builder.setActionExecutionSalt(...)`.
+    pub action_execution_salt: String,
+    /// `builder.setActionInputPrefetcher(actionInputFetcher)` (with a cache), which is also the
+    /// fetcher of the `RemoteOutputService` (`finalizeAction`) and of its action file systems.
+    pub action_input_fetcher: Option<Arc<RemoteActionInputFetcher>>,
 }
 
 /// `RemoteModule`, as far as one command goes.
@@ -265,39 +275,50 @@ impl RemoteModule {
     /// `registerActionContexts(registryBuilder, env, buildRequest)`: the `SpawnCache` this
     /// module registers (`"remote-cache"`), `None` when `beforeCommand` created no provider.
     ///
-    /// PORT: the `RemoteImportantOutputHandler` registration (Skymeld with an action input
-    /// fetcher) belongs to Build without the Bytes, which `executor_init` refuses.
+    /// PORT: the `RemoteImportantOutputHandler` (registered with Skymeld and an action input
+    /// fetcher) is not ported: it downloads, when a top-level target completes, the outputs that
+    /// were not known to be top-level when their action ran. Blaze posts every
+    /// `TopLevelTargetAnalyzedEvent` before the first action executes, so the checker knows
+    /// them all by then and `RemoteExecutionService.downloadOutputs`/`finalizeAction` download
+    /// them.
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1190 RemoteModule.registerActionContexts
     pub fn register_action_contexts(&self) -> Option<Arc<dyn SpawnCache>> {
         let provider = self.action_context_provider.as_ref()?;
         Some(provider.get_spawn_cache())
     }
 
-    /// `executorInit(env, request, builder)`: returns the action execution salt the module sets
-    /// on the `ExecutorBuilder` (`None` when `beforeCommand` created no provider).
+    /// `executorInit(env, request, builder)`: what the module sets on the `ExecutorBuilder` (the
+    /// action execution salt and, with a cache, the action input prefetcher, which is also the
+    /// `RemoteOutputService`'s fetcher); `None` when `beforeCommand` created no provider.
     ///
-    /// PORT: with a cache, Java wires a `RemoteActionInputFetcher` (the executor's
-    /// `ActionInputPrefetcher`), a `LeaseService` and the `RemoteOutputService`. With
-    /// `--remote_download_outputs=all` every output a spawn produces is downloaded (an in-memory
-    /// output, which Java never writes to disk, is kept in the executor's remote output tree),
-    /// so no input of a local action is remote and the fetcher has nothing to fetch; the other
-    /// modes (Build without the Bytes) fail loudly here.
+    /// PORT: Java creates the `RemoteActionInputFetcher` in `beforeCommand`
+    /// (`createActionInputFetcher`) and wires it here; it is created here, where it is first
+    /// used, from the same values (`output_permissions` is `CoreOptions
+    /// .experimentalWritableOutputs`).
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1241 RemoteModule.executorInit
-    pub fn executor_init(&self, remote_options: &RemoteOptions) -> Option<String> {
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:331 RemoteModule.createActionInputFetcher
+    pub fn executor_init(
+        &self,
+        remote_options: &RemoteOptions,
+        output_permissions: OutputPermissions,
+    ) -> Option<RemoteExecutorInit> {
         let provider = self.action_context_provider.as_ref()?;
-        if provider.get_combined_cache().is_some()
-            && remote_options.remote_outputs_mode != RemoteOutputsMode::ALL
-        {
-            blaze_util::unported!(
-                "RemoteModule.executorInit (RemoteActionInputFetcher, RemoteOutputService: Build without the Bytes)",
-                "--remote_download_outputs={} with a remote or disk cache; pass --remote_download_outputs=all",
-                match remote_options.remote_outputs_mode {
-                    RemoteOutputsMode::MINIMAL => "minimal",
-                    _ => "toplevel",
-                }
-            );
-        }
-        if provider.get_combined_cache().is_some() {
+        let mut action_input_fetcher = None;
+        if let Some(combined_cache) = provider.get_combined_cache() {
+            let remote_output_checker = self
+                .remote_output_checker
+                .clone()
+                .expect("remoteOutputChecker must not be null");
+            action_input_fetcher = Some(Arc::new(RemoteActionInputFetcher::new(
+                provider.env.reporter.clone(),
+                provider.env.build_request_id.clone(),
+                provider.env.command_id.clone(),
+                combined_cache.clone(),
+                provider.env.exec_root.clone(),
+                provider.temp_path_generator.clone(),
+                remote_output_checker,
+                output_permissions,
+            )));
             if self.rewind_lost_inputs {
                 // Action rewinding regenerates lost inputs within the build, so there is no need
                 // for the lease service to extend leases or to discard all remote metadata after
@@ -318,7 +339,10 @@ impl RemoteModule {
             // PORT: the LeaseService without a lease extension only discards remote metadata
             // after a build that lost inputs, which needs action rewinding (not ported).
         }
-        Some(compute_action_execution_salt(Some(remote_options)))
+        Some(RemoteExecutorInit {
+            action_execution_salt: compute_action_execution_salt(Some(remote_options)),
+            action_input_fetcher,
+        })
     }
 
     /// `onBuildComplete(BuildCompleteEvent)` of the `RemoteExecutionService`, which Java

@@ -156,24 +156,44 @@ fn run_build(
     // ByteStreamBuildEventArtifactUploader (`bytestream://` URIs, uploads of the files the
     // events name). It is not ported.
     // Java: com/google/devtools/build/lib/runtime/BuildEventArtifactUploaderFactoryMap.java:33 BuildEventArtifactUploaderFactoryMap.select
+    // A file transport whose path conversion is off gets a LocalFilesArtifactUploader.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:838 BuildEventServiceModule.createBepTransports
+    let selects_remote_uploader = options
+        .get_options::<blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions>()
+        .is_none_or(|o| {
+            o.build_event_upload_strategy.is_none()
+                || o.build_event_upload_strategy.as_deref() == Some("remote")
+        });
     if remote_module.uses_byte_stream_build_event_artifact_uploader()
         && options
             .get_options::<blaze_optdefs::misc::build_event_stream_options::BuildEventStreamOptions>()
             .is_some_and(|o| {
-                !o.build_event_text_file.is_empty()
-                    || !o.build_event_binary_file.is_empty()
-                    || !o.build_event_json_file.is_empty()
+                (!o.build_event_text_file.is_empty() && o.build_event_text_file_path_conversion)
+                    || (!o.build_event_binary_file.is_empty()
+                        && o.build_event_binary_file_path_conversion)
+                    || (!o.build_event_json_file.is_empty()
+                        && o.build_event_json_file_path_conversion)
             })
-        && options
-            .get_options::<blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions>()
-            .is_none_or(|o| {
-                o.build_event_upload_strategy.is_none()
-                    || o.build_event_upload_strategy.as_deref() == Some("remote")
-            })
+        && selects_remote_uploader
     {
         blaze_util::unported!(
             "ByteStreamBuildEventArtifactUploader (RemoteModule.BuildEventArtifactUploaderFactoryDelegate.create)",
             "--build_event_*_file with a gRPC remote cache or remote execution (Bazel names the files bytestream://...); pass --experimental_build_event_upload_strategy=local"
+        );
+    }
+    // `--experimental_stream_log_file_uploads` streams the profile and the Skyframe memory dump
+    // to the selected uploader, which with a gRPC cache is the ByteStream one.
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:380 BlazeRuntime.initProfiler
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:733 BuildTool.dumpSkyframeMemory
+    if remote_module.uses_byte_stream_build_event_artifact_uploader()
+        && selects_remote_uploader
+        && options
+            .get_options::<blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions>()
+            .is_some_and(|o| o.streaming_log_file_uploads)
+    {
+        blaze_util::unported!(
+            "ByteStreamBuildEventArtifactUploader (BlazeRuntime.newUploader: --experimental_stream_log_file_uploads)",
+            "--experimental_stream_log_file_uploads with a gRPC remote cache or remote execution; pass --experimental_build_event_upload_strategy=local or drop the flag"
         );
     }
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
@@ -413,10 +433,13 @@ fn run_build_with_bep(
         },
     ) {
         Ok(c) => (c, None),
-        // SpawnLogModule.executorInit throws from ExecutionTool's constructor, before the
-        // spawn strategies are registered: the build fails where Java constructs the
-        // ExecutionTool (see PreparedExecution::check_execution_tool_created).
-        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:171 ExecutionTool.<init>
+        // SpawnLogModule.executorInit does not throw: it requests the command's exit
+        // (`env.getBlazeModuleEnvironment().exit(...)`), which is thrown at the next
+        // `env.throwPendingException()`; a spawn strategy registry error of ExecutionTool's
+        // constructor comes first (see PreparedExecution::check_execution_tool_created).
+        // PORT: the pending exit is reported where the ExecutionTool is created.
+        // Java: com/google/devtools/build/lib/bazel/SpawnLogModule.java:85 SpawnLogModule.executorInit
+        // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:113 AnalysisAndExecutionPhaseRunner.execute
         Err(e) => (
             None,
             Some(
@@ -557,6 +580,17 @@ fn run_build_with_bep(
             .len(),
     );
     request.set_merged_analysis_and_execution(merged_analysis_and_execution);
+    // AnalysisAndExecutionPhaseRunner: TopLevelTargetAnalysisWatcher.createAndRegisterWithEventBus
+    // (the remote module is the only module with these hooks).
+    // PORT: the watcher stays registered for the rest of the command (Java unregisters it when
+    // the phase runner returns, after which no such event is posted).
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:309 TopLevelTargetAnalysisWatcher.createAndRegisterWithEventBus
+    env.get_event_bus()
+        .register(Arc::new(TopLevelTargetAnalysisWatcher {
+            remote_module: remote_module.clone(),
+            output_groups: request.get_top_level_artifact_context_output_groups(),
+            analyzed_targets: parking_lot::Mutex::new(Vec::new()),
+        }));
 
     let execution_phase = RuntimeExecutionPhase {
         reporter: reporter.clone(),
@@ -1066,6 +1100,164 @@ impl blaze_events::EventBus for BuildResultListener {
                 tests.push(target.clone());
             }
         }
+    }
+}
+
+/// `AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher`: calls the modules' hooks
+/// for the top-level targets and tests as they are analyzed.
+// Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:291 TopLevelTargetAnalysisWatcher
+struct TopLevelTargetAnalysisWatcher {
+    remote_module: Arc<CommandRemoteModule>,
+    /// `buildRequest.getTopLevelArtifactContext().outputGroups()`.
+    output_groups: Vec<String>,
+    /// The targets of the `TopLevelTargetAnalyzedEvent`s, for the `TestAnalyzedEvent`s, which
+    /// carry a view of their target.
+    analyzed_targets: parking_lot::Mutex<Vec<ConfiguredTarget>>,
+}
+
+impl blaze_events::EventBus for TopLevelTargetAnalysisWatcher {
+    fn post(&self, event: Arc<dyn blaze_events::Postable>) {
+        if let Some(event) =
+            blaze_sky_exec::events::downcast_event::<TopLevelTargetAnalyzedEvent>(&event)
+        {
+            // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:321 TopLevelTargetAnalysisWatcher.handleTopLevelTargetAnalysisConcluded
+            let target = &event.configured_target;
+            self.analyzed_targets.lock().push(target.clone());
+            let rule_class_string =
+                blaze_analysis::configuredtargets::get_rule_class_string(target);
+            self.remote_module.after_top_level_target_analysis(
+                (!rule_class_string.is_empty()).then_some(rule_class_string.as_str()),
+                &TopLevelTargetView {
+                    target,
+                    output_groups: &self.output_groups,
+                },
+            );
+        } else if let Some(event) =
+            blaze_sky_exec::events::downcast_event::<TestAnalyzedEvent>(&event)
+        {
+            // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:337 TopLevelTargetAnalysisWatcher.handleTestAnalyzed
+            // PORT: the event carries a view of the target; the target itself is the analyzed
+            // top-level target with the same key (every tested target is one).
+            let key = event.configured_target.get_lookup_key();
+            let target = self
+                .analyzed_targets
+                .lock()
+                .iter()
+                .find(|t| *t.get_lookup_key() == key)
+                .cloned();
+            let Some(target) = target else {
+                panic!(
+                    "IllegalStateException: TestAnalyzedEvent of {} without its \
+                     TopLevelTargetAnalyzedEvent",
+                    event.configured_target.get_label()
+                );
+            };
+            let test_provider = target
+                .get_provider::<blaze_analysis::test::test_provider::TestProvider>()
+                .expect("NullPointerException: TestProvider of a test target");
+            self.remote_module
+                .after_single_test_analysis(&TargetUnderTestView {
+                    test_params: test_provider.get_test_params(),
+                });
+        }
+    }
+}
+
+/// `RemoteOutputChecker`'s view of a top-level configured target.
+struct TopLevelTargetView<'a> {
+    target: &'a ConfiguredTarget,
+    output_groups: &'a [String],
+}
+
+impl blaze_remote::remote_output_checker::TopLevelTarget for TopLevelTargetView<'_> {
+    // Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:183 TopLevelArtifactHelper.ArtifactsToBuild.getImportantArtifacts
+    fn get_important_artifacts_to_build(&self) -> Vec<blaze_exec::actions::ActionInputRef> {
+        let all = blaze_sky_top::execution_seam::get_all_artifacts_to_build(self.target);
+        let mut important = blaze_collect::NestedSetBuilder::stable_order();
+        for output_group in self.output_groups {
+            if let Some(artifacts) = all.get(output_group)
+                && blaze_sky_top::execution_seam::is_important_group(output_group)
+            {
+                important.add_transitive(artifacts);
+            }
+        }
+        important
+            .build()
+            .to_list()
+            .iter()
+            .map(blaze_exec::actions::action_adapters::artifact_input)
+            .collect()
+    }
+
+    fn output_groups_contain_hidden_top_level(&self) -> bool {
+        self.output_groups
+            .iter()
+            .any(|g| g == blaze_analysis::providers::output_group_info::HIDDEN_TOP_LEVEL)
+    }
+
+    fn get_runfiles(&self) -> Option<blaze_remote::remote_output_checker::RunfilesView> {
+        let provider = blaze_analysis::configuredtargets::get_files_to_run_provider(self.target)?;
+        let runfiles = provider.get_runfiles_support()?.get_runfiles();
+        let input = blaze_exec::actions::action_adapters::artifact_input;
+        Some(blaze_remote::remote_output_checker::RunfilesView {
+            artifacts: runfiles
+                .get_artifacts()
+                .to_list()
+                .iter()
+                .map(input)
+                .collect(),
+            symlink_artifacts: runfiles
+                .get_symlinks()
+                .to_list()
+                .iter()
+                .map(|s| input(s.get_artifact()))
+                .collect(),
+            root_symlink_artifacts: runfiles
+                .get_root_symlinks()
+                .to_list()
+                .iter()
+                .map(|s| input(s.get_artifact()))
+                .collect(),
+        })
+    }
+
+    /// PORT: `ExtraActionArtifactsProvider` is not ported; without
+    /// `--experimental_action_listener` (not ported) its artifacts are empty.
+    fn get_extra_action_artifacts(&self) -> Option<Vec<blaze_exec::actions::ActionInputRef>> {
+        Some(Vec::new())
+    }
+}
+
+/// `RemoteOutputChecker`'s view of a test target's `TestProvider`.
+struct TargetUnderTestView<'a> {
+    test_params: &'a blaze_analysis::test::test_provider::TestParams,
+}
+
+impl blaze_remote::remote_output_checker::TargetUnderTest for TargetUnderTestView<'_> {
+    fn get_test_outputs(&self) -> Vec<blaze_exec::actions::ActionInputRef> {
+        self.test_params
+            .get_outputs()
+            .iter()
+            .map(|output| match output {
+                blaze_analysis::test::test_provider::TestOutput::Artifact(a) => {
+                    blaze_exec::actions::action_adapters::artifact_input(a)
+                }
+                // ActionInputHelper.fromPath(path)
+                blaze_analysis::test::test_provider::TestOutput::Path(p) => {
+                    blaze_exec::actions::ActionInputRef::new(
+                        blaze_exec::actions::BasicActionInput::from_path_fragment(p.clone()),
+                    )
+                }
+            })
+            .collect()
+    }
+
+    fn get_coverage_artifacts(&self) -> Vec<blaze_exec::actions::ActionInputRef> {
+        self.test_params
+            .get_coverage_artifacts()
+            .iter()
+            .map(blaze_exec::actions::action_adapters::artifact_input)
+            .collect()
     }
 }
 

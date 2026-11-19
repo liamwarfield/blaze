@@ -174,16 +174,20 @@ impl TreeArtifactValue {
         }
 
         let digest = fingerprint.digest_and_reset();
-        if entirely_remote || resolved_path.is_some() {
-            blaze_util::unported!(
-                "TreeArtifactValue.getMetadata",
-                "TreeArtifactCompositeFileArtifactValue of a remote tree or one with a resolved path"
-            );
-        }
+        // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:324 TreeArtifactValue.getMetadata
+        let metadata = if entirely_remote || resolved_path.is_some() {
+            FileArtifactValue::TreeArtifactComposite {
+                digest,
+                is_remote: entirely_remote,
+                resolved_path: resolved_path.clone(),
+            }
+        } else {
+            FileArtifactValue::HashedDirectory { digest }
+        };
         TreeArtifactValue {
             child_values,
             archived_representation,
-            metadata: Some(FileArtifactValue::HashedDirectory { digest }),
+            metadata: Some(metadata),
             resolved_path,
         }
     }

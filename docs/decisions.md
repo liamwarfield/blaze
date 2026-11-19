@@ -154,3 +154,10 @@ Each entry: date, decision, why, who decided.
   on the server. The Stairwell depot itself is not a target: Bazel 9.3.2 cannot analyse it
   (`rule()` no longer accepts `incompatible_use_toolchain_transition`, used by its
   aspect_rules_cypress toolchain repo), and Blaze stops at the same error. Remote lead.
+- 2026-11-19. Remote phase 2: build without the bytes is on. The build-wide remote output tree
+  also records the remote outputs of action-cache hits, standing in for each action file
+  system's input metadata. In-process reads of remote files download on demand through the
+  `RemoteActionInputFetcher`. `RemoteImportantOutputHandler` is not ported because Blaze posts
+  every `TopLevelTargetAnalyzedEvent` before execution starts. A remote or resolved tree's
+  metadata is `FileArtifactValue::TreeArtifactComposite`; local trees stay `HashedDirectory`.
+  Remote implementer; remote lead.
