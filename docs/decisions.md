@@ -132,3 +132,8 @@ Each entry: date, decision, why, who decided.
   server-log keys Blaze stays identical to Bazel (which does not confine them) rather than
   hardening beyond it; each site is marked and listed in docs/remote.md. Flagged to the user as
   a decision they may want to overrule. Root.
+- 2026-11-19. Integrity audit round 2B: PASS; test baseline moved to ef66f55. Referee batch 2
+  (auditor's open list) was partly committed by a checkpoint before review (root's error); the
+  auditor is reviewing it as round 2C, and AGENTS.md "Commits" now keeps in-progress protected
+  changes out of checkpoints. Accepted score files stay as recorded; the next accepted label
+  uses the new referee with commit verification. Root.

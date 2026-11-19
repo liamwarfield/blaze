@@ -79,6 +79,10 @@ Read them again after a context reset.
   `scripts/cargo-capped check --workspace --all-targets`).
 - A score is reported with the commit it was measured at, the binary used, and its denominator
   (including what was excluded or not ported).
+- Checkpoint commits must not include in-progress changes to protected paths. Stage them out
+  (`git add -A && git reset -q -- $(grep -v '^#' scripts/gate/protected-paths.txt | awk 'NF{print $NF}')`,
+  then add back only reviewed or task-named protected files); referee and gate changes are
+  committed after the auditor's verdict.
 
 ## Protected paths and accepted state
 
