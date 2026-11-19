@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""What the proxy recordings prove: one class per scenario. See `classify help`."""
+
+import json
+import os
+import re
+import sys
+
+USAGE = """\
+usage: scripts/proxy/classify [--json FILE] [DATA_DIR [TEST_FILE]]
+       scripts/proxy/classify selftest
+       scripts/proxy/classify help
+
+Reads the oracle recordings (DATA_DIR, default crates/blaze_repo_fetch/tests/data/proxy, one
+directory per scenario, written by scripts/proxy/run) and the Rust test that consumes them
+(TEST_FILE, default crates/blaze_repo_fetch/tests/proxy_authentication_test.rs; each #[test]
+calls run("<scenario>", opens, direct_first, N) and then asserts on the outcomes), and prints
+what each scenario's test compares, in one of these classes:
+
+  full match       the test compares Blaze's requests with every request the oracle's run sent
+                   (N equals the number of `request` lines in events.txt) and asserts the
+                   outcome of each connection
+  prefix match     the test compares only the first N requests (N is smaller than the oracle's
+                   total: the oracle's run makes more connection attempts than the test opens,
+                   or Blaze stops earlier); the rest of the oracle's requests are not compared
+  loud not-ported  the test passes by asserting that Blaze stops at unported!(...) (Digest, NTLM,
+                   Negotiate); at most the requests before that point are compared
+  not consumed     a recording no test reads (or a test without a recording)
+
+Never compared by any test, for every scenario: the oracle's stderr.txt (its WARNING/Error lines)
+and exit-code (both are listed here for reading). The summary line counts each class; a
+scenario count is never reported as "N of N" without the classes.
+
+Exit status: 0 when every recording is consumed by exactly one test; 1 otherwise; 2 on a usage
+error. This tool reads files only; it runs no binary.
+"""
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+DATA = os.path.join(ROOT, "crates", "blaze_repo_fetch", "tests", "data", "proxy")
+TEST = os.path.join(ROOT, "crates", "blaze_repo_fetch", "tests", "proxy_authentication_test.rs")
+
+TEST_RE = re.compile(r"#\[test\]\s*fn\s+(\w+)\s*\(\)\s*\{(.*?)\n\}", re.S)
+RUN_RE = re.compile(r'run\("([^"]+)",\s*(\d+),\s*(true|false),\s*(\d+)\)')
+ASSERT_RE = re.compile(r"(assert_\w+)\(&o\[(\d+)\]")
+
+FULL, PREFIX, LOUD, UNUSED = "full match", "prefix match", "loud not-ported", "not consumed"
+
+
+def parse_tests(text):
+    """{scenario: {"test", "opens", "compared", "asserts": [(fn, index)]}}; duplicates listed."""
+    out, dup = {}, []
+    for name, body in TEST_RE.findall(text):
+        m = RUN_RE.search(body)
+        if not m:
+            continue
+        scen = m.group(1)
+        if scen in out:
+            dup.append(scen)
+        out[scen] = {"test": name, "opens": int(m.group(2)), "direct_first": m.group(3) == "true",
+                     "compared": int(m.group(4)),
+                     "asserts": [(a, int(i)) for a, i in ASSERT_RE.findall(body)]}
+    return out, dup
+
+
+def read(path, default=""):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return default
+
+
+def recording(d):
+    events = read(os.path.join(d, "events.txt")).splitlines()
+    return {
+        "oracle_requests": sum(1 for l in events if l.startswith("request ")),
+        "kept_requests": sum(1 for f in os.listdir(d) if f.endswith(".req")),
+        "exit_code": read(os.path.join(d, "exit-code")).strip() or None,
+        "stderr_lines": len(read(os.path.join(d, "stderr.txt")).splitlines()),
+    }
+
+
+def classify(data_dir, test_file):
+    tests, dup = parse_tests(read(test_file))
+    scenarios = sorted(d for d in os.listdir(data_dir)
+                       if os.path.isdir(os.path.join(data_dir, d)))
+    rows = []
+    for s in scenarios:
+        rec = recording(os.path.join(data_dir, s))
+        t = tests.get(s)
+        if t is None:
+            rows.append(dict(rec, scenario=s, cls=UNUSED, test=None, compared=0,
+                             detail="no test reads this recording"))
+            continue
+        unported = [a for a, _ in t["asserts"] if a == "assert_unported"]
+        if unported:
+            cls = LOUD
+            detail = "asserts unported!; compares %d of the oracle's %d requests" % (
+                t["compared"], rec["oracle_requests"])
+        elif t["compared"] >= rec["oracle_requests"]:
+            cls = FULL
+            detail = "compares all %d requests; asserts %s" % (
+                rec["oracle_requests"], ", ".join(sorted({a for a, _ in t["asserts"]})))
+        else:
+            cls = PREFIX
+            detail = "compares the first %d of the oracle's %d requests (%d kept); asserts %s" % (
+                t["compared"], rec["oracle_requests"], rec["kept_requests"],
+                ", ".join(sorted({a for a, _ in t["asserts"]})))
+        rows.append(dict(rec, scenario=s, cls=cls, test=t["test"], compared=t["compared"],
+                         detail=detail))
+    for s in sorted(set(tests) - set(scenarios)):
+        rows.append({"scenario": s, "cls": UNUSED, "test": tests[s]["test"], "compared": 0,
+                     "detail": "test without a recording", "oracle_requests": None,
+                     "kept_requests": None, "exit_code": None, "stderr_lines": None})
+    return rows, dup
+
+
+def main(argv):
+    if argv[:1] in (["help"], ["--help"], ["-h"]):
+        print(USAGE, end="")
+        return 0
+    if argv[:1] == ["selftest"]:
+        return selftest()
+    json_out = None
+    if argv[:1] == ["--json"]:
+        if len(argv) < 2:
+            print(USAGE, file=sys.stderr)
+            return 2
+        json_out, argv = argv[1], argv[2:]
+    data_dir = argv[0] if len(argv) > 0 else DATA
+    test_file = argv[1] if len(argv) > 1 else TEST
+    if not os.path.isdir(data_dir) or not os.path.isfile(test_file):
+        print(USAGE, file=sys.stderr)
+        return 2
+    rows, dup = classify(data_dir, test_file)
+    print("proxy recordings: %s; test: %s" % (data_dir, test_file))
+    print("%-30s %-16s %-6s %s" % ("scenario", "class", "exit", "what the test compares"))
+    for r in rows:
+        print("%-30s %-16s %-6s %s" % (r["scenario"], r["cls"], r["exit_code"] or "-",
+                                       r["detail"]))
+    counts = {c: sum(1 for r in rows if r["cls"] == c) for c in (FULL, PREFIX, LOUD, UNUSED)}
+    print("%d recordings: %d full match, %d prefix match, %d loud not-ported, %d not consumed; "
+          "stderr and exit code compared in none" % (
+              sum(1 for r in rows if r["oracle_requests"] is not None), counts[FULL],
+              counts[PREFIX], counts[LOUD], counts[UNUSED]))
+    if dup:
+        print("error: scenarios read by more than one test: %s" % ", ".join(dup))
+    if json_out:
+        with open(json_out, "w") as f:
+            json.dump({"rows": rows, "counts": counts, "duplicates": dup}, f, indent=1)
+    return 0 if not counts[UNUSED] and not dup else 1
+
+
+def selftest():
+    import shutil
+    import tempfile
+    base = os.path.join(os.path.expanduser("~"), ".cache", "blaze", "work", "compare-common")
+    os.makedirs(base, exist_ok=True)
+    d = tempfile.mkdtemp(prefix="selftest-proxy-classify-", dir=base)
+    fails = 0
+
+    def check(name, ok):
+        nonlocal fails
+        fails += 0 if ok else 1
+        print("  %-4s %s" % ("ok" if ok else "FAIL", name))
+
+    try:
+        data = os.path.join(d, "data")
+        for scen, n in (("full", 2), ("prefix", 20), ("loud", 3), ("unused", 1)):
+            os.makedirs(os.path.join(data, scen))
+            with open(os.path.join(data, scen, "events.txt"), "w") as f:
+                f.write("".join("request %02d-c1 GET x\n" % i for i in range(n)))
+            with open(os.path.join(data, scen, "exit-code"), "w") as f:
+                f.write("7\n")
+        test = os.path.join(d, "t.rs")
+        with open(test, "w") as f:
+            f.write('#[test]\nfn full() {\n    let o = run("full", 1, false, 2);\n'
+                    '    assert_response(&o[0], 200);\n}\n'
+                    '#[test]\nfn prefix() {\n    let o = run("prefix", 1, false, 3);\n'
+                    '    assert_response(&o[0], 407);\n}\n'
+                    '#[test]\nfn loud() {\n    let o = run("loud", 1, false, 1);\n'
+                    '    assert_unported(&o[0], "X");\n}\n')
+        rows, _ = classify(data, test)
+        cls = {r["scenario"]: r["cls"] for r in rows}
+        check("all requests compared is a full match", cls.get("full") == FULL)
+        check("3 of 20 requests is a prefix match", cls.get("prefix") == PREFIX)
+        check("an unported! assertion is loud not-ported", cls.get("loud") == LOUD)
+        check("a recording without a test is not consumed", cls.get("unused") == UNUSED)
+        with open(os.devnull, "w") as null:
+            old = sys.stdout
+            sys.stdout = null
+            try:
+                rc = main([data, test])
+            finally:
+                sys.stdout = old
+        check("an unconsumed recording fails the run", rc != 0)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("proxy/classify selftest: %s" % ("PASS" if not fails else "FAIL"))
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

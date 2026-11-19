@@ -9,7 +9,8 @@ import sys
 
 USAGE = """\
 usage: scripts/starlark/interp-diff record-java [CASEDIR]
-       scripts/starlark/interp-diff binary [--blaze BIN] [--only REGEX] [CASEDIR]
+       scripts/starlark/interp-diff binary [--blaze BIN] [--only REGEX] [--json FILE] [CASEDIR]
+       scripts/starlark/interp-diff selftest
        scripts/starlark/interp-diff help
 
 CASEDIR (default crates/starlark_conformance/tests/data/interp) holds NAME.star files: small
@@ -29,12 +30,29 @@ binary       differential run on the real binaries. One scratch workspace
              The oracle (~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64) and Blaze (BIN,
              default target/debug/blaze) each run once, `query --keep_going //...`, under
              systemd-run (MemoryMax=12G), with separate output user roots. Per package the tool
-             compares: accepted or rejected (an ERROR line naming the package), and the DEBUG
-             lines (print output with file:line:col). Error texts are not compared (Blaze keeps
-             starlark-rust's core-language texts, docs/decisions.md). Prints one line per
-             package that differs and a summary; exit status 1 if any differs. Stderr of both
-             runs is saved under ~/.cache/blaze/oracle-out/interp-diff/.
-             --only REGEX keeps the cases whose NAME matches."""
+             compares: accepted or rejected (an ERROR line naming the package), the DEBUG
+             lines (print output with file:line:col), and the text of every ERROR message that
+             names the package, with its continuation lines (Bazel's traceback, the source
+             lines, `Error in f: ...`), in order (docs/decisions.md 2026-11-19: core-language
+             error texts are ported). Prints one line per package that differs (OUTCOME: the
+             outcome or the print output differs; TEXT: only the error text differs, with both
+             texts) and a summary; exit status 1 if any differs. Stderr of both runs is saved
+             under ~/.cache/blaze/oracle-out/interp-diff/.
+             --only REGEX keeps the cases whose NAME matches.
+
+             Guards (scripts/lib/compare_common.py): both runs go through a supervisor in the
+             scope (environment HOME and PATH=/usr/bin:/bin only) that records how the query
+             really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout` after 3600 s). The
+             terminations are compared as one more row, `query-termination`: the expected exit
+             is 3 when the oracle rejects at least one package (--keep_going), else 0; equal
+             failures otherwise are BOTH-FAILED. The oracle must be the pinned one
+             (UPSTREAM.json); an --only that matches no case is an error. Each package is one
+             row: IDENTICAL, or DIFFERENT (OUTCOME or TEXT). The report starts with the
+             repository HEAD and dirty flag and both binaries' paths and sha256 and ends with
+             the denominator; --json writes it. Exit status 0 only when every row is IDENTICAL;
+             1 otherwise; 2 on a refusal.
+
+selftest     proves the guards with fake binaries (no real build)."""
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -44,6 +62,9 @@ INSTALL_BASE = os.path.expanduser(
     "~/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9")
 PROBE = os.path.join(ROOT, "crates/starlark_conformance/java/StarlarkProbe.java")
 BASE = os.path.expanduser("~/.cache/blaze/oracle-out/interp-diff")
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
+import compare_common as cc  # noqa: E402
 
 
 def cases_in(casedir, only=None):
@@ -88,70 +109,145 @@ def make_workspace(casedir, names):
     return ws
 
 
-def run(binary, ws, tag):
+def run(binary, ws, tag, base=BASE):
+    """(compare_common.Termination, stderr with <WS>) of `query --keep_going //...`."""
     home = os.path.expanduser("~")
-    argv = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
-            "-p", "MemorySwapMax=0",
-            binary, "--output_user_root=" + os.path.join(BASE, "ur-" + tag), "--nohome_rc",
+    argv = [binary, "--output_user_root=" + os.path.join(base, "ur-" + tag), "--nohome_rc",
             "--nosystem_rc", "query", "--keep_going", "--color=no", "--curses=no",
             "--repository_cache=" + home + "/.cache/blaze/repo-cache", "//..."]
-    env = {"HOME": home, "PATH": "/usr/bin:/bin"}
-    for k in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
-        if k in os.environ:
-            env[k] = os.environ[k]
-    p = subprocess.run(argv, cwd=ws, env=env, capture_output=True)
-    err = p.stderr.decode("latin-1").replace(ws, "<WS>")
-    with open(os.path.join(BASE, tag + ".stderr.txt"), "w", encoding="latin-1") as f:
+    p = cc.run(argv, ws, timeout=3600, mode="scope", tag="interp-diff-" + tag)
+    err = p.err.decode("latin-1").replace(ws, "<WS>")
+    with open(os.path.join(base, tag + ".stderr.txt"), "w", encoding="latin-1") as f:
         f.write(err)
-    with open(os.path.join(BASE, tag + ".stdout.txt"), "wb") as f:
-        f.write(p.stdout)
-    if p.returncode not in (0, 3):
-        sys.stderr.write("%s: exit %d, see %s\n" % (tag, p.returncode,
-                                                  os.path.join(BASE, tag + ".stderr.txt")))
-    return p.returncode, err
+    with open(os.path.join(base, tag + ".stdout.txt"), "wb") as f:
+        f.write(p.out)
+    if not (p.term.normal and p.term.code in (0, 3)):
+        sys.stderr.write("%s: %s, see %s\n" % (tag, p.term,
+                                               os.path.join(base, tag + ".stderr.txt")))
+    return p.term, err
 
 
 PKG_RE = re.compile(r"(?:<WS>/|//|package '|package contains errors: )([bz]_[A-Za-z0-9_]+)")
 
 
+CONTINUATION = re.compile(r"^(\t|Traceback |Error |Error:|Error in )")
+
+
 def summarize(err, packages):
-    """Per package: (rejected, sorted DEBUG lines)."""
+    """Per package: (rejected, sorted DEBUG lines, error message blocks in order)."""
     rejected = set()
     debug = {p: [] for p in packages}
+    errors = {p: [] for p in packages}
+    block = None
     for line in err.split("\n"):
+        if block is not None and CONTINUATION.match(line):
+            block[1].append(line)
+            continue
+        block = None
         if line.startswith("DEBUG: <WS>/"):
             m = re.match(r"DEBUG: <WS>/([^/]+)/(\S+): (.*)$", line)
             if m and m.group(1) in debug:
                 debug[m.group(1)].append(m.group(2) + ": " + m.group(3))
         elif line.startswith("ERROR: "):
-            for m in PKG_RE.finditer(line):
-                if m.group(1) in debug:
-                    rejected.add(m.group(1))
-    return {p: (p in rejected, sorted(debug[p])) for p in packages}
+            named = [m.group(1) for m in PKG_RE.finditer(line) if m.group(1) in debug]
+            for p in named:
+                rejected.add(p)
+            if named:
+                block = (named[0], [line])
+                errors[named[0]].append(block[1])
+    return {p: (p in rejected, sorted(debug[p]), ["\n".join(b) for b in errors[p]])
+            for p in packages}
 
 
-def binary(casedir, blaze, only):
-    names = cases_in(casedir, only)
-    ws = make_workspace(casedir, names)
-    packages = ["b_" + n for n in names] + ["z_" + n for n in names]
-    oracle_code, oracle_err = run(ORACLE, ws, "oracle")
-    blaze_code, blaze_err = run(blaze, ws, "blaze")
+def judge_packages(packages, oracle_term, oracle_err, blaze_term, blaze_err, report):
+    """Adds the query-termination row and one row per package; prints OUTCOME/TEXT lines."""
     want = summarize(oracle_err, packages)
     got = summarize(blaze_err, packages)
-    bad = 0
+    rejected = sum(1 for p in packages if want[p][0])
+    cls, detail = cc.judge(oracle_term, blaze_term, [], declared_exit=3 if rejected else None)
+    report.add("query-termination", cls, detail or "oracle %s, blaze %s" % (
+        oracle_term, blaze_term))
+    outcome = text = 0
     for p in packages:
-        if want[p] != got[p]:
-            bad += 1
-            print("DIFF %s: oracle %s %s | blaze %s %s" % (
+        if want[p][:2] != got[p][:2]:
+            outcome += 1
+            print("OUTCOME %s: oracle %s %s | blaze %s %s" % (
                 p, "rejected" if want[p][0] else "accepted", want[p][1],
                 "rejected" if got[p][0] else "accepted", got[p][1]))
+            report.add(p, cc.DIFFERENT, "outcome or print output")
+        elif want[p][2] != got[p][2]:
+            text += 1
+            print("TEXT %s:\n  oracle %r\n  blaze  %r" % (p, want[p][2], got[p][2]))
+            report.add(p, cc.DIFFERENT, "error text only")
+        else:
+            report.add(p, cc.IDENTICAL, "rejected" if want[p][0] else "accepted")
+    return want, outcome, text
+
+
+def binary(casedir, blaze, only, json_out=None):
+    names = cases_in(casedir, only)
+    if not names:
+        return cc.empty_selection_error("starlark/interp-diff")
+    try:
+        oracle, oracle_sha = cc.require_oracle(ORACLE)
+        bid = cc.blaze_identity(blaze)
+    except cc.Refusal as e:
+        return cc.refuse("starlark/interp-diff", e)
+    report = cc.Report("starlark/interp-diff", blaze=bid,
+                       oracle={"path": oracle, "sha256": oracle_sha},
+                       selection="%d cases of %s%s" % (len(names), casedir,
+                                                       " (--only %s)" % only if only else ""),
+                       tool_files=[os.path.abspath(__file__)])
+    report.print_header()
+    ws = make_workspace(casedir, names)
+    packages = ["b_" + n for n in names] + ["z_" + n for n in names]
+    oracle_term, oracle_err = run(oracle, ws, "oracle")
+    blaze_term, blaze_err = run(bid["path"], ws, "blaze")
+    want, outcome, text = judge_packages(packages, oracle_term, oracle_err, blaze_term,
+                                         blaze_err, report)
     accepted = sum(1 for p in packages if not want[p][0])
-    print("%d cases, %d packages (oracle: %d accepted, %d rejected); exit codes oracle %d, "
-          "blaze %d; %d packages differ" % (len(names), len(packages), accepted,
-                                            len(packages) - accepted, oracle_code, blaze_code,
-                                            bad))
-    print("blaze binary: %s" % blaze)
-    sys.exit(1 if bad else 0)
+    print("%d cases, %d packages (oracle: %d accepted, %d rejected); oracle %s, blaze %s; "
+          "%d packages differ in outcome, %d more in error text only; %d identical"
+          % (len(names), len(packages), accepted, len(packages) - accepted, oracle_term,
+             blaze_term, outcome, text, len(packages) - outcome - text))
+    report.print_footer()
+    if json_out:
+        report.write_json(json_out)
+    return report.exit_code()
+
+
+def selftest():
+    def run_pair(ofake, bfake, wd):
+        cc.require_oracle(ofake)
+        res = {}
+        for side, fake in (("oracle", ofake), ("blaze", bfake)):
+            term, err = run(fake, wd, side, base=wd)
+            out = open(os.path.join(wd, side + ".stdout.txt"), "rb").read().decode("latin-1")
+            # A fake's stdout stands for a package's print output.
+            res[side] = (term, err + "DEBUG: <WS>/b_x/BUILD:1:1: " + out.strip() + "\n")
+        rep = cc.Report("selftest")
+        with open(os.devnull, "w") as null:
+            old = sys.stdout
+            sys.stdout = null
+            try:
+                judge_packages(["b_x"], res["oracle"][0], res["oracle"][1], res["blaze"][0],
+                               res["blaze"][1], rep)
+            finally:
+                sys.stdout = old
+        bad = [r for r in rep.rows if r["class"] != cc.IDENTICAL]
+        return (bad[0]["class"], bad[0]["detail"]) if bad else (cc.IDENTICAL, "")
+
+    def empty_selection():
+        with open(os.devnull, "w") as null:
+            old = sys.stderr
+            sys.stderr = null
+            try:
+                return binary(DEFAULT_CASES, "/bin/true", "^no case has this name$")
+            finally:
+                sys.stderr = old
+
+    return cc.selftest("starlark/interp-diff", run_pair=run_pair,
+                       empty_selection=empty_selection, mode="scope")
 
 
 def main():
@@ -163,9 +259,12 @@ def main():
     if cmd == "record-java":
         record_java(os.path.abspath(rest[0]) if rest else DEFAULT_CASES)
         return
+    if cmd == "selftest":
+        sys.exit(selftest())
     if cmd == "binary":
         blaze = os.path.join(ROOT, "target/debug/blaze")
         only = None
+        json_out = None
         casedir = DEFAULT_CASES
         i = 0
         while i < len(rest):
@@ -175,12 +274,14 @@ def main():
             elif rest[i] == "--only":
                 only = rest[i + 1]
                 i += 2
+            elif rest[i] == "--json":
+                json_out = rest[i + 1]
+                i += 2
             else:
                 casedir = os.path.abspath(rest[i])
                 i += 1
         os.makedirs(BASE, exist_ok=True)
-        binary(casedir, blaze, only)
-        return
+        sys.exit(binary(casedir, blaze, only, json_out))
     print(USAGE)
     sys.exit(2)
 

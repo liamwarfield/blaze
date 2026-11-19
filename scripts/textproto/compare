@@ -6,6 +6,7 @@ Usage:
   scripts/textproto/compare run <project> --binary B --out DIR [--steps build,cquery,aquery]
   scripts/textproto/compare check DIR
   scripts/textproto/compare bep-e2e <project> <reference DIR> <candidate DIR> [--verbose]
+  scripts/textproto/compare selftest
   scripts/textproto/compare help
 
 files    Prints <binary> (the binary output of a Bazel invocation) with Blaze's printer
@@ -23,8 +24,18 @@ run      Runs binary B (the oracle or a Blaze binary) on a fresh copy of the cor
          aquery.txt,*.stderr,exit_codes.json,context.json}. The workspace is
          ~/.cache/blaze/work/textproto-<DIR name>/<project>, the output user root
          ~/.cache/blaze/oracle-out/textproto-<DIR name> (both wiped first).
+         Every command runs through scripts/lib/compare_common.py (a --scope unit with a
+         supervisor), so exit_codes.json holds how each step really ended (`exit N`, `signal
+         NAME`, `oom-kill`, `timeout`); provenance.json names the binary, its sha256, whether
+         it is the pinned oracle, the repository HEAD and dirty flag.
 check    `files` on every pair DIR holds (bep, cquery, aquery), and checks that the text BEP
          parsed back (blaze-textproto bep-text-to-json) equals DIR/bep.json event by event.
+         Every step that produced a pair must have ended with exit 0 (exit_codes.json): a
+         pair whose step failed, crashed or is missing is SKIPPED with the reason and makes the
+         check fail, unless EXPECTED_GAPS (in this script) names the pair. DIR must have been
+         recorded by the pinned oracle (its sha256 in UPSTREAM.json): a directory recorded by
+         another binary is checked only for consistency with itself, the report says so, and
+         the check never passes on it.
 bep-e2e  Compares the --build_event_text_file of two runs: each is parsed back to JSON events
          and normalised with the referee's BEP normaliser (scripts/oracle/surfaces.normalise_bep,
          each run with its own path/user/host context), then compared item by item with the
@@ -32,7 +43,13 @@ bep-e2e  Compares the --build_event_text_file of two runs: each is parsed back t
          also reported as a multiset, since the order of announcements varies between runs and
          even between two transports of one oracle run).
 
-Exit status: 0 when everything compared is identical, 1 on a difference, 2 on a usage error.
+bep-e2e  refuses a reference DIR not recorded by the pinned oracle, and judges the build
+         step's termination on both sides (compare_common.judge).
+selftest proves the guards with fake binaries (no real build): a crashed step, an empty
+         pair, a non-oracle directory, signal deaths, the wrong oracle.
+
+Exit status (check, bep-e2e): 0 only when something was compared and everything compared is
+identical with no undeclared skip; 1 otherwise; 2 on a usage error or a refusal.
 Python 3 standard library only.
 """
 import argparse
@@ -44,9 +61,13 @@ import os
 import socket
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
+import compare_common as cc  # noqa: E402
 sys.path.insert(0, os.path.join(ROOT, "scripts", "oracle"))
 import oracle_common as oc  # noqa: E402
 import oracle_compare as cmp  # noqa: E402
@@ -73,6 +94,15 @@ PAIRS = [
     ("cquery", "cquery", "analysis.CqueryResult", "cquery.pb", "cquery.txt"),
     ("aquery", "aquery", "analysis.ActionGraphContainer", "aquery.pb", "aquery.txt"),
 ]
+# The `run` steps (keys of exit_codes.json) that write each pair.
+PAIR_STEPS = {
+    "bep": ["build"],
+    "cquery": ["cquery_proto", "cquery_textproto"],
+    "aquery": ["aquery_proto", "aquery_textproto"],
+}
+# Pairs that `check` may skip without failing: {pair name: why}. Empty: every recorded step is
+# expected to produce its pair.
+EXPECTED_GAPS = {}
 
 
 AQUERY_LABELS = (b"artifacts", b"actions", b"targets", b"dep_set_of_files", b"configuration",
@@ -163,12 +193,42 @@ def cmd_files(argv):
 
 
 def run_logged(argv, cwd, out_path, err_path):
-    scoped = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
-              "-p", "MemorySwapMax=0", "--", "env", "-i", "HOME=" + oc.HOME,
-              "PATH=/usr/bin:/bin"] + argv
-    with open(out_path, "wb") as out, open(err_path, "wb") as err:
-        p = subprocess.run(scoped, cwd=cwd, stdout=out, stderr=err, stdin=subprocess.DEVNULL)
-    return p.returncode
+    """Runs argv in a --scope unit (the server stays up between steps); returns the
+    compare_common.Termination recorded inside the unit."""
+    return cc.run(argv, cwd, mode="scope", stdout_path=out_path, stderr_path=err_path,
+                  tag="textproto").term
+
+
+def step_term(value):
+    """A step's termination from exit_codes.json: a Termination dict (this script), or a plain
+    number (recorded before 2026-11-19 by an earlier version: a negative number is a signal; an
+    OOM kill was not recorded)."""
+    if isinstance(value, dict):
+        return cc.Termination.from_dict(value)
+    if isinstance(value, int):
+        if value < 0:
+            return cc.Termination("signal", 128 - value, "SIG%d" % -value,
+                                  detail="legacy record")
+        return cc.Termination("exit", value, detail="legacy record: OOM not checked")
+    return None
+
+
+def read_provenance(d):
+    """{"binary", "sha256", "oracle"} of the binary that recorded d (provenance.json, else the
+    older binary.txt), or None."""
+    pj = os.path.join(d, "provenance.json")
+    if os.path.exists(pj):
+        with open(pj) as f:
+            p = json.load(f)
+        return {"binary": p["binary"]["path"], "sha256": p["binary"]["sha256"],
+                "oracle": p["binary"]["sha256"] == cc.pinned_sha256()}
+    bt = os.path.join(d, "binary.txt")
+    if os.path.exists(bt):
+        words = open(bt).read().split()
+        if len(words) >= 2:
+            return {"binary": words[0], "sha256": words[1],
+                    "oracle": words[1] == cc.pinned_sha256()}
+    return None
 
 
 def cmd_run(argv):
@@ -186,6 +246,9 @@ def cmd_run(argv):
     os.makedirs(out, exist_ok=True)
     name = os.path.basename(out.rstrip("/"))
     binary = os.path.abspath(oc.expand(a.binary))
+    if not os.path.isfile(binary):
+        return cc.refuse("textproto run", "binary %s does not exist" % binary)
+    binary_sha = cc.sha256_file(binary)
     ws = os.path.join(oc.WORK, "textproto-" + name, a.project)
     root = os.path.join(oc.OUTPUT_ROOTS, "textproto-" + name)
     rec.kill_servers(root)
@@ -218,11 +281,12 @@ def cmd_run(argv):
         verb_ = args[0]
         argv_ = startup + [verb_] + common + args[1:]
         stdout_path = os.path.join(out, stdout_name or (key + ".stdout"))
-        rc = run_logged(argv_, ws, stdout_path, os.path.join(out, key + ".stderr"))
-        codes[key] = rc
-        print("[textproto] %s %s: exit %d" % (a.project, key, rc), flush=True)
-    run_logged(startup + ["shutdown"], ws, os.path.join(out, "shutdown.stdout"),
-               os.path.join(out, "shutdown.stderr"))
+        term = run_logged(argv_, ws, stdout_path, os.path.join(out, key + ".stderr"))
+        codes[key] = term.to_dict()
+        print("[textproto] %s %s: %s" % (a.project, key, term), flush=True)
+    codes["shutdown"] = run_logged(startup + ["shutdown"], ws,
+                                   os.path.join(out, "shutdown.stdout"),
+                                   os.path.join(out, "shutdown.stderr")).to_dict()
     rec.kill_servers(root)
     info = rec.parse_info(open(os.path.join(out, "info.txt"), encoding="utf-8", errors="replace").read())
     output_base = info.get("output_base") or os.path.join(root, hashlib.md5(ws.encode()).hexdigest())
@@ -244,8 +308,18 @@ def cmd_run(argv):
     with open(os.path.join(out, "exit_codes.json"), "w") as f:
         json.dump(codes, f, indent=1)
     with open(os.path.join(out, "binary.txt"), "w") as f:
-        f.write("%s %s\n" % (binary, oc.sha256_file(binary) if hasattr(oc, "sha256_file") else ""))
-    return 0
+        f.write("%s %s\n" % (binary, binary_sha))
+    with open(os.path.join(out, "provenance.json"), "w") as f:
+        json.dump({"binary": {"path": binary, "sha256": binary_sha,
+                              "is_pinned_oracle": binary_sha == cc.pinned_sha256()},
+                   "repo": cc.repo_state(), "project": a.project, "steps": sorted(steps),
+                   "tool_sha256": cc.tool_sha256(os.path.abspath(__file__)),
+                   "date": time.strftime("%Y-%m-%dT%H:%M:%S%z")}, f, indent=1)
+    bad = [k for k, v in codes.items() if not step_term(v).ok]
+    if bad:
+        print("[textproto] steps that did not exit 0: %s" % ", ".join(
+            "%s (%s)" % (k, step_term(codes[k])) for k in bad))
+    return 1 if bad else 0
 
 
 def text_bep_events(path):
@@ -256,25 +330,67 @@ def text_bep_events(path):
     return [json.loads(l) for l in p.stdout.decode("utf-8").splitlines() if l.strip()]
 
 
-def cmd_check(argv):
+def cmd_check(argv, report_out=None):
     if len(argv) != 1:
         print(__doc__)
         return 2
     d = argv[0]
-    ok = True
-    n = 0
+    prov = read_provenance(d)
+    rep = cc.Report("textproto check %s" % d,
+                    blaze={"path": tool(), "sha256": cc.sha256_file(tool())
+                           if os.path.exists(tool()) else None},
+                    oracle={"path": prov["binary"], "sha256": prov["sha256"]}
+                    if prov and prov["oracle"] else None,
+                    selection="pairs %s, bep text against bep.json; %s recorded by %s" % (
+                        ", ".join(p[0] for p in PAIRS), d,
+                        "%s sha256 %s" % (prov["binary"], prov["sha256"]) if prov else "?"),
+                    tool_files=[os.path.abspath(__file__)])
+    rep.prov["blaze"]["role"] = "blaze-textproto (the printer under test)"
+    rep.print_header()
+    self_only = not (prov and prov["oracle"])
+    if self_only:
+        print("  NOTE: %s was not recorded by the pinned oracle (%s): the check compares that "
+              "binary's own text with Blaze's printer; it is not oracle evidence and never "
+              "passes" % (d, prov["sha256"] if prov else "no provenance"))
+    try:
+        with open(os.path.join(d, "exit_codes.json")) as f:
+            codes = json.load(f)
+    except (OSError, ValueError):
+        codes = None
     for name, framing, msg_type, binary, text in PAIRS:
         b, t = os.path.join(d, binary), os.path.join(d, text)
-        if not (os.path.exists(b) and os.path.exists(t)):
-            print("%s: not recorded" % name)
+        if codes is None:
+            reason = "no exit_codes.json: the steps' terminations are unknown"
+        else:
+            steps = PAIR_STEPS[name]
+            missing = [k for k in steps if k not in codes]
+            failed = ["%s %s" % (k, step_term(codes[k])) for k in steps
+                      if k in codes and not (step_term(codes[k]) and step_term(codes[k]).ok)]
+            reason = None
+            if len(missing) == len(steps):
+                reason = "step(s) %s not recorded (not selected with --steps)" % ", ".join(steps)
+            elif missing:
+                reason = "step(s) %s missing from exit_codes.json" % ", ".join(missing)
+            elif failed:
+                reason = "step(s) did not exit 0: %s" % "; ".join(failed)
+        if reason is None and not (os.path.exists(b) and os.path.exists(t)):
+            reason = "%s or %s not recorded" % (binary, text)
+        if reason is None and os.path.getsize(b) == 0 and os.path.getsize(t) == 0:
+            reason = "both files empty"
+        if reason is not None:
+            if name in EXPECTED_GAPS:
+                rep.add(name, cc.DECLARED_GAP, "%s (declared: %s)" % (reason, EXPECTED_GAPS[name]))
+            else:
+                rep.add(name, cc.SKIPPED, reason)
+            print("%s: SKIPPED: %s" % (name, reason))
             continue
-        if os.path.getsize(b) == 0 and os.path.getsize(t) == 0:
-            print("%s: both empty (see %s/*.stderr)" % (name, d))
-            continue
-        n += 1
-        ok = compare_files(framing, msg_type, b, t, label="%s/%s" % (os.path.basename(d.rstrip("/")), name)) and ok
+        same = compare_files(framing, msg_type, b, t,
+                             label="%s/%s" % (os.path.basename(d.rstrip("/")), name))
+        rep.add(name, cc.IDENTICAL if same else cc.DIFFERENT, "printer, reprint, round trip")
     jp, tp = os.path.join(d, "bep.json"), os.path.join(d, "bep.txt")
-    if os.path.exists(jp) and os.path.exists(tp):
+    if os.path.exists(jp) and os.path.exists(tp) and \
+            not any(r["case"] == "bep" and r["class"] in (cc.SKIPPED, cc.DECLARED_GAP)
+                    for r in rep.rows):
         from_text = text_bep_events(tp)
         with open(jp, encoding="utf-8") as f:
             from_json = [json.loads(l) for l in f if l.strip()]
@@ -292,8 +408,19 @@ def cmd_check(argv):
                 print("  only in json: %s" % x[:600])
             for x in extra[:3]:
                 print("  only in text: %s" % x[:600])
-        ok = ok and same
-    return 0 if ok and n else 1
+        rep.add("bep-text-vs-json", cc.IDENTICAL if same else cc.DIFFERENT,
+                "%d / %d events" % (len(from_text), len(from_json)))
+    else:
+        rep.add("bep-text-vs-json", cc.SKIPPED, "bep pair skipped or bep.json/bep.txt missing")
+    if self_only:
+        rep.add("recorded-by-oracle", cc.SKIPPED,
+                "directory not recorded by the pinned oracle: no oracle evidence")
+    print()
+    rep.print_rows()
+    rep.print_footer()
+    if report_out is not None:
+        report_out.append(rep)
+    return rep.exit_code()
 
 
 def progress_skeleton(events):
@@ -318,6 +445,31 @@ def cmd_bep_e2e(argv):
         events = text_bep_events(os.path.join(d, "bep.txt"))
         return events, surfaces.normalise_bep(ctx, events)
 
+    ref_prov, cand_prov = read_provenance(a.reference), read_provenance(a.candidate)
+    if not (ref_prov and ref_prov["oracle"]):
+        return cc.refuse("textproto bep-e2e", "reference %s was not recorded by the pinned oracle "
+                         "(%s)" % (a.reference, ref_prov["sha256"] if ref_prov else
+                                   "no provenance"))
+    rep = cc.Report("textproto bep-e2e %s" % a.project,
+                    blaze={"path": cand_prov and cand_prov["binary"],
+                           "sha256": cand_prov and cand_prov["sha256"]},
+                    oracle={"path": ref_prov["binary"], "sha256": ref_prov["sha256"]},
+                    selection="%s against %s" % (a.candidate, a.reference),
+                    tool_files=[os.path.abspath(__file__)])
+    rep.print_header()
+
+    def build_term(d):
+        try:
+            return step_term(json.load(open(os.path.join(d, "exit_codes.json"))).get("build"))
+        except (OSError, ValueError):
+            return None
+    ot, bt = build_term(a.reference), build_term(a.candidate)
+    if ot is None or bt is None or not os.path.exists(os.path.join(a.candidate, "bep.txt")):
+        rep.add("bep", cc.SKIPPED, "build step termination or bep.txt missing (oracle %s, "
+                "blaze %s)" % (ot, bt))
+        rep.print_rows()
+        rep.print_footer()
+        return rep.exit_code()
     ref_events, ref = load(a.reference)
     cand_events, cand = load(a.candidate)
     allow = cmp.AllowList()
@@ -354,7 +506,13 @@ def cmd_bep_e2e(argv):
         a.project, len(set(ref) | set(cand)), ", ".join("%s %d" % kv for kv in counts.items()),
         "MATCH" if progress_ok else "DIFF", "MATCH" if multiset_ok else "DIFF", len(pc)))
     bad = counts["DIFF"] + counts["MISSING"] + counts["EXTRA"]
-    return 1 if bad or not progress_ok else 0
+    differing = (["bep items (%d)" % bad] if bad else []) + \
+        ([] if progress_ok else ["progress skeleton order"])
+    cls, detail = cc.judge(ot, bt, differing)
+    rep.add("bep", cls, detail)
+    rep.print_rows()
+    rep.print_footer()
+    return rep.exit_code()
 
 
 def main(argv):
@@ -370,8 +528,107 @@ def main(argv):
         return cmd_check(rest)
     if sub == "bep-e2e":
         return cmd_bep_e2e(rest)
+    if sub == "selftest":
+        return selftest()
     print(__doc__)
     return 2
+
+
+def selftest():
+    """Fake binaries stand in for Bazel; the checks run the real `run` step launcher and the
+    real `check` judgement on synthetic record directories."""
+    def write_dir(wd, codes, files, oracle=True):
+        d = os.path.join(wd, "rec")
+        os.makedirs(d, exist_ok=True)
+        for n, data in files.items():
+            with open(os.path.join(d, n), "wb") as f:
+                f.write(data)
+        with open(os.path.join(d, "exit_codes.json"), "w") as f:
+            json.dump({k: v.to_dict() for k, v in codes.items()}, f)
+        sha = cc.pinned_sha256() if oracle else "0" * 64
+        with open(os.path.join(d, "binary.txt"), "w") as f:
+            f.write("/fake/oracle %s\n" % sha)
+        return d
+
+    def run_pair(ofake, bfake, wd):
+        # The real launcher of `run` on both fakes, then the judgement `check` makes on a step.
+        cc.require_oracle(ofake)
+        ot = run_logged([ofake], wd, os.path.join(wd, "o.out"), os.path.join(wd, "o.err"))
+        bt = run_logged([bfake], wd, os.path.join(wd, "b.out"), os.path.join(wd, "b.err"))
+        o = open(os.path.join(wd, "o.out"), "rb").read()
+        b = open(os.path.join(wd, "b.out"), "rb").read()
+        return cc.judge(ot, bt, [] if o == b else ["stdout"],
+                        blaze_unported=cc.unported_message(open(os.path.join(wd, "b.err"),
+                                                                "rb").read()))
+
+    def extra(st):
+        ok0 = cc.Termination("exit", 0)
+        crash = cc.Termination("exit", 101)
+        all_steps = ["build", "cquery_proto", "cquery_textproto", "aquery_proto",
+                     "aquery_textproto"]
+        # B3-1: aquery steps crashed, both files empty; nothing else recorded.
+        wd = os.path.join(st.dir, "crashed-aquery")
+        codes = {k: ok0 for k in all_steps}
+        codes["aquery_proto"] = codes["aquery_textproto"] = crash
+        d = write_dir(wd, codes, {"aquery.pb": b"", "aquery.txt": b""})
+        reps = []
+        with open(os.devnull, "w") as null:
+            old = sys.stdout
+            sys.stdout = null
+            try:
+                rc = cmd_check([d], reps)
+            finally:
+                sys.stdout = old
+        rows = {r["case"]: r for r in reps[0].rows}
+        st.check("check: crashed aquery steps fail the run", rc != 0, "exit %d" % rc)
+        st.check("check: crashed aquery pair is SKIPPED with the exit codes",
+                 rows["aquery"]["class"] == cc.SKIPPED and "exit 101" in rows["aquery"]["detail"],
+                 rows["aquery"]["detail"])
+        # A signal death recorded by the launcher is not an exit 0.
+        wd = os.path.join(st.dir, "sigpipe-step")
+        codes = {k: ok0 for k in all_steps}
+        codes["cquery_proto"] = cc.Termination("signal", 141, "SIGPIPE")
+        d = write_dir(wd, codes, {})
+        with open(os.devnull, "w") as null:
+            old = sys.stdout
+            sys.stdout = null
+            try:
+                reps = []
+                rc = cmd_check([d], reps)
+            finally:
+                sys.stdout = old
+        rows = {r["case"]: r for r in reps[0].rows}
+        st.check("check: a SIGPIPE step is SKIPPED, run fails",
+                 rc != 0 and rows["cquery"]["class"] == cc.SKIPPED
+                 and "SIGPIPE" in rows["cquery"]["detail"], rows["cquery"]["detail"])
+        # Legacy integer records are read: 101 is not 0.
+        st.check("check: legacy integer 101 is not ok", not step_term(101).ok)
+        st.check("check: legacy integer -13 is a signal", step_term(-13).kind == "signal")
+        # A directory not recorded by the oracle never passes.
+        wd = os.path.join(st.dir, "not-oracle")
+        d = write_dir(wd, {}, {}, oracle=False)
+        with open(os.devnull, "w") as null:
+            old = sys.stdout
+            sys.stdout = null
+            try:
+                reps = []
+                rc = cmd_check([d], reps)
+            finally:
+                sys.stdout = old
+        st.check("check: a non-oracle directory fails", rc != 0, "exit %d" % rc)
+        # Nothing recorded at all: everything skipped, run fails.
+        wd = os.path.join(st.dir, "empty")
+        os.makedirs(wd)
+        with open(os.devnull, "w") as null:
+            old = sys.stdout
+            sys.stdout = null
+            try:
+                rc = cmd_check([wd])
+            finally:
+                sys.stdout = old
+        st.check("check: an empty directory fails", rc != 0, "exit %d" % rc)
+
+    return cc.selftest("textproto/compare", run_pair=run_pair, extra=extra, mode="scope")
 
 
 if __name__ == "__main__":

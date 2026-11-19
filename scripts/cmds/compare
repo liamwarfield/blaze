@@ -3,6 +3,7 @@
 See `compare help`."""
 
 import argparse
+import base64
 import difflib
 import importlib.machinery
 import importlib.util
@@ -23,6 +24,9 @@ sys.path.insert(0, ORACLE_SCRIPTS)
 
 import oracle_common as oc  # noqa: E402
 
+sys.path.insert(0, os.path.join(REPO, "scripts", "lib"))
+import compare_common as cc  # noqa: E402
+
 
 def _load_record():
     """scripts/oracle/record has no .py suffix; load it by path for its workspace helpers."""
@@ -39,6 +43,7 @@ record = _load_record()
 USAGE = """\
 usage: scripts/cmds/compare [--side oracle|blaze|both] [--case REGEX] [--blaze PATH]
                             [--diff-lines N] [--json PATH] [--list]
+       scripts/cmds/compare selftest
        scripts/cmds/compare help | --help
 
 Runs a list of invocations with the oracle (real Bazel 9.3.2,
@@ -46,13 +51,18 @@ Runs a list of invocations with the oracle (real Bazel 9.3.2,
 and stderr byte for byte (after the normalisations listed below). Commands: `help` (the index,
 `help <command>` for every command of Bazel 9.3.2 with the default verbosity, --short and
 --long, the help topics, completion, flags-as-proto, everything-as-html, errors),
-`canonicalize-flags` (in brotli), `fetch` on brotli and re2 (empty and warm output base) and `license`.
+`canonicalize-flags` (in brotli), `fetch` on brotli and re2 (empty and warm output base), `license`,
+and `--invocation_policy` in text and base64-binary form (canonicalize-flags' option, with and
+without --canonicalize_policy, and the startup option with info, build and version).
 
-Each invocation runs as (the way scripts/w1/compare-info runs them)
+Each invocation runs through scripts/lib/compare_common.py as
     systemd-run --user --collect --wait --pipe -q -p MemoryMax=12G -p MemorySwapMax=0
-      --working-directory=<cwd> env -i HOME=$HOME PATH=/usr/bin:/bin USER=$USER
+      -p OOMPolicy=continue --working-directory=<cwd> <supervisor> env -i HOME=$HOME
+      PATH=/usr/bin:/bin USER=$USER
       <binary> --output_user_root=<root> --nohome_rc --nosystem_rc [startup...] <command...>
-so every invocation starts a fresh server, with one output user root per side (oracle:
+where the supervisor records inside the unit how the binary ended (`exit N`, `signal NAME`,
+`oom-kill`; `timeout` after 1200 s): systemd-run itself returns 0 for a death by SIGPIPE or
+SIGTERM, so its status is never used. So every invocation starts a fresh server, with one output user root per side (oracle:
 ~/.cache/blaze/oracle-out/ur-cmds, blaze: ~/.cache/blaze/work/cmds/blaze-ur). Each side first
 runs `version` once (not compared) so that "Extracting Bazel installation..." is not part of
 a compared case. cwd is ~/.cache/blaze/work/cmds/outside (an empty directory outside any
@@ -68,8 +78,20 @@ removed (Blaze has no JVM); "Elapsed time: N.NNNs" and "Critical Path: N.NNs" be
 UI progress lines (printed on a timer) are removed; random download temp directory names
 (/temp<digits>/) become /temp<N>/. The rules and their reasons: NORMALIZATION_RULES.
 
-Results: ~/.cache/blaze/work/cmds/results/<side>/<case>.{out,err,rc,cmd}. Per case: IDENTICAL,
-DIFFERENT (streams that differ, diff shown), BLAZE-UNPORTED (Blaze hit unported!(...)).
+Results: ~/.cache/blaze/work/cmds/results/<side>/<case>.{out,err,rc,term,cmd} (`term`: the
+termination; `rc` only for reading). Each oracle result has <case>.key: the oracle's sha256,
+this tool's sha256, the exact argv and environment, the digest of the workspace copy and the
+cases run before it on the same side; `--side blaze` refuses a stored oracle result whose key
+differs from the one this run would use (or that has none).
+
+Per case (scripts/lib/compare_common.py classes): IDENTICAL (same termination, stdout and stderr;
+the oracle exited 0, or the case declares its exit code in DECLARED_EXIT as the failure under
+test), DIFFERENT (termination or streams differ, diff shown), BOTH-FAILED (both failed the same
+way, not declared), NOT-PORTED (Blaze hit unported!(...)), ORACLE-UNEXPECTED (the oracle did not
+exit with the declared code), SKIPPED (no result, or a stale oracle result; reason given).
+"Identical" means identical after the normalisations above, not byte-identical raw output.
+The report starts with the repository HEAD and dirty flag, the Blaze binary's path and sha256
+and the oracle's, and ends with the denominator; --json writes the same.
 
 Options:
   --side S        oracle, blaze or both (default both). With blaze only, the stored oracle
@@ -80,12 +102,16 @@ Options:
   --json PATH     write machine-readable results
   --list          print the case list and exit
 
-Exit status: 0 iff every selected case is IDENTICAL; 1 otherwise; 2 on usage errors.
+selftest proves these guards with fake binaries, no real build.
+
+Exit status: 0 iff at least one case was selected and every selected case is IDENTICAL; 1
+otherwise (an empty selection included); 2 on usage errors and refusals (an oracle whose sha256
+is not the pin in UPSTREAM.json, a stale stored oracle result).
 """
 
 HOME = oc.HOME
 USER = os.environ.get("USER") or os.path.basename(HOME)
-ORACLE_BIN = os.path.join(oc.CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+ORACLE_BIN = cc.PINNED_ORACLE
 DEFAULT_BLAZE = os.path.join(REPO, "target", "debug", "blaze")
 WORK = os.path.join(oc.WORK, "cmds")
 OUTSIDE = os.path.join(WORK, "outside")
@@ -107,6 +133,42 @@ COMMANDS = [
 ]
 
 
+# Cases whose non-zero exit is the behaviour under test (the case's name says it tests an
+# error), with the oracle's exit code. A case that fails on both sides and is not listed here is
+# BOTH-FAILED, never IDENTICAL. The codes are the oracle's (results of 2026-11-19 11:58); a
+# later oracle run that exits otherwise makes the case ORACLE-UNEXPECTED.
+DECLARED_EXIT = {
+    "help nosuchcommand": 2,
+    "help completion bash extra": 2,
+    "canonicalize-flags outside workspace": 37,  # Bazel's NullPointerException (see build_cases)
+    "canonicalize-flags for_command bad": 2,
+    "canonicalize-flags invalid flag": 2,
+    "canonicalize-flags invalid value": 2,
+    "canonicalize-flags residue": 2,
+    "canonicalize-flags policy allow_values error text": 2,
+    "canonicalize-flags policy allow_values error base64": 2,
+    "canonicalize-flags policy disallow_values error text": 2,
+    "canonicalize-flags policy disallow_values error base64": 2,
+    "canonicalize-flags policy set_value throw text": 2,
+    "canonicalize-flags policy set_value throw base64": 2,
+    "canonicalize-flags policy malformed": 2,
+    "canonicalize-flags policy malformed base64 proto": 2,
+    "startup policy info throw": 2,
+    "startup policy info allow_values error": 2,
+    "startup policy info malformed": 2,
+    "startup policy build throw": 2,
+    "startup policy build allow_values error base64": 2,
+    "startup policy build malformed base64 proto": 2,
+    "fetch brotli bad target": 2,
+    "fetch re2 bad target": 2,
+    "fetch brotli --repo=@nosuch": 8,
+    "fetch re2 --repo=@nosuch": 8,
+    "fetch brotli --repo=bad": 8,
+    "fetch re2 --repo=bad": 8,
+    "fetch outside workspace": 2,
+}
+
+
 class Case:
     def __init__(self, name, argv, cwd="outside", startup=(), fresh_output_base=False):
         self.name = name
@@ -114,6 +176,7 @@ class Case:
         self.cwd = cwd  # "outside" or a project name
         self.startup = list(startup)
         self.fresh_output_base = fresh_output_base
+        self.expect_exit = DECLARED_EXIT.get(name)
 
     @property
     def slug(self):
@@ -172,6 +235,7 @@ def build_cases():
     cases.append(Case("canonicalize-flags outside workspace", ["canonicalize-flags", "--", "--jobs=4"]))
     for name, args in canon:
         cases.append(Case(name, ["canonicalize-flags"] + args, cwd="brotli"))
+    cases += invocation_policy_cases()
     # fetch
     for project in ["brotli", "re2"]:
         cases += [
@@ -199,6 +263,207 @@ def build_cases():
     return cases
 
 
+def _varint(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def _field(number, payload):
+    """A length-delimited field (wire type 2)."""
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+    return _varint(number << 3 | 2) + _varint(len(payload)) + payload
+
+
+def encode_flag_policy(flag, op, values=(), behavior=None, new_value=None, use_default=False,
+                       commands=(), custom_error_message=None):
+    """blaze.invocation_policy.FlagPolicy in protobuf binary form (fields in number order, as
+    Java's writeTo writes them). op: set_value, use_default, allow_values, disallow_values."""
+    body = _field(1, flag)
+    for c in commands:
+        body += _field(2, c)
+    if op == "set_value":
+        inner = b"".join(_field(1, v) for v in values)
+        if behavior is not None:
+            inner += _varint(4 << 3 | 0) + _varint(behavior)
+        body += _field(3, inner)
+    elif op == "use_default":
+        body += _field(4, b"")
+    elif op in ("allow_values", "disallow_values"):
+        inner = b"".join(_field(1, v) for v in values)
+        if new_value is not None:
+            inner += _field(3, new_value)
+        if use_default:
+            inner += _field(4, b"")
+        body += _field(6 if op == "allow_values" else 5, inner)
+    if custom_error_message is not None:
+        body += _field(7, custom_error_message)
+    return body
+
+
+def encode_policy(*flag_policies):
+    """InvocationPolicy (base64 of its binary form, as Blaze/Bazel accept it)."""
+    return base64.b64encode(b"".join(_field(1, fp) for fp in flag_policies)).decode("ascii")
+
+
+# SetValue.Behavior numbers.
+ALLOW_OVERRIDES, APPEND, FINAL_VALUE_IGNORE_OVERRIDES, FINAL_VALUE_THROW_ON_OVERRIDE = 1, 2, 3, 4
+
+
+def invocation_policy_cases():
+    """`--invocation_policy` (canonicalize-flags option and startup option), in text and
+    base64-binary form, for every operation, its errors and the deprecation-warning cases."""
+    t_set_jobs = ('flag_policies { flag_name: "jobs" '
+                  'set_value { flag_value: "7" behavior: FINAL_VALUE_IGNORE_OVERRIDES } }')
+    b_set_jobs = encode_policy(encode_flag_policy("jobs", "set_value", ["7"],
+                                                  FINAL_VALUE_IGNORE_OVERRIDES))
+    t_allow_ovr = ('flag_policies { flag_name: "jobs" '
+                   'set_value { flag_value: "7" behavior: ALLOW_OVERRIDES } }')
+    b_allow_ovr = encode_policy(encode_flag_policy("jobs", "set_value", ["7"], ALLOW_OVERRIDES))
+    t_append = ('flag_policies { flag_name: "copt" '
+                'set_value { flag_value: "-DX" flag_value: "-DY" behavior: APPEND } }')
+    b_append = encode_policy(encode_flag_policy("copt", "set_value", ["-DX", "-DY"], APPEND))
+    t_throw = ('flag_policies { flag_name: "jobs" custom_error_message: "Ask the admins." '
+               'set_value { flag_value: "7" behavior: FINAL_VALUE_THROW_ON_OVERRIDE } }')
+    b_throw = encode_policy(encode_flag_policy("jobs", "set_value", ["7"],
+                                               FINAL_VALUE_THROW_ON_OVERRIDE,
+                                               custom_error_message="Ask the admins."))
+    t_use_default = 'flag_policies { flag_name: "keep_going" use_default {} }'
+    b_use_default = encode_policy(encode_flag_policy("keep_going", "use_default"))
+    t_allow = ('flag_policies { flag_name: "compilation_mode" allow_values { '
+               'allowed_values: "fastbuild" allowed_values: "opt" new_value: "opt" } }')
+    b_allow = encode_policy(encode_flag_policy("compilation_mode", "allow_values",
+                                               ["fastbuild", "opt"], new_value="opt"))
+    t_allow_err = ('flag_policies { flag_name: "compilation_mode" allow_values { '
+                   'allowed_values: "opt" } }')
+    b_allow_err = encode_policy(encode_flag_policy("compilation_mode", "allow_values", ["opt"]))
+    t_disallow = ('flag_policies { flag_name: "compilation_mode" disallow_values { '
+                  'disallowed_values: "dbg" use_default {} } }')
+    b_disallow = encode_policy(encode_flag_policy("compilation_mode", "disallow_values", ["dbg"],
+                                                  use_default=True))
+    t_disallow_err = ('flag_policies { flag_name: "copt" disallow_values { '
+                      'disallowed_values: "-DBAD" } }')
+    b_disallow_err = encode_policy(encode_flag_policy("copt", "disallow_values", ["-DBAD"]))
+    t_disallow_default = ('flag_policies { flag_name: "compilation_mode" disallow_values { '
+                          'disallowed_values: "fastbuild" use_default {} } }')
+    t_expansion = 'flag_policies { flag_name: "remote_download_minimal" use_default {} }'
+    b_expansion = encode_policy(encode_flag_policy("remote_download_minimal", "use_default"))
+    t_expansion_set = ('flag_policies { flag_name: "remote_download_minimal" '
+                       'set_value { behavior: FINAL_VALUE_IGNORE_OVERRIDES } }')
+    t_expansion_allow = ('flag_policies { flag_name: "remote_download_minimal" allow_values { '
+                         'allowed_values: "x" } }')
+    t_config = ('flag_policies { flag_name: "config" '
+                'set_value { flag_value: "foo" behavior: FINAL_VALUE_IGNORE_OVERRIDES } }')
+    t_undefined = 'flag_policies { flag_name: "jobs" set_value { flag_value: "7" } }'
+    t_no_value = ('flag_policies { flag_name: "jobs" '
+                  'set_value { behavior: FINAL_VALUE_IGNORE_OVERRIDES } }')
+    t_multi = ('flag_policies { flag_name: "jobs" set_value { flag_value: "1" flag_value: "2" '
+               'behavior: FINAL_VALUE_IGNORE_OVERRIDES } }')
+    t_no_op = 'flag_policies { flag_name: "jobs" }'
+    t_commands = ('flag_policies { flag_name: "jobs" commands: "test" '
+                  'set_value { flag_value: "7" behavior: FINAL_VALUE_IGNORE_OVERRIDES } }')
+    t_unknown = ('flag_policies { flag_name: "no_such_flag_anywhere" '
+                 'set_value { flag_value: "7" behavior: FINAL_VALUE_IGNORE_OVERRIDES } } '
+                 + t_set_jobs)
+    t_last_wins = t_set_jobs + ' flag_policies { flag_name: "jobs" use_default {} }'
+    t_deprecated_set = ('flag_policies { flag_name: "experimental_skyframe_prepare_analysis" '
+                        'set_value { flag_value: "true" behavior: FINAL_VALUE_IGNORE_OVERRIDES } }')
+    t_deprecated_default = ('flag_policies { flag_name: "experimental_skyframe_prepare_analysis" '
+                            'use_default {} }')
+    t_strategy = 'strategy_policy { }'
+    b_with_whitespace = b_set_jobs[:8] + " \n\t" + b_set_jobs[8:]
+    canon = [
+        ("set_value text", t_set_jobs, ["--jobs=3"]),
+        ("set_value base64", b_set_jobs, ["--jobs=3"]),
+        ("set_value base64 whitespace", b_with_whitespace, ["--jobs=3"]),
+        ("set_value allow_overrides text", t_allow_ovr, ["--jobs=3"]),
+        ("set_value allow_overrides base64 unset", b_allow_ovr, []),
+        ("set_value append text", t_append, ["--copt=-DA"]),
+        ("set_value append base64", b_append, ["--copt=-DA"]),
+        ("set_value throw text", t_throw, ["--jobs=3"]),
+        ("set_value throw base64", b_throw, ["--jobs=3"]),
+        ("set_value throw unset", t_throw, ["-k"]),
+        ("use_default text", t_use_default, ["-k"]),
+        ("use_default base64", b_use_default, ["--keep_going"]),
+        ("allow_values text", t_allow, ["-c", "dbg"]),
+        ("allow_values base64", b_allow, ["--compilation_mode=dbg"]),
+        ("allow_values allowed", t_allow, ["-c", "fastbuild"]),
+        ("allow_values error text", t_allow_err, ["-c", "dbg"]),
+        ("allow_values error base64", b_allow_err, []),
+        ("disallow_values text", t_disallow, ["-c", "dbg"]),
+        ("disallow_values base64", b_disallow, ["-c", "dbg"]),
+        ("disallow_values error text", t_disallow_err, ["--copt=-DOK", "--copt=-DBAD"]),
+        ("disallow_values error base64", b_disallow_err, ["--copt=-DBAD"]),
+        ("disallow_values default and use_default", t_disallow_default, []),
+        ("expansion use_default text", t_expansion, ["--remote_download_minimal"]),
+        ("expansion use_default base64", b_expansion, ["--remote_download_minimal"]),
+        ("expansion set_value", t_expansion_set, []),
+        ("expansion allow_values", t_expansion_allow, []),
+        ("config", t_config, []),
+        ("undefined behavior", t_undefined, []),
+        ("set_value without value", t_no_value, []),
+        ("set_value two values", t_multi, []),
+        ("operation not set", t_no_op, ["--jobs=3"]),
+        ("commands not applying", t_commands, ["--jobs=3"]),
+        ("unknown flag", t_unknown, ["--jobs=3"]),
+        ("last policy wins", t_last_wins, ["--jobs=3"]),
+        ("deprecated set_value", t_deprecated_set, []),
+        ("deprecated use_default", t_deprecated_default, ["--experimental_skyframe_prepare_analysis"]),
+        ("strategy policy only", t_strategy, ["--jobs=3"]),
+        ("malformed", "flag_policies { flag_name: ", []),
+        ("malformed base64 proto", "AAAA", []),
+    ]
+    cases = []
+    for name, policy, flags in canon:
+        cases.append(Case("canonicalize-flags policy " + name,
+                          ["canonicalize-flags", "--invocation_policy=" + policy, "--"] + flags,
+                          cwd="brotli"))
+    for name, policy, flags in [("set_value text", t_set_jobs, ["--jobs=3"]),
+                                ("set_value base64", b_set_jobs, ["--jobs=3"]),
+                                ("expansion use_default text", t_expansion, []),
+                                ("expansion set_value", t_expansion_set, []),
+                                ("allow_values text", t_allow, ["-c", "dbg"]),
+                                ("disallow_values base64", b_disallow, []),
+                                ("unknown flag", t_unknown, []),
+                                ("for_command test", t_commands, ["--jobs=3"])]:
+        argv = ["canonicalize-flags", "--canonicalize_policy", "--invocation_policy=" + policy]
+        if name == "for_command test":
+            argv.append("--for_command=test")
+        cases.append(Case("canonicalize-flags canonicalize_policy " + name,
+                          argv + ["--"] + flags, cwd="brotli"))
+    # The startup option: enforced on every command's options.
+    startup = [
+        ("info set_value text", t_set_jobs, ["info", "--jobs=3", "release"]),
+        ("info set_value base64", b_set_jobs, ["info", "release"]),
+        ("info throw", t_throw, ["info", "--jobs=3", "release"]),
+        ("info allow_values error", t_allow_err, ["info", "release"]),
+        ("info disallow_values base64", b_disallow, ["info", "-c", "dbg", "release"]),
+        ("info config", t_config, ["info", "release"]),
+        ("info malformed", "flag_policies { flag_name: ", ["info", "release"]),
+        ("info deprecated set_value", t_deprecated_set, ["info", "release"]),
+        ("info deprecated use_default", t_deprecated_default,
+         ["info", "--experimental_skyframe_prepare_analysis", "release"]),
+        ("info strategy policy", t_strategy, ["info", "release"]),
+        ("build throw", t_throw, ["build", "--jobs=3", "//:brotli"]),
+        ("build allow_values error base64", b_allow_err, ["build", "//:brotli"]),
+        ("build malformed base64 proto", "AAAA", ["build", "//:brotli"]),
+        ("build set_value nobuild", 'flag_policies { flag_name: "build" set_value { '
+         'flag_value: "false" behavior: FINAL_VALUE_IGNORE_OVERRIDES } }', ["build", "//:brotli"]),
+        ("version use_default", t_use_default, ["version"]),
+    ]
+    for name, policy, argv in startup:
+        cases.append(Case("startup policy " + name, argv, cwd="brotli",
+                          startup=["--invocation_policy=" + policy]))
+    return cases
+
+
 NORMALIZATION_RULES = [
     {"name": "paths", "why": "Each side has its own output user root, workspace copy and output "
                              "base; they are inputs of the run, not behaviour."},
@@ -214,10 +479,12 @@ NORMALIZATION_RULES = [
     {"name": "critical_path", "pattern": r"Critical Path: \d+\.\d+s", "repl": "Critical Path: <T>s",
      "streams": ("out", "err"), "why": "Wall-clock time."},
     {"name": "progress", "pattern":
-     r"(?m)^(Computing main repo mapping: |Loading: |Analyzing: |Fetching |\[[\d,]+ / [\d,]+\] )[^\n]*\n",
+     r"(?m)^(Computing main repo mapping: |Loading: |    currently loading: |Analyzing: |Fetching "
+     r"|\[[\d,]+ / [\d,]+\] )[^\n]*\n",
      "repl": "", "streams": ("err",),
      "why": "UI progress lines, printed on a timer (--show_progress_rate_limit), so their number "
-            "depends on wall-clock time."},
+            "depends on wall-clock time (\"    currently loading: \" is the second line of a "
+            "\"Loading: \" progress message)."},
     {"name": "download_temp", "pattern": r"/temp\d+/", "repl": "/temp<N>/",
      "streams": ("out", "err"),
      "why": "Temporary download directories get a random number (Files.createTempDirectory)."},
@@ -236,29 +503,70 @@ def normalize(data, stream, ctx):
     return text
 
 
+ENV = {"USER": USER}  # on top of HOME and PATH=/usr/bin:/bin (compare_common.clean_env)
+
+
 def wrap(binary, root, cwd, startup, argv):
-    return [
-        "systemd-run", "--user", "--collect", "--wait", "--pipe", "-q",
-        "-p", "MemoryMax=" + MEMORY_MAX, "-p", "MemorySwapMax=0",
-        "--working-directory=" + cwd,
-        "env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin", "USER=" + USER,
-        binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc",
-    ] + list(startup) + list(argv)
+    """The binary's argv (compare_common.run adds the unit, the supervisor and env -i)."""
+    return [binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc"] + \
+        list(startup) + list(argv)
 
 
-def invoke(cmd, timeout=COMMAND_TIMEOUT):
-    t0 = time.monotonic()
-    try:
-        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, timeout=timeout)
-        out, err, rc = p.stdout, p.stderr, p.returncode
-    except subprocess.TimeoutExpired as e:
-        out, err, rc = e.stdout or b"", (e.stderr or b"") + b"\n[compare] timed out\n", -9
-    return out, err, rc, time.monotonic() - t0
+def invoke(cmd, cwd, timeout=COMMAND_TIMEOUT):
+    r = cc.run(cmd, cwd, env=ENV, timeout=timeout, mode="service", memory_max=MEMORY_MAX,
+               tag="cmds")
+    return r.out, r.err, r.term, r.duration
 
 
 def side_work(side):
     return os.path.join(WORK, side)
+
+
+def case_command(side, binary, case, workspaces):
+    """(cwd, argv, ctx) of one case on one side."""
+    root = ROOTS[side]
+    startup = list(case.startup)
+    ctx = {"ur": root}
+    if case.cwd == "outside":
+        cwd = OUTSIDE
+    else:
+        cwd = workspaces[case.cwd]
+        ctx["ws"] = cwd
+    argv = list(case.argv)
+    if argv[0] == "fetch":
+        ob = os.path.join(side_work(side), "ob-" + case.cwd)
+        startup.append("--output_base=" + ob)
+        argv.insert(1, "--repository_cache=" + REPO_CACHE)
+        ctx["ob"] = ob
+    return cwd, wrap(binary, root, cwd, startup, argv), ctx
+
+
+def oracle_key(case, cwd, cmd, inputs, before):
+    """The cache key of the oracle's result of `case` (compare_common.cache_key). The stored
+    outputs are raw (normalised when loaded), so this tool's sha256 is not part of it."""
+    return cc.cache_key(None, cc.pinned_sha256(), cmd,
+                        cc.clean_env(ENV), inputs,
+                        extra={"cwd": cwd, "fresh_output_base": case.fresh_output_base,
+                               "cases_before": before})
+
+
+_source_digests = {}
+
+
+def side_workspaces(side, cases, prepare):
+    """{project: (realpath of the work copy, digest of its source)}; prepares the copies when
+    asked. The digest is of the read-only corpus checkout the copy is made from (the copy itself
+    changes once a command ran in it)."""
+    out = {}
+    for project in sorted({c.cwd for c in cases if c.cwd != "outside"}):
+        ws = os.path.join(side_work(side), project)
+        src = os.path.join(oc.CACHE, "corpus", project)
+        if prepare:
+            record.prepare_workspace(src, ws)
+        if project not in _source_digests:
+            _source_digests[project] = cc.tree_digest(src)
+        out[project] = (os.path.realpath(ws), _source_digests[project])
+    return out
 
 
 def run_side(side, binary, cases):
@@ -267,43 +575,39 @@ def run_side(side, binary, cases):
     sd = os.path.join(RESULTS, side)
     os.makedirs(sd, exist_ok=True)
     # Warm-up: extracts the install base so that no compared case prints "Extracting...".
-    invoke(wrap(binary, root, OUTSIDE, [], ["version"]))
-    projects = sorted({c.cwd for c in cases if c.cwd != "outside"})
-    workspaces = {}
-    for project in projects:
-        ws = os.path.join(side_work(side), project)
-        record.prepare_workspace(os.path.join(oc.CACHE, "corpus", project), ws)
-        workspaces[project] = os.path.realpath(ws)
+    _, _, term, _ = invoke(wrap(binary, root, OUTSIDE, [], ["version"]), OUTSIDE)
+    if not term.ok:
+        print("[cmds] %s: warm-up `version` ended with %s" % (side, term), flush=True)
+    wsd = side_workspaces(side, cases, prepare=True)
+    workspaces = {p: v[0] for p, v in wsd.items()}
     install_dir = os.path.join(root, "install")
     installs = sorted(os.listdir(install_dir)) if os.path.isdir(install_dir) else []
     install_md5 = installs[0] if len(installs) == 1 else None
+    before = []
     for case in cases:
-        startup = list(case.startup)
-        ctx = {"ur": root, "install_md5": install_md5}
-        if case.cwd == "outside":
-            cwd = OUTSIDE
-        else:
-            cwd = workspaces[case.cwd]
-            ctx["ws"] = cwd
-        argv = list(case.argv)
-        if argv[0] == "fetch":
-            ob = os.path.join(side_work(side), "ob-" + case.cwd)
-            if case.fresh_output_base and os.path.lexists(ob):
-                record.make_writable_and_remove(ob)
-            startup.append("--output_base=" + ob)
-            argv.insert(1, "--repository_cache=" + REPO_CACHE)
-            ctx["ob"] = ob
-        cmd = wrap(binary, root, cwd, startup, argv)
-        out, err, rc, dur = invoke(cmd)
+        cwd, cmd, ctx = case_command(side, binary, case, workspaces)
+        ctx["install_md5"] = install_md5
+        if case.fresh_output_base and "ob" in ctx and os.path.lexists(ctx["ob"]):
+            record.make_writable_and_remove(ctx["ob"])
+        out, err, term, dur = invoke(cmd, cwd)
         base = os.path.join(sd, case.slug)
         for ext, data in (("out", out), ("err", err)):
             with open(base + "." + ext, "wb") as f:
                 f.write(data)
         with open(base + ".rc", "w") as f:
-            f.write("%d\n" % rc)
+            f.write("%d\n" % term.exit_code_like())
+        with open(base + ".term", "w") as f:
+            json.dump(term.to_dict(), f)
         with open(base + ".cmd", "w") as f:
-            f.write(json.dumps({"cwd": cwd, "argv": cmd, "ctx": ctx}) + "\n")
-        print("[cmds] %s: %-55s rc=%-3d %6.1fs" % (side, case.name[:55], rc, dur), flush=True)
+            f.write(json.dumps({"cwd": cwd, "argv": cmd, "env": cc.clean_env(ENV),
+                                "ctx": ctx}) + "\n")
+        if side == "oracle":
+            inputs = wsd[case.cwd][1] if case.cwd in wsd else "outside (empty directory)"
+            cc.write_key(base + ".key", oracle_key(case, cwd, cmd, inputs, list(before)))
+        elif os.path.lexists(base + ".key"):
+            os.remove(base + ".key")
+        before.append(case.slug)
+        print("[cmds] %s: %-55s %-16s %6.1fs" % (side, case.name[:55], term, dur), flush=True)
 
 
 def load(side, case):
@@ -313,8 +617,8 @@ def load(side, case):
             out = f.read()
         with open(base + ".err", "rb") as f:
             err = f.read()
-        with open(base + ".rc") as f:
-            rc = int(f.read().strip())
+        with open(base + ".term") as f:
+            term = cc.Termination.from_dict(json.load(f))
         with open(base + ".cmd") as f:
             ctx = json.load(f)["ctx"]
         if not ctx.get("install_md5"):
@@ -323,30 +627,54 @@ def load(side, case):
             ctx["install_md5"] = installs[0] if len(installs) == 1 else None
     except (OSError, ValueError, KeyError):
         return None
-    return {"out": normalize(out, "out", ctx), "err": normalize(err, "err", ctx), "rc": rc}
+    if term is None:
+        return None
+    return {"out": normalize(out, "out", ctx), "err": normalize(err, "err", ctx), "term": term,
+            "raw_err": err}
 
 
-def compare(cases, diff_lines):
-    rows = []
+def check_oracle_keys(cases):
+    """{case name: reason} for the stored oracle results that this run may not reuse."""
+    wsd = side_workspaces("oracle", cases, prepare=False)
+    workspaces = {p: v[0] for p, v in wsd.items()}
+    stale = {}
+    before = []
     for case in cases:
+        cwd, cmd, _ = case_command("oracle", ORACLE_BIN, case, workspaces)
+        inputs = wsd[case.cwd][1] if case.cwd in wsd else "outside (empty directory)"
+        reason = cc.check_key(os.path.join(RESULTS, "oracle", case.slug + ".key"),
+                              oracle_key(case, cwd, cmd, inputs, list(before)))
+        if reason:
+            stale[case.name] = reason
+        before.append(case.slug)
+    return stale
+
+
+def judge_case(case, o, b):
+    """(class, detail, differing streams) of one case from the loaded results."""
+    differing = [s for s in ("out", "err") if o[s] != b[s]]
+    m = re.search(r"blaze: not ported yet: ([^\n]*)", b["err"])
+    cls, detail = cc.judge(o["term"], b["term"], ["std" + s for s in differing],
+                           declared_exit=case.expect_exit,
+                           blaze_unported=m.group(1)[:100] if m else None)
+    return cls, detail, differing
+
+
+def compare(cases, diff_lines, report, stale=None):
+    stale = stale or {}
+    for case in cases:
+        if case.name in stale:
+            report.add(case.name, cc.SKIPPED, "stale oracle result: " + stale[case.name])
+            continue
         o = load("oracle", case)
         b = load("blaze", case)
         if o is None or b is None:
-            rows.append((case.name, "MISSING", "oracle" if o is None else "blaze"))
+            report.add(case.name, cc.SKIPPED, "no %s result with a recorded termination" % (
+                "oracle" if o is None else "blaze"))
             continue
-        if "blaze: not ported yet:" in b["err"]:
-            m = re.search(r"blaze: not ported yet: ([^\n]*)", b["err"])
-            rows.append((case.name, "BLAZE-UNPORTED", m.group(1)[:100]))
-            continue
-        differing = [s for s in ("rc", "out", "err") if o[s] != b[s]]
-        if not differing:
-            rows.append((case.name, "IDENTICAL", ""))
-            continue
-        detail = ",".join(differing)
-        if "rc" in differing:
-            detail += " (oracle %d, blaze %d)" % (o["rc"], b["rc"])
-        rows.append((case.name, "DIFFERENT", detail))
-        if diff_lines:
+        cls, detail, differing = judge_case(case, o, b)
+        report.add(case.name, cls, detail)
+        if cls == cc.DIFFERENT and diff_lines:
             for s in ("out", "err"):
                 if s in differing:
                     d = list(difflib.unified_diff(
@@ -357,13 +685,14 @@ def compare(cases, diff_lines):
                         print("    " + line[:200])
                     if len(d) > diff_lines:
                         print("    ... (%d more diff lines)" % (len(d) - diff_lines))
-    return rows
 
 
 def main(argv):
     if argv and argv[0] in ("help", "--help", "-h"):
         print(USAGE, end="")
         return 0
+    if argv and argv[0] == "selftest":
+        return selftest()
     ap = argparse.ArgumentParser(usage=USAGE, add_help=False)
     ap.add_argument("--side", default="both", choices=["oracle", "blaze", "both"])
     ap.add_argument("--case")
@@ -382,24 +711,80 @@ def main(argv):
         for c in cases:
             print(c.name)
         return 0
+    if not cases:
+        return cc.empty_selection_error("cmds/compare")
     if shutil.which("systemd-run") is None:
         oc.die("systemd-run not found")
+    try:
+        oracle_path, oracle_sha = cc.require_oracle(ORACLE_BIN)
+        blaze = cc.blaze_identity(os.path.realpath(args.blaze)) \
+            if args.side in ("blaze", "both") else None
+    except cc.Refusal as e:
+        return cc.refuse("cmds/compare", e)
+    report = cc.Report("cmds/compare", blaze=blaze,
+                       oracle={"path": oracle_path, "sha256": oracle_sha},
+                       selection="%d cases%s, side %s" % (
+                           len(cases), " matching %r" % args.case if args.case else "",
+                           args.side), tool_files=[os.path.abspath(__file__)])
+    report.print_header()
     if args.side in ("oracle", "both"):
         run_side("oracle", ORACLE_BIN, cases)
+    stale = check_oracle_keys(cases)
     if args.side in ("blaze", "both"):
-        run_side("blaze", os.path.realpath(args.blaze), cases)
-    rows = compare(cases, args.diff_lines)
-    width = max(len(r[0]) for r in rows) if rows else 10
-    counts = {}
+        if stale and args.side == "blaze":
+            for name, reason in sorted(stale.items())[:5]:
+                print("refused: %s: %s" % (name, reason), file=sys.stderr)
+            return cc.refuse("cmds/compare", "%d stored oracle results are stale or unkeyed; "
+                             "run with --side both" % len(stale))
+        run_side("blaze", blaze["realpath"], cases)
+    compare(cases, args.diff_lines, report, stale)
     print()
-    for name, status, detail in rows:
-        counts[status] = counts.get(status, 0) + 1
-        print("%-*s  %-14s %s" % (width, name, status, detail))
+    report.print_header()
+    report.print_rows()
     print()
-    print("total %d: %s" % (len(rows), ", ".join("%s %d" % kv for kv in sorted(counts.items()))))
+    report.print_footer()
     if args.json:
-        oc.write_json(args.json, [{"case": n, "status": s, "detail": d} for n, s, d in rows])
-    return 0 if all(r[1] == "IDENTICAL" for r in rows) else 1
+        report.write_json(args.json)
+    return report.exit_code()
+
+
+def selftest():
+    def run_pair(ofake, bfake, wd):
+        cc.require_oracle(ofake)
+        res = {}
+        for side, fake in (("oracle", ofake), ("blaze", bfake)):
+            out, err, term, _ = invoke(wrap(fake, os.path.join(wd, "ur-" + side), wd, [],
+                                            ["help"]), wd)
+            ctx = {"ur": os.path.join(wd, "ur-" + side)}
+            res[side] = {"out": normalize(out, "out", ctx), "err": normalize(err, "err", ctx),
+                         "term": term}
+        cls, detail, _ = judge_case(Case("selftest", ["help"]), res["oracle"], res["blaze"])
+        return cls, detail
+
+    def empty_selection():
+        with open(os.devnull, "w") as null:
+            old = sys.stderr
+            sys.stderr = null
+            try:
+                return main(["--case", "^no case has this name$", "--side", "blaze"])
+            finally:
+                sys.stderr = old
+
+    def extra(st):
+        # A declared failure is IDENTICAL only with the declared code.
+        c = Case("help nosuchcommand", ["help", "nosuchcommand"])
+        two = {"out": "", "err": "x", "term": cc.Termination("exit", 2)}
+        st.check("declared exit 2 on both sides is IDENTICAL",
+                 judge_case(c, two, dict(two))[0] == cc.IDENTICAL)
+        three = {"out": "", "err": "x", "term": cc.Termination("exit", 3)}
+        st.check("declared exit 2, oracle exit 3: ORACLE-UNEXPECTED",
+                 judge_case(c, three, dict(three))[0] == cc.ORACLE_UNEXPECTED)
+        # A stored oracle result without a key is stale.
+        st.check("a legacy stored result (no .term) is not loaded",
+                 load("oracle", Case("no such stored case", ["help"])) is None)
+
+    return cc.selftest("cmds/compare", run_pair=run_pair, empty_selection=empty_selection,
+                       extra=extra, mode="service")
 
 
 if __name__ == "__main__":

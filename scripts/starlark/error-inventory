@@ -7,6 +7,7 @@ import sys
 
 USAGE = """\
 usage: scripts/starlark/error-inventory extract [TSV]
+       scripts/starlark/error-inventory annotate PROBE_DIFF [TSV]
        scripts/starlark/error-inventory summary [TSV]
        scripts/starlark/error-inventory help
 
@@ -32,6 +33,15 @@ extract  scans the Java of net.starlark.java at the pin (syntax, eval, lib/json 
          message, then by id); new rows get status `todo`, or `internal` for Java exceptions
          that are crashes (IllegalStateException, IllegalArgumentException, ...) and `rethrow`
          for a `throw` of a caught exception.
+annotate fills `case` and `status` of the rows whose status is `todo`, `matched`, `different`
+         or `no-case` from the interp cases (crates/starlark_conformance/tests/data/interp):
+         a row's message (its string literals, format specifiers and expressions as wildcards)
+         is matched against the error lines Bazel printed for each case (NAME.latin1.txt);
+         PROBE_DIFF is the output of `starlark_conformance probe-diff -v`. Status `matched`: a
+         case whose Bazel error line comes from this row has the same line in Blaze's output;
+         `different`: cases exist, none has the line; `no-case`: no case triggers the row.
+         Rows with any other status (`internal`, `rethrow`, `helper`, `not-triggerable`, set by
+         hand) are kept.
 summary  counts the rows of TSV by status."""
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -243,6 +253,137 @@ def summary(path):
     print("%-16s %d" % ("total", len(rows)))
 
 
+CASEDIR = os.path.join(ROOT, "crates/starlark_conformance/tests/data/interp")
+
+
+def message_regex(msg):
+    """A regex for the texts a Java message expression can produce."""
+    lits = [(m.start(), m.end(), m.group(1))
+            for m in re.finditer(r'"((?:[^"\\]|\\.)*)"', msg)]
+    if not lits:
+        return None
+    # Only the argument that holds the first literal (up to the next top-level comma).
+    depth = 0
+    i = lits[0][0]
+    while i < len(msg):
+        c = msg[i]
+        if c == '"':
+            j = i + 1
+            while j < len(msg) and msg[j] != '"':
+                j += 2 if msg[j] == "\\" else 1
+            i = j + 1
+            continue
+        if c in "([":
+            depth += 1
+        elif c in ")]":
+            if depth == 0:
+                break
+            depth -= 1
+        elif c == "," and depth == 0:
+            break
+        i += 1
+    lits = [l for l in lits if l[1] <= i]
+    msg = msg[:i]
+    parts = []
+    prev_end = None
+    for start, end, lit in lits:
+        if prev_end is not None:
+            between = msg[prev_end:start]
+            if re.search(r"[A-Za-z0-9_)]", between.replace("+", "")):
+                parts.append(".*")
+        text = lit.encode().decode("unicode_escape")
+        # Format specifiers and escaped percent.
+        pieces = re.split(r"(%%|%[-0-9.]*[sdcx])", text)
+        for piece in pieces:
+            if piece == "%%":
+                parts.append(re.escape("%"))
+            elif re.fullmatch(r"%[-0-9.]*[sdcx]", piece or "x"):
+                parts.append(".*")
+            else:
+                parts.append(re.escape(piece))
+        prev_end = end
+    tail = msg[prev_end:]
+    first_arg_end = re.match(r"[^,]*", tail)
+    rx = "".join(parts)
+    if not rx.replace(".*", "").strip():
+        return None
+    return re.compile(rx + "(.*)?$" if tail.lstrip().startswith("+") else rx + "$")
+
+
+def unescape_probe(line):
+    out = []
+    i = 0
+    while i < len(line):
+        if line.startswith("\\\\", i):
+            out.append("\\")
+            i += 2
+        elif line.startswith("\\x", i):
+            out.append(chr(int(line[i + 2:i + 4], 16)))
+            i += 4
+        else:
+            out.append(line[i])
+            i += 1
+    return "".join(out)
+
+
+def error_lines(path):
+    """(kind, message) of each SYNTAX/EVAL line of a probe output file."""
+    res = []
+    if not os.path.exists(path):
+        return res
+    for line in open(path, encoding="latin-1").read().split("\n"):
+        if line.startswith("SYNTAX "):
+            m = re.match(r"SYNTAX \S+?:\d+:\d+: (.*)$", line)
+            res.append((line, unescape_probe(m.group(1) if m else line[7:])))
+        elif line.startswith("EVAL "):
+            res.append((line, unescape_probe(line[5:])))
+    return res
+
+
+def annotate(diff_path, path):
+    rust_lines = {}
+    cur = None
+    for line in open(diff_path, encoding="latin-1").read().split("\n"):
+        m = re.match(r"(MATCH|TEXT|DIFF) (\S+)", line)
+        if m:
+            cur = m.group(2)
+            rust_lines[cur] = (m.group(1), set())
+        elif line.startswith("    rust ") and cur:
+            rust_lines[cur][1].add(line[9:])
+    cases = {}
+    for f in sorted(os.listdir(CASEDIR)):
+        if f.endswith(".latin1.txt"):
+            cases[f[:-len(".latin1.txt")] + ".star"] = error_lines(os.path.join(CASEDIR, f))
+    rows = read_tsv(path)
+    for r in rows:
+        if r["status"] not in ("todo", "matched", "different", "no-case") or r.get("note"):
+            continue
+        rx = message_regex(r["message"])
+        if rx is None:
+            continue
+        hits = []
+        for name, lines in cases.items():
+            for raw, msg in lines:
+                # Java wraps some messages ("syntax error at 'X': ", "at offset N, ", ...).
+                if rx.search(msg):
+                    hits.append((name, raw))
+                    break
+        if not hits:
+            r["status"] = "no-case"
+            r["case"] = ""
+            continue
+        names = sorted({h[0] for h in hits})
+        r["case"] = ",".join(n[:-5] for n in names[:6]) + (",..." if len(names) > 6 else "")
+        matched = False
+        for name, raw in hits:
+            kind, rl = rust_lines.get(name, ("", set()))
+            if kind == "MATCH" or raw in rl:
+                matched = True
+        r["status"] = "matched" if matched else "different"
+    write_tsv(path, rows)
+    summary(path)
+
+
 def main():
     args = sys.argv[1:]
     if not args or args[0] in ("help", "--help", "-h"):
@@ -254,6 +395,9 @@ def main():
         write_tsv(path, rows)
         print("%d rows written to %s" % (len(rows), path))
         summary(path)
+    elif args[0] == "annotate":
+        path = os.path.abspath(args[2]) if len(args) > 2 else DEFAULT_TSV
+        annotate(os.path.abspath(args[1]), path)
     elif args[0] == "summary":
         summary(path)
     else:
