@@ -404,6 +404,15 @@ def unlocked_runs():
         text = [a.decode(errors="replace") for a in args]
         script = next((a for a in text[:3] if a.endswith(("upstream-tests/run",
                                                           "upstream-tests/prepare"))), None)
+        # Only the harness process itself counts: the script as argv[0], or as argv[1] of a
+        # Python interpreter. A wrapper around a run (`timeout N scripts/upstream-tests/run
+        # ...`, `env ...`, `nice ...`) is not a run: its child registers itself and takes the
+        # lock like any other. Counting the wrapper deadlocked the queue on 2026-11-19 (the
+        # lock holder waited for the wrapper of a run that was waiting for the lock).
+        if script and not (text[0] == script or (
+                os.path.basename(text[0]).startswith("python") and len(text) > 1
+                and text[1] == script)):
+            script = None
         if script:
             rest = text[text.index(script) + 1:]
             if rest and rest[0] == "_inner":

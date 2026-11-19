@@ -278,3 +278,12 @@ Each entry: date, decision, why, who decided.
   verdict. Remedy: those directories are protected paths now (so `git add -A` checkpoints leave
   them out), and a number from a comparison tool enters README or STATUS only after the
   auditor's verdict on the tool. Root.
+- 2026-11-19. The fixed upstream-test harness deadlocked: root's full-suite re-run
+  (`blaze-v0.1.0-r2`) held the outer lock from 14:02 for over 80 minutes without starting,
+  because the "runs that do not take the lock" check counted the `timeout` wrapper of another
+  agent's queued run as such a run, while that run waited for the lock (the heuristic the
+  auditor listed as A-5). Root changed `scripts/upstream-tests/ut_common.py` so that only the
+  script itself or `python <script>` counts, committed under root's own approval, to be
+  reviewed in the auditor's next round. The owner of the wrapper was asked to stop it (root's
+  attempt to stop another agent's process was refused by the harness's permission check and
+  not repeated). No suite total exists yet for v0.1.0 under the fixed harness. Root.

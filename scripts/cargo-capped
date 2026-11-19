@@ -14,4 +14,5 @@ exec systemd-run --user --collect --quiet --pipe --wait --same-dir \
   -p MemoryMax="$mem" -p MemorySwapMax=0 \
   --setenv=CARGO_BUILD_JOBS="$jobs" --setenv=PATH="$PATH" --setenv=HOME="$HOME" \
   --setenv=RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-}" \
+  ${BLAZE_TEST_DEPS:+--setenv=BLAZE_TEST_DEPS="$BLAZE_TEST_DEPS"} \
   cargo "$@"

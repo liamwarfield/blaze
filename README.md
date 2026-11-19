@@ -137,6 +137,10 @@ it exists under `~/.cache/blaze/oracle-out/ur/install/`).
 scripts/cargo-capped build -p blaze      # -> target/debug/blaze
 ```
 
+Before running the analysis tests: `scripts/test-deps/prepare` (materialises the rules_cc,
+rules_java, rules_python, bazel_skylib, platforms and protobuf versions of the pinned Bazel into
+`~/.cache/blaze/test-deps`, with a sha256 manifest; the tests fail without it).
+
 Note: commits `0388d76` through `078b27a` do not build (a partial commit). `0e68a79` and later
 do; it was verified with `cargo check --workspace --all-targets` from a clean checkout.
 
