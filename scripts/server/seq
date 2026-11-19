@@ -148,8 +148,9 @@ Exit status: 0 when no step is DIFFERENT or NOT-RUN and both units recorded a cl
 
 Side A is cached: under refcache/<key>/, where <key> is the sha256 of the oracle sha256, the
 project (commit, command), a digest of the prepared workspace, the resolved sequence (step
-names, file actions, command lines), the reference mode and the sha256 of these tools
-(scripts/server/*, the imported scripts/oracle files, unit-supervisor). A cached side is used
+names, file actions, command lines), the reference mode and the sha256 of the code that records and extracts it
+(scripts/server/seq and common.py, the imported scripts/oracle files oracle_common.py,
+normalise.py, surfaces.py and record, scripts/remote/unit-supervisor). A cached side is used
 only when it is complete; --fresh-reference re-runs it. --control never uses the cache for B.
 
 Options:
@@ -636,7 +637,8 @@ def cmd_run(args):
                    "commit": spec.get("commit"), "command": spec["commands"][0],
                    "workspace": os.path.realpath(ws), "workspace_digest": ws_digest,
                    "workspace_fixups": fixed, "steps": steps, "reference": reference,
-                   "ref_flags": REF_FLAGS, "common": COMMON, "tools_sha256": C.tools_sha256()}
+                   "ref_flags": REF_FLAGS, "common": COMMON,
+                   "tools_sha256": C.tools_sha256(["seq", "common.py"])}
         key = hashlib.sha256(C.oc.canonical(key_obj).encode()).hexdigest()
         ref_dir = os.path.join(WORK, "refcache", key)
         report("%s: reference key %s (workspace digest %s)" % (TOOL, key, ws_digest))

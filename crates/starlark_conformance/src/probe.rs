@@ -111,10 +111,10 @@ pub fn run(name: &str, bytes: &[u8], mode: ScriptMode) -> Vec<String> {
             let java_options = blaze_starlark::syntax::java::JavaOptions::DEFAULT;
             let parsed = blaze_starlark::syntax::java::parse_file(&name, &source, java_options);
             let no_guard = |_: &str| None;
-            let module = blaze_starlark::syntax::java::PredeclaredModule {
-                names: globals.names().map(|n| n.as_str().to_owned()).collect(),
-                guarded: &no_guard,
-            };
+            let module = blaze_starlark::syntax::java::PredeclaredModule::new(
+                globals.names().map(|n| n.as_str().to_owned()).collect(),
+                &no_guard,
+            );
             let static_errors =
                 blaze_starlark::syntax::java::compile_errors(&parsed, &module, java_options);
             if !static_errors.is_empty() {

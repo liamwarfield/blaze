@@ -1034,9 +1034,8 @@ fn target_pattern_phase_function(
     let tests_to_run_labels: Option<IndexSet<Label>> =
         tests_to_run.map(|t| t.keys().cloned().collect());
     // PORT: TargetParsingCompleteEvent is built by the command for the build event stream
-    // (blaze_runtime commands/bep.rs) and LoadingPhaseCompleteEvent's labels are read from the
-    // value by `analysis_phase_runner::report_analysis_complete`; the removed (test suite) labels
-    // only feed the latter event's filtered set, which no ported subscriber reads.
+    // (blaze_runtime commands/bep.rs); the removed (test suite) labels only feed
+    // LoadingPhaseCompleteEvent's filtered set, which no ported subscriber reads.
     let result = TargetPatternPhaseValue {
         target_labels: target_labels.get_targets().clone(),
         tests_to_run_labels,
@@ -1048,6 +1047,13 @@ fn target_pattern_phase_function(
         has_error: targets.has_error,
         has_post_expansion_error: expanded_targets.has_error,
     };
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseFunction.java:246 TargetPatternPhaseFunction.compute
+    env.listener().post(Arc::new(
+        blaze_buildtool::buildtool::buildevent::LoadingPhaseCompleteEvent::new(
+            result.target_labels.iter().cloned().collect(),
+            repository_mapping.clone(),
+        ),
+    ));
     Ok(Some(result))
 }
 

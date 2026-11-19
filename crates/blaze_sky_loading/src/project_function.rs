@@ -218,11 +218,7 @@ impl EnforcementPolicy {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildableUnit {
     name: String,
-    /// The patterns of `targetPatternMatcher()`.
-    ///
-    /// PORT: `collect/SimpleTargetPatternMatcher` (matching) is not ported; the patterns are
-    /// kept, and `create` performs its validation (an exact pattern must be a canonical label).
-    target_patterns: Vec<String>,
+    target_pattern_matcher: crate::simple_target_pattern_matcher::SimpleTargetPatternMatcher,
     description: String,
     flags: Vec<String>,
     is_default: bool,
@@ -237,21 +233,12 @@ impl BuildableUnit {
         flags: Vec<String>,
         is_default: bool,
     ) -> Result<BuildableUnit, blaze_cmdline::LabelSyntaxException> {
-        // Java: com/google/devtools/build/lib/collect/SimpleTargetPatternMatcher.java:37 SimpleTargetPatternMatcher.create
-        for pattern in &target_patterns {
-            // Java: com/google/devtools/build/lib/collect/SimpleTargetPatternMatcher.java:104 SimpleTargetPatternMatcher.createSinglePatternMatcher
-            let mut pattern = pattern.as_str();
-            while let Some(rest) = pattern.strip_prefix('-') {
-                pattern = rest;
-            }
-            if !pattern.ends_with("/...") {
-                // ExactMatcher: Label.parseCanonical(pattern).
-                Label::parse_canonical(pattern)?;
-            }
-        }
         Ok(BuildableUnit {
             name,
-            target_patterns,
+            target_pattern_matcher:
+                crate::simple_target_pattern_matcher::SimpleTargetPatternMatcher::create(
+                    &target_patterns,
+                )?,
             description,
             flags,
             is_default,
@@ -262,8 +249,10 @@ impl BuildableUnit {
         &self.name
     }
 
-    pub fn target_patterns(&self) -> &[String] {
-        &self.target_patterns
+    pub fn target_pattern_matcher(
+        &self,
+    ) -> &crate::simple_target_pattern_matcher::SimpleTargetPatternMatcher {
+        &self.target_pattern_matcher
     }
 
     pub fn description(&self) -> &str {

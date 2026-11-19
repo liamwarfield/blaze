@@ -21,7 +21,10 @@ Workspaces: ~/.cache/blaze/work/query-cmp/{o,b}/<project> (rsync of the checkout
 and .git, refreshed at the start of a run); output user roots ~/.cache/blaze/oracle-out/qc-{o,b}.
 The two sides' paths have equal lengths, and Blaze's workspace, output base and install base are
 replaced by the oracle's in Blaze's stdout (byte for byte, so binary protos stay comparable).
-workerd uses its own copies (scripts/workerd/run); its paths are replaced as text only.
+workerd uses the copies of scripts/workerd/run (~/.cache/blaze/work/workerd and workerd-blaze,
+output user roots ur-workerd and ur-workerd-blaze, MemoryMax 20G), run here directly through
+compare_common's launcher with the arguments scripts/workerd/run would pass; its paths are
+replaced as text only.
 
 Verdict per cell:
   identical            same exit code and same stdout bytes as oracle A or B
@@ -37,23 +40,35 @@ Verdict per cell:
 Results: ~/.cache/blaze/query-compare/<label>/{results.json,matrix.md,cells/<id>/...}.
 --no-run re-classifies the saved outputs. Run it under systemd-run (AGENTS.md: heavy jobs).
 
-Guards (scripts/lib/compare_common.py). Every command of brotli, re2 and probe runs in a --scope
-unit (MemoryMax=12G, clean environment HOME and PATH=/usr/bin:/bin) under a supervisor that
-records how it really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout`), saved as
-<side>.term and compared instead of the exit code (a cell saved without .term is SKIPPED);
-workerd cells go through scripts/workerd/run (a --scope unit too: signals are seen, an OOM kill
-is not). The oracle must be the pinned one (UPSTREAM.json). Each oracle output has
-oracleA.key/oracleB.key: oracle sha256, the argv, the environment and the digest of the
-project's input (the corpus checkout or the probe files); --no-run refuses (SKIPPED) an output
-whose key differs from this run's. The stored outputs are raw bytes, so this tool's own sha256
-is not part of the key (re-classifying them under a changed classify() is what --no-run is for).
-Each cell gets one compare_common class: IDENTICAL (identical or identical-unordered with an
-oracle that exited 0, or an exit code DECLARED_EXIT declares), BOTH-FAILED (identical but both
-failed, not declared), NOT-PORTED (unported!), DIFFERENT (different, oracle-varies, a panic),
-SKIPPED (no saved result, no termination, stale oracle output). The output and results.json
-carry the repository HEAD and dirty flag, both binaries' paths and sha256 and the denominator.
-Exit status: 0 only when at least one cell was compared and every selected cell is IDENTICAL; 1
-otherwise (an empty selection included); 2 on a usage error or a refusal.
+Every verdict also requires the whole stderr to equal oracle A's or B's after the exclusion
+rules of scripts/lib/compare_common.py (VOLATILE_RULES; `paths`: each side's workspace, output
+base and install base; B1_GAP_RULES: lines that depend on the oracle's warm server, which runs
+all cells of a project), listed in the report with the lines each changed or removed.
+
+Guards (scripts/lib/compare_common.py). Every command, workerd's included, runs in a --scope unit
+(clean environment HOME and PATH=/usr/bin:/bin) under a supervisor that records how it really
+ended (`exit N`, `signal NAME`, `oom-kill`, `timeout`), saved as <side>.term and compared
+instead of the exit code (a cell saved without .term is SKIPPED); the terminations of `info` and
+`shutdown` are listed (an abnormal one fails the run). The oracle must be the pinned one
+(UPSTREAM.json). Each oracle output has oracleA.key/oracleB.key, written after the output files
+and holding their digests with the key (oracle sha256, the argv that ran, the environment, the
+digest of the project's input: the corpus checkout, the probe files, or workerd's git HEAD and
+status). Each Blaze output has blaze.capture.json (the binary's sha256 and the files' digests).
+--no-run re-classifies stored outputs: an oracle output whose key or files differ, and a Blaze
+output not made by the binary named with --binary, are SKIPPED, and a --no-run run never exits 0
+(it judges nothing new). The stored outputs are raw bytes, so this tool's own sha256 is not part
+of the key.
+Each cell gets one compare_common class: IDENTICAL (identical, the oracle exited 0 or
+DECLARED_EXIT declares its code, stderr equal), IDENTICAL-REDUCED (identical-unordered: stdout
+compared as a multiset of lines), KNOWN-GAP (stderr equal except in B1 lines), BOTH-FAILED
+(identical but both failed, not declared), NOT-PORTED (unported!), DIFFERENT (different,
+oracle-varies, a panic, stderr), SKIPPED (no saved result, no termination, stale oracle output,
+Blaze output of another binary). matrix.md shows these classes, skipped cells included. The
+output and results.json carry the repository HEAD and dirty flag, both binaries' paths and
+sha256 and the denominator. Exit status: 0 only when at least one cell was compared and every
+selected cell is IDENTICAL; 1 otherwise (an empty selection or --no-run included); 2 on a usage
+error or a refusal.
+selftest drives this command line with fake binaries (compare_common.selftest_tool).
 """
 import hashlib
 import json
@@ -358,26 +373,29 @@ def sync_workspace(project, side):
     return dst
 
 
-def run(side, project, binary, argv, timeout=1800):
-    if project == "workerd":
-        env = dict(os.environ)
-        cmd = [os.path.join(ROOT, "scripts/workerd/run"), "oracle" if side == "o" else "blaze"]
-        if side == "b":
-            env["BLAZE"] = binary
-        try:
-            p = subprocess.run(cmd + argv, capture_output=True, timeout=timeout, env=env)
-        except subprocess.TimeoutExpired as e:
-            return (cc.Termination("timeout", detail="%ss limit (scripts/workerd/run)" % timeout),
-                    e.stdout or b"", e.stderr or b"")
-        rc = p.returncode
-        # scripts/workerd/run execs a --scope unit: a signal shows as a negative status; an OOM
-        # kill is not detected there.
-        term = cc.Termination("signal", 128 - rc, "SIG%d" % -rc) if rc < 0 else \
-            cc.Termination("exit", rc, detail="via scripts/workerd/run: OOM not checked")
-        return term, p.stdout, p.stderr
+RULES = cc.VOLATILE_RULES + cc.B1_GAP_RULES
+
+
+def startup(side, project, binary):
+    """(binary argv prefix, cwd, memory cap) of one side, as the command runs."""
     exe = ORACLE if side == "o" else binary
-    startup = [exe, "--output_user_root=" + USER_ROOT[side], "--nohome_rc", "--nosystem_rc"]
-    r = cc.run(startup + argv, os.path.join(WORK, side, project), timeout=timeout, mode="scope",
+    if project == "workerd":
+        # What scripts/workerd/run does, through compare_common's launcher.
+        ws = os.path.join(CACHE, "work", "workerd" if side == "o" else "workerd-blaze")
+        ur = os.path.join(CACHE, "oracle-out", "ur-workerd" if side == "o" else
+                          "ur-workerd-blaze")
+        return [exe, "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc"], ws, "20G"
+    return ([exe, "--output_user_root=" + USER_ROOT[side], "--nohome_rc", "--nosystem_rc"],
+            os.path.join(WORK, side, project), "12G")
+
+
+def run(side, project, binary, argv, timeout=1800):
+    pre, cwd, mem = startup(side, project, binary)
+    if project == "workerd" and not os.path.isdir(cwd):
+        os.makedirs(cwd)
+        subprocess.run(["rsync", "-a", "--delete", "--exclude", "/bazel-*", "--exclude", "/.git",
+                        os.path.join(CACHE, "corpus", "workerd") + "/", cwd + "/"], check=True)
+    r = cc.run(pre + argv, cwd, timeout=timeout, mode="scope", memory_max=mem,
                tag="query-compare")
     return r.term, r.out, r.err
 
@@ -391,7 +409,12 @@ def input_digest(project):
             _input_digests[project] = cc.sha256_bytes(json.dumps(PROBE_FILES, sort_keys=True)
                                                       .encode())
         elif project == "workerd":
-            _input_digests[project] = "workerd via scripts/workerd/run (not digested)"
+            src = os.path.join(CACHE, "corpus", "workerd")
+            head = subprocess.run(["git", "-C", src, "rev-parse", "HEAD"], capture_output=True,
+                                  text=True).stdout.strip()
+            st = subprocess.run(["git", "-C", src, "status", "--porcelain"],
+                                capture_output=True).stdout
+            _input_digests[project] = "git %s status %s" % (head, cc.sha256_bytes(st))
         else:
             _input_digests[project] = cc.tree_digest(os.path.join(CACHE, "corpus", project))
     return _input_digests[project]
@@ -399,18 +422,23 @@ def input_digest(project):
 
 def oracle_key(project, cell, side_pass):
     """Key of a saved oracle output (raw bytes: no tool sha256)."""
-    return cc.cache_key(None, cc.pinned_sha256(),
-                        [ORACLE, "--output_user_root=" + USER_ROOT["o"], "--nohome_rc",
-                         "--nosystem_rc"] + cell_argv(cell),
-                        cc.clean_env(), input_digest(project),
-                        extra={"project": project, "pass": side_pass})
+    pre, cwd, mem = startup("o", project, None)
+    return cc.cache_key(None, cc.pinned_sha256(), pre + cell_argv(cell), cc.clean_env(),
+                        input_digest(project),
+                        extra={"project": project, "pass": side_pass, "cwd": cwd,
+                               "memory": mem})
 
 
-def info_paths(side, project, binary):
+def side_files(d, name):
+    return [os.path.join(d, name + ext) for ext in (".stdout", ".stderr", ".term")]
+
+
+def info_paths(side, project, binary, report):
     """(workspace, output_base, install_base) of one side."""
     paths = []
     for key in ("workspace", "output_base", "install_base"):
         term, out, _ = run(side, project, binary, ["info"] + COMMON + [key], timeout=600)
+        report.add_aux("%s %s info %s" % (side, project, key), term)
         paths.append(out.decode("latin-1").strip() if term.ok else None)
     return paths
 
@@ -489,18 +517,40 @@ def load(d, name):
     return term, out, err
 
 
-def common_class(cell, cid, verdict, oa, b):
-    """compare_common class of a cell from its verdict."""
+def stderr_check(norm, meta, project, oa, ob, b):
+    """(equal to A or B, gap rules that differ) of Blaze's stderr after the rules."""
+    paths = meta.get("paths", {}).get(project, {})
+    tags = ("<WORKSPACE>", "<OUTPUT_BASE>", "<INSTALL_BASE>")
+    op = [(p, t) for p, t in zip(paths.get("o") or [], tags) if p]
+    bp = [(p, t) for p, t in zip(paths.get("b") or [], tags) if p]
+    best = None
+    for o in (oa, ob):
+        eq, gaps = norm.compare(o[2], b[2], "stderr", op, bp)
+        if eq and not gaps:
+            return True, []
+        if eq and best is None:
+            best = gaps
+    return (True, best) if best is not None else (False, [])
+
+
+def common_class(cell, cid, verdict, oa, b, stderr_eq=True, gaps=()):
+    """compare_common class of a cell from its verdict and the stderr check."""
     oterm, bterm, berr = oa[0], b[0], b[2]
     if verdict == "loud":
         msg = cc.unported_message(berr)
         return (cc.NOT_PORTED, msg) if msg else (cc.DIFFERENT, "Blaze panicked")
     if verdict in ("identical", "identical-unordered"):
-        cls, detail = cc.judge(oterm, bterm, [], declared_exit=DECLARED_EXIT.get(cid))
+        reduced = None
+        if verdict == "identical-unordered":
+            reduced = "stdout compared as a multiset of lines (identical-unordered)"
+        cls, detail = cc.judge(oterm, bterm, [] if stderr_eq else ["stderr"],
+                               declared_exit=DECLARED_EXIT.get(cid), gaps=list(gaps),
+                               reduced=reduced)
         return cls, (verdict + ("; " + detail if detail else ""))
     if verdict == "oracle-varies":
         return cc.DIFFERENT, "the oracle varies; Blaze matches neither run"
-    cls, detail = cc.judge(oterm, bterm, ["stdout"], declared_exit=DECLARED_EXIT.get(cid))
+    cls, detail = cc.judge(oterm, bterm, ["stdout"] + ([] if stderr_eq else ["stderr"]),
+                           declared_exit=DECLARED_EXIT.get(cid))
     return (cls if cls != cc.IDENTICAL else cc.DIFFERENT), detail
 
 
@@ -552,23 +602,38 @@ def main(argv):
         return 2
     if not plan:
         return cc.empty_selection_error("query/compare", "cells")
+    no_run = "--no-run" in flags
     try:
         oracle_path, oracle_sha = cc.require_oracle(ORACLE)
-        if "--no-run" not in flags:
-            cc.blaze_identity(args["--binary"])
+        blaze = cc.blaze_identity(args["--binary"]) if args["--binary"] else None
     except cc.Refusal as e:
         return cc.refuse("query/compare", e)
     label_dir = os.path.join(OUT, args["--label"])
     os.makedirs(os.path.join(label_dir, "cells"), exist_ok=True)
-    binary = os.path.abspath(args["--binary"]) if args["--binary"] else None
+    binary = blaze["path"] if blaze else None
     meta_path = os.path.join(label_dir, "meta.json")
     meta = json.load(open(meta_path)) if os.path.exists(meta_path) else {"paths": {}}
-    if "--no-run" not in flags:
+    report = cc.Report("query/compare", blaze=blaze,
+                       oracle={"path": oracle_path, "sha256": oracle_sha},
+                       selection="label %s, %d cells (projects %s, commands %s%s)%s" % (
+                           args["--label"], len(plan), args["--project"], args["--command"],
+                           ", cells %r" % args["--cells"] if args["--cells"] else "",
+                           ", --no-run" if no_run else ""),
+                       tool_files=[os.path.abspath(__file__)],
+                       compared="termination, stdout (bytes, or as a multiset of lines where "
+                                "the class says so), the whole stderr after the exclusion "
+                                "rules listed at the end")
+    norm = cc.Normaliser(RULES, path_reason="each side's workspace, output base and install "
+                         "base (from `info`)")
+    report.add_normaliser(norm)
+    report.reclassify_only = no_run
+    report.print_header()
+    if not no_run:
         if "/target/" in binary:
             print("warning: the binary lies in a target/ directory; copy it out first",
                   file=sys.stderr)
         meta["binary"] = binary
-        meta["binary_sha256"] = hashlib.sha256(open(binary, "rb").read()).hexdigest()
+        meta["binary_sha256"] = blaze["sha256"]
         meta["date"] = time.strftime("%Y-%m-%d %H:%M:%S")
         meta["blaze_head"] = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"],
                                             capture_output=True, text=True).stdout.strip()
@@ -576,61 +641,69 @@ def main(argv):
             if p != "workerd":
                 sync_workspace(p, "o")
                 sync_workspace(p, "b")
-            meta["paths"][p] = {"o": info_paths("o", p, binary), "b": info_paths("b", p, binary)}
+            meta["paths"][p] = {"o": info_paths("o", p, binary, report),
+                                "b": info_paths("b", p, binary, report)}
             p_cells = [x for x in plan if x[0] == p]
             for side_pass in ("A", "B"):
                 if p != "workerd":
-                    run("o", p, binary, ["shutdown"], timeout=300)
+                    report.add_aux("oracle %s shutdown before pass %s" % (p, side_pass),
+                                   run("o", p, binary, ["shutdown"], timeout=300)[0])
                 for _, c, cid in p_cells:
                     d = os.path.join(label_dir, "cells", cid)
                     os.makedirs(d, exist_ok=True)
+                    kp = os.path.join(d, "oracle%s.key" % side_pass)
+                    cc.invalidate_key(kp)
                     save(d, "oracle" + side_pass, run("o", p, binary, cell_argv(c)))
-                    cc.write_key(os.path.join(d, "oracle%s.key" % side_pass),
-                                 oracle_key(p, c, side_pass))
+                    cc.write_key(kp, oracle_key(p, c, side_pass),
+                                 side_files(d, "oracle" + side_pass))
                     if side_pass == "A":
                         t0 = time.time()
+                        cap = os.path.join(d, "blaze.capture.json")
+                        cc.invalidate_key(cap)
                         res = run("b", p, binary, cell_argv(c))
                         save(d, "blaze", res)
+                        cc.write_capture(cap, blaze, side_files(d, "blaze"),
+                                         extra={"argv": cell_argv(c)})
                         with open(os.path.join(d, "argv.json"), "w") as f:
                             json.dump({"project": p, "argv": cell_argv(c),
                                        "blaze_s": round(time.time() - t0, 2)}, f)
             if p != "workerd":
-                run("o", p, binary, ["shutdown"], timeout=300)
+                report.add_aux("oracle %s shutdown" % p,
+                               run("o", p, binary, ["shutdown"], timeout=300)[0])
         json.dump(meta, open(meta_path, "w"), indent=1)
-    report = cc.Report("query/compare", blaze={"path": meta.get("binary"),
-                                               "sha256": meta.get("binary_sha256")},
-                       oracle={"path": oracle_path, "sha256": oracle_sha},
-                       selection="label %s, %d cells (projects %s, commands %s%s)%s" % (
-                           args["--label"], len(plan), args["--project"], args["--command"],
-                           ", cells %r" % args["--cells"] if args["--cells"] else "",
-                           ", --no-run" if "--no-run" in flags else ""),
-                       tool_files=[os.path.abspath(__file__)])
-    report.print_header()
     results = []
     for p, c, cid in plan:
         d = os.path.join(label_dir, "cells", cid)
-        if not os.path.exists(os.path.join(d, "blaze.rc")):
+        if not os.path.exists(os.path.join(d, "blaze.stdout")):
             report.add(cid, cc.SKIPPED, "no saved Blaze result")
+            results.append({"id": cid, "project": p, "command": c[0], "expr": c[1],
+                            "output": c[2], "flags": c[3], "verdict": None,
+                            "class": cc.SKIPPED})
             continue
-        stale = [cc.check_key(os.path.join(d, "oracle%s.key" % sp), oracle_key(p, c, sp))
-                 for sp in ("A", "B")]
-        stale = [r for r in stale if r]
-        if stale:
-            report.add(cid, cc.SKIPPED, "stale oracle output: " + stale[0])
-            continue
+        why = [cc.check_key(os.path.join(d, "oracle%s.key" % sp), oracle_key(p, c, sp))
+               for sp in ("A", "B")]
+        why = ["stale oracle output: " + r for r in why if r]
+        capture = cc.check_capture(os.path.join(d, "blaze.capture.json"), blaze)
+        if capture:
+            why.append("Blaze output: " + capture)
         if p not in meta.get("paths", {}):
-            report.add(cid, cc.SKIPPED, "no recorded paths for project %s" % p)
+            why.append("no recorded paths for project %s" % p)
+        b = load(d, "blaze")
+        oa, ob = load(d, "oracleA"), load(d, "oracleB")
+        if not why and None in (b[0], oa[0], ob[0]):
+            why.append("saved without a recorded termination")
+        if why:
+            report.add(cid, cc.SKIPPED, why[0])
+            results.append({"id": cid, "project": p, "command": c[0], "expr": c[1],
+                            "output": c[2], "flags": c[3], "verdict": None,
+                            "class": cc.SKIPPED})
             continue
         po, pb = meta["paths"][p]["o"], meta["paths"][p]["b"]
         pairs = sorted(zip(pb, po), key=lambda x: -len(x[0] or ""))
-        b = load(d, "blaze")
-        oa, ob = load(d, "oracleA"), load(d, "oracleB")
-        if None in (b[0], oa[0], ob[0]):
-            report.add(cid, cc.SKIPPED, "saved without a recorded termination")
-            continue
         b = (b[0], substitute(b[1], pairs), b[2])
         verdict = classify(c, oa, ob, b)
-        cls, detail = common_class(c, cid, verdict, oa, b)
+        eq, gaps = stderr_check(norm, meta, p, oa, ob, b)
+        cls, detail = common_class(c, cid, verdict, oa, b, eq, gaps)
         report.add(cid, cls, detail)
         with open(os.path.join(d, "blaze.normalised.stdout"), "wb") as f:
             f.write(b[1])
@@ -643,11 +716,12 @@ def main(argv):
     write_matrix(label_dir, results, meta)
     counts = {}
     for r in results:
-        counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
+        counts[r["class"]] = counts.get(r["class"], 0) + 1
     print("cells: %d  %s" % (len(results), "  ".join("%s %d" % kv for kv in sorted(counts.items()))))
     n = int(args["--details"])
-    for r in [r for r in results if r["verdict"] in ("different", "loud")][:n]:
-        print("%s  %s  %s" % (r["verdict"], r["id"], " ".join([r["command"], "--output=" + r["output"]] + r["flags"] + [r["expr"]])))
+    for r in [r for r in results if r["class"] in (cc.DIFFERENT, cc.NOT_PORTED)][:n]:
+        print("%s  %s  %s" % (r["class"], r["id"], " ".join(
+            [r["command"], "--output=" + r["output"]] + r["flags"] + [r["expr"]])))
     for row in report.rows:
         if row["class"] not in (cc.IDENTICAL,):
             print("  %-17s %s %s" % (row["class"], row["case"], row["detail"]))
@@ -657,43 +731,28 @@ def main(argv):
 
 
 def selftest():
-    cell = ("query", "//x", "label", [])
+    def cell_of(blaze, label):
+        cells = cells_for("probe", ["query"])
+        return cell_id("probe", cells[0])
 
-    def run_pair(ofake, bfake, wd):
-        cc.require_oracle(ofake)
-        res = {}
-        for side, fake in (("oracle", ofake), ("blaze", bfake)):
-            r = cc.run([fake, "query"], wd, mode="scope", tag="selftest")
-            res[side] = (r.term, r.out, r.err)
-        oa = res["oracle"]
-        verdict = classify(cell, oa, oa, res["blaze"])
-        return common_class(cell, "selftest", verdict, oa, res["blaze"])
+    def argv(blaze, label):
+        return ["--binary", blaze, "--label", label, "--project", "probe", "--command", "query",
+                "--cells", "^" + re.escape(cell_of(blaze, label)) + "$"]
 
-    def empty_selection():
-        with open(os.devnull, "w") as null:
-            old = sys.stderr
-            sys.stderr = null
-            try:
-                return main(["compare", "--binary", "/bin/true", "--label", "selftest-empty",
-                             "--cells", "^no cell has this id$"])
-            finally:
-                sys.stderr = old
+    def extra(st, fh, run):
+        o, b = fh.fakes(dict(out=b"same\n"), dict(out=b"same\n"))
+        rc, rep, log = run(argv(b, "selftest-no-run"))
+        rc2, rep2, log2 = run(argv(b, "selftest-no-run") + ["--no-run"])
+        st.check("--no-run with the binary that made the outputs never exits 0",
+                 rc == 0 and rc2 == 1, "fresh run exit %s, --no-run exit %s" % (rc, rc2))
 
-    def extra(st):
-        t0, t1 = cc.Termination("exit", 0), cc.Termination("exit", 1)
-        st.check("identical with both exit 1 is BOTH-FAILED",
-                 common_class(cell, "x", "identical", (t1, b"", b""), (t1, b"", b""))[0]
-                 == cc.BOTH_FAILED)
-        st.check("oracle-varies is not a pass",
-                 common_class(cell, "x", "oracle-varies", (t0, b"", b""), (t0, b"", b""))[0]
-                 == cc.DIFFERENT)
-        st.check("a panic is DIFFERENT",
-                 common_class(cell, "x", "loud", (t0, b"", b""),
-                              (cc.Termination("signal", 134, "SIGABRT"), b"", b"panicked at"))[0]
-                 == cc.DIFFERENT)
-
-    return cc.selftest("query/compare", run_pair=run_pair, empty_selection=empty_selection,
-                       extra=extra, mode="scope")
+    return cc.selftest_tool(
+        "query/compare", os.path.abspath(__file__), argv,
+        empty=lambda b, l: ["--binary", b, "--label", l, "--cells", "^no cell has this id$"],
+        stored=lambda b, l: ["--binary", b, "--label", l, "--project", "probe", "--command",
+                             "query", "--no-run", "--cells",
+                             "^" + re.escape(cell_of(b, l)) + "$"],
+        extra=extra)
 
 
 def write_matrix(label_dir, results, meta):
@@ -701,8 +760,9 @@ def write_matrix(label_dir, results, meta):
              "Binary: `%s` (sha256 %s), Blaze HEAD %s, %s." % (
                  meta.get("binary"), meta.get("binary_sha256", "")[:12], meta.get("blaze_head"),
                  meta.get("date")), "",
-             "Verdicts: identical (I), identical-unordered (U: the oracle varies between two "
-             "servers; same lines as a multiset), oracle-varies (V), loud (L), different (D).", ""]
+             "Classes (scripts/lib/compare_common.py): IDENTICAL (I), IDENTICAL-REDUCED (U: "
+             "stdout as a multiset of lines), KNOWN-GAP (G), BOTH-FAILED (F), NOT-PORTED (L), "
+             "DIFFERENT (D), SKIPPED (S).", ""]
     for p in sorted(set(r["project"] for r in results)):
         for cmd in ("query", "cquery", "aquery"):
             rs = [r for r in results if r["project"] == p and r["command"] == cmd]
@@ -722,22 +782,23 @@ def write_matrix(label_dir, results, meta):
             if plain:
                 lines.append("| expression | " + " | ".join(fmts) + " |")
                 lines.append("|---|" + "---|" * len(fmts))
-                short = {"identical": "I", "identical-unordered": "U", "loud": "L", "different": "D",
-                         "oracle-varies": "V"}
+                short = {cc.IDENTICAL: "I", cc.REDUCED: "U", cc.KNOWN_GAP: "G",
+                         cc.BOTH_FAILED: "F", cc.NOT_PORTED: "L", cc.DIFFERENT: "D",
+                         cc.SKIPPED: "S", cc.ORACLE_UNEXPECTED: "O"}
                 for e in exprs:
                     row = []
                     for f in fmts:
-                        v = [r["verdict"] for r in plain if r["expr"] == e and r["output"] == f]
+                        v = [r["class"] for r in plain if r["expr"] == e and r["output"] == f]
                         row.append(short.get(v[0], "?") if v else "")
                     lines.append("| `%s` | %s |" % (e.replace("|", "\\|"), " | ".join(row)))
                 lines.append("")
             flagged = [r for r in rs if r["flags"]]
             if flagged:
-                lines.append("| expression | output | flags | verdict |")
+                lines.append("| expression | output | flags | class |")
                 lines.append("|---|---|---|---|")
                 for r in flagged:
                     lines.append("| `%s` | %s | `%s` | %s |" % (
-                        r["expr"].replace("|", "\\|"), r["output"], " ".join(r["flags"]), r["verdict"]))
+                        r["expr"].replace("|", "\\|"), r["output"], " ".join(r["flags"]), r["class"]))
                 lines.append("")
     with open(os.path.join(label_dir, "matrix.md"), "w") as f:
         f.write("\n".join(lines) + "\n")

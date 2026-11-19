@@ -120,35 +120,7 @@ impl MockToolsConfig {
         depth: usize,
         use_empty_build_files: bool,
     ) {
-        // Files.walk(source, depth).filter(isFile): directories are followed to `depth`;
-        // Files.walk does not follow symbolic links, and File.isFile follows them.
-        fn walk(dir: &std::path::Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
-            if depth == 0 {
-                return;
-            }
-            let mut entries: Vec<_> = std::fs::read_dir(dir)
-                .unwrap_or_else(|e| panic!("IOException: {}: {e}", dir.display()))
-                .map(|e| e.expect("directory entry").path())
-                .collect();
-            entries.sort();
-            for entry in entries {
-                let meta = std::fs::symlink_metadata(&entry).expect("metadata");
-                if meta.is_dir() {
-                    walk(&entry, depth - 1, out);
-                } else if entry.is_file() {
-                    out.push(entry);
-                }
-            }
-        }
-        let mut files = Vec::new();
-        walk(source, depth, &mut files);
-        for file in files {
-            let relative = file
-                .strip_prefix(source)
-                .expect("under the source")
-                .to_str()
-                .expect("an ASCII path of the prepared test dependencies")
-                .to_string();
+        for (relative, content) in directory_files(source, depth).iter() {
             if relative.is_empty() {
                 continue;
             }
@@ -156,7 +128,10 @@ impl MockToolsConfig {
             if relative.ends_with("BUILD") && use_empty_build_files {
                 self.create(&dest, &[]);
             } else {
-                self.copy_tool(&file, &dest);
+                // copyTool(path.getRelative(f), to + "/" + f)
+                let lines = guava_read_lines(content);
+                let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+                self.overwrite(&dest, &lines);
             }
         }
     }
@@ -213,4 +188,66 @@ fn guava_read_lines(content: &str) -> Vec<String> {
         lines.push(current);
     }
     lines
+}
+
+/// The files under `source` (up to `depth` levels; Java `Files.walk(source, depth)` filtered to
+/// regular files, which does not follow symbolic links to directories), relative to `source`,
+/// with their contents decoded as Latin-1.
+///
+/// PORT: the prepared test dependencies do not change while a test process runs, so each
+/// directory is read once per process and its decoded contents are kept (the analysis tests
+/// copy the same rules into every test's workspace).
+fn directory_files(
+    source: &std::path::Path,
+    depth: usize,
+) -> std::sync::Arc<Vec<(String, String)>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Cache = Mutex<HashMap<(std::path::PathBuf, usize), Arc<Vec<(String, String)>>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let key = (source.to_path_buf(), depth);
+    if let Some(files) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return files.clone();
+    }
+    fn walk(dir: &std::path::Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
+        if depth == 0 {
+            return;
+        }
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("IOException: {}: {e}", dir.display()))
+            .map(|e| e.expect("directory entry").path())
+            .collect();
+        entries.sort();
+        for entry in entries {
+            let meta = std::fs::symlink_metadata(&entry).expect("metadata");
+            if meta.is_dir() {
+                walk(&entry, depth - 1, out);
+            } else if entry.is_file() {
+                out.push(entry);
+            }
+        }
+    }
+    let mut paths = Vec::new();
+    walk(source, depth, &mut paths);
+    let files: Vec<(String, String)> = paths
+        .into_iter()
+        .map(|file| {
+            let relative = file
+                .strip_prefix(source)
+                .expect("under the source")
+                .to_str()
+                .expect("an ASCII path of the prepared test dependencies")
+                .to_string();
+            let bytes = std::fs::read(&file)
+                .unwrap_or_else(|e| panic!("IOException: {}: {e}", file.display()));
+            (relative, latin1_decode(&bytes).into_owned())
+        })
+        .collect();
+    let files = Arc::new(files);
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, files.clone());
+    files
 }

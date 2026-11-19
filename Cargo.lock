@@ -1076,8 +1076,11 @@ name = "blaze_util"
 version = "0.1.0"
 dependencies = [
  "blaze_protos",
+ "flate2",
  "hex",
+ "libc",
  "md-5",
+ "parking_lot",
  "regex",
  "sha1",
  "sha2",

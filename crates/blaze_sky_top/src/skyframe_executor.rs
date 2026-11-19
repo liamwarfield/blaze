@@ -137,12 +137,13 @@ pub enum SkyframeExecutorCreationError {
 /// The configuration-related state (Java: the precomputed baseline values).
 struct ConfigurationState {
     client: Arc<ConfigurationEnvironment>,
-    baseline: Arc<BuildOptions>,
 }
 
 /// The `SkyframeExecutor` of one command.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:369 SkyframeExecutor
 pub struct SkyframeExecutor {
+    /// `progressReceiver`.
+    progress_receiver: Arc<crate::skyframe_progress_receiver::SkyframeProgressReceiver>,
     evaluator: Arc<Evaluator>,
     package_manager: Arc<SkyframePackageManager>,
     pkg_locator: PathPackageLocator,
@@ -400,7 +401,8 @@ impl SkyframeExecutor {
             // Java: SkyframeExecutor.getStarlarkExecTransition loads the exec transition's .bzl
             // with BZL_LOAD. A file in @_builtins is evaluated by the bundled loader now; another
             // file is loaded through the evaluator once it is built (below).
-            let baseline_exec_configuration = std::sync::OnceLock::new();
+            let baseline_exec_configuration =
+                blaze_build_config::skyframe::PrecomputedOptions::new(None);
             if !exec_config_needs_bzl_load(&baseline) {
                 let baseline_exec = Self::adjust_for_exec(
                     &baseline,
@@ -408,7 +410,7 @@ impl SkyframeExecutor {
                     inputs.reporter.as_ref(),
                 )
                 .map_err(SkyframeExecutorCreationError::InvalidConfiguration)?;
-                let _ = baseline_exec_configuration.set(Arc::new(baseline_exec));
+                baseline_exec_configuration.set(Arc::new(baseline_exec));
             }
             let client = Arc::new(ConfigurationEnvironment {
                 directories: config_directories,
@@ -419,7 +421,9 @@ impl SkyframeExecutor {
                     .iter()
                     .filter_map(|r| r.as_path().cloned())
                     .collect(),
-                baseline_configuration: baseline.clone(),
+                baseline_configuration: blaze_build_config::skyframe::PrecomputedOptions::new(
+                    Some(baseline.clone()),
+                ),
                 baseline_exec_configuration,
                 platforms,
                 main_repository_mapping: Arc::new(MainRepositoryMappingFromSkyframe),
@@ -484,25 +488,35 @@ impl SkyframeExecutor {
                 execution = Some(state);
             }
             analysis_services = Some(services);
-            configuration = Some(ConfigurationState { client, baseline });
+            configuration = Some(ConfigurationState { client });
         }
 
         if let Some(extra_sky_functions) = extra_sky_functions {
             builder = extra_sky_functions(builder);
         }
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3493 SkyframeExecutor.SkyframeProgressReceiver
+        // PORT: installed only for a command that executes: it forwards only to the execution
+        // progress receiver (see SkyframeProgressReceiver), and a receiver makes the evaluator
+        // hand every node's direct deps to it.
+        let progress_receiver = Arc::new(
+            crate::skyframe_progress_receiver::SkyframeProgressReceiver::new(),
+        );
+        if execution.is_some() {
+            builder = builder.progress_receiver(progress_receiver.clone());
+        }
         let evaluator = Arc::new(builder.build());
         if let Some(state) = &configuration
-            && state.client.baseline_exec_configuration.get().is_none()
+            && !state.client.baseline_exec_configuration.is_set()
         {
             // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1544 SkyframeExecutor.adjustForExec
             let baseline_exec = adjust_for_exec_with_evaluator(
                 &evaluator,
-                &state.baseline,
+                &state.client.baseline_configuration.get(),
                 &state.client.starlark_semantics,
                 inputs.reporter.clone(),
             )
             .map_err(SkyframeExecutorCreationError::InvalidConfiguration)?;
-            let _ = state
+            state
                 .client
                 .baseline_exec_configuration
                 .set(Arc::new(baseline_exec));
@@ -541,6 +555,7 @@ impl SkyframeExecutor {
         ];
         let cycles_reporter = CyclesReporter::new(cycle_reporters);
         Ok(SkyframeExecutor {
+            progress_receiver,
             cycles_reporter,
             action_conflicts,
             top_level_artifact_context_for_conflict_pruning: parking_lot::Mutex::new(None),
@@ -646,6 +661,14 @@ impl SkyframeExecutor {
         &self.evaluator
     }
 
+    /// The executor's progress receiver, whose execution progress receiver
+    /// `setExecutionProgressReceiver` sets.
+    pub fn get_progress_receiver(
+        &self,
+    ) -> &Arc<crate::skyframe_progress_receiver::SkyframeProgressReceiver> {
+        &self.progress_receiver
+    }
+
     /// The graph after evaluation (Java `SkyframeExecutorWrappingWalkableGraph.of(this)`).
     pub fn get_walkable_graph(&self) -> Arc<dyn WalkableGraph> {
         self.evaluator.clone()
@@ -682,8 +705,10 @@ impl SkyframeExecutor {
     }
 
     /// The baseline (top-level) build options set at construction.
-    pub fn get_baseline_configuration(&self) -> Option<&Arc<BuildOptions>> {
-        self.configuration.as_ref().map(|c| &c.baseline)
+    pub fn get_baseline_configuration(&self) -> Option<Arc<BuildOptions>> {
+        self.configuration
+            .as_ref()
+            .map(|c| c.client.baseline_configuration.get())
     }
 
     /// `getActionKeyContext()`.
@@ -930,9 +955,16 @@ impl SkyframeExecutor {
         keep_going: bool,
         key: TargetPatternPhaseKey,
     ) -> Result<TargetPatternPhaseValue, TargetPatternPhaseDetailedError> {
-        // PORT: LoadingPhaseStartedEvent(packageProgress) and TargetParsingPhaseTimeEvent feed the
-        // UI's loading progress and the build metrics; the command reads the process-wide
-        // PACKAGE_PROGRESS and measures the phase itself (blaze_runtime).
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3210 SkyframeExecutor.getTargetPatternPhaseValue
+        event_handler.post(Arc::new(
+            blaze_buildtool::buildtool::buildevent::LoadingPhaseStartedEvent::new(Arc::new(
+                crate::skyframe_progress_receiver::PackageProgressReceiverView(
+                    &blaze_sky_loading::package_progress_receiver::PACKAGE_PROGRESS,
+                ),
+            )),
+        ));
+        // PORT: TargetParsingPhaseTimeEvent feeds the build metrics; the command measures the
+        // phase itself (blaze_runtime).
         let sky_key = SkyKey::new(key.clone());
         let eval_result = self
             .evaluate(
@@ -1186,16 +1218,38 @@ impl SkyframeExecutor {
 
     /// `setBaselineConfiguration(targetOptions, eventHandler)`.
     ///
-    /// PORT: the baseline is fixed when the executor is built (see the module documentation);
-    /// this checks that the requested baseline is that one.
+    /// PORT: incremental. Java injects the precomputed values, which invalidates the
+    /// configurations computed from the previous baseline; a Blaze executor serves one command,
+    /// so a new baseline is accepted only before any configuration was computed (the build's
+    /// options change when a project file's flags apply, BuildTool.buildTargets).
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1520 SkyframeExecutor.setBaselineConfiguration
-    pub fn set_baseline_configuration(&self, target_options: &BuildOptions) {
+    pub fn set_baseline_configuration(
+        &self,
+        target_options: &BuildOptions,
+        event_handler: Arc<dyn ExtendedEventHandler>,
+    ) -> Result<(), InvalidConfigurationException> {
         let state = self.configuration_state();
+        if *state.client.baseline_configuration.get() == *target_options {
+            return Ok(());
+        }
         blaze_util::check_state!(
-            *state.baseline == *target_options,
-            "the baseline configuration is fixed when the executor is created"
+            self.get_transitive_configuration_keys().is_empty(),
+            "the baseline configuration changed after configurations were computed"
         );
-        let _ = &state.client;
+        let baseline = Arc::new(target_options.clone());
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1544 SkyframeExecutor.adjustForExec
+        let baseline_exec = adjust_for_exec_with_evaluator(
+            &self.evaluator,
+            &baseline,
+            &state.client.starlark_semantics,
+            event_handler,
+        )?;
+        state.client.baseline_configuration.set(baseline);
+        state
+            .client
+            .baseline_exec_configuration
+            .set(Arc::new(baseline_exec));
+        Ok(())
     }
 
     /// The keys of every configuration computed so far.

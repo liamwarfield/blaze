@@ -69,7 +69,8 @@ use crate::action_execution_value::ActionExecutionValue;
 use crate::artifact_function::execution_failure;
 use crate::events::{
     ActionCompletionEvent, ActionExecutedEvent, ActionResultReceivedEvent, ActionStartedEvent,
-    ErrorTiming,
+    CachingActionEvent, ErrorTiming, RunningActionEvent, ScanningActionEvent,
+    SchedulingActionEvent, StoppedScanningActionEvent,
 };
 
 /// `OutputPermissions`: the mode output files are set to after execution.
@@ -950,6 +951,7 @@ impl SkyframeActionExecutor {
             file_system.update_context(ActionMetadataSnapshot::of(action.as_ref()));
         }
         let context = ActionExecutionContextImpl {
+            action: action.clone(),
             exec_root: action_exec_root(self, output_metadata_store.get_action_file_system()),
             executor: self,
             input_metadata: input_metadata.clone(),
@@ -1759,6 +1761,7 @@ impl SkyframeActionExecutor {
     ) -> Result<Option<NestedSet<Artifact>>, ExecutionFailure> {
         // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:315 ActionExecutionContext.forInputDiscovery
         let context = ActionExecutionContextImpl {
+            action: action.clone(),
             exec_root: action_exec_root(self, action_file_system.as_ref()),
             executor: self,
             input_metadata,
@@ -1778,7 +1781,10 @@ impl SkyframeActionExecutor {
             // OutErr streams is sufficient.
             setup_action_fs_file_out_err(context.get_file_out_err(), action.as_ref())?;
         }
-        // PORT: ScanningActionEvent / StoppedScanningActionEvent feed the progress UI only.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:958 SkyframeActionExecutor.discoverInputs
+        listener.post(Arc::new(ScanningActionEvent {
+            action: action.clone(),
+        }));
         let Some(executable) = as_executable(action.as_ref()) else {
             blaze_util::unported!(&format!(
                 "{}.discoverInputs (no ExecutableAction registered for mnemonic {})",
@@ -1797,7 +1803,7 @@ impl SkyframeActionExecutor {
             )?;
             Ok(artifacts)
         });
-        match result {
+        let outcome = (|| match result {
             Ok(artifacts) => Ok(artifacts),
             // Java: InterruptedException propagates unreported.
             Err(e) if e.is_interrupted() => Err(ExecutionFailure::Interrupted),
@@ -1852,7 +1858,13 @@ impl SkyframeActionExecutor {
                     )
                     .into())
             }
-        }
+        })();
+        // finally
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1002 SkyframeActionExecutor.discoverInputs
+        listener.post(Arc::new(StoppedScanningActionEvent {
+            action: action.clone(),
+        }));
+        outcome
     }
 
     /// Must not be called with a `LostInputsActionExecutionException`.
@@ -3653,6 +3665,9 @@ impl InputMetadataProvider for ActionInputMetadata {
 /// `ActionExecutionContext.forInputDiscovery` of one action).
 // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:59 ActionExecutionContext
 struct ActionExecutionContextImpl<'a> {
+    /// The action the context was created for: the action of the progress events
+    /// ([`ActionExecutionContext::post_progress`]).
+    action: ActionRef,
     /// `getExecRoot()`: the executor's exec root, on the action file system when there is one.
     exec_root: Path,
     executor: &'a SkyframeActionExecutor,
@@ -3729,8 +3744,38 @@ impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
             &*self.executor.reporter,
         );
     }
-    fn post_progress(&self, _action: &dyn ActionExecutionMetadata, _progress: &ProgressStatus) {
-        // PORT: progress events (SchedulingActionEvent, RunningActionEvent) feed the UI only.
+    /// `progress.postTo(getEventHandler(), action)`.
+    ///
+    /// PORT: the posted events hold the action (`ActionRef`); the metadata the strategies pass
+    /// is the action this context was created for (a snapshot of it), so the context's own
+    /// action is posted.
+    // Java: com/google/devtools/build/lib/exec/SpawnRunner.java:116 SpawnRunner.ProgressStatus.postTo
+    fn post_progress(&self, _action: &dyn ActionExecutionMetadata, progress: &ProgressStatus) {
+        let event_handler = self.get_event_handler();
+        let action = self.action.clone();
+        match progress {
+            // Java: com/google/devtools/build/lib/exec/SpawnSchedulingEvent.java:36 SpawnSchedulingEvent.postTo
+            ProgressStatus::Scheduling(name) => {
+                event_handler.post(Arc::new(SchedulingActionEvent {
+                    action,
+                    strategy: name.clone(),
+                }))
+            }
+            // Java: com/google/devtools/build/lib/exec/SpawnExecutingEvent.java:41 SpawnExecutingEvent.postTo
+            ProgressStatus::Executing(name) => {
+                event_handler.post(Arc::new(RunningActionEvent {
+                    action,
+                    strategy: name.clone(),
+                }))
+            }
+            // Java: com/google/devtools/build/lib/exec/SpawnCheckingCacheEvent.java:34 SpawnCheckingCacheEvent.postTo
+            ProgressStatus::CheckingCache(name) => {
+                event_handler.post(Arc::new(CachingActionEvent {
+                    action,
+                    strategy: name.clone(),
+                }))
+            }
+        }
     }
     fn get_verbose_failures(&self) -> bool {
         self.executor.verbose_failures
@@ -4607,6 +4652,13 @@ mod action_output_metadata_store_tests {
         )
         .unwrap();
 
+        // Java evaluates `store.getTreeArtifactValue(outputArtifact)` (which chmods the child and
+        // so changes its ctime) before `createForTesting` stats the child for the expected value.
+        let tree = match store.get_tree_artifact_value(&artifact_input(&output_artifact)) {
+            Ok(tree) => tree,
+            Err(IoOrInterruptedException::Io(e)) => panic!("{e}"),
+            Err(IoOrInterruptedException::Interrupted(_)) => panic!("interrupted"),
+        };
         let child = Artifact::create_tree_output_str(&output_artifact, "child");
         let expected = blaze_exec::actions::TreeArtifactValue::build(
             vec![(
@@ -4619,11 +4671,6 @@ mod action_output_metadata_store_tests {
             None,
             None,
         );
-        let tree = match store.get_tree_artifact_value(&artifact_input(&output_artifact)) {
-            Ok(tree) => tree,
-            Err(IoOrInterruptedException::Io(e)) => panic!("{e}"),
-            Err(IoOrInterruptedException::Interrupted(_)) => panic!("interrupted"),
-        };
         assert_tree_eq(&tree, &expected, "");
 
         // Let the temporary directory be deleted (the store chmod'ed the tree to 0555).
@@ -4760,6 +4807,11 @@ mod action_output_metadata_store_tests {
         chmod(lib.get_path_string(), 0o755);
     }
 }
+
+/// The other 23 methods of `ActionOutputMetadataStoreTest`, with the table of all 30.
+#[cfg(test)]
+#[path = "action_output_metadata_store_tests.rs"]
+mod action_output_metadata_store_java_tests;
 
 /// Port of `ActionInputMapTest`, for the `ActionInputMap` inside [`ActionInputMetadata`].
 ///

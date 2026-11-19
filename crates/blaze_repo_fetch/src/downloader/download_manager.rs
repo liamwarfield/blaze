@@ -33,7 +33,11 @@ pub struct CacheProgress {
     is_finished: bool,
 }
 
-impl Postable for CacheProgress {}
+impl Postable for CacheProgress {
+    fn as_fetch_progress(&self) -> Option<&dyn FetchProgress> {
+        Some(self)
+    }
+}
 
 impl FetchProgress for CacheProgress {
     fn get_resource_identifier(&self) -> String {

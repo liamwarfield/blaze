@@ -302,6 +302,9 @@ pub fn clone_compiled_file(program: &CompiledFile) -> CompiledFile {
         ast: program.ast.clone(),
         loads: program.loads.clone(),
         build_facts: program.build_facts.clone(),
+        // The copy is for execution; Java's syntax tree stays with (and is taken by the resolve
+        // of) the original.
+        java_tree: std::sync::Mutex::new(None),
     }
 }
 

@@ -682,7 +682,6 @@ genrule(
 // Java: GenRuleConfiguredTargetTest.testBinaryTargetsExpandToExecutable
 /// Ensure that labels from binary targets expand to the executable
 #[test]
-#[ignore = "needs the mock C++ toolchain (cc_binary from the mock rules_cc)"]
 fn test_binary_targets_expand_to_executable() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(

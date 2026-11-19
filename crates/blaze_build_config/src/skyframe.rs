@@ -220,18 +220,46 @@ pub struct ConfigurationEnvironment {
     /// `PrecomputedValue.PATH_PACKAGE_LOCATOR` path entries (for the platform mappings file).
     pub package_path_roots: Vec<Path>,
     /// `PrecomputedValue.BASELINE_CONFIGURATION`.
-    pub baseline_configuration: Arc<BuildOptions>,
+    pub baseline_configuration: PrecomputedOptions,
     /// `PrecomputedValue.BASELINE_EXEC_CONFIGURATION`.
     ///
-    /// PORT: set once, before the first configuration is requested. Java injects it when the
-    /// baseline is set (`SkyframeExecutor.setBaselineConfiguration`), loading the exec
-    /// transition's .bzl with the same evaluator; Blaze's evaluator only exists once its
-    /// functions (this client among them) are registered, so a client may set it after building
-    /// the evaluator.
-    pub baseline_exec_configuration: std::sync::OnceLock<Arc<BuildOptions>>,
+    /// PORT: Java injects both values when the baseline is set
+    /// (`SkyframeExecutor.setBaselineConfiguration`), loading the exec transition's .bzl with the
+    /// same evaluator; Blaze's evaluator only exists once its functions (this client among them)
+    /// are registered, so the client sets them after building the evaluator, and again when the
+    /// build's options change (project files) before any configuration is computed.
+    pub baseline_exec_configuration: PrecomputedOptions,
     pub platforms: SharedPlatformValueProvider,
     /// `RepositoryMappingValue.key(RepositoryName.MAIN)` (PlatformMappingFunction).
     pub main_repository_mapping: Arc<dyn MainRepositoryMappingLookup>,
+}
+
+/// A precomputed `BuildOptions` value of the configuration client (Java: a `PrecomputedValue`
+/// injected into the graph): set before the first configuration is requested.
+#[derive(Default)]
+pub struct PrecomputedOptions(std::sync::RwLock<Option<Arc<BuildOptions>>>);
+
+impl PrecomputedOptions {
+    pub fn new(value: Option<Arc<BuildOptions>>) -> Self {
+        PrecomputedOptions(std::sync::RwLock::new(value))
+    }
+
+    /// The value; panics if it was never set.
+    pub fn get(&self) -> Arc<BuildOptions> {
+        self.0
+            .read()
+            .unwrap()
+            .clone()
+            .expect("IllegalStateException: precomputed baseline options are not set")
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.0.read().unwrap().is_some()
+    }
+
+    pub fn set(&self, value: Arc<BuildOptions>) {
+        *self.0.write().unwrap() = Some(value);
+    }
 }
 
 fn client<'a>(env: &'a Environment<'_>) -> &'a ConfigurationEnvironment {
@@ -923,7 +951,7 @@ fn possibly_apply_scopes(
 
     // TODO: b/390669368 - The same performance issue still exists if we reach this point.
     // Java: tasks.lookUp(PrecomputedValue.BASELINE_CONFIGURATION.getKey(), ...)
-    let baseline_configuration = client(env).baseline_configuration.clone();
+    let baseline_configuration = client(env).baseline_configuration.get();
     // BuildConfigurationKeyFunction passes a null label; the analysis producers
     // (BuildConfigurationKeyMapProducer) pass the target's label, which Blaze carries in the
     // request (`BuildConfigurationKeyValueKey::producer_label`).
@@ -1069,14 +1097,10 @@ fn compute_baseline_options(
 ) -> Result<Option<Arc<BuildOptions>>, ComputeError> {
     let raw_baseline_options = if key.after_exec_transition {
         // Use the precomputed baseline exec
-        client(env)
-            .baseline_exec_configuration
-            .get()
-            .expect("BASELINE_EXEC_CONFIGURATION is set")
-            .clone()
+        client(env).baseline_exec_configuration.get()
     } else {
         // Use the standard baseline
-        client(env).baseline_configuration.clone()
+        client(env).baseline_configuration.get()
     };
 
     // Some test infrastructure only creates mock or partial top-level BuildOptions such that
@@ -1364,8 +1388,8 @@ impl ConfigurationSkyframe {
             rule_class_provider: request.rule_class_provider,
             starlark_semantics: request.starlark_semantics,
             package_path_roots: request.package_path_roots,
-            baseline_configuration: build_options,
-            baseline_exec_configuration: std::sync::OnceLock::from(Arc::new(baseline_exec)),
+            baseline_configuration: PrecomputedOptions::new(Some(build_options)),
+            baseline_exec_configuration: PrecomputedOptions::new(Some(Arc::new(baseline_exec))),
             platforms: request.platforms,
             main_repository_mapping: Arc::new(UnportedMainRepositoryMapping),
         };
@@ -1412,11 +1436,7 @@ impl ConfigurationSkyframe {
     }
 
     pub fn baseline_exec_configuration(&self) -> Arc<BuildOptions> {
-        self.client()
-            .baseline_exec_configuration
-            .get()
-            .expect("BASELINE_EXEC_CONFIGURATION is set")
-            .clone()
+        self.client().baseline_exec_configuration.get()
     }
 
     fn client(&self) -> &ConfigurationEnvironment {

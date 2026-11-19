@@ -148,8 +148,38 @@ fn execution_transition_conf_dist_legacy() {
 }
 
 #[test]
-#[ignore = "needs ExecTransitionFinalizer full_hash scheme (unported in exec_transition_patch) and BuildOptions.hashCode"]
-fn execution_transition_conf_dist_full_hash() {}
+fn execution_transition_conf_dist_full_hash() {
+    let options = of(
+        &target_fragment_classes(),
+        &[
+            "--platforms=//platform:target",
+            "--experimental_exec_configuration_distinguisher=full_hash",
+        ],
+    );
+
+    let result = patch_exec_transition(Some(&execution_platform()), &options);
+
+    let mut mutable_copy = result.clone();
+    mutable_copy
+        .get_mut::<CoreOptions>()
+        .unwrap()
+        .platform_suffix = Some(String::new());
+    // BuildOptions.hashCode(): 31 + checksum().hashCode().
+    let full_hash = 31i32.wrapping_add(
+        blaze_build_config::output_path_mnemonic_computer::java_string_hash_code(
+            mutable_copy.checksum(),
+        ),
+    );
+
+    let core = result.get::<CoreOptions>().unwrap();
+    assert!(core.affected_by_starlark_transition.is_empty());
+    assert!(
+        core.platform_suffix
+            .as_deref()
+            .unwrap()
+            .contains(&format!("{:X}", full_hash as u32))
+    );
+}
 
 #[test]
 fn execution_transition_conf_dist_diff_to_affected() {

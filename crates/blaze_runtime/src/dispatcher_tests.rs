@@ -394,7 +394,10 @@ fn await_err_containing(out_err: &RecordingOutErr, text: &str) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    panic!("stderr never contained {text:?}: {}", out_err.err_as_latin1());
+    panic!(
+        "stderr never contained {text:?}: {}",
+        out_err.err_as_latin1()
+    );
 }
 
 mod blaze_command_dispatcher_test {
@@ -443,12 +446,10 @@ mod blaze_command_dispatcher_test {
         let hanging_command = command(annotation("testcommand", no_options, &[]), move |_, _| {
             command_started_tx.lock().send(()).unwrap();
             match interruptible::sleep(Duration::from_secs(600)) {
-                Err(InterruptedException) => {
-                    BlazeCommandResult::detailed_exit_code(interrupted(
-                        "",
-                        failure_details::interrupted::Code::Interrupted,
-                    ))
-                }
+                Err(InterruptedException) => BlazeCommandResult::detailed_exit_code(interrupted(
+                    "",
+                    failure_details::interrupted::Code::Interrupted,
+                )),
                 Ok(()) => panic!("IllegalStateException: Should have been interrupted"),
             }
         });
@@ -501,9 +502,14 @@ mod blaze_command_dispatcher_test {
         let recording_out_err = RecordingOutErr::new();
         let error_message = "bazel is crashing: crash oom message";
         assert_eq!(
-            exec(&dispatch, &["testcommand"], "clientdesc", &recording_out_err)
-                .get_detailed_exit_code()
-                .get_failure_detail(),
+            exec(
+                &dispatch,
+                &["testcommand"],
+                "clientdesc",
+                &recording_out_err
+            )
+            .get_detailed_exit_code()
+            .get_failure_detail(),
             Some(&FailureDetail {
                 message: error_message.to_string(),
                 category: Some(Category::Command(failure_details::Command {
@@ -525,8 +531,10 @@ mod blaze_command_dispatcher_test {
                 posts it; Blaze declares the exit code without posting, see notify_command_complete)"]
     fn test_exec_reports_status() {}
 
-    fn client_env_recorder() -> (Arc<dyn BlazeModule>, Arc<Mutex<Option<Vec<(String, String)>>>>)
-    {
+    fn client_env_recorder() -> (
+        Arc<dyn BlazeModule>,
+        Arc<Mutex<Option<Vec<(String, String)>>>>,
+    ) {
         let client_env = Arc::new(Mutex::new(None));
         let recorded = client_env.clone();
         let module = Arc::new(TestModule {
@@ -614,7 +622,12 @@ mod blaze_command_dispatcher_test {
         let dispatch = dispatcher(&fixture, BlazeCommandDispatcher::UNKNOWN_SERVER_PID);
         let out_err = RecordingOutErr::new();
 
-        exec(&dispatch, &["foo", "--stdout=Hello, foo."], "test", &out_err);
+        exec(
+            &dispatch,
+            &["foo", "--stdout=Hello, foo."],
+            "test",
+            &out_err,
+        );
         assert_eq!(out_err.out_as_latin1(), "Hello, foo.");
         out_err.reset();
         exec(&dispatch, &["bar"], "test", &out_err);
@@ -1038,9 +1051,9 @@ mod blaze_command_dispatcher_test {
         assert!(result.get_exit_code().is_infrastructure_failure());
         assert_eq!(result.get_detailed_exit_code(), &infrastructure_failure);
         assert!(
-            out_err.err_as_latin1().contains(
-                "This is an infrastructure failure so this error should take priority."
-            )
+            out_err
+                .err_as_latin1()
+                .contains("This is an infrastructure failure so this error should take priority.")
         );
     }
 
@@ -1316,4 +1329,182 @@ mod command_interruption_test {
     #[ignore = "needs BlazeModuleEnvironment.exit from another thread, and a command executor that \
                 reuses threads (each server command runs on a fresh thread)"]
     fn calling_exit_after_command_completes_does_nothing() {}
+}
+
+/// Several commands of the real Bazel modules through one runtime and one dispatcher, as a
+/// server runs them: `version`, `info`, a genrule `build` twice, a `build` whose command thread
+/// is interrupted (the server's `Cancel`), then a `build` that must not start interrupted.
+///
+/// Needs the oracle's install base (`embedded_tools`, `linux-sandbox`) and the shared repository
+/// cache (AGENTS.md "Fixed facts"); skipped when the install base is missing.
+mod server_commands {
+    use super::*;
+
+    const INSTALL_MD5: &str = "58cf1ecbff441bac762b0050d6da21e9";
+
+    fn home() -> std::path::PathBuf {
+        std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"))
+    }
+
+    fn run(
+        dispatch: &BlazeCommandDispatcher,
+        args: &[String],
+        out_err: &RecordingOutErr,
+    ) -> BlazeCommandResult {
+        dispatch
+            .exec(
+                InvocationPolicy::default(),
+                args.to_vec(),
+                out_err.out_err().clone(),
+                LockingMode::WAIT,
+                UiVerbosity::NORMAL,
+                "pid=1",
+                None,
+            )
+            .expect("not interrupted while waiting for the lock")
+    }
+
+    #[test]
+    fn several_commands_through_one_runtime_and_dispatcher() {
+        let install_base = home().join(format!(".cache/blaze/oracle-out/ur/install/{INSTALL_MD5}"));
+        if !install_base.join("embedded_tools").is_dir() {
+            eprintln!(
+                "skipping: no oracle install base at {}",
+                install_base.display()
+            );
+            return;
+        }
+        let repository_cache = home().join(".cache/blaze/repo-cache");
+
+        let serial = TEST_SERIAL.lock();
+        crate::bugreport::install_panic_hook();
+        // Bazel.main, once per process.
+        static BUILD_INFO: std::sync::Once = std::sync::Once::new();
+        BUILD_INFO.call_once(|| {
+            crate::version_info::BlazeVersionInfo::set_build_info(
+                crate::version_info::try_get_build_info(),
+            )
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_string();
+        let ws = format!("{root}/ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(format!("{ws}/MODULE.bazel"), "").unwrap();
+        std::fs::write(
+            format!("{ws}/BUILD"),
+            "genrule(\n    name = \"g\",\n    outs = [\"g.txt\"],\n    cmd = \"echo hello > $@\",\n)\n\n\
+             genrule(\n    name = \"slow\",\n    outs = [\"slow.txt\"],\n    cmd = \"sleep 120; echo slow > $@\",\n)\n",
+        )
+        .unwrap();
+        let ob = format!("{root}/ob");
+        std::fs::create_dir_all(&ob).unwrap();
+        let args = vec![
+            format!("--install_base={}", install_base.display()),
+            format!("--install_md5={INSTALL_MD5}"),
+            format!("--output_base={ob}"),
+            format!("--output_user_root={root}"),
+            format!("--workspace_directory={ws}"),
+            format!("--failure_detail_out={ob}/failure_detail.rawproto"),
+        ];
+        let runtime =
+            match BlazeRuntime::new_runtime(crate::bazel_modules::bazel_modules(), &args, None) {
+                Ok(runtime) => runtime,
+                Err(_) => panic!("newRuntime failed"),
+            };
+        let _fixture = Fixture {
+            runtime: runtime.clone(),
+            _dir: dir,
+            _serial: serial,
+        };
+        let dispatch = Arc::new(BlazeCommandDispatcher::new(runtime, 4242));
+        let command = |args: &[&str]| -> Vec<String> {
+            let mut v: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            v.push(format!("--client_cwd={ws}"));
+            v
+        };
+        let build = |target: &str| -> Vec<String> {
+            command(&[
+                "build",
+                target,
+                &format!("--repository_cache={}", repository_cache.display()),
+                "--color=no",
+                "--curses=no",
+            ])
+        };
+
+        let out_err = RecordingOutErr::new();
+        let result = run(&dispatch, &command(&["version"]), &out_err);
+        assert_eq!(
+            result.get_exit_code(),
+            ExitCode::SUCCESS,
+            "{}",
+            out_err.err_as_latin1()
+        );
+        assert!(out_err.out_as_latin1().starts_with("Build label:"));
+
+        let out_err = RecordingOutErr::new();
+        let result = run(&dispatch, &command(&["info", "output_base"]), &out_err);
+        assert_eq!(
+            result.get_exit_code(),
+            ExitCode::SUCCESS,
+            "{}",
+            out_err.err_as_latin1()
+        );
+        assert_eq!(out_err.out_as_latin1(), format!("{ob}\n"));
+
+        for _ in 0..2 {
+            let out_err = RecordingOutErr::new();
+            let result = run(&dispatch, &build("//:g"), &out_err);
+            assert_eq!(
+                result.get_exit_code(),
+                ExitCode::SUCCESS,
+                "{}",
+                out_err.err_as_latin1()
+            );
+            assert!(
+                out_err
+                    .err_as_latin1()
+                    .contains("INFO: Build completed successfully"),
+                "{}",
+                out_err.err_as_latin1()
+            );
+        }
+
+        // A cancelled command: its thread is interrupted while the genrule sleeps.
+        let out_err = RecordingOutErr::new();
+        let (thread_tx, thread_rx) = mpsc::channel();
+        let slow_dispatch = dispatch.clone();
+        let slow_out_err = out_err.clone();
+        let slow_args = build("//:slow");
+        let slow = std::thread::spawn(move || {
+            thread_tx.send(ThreadInterrupt::current()).unwrap();
+            run(&slow_dispatch, &slow_args, &slow_out_err)
+        });
+        let slow_thread = thread_rx.recv().unwrap();
+        await_err_containing(&out_err, "INFO: Found 1 target...");
+        std::thread::sleep(Duration::from_secs(2));
+        slow_thread.interrupt();
+        let result = slow.join().unwrap();
+        assert_eq!(
+            result.get_exit_code(),
+            ExitCode::INTERRUPTED,
+            "{}",
+            out_err.err_as_latin1()
+        );
+
+        // The next command is not interrupted.
+        let out_err = RecordingOutErr::new();
+        let result = run(&dispatch, &build("//:g"), &out_err);
+        assert_eq!(
+            result.get_exit_code(),
+            ExitCode::SUCCESS,
+            "{}",
+            out_err.err_as_latin1()
+        );
+        let out_err = RecordingOutErr::new();
+        let result = run(&dispatch, &command(&["info", "server_pid"]), &out_err);
+        assert_eq!(result.get_exit_code(), ExitCode::SUCCESS);
+        // ServerPidInfoItem: ProcessHandle.current().pid().
+        assert_eq!(out_err.out_as_latin1(), format!("{}\n", std::process::id()));
+    }
 }

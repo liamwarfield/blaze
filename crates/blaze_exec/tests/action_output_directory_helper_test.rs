@@ -7,6 +7,7 @@
 
 mod analysis_actions_common;
 
+use std::io::{self, Read, Write};
 use std::sync::Arc;
 
 use analysis_actions_common::{NullArtifactOwner, TestDirs};
@@ -14,7 +15,10 @@ use blaze_actions::actions::artifact::SpecialArtifactType;
 use blaze_actions::{ActionLookupKeyRef, Artifact, ArtifactRoot, RootType};
 use blaze_exec::actions::action_output_directory_helper::ActionOutputDirectoryHelper;
 use blaze_exec::exec::remote_action_file_system::RemoteInMemoryFileSystem;
-use blaze_vfs::{DigestHashFunction, DirentType, FileSystemExt, FileSystemRef, Path, PathFragment};
+use blaze_vfs::{
+    DigestHashFunction, Dirent, DirentType, FileStatus, FileSystem, FileSystemExt, FileSystemRef,
+    Path, PathFragment,
+};
 
 /// `OutputSet`: file outputs, tree outputs and the expected leaf directories.
 /// (name, file outputs, tree outputs, expected leaf directories)
@@ -206,10 +210,246 @@ fn create_output_directories_overwrites_existing_file_at_grandparent_path() {
     assert!(parent_path.is_executable().unwrap());
 }
 
+/// `IOException injectedException = new IOException("oh no!")`.
+///
+/// PORT: `io::Error` has no identity; `isSameInstanceAs(injectedException)` is checked by the
+/// payload: an `InjectedException` with the id of the one the test created.
+#[derive(Debug)]
+struct InjectedException {
+    id: usize,
+}
+
+impl std::fmt::Display for InjectedException {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("oh no!")
+    }
+}
+
+impl std::error::Error for InjectedException {}
+
+/// A fresh `injectedException`, distinct from every other one the tests create.
+fn new_injected_exception_id() -> usize {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// `assertThat(e).hasCauseThat().isSameInstanceAs(injectedException)`.
+fn assert_cause_is_injected(cause: &io::Error, id: usize) {
+    let injected = cause
+        .get_ref()
+        .and_then(|e| e.downcast_ref::<InjectedException>())
+        .unwrap_or_else(|| panic!("cause is not the injected exception: {cause:?}"));
+    assert_eq!(injected.id, id);
+    assert_eq!(cause.to_string(), "oh no!");
+}
+
+/// `new DelegateFileSystem(delegate) {}`, and, with a `failing_path`, the file system of
+/// `createFileSystemInjectingException(failingPath, injectedException)`: `createDirectory` and
+/// `createDirectoryAndParents` of `failing_path` throw the injected exception.
+// Java: src/test/java/com/google/devtools/build/lib/actions/ActionOutputDirectoryHelperTest.java:255 ActionOutputDirectoryHelperTest.createFileSystemInjectingException
+#[derive(Debug)]
+struct DelegateFileSystem {
+    delegate: FileSystemRef,
+    failing_path: Option<(PathFragment, usize)>,
+}
+
+impl DelegateFileSystem {
+    fn injected(&self, path: &PathFragment) -> io::Result<()> {
+        match &self.failing_path {
+            Some((failing_path, id)) if path == failing_path => {
+                Err(io::Error::other(InjectedException { id: *id }))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+impl FileSystem for DelegateFileSystem {
+    fn get_digest_function(&self) -> DigestHashFunction {
+        self.delegate.get_digest_function()
+    }
+    fn supports_modifications(&self, path: &PathFragment) -> bool {
+        self.delegate.supports_modifications(path)
+    }
+    fn supports_symbolic_links_natively(&self, path: &PathFragment) -> bool {
+        self.delegate.supports_symbolic_links_natively(path)
+    }
+    fn supports_hard_links_natively(&self, path: &PathFragment) -> bool {
+        self.delegate.supports_hard_links_natively(path)
+    }
+    fn may_be_case_or_normalization_insensitive(&self) -> bool {
+        self.delegate.may_be_case_or_normalization_insensitive()
+    }
+    fn create_directory(&self, path: &PathFragment) -> io::Result<bool> {
+        self.injected(path)?;
+        self.delegate.create_directory(path)
+    }
+    fn create_directory_and_parents(&self, path: &PathFragment) -> io::Result<()> {
+        self.injected(path)?;
+        self.delegate.create_directory_and_parents(path)
+    }
+    fn get_file_size(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<i64> {
+        self.delegate.get_file_size(path, follow_symlinks)
+    }
+    fn delete(&self, path: &PathFragment) -> io::Result<bool> {
+        self.delegate.delete(path)
+    }
+    fn get_last_modified_time(
+        &self,
+        path: &PathFragment,
+        follow_symlinks: bool,
+    ) -> io::Result<i64> {
+        self.delegate.get_last_modified_time(path, follow_symlinks)
+    }
+    fn set_last_modified_time(&self, path: &PathFragment, new_time: i64) -> io::Result<()> {
+        self.delegate.set_last_modified_time(path, new_time)
+    }
+    fn get_fast_digest(&self, path: &PathFragment) -> io::Result<Option<Vec<u8>>> {
+        self.delegate.get_fast_digest(path)
+    }
+    fn get_digest(&self, path: &PathFragment) -> io::Result<Vec<u8>> {
+        self.delegate.get_digest(path)
+    }
+    fn resolve_one_link(&self, path: &PathFragment) -> io::Result<Option<PathFragment>> {
+        self.delegate.resolve_one_link(path)
+    }
+    fn resolve_symbolic_links(&self, path: &PathFragment) -> io::Result<PathFragment> {
+        self.delegate.resolve_symbolic_links(path)
+    }
+    fn stat(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<FileStatus> {
+        self.delegate.stat(path, follow_symlinks)
+    }
+    fn stat_nullable(&self, path: &PathFragment, follow_symlinks: bool) -> Option<FileStatus> {
+        self.delegate.stat_nullable(path, follow_symlinks)
+    }
+    fn stat_if_found(
+        &self,
+        path: &PathFragment,
+        follow_symlinks: bool,
+    ) -> io::Result<Option<FileStatus>> {
+        self.delegate.stat_if_found(path, follow_symlinks)
+    }
+    fn create_symbolic_link(
+        &self,
+        link_path: &PathFragment,
+        target_fragment: &PathFragment,
+    ) -> io::Result<()> {
+        self.delegate
+            .create_symbolic_link(link_path, target_fragment)
+    }
+    fn read_symbolic_link(&self, path: &PathFragment) -> io::Result<PathFragment> {
+        self.delegate.read_symbolic_link(path)
+    }
+    fn exists(&self, path: &PathFragment, follow_symlinks: bool) -> bool {
+        self.delegate.exists(path, follow_symlinks)
+    }
+    fn get_directory_entries(&self, path: &PathFragment) -> io::Result<Vec<String>> {
+        self.delegate.get_directory_entries(path)
+    }
+    fn readdir(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<Vec<Dirent>> {
+        self.delegate.readdir(path, follow_symlinks)
+    }
+    fn is_readable(&self, path: &PathFragment) -> io::Result<bool> {
+        self.delegate.is_readable(path)
+    }
+    fn set_readable(&self, path: &PathFragment, readable: bool) -> io::Result<()> {
+        self.delegate.set_readable(path, readable)
+    }
+    fn is_writable(&self, path: &PathFragment) -> io::Result<bool> {
+        self.delegate.is_writable(path)
+    }
+    fn set_writable(&self, path: &PathFragment, writable: bool) -> io::Result<()> {
+        self.delegate.set_writable(path, writable)
+    }
+    fn is_executable(&self, path: &PathFragment) -> io::Result<bool> {
+        self.delegate.is_executable(path)
+    }
+    fn set_executable(&self, path: &PathFragment, executable: bool) -> io::Result<()> {
+        self.delegate.set_executable(path, executable)
+    }
+    fn chmod(&self, path: &PathFragment, mode: u32) -> io::Result<()> {
+        self.delegate.chmod(path, mode)
+    }
+    fn get_input_stream(&self, path: &PathFragment) -> io::Result<Box<dyn Read + Send>> {
+        self.delegate.get_input_stream(path)
+    }
+    fn get_output_stream(
+        &self,
+        path: &PathFragment,
+        append: bool,
+        internal: bool,
+    ) -> io::Result<Box<dyn Write + Send>> {
+        self.delegate.get_output_stream(path, append, internal)
+    }
+    fn rename_to(&self, source_path: &PathFragment, target_path: &PathFragment) -> io::Result<()> {
+        self.delegate.rename_to(source_path, target_path)
+    }
+    fn create_hard_link(
+        &self,
+        link_path: &PathFragment,
+        original_path: &PathFragment,
+    ) -> io::Result<()> {
+        self.delegate.create_hard_link(link_path, original_path)
+    }
+    fn create_fs_dependent_hard_link(
+        &self,
+        link_path: &PathFragment,
+        original_path: &PathFragment,
+    ) -> io::Result<()> {
+        self.delegate
+            .create_fs_dependent_hard_link(link_path, original_path)
+    }
+}
+
+// Java: src/test/java/com/google/devtools/build/lib/actions/ActionOutputDirectoryHelperTest.java:255 ActionOutputDirectoryHelperTest.createFileSystemInjectingException
+fn create_file_system_injecting_exception(
+    exec_root: &Path,
+    failing_path: PathFragment,
+    injected_exception: usize,
+) -> FileSystemRef {
+    Arc::new(DelegateFileSystem {
+        delegate: exec_root.get_file_system().clone(),
+        failing_path: Some((failing_path, injected_exception)),
+    })
+}
+
 // Java: src/test/java/com/google/devtools/build/lib/actions/ActionOutputDirectoryHelperTest.java:196 ActionOutputDirectoryHelperTest.createOutputDirectories_ioExceptionWhenCreatingDirectory_fails
+// PORT: @TestParameter DirectoryCache: only CACHE_ENABLED, as
+// create_output_directories_creates_expected_directories.
 #[test]
-#[ignore = "needs createFileSystemInjectingException (a FileSystem whose createDirectory fails with a given IOException) and DelegateFileSystem, which are not ported"]
-fn create_output_directories_io_exception_when_creating_directory_fails() {}
+fn create_output_directories_io_exception_when_creating_directory_fails() {
+    let dirs = TestDirs::new();
+    let exec_root = dirs.exec_root.clone();
+    let output_root = output_root(&dirs);
+    let output_directory_helper = ActionOutputDirectoryHelper::new();
+    let injected_exception = new_injected_exception_id();
+    let output_root_path = output_root
+        .get_root()
+        .as_path()
+        .unwrap()
+        .as_fragment()
+        .clone();
+    let fs_with_failures = create_file_system_injecting_exception(
+        &exec_root,
+        output_root_path.get_relative(&PathFragment::create("dir")),
+        injected_exception,
+    );
+    let root_with_failure = create_output_root(&Path::create(
+        exec_root.as_fragment().clone(),
+        &fs_with_failures,
+    ));
+    let outputs = vec![create_output(&root_with_failure, "dir/file")];
+
+    let e = output_directory_helper
+        .create_output_directories(&outputs)
+        .unwrap_err();
+
+    assert_eq!(
+        e.get_directory_path(),
+        &output_root_path.get_relative(&PathFragment::create("dir"))
+    );
+    assert_cause_is_injected(e.get_cause(), injected_exception);
+}
 
 // Java: src/test/java/com/google/devtools/build/lib/actions/ActionOutputDirectoryHelperTest.java:236 ActionOutputDirectoryHelperTest.invalidateTreeArtifactDirectoryCreation_onlyInvalidatesTreeArtifactDirs
 #[test]
@@ -289,5 +529,42 @@ fn create_action_fs_output_directories_creates_expected_directories_in_action_fs
 
 // Java: src/test/java/com/google/devtools/build/lib/actions/ActionOutputDirectoryHelperTest.java:216 ActionOutputDirectoryHelperTest.createActionFsOutputDirectories_ioExceptionWhenCreatingDirectory_fails
 #[test]
-#[ignore = "needs createFileSystemInjectingException (a FileSystem whose createDirectory fails with a given IOException) and DelegateFileSystem, which are not ported"]
-fn create_action_fs_output_directories_io_exception_when_creating_directory_fails() {}
+fn create_action_fs_output_directories_io_exception_when_creating_directory_fails() {
+    let dirs = TestDirs::new();
+    let exec_root = dirs.exec_root.clone();
+    let output_root = output_root(&dirs);
+    let output_directory_helper = ActionOutputDirectoryHelper::new();
+    let injected_exception = new_injected_exception_id();
+    let output_root_path = output_root
+        .get_root()
+        .as_path()
+        .unwrap()
+        .as_fragment()
+        .clone();
+    let fs_with_failures = create_file_system_injecting_exception(
+        &exec_root,
+        output_root_path.get_relative(&PathFragment::create("dir")),
+        injected_exception,
+    );
+    let root_with_failure = create_output_root(&Path::create(
+        exec_root.as_fragment().clone(),
+        &fs_with_failures,
+    ));
+    let outputs = vec![create_output(&root_with_failure, "dir/file")];
+    let action_file_system: FileSystemRef = Arc::new(DelegateFileSystem {
+        delegate: fs_with_failures,
+        failing_path: None,
+    });
+    // ArtifactPathResolver.createPathResolver(actionFileSystem, execRoot)
+    let path_resolver = Some(&action_file_system);
+
+    let e = output_directory_helper
+        .create_action_fs_output_directories(&outputs, path_resolver)
+        .unwrap_err();
+
+    assert_eq!(
+        e.get_directory_path(),
+        &output_root_path.get_relative(&PathFragment::create("dir"))
+    );
+    assert_cause_is_injected(e.get_cause(), injected_exception);
+}

@@ -15,7 +15,11 @@ pub struct DownloadProgressEvent {
     pub download_finished: bool,
 }
 
-impl Postable for DownloadProgressEvent {}
+impl Postable for DownloadProgressEvent {
+    fn as_fetch_progress(&self) -> Option<&dyn FetchProgress> {
+        Some(self)
+    }
+}
 
 impl DownloadProgressEvent {
     pub fn new(

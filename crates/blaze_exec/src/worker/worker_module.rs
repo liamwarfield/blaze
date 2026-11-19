@@ -112,6 +112,12 @@ impl WorkerModule {
     // Java: com/google/devtools/build/lib/worker/WorkerModule.java:92 WorkerModule.buildStarting
     pub fn build_starting(event: WorkerBuildStarting<'_>) {
         let mut st = MODULE.lock();
+        // Java posts one BuildStartingEvent per build. PORT: Blaze can build the executor (and
+        // with it the `worker` strategy, see register_spawn_strategies) before the build command
+        // reaches the event; the first of the two runs this, the second returns here.
+        if st.build_started {
+            return;
+        }
         st.build_started = true;
         st.reporter = Some(event.reporter.clone());
         st.options = Some(event.worker_options.clone());

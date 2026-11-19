@@ -172,3 +172,90 @@ pub fn create_worker_key_mnemonic(
         &[],
     )
 }
+
+/// `WorkerTestUtils.FakeSubprocess`: a process whose stdout is `bytes` and whose stdin is
+/// recorded.
+// Java: src/test/java/com/google/devtools/build/lib/worker/WorkerTestUtils.java:243 WorkerTestUtils.FakeSubprocess
+pub struct FakeSubprocess {
+    input: parking_lot::Mutex<Option<Vec<u8>>>,
+    pub output: Arc<parking_lot::Mutex<Vec<u8>>>,
+    was_destroyed: std::sync::atomic::AtomicBool,
+}
+
+impl FakeSubprocess {
+    pub fn new(bytes: Vec<u8>) -> Arc<FakeSubprocess> {
+        Arc::new(FakeSubprocess {
+            input: parking_lot::Mutex::new(Some(bytes)),
+            output: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            was_destroyed: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+}
+
+struct SharedWriter(Arc<parking_lot::Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The `Subprocess` handed to the worker; shares the fake's state.
+pub struct FakeSubprocessHandle(pub Arc<FakeSubprocess>);
+
+impl blaze_shell::Subprocess for FakeSubprocessHandle {
+    fn destroy(&self) -> bool {
+        self.0
+            .was_destroyed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        true
+    }
+    fn exit_value(&self) -> i32 {
+        0
+    }
+    fn finished(&self) -> bool {
+        true
+    }
+    fn is_alive(&self) -> bool {
+        !self
+            .0
+            .was_destroyed
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn timedout(&self) -> bool {
+        false
+    }
+    fn wait_for(&self) -> Result<(), blaze_shell::InterruptedException> {
+        Ok(())
+    }
+    fn get_output_stream(&self) -> Option<Box<dyn std::io::Write + Send>> {
+        Some(Box::new(SharedWriter(self.0.output.clone())))
+    }
+    fn get_input_stream(&self) -> Option<Box<dyn std::io::Read + Send>> {
+        let bytes = self.0.input.lock().take().unwrap_or_default();
+        Some(Box::new(std::io::Cursor::new(bytes)))
+    }
+    fn get_error_stream(&self) -> Option<Box<dyn std::io::Read + Send>> {
+        Some(Box::new(std::io::empty()))
+    }
+    fn get_process_id(&self) -> i64 {
+        0
+    }
+    fn close(&self) {}
+}
+
+/// A `SubprocessFactory` that hands out one fake process.
+pub struct FakeSubprocessFactory(pub Arc<FakeSubprocess>);
+
+impl blaze_shell::SubprocessFactory for FakeSubprocessFactory {
+    fn create(
+        &self,
+        _params: &blaze_shell::SubprocessBuilder,
+    ) -> std::io::Result<Box<dyn blaze_shell::Subprocess>> {
+        Ok(Box::new(FakeSubprocessHandle(self.0.clone())))
+    }
+}

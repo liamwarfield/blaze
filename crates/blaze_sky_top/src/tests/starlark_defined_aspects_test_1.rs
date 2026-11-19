@@ -260,7 +260,6 @@ fn expect_failure(result: Result<&AnalysisResult, BuildViewError>) {
 
 // Java: StarlarkDefinedAspectsTest.simpleAspect
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn simple_aspect() {
     let mut t = new_test();
     t.scratch.file(
@@ -291,7 +290,6 @@ MyAspect = aspect(implementation=_impl)
 
 // Java: StarlarkDefinedAspectsTest.aspectCanBeDefinedUsingFactory
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
 fn aspect_can_be_defined_using_factory() {
     let mut t = new_test();
     t.scratch.file(
@@ -352,7 +350,6 @@ my_aspect = aspect_factory()
 
 // Java: StarlarkDefinedAspectsTest.aspectWithSingleDeclaredProvider
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_with_single_declared_provider() {
     let mut t = new_test();
     t.scratch.file(
@@ -392,7 +389,6 @@ MyAspect = aspect(implementation=_impl)
 
 // Java: StarlarkDefinedAspectsTest.aspectWithDeclaredProviders
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_with_declared_providers() {
     let mut t = new_test();
     t.scratch.file(
@@ -439,7 +435,6 @@ MyAspect = aspect(implementation=_impl)
 
 // Java: StarlarkDefinedAspectsTest.aspectWithDeclaredProvidersInAStruct
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_with_declared_providers_in_a_struct() {
     let mut t = new_test();
     t.scratch.file(
@@ -487,7 +482,6 @@ MyAspect = aspect(implementation=_impl)
 
 // Java: StarlarkDefinedAspectsTest.aspectCommandLineLabel
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_command_line_label() {
     let mut t = new_test();
     t.scratch.file(
@@ -518,7 +512,6 @@ MyAspect = aspect(implementation=_impl)
 
 // Java: StarlarkDefinedAspectsTest.aspectCommandLineRepoLabel
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_command_line_repo_label() {
     let mut t = new_test();
     t.scratch.append_file(
@@ -560,7 +553,6 @@ MyAspect = aspect(implementation=_impl)
 
 // Java: StarlarkDefinedAspectsTest.aspectAllowsFragmentsToBeSpecified
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_allows_fragments_to_be_specified() {
     let mut t = new_test();
     t.scratch.file(
@@ -609,7 +601,6 @@ MyAspect = aspect(implementation=_impl, fragments=['java'])
 
 // Java: StarlarkDefinedAspectsTest.aspectPropagating
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_propagating() {
     let mut t = new_test();
     t.scratch.file(
@@ -660,7 +651,6 @@ java_library(
 
 // Java: StarlarkDefinedAspectsTest.aspectsPropagatingForDefaultAndImplicit
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
 fn aspects_propagating_for_default_and_implicit() {
     let mut t = new_test();
     t.use_configuration(&[
@@ -786,7 +776,6 @@ my_rule(name = 'yyy', dep = ':xxx')
 
 // Java: StarlarkDefinedAspectsTest.aspectWithOutputGroupsDeclaredProvider
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_with_output_groups_declared_provider() {
     let mut t = new_test();
     let line = format!("   f = target[OutputGroupInfo]._hidden_top_level{INTERNAL_SUFFIX}");
@@ -844,7 +833,6 @@ java_library(
 
 // Java: StarlarkDefinedAspectsTest.aspectWithOutputGroupsAsListDeclaredProvider
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_with_output_groups_as_list_declared_provider() {
     let mut t = new_test();
     let line = format!("   g = target[OutputGroupInfo]._hidden_top_level{INTERNAL_SUFFIX}");
@@ -908,7 +896,6 @@ java_library(
 
 // Java: StarlarkDefinedAspectsTest.aspectsFromStarlarkRules
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspects_from_starlark_rules() {
     let mut t = new_test();
     t.scratch.file(
@@ -962,7 +949,6 @@ my_rule(
 
 // Java: StarlarkDefinedAspectsTest.aspectsNonExported
 #[test]
-#[ignore = "needs the mock rules_java (java_library) of BazelAnalysisMock: without it the BUILD file's second load() fails as well, and which of the two load errors is reported is a race (the test passed and failed in turn)"]
 fn aspects_non_exported() {
     let mut t = new_test();
     t.scratch.file(
@@ -1011,7 +997,6 @@ my_rule(
 
 // Java: StarlarkDefinedAspectsTest.aspectReturnsNonExportedProvider
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_returns_non_exported_provider() {
     let mut t = new_test();
     t.scratch.file(
@@ -1045,7 +1030,6 @@ r(name = 'test', a = [':j'])
 
 // Java: StarlarkDefinedAspectsTest.providerNonExported
 #[test]
-#[ignore = "needs the mock rules_java (java_library) of BazelAnalysisMock: without it the BUILD file's second load() fails as well, and which of the two load errors is reported is a race (the test passed and failed in turn)"]
 fn provider_non_exported() {
     let mut t = new_test();
     t.scratch.file(
@@ -1090,7 +1074,6 @@ my_rule(
 
 // Java: StarlarkDefinedAspectsTest.aspectOnLabelAttr
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_on_label_attr() {
     let mut t = new_test();
     t.scratch.file(
@@ -1136,7 +1119,6 @@ my_rule(
 
 // Java: StarlarkDefinedAspectsTest.labelKeyedStringDictAllowsAspects
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn label_keyed_string_dict_allows_aspects() {
     let mut t = new_test();
     t.scratch.file(
@@ -1184,7 +1166,6 @@ my_rule(
 
 // Java: StarlarkDefinedAspectsTest.labelListDictAllowsAspects
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
 fn label_list_dict_allows_aspects() {
     let mut t = new_test();
     t.scratch.file(
@@ -1234,7 +1215,6 @@ my_rule(
 
 // Java: StarlarkDefinedAspectsTest.aspectsDoNotAttachToFiles
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspects_do_not_attach_to_files() {
     let mut t = new_test();
     t.scratch.file(
@@ -1269,7 +1249,6 @@ java_library(
 
 // Java: StarlarkDefinedAspectsTest.aspectsDoNotAttachToTopLevelFiles
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspects_do_not_attach_to_top_level_files() {
     let mut t = new_test();
     t.scratch.file(
@@ -1306,7 +1285,6 @@ java_library(
 
 // Java: StarlarkDefinedAspectsTest.aspectFailingExecution
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_failing_execution() {
     let mut t = new_test();
     t.scratch.file(
@@ -1339,7 +1317,6 @@ MyAspect = aspect(implementation=_impl)
 
 // Java: StarlarkDefinedAspectsTest.aspectFailingReturnsNotAStruct
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_failing_returns_not_a_struct() {
     let mut t = new_test();
     t.scratch.file(
@@ -1367,7 +1344,6 @@ MyAspect = aspect(implementation=_impl)
 
 // Java: StarlarkDefinedAspectsTest.aspectFailingOrphanArtifacts
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_failing_orphan_artifacts() {
     let mut t = new_test();
     t.scratch.file(
@@ -1444,7 +1420,6 @@ genrule(
 
 // Java: StarlarkDefinedAspectsTest.expandLocationFailsForTargetsWithSameLabel
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
 fn expand_location_fails_for_targets_with_same_label() {
     let mut t = new_test();
     t.scratch.overwrite_file(
@@ -1506,7 +1481,6 @@ split_deps_rule(
 
 // Java: StarlarkDefinedAspectsTest.topLevelAspectIsNotAnAspect
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn top_level_aspect_is_not_an_aspect() {
     let mut t = new_test();
     t.scratch.file("test/aspect.bzl", &["MyAspect = 4"]);
@@ -1982,7 +1956,6 @@ rbase(name = 'yyy', dep = ':xxx')
 
 // Java: StarlarkDefinedAspectsTest.topLevelAspectDoesNotExist
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn top_level_aspect_does_not_exist() {
     let mut t = new_test();
     t.scratch.file("test/aspect.bzl", &[""]);
@@ -2001,7 +1974,6 @@ fn top_level_aspect_does_not_exist() {
 
 // Java: StarlarkDefinedAspectsTest.topLevelAspectDoesNotExist2
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn top_level_aspect_does_not_exist2() {
     let mut t = new_test();
     t.scratch.file(

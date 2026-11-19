@@ -101,10 +101,8 @@ pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &Opti
     // The Build Event Protocol of the commands whose build events are not posted yet (the
     // module streams them: crate::bazel_modules::BazelBuildEventServiceModule).
     // Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModule.java:189 BazelBuildEventServiceModule.ALLOWED_COMMANDS
-    if matches!(
-        command_name,
-        "cquery" | "aquery" | "coverage" | "mobile-install"
-    ) && let Some(o) = options.get_options::<BuildEventStreamOptions>()
+    if matches!(command_name, "coverage" | "mobile-install")
+        && let Some(o) = options.get_options::<BuildEventStreamOptions>()
         && (!o.build_event_text_file.is_empty()
             || !o.build_event_binary_file.is_empty()
             || !o.build_event_json_file.is_empty())

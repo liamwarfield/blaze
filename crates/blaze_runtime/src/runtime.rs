@@ -18,9 +18,9 @@ use indexmap::IndexMap;
 
 use crate::command::{BlazeCommand, BlazeCommandResult};
 use crate::command_name_cache_impl::CommandNameCacheImpl;
+use crate::custom_exit_code_publisher::{CustomExitCodePublisher, CustomFailureDetailPublisher};
 use crate::directories::{BlazeDirectories, ServerDirectories};
 use crate::dispatcher::{BlazeCommandDispatcher, LockingMode, UiVerbosity};
-use crate::custom_exit_code_publisher::{CustomExitCodePublisher, CustomFailureDetailPublisher};
 use crate::exit_code::{DetailedExitCode, ExitCode};
 use crate::info_item::InfoItem;
 use crate::interrupt::InterruptSignalHandler;
@@ -1231,7 +1231,10 @@ fn child_processes() -> Vec<libc::pid_t> {
             continue;
         };
         for pid in list.split(|b| b.is_ascii_whitespace()) {
-            if let Ok(pid) = std::str::from_utf8(pid).unwrap_or("").parse::<libc::pid_t>() {
+            if let Ok(pid) = std::str::from_utf8(pid)
+                .unwrap_or("")
+                .parse::<libc::pid_t>()
+            {
                 children.push(pid);
             }
         }
@@ -1337,7 +1340,7 @@ mod tests {
     fn manage_profiles() {}
 
     #[test]
-    #[ignore = "needs a test runtime (createRuntime), notifyOnCrash and afterCommand's stored crash exit code"]
+    #[ignore = "needs BlazeRuntime.afterCommand as a runtime method (Blaze's is the dispatcher's after_command) and a CommandEnvironment built outside the dispatcher; the same behaviour runs in dispatcher_tests crash_prevents_new_command"]
     fn crash_test() {}
 
     #[test]

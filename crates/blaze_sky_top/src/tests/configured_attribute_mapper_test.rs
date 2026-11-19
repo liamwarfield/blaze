@@ -371,7 +371,6 @@ fn test_none_values_with_multiple_selects_all_none() {
 
 // Java: ConfiguredAttributeMapperTest.testNoneValueOnDefaultConditionWithNullDefault
 #[test]
-#[ignore = "needs the mock C++ toolchain (cc_library from the mock rules_cc)"]
 fn test_none_value_on_default_condition_with_null_default() {
     let mut t = BuildViewTestCase::new();
     write_config_rules(&t);

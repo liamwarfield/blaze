@@ -16,13 +16,13 @@ use blaze_options::rc::handler::{
 use blaze_options::{OptionsParser, OptionsParsingException, PriorityCategory};
 use blaze_protos::blaze::invocation_policy::InvocationPolicy;
 use blaze_protos::failure_details::{self, FailureDetail};
-use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use blaze_protos::google::protobuf::Any;
 use blaze_server::command_dispatcher::{
     CommandDispatcher, CommandExtensionReporter, IdleTaskResultsSupplier,
 };
 use blaze_server::interruptible::Monitor;
 use blaze_shell::thread_interrupt::InterruptedException;
+use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use parking_lot::Mutex;
 
 use crate::command::{BlazeCommand, BlazeCommandResult};
@@ -176,12 +176,12 @@ impl BlazeCommandDispatcher {
                 match locking_mode {
                     LockingMode::WAIT => {
                         if other_client_description != current {
-                            let server_description =
-                                if self.server_pid == Self::UNKNOWN_SERVER_PID {
-                                    String::new()
-                                } else {
-                                    format!(" (server_pid={})", self.server_pid)
-                                };
+                            let server_description = if self.server_pid == Self::UNKNOWN_SERVER_PID
+                            {
+                                String::new()
+                            } else {
+                                format!(" (server_pid={})", self.server_pid)
+                            };
                             out_err.print_err_ln(&format!(
                                 "Another command ({}) is running. Waiting for it to complete on \
                                  the server{}...",
@@ -191,8 +191,10 @@ impl BlazeCommandDispatcher {
                         }
                         // commandLock.wait(500): an interrupt of this thread (a Cancel of this
                         // command) ends the wait with InterruptedException.
-                        self.current_client_description
-                            .wait(&mut current_client_description, Some(Duration::from_millis(500)))?;
+                        self.current_client_description.wait(
+                            &mut current_client_description,
+                            Some(Duration::from_millis(500)),
+                        )?;
                     }
                     LockingMode::ERROR_OUT => {
                         let message = format!(
@@ -500,18 +502,25 @@ impl BlazeCommandDispatcher {
         let new_stats_summary = options
             .get_options::<blaze_optdefs::command::execution_options::ExecutionOptions>()
             .is_some_and(|o| o.stats_summary);
-        handler.set_state_tracker(Arc::new(new_ui_state_tracker(
+        let ui_state_tracker = Arc::new(new_ui_state_tracker(
             &handler,
             &event_handler_options,
             false,
             new_stats_summary,
-        )));
+        ));
+        handler.set_state_tracker(ui_state_tracker.clone());
+        let ui_subscriber = Arc::new(
+            blaze_buildtool::runtime::ui_event_subscriber::UiEventSubscriber::new(
+                handler.clone(),
+                ui_state_tracker,
+            ),
+        );
         // PORT: the UI handler is registered behind a filter that drops the events of the main
         // repository mapping once when the command's own evaluation reports them again (see
         // MainRepoMappingEventHandler).
         let ui_filter = Arc::new(ReportedOnceFilter::new(handler.clone()));
         reporter.add_handler(ui_filter.clone());
-        env.set_ui_event_handler(handler.clone());
+        env.set_ui_event_handler(handler.clone(), ui_subscriber);
         // PORT: the ANSI-allowing handler for --color=no (registerAnsiAllowingHandler) is only
         // switched to by the `run` command (Reporter.switchToAnsiAllowingHandler), whose `exec`
         // is not ported and fails loudly.
@@ -614,9 +623,14 @@ impl BlazeCommandDispatcher {
                 boolean_option_value(&options, "incompatible_remove_ctx_bazel_py_fragment");
             // Compute the repo mapping of the main repo and re-parse options so that we get correct
             // values for label-typed options.
-            // PORT: MainRepoMappingComputationStartingEvent only feeds the UI's progress bar
-            // (cursor-control UI). PORT: skipped, profiling: the profiler task.
+            // PORT: skipped, profiling: the profiler task.
             // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:701 BlazeCommandDispatcher.execExclusively
+            // env.getEventBus().post(new MainRepoMappingComputationStartingEvent()): its only
+            // subscriber is UiEventHandler.mainRepoMappingComputationStarted (an event of
+            // lib/runtime, posted by calling the subscriber).
+            if let Some(handler) = env.get_ui_event_handler() {
+                handler.main_repo_mapping_computation_started();
+            }
             let event_handler: Arc<dyn blaze_events::ExtendedEventHandler> = stored_events.clone();
             let interrupted = || {
                 let message = "command interrupted while computing main repo mapping";

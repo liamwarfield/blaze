@@ -64,6 +64,9 @@ pub struct PostAnalysisCommandEnvironment<'a> {
     /// crate builds the executor setup, above this crate.
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:151 ExecutionTool.<init>
     pub execution_tool: &'a dyn Fn() -> Result<(), DetailedExitCode>,
+    /// The build event stream's posting points in `BuildTool` (`None` without a build event
+    /// stream; blaze_runtime commands/bep.rs).
+    pub build_event_hooks: Option<&'a dyn blaze_sky_top::build_tool::BuildEventHooks>,
 }
 
 /// Java's `BuildTool.buildTargetsWithoutMergedAnalysisExecution` constructs the
@@ -105,13 +108,17 @@ pub(crate) fn process_request(
         execution_tool: env.execution_tool,
         post_processor,
     };
-    let detailed_exit_code = blaze_sky_top::build_tool::BuildTool::new(
+    let build_tool = blaze_sky_top::build_tool::BuildTool::new(
         env.skyframe_executor,
         env.reporter.clone(),
         env.relative_working_directory.clone(),
         &post_processor,
-    )
-    .process_request(request);
+    );
+    let build_tool = match env.build_event_hooks {
+        Some(hooks) => build_tool.with_build_event_hooks(hooks),
+        None => build_tool,
+    };
+    let detailed_exit_code = build_tool.process_request(request);
     (env.stop_request)(&detailed_exit_code);
     detailed_exit_code
 }

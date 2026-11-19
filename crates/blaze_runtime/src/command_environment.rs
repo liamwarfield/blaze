@@ -58,6 +58,9 @@ pub struct CommandEnvironment {
     pending_exception: Option<AbruptExitException>,
     has_synced_package_loading: bool,
     ui_event_handler: Option<Arc<blaze_events::ui::UiEventHandler>>,
+    /// The `@Subscribe` methods of `ui_event_handler`, registered on the event bus with it.
+    ui_event_subscriber:
+        Option<Arc<blaze_buildtool::runtime::ui_event_subscriber::UiEventSubscriber>>,
     /// The Build Event Protocol of this command, set by `BuildEventServiceModule.beforeCommand`
     /// (`crate::bazel_modules::BazelBuildEventServiceModule`) when the command streams build
     /// events. PORT: Java's commands reach the streamer through the event bus only; the posting
@@ -242,6 +245,7 @@ impl CommandEnvironment {
             pending_exception,
             has_synced_package_loading: false,
             ui_event_handler: None,
+            ui_event_subscriber: None,
             bep: None,
             shutdown_reason: None,
             // SequencedSkyframeExecutor.trackIncrementalState is true until
@@ -587,9 +591,28 @@ impl CommandEnvironment {
         blaze_util::unported!("CommandEnvironment.syncPackageLoading")
     }
 
+    /// `setUiEventHandler(uiEventHandler)`: also registers the handler's `@Subscribe` methods
+    /// (`subscriber`) on the event bus.
+    ///
+    /// PORT: `reporter.addHandler(uiEventHandler)` is the caller's (the dispatcher registers the
+    /// handler behind a filter, see `ReportedOnceFilter`).
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1192 CommandEnvironment.setUiEventHandler
-    pub fn set_ui_event_handler(&mut self, handler: Arc<blaze_events::ui::UiEventHandler>) {
+    pub fn set_ui_event_handler(
+        &mut self,
+        handler: Arc<blaze_events::ui::UiEventHandler>,
+        subscriber: Arc<blaze_buildtool::runtime::ui_event_subscriber::UiEventSubscriber>,
+    ) {
+        blaze_util::check_state!(self.ui_event_handler.is_none(), "UiEventHandler already set");
         self.ui_event_handler = Some(handler);
+        self.event_bus.register(subscriber.clone());
+        self.ui_event_subscriber = Some(subscriber);
+    }
+
+    /// The handler's subscriber on the event bus (see [`CommandEnvironment::set_ui_event_handler`]).
+    pub fn get_ui_event_subscriber(
+        &self,
+    ) -> Option<&Arc<blaze_buildtool::runtime::ui_event_subscriber::UiEventSubscriber>> {
+        self.ui_event_subscriber.as_ref()
     }
 
     pub fn get_ui_event_handler(&self) -> Option<&Arc<blaze_events::ui::UiEventHandler>> {

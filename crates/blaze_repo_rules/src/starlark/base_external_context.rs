@@ -659,7 +659,11 @@ struct ReportProgress {
     progress: String,
 }
 
-impl Postable for ReportProgress {}
+impl Postable for ReportProgress {
+    fn as_fetch_progress(&self) -> Option<&dyn FetchProgress> {
+        Some(self)
+    }
+}
 
 impl FetchProgress for ReportProgress {
     fn get_resource_identifier(&self) -> String {
@@ -704,7 +708,11 @@ impl ExtractProgress {
     }
 }
 
-impl Postable for ExtractProgress {}
+impl Postable for ExtractProgress {
+    fn as_fetch_progress(&self) -> Option<&dyn FetchProgress> {
+        Some(self)
+    }
+}
 
 impl FetchProgress for ExtractProgress {
     fn get_resource_identifier(&self) -> String {

@@ -204,17 +204,17 @@ fn test_reports_visibility_analysis_root_causes() {
 
 // Java: BuildViewTest.testReportsNonExistentPackageAnalysisRootCausesNoKeepGoing
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
+#[ignore = "not ported yet: body (needs BuildViewTestBase.AnalysisFailureRecorder on the event bus; the mock rules_java is in the harness)"]
 fn test_reports_non_existent_package_analysis_root_causes_no_keep_going() {}
 
 // Java: BuildViewTest.testReportsNonExistentPackageAnalysisRootCausesKeepGoing
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
+#[ignore = "not ported yet: body (needs BuildViewTestBase.AnalysisFailureRecorder on the event bus; the mock rules_java is in the harness)"]
 fn test_reports_non_existent_package_analysis_root_causes_keep_going() {}
 
 // Java: BuildViewTest.testReportsNonExistentPackageInPackageGroupKeepGoing
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
+#[ignore = "not ported yet: body (needs BuildViewTestBase.AnalysisFailureRecorder on the event bus; the mock rules_java is in the harness)"]
 fn test_reports_non_existent_package_in_package_group_keep_going() {}
 
 // Java: BuildViewTest.testTestOnlyFailureReported

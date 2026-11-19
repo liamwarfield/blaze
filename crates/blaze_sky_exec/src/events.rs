@@ -203,6 +203,105 @@ pub struct TopLevelTargetBuiltEvent {
     pub label: Label,
 }
 
+/// Notifies that an in-flight action is running input discovery.
+// Java: com/google/devtools/build/lib/actions/ScanningActionEvent.java:24 ScanningActionEvent
+#[derive(Clone)]
+pub struct ScanningActionEvent {
+    /// `getActionMetadata()`.
+    pub action: ActionRef,
+}
+
+/// Notifies that an in-flight action stopped running input discovery.
+// Java: com/google/devtools/build/lib/actions/StoppedScanningActionEvent.java:20 StoppedScanningActionEvent
+#[derive(Clone)]
+pub struct StoppedScanningActionEvent {
+    /// `getAction()`.
+    pub action: ActionRef,
+}
+
+/// Notifies that an in-flight action is checking the cache.
+// Java: com/google/devtools/build/lib/actions/CachingActionEvent.java:27 CachingActionEvent
+#[derive(Clone)]
+pub struct CachingActionEvent {
+    pub action: ActionRef,
+    pub strategy: String,
+}
+
+/// Notifies that an in-flight action is being scheduled (waiting for resources).
+// Java: com/google/devtools/build/lib/actions/SchedulingActionEvent.java:28 SchedulingActionEvent
+#[derive(Clone)]
+pub struct SchedulingActionEvent {
+    /// `getActionMetadata()`.
+    pub action: ActionRef,
+    /// `getStrategy()`.
+    pub strategy: String,
+}
+
+/// Notifies that an in-flight action is running.
+// Java: com/google/devtools/build/lib/actions/RunningActionEvent.java:29 RunningActionEvent
+#[derive(Clone)]
+pub struct RunningActionEvent {
+    /// `getActionMetadata()`.
+    pub action: ActionRef,
+    /// `getStrategy()`.
+    pub strategy: String,
+}
+
+/// Notifies that an in-flight action has made progress.
+// Java: com/google/devtools/build/lib/actions/ActionProgressEvent.java:29 ActionProgressEvent
+#[derive(Clone)]
+pub struct ActionProgressEvent {
+    pub action: ActionRef,
+    pub progress_id: String,
+    pub progress: String,
+    pub finished: bool,
+}
+
+/// Event for an action that has finished input discovery (the action of a shared action that
+/// discovers inputs).
+// Java: com/google/devtools/build/lib/actions/ActionScanningCompletedEvent.java:23 ActionScanningCompletedEvent
+#[derive(Clone)]
+pub struct ActionScanningCompletedEvent {
+    pub action: ActionRef,
+    pub action_lookup_data: ActionLookupData,
+}
+
+/// Event for the metrics of input discovery of an action.
+// Java: com/google/devtools/build/lib/actions/DiscoveredInputsEvent.java:20 DiscoveredInputsEvent
+#[derive(Clone)]
+pub struct DiscoveredInputsEvent {
+    /// `getMetrics()`.
+    pub metrics: blaze_exec::actions::spawn_metrics::SpawnMetrics,
+    /// `getAction()`.
+    pub action: ActionRef,
+    /// `getStartTimeNanos()`.
+    pub start_time_nanos: Instant,
+}
+
+/// Signals that the first target finished analysis and execution is about to start (or, not
+/// counted in execution time, that the workspace status actions of a Skymeld build may run).
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:151 TopLevelStatusEvents.SomeExecutionStartedEvent
+#[derive(Clone, Copy)]
+pub struct SomeExecutionStartedEvent {
+    pub counted_in_execution_time: bool,
+}
+
+impl SomeExecutionStartedEvent {
+    // Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:154 TopLevelStatusEvents.SomeExecutionStartedEvent.create
+    pub fn create() -> SomeExecutionStartedEvent {
+        SomeExecutionStartedEvent {
+            counted_in_execution_time: true,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:158 TopLevelStatusEvents.SomeExecutionStartedEvent.notCountedInExecutionTime
+    pub fn not_counted_in_execution_time() -> SomeExecutionStartedEvent {
+        SomeExecutionStartedEvent {
+            counted_in_execution_time: false,
+        }
+    }
+}
+
 macro_rules! postable {
     ($($t:ty => $name:literal),* $(,)?) => {
         $(
@@ -221,6 +320,15 @@ postable! {
     ActionCompletionEvent => "ActionCompletionEvent",
     ActionResultReceivedEvent => "ActionResultReceivedEvent",
     ActionExecutedEvent => "ActionExecutedEvent",
+    ScanningActionEvent => "ScanningActionEvent",
+    StoppedScanningActionEvent => "StoppedScanningActionEvent",
+    CachingActionEvent => "CachingActionEvent",
+    SchedulingActionEvent => "SchedulingActionEvent",
+    RunningActionEvent => "RunningActionEvent",
+    ActionProgressEvent => "ActionProgressEvent",
+    ActionScanningCompletedEvent => "ActionScanningCompletedEvent",
+    DiscoveredInputsEvent => "DiscoveredInputsEvent",
+    SomeExecutionStartedEvent => "SomeExecutionStartedEvent",
 }
 
 impl Postable for TargetCompleteEvent {}

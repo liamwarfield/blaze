@@ -148,8 +148,7 @@ impl InterruptSignalHandler {
                     let n =
                         unsafe { libc::read(read_fd, (&raw mut byte).cast::<libc::c_void>(), 1) };
                     if n < 0
-                        && std::io::Error::last_os_error().kind()
-                            == std::io::ErrorKind::Interrupted
+                        && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
                     {
                         continue;
                     }

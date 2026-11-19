@@ -27,8 +27,9 @@
 //!   `TestRuleClassProvider` adds test-only native rules (`testing_dummy_rule`,
 //!   `rule_with_*`, ...) and native test aspects; tests that use them stay ignored ("needs
 //!   TestRuleClassProvider's test rules").
-//! - **Mock toolchains.** The C++, Java, Python, Objective-C and proto mocks are not ported (see
-//!   `analysis_mock.rs`).
+//! - **Mock toolchains.** The C++, Java and Python mocks copy the real rules from the prepared
+//!   test dependencies (`test_deps.rs`; run `scripts/test-deps/prepare`) where Java copies them
+//!   from the test's runfiles. Without them every test fails, naming the script.
 //! - **Fail-fast handler.** Java's `failFastHandler` fails the test from inside the event
 //!   handler. Here it records the first error event it receives; every harness call that
 //!   evaluates checks it afterwards and panics with the event (so a test that expects errors
@@ -272,6 +273,8 @@ pub struct BuildViewTestCase {
     precomputed_args: Vec<String>,
     /// `AnalysisMock.getSkyFunctions`: test SkyFunctions registered in the executor.
     extra_sky_functions: Option<ExtraSkyFunctions>,
+    /// The analysis services of the current executor, for `RULE_CONTEXT_FOR_TESTING`.
+    rule_context_services: crate::testing::rule_context_for_testing::AnalysisServicesSlot,
     /// `BuildViewTestCase.getDefaultVisibility()` (overridable with
     /// [`Self::set_default_visibility`]).
     default_visibility: String,
@@ -355,6 +358,7 @@ impl BuildViewTestCase {
             repo_precomputed: Default::default(),
             precomputed_args: Vec::new(),
             extra_sky_functions: None,
+            rule_context_services: Default::default(),
             default_visibility: "public".to_string(),
             default_flags: FlagBuilder::default()
                 .with(Flag::PublicVisibility)
@@ -643,6 +647,49 @@ impl BuildViewTestCase {
         self.invalidate_executor();
     }
 
+    /// `getRuleContext(target)`: a rule context equivalent to the one that was used to create the
+    /// configured target (`BuildViewForTesting.getRuleContextForTesting`, see
+    /// `rule_context_for_testing.rs`).
+    // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:814 BuildViewTestCase.getRuleContext
+    pub fn get_rule_context(
+        &mut self,
+        target: &ConfiguredTarget,
+    ) -> Arc<blaze_analysis::rule::rule_context::RuleContext> {
+        use crate::testing::rule_context_for_testing::RuleContextForTestingKey;
+        // Java: BuildViewForTesting.initializeDependencyResolverState
+        let configuration = self.get_configuration(target);
+        let rule_target = self
+            .get_target(&target.get_label().to_string())
+            .unwrap_or_else(|e| {
+                panic!(
+                    "IllegalStateException: Failed to get target when trying to get rule context \
+                     for testing: {e:?}"
+                )
+            });
+        let key = RuleContextForTestingKey {
+            target_and_configuration:
+                blaze_sky_analysis::producers::errors::TargetAndConfiguration::new(
+                    rule_target,
+                    configuration,
+                ),
+            // ConfiguredTargetKey.fromConfiguredTarget(configuredTarget)
+            configured_target_key: target
+                .unwrap_if_merged()
+                .get_lookup_key()
+                .0
+                .as_any()
+                .downcast_ref::<ConfiguredTargetKey>()
+                .expect("ClassCastException: not a ConfiguredTargetKey")
+                .clone(),
+        };
+        let result = self.evaluate(&[SkyKey::new(key.clone())], false);
+        result
+            .get(&key)
+            .unwrap_or_else(|| panic!("{:?}", result.error_map()))
+            .rule_context
+            .clone()
+    }
+
     /// `skyframeExecutor.injectExtraPrecomputedValues(values)`.
     ///
     /// PORT: Blaze's executor is built with its precomputed values (one command per process), so
@@ -825,15 +872,24 @@ impl BuildViewTestCase {
             top_level_build_options: Some((**build_options).clone()),
             execution: None,
         };
+        // The harness's own test function (`getRuleContextForTesting`), then the test's.
+        let slot = self.rule_context_services.clone();
+        let extra = self.extra_sky_functions.clone();
+        let extra_sky_functions = move |builder: EvaluatorBuilder| {
+            let builder = crate::testing::rule_context_for_testing::register(builder, slot.clone());
+            match &extra {
+                Some(f) => f(builder),
+                None => builder,
+            }
+        };
         let executor = SkyframeExecutor::create_with_extra_sky_functions(
             inputs,
             None,
             Some(self.analysis_mock.get_builtin_modules(&self.root_directory)),
-            self.extra_sky_functions
-                .as_ref()
-                .map(|f| f.as_ref() as &dyn Fn(EvaluatorBuilder) -> EvaluatorBuilder),
+            Some(&extra_sky_functions),
         )
         .unwrap_or_else(|e| panic!("cannot create the SkyframeExecutor: {e}"));
+        *self.rule_context_services.lock() = executor.get_analysis_services().cloned();
         // Java: createBuildOptionsForTesting evaluates the main repository mapping.
         if let Err(e) =
             executor.get_main_repo_mapping(false, LOADING_PHASE_THREADS, self.event_handler())
@@ -1485,14 +1541,13 @@ impl BuildViewTestCase {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        self.update_with_parameters(&flags, aspects, &aspects_parameters, labels)
+        self.update_with_parameters(&flags, &[], aspects, &aspects_parameters, labels)
     }
 
     /// `AnalysisTestCase.update(eventBus, config, explicitTargetPatterns, aspects,
     /// aspectsParameters, labels...)`.
     ///
-    /// PORT: `aspectsParameters` and `explicitTargetPatterns` are always empty in the callers
-    /// ported so far; the event bus is the reporter's (none).
+    /// PORT: the event bus is the reporter's (none).
     // Java: com/google/devtools/build/lib/analysis/util/AnalysisTestCase.java:364 AnalysisTestCase.update
     pub fn update_with(
         &mut self,
@@ -1500,7 +1555,29 @@ impl BuildViewTestCase {
         aspects: &[&str],
         labels: &[&str],
     ) -> Result<&AnalysisResult, BuildViewError> {
-        self.update_with_parameters(config, aspects, &IndexMap::new(), labels)
+        self.update_with_parameters(config, &[], aspects, &IndexMap::new(), labels)
+    }
+
+    /// `AnalysisTestCase.update(eventBus, config, explicitTargetPatterns, aspects,
+    /// aspectsParameters, labels...)` with `explicitTargetPatterns`.
+    // Java: com/google/devtools/build/lib/analysis/util/AnalysisTestCase.java:364 AnalysisTestCase.update
+    pub fn update_with_explicit_target_patterns(
+        &mut self,
+        config: &FlagBuilder,
+        explicit_target_patterns: &[&str],
+        aspects: &[&str],
+        aspects_parameters: &[(&str, &str)],
+        labels: &[&str],
+    ) -> Result<&AnalysisResult, BuildViewError> {
+        let aspects_parameters: IndexMap<String, String> = aspects_parameters
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let explicit: Vec<Label> = explicit_target_patterns
+            .iter()
+            .map(|l| Label::parse_canonical_unchecked(l))
+            .collect();
+        self.update_with_parameters(config, &explicit, aspects, &aspects_parameters, labels)
     }
 
     /// `AnalysisTestCase.update(eventBus, config, explicitTargetPatterns, aspects,
@@ -1509,6 +1586,7 @@ impl BuildViewTestCase {
     fn update_with_parameters(
         &mut self,
         config: &FlagBuilder,
+        explicit_target_patterns: &[Label],
         aspects: &[&str],
         aspects_parameters: &IndexMap<String, String>,
         labels: &[&str],
@@ -1521,6 +1599,7 @@ impl BuildViewTestCase {
         self.analysis_result = None;
         let result = self.update_internal(
             &labels.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            explicit_target_patterns,
             aspects,
             aspects_parameters,
             keep_going,
@@ -1544,6 +1623,7 @@ impl BuildViewTestCase {
     ) -> Result<&AnalysisResult, BuildViewError> {
         let result = self.update_internal(
             &targets.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            &[],
             aspects,
             &IndexMap::new(),
             keep_going,
@@ -1558,6 +1638,7 @@ impl BuildViewTestCase {
     fn update_internal(
         &mut self,
         targets: &[String],
+        explicit_target_patterns: &[Label],
         aspects: &[&str],
         aspects_parameters: &IndexMap<String, String>,
         keep_going: bool,
@@ -1605,7 +1686,7 @@ impl BuildViewTestCase {
             keep_going,
             check_for_action_conflicts: true,
             aspects: aspects.iter().map(|s| s.to_string()).collect(),
-            explicit_target_patterns: IndexSet::new(),
+            explicit_target_patterns: explicit_target_patterns.iter().cloned().collect(),
             skip_incompatible_explicit_targets: analysis_options.skip_incompatible_explicit_targets,
             report_incompatible_targets: true,
             include_execution_phase: false,

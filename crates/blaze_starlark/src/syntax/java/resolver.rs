@@ -48,23 +48,23 @@ enum BlockKind {
 struct Binding {
     scope: Scope,
     is_syntactic: bool,
-    first: Ident,
+    first_start: usize,
 }
 
-struct Block {
+struct Block<'t> {
     kind: BlockKind,
-    bindings: HashMap<String, usize>,
+    bindings: HashMap<&'t str, usize>,
 }
 
 // Java: net/starlark/java/syntax/Resolver.java:33 Resolver
-struct Resolver<'m> {
+struct Resolver<'m, 't> {
     errors: Vec<OffsetError>,
     options: JavaOptions,
     module: &'m dyn ResolverModule,
     bindings: Vec<Binding>,
-    toplevel: HashMap<String, usize>,
+    toplevel: HashMap<&'t str, usize>,
     /// Innermost last.
-    blocks: Vec<Block>,
+    blocks: Vec<Block<'t>>,
     loop_count: usize,
 }
 
@@ -96,7 +96,7 @@ pub fn resolve_file(
     r.errors
 }
 
-impl Resolver<'_> {
+impl<'t> Resolver<'_, 't> {
     fn errorf(&mut self, offset: usize, message: String) {
         self.errors.push(OffsetError { offset, message });
     }
@@ -108,7 +108,7 @@ impl Resolver<'_> {
         });
     }
 
-    fn locals(&self) -> &Block {
+    fn locals(&self) -> &Block<'t> {
         self.blocks.last().unwrap()
     }
 
@@ -116,14 +116,14 @@ impl Resolver<'_> {
         self.locals().kind == BlockKind::File
     }
 
-    fn create_bindings_for_block(&mut self, stmts: &[Stmt]) {
+    fn create_bindings_for_block(&mut self, stmts: &'t [Stmt]) {
         for s in stmts {
             self.create_bindings(s);
         }
     }
 
     // Java: net/starlark/java/syntax/Resolver.java:549 Resolver.createBindings
-    fn create_bindings(&mut self, stmt: &Stmt) {
+    fn create_bindings(&mut self, stmt: &'t Stmt) {
         match stmt {
             Stmt::Assign { lhs, ty, .. } => {
                 if ty.is_some() {
@@ -168,7 +168,7 @@ impl Resolver<'_> {
                             format!("symbol '{}' is private and cannot be imported", orig.name),
                         );
                     }
-                    if names.insert(local.name.clone()) {
+                    if names.insert(local.name.as_str()) {
                         self.bind(local, true, false);
                     } else {
                         self.errorf(
@@ -184,7 +184,7 @@ impl Resolver<'_> {
     }
 
     // Java: net/starlark/java/syntax/Identifier.java:116 Identifier.boundIdentifiers
-    fn create_bindings_for_lhs(&mut self, lhs: &Expr) {
+    fn create_bindings_for_lhs(&mut self, lhs: &'t Expr) {
         let mut ids = Vec::new();
         collect_bound_identifiers(lhs, &mut ids);
         for id in ids {
@@ -193,8 +193,8 @@ impl Resolver<'_> {
     }
 
     // Java: net/starlark/java/syntax/Resolver.java:1157 Resolver.bind
-    fn bind(&mut self, id: &Ident, is_load: bool, has_type: bool) -> bool {
-        let name = id.name.clone();
+    fn bind(&mut self, id: &'t Ident, is_load: bool, has_type: bool) -> bool {
+        let name: &'t str = &id.name;
         let mut is_new = false;
         let bind;
         if self.at_file() && !(is_load && !self.options.load_binds_globally) {
@@ -205,9 +205,9 @@ impl Resolver<'_> {
                     self.bindings.push(Binding {
                         scope: Scope::Global,
                         is_syntactic: true,
-                        first: id.clone(),
+                        first_start: id.start,
                     });
-                    self.toplevel.insert(name.clone(), bind);
+                    self.toplevel.insert(name, bind);
                     if let Some(&prev_local) = self.locals().bindings.get(&name) {
                         self.global_local_conflict(id, Scope::Global, prev_local);
                     }
@@ -225,13 +225,13 @@ impl Resolver<'_> {
                     self.bindings.push(Binding {
                         scope: Scope::Local,
                         is_syntactic: true,
-                        first: id.clone(),
+                        first_start: id.start,
                     });
                     self.blocks
                         .last_mut()
                         .unwrap()
                         .bindings
-                        .insert(name.clone(), bind);
+                        .insert(name, bind);
                 }
                 Some(&b) => bind = b,
             }
@@ -256,7 +256,7 @@ impl Resolver<'_> {
                         id.name
                     ),
                 );
-                let first = self.bindings[bind].first.start;
+                let first = self.bindings[bind].first_start;
                 self.errorf(first, format!("'{}' first declared here", id.name));
             } else {
                 self.errorf(
@@ -268,17 +268,17 @@ impl Resolver<'_> {
         is_new
     }
 
-    fn toplevel_rebinding(&mut self, id: &Ident, prev: usize) {
+    fn toplevel_rebinding(&mut self, id: &'t Ident, prev: usize) {
         if !self.options.allow_toplevel_rebinding {
             self.errorf(id.start, format!("'{}' redeclared at top level", id.name));
             if self.bindings[prev].is_syntactic {
-                let first = self.bindings[prev].first.start;
+                let first = self.bindings[prev].first_start;
                 self.errorf(first, format!("'{}' previously declared here", id.name));
             }
         }
     }
 
-    fn global_local_conflict(&mut self, id: &Ident, scope: Scope, prev: usize) {
+    fn global_local_conflict(&mut self, id: &'t Ident, scope: Scope, prev: usize) {
         let qual = |s: Scope| {
             if s == Scope::Global {
                 "global"
@@ -293,7 +293,7 @@ impl Resolver<'_> {
             format!("conflicting {newqual} declaration of '{}'", id.name),
         );
         if self.bindings[prev].is_syntactic {
-            let first = self.bindings[prev].first.start;
+            let first = self.bindings[prev].first_start;
             self.errorf(
                 first,
                 format!("'{}' previously declared as {oldqual} here", id.name),
@@ -302,7 +302,7 @@ impl Resolver<'_> {
     }
 
     // Java: net/starlark/java/syntax/Resolver.java:1277 Resolver.checkLoadAfterStatement
-    fn check_load_after_statement(&mut self, stmts: &[Stmt]) {
+    fn check_load_after_statement(&mut self, stmts: &'t [Stmt]) {
         let mut first: Option<usize> = None;
         for s in stmts {
             if let Stmt::Expr(Expr::Str { .. }) = s {
@@ -323,7 +323,7 @@ impl Resolver<'_> {
     }
 
     // Java: net/starlark/java/syntax/Resolver.java:378 Resolver.assign
-    fn assign(&mut self, lhs: &Expr) {
+    fn assign(&mut self, lhs: &'t Expr) {
         match lhs {
             Expr::Ident(_) => {}
             Expr::Index { .. } => self.visit_expr(lhs),
@@ -341,14 +341,14 @@ impl Resolver<'_> {
     }
 
     // Java: net/starlark/java/syntax/Resolver.java:922 Resolver.use
-    fn use_ident(&mut self, id: &Ident) {
+    fn use_ident(&mut self, id: &'t Ident) {
         let name = &id.name;
         for b in self.blocks.iter().rev() {
-            if b.bindings.contains_key(name) {
+            if b.bindings.contains_key(name.as_str()) {
                 return;
             }
         }
-        if self.toplevel.contains_key(name) {
+        if self.toplevel.contains_key(name.as_str()) {
             return;
         }
         match self.module.resolve(name) {
@@ -357,9 +357,9 @@ impl Resolver<'_> {
                 self.bindings.push(Binding {
                     scope,
                     is_syntactic: false,
-                    first: id.clone(),
+                    first_start: id.start,
                 });
-                self.toplevel.insert(name.clone(), bind);
+                self.toplevel.insert(name, bind);
             }
             Err(ex) => {
                 if !is_valid_identifier(name) {
@@ -382,20 +382,20 @@ impl Resolver<'_> {
     fn get_all_symbols(&self, predeclared: Vec<String>) -> Vec<String> {
         let mut words = Vec::new();
         for b in self.blocks.iter().rev() {
-            words.extend(b.bindings.keys().cloned());
+            words.extend(b.bindings.keys().map(|k| (*k).to_owned()));
         }
         words.extend(predeclared);
-        words.extend(self.toplevel.keys().cloned());
+        words.extend(self.toplevel.keys().map(|k| (*k).to_owned()));
         starlark::errors::spell_checker::java_hash_set_order(words)
     }
 
-    fn visit_block(&mut self, stmts: &[Stmt]) {
+    fn visit_block(&mut self, stmts: &'t [Stmt]) {
         for s in stmts {
             self.visit_stmt(s);
         }
     }
 
-    fn visit_stmt(&mut self, s: &Stmt) {
+    fn visit_stmt(&mut self, s: &'t Stmt) {
         match s {
             // Java: Resolver.visit(AssignmentStatement)
             Stmt::Assign {
@@ -501,9 +501,9 @@ impl Resolver<'_> {
     // Java: net/starlark/java/syntax/Resolver.java:1016 Resolver.resolveFunction
     fn resolve_function(
         &mut self,
-        params: &[Parameter],
-        body: &[Stmt],
-        lambda_body: Option<&Expr>,
+        params: &'t [Parameter],
+        body: &'t [Stmt],
+        lambda_body: Option<&'t Expr>,
     ) {
         for p in params {
             if let Parameter::Optional(_, _, d) = p {
@@ -605,15 +605,14 @@ impl Resolver<'_> {
     }
 
     // Java: net/starlark/java/syntax/Resolver.java:1137 Resolver.bindParam
-    fn bind_param(&mut self, p: &Parameter) {
+    fn bind_param(&mut self, p: &'t Parameter) {
         let Some(id) = p.ident() else { return };
-        let id = id.clone();
         if !self.bind(&id, false, false) {
             self.errorf(p.start(), format!("duplicate parameter: {}", id.name));
         }
     }
 
-    fn visit_expr(&mut self, e: &Expr) {
+    fn visit_expr(&mut self, e: &'t Expr) {
         match e {
             Expr::Ident(id) => self.use_ident(id),
             Expr::Int { .. } | Expr::Float { .. } | Expr::Str { .. } | Expr::Ellipsis { .. } => {}
@@ -664,7 +663,7 @@ impl Resolver<'_> {
             Expr::Call { func, args } => {
                 let mut seen_varargs = false;
                 let mut seen_kwargs = false;
-                let mut keywords: Option<HashSet<String>> = None;
+                let mut keywords: Option<HashSet<&str>> = None;
                 for a in args {
                     match a {
                         Argument::Positional(_) => {
@@ -700,7 +699,7 @@ impl Resolver<'_> {
                             }
                             if !keywords
                                 .get_or_insert_with(HashSet::new)
-                                .insert(id.name.clone())
+                                .insert(id.name.as_str())
                             {
                                 self.errorf(
                                     a.start(),
@@ -775,9 +774,9 @@ impl Resolver<'_> {
     }
 }
 
-fn collect_bound_identifiers(lhs: &Expr, out: &mut Vec<Ident>) {
+fn collect_bound_identifiers<'t>(lhs: &'t Expr, out: &mut Vec<&'t Ident>) {
     match lhs {
-        Expr::Ident(id) => out.push(id.clone()),
+        Expr::Ident(id) => out.push(id),
         Expr::List { elems, .. } => {
             for e in elems {
                 collect_bound_identifiers(e, out);

@@ -547,7 +547,7 @@ r1(name = 't1')
 
 // Java: StarlarkDefinedAspectsTest.topLevelAspectsAndExtraActions
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java) and AnalysisResult.getArtifactsToBuild"]
+#[ignore = "BLAZE GAP: unported!(\"RuleConfiguredTargetBuilder.createExtraActionProvider\") (blaze_analysis rule_configured_target_builder.rs)"]
 fn top_level_aspects_and_extra_actions() {
     let mut t = new_test();
     t.scratch.file(
@@ -586,7 +586,7 @@ java_library(name = 'xxx')
 
 // Java: StarlarkDefinedAspectsTest.topLevelAspectsAndExtraActionsWithConflict
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
+#[ignore = "BLAZE GAP: unported!(\"RuleConfiguredTargetBuilder.createExtraActionProvider\") (blaze_analysis rule_configured_target_builder.rs)"]
 fn top_level_aspects_and_extra_actions_with_conflict() {
     let mut t = new_test();
     t.scratch.file(
@@ -632,7 +632,6 @@ java_library(name = 'yyy')
 
 // Java: StarlarkDefinedAspectsTest.aspectsPropagatingToAllAttributes
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspects_propagating_to_all_attributes() {
     let mut t = new_test();
     t.scratch.file(
@@ -1011,7 +1010,6 @@ r2(name = 'x2', foo = [':x1'])
 
 // Java: StarlarkDefinedAspectsTest.aspectAdvertisingProviders
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
 fn aspect_advertising_providers() {
     let mut t = new_test();
     t.scratch.file(
@@ -1522,7 +1520,6 @@ r2(name = 'r2', dep = ':r1')
 
 // Java: StarlarkDefinedAspectsTest.testRuleAndAspectAttrConflict
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
 fn test_rule_and_aspect_attr_conflict() {
     let mut t = new_test();
     t.scratch.file(
@@ -1572,7 +1569,6 @@ cc_library(
 
 // Java: StarlarkDefinedAspectsTest.aspectOnAspectAttrConflict
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
 fn aspect_on_aspect_attr_conflict() {
     let mut t = new_test();
     t.scratch.file(
@@ -1626,7 +1622,6 @@ cc_library(
 
 // Java: StarlarkDefinedAspectsTest.testAllCcLibraryAttrsAreValidTypes
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
 fn test_all_cc_library_attrs_are_valid_types() {
     let mut t = new_test();
     t.scratch.file(
@@ -1869,7 +1864,6 @@ fn test_aspect_on_aspect_apply_to_generating_rules_dep_only() {
 
 // Java: StarlarkDefinedAspectsTest.testAspectActionsDontInheritExecProperties
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_binary from the mock rules_cc)"]
 fn test_aspect_actions_dont_inherit_exec_properties() {
     let mut t = new_test();
     t.scratch.file(
@@ -4811,7 +4805,6 @@ my_rule(name = 'main')
 
 // Java: StarlarkDefinedAspectsTest.testTopLevelAspectRequiresAspect_stackOfRequiredAspects
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_binary from the mock rules_cc)"]
 fn test_top_level_aspect_requires_aspect_stack_of_required_aspects() {
     let mut t = new_test();
     t.scratch.file(

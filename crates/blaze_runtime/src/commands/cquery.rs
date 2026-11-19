@@ -55,7 +55,16 @@ impl BlazeCommand for CqueryCommand {
         };
         let _after_command = AfterCommand(&skyframe_executor);
         // new ExecutionTool(env, request) (see `construct_execution_tool`).
-        let execution_tool = || construct_execution_tool(env, options);
+        // BuildSummaryStatsModule's state for this request: executorInit when the ExecutionTool
+        // is constructed, buildComplete in stopRequest.
+        let collector = blaze_buildtool::buildtool::execution_tool::ExecutionEventCollector::new();
+        let execution_tool = || construct_execution_tool(env, options, &collector);
+        // BuildRequest.getOptionsDescription(): the command's options.
+        if let Some(bep) = env.get_bep() {
+            bep.set_build_request_options(options);
+        }
+        // The build event stream's posting points (BuildTool's events).
+        let bep = env.get_bep().cloned();
         let command_env = PostAnalysisCommandEnvironment {
             skyframe_executor: &skyframe_executor,
             reporter: reporter(env),
@@ -66,10 +75,17 @@ impl BlazeCommand for CqueryCommand {
             tracks_state_for_incrementality: env.tracks_state_for_incrementality(),
             available_processors: crate::local_resources::available_processors(),
             stop_request: &|detailed_exit_code| {
-                crate::commands::build::stop_request_without_execution(env, detailed_exit_code)
+                crate::commands::build::stop_request_without_execution(
+                    env,
+                    detailed_exit_code,
+                    &collector,
+                )
             },
             options,
             execution_tool: &execution_tool,
+            build_event_hooks: bep
+                .as_deref()
+                .map(|b| b as &dyn blaze_sky_top::build_tool::BuildEventHooks),
         };
         let detailed_exit_code = blaze_cquery::commands::cquery_command::exec(&command_env);
         BlazeCommandResult::detailed_exit_code(to_runtime_detailed_exit_code(detailed_exit_code))
@@ -102,6 +118,7 @@ fn options_or_default<T: blaze_options::OptionsClass>(options: &OptionsParsingRe
 pub(crate) fn construct_execution_tool(
     env: &CommandEnvironment,
     options: &OptionsParsingResult,
+    collector: &blaze_buildtool::buildtool::execution_tool::ExecutionEventCollector,
 ) -> Result<(), blaze_query_engine::DetailedExitCode> {
     let build_request_options: BuildRequestOptions = options_or_default(options);
     let execution_options: ExecutionOptions = options_or_default(options);
@@ -176,6 +193,16 @@ pub(crate) fn construct_execution_tool(
             env.get_command_name()
         ),
     };
+    // ExecutionTool.<init>: each module's executorInit (BuildSummaryStatsModule's registers the
+    // CriticalPathComputer) runs before the spawn strategy registry is built.
+    // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:91 BuildSummaryStatsModule.executorInit
+    collector.executor_init(
+        execution_options.enable_critical_path_profiling,
+        execution_options.stats_summary,
+        blaze_buildtool::buildtool::execution_tool::can_be_shared_with_executor(
+            prepared.executor.clone(),
+        ),
+    );
     // catch (AbruptExitException e)
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:999 BuildTool.processRequest
     prepared.check_execution_tool_created().map_err(|e| {

@@ -2,27 +2,12 @@
 //! (src/test/java), with `packages/util/MockPlatformSupport.java` and
 //! `packages/util/MockGenruleSupport.java`: the mock client the analysis tests run in.
 //!
-//! The files are Java's, character for character (text blocks dedented as `javac` does). What is
-//! not ported, and why (every other file of the Java mock is written here):
+//! The files are Java's, character for character (text blocks dedented as `javac` does). What
+//! Java copies from the test's runfiles and resources (the real `rules_cc`, `rules_java`,
+//! `rules_python`, `bazel_skylib` and protobuf sources, the `tools/jdk` and `tools/python` files
+//! of the Bazel source, the mock `cc_toolchain_config.bzl`) comes from the prepared test
+//! dependencies (`test_deps.rs`, `scripts/test-deps/prepare`). Not ported:
 //!
-//! - The mock C++, Java, Python, Objective-C and protobuf toolchains
-//!   (`MockCcSupport`/`BazelMockCcSupport`, `AbstractMockJavaSupport.setupRulesJava`,
-//!   `BazelMockPythonSupport`, `MockObjcSupport.setupXcodeRules`, the protobuf half of
-//!   `MockProtoSupport.setupWorkspace`) and the `@bazel_skylib` copy. Java copies the real
-//!   `rules_cc`, `rules_java`, `rules_python`, `bazel_skylib` and `protobuf` sources from the
-//!   test's runfiles into the workspace; a hermetic Rust test has no such runfiles. Only the
-//!   `MODULE.bazel` files those supports write are created (every built-in module needs one for
-//!   module resolution), so `@rules_cc`, `@rules_java`, `@rules_python`, ... resolve but are
-//!   empty. Tests that use C++, Java, Python, Objective-C or proto rules stay ignored with the
-//!   reason "needs the mock C++/Java/Python toolchains".
-//! - For the same reason the root `MODULE.bazel` does not register the toolchains of those mocks
-//!   (`@rules_java//java/toolchains/runtime:all`, `@rules_java//java/toolchains/javac:all`,
-//!   `@bazel_tools//tools/cpp:all`, `@bazel_tools//tools/jdk:all`,
-//!   `@bazel_tools//tools/python:autodetecting_toolchain`, and `MockProtoSupport`'s
-//!   `//tools/proto/toolchains:all`): their packages do not exist here. The `@bazel_tools`
-//!   module's own registration (`//tools/test:all`) is kept.
-//! - `embedded_tools/tools/jdk/{BUILD,launcher_flag_alias.bzl,java_toolchain_alias.bzl}` load
-//!   `@rules_java` / `@rules_cc` symbols and are part of the Java mock: left out.
 //! - `ShellConfiguration.injectShellExecutableFinder` is a no-op here (Blaze's shell
 //!   configuration is computed from the options).
 
@@ -31,7 +16,10 @@ use blaze_bzlmod_model::repo_spec::{AttributeValue, AttributeValues, LOCAL_REPOS
 use blaze_vfs::{Path, PathFragment};
 use indexmap::IndexMap;
 
+use crate::testing::mock_cc_support::BazelMockCcSupport;
+use crate::testing::mock_java_python_support::{BazelMockJavaSupport, BazelMockPythonSupport};
 use crate::testing::mock_tools_config::MockToolsConfig;
+use crate::testing::test_deps::test_deps;
 
 /// `TestConstants.PRODUCT_NAME`.
 pub const PRODUCT_NAME: &str = "bazel";
@@ -148,7 +136,7 @@ foo_test = rule(
                 "xcode_config(name = 'host_xcodes')",
             ],
         );
-        // PORT: MockObjcSupport.setupXcodeRules(config) is not ported (module documentation).
+        MockObjcSupport::setup_xcode_rules(config);
         config.create(
             "local_config_xcode_workspace/MODULE.bazel",
             &["module(name = 'local_config_xcode')"],
@@ -158,12 +146,16 @@ foo_test = rule(
             "third_party/protobuf/MODULE.bazel",
             &["module(name='com_google_protobuf')"],
         );
-        // PORT: Java registers the toolchains of the C++, Java and Python mocks here
-        // (register_toolchains of '@rules_java//java/toolchains/runtime:all',
-        // '@rules_java//java/toolchains/javac:all', '@bazel_tools//tools/cpp:all',
-        // '@bazel_tools//tools/jdk:all', '@bazel_tools//tools/python:autodetecting_toolchain');
-        // those mocks are not ported (module documentation), so the file is empty.
-        config.overwrite("MODULE.bazel", &[]);
+        config.overwrite(
+            "MODULE.bazel",
+            &[
+                "register_toolchains('@rules_java//java/toolchains/runtime:all')",
+                "register_toolchains('@rules_java//java/toolchains/javac:all')",
+                "register_toolchains('@bazel_tools//tools/cpp:all')",
+                "register_toolchains('@bazel_tools//tools/jdk:all')",
+                "register_toolchains('@bazel_tools//tools/python:autodetecting_toolchain')",
+            ],
+        );
         /* The rest of platforms is initialized in {@link MockPlatformSupport}. */
         config.create(
             "platforms_workspace/MODULE.bazel",
@@ -196,9 +188,188 @@ foo_test = rule(
             ],
         );
 
-        // PORT: tools/jdk/java_toolchain_alias.bzl (copied from runfiles),
-        // embedded_tools/tools/jdk/launcher_flag_alias.bzl and embedded_tools/tools/jdk/BUILD
-        // are part of the Java mock (module documentation).
+        // runfiles.rlocation("io_bazel/" + filename): a file of the pinned Bazel source.
+        for filename in ["tools/jdk/java_toolchain_alias.bzl"] {
+            let deps = test_deps();
+            let content = deps.read_resource(&deps.resource(filename));
+            config.create(&format!("embedded_tools/{filename}"), &[&content]);
+        }
+        config.create(
+            "embedded_tools/tools/jdk/launcher_flag_alias.bzl",
+            &[r#"load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
+load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+
+_providers = [CcInfo, cc_common.launcher_provider]
+
+def _impl(ctx):
+        if not ctx.attr._launcher:
+            return None
+        launcher = ctx.attr._launcher
+        providers = [ctx.attr._launcher[p] for p in _providers]
+        providers.append(DefaultInfo(
+            files = launcher[DefaultInfo].files,
+            runfiles = launcher[DefaultInfo].default_runfiles,
+        ))
+        return providers
+
+launcher_flag_alias = rule(
+        implementation = _impl,
+        attrs = {
+            "_launcher": attr.label(
+                default = configuration_field(
+                    fragment = "java",
+                    name = "launcher",
+                ),
+                providers = _providers,
+            ),
+        },
+)
+"#],
+        );
+        config.create(
+            "embedded_tools/tools/jdk/BUILD",
+            &[r#"load("@rules_java//java:defs.bzl",
+  "java_binary", "java_import", "java_toolchain", "java_runtime")
+load(
+        ":java_toolchain_alias.bzl",
+        "java_host_runtime_alias",
+        "java_runtime_alias",
+        "java_toolchain_alias",
+)
+load(":launcher_flag_alias.bzl", "launcher_flag_alias")
+
+package(default_visibility = ["//visibility:public"])
+
+java_toolchain(
+        name = "toolchain",
+        bootclasspath = [":bootclasspath"],
+        genclass = ["GenClass_deploy.jar"],
+        header_compiler = ["turbine_deploy.jar"],
+        header_compiler_direct = ["TurbineDirect_deploy.jar"],
+        ijar = ["ijar"],
+        jacocorunner = ":JacocoCoverage",
+        java_runtime = "host_jdk",
+        javabuilder = ["JavaBuilder_deploy.jar"],
+        singlejar = ["singlejar"],
+        source_version = "8",
+        target_version = "8",
+)
+
+java_toolchain(
+        name = "remote_toolchain",
+        bootclasspath = [":bootclasspath"],
+        genclass = ["GenClass_deploy.jar"],
+        header_compiler = ["turbine_deploy.jar"],
+        header_compiler_direct = ["TurbineDirect_deploy.jar"],
+        ijar = ["ijar"],
+        jacocorunner = ":JacocoCoverage",
+        java_runtime = "host_jdk",
+        javabuilder = ["JavaBuilder_deploy.jar"],
+        singlejar = ["singlejar"],
+        source_version = "8",
+        target_version = "8",
+)
+
+java_import(
+        name = "JacocoCoverageRunner",
+        jars = ["JacocoCoverage_jarjar_deploy.jar"],
+)
+
+java_import(
+        name = "proguard_import",
+        jars = ["proguard_rt.jar"],
+)
+
+java_binary(
+        name = "proguard",
+        main_class = "proguard.Proguard",
+        runtime_deps = [":proguard_import"],
+)
+
+java_import(
+        name = "TestRunner",
+        jars = ["TestRunner.jar"],
+)
+
+java_runtime(
+        name = "jdk",
+        srcs = [],
+)
+
+java_runtime(
+        name = "host_jdk",
+        srcs = [],
+)
+
+java_runtime(
+        name = "remote_jdk11",
+        srcs = [],
+)
+
+java_toolchain_alias(name = "current_java_toolchain")
+
+java_runtime_alias(name = "current_java_runtime")
+
+java_host_runtime_alias(name = "current_host_java_runtime")
+
+filegroup(
+        name = "bootclasspath",
+        srcs = ["jdk/jre/lib/rt.jar"],
+)
+
+filegroup(
+        name = "extdir",
+        srcs = glob(
+            ["jdk/jre/lib/ext/*"],
+            allow_empty = True,
+        ),
+)
+
+filegroup(
+        name = "java",
+        srcs = ["jdk/jre/bin/java"],
+)
+
+filegroup(
+        name = "JacocoCoverage",
+        srcs = ["JacocoCoverage_deploy.jar"],
+)
+
+exports_files([
+        "JavaBuilder_deploy.jar",
+        "singlejar",
+        "TestRunner_deploy.jar",
+        "ijar",
+        "GenClass_deploy.jar",
+        "turbine_deploy.jar",
+        "TurbineDirect_deploy.jar",
+        "proguard_allowlister.par",
+])
+
+toolchain_type(name = "toolchain_type")
+
+toolchain_type(name = "runtime_toolchain_type")
+
+toolchain(
+        name = "dummy_java_toolchain",
+        toolchain = ":toolchain",
+        toolchain_type = ":toolchain_type",
+)
+
+toolchain(
+        name = "dummy_java_runtime_toolchain",
+        toolchain = ":jdk",
+        toolchain_type = ":runtime_toolchain_type",
+)
+
+java_plugins_flag_alias(name = "java_plugins_flag_alias")
+
+launcher_flag_alias(
+        name = "launcher_flag_alias",
+        visibility = ["//visibility:public"],
+)
+"#],
+        );
 
         config.create(
             &format!("{CONSTRAINTS_PATH}/android/BUILD"),
@@ -596,7 +767,12 @@ proto_library(
         config.create("embedded_tools/objcproto/well_known_type.proto", &[]);
 
         // Copies bazel_skylib from real @bazel_skylib (needed by rules_python)
-        // PORT: the copy is not ported (module documentation); the module file is.
+        config.copy_directory(
+            &test_deps().repository("bazel_skylib"),
+            "bazel_skylib_workspace",
+            usize::MAX,
+            true,
+        );
         config.overwrite(
             "bazel_skylib_workspace/MODULE.bazel",
             &["module(name = 'bazel_skylib')"],
@@ -649,24 +825,11 @@ package_group(
 
         MockProtoSupport::setup_workspace(config);
         MockPlatformSupport::setup(config);
-        // PORT: ccSupport().setup(config), javaSupport().setupRulesJava(config, ...) and
-        // pySupport().setup(config): only the module files they write (module documentation).
-        config.create(
-            "third_party/bazel_rules/rules_cc/MODULE.bazel",
-            &["module(name='rules_cc')"],
-        );
-        config.create(
-            "rules_java_workspace/MODULE.bazel",
-            &["module(name = 'rules_java')"],
-        );
-        config.overwrite(
-            "rules_python_workspace/MODULE.bazel",
-            &["module(name = 'rules_python')"],
-        );
-        config.create(
-            "rules_python_internal_workspace/MODULE.bazel",
-            &["module(name = 'rules_python_internal')"],
-        );
+        BazelMockCcSupport.setup(config);
+        BazelMockJavaSupport.setup_rules_java(config);
+        BazelMockPythonSupport.setup(config);
+        // PORT: ShellConfiguration.injectShellExecutableFinder is a no-op here (module
+        // documentation).
     }
 
     /// Creates a mock tools repository.
@@ -855,8 +1018,7 @@ impl MockGenruleSupport {
     }
 }
 
-/// The part of Java `MockProtoSupport.setupWorkspace` that does not copy protobuf sources from
-/// the runfiles (module documentation).
+/// Java `MockProtoSupport` (the `setupWorkspace` part).
 pub struct MockProtoSupport;
 
 impl MockProtoSupport {
@@ -873,11 +1035,53 @@ toolchain_type(
 )
 "#],
         );
-        // PORT: the copy of com_google_protobuf/bazel and the protobuf BUILD overwrites are not
-        // ported (module documentation).
+        // TestConstants.PRODUCT_NAME.equals("bazel")
+        // runfiles.rlocation("com_google_protobuf/bazel/BUILD.bazel"), its directory.
+        config.copy_directory(
+            &test_deps().repository("protobuf").join("bazel"),
+            "third_party/protobuf/bazel",
+            usize::MAX,
+            false,
+        );
+        config.overwrite(
+            "third_party/protobuf/BUILD",
+            &[
+                "filegroup(name = 'license')",
+                "genrule(name='protoc_gen', cmd='', executable = True, outs = ['protoc'])",
+            ],
+        );
         config.overwrite(
             "proto_bazel_features_workspace/MODULE.bazel",
             &["module(name = 'proto_bazel_features')"],
+        );
+        // Overwritten to remove bazel7 toolchains from protobuf
+        config.overwrite("third_party/protobuf/bazel/private/toolchains/BUILD.bazel", &["load('//bazel/toolchains:proto_toolchain.bzl', 'proto_toolchain')", "load('@com_google_protobuf//bazel/toolchains:proto_lang_toolchain.bzl', 'proto_lang_toolchain')", "proto_toolchain(name = 'protoc_sources',proto_compiler = '@bazel_tools//tools/proto:protoc')"]);
+        config.overwrite(
+            "third_party/protobuf/bazel/private/toolchains/prebuilt/authenticity.bzl",
+            &[
+                "def _authenticity_impl(ctx):",
+                "    return [OutputGroupInfo(_validation = depset())]",
+                "authenticity_rule = rule(implementation = _authenticity_impl)",
+            ],
+        );
+        config.overwrite("third_party/protobuf/bazel/private/toolchains/prebuilt/BUILD.bazel", &["load(':authenticity.bzl', 'authenticity_rule')", "authenticity_rule(name = 'authenticity_validation', visibility = ['//visibility:public'])"]);
+        config.overwrite("proto_bazel_features_workspace/BUILD", &[]);
+        config.overwrite(
+            "proto_bazel_features_workspace/features.bzl",
+            &[
+                "bazel_features = struct(",
+                "  globals = struct(PackageSpecificationInfo = PackageSpecificationInfo),",
+                "  proto = struct(starlark_proto_info = True),",
+                "  cc = struct(protobuf_on_allowlist = True),",
+                ")",
+            ],
+        );
+        config.overwrite(
+            "third_party/protobuf/src/google/protobuf/compiler/BUILD.bazel",
+            &[
+                r#"genrule(name = "protoc", cmd = '', outs = ["protoc_minimal"], executable = True)
+"#,
+            ],
         );
     }
 }
@@ -1060,6 +1264,458 @@ impl MockPlatformSupport {
                 "   target_compatible_with = [':mock_value'],",
                 ")",
             ],
+        );
+    }
+}
+
+/// Java `MockObjcSupport` (the `setupXcodeRules` part).
+pub struct MockObjcSupport;
+
+impl MockObjcSupport {
+    // Java: com/google/devtools/build/lib/packages/util/MockObjcSupport.java:129 MockObjcSupport.setupXcodeRules
+    pub fn setup_xcode_rules(config: &MockToolsConfig) {
+        config.create("build_bazel_apple_support/xcode/BUILD", &[]);
+        config.create("build_bazel_apple_support/xcode/xcode_version.bzl", &[r#"XcodeVersionRuleInfo = provider(fields = ["aliases", "label", "xcode_version_properties"])
+
+def _xcode_version_properties_info_init(
+            *,
+            xcode_version,
+            default_ios_sdk_version = "8.4",
+            default_macos_sdk_version = "10.11",
+            default_tvos_sdk_version = "9.0",
+            default_watchos_sdk_version = "2.0",
+            default_visionos_sdk_version = "1.0"):
+        return {
+            "xcode_version": xcode_version,
+            "default_ios_sdk_version": default_ios_sdk_version,
+            "default_macos_sdk_version": default_macos_sdk_version,
+            "default_tvos_sdk_version": default_tvos_sdk_version,
+            "default_watchos_sdk_version": default_watchos_sdk_version,
+            "default_visionos_sdk_version": default_visionos_sdk_version,
+        }
+
+XcodeVersionPropertiesInfo, _new_xcode_version_properties_info = provider(
+        fields = [
+            "xcode_version",
+            "default_ios_sdk_version",
+            "default_macos_sdk_version",
+            "default_tvos_sdk_version",
+            "default_watchos_sdk_version",
+            "default_visionos_sdk_version",
+        ],
+        init = _xcode_version_properties_info_init,
+)
+
+def _xcode_version_impl(ctx):
+        xcode_version_properties = XcodeVersionPropertiesInfo(
+            xcode_version = ctx.attr.version,
+            default_ios_sdk_version = ctx.attr.default_ios_sdk_version,
+            default_visionos_sdk_version = ctx.attr.default_visionos_sdk_version,
+            default_watchos_sdk_version = ctx.attr.default_watchos_sdk_version,
+            default_tvos_sdk_version = ctx.attr.default_tvos_sdk_version,
+            default_macos_sdk_version = ctx.attr.default_macos_sdk_version,
+        )
+        return [
+            xcode_version_properties,
+            XcodeVersionRuleInfo(
+                label = ctx.label,
+                xcode_version_properties = xcode_version_properties,
+                aliases = ctx.attr.aliases,
+            ),
+            DefaultInfo(runfiles = ctx.runfiles()),
+        ]
+
+xcode_version = rule(
+        attrs = {
+            "version": attr.string(mandatory = True),
+            "aliases": attr.string_list(allow_empty = True, mandatory = False),
+            "default_ios_sdk_version": attr.string(default = "8.4", mandatory = False),
+            "default_visionos_sdk_version": attr.string(default = "1.0", mandatory = False),
+            "default_watchos_sdk_version": attr.string(default = "2.0", mandatory = False),
+            "default_tvos_sdk_version": attr.string(default = "9.0",  mandatory = False),
+            "default_macos_sdk_version": attr.string(default = "10.11",  mandatory = False),
+        },
+        implementation = _xcode_version_impl,
+)
+"#]);
+        config.create(
+            "build_bazel_apple_support/xcode/available_xcodes.bzl",
+            &[r#"load(":xcode_version.bzl", "XcodeVersionRuleInfo")
+AvailableXcodesInfo = provider(fields = ["available_versions", "default_version"])
+
+def _available_xcodes_impl(ctx):
+        available_versions = [
+            target[XcodeVersionRuleInfo]
+            for target in ctx.attr.versions
+        ]
+        default_version = ctx.attr.default[XcodeVersionRuleInfo]
+
+        return [
+            AvailableXcodesInfo(
+                available_versions = available_versions,
+                default_version = default_version,
+            ),
+        ]
+
+available_xcodes = rule(
+        attrs = {
+            "default": attr.label(
+                doc = "The default Xcode version for this platform.",
+                mandatory = True,
+                providers = [[XcodeVersionRuleInfo]],
+                flags = ["NONCONFIGURABLE"],
+            ),
+            "versions": attr.label_list(
+                doc = "The Xcode versions that are available on this platform.",
+                providers = [[XcodeVersionRuleInfo]],
+                flags = ["NONCONFIGURABLE"],
+            ),
+        },
+        implementation = _available_xcodes_impl,
+        provides = [AvailableXcodesInfo],
+)
+"#],
+        );
+        config.create("build_bazel_apple_support/xcode/xcode_config.bzl", &[r#"load(":available_xcodes.bzl", "AvailableXcodesInfo")
+load(":xcode_version.bzl", "XcodeVersionRuleInfo", "XcodeVersionPropertiesInfo")
+
+XcodeVersionInfo = apple_common.XcodeVersionConfig
+unavailable_xcode_message = "'bazel fetch --force --configure' (Bzlmod) or 'bazel sync --configure' (WORKSPACE)"
+
+def _xcode_config_impl(ctx):
+        apple_fragment = ctx.fragments.apple
+        cpp_fragment = ctx.fragments.cpp
+
+        explicit_default_version = ctx.attr.default[XcodeVersionRuleInfo] if ctx.attr.default else None
+        explicit_versions = [
+            target[XcodeVersionRuleInfo]
+            for target in ctx.attr.versions
+        ] if ctx.attr.versions else []
+        remote_versions = [
+            target
+            for target in ctx.attr.remote_versions[AvailableXcodesInfo].available_versions
+        ] if ctx.attr.remote_versions else []
+        local_versions = [
+            target
+            for target in ctx.attr.local_versions[AvailableXcodesInfo].available_versions
+        ] if ctx.attr.local_versions else []
+
+        local_default_version = ctx.attr.local_versions[AvailableXcodesInfo].default_version if ctx.attr.local_versions else None
+        xcode_version_properties = None
+        availability = "unknown"
+
+        if _use_available_xcodes(
+            explicit_default_version,
+            explicit_versions,
+            local_versions,
+            remote_versions,
+        ):
+            xcode_version_properties, availability = _resolve_xcode_from_local_and_remote(
+                local_versions,
+                remote_versions,
+                apple_fragment.xcode_version_flag,
+                apple_fragment.prefer_mutual_xcode,
+                local_default_version,
+            )
+        else:
+            xcode_version_properties = _resolve_explicitly_defined_version(
+                explicit_versions,
+                explicit_default_version,
+                apple_fragment.xcode_version_flag,
+            )
+            availability = "UNKNOWN"
+
+        ios_sdk_version = apple_fragment.ios_sdk_version_flag or _dotted_version_or_default(xcode_version_properties.default_ios_sdk_version, "8.4")
+        macos_sdk_version = apple_fragment.macos_sdk_version_flag or _dotted_version_or_default(xcode_version_properties.default_macos_sdk_version, "10.11")
+        tvos_sdk_version = apple_fragment.tvos_sdk_version_flag or _dotted_version_or_default(xcode_version_properties.default_tvos_sdk_version, "9.0")
+        watchos_sdk_version = apple_fragment.watchos_sdk_version_flag or _dotted_version_or_default(xcode_version_properties.default_watchos_sdk_version, "2.0")
+        visionos_sdk_version = _dotted_version_or_default(xcode_version_properties.default_visionos_sdk_version, "1.0")
+
+        ios_minimum_os = apple_fragment.ios_minimum_os_flag or ios_sdk_version
+        macos_minimum_os = apple_fragment.macos_minimum_os_flag or macos_sdk_version
+        tvos_minimum_os = apple_fragment.tvos_minimum_os_flag or tvos_sdk_version
+        watchos_minimum_os = apple_fragment.watchos_minimum_os_flag or watchos_sdk_version
+        if cpp_fragment.minimum_os_version():
+            visionos_minimum_os = apple_common.dotted_version(cpp_fragment.minimum_os_version())
+        else:
+            visionos_minimum_os = visionos_sdk_version
+
+        xcode_versions = XcodeVersionInfo(
+            ios_sdk_version = str(ios_sdk_version),
+            ios_minimum_os_version = str(ios_minimum_os),
+            visionos_sdk_version = str(visionos_sdk_version),
+            visionos_minimum_os_version = str(visionos_minimum_os),
+            watchos_sdk_version = str(watchos_sdk_version),
+            watchos_minimum_os_version = str(watchos_minimum_os),
+            tvos_sdk_version = str(tvos_sdk_version),
+            tvos_minimum_os_version = str(tvos_minimum_os),
+            macos_sdk_version = str(macos_sdk_version),
+            macos_minimum_os_version = str(macos_minimum_os),
+            xcode_version = xcode_version_properties.xcode_version,
+            availability = availability,
+            xcode_version_flag = apple_fragment.xcode_version_flag,
+            include_xcode_execution_info = apple_fragment.include_xcode_exec_requirements,
+        )
+        return [
+            DefaultInfo(runfiles = ctx.runfiles()),
+            xcode_versions,
+            xcode_version_properties,
+        ]
+
+xcode_config = rule(
+        attrs = {
+            "default": attr.label(
+                flags = ["NONCONFIGURABLE"],
+                providers = [[XcodeVersionRuleInfo]],
+            ),
+            "versions": attr.label_list(
+                flags = ["NONCONFIGURABLE"],
+                providers = [[XcodeVersionRuleInfo]],
+            ),
+            "remote_versions": attr.label(
+                flags = ["NONCONFIGURABLE"],
+                providers = [[AvailableXcodesInfo]],
+            ),
+            "local_versions": attr.label(
+                flags = ["NONCONFIGURABLE"],
+                providers = [[AvailableXcodesInfo]],
+            ),
+        },
+        fragments = ["apple", "cpp"],
+        implementation = _xcode_config_impl,
+)
+
+def _use_available_xcodes(explicit_default_version, explicit_versions, local_versions, remote_versions):
+        if remote_versions:
+            if explicit_versions:
+                fail("'versions' may not be set if '[local,remote]_versions' is set.")
+            if explicit_default_version:
+                fail("'default' may not be set if '[local,remote]_versions' is set.")
+            if not local_versions:
+                fail("if 'remote_versions' are set, you must also set 'local_versions'")
+            return True
+        return False
+
+def _duplicate_alias_error(alias, versions):
+        labels_containing_alias = []
+        for version in versions:
+            if alias in version.aliases or (version.xcode_version_properties.xcode_version == alias):
+                labels_containing_alias.append(str(version.label))
+        return "'{}' is registered to multiple labels ({}) in a single xcode_config rule".format(
+            alias,
+            ", ".join(labels_containing_alias),
+        )
+
+def _aliases_to_xcode_version(versions):
+        version_map = {}
+        if not versions:
+            return version_map
+        for version in versions:
+            for alias in version.aliases:
+                if alias in version_map:
+                    fail(_duplicate_alias_error(alias, versions))
+                else:
+                    version_map[alias] = version
+            version_string = version.xcode_version_properties.xcode_version
+            if version_string not in version.aliases:  # only add the version if it's not also an alias
+                if version_string in version_map:
+                    fail(_duplicate_alias_error(version_string, versions))
+                else:
+                    version_map[version_string] = version
+        return version_map
+
+def _resolve_xcode_from_local_and_remote(
+            local_versions,
+            remote_versions,
+            xcode_version_flag,
+            prefer_mutual_xcode,
+            local_default_version):
+        local_alias_to_version_map = _aliases_to_xcode_version(local_versions)
+        remote_alias_to_version_map = _aliases_to_xcode_version(remote_versions)
+
+        mutually_available_versions = {}
+        for version in local_versions:
+            version_string = version.xcode_version_properties.xcode_version
+            if version_string in remote_alias_to_version_map:
+                mutually_available_versions[version_string] = remote_alias_to_version_map[version_string]
+
+        # We'd log an event here if we could!!
+        if xcode_version_flag:
+            remote_version_from_flag = remote_alias_to_version_map.get(xcode_version_flag)
+            local_version_from_flag = local_alias_to_version_map.get(xcode_version_flag)
+            availability = "BOTH"
+
+            if remote_version_from_flag and local_version_from_flag:
+                local_version_from_remote_versions = remote_alias_to_version_map.get(local_version_from_flag.xcode_version_properties.xcode_version)
+                if local_version_from_remote_versions:
+                    return remote_version_from_flag.xcode_version_properties, availability
+                else:
+                    fail(
+                        ("Xcode version {0} was selected, either because --xcode_version was passed, or" +
+                        " because xcode-select points to this version locally. This corresponds to" +
+                        " local Xcode version {1}. That build of version {0} is not available" +
+                        " remotely, but there is a different build of version {2}, which has" +
+                        " version {2} and aliases {3}. You probably meant to use this version." +
+                        " Please download it *and delete version {1}, then run `blaze shutdown`" +
+                        " to continue using dynamic execution. If you really did intend to use" +
+                        " local version {1}, please specify it fully with --xcode_version={1}.").format(
+                            xcode_version_flag,
+                            local_version_from_flag.xcode_version_properties.xcode_version,
+                            remote_version_from_flag.xcode_version_properties.xcode_version,
+                            remote_version_from_flag.aliases,
+                        ),
+                    )
+
+            elif local_version_from_flag:
+                error = (
+                    " --xcode_version={} specified, but it is not available remotely. Actions " +
+                    "requiring Xcode will be run locally, which could make your build slower."
+                ).format(
+                    xcode_version_flag,
+                )
+                if (mutually_available_versions):
+                    error += " Consider using one of [{}].".format(
+                        ", ".join([version for version in mutually_available_versions]),
+                    )
+                print(error)
+                return local_version_from_flag.xcode_version_properties, "LOCAL"
+
+            elif remote_version_from_flag:
+                print(("--xcode_version={version} specified, but it is not available locally. " +
+                      "Your build will fail if any actions require a local Xcode. " +
+                      "If you believe you have '{version}' installed, try running {command}," +
+                      "and then re-run your command. Locally available versions: {local_versions}. ")
+                    .format(
+                    version = xcode_version_flag,
+                    command = unavailable_xcode_message,
+                    local_versions = ", ".join([version for version in local_alias_to_version_map.keys()]),
+                ))
+                availability = "REMOTE"
+
+                return remote_version_from_flag.xcode_version_properties, availability
+
+            else:  # fail if we can't find any version to match
+                fail(
+                    ("--xcode_version={0} specified, but '{0}' is not an available Xcode version." +
+                    " Locally available versions: [{2}]. Remotely available versions: [{3}]. If" +
+                    " you believe you have '{0}' installed, try running {1}, and then" +
+                    " re-run your command.").format(
+                        xcode_version_flag,
+                        unavailable_xcode_message,
+                        ", ".join([version.xcode_version_properties.xcode_version for version in local_versions]),
+                        ", ".join([version.xcode_version_properties.xcode_version for version in remote_versions]),
+                    ),
+                )
+
+        # --xcode_version is not set
+        availability = "UNKNOWN"
+        local_version = None
+
+        # If there aren't any mutually available versions, select the local default.
+        if not mutually_available_versions:
+            print(
+                ("Using a local Xcode version, '{}', since there are no" +
+                " remotely available Xcodes on this machine. Consider downloading one of the" +
+                " remotely available Xcode versions ({}) in order to get the best build" +
+                " performance.").format(local_default_version.xcode_version_properties.xcode_version, ", ".join([version.xcode_version_properties.xcode_version for version in remote_versions])),
+            )
+            local_version = local_default_version
+            availability = "LOCAL"
+        elif (local_default_version.xcode_version_properties.xcode_version in remote_alias_to_version_map):
+            #  If the local default version is also available remotely, use it.
+            availability = "BOTH"
+            local_version = remote_alias_to_version_map.get(local_default_version.xcode_version_properties.xcode_version)
+        else:
+            # If an alias of the local default version is available remotely, use it.
+            for version_number in local_default_version.aliases:
+                if version_number in remote_alias_to_version_map:
+                    availability = "BOTH"
+                    local_version = remote_alias_to_version_map.get(version_number)
+                    break
+
+        if local_version:
+            return local_version.xcode_version_properties, availability
+
+        # The local default is not available remotely.
+        if prefer_mutual_xcode:
+            # If we prefer a mutually available version, the newest one.
+            newest_version = "0.0"
+            default_version = None
+            for _, version in mutually_available_versions.items():
+                if _compare_version_strings(version.xcode_version_properties.xcode_version, newest_version) > 0:
+                    default_version = version
+                    newest_version = default_version.xcode_version_properties.xcode_version
+
+            return default_version.xcode_version_properties, "BOTH"
+        else:
+            # Use the local default
+            return local_default_version.xcode_version_properties, "LOCAL"
+
+def _compare_version_strings(first, second):
+        return apple_common.dotted_version(first).compare_to(apple_common.dotted_version(second))
+
+def _resolve_explicitly_defined_version(
+            explicit_versions,
+            explicit_default_version,
+            xcode_version_flag):
+        if explicit_default_version and explicit_default_version.label not in [
+            version.label
+            for version in explicit_versions
+        ]:
+            fail(
+                "default label '{}' must be contained in versions attribute".format(explicit_default_version.label),
+            )
+        if not explicit_versions:
+            if explicit_default_version:
+                fail("default label must be contained in versions attribute")
+            return XcodeVersionPropertiesInfo(xcode_version = None)
+
+        if not explicit_default_version:
+            fail("if any versions are specified, a default version must be specified")
+
+        alias_to_versions = _aliases_to_xcode_version(explicit_versions)
+        if xcode_version_flag:
+            flag_version = alias_to_versions.get(str(xcode_version_flag))
+            if flag_version:
+                return flag_version.xcode_version_properties
+            elif xcode_version_flag.startswith("/"):
+                return XcodeVersionPropertiesInfo(xcode_version = xcode_version_flag)
+            else:
+                fail(
+                    ("--xcode_version={0} specified, but '{0}' is not an available Xcode version. " +
+                    "If you believe you have '{0}' installed, try running 'bazel shutdown', and then " +
+                    "re-run your command.").format(xcode_version_flag),
+                )
+
+        return alias_to_versions.get(explicit_default_version.xcode_version_properties.xcode_version).xcode_version_properties
+
+def _dotted_version_or_default(field, default):
+        return apple_common.dotted_version(field) or default
+"#]);
+        config.create(
+            "build_bazel_apple_support/xcode/xcode_config_alias.bzl",
+            &[r#"load(":xcode_version.bzl", "XcodeVersionPropertiesInfo")
+
+def _xcode_config_alias_impl(ctx):
+        xcode_config = ctx.attr._xcode_config
+        return [
+            xcode_config[XcodeVersionPropertiesInfo],
+            xcode_config[apple_common.XcodeVersionConfig],
+        ]
+
+xcode_config_alias = rule(
+        attrs = {
+            "_xcode_config": attr.label(
+                default = configuration_field(
+                    fragment = "apple",
+                    name = "xcode_config_label",
+                ),
+            ),
+        },
+        fragments = ["apple"],
+        implementation = _xcode_config_alias_impl,
+)
+"#],
         );
     }
 }

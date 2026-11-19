@@ -12,6 +12,21 @@ from their `tests/` directory):
 | `packages/util/MockToolsConfig` | `mock_tools_config.rs` |
 | `testutil/Scratch` | `scratch.rs` (a real temporary directory, not an `InMemoryFileSystem`) |
 | `bazel/bzlmod/FakeRegistry` | `fake_registry.rs` (a local index registry on disk) |
+| `packages/util/MockCcSupport`, `BazelMockCcSupport`, `Crosstool` | `mock_cc_support.rs` |
+| `analysis/util/AbstractMockJavaSupport`, `packages/util/BazelMockPythonSupport` | `mock_java_python_support.rs` |
+| the test's runfiles and resources (real `rules_cc`, `rules_java`, ...) | `test_deps.rs` (`scripts/test-deps/prepare`) |
+
+## Test dependencies
+
+Java's mocks copy the real `rules_cc`, `rules_java`, `rules_python`, `bazel_skylib` and protobuf
+sources and some files of the Bazel source from the test's runfiles and resources.
+`scripts/test-deps/prepare` materialises them, at the versions the pinned Bazel's own lockfile
+selects, fetched by the oracle through the shared repository cache, into
+`~/.cache/blaze/test-deps/` (or `--dest`), with `manifest.json` (archive URLs, sha256, patches,
+resource sha256). Tests find the directory through `BLAZE_TEST_DEPS` (default
+`~/.cache/blaze/test-deps`) and fail, naming the script, when it is missing.
+`scripts/cargo-capped` forwards only `PATH`, `HOME` and the toolchain to `systemd-run`, so tests
+run through it use the default directory.
 
 Differences from Java are listed at the top of each file and marked `PORT:` where they apply.
 Java expectations that contain the in-memory file system's absolute paths (`/workspace`,
@@ -29,6 +44,8 @@ literal. Reviewers: sample these against the Java.
 | Java test class | methods transcribed by script | of which run | by hand |
 | --- | --- | --- | --- |
 | `bazel/bzlmod/ModuleExtensionResolutionTest` | 79 | 67 | `useRepo_placeholders` (parameterized) |
+
+| `analysis/VisibilityTest` (the `testVerboseDiagnostics_*` methods) | 16 | 16 | |
 
 `BuildConfigurationValueTest` (`crates/blaze_build_config/tests/build_configuration_value_test.rs`)
 and the toolchain lookup tests were ported by hand.
@@ -116,3 +133,22 @@ and the toolchain lookup tests were ported by hand.
 | `simpleExtension_nonCanonicalLabel_repoName` | `simple_extension_non_canonical_label_repo_name` | runs, passes |
 | `tagSortOrder` | `tag_sort_order` | runs, passes |
 | `wrongModuleExtensionLabel` | `wrong_module_extension_label` | runs, passes |
+
+### VisibilityTest, transcribed by script (all run and pass)
+
+- `testVerboseDiagnostics_aliasDisclaimer_notShownForNonAlias` -> `test_verbose_diagnostics_alias_disclaimer_not_shown_for_non_alias`
+- `testVerboseDiagnostics_aliasDisclaimer_shownForAlias` -> `test_verbose_diagnostics_alias_disclaimer_shown_for_alias`
+- `testVerboseDiagnostics_aspectImplicitDep` -> `test_verbose_diagnostics_aspect_implicit_dep`
+- `testVerboseDiagnostics_consumingLocation_isDelegatedFromMacro` -> `test_verbose_diagnostics_consuming_location_is_delegated_from_macro`
+- `testVerboseDiagnostics_consumingLocation_isDelegatedFromPackage` -> `test_verbose_diagnostics_consuming_location_is_delegated_from_package`
+- `testVerboseDiagnostics_consumingLocation_isInMacro` -> `test_verbose_diagnostics_consuming_location_is_in_macro`
+- `testVerboseDiagnostics_consumingLocation_isNotInMacro` -> `test_verbose_diagnostics_consuming_location_is_not_in_macro`
+- `testVerboseDiagnostics_editVisibilitySuggestion_forFileTarget` -> `test_verbose_diagnostics_edit_visibility_suggestion_for_file_target`
+- `testVerboseDiagnostics_editVisibilitySuggestion_forRuleTarget` -> `test_verbose_diagnostics_edit_visibility_suggestion_for_rule_target`
+- `testVerboseDiagnostics_moreDelegationNeeded_fromAncestorMacro` -> `test_verbose_diagnostics_more_delegation_needed_from_ancestor_macro`
+- `testVerboseDiagnostics_moreDelegationNeeded_fromBuildFile` -> `test_verbose_diagnostics_more_delegation_needed_from_build_file`
+- `testVerboseDiagnostics_moreDelegationNeeded_incompleteDelegation` -> `test_verbose_diagnostics_more_delegation_needed_incomplete_delegation`
+- `testVerboseDiagnostics_ruleImplicitDep` -> `test_verbose_diagnostics_rule_implicit_dep`
+- `testVerboseDiagnostics_samePackageDisclaimer` -> `test_verbose_diagnostics_same_package_disclaimer`
+- `testVerboseDiagnostics_samePackageDisclaimer_notShownForImplicitDepOfRule` -> `test_verbose_diagnostics_same_package_disclaimer_not_shown_for_implicit_dep_of_rule`
+- `testVerboseDiagnostics_samePackageDisclaimer_shownForImplicitDepOfMacro` -> `test_verbose_diagnostics_same_package_disclaimer_shown_for_implicit_dep_of_macro`

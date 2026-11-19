@@ -62,6 +62,16 @@ pub trait Postable: Any + Send + Sync + fmt::Debug {
     fn store_for_replay(&self) -> bool {
         false
     }
+
+    /// The posted object as a [`FetchProgress`], when it is one.
+    ///
+    /// PORT: Guava's `EventBus` delivers an event to the subscribers of every interface its
+    /// class implements (`UiEventHandler.downloadProgress(FetchProgress)`); a Rust subscriber
+    /// recognises a concrete event by downcasting, and a `FetchProgress` implementor through
+    /// this method, which each implementor overrides.
+    fn as_fetch_progress(&self) -> Option<&dyn FetchProgress> {
+        None
+    }
 }
 
 impl Reportable for Arc<dyn Postable> {

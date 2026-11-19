@@ -291,7 +291,9 @@ pub fn update_with_aspects_parameters(
     // Configuration creation.
     // TODO(gregce): Consider dropping this phase and passing on-the-fly target / exec configs as
     // needed. This requires cleaning up the invalidation in SkyframeBuildView.setConfigurations.
-    skyframe_executor.set_baseline_configuration(target_options);
+    skyframe_executor
+        .set_baseline_configuration(target_options, event_handler.clone())
+        .map_err(BuildViewError::InvalidConfiguration)?;
     let top_level_config = skyframe_executor
         .create_configuration(
             event_handler.clone(),
@@ -353,6 +355,47 @@ pub fn update_with_aspects_parameters(
     )?;
 
     // PORT: ArtifactFactory.noteAnalysisStarting only resets incremental state.
+    // With the execution phase, Java's SkyframeBuildView.analyzeAndExecuteTargets requests the
+    // workspace status artifacts together with the top-level BuildDriverKeys, right after
+    // `executionSetupCallback.prepareForExecution()`; the workspace status action then runs while
+    // the top-level targets are analyzed.
+    // PORT: Blaze analyzes the top-level targets (configureTargets below) before it evaluates
+    // the BuildDriverKeys (module comment of blaze_runtime commands/build.rs), so the workspace
+    // status artifacts are evaluated here, before the analysis; the build command requests them
+    // again with the BuildDriverKeys (done nodes, or their error). The symlink forest of
+    // prepareForExecution is planted by the build command before the BuildDriverKeys; the
+    // workspace status action writes only to the output tree.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:654 SkyframeBuildView.analyzeAndExecuteTargets
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2327 SkyframeExecutor.configureTargets
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2492 SkyframeExecutor.evaluateBuildDriverKeys
+    // PORT: both of Java's paths post ConfigurationPhaseStartedEvent before their evaluation
+    // (configureTargets without, evaluateBuildDriverKeys with the execution phase); Blaze's one
+    // path posts it here, before the workspace status artifacts and configureTargets below.
+    event_handler.post(Arc::new(
+        blaze_buildtool::buildtool::buildevent::ConfigurationPhaseStartedEvent::new(Arc::new(
+            crate::skyframe_progress_receiver::AnalysisProgressReceiverView(
+                &blaze_sky_analysis::analysis_progress_receiver::ANALYSIS_PROGRESS,
+            ),
+        )),
+    ));
+    if options.include_execution_phase {
+        // For the workspace status actions.
+        event_handler.post(Arc::new(
+            blaze_sky_exec::events::SomeExecutionStartedEvent::not_counted_in_execution_time(),
+        ));
+    }
+    if options.include_execution_phase
+        && let Some(execution) = skyframe_executor.get_execution()
+    {
+        blaze_buildtool::buildtool::execution_tool::evaluate_build_driver_keys(
+            skyframe_executor.get_evaluator(),
+            &[],
+            &execution.seam.get_workspace_status_artifacts(),
+            &execution.config,
+            event_handler.clone(),
+        )
+        .map_err(|_| BuildViewError::Interrupted)?;
+    }
     let mut skyframe_analysis_result = skyframe_build_view::configure_targets(
         skyframe_executor,
         event_handler.clone(),

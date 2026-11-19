@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use blaze_optdefs::misc::worker_options::WorkerOptions;
 use blaze_protos::blaze::worker::{WorkRequest, WorkResponse};
-use blaze_shell::{JavaFile, Subprocess, SubprocessBuilder};
+use blaze_shell::{JavaFile, Subprocess, SubprocessBuilder, SubprocessFactory};
 use blaze_vfs::{Path, PathFragment};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
@@ -50,7 +50,7 @@ pub struct WorkerSandboxOptions {
 /// The parts of a `SandboxedWorker` its `SingleplexWorker` superclass does not have.
 struct SandboxedParts {
     worker_exec_root: Mutex<WorkerExecRoot>,
-    tree_deleter: Arc<dyn TreeDeleter>,
+    tree_deleter: Option<Arc<dyn TreeDeleter>>,
 }
 
 /// The state Java keeps in the worker's fields.
@@ -88,6 +88,9 @@ pub struct SingleplexWorker {
     shared: Arc<SingleplexShared>,
     /// `Some` for a `SandboxedWorker`.
     sandboxed: Option<SandboxedParts>,
+    /// For tests: the factory `createProcess` starts the process with (Java's tests override
+    /// `createProcess` in a subclass, `WorkerTestUtils.TestWorker`).
+    subprocess_factory: Mutex<Option<Arc<dyn SubprocessFactory>>>,
 }
 
 impl SingleplexWorker {
@@ -118,7 +121,13 @@ impl SingleplexWorker {
                 worker_protocol: Mutex::new(None),
             }),
             sandboxed: None,
+            subprocess_factory: Mutex::new(None),
         }
+    }
+
+    /// For tests: starts the worker's process with `factory` (see `subprocess_factory`).
+    pub fn set_process_factory(&self, factory: Arc<dyn SubprocessFactory>) {
+        *self.subprocess_factory.lock() = Some(factory);
     }
 
     /// `new SandboxedWorker(...)`.
@@ -130,7 +139,7 @@ impl SingleplexWorker {
         log_file: Path,
         worker_options: Arc<WorkerOptions>,
         hardened_sandbox_options: Option<&WorkerSandboxOptions>,
-        tree_deleter: Arc<dyn TreeDeleter>,
+        tree_deleter: Option<Arc<dyn TreeDeleter>>,
         use_in_memory_tracking: bool,
     ) -> SingleplexWorker {
         let mut worker = SingleplexWorker::new(
@@ -191,7 +200,10 @@ impl SingleplexWorker {
         argv: Vec<String>,
         client_env: &IndexMap<String, String>,
     ) -> SubprocessBuilder {
-        let mut process_builder = SubprocessBuilder::new(client_env);
+        let mut process_builder = match &*self.subprocess_factory.lock() {
+            Some(f) => SubprocessBuilder::with_factory(client_env, f.clone()),
+            None => SubprocessBuilder::new(client_env),
+        };
         process_builder.set_argv(argv);
         process_builder.set_working_directory(Some(JavaFile::new(self.work_dir.get_path_string())));
         process_builder.set_stderr_file(JavaFile::new(self.base.log_file.get_path_string()));
@@ -288,7 +300,10 @@ impl Worker for SingleplexWorker {
                 worker_files,
                 input_files,
                 outputs,
-                &*sandboxed.tree_deleter,
+                &**sandboxed
+                    .tree_deleter
+                    .as_ref()
+                    .expect("NullPointerException: treeDeleter"),
             )?;
         }
         let recording = {

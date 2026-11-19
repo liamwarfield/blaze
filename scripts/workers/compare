@@ -27,22 +27,24 @@ Each side has its own copy of the probe (~/.cache/blaze/work/workers-compare/<la
 and its own output user root (~/.cache/blaze/oracle-out/workers-compare-<side>), a clean
 environment (HOME, PATH=/usr/bin:/bin), --nohome_rc --nosystem_rc, the shared repository cache,
 --color=no --curses=no. A case is `clean`, then one `build` (with --jobs=1, --worker_verbose and
---execution_log_json_file, plus the case's flags and targets), then `info output_base`, then
-`shutdown`: every case starts from a fresh server on both sides (Blaze has no persistent server
+--execution_log_json_file, plus the case's flags and targets) from a stopped server (`clean`,
+then `shutdown`), then `info output_base`, then `shutdown`: every case starts from a fresh server on both sides (Blaze has no persistent server
 yet, so its workers live as long as one command; shutting the oracle's server down gives the same
 start: no worker, worker ids from 1).
 
 Compared per case (after replacing the workspace copy, output base, execroot, output user root,
 install base and $HOME by placeholders, scripts/oracle/normalise.py):
   termination  how the build ended (exit code, signal, OOM kill, timeout)
-  summary      the "INFO: N processes: ..." and "Build completed ..." / "did NOT complete" lines
-  messages     every ERROR:, WARNING: and INFO: line about workers and the action's output
-               ("INFO: From ...:" blocks, "Created new ...", "Destroying ...", pool messages),
-               with the line that follows them, in order. Normalised: the worker key hash
-               (it hashes the execroot path, which differs between the two output roots; that it
-               equals Bazel's for equal paths is checked by the `samehash` case), and the Java stack
-               frames ("\\tat ..." and "\\t... N more" lines) of the oracle's "Exception details",
-               which Blaze cannot print (declared normalisation: blaze_exec::worker::error_message).
+  stderr       the whole stderr, line by line, after removing only named lines: the
+               "INFO: Elapsed time" line, progress lines the UI repaints on a timer
+               ("Loading: ...", "Analyzing: ...", "Computing main repo mapping: ...",
+               "[N / M] ...", "Fetching ...", empty lines), and the Java stack frames
+               ("\\tat ..." and "\\t... N more") of the oracle's "Exception details", which Blaze
+               cannot print (declared normalisation: blaze_exec::worker::error_message);
+               normalised: the worker key hash (it hashes the execroot path, which differs
+               between the two output roots; that it equals Bazel's for equal paths is checked by
+               the `samehash` case). "stderr order" when the same lines come in another order
+               (the order the actions ran in, which is the executor's).
   outputs      sha256 of every bazel-bin/*.out and bazel-bin/java/*.jar
   logs         the names of <output_base>/bazel-workers/*.log and the contents of each
   execlog      every spawn of --execution_log_json_file, normalised as the referee does
@@ -118,7 +120,7 @@ CASES = [
     ("empty-response", ["//:empty_proto"], 1),
     ("huge-stderr", ["//:huge_stderr"], 1),
     ("cancel-response", ["//:cancelled_proto"], 1),
-    ("bad-protocol", ["//:bad_protocol"], 1),
+    ("bad-protocol", ["//:bad_protocol"], 36),
     ("java", ["//java:shout"], None),
 ]
 CASE_IDS = [c[0] for c in CASES] + ["samehash"]
@@ -126,20 +128,13 @@ SAMEHASH_TARGETS = ["//:ok_proto", "//:ok_json", "//:ok_mx"]
 # Flags every build gets.
 BUILD_FLAGS = ["--jobs=1", "--worker_verbose"]
 
-SUMMARY_RE = re.compile(r"^(INFO: \d+ process(es)?:.*|INFO: Build completed.*|"
-                        r"(ERROR: )?Build did NOT complete.*)$")
-# The messages compared: errors, warnings and the worker-related INFO lines, with the text up to
-# the next message line.
-MESSAGE_START_RE = re.compile(r"^(ERROR|WARNING|INFO): ")
-INFO_KEPT_RE = re.compile(r"^INFO: (From |Created new |Destroying |Worker |Clean command|"
-                          r"Build completed, shutting|Could not)")
-PROGRESS_RE = re.compile(r"^(Loading|Analyzing|Computing|INFO: Analyzed|INFO: Found|"
-                         r"INFO: Elapsed|INFO: Invocation|INFO: Streaming|Target |  bazel-bin|"
-                         r"\[\d+ / \d+\]|Extracting Bazel|Starting local Bazel|INFO: Reading|"
-                         r"Another command|INFO: Starting clean)")
+# The lines removed before the whole stderr is compared: written on a timer (progress the UI
+# repaints while a phase runs) or holding a duration.
+TIMER_LINE_RE = re.compile(r"^(INFO: Elapsed time: .*|Loading: .*|Loading:|Analyzing: .*|"
+                           r"Computing main repo mapping: .*|Computing main repo mapping:|"
+                           r"\[\d+ / \d+\] .*|Fetching .*|)$")
 KEY_HASH_RE = re.compile(r"key hash -?\d+")
 JAVA_FRAME_RE = re.compile(r"^\t(at |\.\.\. \d+ more)")
-ELAPSED_RE = re.compile(r"\b\d+\.\d+s\b")
 
 
 def make_writable_and_remove(path):
@@ -221,6 +216,8 @@ def side_run(side, binary, label, cases):
     paths = None
     for cid, args, _ in selected(cases):
         run_cmd(binary, ws, our, ["clean"], tag)
+        # Both sides start the build cold (Blaze has no persistent server yet).
+        run_cmd(binary, ws, our, ["shutdown"], tag)
         execlog = os.path.join(outdir, cid + ".execlog.json")
         term, out, err = run_cmd(binary, ws, our, build_args(args, execlog), tag)
         with open(os.path.join(outdir, cid + ".stderr"), "wb") as f:
@@ -243,7 +240,10 @@ def side_run(side, binary, label, cases):
     with open(os.path.join(outdir, "results.json"), "w") as f:
         json.dump(results, f, indent=1, sort_keys=True)
     if side == "oracle":
-        cc.write_key(os.path.join(outdir, "oracle.key"), oracle_key(label, cases))
+        # The key anchors every capture of the side (results.json, stderr, execution logs).
+        cc.write_key(os.path.join(outdir, "oracle.key"), oracle_key(label, cases),
+                     [os.path.join(outdir, n) for n in sorted(os.listdir(outdir))
+                      if n != "oracle.key"])
     return results
 
 
@@ -274,26 +274,15 @@ def samehash_run(blaze, oracle, label):
     return lines, terms
 
 
-def message_blocks(text):
-    """The compared message lines (see USAGE), each with its continuation lines."""
+def stderr_lines(ctx, text):
+    """The whole stderr, normalised, without the named lines that depend on timing: the elapsed
+    time line, the progress lines the UI repaints on a timer, and the Java stack frames of the
+    oracle's "Exception details" (see USAGE)."""
     out = []
-    cur = None
     for line in text.splitlines():
-        if JAVA_FRAME_RE.match(line):
+        if JAVA_FRAME_RE.match(line) or TIMER_LINE_RE.match(line):
             continue
-        if MESSAGE_START_RE.match(line) or PROGRESS_RE.match(line):
-            if cur is not None:
-                out.append("\n".join(cur))
-                cur = None
-            if PROGRESS_RE.match(line) or SUMMARY_RE.match(line):
-                continue
-            if line.startswith("INFO: ") and not INFO_KEPT_RE.match(line):
-                continue
-            cur = [line]
-        elif cur is not None:
-            cur.append(line)
-    if cur is not None:
-        out.append("\n".join(cur))
+        out.append(norm(ctx, line))
     return out
 
 
@@ -326,18 +315,21 @@ def compare_case(cid, declared, o, b, odir, bdir, octx, bctx):
     differing = []
     oerr = open(os.path.join(odir, cid + ".stderr"), "rb").read().decode("latin-1")
     berr = open(os.path.join(bdir, cid + ".stderr"), "rb").read().decode("latin-1")
-    osum = [ELAPSED_RE.sub("<T>s", norm(octx, l)) for l in oerr.splitlines() if SUMMARY_RE.match(l)]
-    bsum = [ELAPSED_RE.sub("<T>s", norm(bctx, l)) for l in berr.splitlines() if SUMMARY_RE.match(l)]
+    ol_ = stderr_lines(octx, oerr)
+    bl_ = stderr_lines(bctx, berr)
     details = []
-    if osum != bsum:
-        differing.append("summary")
-        details.append("summary: oracle %s | blaze %s" % (osum, bsum))
-    om = [norm(octx, m) for m in message_blocks(oerr)]
-    bm = [norm(bctx, m) for m in message_blocks(berr)]
-    if om != bm:
-        differing.append("messages")
-        with open(os.path.join(bdir, cid + ".messages.diff.json"), "w") as f:
-            json.dump({"oracle": om, "blaze": bm}, f, indent=1)
+    if ol_ != bl_:
+        if sorted(ol_) == sorted(bl_):
+            # The same lines in another order: the actions ran in another order (the
+            # executor's scheduling, not a worker property; reported as its own aspect).
+            differing.append("stderr order")
+        else:
+            differing.append("stderr")
+            only_o = [l for l in ol_ if l not in bl_][:3]
+            only_b = [l for l in bl_ if l not in ol_][:3]
+            details.append("stderr: only oracle %s | only blaze %s" % (only_o, only_b))
+        with open(os.path.join(bdir, cid + ".stderr.diff.json"), "w") as f:
+            json.dump({"oracle": ol_, "blaze": bl_}, f, indent=1)
     if oc["outputs"] != bc["outputs"]:
         differing.append("outputs")
         details.append("outputs: oracle %s | blaze %s" % (

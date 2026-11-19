@@ -24,7 +24,7 @@ struct SandboxedProxyParts {
     /// The sandbox directory for the current request, inside `workDir`.
     sandbox_dir: Path,
     sandbox_name: PathFragment,
-    tree_deleter: Arc<dyn TreeDeleter>,
+    tree_deleter: Option<Arc<dyn TreeDeleter>>,
 }
 
 /// A proxy that talks to the multiplexer
@@ -71,7 +71,7 @@ impl WorkerProxy {
         log_file: Path,
         worker_multiplexer: Arc<WorkerMultiplexer>,
         work_dir: Path,
-        tree_deleter: Arc<dyn TreeDeleter>,
+        tree_deleter: Option<Arc<dyn TreeDeleter>>,
     ) -> WorkerProxy {
         let sandbox_name = PathFragment::create(&format!(
             "__sandbox/{}/{}",
@@ -137,7 +137,10 @@ impl Worker for WorkerProxy {
             &self.work_dir,
             worker_files,
             input_files,
-            &*sandboxed.tree_deleter,
+            &**sandboxed
+                .tree_deleter
+                .as_ref()
+                .expect("NullPointerException: treeDeleter"),
             client_env,
         )?;
 
@@ -164,7 +167,10 @@ impl Worker for WorkerProxy {
             &mut inputs_to_create,
             &mut dirs_to_create,
             &sandboxed.sandbox_dir,
-            &*sandboxed.tree_deleter,
+            &**sandboxed
+                .tree_deleter
+                .as_ref()
+                .expect("NullPointerException: treeDeleter"),
         )?;
         // Finally, create anything that is still missing. This is non-strict only for historical
         // reasons, we haven't seen what would break if we make it strict.

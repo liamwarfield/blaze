@@ -100,7 +100,6 @@ fn assert_throws(exception_class: &str, f: impl FnOnce()) -> String {
 
 // Java: AspectAwareAttributeMapperTest.getName
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn get_name() {
     let f = create_mapper();
     assert_eq!(f.mapper.get_label().get_name(), f.rule.get_name());
@@ -108,7 +107,6 @@ fn get_name() {
 
 // Java: AspectAwareAttributeMapperTest.getLabel
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn get_label() {
     let f = create_mapper();
     assert_eq!(f.mapper.get_label(), f.rule.get_label());
@@ -116,7 +114,6 @@ fn get_label() {
 
 // Java: AspectAwareAttributeMapperTest.getRuleAttributeValue
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn get_rule_attribute_value() {
     let f = create_mapper();
     match f.mapper.get("srcs", Type::LabelList) {
@@ -129,7 +126,6 @@ fn get_rule_attribute_value() {
 
 // Java: AspectAwareAttributeMapperTest.getAspectAttributeValue
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn get_aspect_attribute_value() {
     let f = create_mapper();
     assert_throws("UnsupportedOperationException", || {
@@ -139,7 +135,6 @@ fn get_aspect_attribute_value() {
 
 // Java: AspectAwareAttributeMapperTest.getAspectValueWrongType
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn get_aspect_value_wrong_type() {
     let f = create_mapper();
     let e = assert_throws("IllegalArgumentException", || {
@@ -153,7 +148,6 @@ fn get_aspect_value_wrong_type() {
 
 // Java: AspectAwareAttributeMapperTest.getMissingAttributeValue
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn get_missing_attribute_value() {
     let f = create_mapper();
     let e = assert_throws("IllegalArgumentException", || {
@@ -172,7 +166,6 @@ fn get_missing_attribute_value() {
 
 // Java: AspectAwareAttributeMapperTest.isConfigurable
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn is_configurable() {
     let f = create_mapper();
     assert!(f.mapper.is_configurable("linkstatic"));
@@ -181,7 +174,6 @@ fn is_configurable() {
 
 // Java: AspectAwareAttributeMapperTest.getAttributeNames
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn get_attribute_names() {
     let f = create_mapper();
     let names = f.mapper.get_attribute_names();
@@ -192,7 +184,6 @@ fn get_attribute_names() {
 
 // Java: AspectAwareAttributeMapperTest.getAttributeType
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn get_attribute_type() {
     let f = create_mapper();
     assert_eq!(f.mapper.get_attribute_type("srcs"), Some(Type::LabelList));
@@ -201,7 +192,6 @@ fn get_attribute_type() {
 
 // Java: AspectAwareAttributeMapperTest.getAttributeDefinition
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn get_attribute_definition() {
     let f = create_mapper();
     assert_eq!(
@@ -222,7 +212,6 @@ fn get_attribute_definition() {
 
 // Java: AspectAwareAttributeMapperTest.has
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn has() {
     let f = create_mapper();
     assert!(f.mapper.has("srcs"));

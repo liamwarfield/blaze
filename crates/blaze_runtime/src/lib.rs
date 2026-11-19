@@ -23,10 +23,11 @@
 
 pub mod blaze_command_utils;
 pub mod bugreport;
+pub mod collect_local_resource_usage;
 pub mod command;
 pub mod command_environment;
-pub mod custom_exit_code_publisher;
 mod command_name_cache_impl;
+pub mod custom_exit_code_publisher;
 pub mod directories;
 pub mod dispatcher;
 pub mod exit_code;

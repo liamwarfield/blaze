@@ -494,7 +494,6 @@ rule_without_p1(name = 't2')
 
 // Java: src/test/java/com/google/devtools/build/lib/starlark/StarlarkDefinedAspectsTest.java:6784 StarlarkDefinedAspectsTest.testTopLevelAspectRequiresAspect_aspectRequiredByMultipleAspects
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_binary from the mock rules_cc)"]
 fn test_top_level_aspect_requires_aspect_aspect_required_by_multiple_aspects() {
     let mut f = StarlarkDefinedAspectsTest::new();
     f.scratch.file(
@@ -529,7 +528,6 @@ aspect_a = aspect(implementation = _impl, requires = [aspect_c])
 
 // Java: src/test/java/com/google/devtools/build/lib/starlark/StarlarkDefinedAspectsTest.java:6812 StarlarkDefinedAspectsTest.testTopLevelAspectRequiresAspect_aspectRequiredByMultipleAspects2
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_binary from the mock rules_cc)"]
 fn test_top_level_aspect_requires_aspect_aspect_required_by_multiple_aspects2() {
     let mut f = StarlarkDefinedAspectsTest::new();
     f.scratch.file(
@@ -563,7 +561,6 @@ aspect_a = aspect(implementation = _impl, requires = [aspect_b, aspect_c])
 
 // Java: src/test/java/com/google/devtools/build/lib/starlark/StarlarkDefinedAspectsTest.java:6840 StarlarkDefinedAspectsTest.testTopLevelAspectRequiresAspect_requireExistingAspect_passed
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_binary from the mock rules_cc)"]
 fn test_top_level_aspect_requires_aspect_require_existing_aspect_passed() {
     let mut f = StarlarkDefinedAspectsTest::new();
     f.scratch.file(
@@ -596,7 +593,6 @@ aspect_a = aspect(implementation = _impl, requires = [aspect_b])
 
 // Java: src/test/java/com/google/devtools/build/lib/starlark/StarlarkDefinedAspectsTest.java:6866 StarlarkDefinedAspectsTest.testTopLevelAspectRequiresAspect_requireExistingAspect_failed
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_binary from the mock rules_cc)"]
 fn test_top_level_aspect_requires_aspect_require_existing_aspect_failed() {
     let mut f = StarlarkDefinedAspectsTest::new();
     f.scratch.file(
@@ -4205,7 +4201,7 @@ fn top_level_aspect_on_alias_target_required_provider_not_satisfied() {
 
 // Java: src/test/java/com/google/devtools/build/lib/starlark/StarlarkDefinedAspectsTest.java:10294 StarlarkDefinedAspectsTest.starlarkDefinedAspectCodec
 #[test]
-#[ignore = "needs serialization codecs (RoundTripping.roundTripWithSkyframe) and the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
+#[ignore = "needs serialization (RoundTripping.roundTripWithSkyframe): serialization is skipped"]
 fn starlark_defined_aspect_codec() {
     let mut f = StarlarkDefinedAspectsTest::new();
     f.scratch.file(

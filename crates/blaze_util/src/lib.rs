@@ -4,6 +4,7 @@ pub mod exit_code;
 pub mod fingerprint;
 pub mod graph;
 pub mod java_regex;
+pub mod profiler;
 pub mod string_encoding;
 
 pub use exit_code::DetailedExitCode;

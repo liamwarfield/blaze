@@ -64,6 +64,10 @@ pub struct CompiledFile {
     pub loads: Vec<LoadRequest>,
     /// BUILD only: glob/subpackages prefetch patterns and generator names.
     pub build_facts: BuildFileFacts,
+    /// Java's syntax tree of the file, kept from [`compile_with_options`] for [`resolve`], which
+    /// takes it (so that a compiled file Skyframe keeps does not pin it). Empty otherwise;
+    /// `resolve` then parses again.
+    pub java_tree: std::sync::Mutex<Option<Box<crate::syntax::java::ParsedFile>>>,
 }
 
 impl std::fmt::Debug for CompiledFile {
@@ -79,6 +83,26 @@ impl std::fmt::Debug for CompiledFile {
 /// Parses `source` as a file of `kind` and runs Bazel's static checks.
 pub fn compile(kind: FileKind, file_name: &str, source: String) -> Result<CompiledFile, EvalError> {
     compile_with_options(kind, kind.file_options(), file_name, source)
+}
+
+// TEMPORARY timing counter (root's measurement of the Java front end's share; removed after).
+static FE_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn fe_timed<T>(f: impl FnOnce() -> T) -> T {
+    let t = std::time::Instant::now();
+    let r = f();
+    let n = FE_NANOS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed)
+        + t.elapsed().as_nanos() as u64;
+    let c = FE_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+    if c % 16 == 0 {
+        let path = format!(
+            "{}/.cache/blaze/work/java-fe-timing/{}.txt",
+            std::env::var("HOME").unwrap_or_default(),
+            std::process::id()
+        );
+        let _ = std::fs::write(path, format!("{n} {c}\n"));
+    }
+    r
 }
 
 /// Java's static errors of a file before the resolver: the scanner's and parser's errors (every
@@ -172,15 +196,17 @@ pub fn compile_with_options(
     file_name: &str,
     source: String,
 ) -> Result<CompiledFile, EvalError> {
-    let (parsed, errors) = java_static_errors(kind, options, file_name, &source);
+    let (parsed, errors) = fe_timed(|| java_static_errors(kind, options, file_name, &source));
     if !errors.is_empty() {
         return Err(EvalError::syntax(errors));
     }
-    let errors = java_resolver_errors(&parsed, &EveryNamePredeclared, options);
+    let errors = fe_timed(|| java_resolver_errors(&parsed, &EveryNamePredeclared, options));
     if !errors.is_empty() {
         return Err(EvalError::syntax(errors));
     }
-    compile_starlark_rust(kind, options, file_name, source)
+    let compiled = compile_starlark_rust(kind, options, file_name, source)?;
+    *compiled.java_tree.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(parsed));
+    Ok(compiled)
 }
 
 /// Java's compile of a file against its predeclared names: every static error Bazel reports
@@ -197,8 +223,8 @@ pub fn compile_and_resolve(
     names: Vec<String>,
     guarded: &dyn Fn(&str) -> Option<String>,
 ) -> Result<CompiledFile, EvalError> {
-    let module = crate::syntax::java::PredeclaredModule { names, guarded };
-    let (parsed, mut errors) = java_static_errors(kind, options, file_name, &source);
+    let module = crate::syntax::java::PredeclaredModule::new(names, guarded);
+    let (parsed, mut errors) = fe_timed(|| java_static_errors(kind, options, file_name, &source));
     // Java: PackageFunction.java:1367 returns a BUILD file's parse errors alone; for a .bzl
     // file, compileFile resolves the partial tree and adds the resolver's errors
     // (BzlCompileFunction.java:234).
@@ -206,7 +232,7 @@ pub fn compile_and_resolve(
     if !errors.is_empty() && (kind.dot_bazel_checker_config().is_some() || !parse_failed) {
         return Err(EvalError::syntax(errors));
     }
-    errors.extend(java_resolver_errors(&parsed, &module, options));
+    errors.extend(fe_timed(|| java_resolver_errors(&parsed, &module, options)));
     if !errors.is_empty() {
         return Err(EvalError::syntax(errors));
     }
@@ -245,6 +271,7 @@ fn compile_starlark_rust(
         ast,
         loads,
         build_facts,
+        java_tree: std::sync::Mutex::new(None),
     })
 }
 
@@ -257,28 +284,40 @@ fn compile_starlark_rust(
 // Java: net/starlark/java/syntax/Resolver.java:922 Resolver.use
 // Java: net/starlark/java/syntax/Program.java:101 Program.compileFile
 pub fn resolve(compiled: &CompiledFile, globals: &Globals) -> Result<(), EvalError> {
-    let ast = &compiled.ast;
-    let span = ast.file_span(ast.statement().span);
-    let source = span.file.source().to_owned();
-    let file_name = span.filename().to_owned();
+    let kept = compiled
+        .java_tree
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
     let mut options = compiled.kind.file_options();
-    // The type syntax setting the file was compiled with (`compile_with_options`).
-    {
-        use starlark_syntax::syntax::module::AstModuleFields;
-        options.allow_type_syntax =
-            ast.dialect().enable_types == starlark::syntax::DialectTypes::ParseOnly;
-    }
-    let parsed = crate::syntax::java::parse_file(
-        &file_name,
-        &source,
-        crate::syntax::java::JavaOptions::from_file_options(options),
-    );
-    let no_guard = |_: &str| None;
-    let module = crate::syntax::java::PredeclaredModule {
-        names: globals.names().map(|n| n.as_str().to_owned()).collect(),
-        guarded: &no_guard,
+    let parsed = match kept {
+        Some(p) => *p,
+        None => {
+            let ast = &compiled.ast;
+            let span = ast.file_span(ast.statement().span);
+            let source = span.file.source().to_owned();
+            let file_name = span.filename().to_owned();
+            // The type syntax setting the file was compiled with (`compile_with_options`).
+            {
+                use starlark_syntax::syntax::module::AstModuleFields;
+                options.allow_type_syntax =
+                    ast.dialect().enable_types == starlark::syntax::DialectTypes::ParseOnly;
+            }
+            fe_timed(|| {
+                crate::syntax::java::parse_file(
+                    &file_name,
+                    &source,
+                    crate::syntax::java::JavaOptions::from_file_options(options),
+                )
+            })
+        }
     };
-    let errors = java_resolver_errors(&parsed, &module, options);
+    let no_guard = |_: &str| None;
+    let module = crate::syntax::java::PredeclaredModule::new(
+        globals.names().map(|n| n.as_str().to_owned()).collect(),
+        &no_guard,
+    );
+    let errors = fe_timed(|| java_resolver_errors(&parsed, &module, options));
     if errors.is_empty() {
         Ok(())
     } else {
@@ -501,4 +540,96 @@ pub fn run_on_evaluation_thread<R: Send>(f: impl FnOnce() -> R + Send) -> R {
             .join()
             .unwrap_or_else(|p| std::panic::resume_unwind(p))
     })
+}
+
+/// What one front end makes of a file: its top-level statement count and the names it binds at
+/// top level (in order of first binding), or its errors.
+pub type FrontEndResult = Result<(usize, Vec<String>), Vec<String>>;
+
+/// Runs both front ends on a file, for the differential test of crates/starlark_conformance:
+/// Java's port (parse, the `.bazel` checks, the resolver's name-independent errors) and
+/// starlark-rust's parse with Blaze's checks. A file one accepts and the other rejects, or with
+/// different top-level statements or bindings, is a disagreement.
+pub fn front_ends(
+    kind: FileKind,
+    options: crate::file_kind::FileOptions,
+    file_name: &str,
+    source: &str,
+) -> (FrontEndResult, FrontEndResult) {
+    let (parsed, mut errors) = java_static_errors(kind, options, file_name, source);
+    if errors.is_empty() {
+        errors = java_resolver_errors(&parsed, &EveryNamePredeclared, options);
+    }
+    let java = if errors.is_empty() {
+        let mut names: Vec<String> = Vec::new();
+        let mut add = |n: &str| {
+            if !names.iter().any(|x| x == n) {
+                names.push(n.to_owned());
+            }
+        };
+        fn bound(e: &crate::syntax::java::ast::Expr, add: &mut dyn FnMut(&str)) {
+            use crate::syntax::java::ast::Expr;
+            match e {
+                Expr::Ident(id) => add(&id.name),
+                Expr::List { elems, .. } => elems.iter().for_each(|x| bound(x, add)),
+                _ => {}
+            }
+        }
+        for s in &parsed.statements {
+            use crate::syntax::java::ast::Stmt;
+            match s {
+                Stmt::Assign { lhs, .. } => bound(lhs, &mut add),
+                Stmt::Def { name, .. } => add(&name.name),
+                Stmt::Load { bindings, .. } => bindings.iter().for_each(|(l, _)| add(&l.name)),
+                Stmt::Var { name, .. } => add(&name.name),
+                _ => {}
+            }
+        }
+        Ok((parsed.statements.len(), names))
+    } else {
+        Err(errors.iter().map(|e| e.to_string()).collect())
+    };
+    let rust = match compile_starlark_rust(kind, options, file_name, source.to_owned()) {
+        Err(e) => Err(vec![e.message_with_stack()]),
+        Ok(compiled) => {
+            use starlark::syntax::ast::AssignTargetP;
+            use starlark::syntax::ast::StmtP;
+            let mut names: Vec<String> = Vec::new();
+            let mut add = |n: &str| {
+                if !names.iter().any(|x| x == n) {
+                    names.push(n.to_owned());
+                }
+            };
+            fn bound(
+                t: &starlark::syntax::ast::AstAssignTargetP<starlark::syntax::ast::AstNoPayload>,
+                add: &mut dyn FnMut(&str),
+            ) {
+                match &t.node {
+                    AssignTargetP::Identifier(id) => add(&id.node.ident),
+                    AssignTargetP::Tuple(xs) => xs.iter().for_each(|x| bound(x, add)),
+                    _ => {}
+                }
+            }
+            let top = compiled.ast.statement();
+            let stmts: Vec<_> = match &top.node {
+                StmtP::Statements(xs) => xs.iter().collect(),
+                _ => vec![top],
+            };
+            for s in &stmts {
+                if let Some(id) = s.blaze_var_statement() {
+                    add(&id.node.ident);
+                    continue;
+                }
+                match &s.node {
+                    StmtP::Assign(a) => bound(&a.lhs, &mut add),
+                    StmtP::AssignModify(lhs, _, _) => bound(lhs, &mut add),
+                    StmtP::Def(d) => add(&d.name.node.ident),
+                    StmtP::Load(l) => l.args.iter().for_each(|a| add(&a.local.node.ident)),
+                    _ => {}
+                }
+            }
+            Ok((stmts.len(), names))
+        }
+    };
+    (java, rust)
 }

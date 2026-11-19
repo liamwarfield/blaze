@@ -1085,6 +1085,8 @@ impl PackageFunction {
 
         // vv ---- begin PackageCompileFunction ---- vv
 
+        // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1080 PackageFunction.loadPackage
+        crate::package_progress_receiver::PACKAGE_PROGRESS.start_read_package(package_id);
         if self.config.show_loading_progress {
             env.listener()
                 .handle(&Event::progress(format!("Loading package: {}", package_id)));

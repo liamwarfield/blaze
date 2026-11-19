@@ -565,6 +565,8 @@ impl ActionExecutionFunction {
         output_metadata_store.prepare_for_action_execution();
 
         if action.discovers_inputs() {
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:729 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
+            let mut discovered_inputs_duration = std::time::Duration::ZERO;
             if state.discovered_inputs.is_none() {
                 // PORT: action.prepareInputDiscovery() is not part of the ported Action protocol;
                 // its only override (CppCompileAction) clears additional inputs left over from an
@@ -583,6 +585,7 @@ impl ActionExecutionFunction {
                         output_metadata_store.get_action_file_system().cloned(),
                     )?
                 };
+                discovered_inputs_duration = action_start_time.elapsed();
                 if env.values_missing() {
                     check_state!(
                         discovered_inputs.is_none(),
@@ -605,8 +608,24 @@ impl ActionExecutionFunction {
                 return Ok(None);
             }
 
-            // PORT: skipped, profiling (DiscoveredInputsEvent: the input discovery time of the
-            // CriticalPathComputer and the execution graph log).
+            // When discover inputs completes, post an event with the duration values.
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:769 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
+            // SpawnMetrics.Builder.forOtherExec().setParseTime(d).setTotalTime(d): toMs is
+            // `Ints.saturatedCast(duration.toMillis())`.
+            let discovered_inputs_millis =
+                i32::try_from(discovered_inputs_duration.as_millis()).unwrap_or(i32::MAX);
+            env.listener()
+                .post(Arc::new(crate::events::DiscoveredInputsEvent {
+                    metrics: blaze_exec::actions::spawn_metrics::SpawnMetrics {
+                        parse_time_in_ms: discovered_inputs_millis,
+                        total_time_in_ms: discovered_inputs_millis,
+                        ..blaze_exec::actions::spawn_metrics::SpawnMetrics::for_exec(
+                            blaze_exec::actions::spawn_metrics::ExecKind::Other,
+                        )
+                    },
+                    action: action.clone(),
+                    start_time_nanos: action_start_time,
+                }));
         }
 
         let input_artifact_data = state.input_artifact_data.clone();

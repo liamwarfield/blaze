@@ -9,7 +9,7 @@ use indexmap::{IndexMap, IndexSet};
 use parking_lot::{Condvar, Mutex};
 
 use super::worker::Worker;
-use super::worker_factory::WorkerFactory;
+use super::worker_factory::WorkerFactoryApi;
 use super::worker_key::WorkerKey;
 use super::worker_process_status::Status;
 
@@ -115,7 +115,7 @@ const DEFAULT_MAX_MULTIPLEX_WORKERS: i32 = 8;
 /// concurrent calls.
 // Java: com/google/devtools/build/lib/worker/WorkerPoolImpl.java:48 WorkerPoolImpl
 pub struct WorkerPoolImpl {
-    factory: Arc<WorkerFactory>,
+    factory: Arc<dyn WorkerFactoryApi>,
     singleplex_max_instances: IndexMap<String, i32>,
     multiplex_max_instances: IndexMap<String, i32>,
     /// PORT: java-hash-order. Java's `ConcurrentHashMap<WorkerKey, ...>` order reaches only
@@ -126,7 +126,7 @@ pub struct WorkerPoolImpl {
 
 impl WorkerPoolImpl {
     // Java: com/google/devtools/build/lib/worker/WorkerPoolImpl.java:66 WorkerPoolImpl.<init>
-    pub fn new(factory: Arc<WorkerFactory>, config: &WorkerPoolConfig) -> WorkerPoolImpl {
+    pub fn new(factory: Arc<dyn WorkerFactoryApi>, config: &WorkerPoolConfig) -> WorkerPoolImpl {
         WorkerPoolImpl {
             factory,
             singleplex_max_instances: WorkerPoolImpl::get_max_instances(
@@ -358,13 +358,13 @@ struct KeyPoolState {
 struct WorkerKeyPool {
     key: Arc<WorkerKey>,
     max: i32,
-    factory: Arc<WorkerFactory>,
+    factory: Arc<dyn WorkerFactoryApi>,
     state: Mutex<KeyPoolState>,
 }
 
 impl WorkerKeyPool {
     // Java: com/google/devtools/build/lib/worker/WorkerPoolImpl.java:238 WorkerPoolImpl.WorkerKeyPool.<init>
-    fn new(key: Arc<WorkerKey>, max: i32, factory: Arc<WorkerFactory>) -> WorkerKeyPool {
+    fn new(key: Arc<WorkerKey>, max: i32, factory: Arc<dyn WorkerFactoryApi>) -> WorkerKeyPool {
         WorkerKeyPool {
             key,
             max,

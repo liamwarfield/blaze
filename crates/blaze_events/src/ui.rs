@@ -539,7 +539,8 @@ impl UiEventHandler {
     /// PORT: Java also takes the `EventBus` (only for `crash`), skymeld mode and
     /// `newStatsSummary`, which choose and configure the state tracker: the caller creates the
     /// tracker (`blaze_buildtool`) and hands it over with [`UiEventHandler::set_state_tracker`].
-    /// The `TerminalSizeMonitor` is not ported (the terminal width is `--terminal_columns`).
+    /// The `TerminalSizeMonitor` listener is [`UiEventHandler::terminal_size_changed`], which the
+    /// holder of a monitor registers (the width starts at `--terminal_columns`).
     // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:198 UiEventHandler.UiEventHandler
     pub fn new(
         out_err: OutErr,
@@ -801,6 +802,43 @@ impl UiEventHandler {
     // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:771 UiEventHandler.packageLocatorCreated
     pub fn package_locator_created(&self, path_entries: Vec<String>) {
         self.location_printer.package_locator_created(path_entries);
+    }
+
+    /// The listener the constructor adds to the command's `TerminalSizeMonitor`
+    /// (`terminalSizeMonitor.addListener(this::terminalSizeChanged)`).
+    ///
+    /// PORT: the monitor (`blaze_server::terminal_size_monitor`) belongs to the server's running
+    /// command; a command run in its own process has none (`TerminalSizeMonitor.NOOP`), and the
+    /// width stays `--terminal_columns`. Whoever holds a monitor registers this method on it.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:279 UiEventHandler.terminalSizeChanged
+    pub fn terminal_size_changed(&self, columns: i32, _rows: i32) {
+        let new_terminal_width = normalize_terminal_width(columns);
+        let _update_guard = self.update_lock.lock();
+        let result = (|| -> io::Result<()> {
+            let mut st = self.state.lock();
+            if st.terminal_width == new_terminal_width {
+                return Ok(());
+            }
+            if st.show_progress && st.build_running && self.cursor_control {
+                self.clear_progress_bar(&mut st)?;
+            }
+            st.terminal_width = new_terminal_width;
+            if self.cursor_control {
+                let target_width = 0.max(st.terminal_width - 2);
+                self.state_tracker("UiStateTracker.setTargetWidth")
+                    .set_target_width(target_width);
+            }
+            self.ignore_refresh_limit_once();
+            self.progress_bar_needs_refresh
+                .store(true, Ordering::SeqCst);
+            if st.show_progress && st.build_running && self.cursor_control {
+                self.add_progress_bar(&mut st)?;
+                self.terminal.flush()?;
+            }
+            Ok(())
+        })();
+        // PORT: Java logs "IO Error updating terminal size" at WARNING; logging is not ported.
+        let _ = result;
     }
 
     /// Disables progress, clearing the progress bar if it is currently shown. Returns false if

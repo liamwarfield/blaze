@@ -101,7 +101,10 @@ fn parser(options: WorkerOptions) -> WorkerParser {
         fs.get_path("/"),
         Arc::new(options),
         Arc::new(NoopLocalEnvProvider),
-        Some(Arc::new(BinTools::for_unit_testing(&fs.get_path("/"), Vec::new()))),
+        Some(Arc::new(BinTools::for_unit_testing(
+            &fs.get_path("/"),
+            Vec::new(),
+        ))),
     )
 }
 

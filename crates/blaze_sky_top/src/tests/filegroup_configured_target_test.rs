@@ -25,7 +25,7 @@ fn test_group() {
 
 // Java: FilegroupConfiguredTargetTest.testDependencyGraph
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_binary from the mock rules_java)"]
+#[ignore = "not ported yet: body (needs ActionsTestUtil.predecessorClosureOf; the mock rules_java is in the harness)"]
 fn test_dependency_graph() {}
 
 // Java: FilegroupConfiguredTargetTest.testEmptyGroupIsAnOk
@@ -166,17 +166,17 @@ fn test_glob_matches_rule_outputs_instead_of_file_with_the_same_name() {
 
 // Java: FilegroupConfiguredTargetTest.outputGroupSourceJars_extractsTransitiveSources
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
+#[ignore = "not ported yet: body (the mock rules_java is in the harness)"]
 fn output_group_source_jars_extracts_transitive_sources() {}
 
 // Java: FilegroupConfiguredTargetTest.outputGroupDirectSourceJars_extractsDirectSources
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (java_library from the mock rules_java)"]
+#[ignore = "not ported yet: body (the mock rules_java is in the harness)"]
 fn output_group_direct_source_jars_extracts_direct_sources() {}
 
 // Java: FilegroupConfiguredTargetTest.testErrorForIllegalOutputGroup
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
+#[ignore = "not ported yet: body (asserts the AssertionError of the fail-fast handler; the mock rules_cc is in the harness)"]
 fn test_error_for_illegal_output_group() {}
 
 /// `testDefaultInfo(@TestParameter boolean filegroupRunfilesForData)`.

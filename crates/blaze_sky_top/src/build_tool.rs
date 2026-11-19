@@ -373,6 +373,15 @@ pub trait TargetValidator {
 /// PORT: the events are built by the command's build event stream support (blaze_runtime
 /// commands/bep.rs), which reads them from these values; this crate sits below it.
 pub trait BuildEventHooks {
+    /// At the start of the `try` block of `BuildTool.buildTargets`: `BuildStartingEvent`.
+    ///
+    /// PORT: `build`, `test` and `run` post it themselves before calling `process_request`
+    /// (blaze_runtime commands/build.rs, where OutputFilteringModule's subscriber runs too); the
+    /// commands whose `BuildTool` is constructed in another crate (`cquery`, `aquery`) get it
+    /// here, where Java posts it.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:288 BuildTool.buildTargets
+    fn build_starting(&self, _request: &BuildRequest) {}
+
     /// After the target patterns were evaluated: `TargetParsingCompleteEvent`
     /// (`TargetPatternPhaseFunction`) and `ExecRootEvent` (`BuildTool.buildTargets`).
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:311 BuildTool.buildTargets
@@ -554,6 +563,9 @@ impl<'a> BuildTool<'a> {
         // PORT: a catastrophe (Error | RuntimeException) is a panic that unwinds past this
         // point, so the finally block runs on every return.
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:436 BuildTool.buildTargets
+        if let Some(hooks) = self.build_event_hooks {
+            hooks.build_starting(request);
+        }
         let result = self.build_targets_try(request);
         if let Some(hooks) = self.build_event_hooks {
             hooks.ensure_build_info_posted();
@@ -569,7 +581,6 @@ impl<'a> BuildTool<'a> {
         let build_options = self
             .skyframe_executor
             .get_baseline_configuration()
-            .cloned()
             .expect("IllegalStateException: the executor has no build options");
 
         // PORT: the progress receivers are process-wide (one command per process); Java resets
@@ -672,6 +683,16 @@ impl<'a> BuildTool<'a> {
                         &analysis_result,
                     )?,
                     None => blaze_util::unported!("ExecutionTool.executeBuild"),
+                }
+                // AnalysisAndExecutionPhaseRunner.execute reports the targets once the merged
+                // phase returned (analysis_phase_runner::execute did not).
+                // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:135 AnalysisAndExecutionPhaseRunner.execute
+                if request.with_merged_analysis_and_execution_source_of_truth() {
+                    analysis_phase_runner::report_analyzed_targets(
+                        self.reporter.as_ref(),
+                        request,
+                        &analysis_result,
+                    );
                 }
             } else if let Some(hooks) = self.build_event_hooks {
                 // env.getReporter().post(new NoExecutionEvent())

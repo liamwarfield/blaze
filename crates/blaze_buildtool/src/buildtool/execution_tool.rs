@@ -45,8 +45,8 @@ use blaze_optdefs::misc::worker_options::WorkerOptions;
 use blaze_options::Options;
 use blaze_sky_exec::action_execution_function::SkyframeContainingPackageRootLookup;
 use blaze_sky_exec::events::{
-    ActionCompletionEvent, ActionResultReceivedEvent, ActionStartedEvent, TargetCompleteEvent,
-    TopLevelTargetPendingExecutionEvent, downcast_event,
+    ActionCompletionEvent, ActionResultReceivedEvent, ActionStartedEvent, DiscoveredInputsEvent,
+    TargetCompleteEvent, TopLevelTargetPendingExecutionEvent, downcast_event,
 };
 use blaze_sky_exec::keys::{BuildDriverKey, TestCompletionKey, artifact_key};
 use blaze_sky_exec::skyframe_action_executor::{
@@ -231,7 +231,10 @@ impl ExecutionEventCollector {
         let Some(computer) = self.critical_path_computer.lock().clone() else {
             return;
         };
-        if let Some(e) = downcast_event::<ActionStartedEvent>(event) {
+        if let Some(e) = downcast_event::<DiscoveredInputsEvent>(event) {
+            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:219 CriticalPathComputer.discoverInputs
+            computer.discover_inputs(&e.action, nano_time_of(e.start_time_nanos), &e.metrics);
+        } else if let Some(e) = downcast_event::<ActionStartedEvent>(event) {
             // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:232 CriticalPathComputer.actionStarted
             computer.action_started(&e.action, nano_time_of(e.nano_time_start));
         } else if let Some(e) = downcast_event::<ActionCompletionEvent>(event) {
@@ -269,9 +272,8 @@ impl ExecutionEventCollector {
                 &**e.get_action(),
             ));
         }
-        // PORT: DiscoveredInputsEvent, ActionChangePrunedEvent and ActionRewoundEvent are not
-        // posted by the execution side (input discovery metrics, change pruning and action
-        // rewinding are not ported there).
+        // PORT: ActionChangePrunedEvent and ActionRewoundEvent are not posted by the execution
+        // side (change pruning and action rewinding are not ported there).
     }
 }
 

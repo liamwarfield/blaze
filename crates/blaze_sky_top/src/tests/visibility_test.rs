@@ -1,6 +1,7 @@
 //! Port of `src/test/java/com/google/devtools/build/lib/analysis/VisibilityTest.java` (an
 //! `AnalysisTestCase`).
 
+use crate::build_view::BuildViewError;
 use crate::testing::{AnalysisTestCase, BuildViewTestCase};
 
 fn new_test() -> AnalysisTestCase {
@@ -405,80 +406,885 @@ fn test_sourcefile_no_implicit_export() {
 
 // Java: VisibilityTest.testVerboseDiagnostics_ruleImplicitDep
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_rule_implicit_dep() {}
+fn test_verbose_diagnostics_rule_implicit_dep() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "tool/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "tool",
+    visibility = ["//visibility:private"],
+)
+"#],
+    );
+    t.scratch.file("rule/BUILD", &[]);
+    t.scratch.file(
+        "rule/defs.bzl",
+        &[r#"def _impl(ctx):
+    pass
+
+my_rule = rule(
+    implementation = _impl,
+    attrs = {"_implicit_dep": attr.label(default="//tool:tool")},
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("//rule:defs.bzl", "my_rule")
+
+my_rule(name = "foo")
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event("* The dependency is an implicit dependency of the consuming target's rule, my_rule, which is defined in //rule:defs.bzl. Since that file's package, //rule, does not match");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_aspectImplicitDep
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_aspect_implicit_dep() {}
+fn test_verbose_diagnostics_aspect_implicit_dep() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "tool/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "tool",
+    visibility = ["//visibility:private"],
+)
+"#],
+    );
+    t.scratch.file("aspect/BUILD", &[]);
+    t.scratch.file(
+        "aspect/defs.bzl",
+        &[r#"def _impl(ctx):
+    pass
+
+my_aspect = aspect(
+    implementation = _impl,
+    attrs = {"_implicit_dep": attr.label(default="//tool:tool")},
+)
+"#],
+    );
+    t.scratch.file("rule/BUILD", &[]);
+    t.scratch.file(
+        "rule/defs.bzl",
+        &[r#"load("//aspect:defs.bzl", "my_aspect")
+
+def _impl(ctx):
+    pass
+
+my_rule = rule(
+    implementation = _impl,
+    attrs = {"deps": attr.label_list(aspects=[my_aspect])},
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("//rule:defs.bzl", "my_rule")
+
+cc_library(name = "dep")
+
+my_rule(
+    name = "foo",
+    deps = [":dep"],
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event("* The dependency is an implicit dependency of the consuming target's aspect, my_aspect, which is defined in //aspect:defs.bzl. Since that file's package, //aspect, does not");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_consumingLocation_isNotInMacro
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_consuming_location_is_not_in_macro() {}
+fn test_verbose_diagnostics_consuming_location_is_not_in_macro() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "tool/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "tool",
+    visibility = ["//visibility:private"],
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "foo",
+    deps = ["//tool:tool"],
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event(
+        "* The location being checked is the package where the consuming target lives, //pkg.",
+    );
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_consumingLocation_isInMacro
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_consuming_location_is_in_macro() {}
+fn test_verbose_diagnostics_consuming_location_is_in_macro() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "tool/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "tool",
+    visibility = ["//visibility:private"],
+)
+"#],
+    );
+    t.scratch.file("macro/BUILD", &[]);
+    t.scratch.file(
+        "macro/defs.bzl",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+def _impl(name, visibility):
+    cc_library(
+        name = name + "_bar",
+        deps = ["//tool:tool"],
+    )
+
+my_macro = macro(implementation = _impl)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("//macro:defs.bzl", "my_macro")
+
+my_macro(name = "foo")
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo_bar"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event("* Because the consuming target was declared in the body of the symbolic macro my_macro defined in //macro:defs.bzl, the location being checked is this file's package, //macro.");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_consumingLocation_isDelegatedFromPackage
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_consuming_location_is_delegated_from_package() {}
+fn test_verbose_diagnostics_consuming_location_is_delegated_from_package() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "tool/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "tool",
+    visibility = ["//visibility:private"],
+)
+"#],
+    );
+    t.scratch.file("submacro/BUILD", &[]);
+    t.scratch.file(
+        "submacro/defs.bzl",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+def _impl(name, visibility, deps):
+    cc_library(
+        name = name + "_baz",
+        deps = deps,
+    )
+
+my_submacro = macro(
+    implementation = _impl,
+    attrs = {"deps": attr.label_list()},
+)
+"#],
+    );
+    t.scratch.file("macro/BUILD", &[]);
+    t.scratch.file(
+        "macro/defs.bzl",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("//submacro:defs.bzl", "my_submacro")
+
+def _impl(name, visibility, deps, use_submacro):
+    callable = my_submacro if use_submacro else cc_library
+    callable(
+        name = name + "_bar",
+        deps = deps,
+    )
+
+my_macro = macro(
+    implementation = _impl,
+    attrs = {
+        "deps": attr.label_list(),
+        "use_submacro": attr.bool(configurable=False),
+    },
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("//macro:defs.bzl", "my_macro")
+
+my_macro(
+    name = "foo",
+    deps = ["//tool:tool"],
+    use_submacro = False,
+)
+
+my_macro(
+    name = "foo2",
+    deps = ["//tool:tool"],
+    use_submacro = True,
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo_bar"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event("* Because the dependency was passed to the consuming target from an attribute of the symbolic macro //pkg:foo, the location being checked is the place where this macro is declared: package //pkg.");
+    t.event_collector.clear();
+    assert!(matches!(
+        t.update(&["//pkg:foo2_bar_baz"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    // Should say "transitive", and should still identify outer macro (foo2), not inner macro
+    // (foo2_bar).
+    t.assert_contains_event("* Because the dependency was transitively passed to the consuming target from an attribute of the symbolic macro //pkg:foo2, the location being checked is the place where this macro is declared: package //pkg.");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_consumingLocation_isDelegatedFromMacro
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_consuming_location_is_delegated_from_macro() {}
+fn test_verbose_diagnostics_consuming_location_is_delegated_from_macro() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "tool/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "tool",
+    visibility = ["//visibility:private"],
+)
+"#],
+    );
+    t.scratch.file("subsubmacro/BUILD", &[]);
+    t.scratch.file(
+        "subsubmacro/defs.bzl",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+def _impl(name, visibility, deps):
+    cc_library(
+        name = name + "_qux",
+        deps = deps,
+    )
+
+my_subsubmacro = macro(
+    implementation = _impl,
+    attrs = {"deps": attr.label_list()},
+)
+"#],
+    );
+    t.scratch.file("submacro/BUILD", &[]);
+    t.scratch.file(
+        "submacro/defs.bzl",
+        &[r#"load("//subsubmacro:defs.bzl", "my_subsubmacro")
+
+def _impl(name, visibility, deps):
+    my_subsubmacro(
+        name = name + "_baz",
+        deps = deps,
+    )
+
+my_submacro = macro(
+    implementation = _impl,
+    attrs = {"deps": attr.label_list()},
+)
+"#],
+    );
+    t.scratch.file("macro/BUILD", &[]);
+    t.scratch.file(
+        "macro/defs.bzl",
+        &[r#"load("//submacro:defs.bzl", "my_submacro")
+load("//subsubmacro:defs.bzl", "my_subsubmacro")
+
+def _impl(name, visibility, extra_level_deep):
+    callable = my_submacro if extra_level_deep else my_subsubmacro
+    callable(
+        name = name + "_bar",
+        deps = ["//tool:tool"],
+    )
+
+my_macro = macro(
+    implementation = _impl,
+    attrs = {"extra_level_deep": attr.bool(configurable=False)},
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("//macro:defs.bzl", "my_macro")
+
+my_macro(
+    name = "foo",
+    extra_level_deep = False,
+)
+
+my_macro(
+    name = "foo2",
+    extra_level_deep = True,
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo_bar_qux"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event("* Because the dependency was passed to the consuming target from an attribute of the symbolic macro //pkg:foo_bar, the location being checked is the place where this macro is declared: the body of the calling macro my_macro, defined in //macro:defs.bzl of package //macro.");
+    t.event_collector.clear();
+    assert!(matches!(
+        t.update(&["//pkg:foo2_bar_baz_qux"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    // Should say "transitive", and should still identify outer macro (foo2_bar), not inner macro
+    // (foo2_bar_baz).
+    t.assert_contains_event("* Because the dependency was transitively passed to the consuming target from an attribute of the symbolic macro //pkg:foo2_bar, the location being checked is the place where this macro is declared: the body of the calling macro my_macro, defined in //macro:defs.bzl of package //macro.");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_aliasDisclaimer_shownForAlias
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_alias_disclaimer_shown_for_alias() {}
+fn test_verbose_diagnostics_alias_disclaimer_shown_for_alias() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "tool/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "tool",
+    visibility = ["//pkg:__pkg__"],
+)
+
+alias(
+    name = "indirect",
+    actual = ":tool",
+    visibility = ["//visibility:private"],
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "foo",
+    deps = ["//tool:indirect"],
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event("* The dependency is an alias target. Note that it is the visibility of the alias we care about, not the visibility of the underlying target it refers to.
+");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_aliasDisclaimer_notShownForNonAlias
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_alias_disclaimer_not_shown_for_non_alias() {}
+fn test_verbose_diagnostics_alias_disclaimer_not_shown_for_non_alias() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "tool/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "tool",
+    visibility = ["//visibility:private"],
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "foo",
+    deps = ["//tool:tool"],
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_does_not_contain_event("The dependency is an alias");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_samePackageDisclaimer
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_same_package_disclaimer() {}
+fn test_verbose_diagnostics_same_package_disclaimer() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file("macro/BUILD", &[]);
+    t.scratch.file(
+        "macro/defs.bzl",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+def _impl(name, visibility):
+    cc_library(
+        name = name,
+        deps = ["//pkg:tool"],
+    )
+
+my_macro = macro(implementation = _impl)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("//macro:defs.bzl", "my_macro")
+
+cc_library(
+    name = "tool",
+    visibility = ["//visibility:private"],
+)
+
+my_macro(
+    name = "foo",
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg2/BUILD",
+        &[r#"load("//macro:defs.bzl", "my_macro")
+
+my_macro(
+    name = "foo",
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event("* Although both targets live in the same package, they cannot automatically see each other because they are declared by different symbolic macros.");
+    t.event_collector.clear();
+    assert!(matches!(
+        t.update(&["//pkg2:foo"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_does_not_contain_event("both targets live in the same package");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_samePackageDisclaimer_shownForImplicitDepOfMacro
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_same_package_disclaimer_shown_for_implicit_dep_of_macro() {}
+fn test_verbose_diagnostics_same_package_disclaimer_shown_for_implicit_dep_of_macro() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file("macro/BUILD", &[]);
+    t.scratch.file(
+        "macro/defs.bzl",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+def _impl(name, visibility, _implicit_dep):
+    cc_library(
+        name = name,
+        deps = [_implicit_dep],
+    )
+
+my_macro = macro(
+    implementation = _impl,
+    attrs = {"_implicit_dep": attr.label(default="//pkg:tool", configurable=False)},
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("//macro:defs.bzl", "my_macro")
+
+cc_library(
+    name = "tool",
+    visibility = ["//visibility:private"],
+)
+
+my_macro(
+    name = "foo",
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event("* Although both targets live in the same package, they cannot automatically see each other because they are declared by different symbolic macros.");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_samePackageDisclaimer_notShownForImplicitDepOfRule
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_same_package_disclaimer_not_shown_for_implicit_dep_of_rule() {}
+fn test_verbose_diagnostics_same_package_disclaimer_not_shown_for_implicit_dep_of_rule() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file("rule/BUILD", &[]);
+    t.scratch.file(
+        "rule/defs.bzl",
+        &[r#"def _impl(ctx):
+    pass
+
+my_rule = rule(
+    implementation = _impl,
+    attrs = {"_implicit_dep": attr.label(default="//pkg:tool")},
+)
+"#],
+    );
+    t.scratch.file("macro/BUILD", &[]);
+    t.scratch.file(
+        "macro/defs.bzl",
+        &[r#"load("//rule:defs.bzl", "my_rule")
+
+def _impl(name, visibility):
+    my_rule(name = name)
+
+my_macro = macro(implementation = _impl)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("//macro:defs.bzl", "my_macro")
+
+cc_library(
+    name = "tool",
+    visibility = ["//visibility:private"],
+)
+
+my_macro(name = "foo")
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_does_not_contain_event("both targets live in the same package");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_moreDelegationNeeded_fromAncestorMacro
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_more_delegation_needed_from_ancestor_macro() {}
+fn test_verbose_diagnostics_more_delegation_needed_from_ancestor_macro() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "tool/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "tool",
+    visibility = ["//macro:__pkg__"],
+)
+"#],
+    );
+    t.scratch.file("subsubmacro/BUILD", &[]);
+    t.scratch.file(
+        "subsubmacro/defs.bzl",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+def _impl(name, visibility):
+    cc_library(
+        name = name + "_qux",
+        deps = ["//tool:tool"],
+    )
+
+my_subsubmacro = macro(implementation = _impl)
+"#],
+    );
+    t.scratch.file("submacro/BUILD", &[]);
+    t.scratch.file(
+        "submacro/defs.bzl",
+        &[r#"load("//subsubmacro:defs.bzl", "my_subsubmacro")
+
+def _impl(name, visibility):
+    my_subsubmacro(name = name + "_baz")
+
+my_submacro = macro(implementation = _impl)
+"#],
+    );
+    t.scratch.file("macro/BUILD", &[]);
+    t.scratch.file(
+        "macro/defs.bzl",
+        &[r#"load("//submacro:defs.bzl", "my_submacro")
+load("//subsubmacro:defs.bzl", "my_subsubmacro")
+
+def _impl(name, visibility, extra_level_deep):
+    callable = my_submacro if extra_level_deep else my_subsubmacro
+    callable(name = name + "_bar")
+
+my_macro = macro(
+    implementation = _impl,
+    attrs = {"extra_level_deep": attr.bool(configurable=False)},
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("//macro:defs.bzl", "my_macro")
+
+my_macro(
+    name = "foo",
+    extra_level_deep = False,
+)
+
+my_macro(
+    name = "foo2",
+    extra_level_deep = True,
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo_bar_qux"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event("* Although the dependency is not visible to the location being checked, it is visible to this location's caller, //pkg:foo, a my_macro macro defined in //macro. (Perhaps the caller needs to pass in the dependency as an argument?)");
+    t.event_collector.clear();
+    assert!(matches!(
+        t.update(&["//pkg:foo2_bar_baz_qux"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    // Should say "transitive", and should still identify outer macro (foo2_bar), not inner macro
+    // (foo2_bar_baz).
+    t.assert_contains_event("* Although the dependency is not visible to the location being checked, it is visible to this location's transitive caller, //pkg:foo2, a my_macro macro defined in //macro. (Perhaps this caller, or an intermediate caller, needs to pass in the dependency as an argument?)");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_moreDelegationNeeded_fromBuildFile
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_more_delegation_needed_from_build_file() {}
+fn test_verbose_diagnostics_more_delegation_needed_from_build_file() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "tool/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "tool",
+    visibility = ["//pkg:__pkg__"],
+)
+"#],
+    );
+    t.scratch.file("submacro/BUILD", &[]);
+    t.scratch.file(
+        "submacro/defs.bzl",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+def _impl(name, visibility):
+    cc_library(
+        name = name + "_baz",
+        deps = ["//tool:tool"],
+    )
+
+my_submacro = macro(implementation = _impl)
+"#],
+    );
+    t.scratch.file("macro/BUILD", &[]);
+    t.scratch.file(
+        "macro/defs.bzl",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("//submacro:defs.bzl", "my_submacro")
+
+def _impl(name, visibility, extra_level_deep):
+    if extra_level_deep:
+        my_submacro(name = name + "_bar")
+    else:
+        cc_library(
+            name = name + "_bar",
+            deps = ["//tool:tool"],
+        )
+
+my_macro = macro(
+    implementation = _impl,
+    attrs = {"extra_level_deep": attr.bool(configurable=False)},
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("//macro:defs.bzl", "my_macro")
+
+my_macro(
+    name = "foo",
+    extra_level_deep = False,
+)
+
+my_macro(
+    name = "foo2",
+    extra_level_deep = True,
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo_bar"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event("* Although the dependency is not visible to the location being checked, it is visible to this location's caller, the BUILD file of package //pkg. (Perhaps the caller needs to pass in the dependency as an argument?)");
+    t.event_collector.clear();
+    assert!(matches!(
+        t.update(&["//pkg:foo2_bar_baz"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    // Should say "transitive".
+    t.assert_contains_event("* Although the dependency is not visible to the location being checked, it is visible to this location's transitive caller, the BUILD file of package //pkg. (Perhaps this caller, or an intermediate caller, needs to pass in the dependency as an argument?)");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_moreDelegationNeeded_incompleteDelegation
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_more_delegation_needed_incomplete_delegation() {}
+fn test_verbose_diagnostics_more_delegation_needed_incomplete_delegation() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "tool/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "tool",
+    visibility = ["//pkg:__pkg__"],
+)
+"#],
+    );
+    t.scratch.file("submacro/BUILD", &[]);
+    t.scratch.file(
+        "submacro/defs.bzl",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+def _impl(name, visibility, deps):
+    if not deps:
+        deps = ["//tool:tool"]
+    cc_library(
+        name = name + "_baz",
+        deps = deps,
+    )
+
+my_submacro = macro(
+    implementation = _impl,
+    attrs = {"deps": attr.label_list(configurable=False)},
+)
+"#],
+    );
+    t.scratch.file("macro/BUILD", &[]);
+    t.scratch.file(
+        "macro/defs.bzl",
+        &[r#"load("//submacro:defs.bzl", "my_submacro")
+
+def _impl(name, visibility, deps, pass_in_tool):
+    my_submacro(
+        name = name + "_bar",
+        deps = ["//tool:tool"] if pass_in_tool else [],
+    )
+
+my_macro = macro(
+    implementation = _impl,
+    attrs = {
+        "deps": attr.label_list(),
+        "pass_in_tool": attr.bool(configurable=False),
+    },
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("//macro:defs.bzl", "my_macro")
+
+my_macro(
+    name = "foo",
+    pass_in_tool = True,
+)
+
+my_macro(
+    name = "foo2",
+    deps = ["//tool:tool"],
+    pass_in_tool = False,
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo_bar_baz"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    // my_macro passed it to my_submacro, but BUILD didn't pass it to my_macro.
+    t.assert_contains_event("* Although the dependency is not visible to the location being checked, it is visible to this location's caller, the BUILD file of package //pkg. (Perhaps the caller needs to pass in the dependency as an argument?)");
+    t.event_collector.clear();
+    assert!(matches!(
+        t.update(&["//pkg:foo2_bar_baz"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    // BUILD passed it to my_macro, but my_macro didn't pass it to my_submacro.
+    t.assert_contains_event("* Although the dependency is not visible to the location being checked, it is visible to this location's transitive caller, the BUILD file of package //pkg. (Perhaps this caller, or an intermediate caller, needs to pass in the dependency as an argument?)");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_editVisibilitySuggestion_forRuleTarget
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_edit_visibility_suggestion_for_rule_target() {}
+fn test_verbose_diagnostics_edit_visibility_suggestion_for_rule_target() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "dep/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "dep",
+    visibility = ["//visibility:private"],
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "foo",
+    deps = ["//dep:dep"],
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event("* If you think the dependency is legitimate, consider updating its visibility declaration.");
+}
 
 // Java: VisibilityTest.testVerboseDiagnostics_editVisibilitySuggestion_forFileTarget
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_verbose_diagnostics_edit_visibility_suggestion_for_file_target() {}
+fn test_verbose_diagnostics_edit_visibility_suggestion_for_file_target() {
+    let mut t = new_test();
+    t.use_configuration(&["--verbose_visibility_errors"]);
+    t.remove_fail_fast_handler();
+    t.scratch.file(
+        "dep/BUILD",
+        &[r#"exports_files(
+    ["dep"],
+    visibility = ["//visibility:private"],
+)
+"#],
+    );
+    t.scratch.file(
+        "pkg/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "foo",
+    deps = ["//dep:dep"],
+)
+"#],
+    );
+    assert!(matches!(
+        t.update(&["//pkg:foo"]),
+        Err(BuildViewError::ViewCreationFailed { .. })
+    ));
+    t.assert_contains_event("* If you think the dependency on this source file is legitimate, consider updating its visibility declaration using exports_files().");
+}

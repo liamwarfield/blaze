@@ -1019,7 +1019,7 @@ fn aspect_truth_in_advertisement() {
 
 // Java: AspectTest.aspectApplyingToFiles
 #[test]
-#[ignore = "needs the native test aspect TestAspects.AspectApplyingToFiles (and its Provider), AspectConfiguredEvent children, and the mock Java toolchains (java_binary from the mock rules_java)"]
+#[ignore = "BLAZE GAP: unported!(\"ConfiguredRuleClassProvider.getNativeAspectClassMap\") in build_view.rs for the native test aspect AspectApplyingToFiles (TestAspects, registered by Java's test rule class provider)"]
 fn aspect_applying_to_files() {
     let mut t = new_test();
     // Java: AspectApplyingToFiles aspectApplyingToFiles = new AspectApplyingToFiles();
@@ -1054,7 +1054,7 @@ fn aspect_applying_to_files() {
 
 // Java: AspectTest.aspectApplyingToSourceFilesIgnored
 #[test]
-#[ignore = "needs the native test aspect TestAspects.AspectApplyingToFiles (and its Provider), and the mock Java toolchains (java_binary from the mock rules_java)"]
+#[ignore = "BLAZE GAP: unported!(\"ConfiguredRuleClassProvider.getNativeAspectClassMap\") in build_view.rs for the native test aspect AspectApplyingToFiles (TestAspects, registered by Java's test rule class provider)"]
 fn aspect_applying_to_source_files_ignored() {
     let mut t = new_test();
     // Java: setRulesAndAspectsAvailableInTests(ImmutableList.of(aspectApplyingToFiles), of());
@@ -1077,7 +1077,7 @@ fn aspect_applying_to_source_files_ignored() {
 
 // Java: AspectTest.aspectApplyingToPackageGroupIgnored
 #[test]
-#[ignore = "needs the native test aspect TestAspects.AspectApplyingToFiles, and the mock Java toolchains (java_binary from the mock rules_java)"]
+#[ignore = "BLAZE GAP: unported!(\"ConfiguredRuleClassProvider.getNativeAspectClassMap\") in build_view.rs for the native test aspect AspectApplyingToFiles (TestAspects, registered by Java's test rule class provider)"]
 fn aspect_applying_to_package_group_ignored() {
     let mut t = new_test();
     // Java: setRulesAndAspectsAvailableInTests(ImmutableList.of(aspectApplyingToFiles), of());
@@ -1103,7 +1103,7 @@ fn aspect_applying_to_package_group_ignored() {
 
 // Java: AspectTest.duplicateTopLevelAspects_allowedAndDeduplicated
 #[test]
-#[ignore = "needs the native test aspect TestAspects.AspectApplyingToFiles, and the mock Java toolchains (java_binary from the mock rules_java)"]
+#[ignore = "BLAZE GAP: unported!(\"ConfiguredRuleClassProvider.getNativeAspectClassMap\") in build_view.rs for the native test aspect AspectApplyingToFiles (TestAspects, registered by Java's test rule class provider)"]
 fn duplicate_top_level_aspects_allowed_and_deduplicated() {
     let mut t = new_test();
     // Java: setRulesAndAspectsAvailableInTests(ImmutableList.of(aspectApplyingToFiles), of());
@@ -1643,7 +1643,6 @@ fn get_instrumented_files(t: &mut AnalysisTestCase, label: &str) -> Vec<String> 
 
 // Java: AspectTest.aspectSeesAspectHintsAttributeOnNativeRule
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_library from the mock rules_cc)"]
 fn aspect_sees_aspect_hints_attribute_on_native_rule() {
     let mut t = new_test();
     setup_aspect_hints(&mut t);

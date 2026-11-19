@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""A `--binary` for scripts/upstream-tests/run that runs Blaze with BLAZE_SERVER_MODE=daemon.
+See `ut-wrapper help`."""
+
+import os
+import shutil
+import sys
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import common as C  # noqa: E402
+
+TOOL = "ut-wrapper"
+ROOT = os.path.join(C.TOOLS_WORK, "ut-bin")
+
+USAGE = """\
+usage: scripts/server/ut-wrapper make [BLAZE]     (default $BLAZE or target/debug/blaze)
+       scripts/server/ut-wrapper list
+       scripts/server/ut-wrapper remove <sha256>
+       scripts/server/ut-wrapper help
+
+`make` copies BLAZE to ~/.cache/blaze/work/server/tools/ut-bin/<sha256>/blaze (content
+addressed: the copy's sha256 is checked; an existing copy is reused, never overwritten) and
+writes next to it the wrapper blaze-daemon:
+
+    #!/bin/bash
+    export BLAZE_SERVER_MODE=daemon
+    exec -a "$0" <root>/<sha256>/blaze "$@"
+
+It prints the wrapper's path, for
+    scripts/upstream-tests/run --binary <wrapper> --label <label> ...
+The harness copies the wrapper's bytes into the tests' runfiles as //src:bazel; the tests run
+it as `bazel` (src/test/shell/bin/bazel, test_base.py), the wrapper sets the variable and
+execs the real binary by absolute path (the sandbox of a test sees the whole file system
+read-only, so the path is visible; `exec -a "$0"` keeps argv[0] the runfiles path, as without
+the wrapper). The wrapper names the binary's sha256, so its own sha256 (which keys the
+harness's staged binary, TEST_INSTALL_BASE and the label's binary check) changes whenever the
+Blaze binary changes. Blaze in daemon mode starts its server from /proc/self/exe, the copy.
+
+`remove` deletes one <sha256> directory (refuse while a harness run may use it: the tool cannot
+know). Nothing here edits scripts/upstream-tests (protected).
+"""
+
+WRAPPER = """#!/bin/bash
+# Made by scripts/server/ut-wrapper: Blaze {sha} with its own persistent server.
+export BLAZE_SERVER_MODE=daemon
+exec -a "$0" {binary} "$@"
+"""
+
+
+def make(src):
+    src = os.path.abspath(src)
+    if not os.access(src, os.X_OK):
+        C.die(TOOL, "not an executable: %s" % src)
+    sha = C.sha256_file(src)
+    d = os.path.join(ROOT, sha)
+    binary = os.path.join(d, "blaze")
+    if not os.path.exists(binary):
+        os.makedirs(d, exist_ok=True)
+        tmp = binary + ".tmp-%d" % os.getpid()
+        shutil.copy2(src, tmp)
+        os.chmod(tmp, 0o755)
+        if C.oc.sha256_file(tmp) != sha:
+            os.unlink(tmp)
+            C.die(TOOL, "%s changed while it was being copied; rerun" % src)
+        os.rename(tmp, binary)
+    elif C.oc.sha256_file(binary) != sha:
+        C.die(TOOL, "%s exists with another sha256; remove it first" % binary)
+    wrapper = os.path.join(d, "blaze-daemon")
+    text = WRAPPER.format(sha=sha, binary=binary)
+    if not os.path.exists(wrapper) or open(wrapper).read() != text:
+        with open(wrapper + ".tmp", "w") as f:
+            f.write(text)
+        os.chmod(wrapper + ".tmp", 0o755)
+        os.rename(wrapper + ".tmp", wrapper)
+    print("binary  %s (sha256 %s, from %s)" % (binary, sha, src))
+    print("wrapper %s (sha256 %s)" % (wrapper, C.oc.sha256_file(wrapper)))
+    print(wrapper)
+    return 0
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("help", "--help", "-h"):
+        sys.stdout.write(USAGE)
+        return 0
+    if argv[1] == "make":
+        return make(argv[2] if len(argv) > 2 else C.blaze_binary())
+    if argv[1] == "list":
+        if os.path.isdir(ROOT):
+            for n in sorted(os.listdir(ROOT)):
+                print(os.path.join(ROOT, n, "blaze-daemon"))
+        return 0
+    if argv[1] == "remove" and len(argv) == 3:
+        sha = argv[2]
+        if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+            C.die(TOOL, "remove takes a full sha256")
+        C.safe_rmtree(os.path.join(ROOT, sha), ROOT)
+        return 0
+    C.die(TOOL, "unknown command; see `ut-wrapper help`")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -150,9 +150,21 @@ pub fn compile_errors(
 // Java: net/starlark/java/eval/Module.java:231 Module.resolve
 pub struct PredeclaredModule<'a> {
     /// Predeclared and universal names, in the order Java's `HashSet` of candidates is filled.
-    pub names: Vec<String>,
+    names: Vec<String>,
+    set: std::collections::HashSet<String>,
     /// The message for a predeclared name whose `GuardedValue` is not accessible.
-    pub guarded: &'a dyn Fn(&str) -> Option<String>,
+    guarded: &'a dyn Fn(&str) -> Option<String>,
+}
+
+impl<'a> PredeclaredModule<'a> {
+    pub fn new(names: Vec<String>, guarded: &'a dyn Fn(&str) -> Option<String>) -> Self {
+        let set = names.iter().cloned().collect();
+        PredeclaredModule {
+            names,
+            set,
+            guarded,
+        }
+    }
 }
 
 impl resolver::ResolverModule for PredeclaredModule<'_> {
@@ -163,7 +175,7 @@ impl resolver::ResolverModule for PredeclaredModule<'_> {
                 candidates: None,
             });
         }
-        if self.names.iter().any(|n| n == name) {
+        if self.set.contains(name) {
             return Ok(resolver::Scope::Predeclared);
         }
         Err(resolver::Undefined {

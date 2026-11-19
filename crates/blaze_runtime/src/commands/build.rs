@@ -620,20 +620,38 @@ fn run_build_with_bep(
     // env.withMergedAnalysisAndExecutionSourceOfTruth(), newStatsSummary)` picks the
     // SkymeldUiStateTracker; its @Subscribe methods are the UI subscriber on the event bus.
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:1037 BlazeCommandDispatcher.createEventHandler
-    let ui_subscriber = env.get_ui_event_handler().cloned().map(|handler| {
+    // PORT: the dispatcher created the handler with a UiStateTracker before this decision; the
+    // tracker is replaced here, and the new one is told the one event the old one received
+    // (MainRepoMappingComputationStartingEvent, posted by the dispatcher).
+    let ui_subscriber = env.get_ui_event_subscriber().cloned().map(|subscriber| {
         let tracker = Arc::new(crate::dispatcher::new_ui_state_tracker(
-            &handler,
+            subscriber.get_handler(),
             &ui_options,
             merged_analysis_and_execution,
             execution_options.stats_summary,
         ));
-        handler.set_state_tracker(tracker.clone());
-        let subscriber = Arc::new(
-            blaze_buildtool::runtime::ui_event_subscriber::UiEventSubscriber::new(handler, tracker),
-        );
-        env.get_event_bus().register(subscriber.clone());
+        tracker.main_repo_mapping_computation_started();
+        subscriber.set_state_tracker(tracker);
         subscriber
     });
+    // ExecutionTool.prepareForExecution: the ExecutionProgressReceiverSetup is registered on the
+    // event bus; it creates the build's ExecutionProgressReceiver on the first
+    // SomeExecutionStartedEvent.
+    // PORT: registered for every build that executes (see ExecutionProgressReceiverSetup).
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:343 ExecutionTool.prepareForExecution
+    if skyframe_executor.get_execution().is_some() {
+        let skyframe_progress_receiver = skyframe_executor.get_progress_receiver().clone();
+        env.get_event_bus().register(Arc::new(
+            blaze_buildtool::buildtool::execution_progress_receiver::ExecutionProgressReceiverSetup::new(
+                env.get_event_bus().clone(),
+                Box::new(move |execution_progress_receiver| {
+                    // skyframeExecutor.setExecutionProgressReceiver(executionProgressReceiver)
+                    skyframe_progress_receiver
+                        .set_execution_progress_receiver(Some(execution_progress_receiver));
+                }),
+            ),
+        ));
+    }
 
     let execution_phase = RuntimeExecutionPhase {
         expand_filesets: options
@@ -709,6 +727,10 @@ fn run_build_with_bep(
     // Java: com/google/devtools/build/lib/outputfilter/OutputFilteringModule.java:78 OutputFilteringModule.buildStarting
     if let Some(filter) = &reporter_output_filter {
         env.get_reporter().set_output_filter(filter.clone());
+    }
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:658 UiEventHandler.buildStarted
+    if let Some(handler) = env.get_ui_event_handler() {
+        handler.build_started();
     }
     if let Some(bep) = bep {
         bep.build_starting(
@@ -967,23 +989,22 @@ fn run_build_with_bep(
 /// prints `Build completed successfully, 0 total actions` or
 /// `Build did NOT complete successfully`.
 ///
-/// PORT: the Build Event Protocol of these commands is not ported (the dispatcher fails loudly
-/// when a `--build_event_*_file` is given to a command other than `build` and `test`), so the
-/// `BuildCompleteEvent` and the `BuildToolLogs` event have no other subscriber.
+/// With a build event stream, the `BuildCompleteEvent` then reaches its BEP subscribers and the
+/// `BuildToolLogs` event is posted ([`BepCommandSupport::build_complete`]).
 // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1155 BuildTool.stopRequest
 pub(crate) fn stop_request_without_execution(
     env: &CommandEnvironment,
     detailed_exit_code: &blaze_query_engine::DetailedExitCode,
+    collector: &ExecutionEventCollector,
 ) {
     let reporter = reporter(env);
     let mut result = BuildResult::new(env.get_command_start_time());
     // The stop time has to be captured before we send the BuildCompleteEvent.
     result.set_stop_time(JavaClock.current_time_millis());
     // No action ran: the counters of BuildSummaryStatsModule and of the UI are zero.
-    let collector = ExecutionEventCollector::new();
     report_build_summary_stats(
         reporter.as_ref(),
-        &collector,
+        collector,
         result.get_elapsed_seconds(),
         result.get_stop_time(),
     );
@@ -991,8 +1012,14 @@ pub(crate) fn stop_request_without_execution(
     reporter.handle(&build_complete_event(
         detailed_exit_code.is_success(),
         0,
-        &collector,
+        collector,
     ));
+    // The BuildCompleteEvent's BEP subscribers, then the BuildToolLogs event.
+    if let Some(bep) = env.get_bep() {
+        let detailed_exit_code = to_runtime_detailed_exit_code(detailed_exit_code.clone());
+        result.set_detailed_exit_code(Arc::new(detailed_exit_code.clone()));
+        bep.build_complete(&mut result, &detailed_exit_code, collector);
+    }
 }
 
 /// The runtime's `DetailedExitCode` as `blaze_util`'s (what `BuildResult` holds).

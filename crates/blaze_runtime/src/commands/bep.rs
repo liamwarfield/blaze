@@ -343,11 +343,13 @@ impl EventBus for BepSubscriber {
         if let Some(e) = downcast_event::<TopLevelTargetConfiguredEvent>(&event) {
             // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:438 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
             let configuration = e.configuration.as_deref();
-            shared.streamer.build_event(Arc::new(TargetConfiguredEvent::new(
-                configured_target_info(&e.target),
-                configuration.map(configuration_event),
-                configuration.map(|c| c.checksum().to_string()),
-            )));
+            shared
+                .streamer
+                .build_event(Arc::new(TargetConfiguredEvent::new(
+                    configured_target_info(&e.target),
+                    configuration.map(configuration_event),
+                    configuration.map(|c| c.checksum().to_string()),
+                )));
             return;
         }
         if let Some(e) = downcast_event::<TopLevelConfigurationEvent>(&event) {
@@ -820,6 +822,13 @@ pub struct BepCommandSupport {
     precompleted: AtomicBool,
     /// Whether afterCommand ran (see [`BepCommandSupport::after_command`]).
     after_command_done: AtomicBool,
+    /// What `BuildStartingEvent.create(env, request)` reads from the command environment, for
+    /// the commands whose `BuildTool` posts it through the hooks (`cquery`, `aquery`).
+    build_starting_context: Mutex<BuildStartingData>,
+    /// Whether the command's `BuildStartingEvent` was posted.
+    build_starting_posted: AtomicBool,
+    /// `--aspects` is not empty (`TargetSummaryPublisher.buildStarting`).
+    has_aspects: bool,
 }
 
 /// `BazelBuildEventServiceModule.ALLOWED_COMMANDS`: the commands that stream build events.
@@ -1203,6 +1212,27 @@ impl BepCommandSupport {
             output_listener,
             precompleted: AtomicBool::new(false),
             after_command_done: AtomicBool::new(false),
+            build_starting_context: Mutex::new(BuildStartingData {
+                uuid: env.get_command_id().to_string(),
+                // request.getStartTime(): the requests are built with env.getCommandStartTime().
+                start_time_millis: env.get_command_start_time(),
+                build_tool_version: BlazeVersionInfo::instance().get_version(),
+                options_description: as_shell_escaped_string(&options),
+                command_name: env.get_command_name().to_string(),
+                server_pid: std::process::id() as i64,
+                pwd: env.get_working_directory().get_path_string().to_string(),
+                workspace: env
+                    .get_directories()
+                    .get_workspace()
+                    .map(|w| w.get_path_string().to_string()),
+                host: blaze_sky_top::skyframe_executor::short_host_name(),
+                user: user_name(),
+                targets: Vec::new(),
+            }),
+            build_starting_posted: AtomicBool::new(false),
+            has_aspects: options
+                .get_options::<BuildRequestOptions>()
+                .is_some_and(|o| !o.aspects.is_empty()),
         });
         Some(support)
     }
@@ -1348,6 +1378,14 @@ impl BepCommandSupport {
         )));
     }
 
+    /// `request.getOptionsDescription()` of a request whose `BuildStartingEvent` is posted
+    /// through the hooks: the options the command was given (with the flag aliases the
+    /// dispatcher injected).
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:268 BuildRequest.getOptionsDescription
+    pub(crate) fn set_build_request_options(&self, options: &OptionsParsingResult) {
+        self.build_starting_context.lock().options_description = as_shell_escaped_string(options);
+    }
+
     /// `BuildTool.buildTargets`: `BuildStartingEvent.create(env, request)`.
     ///
     /// `targets` is `request.getTargets()`, `start_time_millis` `request.getStartTime()`,
@@ -1361,6 +1399,7 @@ impl BepCommandSupport {
         start_time_millis: i64,
         host: String,
     ) {
+        self.build_starting_posted.store(true, Ordering::SeqCst);
         // Java: com/google/devtools/build/lib/runtime/TargetSummaryPublisher.java:80 TargetSummaryPublisher.buildStarting
         if let Some(publisher) = &self.shared.target_summary_publisher {
             publisher.build_starting(
@@ -1851,6 +1890,24 @@ impl Drop for BepCommandSupport {
 /// Java posts the events, so they are posted whether or not analysis succeeds or anything
 /// executes).
 impl BuildEventHooks for BepCommandSupport {
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:288 BuildTool.buildTargets
+    // Java: com/google/devtools/build/lib/buildtool/buildevent/BuildStartingEvent.java:67 BuildStartingEvent.create
+    fn build_starting(&self, request: &BuildRequest) {
+        // PORT: build, test and run posted it before BuildTool.processRequest (see the trait).
+        if self.build_starting_posted.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // Java: com/google/devtools/build/lib/runtime/TargetSummaryPublisher.java:80 TargetSummaryPublisher.buildStarting
+        if let Some(publisher) = &self.shared.target_summary_publisher {
+            publisher.build_starting(self.has_aspects);
+        }
+        let data = BuildStartingData {
+            targets: request.targets.clone(),
+            ..self.build_starting_context.lock().clone()
+        };
+        self.post(Arc::new(BuildStartingEvent::create(data)));
+    }
+
     // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseFunction.java:76 TargetPatternPhaseFunction.compute
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:311 BuildTool.buildTargets
     fn target_patterns_evaluated(
@@ -1881,12 +1938,15 @@ impl BuildEventHooks for BepCommandSupport {
         // workspace.getWorkspaceStatusActionFactory().createDummyWorkspaceStatus(
         // workspaceInfoFromDiff): Bazel's factory (BazelWorkspaceStatusModule).
         use blaze_actions::analysis::workspace_status_action::WorkspaceStatusActionFactory as _;
-        let factory = blaze_actions::bazel::bazel_workspace_status_module::BazelStatusActionFactory {
-            username: user_name(),
-            hostname: blaze_sky_top::skyframe_executor::short_host_name(),
-        };
-        let workspace_status: IndexMap<String, String> =
-            factory.create_dummy_workspace_status().into_iter().collect();
+        let factory =
+            blaze_actions::bazel::bazel_workspace_status_module::BazelStatusActionFactory {
+                username: user_name(),
+                hostname: blaze_sky_top::skyframe_executor::short_host_name(),
+            };
+        let workspace_status: IndexMap<String, String> = factory
+            .create_dummy_workspace_status()
+            .into_iter()
+            .collect();
         self.post(Arc::new(BuildEventPost(Arc::new(BuildInfoEvent::new(
             workspace_status,
         )))));

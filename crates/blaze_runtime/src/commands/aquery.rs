@@ -47,7 +47,16 @@ impl BlazeCommand for AqueryCommand {
         };
         let _after_command = AfterCommand(&skyframe_executor);
         // new ExecutionTool(env, request) (see `construct_execution_tool`).
-        let execution_tool = || construct_execution_tool(env, options);
+        // BuildSummaryStatsModule's state for this request: executorInit when the ExecutionTool
+        // is constructed, buildComplete in stopRequest.
+        let collector = blaze_buildtool::buildtool::execution_tool::ExecutionEventCollector::new();
+        let execution_tool = || construct_execution_tool(env, options, &collector);
+        // BuildRequest.getOptionsDescription(): the command's options.
+        if let Some(bep) = env.get_bep() {
+            bep.set_build_request_options(options);
+        }
+        // The build event stream's posting points (BuildTool's events).
+        let bep = env.get_bep().cloned();
         let command_env = PostAnalysisCommandEnvironment {
             skyframe_executor: &skyframe_executor,
             reporter: reporter(env),
@@ -58,10 +67,17 @@ impl BlazeCommand for AqueryCommand {
             tracks_state_for_incrementality: env.tracks_state_for_incrementality(),
             available_processors: crate::local_resources::available_processors(),
             stop_request: &|detailed_exit_code| {
-                crate::commands::build::stop_request_without_execution(env, detailed_exit_code)
+                crate::commands::build::stop_request_without_execution(
+                    env,
+                    detailed_exit_code,
+                    &collector,
+                )
             },
             options,
             execution_tool: &execution_tool,
+            build_event_hooks: bep
+                .as_deref()
+                .map(|b| b as &dyn blaze_sky_top::build_tool::BuildEventHooks),
         };
         let detailed_exit_code = blaze_cquery::commands::aquery_command::exec(&command_env);
         BlazeCommandResult::detailed_exit_code(to_runtime_detailed_exit_code(detailed_exit_code))

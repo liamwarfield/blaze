@@ -237,7 +237,9 @@ def handle(req, out, verbose_seen):
     if req["verbosity"] and not verbose_seen[0]:
         verbose_seen[0] = True
         log("verbosity %d" % req["verbosity"])
-    work = parse_work(req["arguments"])
+    # Bazel expands @flagfile arguments into the request, but passes --flagfile= ones as they
+    # are (WorkerSpawnRunner.expandArgument); a request may hold either.
+    work = parse_work(expand_flagfiles(req["arguments"]))
     misbehave_before_answer(work)
     if work["mode"] == "cancelled":
         out.send({"requestId": req["requestId"], "wasCancelled": True})

@@ -267,6 +267,8 @@ fn discover_and_select(
             && e.get_code() == ExternalDepsCode::ExternalDepsUnknown
             && e.get_message() == VALUES_MISSING)
     {
+        // Java reports the checks' events as they happen, before throwing.
+        events.replay_on(env.listener());
         return Err(throw(e.clone(), Transience::Persistent));
     }
     if failure == Some(LookupFailure::ValuesMissing) {

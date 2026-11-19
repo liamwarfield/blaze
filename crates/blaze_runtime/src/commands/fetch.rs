@@ -259,13 +259,10 @@ fn post_no_build_request_finished_event(
     result: BlazeCommandResult,
 ) -> BlazeCommandResult {
     if let Some(bep) = env.get_bep() {
-        bep.post_no_build_request_finished_event(
-            result.get_exit_code(),
-            {
-                use blaze_events::Clock as _;
-                blaze_events::JavaClock.current_time_millis()
-            },
-        );
+        bep.post_no_build_request_finished_event(result.get_exit_code(), {
+            use blaze_events::Clock as _;
+            blaze_events::JavaClock.current_time_millis()
+        });
     }
     result
 }

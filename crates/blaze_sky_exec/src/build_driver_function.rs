@@ -9,7 +9,9 @@ use blaze_skyframe::{ComputeError, Environment, SkyKey};
 use parking_lot::Mutex;
 
 use crate::analysis_seam::{AnalysisSeam, ConfiguredAspectView, ConfiguredTargetView};
-use crate::events::{TestAnalyzedEvent, TopLevelTargetPendingExecutionEvent};
+use crate::events::{
+    SomeExecutionStartedEvent, TestAnalyzedEvent, TopLevelTargetPendingExecutionEvent,
+};
 use crate::keys::{
     AspectCompletionKey, BuildDriverKey, TargetCompletionKey, TestCompletionKey, TestType,
 };
@@ -59,6 +61,7 @@ pub struct BuildDriverValue {
 #[allow(non_camel_case_types)]
 enum TopLevelStatusEventsType {
     TOP_LEVEL_TARGET_PENDING_EXECUTION,
+    SOME_EXECUTION_STARTED,
     TEST_ANALYZED,
 }
 
@@ -108,7 +111,8 @@ impl BuildDriverFunction {
     // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:155 BuildDriverFunction.compute
     // PORT: BUILD_ID, action conflict checks (checkActionConflicts), target compatibility
     // (isConfiguredTargetCompatible: incompatible targets are skipped), extra actions, top-level
-    // aspects and the TopLevelStatusEvents other than TopLevelTargetPendingExecutionEvent are the
+    // aspects and the TopLevelStatusEvents other than TopLevelTargetPendingExecutionEvent,
+    // SomeExecutionStartedEvent and TestAnalyzedEvent are the
     // analysis side's (blaze_sky_top) and are not ported here.
     pub fn compute(
         &self,
@@ -138,6 +142,13 @@ impl BuildDriverFunction {
             }),
         );
         // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:590 BuildDriverFunction.requestConfiguredTargetExecution
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:605 BuildDriverFunction.requestConfiguredTargetExecution
+        self.post_event_if_necessary(
+            key,
+            env,
+            TopLevelStatusEventsType::SOME_EXECUTION_STARTED,
+            Arc::new(SomeExecutionStartedEvent::create()),
+        );
         if test_type != TestType::NOT_TEST {
             // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:615 BuildDriverFunction.requestConfiguredTargetExecution
             self.post_event_if_necessary(
@@ -209,7 +220,7 @@ impl BuildDriverFunction {
     ///
     /// PORT: as for configured targets, BUILD_ID, the action conflict check, extra actions
     /// (`addExtraActionsIfRequested`), `TopLevelTargetReadyForSymlinkPlanting`,
-    /// `TopLevelEntityAnalysisConcludedEvent`, `SomeExecutionStartedEvent` and
+    /// `TopLevelEntityAnalysisConcludedEvent` and
     /// `additionalPostAnalysisDepsRequestedAndAvailable` are not ported here; the
     /// `announceTopLevelAspectAnalyzed` events (`ToplevelAspectsIdentifiedEvent`,
     /// `AspectConfiguredEvent`, `AspectAnalyzedEvent`) are posted by the analysis side
@@ -242,6 +253,13 @@ impl BuildDriverFunction {
             )));
         }
 
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:369 BuildDriverFunction.compute
+        self.post_event_if_necessary(
+            key,
+            env,
+            TopLevelStatusEventsType::SOME_EXECUTION_STARTED,
+            Arc::new(SomeExecutionStartedEvent::create()),
+        );
         // Request the execution of the collected aspects.
         // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:650 BuildDriverFunction.declareDependenciesAndCheckValues
         let result = env.get_values_and_exceptions(&aspect_completion_keys)?;

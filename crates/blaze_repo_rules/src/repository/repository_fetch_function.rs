@@ -138,7 +138,11 @@ impl RepositoryFetchProgress {
     }
 }
 
-impl Postable for RepositoryFetchProgress {}
+impl Postable for RepositoryFetchProgress {
+    fn as_fetch_progress(&self) -> Option<&dyn FetchProgress> {
+        Some(self)
+    }
+}
 
 impl FetchProgress for RepositoryFetchProgress {
     // Java: com/google/devtools/build/lib/repository/RepositoryFetchProgress.java:48 RepositoryFetchProgress.getResourceIdentifier

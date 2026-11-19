@@ -19,7 +19,7 @@ fn frozen<'v>(info: &'v OwnedFrozenValue) -> Value<'v> {
 
 // Java: TemplateVariableInfoTest.proxyTemplateVariableInfo
 #[test]
-#[ignore = "needs the mock C++ toolchain (cc_toolchain_alias from the mock rules_cc)"]
+#[ignore = "needs SpawnAction.getArguments of the genrule action (unported! in the test, template_variable_info_test.rs)"]
 fn proxy_template_variable_info() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -64,7 +64,6 @@ genrule(
 
 // Java: TemplateVariableInfoTest.templateVariableInfo
 #[test]
-#[ignore = "needs the mock C++ toolchain (cc_toolchain_alias from the mock rules_cc)"]
 fn template_variable_info() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(

@@ -9,8 +9,12 @@ pub mod analysis_mock;
 pub mod build_view_test_case;
 pub mod configuration_test_case;
 pub mod fake_registry;
+pub mod mock_cc_support;
+pub mod mock_java_python_support;
 pub mod mock_tools_config;
+pub mod rule_context_for_testing;
 pub mod scratch;
+pub mod test_deps;
 
 pub use configuration_test_case::ConfigurationTestCase;
 pub use fake_registry::{FakeRegistry, create_module_key};

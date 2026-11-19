@@ -117,7 +117,11 @@ impl ModuleExtensionEvaluationProgress {
     }
 }
 
-impl Postable for ModuleExtensionEvaluationProgress {}
+impl Postable for ModuleExtensionEvaluationProgress {
+    fn as_fetch_progress(&self) -> Option<&dyn FetchProgress> {
+        Some(self)
+    }
+}
 
 impl FetchProgress for ModuleExtensionEvaluationProgress {
     // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionEvaluationProgress.java:50 ModuleExtensionEvaluationProgress.getResourceIdentifier

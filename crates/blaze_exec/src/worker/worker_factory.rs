@@ -52,6 +52,34 @@ fn log_message(reporter: Option<&Arc<dyn EventHandler>>, level: LogLevel, messag
     }
 }
 
+/// The methods of `WorkerFactory` that `WorkerPoolImpl` calls.
+///
+/// PORT: Java's pool holds the `WorkerFactory` class, which its tests replace by a Mockito spy;
+/// the pool holds this trait so that the tests can do the same.
+// Java: com/google/devtools/build/lib/worker/WorkerFactory.java:36 WorkerFactory
+pub trait WorkerFactoryApi: Send + Sync {
+    /// `create(key)`.
+    fn create(&self, key: &Arc<WorkerKey>) -> std::io::Result<Arc<dyn Worker>>;
+    /// `destroyWorker(key, worker)`.
+    fn destroy_worker(&self, key: &WorkerKey, worker: &Arc<dyn Worker>);
+    /// `validateWorker(key, worker)`.
+    fn validate_worker(&self, key: &WorkerKey, worker: &Arc<dyn Worker>) -> bool;
+}
+
+impl WorkerFactoryApi for WorkerFactory {
+    fn create(&self, key: &Arc<WorkerKey>) -> std::io::Result<Arc<dyn Worker>> {
+        WorkerFactory::create(self, key)
+    }
+
+    fn destroy_worker(&self, key: &WorkerKey, worker: &Arc<dyn Worker>) {
+        WorkerFactory::destroy_worker(self, key, worker)
+    }
+
+    fn validate_worker(&self, key: &WorkerKey, worker: &Arc<dyn Worker>) -> bool {
+        WorkerFactory::validate_worker(self, key, worker)
+    }
+}
+
 /// Factory used by the pool to create / destroy / validate worker processes.
 // Java: com/google/devtools/build/lib/worker/WorkerFactory.java:36 WorkerFactory
 pub struct WorkerFactory {
@@ -98,11 +126,11 @@ impl WorkerFactory {
         self.reporter.lock().clone()
     }
 
-    fn tree_deleter(&self) -> Arc<dyn TreeDeleter> {
-        match &self.tree_deleter {
-            Some(t) => t.clone(),
-            None => panic!("NullPointerException: treeDeleter"),
-        }
+    /// `treeDeleter`, null without one (the workers fail when they use it).
+    fn tree_deleter(&self) -> Option<Arc<dyn TreeDeleter>> {
+        self.tree_deleter
+            .as_ref()
+            .map(|t| t.clone() as Arc<dyn TreeDeleter>)
     }
 
     // Java: com/google/devtools/build/lib/worker/WorkerFactory.java:80 WorkerFactory.create

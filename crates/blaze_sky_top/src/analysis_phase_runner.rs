@@ -54,23 +54,15 @@ pub fn execute(
             build_options,
         )?;
 
-        // AnalysisPhaseCompleteEvent → UiEventHandler.analysisComplete.
-        report_analysis_complete(reporter.as_ref(), target_pattern_phase_value);
-
         // PORT: BlazeModule.afterAnalysis has no ported implementer (the modules that override
         // it are Google-internal or the remote module).
 
-        if request.should_run_tests() {
-            report_targets_with_tests(
-                reporter.as_ref(),
-                result.get_targets_to_build().len(),
-                result
-                    .get_targets_to_test()
-                    .expect("NullPointerException: targets to test")
-                    .len(),
-            );
-        } else {
-            report_targets(reporter.as_ref(), result.get_targets_to_build().len());
+        // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:156 AnalysisPhaseRunner.execute
+        // PORT: with merged analysis and execution, AnalysisAndExecutionPhaseRunner.execute
+        // reports the targets after the execution phase returned (it does not when the
+        // execution phase throws): `report_analyzed_targets`, called by BuildTool.
+        if !request.with_merged_analysis_and_execution_source_of_truth() {
+            report_analyzed_targets(reporter.as_ref(), request, &result);
         }
 
         // PORT: postAbortedEventsForSkippedTargets (an AbortedEvent per skipped target for the
@@ -161,15 +153,39 @@ fn run_analysis_phase(
         BuildViewError::Interrupted => BuildToolError::Interrupted,
     })?;
 
-    // PORT: AnalysisPhaseCompleteEvent is built by the command from the returned
-    // `AnalysisResult` (its counters are `get_analysis_phase_complete_stats`).
-    // TestFilteringCompleteEvent has one subscriber besides the build event stream,
-    // AggregatingTestListener.populateTests, which does what populateTest does with the
-    // TestAnalyzedEvents posted below.
+    // TODO(bazel-team): Merge these into one event.
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:429 AnalysisPhaseRunner.runAnalysisPhase
+    // PORT: with merged analysis and execution Java posts it from
+    // SkyframeBuildView.analysisFinishedCallback (SkyframeBuildView.java:957), once the analysis
+    // of every top-level target concluded; Blaze's merged build has concluded its analysis here.
+    // Java posts it before the errors of a keep_going analysis are reported, Blaze after
+    // (open: the "errors encountered while analyzing" warnings precede the summary line). The
+    // event's counters for the build metrics are the command's
+    // (`AnalysisResult::get_analysis_phase_complete_stats`).
+    reporter.post(Arc::new(
+        blaze_buildtool::buildtool::buildevent::AnalysisPhaseCompleteEvent::new(
+            analysis_result.get_targets_to_build().len(),
+        ),
+    ));
     // PORT: Java's AnalysisPhaseRunner serves only requests without merged analysis and
-    // execution; for a merged request BuildDriverFunction posts these events, which
-    // `build_view::update` (analyzed, skipped) and the command (skipped tests) do here.
+    // execution; for a merged request BuildDriverFunction posts the top-level status events,
+    // which `build_view::update` (analyzed, skipped) and the command (skipped tests) do here,
+    // and no TestFilteringCompleteEvent is posted.
     if !request.with_merged_analysis_and_execution_source_of_truth() {
+        // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:454 AnalysisPhaseRunner.runAnalysisPhase
+        // PORT: the event carries the labels of the test targets (see the type);
+        // AggregatingTestListener.populateTests does what populateTest does with the
+        // TestAnalyzedEvents posted below.
+        reporter.post(Arc::new(
+            blaze_buildtool::buildtool::buildevent::TestFilteringCompleteEvent::new(
+                analysis_result.get_targets_to_test().map(|targets| {
+                    targets
+                        .iter()
+                        .map(|target| Some(target.get_label()))
+                        .collect()
+                }),
+            ),
+        ));
         post_top_level_status_events(skyframe_executor, reporter.as_ref(), &analysis_result);
     }
 
@@ -343,26 +359,26 @@ fn report_targets(reporter: &dyn ExtendedEventHandler, target_count: usize) {
     )));
 }
 
-/// The UI's summary of the analysis phase, `Analyzed N targets (P packages loaded, T targets
-/// configured).` (Java: `UiEventHandler.analysisComplete` on `AnalysisPhaseCompleteEvent`, with
-/// the labels of `LoadingPhaseCompleteEvent`).
-// Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:199 SkymeldUiStateTracker.analysisComplete
-fn report_analysis_complete(
+/// The `reportTargetsWithTests` / `reportTargets` of `AnalysisPhaseRunner.execute` (and, with
+/// merged analysis and execution, of `AnalysisAndExecutionPhaseRunner.execute`, after the
+/// execution phase returned).
+// Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:156 AnalysisPhaseRunner.execute
+// Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:135 AnalysisAndExecutionPhaseRunner.execute
+pub fn report_analyzed_targets(
     reporter: &dyn ExtendedEventHandler,
-    loading_result: &TargetPatternPhaseValue,
+    request: &BuildRequest,
+    result: &AnalysisResult,
 ) {
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:178 SkymeldUiStateTracker.loadingComplete
-    let labels = loading_result.get_target_labels();
-    let additional_message = if labels.len() == 1 {
-        format!("target {}", labels.iter().next().expect("one label"))
+    if request.should_run_tests() {
+        report_targets_with_tests(
+            reporter,
+            result.get_targets_to_build().len(),
+            result
+                .get_targets_to_test()
+                .expect("NullPointerException: targets to test")
+                .len(),
+        );
     } else {
-        format!("{} targets", labels.len())
-    };
-    let work_done = format!(
-        "Analyzed {} ({}, {}).",
-        additional_message,
-        blaze_sky_loading::package_progress_receiver::PACKAGE_PROGRESS.progress_state(),
-        blaze_sky_analysis::analysis_progress_receiver::ANALYSIS_PROGRESS.get_progress_string()
-    );
-    reporter.handle(&Event::info(work_done));
+        report_targets(reporter, result.get_targets_to_build().len());
+    }
 }

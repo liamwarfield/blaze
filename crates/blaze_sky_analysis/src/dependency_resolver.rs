@@ -110,7 +110,10 @@ impl From<Interrupted> for DependencyResolverException {
 }
 
 /// The exceptions `evaluate` catches and hands to `handleException`.
-enum CaughtException {
+///
+/// Public for the test SkyFunction of `ToolchainsForTargetsTest` (blaze_sky_top's tests), which
+/// calls [`get_dependency_context`].
+pub enum CaughtException {
     DependencyEvaluation(DependencyEvaluationException),
     ConfiguredValueCreation(ConfiguredValueCreationException),
     Toolchain(ToolchainException),
@@ -600,8 +603,10 @@ pub fn toolchain_exception_detailed_exit_code(
 }
 
 /// Null when a Skyframe restart is needed.
+///
+/// Public for the test SkyFunction of `ToolchainsForTargetsTest` (blaze_sky_top's tests).
 // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:479 DependencyResolver.getDependencyContext
-fn get_dependency_context(
+pub fn get_dependency_context(
     state: &mut DependencyResolverState,
     configured_target_key: &ConfiguredTargetKey,
     services: &AnalysisServices,

@@ -383,7 +383,6 @@ cc_binary(name = "bar")
 
 // Java: StarlarkSubruleTest.testSubrule_attrLengthLimitIgnoresBzlLabel
 #[test]
-#[ignore = "needs the mock C++ toolchains (@rules_cc//cc:cc_binary.bzl, absent from the mock rules_cc)"]
 fn test_subrule_attr_length_limit_ignores_bzl_label() {
     let mut t = BuildViewTestCase::new();
     // deserialized package does not have a reference to subrules
@@ -585,7 +584,6 @@ child_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubrule_aspectMustDeclareSubrule
 #[test]
-#[ignore = "needs the mock Java toolchains (java_library from @rules_java//java:defs.bzl, absent from the mock rules_java)"]
 fn test_subrule_aspect_must_declare_subrule() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -738,7 +736,6 @@ my_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubrule_isCallableFromAspect
 #[test]
-#[ignore = "needs the mock Java toolchains (java_library from @rules_java//java:defs.bzl, absent from the mock rules_java)"]
 fn test_subrule_is_callable_from_aspect() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -1422,7 +1419,6 @@ my_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubruleAttr_executableAttrIsPassedAsFilesToRun
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn test_subrule_attr_executable_attr_is_passed_as_files_to_run() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -1483,7 +1479,6 @@ my_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubruleAction_executableMustBeFilesToRunProvider
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
 fn test_subrule_action_executable_must_be_files_to_run_provider() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -1531,7 +1526,7 @@ my_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubruleAttrs_lateBoundDefaultsAreResolved
 #[test]
-#[ignore = "needs the mock C++ toolchains (cc_binary from the mock rules_cc)"]
+#[ignore = "BLAZE GAP: unported!(\"BaselineCoverageAction.create\") (blaze_analysis test/instrumented_files_info.rs)"]
 fn test_subrule_attrs_late_bound_defaults_are_resolved() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -1646,7 +1641,6 @@ my_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubruleToolchains_cannotAccessToolchainFromRule
 #[test]
-#[ignore = "needs the mock Java toolchains (@bazel_tools//tools/jdk:toolchain_type with a registered Java toolchain)"]
 fn test_subrule_toolchains_cannot_access_toolchain_from_rule() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--incompatible_auto_exec_groups"]);
@@ -1688,7 +1682,6 @@ my_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubruleToolchains_requestedToolchainIsResolved_inRule
 #[test]
-#[ignore = "needs the mock Java toolchains (@bazel_tools//tools/jdk:toolchain_type with a registered Java toolchain, JavaToolchainProvider)"]
 fn test_subrule_toolchains_requested_toolchain_is_resolved_in_rule() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--incompatible_auto_exec_groups"]);
@@ -1738,7 +1731,6 @@ my_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubruleToolchains_requstedToolchainIsResolved_inAspect
 #[test]
-#[ignore = "needs the mock Java toolchains (@bazel_tools//tools/jdk:toolchain_type with a registered Java toolchain, JavaToolchainProvider)"]
 fn test_subrule_toolchains_requsted_toolchain_is_resolved_in_aspect() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--incompatible_auto_exec_groups"]);
@@ -1838,7 +1830,6 @@ my_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubruleToolchains_requestedToolchainIsSuppliedToAction
 #[test]
-#[ignore = "needs the mock Java toolchains (@bazel_tools//tools/jdk:toolchain_type with a registered Java toolchain) and BuildViewTestCase.getRuleContext (getActionOwner(toolchainType))"]
 fn test_subrule_toolchains_requested_toolchain_is_supplied_to_action() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&["--incompatible_auto_exec_groups"]);

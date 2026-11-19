@@ -140,15 +140,18 @@ def header(tool, binaries, blaze=None):
     return lines
 
 
-def tools_sha256(extra=()):
-    """sha256 over scripts/server/* and the scripts/oracle files these tools import."""
+def tools_sha256(files=None):
+    """sha256 over tool files (default: every file of scripts/server) plus the scripts/oracle
+    files these tools import and unit-supervisor."""
     h = hashlib.sha256()
-    files = sorted(os.path.join(HERE, f) for f in os.listdir(HERE)
-                   if os.path.isfile(os.path.join(HERE, f)) and not f.endswith(".pyc"))
-    files += [os.path.join(REPO, "scripts/oracle", f) for f in
-              ("oracle_common.py", "normalise.py", "surfaces.py")]
-    files += [SUPERVISOR] + list(extra)
-    for f in files:
+    if files is None:
+        files = [f for f in os.listdir(HERE)
+                 if os.path.isfile(os.path.join(HERE, f)) and not f.endswith(".pyc")]
+    paths = sorted(os.path.join(HERE, f) for f in files)
+    paths += [os.path.join(REPO, "scripts/oracle", f) for f in
+              ("oracle_common.py", "normalise.py", "surfaces.py", "record")]
+    paths += [SUPERVISOR]
+    for f in paths:
         h.update(os.path.relpath(f, REPO).encode() + b"\0" + oc.sha256_file(f).encode() + b"\n")
     return h.hexdigest()
 
@@ -359,6 +362,11 @@ def safe_rmtree(path, root):
 PROGRESS = re.compile(
     r"^(Computing main repo mapping:|Loading:|Analyzing:|Fetching |Building:|Testing:|"
     r"\[[\d,]+ / [\d,]+\])")  # the classes scripts/w4/probe drops
+# Also dropped from stderr: lines whose presence depends only on timing, seen to differ between
+# two oracle runs (interop-client --control, 2026-11-19): empty lines (the client's progress
+# output leaves a varying number) and the client's "... still trying to connect to local Bazel
+# server (N) after 10 seconds ..." under load.
+TIMING_LINES = re.compile(r"^$|^\.\.\. still trying to connect to local ")
 UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
 DUR = re.compile(r"\b\d+(\.\d+)?m?s\b")
 PIDS = [
@@ -393,7 +401,9 @@ contents alike):
   5. sandbox directory numbers `/sandbox/<strategy>/N/` -> `/sandbox/<strategy>/<N>/`;
   6. stderr only: the rate-limited progress lines whose number and content depend on timing
      (lines starting `Computing main repo mapping:`, `Loading:`, `Analyzing:`, `Fetching `,
-     `Building:`, `Testing:`, `[n / m]`; the classes scripts/w4/probe drops) are dropped.
+     `Building:`, `Testing:`, `[n / m]`; the classes scripts/w4/probe drops) are dropped, and
+     so are empty lines and `... still trying to connect to local Bazel server ...` (both
+     differ between two oracle runs: interop-client --control).
 Nothing else is changed or dropped: "Starting local Bazel server", "Extracting Bazel
 installation", "INFO: N processes" and "INFO: Analyzed ..." lines are compared verbatim.
 """
@@ -420,8 +430,12 @@ installation", "INFO: N processes" and "INFO: Analyzed ..." lines are compared v
         return text
 
     def stderr(self, data):
-        lines = [l for l in data.decode("latin-1").split("\n") if not PROGRESS.match(l)]
-        return self.text("\n".join(lines))
+        lines = data.decode("latin-1").split("\n")
+        last = lines.pop()  # "" when the data ends with a newline
+        kept = [l + "\n" for l in lines if not PROGRESS.match(l) and not TIMING_LINES.match(l)]
+        if last and not PROGRESS.match(last):
+            kept.append(last)
+        return self.text("".join(kept))
 
 
 # ---------------------------------------------------------------------------------------------

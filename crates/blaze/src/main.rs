@@ -111,7 +111,9 @@ mod tests {
             Some(v(&["--max_idle_secs=10800", "--output_base=/ob"]))
         );
         assert_eq!(
-            server_args(&v(&["java", "-jar", "/j", "--batch", "--x", "build", "//:a"])),
+            server_args(&v(&[
+                "java", "-jar", "/j", "--batch", "--x", "build", "//:a"
+            ])),
             Some(v(&["--batch", "--x", "build", "//:a"]))
         );
     }
@@ -119,7 +121,10 @@ mod tests {
     #[test]
     fn client_invocations_are_not_server_starts() {
         assert_eq!(server_args(&v(&["blaze", "build", "-jar", "x"])), None);
-        assert_eq!(server_args(&v(&["blaze", "--batch", "build", "//:a"])), None);
+        assert_eq!(
+            server_args(&v(&["blaze", "--batch", "build", "//:a"])),
+            None
+        );
         assert_eq!(server_args(&v(&["blaze"])), None);
         assert_eq!(server_args(&v(&["blaze", "-jar"])), None);
     }

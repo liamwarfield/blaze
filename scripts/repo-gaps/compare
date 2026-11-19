@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compare oracle and Blaze on the repo-gaps reproductions. See `compare help`."""
 
+import difflib
 import json
 import os
 import re
@@ -21,21 +22,25 @@ and with <binary>: each side gets a fresh copy of the case's workspace under
 --nohome_rc --nosystem_rc, --batch on the oracle, the shared repository cache, --color=no
 --curses=no, under systemd-run --user --scope -p MemoryMax=12G.
 
-Compared per command (after replacing the workspace, output user root and output base hash with
-placeholders): the termination, and the stderr lines that start with ERROR:, WARNING: or FATAL:
-plus the first line of a Java exception / Rust panic message. Output: a table; transcripts
-under ~/.cache/blaze/repo-gaps-compare/<label>/<side>/<case>.{stderr,norm.json}, and
-results.json there.
+Compared per command: the termination, the whole stdout and the whole stderr, after the
+exclusion rules of scripts/lib/compare_common.py (VOLATILE_RULES; `paths`: each side's
+workspace, sibling directory and output user root; `output_base_hash`: the output base's
+directory name), listed in the report with the lines each changed or removed on each side. Both
+sides start a fresh process for every command (the oracle with --batch), so no server-state rule
+applies. Output: a table; transcripts under
+~/.cache/blaze/repo-gaps-compare/<label>/<side>/<case>.{stderr,norm.json} (raw stdout and stderr
+per command), and results.json there.
 
 Guards (scripts/lib/compare_common.py): every command runs under a supervisor in the scope that
 records how it really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout` after 1800 s);
 --oracle must be the pinned oracle (UPSTREAM.json); an empty selection is an error. Each command
-of a case is one row (`<case>#<n>`): IDENTICAL (termination and lines equal; the oracle exited 0,
-or DECLARED_EXIT names the row with that exit code), DIFFERENT, BOTH-FAILED (equal failures not
+of a case is one row (`<case>#<n>`): IDENTICAL (termination, stdout and stderr equal; the oracle
+exited 0, or DECLARED_EXIT names the row with that exit code), DIFFERENT, BOTH-FAILED (equal failures not
 declared), NOT-PORTED, ORACLE-UNEXPECTED, SKIPPED. The output and results.json carry the
 repository HEAD and dirty flag, both binaries' paths and sha256, and the denominator. Exit 0
 only when at least one row was compared and every row is IDENTICAL; 1 otherwise; 2 on a usage
 error or a refusal. Oracle outputs are never reused: both sides run every time.
+selftest drives this command line with fake binaries (compare_common.selftest_tool).
 """
 
 HOME = os.environ["HOME"]
@@ -194,21 +199,14 @@ case("nofetch",
      "--nofetch with a repository that is not fetched")
 
 
-def norm(text, ws, aux, root):
-    text = text.replace(ws, "<WS>").replace(aux, "<AUX>").replace(root, "<ROOT>")
-    text = re.sub(r"<ROOT>/[0-9a-f]{32}", "<ROOT>/<OB>", text)
-    return text
+RULES = cc.VOLATILE_RULES + [
+    cc.Rule("output_base_hash", r"<ROOT>/[0-9a-f]{32}", "the output base is named by the md5 "
+            "of the workspace path, which differs between the sides", repl="<ROOT>/<OB>",
+            streams=("stdout", "stderr"))]
 
 
-def compared(stderr):
-    out = []
-    lines = stderr.splitlines()
-    for i, l in enumerate(lines):
-        if re.match(r"(ERROR|WARNING|FATAL):", l):
-            out.append(l)
-        elif re.match(r"(java\.lang\.\w+|blaze: not ported yet|thread '.*' .*panicked)", l):
-            out.append(l)
-    return out
+def path_pairs(ws, aux, root):
+    return [(ws, "<WS>"), (aux, "<AUX>"), (root, "<ROOT>")]
 
 
 def write_files(ws, aux, files):
@@ -240,12 +238,12 @@ def run_side(side, binary, is_bazel, name, c, label):
         cmd += [args[0], "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"]
         cmd += args[1:]
         p = cc.run(cmd, ws, timeout=1800, mode="scope", tag="repo-gaps")
-        err = norm(p.err.decode("latin-1"), ws, aux, root)
-        out = norm(p.out.decode("latin-1"), ws, aux, root)
+        err = p.err.decode("latin-1")
+        out = p.out.decode("latin-1")
         transcript += "$ %s\n%s\n--- stdout\n%s\n[%s]\n" % (" ".join(args), err, out, p.term)
         results.append({"cmd": " ".join(args), "exit": p.rc, "termination": p.term.to_dict(),
-                        "unported": cc.unported_message(err), "lines": compared(err),
-                        "stdout": out})
+                        "unported": cc.unported_message(err), "stderr": err, "stdout": out,
+                        "paths": path_pairs(ws, aux, root)})
     odir = os.path.join(HOME, ".cache/blaze/repo-gaps-compare", label, side)
     os.makedirs(odir, exist_ok=True)
     open(os.path.join(odir, name + ".stderr"), "w").write(transcript)
@@ -283,7 +281,12 @@ def main(argv):
                        oracle={"path": oracle, "sha256": oracle_sha},
                        selection="label %s, %d cases%s" % (
                            a.label, len(names), " (--case %s)" % ",".join(a.case) if a.case
-                           else ""), tool_files=[os.path.abspath(__file__)])
+                           else ""), tool_files=[os.path.abspath(__file__)],
+                       compared="per command: termination, the whole stdout and the whole "
+                                "stderr after the exclusion rules listed at the end")
+    norm = cc.Normaliser(RULES, path_reason="each side's workspace, sibling directory and "
+                         "output user root")
+    report.add_normaliser(norm)
     report.print_header()
     for n in names:
         o = run_side("oracle", oracle, True, n, CASES[n], a.label)
@@ -291,18 +294,18 @@ def main(argv):
         if len(o) != len(b):
             report.add(n, cc.SKIPPED, "%d oracle commands, %d blaze commands" % (len(o), len(b)))
         for i, (x, y) in enumerate(zip(o, b)):
-            cls, detail = judge("%s#%d" % (n, i), x, y)
+            cls, detail = judge(norm, "%s#%d" % (n, i), x, y)
             report.add("%s#%d" % (n, i), cls, detail)
             print("%-17s %-20s #%d %s/%s  %s" % (
                 cls, n, i, cc.Termination.from_dict(x["termination"]),
                 cc.Termination.from_dict(y["termination"]), x["cmd"][:60]))
-            if cls != cc.IDENTICAL:
-                for l in x["lines"]:
-                    if l not in y["lines"]:
-                        print("        - oracle: " + l[:300])
-                for l in y["lines"]:
-                    if l not in x["lines"]:
-                        print("        + blaze:  " + l[:300])
+            if cls == cc.DIFFERENT:
+                for stream in ("stdout", "stderr"):
+                    ol = norm.apply(x[stream], "oracle", stream, x["paths"]).text.splitlines()
+                    bl = norm.apply(y[stream], "blaze", stream, y["paths"]).text.splitlines()
+                    for l in difflib.unified_diff(ol, bl, "oracle." + stream, "blaze." + stream,
+                                                  lineterm="", n=0):
+                        print("        " + l[:300])
     odir = os.path.join(HOME, ".cache/blaze/repo-gaps-compare", a.label)
     os.makedirs(odir, exist_ok=True)
     report.write_json(os.path.join(odir, "results.json"))
@@ -312,38 +315,26 @@ def main(argv):
     return report.exit_code()
 
 
-def judge(row, x, y):
+def judge(norm, row, x, y):
+    differing = []
+    for stream in ("stdout", "stderr"):
+        eq, _ = norm.compare(x[stream], y[stream], stream, x["paths"], y["paths"])
+        if not eq:
+            differing.append(stream)
     return cc.judge(cc.Termination.from_dict(x.get("termination")),
-                    cc.Termination.from_dict(y.get("termination")),
-                    [] if x["lines"] == y["lines"] else ["stderr lines"],
+                    cc.Termination.from_dict(y.get("termination")), differing,
                     declared_exit=DECLARED_EXIT.get(row), blaze_unported=y.get("unported"))
 
 
 def selftest():
-    def run_pair(ofake, bfake, wd):
-        cc.require_oracle(ofake)
-        res = {}
-        for side, fake in (("oracle", ofake), ("blaze", bfake)):
-            p = cc.run([fake, "build"], wd, mode="scope", tag="selftest")
-            err = norm(p.err.decode("latin-1"), wd, wd, wd)
-            # The fakes print their difference on stdout, which this tool does not compare; put
-            # it in a compared line the way an ERROR line would be.
-            lines = compared(err) + ["ERROR: " + p.out.decode("latin-1").strip()]
-            res[side] = {"termination": p.term.to_dict(), "unported": cc.unported_message(err),
-                         "lines": lines}
-        return judge("selftest", res["oracle"], res["blaze"])
+    first = next(iter(CASES))
 
-    def empty_selection():
-        with open(os.devnull, "w") as null:
-            old = sys.stderr
-            sys.stderr = null
-            try:
-                return main(["--binary", "/bin/true", "--case", "no-such-case"])
-            finally:
-                sys.stderr = old
+    def argv(blaze, label):
+        return ["--binary", blaze, "--case", first, "--label", label]
 
-    return cc.selftest("repo-gaps/compare", run_pair=run_pair, empty_selection=empty_selection,
-                       mode="scope")
+    return cc.selftest_tool(
+        "repo-gaps/compare", os.path.abspath(__file__), argv,
+        empty=lambda b, l: ["--binary", b, "--case", "no-such-case", "--label", l])
 
 
 if __name__ == "__main__":

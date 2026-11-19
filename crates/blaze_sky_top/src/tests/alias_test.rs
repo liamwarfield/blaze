@@ -5,8 +5,56 @@ use blaze_analysis::providers::file_provider::{FileProvider, RunfilesProvider};
 
 // Java: AliasTest.smoke
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn smoke() {}
+fn smoke() {
+    let mut t = BuildViewTestCase::new();
+    t.scratch.file(
+        "a/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "a",
+    srcs = ["a.cc"],
+)
+
+alias(
+    name = "b",
+    actual = "a",
+)
+"#],
+    );
+
+    let b = t.get_configured_target("//a:b").expect("//a:b");
+    let cc_info = cc_info_get(&b).expect("CcInfo");
+    // assertThat(CcInfo.get(b).getCcCompilationContext()).isNotNull()
+    starlark::values::Heap::temp(|heap| {
+        // SAFETY: the value is used only while `cc_info` (which keeps its frozen heap alive) is
+        // borrowed.
+        let compilation_context = unsafe { cc_info.unchecked_frozen_value() }
+            .to_value()
+            .get_attr("compilation_context", heap)
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(compilation_context.is_some_and(|v| !v.is_none()));
+    });
+}
+
+/// The test's `CcInfo.get(target)` (rules/cpp/CcInfo.java in src/test/java): the
+/// `@_builtins` CcInfo, else the `@rules_cc+` one.
+fn cc_info_get(
+    target: &blaze_analysis::configured_target::ConfiguredTarget,
+) -> Option<starlark::values::OwnedFrozenValue> {
+    let builtins = blaze_packages::rule_class::ProviderKey::Starlark {
+        extension_label: blaze_cmdline::Label::parse_canonical_unchecked(
+            "@_builtins//:common/cc/cc_info.bzl",
+        ),
+        exported_name: "CcInfo".to_string(),
+    };
+    target.get(&builtins).or_else(|| {
+        BuildViewTestCase::get_starlark_provider(
+            target,
+            "@rules_cc+//cc/private:cc_info.bzl",
+            "CcInfo",
+        )
+    })
+}
 
 // Java: AliasTest.aliasToInputFile
 #[test]
@@ -145,12 +193,33 @@ filegroup(
 
 // Java: AliasTest.testAliasedInvalidDependency
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_aliased_invalid_dependency() {}
+fn test_aliased_invalid_dependency() {
+    let mut t = BuildViewTestCase::new();
+    t.scratch.file(
+        "a/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "a",
+    deps = [":b"],
+)
+
+alias(
+    name = "b",
+    actual = ":c",
+)
+
+filegroup(name = "c")
+"#],
+    );
+
+    t.remove_fail_fast_handler();
+    t.get_configured_target("//a:a");
+    t.assert_contains_event("alias '//a:b' referring to filegroup rule '//a:c' is misplaced here");
+}
 
 // Java: AliasTest.testAspectPropagation
 #[test]
-#[ignore = "needs top-level aspects (BuildView.createTopLevelAspectKeys) and the mock C++ toolchain"]
+#[ignore = "not ported yet: needs writeConfigTransitionTestFiles and top-level aspects (BuildView.createTopLevelAspectKeys)"]
 fn test_aspect_propagation() {}
 
 // Java: AliasTest.assertNoLicensesAttribute
@@ -175,8 +244,31 @@ alias(
 
 // Java: AliasTest.passesTargetTypeCheck
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn passes_target_type_check() {}
+fn passes_target_type_check() {
+    let mut t = BuildViewTestCase::new();
+    t.scratch.file(
+        "a/BUILD",
+        &[r#"load("@rules_cc//cc:cc_library.bzl", "cc_library")
+cc_library(
+    name = "a",
+    srcs = ["a.cc"],
+    deps = [":b"],
+)
+
+alias(
+    name = "b",
+    actual = ":c",
+)
+
+cc_library(
+    name = "c",
+    srcs = ["c.cc"],
+)
+"#],
+    );
+
+    t.get_configured_target("//a:a");
+}
 
 // Java: AliasTest.packageGroupInAlias
 #[test]
@@ -308,8 +400,23 @@ test_suite(
 
 // Java: AliasTest.testRedirectChasing
 #[test]
-#[ignore = "needs the mock C++/Java/Python toolchains (cc_library from the mock rules_cc)"]
-fn test_redirect_chasing() {}
+fn test_redirect_chasing() {
+    let mut t = BuildViewTestCase::new();
+    t.scratch.file(
+        "a/BUILD",
+        &[
+            "load('@rules_cc//cc:cc_library.bzl', 'cc_library')",
+            &format!(
+                "alias(name='cc', actual='{}')",
+                crate::testing::analysis_mock::PLATFORM_LABEL
+            ),
+            "cc_library(name='a', srcs=['a.cc'])",
+        ],
+    );
+
+    t.use_configuration(&["--platforms=//a:cc"]);
+    t.get_configured_target("//a:a");
+}
 
 // Java: AliasTest.testNoActual
 #[test]
