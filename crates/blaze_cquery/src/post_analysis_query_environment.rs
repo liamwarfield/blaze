@@ -29,7 +29,9 @@
 //!   `DelegatingWalkableGraph.getDirectDeps`, `targetifyValues`): [`java_hash_map_key_order`],
 //!   [`delegating_walkable_graph_map_order`].
 //! - The hash codes are Java's `ConfiguredTargetKey.hashCode()`
-//!   ([`configured_target_key_java_hash_code`]).
+//!   ([`configured_target_key_java_hash_code`]) and, for cquery's aspect nodes and the `ASPECT`
+//!   keys among reverse dependencies, `AspectKey.hashCode()` ([`aspect_key_java_hash_code`]),
+//!   which mixes in an identity hash code Bazel does not fix ([`java_class_identity_hash_code`]).
 //! - Within one bin the order is the insertion order, which comes from the order of a node's
 //!   direct deps in the Skyframe graph (`WalkableGraph.getDirectDeps`, Java's `GroupedDeps`
 //!   order, i.e. the order in which `ConfiguredTargetFunction` and its state machines requested
@@ -46,10 +48,14 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use blaze_actions::ActionLookupKeyRef;
+use blaze_analysis::aspect_key_creator::AspectKey;
+use blaze_analysis::aspect_value::AspectValue;
+use blaze_analysis::configured_aspect::ConfiguredAspect;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::{CONFIGURED_TARGET, ConfiguredTargetKey};
 use blaze_analysis::configured_target_value::ConfiguredTargetValue;
 use blaze_analysis::configuredtargets::RuleConfiguredTarget;
+use blaze_analysis::providers::alias_provider::AliasProvider;
 use blaze_analysis::toolchains::toolchain_context_key::ToolchainContextKey;
 use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
@@ -57,6 +63,9 @@ use blaze_cmdline::{
     Label, PackageIdentifier, RepositoryName, TargetParsingException, TargetPatternParser,
 };
 use blaze_events::{Event, EventHandler, ExtendedEventHandler};
+use blaze_packages::aspect::{
+    AspectClass, AspectDescriptor, AspectParameters, StarlarkAspectClass,
+};
 use blaze_packages::exceptions::NoSuchPackageException;
 use blaze_packages::package::Package;
 use blaze_packages::target::{LabelPrinter, Target};
@@ -132,14 +141,35 @@ pub fn default_thread_count() -> i32 {
 // -------------------------------------------------------------------------------------------
 // Node types.
 
-/// The node types of post-analysis queries: `CqueryNode` (a `ConfiguredTarget`) for cquery and
-/// `ConfiguredTargetValue` for aquery.
+/// The node types of post-analysis queries: `CqueryNode` (a `ConfiguredTarget` or, with
+/// `--experimental_explicit_aspects`, an `AspectKey`) for cquery and `ConfiguredTargetValue` for
+/// aquery.
+///
+/// PORT: the abstract methods of `PostAnalysisQueryEnvironment<T>` that depend on `T` and the
+/// `CqueryNode` defaults the shared code reads.
 pub trait PostAnalysisNode: Clone + 'static {
-    /// The configured target of the node.
-    fn get_configured_target(&self) -> &ConfiguredTarget;
+    /// Java `getConfiguredTargetKey(T)` (`CqueryNode.getLookupKey()` for cquery).
+    // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:679 PostAnalysisQueryEnvironment.getConfiguredTargetKey
+    fn get_lookup_key(&self) -> ActionLookupKeyRef;
 
-    /// Java `getValueFromKey`: the node for a `CONFIGURED_TARGET` value.
-    fn from_configured_target_value(value: Arc<ConfiguredTargetValue>) -> Self;
+    /// The key of the node's configuration (what `getConfiguration(T)` looks up).
+    // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:677 PostAnalysisQueryEnvironment.getConfiguration
+    fn get_configuration_key(&self) -> Option<BuildConfigurationKey>;
+
+    /// Java `getCorrectLabel(T)`: the original label (aliases are not dereferenced).
+    // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:238 PostAnalysisQueryEnvironment.getCorrectLabel
+    fn get_original_label(&self) -> Label;
+
+    /// The configured target behind the node; `None` for a node that is no configured target
+    /// (cquery's `AspectKey` nodes). Java tests the node with `instanceof` in
+    /// `getRuleConfiguredTarget`, `getOwningRuleforOutputConfiguredTarget` and
+    /// `isAliasConfiguredTarget`.
+    fn as_configured_target(&self) -> Option<&ConfiguredTarget>;
+
+    /// Java `getValueFromKey(SkyKey)`: the node of a key in the graph, `None` if the graph has no
+    /// value for it.
+    // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:276 PostAnalysisQueryEnvironment.getValueFromKey
+    fn get_value_from_key(graph: &dyn WalkableGraph, key: &SkyKey) -> Option<Self>;
 
     /// Java `node instanceof RuleConfiguredTarget`, on the node object itself: true for a rule's
     /// `CqueryNode`, never true for aquery's `ConfiguredTargetValue`.
@@ -147,39 +177,43 @@ pub trait PostAnalysisNode: Clone + 'static {
     fn is_instance_of_rule_configured_target(&self) -> bool;
 }
 
-impl PostAnalysisNode for ConfiguredTarget {
-    fn get_configured_target(&self) -> &ConfiguredTarget {
-        self
-    }
-
-    fn is_instance_of_rule_configured_target(&self) -> bool {
-        matches!(self, ConfiguredTarget::Rule(_))
-    }
-
-    fn from_configured_target_value(value: Arc<ConfiguredTargetValue>) -> Self {
-        value.get_configured_target().clone()
-    }
-}
-
 impl PostAnalysisNode for Arc<ConfiguredTargetValue> {
-    fn get_configured_target(&self) -> &ConfiguredTarget {
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:319 ActionGraphQueryEnvironment.getConfiguredTargetKey
+    fn get_lookup_key(&self) -> ActionLookupKeyRef {
         ConfiguredTargetValue::get_configured_target(self)
+            .get_lookup_key()
+            .clone()
+    }
+
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:307 ActionGraphQueryEnvironment.getConfiguration
+    fn get_configuration_key(&self) -> Option<BuildConfigurationKey> {
+        ConfiguredTargetValue::get_configured_target(self).get_configuration_key()
+    }
+
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:217 ActionGraphQueryEnvironment.getCorrectLabel
+    fn get_original_label(&self) -> Label {
+        ConfiguredTargetValue::get_configured_target(self).get_original_label()
+    }
+
+    fn as_configured_target(&self) -> Option<&ConfiguredTarget> {
+        Some(ConfiguredTargetValue::get_configured_target(self))
+    }
+
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:273 ActionGraphQueryEnvironment.getValueFromKey
+    fn get_value_from_key(graph: &dyn WalkableGraph, key: &SkyKey) -> Option<Self> {
+        blaze_util::check_state!(key.downcast::<ConfiguredTargetKey>().is_some());
+        blaze_sky_top::skyframe_executor::get_configured_target_value(graph, key)
     }
 
     fn is_instance_of_rule_configured_target(&self) -> bool {
         // A ConfiguredTargetValue is not a RuleConfiguredTarget.
         false
     }
-
-    fn from_configured_target_value(value: Arc<ConfiguredTargetValue>) -> Self {
-        value
-    }
 }
 
-/// The `ActionLookupKey` of a node (Java `getConfiguredTargetKey(T)`; both subclasses return the
-/// configured target's lookup key).
+/// The `ActionLookupKey` of a node (Java `getConfiguredTargetKey(T)`).
 pub fn get_configured_target_key<T: PostAnalysisNode>(target: &T) -> ActionLookupKeyRef {
-    target.get_configured_target().get_lookup_key().clone()
+    target.get_lookup_key()
 }
 
 /// The `ConfiguredTargetKey` behind a lookup key (Java `ConfiguredTargetKey.fromConfiguredTarget`).
@@ -187,22 +221,37 @@ pub fn as_configured_target_key(key: &ActionLookupKeyRef) -> Option<&ConfiguredT
     key.0.as_any().downcast_ref::<ConfiguredTargetKey>()
 }
 
-/// The SkyKey of a lookup key.
+/// The `AspectKey` behind a lookup key (cquery's aspect nodes).
+pub fn as_aspect_key(key: &ActionLookupKeyRef) -> Option<&AspectKey> {
+    key.0.as_any().downcast_ref::<AspectKey>()
+}
+
+/// The SkyKey of a lookup key (Java: the `ActionLookupKey` is the `SkyKey`).
 pub fn lookup_key_to_sky_key(key: &ActionLookupKeyRef) -> SkyKey {
-    match as_configured_target_key(key) {
-        Some(k) => SkyKey::new(k.clone()),
-        None => blaze_util::unported!(
-            "PostAnalysisQueryEnvironment.getConfiguredTargetKey",
-            "aspect keys as query nodes ({})",
-            key
-        ),
+    if let Some(k) = as_configured_target_key(key) {
+        return SkyKey::new(k.clone());
     }
+    if let Some(k) = as_aspect_key(key) {
+        return SkyKey::new(k.clone());
+    }
+    panic!(
+        "IllegalStateException: {} is neither a ConfiguredTargetKey nor an AspectKey",
+        key
+    )
 }
 
 /// A `KeyExtractor` over [`get_configured_target_key`].
 pub fn configured_target_key_extractor<T: PostAnalysisNode>()
 -> Arc<dyn KeyExtractor<T, ActionLookupKeyRef>> {
     Arc::new(|t: &T| get_configured_target_key(t))
+}
+
+/// `(AspectValue) graph.getValue(key)`.
+pub fn get_aspect_value(graph: &dyn WalkableGraph, key: &SkyKey) -> Option<Arc<AspectValue>> {
+    graph.get_value(key).map(|v| {
+        v.downcast::<AspectValue>()
+            .unwrap_or_else(|_| panic!("ClassCastException: ASPECT value of {:?}", key))
+    })
 }
 
 // -------------------------------------------------------------------------------------------
@@ -257,12 +306,207 @@ fn java_hash_code_of_configured_target_key(key: &ConfiguredTargetKey) -> i32 {
     )
 }
 
-/// Java `hashCode()` of an `ActionLookupKey` that is a post-analysis query node key.
+/// Java `hashCode()` of an `ActionLookupKey` that is a post-analysis query node key (a
+/// `ConfiguredTargetKey`, or an `AspectKey` for cquery's explicit aspect nodes).
 pub fn action_lookup_key_java_hash_code(key: &ActionLookupKeyRef) -> i32 {
-    match as_configured_target_key(key) {
-        Some(k) => java_hash_code_of_configured_target_key(k),
-        None => blaze_util::unported!("AspectKey.hashCode", "aspect keys as query nodes ({})", key),
+    if let Some(k) = as_configured_target_key(key) {
+        return java_hash_code_of_configured_target_key(k);
     }
+    if let Some(k) = as_aspect_key(key) {
+        return aspect_key_java_hash_code(k, &java_class_identity_hash_code);
+    }
+    panic!(
+        "IllegalStateException: {} is neither a ConfiguredTargetKey nor an AspectKey",
+        key
+    )
+}
+
+/// `HashCodes.hashObjects(o1, o2)` over the hash codes of its arguments (0 for null).
+// Java: com/google/devtools/build/lib/util/HashCodes.java:46 HashCodes.hashObjects
+fn hash_objects2(h1: i32, h2: i32) -> i32 {
+    // h2 + (MULTIPLIER * (h1 + MULTIPLIER))
+    h2.wrapping_add(31i32.wrapping_mul(h1.wrapping_add(31)))
+}
+
+/// `List.hashCode()` (`ImmutableList`, `Lists.hashCodeImpl`) over the hash codes of the
+/// elements.
+// Java (JDK): java/util/List.java List.hashCode
+fn java_list_hash_code(element_hash_codes: impl IntoIterator<Item = i32>) -> i32 {
+    let mut hash_code: i32 = 1;
+    for e in element_hash_codes {
+        hash_code = hash_code.wrapping_mul(31).wrapping_add(e);
+    }
+    hash_code
+}
+
+/// The subclasses of `BzlLoadValue.Key` a `StarlarkAspectClass` can hold
+/// (`StarlarkDefinedAspect.export` takes the key of the exporting `.bzl`; `BuildView` and
+/// `StarlarkAspectClass.getAspectClassFromName` use `keyForBuild`).
+// Java: com/google/devtools/build/lib/skyframe/BzlLoadValue.java:107 BzlLoadValue.Key
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BzlLoadKeyClass {
+    /// `BzlLoadValue.KeyForBuild` (a `.bzl` loaded on behalf of a BUILD file).
+    KeyForBuild,
+    /// `BzlLoadValue.KeyForBuiltins` (a `.bzl` of `@_builtins`).
+    KeyForBuiltins,
+}
+
+/// The `BzlLoadValue.Key` class of the extension key of a `StarlarkAspectClass`.
+///
+/// PORT: `blaze_packages::aspect::StarlarkAspectClass` keeps the label of its extension key, not
+/// the key. Labels in `@_builtins` are loaded with `keyForBuiltins`
+/// (`BzlLoadValue.java:349`), every other aspect a build reaches through `keyForBuild`
+/// (`BzlLoadValue.java:344`; `KeyForBzlmod` keys are for `.bzl` files loaded by MODULE.bazel and
+/// its extensions, whose aspects no target can use).
+fn bzl_load_key_class_of(starlark_aspect_class: &StarlarkAspectClass) -> BzlLoadKeyClass {
+    if starlark_aspect_class
+        .get_extension_label()
+        .get_repository()
+        .get_name()
+        == "_builtins"
+    {
+        BzlLoadKeyClass::KeyForBuiltins
+    } else {
+        BzlLoadKeyClass::KeyForBuild
+    }
+}
+
+/// `Object.hashCode()` of the `java.lang.Class` object of a `BzlLoadValue.Key` subclass: its
+/// identity hash code, which `BzlLoadValue.Key.hashCode()` mixes in
+/// (`HashCodes.hashObjects(getClass(), getLabel())`).
+///
+/// PORT: java-hash-order, not replicable. An identity hash code is drawn by the JVM when it is
+/// first asked for (HotSpot: a thread-local xorshift generator), so it is fixed for one Bazel
+/// server and differs between servers: every Java hash collection that holds an `AspectKey` of a
+/// Starlark aspect iterates in an order Bazel itself does not reproduce (cquery with
+/// `--experimental_explicit_aspects`; `rdeps` through delegating configured targets). Blaze takes
+/// one fixed value per class, 0xBAD and 0xBAE (0xBAD is a value HotSpot's generator itself yields,
+/// in place of 0), so its order is one of the orders a Bazel server can print. The formulas
+/// around the value are Java's.
+// Java (JDK): java/lang/Object.java Object.hashCode
+pub fn java_class_identity_hash_code(class: BzlLoadKeyClass) -> i32 {
+    match class {
+        BzlLoadKeyClass::KeyForBuild => 0xBAD,
+        BzlLoadKeyClass::KeyForBuiltins => 0xBAE,
+    }
+}
+
+/// `BzlLoadValue.Key.hashCode()` of a key of class `class` for `label`, given the identity hash
+/// code of that class.
+// Java: com/google/devtools/build/lib/skyframe/BzlLoadValue.java:190 BzlLoadValue.Key.hashCode
+pub fn bzl_load_key_java_hash_code(
+    class: BzlLoadKeyClass,
+    label: &Label,
+    class_identity_hash_code: &dyn Fn(BzlLoadKeyClass) -> i32,
+) -> i32 {
+    // KeyForBuild.isBuildPrelude() is false for the keys of exported aspects (keyForBuild);
+    // KeyForBuiltins.isBuildPrelude() is the default false.
+    let is_build_prelude = false;
+    let is_builtins = class == BzlLoadKeyClass::KeyForBuiltins;
+    // int result = HashCodes.hashObjects(getClass(), getLabel());
+    let mut result = hash_objects2(class_identity_hash_code(class), label.java_hash_code());
+    // result = 31 * result + Boolean.hashCode(isBuildPrelude());
+    result = result
+        .wrapping_mul(31)
+        .wrapping_add(java_boolean_hash_code(is_build_prelude));
+    // result = 31 * result + Boolean.hashCode(isBuiltins());
+    result
+        .wrapping_mul(31)
+        .wrapping_add(java_boolean_hash_code(is_builtins))
+}
+
+/// `StarlarkAspectClass.hashCode()`: `hashObjects(extensionKey, exportedName)`.
+// Java: com/google/devtools/build/lib/packages/StarlarkAspectClass.java:69 StarlarkAspectClass.hashCode
+pub fn starlark_aspect_class_java_hash_code(
+    aspect_class: &StarlarkAspectClass,
+    class_identity_hash_code: &dyn Fn(BzlLoadKeyClass) -> i32,
+) -> i32 {
+    hash_objects2(
+        bzl_load_key_java_hash_code(
+            bzl_load_key_class_of(aspect_class),
+            aspect_class.get_extension_label(),
+            class_identity_hash_code,
+        ),
+        // PORT: StringEncoding identity (the exported name is a Java internal-form string).
+        java_internal_string_hash_code(aspect_class.get_exported_name()),
+    )
+}
+
+/// `AspectClass.hashCode()`.
+pub fn aspect_class_java_hash_code(
+    aspect_class: &AspectClass,
+    class_identity_hash_code: &dyn Fn(BzlLoadKeyClass) -> i32,
+) -> i32 {
+    match aspect_class {
+        AspectClass::Starlark(s) => {
+            starlark_aspect_class_java_hash_code(s, class_identity_hash_code)
+        }
+        // NativeAspectClass implementations do not override Object.hashCode(): the identity hash
+        // code of the singleton.
+        AspectClass::Native(n) => blaze_util::unported!(
+            "NativeAspectClass.hashCode",
+            "identity hash code of the native aspect class {}",
+            n.get_name()
+        ),
+    }
+}
+
+/// `AspectParameters.hashCode()`: `Objects.hashCode(attributes)`, the hash code of an
+/// `ImmutableListMultimap<String, String>`, which is `asMap().hashCode()`: the sum over the keys
+/// of `key.hashCode() ^ values.hashCode()` (`Map.Entry.hashCode()`), the values being an
+/// `ImmutableList<String>` (`List.hashCode()`). The strings are Java internal-form strings
+/// (attribute names and values), so `String.hashCode()` runs over their UTF-8 bytes.
+// Java: com/google/devtools/build/lib/packages/AspectParameters.java:118 AspectParameters.hashCode
+pub fn aspect_parameters_java_hash_code(parameters: &AspectParameters) -> i32 {
+    let mut hash_code: i32 = 0;
+    for (key, values) in parameters.get_attributes().iter() {
+        let values_hash_code =
+            java_list_hash_code(values.iter().map(|v| java_internal_string_hash_code(v)));
+        hash_code = hash_code.wrapping_add(java_internal_string_hash_code(key) ^ values_hash_code);
+    }
+    hash_code
+}
+
+/// `AspectDescriptor.hashCode()`: `HashCodes.hashObjects(aspectClass, aspectParameters)`.
+// Java: com/google/devtools/build/lib/packages/AspectDescriptor.java:63 AspectDescriptor.hashCode
+pub fn aspect_descriptor_java_hash_code(
+    descriptor: &AspectDescriptor,
+    class_identity_hash_code: &dyn Fn(BzlLoadKeyClass) -> i32,
+) -> i32 {
+    hash_objects2(
+        aspect_class_java_hash_code(descriptor.get_aspect_class(), class_identity_hash_code),
+        aspect_parameters_java_hash_code(descriptor.get_parameters()),
+    )
+}
+
+/// `AspectKey.hashCode()`: the `hashCode` computed by `AspectKey.createAspectKey` and cached in
+/// `AspectBaseKey`: `hashObjects(baseConfiguredTargetKey, aspectDescriptor)` for a
+/// `SimpleAspectKey`, `hashObjects(baseConfiguredTargetKey, sortedBaseKeys, aspectDescriptor)`
+/// for an `AspectKeyWithBaseAspects` (the base keys are kept sorted, as `getBaseKeys()` returns
+/// them).
+// Java: com/google/devtools/build/lib/skyframe/AspectKeyCreator.java:116 AspectKeyCreator.AspectKey.createAspectKey
+// Java: com/google/devtools/build/lib/skyframe/AspectKeyCreator.java:85 AspectKeyCreator.AspectBaseKey.hashCode
+pub fn aspect_key_java_hash_code(
+    key: &AspectKey,
+    class_identity_hash_code: &dyn Fn(BzlLoadKeyClass) -> i32,
+) -> i32 {
+    let base_configured_target_key =
+        java_hash_code_of_configured_target_key(key.get_base_configured_target_key());
+    let aspect_descriptor =
+        aspect_descriptor_java_hash_code(key.get_aspect_descriptor(), class_identity_hash_code);
+    if key.get_base_keys().is_empty() {
+        return hash_objects2(base_configured_target_key, aspect_descriptor);
+    }
+    let sorted_base_keys = java_list_hash_code(
+        key.get_base_keys()
+            .iter()
+            .map(|k| aspect_key_java_hash_code(k, class_identity_hash_code)),
+    );
+    hash_objects3(
+        base_configured_target_key,
+        sorted_base_keys,
+        aspect_descriptor,
+    )
 }
 
 /// `java.lang.Boolean.hashCode(boolean)`.
@@ -314,10 +558,13 @@ fn java_hash_code_of_toolchain_context_key(key: &ToolchainContextKey) -> i32 {
 }
 
 /// Java `hashCode()` of the SkyKeys `PostAnalysisQueryEnvironment.targetifyValues` looks at
-/// (`CONFIGURED_TARGET` and `TOOLCHAIN_RESOLUTION` keys), `None` for any other key.
+/// (`CONFIGURED_TARGET`, `ASPECT` and `TOOLCHAIN_RESOLUTION` keys), `None` for any other key.
 fn sky_key_java_hash_code_if_known(key: &SkyKey) -> Option<i32> {
     if let Some(k) = key.downcast::<ConfiguredTargetKey>() {
         return Some(java_hash_code_of_configured_target_key(k));
+    }
+    if let Some(k) = key.downcast::<AspectKey>() {
+        return Some(aspect_key_java_hash_code(k, &java_class_identity_hash_code));
     }
     if let Some(k) = key.downcast::<ToolchainContextKey>() {
         return Some(java_hash_code_of_toolchain_context_key(k));
@@ -325,16 +572,20 @@ fn sky_key_java_hash_code_if_known(key: &SkyKey) -> Option<i32> {
     None
 }
 
-/// Java `hashCode()` of the key of a query node as a SkyKey.
+/// Java `hashCode()` of the key of a query node as a SkyKey (a `ConfiguredTargetKey`, or an
+/// `AspectKey` for cquery's explicit aspect nodes).
 fn sky_key_java_hash_code(key: &SkyKey) -> i32 {
-    match key.downcast::<ConfiguredTargetKey>() {
-        Some(k) => java_hash_code_of_configured_target_key(k),
-        None => blaze_util::unported!(
-            "SkyKey.hashCode",
-            "Java hash code of the query node key {:?}",
-            key
-        ),
+    if let Some(k) = key.downcast::<ConfiguredTargetKey>() {
+        return java_hash_code_of_configured_target_key(k);
     }
+    if let Some(k) = key.downcast::<AspectKey>() {
+        return aspect_key_java_hash_code(k, &java_class_identity_hash_code);
+    }
+    blaze_util::unported!(
+        "SkyKey.hashCode",
+        "Java hash code of the query node key {:?}",
+        key
+    )
 }
 
 /// Guava's `Maps.capacity(expectedSize)` (33.5.0): the `initialCapacity`
@@ -718,6 +969,9 @@ pub struct PostAnalysisQueryEnvironment<T> {
     /// Stores every configuration in the transitive closure of the build graph as a map from its
     /// user-friendly hash to the configuration itself.
     pub(crate) transitive_configurations: Arc<IndexMap<String, Arc<BuildConfigurationValue>>>,
+    /// cquery's `ConfiguredTargetAccessor.topLevelAspectsByTarget` (empty for aquery, whose
+    /// environment takes no top-level aspects).
+    pub(crate) top_level_aspects_by_target: IndexMap<ConfiguredTargetKey, Vec<ConfiguredAspect>>,
 }
 
 impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
@@ -750,6 +1004,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
             pkg_path,
             graph,
             transitive_configurations: Arc::new(transitive_configurations),
+            top_level_aspects_by_target: IndexMap::new(),
         }
     }
 
@@ -834,7 +1089,12 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
         blaze_sky_top::skyframe_executor::get_configured_target_value(&*self.graph, key)
     }
 
-    /// Java `getValueFromKey` (both subclasses: the value of a `CONFIGURED_TARGET` key).
+    // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:252 PostAnalysisQueryEnvironment.getAspectValue
+    pub fn get_aspect_value(&self, key: &SkyKey) -> Option<Arc<AspectValue>> {
+        get_aspect_value(&*self.graph, key)
+    }
+
+    /// Java `getValueFromKey`.
     pub fn get_value_from_key(&self, key: &SkyKey) -> Option<T> {
         self.graph_lookup().get_value_from_key(key)
     }
@@ -870,7 +1130,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
     /// The configuration of a node.
     // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:537 ConfiguredTargetQueryEnvironment.getConfiguration
     pub fn get_configuration(&self, target: &T) -> Option<Arc<BuildConfigurationValue>> {
-        let key = target.get_configured_target().get_configuration_key()?;
+        let key = target.get_configuration_key()?;
         blaze_sky_top::skyframe_executor::get_configuration_from_graph(&*self.graph, Some(&key))
     }
 
@@ -879,7 +1139,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
     // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:477 ConfiguredTargetQueryEnvironment.getCorrectLabel
     pub fn get_correct_label(&self, target: &T) -> Label {
         // Dereference any aliases that might be present.
-        target.get_configured_target().get_original_label()
+        target.get_original_label()
     }
 
     // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:325 ConfiguredTargetQueryEnvironment.getConfiguredTarget
@@ -924,12 +1184,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
             // subject to a non-idempotent rule transition, we have to keep it once if the keys
             // requested above, which never have shouldApplyRuleTransition set to false, don't
             // cover it. This case is rare, so we optimize for it not being hit.
-            if Some(&configuration_key)
-                != target
-                    .get_configured_target()
-                    .get_configuration_key()
-                    .as_ref()
-            {
+            if Some(&configuration_key) != target.get_configuration_key().as_ref() {
                 let lookup_key = get_configured_target_key(&target);
                 let target_key = as_configured_target_key(&lookup_key)
                     .expect("configured target key")
@@ -982,8 +1237,17 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
         let missing_targets: Vec<String> = targets_by_key_set
             .iter()
             .filter(|k| !result.iter().any(|(r, _)| r == *k))
-            // SKYKEY_TO_CTKEY: ConfiguredTargetKey.toString()
-            .map(|k| format!("{:?}", k))
+            // SKYKEY_TO_CTKEY: `(ConfiguredTargetKey) skyKey.argument()`, then
+            // ConfiguredTargetKey.toString(); the cast fails for an aspect node's key.
+            .map(|k| {
+                let ct_key = k.downcast::<ConfiguredTargetKey>().unwrap_or_else(|| {
+                    panic!(
+                        "ClassCastException: {:?} cannot be cast to ConfiguredTargetKey",
+                        k
+                    )
+                });
+                format!("{:?}", ct_key)
+            })
             .collect();
         self.event_handler.handle(&Event::warn(format!(
             "Targets were missing from graph: [{}]",
@@ -1149,20 +1413,14 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
         let mut logical_parents: Vec<SkyKey> = Vec::new();
         self.unwind_reverse_dependency_delegation_layers(child, rdeps, &mut logical_parents);
         // PORT: java-hash-order. The caller iterates the HashSet. The keys targetifyValues looks
-        // at (CONFIGURED_TARGET, TOOLCHAIN_RESOLUTION) come in Java's order; the keys of other
-        // functions, which it skips, follow them (their place cannot be observed).
+        // at (CONFIGURED_TARGET, ASPECT, TOOLCHAIN_RESOLUTION) come in Java's order (for ASPECT
+        // keys, with the identity hash code of `java_class_identity_hash_code`); the keys of
+        // other functions, which it skips, follow them (their place cannot be observed).
         let mut ignored: Vec<SkyKey> = Vec::new();
         let mut elements: Vec<(SkyKey, Option<i32>)> = Vec::new();
         for key in logical_parents {
             let hash_code = sky_key_java_hash_code_if_known(&key);
             if hash_code.is_none() {
-                if key.function_name().get_name() == "ASPECT" {
-                    blaze_util::unported!(
-                        "AspectKey.hashCode",
-                        "aspect keys as reverse dependencies ({:?})",
-                        key
-                    );
-                }
                 if !ignored.contains(&key) {
                     ignored.push(key.clone());
                 }
@@ -1245,28 +1503,47 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
         get_dependencies(&deps)
     }
 
+    /// Java `isAliasConfiguredTarget(ConfiguredTargetKey)`: whether the configured target of
+    /// `key` in the graph is an alias.
+    // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:256 PostAnalysisQueryEnvironment.isAliasConfiguredTarget
+    fn is_alias_configured_target_key(&self, key: &ConfiguredTargetKey) -> bool {
+        let value = self
+            .get_configured_target_value(&SkyKey::new(key.clone()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "NullPointerException: no ConfiguredTargetValue for {:?}",
+                    key
+                )
+            });
+        AliasProvider::is_alias(value.get_configured_target())
+    }
+
     /// Java `getRuleConfiguredTarget(T)`.
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:525 ConfiguredTargetQueryEnvironment.getRuleConfiguredTarget
     fn get_rule_configured_target(target: &T) -> Option<&Arc<RuleConfiguredTarget>> {
-        match target.get_configured_target() {
-            ConfiguredTarget::Rule(r) => Some(r),
+        match target.as_configured_target() {
+            Some(ConfiguredTarget::Rule(r)) => Some(r),
             _ => None,
         }
     }
 
     /// If `target` is an `OutputFileConfiguredTarget`, return the rule that produces it.
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:518 ConfiguredTargetQueryEnvironment.getOwningRuleforOutputConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:534 ConfiguredTargetQueryEnvironment.getOwningRuleforOutputConfiguredTarget
     fn get_owning_rule_for_output_configured_target(
         target: &T,
     ) -> Option<Arc<RuleConfiguredTarget>> {
-        match target.get_configured_target() {
-            ConfiguredTarget::OutputFile(o) => Some(o.get_generating_rule().clone()),
+        match target.as_configured_target() {
+            Some(ConfiguredTarget::OutputFile(o)) => Some(o.get_generating_rule().clone()),
             _ => None,
         }
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:528 ConfiguredTargetQueryEnvironment.isAliasConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:543 ConfiguredTargetQueryEnvironment.isAliasConfiguredTarget
     fn is_alias_configured_target(target: &T) -> bool {
-        matches!(target.get_configured_target(), ConfiguredTarget::Alias(_))
+        matches!(
+            target.as_configured_target(),
+            Some(ConfiguredTarget::Alias(_))
+        )
     }
 
     /// Returns targetified dependencies wrapped as `ClassifiedDependency` objects which include
@@ -1277,7 +1554,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
         parent: Option<&T>,
         dependencies: &[SkyKey],
         known_ct_deps: &mut HashSet<SkyKey>,
-        resolved_aspect_classes: &mut HashSet<String>,
+        resolved_aspect_classes: &mut HashSet<AspectClass>,
     ) -> Vec<ClassifiedDependency<T>> {
         let mut implicit_deps: Option<IndexSet<ConfiguredTargetKey>> = None;
         if let Some(parent) = parent {
@@ -1361,12 +1638,40 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
                 known_ct_deps.insert(key.clone());
             } else if self.settings.contains(&Setting::IncludeAspects) && function_name == "ASPECT"
             {
-                let _ = &resolved_aspect_classes;
-                blaze_util::unported!(
-                    "PostAnalysisQueryEnvironment.targetifyValues",
-                    "aspect dependencies ({:?})",
-                    key
-                );
+                blaze_util::check_state!(!self.settings.contains(&Setting::ExplicitAspects));
+                let aspect_key = key
+                    .downcast::<AspectKey>()
+                    .unwrap_or_else(|| panic!("ClassCastException: {:?} is not an AspectKey", key));
+                if resolved_aspect_classes.contains(aspect_key.get_aspect_class()) {
+                    continue;
+                }
+                // When an aspect is attached to an alias configured target, it bypasses standard
+                // dependency resolution and just Skyframe-loads the same aspect for the alias'
+                // referent. That means the original aspect's attribute deps aren't
+                // Skyframe-resolved through AspectFunction's usual call to
+                // ConfiguredTargetFunction.computeDependencies, so graph.getDirectDeps() won't
+                // include them. So we defer "resolving" the aspect class to the non-alias version,
+                // which properly reflects all dependencies. See AspectFunction for details.
+                if !self.is_alias_configured_target_key(aspect_key.get_base_configured_target_key())
+                {
+                    // Make sure we don't examine aspects of this type again. This saves us from
+                    // unnecessarily traversing a target's transitive deps because it propagates an
+                    // aspect down those deps. The deps added by the aspect are a function of the
+                    // aspect's class, not the target it's attached to. And they can't be
+                    // configured because aspects have no UI for overriding attribute defaults. So
+                    // it's sufficient to examine only a single instance of a given aspect class.
+                    // This has real memory and performance consequences: see b/163052263.
+                    // Note the aspect could attach *another* aspect type to its deps. That will
+                    // still get examined through the recursive call.
+                    resolved_aspect_classes.insert(aspect_key.get_aspect_class().clone());
+                }
+                let deps = self.graph.get_direct_deps(key);
+                values.extend(self.targetify_values(
+                    None,
+                    &deps,
+                    known_ct_deps,
+                    resolved_aspect_classes,
+                ));
             } else if function_name == "TOOLCHAIN_RESOLUTION" {
                 let deps = self.graph.get_direct_deps(key);
                 values.extend(self.targetify_values(
@@ -2059,17 +2364,9 @@ pub struct PostAnalysisGraph {
 }
 
 impl PostAnalysisGraph {
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:346 ConfiguredTargetQueryEnvironment.getValueFromKey
+    /// Java `getValueFromKey` of the environment of `T`.
     pub fn get_value_from_key<T: PostAnalysisNode>(&self, key: &SkyKey) -> Option<T> {
-        if key.function_name() != CONFIGURED_TARGET {
-            blaze_util::unported!(
-                "ConfiguredTargetQueryEnvironment.getValueFromKey",
-                "aspect keys as query nodes ({:?})",
-                key
-            );
-        }
-        blaze_sky_top::skyframe_executor::get_configured_target_value(&*self.graph, key)
-            .map(T::from_configured_target_value)
+        T::get_value_from_key(&*self.graph, key)
     }
 
     /// Returns the node for the given label and configuration if it exists, else `None`.
@@ -2088,7 +2385,7 @@ impl PostAnalysisGraph {
         ))?;
         // The configurations might not match if the target's configuration changed due to a
         // transition or trimming. Filters such targets.
-        if configuration_key != target.get_configured_target().get_configuration_key() {
+        if configuration_key != target.get_configuration_key() {
             return None;
         }
         Some(target)
@@ -2323,6 +2620,7 @@ impl RecursivePackageProvider for GraphBackedRecursivePackageProvider<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blaze_analysis::aspect_key_creator::AspectKeyCreator;
 
     // Java: src/test/java/com/google/devtools/build/lib/query2/PostAnalysisQueryTest.java
     // PORT: the PostAnalysisQueryTest suite drives analysis through BuildViewTestCase.
@@ -2646,6 +2944,161 @@ mod tests {
     #[should_panic(expected = "HashMap.treeifyBin")]
     fn java_hash_set_order_of_known_refuses_possible_tree_bins() {
         java_hash_set_order_of_known((0..9).map(|e: i32| (e, None)).collect());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // AspectKey.hashCode (AspectKeyCreator.java:116, AspectDescriptor.java:63,
+    // StarlarkAspectClass.java:69, BzlLoadValue.java:190, AspectParameters.java:118).
+    //
+    // Expected values derived by hand from the Java formulas (all arithmetic mod 2^32, as Java
+    // int); `C` is the identity hash code of the `BzlLoadValue.Key` subclass, taken as 0 here
+    // (`identity_zero`) so the arithmetic stays short:
+    //
+    //   "" .hashCode() = 0, "a" = 97, "b" = 98, "x" = 120, "y" = 121, "p" = 112, "v" = 118
+    //   RepositoryName(main) = hashObjects("", null, null) = 31 * (31 * (0 + 31)) = 29791
+    //   PackageIdentifier(//) = hashObjects(29791, "") = 0 + 31 * (29791 + 31) = 924482
+    //   Label //:a = 31 * (31 + 97) + 924482 = 928450;  //:b = 31 * (31 + 98) + 924482 = 928481
+    //   ConfiguredTargetKey(//:a, no configuration) = hashObjects(928450, null, null)
+    //     = 31 * (31 * (928450 + 31)) = 961 * 928481 = 892270241
+    //   KeyForBuild(//:b).hashCode():
+    //     hashObjects(C = 0, 928481) = 928481 + 31 * (0 + 31) = 929442
+    //     31 * 929442 + Boolean.hashCode(false) = 28812702 + 1237 = 28813939
+    //     31 * 28813939 + Boolean.hashCode(false) = 893232109 + 1237 = 893233346
+    //   StarlarkAspectClass(//:b, "x") = hashObjects(893233346, 120)
+    //     = 120 + 31 * 893233377 = 27690234807 = 27690234807 - 6 * 2^32 = 1920431031
+    //   StarlarkAspectClass(//:b, "y") = 1920431031 + 1 = 1920431032
+    //   AspectParameters.EMPTY = 0;  {p=[v]} = 112 ^ (31 * 1 + 118) = 112 ^ 149 = 229
+    //   AspectDescriptor(x, EMPTY) = hashObjects(1920431031, 0) = 31 * 1920431062
+    //     = 59533362922 - 13 * 2^32 = 3698788074 -> -596179222 (as int)
+    //   AspectDescriptor(x, {p=[v]}) = -596179222 + 229 = -596178993
+    //   AspectDescriptor(y, EMPTY) = 31 * 1920431063 - 13 * 2^32 -> -596179191
+    //   SimpleAspectKey(//:a, x) = hashObjects(892270241, -596179222)
+    //     = -596179222 + 31 * 892270272 = 27064199210 - 6 * 2^32 = 1294395434
+    //   AspectKeyWithBaseAspects(//:a, y, [that key]):
+    //     ImmutableList.hashCode() = 31 * 1 + 1294395434 = 1294395465
+    //     hashObjects(892270241, 1294395465, -596179191)
+    //       = -596179191 + 31 * (1294395465 + 31 * (892270241 + 31)) -> -646353248
+    //   With C = 0xBAD = 2989 (`java_class_identity_hash_code`): C enters
+    //     hashObjects(C, label) times 31, then is multiplied by 31 in each of the next four steps
+    //     (bzl key twice, class, descriptor) and added unmultiplied to the key: the key grows by
+    //     31^5 * 2989 = 28629151 * 2989 = 85572532339 -> 1294395434 + 85572532339 - 20 * 2^32
+    //     = 967581853.
+    //   KeyForBuiltins(//:b) (isBuiltins true): 893232109 + 1231 = 893233340.
+
+    fn identity_zero(_: BzlLoadKeyClass) -> i32 {
+        0
+    }
+
+    fn aspect_descriptor(exported_name: &str, parameters: AspectParameters) -> AspectDescriptor {
+        AspectDescriptor::of(
+            AspectClass::Starlark(StarlarkAspectClass::new(
+                Label::parse_canonical_unchecked("//:b"),
+                exported_name,
+            )),
+            parameters,
+        )
+    }
+
+    fn base_configured_target_key() -> ConfiguredTargetKey {
+        ConfiguredTargetKey::builder()
+            .set_label(Label::parse_canonical_unchecked("//:a"))
+            .build()
+    }
+
+    #[test]
+    fn bzl_load_key_hash_codes_match_java() {
+        let label = Label::parse_canonical_unchecked("//:b");
+        assert_eq!(label.java_hash_code(), 928481);
+        assert_eq!(
+            bzl_load_key_java_hash_code(BzlLoadKeyClass::KeyForBuild, &label, &identity_zero),
+            893233346
+        );
+        assert_eq!(
+            bzl_load_key_java_hash_code(BzlLoadKeyClass::KeyForBuiltins, &label, &identity_zero),
+            893233340
+        );
+    }
+
+    #[test]
+    fn aspect_parameters_hash_codes_match_java() {
+        assert_eq!(
+            aspect_parameters_java_hash_code(&AspectParameters::empty()),
+            0
+        );
+        let parameters = AspectParameters::builder().add_attribute("p", "v").build();
+        assert_eq!(aspect_parameters_java_hash_code(&parameters), 229);
+    }
+
+    #[test]
+    fn aspect_descriptor_hash_codes_match_java() {
+        let x = aspect_descriptor("x", AspectParameters::empty());
+        let AspectClass::Starlark(class) = x.get_aspect_class() else {
+            unreachable!()
+        };
+        assert_eq!(
+            starlark_aspect_class_java_hash_code(class, &identity_zero),
+            1920431031
+        );
+        assert_eq!(
+            aspect_descriptor_java_hash_code(&x, &identity_zero),
+            -596179222
+        );
+        let x_with_parameters = aspect_descriptor(
+            "x",
+            AspectParameters::builder().add_attribute("p", "v").build(),
+        );
+        assert_eq!(
+            aspect_descriptor_java_hash_code(&x_with_parameters, &identity_zero),
+            -596178993
+        );
+        let y = aspect_descriptor("y", AspectParameters::empty());
+        assert_eq!(
+            aspect_descriptor_java_hash_code(&y, &identity_zero),
+            -596179191
+        );
+    }
+
+    #[test]
+    fn aspect_key_hash_codes_match_java() {
+        assert_eq!(
+            java_hash_code_of_configured_target_key(&base_configured_target_key()),
+            892270241
+        );
+        let simple = AspectKeyCreator::create_aspect_key(
+            aspect_descriptor("x", AspectParameters::empty()),
+            Vec::new(),
+            base_configured_target_key(),
+        );
+        assert_eq!(
+            aspect_key_java_hash_code(&simple, &identity_zero),
+            1294395434
+        );
+        let with_base_aspects = AspectKeyCreator::create_aspect_key(
+            aspect_descriptor("y", AspectParameters::empty()),
+            vec![simple.clone()],
+            base_configured_target_key(),
+        );
+        assert_eq!(
+            aspect_key_java_hash_code(&with_base_aspects, &identity_zero),
+            -646353248
+        );
+        // The query sets and maps use the stand-in identity hash code.
+        assert_eq!(
+            aspect_key_java_hash_code(&simple, &java_class_identity_hash_code),
+            967581853
+        );
+        assert_eq!(
+            JavaActionLookupKey(ActionLookupKeyRef::new(simple.clone())).java_hash_code(),
+            967581853
+        );
+        assert_eq!(
+            sky_key_java_hash_code(&SkyKey::new(simple.clone())),
+            967581853
+        );
+        assert_eq!(
+            sky_key_java_hash_code_if_known(&SkyKey::new(simple)),
+            Some(967581853)
+        );
     }
 
     #[test]

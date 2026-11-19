@@ -450,3 +450,48 @@ impl CircuitBreaker for TripAfterNCircuitBreaker {
         inner.state = CircuitBreakerState::AcceptCalls;
     }
 }
+
+/// Not in RetrierTest.java (review 2026-11-19 R4): `TimeUnit.MILLISECONDS.sleep` between
+/// synchronous retries is interruptible; an interrupt of the sleeping thread ends the retries
+/// with an `InterruptedException`.
+#[test]
+fn interrupt_during_backoff_sleep_ends_the_retries() {
+    // A backoff with a long delay, so that the call is still sleeping when it is interrupted.
+    struct LongBackoff;
+    impl Backoff for LongBackoff {
+        fn next_delay_millis(&self, _e: &io::Error) -> i64 {
+            60_000
+        }
+        fn get_retry_attempts(&self) -> i32 {
+            0
+        }
+    }
+    let s: BackoffSupplier = Arc::new(|| -> Arc<dyn Backoff> { Arc::new(LongBackoff) });
+    let r = Retrier::new(
+        s,
+        retry_all(),
+        retry_service(),
+        blaze_remote::retrier::ALLOW_ALL_CALLS.clone(),
+    );
+    let thread = blaze_shell::thread_interrupt::ThreadInterrupt::current();
+    let interrupter = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        thread.interrupt();
+    });
+
+    let num_calls = AtomicI32::new(0);
+    let start = std::time::Instant::now();
+    let e = r
+        .execute(|| -> io::Result<()> {
+            num_calls.fetch_add(1, Ordering::SeqCst);
+            Err(errors::io_exception("call failed"))
+        })
+        .unwrap_err();
+    interrupter.join().unwrap();
+
+    assert!(errors::is_interrupted(&e), "{e:?}");
+    assert_eq!(num_calls.load(Ordering::SeqCst), 1);
+    assert!(start.elapsed() < std::time::Duration::from_secs(30));
+    // Thread.sleep threw InterruptedException, which cleared the flag.
+    assert!(!blaze_shell::thread_interrupt::is_current_interrupted());
+}

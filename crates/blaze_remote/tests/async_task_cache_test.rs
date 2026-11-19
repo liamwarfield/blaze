@@ -168,10 +168,11 @@ fn is_cancellation_exception(e: &io::Error) -> bool {
 #[test]
 fn execute_no_subscription_no_execution() {
     let cache: AsyncTaskCache<String, String> = AsyncTaskCache::create();
-    let executed = AtomicBool::new(false);
+    let executed = Arc::new(AtomicBool::new(false));
 
-    let _single = cache.execute_if_not("key1".to_string(), async {
-        executed.store(true, Ordering::SeqCst);
+    let task_executed = executed.clone();
+    let _single = cache.execute_if_not("key1".to_string(), async move {
+        task_executed.store(true, Ordering::SeqCst);
         Ok("value1".to_string())
     });
 
@@ -312,7 +313,6 @@ fn execute_dispose_cancelled() {
 }
 
 #[test]
-#[ignore = "an execution cannot outlive the caller that drives it (its task borrows from that caller; util/async_task_cache.rs module doc, review 2026-11-19 R11): disposing the first subscriber cancels the task and the remaining one runs its own copy, where Rx keeps one execution for every subscriber"]
 fn execute_dispose_when_multiple_subscriptions_not_cancelled() {
     let cache: Cache = Arc::new(AsyncTaskCache::create());
     let single = TestSingle::create();

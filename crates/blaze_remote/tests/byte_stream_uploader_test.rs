@@ -422,7 +422,17 @@ fn start_server(service_registry: Arc<MutableHandlerRegistry>) -> Server {
     let addr = listener.local_addr().expect("local address");
     let (shutdown, signal) = tokio::sync::oneshot::channel::<()>();
     runtime().spawn(async move {
+        // PORT: the in-process server of the Java tests buffers any number of small messages.
+        // The h2 crate's server closes the connection with GOAWAY(ENHANCE_YOUR_CALM) once the
+        // small DATA frames it buffers for streams whose handlers have not read them yet exceed
+        // its "DATA frame budget" (half the connection window, at least 25,600 bytes, each frame
+        // under 256 bytes counted as 256). With CHUNK_SIZE = 10 and 1000 concurrent uploads
+        // (`available_permits_open_file_semaphore_fewer_permits_than_uploads_end_with_all_permits`)
+        // that budget is exceeded whenever the handlers fall behind, and every upload on the
+        // connection fails with "connection closed". A large connection window raises the
+        // budget so that the fake server behaves as grpc-java's does; the client is unchanged.
         let _ = tonic::transport::Server::builder()
+            .initial_connection_window_size(1u32 << 30)
             .serve_with_incoming_shutdown(
                 ByteStreamServer::new(RegisteredByteStream(service_registry)),
                 tokio_stream::wrappers::TcpListenerStream::new(listener),
@@ -2585,4 +2595,72 @@ fn test_compressed_uploads() {
     t.mock_backoff.verify_no_interactions();
 
     assert_eq!(num_uploads.load(Ordering::SeqCst), 1);
+}
+
+/// Not in ByteStreamUploaderTest.java (review 2026-11-19 R10): every chunk was sent, `Write`
+/// fails with UNAVAILABLE and `QueryWriteStatus` answers `committed_size == size,
+/// complete == false`. Each resumed attempt seeks the exhausted chunker to its end, where
+/// `Chunker.seek` throws a NullPointerException in the on-ready handler; gRPC cancels the call
+/// with CANCELLED "Failed to call onReady." (`ClientCallImpl.ClientStreamListenerImpl.onReady`),
+/// which is retried while the backoff allows and then fails the upload. No panic.
+#[test]
+fn resume_at_end_of_blob_fails_with_cancelled_on_ready() {
+    let t = ByteStreamUploaderTest::set_up();
+    let retrier = new_remote_retrier(
+        fixed_backoff(3, 0),
+        Arc::new(|e: &io::Error| {
+            // e instanceof StatusRuntimeException ? Result.TRANSIENT_FAILURE : Result.SUCCESS
+            if errors::downcast_ref::<StatusRuntimeException>(e).is_some() {
+                ResultClassifierResult::TransientFailure
+            } else {
+                ResultClassifierResult::Success
+            }
+        }),
+        t.retry_service.clone(),
+    );
+    let uploader = ByteStreamUploader::new(
+        INSTANCE_NAME,
+        t.reference_counted_channel.clone(),
+        no_credentials(),
+        retrier,
+        -1,
+        /* digest_function= */ digest_function::Value::Sha256,
+    );
+
+    let blob = random_blob((CHUNK_SIZE - 1) as usize);
+    let blob_length = blob.len() as i64;
+
+    t.service_registry.add_service(
+        ByteStreamImplBase::new()
+            .write(move |_headers, _stream_observer| {
+                stream_observer(
+                    (),
+                    |_, _write_request, _stream_observer| {},
+                    |_, _throwable| {},
+                    move |_, stream_observer| {
+                        stream_observer.on_next(WriteResponse {
+                            committed_size: blob_length,
+                        });
+                        stream_observer.on_error(Status::unavailable(""));
+                    },
+                )
+            })
+            .query_write_status(move |_request| {
+                Ok(QueryWriteStatusResponse {
+                    committed_size: blob_length,
+                    complete: false,
+                })
+            }),
+    );
+
+    let chunker = Chunker::builder()
+        .set_input_bytes(blob.clone())
+        .set_chunk_size(CHUNK_SIZE)
+        .build();
+    let digest = DIGEST_UTIL.compute(&blob);
+
+    let e = upload_blob(&uploader, &t.context, &digest, chunker).unwrap_err();
+    let status = errors::status_from_throwable(&e).expect("a StatusRuntimeException");
+    assert_eq!(status.code(), tonic::Code::Cancelled, "{e}");
+    assert_eq!(status.message(), "Failed to call onReady.");
 }

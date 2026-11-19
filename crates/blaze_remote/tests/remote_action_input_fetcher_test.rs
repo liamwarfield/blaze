@@ -47,6 +47,7 @@ use blaze_exec::actions::{
 use blaze_optdefs::misc::remote_outputs_mode::RemoteOutputsMode;
 use blaze_remote::abstract_action_input_prefetcher::{
     AbstractActionInputPrefetcher, AbstractActionInputPrefetcherBase, Priority, Reason,
+    register_prefetcher,
 };
 use blaze_remote::combined_cache::CombinedCache;
 use blaze_remote::common::RemoteCacheClient;
@@ -871,12 +872,12 @@ impl Fixture {
 
     // Java: com/google/devtools/build/lib/remote/RemoteActionInputFetcherTest.java:75 RemoteActionInputFetcherTest.createPrefetcher
     fn create_prefetcher(&self, cas: &Cas) -> Arc<dyn AbstractActionInputPrefetcher> {
-        Arc::new(self.new_fetcher(cas))
+        register_prefetcher(self.new_fetcher(cas))
     }
 
     /// `spy(createPrefetcher(cas))`.
     fn create_spy(&self, cas: &Cas) -> Arc<SpyPrefetcher> {
-        Arc::new(SpyPrefetcher {
+        register_prefetcher(SpyPrefetcher {
             inner: self.new_fetcher(cas),
             do_download_file_calls: Mutex::new(Vec::new()),
             mock: Mutex::new(None),
@@ -1872,6 +1873,8 @@ fn prefetch_files_multiple_threads_download_is_not_cancelled_by_other_threads() 
     let artifact = f.create_remote_artifact("file1", "hello world", &mut metadata, Some(&mut cas));
     // `SettableFuture<Void> download`.
     let (download_tx, download_rx) = tokio::sync::watch::channel(false);
+    let download_cancelled = Arc::new(AtomicUsize::new(0));
+    let download_cancelled_in_download = download_cancelled.clone();
     let spy = f.create_spy(&cas);
     let prefetcher: Arc<dyn AbstractActionInputPrefetcher> = spy.clone();
     mock_download(
@@ -1879,7 +1882,10 @@ fn prefetch_files_multiple_threads_download_is_not_cancelled_by_other_threads() 
         &cas,
         Arc::new(move || -> DownloadResult {
             let mut download = download_rx.clone();
+            // `download.isCancelled()`: the future was dropped before it completed.
+            let guard = CancelledGuard(download_cancelled_in_download.clone(), true);
             Box::pin(async move {
+                let mut guard = guard;
                 loop {
                     let done = *download.borrow();
                     if done {
@@ -1890,6 +1896,7 @@ fn prefetch_files_multiple_threads_download_is_not_cancelled_by_other_threads() 
                         .await
                         .map_err(|_| io::Error::other("closed"))?;
                 }
+                guard.1 = false;
                 Ok::<(), io::Error>(())
             })
         }),
@@ -1933,15 +1940,12 @@ fn prefetch_files_multiple_threads_download_is_not_cancelled_by_other_threads() 
         let _ = interrupt.send(());
         cancelled_thread.join().unwrap();
         // simulate the download finishing
-        // PORT: `assertThat(download.isCancelled()).isFalse()`: the shared download is the watch
-        // channel, which nothing cancels. When the interrupted caller was the one driving the
-        // download, its copy is dropped and the remaining caller drives its own copy (see
-        // `AsyncTaskCache`); the download must still be in progress for it.
-        assert!(wait_until(Duration::from_secs(10), || prefetcher
-            .downloads_in_progress()
-            .contains(&path)));
+        // `assertThat(download.isCancelled()).isFalse()`, checked after the download is
+        // released so that a failure does not leave the other thread waiting.
+        let download_is_cancelled = download_cancelled.load(Ordering::SeqCst) != 0;
         download_tx.send(true).unwrap();
         successful_thread.join().unwrap();
+        assert!(!download_is_cancelled);
     });
 
     // assert
@@ -2167,8 +2171,8 @@ fn rewound_action_output_exec_root_on_overlay_file_system_redownloaded() {
     // overlaying the host file system that downloads are written to.
     // PORT: `new RemoteExternalOverlayFileSystem(PathFragment.create("/output_base/external"),
     // fs)` is not ported; the exec root stays on the host file system.
-    let action_input_fetcher = f.new_fetcher(&cas);
-    let prefetcher: &dyn AbstractActionInputPrefetcher = &action_input_fetcher;
+    let action_input_fetcher = register_prefetcher(f.new_fetcher(&cas));
+    let prefetcher: &dyn AbstractActionInputPrefetcher = &*action_input_fetcher;
 
     wait(prefetcher.prefetch_files_interruptibly(
         f.action(),
@@ -2217,4 +2221,15 @@ fn prefetch_files_exec_root_on_overlay_file_system_replaces_parent_file() {
     .unwrap();
 
     assert_eq!(read_content(&a.get_path()), "hello world");
+}
+
+/// Counts (in `.0`) the downloads dropped while `.1` (not completed) holds.
+struct CancelledGuard(Arc<AtomicUsize>, bool);
+
+impl Drop for CancelledGuard {
+    fn drop(&mut self) {
+        if self.1 {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 }

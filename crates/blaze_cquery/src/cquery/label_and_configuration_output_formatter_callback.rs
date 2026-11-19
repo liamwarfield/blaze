@@ -61,6 +61,19 @@ impl Callback<CqueryNode> for LabelAndConfigurationOutputFormatterCallback<'_> {
     }
 }
 
+/// The required configuration fragments of a node, as `ImmutableSortedSet.toString()`.
+// Java: com/google/devtools/build/lib/query2/cquery/LabelAndConfigurationOutputFormatterCallback.java:77 LabelAndConfigurationOutputFormatterCallback.requiredFragmentStrings
+fn required_fragment_strings(keyed_configured_target: &CqueryNode) -> String {
+    if keyed_configured_target.as_configured_target().is_none() {
+        // ImmutableSortedSet.of()
+        return "[]".to_owned();
+    }
+    blaze_util::unported!(
+        "LabelAndConfigurationOutputFormatterCallback.requiredFragmentStrings",
+        "RequiredConfigFragmentsProvider"
+    )
+}
+
 impl OutputFormatterCallback<CqueryNode> for LabelAndConfigurationOutputFormatterCallback<'_> {
     // Java: com/google/devtools/build/lib/query2/cquery/LabelAndConfigurationOutputFormatterCallback.java:54 LabelAndConfigurationOutputFormatterCallback.processOutput
     fn process_output(&self, partial_result: &[CqueryNode]) -> Result<(), OutputFormatterError> {
@@ -74,12 +87,7 @@ impl OutputFormatterCallback<CqueryNode> for LabelAndConfigurationOutputFormatte
                 output.push_str(&actual_target.get_target_kind());
                 output.push(' ');
             }
-            // CqueryNode.getDescription(labelPrinter)
-            output.push_str(
-                &self
-                    .label_printer
-                    .to_string(&keyed_configured_target.get_original_label()),
-            );
+            output.push_str(&keyed_configured_target.get_description(&self.label_printer));
             output.push_str(" (");
             output.push_str(&short_id(
                 self.base
@@ -91,11 +99,8 @@ impl OutputFormatterCallback<CqueryNode> for LabelAndConfigurationOutputFormatte
             if self.base.options.show_required_config_fragments
                 != CoreOptionsIncludeConfigFragmentsEnum::OFF
             {
-                // Java: LabelAndConfigurationOutputFormatterCallback.requiredFragmentStrings
-                blaze_util::unported!(
-                    "LabelAndConfigurationOutputFormatterCallback.requiredFragmentStrings",
-                    "RequiredConfigFragmentsProvider"
-                );
+                output.push(' ');
+                output.push_str(&required_fragment_strings(keyed_configured_target));
             }
 
             self.base.add_result(output);

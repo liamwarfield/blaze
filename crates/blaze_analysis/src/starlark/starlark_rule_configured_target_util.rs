@@ -151,7 +151,7 @@ pub fn build_rule(
 /// phase, the analysis environment's semantics, `print` to its event handler, and the main
 /// repository mapping (Java `BazelRuleAnalysisThreadContext` extends `StarlarkThreadContext`).
 // Java: com/google/devtools/build/lib/analysis/RuleContext.java:977 RuleContext.createStarlarkThread
-fn analysis_thread_context(rule_context: &RuleContext) -> ThreadContext {
+pub(crate) fn analysis_thread_context(rule_context: &RuleContext) -> ThreadContext {
     let env = rule_context.get_analysis_environment();
     let semantics = env.get_starlark_semantics().clone();
     let handler: Arc<dyn blaze_events::EventHandler> = env.get_event_handler().clone();
@@ -196,7 +196,7 @@ fn evaluate(
 
             // must be called before any calls to ruleContext.getStarlarkRuleContext()
             // Java: com/google/devtools/build/lib/analysis/RuleContext.java:996 RuleContext.initStarlarkRuleContext
-            let ctx = StarlarkRuleContext::create(handle, false, module.heap())?;
+            let ctx = StarlarkRuleContext::create(handle, None, module.heap())?;
             let ctx_value = module.heap().alloc(ctx);
             let ctx_index = keep.push(ctx_value);
             AnalysisThreadPayload::from_or_fail(&eval, "initStarlarkRuleContext")
@@ -454,7 +454,7 @@ pub fn create_target(
 
 /// `StarlarkProviderValidationUtil.validateArtifacts(ruleContext)`.
 // Java: com/google/devtools/build/lib/analysis/StarlarkProviderValidationUtil.java:25 StarlarkProviderValidationUtil.validateArtifacts
-fn validate_artifacts(rule_context: &RuleContext) -> Result<(), String> {
+pub(crate) fn validate_artifacts(rule_context: &RuleContext) -> Result<(), String> {
     let env = rule_context.get_analysis_environment();
     let tree_artifacts_conflicting_with_files = env.get_tree_artifacts_conflicting_with_files();
     if !tree_artifacts_conflicting_with_files.is_empty() {

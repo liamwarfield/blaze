@@ -136,9 +136,46 @@ pub trait ActionExecutionContext: ActionContextRegistry {
         input_metadata_provider: &dyn InputMetadataProvider,
     ) -> Result<(), ExecException> {
         match get_context::<Arc<dyn ActionInputPrefetcher>>(self) {
-            Some(prefetcher) => prefetcher
-                .prefetch_files(owner, inputs, input_metadata_provider)
-                .map_err(|e| crate::exec::abstract_spawn_strategy::exec_io_exception(&e)),
+            Some(prefetcher) => {
+                match prefetcher.prefetch_files(owner, inputs, input_metadata_provider) {
+                    Ok(()) => Ok(()),
+                    // Futures.catchingAsync(..., BulkTransferException.class, ...)
+                    // Java: com/google/devtools/build/lib/exec/AbstractSpawnStrategy.java:285 SpawnExecutionContextImpl.prefetchInputs
+                    Err(e) => match e
+                        .get_ref()
+                        .and_then(|inner| inner.downcast_ref::<BulkTransferError>())
+                    {
+                        Some(bulk) => {
+                            let input_metadata_provider = self.get_input_metadata_provider();
+                            let lost = bulk.get_lost_artifacts(&|exec_path| {
+                                input_metadata_provider.get_input(exec_path)
+                            });
+                            // .throwIfNotEmpty()
+                            if !lost.is_empty() {
+                                return Err(crate::actions::LostInputsExecException::create(lost));
+                            }
+                            Err(crate::actions::EnvironmentalExecException::with_cause(
+                                &bulk.message,
+                                blaze_protos::failure_details::FailureDetail {
+                                    message: "Failed to fetch blobs because of a remote cache error."
+                                        .to_string(),
+                                    category: Some(
+                                        blaze_protos::failure_details::failure_detail::Category::Spawn(
+                                            blaze_protos::failure_details::Spawn {
+                                                code: blaze_protos::failure_details::spawn::Code::RemoteCacheEvicted
+                                                    as i32,
+                                                ..Default::default()
+                                            },
+                                        ),
+                                    ),
+                                },
+                            )
+                            .into())
+                        }
+                        None => Err(crate::exec::abstract_spawn_strategy::exec_io_exception(&e)),
+                    },
+                }
+            }
             // Java: com/google/devtools/build/lib/actions/ActionInputPrefetcher.java:28 ActionInputPrefetcher.NONE
             None => Ok(()),
         }
@@ -184,6 +221,68 @@ pub trait ActionExecutionContext: ActionContextRegistry {
         let path = self.get_input_path(output);
         let stat = path.stat_with(blaze_vfs::Symlinks::Follow)?;
         crate::actions::FileArtifactValue::create_from_stat(&path, &stat)
+    }
+}
+
+/// A `BulkTransferException` of the [`ActionInputPrefetcher`], as the execution layer sees it
+/// (the prefetcher returns it inside an `io::Error`): its message, and for each suppressed
+/// `CacheNotFoundException` the missing digest (`hash/size`) and the exec path of the file
+/// whose blob is missing. `causes` is `None` unless every suppressed exception is a
+/// `CacheNotFoundException` (`allCausedByCacheNotFoundException()`); an entry's path is `None`
+/// for a special output such as stdout/stderr (a `CacheNotFoundException` with a file name but
+/// no exec path).
+///
+/// PORT: `BulkTransferException` lives in `lib/remote/common` (blaze_remote); this is the part
+/// `AbstractSpawnStrategy.prefetchInputs` reads.
+// Java: com/google/devtools/build/lib/remote/common/BulkTransferException.java:36 BulkTransferException
+#[derive(Debug)]
+pub struct BulkTransferError {
+    /// `getMessage()`.
+    pub message: String,
+    /// The missing digests and exec paths, see the type's doc.
+    pub causes: Option<Vec<(String, Option<blaze_vfs::PathFragment>)>>,
+}
+
+impl std::fmt::Display for BulkTransferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for BulkTransferError {}
+
+impl BulkTransferError {
+    /// `getLostArtifacts(actionInputResolver)`: non-empty if and only if all suppressed
+    /// exceptions are cache misses of files the resolver knows.
+    // Java: com/google/devtools/build/lib/remote/common/BulkTransferException.java:83 BulkTransferException.getLostArtifacts
+    pub fn get_lost_artifacts(
+        &self,
+        action_input_resolver: &dyn Fn(&blaze_vfs::PathFragment) -> Option<ActionInputRef>,
+    ) -> crate::actions::LostArtifacts {
+        let Some(causes) = &self.causes else {
+            return crate::actions::LostArtifacts::default();
+        };
+        let mut lost = crate::actions::LostArtifacts::default();
+        for (missing_digest, exec_path) in causes {
+            let Some(exec_path) = exec_path else {
+                // This can happen if the lost artifact is not an input of the action, but a
+                // special output such as stdout/stderr. This can't be solved by the rewinding
+                // that LostArtifacts would trigger, but is rather a failure of the current
+                // action execution.
+                return crate::actions::LostArtifacts::default();
+            };
+            let Some(action_input) = action_input_resolver(exec_path) else {
+                // This can happen if the lost artifact is not known to the resolver, e.g. an
+                // output that failed to be retrieved from the remote cache after a cache hit
+                // while resolving inputs. Rewinding can't recover an artifact it can't identify.
+                return crate::actions::LostArtifacts::default();
+            };
+            lost.by_digest
+                .entry(missing_digest.clone())
+                .or_default()
+                .insert(action_input);
+        }
+        lost
     }
 }
 

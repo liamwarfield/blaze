@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use blaze_analysis::aspect_key_creator::AspectKey;
+use blaze_analysis::aspect_value::AspectValue;
 use blaze_cmdline::TargetPatternParser;
 use blaze_events::ExtendedEventHandler;
 use blaze_optdefs::command::cquery_options::CqueryOptions;
@@ -73,6 +75,7 @@ impl CqueryProcessor {
             String,
             Arc<blaze_build_config::build_configuration_value::BuildConfigurationValue>,
         >,
+        top_level_aspects: &indexmap::IndexMap<AspectKey, Arc<AspectValue>>,
         walkable_graph: Arc<dyn blaze_skyframe::WalkableGraph>,
     ) -> ConfiguredTargetQueryEnvironment {
         // PORT: env.getRuntime().getQueryFunctions() is empty for Bazel.
@@ -84,6 +87,7 @@ impl CqueryProcessor {
             extra_functions,
             configurations,
             transitive_configurations,
+            top_level_aspects,
             self.main_repo_target_parser.clone(),
             skyframe_executor.get_package_path().clone(),
             walkable_graph,
@@ -120,6 +124,7 @@ impl AnalysisPostProcessor for CqueryProcessor {
             skyframe_executor,
             TopLevelConfigurations::new(analysis_result.get_top_level_targets_with_configs()),
             transitive_configurations,
+            analysis_result.get_aspects_map(),
             walkable_graph,
         );
         // env.getRuntime().getQueryRuntimeHelperFactory().create(env, getQueryOptions(env))

@@ -34,6 +34,7 @@ use crate::exec::action_execution_context::{ActionInputPrefetcher, RemoteOutputT
 /// `FollowMode`.
 // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:121 RemoteActionFileSystem.FollowMode
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // Java's names.
 enum FollowMode {
     /// Canonicalize neither the parent nor the base name.
     FollowNone,
@@ -301,11 +302,10 @@ impl RemoteActionFileSystem {
             // TODO(tjgq): Also look up the remote output tree.
             return Ok(());
         };
-        let action = self
-            .action
-            .lock()
-            .clone()
-            .expect("NullPointerException: RemoteActionFileSystem.updateContext was not called");
+        let action =
+            self.action.lock().clone().expect(
+                "NullPointerException: RemoteActionFileSystem.updateContext was not called",
+            );
         let fetcher = self.input_fetcher.as_ref().expect(
             "NullPointerException: RemoteActionFileSystem has no input fetcher for a remote file",
         );
@@ -352,10 +352,8 @@ impl RemoteActionFileSystem {
                             };
                             let name = path.get_base_name().to_string();
                             let is_directory = &path != child.get_exec_path();
-                            let entries = cache
-                                .dir_to_entries
-                                .entry(parent_path.clone())
-                                .or_default();
+                            let entries =
+                                cache.dir_to_entries.entry(parent_path.clone()).or_default();
                             if !entries.insert((name, is_directory)) {
                                 // Avoid wasted work on common prefixes.
                                 break;
@@ -418,10 +416,7 @@ impl RemoteActionFileSystem {
         }
 
         if stat_sources == StatSources::All {
-            return Ok(self
-                .local_fs
-                .stat_if_found(&path, false)?
-                .map(Stat::Local));
+            return Ok(self.local_fs.stat_if_found(&path, false)?.map(Stat::Local));
         }
 
         Ok(None)
@@ -806,14 +801,8 @@ impl FileSystem for RemoteActionFileSystem {
         let src_path = self.resolve_symbolic_links_for_parent(source_path)?;
         let dst_path = self.resolve_symbolic_links_for_parent(target_path)?;
 
-        blaze_util::check_argument!(
-            self.is_output(&src_path),
-            "srcPath must be an output path"
-        );
-        blaze_util::check_argument!(
-            self.is_output(&dst_path),
-            "dstPath must be an output path"
-        );
+        blaze_util::check_argument!(self.is_output(&src_path), "srcPath must be an output path");
+        blaze_util::check_argument!(self.is_output(&dst_path), "dstPath must be an output path");
 
         let remote_found = self.remote_output_tree.rename(&src_path, &dst_path);
         match self.local_fs.rename_to(&src_path, &dst_path) {

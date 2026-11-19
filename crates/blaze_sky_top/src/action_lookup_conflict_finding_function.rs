@@ -9,6 +9,9 @@ use std::sync::Arc;
 use blaze_actions::analysis::workspace_status_action::BUILD_INFO_FUNCTION_NAME;
 use blaze_actions::{ActionLookupKeyRef, ActionRef, Artifact};
 use blaze_analysis::analysis_services::WorkspaceStatusKey;
+use blaze_analysis::aspect_key_creator::{
+    ASPECT, AspectKey, TOP_LEVEL_ASPECTS, TopLevelAspectsKey,
+};
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::{CONFIGURED_TARGET, ConfiguredTargetKey};
 use blaze_collect::{NestedSet, NestedSetBuilder};
@@ -16,7 +19,7 @@ use blaze_skyframe::{
     ComputeError, Environment, EvaluatorBuilder, Key, SkyFunction, SkyFunctionException,
     SkyFunctionName, SkyKey, SkyValue, Transience,
 };
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 
 use crate::action_conflict_exception::ActionConflicts;
 
@@ -125,24 +128,20 @@ impl Key for TopLevelActionLookupConflictFindingKey {
 /// `TopLevelActionLookupConflictFindingFunction.keys`.
 // Java: com/google/devtools/build/lib/skyframe/TopLevelActionLookupConflictFindingFunction.java:64 TopLevelActionLookupConflictFindingFunction.keys
 pub fn keys(
-    keys: &[ConfiguredTargetKey],
+    keys: &[ActionLookupKeyRef],
     output_groups: &[String],
 ) -> Vec<TopLevelActionLookupConflictFindingKey> {
     keys.iter()
-        .map(|k| {
-            TopLevelActionLookupConflictFindingKey::create(
-                ActionLookupKeyRef::new(k.clone()),
-                output_groups,
-            )
-        })
+        .map(|k| TopLevelActionLookupConflictFindingKey::create(k.clone(), output_groups))
         .collect()
 }
 
 /// The actions of the `ActionLookupValue` of `lookup_key` (`env.getValue(lookupKey)`), `None`
 /// when the value is missing.
 ///
-/// PORT: the `ActionLookupKey`s that are graph nodes are `ConfiguredTargetKey` and the workspace
-/// status key; the others (aspects, action templates, the coverage report) are not ported.
+/// PORT: the `ActionLookupKey`s that are graph nodes are `ConfiguredTargetKey`, `AspectKey`,
+/// `TopLevelAspectsKey` and the workspace status key; the others (action templates, the coverage
+/// report) are not ported.
 fn get_action_lookup_value_actions(
     lookup_key: &ActionLookupKeyRef,
     env: &mut Environment<'_>,
@@ -165,6 +164,30 @@ fn get_action_lookup_value_actions(
                 return Ok(None);
             };
             Ok(Some(value.actions.clone()))
+        }
+        // Java: AspectValue extends BasicActionLookupValue.
+        name if name == ASPECT.0 => {
+            let aspect_key = lookup_key
+                .as_any()
+                .downcast_ref::<AspectKey>()
+                .unwrap_or_else(|| panic!("ClassCastException: {lookup_key} is not an AspectKey"));
+            let Some(value) = env.get_value(aspect_key.clone())? else {
+                return Ok(None);
+            };
+            Ok(Some(value.get_actions().to_vec()))
+        }
+        // Java: TopLevelAspectsValue implements ActionLookupValue (no actions).
+        name if name == TOP_LEVEL_ASPECTS.0 => {
+            let top_level_key = lookup_key
+                .as_any()
+                .downcast_ref::<TopLevelAspectsKey>()
+                .unwrap_or_else(|| {
+                    panic!("ClassCastException: {lookup_key} is not a TopLevelAspectsKey")
+                });
+            let Some(value) = env.get_value(top_level_key.clone())? else {
+                return Ok(None);
+            };
+            Ok(Some(value.get_actions().to_vec()))
         }
         other => blaze_util::unported!(
             "ActionLookupConflictFindingFunction.compute",
@@ -268,15 +291,13 @@ impl SkyFunction for TopLevelActionLookupConflictFindingFunction {
             .expect("TOP_LEVEL_ACTION_LOOKUP_CONFLICT_DETECTION key");
         // CompletionFunction.getValueAndArtifactsToBuild(key, env)
         // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:364 CompletionFunction.getValueAndArtifactsToBuild
-        let configured_target = get_configured_object(&key.action_lookup_key, env)?;
+        let all_output_groups = get_all_artifacts_to_build(&key.action_lookup_key, env)?;
         if env.values_missing() {
             return Ok(None);
         }
-        let configured_target = configured_target.expect("value is not missing");
         // TopLevelArtifactHelper.getAllArtifactsToBuild(value.getConfiguredObject(),
         // topLevelContext).getAllArtifacts()
-        let all_output_groups =
-            crate::execution_seam::get_all_artifacts_to_build(&configured_target);
+        let all_output_groups = all_output_groups.expect("value is not missing");
         let mut all_artifacts = NestedSetBuilder::stable_order();
         for output_group in &key.output_groups {
             if let Some(artifacts) = all_output_groups.get(output_group) {
@@ -311,26 +332,38 @@ impl SkyFunction for TopLevelActionLookupConflictFindingFunction {
     }
 }
 
-/// `env.getValue(key.actionLookupKey())` and `value.getConfiguredObject()` of a top-level key.
-///
-/// PORT: top-level aspect keys are not ported; the key is a `ConfiguredTargetKey`.
-fn get_configured_object(
+/// `env.getValue(key.actionLookupKey())` and `TopLevelArtifactHelper.getAllArtifactsToBuild` of
+/// `value.getConfiguredObject()` for a top-level key: a `ConfiguredTargetKey` (the
+/// `ConfiguredTarget`) or an `AspectKey` (the `AspectValue`, a `ConfiguredAspect`).
+// Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:364 CompletionFunction.getValueAndArtifactsToBuild
+fn get_all_artifacts_to_build(
     action_lookup_key: &ActionLookupKeyRef,
     env: &mut Environment<'_>,
-) -> Result<Option<ConfiguredTarget>, ComputeError> {
-    let Some(ct_key) = action_lookup_key
+) -> Result<Option<IndexMap<String, NestedSet<Artifact>>>, ComputeError> {
+    if let Some(aspect_key) = action_lookup_key.as_any().downcast_ref::<AspectKey>() {
+        let Some(value) = env.get_value(aspect_key.clone())? else {
+            return Ok(None);
+        };
+        return Ok(Some(
+            crate::execution_seam::get_all_artifacts_to_build_of_aspect(&value),
+        ));
+    }
+    let ct_key = action_lookup_key
         .as_any()
         .downcast_ref::<ConfiguredTargetKey>()
-    else {
-        blaze_util::unported!(
-            "TopLevelActionLookupConflictFindingFunction.compute",
-            "top-level key that is not a ConfiguredTargetKey: {action_lookup_key}"
-        );
-    };
+        .unwrap_or_else(|| {
+            panic!(
+                "ClassCastException: {action_lookup_key} is neither a ConfiguredTargetKey nor an \
+                 AspectKey"
+            )
+        });
     let Some(value) = env.get_value(ct_key.clone())? else {
         return Ok(None);
     };
-    Ok(Some(value.get_configured_target().clone()))
+    let configured_target: &ConfiguredTarget = value.get_configured_target();
+    Ok(Some(crate::execution_seam::get_all_artifacts_to_build(
+        configured_target,
+    )))
 }
 
 /// Registers `ACTION_LOOKUP_CONFLICT_DETECTION` and `TOP_LEVEL_ACTION_LOOKUP_CONFLICT_DETECTION`.

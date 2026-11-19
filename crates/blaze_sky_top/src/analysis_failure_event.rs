@@ -7,6 +7,8 @@
 //! (`getEventId`, `getChildrenEvents`, `asStreamProto`) belongs to `blaze_bep`, which wraps this
 //! event.
 
+use blaze_actions::ActionLookupKeyRef;
+use blaze_analysis::aspect_key_creator::AspectKey;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_cmdline::Label;
 use blaze_events::Postable;
@@ -56,6 +58,7 @@ impl AnalysisRootCause {
 #[derive(Clone, Debug)]
 pub struct AnalysisFailureEvent {
     failed_target: ConfiguredTargetKey,
+    failed_aspect: Option<AspectKey>,
     /// True if the target is configured.
     ///
     /// The configuration of a target is undefined until its analysis is complete so this is
@@ -74,28 +77,46 @@ impl AnalysisFailureEvent {
     ) -> Self {
         AnalysisFailureEvent {
             failed_target,
+            failed_aspect: None,
             is_configured: false,
             root_causes,
         }
     }
 
-    /// PORT: the aspect overload (`failedTarget instanceof AspectKey`) is not ported with
-    /// aspects.
-    // Java: com/google/devtools/build/lib/analysis/AnalysisFailureEvent.java:63 AnalysisFailureEvent.actionConflict
+    // Java: com/google/devtools/build/lib/analysis/AnalysisFailureEvent.java:62 AnalysisFailureEvent.actionConflict
     pub fn action_conflict(
-        failed_target: ConfiguredTargetKey,
+        failed_target: &ActionLookupKeyRef,
         root_causes: Vec<AnalysisRootCause>,
     ) -> Self {
+        let as_ct_key = failed_target.as_any().downcast_ref::<ConfiguredTargetKey>();
+        let as_aspect_key = failed_target.as_any().downcast_ref::<AspectKey>();
+        blaze_util::check_argument!(as_ct_key.is_some() || as_aspect_key.is_some());
+        if let Some(ct_key) = as_ct_key {
+            return AnalysisFailureEvent {
+                failed_target: ct_key.clone(),
+                failed_aspect: None,
+                is_configured: true,
+                root_causes,
+            };
+        }
+        let failed_aspect = as_aspect_key.expect("checked above").clone();
         AnalysisFailureEvent {
-            failed_target,
+            failed_target: failed_aspect.get_base_configured_target_key().clone(),
+            failed_aspect: Some(failed_aspect),
             is_configured: true,
             root_causes,
         }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/AnalysisFailureEvent.java:104 AnalysisFailureEvent.getFailedTarget
+    // Java: com/google/devtools/build/lib/analysis/AnalysisFailureEvent.java:102 AnalysisFailureEvent.getFailedTarget
     pub fn get_failed_target(&self) -> &ConfiguredTargetKey {
         &self.failed_target
+    }
+
+    /// The failed aspect of an action conflict in an aspect (Java's `failedAspect` field, which
+    /// `getEventId` reads: `aspectCompleted(label, configurationId, getAspectName())`).
+    pub fn get_failed_aspect(&self) -> Option<&AspectKey> {
+        self.failed_aspect.as_ref()
     }
 
     /// Whether the event names a configured target (`getConfigurationId() != null`).

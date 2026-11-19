@@ -1,16 +1,15 @@
 //! Port of `analysis/DependencyResolutionHelpers.java`: the labels of a configured target's
-//! dependencies by dependency kind.
-//!
-//! PORT: aspects are not ported (neither corpus project attaches aspects to the attributes it
-//! analyzes); the `aspects` parameters are kept and must be empty.
+//! dependencies by dependency kind (for a configured target, or for the path of aspects applied
+//! to it).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use blaze_analysis::config::config_matching_provider::ConfigMatchingProvider;
 use blaze_analysis::config::configured_attribute_mapper::ConfiguredAttributeMapper;
 use blaze_analysis::config::ordered_set_multimap::{DependencyLabels, put_all_labels, put_label};
 use blaze_analysis::config::transitions::find_execution_transition_factory;
-use blaze_analysis::dependency_kind::DependencyKind;
+use blaze_analysis::dependency_kind::{AspectClassName, DependencyKind};
 use blaze_analysis::toolchains::toolchain_context::ToolchainContext;
 use blaze_analysis::toolchains::{ToolchainCollection, UnloadedToolchainContext};
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
@@ -28,10 +27,7 @@ use indexmap::IndexMap;
 use crate::late_bound_defaults::{self, LateBoundInput};
 use crate::producers::errors::TargetAndConfiguration;
 
-/// An aspect applied to the dependencies (Java `Aspect`).
-// PORT: aspects are not ported; see the module comment.
-#[derive(Clone, Debug)]
-pub enum Aspect {}
+pub use blaze_packages::aspect::Aspect;
 
 /// The tuple [`compute_dependency_labels`] outputs.
 // Java: com/google/devtools/build/lib/analysis/DependencyResolutionHelpers.java:62 DependencyResolutionHelpers.DependencyLabels
@@ -83,12 +79,17 @@ pub fn compute_dependency_labels(
                 DependencyKind::OUTPUT_FILE_RULE_DEPENDENCY,
                 Some(rule.get_label().clone()),
             );
-            if !aspects.is_empty() {
-                let _ = config;
-                blaze_util::unported!(
-                    "DependencyResolutionHelpers.computeDependencyLabels",
-                    "aspects"
+            if aspects.iter().any(|a| a.get_definition().apply_to_files()) {
+                let map =
+                    ConfiguredAttributeMapper::of(rule.clone(), config_conditions.clone(), config);
+                resolve_attributes(
+                    &get_aspect_attributes(aspects),
+                    &mut outgoing_labels,
+                    rule,
+                    &map,
+                    config,
                 );
+                attribute_map = Some(map);
             }
             add_toolchain_deps(toolchain_contexts, &mut outgoing_labels);
         }
@@ -164,18 +165,36 @@ pub enum ExecutionPlatformResult {
 pub fn get_execution_platform_label(
     kind: &DependencyKind,
     toolchain_contexts: Option<&ToolchainCollection<UnloadedToolchainContext>>,
-    _base_target_unloaded_toolchain_contexts: Option<
-        &ToolchainCollection<UnloadedToolchainContext>,
-    >,
+    base_target_unloaded_toolchain_contexts: Option<&ToolchainCollection<UnloadedToolchainContext>>,
     aspects_list: &[Aspect],
 ) -> ExecutionPlatformResult {
-    if aspects_list.is_empty() {
-        return get_execution_platform_label_of(kind, toolchain_contexts);
+    if aspects_list.is_empty() || is_main_aspect(aspects_list, kind.get_owning_aspect()) {
+        get_execution_platform_label_of(kind, toolchain_contexts)
+    } else if kind.get_owning_aspect().is_none() {
+        // During aspect evaluation, use `baseTargetUnloadedToolchainContexts` for the base
+        // target's dependencies.
+        get_execution_platform_label_of(kind, base_target_unloaded_toolchain_contexts)
+    } else {
+        let execution_platform_result = get_execution_platform_label_of(kind, toolchain_contexts);
+        if let ExecutionPlatformResult::Error(_) = execution_platform_result {
+            // TODO(b/373963347): Make the toolchain contexts of base aspects available to be
+            // used with their corresponding dependencies.
+            // Currently dependencies of the base aspects are resolved with the toolchain context
+            // of the main aspect, skip errors as actual errors would be reported during the base
+            // aspect evaluation.
+            ExecutionPlatformResult::Skip
+        } else {
+            execution_platform_result
+        }
     }
-    blaze_util::unported!(
-        "DependencyResolutionHelpers.getExecutionPlatformLabel",
-        "aspects"
-    )
+}
+
+/// True if `owning_aspect` is the main aspect, the last one in `aspects_list`.
+// Java: com/google/devtools/build/lib/analysis/DependencyResolutionHelpers.java:276 DependencyResolutionHelpers.isMainAspect
+fn is_main_aspect(aspects_list: &[Aspect], owning_aspect: Option<&AspectClassName>) -> bool {
+    // `AspectClass.equals(null)` is false.
+    let main_aspect = aspects_list.last().expect("NoSuchElementException");
+    owning_aspect.is_some_and(|o| main_aspect.get_aspect_class() == o)
 }
 
 // Java: com/google/devtools/build/lib/analysis/DependencyResolutionHelpers.java:219 DependencyResolutionHelpers.getExecutionPlatformLabel
@@ -316,15 +335,34 @@ fn add_toolchain_deps(
 // Java: com/google/devtools/build/lib/analysis/DependencyResolutionHelpers.java:367 DependencyResolutionHelpers.addBaseTargetToolchainDeps
 fn add_base_target_toolchain_deps(
     toolchain_contexts: Option<&ToolchainCollection<UnloadedToolchainContext>>,
-    _outgoing_labels: &mut DependencyLabels,
+    outgoing_labels: &mut DependencyLabels,
 ) {
-    if toolchain_contexts.is_none() {
+    let Some(toolchain_contexts) = toolchain_contexts else {
         return;
+    };
+    for (exec_group, context) in toolchain_contexts.context_map() {
+        // `toolchainTypeToResolved().asMap()`: the multimap's keys in first-insertion order,
+        // each with its values in insertion order.
+        let mut by_type: IndexMap<Label, Vec<Label>> = IndexMap::new();
+        for (toolchain_type, resolved) in context.toolchain_type_to_resolved() {
+            by_type
+                .entry(toolchain_type.type_label().clone())
+                .or_default()
+                .push(resolved.clone());
+        }
+        for (type_label, resolved) in by_type {
+            // map entries from (exec group, toolchain type) to resolved toolchain labels. We need
+            // to distinguish the resolved toolchains per type because aspects propagate on
+            // toolchains based on the types specified in `toolchains_aspects`. So even if 2 types
+            // resolved to the same toolchain target, their CT will be different if an aspect
+            // propagates to one type but not the other.
+            put_all_labels(
+                outgoing_labels,
+                DependencyKind::for_base_target_exec_group(exec_group, type_label),
+                &resolved,
+            );
+        }
     }
-    blaze_util::unported!(
-        "DependencyResolutionHelpers.addBaseTargetToolchainDeps",
-        "aspects propagating to toolchains"
-    )
 }
 
 // Java: com/google/devtools/build/lib/analysis/DependencyResolutionHelpers.java:390 DependencyResolutionHelpers.resolveAttributes
@@ -392,10 +430,14 @@ fn resolve_attribute(
         if dependency_kind.get_owning_aspect().is_none() {
             attribute_value = attribute_map.get(attribute.get_name(), type_);
         } else {
-            blaze_util::unported!(
-                "DependencyResolutionHelpers.resolveAttribute",
-                "aspect attributes"
-            );
+            let default_value =
+                attribute.get_default_value(Some(&**rule as &dyn RuleOrMacroInstance));
+            attribute_value = match default_value {
+                Some(AttrValue::ComputedDefault(computed_default)) => {
+                    computed_default.get_default(attribute_map)
+                }
+                other => other,
+            };
         }
     } else if attribute.is_materializing() {
         // These attributes are resolved by calling the materializer function in
@@ -506,17 +548,74 @@ fn get_attributes(rule: &Rule, aspects: &[Aspect]) -> Vec<DependencyKind> {
     let mut result = Vec::new();
     // PORT: `DependencyKind.forRule` holds the attribute; Blaze's attributes are values, so
     // each is shared through an `Arc` copy (equality is by value).
+    let mut rule_and_base_aspects_processed_attributes: HashSet<String> = HashSet::new();
+
+    // For aspects evaluation, all attributes of the main aspect (last aspect in `aspects`) should
+    // be added, even if they have the same name as an attribute in the rule or a base aspect
+    // because main aspect attributes are separated and retrieved from `ctx.attr`.
+
+    // Attributes of the underlying rule and base aspects are merged and retrieved from
+    // `ctx.rule.attr` with rule attributes taking precedence then aspects' attributes based on
+    // the aspect order in the aspects path (lowest order to highest).
     for attribute in rule
         .get_rule_class_object()
         .get_attribute_provider()
         .get_attributes()
     {
         result.push(DependencyKind::for_rule(rule_attribute(rule, attribute)));
+        rule_and_base_aspects_processed_attributes.insert(attribute.get_name().to_owned());
     }
-    if !aspects.is_empty() {
-        blaze_util::unported!("DependencyResolutionHelpers.addAspectAttributes");
-    }
+
+    add_aspect_attributes(
+        aspects,
+        &mut rule_and_base_aspects_processed_attributes,
+        &mut result,
+    );
     result
+}
+
+// Java: com/google/devtools/build/lib/analysis/DependencyResolutionHelpers.java:574 DependencyResolutionHelpers.getAspectAttributes
+fn get_aspect_attributes(aspects: &[Aspect]) -> Vec<DependencyKind> {
+    let mut result = Vec::new();
+    add_aspect_attributes(aspects, &mut HashSet::new(), &mut result);
+    result
+}
+
+// Java: com/google/devtools/build/lib/analysis/DependencyResolutionHelpers.java:581 DependencyResolutionHelpers.addAspectAttributes
+fn add_aspect_attributes(
+    aspects: &[Aspect],
+    processed_attributes: &mut HashSet<String>,
+    attributes: &mut Vec<DependencyKind>,
+) {
+    let Some(main_aspect) = aspects.last() else {
+        return;
+    };
+
+    // Add all the main aspect's attributes
+    for attribute in main_aspect.get_definition().get_attributes().values() {
+        attributes.push(DependencyKind::for_aspect(
+            aspect_attribute(attribute),
+            main_aspect.get_aspect_class().clone(),
+        ));
+    }
+
+    // For base aspects, if multiple attributes have the same name, take the first encountered
+    // in the aspects path.
+    for aspect in &aspects[..aspects.len() - 1] {
+        for attribute in aspect.get_definition().get_attributes().values() {
+            if processed_attributes.insert(attribute.get_name().to_owned()) {
+                attributes.push(DependencyKind::for_aspect(
+                    aspect_attribute(attribute),
+                    aspect.get_aspect_class().clone(),
+                ));
+            }
+        }
+    }
+}
+
+/// The shared `Arc<Attribute>` of an aspect definition attribute.
+fn aspect_attribute(attribute: &Attribute) -> Arc<Attribute> {
+    Arc::new(attribute.clone())
 }
 
 /// The shared `Arc<Attribute>` of a rule class attribute.

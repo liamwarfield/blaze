@@ -71,6 +71,37 @@ pub struct RemoteModuleContributions {
     /// `RemoteOutputService.finalizeAction` when `--output_tree_tracking` is set (see
     /// [`ActionFinalizer`](crate::exec::action_execution_context::ActionFinalizer)).
     pub action_finalizer: Option<Arc<dyn crate::exec::action_execution_context::ActionFinalizer>>,
+    /// How the action executor treats the lost inputs of a build with a remote cache (see
+    /// [`LostInputsPolicy`]); `None` without one (no input can be lost then).
+    pub lost_inputs_policy: Option<LostInputsPolicy>,
+}
+
+/// `SkyframeActionExecutor.rewindingEnabled()` / `invocationRetriesEnabled()` and the
+/// `LostInputsEvent` subscriber (`RemoteExecutionService.onLostInputs`), which
+/// `ActionRewindStrategy.checkRewindingEnabled` uses when an action lost inputs.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:355 SkyframeActionExecutor.prepareForExecution
+#[derive(Clone)]
+pub struct LostInputsPolicy {
+    /// `--rewind_lost_inputs` (`BuildRequestOptions.rewindLostInputs`).
+    pub rewinding_enabled: bool,
+    /// `--experimental_remote_cache_eviction_retries` > 0
+    /// (`ExecutionOptions.remoteRetryOnTransientCacheError`).
+    pub invocation_retries_enabled: bool,
+    /// `post(new LostInputsEvent(missingDigests))`: the subscribers' handler (the digests are
+    /// `hash/size`).
+    pub on_lost_inputs: Arc<dyn Fn(&[String]) + Send + Sync>,
+}
+
+impl fmt::Debug for LostInputsPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LostInputsPolicy")
+            .field("rewinding_enabled", &self.rewinding_enabled)
+            .field(
+                "invocation_retries_enabled",
+                &self.invocation_retries_enabled,
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl RemoteModuleContributions {

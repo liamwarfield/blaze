@@ -8,13 +8,19 @@
 //! Here the part of each producer before its `PrerequisitesProducer` runs first, in index order
 //! (`plan_dependency`); the configured targets are then requested in the order of Java's
 //! lookup rounds (see `produce_dependency_map`, "request order") and each result is stored at
-//! its index, which yields the same map. Materializers (dormant dependencies) and aspects are
-//! not ported.
+//! its index, which yields the same map. Materializers (dormant dependencies) are not ported.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use blaze_analysis::analysis_services::AnalysisServices;
+use blaze_analysis::aspect_collection::AspectCollection;
+use blaze_analysis::aspect_key_creator::LoadAspectsKey;
+use blaze_analysis::aspect_resolution_helpers::{
+    AspectMultimap, ComputeAspectCollectionError, compute_aspect_collection,
+    compute_aspect_collection_no_aspects_filtering, compute_attribute_aspects,
+    compute_propagating_aspects, compute_toolchains_aspects,
+};
 use blaze_analysis::config::configuration_transition_event::ConfigurationTransitionEvent;
 use blaze_analysis::config::configured_attribute_mapper::ConfiguredAttributeMapper;
 use blaze_analysis::config::ordered_set_multimap::{
@@ -36,14 +42,17 @@ use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_cmdline::Label;
 use blaze_events::{Event, EventHandler, ExtendedEventHandler, StoredEventHandler};
 use blaze_packages::exceptions::{NoSuchTargetException, NoSuchThingException};
-use blaze_packages::target::Target;
 use blaze_packages::target::target_utils::{
     format_missing_edge_with_attribute, get_location_maybe,
 };
+use blaze_packages::target::{Rule, Target};
 use blaze_sky_loading::package_function::PackageKey;
 use blaze_skyframe::Environment;
 use indexmap::IndexMap;
 
+use crate::producers::configured_aspect_producer::{
+    ConfiguredAspectError, produce_configured_aspects,
+};
 use crate::producers::configured_target_and_data_producer::{
     ConfiguredTargetAndDataRequest, produce_configured_targets_and_data,
 };
@@ -51,13 +60,14 @@ use crate::producers::dependency_resolution_helpers::{
     Aspect, ExecutionPlatformResult, get_execution_platform_label,
 };
 use crate::producers::errors::{
-    Cause, ConfiguredTargetLookupError, ConfiguredValueCreationException, DependencyError,
-    DependencyEvaluationException, MissingEdgeError, TargetAndConfiguration,
+    AspectCreationException, Cause, ConfiguredTargetLookupError, ConfiguredValueCreationException,
+    DependencyError, DependencyEvaluationException, MissingEdgeError, TargetAndConfiguration,
     TransitiveDependencyState, configuration_id_of_key, event_location,
 };
 use crate::producers::transition_applier::{
     Produced, TransitionApplierError, apply_transition_with_lookup_rounds,
 };
+use blaze_analysis::base_target_prerequisites_supplier::BaseTargetPrerequisitesSupplier;
 
 // -------------------------------------------------------------------------------------------
 // PrerequisiteParameters.
@@ -72,6 +82,9 @@ pub struct PrerequisiteParameters<'a> {
     /// is carried here so they are emitted where they are accepted.
     pub target_and_configuration: &'a TargetAndConfiguration,
     pub aspects: &'a [Aspect],
+    /// This is the key for loading the aspects passed to the --exec_aspects flag, which get
+    /// attached to targets in the exec configuration.
+    pub load_exec_aspects_key: Option<&'a LoadAspectsKey>,
     /// The Starlark exec transition provider (`None` if Bazel uses native logic).
     pub starlark_transition_provider: Option<Arc<StarlarkAttributeTransitionProvider>>,
     pub toolchain_contexts: Option<&'a ToolchainCollection<UnloadedToolchainContext>>,
@@ -79,6 +92,14 @@ pub struct PrerequisiteParameters<'a> {
     pub attribute_map: Option<&'a ConfiguredAttributeMapper>,
     pub transitive_state: &'a mut TransitiveDependencyState,
     pub event_handler: &'a StoredEventHandler,
+    /// Cache for `ConfiguredTargetValue` and `BuildConfigurationValue` (see
+    /// `AspectFunction`'s `baseTargetPrerequisitesSupplier`).
+    pub base_target_prerequisites_supplier: Option<&'a BaseTargetPrerequisitesSupplier>,
+    /// The `UnloadedToolchainContext`s for the base target of the aspect under evaluation.
+    ///
+    /// This is only non-null during aspect evaluation if the aspects path can propagate to
+    /// toolchains.
+    pub base_target_toolchain_contexts: Option<&'a ToolchainCollection<UnloadedToolchainContext>>,
 }
 
 impl PrerequisiteParameters<'_> {
@@ -88,6 +109,11 @@ impl PrerequisiteParameters<'_> {
 
     pub fn target(&self) -> &Target {
         self.target_and_configuration.get_target()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:118 PrerequisiteParameters.associatedRule
+    pub fn associated_rule(&self) -> Option<&Arc<Rule>> {
+        self.target().get_associated_rule()
     }
 
     pub fn configuration_key(&self) -> Option<&BuildConfigurationKey> {
@@ -109,16 +135,15 @@ impl PrerequisiteParameters<'_> {
         exec_group: &str,
         is_base_target_toolchain: bool,
     ) -> Option<Label> {
-        if is_base_target_toolchain {
-            blaze_util::unported!(
-                "PrerequisiteParameters.getExecutionPlatformLabel",
-                "aspects"
-            );
-        }
-        let context = self
-            .toolchain_contexts
-            .expect("NullPointerException: toolchain contexts");
+        let context = if is_base_target_toolchain {
+            self.base_target_toolchain_contexts
+        } else {
+            self.toolchain_contexts
+        };
+
+        // PORT: the Rust ToolchainContext's execution platform is never null.
         let platform = context
+            .expect("NullPointerException: toolchain contexts")
             .get_toolchain_context(exec_group)
             .expect("NullPointerException: exec group toolchain context")
             .execution_platform();
@@ -196,13 +221,32 @@ pub fn produce_dependency_map(
     parameters: &mut PrerequisiteParameters<'_>,
     dependency_labels: &DependencyLabels,
 ) -> Produced<DependencyMapOutcome> {
-    if !parameters.aspects.is_empty() {
-        // Java: DependencyMapProducer.computeAspectPropagationEdges
-        blaze_util::unported!("DependencyMapProducer.computeAspectPropagationEdges");
-    }
+    let mut errors = ErrorState { last_error: None };
+    let (computed_attribute_aspects, computed_toolchains_aspects) =
+        match compute_aspect_propagation_edges(parameters, dependency_labels) {
+            Ok(computed) => computed,
+            Err(e) => {
+                parameters.event_handler.handle(&Event::error_at(
+                    event_location(Some(&parameters.location())),
+                    e.message_with_stack(),
+                ));
+                errors.accept_dependency_error(DependencyError::AspectEvaluation(
+                    DependencyEvaluationException::of_eval(
+                        e.message.clone(),
+                        Some(parameters.location()),
+                    ),
+                ));
+                return Ok(Some(DependencyMapOutcome {
+                    dependency_map: None,
+                    materializer_targets: None,
+                    dependency_map_error: errors.last_error,
+                }));
+            }
+        };
+    let empty_attribute_aspects: AspectMultimap<String> = IndexMap::new();
+    let empty_toolchains_aspects: AspectMultimap<Label> = IndexMap::new();
     let mut results: Vec<Option<Vec<ConfiguredTargetAndData>>> =
         vec![None; labels_size(dependency_labels)];
-    let mut errors = ErrorState { last_error: None };
     let mut missing = false;
 
     // Java: attributeResolutionStep(tasks, forMaterializers=true, ...), then
@@ -230,19 +274,37 @@ pub fn produce_dependency_map(
 
             // The list of aspects is evaluated here to be done once per attribute, rather than
             // once per dependency.
-            // Java: com/google/devtools/build/lib/analysis/AspectResolutionHelpers.java:64 AspectResolutionHelpers.computePropagatingAspects
-            if !skip {
-                if let Some(attribute) = kind.get_attribute() {
-                    if attribute.has_aspects() {
-                        blaze_util::unported!(
-                            "AspectResolutionHelpers.computePropagatingAspects",
-                            "aspects on attribute '{}' of {}",
-                            attribute.get_name(),
-                            parameters.label()
+            // PORT: Java passes the multimaps (null without aspects) and the possibly null
+            // associated rule; W3's port takes references. Without aspects the multimaps are
+            // never read, and a target without an associated rule (input file, package group,
+            // environment group) has no attribute or base target toolchain dependencies, for
+            // which Java returns an empty list.
+            let aspects: Vec<Aspect> = if skip {
+                Vec::new()
+            } else {
+                match parameters.associated_rule() {
+                    Some(rule) => compute_propagating_aspects(
+                        kind,
+                        parameters.aspects,
+                        computed_attribute_aspects
+                            .as_ref()
+                            .unwrap_or(&empty_attribute_aspects),
+                        computed_toolchains_aspects
+                            .as_ref()
+                            .unwrap_or(&empty_toolchains_aspects),
+                        rule,
+                        parameters.base_target_toolchain_contexts,
+                    ),
+                    None => {
+                        blaze_util::check_state!(
+                            kind.get_attribute().is_none() && !kind.is_base_target_toolchain(),
+                            "{:?} of a target without a rule",
+                            kind
                         );
+                        Vec::new()
                     }
                 }
-            }
+            };
             for label in labels {
                 let current_index = index;
                 index += 1;
@@ -269,6 +331,7 @@ pub fn produce_dependency_map(
                         configuration,
                         execution_platform_label,
                         lookup_rounds,
+                        propagating_aspects: aspects.clone(),
                     }),
                 }
             }
@@ -316,11 +379,24 @@ pub fn produce_dependency_map(
             let mut round_keys: Vec<blaze_skyframe::SkyKey> = Vec::new();
             while end < pending.len() && pending[end].lookup_rounds.unwrap_or(0) == round {
                 let p = &pending[end];
+                // Java: ConfiguredTargetAndDataProducer.step looks a key up only when the
+                // `BaseTargetPrerequisitesSupplier` (used during aspect evaluation for the base
+                // target's own dependencies) does not have its value: the supplier adds no
+                // dependency edge, and neither may this batch.
+                // Java: com/google/devtools/build/lib/analysis/producers/ConfiguredTargetAndDataProducer.java:99 ConfiguredTargetAndDataProducer.step
+                let supplier = if use_base_target_prerequisites_supplier(parameters, p.kind) {
+                    parameters.base_target_prerequisites_supplier
+                } else {
+                    None
+                };
                 for request in prerequisite_requests(
                     p.label,
                     p.execution_platform_label.as_ref(),
                     &p.configuration,
                 ) {
+                    if supplier.is_some_and(|s| s.get_prerequisite(&request.key).is_some()) {
+                        continue;
+                    }
                     round_keys.push(blaze_skyframe::SkyKey::new(request.key));
                 }
                 end += 1;
@@ -336,7 +412,7 @@ pub fn produce_dependency_map(
                     p.label,
                     p.configuration.clone(),
                     p.execution_platform_label.clone(),
-                    &[],
+                    &p.propagating_aspects,
                     &mut errors,
                 )? {
                     None => missing = true,
@@ -390,6 +466,45 @@ pub fn produce_dependency_map(
     }))
 }
 
+/// Computes the aspects' propagation attribute names and toolchain types (Java
+/// `computedAttributeAspects` and `computedToolchainsAspects`; both `None` without aspects).
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:361 DependencyMapProducer.computeAspectPropagationEdges
+fn compute_aspect_propagation_edges(
+    parameters: &PrerequisiteParameters<'_>,
+    dependency_labels: &DependencyLabels,
+) -> Result<
+    (
+        Option<AspectMultimap<String>>,
+        Option<AspectMultimap<Label>>,
+    ),
+    blaze_starlark::EvalError,
+> {
+    if parameters.aspects.is_empty() {
+        return Ok((None, None));
+    }
+
+    // Java passes `parameters.attributeMap()`, null for a target that is not a rule.
+    let attribute_map = parameters.attribute_map;
+    let computed_attribute_aspects = compute_attribute_aspects(
+        parameters.aspects,
+        parameters.target(),
+        attribute_map,
+        dependency_labels,
+        parameters.event_handler,
+    )?;
+    let computed_toolchains_aspects = compute_toolchains_aspects(
+        parameters.aspects,
+        parameters.target(),
+        attribute_map,
+        dependency_labels,
+        parameters.event_handler,
+    )?;
+    Ok((
+        Some(computed_attribute_aspects),
+        Some(computed_toolchains_aspects),
+    ))
+}
+
 // -------------------------------------------------------------------------------------------
 // DependencyProducer.
 
@@ -410,6 +525,7 @@ struct PendingPrerequisites<'a> {
     configuration: AttributeConfiguration,
     execution_platform_label: Option<Label>,
     lookup_rounds: Option<usize>,
+    propagating_aspects: Vec<Aspect>,
 }
 
 /// What a `DependencyProducer` decides before its `PrerequisitesProducer` runs.
@@ -506,7 +622,7 @@ fn plan_dependency(
     match get_execution_platform_label(
         kind,
         parameters.toolchain_contexts,
-        /* base_target_unloaded_toolchain_contexts= */ None,
+        parameters.base_target_toolchain_contexts,
         parameters.aspects,
     ) {
         ExecutionPlatformResult::Label(l) => transition_data.execution_platform = Some(l),
@@ -741,6 +857,12 @@ fn compute_prerequisites(
     propagating_aspects: &[Aspect],
     errors: &mut ErrorState,
 ) -> Produced<Option<Vec<ConfiguredTargetAndData>>> {
+    let base_target_prerequisites_supplier =
+        if use_base_target_prerequisites_supplier(parameters, kind) {
+            parameters.base_target_prerequisites_supplier
+        } else {
+            None
+        };
     let prerequisite_values = match produce_prerequisites(
         env,
         parameters,
@@ -748,6 +870,7 @@ fn compute_prerequisites(
         execution_platform_label,
         configuration,
         propagating_aspects,
+        base_target_prerequisites_supplier,
     )? {
         None => return Ok(None),
         Some(Ok(v)) => v,
@@ -785,6 +908,14 @@ fn compute_prerequisites(
                             }
                         }
                     }
+                    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:407 DependencyProducer.acceptPrerequisitesAspectError
+                    PrerequisitesError::AspectEvaluation(error) => {
+                        errors.accept_dependency_error(DependencyError::AspectEvaluation(error))
+                    }
+                    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:412 DependencyProducer.acceptPrerequisitesAspectError
+                    PrerequisitesError::AspectCreation(error) => {
+                        errors.accept_dependency_error(DependencyError::AspectCreation(error))
+                    }
                 }
             }
             return Ok(Some(None));
@@ -815,6 +946,30 @@ fn compute_prerequisites(
     Ok(Some(Some(prerequisite_values)))
 }
 
+/// Returns true only during aspects evaluation for attribute dependencies not owned by an
+/// aspect to enable using the `BaseTargetPrerequisitesSupplier` to look up them.
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:355 DependencyProducer.useBaseTargetPrerequisitesSupplier
+fn use_base_target_prerequisites_supplier(
+    parameters: &PrerequisiteParameters<'_>,
+    kind: &DependencyKind,
+) -> bool {
+    if parameters.aspects.is_empty() {
+        return false;
+    }
+
+    if kind.is_base_target_toolchain() {
+        return true;
+    }
+
+    if kind.is_attribute() {
+        if kind.get_owning_aspect().is_none() {
+            return true;
+        }
+    }
+
+    false
+}
+
 // -------------------------------------------------------------------------------------------
 // PrerequisitesProducer.
 
@@ -824,6 +979,10 @@ enum PrerequisitesError {
     /// `InvalidVisibilityDependencyException(label)`.
     InvalidVisibility(Label),
     Creation(ConfiguredValueCreationException),
+    /// `acceptPrerequisitesAspectError(DependencyEvaluationException)`.
+    AspectEvaluation(DependencyEvaluationException),
+    /// `acceptPrerequisitesAspectError(AspectCreationException)`.
+    AspectCreation(AspectCreationException),
 }
 
 /// The configured target lookups of one dependency edge (Java `PrerequisitesProducer.step` and
@@ -874,11 +1033,16 @@ fn produce_prerequisites(
     execution_platform_label: Option<Label>,
     configuration: AttributeConfiguration,
     propagating_aspects: &[Aspect],
+    base_target_prerequisites_supplier: Option<&BaseTargetPrerequisitesSupplier>,
 ) -> Produced<Result<Vec<ConfiguredTargetAndData>, Vec<PrerequisitesError>>> {
     let requests: Vec<ConfiguredTargetAndDataRequest> =
         prerequisite_requests(label, execution_platform_label.as_ref(), &configuration);
-    let outcomes =
-        produce_configured_targets_and_data(env, &requests, parameters.transitive_state)?;
+    let outcomes = produce_configured_targets_and_data(
+        env,
+        &requests,
+        parameters.transitive_state,
+        base_target_prerequisites_supplier,
+    )?;
 
     let mut configured_targets: Vec<ConfiguredTargetAndData> = Vec::new();
     let mut errors: Vec<PrerequisitesError> = Vec::new();
@@ -932,12 +1096,151 @@ fn produce_prerequisites(
 
     let configured_targets = cleanup_values(configured_targets, parameters.label(), label);
 
-    // PORT: `--exec_aspects` (LoadAspectsKey) and aspect filtering are not ported; with no
-    // propagating aspects the aspect collection is empty and the values are accepted as is.
-    if !propagating_aspects.is_empty() {
-        blaze_util::unported!("PrerequisitesProducer.maybeFilterAspects");
+    // PORT: request order. Java looks the key up in the round after the configured target
+    // lookups of this producer (here: after this dependency's lookups, before the next one's).
+    let mut exec_aspects: Vec<Aspect> = Vec::new();
+    if let Some(load_exec_aspects_key) = parameters.load_exec_aspects_key {
+        // Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:335 PrerequisitesProducer.acceptExecAspects
+        if let Some(load_aspects_value) = env.get_value(load_exec_aspects_key.clone())? {
+            exec_aspects = load_aspects_value.get_aspects().to_vec();
+        }
     }
-    Ok(Some(Ok(configured_targets)))
+
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:230 PrerequisitesProducer.maybeFilterAspects
+    let aspects: AspectCollection = {
+        // All configured targets in the set have the same underlying target so using an
+        // arbitrary one for aspect filtering is safe.
+        let first = &configured_targets[0];
+        let filtered_aspects =
+            filter_aspects_based_on_target(propagating_aspects, &exec_aspects, first);
+        let computed = if filtered_aspects.is_empty() {
+            Ok(AspectCollection::empty())
+        } else if let Some(rule) = first.get_target().as_rule() {
+            compute_aspect_collection(
+                &filtered_aspects,
+                rule.get_advertised_providers(),
+                rule.get_label(),
+                rule.get_rule_class_object(),
+                &rule.get_only_tags_attribute(),
+                rule.get_location(),
+                parameters.event_handler,
+            )
+        } else {
+            compute_aspect_collection_no_aspects_filtering(
+                &filtered_aspects,
+                first.get_target().get_label(),
+                &first.get_target().get_location(),
+            )
+            .map_err(ComputeAspectCollectionError::InconsistentAspectOrder)
+        };
+        match computed {
+            Ok(c) => c,
+            Err(ComputeAspectCollectionError::InconsistentAspectOrder(e)) => {
+                return Ok(Some(Err(vec![PrerequisitesError::AspectEvaluation(
+                    DependencyEvaluationException::of_inconsistent_aspect_order(e),
+                )])));
+            }
+            Err(ComputeAspectCollectionError::Eval(e)) => {
+                parameters.event_handler.handle(&Event::error_at(
+                    event_location(Some(&parameters.location())),
+                    e.message_with_stack(),
+                ));
+                return Ok(Some(Err(vec![PrerequisitesError::AspectEvaluation(
+                    DependencyEvaluationException::of_eval(
+                        e.message.clone(),
+                        Some(parameters.location()),
+                    ),
+                )])));
+            }
+        }
+    };
+
+    if aspects.is_empty() {
+        // Short circuits if there are no aspects.
+        return Ok(Some(Ok(configured_targets)));
+    }
+
+    let outcomes = produce_configured_aspects(
+        env,
+        &aspects,
+        configured_targets,
+        parameters.transitive_state,
+    )?;
+
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:341 PrerequisitesProducer.emitMergedTargets
+    let mut merged_targets: Vec<ConfiguredTargetAndData> = Vec::new();
+    let mut errors: Vec<PrerequisitesError> = Vec::new();
+    let mut missing = false;
+    for outcome in outcomes {
+        match outcome {
+            None => missing = true,
+            Some(Ok(merged)) => merged_targets.push(merged),
+            Some(Err(aspect_errors)) => {
+                for error in aspect_errors {
+                    errors.push(match error {
+                        // Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:315 PrerequisitesProducer.acceptConfiguredAspectError
+                        ConfiguredAspectError::Merging(e) => PrerequisitesError::AspectEvaluation(
+                            DependencyEvaluationException::of_creation(
+                                ConfiguredValueCreationException::new(
+                                    Some(parameters.location()),
+                                    e.get_message(),
+                                    parameters.label(),
+                                    parameters.event_id(),
+                                    /* root_causes= */ None,
+                                    /* detailed_exit_code= */ None,
+                                ),
+                                /* dep_reported_own_error= */ false,
+                            ),
+                        ),
+                        // Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:330 PrerequisitesProducer.acceptConfiguredAspectError
+                        ConfiguredAspectError::AspectCreation(e) => {
+                            PrerequisitesError::AspectCreation(e)
+                        }
+                    });
+                }
+            }
+        }
+    }
+    if !errors.is_empty() {
+        return Ok(Some(Err(errors)));
+    }
+    if missing {
+        return Ok(None);
+    }
+    Ok(Some(Ok(merged_targets)))
+}
+
+// Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:287 PrerequisitesProducer.filterAspectsBasedOnTarget
+fn filter_aspects_based_on_target(
+    propagating_aspects: &[Aspect],
+    exec_aspects: &[Aspect],
+    prerequisite: &ConfiguredTargetAndData,
+) -> Vec<Aspect> {
+    if matches!(prerequisite.get_target(), Target::OutputFile(_)) {
+        return propagating_aspects
+            .iter()
+            .filter(|aspect| aspect.get_definition().apply_to_generating_rules())
+            .cloned()
+            .collect();
+    }
+
+    if !prerequisite.get_target().is_rule() {
+        return Vec::new();
+    }
+
+    if prerequisite
+        .get_configuration()
+        .expect("NullPointerException: rule configuration")
+        .is_exec_configuration()
+    {
+        return propagating_aspects
+            .iter()
+            .chain(exec_aspects.iter())
+            .cloned()
+            .collect();
+    }
+
+    propagating_aspects.to_vec()
 }
 
 /// Deduplicates split results and orders them (Java `PrerequisitesProducer.cleanupValues`).

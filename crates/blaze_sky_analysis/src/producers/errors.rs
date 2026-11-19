@@ -1,16 +1,22 @@
 //! The error and state types the configured-target producers share: `skyframe/
 //! ConfiguredValueCreationException`, `analysis/config/DependencyEvaluationException`,
 //! `analysis/InconsistentNullConfigException`, `analysis/TransitiveDependencyState`,
-//! `analysis/TargetAndConfiguration`, `causes/{AnalysisFailedCause,LoadingFailedCause}` and
+//! `analysis/TargetAndConfiguration`, `causes/{AnalysisFailedCause,LoadingFailedCause,LabelCause}`,
+//! `skyframe/AspectCreationException` and
 //! `analysis/producers/{DependencyError,DependencyContextError,MissingEdgeError}`.
+//!
+//! PORT: `AspectCreationException` lives here (not in blaze_analysis) because it carries
+//! `NestedSet<Cause>` and `Cause` is defined in this crate.
 
 use std::fmt;
 use std::sync::Arc;
 
+use blaze_analysis::aspect_key_creator::AspectKey;
 use blaze_analysis::config::starlark_transition::TransitionException;
 use blaze_analysis::config::transitions::TransitionCreationException;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::dependency_kind::DependencyKind;
+use blaze_analysis::inconsistent_aspect_order_exception::InconsistentAspectOrderException;
 use blaze_analysis::rule::action_conflict_exception::ActionConflictException;
 use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
@@ -81,12 +87,20 @@ pub enum Cause {
         label: Label,
         detailed_exit_code: DetailedExitCode,
     },
+    /// Class of Cause that just has a label.
+    // Java: com/google/devtools/build/lib/causes/LabelCause.java:23 LabelCause
+    Label {
+        label: Label,
+        detailed_exit_code: DetailedExitCode,
+    },
 }
 
 impl Cause {
     pub fn get_label(&self) -> &Label {
         match self {
-            Cause::AnalysisFailed { label, .. } | Cause::LoadingFailed { label, .. } => label,
+            Cause::AnalysisFailed { label, .. }
+            | Cause::LoadingFailed { label, .. }
+            | Cause::Label { label, .. } => label,
         }
     }
 
@@ -96,6 +110,9 @@ impl Cause {
                 detailed_exit_code, ..
             }
             | Cause::LoadingFailed {
+                detailed_exit_code, ..
+            }
+            | Cause::Label {
                 detailed_exit_code, ..
             } => detailed_exit_code,
         }
@@ -222,14 +239,24 @@ impl ConfiguredValueCreationException {
     }
 }
 
+/// The cause of a [`DependencyEvaluationException`] (Java `getCause()`, one of the classes its
+/// constructors take).
+#[derive(Clone, Debug)]
+pub enum DependencyEvaluationCause {
+    Creation(ConfiguredValueCreationException),
+    InconsistentAspectOrder(InconsistentAspectOrderException),
+    /// `EvalException`, carried by its `getMessage()`.
+    Eval(String),
+}
+
 /// Exception that signals an error during the evaluation of a configured target dependency.
 // Java: com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java:36 DependencyEvaluationException
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("{message}")]
 pub struct DependencyEvaluationException {
     message: String,
-    /// The `ConfiguredValueCreationException` cause, if that is the cause.
-    cause: Option<ConfiguredValueCreationException>,
+    cause: DependencyEvaluationCause,
+    /// Null denotes whatever default exit code callers choose.
     detailed_exit_code: Option<DetailedExitCode>,
     location: Option<Location>,
     dep_reported_own_error: bool,
@@ -245,17 +272,34 @@ impl DependencyEvaluationException {
             message: cause.get_message().to_owned(),
             detailed_exit_code: Some(cause.get_detailed_exit_code().clone()),
             location: cause.get_location().cloned(),
-            cause: Some(cause),
+            cause: DependencyEvaluationCause::Creation(cause),
             dep_reported_own_error,
         }
     }
 
-    /// Java `DependencyEvaluationException(EvalException, Location)`.
+    /// Java `DependencyEvaluationException(InconsistentAspectOrderException)`.
+    // Java: com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java:60 DependencyEvaluationException.<init>
+    pub fn of_inconsistent_aspect_order(cause: InconsistentAspectOrderException) -> Self {
+        // Calling logic doesn't provide an opportunity for this dependency to report its own
+        // error.
+        DependencyEvaluationException {
+            message: cause.get_message().to_owned(),
+            detailed_exit_code: None,
+            location: Some(cause.get_location().clone()),
+            cause: DependencyEvaluationCause::InconsistentAspectOrder(cause),
+            dep_reported_own_error: false,
+        }
+    }
+
+    /// Java `DependencyEvaluationException(EvalException, Location)`; `message` is the
+    /// `EvalException`'s `getMessage()`.
     // Java: com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java:66 DependencyEvaluationException.<init>
     pub fn of_eval(message: String, location: Option<Location>) -> Self {
+        // Calling logic doesn't provide an opportunity for this dependency to report its own
+        // error.
         DependencyEvaluationException {
+            cause: DependencyEvaluationCause::Eval(message.clone()),
             message,
-            cause: None,
             detailed_exit_code: None,
             location,
             dep_reported_own_error: false,
@@ -266,6 +310,7 @@ impl DependencyEvaluationException {
         &self.message
     }
 
+    /// Returns the cause's `DetailedExitCode`. If `None`, the caller should choose a default.
     pub fn get_detailed_exit_code(&self) -> Option<&DetailedExitCode> {
         self.detailed_exit_code.as_ref()
     }
@@ -278,9 +323,125 @@ impl DependencyEvaluationException {
         self.dep_reported_own_error
     }
 
+    /// Java `getCause()`.
+    pub fn get_cause(&self) -> &DependencyEvaluationCause {
+        &self.cause
+    }
+
     /// Java `getCause() instanceof ConfiguredValueCreationException`.
     pub fn get_creation_cause(&self) -> Option<&ConfiguredValueCreationException> {
-        self.cause.as_ref()
+        match &self.cause {
+            DependencyEvaluationCause::Creation(c) => Some(c),
+            _ => None,
+        }
+    }
+}
+
+/// An exception indicating that there was a problem creating an aspect.
+// Java: com/google/devtools/build/lib/skyframe/AspectCreationException.java:32 AspectCreationException
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct AspectCreationException {
+    message: String,
+    causes: NestedSet<Cause>,
+    detailed_exit_code: DetailedExitCode,
+}
+
+impl AspectCreationException {
+    // Java: com/google/devtools/build/lib/skyframe/AspectCreationException.java:38 AspectCreationException.<init>
+    pub fn new(
+        message: impl Into<String>,
+        causes: NestedSet<Cause>,
+        detailed_exit_code: DetailedExitCode,
+    ) -> Self {
+        AspectCreationException {
+            message: message.into(),
+            causes,
+            detailed_exit_code,
+        }
+    }
+
+    /// Java `AspectCreationException(message, currentTarget, configuration, detailedExitCode)`.
+    // Java: com/google/devtools/build/lib/skyframe/AspectCreationException.java:45 AspectCreationException.<init>
+    pub fn for_target_with_exit_code(
+        message: impl Into<String>,
+        current_target: &Label,
+        configuration: Option<&BuildConfigurationValue>,
+        detailed_exit_code: DetailedExitCode,
+    ) -> Self {
+        let causes = NestedSetBuilder::create(
+            Order::STABLE_ORDER,
+            [Cause::AnalysisFailed {
+                label: current_target.clone(),
+                configuration: configuration_id_message(configuration.map(|c| c.checksum())),
+                detailed_exit_code: detailed_exit_code.clone(),
+            }],
+        );
+        Self::new(message, causes, detailed_exit_code)
+    }
+
+    /// Java `AspectCreationException(message, currentTarget, configuration)`.
+    // Java: com/google/devtools/build/lib/skyframe/AspectCreationException.java:60 AspectCreationException.<init>
+    pub fn for_target(
+        message: impl Into<String>,
+        current_target: &Label,
+        configuration: Option<&BuildConfigurationValue>,
+    ) -> Self {
+        let message = message.into();
+        let detailed_exit_code =
+            create_aspect_detailed_exit_code(&message, "ASPECT_CREATION_FAILED");
+        Self::for_target_with_exit_code(message, current_target, configuration, detailed_exit_code)
+    }
+
+    /// Java `AspectCreationException(message, currentTarget, detailedExitCode)`.
+    // Java: com/google/devtools/build/lib/skyframe/AspectCreationException.java:69 AspectCreationException.<init>
+    pub fn for_label_with_exit_code(
+        message: impl Into<String>,
+        current_target: &Label,
+        detailed_exit_code: DetailedExitCode,
+    ) -> Self {
+        Self::for_target_with_exit_code(message, current_target, None, detailed_exit_code)
+    }
+
+    /// Java `AspectCreationException(message, currentTarget)`.
+    // Java: com/google/devtools/build/lib/skyframe/AspectCreationException.java:74 AspectCreationException.<init>
+    pub fn for_label(message: impl Into<String>, current_target: &Label) -> Self {
+        let message = message.into();
+        let detailed_exit_code =
+            create_aspect_detailed_exit_code(&message, "ASPECT_CREATION_FAILED");
+        Self::for_target_with_exit_code(message, current_target, None, detailed_exit_code)
+    }
+
+    /// Java `AspectCreationException(message, LabelCause)`; `cause` is a [`Cause::Label`].
+    // Java: com/google/devtools/build/lib/skyframe/AspectCreationException.java:79 AspectCreationException.<init>
+    pub fn of_label_cause(message: impl Into<String>, cause: Cause) -> Self {
+        let detailed_exit_code = cause.get_detailed_exit_code().clone();
+        Self::new(
+            message,
+            NestedSetBuilder::create(Order::STABLE_ORDER, [cause]),
+            detailed_exit_code,
+        )
+    }
+
+    pub fn get_message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn get_causes(&self) -> &NestedSet<Cause> {
+        &self.causes
+    }
+
+    pub fn get_detailed_exit_code(&self) -> &DetailedExitCode {
+        &self.detailed_exit_code
+    }
+}
+
+/// Java `DetailedExitCode.of(FailureDetail{message, Analysis.<code>})`.
+// Java: com/google/devtools/build/lib/skyframe/AspectCreationException.java:95 AspectCreationException.createDetailedExitCode
+pub fn create_aspect_detailed_exit_code(message: &str, code: &str) -> DetailedExitCode {
+    DetailedExitCode {
+        message: message.to_owned(),
+        code: FailureCode::Other(format!("Analysis.{code}")),
     }
 }
 
@@ -480,6 +641,8 @@ struct PackageCollector {
     /// Stores transitive package metadata of `ConfiguredTargetValue`s, in
     /// `CONFIGURED_TARGET_KEY_ORDERING`.
     configured_target_packages: Vec<(ConfiguredTargetKey, NestedSet<RepoMappingPackageMetadata>)>,
+    /// Stores transitive package metadata of `AspectValue`s, in `ASPECT_KEY_ORDERING`.
+    aspect_packages: Vec<(AspectKey, NestedSet<RepoMappingPackageMetadata>)>,
 }
 
 type RepoMappingPackageMetadata =
@@ -521,7 +684,9 @@ impl PackageCollector {
         for (_, package_set) in &self.configured_target_packages {
             result.add_transitive(package_set);
         }
-        // PORT: aspectPackages are empty (AspectFunction is not ported).
+        for (_, package_set) in &self.aspect_packages {
+            result.add_transitive(package_set);
+        }
         result.build()
     }
 }
@@ -535,6 +700,7 @@ impl TransitiveDependencyState {
                 Some(PackageCollector {
                     packages: Vec::new(),
                     configured_target_packages: Vec::new(),
+                    aspect_packages: Vec::new(),
                 })
             } else {
                 None
@@ -602,6 +768,69 @@ impl TransitiveDependencyState {
             }
         }
     }
+
+    /// Adds to the set of transitive package metadata if `store_transitive_packages` is true.
+    // Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:136 TransitiveDependencyState.updateTransitivePackages
+    pub fn update_transitive_packages_of_aspect(
+        &mut self,
+        key: &AspectKey,
+        packages: &NestedSet<RepoMappingPackageMetadata>,
+    ) {
+        if let Some(c) = &mut self.package_collector {
+            // TreeMap.put: replaces an equal key's value.
+            match c
+                .aspect_packages
+                .binary_search_by(|(k, _)| aspect_key_ordering(k, key))
+            {
+                Ok(i) => c.aspect_packages[i].1 = packages.clone(),
+                Err(i) => c.aspect_packages.insert(i, (key.clone(), packages.clone())),
+            }
+        }
+    }
+}
+
+/// Java `ASPECT_KEY_ORDERING`: the base configured target key, then the aspect key graphs
+/// (`AspectKeyDescriptorGraphComparator`, a new instance per comparison).
+// Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:206 TransitiveDependencyState.ASPECT_KEY_ORDERING
+fn aspect_key_ordering(a: &AspectKey, b: &AspectKey) -> std::cmp::Ordering {
+    configured_target_key_ordering(
+        a.get_base_configured_target_key(),
+        b.get_base_configured_target_key(),
+    )
+    .then_with(|| {
+        let mut visited = std::collections::HashSet::new();
+        aspect_key_descriptor_graph_compare(&mut visited, a, b)
+    })
+}
+
+/// Compares the `AspectKey` graph structure for specific dependencies (Java
+/// `AspectKeyDescriptorGraphComparator.compare`; `visited` is the comparator instance's state).
+// Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:232 TransitiveDependencyState.AspectKeyDescriptorGraphComparator.compare
+fn aspect_key_descriptor_graph_compare(
+    visited: &mut std::collections::HashSet<blaze_packages::aspect::AspectDescriptor>,
+    left: &AspectKey,
+    right: &AspectKey,
+) -> std::cmp::Ordering {
+    let left_descriptor = left.get_aspect_descriptor();
+    let right_descriptor = right.get_aspect_descriptor();
+    if left_descriptor != right_descriptor {
+        return left_descriptor
+            .get_description()
+            .cmp(&right_descriptor.get_description());
+    }
+    if !visited.insert(left_descriptor.clone()) {
+        return std::cmp::Ordering::Equal;
+    }
+    // Ordering.lexicographical(this).compare(left.getBaseKeys(), right.getBaseKeys())
+    let left_keys = left.get_base_keys();
+    let right_keys = right.get_base_keys();
+    for (l, r) in left_keys.iter().zip(right_keys.iter()) {
+        let c = aspect_key_descriptor_graph_compare(visited, l, r);
+        if c != std::cmp::Ordering::Equal {
+            return c;
+        }
+    }
+    left_keys.len().cmp(&right_keys.len())
 }
 
 /// Tagged union of the errors of the dependency map producers (Java `DependencyError`).
@@ -614,7 +843,7 @@ pub enum DependencyError {
     /// `InvalidVisibilityDependencyException(label)`.
     InvalidVisibility(Label),
     AspectEvaluation(DependencyEvaluationException),
-    AspectCreation(String),
+    AspectCreation(AspectCreationException),
     PlatformMapping(String),
     InvalidPlatform(String),
     TransitionCreation(TransitionCreationException),

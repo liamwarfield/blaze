@@ -71,7 +71,7 @@ use blaze_sky_top::target_pattern_phase::TargetPatternPhaseValue;
 use blaze_vfs::{Path, PathFragment};
 
 #[path = "build_remote.rs"]
-mod build_remote;
+pub(crate) mod build_remote;
 
 use crate::command::{BlazeCommand, BlazeCommandResult, CommandAnnotation};
 use crate::command_environment::CommandEnvironment;
@@ -130,6 +130,23 @@ fn options_or_default<T: blaze_options::OptionsClass>(options: &OptionsParsingRe
         .unwrap_or_else(Options::<T>::get_defaults)
 }
 
+/// `AbruptExitException.getDetailedExitCode()` of a module's exception: Java's explicit
+/// `ExitCode` when the module passed one (`DetailedExitCode.of(exitCode, failureDetail)`, e.g.
+/// `RemoteModule.createExitException`), else the failure detail's metadata.
+// Java: com/google/devtools/build/lib/util/AbruptExitException.java:46 AbruptExitException.getDetailedExitCode
+fn abrupt_exit_detailed_exit_code(
+    e: blaze_exec::exec::spawn_strategy_registry::AbruptExitException,
+) -> DetailedExitCode {
+    match e.exit_code {
+        Some(code) => DetailedExitCode::of_exit_code(
+            ExitCode::for_code(code)
+                .unwrap_or_else(|| panic!("No ExitCode for numericExitCode {code}")),
+            e.failure_detail,
+        ),
+        None => DetailedExitCode::of(e.failure_detail),
+    }
+}
+
 /// `BuildCommand.exec` / `TestCommand.doTest` with the Build Event Protocol modules around them:
 /// `BuildEventServiceModule.beforeCommand` before, `env.precompleteCommand` (the
 /// `BuildMetricsEvent`) and `BuildEventServiceModule.afterCommand` after.
@@ -150,11 +167,16 @@ fn run_build(
         Err(e) => {
             env.get_reporter()
                 .handle(&Event::error(e.get_message().to_owned()));
-            return BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(e.failure_detail));
+            return BlazeCommandResult::detailed_exit_code(abrupt_exit_detailed_exit_code(e));
         }
     };
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
     let bep = BepCommandSupport::before_command(env, options);
+    if bep.is_some()
+        && let Some(remote) = &remote
+    {
+        build_remote::create_bep_file_transport_uploaders(remote, options);
+    }
     let result = run_build_with_bep(env, options, run_tests, bep.as_ref(), remote.as_ref());
     // BlazeRuntime.afterCommand: CommandPrecompleteEvent, then each module's afterCommand
     // (RemoteModule before BuildEventServiceModule); an AbruptExitException of a module replaces
@@ -164,12 +186,16 @@ fn run_build(
         // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:802 CommandEnvironment.precompleteCommand
         bep.command_precomplete();
     }
-    let remote_exit = remote
-        .as_ref()
-        .and_then(|remote| remote.after_command(env.get_reporter().as_ref()));
+    let remote_exit = match &remote {
+        Some(remote) => remote.after_command(env.get_reporter().as_ref()),
+        None => {
+            build_remote::placeholder_after_command(env, options);
+            None
+        }
+    };
     let result = match remote_exit {
         Some(e) if !result.get_exit_code().is_infrastructure_failure() => {
-            BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(e.failure_detail))
+            BlazeCommandResult::detailed_exit_code(abrupt_exit_detailed_exit_code(e))
         }
         _ => result,
     };
@@ -386,6 +412,8 @@ fn run_build_with_bep(
                         .as_ref(),
                     // ExecutionTool: request.getBuildOptions().finalizeActions.
                     build_request_options.finalize_actions,
+                    build_request_options.rewind_lost_inputs,
+                    execution_options.remote_retry_on_transient_cache_error,
                 )
             })
             // No remote option set: RemoteModule.setup's placeholder; executorInit still sets
@@ -1581,6 +1609,11 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // ExecutionTool.nonCatastrophicFinalizations: `if (buildCompleted)
         // saveActionCache(actionCache)`.
         if !interrupted {
+            // RemoteOutputService.onExecutionPhaseCompleteEvent → LeaseService
+            // .finalizeExecution (Java: after the save, on the server's in-memory cache).
+            if let Some(remote) = &self.remote {
+                remote.finalize_execution(state.prepared.action_cache.as_deref());
+            }
             state.prepared.save_action_cache(reporter.as_ref());
         }
 

@@ -212,6 +212,7 @@ pub(crate) fn environmental_exec_exception(
     crate::actions::EnvironmentalExecException {
         message: io_exception_to_string(e),
         failure_detail: failure_detail("", execution_category(code)),
+        lost_inputs: None,
     }
     .into()
 }

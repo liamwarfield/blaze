@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use blaze_analysis::aspect_key_creator::AspectKey;
+use blaze_analysis::aspect_value::AspectValue;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_build_config::build_options::BuildOptions;
 use blaze_cmdline::Label;
@@ -121,7 +123,14 @@ fn run_analysis_phase(
         request.get_top_level_artifact_context_output_groups(),
     );
 
-    let analysis_result = build_view::update(
+    let aspects_parameters =
+        request
+            .get_aspects_parameters()
+            .map_err(|e| BuildToolError::ViewCreationFailed {
+                message: e.get_message().to_owned(),
+                failure_detail: e.get_failure_detail().clone(),
+            })?;
+    let analysis_result = build_view::update_with_aspects_parameters(
         skyframe_executor,
         loading_result,
         target_options,
@@ -137,6 +146,7 @@ fn run_analysis_phase(
             // runner.
             include_execution_phase: request.with_merged_analysis_and_execution_source_of_truth(),
         },
+        &aspects_parameters,
         reporter.clone(),
     )
     .map_err(|e| match e {
@@ -166,10 +176,32 @@ fn run_analysis_phase(
     Ok(analysis_result)
 }
 
-/// Post the appropriate `TopLevelStatusEvents`.
+/// An event that marks the successful analysis of an aspect.
 ///
-/// PORT: the `AspectAnalyzedEvent`s are none (top-level aspects are not ported:
-/// `BuildView.createTopLevelAspectKeys` fails loudly).
+/// PORT: Java's class is in `TopLevelStatusEvents` (blaze_sky_analysis
+/// `top_level_status_events`, not in this crate); defined here until it moves there.
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:210 TopLevelStatusEvents.AspectAnalyzedEvent
+#[derive(Clone, Debug)]
+pub struct AspectAnalyzedEvent {
+    /// `aspectKey()`.
+    pub aspect_key: AspectKey,
+    /// `configuredAspect()`.
+    pub configured_aspect: Arc<AspectValue>,
+}
+
+impl AspectAnalyzedEvent {
+    // Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:215 TopLevelStatusEvents.AspectAnalyzedEvent.create
+    pub fn create(aspect_key: AspectKey, configured_aspect: Arc<AspectValue>) -> Self {
+        AspectAnalyzedEvent {
+            aspect_key,
+            configured_aspect,
+        }
+    }
+}
+
+impl blaze_events::Postable for AspectAnalyzedEvent {}
+
+/// Post the appropriate `TopLevelStatusEvents`.
 // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:467 AnalysisPhaseRunner.postTopLevelStatusEvents
 fn post_top_level_status_events(
     skyframe_executor: &SkyframeExecutor,
@@ -213,6 +245,13 @@ fn post_top_level_status_events(
                 is_skipped: skipped,
             }));
         }
+    }
+
+    for (aspect_key, configured_aspect) in analysis_result.get_aspects_map() {
+        reporter.post(Arc::new(AspectAnalyzedEvent::create(
+            aspect_key.clone(),
+            configured_aspect.clone(),
+        )));
     }
 }
 

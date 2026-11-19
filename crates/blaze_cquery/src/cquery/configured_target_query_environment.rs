@@ -2,15 +2,21 @@
 //! aquery, which live in `post_analysis_query_environment`) and
 //! `query2/cquery/ConfiguredTargetAccessor.java`.
 //!
-//! PORT: Java's `CqueryNode` is implemented by `ConfiguredTarget` and by `AspectKey` (with
-//! `--experimental_explicit_aspects`); aspect nodes are not ported, so a node is a
-//! `ConfiguredTarget`.
+//! Java's interface `CqueryNode` (`query2/common/CqueryNode.java`), implemented by
+//! `ConfiguredTarget` and by `AspectKey` (with `--experimental_explicit_aspects`), is the enum
+//! [`CqueryNode`].
 
 use std::sync::Arc;
 
+use blaze_actions::ActionLookupKeyRef;
+use blaze_analysis::aspect_key_creator::AspectKey;
+use blaze_analysis::aspect_value::AspectValue;
 use blaze_analysis::config::config_matching_provider::ConfigMatchingProvider;
 use blaze_analysis::config::configured_attribute_mapper::ConfiguredAttributeMapper;
+use blaze_analysis::configured_aspect::ConfiguredAspect;
 use blaze_analysis::configured_target::ConfiguredTarget;
+use blaze_analysis::configured_target_value::ConfiguredTargetValue;
+use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_cmdline::{Label, TargetPatternParser};
 use blaze_events::ExtendedEventHandler;
@@ -25,17 +31,177 @@ use blaze_query_engine::{
     default_query_functions,
 };
 use blaze_sky_loading::pkgcache::PathPackageLocator;
-use blaze_skyframe::WalkableGraph;
+use blaze_skyframe::{SkyKey, WalkableGraph};
 use indexmap::IndexMap;
 
 use crate::cquery::config_function::{ConfigFunction, ConfigFunctionSlot};
 use crate::cquery::cquery_options::CommonQueryOptionsView;
 use crate::post_analysis_query_environment::{
-    PostAnalysisQueryEnvironment, TopLevelConfigurations,
+    PostAnalysisNode, PostAnalysisQueryEnvironment, TopLevelConfigurations,
+    as_configured_target_key,
 };
 
-/// A node of the configured target graph (Java `CqueryNode`).
-pub type CqueryNode = ConfiguredTarget;
+/// A node of the configured target graph: the information necessary to traverse the
+/// different types of nodes that can be visited during a cquery call.
+// Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:33 CqueryNode
+#[derive(Clone)]
+pub enum CqueryNode {
+    ConfiguredTarget(ConfiguredTarget),
+    /// An aspect node (`--experimental_explicit_aspects`): Java's `AspectKey implements
+    /// CqueryNode`.
+    AspectKey(AspectKey),
+}
+
+impl From<ConfiguredTarget> for CqueryNode {
+    fn from(configured_target: ConfiguredTarget) -> Self {
+        CqueryNode::ConfiguredTarget(configured_target)
+    }
+}
+
+impl CqueryNode {
+    /// Returns a key that may be used to lookup this `CqueryNode`.
+    // Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:33 CqueryNode.getLookupKey
+    // Java: com/google/devtools/build/lib/skyframe/AspectKeyCreator.java:182 AspectKeyCreator.AspectKey.getLookupKey
+    pub fn get_lookup_key(&self) -> ActionLookupKeyRef {
+        match self {
+            CqueryNode::ConfiguredTarget(ct) => ct.get_lookup_key().clone(),
+            CqueryNode::AspectKey(key) => ActionLookupKeyRef::new(key.clone()),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:35 CqueryNode.getLabel
+    // Java: com/google/devtools/build/lib/skyframe/AspectKeyCreator.java:172 AspectKeyCreator.AspectKey.getLabel
+    pub fn get_label(&self) -> Label {
+        match self {
+            CqueryNode::ConfiguredTarget(ct) => ct.get_label(),
+            CqueryNode::AspectKey(key) => key.get_label().clone(),
+        }
+    }
+
+    /// The text cquery prints for the node: the original label for a configured target, the
+    /// aspect's description (`<aspect class> of <label>`) for an aspect.
+    // Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:39 CqueryNode.getDescription
+    // Java: com/google/devtools/build/lib/skyframe/AspectKeyCreator.java:152 AspectKeyCreator.AspectKey.getDescription
+    pub fn get_description(&self, label_printer: &LabelPrinter) -> String {
+        match self {
+            CqueryNode::ConfiguredTarget(ct) => label_printer.to_string(&ct.get_original_label()),
+            CqueryNode::AspectKey(key) => key.get_description(),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:44 CqueryNode.getConfigurationChecksum
+    pub fn get_configuration_checksum(&self) -> Option<String> {
+        self.get_configuration_key()
+            .map(|k| k.get_options().checksum().to_owned())
+    }
+
+    /// The key of the configuration the node is defined for (`None` for input files and package
+    /// groups; an aspect's is its base configured target's).
+    // Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:59 CqueryNode.getConfigurationKey
+    // Java: com/google/devtools/build/lib/skyframe/AspectKeyCreator.java:205 AspectKeyCreator.AspectKey.getConfigurationKey
+    pub fn get_configuration_key(&self) -> Option<BuildConfigurationKey> {
+        match self {
+            CqueryNode::ConfiguredTarget(ct) => ct.get_configuration_key(),
+            CqueryNode::AspectKey(key) => key.get_configuration_key().cloned(),
+        }
+    }
+
+    /// If the configured target is an alias, return the actual target, otherwise return the
+    /// current target. This follows alias chains.
+    // Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:67 CqueryNode.getActual
+    pub fn get_actual(&self) -> CqueryNode {
+        match self {
+            CqueryNode::ConfiguredTarget(ct) => CqueryNode::ConfiguredTarget(ct.get_actual()),
+            CqueryNode::AspectKey(_) => self.clone(),
+        }
+    }
+
+    /// If the configured target is an alias, return the original label, otherwise return the
+    /// current label. This is not the same as `get_actual().get_label()`, because it does not
+    /// follow alias chains.
+    // Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:76 CqueryNode.getOriginalLabel
+    pub fn get_original_label(&self) -> Label {
+        match self {
+            CqueryNode::ConfiguredTarget(ct) => ct.get_original_label(),
+            CqueryNode::AspectKey(_) => self.get_label(),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:88 CqueryNode.isRuleConfiguredTarget
+    pub fn is_rule_configured_target(&self) -> bool {
+        match self {
+            CqueryNode::ConfiguredTarget(ct) => ct.is_rule_configured_target(),
+            CqueryNode::AspectKey(_) => false,
+        }
+    }
+
+    /// The base configured target if it has been merged with aspects otherwise the current
+    /// value. Unwrapping is recursive if there are multiple layers.
+    // Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:97 CqueryNode.unwrapIfMerged
+    pub fn unwrap_if_merged(&self) -> CqueryNode {
+        match self {
+            CqueryNode::ConfiguredTarget(ct) => CqueryNode::ConfiguredTarget(ct.unwrap_if_merged()),
+            CqueryNode::AspectKey(_) => self.clone(),
+        }
+    }
+
+    /// The configured target of the node (`node instanceof ConfiguredTarget`).
+    pub fn as_configured_target(&self) -> Option<&ConfiguredTarget> {
+        match self {
+            CqueryNode::ConfiguredTarget(ct) => Some(ct),
+            CqueryNode::AspectKey(_) => None,
+        }
+    }
+}
+
+impl PostAnalysisNode for CqueryNode {
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:560 ConfiguredTargetQueryEnvironment.getConfiguredTargetKey
+    fn get_lookup_key(&self) -> ActionLookupKeyRef {
+        CqueryNode::get_lookup_key(self)
+    }
+
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:549 ConfiguredTargetQueryEnvironment.getConfiguration
+    fn get_configuration_key(&self) -> Option<BuildConfigurationKey> {
+        CqueryNode::get_configuration_key(self)
+    }
+
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:494 ConfiguredTargetQueryEnvironment.getCorrectLabel
+    fn get_original_label(&self) -> Label {
+        CqueryNode::get_original_label(self)
+    }
+
+    fn as_configured_target(&self) -> Option<&ConfiguredTarget> {
+        CqueryNode::as_configured_target(self)
+    }
+
+    /// Returns the `CqueryNode` for the given key if its value is a supported instance of
+    /// CqueryNode. This function can only receive keys of node types that the calling logic can
+    /// support. For example, if the caller does not support handling of AspectKey types of
+    /// CqueryNodes, then this function should not be called with an AspectKey key.
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:327 ConfiguredTargetQueryEnvironment.getValueFromKey
+    fn get_value_from_key(graph: &dyn WalkableGraph, key: &SkyKey) -> Option<Self> {
+        let value = graph.get_value(key)?;
+        if let Ok(configured_target_value) = value.clone().downcast::<ConfiguredTargetValue>() {
+            return Some(CqueryNode::ConfiguredTarget(
+                configured_target_value.get_configured_target().clone(),
+            ));
+        }
+        // The value is intentionally ignored as the key implements CqueryNode.
+        if value.is::<AspectValue>()
+            && let Some(aspect_key) = key.downcast::<AspectKey>()
+        {
+            return Some(CqueryNode::AspectKey(aspect_key.clone()));
+        }
+        panic!("IllegalStateException: unknown value type for CqueryNode")
+    }
+
+    fn is_instance_of_rule_configured_target(&self) -> bool {
+        matches!(
+            self,
+            CqueryNode::ConfiguredTarget(ConfiguredTarget::Rule(_))
+        )
+    }
+}
 
 /// `QueryEnvironment` that runs queries over the configured target (analysis) graph.
 // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:80 ConfiguredTargetQueryEnvironment
@@ -63,15 +229,14 @@ pub fn new_configured_target_query_environment(
     extra_functions: Vec<Arc<dyn QueryFunction<CqueryNode>>>,
     top_level_configurations: TopLevelConfigurations,
     transitive_configurations: IndexMap<String, Arc<BuildConfigurationValue>>,
+    top_level_aspects: &IndexMap<AspectKey, Arc<AspectValue>>,
     main_repo_target_parser: TargetPatternParser,
     pkg_path: PathPackageLocator,
     walkable_graph: Arc<dyn WalkableGraph>,
     cquery_options: &CqueryOptions,
     label_printer: LabelPrinter,
 ) -> ConfiguredTargetQueryEnvironment {
-    // PORT: top-level aspects (ConfiguredTargetAccessor.topLevelAspectsByTarget) are not
-    // ported; --aspects is rejected by BuildView.
-    PostAnalysisQueryEnvironment::new(
+    let mut env = PostAnalysisQueryEnvironment::new(
         keep_going,
         event_handler,
         extra_functions,
@@ -82,17 +247,41 @@ pub fn new_configured_target_query_environment(
         walkable_graph,
         cquery_options.to_settings(),
         label_printer,
-    )
+    );
+    // this.accessor = new ConfiguredTargetAccessor(walkableGraphSupplier.get(), this,
+    //     topLevelAspects);
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:73 ConfiguredTargetAccessor.<init>
+    // PORT: Java memoizes the multimap (Suppliers.memoize); it is built eagerly here, which is
+    // not observable.
+    if env
+        .settings
+        .contains(&blaze_query_engine::Setting::IncludeAspects)
+    {
+        // topLevelAspects.entrySet().stream().collect(toImmutableListMultimap(
+        //     entry -> entry.getKey().getBaseConfiguredTargetKey(), Map.Entry::getValue))
+        for (key, value) in top_level_aspects {
+            env.top_level_aspects_by_target
+                .entry(key.get_base_configured_target_key().clone())
+                .or_default()
+                // PORT: AnalysisResult.getAspectsMap() holds the AspectValues (each a
+                // ConfiguredAspect in Java).
+                .push(ConfiguredAspect::Value(value.clone()));
+        }
+    }
+    env
 }
 
 /// `CqueryNode.getConfigConditions()`: the `config_setting`s a rule's `select()`s read.
-pub fn get_config_conditions(
-    target: &ConfiguredTarget,
-) -> Arc<IndexMap<Label, ConfigMatchingProvider>> {
+// Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:84 CqueryNode.getConfigConditions
+pub fn get_config_conditions(target: &CqueryNode) -> Arc<IndexMap<Label, ConfigMatchingProvider>> {
     match target {
-        ConfiguredTarget::Rule(r) => r.get_config_conditions().clone(),
-        ConfiguredTarget::Alias(a) => a.get_config_conditions().clone(),
-        // Java: ConfiguredTarget.getConfigConditions() default (ImmutableMap.of()).
+        CqueryNode::ConfiguredTarget(ConfiguredTarget::Rule(r)) => {
+            r.get_config_conditions().clone()
+        }
+        CqueryNode::ConfiguredTarget(ConfiguredTarget::Alias(a)) => {
+            a.get_config_conditions().clone()
+        }
+        // Java: CqueryNode.getConfigConditions() default (ImmutableMap.of()).
         _ => Arc::new(IndexMap::new()),
     }
 }
@@ -114,6 +303,19 @@ pub fn configured_attribute_mapper(
 }
 
 impl ConfiguredTargetQueryEnvironment {
+    /// Returns the top-level aspects applied to the given `CqueryNode`.
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:294 ConfiguredTargetAccessor.getTopLevelAspects
+    pub fn get_top_level_aspects(&self, cn: &CqueryNode) -> Vec<ConfiguredAspect> {
+        let lookup_key = cn.get_lookup_key();
+        let Some(key) = as_configured_target_key(&lookup_key) else {
+            return Vec::new();
+        };
+        self.top_level_aspects_by_target
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// The target of a configured target, dereferencing aliases.
     // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:278 ConfiguredTargetAccessor.getTarget
     pub fn get_accessor_target(&self, configured_target: &CqueryNode) -> Target {
@@ -329,4 +531,24 @@ mod tests {
     #[test]
     #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
     fn test_implicit_toolchain_binding_contains_toolchain_target() {}
+
+    // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQuerySemanticsTest.java:767 ConfiguredTargetQuerySemanticsTest.testAspectDepsAppearInCqueryDeps
+    #[test]
+    #[ignore = "needs the BuildViewTestCase harness (blaze_sky_top::testing)"]
+    fn test_aspect_deps_appear_in_cquery_deps() {}
+
+    // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQuerySemanticsTest.java:839 ConfiguredTargetQuerySemanticsTest.testToolchainPropagatingAspectDepsAppearInCqueryDeps
+    #[test]
+    #[ignore = "needs the BuildViewTestCase harness (blaze_sky_top::testing)"]
+    fn test_toolchain_propagating_aspect_deps_appear_in_cquery_deps() {}
+
+    // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQuerySemanticsTest.java:949 ConfiguredTargetQuerySemanticsTest.testAspectOnAspectDepsAppearInCqueryDeps
+    #[test]
+    #[ignore = "needs the BuildViewTestCase harness (blaze_sky_top::testing)"]
+    fn test_aspect_on_aspect_deps_appear_in_cquery_deps() {}
+
+    // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQuerySemanticsTest.java:1078 ConfiguredTargetQuerySemanticsTest.testAspectDepsAppearInCqueryRdeps
+    #[test]
+    #[ignore = "needs the BuildViewTestCase harness (blaze_sky_top::testing)"]
+    fn test_aspect_deps_appear_in_cquery_rdeps() {}
 }

@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Compares Blaze's cquery on workerd with the oracle's recording, on the ASCII-README copy.
+
+usage: scripts/workerd/cquery-compare [--out DIR] [--reuse]
+       scripts/workerd/cquery-compare help
+
+Runs the two cquery commands of the referee's protocol (scripts/oracle/record, step `cquery`)
+with `scripts/workerd/run blaze` (work copy ~/.cache/blaze/work/workerd-blaze, whose README has
+the emoji of its first line removed: docs/workerd.md, byte strings):
+
+  cquery 'deps(//src/workerd/server:workerd)' --output=label_kind
+  cquery //src/workerd/server:workerd --output=jsonproto
+
+turns the outputs into items with the referee's own extractors (scripts/oracle/surfaces.py
+s_cquery_label_kind, s_cquery_jsonproto) and compares them with
+~/.cache/blaze/oracle-records/oracle-9.3.2/workerd/items/cquery_{label_kind,jsonproto}.json.
+Prints, per surface: oracle items, matching, different, missing, extra, and whether the
+`__order__` items are equal; writes DIR/<surface>.diff.txt. `--reuse` compares the outputs of
+the last run in DIR instead of running Blaze. DIR defaults to
+~/.cache/blaze/work/workerd-logs/cquery-compare. Exit 0 only when both surfaces match in full.
+
+This is a development aid, not the referee: a recording made by scripts/oracle/record uses a
+pristine copy of the checkout, on which Blaze cannot fetch aspect_tools_telemetry until Bazel's
+byte-string semantics are ported. Scores come from scripts/oracle.
+Environment: BLAZE (binary), as scripts/workerd/run.
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT, "scripts", "oracle"))
+HOME = os.path.expanduser("~")
+RECORD = os.path.join(HOME, ".cache/blaze/oracle-records/oracle-9.3.2/workerd")
+LOGS = os.path.join(HOME, ".cache/blaze/work/workerd-logs")
+TARGET = "//src/workerd/server:workerd"
+COMMANDS = [
+    ("cquery_deps_label_kind", ["cquery", "deps(%s)" % TARGET, "--output=label_kind"]),
+    ("cquery_jsonproto", ["cquery", TARGET, "--output=jsonproto"]),
+]
+
+
+def main(argv):
+    if argv and argv[0] in ("help", "--help", "-h"):
+        print(__doc__)
+        return 0
+    out_dir = os.path.join(LOGS, "cquery-compare")
+    reuse = False
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--out":
+            out_dir = argv[i + 1]
+            i += 2
+        elif argv[i] == "--reuse":
+            reuse = True
+            i += 1
+        else:
+            print(f"unknown argument {argv[i]}", file=sys.stderr)
+            return 2
+    for d in ("raw", "norm"):
+        os.makedirs(os.path.join(out_dir, d), exist_ok=True)
+    manifest_path = os.path.join(out_dir, "manifest.json")
+    if reuse:
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+    else:
+        commands = []
+        for name, args in COMMANDS:
+            with open(os.path.join(out_dir, "raw", name + ".stdout"), "wb") as stdout, \
+                    open(os.path.join(out_dir, "raw", name + ".stderr"), "wb") as stderr:
+                rc = subprocess.run([os.path.join(ROOT, "scripts/workerd/run"), "blaze"] + args,
+                                    stdout=stdout, stderr=stderr, stdin=subprocess.DEVNULL).returncode
+            commands.append({"name": name, "exit_code": rc})
+        manifest = {"commands": commands}
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f)
+
+    import normalise  # noqa: E402
+    import surfaces  # noqa: E402
+
+    user_root = os.path.join(HOME, ".cache/blaze/oracle-out/ur-workerd-blaze")
+    workspace = os.path.join(HOME, ".cache/blaze/work/workerd-blaze")
+    ctx = normalise.Context({"output_user_root": user_root, "workspace": workspace, "home": HOME},
+                            os.environ.get("USER"), None)
+    ok = True
+    for surface, extract, command in (
+        ("cquery_label_kind", surfaces.s_cquery_label_kind, "cquery_deps_label_kind"),
+        ("cquery_jsonproto", surfaces.s_cquery_jsonproto, "cquery_jsonproto"),
+    ):
+        with open(os.path.join(RECORD, "items", surface + ".json")) as f:
+            want = json.load(f)["items"]
+        rc = next(c["exit_code"] for c in manifest["commands"] if c["name"] == command)
+        try:
+            got = extract(out_dir, manifest, ctx)
+        except surfaces.SurfaceFailed as e:
+            with open(os.path.join(out_dir, "raw", command + ".stderr"), errors="replace") as f:
+                lines = f.read().splitlines()
+            first = next((l for l in lines if "not ported yet" in l or "panicked" in l or l.startswith("ERROR")), "")
+            print(f"{surface}: FAILED ({e}; exit {rc}): {first[:300]}; oracle items {len(want)}")
+            ok = False
+            continue
+        order_keys = [k for k in want if k.startswith("__order__")]
+        matching = [k for k in want if k in got and got[k] == want[k] and k not in order_keys]
+        different = [k for k in want if k in got and got[k] != want[k] and k not in order_keys]
+        missing = [k for k in want if k not in got]
+        extra = [k for k in got if k not in want]
+        order_equal = all(got.get(k) == want[k] for k in order_keys)
+        total = len(want)
+        print(f"{surface}: oracle items {total} (of which {len(order_keys)} order); matching "
+              f"{len(matching) + sum(1 for k in order_keys if got.get(k) == want[k])}; different {len(different)}; "
+              f"missing {len(missing)}; extra {len(extra)}; order {'equal' if order_equal else 'DIFFERENT'}")
+        with open(os.path.join(out_dir, surface + ".diff.txt"), "w") as f:
+            for k in different:
+                f.write(f"DIFF {k}\n  oracle: {json.dumps(want[k], sort_keys=True)[:2000]}\n"
+                        f"  blaze:  {json.dumps(got[k], sort_keys=True)[:2000]}\n")
+            for k in missing:
+                f.write(f"MISSING {k}\n")
+            for k in extra:
+                f.write(f"EXTRA {k}\n")
+            if not order_equal:
+                for k in order_keys:
+                    a, b = want[k], got.get(k) or []
+                    n = next((j for j, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+                    f.write(f"ORDER {k}: first difference at index {n}: oracle "
+                            f"{json.dumps(a[n:n + 3])} blaze {json.dumps(b[n:n + 3])}\n")
+        if different or missing or extra or not order_equal:
+            ok = False
+    print(f"details: {out_dir}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

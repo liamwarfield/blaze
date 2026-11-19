@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Triage for workerd analysis: runs `blaze cquery 'deps(<label>)' --output=label_kind` for each
+# label of a list and records the exit code, the number of result lines and the first failure
+# line (panic / "not ported yet" / ERROR). One line per label in <outdir>/summary.tsv; the raw
+# stdout/stderr of run N are <outdir>/N.out and <outdir>/N.err.
+# usage: scripts/workerd/triage <labels-file> <outdir>
+#        scripts/workerd/triage --aquery <labels-file> <outdir>   (per label: scripts/workerd/
+#            aquery-compare 'deps("<label>")' --out <outdir>/N; its report is <outdir>/N.txt and
+#            its first two lines go to summary.tsv)
+#        scripts/workerd/triage kinds > <labels-file>   (one label per rule kind of the oracle's
+#                                                        cquery_deps_label_kind recording)
+#        scripts/workerd/triage help
+# <labels-file>: lines "<kind> <label>". Environment: BLAZE (binary, default target/debug/blaze;
+# pass a copy to keep the run independent of rebuilds), TIMEOUT (seconds per label, default 300).
+set -u
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,14p' "$0"; exit 0; fi
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [[ "$1" == "kinds" ]]; then
+  awk '$1!="source" && $1!="generated"{print $1" "$3}' \
+    "$HOME/.cache/blaze/oracle-records/oracle-9.3.2/workerd/norm/cquery_deps_label_kind.txt" \
+    | awk '!seen[$1]++'
+  exit 0
+fi
+aquery=0; if [[ "$1" == "--aquery" ]]; then aquery=1; shift; fi
+labels="$(realpath "$1")"; out="$(realpath -m "$2")"; mkdir -p "$out"; : > "$out/summary.tsv"
+i=0
+while read -r kind label; do
+  i=$((i+1)); f="$out/$i"
+  if [[ "$aquery" == 1 ]]; then
+    ( cd "$root" && nice -n 10 python3 -I scripts/workerd/aquery-compare "deps(\"$label\")" --out "$f" \
+        > "$f.txt" 2>&1 < /dev/null ); rc=$?
+    printf '%s\t%s\t%s\t%s\n' "$rc" "$kind" "$label" "$(head -2 "$f.txt" | tr '\n' ' ')" >> "$out/summary.tsv"
+    continue
+  fi
+  ( cd "$root" && timeout "${TIMEOUT:-300}" nice -n 10 scripts/workerd/run blaze cquery \
+      "deps(\"$label\")" --output=label_kind > "$f.out" 2> "$f.err" < /dev/null ); rc=$?
+  msg=$(grep -m1 -E 'not ported yet|^ERROR' "$f.err" | cut -c1-300)
+  where=$(grep -m1 'panicked at' "$f.err" | sed 's/.*panicked at //' | cut -c1-120)
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$rc" "$kind" "$label" "$(wc -l < "$f.out")" "$where" "$msg" \
+    >> "$out/summary.tsv"
+done < "$labels"

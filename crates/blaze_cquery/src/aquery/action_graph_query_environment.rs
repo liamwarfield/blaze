@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use blaze_analysis::aspect_key_creator::{ASPECT, AspectKey};
+use blaze_analysis::aspect_value::AspectValue;
 use blaze_analysis::configured_target_value::ConfiguredTargetValue;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_cmdline::TargetPatternParser;
@@ -17,7 +19,7 @@ use blaze_query_engine::{
     QueryFunction, QueryVisibility, TargetAccessor, default_query_functions,
 };
 use blaze_sky_loading::pkgcache::PathPackageLocator;
-use blaze_skyframe::WalkableGraph;
+use blaze_skyframe::{SkyKey, WalkableGraph};
 use indexmap::IndexMap;
 
 use crate::cquery::cquery_options::CommonQueryOptionsView;
@@ -90,32 +92,54 @@ impl ActionGraphQueryEnvironment {
 
     /// Returns the AspectValues that are attached to the given configuredTarget.
     ///
-    /// PORT: `AspectValue` (AspectFunction) is not ported (blaze_sky_analysis::aspect_function),
-    /// so the result is empty unless an `ASPECT` node depends on the target, which fails loudly.
+    /// An element is `None` where the graph has no value for an `ASPECT` reverse dependency
+    /// (Java adds the `null` that `walkableGraph.getValue` returns).
+    ///
+    /// PORT: java-hash-order, not replicable. Java collects the values in a `HashSet`; `AspectValue`
+    /// does not override `hashCode` (`BasicActionLookupValue`), so the set iterates in the order
+    /// of identity hash codes, which Bazel itself does not reproduce from one server to the next.
+    /// The values are kept in the order of the reverse dependencies here, each once (Java's set
+    /// compares them by identity).
     // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:163 ConfiguredTargetValueAccessor.getAspectValues
     pub fn get_aspect_values(
         &self,
         configured_target_value: &KeyedConfiguredTargetValue,
-    ) -> Vec<std::convert::Infallible> {
+    ) -> Vec<Option<Arc<AspectValue>>> {
+        let mut result: Vec<Option<Arc<AspectValue>>> = Vec::new();
         let sky_key = crate::post_analysis_query_environment::lookup_key_to_sky_key(
             &crate::post_analysis_query_environment::get_configured_target_key(
                 configured_target_value,
             ),
         );
+        // Iterables.concat(walkableGraph.getReverseDeps(ImmutableList.of(skyKey)).values())
+        let rev_deps: Vec<SkyKey> = self
+            .get_graph()
+            .get_reverse_deps(&[sky_key])
+            .into_iter()
+            .flat_map(|(_, rev_deps)| rev_deps)
+            .collect();
         let label = configured_target_value.get_configured_target().get_label();
-        for (_, rev_deps) in self.get_graph().get_reverse_deps(&[sky_key]) {
-            for rev_dep in rev_deps {
-                if rev_dep.function_name().0 == "ASPECT" {
-                    blaze_util::unported!(
-                        "ConfiguredTargetValueAccessor.getAspectValues",
-                        "AspectValue of {:?} on {}",
-                        rev_dep,
-                        label
-                    );
+        for rev_dep in rev_deps {
+            let sky_function_name = rev_dep.function_name();
+            if sky_function_name == ASPECT {
+                let aspect_value = self.get_aspect_value(&rev_dep);
+                let aspect_key = rev_dep
+                    .downcast::<AspectKey>()
+                    .unwrap_or_else(|| panic!("ClassCastException: {:?}", rev_dep));
+                if *aspect_key.get_label() == label {
+                    // result.add(aspectValue)
+                    let present = result.iter().any(|v| match (v, &aspect_value) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                        _ => false,
+                    });
+                    if !present {
+                        result.push(aspect_value);
+                    }
                 }
             }
         }
-        Vec::new()
+        result
     }
 }
 

@@ -32,6 +32,7 @@ use starlark::values::{Heap, NoSerialize, OwnedFrozenValue, StarlarkValue, Value
 
 use super::util::{alloc_immutable_list, errorf};
 use crate::platform::toolchain_type_label_from_value;
+use crate::toolchains::aspect_base_target_resolved_toolchain_context::AspectBaseTargetResolvedToolchainContext;
 use crate::toolchains::{ResolvedToolchainContext, ToolchainCollection};
 
 /// The value of `ctx.toolchains` (type `ToolchainContext`).
@@ -350,6 +351,46 @@ impl StarlarkExecGroupCollection {
                     toolchain_collection
                         .get_toolchain_context(name)
                         .map(|tc| std::sync::Arc::new(StarlarkToolchainContext::of_resolved(tc))),
+                )
+            })
+            .collect();
+        StarlarkExecGroupCollection::Valid {
+            exec_group_names,
+            default_target_description: toolchain_collection
+                .get_default_toolchain_context()
+                .target_description()
+                .to_owned(),
+            contexts,
+        }
+    }
+
+    /// Java `StarlarkExecGroupCollection.create(toolchainCollection)` for the base target's
+    /// toolchain contexts of an aspect (`ctx.rule.exec_groups`): each exec group's
+    /// `StarlarkToolchainContext` resolves a toolchain type to its `ToolchainAspectsProviders`.
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkExecGroupCollection.java:72 StarlarkExecGroupCollection.create
+    pub fn create_for_base_target(
+        toolchain_collection: &ToolchainCollection<AspectBaseTargetResolvedToolchainContext>,
+    ) -> StarlarkExecGroupCollection {
+        let exec_group_names: Vec<String> = toolchain_collection
+            .get_exec_group_names()
+            .into_iter()
+            .map(|s| s.to_owned())
+            .collect();
+        let contexts = exec_group_names
+            .iter()
+            .map(|name| {
+                (
+                    name.clone(),
+                    toolchain_collection.get_toolchain_context(name).map(|tc| {
+                        std::sync::Arc::new(StarlarkToolchainContext::create(
+                            tc.target_description().to_owned(),
+                            &|l| {
+                                tc.for_toolchain_type(l)
+                                    .map(super::starlark_attributes_collection::toolchain_aspects_providers_value)
+                            },
+                            tc.requested_toolchain_type_labels().keys().cloned().collect(),
+                        ))
+                    }),
                 )
             })
             .collect();

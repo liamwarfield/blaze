@@ -234,3 +234,21 @@ fn refresh_if_unauthenticated_cant_refresh_should_refresh_once_and_fail() {
     assert_eq!(call_times.load(Ordering::SeqCst), 2);
     assert_eq!(call_credentials_provider.refresh_times(), 1);
 }
+
+/// Not in UtilsTest.java (review 2026-11-19 R4): `waitForBulkTransfer` throws
+/// `InterruptedException` when the waiting thread is interrupted and cancels the transfers.
+#[test]
+fn wait_for_bulk_transfer_interrupted_cancels_transfers() {
+    let thread = blaze_shell::thread_interrupt::ThreadInterrupt::current();
+    let interrupter = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        thread.interrupt();
+    });
+    let pending = || async { futures::future::pending::<io::Result<()>>().await };
+
+    let e = utils::wait_for_bulk_transfer([pending(), pending()]).unwrap_err();
+    interrupter.join().unwrap();
+
+    assert!(errors::is_interrupted(&e), "{e:?}");
+    assert!(!blaze_shell::thread_interrupt::is_current_interrupted());
+}

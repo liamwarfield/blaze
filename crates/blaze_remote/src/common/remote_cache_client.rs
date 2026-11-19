@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::io::{self, Read, Write};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use blaze_vfs::Path;
@@ -156,50 +157,6 @@ pub trait RemoteCacheClient: MissingDigestsFinder {
     /// Close resources associated with the remote cache.
     fn close(&self);
 
-    /// Uploads a `file` BLOB to the CAS.
-    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:143 RemoteCacheClient.uploadFile
-    async fn upload_file(
-        &self,
-        context: &RemoteActionExecutionContext<'_>,
-        digest: &Digest,
-        file: &Path,
-        force: bool,
-    ) -> io::Result<()> {
-        self.upload_blob(context, digest, &FileBlob(file.clone()), force)
-            .await
-    }
-
-    /// Uploads a BLOB to the CAS.
-    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:170 RemoteCacheClient.uploadBlob
-    async fn upload_blob(
-        &self,
-        context: &RemoteActionExecutionContext<'_>,
-        digest: &Digest,
-        blob: &dyn Blob,
-        force: bool,
-    ) -> io::Result<()> {
-        self.cas_upload_cache()
-            .execute(
-                digest.clone(),
-                self.upload_blob_impl(context, digest, blob),
-                force,
-            )
-            .await
-    }
-
-    /// Uploads an in-memory BLOB to the CAS (`uploadBlob(context, digest, ByteString, force)`).
-    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:187 RemoteCacheClient.uploadBlob
-    async fn upload_bytes(
-        &self,
-        context: &RemoteActionExecutionContext<'_>,
-        digest: &Digest,
-        data: bytes::Bytes,
-        force: bool,
-    ) -> io::Result<()> {
-        self.upload_blob(context, digest, &BytesBlob(data), force)
-            .await
-    }
-
     /// Returns the digests of the uploads that are in progress.
     // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:232 RemoteCacheClient.getInProgressUploads
     fn get_in_progress_uploads(&self) -> Vec<Digest> {
@@ -237,8 +194,98 @@ pub trait RemoteCacheClient: MissingDigestsFinder {
     }
 }
 
+/// The upload methods of `RemoteCacheClient` (`uploadFile`, `uploadBlob`, `dedupUpload`), which
+/// run the upload as a task of `casUploadCache`.
+///
+/// PORT: the task of an `AsyncTaskCache` is shared by every caller that waits for it and must
+/// outlive the caller that started it, so it may not borrow from it: these methods are on the
+/// shared handle of the client (`Arc`), and the task owns a clone of it, the detached context,
+/// the digest and the blob.
+#[async_trait]
+pub trait RemoteCacheClientUploads {
+    /// Uploads a `file` BLOB to the CAS.
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:143 RemoteCacheClient.uploadFile
+    async fn upload_file(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        file: &Path,
+        force: bool,
+    ) -> io::Result<()>;
+
+    /// Uploads a BLOB to the CAS.
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:170 RemoteCacheClient.uploadBlob
+    async fn upload_blob(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        blob: Arc<dyn Blob>,
+        force: bool,
+    ) -> io::Result<()>;
+
+    /// Uploads an in-memory BLOB to the CAS (`uploadBlob(context, digest, ByteString, force)`).
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:187 RemoteCacheClient.uploadBlob
+    async fn upload_bytes(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        data: bytes::Bytes,
+        force: bool,
+    ) -> io::Result<()>;
+}
+
+#[async_trait]
+impl<T: RemoteCacheClient + ?Sized + 'static> RemoteCacheClientUploads for Arc<T> {
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:143 RemoteCacheClient.uploadFile
+    async fn upload_file(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        file: &Path,
+        force: bool,
+    ) -> io::Result<()> {
+        self.upload_blob(context, digest, Arc::new(FileBlob(file.clone())), force)
+            .await
+    }
+
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:170 RemoteCacheClient.uploadBlob
+    async fn upload_blob(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        blob: Arc<dyn Blob>,
+        force: bool,
+    ) -> io::Result<()> {
+        let client = self.clone();
+        let context = context.detached();
+        let task_digest = digest.clone();
+        // `Completable.defer(() -> uploadBlobImpl(context, digest, blob))`
+        let upload = async move {
+            client
+                .upload_blob_impl(&context, &task_digest, &*blob)
+                .await
+        };
+        self.cas_upload_cache()
+            .execute(digest.clone(), upload, force)
+            .await
+    }
+
+    // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:187 RemoteCacheClient.uploadBlob
+    async fn upload_bytes(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        data: bytes::Bytes,
+        force: bool,
+    ) -> io::Result<()> {
+        self.upload_blob(context, digest, Arc::new(BytesBlob(data)), force)
+            .await
+    }
+}
+
 /// `RemoteCacheClient.dedupUpload(digest, upload, force)`: runs `upload` through the client's
-/// upload deduplication (a free function because it is generic over the future).
+/// upload deduplication (a free function because it is generic over the future). The upload is
+/// shared with every caller that waits for the same digest, so it owns what it needs.
 // Java: com/google/devtools/build/lib/remote/common/RemoteCacheClient.java:225 RemoteCacheClient.dedupUpload
 pub async fn dedup_upload<F>(
     client: &dyn RemoteCacheClient,
@@ -247,7 +294,7 @@ pub async fn dedup_upload<F>(
     force: bool,
 ) -> io::Result<()>
 where
-    F: std::future::Future<Output = io::Result<()>>,
+    F: std::future::Future<Output = io::Result<()>> + Send + 'static,
 {
     client
         .cas_upload_cache()

@@ -263,3 +263,21 @@ fn test_interrupted_exception_is_passed_through() {
     assert!(errors::is_interrupted(&expected));
     assert_eq!(expected.to_string(), "the thrown instance");
 }
+
+/// Not in RemoteRetrierTest.java (review 2026-11-19 R4): CANCELLED is transient unless the
+/// classifying thread is interrupted (`RemoteRetrier.EXPERIMENTAL_GRPC_RESULT_CLASSIFIER`).
+#[test]
+fn cancelled_is_permanent_on_an_interrupted_thread() {
+    use blaze_remote::remote_retrier::EXPERIMENTAL_GRPC_RESULT_CLASSIFIER;
+    let cancelled = errors::status_to_io_error(tonic::Status::cancelled(""));
+    assert_eq!(
+        EXPERIMENTAL_GRPC_RESULT_CLASSIFIER.test(&cancelled),
+        ResultClassifierResult::TransientFailure
+    );
+    blaze_shell::thread_interrupt::interrupt_current();
+    assert_eq!(
+        EXPERIMENTAL_GRPC_RESULT_CLASSIFIER.test(&cancelled),
+        ResultClassifierResult::PermanentFailure
+    );
+    assert!(blaze_shell::thread_interrupt::interrupted());
+}

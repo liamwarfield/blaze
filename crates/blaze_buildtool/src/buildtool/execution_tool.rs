@@ -440,7 +440,8 @@ pub fn prepare_for_execution_with_action_cache(
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:782 SkyframeActionExecutor.checkActionCache
         output_checker: config.remote.output_checker.clone(),
     })
-    .with_show_subcommands(show_subcommands);
+    .with_show_subcommands(show_subcommands)
+    .with_lost_inputs_policy(config.remote.lost_inputs_policy.clone());
     if let Some(output_filter) = &config.output_filter {
         executor = executor.with_output_filter(output_filter.clone());
     }

@@ -90,6 +90,70 @@ design.
 Counts: 18 items; 11 fixed (1–4, 6–12 with #12's sky_top call pending), 7 open (#5 root,
 #13/#17 integration lead, #15/#16 blaze_rules, #14 blaze_build_config, #18 oracle-only).
 
+## Aspects wave (2026-11-18, aspects lead)
+
+State of the tree before the wave (HEAD 12ec0c9; #12 to #17 of the table above are fixed): the
+full target stops at `AspectResolutionHelpers.computePropagatingAspects` (aspects on the `deps`
+of protobuf's `upb_c_proto_library` targets, and on `launcher` of the esbuild toolchain).
+
+New tools:
+
+- `scripts/workerd/triage <labels> <outdir>`: `blaze cquery 'deps(<label>)'` per label, with the
+  first failure of each; `triage kinds` lists one label per rule kind of the oracle's cquery
+  recording (135 kinds). `triage --aquery` runs the comparison below per label.
+- `scripts/workerd/aquery-compare '<expr>' [--full]`: Blaze's aquery of any part of the closure
+  against the oracle's recorded actions with the same keys (the referee's own extractor); a
+  development aid, not a score.
+
+Before any aspect work, with the binary of HEAD 12ec0c9 (`triage kinds`, 135 labels):
+
+- cquery: 124 of 135 labels analyse to the end (81,779 result lines); 10 stop at the aspect
+  `unported!` above and one label was quoted wrongly by the first version of the tool. No other
+  unported native is reached outside aspect-carrying subtrees.
+- aquery on ten of the largest subtrees that pass (`triage --aquery`; 8 ran, 2 exit 8, next
+  point): 7,247 actions printed, 7,142 with a key in the oracle record, 6,890 identical, 252
+  different. Every difference is the `actionKey` of a `SourceSymlinkManifest` (126) or
+  `SymlinkTree` (126) action: the referee's allow-listed `runfiles-manifest-action-key` (the key
+  fingerprints absolute execroot paths). 105 actions (two subtrees) are not in the oracle record
+  because the label was queried in the target configuration, which the real build reaches in
+  another one.
+- aquery exits 8 ("build interrupted") for `deps(@v8//:code_generator)` and the pyodide subtree,
+  **as the oracle does on a fresh output base** (#18): `--include_file_write_contents` makes
+  `SourceManifestAction` read the target of an unresolved symlink artifact
+  (`UnresolvedSymlink` actions of rules_python's venv) from disk; before a build it is not
+  there. `mnemonic("^SourceSymlinkManifest$", deps(@v8//:code_generator))` with that flag is the
+  smallest reproducer. So the protocol result for workerd's aquery surface is exit 8 on both
+  sides; the action list can only be compared on a built output base.
+
+### After the aspect port (working tree on HEAD cf0819b, 2026-11-18)
+
+All numbers below are from `target/debug/blaze` built from the working tree, on the
+ASCII-README copy, with the tools above (the referee's extractors; development aids, not scores).
+
+| surface | result |
+| --- | --- |
+| analysis | `Analyzed target //src/workerd/server:workerd (736 packages loaded, 44464 targets configured, 9 aspect applications)`; the oracle on a fresh server prints 737 / 44464 / 9 (the one package is not explained yet) |
+| cquery_label_kind (`cquery-compare`) | 38,892 of 38,892 items, the `__order__` item included |
+| cquery_jsonproto | 4 of 4 items, both order items included |
+| aquery_actions (`aquery-compare --full --order --make-unresolved-symlinks`) | 13,416 actions on both sides, none missing, none extra; 13,160 identical in every field; 256 differ only in `actionKey`: 128 `SourceSymlinkManifest` and 128 `SymlinkTree` runfiles actions (allow-listed kind `runfiles-manifest-action-key`). All nine `__order__` items equal: actions 13,416, action ids 13,416, artifacts 49,857, depSetOfFiles 22,250, pathFragments 55,226, targets 2,242, configuration 4, ruleClasses 48, aspectDescriptors 2 |
+| build of a sub-target | `build //src/workerd/server:malloc --jobs=8`: 314 actions (169 linux-sandbox); its 485 objects, archives, shared objects, module maps, `.d` and `.params` files are byte-identical to the oracle's files at the same paths |
+
+Referee protocol: `scripts/oracle/record --project workerd` runs on a pristine copy (README with
+the emoji), so Blaze's cquery and aquery commands fail there at `aspect_tools_telemetry` until
+byte strings are ported (#5); the label recorded for this state is `blaze-aspects-2`.
+
+### Triage, continued (aspects wave)
+
+| # | phase | crate | Java | gap | first error | status |
+| --- | --- | --- | --- | --- | --- | --- |
+| 19 | cquery | blaze_packages, blaze_analysis, blaze_sky_analysis, blaze_sky_top, blaze_cquery | `AspectFunction`, `AspectKeyCreator`, `AspectCollection`, `AspectResolutionHelpers`, `ConfiguredAspect`, `AspectContext`, `MergedConfiguredTarget`, `StarlarkAspectFactory`, producers (see crates/blaze_analysis/DESIGN.md, "Aspects wave") | aspects | `not ported yet: AspectResolutionHelpers.computePropagatingAspects` (10 of 135 rule kinds) | fixed |
+| 20 | cquery | blaze_starlark (`label.rs`) | `Label.getRelative` (`BazelModuleContext.ofInnermostBzlOrThrow(thread).repoMapping()`) | `Label.relative()` only worked while a .bzl file loads | protobuf `upb_proto_library_internal/aspect.bzl:197`: `Label.relative() requires a repository mapping` | fixed |
+| 21 | cquery (order) | blaze_sky_analysis (`dependency_map_producer.rs`) | `ConfiguredTargetAndDataProducer.step` with `BaseTargetPrerequisitesSupplier` | the batch that requests one round's configured targets also requested the base target's dependencies of an aspect, adding edges Java does not have | 26 of 38,891 cquery results out of order (`deps(esbuild_toolchain, 1)`: 27 results, oracle 6) | fixed |
+| 22 | (order, latent) | blaze_packages (`aspect/aspect_definition.rs`) | `AspectDefinition.Builder.toolchainTypes` (`HashSet`) | toolchain types of an aspect in insertion order, Java: `HashSet` order | none on workerd | fixed (Java order from `ToolchainTypeRequirement`'s record hash) |
+| 23 | build | blaze_sky_top (`build_view.rs`) | `BuildView.setArtifactRoots` | `ArtifactFactory.packageRoots` never set | `NullPointerException: packageRoots` in `CppCompileAction` `.d` input discovery | fixed |
+| 24 | build | blaze_sky_exec (execution owner) | `TrackSourceDirectoriesFlag` | default assumed false; Bazel's is true | 676 `input 'sysroot' ... is a directory; dependency checking of directories is unsound` warnings for one cc sub-target (oracle: none in the whole build) | open, reported to root |
+| 25 | build (`--aspects`) | blaze_sky_exec (execution owner) | `BuildDriverFunction` for `TopLevelAspectsKey`, `AspectCompletor` | top-level aspects on the build path | `unported!` (not reached by workerd's default configuration) | open, reported to root |
+
 ## Regression checks (brotli, re2)
 
 After all fixes, on the working tree of 2026-11-18 (HEAD bd9694d plus uncommitted changes):

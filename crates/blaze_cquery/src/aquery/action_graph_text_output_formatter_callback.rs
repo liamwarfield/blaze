@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use blaze_actions::actions::action::Action;
+use blaze_actions::actions::action_owner::AspectDescriptor;
 use blaze_actions::skyframe::actiongraph::v2::action_graph_dump::{
     ActionGraphDumpError, matches_aquery_filters,
 };
@@ -93,6 +94,20 @@ impl<'a> ActionGraphTextOutputFormatterCallback<'a> {
         }
     }
 
+    /// `writeAction` with `processOutput`'s handling of its exceptions.
+    fn write_action_or_fail(&self, action: &dyn Action) -> Result<(), OutputFormatterError> {
+        match self.write_action(action) {
+            Ok(()) => Ok(()),
+            Err(ActionGraphDumpError::Interrupted) => Err(OutputFormatterError::Interrupted(
+                InterruptedException::new(),
+            )),
+            Err(ActionGraphDumpError::Io(e)) => Err(e.into()),
+            // catch (CommandLineExpansionException | EvalException e) {
+            //   throw new IOException(e.getMessage()); }
+            Err(e) => Err(std::io::Error::other(e.to_string()).into()),
+        }
+    }
+
     // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:129 ActionGraphTextOutputFormatterCallback.writeAction
     fn write_action(&self, action: &dyn Action) -> Result<(), ActionGraphDumpError> {
         if self.options.include_param_files {
@@ -131,6 +146,48 @@ impl<'a> ActionGraphTextOutputFormatterCallback<'a> {
             ),
         }
     }
+}
+
+/// The `  AspectDescriptors: [...]` lines `writeText` appends for an action whose owner has
+/// aspect descriptors (nothing otherwise).
+///
+/// In the case of aspect-on-aspect, AspectDescriptors are listed in topological order of the
+/// dependency graph. e.g. [A -> B] would imply that aspect A is applied on top of aspect B.
+///
+/// PORT: `writeText` itself is not ported (see the module documentation); this is its aspect
+/// part, for it to call.
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:182 ActionGraphTextOutputFormatterCallback.writeText
+pub fn write_aspect_descriptors(
+    owner_aspect_descriptors: &[AspectDescriptor],
+    string_builder: &mut String,
+) {
+    // ImmutableList<AspectDescriptor> aspectDescriptors =
+    //     actionOwner.getAspectDescriptors().reverse();
+    if owner_aspect_descriptors.is_empty() {
+        return;
+    }
+    let descriptions: Vec<String> = owner_aspect_descriptors
+        .iter()
+        .rev()
+        .map(|aspect_descriptor| {
+            let mut aspect_description = String::new();
+            aspect_description.push_str(&aspect_descriptor.aspect_class_name);
+            aspect_description.push('(');
+            aspect_description.push_str(
+                &aspect_descriptor
+                    .parameters
+                    .iter()
+                    .map(|(key, value)| format!("{key}='{value}'"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            aspect_description.push(')');
+            aspect_description
+        })
+        .collect();
+    string_builder.push_str("  AspectDescriptors: [");
+    string_builder.push_str(&descriptions.join("\n    -> "));
+    string_builder.push_str("]\n");
 }
 
 impl NamedThreadSafeOutputFormatterCallback<KeyedConfiguredTargetValue>
@@ -176,25 +233,19 @@ impl OutputFormatterCallback<KeyedConfiguredTargetValue>
             }
             let actions: Vec<Arc<dyn Action>> = configured_target_value.get_actions().to_vec();
             for action in &actions {
-                match self.write_action(&**action) {
-                    Ok(()) => {}
-                    Err(ActionGraphDumpError::Interrupted) => {
-                        return Err(OutputFormatterError::Interrupted(
-                            InterruptedException::new(),
-                        ));
-                    }
-                    Err(ActionGraphDumpError::Io(e)) => return Err(e.into()),
-                    // catch (CommandLineExpansionException | EvalException e) {
-                    //   throw new IOException(e.getMessage()); }
-                    Err(e) => return Err(std::io::Error::other(e.to_string()).into()),
-                }
+                self.write_action_or_fail(&**action)?;
             }
             if self.options.use_aspects {
-                // Java: writeAction(action, printStream) for the actions of each aspect value.
-                #[allow(clippy::never_loop)]
-                // the aspect value type is uninhabited until aspects are ported
-                for aspect_value in self.accessor.get_aspect_values(configured_target_value) {
-                    match aspect_value {}
+                for aspect_value in self
+                    .accessor
+                    .get_aspect_values(configured_target_value)
+                    .into_iter()
+                    .flatten()
+                {
+                    let actions: Vec<Arc<dyn Action>> = aspect_value.get_actions().to_vec();
+                    for action in &actions {
+                        self.write_action_or_fail(&**action)?;
+                    }
                 }
             }
         }
@@ -213,6 +264,47 @@ mod tests {
     /// The format names of the Java enum (`TEXT("text")`, `COMMANDS("commands")`), which
     /// `getName` returns and `--output` selects.
     // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:62 ActionGraphTextOutputFormatterCallback.OutputType
+    fn descriptor(name: &str, parameters: &[(&str, &str)]) -> AspectDescriptor {
+        AspectDescriptor {
+            aspect_class_name: name.to_owned(),
+            parameters: parameters
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            description: String::new(),
+        }
+    }
+
+    // The format of ActionGraphTextOutputFormatterCallback.writeText (lines 182-215): the
+    // owner's descriptors reversed, each `name(key='value', ...)`, joined by "\n    -> ".
+    // Expected strings follow the Java StringBuilder code character by character.
+    #[test]
+    fn write_aspect_descriptors_format() {
+        let mut out = String::new();
+        write_aspect_descriptors(&[], &mut out);
+        assert_eq!(out, "");
+
+        // The upb aspects of the workerd oracle: the action owner of an action of
+        // upb_c_proto_library_aspect applied on top of upb_minitable_proto_library_aspect lists
+        // [minitable, c] (base aspect first); the text lists them reversed.
+        let minitable = descriptor(
+            "@@protobuf+//upb/bazel:upb_minitable_proto_library.bzl%upb_minitable_proto_library_aspect",
+            &[],
+        );
+        let c = descriptor(
+            "@@protobuf+//upb/bazel:upb_c_proto_library.bzl%upb_c_proto_library_aspect",
+            &[("p", "v1"), ("p", "v2"), ("q", "x")],
+        );
+        let mut out = String::new();
+        write_aspect_descriptors(&[minitable, c], &mut out);
+        assert_eq!(
+            out,
+            "  AspectDescriptors: [\
+             @@protobuf+//upb/bazel:upb_c_proto_library.bzl%upb_c_proto_library_aspect(p='v1', p='v2', q='x')\n    \
+             -> @@protobuf+//upb/bazel:upb_minitable_proto_library.bzl%upb_minitable_proto_library_aspect()]\n"
+        );
+    }
+
     #[test]
     fn output_type_format_names() {
         assert_eq!(OutputType::TEXT.format_name(), "text");

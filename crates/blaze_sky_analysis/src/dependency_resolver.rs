@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 use blaze_analysis::analysis_services::AnalysisServices;
+use blaze_analysis::aspect_key_creator::LoadAspectsKey;
 use blaze_analysis::config::config_conditions::ConfigConditions;
 use blaze_analysis::config::ordered_set_multimap::PrerequisiteMap;
 use blaze_analysis::config::transitions::StarlarkAttributeTransitionProvider;
@@ -34,24 +35,27 @@ use blaze_cmdline::Label;
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
 use blaze_events::{Event, ExtendedEventHandler, StoredEventHandler};
 use blaze_optdefs::fragment::core_options::CoreOptions;
+use blaze_packages::aspect::{AspectClass, StarlarkAspectClass};
 use blaze_packages::exceptions::DetailedExitCode;
 use blaze_packages::target::Target;
 use blaze_skyframe::{Environment, Interrupted};
 use blaze_starlark::Location;
+use indexmap::IndexMap;
 use parking_lot::Mutex;
 
 use crate::producers::dependency_context_producer::{
     DependencyContext, produce_dependency_context_with_compatibility_check,
 };
 use crate::producers::dependency_map_producer::{PrerequisiteParameters, produce_dependency_map};
-use crate::producers::dependency_resolution_helpers::compute_dependency_labels;
+use crate::producers::dependency_resolution_helpers::{Aspect, compute_dependency_labels};
 use crate::producers::errors::{
-    Cause, ConfiguredValueCreationException, DependencyContextError, DependencyError,
-    DependencyEvaluationException, TargetAndConfiguration, TransitiveDependencyState,
-    choose_more_important_with_first_if_tie, configuration_id, configuration_id_message,
-    create_detailed_exit_code, event_location,
+    AspectCreationException, Cause, ConfiguredValueCreationException, DependencyContextError,
+    DependencyError, DependencyEvaluationException, TargetAndConfiguration,
+    TransitiveDependencyState, choose_more_important_with_first_if_tie, configuration_id,
+    configuration_id_message, create_detailed_exit_code, event_location,
 };
 use crate::producers::target_and_configuration_producer::compute_toolchain_configuration_key;
+use blaze_analysis::base_target_prerequisites_supplier::BaseTargetPrerequisitesSupplier;
 
 /// Memoizes computation steps of [`DependencyResolver::evaluate`].
 // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:139 DependencyResolver.State
@@ -112,6 +116,7 @@ enum CaughtException {
     DependencyEvaluation(DependencyEvaluationException),
     ConfiguredValueCreation(ConfiguredValueCreationException),
     Toolchain(ToolchainException),
+    AspectCreation(AspectCreationException),
     StarlarkExecTransitionLoading(StarlarkExecTransitionLoadingException),
     InvalidExecGroup(String),
     IncompatibleTarget(Arc<ConfiguredTargetValue>),
@@ -125,6 +130,36 @@ enum CaughtException {
 impl From<Interrupted> for CaughtException {
     fn from(e: Interrupted) -> Self {
         CaughtException::Interrupted(e)
+    }
+}
+
+/// The exceptions [`compute_dependencies`] throws.
+#[derive(Debug)]
+pub enum ComputeDependenciesException {
+    DependencyEvaluation(DependencyEvaluationException),
+    ConfiguredValueCreation(ConfiguredValueCreationException),
+    AspectCreation(AspectCreationException),
+    Interrupted(Interrupted),
+}
+
+impl From<Interrupted> for ComputeDependenciesException {
+    fn from(e: Interrupted) -> Self {
+        ComputeDependenciesException::Interrupted(e)
+    }
+}
+
+impl From<ComputeDependenciesException> for CaughtException {
+    fn from(e: ComputeDependenciesException) -> Self {
+        match e {
+            ComputeDependenciesException::DependencyEvaluation(e) => {
+                CaughtException::DependencyEvaluation(e)
+            }
+            ComputeDependenciesException::ConfiguredValueCreation(e) => {
+                CaughtException::ConfiguredValueCreation(e)
+            }
+            ComputeDependenciesException::AspectCreation(e) => CaughtException::AspectCreation(e),
+            ComputeDependenciesException::Interrupted(e) => CaughtException::Interrupted(e),
+        }
     }
 }
 
@@ -275,6 +310,7 @@ impl DependencyResolver {
         )
         .map_err(CaughtException::StarlarkExecTransitionLoading)?;
 
+        let mut load_exec_aspects_key: Option<LoadAspectsKey> = None;
         if let Some(configuration_key) = configured_target_key.get_configuration_key() {
             let exec_aspects = &configuration_key
                 .get_options()
@@ -282,21 +318,28 @@ impl DependencyResolver {
                 .expect("CoreOptions")
                 .exec_aspects;
             if !exec_aspects.is_empty() {
-                blaze_util::unported!(
-                    "DependencyResolver.createAspectClasses",
-                    "--exec_aspects {:?}",
-                    exec_aspects
-                );
+                let aspect_classes = self
+                    .create_aspect_classes(exec_aspects)
+                    .map_err(CaughtException::AspectCreation)?;
+                if !aspect_classes.is_empty() {
+                    load_exec_aspects_key = Some(LoadAspectsKey::create(
+                        aspect_classes,
+                        /* top_level_aspects_parameters= */ IndexMap::new(),
+                    ));
+                }
             }
         }
-
         // Calculate the dependencies of this target.
         let dep_value_map = compute_dependencies(
             state,
             configured_target_key,
+            /* aspects= */ &[],
+            load_exec_aspects_key.as_ref(),
             services,
             starlark_exec_transition,
             env,
+            /* base_target_prerequisites_supplier= */ None,
+            /* base_target_unloaded_toolchain_contexts= */ None,
         )?;
         if state.transitive_state.has_root_cause() {
             let causes = state.transitive_root_causes();
@@ -323,6 +366,26 @@ impl DependencyResolver {
         self.dep_value_map = Some(dep_value_map);
         self.materializer_targets = state.materializer_targets.clone();
         Ok(true)
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:906 DependencyResolver.createAspectClasses
+    fn create_aspect_classes(
+        &self,
+        aspect_names: &[String],
+    ) -> Result<Vec<AspectClass>, AspectCreationException> {
+        let mut aspect_classes_builder = Vec::new();
+        for aspect in aspect_names {
+            match StarlarkAspectClass::get_aspect_class_from_name(aspect) {
+                Ok(c) => aspect_classes_builder.push(AspectClass::Starlark(c)),
+                Err(e) => {
+                    return Err(AspectCreationException::for_label(
+                        e.0,
+                        self.get_target_and_configuration().get_label(),
+                    ));
+                }
+            }
+        }
+        Ok(aspect_classes_builder)
     }
 
     /// Handles all exceptions that [`DependencyResolver::evaluate`] may throw.
@@ -391,6 +454,21 @@ impl DependencyResolver {
                     ));
                 }
                 DependencyResolverException::Reported(e)
+            }
+            CaughtException::AspectCreation(e) => {
+                if !e.get_message().is_empty() {
+                    // Report the error to the user.
+                    env.listener().handle(&Event::error(e.get_message()));
+                }
+                DependencyResolverException::Reported(
+                    ConfiguredValueCreationException::for_target_full(
+                        target,
+                        configuration_id(configuration),
+                        e.get_message(),
+                        Some(e.get_causes().clone()),
+                        Some(e.get_detailed_exit_code().clone()),
+                    ),
+                )
             }
             CaughtException::Toolchain(e) => {
                 let cvce = toolchain_exception_as_configured_value_creation_exception(
@@ -490,7 +568,7 @@ pub fn toolchain_exception_as_configured_value_creation_exception(
 
 /// Java `ToolchainException.getDetailedExitCode`.
 // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainException.java:51 ToolchainException.getDetailedExitCode
-fn toolchain_exception_detailed_exit_code(
+pub fn toolchain_exception_detailed_exit_code(
     e: &blaze_analysis::toolchains::ToolchainException,
 ) -> DetailedExitCode {
     if let Some(cause) = e.get_cause() {
@@ -607,27 +685,42 @@ pub fn load_starlark_exec_transition_provider(
     Ok(LOADED.lock().entry(user_ref).or_insert(provider).clone())
 }
 
-/// Computes the direct dependencies of a node in the configured target graph. Returns `None`
-/// if Skyframe hasn't evaluated the required dependencies yet.
+/// Computes the direct dependencies of a node in the configured target graph (a configured
+/// target or an aspect). Returns `None` if Skyframe hasn't evaluated the required dependencies
+/// yet.
 ///
 /// REQUIRES: `state.dependency_context` is populated.
+///
+/// `load_exec_aspects_key`: the key of the aspects passed to the --exec_aspects flag that are
+/// attached to exec-configured targets. `base_target_prerequisites_supplier` and
+/// `base_target_unloaded_toolchain_contexts` are non-null only in case of aspect evaluation (the
+/// latter is the `UnloadedToolchainContext`s of the underlying target to support aspects
+/// toolchains propagation).
 // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:648 DependencyResolver.computeDependencies
-fn compute_dependencies(
+pub fn compute_dependencies(
     state: &mut DependencyResolverState,
     configured_target_key: &ConfiguredTargetKey,
+    aspects: &[Aspect],
+    load_exec_aspects_key: Option<&LoadAspectsKey>,
     services: &AnalysisServices,
     starlark_transition_provider: Option<Arc<StarlarkAttributeTransitionProvider>>,
     env: &mut Environment<'_>,
-) -> Result<Option<PrerequisiteMap>, CaughtException> {
+    base_target_prerequisites_supplier: Option<&BaseTargetPrerequisitesSupplier>,
+    base_target_unloaded_toolchain_contexts: Option<&ToolchainCollection<UnloadedToolchainContext>>,
+) -> Result<Option<PrerequisiteMap>, ComputeDependenciesException> {
     // Replays stored events unless a Skyframe restart is immediately needed and the events would
     // be unused anyway.
     let mut should_replay_stored_events = true;
     let result = compute_dependencies_internal(
         state,
         configured_target_key,
+        aspects,
+        load_exec_aspects_key,
         services,
         starlark_transition_provider,
         env,
+        base_target_prerequisites_supplier,
+        base_target_unloaded_toolchain_contexts,
         &mut should_replay_stored_events,
     );
     if should_replay_stored_events {
@@ -639,11 +732,15 @@ fn compute_dependencies(
 fn compute_dependencies_internal(
     state: &mut DependencyResolverState,
     configured_target_key: &ConfiguredTargetKey,
+    aspects: &[Aspect],
+    load_exec_aspects_key: Option<&LoadAspectsKey>,
     services: &AnalysisServices,
     starlark_transition_provider: Option<Arc<StarlarkAttributeTransitionProvider>>,
     env: &mut Environment<'_>,
+    base_target_prerequisites_supplier: Option<&BaseTargetPrerequisitesSupplier>,
+    base_target_unloaded_toolchain_contexts: Option<&ToolchainCollection<UnloadedToolchainContext>>,
     should_replay_stored_events: &mut bool,
-) -> Result<Option<PrerequisiteMap>, CaughtException> {
+) -> Result<Option<PrerequisiteMap>, ComputeDependenciesException> {
     if let Some(m) = &state.dependency_map {
         return Ok(Some(m.clone()));
     }
@@ -656,14 +753,14 @@ fn compute_dependencies_internal(
     let config_conditions = Arc::new(dependency_context.config_conditions.as_providers().clone());
     let dependency_labels = match compute_dependency_labels(
         &ctg_value,
-        /* aspects= */ &[],
+        aspects,
         &config_conditions,
         toolchain_contexts,
-        /* base_target_unloaded_toolchain_contexts= */ None,
+        base_target_unloaded_toolchain_contexts,
     ) {
         Ok(l) => l,
         Err(e) => {
-            return Err(CaughtException::DependencyEvaluation(
+            return Err(ComputeDependenciesException::DependencyEvaluation(
                 handle_dependency_root_cause_error(
                     &ctg_value,
                     e.location,
@@ -678,12 +775,15 @@ fn compute_dependencies_internal(
             services,
             configured_target_key,
             target_and_configuration: &ctg_value,
-            aspects: &[],
+            aspects,
+            load_exec_aspects_key,
             starlark_transition_provider,
             toolchain_contexts,
             attribute_map: dependency_labels.attribute_map.as_ref(),
             transitive_state: &mut state.transitive_state,
             event_handler: &state.stored_events,
+            base_target_prerequisites_supplier,
+            base_target_toolchain_contexts: base_target_unloaded_toolchain_contexts,
         };
         produce_dependency_map(env, &mut parameters, &dependency_labels.labels)?
     };
@@ -698,37 +798,47 @@ fn compute_dependencies_internal(
     if let Some(error) = outcome.dependency_map_error {
         let target = ctg_value.get_target();
         return Err(match error {
-            DependencyError::DependencyTransition(e) => CaughtException::ConfiguredValueCreation(
-                ConfiguredValueCreationException::for_target(target, e.0),
-            ),
+            DependencyError::DependencyTransition(e) => {
+                ComputeDependenciesException::ConfiguredValueCreation(
+                    ConfiguredValueCreationException::for_target(target, e.0),
+                )
+            }
             DependencyError::DependencyOptionsParsing(m) => {
-                CaughtException::ConfiguredValueCreation(
+                ComputeDependenciesException::ConfiguredValueCreation(
                     ConfiguredValueCreationException::for_target(target, m),
                 )
             }
-            DependencyError::Materializer(m) => CaughtException::ConfiguredValueCreation(
-                ConfiguredValueCreationException::for_target(target, m),
-            ),
+            DependencyError::Materializer(m) => {
+                ComputeDependenciesException::ConfiguredValueCreation(
+                    ConfiguredValueCreationException::for_target(target, m),
+                )
+            }
             DependencyError::InvalidVisibility(label) => {
-                CaughtException::DependencyEvaluation(handle_dependency_root_cause_error(
-                    &ctg_value,
-                    Some(target.get_location()),
-                    &format!("Label '{}' does not refer to a package group.", label),
-                    env.listener(),
-                ))
+                ComputeDependenciesException::DependencyEvaluation(
+                    handle_dependency_root_cause_error(
+                        &ctg_value,
+                        Some(target.get_location()),
+                        &format!("Label '{}' does not refer to a package group.", label),
+                        env.listener(),
+                    ),
+                )
             }
-            DependencyError::AspectEvaluation(e) => CaughtException::DependencyEvaluation(e),
-            DependencyError::AspectCreation(m) => {
-                blaze_util::unported!("AspectCreationException", "{}", m)
+            DependencyError::AspectEvaluation(e) => {
+                ComputeDependenciesException::DependencyEvaluation(e)
             }
+            DependencyError::AspectCreation(e) => ComputeDependenciesException::AspectCreation(e),
             DependencyError::PlatformMapping(m)
             | DependencyError::InvalidPlatform(m)
-            | DependencyError::BuildOptionsScope(m) => CaughtException::ConfiguredValueCreation(
-                ConfiguredValueCreationException::for_target(target, m),
-            ),
-            DependencyError::TransitionCreation(e) => CaughtException::ConfiguredValueCreation(
-                ConfiguredValueCreationException::for_target(target, e.0),
-            ),
+            | DependencyError::BuildOptionsScope(m) => {
+                ComputeDependenciesException::ConfiguredValueCreation(
+                    ConfiguredValueCreationException::for_target(target, m),
+                )
+            }
+            DependencyError::TransitionCreation(e) => {
+                ComputeDependenciesException::ConfiguredValueCreation(
+                    ConfiguredValueCreationException::for_target(target, e.0),
+                )
+            }
         });
     }
     if !state.transitive_state.has_root_cause() && outcome.dependency_map.is_none() {

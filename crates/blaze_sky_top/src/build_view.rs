@@ -22,6 +22,9 @@
 
 use std::sync::Arc;
 
+use blaze_analysis::aspect_key_creator::AspectKey;
+use blaze_analysis::aspect_key_creator::{AspectKeyCreator, TopLevelAspectsKey};
+use blaze_analysis::aspect_value::AspectValue;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::constraints::top_level_constraint_semantics::{
@@ -30,17 +33,21 @@ use blaze_analysis::constraints::top_level_constraint_semantics::{
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_build_config::build_options::BuildOptions;
 use blaze_build_config::fragment::InvalidConfigurationException;
-use blaze_cmdline::Label;
+use blaze_cmdline::repository_name::MAIN;
+use blaze_cmdline::{Label, LabelRepoContextImpl, RepositoryMapping};
 use blaze_events::{Event, ExtendedEventHandler};
+use blaze_packages::aspect::{AspectClass, StarlarkAspectClass};
 use blaze_packages::target::Target;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
 use blaze_sky_analysis::top_level_status_events::{
     TopLevelTargetAnalyzedEvent, TopLevelTargetSkippedEvent,
 };
+use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use blaze_skyframe::WalkableGraph;
 use indexmap::{IndexMap, IndexSet};
 
 use crate::skyframe_build_view::{self, ConfigureTargetsError, SkyframeAnalysisResult};
+use crate::skyframe_error_processor::ViewCreationFailedException;
 use crate::skyframe_executor::{SkyframeExecutor, TargetAndConfiguration};
 use crate::target_pattern_phase::TargetPatternPhaseValue;
 
@@ -51,6 +58,7 @@ pub struct AnalysisResult {
     targets_to_build: Vec<ConfiguredTarget>,
     targets_to_test: Option<Vec<ConfiguredTarget>>,
     targets_to_skip: Vec<ConfiguredTarget>,
+    aspects: IndexMap<AspectKey, Arc<AspectValue>>,
     failure_detail: Option<FailureDetail>,
     walkable_graph: Arc<dyn WalkableGraph>,
     top_level_targets_with_configs: Vec<TargetAndConfiguration>,
@@ -113,12 +121,13 @@ impl AnalysisResult {
         &self.top_level_targets_with_configs
     }
 
-    /// `getAspectsMap()`.
+    /// Returns aspects of configured targets to build.
     ///
-    /// PORT: top-level aspects (`--aspects`) are not ported; the map is always empty.
+    /// If this list is empty, build the targets returned by `getTargetsToBuild()`. Otherwise,
+    /// only build these aspects of the targets returned by `getTargetsToBuild()`.
     // Java: com/google/devtools/build/lib/analysis/AnalysisResult.java:116 AnalysisResult.getAspectsMap
-    pub fn get_aspects_map_is_empty(&self) -> bool {
-        true
+    pub fn get_aspects_map(&self) -> &IndexMap<AspectKey, Arc<AspectValue>> {
+        &self.aspects
     }
 }
 
@@ -178,6 +187,31 @@ pub fn update(
     options: &BuildViewUpdateOptions,
     event_handler: Arc<dyn ExtendedEventHandler>,
 ) -> Result<AnalysisResult, BuildViewError> {
+    update_with_aspects_parameters(
+        skyframe_executor,
+        loading_result,
+        target_options,
+        options,
+        &IndexMap::new(),
+        event_handler,
+    )
+}
+
+/// [`update`] with Java's `aspectsParameters` argument (`BuildRequest.getAspectsParameters()`,
+/// `--aspects_parameters`).
+///
+/// PORT: a separate entry point rather than a field of [`BuildViewUpdateOptions`], so that the
+/// callers that build the options literally keep compiling; [`update`] passes no parameters
+/// (`ImmutableMap.of()`).
+// Java: com/google/devtools/build/lib/analysis/BuildView.java:216 BuildView.update
+pub fn update_with_aspects_parameters(
+    skyframe_executor: &SkyframeExecutor,
+    loading_result: &TargetPatternPhaseValue,
+    target_options: &Arc<BuildOptions>,
+    options: &BuildViewUpdateOptions,
+    aspects_parameters: &IndexMap<String, String>,
+    event_handler: Arc<dyn ExtendedEventHandler>,
+) -> Result<AnalysisResult, BuildViewError> {
     // AnalysisPhaseRunner.runAnalysisPhase: Stopwatch timer = Stopwatch.createStarted().
     // PORT: the analysis timer runs over BuildView.update (Java starts it just before).
     let timer = std::time::Instant::now();
@@ -233,9 +267,18 @@ pub fn update(
         })
         .collect();
 
-    if !options.aspects.is_empty() {
-        blaze_util::unported!("BuildView.createTopLevelAspectKeys");
-    }
+    let aspect_keys = create_top_level_aspect_keys(
+        skyframe_executor,
+        &options.aspects,
+        aspects_parameters,
+        &label_to_target_map
+            .keys()
+            .cloned()
+            .collect::<IndexSet<Label>>(),
+        &top_level_config,
+        options.keep_going,
+        event_handler.clone(),
+    )?;
 
     // PORT: ArtifactFactory.noteAnalysisStarting only resets incremental state.
     let mut skyframe_analysis_result = skyframe_build_view::configure_targets(
@@ -243,9 +286,12 @@ pub fn update(
         event_handler.clone(),
         &label_to_target_map,
         &top_level_ct_keys,
+        &aspect_keys,
         options.keep_going,
         options.check_for_action_conflicts,
     )?;
+    // Java: setArtifactRoots(skyframeAnalysisResult.getPackageRoots()).
+    set_artifact_roots(skyframe_executor);
 
     // PORT: with the execution phase, Java's `analyzeAndExecuteTargets` has checked the
     // compatibility of each top-level target in its `BuildDriverFunction` by now (module comment).
@@ -269,6 +315,32 @@ pub fn update(
         )?;
         skyframe_analysis_result = result;
         targets_to_skip = skipped;
+        // PORT: Java's BuildDriverFunction of each TopLevelAspectsKey announces its aspects as
+        // analyzed (`announceTopLevelAspectAnalyzed`); the ToplevelAspectsIdentifiedEvent and
+        // AspectConfiguredEvents were posted by `configureTargets`, the AspectAnalyzedEvents
+        // are posted here, in the order of the aspects map.
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:449 BuildDriverFunction.announceTopLevelAspectAnalyzed
+        for (aspect_key, aspect_value) in skyframe_analysis_result.get_aspects() {
+            event_handler.post(Arc::new(
+                crate::analysis_phase_runner::AspectAnalyzedEvent::create(
+                    aspect_key.clone(),
+                    aspect_value.clone(),
+                ),
+            ));
+        }
+        // Java: SkyframeBuildView.analyzeAndExecuteTargets also creates a
+        // `BuildDriverKey.ofTopLevelAspect` per TopLevelAspectsKey, whose BuildDriverFunction
+        // requests one AspectCompletionKey per aspect (AspectCompletor). The execution side has
+        // no aspect entry point yet (`execution_seam::build_driver_keys` creates configured
+        // target keys only), so a build with top-level aspects fails here instead of silently
+        // not building them.
+        if !skyframe_analysis_result.get_aspects().is_empty() {
+            blaze_util::unported!(
+                "SkyframeBuildView.analyzeAndExecuteTargets",
+                "BuildDriverKey.ofTopLevelAspect / AspectCompletor for {} top-level aspect(s)",
+                skyframe_analysis_result.get_aspects().len()
+            );
+        }
     }
 
     let num_targets_to_analyze = label_to_target_map.len();
@@ -519,6 +591,174 @@ pub fn construct_label_to_target_map(
     builder
 }
 
+/// `createAnalysisFailureDetail(String errorMessage, Analysis.Code code)`.
+// Java: com/google/devtools/build/lib/analysis/BuildView.java:740 BuildView.createAnalysisFailureDetail
+fn create_analysis_failure_detail_with_code(
+    error_message: &str,
+    code: failure_details::analysis::Code,
+) -> FailureDetail {
+    FailureDetail {
+        message: error_message.to_owned(),
+        category: Some(Category::Analysis(failure_details::Analysis {
+            code: code as i32,
+        })),
+    }
+}
+
+/// The aspect class part of `createTopLevelAspectKeys` for one `--aspects` value: `label%aspect`
+/// (with the legacy forms of the label part) or the name of a native aspect.
+///
+/// `native_aspect_class_map` stands for `ruleClassProvider.getNativeAspectClassMap()`.
+// Java: com/google/devtools/build/lib/analysis/BuildView.java:548 BuildView.createTopLevelAspectKeys
+pub fn create_top_level_aspect_class(
+    aspect: &str,
+    main_repo_mapping: &RepositoryMapping,
+    native_aspect_class_map: &dyn Fn(&str) -> Option<AspectClass>,
+) -> Result<AspectClass, ViewCreationFailedException> {
+    // Syntax: label%aspect
+    if let Some(delimiter_position) = aspect.find('%') {
+        // TODO(jfield): For consistency with Starlark loads, the aspect should be specified
+        // as an absolute label.
+        // We convert it for compatibility reasons (this will be removed in the future).
+        let mut bzl_file_load_like_string = aspect[..delimiter_position].to_owned();
+        if !bzl_file_load_like_string.starts_with("//")
+            && !bzl_file_load_like_string.starts_with('@')
+        {
+            // "Legacy" behavior of '--aspects' parameter.
+            if let Some(rest) = bzl_file_load_like_string.strip_prefix('/') {
+                bzl_file_load_like_string = rest.to_owned();
+            }
+            match bzl_file_load_like_string.rfind('/') {
+                Some(last_slash_position) => {
+                    bzl_file_load_like_string = format!(
+                        "//{}:{}",
+                        &bzl_file_load_like_string[..last_slash_position],
+                        &bzl_file_load_like_string[last_slash_position + 1..]
+                    );
+                }
+                None => {
+                    bzl_file_load_like_string = format!("//:{bzl_file_load_like_string}");
+                }
+            }
+            if !bzl_file_load_like_string.ends_with(".bzl") {
+                bzl_file_load_like_string.push_str(".bzl");
+            }
+        }
+        let starlark_file_label = match Label::parse_with_repo_context(
+            &bzl_file_load_like_string,
+            &LabelRepoContextImpl::of(MAIN.clone(), main_repo_mapping.clone()),
+        ) {
+            Ok(label) => label,
+            Err(e) => {
+                let error_message = format!("Invalid aspect '{}': {}", aspect, e.get_message());
+                return Err(ViewCreationFailedException::with_cause(
+                    error_message.clone(),
+                    create_analysis_failure_detail_with_code(
+                        &error_message,
+                        failure_details::analysis::Code::AspectLabelSyntaxError,
+                    ),
+                    Some(e.get_message()),
+                ));
+            }
+        };
+        let starlark_function_name = &aspect[delimiter_position + 1..];
+        // PORT: Java's StarlarkAspectClass holds `keyForBuild(starlarkFileLabel)` (a BzlLoadValue
+        // key); the ported class holds the label.
+        return Ok(AspectClass::Starlark(StarlarkAspectClass::new(
+            starlark_file_label,
+            starlark_function_name,
+        )));
+    }
+    match native_aspect_class_map(aspect) {
+        Some(aspect_factory_class) => Ok(aspect_factory_class),
+        None => {
+            let error_message = format!("Aspect '{aspect}' is unknown");
+            Err(ViewCreationFailedException::new(
+                error_message.clone(),
+                create_analysis_failure_detail_with_code(
+                    &error_message,
+                    failure_details::analysis::Code::AspectNotFound,
+                ),
+            ))
+        }
+    }
+}
+
+// Java: com/google/devtools/build/lib/analysis/BuildView.java:530 BuildView.createTopLevelAspectKeys
+#[allow(clippy::too_many_arguments)]
+fn create_top_level_aspect_keys(
+    skyframe_executor: &SkyframeExecutor,
+    aspects: &[String],
+    aspects_parameters: &IndexMap<String, String>,
+    top_level_targets: &IndexSet<Label>,
+    configuration: &BuildConfigurationValue,
+    keep_going: bool,
+    event_handler: Arc<dyn ExtendedEventHandler>,
+) -> Result<Vec<TopLevelAspectsKey>, BuildViewError> {
+    // PORT: Java's getMainRepoMapping(eventHandler) reads the build's keep_going and thread
+    // count from the executor; the ported one takes them.
+    let main_repo_mapping = match skyframe_executor.get_main_repo_mapping(
+        keep_going,
+        crate::skyframe_executor::DEFAULT_THREAD_COUNT,
+        event_handler,
+    ) {
+        Ok(mapping) => mapping,
+        Err(RepositoryMappingResolutionOrInterrupted::Interrupted) => {
+            return Err(BuildViewError::Interrupted);
+        }
+        Err(RepositoryMappingResolutionOrInterrupted::Resolution(e)) => {
+            let error_message = format!(
+                "Failed to get main repo mapping for aspect label canonicalization: {}",
+                e
+            );
+            let e = ViewCreationFailedException::with_cause(
+                error_message.clone(),
+                create_analysis_failure_detail_with_code(
+                    &error_message,
+                    failure_details::analysis::Code::UnexpectedAnalysisException,
+                ),
+                Some(&e.to_string()),
+            );
+            return Err(BuildViewError::ViewCreationFailed {
+                message: e.get_message().to_owned(),
+                failure_detail: e.get_failure_detail().clone(),
+            });
+        }
+    };
+
+    let mut aspect_classes: Vec<AspectClass> = Vec::new();
+    for aspect in aspects {
+        let aspect_class = create_top_level_aspect_class(aspect, &main_repo_mapping, &|name| {
+            // ruleClassProvider.getNativeAspectClassMap().get(aspect)
+            // PORT: ConfiguredRuleClassProvider's native aspect class map is not ported.
+            blaze_util::unported!(
+                "ConfiguredRuleClassProvider.getNativeAspectClassMap",
+                "native aspect '{name}'"
+            )
+        })
+        .map_err(|e| BuildViewError::ViewCreationFailed {
+            message: e.get_message().to_owned(),
+            failure_detail: e.get_failure_detail().clone(),
+        })?;
+        aspect_classes.push(aspect_class);
+    }
+    if aspect_classes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    Ok(top_level_targets
+        .iter()
+        .map(|target| {
+            AspectKeyCreator::create_top_level_aspects_key(
+                aspect_classes.clone(),
+                target.clone(),
+                Some(configuration),
+                aspects_parameters.clone(),
+            )
+        })
+        .collect())
+}
+
 // Java: com/google/devtools/build/lib/analysis/BuildView.java:622 BuildView.createResult
 fn create_result(
     loading_result: &TargetPatternPhaseValue,
@@ -542,6 +782,7 @@ fn create_result(
         targets_to_build: configured_targets,
         targets_to_test: all_targets_to_test,
         targets_to_skip,
+        aspects: skyframe_analysis_result.get_aspects().clone(),
         failure_detail,
         walkable_graph: skyframe_analysis_result.get_walkable_graph().clone(),
         top_level_targets_with_configs: skyframe_analysis_result
@@ -622,4 +863,39 @@ pub struct AnalysisPhaseCompleteStats {
     pub time_in_ms: i64,
     pub packages_successfully_loaded: i32,
     pub actions_constructed_by_mnemonic: Vec<(String, i32)>,
+}
+
+/// Java `PackageRoots.MapAsPackageRoots.getPackageRootLookup()`: the root of a package of the
+/// map, null for any other package.
+// Java: com/google/devtools/build/lib/skyframe/MapAsPackageRoots.java:39 MapAsPackageRoots.getPackageRootLookup
+struct MapAsPackageRoots {
+    package_roots_map: IndexMap<blaze_cmdline::PackageIdentifier, blaze_vfs::Root>,
+}
+
+impl blaze_actions::actions::artifact_factory::PackageRootLookup for MapAsPackageRoots {
+    fn get_root_for_package(
+        &self,
+        package_identifier: &blaze_cmdline::PackageIdentifier,
+    ) -> Option<blaze_vfs::Root> {
+        self.package_roots_map.get(package_identifier).cloned()
+    }
+}
+
+/// Sets the possible artifact roots in the artifact factory. This allows the factory to resolve
+/// paths with unknown roots to artifacts.
+///
+/// PORT: Java passes the package roots of the top-level targets' and aspects' transitive
+/// packages (`SkyframeBuildView.collectPackageRoots`); Blaze passes
+/// [`SkyframeExecutor::get_package_roots`], the superset the symlink forest is planted from
+/// (every package this command loaded; see there).
+// Java: com/google/devtools/build/lib/analysis/BuildView.java:911 BuildView.setArtifactRoots
+fn set_artifact_roots(skyframe_executor: &SkyframeExecutor) {
+    let Some(services) = skyframe_executor.get_analysis_services() else {
+        return;
+    };
+    services
+        .artifact_factory
+        .set_package_roots(Arc::new(MapAsPackageRoots {
+            package_roots_map: skyframe_executor.get_package_roots(),
+        }));
 }

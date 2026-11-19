@@ -12,12 +12,42 @@ use blaze_util::check_state;
 use indexmap::IndexMap;
 use starlark::values::OwnedFrozenValue;
 
-use crate::config::configured_attribute_mapper::ConfiguredAttributeMapper;
 use crate::configured_target::ConfiguredTarget;
 use crate::configured_target_and_data::ConfiguredTargetAndData;
 use crate::provider_map::TransitiveInfoProvider;
 use crate::providers::file_provider::{FileProvider, FilesToRunProvider};
 use crate::rule::rule_error_consumer::{RuleErrorConsumer, RuleReporter};
+
+/// Java `PrerequisitesCollection.AttributesMapper`: how the collection finds the definition of
+/// an attribute (Java's two constructors pass `attributes::get` of an aspect definition's
+/// attribute map, or `attributes::getAttributeDefinition` of an `AttributeMap`).
+// Java: com/google/devtools/build/lib/analysis/PrerequisitesCollection.java:43 PrerequisitesCollection.AttributesMapper
+pub enum AttributesMapper {
+    /// `ImmutableMap<String, Attribute>::get`.
+    Map(IndexMap<String, Attribute>),
+    /// `AttributeMap::getAttributeDefinition`.
+    AttributeMap(Arc<dyn AttributeMap + Send + Sync>),
+}
+
+impl AttributesMapper {
+    // Java: com/google/devtools/build/lib/analysis/PrerequisitesCollection.java:56 PrerequisitesCollection.<init>
+    pub fn of_attributes(attributes: IndexMap<String, Attribute>) -> AttributesMapper {
+        AttributesMapper::Map(attributes)
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/PrerequisitesCollection.java:70 PrerequisitesCollection.<init>
+    pub fn of_attribute_map(attributes: Arc<dyn AttributeMap + Send + Sync>) -> AttributesMapper {
+        AttributesMapper::AttributeMap(attributes)
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/PrerequisitesCollection.java:44 AttributesMapper.getAttribute
+    fn get_attribute(&self, attribute_name: &str) -> Option<&Attribute> {
+        match self {
+            AttributesMapper::Map(m) => m.get(attribute_name),
+            AttributesMapper::AttributeMap(m) => m.get_attribute_definition(attribute_name),
+        }
+    }
+}
 
 /// Represents the prerequisites of a rule (and of an aspect's attributes) with the lookup
 /// methods `RuleContext` delegates to.
@@ -25,7 +55,7 @@ use crate::rule::rule_error_consumer::{RuleErrorConsumer, RuleReporter};
 pub struct PrerequisitesCollection {
     /// Java `ImmutableSortedKeyListMultimap<String, ConfiguredTargetAndData>` (keys sorted).
     attribute_to_prerequisites_map: BTreeMap<String, Vec<ConfiguredTargetAndData>>,
-    attributes: Arc<ConfiguredAttributeMapper>,
+    attributes_mapper: AttributesMapper,
     rule_error_consumer: Arc<RuleReporter>,
     rule: Arc<Rule>,
     rule_class_name_for_logging: String,
@@ -37,14 +67,14 @@ impl PrerequisitesCollection {
     // Java: com/google/devtools/build/lib/analysis/PrerequisitesCollection.java:81 PrerequisitesCollection.<init>
     pub fn new(
         attribute_to_prerequisites_map: BTreeMap<String, Vec<ConfiguredTargetAndData>>,
-        attributes: Arc<ConfiguredAttributeMapper>,
+        attributes_mapper: AttributesMapper,
         rule_error_consumer: Arc<RuleReporter>,
         rule: Arc<Rule>,
         rule_class_name_for_logging: String,
     ) -> PrerequisitesCollection {
         PrerequisitesCollection {
             attribute_to_prerequisites_map,
-            attributes,
+            attributes_mapper,
             rule_error_consumer,
             rule,
             rule_class_name_for_logging,
@@ -52,7 +82,7 @@ impl PrerequisitesCollection {
     }
 
     fn get_attribute(&self, attribute_name: &str) -> Option<&Attribute> {
-        self.attributes.get_attribute_definition(attribute_name)
+        self.attributes_mapper.get_attribute(attribute_name)
     }
 
     // Java: com/google/devtools/build/lib/analysis/PrerequisitesCollection.java:113 PrerequisitesCollection.has

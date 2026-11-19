@@ -184,21 +184,17 @@ fn create_exit_exception(
     exit_code: ExitCode,
     remote_execution_code: failure_details::remote_execution::Code,
 ) -> AbruptExitException {
-    // PORT: `blaze_exec`'s `AbruptExitException` carries only the failure detail, whose exit
-    // code is the `exit_code` metadata of its code; where Java's explicit exit code differs from
-    // it (`Partially wrote RPC log file` and `Failed to delete stale downloads`: 36 where the
-    // metadata says 2 and 34), the command exits with the metadata's code until
-    // `AbruptExitException` can carry an explicit one (review 2026-11-19 R15; the change is
-    // listed in docs/reviews/2026-11-19-remote-response.md).
-    let _explicit_exit_code = exit_code.get_numeric_exit_code();
-    AbruptExitException::new(FailureDetail {
-        message: message.into(),
-        category: Some(failure_detail::Category::RemoteExecution(
-            failure_details::RemoteExecution {
-                code: remote_execution_code as i32,
-            },
-        )),
-    })
+    AbruptExitException::with_exit_code(
+        exit_code.get_numeric_exit_code(),
+        FailureDetail {
+            message: message.into(),
+            category: Some(failure_detail::Category::RemoteExecution(
+                failure_details::RemoteExecution {
+                    code: remote_execution_code as i32,
+                },
+            )),
+        },
+    )
 }
 
 /// `handleInitFailure(env, e, code)`: reports the error and makes the command exit with
@@ -310,21 +306,23 @@ impl RemoteModule {
             .action_context_provider
             .as_ref()
             .and_then(|p| p.get_combined_cache().cloned())?;
-        let fetcher = Arc::new(RemoteActionInputFetcher::new(
-            reporter,
-            &self.build_request_id,
-            &self.command_id,
-            combined_cache,
-            self.exec_root.clone().expect("env.getExecRoot()"),
-            self.temp_path_generator
-                .clone()
-                .expect("NullPointerException: tempPathGenerator"),
-            self.remote_output_checker
-                .clone()
-                .expect("NullPointerException: remoteOutputChecker"),
-            output_directory_helper,
-            output_permissions,
-        ));
+        let fetcher = crate::abstract_action_input_prefetcher::register_prefetcher(
+            RemoteActionInputFetcher::new(
+                reporter,
+                &self.build_request_id,
+                &self.command_id,
+                combined_cache,
+                self.exec_root.clone().expect("env.getExecRoot()"),
+                self.temp_path_generator
+                    .clone()
+                    .expect("NullPointerException: tempPathGenerator"),
+                self.remote_output_checker
+                    .clone()
+                    .expect("NullPointerException: remoteOutputChecker"),
+                output_directory_helper,
+                output_permissions,
+            ),
+        );
         self.action_input_fetcher = Some(fetcher.clone());
         Some(fetcher)
     }
@@ -992,8 +990,12 @@ impl RemoteModule {
     }
 }
 
+/// `getTempPathGenerator(env)`: warns about and deletes the downloads a previous build left in
+/// `<action temps>/remote`. `setup` runs it for every command that has `RemoteOptions`, also
+/// when nothing remote is enabled (before it returns with the placeholder provider), so the
+/// integration calls it for those commands too.
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1215 RemoteModule.getTempPathGenerator
-fn get_temp_path_generator(
+pub fn get_temp_path_generator(
     action_temps_directory: &Path,
     reporter: &dyn EventHandler,
 ) -> Result<TempPathGenerator, AbruptExitException> {

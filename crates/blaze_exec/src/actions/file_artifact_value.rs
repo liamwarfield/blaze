@@ -128,12 +128,20 @@ pub enum FileArtifactValue {
     /// `UnresolvedSymlinkArtifactValue`.
     UnresolvedSymlink { target: String, digest: Vec<u8> },
     /// `RemoteFileArtifactValue` / `RemoteFileArtifactValueWithMaterializationData`.
+    ///
+    /// Equality is Java's: digest, size and location index only; the expiration time and the
+    /// in-memory flag are not compared.
+    /// PORT: Java's `equals` also checks the class (`RemoteFileArtifactValue.equals` accepts a
+    /// value with materialization data, the reverse does not); the merged variant cannot tell
+    /// the two classes apart, so the comparison here is the symmetric one.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:756 RemoteFileArtifactValue.equals
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:903 RemoteFileArtifactValueWithMaterializationData.equals
     RemoteFile {
         digest: Vec<u8>,
         size: i64,
         location_index: i32,
-        expiration_time_millis: Option<i64>,
-        in_memory_output: bool,
+        expiration_time_millis: NotInEquality<Option<i64>>,
+        in_memory_output: NotInEquality<bool>,
     },
     /// `ResolvedSymlinkArtifactValue`: a value with the path it was resolved through.
     ResolvedSymlink {
@@ -167,7 +175,8 @@ pub enum FileArtifactValue {
 }
 
 /// A field that `equals` does not compare (Java's `TreeArtifactCompositeFileArtifactValue.equals`
-/// compares the digest and the resolved path only).
+/// compares the digest and the resolved path only; the remote values' `equals` compares digest,
+/// size and location index only).
 #[derive(Clone, Copy, Debug)]
 pub struct NotInEquality<T>(pub T);
 
@@ -319,8 +328,8 @@ impl FileArtifactValue {
             digest,
             size,
             location_index,
-            expiration_time_millis: None,
-            in_memory_output: false,
+            expiration_time_millis: NotInEquality(None),
+            in_memory_output: NotInEquality(false),
         }
     }
 
@@ -336,8 +345,8 @@ impl FileArtifactValue {
             digest,
             size,
             location_index,
-            expiration_time_millis,
-            in_memory_output,
+            expiration_time_millis: NotInEquality(expiration_time_millis),
+            in_memory_output: NotInEquality(in_memory_output),
         }
     }
 

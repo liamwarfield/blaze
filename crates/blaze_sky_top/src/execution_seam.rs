@@ -8,6 +8,7 @@
 //! `BuildRequest.getTopLevelArtifactContext` and `AnalysisAndExecutionPhaseRunner` that create
 //! the `BuildDriverKey`s of a build or test request.
 
+use std::fmt;
 use std::sync::Arc;
 
 use blaze_actions::analysis::workspace_status_action::BUILD_INFO_FUNCTION_NAME;
@@ -15,6 +16,10 @@ use blaze_actions::{ActionLookupKeyRef, ActionRef, Artifact};
 use blaze_analysis::analysis_services::{
     AnalysisServices, WorkspaceStatusKey, WorkspaceStatusValue,
 };
+use blaze_analysis::aspect_key_creator::{
+    ASPECT, AspectKey, TOP_LEVEL_ASPECTS, TopLevelAspectsKey, TopLevelAspectsValue,
+};
+use blaze_analysis::aspect_value::AspectValue;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::{CONFIGURED_TARGET, ConfiguredTargetKey};
 use blaze_analysis::configured_target_value::ConfiguredTargetValue;
@@ -26,12 +31,13 @@ use blaze_analysis::providers::output_group_info::{
 };
 use blaze_analysis::test::test_provider::TestProvider;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
+use blaze_buildtool::buildtool::build_result_printer::ConfiguredAspectView;
 use blaze_cmdline::repository_name::MAIN;
 use blaze_cmdline::{Label, RepositoryMapping, TargetPatternParser, TargetPatternType};
 use blaze_collect::{NestedSet, NestedSetBuilder};
 use blaze_events::{Event, ExtendedEventHandler};
 use blaze_optdefs::command::build_request_options::BuildRequestOptions;
-use blaze_packages::starlark_defs::builtin_providers::OUTPUT_GROUP_INFO;
+use blaze_packages::starlark_defs::builtin_providers::{DEFAULT_INFO, OUTPUT_GROUP_INFO};
 use blaze_packages::target::target_utils;
 use blaze_packages::target::{InputFile, OutputFile, Target};
 use blaze_sky_exec::analysis_seam::{
@@ -54,6 +60,30 @@ struct ConfiguredTargetActionLookupValue(Arc<ConfiguredTargetValue>);
 
 impl ActionLookupValue for ConfiguredTargetActionLookupValue {
     // Java: com/google/devtools/build/lib/skyframe/RuleConfiguredTargetValue.java:46 RuleConfiguredTargetValue.getActions
+    fn get_actions(&self) -> &[ActionRef] {
+        self.0.get_actions()
+    }
+}
+
+/// `AspectValue` as an `ActionLookupValue` (Java `AspectValue extends BasicActionLookupValue`).
+// Java: com/google/devtools/build/lib/analysis/AspectValue.java:37 AspectValue
+// PORT: a newtype because AspectValue (blaze_analysis) and ActionLookupValue (blaze_sky_exec)
+// are both foreign here.
+pub struct AspectActionLookupValue(pub Arc<AspectValue>);
+
+impl ActionLookupValue for AspectActionLookupValue {
+    // Java: com/google/devtools/build/lib/actions/BasicActionLookupValue.java:33 BasicActionLookupValue.getActions
+    fn get_actions(&self) -> &[ActionRef] {
+        self.0.get_actions()
+    }
+}
+
+/// `TopLevelAspectsValue` as an `ActionLookupValue`: it owns no actions.
+// Java: com/google/devtools/build/lib/skyframe/TopLevelAspectsValue.java:28 TopLevelAspectsValue
+pub struct TopLevelAspectsActionLookupValue(pub Arc<TopLevelAspectsValue>);
+
+impl ActionLookupValue for TopLevelAspectsActionLookupValue {
+    // Java: com/google/devtools/build/lib/skyframe/TopLevelAspectsValue.java:40 TopLevelAspectsValue.getActions
     fn get_actions(&self) -> &[ActionRef] {
         self.0.get_actions()
     }
@@ -93,6 +123,11 @@ impl SkyframeAnalysisSeam {
     }
 }
 
+/// The `AspectKey` inside an `ActionLookupKeyRef`, `None` for other key kinds.
+pub fn as_aspect_key(key: &ActionLookupKeyRef) -> Option<&AspectKey> {
+    key.as_any().downcast_ref::<AspectKey>()
+}
+
 /// The `ConfiguredTargetKey` inside an `ActionLookupKeyRef`, `None` for other key kinds.
 fn as_configured_target_key(key: &ActionLookupKeyRef) -> Option<&ConfiguredTargetKey> {
     key.as_any().downcast_ref::<ConfiguredTargetKey>()
@@ -124,8 +159,32 @@ impl AnalysisSeam for SkyframeAnalysisSeam {
                     Arc::new(WorkspaceStatusActionLookupValue(value)) as Arc<dyn ActionLookupValue>
                 ))
             }
-            // Java: AspectKeyCreator.AspectKey / TopLevelAspectsKey -> AspectValue.
-            "ASPECT" | "TOP_LEVEL_ASPECTS" => unported!("AspectValue.getActions"),
+            // Java: AspectKeyCreator.AspectKey -> AspectValue.
+            name if name == ASPECT.0 => {
+                let aspect_key = as_aspect_key(key)
+                    .unwrap_or_else(|| panic!("ClassCastException: {key} is not an AspectKey"));
+                let Some(value) = env.get_value(aspect_key.clone())? else {
+                    return Ok(None);
+                };
+                Ok(Some(
+                    Arc::new(AspectActionLookupValue(value)) as Arc<dyn ActionLookupValue>
+                ))
+            }
+            // Java: AspectKeyCreator.TopLevelAspectsKey -> TopLevelAspectsValue.
+            name if name == TOP_LEVEL_ASPECTS.0 => {
+                let top_level_key = key
+                    .as_any()
+                    .downcast_ref::<TopLevelAspectsKey>()
+                    .unwrap_or_else(|| {
+                        panic!("ClassCastException: {key} is not a TopLevelAspectsKey")
+                    });
+                let Some(value) = env.get_value(top_level_key.clone())? else {
+                    return Ok(None);
+                };
+                Ok(Some(
+                    Arc::new(TopLevelAspectsActionLookupValue(value)) as Arc<dyn ActionLookupValue>
+                ))
+            }
             // Java: ActionTemplateExpansionValue.ActionTemplateExpansionKey.
             "ACTION_TEMPLATE_EXPANSION" => unported!("ActionTemplateExpansionValue.getActions"),
             // Java: CoverageReportValue.COVERAGE_REPORT_KEY.
@@ -141,8 +200,16 @@ impl AnalysisSeam for SkyframeAnalysisSeam {
         env: &mut Environment<'_>,
     ) -> Result<Option<Arc<dyn ConfiguredTargetView>>, ComputeError> {
         let Some(ct_key) = as_configured_target_key(key) else {
-            if key.function_name() == "ASPECT" || key.function_name() == "TOP_LEVEL_ASPECTS" {
-                unported!("AspectCompletor.getValueAndArtifactsToBuild");
+            if key.function_name() == ASPECT.0 || key.function_name() == TOP_LEVEL_ASPECTS.0 {
+                // PORT: Java's BuildDriverFunction requests the TopLevelAspectsValue and one
+                // AspectCompletionKey per aspect (AspectCompletor, SkyFunctions.ASPECT_COMPLETION)
+                // instead of reading a configured target; the execution side has no aspect
+                // completion entry point yet. The aspect half of the reads is
+                // [`get_top_level_aspects`] / [`get_all_artifacts_to_build_of_aspect`].
+                unported!(
+                    "BuildDriverFunction.compute (TopLevelAspectsKey) / AspectCompletor.getValueAndArtifactsToBuild",
+                    "{key}"
+                );
             }
             panic!("ClassCastException: {key} is not a ConfiguredTargetKey");
         };
@@ -217,7 +284,41 @@ pub fn get_all_artifacts_to_build(
         .as_ref()
         .map(|v| downcast_info::<OutputGroupInfo>(v).expect("OutputGroupInfo"));
     let files_to_build = get_files_to_build(target);
+    get_all_artifacts_to_build_of(output_group_info, files_to_build.as_ref())
+}
 
+/// [`get_all_artifacts_to_build`] of an aspect (`TopLevelArtifactHelper.getAllArtifactsToBuild`
+/// over the `AspectValue` as a `ProviderCollection`, as `AspectCompletor` and
+/// `TopLevelArtifactHelper.findAllTopLevelArtifacts` call it).
+// Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:199 TopLevelArtifactHelper.getAllArtifactsToBuild
+pub fn get_all_artifacts_to_build_of_aspect(
+    aspect: &AspectValue,
+) -> IndexMap<String, NestedSet<Artifact>> {
+    let providers = aspect.get_providers();
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:173 OutputGroupInfo.get
+    let output_group_info: Option<&OutputGroupInfo> = providers
+        .get(&OUTPUT_GROUP_INFO.key())
+        .map(|v| downcast_info::<OutputGroupInfo>(v).expect("OutputGroupInfo"));
+    // Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:247 TopLevelArtifactHelper.getFilesToBuild
+    let files_to_build: Option<NestedSet<Artifact>> =
+        if let Some(file_provider) = providers.get_provider::<FileProvider>() {
+            Some(file_provider.get_files_to_build().clone())
+        } else if providers.get(&DEFAULT_INFO.key()).is_some() {
+            unported!(
+                "TopLevelArtifactHelper.getFilesToBuild",
+                "DefaultInfo.getFiles() of an aspect value"
+            )
+        } else {
+            None
+        };
+    get_all_artifacts_to_build_of(output_group_info, files_to_build.as_ref())
+}
+
+// Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:204 TopLevelArtifactHelper.getAllArtifactsToBuild
+fn get_all_artifacts_to_build_of(
+    output_group_info: Option<&OutputGroupInfo>,
+    files_to_build: Option<&NestedSet<Artifact>>,
+) -> IndexMap<String, NestedSet<Artifact>> {
     let mut output_groups: Vec<String> = vec![DEFAULT.to_owned()];
     if let Some(info) = output_group_info {
         for group in info.groups() {
@@ -227,13 +328,12 @@ pub fn get_all_artifacts_to_build(
         }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:204 TopLevelArtifactHelper.getAllArtifactsToBuild
     let mut all_output_groups: IndexMap<String, NestedSet<Artifact>> = IndexMap::new();
     for output_group in output_groups {
         let mut results = NestedSetBuilder::stable_order();
 
         if output_group == DEFAULT
-            && let Some(files_to_build) = &files_to_build
+            && let Some(files_to_build) = files_to_build
         {
             results.add_transitive(files_to_build);
         }
@@ -359,6 +459,152 @@ pub fn configured_target_views(targets: &[ConfiguredTarget]) -> Vec<Arc<dyn Conf
         .iter()
         .map(|ct| {
             Arc::new(SkyframeConfiguredTargetView::new(ct.clone())) as Arc<dyn ConfiguredTargetView>
+        })
+        .collect()
+}
+
+// -------------------------------------------------------------------------------------------
+// Top-level aspects
+
+impl SkyframeAnalysisSeam {
+    /// `env.getValue(topLevelAspectsKey)` as `BuildDriverFunction` reads it for a
+    /// `TopLevelAspectsKey`: the top-level `AspectValue`s by key, in their order. `Ok(None)` when
+    /// the value is missing.
+    ///
+    /// PORT: the execution side's `BuildDriverFunction` has no aspect branch yet; this is the
+    /// analysis half of it (see [`AnalysisSeam::get_configured_target`]).
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:323 BuildDriverFunction.compute
+    pub fn get_top_level_aspects(
+        &self,
+        key: &ActionLookupKeyRef,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<Vec<Arc<dyn ConfiguredAspectView>>>, ComputeError> {
+        let top_level_key = key
+            .as_any()
+            .downcast_ref::<TopLevelAspectsKey>()
+            .unwrap_or_else(|| panic!("ClassCastException: {key} is not a TopLevelAspectsKey"));
+        let Some(value) = env.get_value(top_level_key.clone())? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            value
+                .get_top_level_aspects_map()
+                .iter()
+                .map(|(k, v)| {
+                    Arc::new(SkyframeConfiguredAspectView::new(k.clone(), v.clone()))
+                        as Arc<dyn ConfiguredAspectView>
+                })
+                .collect(),
+        ))
+    }
+
+    /// `AspectCompletor.getValueAndArtifactsToBuild` (`CompletionFunction
+    /// .getValueAndArtifactsToBuild` with an `AspectCompletionKey`): the `AspectValue` of
+    /// `key` as an aspect view. `Ok(None)` when the value is missing.
+    // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:364 CompletionFunction.getValueAndArtifactsToBuild
+    pub fn get_configured_aspect(
+        &self,
+        key: &ActionLookupKeyRef,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<Arc<dyn ConfiguredAspectView>>, ComputeError> {
+        let aspect_key = as_aspect_key(key)
+            .unwrap_or_else(|| panic!("ClassCastException: {key} is not an AspectKey"));
+        let Some(value) = env.get_value(aspect_key.clone())? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            Arc::new(SkyframeConfiguredAspectView::new(aspect_key.clone(), value))
+                as Arc<dyn ConfiguredAspectView>,
+        ))
+    }
+}
+
+/// [`ConfiguredAspectView`] over an `AspectValue` and its `AspectKey` (an entry of
+/// `AnalysisResult.getAspectsMap()` or of a `TopLevelAspectsValue`).
+pub struct SkyframeConfiguredAspectView {
+    key: AspectKey,
+    value: Arc<AspectValue>,
+}
+
+impl SkyframeConfiguredAspectView {
+    pub fn new(key: AspectKey, value: Arc<AspectValue>) -> SkyframeConfiguredAspectView {
+        SkyframeConfiguredAspectView { key, value }
+    }
+
+    /// The `AspectKey`.
+    pub fn get_key(&self) -> &AspectKey {
+        &self.key
+    }
+
+    /// The `AspectValue`.
+    pub fn get_value(&self) -> &Arc<AspectValue> {
+        &self.value
+    }
+
+    /// `AspectKey.getAspectDescriptor().getDescription()` (the `AspectConfiguredEvent`'s
+    /// description).
+    // Java: com/google/devtools/build/lib/packages/AspectDescriptor.java AspectDescriptor.getDescription
+    pub fn get_aspect_description(&self) -> String {
+        self.key.get_aspect_descriptor().get_description()
+    }
+
+    /// `AspectValue.getWritesOutputToMasterLog()` (`AspectCompleteEvent`).
+    // Java: com/google/devtools/build/lib/analysis/AspectValue.java:105 AspectValue.getWritesOutputToMasterLog
+    pub fn get_writes_output_to_master_log(&self) -> bool {
+        self.value.get_writes_output_to_master_log()
+    }
+
+    /// `AspectKey.getLabel() + ", aspect " + getAspectClass().getName()`.
+    // Java: com/google/devtools/build/lib/skyframe/AspectCompletor.java:88 AspectCompletor.getLocationIdentifier
+    pub fn get_location_identifier(&self) -> String {
+        format!(
+            "{}, aspect {}",
+            self.key.get_label(),
+            self.key.get_aspect_class().get_name()
+        )
+    }
+}
+
+impl fmt::Debug for SkyframeConfiguredAspectView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.key)
+    }
+}
+
+impl ConfiguredAspectView for SkyframeConfiguredAspectView {
+    // Java: com/google/devtools/build/lib/skyframe/AspectKeyCreator.java:171 AspectKeyCreator.AspectKey.getLabel
+    fn get_label(&self) -> Label {
+        self.key.get_label().clone()
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/AspectKeyCreator.java:185 AspectKeyCreator.AspectKey.getAspectClass
+    fn get_aspect_class_name(&self) -> String {
+        self.key.get_aspect_class().get_name().to_owned()
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/AspectKeyCreator.java:79 AspectKeyCreator.AspectBaseKey.getBaseConfiguredTargetKey
+    fn get_base_configured_target_key(&self) -> ActionLookupKeyRef {
+        ActionLookupKeyRef::new(self.key.get_base_configured_target_key().clone())
+    }
+
+    fn get_output_groups(&self) -> IndexMap<String, NestedSet<Artifact>> {
+        get_all_artifacts_to_build_of_aspect(&self.value)
+    }
+}
+
+/// The views of `AnalysisResult.getAspectsMap()` (for `BuildResultPrinter`), keyed by the
+/// `AspectKey`s in the map's order.
+pub fn configured_aspect_views(
+    aspects: &IndexMap<AspectKey, Arc<AspectValue>>,
+) -> IndexMap<ActionLookupKeyRef, Arc<dyn ConfiguredAspectView>> {
+    aspects
+        .iter()
+        .map(|(k, v)| {
+            (
+                ActionLookupKeyRef::new(k.clone()),
+                Arc::new(SkyframeConfiguredAspectView::new(k.clone(), v.clone()))
+                    as Arc<dyn ConfiguredAspectView>,
+            )
         })
         .collect()
 }

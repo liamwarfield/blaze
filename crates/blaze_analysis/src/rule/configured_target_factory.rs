@@ -9,13 +9,17 @@ use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_cmdline::Label;
 use blaze_collect::{NestedSet, NestedSetBuilder};
 use blaze_events::{Event, EventHandler};
+use blaze_packages::aspect::Aspect;
 use blaze_packages::package::package::Package;
 use blaze_packages::package::rule_visibility::RuleVisibility;
 use blaze_packages::rule_class::MissingFragmentPolicy;
 use blaze_packages::starlark_defs::builtin_providers::ANALYSIS_FAILURE_INFO;
 use blaze_packages::target::{Rule, Target};
 
+use crate::aspect_key_creator::AspectKey;
 use crate::config::config_conditions::ConfigConditions;
+use crate::configured_aspect::ConfiguredAspect;
+use crate::configured_aspect_factory::ConfiguredAspectFactory;
 use crate::configured_rule_class_provider::{
     ConfiguredRuleClassProvider, CreateConfiguredTargetError,
 };
@@ -42,6 +46,7 @@ use crate::rule::rule_context::{PrerequisiteMap, RuleContext, RuleContextBuilder
 use crate::rule::rule_error_consumer::{RuleErrorConsumer, RuleErrorException};
 use crate::rule::target_context::TargetContext;
 use crate::rule::to_event_location;
+use crate::toolchains::aspect_base_target_resolved_toolchain_context::AspectBaseTargetResolvedToolchainContext;
 use crate::toolchains::exec_group_collection::{
     ExecGroupCollectionBuilder, InvalidExecGroupException,
 };
@@ -414,8 +419,12 @@ impl ConfiguredTargetFactory {
         let target = Target::Rule(rule.clone());
 
         // Visibility computation and checking is done for every rule.
-        let mut builder =
-            RuleContextBuilder::new(env.clone(), target.clone(), configuration.clone());
+        let mut builder = RuleContextBuilder::new(
+            env.clone(),
+            target.clone(),
+            /* aspects= */ Vec::new(),
+            configuration.clone(),
+        );
         builder
             .set_rule_class_provider(self.rule_class_provider.clone())
             .set_configuration_fragment_policy(configuration_fragment_policy.clone())
@@ -435,7 +444,7 @@ impl ConfiguredTargetFactory {
             .set_allow_materializer_rule_real_deps(rule_class.materializer_rule_allows_real_deps());
         let rule_context = builder.build()?;
 
-        let analysis_failures = Self::dep_analysis_failures(&rule_context);
+        let analysis_failures = Self::dep_analysis_failures(&rule_context, &[]);
         if !analysis_failures.is_empty() {
             return Self::errored_configured_target_with_failures(&rule_context, analysis_failures);
         }
@@ -573,14 +582,19 @@ impl ConfiguredTargetFactory {
     }
 
     /// If `--allow_analysis_failures` is true, returns the propagated analysis failures of the
-    /// target's dependencies. Otherwise returns the empty list.
-    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:514 ConfiguredTargetFactory.depAnalysisFailures
+    /// target's dependencies and `extra_deps`. Otherwise returns the empty list.
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:547 ConfiguredTargetFactory.depAnalysisFailures
     fn dep_analysis_failures(
         rule_context: &RuleContext,
+        extra_deps: &[ConfiguredTarget],
     ) -> Vec<starlark::values::OwnedFrozenValue> {
         if config_util::allow_analysis_failures(rule_context.get_configuration()) {
             let mut analysis_failures = Vec::new();
-            for info_collection in rule_context.get_all_prerequisites() {
+            let info_collections = rule_context
+                .get_all_prerequisites()
+                .into_iter()
+                .chain(extra_deps.iter().cloned());
+            for info_collection in info_collections {
                 if let Some(failure_info) = crate::configuredtargets::get_info(
                     &info_collection,
                     &ANALYSIS_FAILURE_INFO.key(),
@@ -665,6 +679,199 @@ impl ConfiguredTargetFactory {
                 .extend(values.iter().cloned());
         }
         result
+    }
+
+    /// Constructs a `ConfiguredAspect`. Returns `Ok(None)` if an error occurs; in that case,
+    /// `aspect_factory` should call one of the error reporting methods of `RuleContext`.
+    ///
+    /// PORT: Java computes the required config fragments here with
+    /// `RequiredFragmentsUtil.getAspectRequiredFragmentsIfEnabled(aspect, aspectFactory,
+    /// associatedTarget.getAssociatedRule(), aspectConfiguration, universalFragments,
+    /// configConditions, deps + configuredTarget, starlarkExecTransition)`; as for
+    /// `create_configured_target`, the caller (`AspectFunction`) passes the result in place of
+    /// Java's last parameter (`starlarkExecTransition`, only used for that computation).
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:668 ConfiguredTargetFactory.createAspect
+    pub fn create_aspect(
+        &self,
+        env: &Arc<CachingAnalysisEnvironment>,
+        associated_target: &Target,
+        configured_target: &ConfiguredTarget,
+        aspect_path: Vec<Aspect>,
+        aspect_factory: &dyn ConfiguredAspectFactory,
+        aspect: &Aspect,
+        prerequisite_map: &PrerequisiteMap,
+        config_conditions: &ConfigConditions,
+        toolchain_contexts: Option<Arc<ToolchainCollection<ResolvedToolchainContext>>>,
+        base_target_toolchain_contexts: Option<
+            Arc<ToolchainCollection<AspectBaseTargetResolvedToolchainContext>>,
+        >,
+        exec_group_collection_builder: Option<ExecGroupCollectionBuilder>,
+        aspect_configuration: &Arc<BuildConfigurationValue>,
+        transitive_packages: Option<
+            NestedSet<
+                blaze_actions::analysis::repo_mapping_manifest_action::RepoMappingPackageMetadata,
+            >,
+        >,
+        aspect_key: &AspectKey,
+        required_config_fragments: Option<RequiredConfigFragmentsProvider>,
+    ) -> Result<Option<ConfiguredAspect>, ConfiguredTargetFactoryError> {
+        let mut builder = RuleContextBuilder::new(
+            env.clone(),
+            associated_target.clone(),
+            aspect_path,
+            aspect_configuration.clone(),
+        );
+        builder
+            .set_rule_class_provider(self.rule_class_provider.clone())
+            .set_configuration_fragment_policy(
+                aspect
+                    .get_definition()
+                    .get_configuration_fragment_policy()
+                    .clone(),
+            )
+            .set_action_owner_symbol(ActionLookupKeyRef::new(aspect_key.clone()))
+            .set_mutability("aspect")
+            .set_visibility(Self::convert_visibility(
+                prerequisite_map,
+                env,
+                associated_target,
+            ))
+            .set_prerequisites(Self::remove_toolchain_deps(prerequisite_map))
+            .set_config_conditions(config_conditions.clone())
+            .set_toolchain_contexts(toolchain_contexts)
+            .set_base_target_toolchain_contexts(base_target_toolchain_contexts);
+        // Java: setExecGroupCollectionBuilder(execGroupCollectionBuilder) (null is kept, and
+        // build() then fails on it like Java's NullPointerException).
+        if let Some(exec_group_collection_builder) = exec_group_collection_builder {
+            builder.set_exec_group_collection_builder(exec_group_collection_builder);
+        }
+        // PORT: setConflictFinder is skipped, as in create_rule (Blaze checks conflicts after
+        // analysis).
+        builder
+            .set_exec_properties(indexmap::IndexMap::new())
+            .set_required_config_fragments(required_config_fragments)
+            .set_transitive_packages_for_runfile_repo_mapping_manifest(transitive_packages);
+        let rule_context = builder.build()?;
+
+        // If allowing analysis failures, targets should be created as normal as possible, and
+        // errors will be propagated via a hook elsewhere as AnalysisFailureInfo.
+        let allow_analysis_failures =
+            config_util::allow_analysis_failures(rule_context.get_configuration());
+
+        let analysis_failures =
+            Self::dep_analysis_failures(&rule_context, std::slice::from_ref(configured_target));
+        if !analysis_failures.is_empty() {
+            return Self::errored_configured_aspect_with_failures(&rule_context, analysis_failures);
+        }
+        if rule_context.has_errors() && !allow_analysis_failures {
+            return Self::errored_configured_aspect(&rule_context, None);
+        }
+
+        // PORT: the factory takes `&mut RuleContext` (the Starlark factory lends it to the
+        // implementation's thread); every RuleContext method takes `&self`.
+        let mut rule_context = rule_context;
+        // Java declares RuleErrorException on createAspect: it propagates to the caller.
+        let configured_aspect = aspect_factory.create(
+            associated_target.get_label(),
+            configured_target,
+            &mut rule_context,
+            aspect.get_parameters(),
+            // PORT: Java `ruleClassProvider.getToolsRepository()`; Bazel's provider sets
+            // RepositoryName.BAZEL_TOOLS (BazelRuleClassProvider.java:214) and
+            // ConfiguredRuleClassProvider (lead) has no accessor yet.
+            &blaze_cmdline::repository_name::BAZEL_TOOLS,
+        )?;
+
+        // PORT: the conflict finder (getConflictFinder() != null) is not ported.
+        let Some(configured_aspect) = configured_aspect else {
+            return Self::errored_configured_aspect(&rule_context, None);
+        };
+        if configured_aspect
+            .get(&ANALYSIS_FAILURE_INFO.key())
+            .is_some()
+        {
+            // this was created by #erroredConfiguredAspect, return early to skip validating
+            // advertised providers
+            return Ok(Some(configured_aspect));
+        }
+
+        Self::validate_advertised_providers(
+            &configured_aspect,
+            aspect_key,
+            aspect.get_definition().get_advertised_providers(),
+            associated_target,
+            env,
+        );
+        Ok(Some(configured_aspect))
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:763 ConfiguredTargetFactory.erroredConfiguredAspectWithFailures
+    fn errored_configured_aspect_with_failures(
+        _rule_context: &RuleContext,
+        _analysis_failures: Vec<starlark::values::OwnedFrozenValue>,
+    ) -> Result<Option<ConfiguredAspect>, ConfiguredTargetFactoryError> {
+        // PORT: AnalysisFailureInfo (forAnalysisFailureSets) is not ported.
+        blaze_util::unported!("ConfiguredTargetFactory.erroredConfiguredAspectWithFailures")
+    }
+
+    /// Returns a `ConfiguredAspect` which indicates that an analysis error occurred in
+    /// processing the aspect. In most cases, this returns `None`, which signals to callers that
+    /// the target failed to build and thus the build should fail. However, if analysis failures
+    /// are allowed in this build, this returns a stub `ConfiguredAspect` which contains
+    /// information about the failure.
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:785 ConfiguredTargetFactory.erroredConfiguredAspect
+    pub fn errored_configured_aspect(
+        rule_context: &RuleContext,
+        _required_config_fragments_provider: Option<RequiredConfigFragmentsProvider>,
+    ) -> Result<Option<ConfiguredAspect>, ConfiguredTargetFactoryError> {
+        if config_util::allow_analysis_failures(rule_context.get_configuration()) {
+            // PORT: AnalysisFailureInfo (forAnalysisFailures) is not ported.
+            blaze_util::unported!(
+                "ConfiguredTargetFactory.erroredConfiguredAspect (allow_analysis_failures)"
+            )
+        }
+        // Returning a null ConfiguredAspect is an indication a rule error occurred. Exceptions
+        // are not propagated, as this would show a nasty stack trace to users, and only provide
+        // info on one specific failure with poor messaging. By returning null, the caller can
+        // inspect ruleContext for multiple errors and output thorough messaging on each.
+        Ok(None)
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:819 ConfiguredTargetFactory.validateAdvertisedProviders
+    fn validate_advertised_providers(
+        configured_aspect: &ConfiguredAspect,
+        aspect_key: &AspectKey,
+        advertised_providers: &blaze_packages::rule_class::AdvertisedProviderSet,
+        target: &Target,
+        event_handler: &CachingAnalysisEnvironment,
+    ) {
+        if advertised_providers.can_have_any_provider() {
+            return;
+        }
+        if let Some(a_class) = advertised_providers.get_builtin_providers().iter().next() {
+            // Java: for each class, configuredAspect.getProvider(aClass) == null. Native
+            // providers are keyed by Rust type in TransitiveInfoProviderMap; a lookup by Java
+            // class name is not ported (Starlark aspects advertise no builtin providers).
+            blaze_util::unported!(
+                "ConfiguredTargetFactory.validateAdvertisedProviders",
+                "builtin advertised provider {}",
+                a_class
+            );
+        }
+
+        for provider_id in advertised_providers.get_starlark_providers() {
+            if configured_aspect.get(provider_id.get_key()).is_none() {
+                event_handler.get_event_handler().handle(&Event::error_at(
+                    Some(to_event_location(&target.get_location())),
+                    format!(
+                        "Aspect '{}', applied to '{}', does not provide advertised provider '{}'",
+                        aspect_key.get_aspect_class().get_name(),
+                        target.get_label(),
+                        provider_id
+                    ),
+                ));
+            }
+        }
     }
 
     /// A pseudo-implementation for configured targets that creates fail actions for all

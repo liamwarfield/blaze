@@ -9,6 +9,7 @@
     clippy::large_enum_variant
 )]
 
+pub mod aspect;
 pub mod attribute;
 pub mod build;
 pub mod builtins;

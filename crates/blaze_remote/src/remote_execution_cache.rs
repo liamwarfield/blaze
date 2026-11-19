@@ -39,7 +39,7 @@ use crate::combined_cache::CombinedCache;
 use crate::common::cache_not_found_exception::CacheNotFoundException;
 use crate::common::errors;
 use crate::common::remote_action_execution_context::RemoteActionExecutionContext;
-use crate::common::remote_cache_client::RemoteCacheClient;
+use crate::common::remote_cache_client::{RemoteCacheClient, RemoteCacheClientUploads};
 use crate::common::remote_path_resolver::RemotePathResolver;
 use crate::disk::DiskCacheClient;
 use crate::merkletree::{MerkleTreeUploadable, MerkleTreeUploader};
@@ -56,9 +56,10 @@ type SharedResult<T> = Result<T, Arc<io::Error>>;
 /// `AsyncTaskCache.Execution`: every call that needs the task holds a clone and drives it, the
 /// task runs while at least one clone is left, and dropping the last clone cancels it.
 ///
-/// PORT: `crate::util::async_task_cache::AsyncTaskCache` cannot be used for this. Its tasks are
-/// driven by the first caller only, and when that caller goes away the task is cancelled and a
-/// waiting caller starts it again; Java keeps the task running for the waiting caller.
+/// PORT: written when `crate::util::async_task_cache::AsyncTaskCache` drove a task from its first
+/// caller only; that cache now has the same subscriber semantics (review 2026-11-19 R11). The
+/// uploads still go through this map before they reach the client's `casUploadCache`, so that
+/// cache sees one subscriber per digest where Java counts every waiting call.
 // Java: com/google/devtools/build/lib/remote/util/AsyncTaskCache.java:142 AsyncTaskCache.Execution
 type SharedTask<T> = Shared<BoxFuture<'static, SharedResult<T>>>;
 

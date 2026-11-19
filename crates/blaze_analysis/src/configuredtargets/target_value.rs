@@ -164,6 +164,9 @@ impl StarlarkTarget {
         }
         if name == ACTIONS_FIELD_NAME {
             // PORT: the Starlark `Action` objects (ActionApi) are not ported.
+            if let ConfiguredTarget::Merged(_) = &self.target {
+                blaze_util::unported!("MergedConfiguredTarget.rawGetStarlarkProvider(actions)");
+            }
             blaze_util::unported!("RuleConfiguredTarget.rawGetStarlarkProvider(actions)");
         }
         self.get_by_string(name, heap)
@@ -248,16 +251,38 @@ impl StarlarkTarget {
         if get_info(&target, &OUTPUT_GROUP_INFO.key()).is_some() {
             result.push(OUTPUT_GROUPS_FIELD.to_owned());
         }
-        // Java: addExtraStarlarkKeys (RuleConfiguredTarget: legacy keys, then "actions").
-        if let ConfiguredTarget::Rule(r) = &target {
-            for (k, _) in r.providers().entries() {
-                if let crate::provider_map::ProviderMapKey::Legacy(s) = k {
-                    result.push(s.clone());
-                }
-            }
-            result.push(ACTIONS_FIELD_NAME.to_owned());
-        }
+        // Java: addExtraStarlarkKeys.
+        Self::add_extra_starlark_keys(&target, &mut result);
         result
+    }
+
+    /// Java `addExtraStarlarkKeys` of each `AbstractConfiguredTarget` subclass.
+    fn add_extra_starlark_keys(target: &ConfiguredTarget, result: &mut Vec<String>) {
+        match target {
+            // RuleConfiguredTarget: legacy keys, then "actions".
+            ConfiguredTarget::Rule(r) => {
+                for (k, _) in r.providers().entries() {
+                    if let crate::provider_map::ProviderMapKey::Legacy(s) = k {
+                        result.push(s.clone());
+                    }
+                }
+                result.push(ACTIONS_FIELD_NAME.to_owned());
+            }
+            // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:149 MergedConfiguredTarget.addExtraStarlarkKeys
+            ConfiguredTarget::Merged(m) => {
+                // Java: `if (base instanceof AbstractConfiguredTarget)`: an alias is not one.
+                if !matches!(m.base_configured_target, ConfiguredTarget::Alias(_)) {
+                    Self::add_extra_starlark_keys(&m.base_configured_target, result);
+                }
+                for (k, _) in m.get_non_base_providers().entries() {
+                    if let crate::provider_map::ProviderMapKey::Legacy(s) = k {
+                        result.push(s.clone());
+                    }
+                }
+                result.push(ACTIONS_FIELD_NAME.to_owned());
+            }
+            _ => {}
+        }
     }
 }
 
@@ -350,7 +375,12 @@ impl<'v> StarlarkValue<'v> for StarlarkTarget {
     // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr
     fn has_attr(&self, attribute: &str, heap: Heap<'v>) -> bool {
         if attribute == ACTIONS_FIELD_NAME {
-            return matches!(self.target, ConfiguredTarget::Rule(_));
+            // Java: RuleConfiguredTarget and MergedConfiguredTarget answer "actions" with a
+            // (possibly empty) list.
+            return matches!(
+                self.target,
+                ConfiguredTarget::Rule(_) | ConfiguredTarget::Merged(_)
+            );
         }
         self.get_value(attribute, heap).is_some()
     }
@@ -361,14 +391,14 @@ impl<'v> StarlarkValue<'v> for StarlarkTarget {
 
     // Java: AbstractConfiguredTarget.isImmutable (immutable and Starlark-hashable, by identity).
     fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
-        let id = self.target.get_lookup_key() as *const _ as usize;
+        let id = self.target.identity();
         id.hash(hasher);
         Ok(())
     }
 
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
         Ok(match other.downcast_ref::<StarlarkTarget>() {
-            Some(o) => std::ptr::eq(self.target.get_lookup_key(), o.target.get_lookup_key()),
+            Some(o) => self.target.identity() == o.target.identity(),
             None => false,
         })
     }

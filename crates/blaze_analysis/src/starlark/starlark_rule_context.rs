@@ -22,6 +22,7 @@ use blaze_actions::analysis::starlark::starlark_file::{
 use blaze_build_config::build_options::{JavaCollectionClass, StarlarkOptionValue};
 use blaze_cmdline::{Label, LabelPackageContext};
 use blaze_collect::Order;
+use blaze_packages::aspect::AspectDescriptor;
 use blaze_packages::attribute::AttributeMap;
 use blaze_packages::attribute::implicit_outputs_function::ImplicitOutputsFunction;
 use blaze_packages::rule_class::rule_class::{RuleClass, STARLARK_BUILD_SETTING_DEFAULT_ATTR_NAME};
@@ -50,8 +51,8 @@ use super::starlark_action_factory::{
     context_repr,
 };
 use super::starlark_attributes_collection::{
-    StarlarkAttributesCollectionBuilder, alloc_struct, convert_string_to_label_list_map,
-    convert_string_to_label_map,
+    StarlarkAttributesCollectionBuilder, StarlarkAttributesCollectionValue, alloc_struct,
+    convert_string_to_label_list_map, convert_string_to_label_map,
 };
 use super::starlark_configuration::{StarlarkConfiguration, is_code_coverage_enabled};
 use super::starlark_runfiles::{StarlarkRunfiles, symlink_entry_from_value};
@@ -95,6 +96,12 @@ pub struct StarlarkRuleContext<'v> {
     files: Value<'v>,
     split_attr: Option<Value<'v>>,
     outputs: Option<Value<'v>>,
+    /// Java `ruleAttributesCollection` (`ctx.rule`; aspects only).
+    rule_attributes_collection: Option<Value<'v>>,
+    /// Java `aspectDescriptor`: the aspect for which the context is created, or `None` if it is
+    /// for a rule.
+    #[allocative(skip)]
+    aspect_descriptor: Option<AspectDescriptor>,
     /// Java `cachedMakeVariables` (`ctx.var`).
     #[allocative(skip)]
     cached_make_variables: Cell<Option<Value<'v>>>,
@@ -156,6 +163,7 @@ unsafe impl<'v> Trace<'v> for StarlarkRuleContext<'v> {
         self.files.trace(tracer);
         self.split_attr.trace(tracer);
         self.outputs.trace(tracer);
+        self.rule_attributes_collection.trace(tracer);
         let mut v = self.cached_make_variables.get();
         v.trace(tracer);
         self.cached_make_variables.set(v);
@@ -262,16 +270,16 @@ pub fn rule_context_from_ctx<'v>(
 
 impl<'v> StarlarkRuleContext<'v> {
     /// Creates a new StarlarkRuleContext wrapping the rule context behind `handle`.
-    /// `is_for_aspect` is Java's `aspectDescriptor != null`.
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:186 StarlarkRuleContext.<init>
+    ///
+    /// `aspect_descriptor` is the aspect for which the context is created, or `None` if it is
+    /// for a rule.
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:191 StarlarkRuleContext.<init>
     pub(crate) fn create(
         handle: RuleContextHandle,
-        is_for_aspect: bool,
+        aspect_descriptor: Option<AspectDescriptor>,
         heap: Heap<'v>,
     ) -> Result<StarlarkRuleContext<'v>, RuleErrorException> {
-        if is_for_aspect {
-            blaze_util::unported!("StarlarkRuleContext.<init>(aspect)");
-        }
+        let is_for_aspect = aspect_descriptor.is_some();
         let shared = Arc::new(SharedRuleContextState::default());
         let (rule_label_canonical_name, rule) = {
             let rc = handle.borrow();
@@ -281,139 +289,233 @@ impl<'v> StarlarkRuleContext<'v> {
         let rule_class_under_evaluation = rule.get_rule_class_object().clone();
         let is_executable = rule_class_under_evaluation.is_executable_starlark();
 
-        let attributes: Vec<_> = rule
-            .get_rule_class_object()
-            .get_attribute_provider()
-            .get_attributes()
-            .iter()
-            .filter(|attribute| attribute.get_name() != "aspect_hints")
-            .cloned()
-            .collect();
+        let attributes_collection;
+        let split_attr;
+        let outputs_object: Option<Vec<(String, Value<'v>)>>;
+        let rule_attributes_collection;
+        if aspect_descriptor.is_none() {
+            let attributes: Vec<_> = rule
+                .get_rule_class_object()
+                .get_attribute_provider()
+                .get_attributes()
+                .iter()
+                .filter(|attribute| attribute.get_name() != "aspect_hints")
+                .cloned()
+                .collect();
 
-        // Populate ctx.outputs.
-        let mut outputs: IndexMap<String, Value<'v>> = IndexMap::new();
-        // These getters do some computational work to return a view, so ensure we only do it
-        // once.
-        let explicit_out_map = rule.get_explicit_output_file_map();
-        let implicit_out_map = rule.get_starlark_implicit_output_file_map();
-        let add_output = |key: &str,
-                          value: Value<'v>,
-                          outputs: &mut IndexMap<String, Value<'v>>|
-         -> Result<(), RuleErrorException> {
-            // TODO(bazel-team): We should reject outputs whose key is not an identifier. Today
-            // this is allowed, and the resulting ctx.outputs value can be retrieved using
-            // getattr().
-            if outputs.contains_key(key) || (is_executable && EXECUTABLE_OUTPUT_NAME == key) {
-                // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:369 Outputs.addOutput
-                return Err(handle
-                    .borrow_mut()
-                    .throw_with_rule_error(&format!("Multiple outputs with the same key: {key}")));
-            }
-            outputs.insert(key.to_owned(), value);
-            Ok(())
-        };
-        // Add the explicit outputs -- values of attributes of type OUTPUT or OUTPUT_LIST.
-        // We must iterate over the attribute definitions, and not just the entries in the
-        // explicitOutMap, because the latter omits empty output attributes, which must still
-        // generate None or [] fields in the struct.
-        for a in &attributes {
-            // Skip non-output attrs.
-            let attr_name = a.get_name();
-            let type_ = a.get_type();
-            if type_.get_label_class() != LabelClass::Output {
-                continue;
-            }
-
-            // Grab all associated outputs.
-            // Java: StarlarkList<Artifact> artifacts = StarlarkList.immutableCopyOf(...)
-            let mut artifacts: Vec<Artifact> = Vec::new();
-            if let Some(output_files) = explicit_out_map.get(attr_name) {
-                for output_file in output_files {
-                    artifacts.push(handle.borrow_mut().create_output_artifact_for(output_file));
+            // Populate ctx.outputs.
+            let mut outputs: IndexMap<String, Value<'v>> = IndexMap::new();
+            // These getters do some computational work to return a view, so ensure we only do
+            // it once.
+            let explicit_out_map = rule.get_explicit_output_file_map();
+            let implicit_out_map = rule.get_starlark_implicit_output_file_map();
+            let add_output = |key: &str,
+                              value: Value<'v>,
+                              outputs: &mut IndexMap<String, Value<'v>>|
+             -> Result<(), RuleErrorException> {
+                // TODO(bazel-team): We should reject outputs whose key is not an identifier.
+                // Today this is allowed, and the resulting ctx.outputs value can be retrieved
+                // using getattr().
+                if outputs.contains_key(key) || (is_executable && EXECUTABLE_OUTPUT_NAME == key) {
+                    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:369 Outputs.addOutput
+                    return Err(handle.borrow_mut().throw_with_rule_error(&format!(
+                        "Multiple outputs with the same key: {key}"
+                    )));
                 }
-            }
+                outputs.insert(key.to_owned(), value);
+                Ok(())
+            };
+            // Add the explicit outputs -- values of attributes of type OUTPUT or OUTPUT_LIST.
+            // We must iterate over the attribute definitions, and not just the entries in the
+            // explicitOutMap, because the latter omits empty output attributes, which must still
+            // generate None or [] fields in the struct.
+            for a in &attributes {
+                // Skip non-output attrs.
+                let attr_name = a.get_name();
+                let type_ = a.get_type();
+                if type_.get_label_class() != LabelClass::Output {
+                    continue;
+                }
 
-            // For singular output attributes, unwrap sole element or else use None for arity
-            // mismatch.
-            if type_ == Type::Output {
-                if artifacts.len() == 1 {
-                    let artifact = artifacts.pop().unwrap();
-                    add_output(
-                        attr_name,
-                        heap.alloc(StarlarkFile::new(artifact)),
-                        &mut outputs,
-                    )?;
+                // Grab all associated outputs.
+                // Java: StarlarkList<Artifact> artifacts = StarlarkList.immutableCopyOf(...)
+                let mut artifacts: Vec<Artifact> = Vec::new();
+                if let Some(output_files) = explicit_out_map.get(attr_name) {
+                    for output_file in output_files {
+                        artifacts.push(handle.borrow_mut().create_output_artifact_for(output_file));
+                    }
+                }
+
+                // For singular output attributes, unwrap sole element or else use None for arity
+                // mismatch.
+                if type_ == Type::Output {
+                    if artifacts.len() == 1 {
+                        let artifact = artifacts.pop().unwrap();
+                        add_output(
+                            attr_name,
+                            heap.alloc(StarlarkFile::new(artifact)),
+                            &mut outputs,
+                        )?;
+                    } else {
+                        add_output(attr_name, Value::new_none(), &mut outputs)?;
+                    }
+                } else if type_ == Type::OutputList {
+                    let list = alloc_immutable_list(
+                        heap,
+                        artifacts
+                            .into_iter()
+                            .map(|a| heap.alloc(StarlarkFile::new(a)))
+                            .collect(),
+                    );
+                    add_output(attr_name, list, &mut outputs)?;
                 } else {
-                    add_output(attr_name, Value::new_none(), &mut outputs)?;
+                    return Err(handle.borrow_mut().throw_with_rule_error(&format!(
+                        "Attribute {attr_name} has unexpected output type {type_:?}"
+                    )));
                 }
-            } else if type_ == Type::OutputList {
-                let list = alloc_immutable_list(
-                    heap,
-                    artifacts
-                        .into_iter()
-                        .map(|a| heap.alloc(StarlarkFile::new(a)))
-                        .collect(),
-                );
-                add_output(attr_name, list, &mut outputs)?;
-            } else {
-                return Err(handle.borrow_mut().throw_with_rule_error(&format!(
-                    "Attribute {attr_name} has unexpected output type {type_:?}"
-                )));
             }
-        }
-        // Add the implicit outputs. In the case where the rule has a native-defined implicit
-        // outputs function, nothing is added. Note that Rule ensures that Starlark-defined
-        // implicit output keys don't conflict with output attribute names.
-        // TODO(bazel-team): Also see about requiring the key to be a valid Starlark identifier.
-        for (key, output_file) in &implicit_out_map {
-            let artifact = handle.borrow_mut().create_output_artifact_for(output_file);
-            add_output(key, heap.alloc(StarlarkFile::new(artifact)), &mut outputs)?;
-        }
+            // Add the implicit outputs. In the case where the rule has a native-defined implicit
+            // outputs function, nothing is added. Note that Rule ensures that Starlark-defined
+            // implicit output keys don't conflict with output attribute names.
+            // TODO(bazel-team): Also see about requiring the key to be a valid Starlark
+            // identifier.
+            for (key, output_file) in &implicit_out_map {
+                let artifact = handle.borrow_mut().create_output_artifact_for(output_file);
+                add_output(key, heap.alloc(StarlarkFile::new(artifact)), &mut outputs)?;
+            }
 
-        // Populate ctx.attr.
-        let collection = {
+            outputs_object = Some(outputs.into_iter().collect());
+
+            // Populate ctx.attr.
+            attributes_collection = {
+                let rc = handle.borrow();
+                let semantics = rc.get_starlark_semantics().clone();
+                let mut builder = StarlarkAttributesCollectionBuilder::new(
+                    rc.get_rule_prerequisites_collection(),
+                    heap,
+                    &semantics,
+                );
+                for attribute in &attributes {
+                    let value = rc
+                        .attributes()
+                        .get(attribute.get_name(), attribute.get_type());
+                    builder.add_attribute(attribute, value.as_ref());
+                }
+                builder.build(rule.get_rule_class().to_owned())
+            };
+            split_attr = Some(build_split_attribute_info(
+                &attributes,
+                &handle.borrow(),
+                heap,
+            ));
+            rule_attributes_collection = None;
+        } else {
+            // ASPECT
+            outputs_object = None;
             let rc = handle.borrow();
             let semantics = rc.get_starlark_semantics().clone();
-            let mut builder = StarlarkAttributesCollectionBuilder::new(
-                rc.get_rule_prerequisites_collection(),
+            let main_aspect = rc
+                .get_main_aspect()
+                .expect("an aspect context has a main aspect")
+                .clone();
+            let attributes: Vec<_> = main_aspect
+                .get_definition()
+                .get_attributes()
+                .values()
+                .cloned()
+                .collect();
+
+            let mut aspect_builder = StarlarkAttributesCollectionBuilder::new(
+                rc.get_main_aspect_prerequisites_collection(),
                 heap,
                 &semantics,
             );
             for attribute in &attributes {
+                let default_value = aspect_attribute_default_value(attribute, rc.attributes());
+                aspect_builder.add_attribute(attribute, default_value.as_ref());
+            }
+            attributes_collection = aspect_builder.build(rule.get_rule_class().to_owned());
+
+            split_attr = None;
+            let mut rule_builder = StarlarkAttributesCollectionBuilder::new(
+                rc.get_rule_prerequisites_collection(),
+                heap,
+                &semantics,
+            );
+            match rc
+                .get_base_target_configuration_make_variable_context()
+                .collect_make_variables()
+            {
+                // Java: collectMakeVariables().buildImmutable()
+                Ok(make_variables) => {
+                    rule_builder.put_all_rule_variables(&make_variables);
+                }
+                Err(_) => {
+                    return Err(rc.throw_with_rule_error("Exception expanding template variables"));
+                }
+            }
+
+            for attribute in rule
+                .get_rule_class_object()
+                .get_attribute_provider()
+                .get_attributes()
+                .iter()
+            {
                 let value = rc
                     .attributes()
                     .get(attribute.get_name(), attribute.get_type());
-                builder.add_attribute(attribute, value.as_ref());
+                rule_builder.add_attribute(attribute, value.as_ref());
             }
-            builder.build(rule.get_rule_class().to_owned())
-        };
-        let split_attr = build_split_attribute_info(&attributes, &handle.borrow(), heap);
+            for aspect in rc.get_aspects() {
+                if *aspect == main_aspect {
+                    // Aspect's own attributes are in <code>attributesCollection</code>.
+                    continue;
+                }
+                for attribute in aspect.get_definition().get_attributes().values() {
+                    let default_value = aspect_attribute_default_value(attribute, rc.attributes());
+                    rule_builder.add_attribute(attribute, default_value.as_ref());
+                }
+            }
+
+            rule_attributes_collection = Some(rule_builder.build(rule.get_rule_class().to_owned()));
+        }
 
         let context = StarlarkActionContext {
             handle,
             shared,
             rule_label_canonical_name,
             is_for_aspect,
-            executable_runfiles_map: collection.executable_runfiles_map.clone(),
+            executable_runfiles_map: attributes_collection.executable_runfiles_map.clone(),
             subrule: None,
         };
-        let outputs_value = heap.alloc(CtxOutputs {
-            context: context.clone(),
-            is_executable,
-            outputs: outputs.into_iter().collect(),
-            executable_created: Cell::new(false),
+        let outputs_value = outputs_object.map(|outputs| {
+            heap.alloc(CtxOutputs {
+                context: context.clone(),
+                is_executable,
+                outputs,
+                executable_created: Cell::new(false),
+            })
+        });
+        let rule_attributes_collection_value = rule_attributes_collection.map(|collection| {
+            heap.alloc(StarlarkAttributesCollectionValue::new(
+                context.clone(),
+                collection,
+                heap,
+            ))
         });
         let actions = heap.alloc(StarlarkActionFactory::new(context.clone()));
         Ok(StarlarkRuleContext {
             context,
             actions,
             fragments,
-            attr: collection.attr_object,
-            executable: collection.executable_object,
-            file: collection.file_object,
-            files: collection.files_object,
-            split_attr: Some(split_attr),
-            outputs: Some(outputs_value),
+            attr: attributes_collection.attr_object,
+            executable: attributes_collection.executable_object,
+            file: attributes_collection.file_object,
+            files: attributes_collection.files_object,
+            split_attr,
+            outputs: outputs_value,
+            rule_attributes_collection: rule_attributes_collection_value,
+            aspect_descriptor,
             cached_make_variables: Cell::new(None),
             rule_class_under_evaluation: RefCell::new(rule_class_under_evaluation),
             super_called: Cell::new(false),
@@ -458,8 +560,15 @@ impl<'v> StarlarkRuleContext<'v> {
     }
 
     /// Java `isForAspect()`.
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:929 StarlarkRuleContext.isForAspect
     pub fn is_for_aspect(&self) -> bool {
         self.context.is_for_aspect
+    }
+
+    /// Java `getAspectDescriptor()`: the aspect this context is for (`None` for a rule).
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:500 StarlarkRuleContext.getAspectDescriptor
+    pub fn get_aspect_descriptor(&self) -> Option<&AspectDescriptor> {
+        self.aspect_descriptor.as_ref()
     }
 
     /// Java `setLockedForSubrule(lockedBy)`: the id of the locking subrule context, 0 for
@@ -568,6 +677,23 @@ impl<'v> StarlarkRuleContext<'v> {
         rc.get_expander_for(Arc::new(make_variable_context))
             .expand(Some(attribute_name), command)
     }
+}
+
+/// The value of an aspect attribute for `ctx.attr` / `ctx.rule.attr` (Java
+/// `attribute.getDefaultValue(null)`, with a `ComputedDefault` evaluated against
+/// `ruleContext.attributes()`).
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:279 StarlarkRuleContext.<init>
+fn aspect_attribute_default_value(
+    attribute: &blaze_packages::attribute::attribute::Attribute,
+    rule_attributes: &dyn AttributeMap,
+) -> Option<blaze_packages::types::AttrValue> {
+    let default_value = attribute.get_default_value(None);
+    if let Some(blaze_packages::types::AttrValue::ComputedDefault(computed_default)) =
+        &default_value
+    {
+        return computed_default.get_default(rule_attributes);
+    }
+    default_value
 }
 
 /// Java `buildSplitAttributeInfo(attributes, ruleContext)`.
@@ -1037,9 +1163,7 @@ fn runfiles_get_prerequisites(
         .get_attribute_definition(attribute_name)
         .is_some_and(|a| a.get_type() == Type::LabelList);
     if defined {
-        rule_context
-            .get_rule_prerequisites_collection()
-            .get_prerequisites(attribute_name)
+        rule_context.get_prerequisites(attribute_name)
     } else {
         Vec::new()
     }
@@ -1485,7 +1609,9 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
         if !ctx.is_for_aspect() {
             return Err(errorf("'rule' is only available in aspect implementations"));
         }
-        blaze_util::unported!("StarlarkRuleContext.rule(aspect)")
+        Ok(ctx
+            .rule_attributes_collection
+            .expect("an aspect context has a rule attributes collection"))
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:817 StarlarkRuleContext.aspectIds
@@ -1501,7 +1627,7 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
         Ok(heap.alloc(AllocList(
             rc.get_aspect_descriptors()
                 .iter()
-                .map(|d| heap.alloc_str(&d.description).to_value()),
+                .map(|d| heap.alloc_str(&d.get_description()).to_value()),
         )))
     }
 

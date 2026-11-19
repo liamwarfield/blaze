@@ -447,7 +447,8 @@ fn aspect_attrs() {
     let v = m.get("my_aspect").unwrap();
     let data = super::aspect::aspect_data(v.value().to_value()).unwrap();
     match &data.attribute_aspects {
-        super::aspect::PropagationEdges::Fixed(l) => {
+        crate::aspect::AspectPropagationEdgesSupplier::FixedList(l) => {
+            let l = l.get_list();
             assert_eq!(
                 l.iter().cloned().collect::<Vec<_>>(),
                 vec!["srcs".to_owned(), "data".to_owned()]
@@ -746,4 +747,634 @@ fn function_repr_names_its_bzl_label() {
     let m = exec_bzl("defs.bzl", "def f():\n    pass\n");
     let f = m.get("f").unwrap();
     assert_eq!(f.value().to_string(), "<function f from //pkg:defs.bzl>");
+}
+
+// ---------------------------------------------------------------------------------------------
+// StarlarkDefinedAspect model (packages/StarlarkDefinedAspect.java,
+// AspectPropagationEdgesSupplier.java, AspectPropagationPredicate.java). The Java tests of these
+// (StarlarkDefinedAspectsTest, StarlarkAspectAttrAspectsFunctionTest,
+// StarlarkAspectsPropagationPredicateTest) run whole analyses; the tests below check the
+// loading-level part of those with the Java tests' expected messages. The .bzl label is
+// `//pkg:<file>` here where the Java tests use `//test:defs.bzl`.
+// ---------------------------------------------------------------------------------------------
+
+fn frozen_aspect(
+    m: &FrozenModule,
+    name: &str,
+) -> &'static super::aspect::FrozenStarlarkDefinedAspect {
+    let handle = super::aspect::aspect_handle_of(&m.get(name).unwrap()).unwrap();
+    super::aspect::as_frozen_aspect(handle.value()).unwrap()
+}
+
+fn top_level_params(pairs: &[(&str, &str)]) -> indexmap::IndexMap<String, String> {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect()
+}
+
+/// A context value for propagation functions (Java `StarlarkAspectPropagationContext`; the
+/// functions below only print or ignore it).
+fn none_context<'v>(_m: &starlark::environment::Module<'v>) -> starlark::values::Value<'v> {
+    starlark::values::Value::new_none()
+}
+
+#[test]
+fn aspect_definition_cached_per_parameters() {
+    let m = exec_bzl(
+        "ta1.bzl",
+        "def _impl(target, ctx):\n  pass\n\
+         p = provider()\n\
+         base = aspect(_impl)\n\
+         my_aspect = aspect(_impl, attr_aspects = ['deps'], attrs = {'p': \
+         attr.string(values = ['a', 'b']), '_tool': attr.label(default = '//x:y')}, \
+         required_providers = [p], provides = [p], fragments = ['cpp'], requires = [base])\n",
+    );
+    let a = frozen_aspect(&m, "my_aspect");
+    assert_eq!(a.get_name(), "//pkg:ta1.bzl%my_aspect");
+    assert_eq!(a.get_aspect_class().get_name(), "//pkg:ta1.bzl%my_aspect");
+
+    let mut pa = crate::aspect::AspectParameters::builder();
+    pa.add_attribute("p", "a");
+    let pa = pa.build();
+    let mut pb = crate::aspect::AspectParameters::builder();
+    pb.add_attribute("p", "b");
+    let pb = pb.build();
+    let d1 = a.get_definition(&pa);
+    let d2 = a.get_definition(&pa.clone());
+    let d3 = a.get_definition(&pb);
+    assert!(Arc::ptr_eq(&d1, &d2));
+    assert!(!Arc::ptr_eq(&d1, &d3));
+    assert_eq!(d1.get_name(), "//pkg:ta1.bzl%my_aspect");
+    assert_eq!(
+        d1.get_attributes().keys().cloned().collect::<Vec<_>>(),
+        vec!["p".to_owned(), "$tool".to_owned()]
+    );
+    assert_eq!(
+        d3.get_attributes()["p"].get_default_value(None),
+        Some(AttrValue::String("b".to_owned()))
+    );
+    assert_eq!(
+        d1.get_attribute_aspects().as_fixed_list().unwrap(),
+        &indexmap::IndexSet::from(["deps".to_owned()])
+    );
+    assert!(!d1.get_required_providers().accepts_any());
+    assert_eq!(
+        d1.get_advertised_providers().get_starlark_providers().len(),
+        1
+    );
+    assert_eq!(
+        d1.get_required_aspect_classes()
+            .iter()
+            .map(|c| c.get_name().to_owned())
+            .collect::<Vec<_>>(),
+        vec!["//pkg:ta1.bzl%base".to_owned()]
+    );
+    assert!(
+        d1.get_configuration_fragment_policy()
+            .is_legal_configuration_fragment("CppConfiguration", Some("cpp"))
+    );
+}
+
+/// `addAttrValue`: a parameter without `values` gets an allowed-values set of its own value.
+#[test]
+fn aspect_definition_add_attr_value() {
+    let m = exec_bzl(
+        "ta2.bzl",
+        "def _impl(target, ctx):\n  pass\n\
+         my_aspect = aspect(_impl, attrs = {'n': attr.int(values = [1, 2]), 'b': attr.bool()})\n",
+    );
+    let a = frozen_aspect(&m, "my_aspect");
+    let mut p = crate::aspect::AspectParameters::builder();
+    p.add_attribute("n", "2").add_attribute("b", "true");
+    let d = a.get_definition(&p.build());
+    assert_eq!(
+        d.get_attributes()["n"].get_default_value(None),
+        Some(AttrValue::Int(2))
+    );
+    let b = &d.get_attributes()["b"];
+    assert_eq!(b.get_default_value(None), Some(AttrValue::Bool(true)));
+    assert!(b.check_allowed_values());
+}
+
+#[test]
+fn top_level_aspects_with_parameters_invalid_parameter_value() {
+    let m = exec_bzl(
+        "ta3.bzl",
+        "def _aspect_a_impl(target, ctx):\n  pass\n\
+         aspect_a = aspect(implementation = _aspect_a_impl, attr_aspects = ['dep'], attrs = { 'p' \
+         : attr.string(values = ['p_v1', 'p_v2']) })\n",
+    );
+    let a = frozen_aspect(&m, "aspect_a");
+    let e = a
+        .extract_top_level_parameters(&top_level_params(&[("p", "p_v")]))
+        .unwrap_err();
+    assert_eq!(
+        e.get_message(),
+        "//pkg:ta3.bzl%aspect_a: invalid value in 'p' attribute: has to be one of 'p_v1' or \
+         'p_v2' instead of 'p_v'"
+    );
+    let ok = a
+        .extract_top_level_parameters(&top_level_params(&[("p", "p_v2")]))
+        .unwrap();
+    assert_eq!(ok.get_only_value_of_attribute("p"), "p_v2");
+}
+
+#[test]
+fn top_level_aspects_with_boolean_parameter_invalid_value() {
+    let m = exec_bzl(
+        "ta4.bzl",
+        "def _aspect_a_impl(target, ctx):\n  pass\n\
+         aspect_a = aspect(implementation = _aspect_a_impl, attr_aspects = ['dep'], attrs = { 'p' \
+         : attr.bool() })\n",
+    );
+    let a = frozen_aspect(&m, "aspect_a");
+    let e = a
+        .extract_top_level_parameters(&top_level_params(&[("p", "x")]))
+        .unwrap_err();
+    assert_eq!(
+        e.get_message(),
+        "//pkg:ta4.bzl%aspect_a: expected value of type 'bool' for attribute 'p' but got 'x'"
+    );
+    let ok = a
+        .extract_top_level_parameters(&top_level_params(&[("p", "Yes")]))
+        .unwrap();
+    assert_eq!(ok.get_only_value_of_attribute("p"), "true");
+}
+
+#[test]
+fn top_level_aspects_with_parameters_invalid_integer_parameter_value() {
+    let m = exec_bzl(
+        "ta5.bzl",
+        "def _aspect_a_impl(target, ctx):\n  pass\n\
+         aspect_a = aspect(implementation = _aspect_a_impl, attr_aspects = ['dep'], attrs = { 'p' \
+         : attr.int(values = [1, 2]) })\n",
+    );
+    let a = frozen_aspect(&m, "aspect_a");
+    let e = a
+        .extract_top_level_parameters(&top_level_params(&[("p", "3")]))
+        .unwrap_err();
+    assert_eq!(
+        e.get_message(),
+        "//pkg:ta5.bzl%aspect_a: invalid value in 'p' attribute: has to be one of '1' or '2' \
+         instead of '3'"
+    );
+    let e = a
+        .extract_top_level_parameters(&top_level_params(&[("p", "x")]))
+        .unwrap_err();
+    assert_eq!(
+        e.get_message(),
+        "//pkg:ta5.bzl%aspect_a: expected value of type 'int' for attribute 'p' but got 'x'"
+    );
+}
+
+#[test]
+fn top_level_aspects_with_integer_parameter_use_default_value() {
+    let m = exec_bzl(
+        "ta6.bzl",
+        "def _aspect_a_impl(target, ctx):\n  pass\n\
+         aspect_a = aspect(implementation = _aspect_a_impl, attrs = { 'p' : attr.int(default = 1, \
+         values = [1, 2]), '_x': attr.int(default = 5) })\n",
+    );
+    let a = frozen_aspect(&m, "aspect_a");
+    let params = a
+        .extract_top_level_parameters(&top_level_params(&[]))
+        .unwrap();
+    assert_eq!(params.to_string(), "{p=[1]}");
+}
+
+#[test]
+fn wild_card_attr_returned_build_fails() {
+    let m = exec_bzl(
+        "ta7.bzl",
+        "def _impl(target, ctx):\n  pass\n\
+         def _propagation_attrs(ctx):\n    return ['*']\n\
+         cmdline_aspect = aspect(_impl, attr_aspects = _propagation_attrs)\n",
+    );
+    let a = frozen_aspect(&m, "cmdline_aspect");
+    let crate::aspect::AspectPropagationEdgesSupplier::Function(f) = &a.data().attribute_aspects
+    else {
+        panic!("expected a function supplier")
+    };
+    let events = blaze_events::EventCollector::new();
+    let e = f.compute_list(&none_context, &events).unwrap_err();
+    assert_eq!(e.message, "'*' is not allowed in 'attr_aspects' list");
+}
+
+#[test]
+fn attr_aspects_function_compute_list() {
+    let m = exec_bzl(
+        "ta8.bzl",
+        "def _impl(target, ctx):\n  pass\n\
+         def _attrs(ctx):\n    print('ctx is', ctx)\n    return ['deps', '_tool']\n\
+         def _bad(ctx):\n    return ('deps',)\n\
+         a = aspect(_impl, attr_aspects = _attrs)\n\
+         b = aspect(_impl, attr_aspects = _bad)\n",
+    );
+    let events = blaze_events::EventCollector::new();
+    let crate::aspect::AspectPropagationEdgesSupplier::Function(f) =
+        &frozen_aspect(&m, "a").data().attribute_aspects
+    else {
+        panic!("expected a function supplier")
+    };
+    assert_eq!(
+        f.compute_list(&none_context, &events)
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec!["deps".to_owned(), "$tool".to_owned(), ":tool".to_owned()]
+    );
+    let printed: Vec<String> = events
+        .iter()
+        .map(|e| e.get_message().into_owned())
+        .collect();
+    assert_eq!(printed, vec!["ctx is None".to_owned()]);
+    let crate::aspect::AspectPropagationEdgesSupplier::Function(f) =
+        &frozen_aspect(&m, "b").data().attribute_aspects
+    else {
+        panic!("expected a function supplier")
+    };
+    assert_eq!(
+        f.compute_list(&none_context, &events).unwrap_err().message,
+        "Expected a list"
+    );
+}
+
+#[test]
+fn toolchains_aspects_function_compute_list() {
+    let m = exec_bzl(
+        "ta9.bzl",
+        "def _impl(target, ctx):\n  pass\n\
+         def _tc(ctx):\n    return [Label('//t:t')]\n\
+         def _bad(ctx):\n    return ['//t:t']\n\
+         a = aspect(_impl, toolchains_aspects = _tc)\n\
+         b = aspect(_impl, toolchains_aspects = _bad)\n\
+         c = aspect(_impl, toolchains_aspects = ['*'])\n",
+    );
+    let events = blaze_events::EventCollector::new();
+    let crate::aspect::AspectPropagationEdgesSupplier::Function(f) =
+        &frozen_aspect(&m, "a").data().toolchains_aspects
+    else {
+        panic!("expected a function supplier")
+    };
+    assert_eq!(
+        f.compute_list(&none_context, &events)
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec![Label::parse_canonical_unchecked("//t:t")]
+    );
+    let crate::aspect::AspectPropagationEdgesSupplier::Function(f) =
+        &frozen_aspect(&m, "b").data().toolchains_aspects
+    else {
+        panic!("expected a function supplier")
+    };
+    assert_eq!(
+        f.compute_list(&none_context, &events).unwrap_err().message,
+        "at index 0 of toolchains_aspects, got element of type string, want Label"
+    );
+    assert_eq!(
+        frozen_aspect(&m, "c")
+            .data()
+            .toolchains_aspects
+            .as_fixed_list()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![crate::aspect::ALL_TOOLCHAINS.clone()]
+    );
+}
+
+#[test]
+fn propagation_predicate_evaluate() {
+    let m = exec_bzl(
+        "ta10.bzl",
+        "def _impl(target, ctx):\n  pass\n\
+         def _yes(ctx):\n    return True\n\
+         def _bad(ctx):\n    return 1\n\
+         a = aspect(_impl, propagation_predicate = _yes)\n\
+         b = aspect(_impl, propagation_predicate = _bad)\n",
+    );
+    let events = blaze_events::EventCollector::new();
+    let a = frozen_aspect(&m, "a");
+    let pred = a.data().get_propagation_predicate().unwrap();
+    assert!(pred.evaluate(&none_context, &events).unwrap());
+    // The definition carries the same predicate.
+    let d = a.get_definition(&crate::aspect::AspectParameters::empty());
+    assert_eq!(d.get_propagation_predicate(), Some(pred));
+    let b = frozen_aspect(&m, "b");
+    assert_eq!(
+        b.data()
+            .get_propagation_predicate()
+            .unwrap()
+            .evaluate(&none_context, &events)
+            .unwrap_err()
+            .message,
+        "Expected a boolean"
+    );
+}
+
+/// `AspectsList.getAspects(rule)` / top-level `buildAspects` through `attr.label(aspects=...)`.
+#[test]
+fn aspects_list_build_aspects() {
+    let m = exec_bzl(
+        "ta11.bzl",
+        "def _impl(target, ctx):\n  pass\n\
+         base = aspect(_impl)\n\
+         a = aspect(_impl, attrs = {'p': attr.string(default = 'x', values = ['x', 'y'])}, \
+         requires = [base])\n",
+    );
+    let mut b = crate::rule_class::AspectsListBuilder::new();
+    b.add_starlark_aspect(super::aspect::aspect_handle_of(&m.get("a").unwrap()).unwrap())
+        .unwrap();
+    let list = b.build();
+    assert_eq!(
+        list.get_aspect_classes()
+            .iter()
+            .map(|c| c.get_name().to_owned())
+            .collect::<Vec<_>>(),
+        vec![
+            "//pkg:ta11.bzl%base".to_owned(),
+            "//pkg:ta11.bzl%a".to_owned()
+        ]
+    );
+    let aspects = list
+        .build_aspects(&top_level_params(&[("p", "y")]))
+        .unwrap();
+    assert_eq!(
+        aspects.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+        vec![
+            "Aspect //pkg:ta11.bzl%base".to_owned(),
+            "Aspect //pkg:ta11.bzl%a[p=\"y\"]".to_owned()
+        ]
+    );
+    assert!(aspects[1].get_definition().requires(&aspects[0]));
+    assert_eq!(
+        list.build_aspects(&top_level_params(&[("p", "y")]))
+            .unwrap(),
+        aspects
+    );
+    assert_eq!(
+        list.validate_top_level_aspects_parameters(&top_level_params(&[("q", "1"), ("p", "x")]))
+            .unwrap_err()
+            .get_message(),
+        "Parameters '[q]' are not parameters of any of the top-level aspects but they are \
+         specified in --aspects_parameters."
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest `declared(name)`: the provider exported as `name` from the
+// evaluated file.
+fn declared(file_name: &str, name: &str) -> crate::rule_class::StarlarkProviderIdentifier {
+    crate::rule_class::StarlarkProviderIdentifier::for_key(
+        crate::rule_class::ProviderKey::Starlark {
+            extension_label: Label::parse_canonical(&format!("//pkg:{file_name}")).unwrap(),
+            exported_name: name.to_owned(),
+        },
+    )
+}
+
+fn advertised_set(
+    providers: &[crate::rule_class::StarlarkProviderIdentifier],
+) -> crate::rule_class::AdvertisedProviderSet {
+    let mut b = crate::rule_class::AdvertisedProviderSet::builder();
+    for p in providers {
+        b.add_starlark(p.clone());
+    }
+    b.build()
+}
+
+fn fixed_attr_aspects(m: &FrozenModule, name: &str) -> Vec<String> {
+    frozen_aspect(m, name)
+        .data()
+        .get_attribute_aspects()
+        .as_fixed_list()
+        .expect("FixedListSupplier")
+        .iter()
+        .cloned()
+        .collect()
+}
+
+fn empty_definition(m: &FrozenModule, name: &str) -> Arc<crate::aspect::AspectDefinition> {
+    frozen_aspect(m, name).get_definition(&crate::aspect::AspectParameters::empty())
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectAllAttrs
+#[test]
+fn aspect_all_attrs() {
+    let m = exec_bzl(
+        "tb1.bzl",
+        "def _impl(target, ctx):\n   pass\nmy_aspect = aspect(_impl, attr_aspects=['*'])\n",
+    );
+    assert_eq!(fixed_attr_aspects(&m, "my_aspect"), vec!["*".to_owned()]);
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectEmptyAttrs
+#[test]
+fn aspect_empty_attrs() {
+    let m = exec_bzl(
+        "tb2.bzl",
+        "def _impl(target, ctx):\n   pass\nmy_aspect = aspect(_impl, attr_aspects=[])\n",
+    );
+    assert!(fixed_attr_aspects(&m, "my_aspect").is_empty());
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectDefaultAttrs
+#[test]
+fn aspect_default_attrs() {
+    let m = exec_bzl(
+        "tb3.bzl",
+        "def _impl(target, ctx):\n   pass\nmy_aspect = aspect(_impl)\n",
+    );
+    assert!(fixed_attr_aspects(&m, "my_aspect").is_empty());
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectRequiredAspectProvidersSingle
+#[test]
+fn aspect_required_aspect_providers_single() {
+    let m = exec_bzl(
+        "tb4.bzl",
+        "def _impl(target, ctx):\n   pass\njava = provider()\ncc = provider()\n\
+         my_aspect = aspect(_impl, required_aspect_providers=[java, cc])\n",
+    );
+    let d = empty_definition(&m, "my_aspect");
+    let required_providers = d.get_required_providers_for_aspects();
+    assert!(required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::any()));
+    assert!(
+        !required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::empty())
+    );
+    assert!(required_providers.is_satisfied_by(&advertised_set(&[
+        declared("tb4.bzl", "cc"),
+        declared("tb4.bzl", "java")
+    ])));
+    assert!(!required_providers.is_satisfied_by(&advertised_set(&[declared("tb4.bzl", "cc")])));
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectRequiredAspectProvidersAlternatives
+#[test]
+fn aspect_required_aspect_providers_alternatives() {
+    let m = exec_bzl(
+        "tb5.bzl",
+        "def _impl(target, ctx):\n   pass\njava = provider()\ncc = provider()\n\
+         my_aspect = aspect(_impl, required_aspect_providers=[[java], [cc]])\n",
+    );
+    let d = empty_definition(&m, "my_aspect");
+    let required_providers = d.get_required_providers_for_aspects();
+    assert!(required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::any()));
+    assert!(
+        !required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::empty())
+    );
+    assert!(required_providers.is_satisfied_by(&advertised_set(&[declared("tb5.bzl", "java")])));
+    assert!(required_providers.is_satisfied_by(&advertised_set(&[declared("tb5.bzl", "cc")])));
+    assert!(!required_providers.is_satisfied_by(&advertised_set(&[declared("tb5.bzl", "prolog")])));
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectRequiredAspectProvidersEmpty
+#[test]
+fn aspect_required_aspect_providers_empty() {
+    let m = exec_bzl(
+        "tb6.bzl",
+        "def _impl(target, ctx):\n   pass\n\
+         my_aspect = aspect(_impl, required_aspect_providers=[])\n",
+    );
+    let d = empty_definition(&m, "my_aspect");
+    let required_providers = d.get_required_providers_for_aspects();
+    assert!(!required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::any()));
+    assert!(
+        !required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::empty())
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectRequiredAspectProvidersDefault
+#[test]
+fn aspect_required_aspect_providers_default() {
+    let m = exec_bzl(
+        "tb7.bzl",
+        "def _impl(target, ctx):\n   pass\nmy_aspect = aspect(_impl)\n",
+    );
+    let d = empty_definition(&m, "my_aspect");
+    let required_providers = d.get_required_providers_for_aspects();
+    assert!(!required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::any()));
+    assert!(
+        !required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::empty())
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectRequiredProvidersSingle
+#[test]
+fn aspect_required_providers_single() {
+    let m = exec_bzl(
+        "tb8.bzl",
+        "def _impl(target, ctx):\n   pass\njava = provider()\ncc = provider()\n\
+         my_aspect = aspect(_impl, required_providers=[java, cc])\n",
+    );
+    let d = empty_definition(&m, "my_aspect");
+    let required_providers = d.get_required_providers();
+    assert!(required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::any()));
+    assert!(
+        !required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::empty())
+    );
+    assert!(required_providers.is_satisfied_by(&advertised_set(&[
+        declared("tb8.bzl", "cc"),
+        declared("tb8.bzl", "java")
+    ])));
+    assert!(!required_providers.is_satisfied_by(&advertised_set(&[declared("tb8.bzl", "cc")])));
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectRequiredProvidersAlternatives
+#[test]
+fn aspect_required_providers_alternatives() {
+    let m = exec_bzl(
+        "tb9.bzl",
+        "def _impl(target, ctx):\n   pass\njava = provider()\ncc = provider()\n\
+         my_aspect = aspect(_impl, required_providers=[[java], [cc]])\n",
+    );
+    let d = empty_definition(&m, "my_aspect");
+    let required_providers = d.get_required_providers();
+    assert!(required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::any()));
+    assert!(
+        !required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::empty())
+    );
+    assert!(required_providers.is_satisfied_by(&advertised_set(&[declared("tb9.bzl", "java")])));
+    assert!(required_providers.is_satisfied_by(&advertised_set(&[declared("tb9.bzl", "cc")])));
+    assert!(!required_providers.is_satisfied_by(&advertised_set(&[declared("tb9.bzl", "prolog")])));
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectRequiredProvidersEmpty
+#[test]
+fn aspect_required_providers_empty() {
+    let m = exec_bzl(
+        "tb10.bzl",
+        "def _impl(target, ctx):\n   pass\nmy_aspect = aspect(_impl, required_providers=[])\n",
+    );
+    let d = empty_definition(&m, "my_aspect");
+    let required_providers = d.get_required_providers();
+    assert!(required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::any()));
+    assert!(required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::empty()));
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectRequiredProvidersDefault
+#[test]
+fn aspect_required_providers_default() {
+    let m = exec_bzl(
+        "tb11.bzl",
+        "def _impl(target, ctx):\n   pass\nmy_aspect = aspect(_impl)\n",
+    );
+    let d = empty_definition(&m, "my_aspect");
+    let required_providers = d.get_required_providers();
+    assert!(required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::any()));
+    assert!(required_providers.is_satisfied_by(&crate::rule_class::AdvertisedProviderSet::empty()));
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectProvides
+#[test]
+fn aspect_provides() {
+    let m = exec_bzl(
+        "tb12.bzl",
+        "def _impl(target, ctx):\n   pass\ny = provider()\n\
+         my_aspect = aspect(_impl, provides = [y])\n",
+    );
+    let d = empty_definition(&m, "my_aspect");
+    let advertised_providers = d.get_advertised_providers();
+    assert!(!advertised_providers.can_have_any_provider());
+    assert_eq!(
+        advertised_providers
+            .get_starlark_providers()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![declared("tb12.bzl", "y")]
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.aspectDoc
+#[test]
+fn aspect_doc() {
+    let m = exec_bzl(
+        "tb13.bzl",
+        "def _impl(target, ctx):\n   pass\n\
+         documented_aspect = aspect(_impl, doc='My doc string')\n\
+         long_documented_aspect = aspect(\n    implementation = _impl,\n    doc='''\n           \
+         My doc string\n           \n           With details''',\n)\n\
+         undocumented_aspect = aspect(_impl)\n",
+    );
+    assert_eq!(
+        frozen_aspect(&m, "documented_aspect")
+            .data()
+            .get_documentation(),
+        Some("My doc string")
+    );
+    assert_eq!(
+        frozen_aspect(&m, "long_documented_aspect")
+            .data()
+            .get_documentation(),
+        Some("My doc string\n\nWith details")
+    );
+    assert_eq!(
+        frozen_aspect(&m, "undocumented_aspect")
+            .data()
+            .get_documentation(),
+        None
+    );
 }

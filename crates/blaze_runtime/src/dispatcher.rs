@@ -18,7 +18,7 @@ use parking_lot::Mutex;
 
 use crate::command::{BlazeCommand, BlazeCommandResult};
 use crate::command_environment::CommandEnvironment;
-use crate::exit_code::DetailedExitCode;
+use crate::exit_code::{DetailedExitCode, ExitCode};
 use crate::runtime::BlazeRuntime;
 use crate::starlark_options_parser::{
     SkyframeExecutorTargetLoader, StarlarkOptionsParser, StarlarkOptionsParsingError,
@@ -50,6 +50,9 @@ pub struct BlazeCommandDispatcher {
     server_pid: i32,
     current_client_description: Mutex<Option<String>>,
     shutdown_reason: Mutex<Option<String>>,
+    /// Set by [`Self::exec_exclusively`] when the command ended with `REMOTE_CACHE_EVICTED` and
+    /// may be retried: Java's `RemoteCacheTransientErrorException`.
+    remote_cache_transient_error: Mutex<bool>,
 }
 
 // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:111 BlazeCommandDispatcher.HELP_COMMAND
@@ -69,6 +72,7 @@ impl BlazeCommandDispatcher {
             server_pid,
             current_client_description: Mutex::new(None),
             shutdown_reason: Mutex::new(None),
+            remote_cache_transient_error: Mutex::new(false),
         }
     }
 
@@ -158,15 +162,36 @@ impl BlazeCommandDispatcher {
                     failure_details::command::Code::PreviouslyShutdown,
                 );
             }
-            let result = self.exec_exclusively(
-                &args,
-                out_err.clone(),
-                ui_verbosity == UiVerbosity::QUIET,
-                &command_name,
-                command,
-                wait_time_in_ms,
-                startup_options_tagged_with_bazel_rc,
-            );
+            // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:290 BlazeCommandDispatcher.exec
+            let mut attempt_number = 0;
+            let mut attempted_commands = 0;
+            // String buildRequestIdOverride = null (kept by crate::commands::build_remote, which
+            // computes the build request id).
+            crate::commands::build::build_remote::reset_build_request_id_override();
+            let result = loop {
+                attempt_number += 1;
+                *self.remote_cache_transient_error.lock() = false;
+                let result = self.exec_exclusively(
+                    &args,
+                    out_err.clone(),
+                    ui_verbosity == UiVerbosity::QUIET,
+                    &command_name,
+                    command.clone(),
+                    wait_time_in_ms,
+                    startup_options_tagged_with_bazel_rc.clone(),
+                    attempt_number,
+                    attempted_commands,
+                );
+                // catch (RemoteCacheTransientErrorException e)
+                if std::mem::take(&mut *self.remote_cache_transient_error.lock()) {
+                    attempted_commands += 1;
+                    // Use a fixed build request ID across cache eviction retries to tie together
+                    // the individual invocations, which all have different invocation IDs.
+                    crate::commands::build::build_remote::retry_with_build_request_id_of_last_attempt();
+                    continue;
+                }
+                break result;
+            };
             if result.shutdown() {
                 self.set_shutdown_reason(format!(
                     "Server shut down {}",
@@ -199,6 +224,8 @@ impl BlazeCommandDispatcher {
         command: Arc<dyn BlazeCommand>,
         _wait_time_in_ms: i64,
         startup_options_tagged_with_bazel_rc: Option<Vec<(String, String)>>,
+        attempt_number: i32,
+        attempted_commands: i32,
     ) -> BlazeCommandResult {
         let command_annotation = command.annotation();
         let workspace = self.runtime.get_workspace().clone();
@@ -245,6 +272,11 @@ impl BlazeCommandDispatcher {
             &mut command_env_warnings,
         );
         env.set_client_command_line(args.to_vec(), startup_options_tagged_with_bazel_rc.clone());
+
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:419 BlazeCommandDispatcher.execExclusively
+        if attempt_number > 1 {
+            out_err.print_err_ln("Found transient remote cache error, retrying the build...");
+        }
 
         let common_options = options
             .get_options::<CommonCommandOptions>()
@@ -575,7 +607,18 @@ impl BlazeCommandDispatcher {
         // with an effect in Bazel is the MetricsCollector (the BuildMetricsEvent); build and test
         // run it with their BEP (crate::commands::build::run_build). No module returns an exit
         // code from it.
-        self.after_command(&mut env, result, &out_err)
+        let new_result = self.after_command(&mut env, result, &out_err);
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:851 BlazeCommandDispatcher.execExclusively
+        if new_result.get_exit_code() == ExitCode::REMOTE_CACHE_EVICTED {
+            let execution_options = options
+                .get_options::<blaze_optdefs::command::execution_options::ExecutionOptions>()
+                .expect("NullPointerException: ExecutionOptions");
+            if attempted_commands < execution_options.remote_retry_on_transient_cache_error {
+                // throw new RemoteCacheTransientErrorException(...)
+                *self.remote_cache_transient_error.lock() = true;
+            }
+        }
+        new_result
     }
 
     /// `CommandEnvironment.beforeCommand`.

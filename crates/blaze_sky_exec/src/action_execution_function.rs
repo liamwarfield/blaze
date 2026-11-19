@@ -350,11 +350,9 @@ impl ActionExecutionFunction {
             // the action even if we wanted to.
             // PORT: previousAction.getResultOrDependOnFuture is the shared execution's OnceLock:
             // execute_action returns the first execution's result.
-            let output_metadata_store =
-                Arc::new(executor.create_output_metadata_store(
-                    action.as_ref(),
-                    &state.input_artifact_data,
-                ));
+            let output_metadata_store = Arc::new(
+                executor.create_output_metadata_store(action.as_ref(), &state.input_artifact_data),
+            );
             return executor.execute_action(
                 env,
                 action,
@@ -369,11 +367,9 @@ impl ActionExecutionFunction {
         // The output metadata store resolves its paths through the action file system when the
         // output service has one (ArtifactPathResolver.createPathResolver(actionFileSystem,
         // execRoot)).
-        let output_metadata_store =
-            Arc::new(executor.create_output_metadata_store(
-                    action.as_ref(),
-                    &state.input_artifact_data,
-                ));
+        let output_metadata_store = Arc::new(
+            executor.create_output_metadata_store(action.as_ref(), &state.input_artifact_data),
+        );
 
         // We only need to check the action cache if we haven't done it on a previous run.
         state.token = executor.check_action_cache(
@@ -1346,11 +1342,11 @@ mod timestamp_builder_tests {
     use blaze_events::location::Location;
     use blaze_events::{JavaClock, NullEventHandler, StoredEventHandler};
     use blaze_exec::actions::CacheCheckAction;
+    use blaze_exec::actions::OutputChecker;
     use blaze_exec::actions::action_cache_checker::{
         ActionCacheChecker, ActionCacheCheckerCacheConfig, NoProxies, TrustAll, TrustLocalOnly,
     };
     use blaze_exec::actions::cache::{ActionCache, CompactPersistentActionCache};
-    use blaze_exec::actions::OutputChecker;
     use blaze_exec::analysis::actions::file_write_action_context::FileWriteActionContext;
     use blaze_exec::exec::action_execution_context::{ActionInputPrefetcher, RemoteOutputTree};
     use blaze_skyframe::{ComputeError, Environment, EvaluationContext, EvaluatorBuilder, SkyKey};
@@ -1620,7 +1616,8 @@ mod timestamp_builder_tests {
                     explain: false,
                     containing_package_root_lookup: None,
                     output_checker: remote.output_checker.clone(),
-                }),
+                })
+                .with_lost_inputs_policy(remote.lost_inputs_policy.clone()),
             );
             let evaluator = crate::register_execution_functions(
                 EvaluatorBuilder::new(),
@@ -1659,6 +1656,37 @@ mod timestamp_builder_tests {
         /// output's metadata is injected into the action file system (as
         /// `RemoteExecutionService.downloadOutputs` does) and no local file is written.
         file_write: Option<Arc<dyn FileWriteActionContext>>,
+        /// `rewindingEnabled` / `invocationRetriesEnabled` and the `LostInputsEvent` handler.
+        lost_inputs_policy: Option<blaze_exec::exec::executor_setup::LostInputsPolicy>,
+    }
+
+    /// A `FileWriteActionContext` whose action loses an input: a `LostInputsExecException`
+    /// for `lost` (a prefetch that found its blob missing in the remote cache).
+    struct LosingFileWrite {
+        lost: Artifact,
+        digest: String,
+    }
+
+    impl FileWriteActionContext for LosingFileWrite {
+        fn write_output_to_file_with_output(
+            &self,
+            _action: &dyn blaze_actions::actions::action::Action,
+            _ctx: &dyn blaze_exec::exec::action_execution_context::ActionExecutionContext,
+            _deterministic_writer: &dyn blaze_actions::analysis::actions::abstract_file_write_action::DeterministicWriter,
+            _make_executable: bool,
+            _is_remotable: bool,
+            _output: &Artifact,
+        ) -> Result<Vec<blaze_exec::actions::SpawnResult>, blaze_exec::actions::ExecException>
+        {
+            let mut lost = blaze_exec::actions::LostArtifacts::default();
+            lost.by_digest
+                .entry(self.digest.clone())
+                .or_default()
+                .insert(blaze_exec::actions::action_adapters::artifact_input(
+                    &self.lost,
+                ));
+            Err(blaze_exec::actions::LostInputsExecException::create(lost))
+        }
     }
 
     /// `ActionInputPrefetcher.NONE`.
@@ -1697,7 +1725,8 @@ mod timestamp_builder_tests {
             make_executable: bool,
             is_remotable: bool,
             output: &Artifact,
-        ) -> Result<Vec<blaze_exec::actions::SpawnResult>, blaze_exec::actions::ExecException> {
+        ) -> Result<Vec<blaze_exec::actions::SpawnResult>, blaze_exec::actions::ExecException>
+        {
             if output != &self.injector {
                 return self.local.write_output_to_file_with_output(
                     action,
@@ -1740,7 +1769,8 @@ mod timestamp_builder_tests {
             _make_executable: bool,
             _is_remotable: bool,
             output: &Artifact,
-        ) -> Result<Vec<blaze_exec::actions::SpawnResult>, blaze_exec::actions::ExecException> {
+        ) -> Result<Vec<blaze_exec::actions::SpawnResult>, blaze_exec::actions::ExecException>
+        {
             use sha2::Digest as _;
             let mut content = Vec::new();
             deterministic_writer.write_to(&mut content).unwrap();
@@ -1816,6 +1846,7 @@ mod timestamp_builder_tests {
                 output_checker: output_checker.clone(),
                 tree: Some(Arc::new(RemoteOutputTree::new())),
                 file_write: Some(Arc::new(InjectingFileWrite)),
+                lost_inputs_policy: None,
             };
             assert_eq!(f.build_with(&actions, &cache, &hello, &first), BUILT);
             // Not downloaded: no local file.
@@ -1826,6 +1857,7 @@ mod timestamp_builder_tests {
                 output_checker: output_checker.clone(),
                 tree: Some(Arc::new(RemoteOutputTree::new())),
                 file_write: Some(Arc::new(InjectingFileWrite)),
+                lost_inputs_policy: None,
             };
             assert_eq!(
                 f.build_with(&actions, &cache, &hello, &second),
@@ -1846,8 +1878,10 @@ mod timestamp_builder_tests {
         let f = Fixture::new();
         let a = f.create_derived_artifact("a");
         let b = f.create_derived_artifact("b");
-        let actions =
-            f.register_actions(vec![write_action(&f, &a, "aaa"), write_action(&f, &b, "bbb")]);
+        let actions = f.register_actions(vec![
+            write_action(&f, &a, "aaa"),
+            write_action(&f, &b, "bbb"),
+        ]);
         let cache = f.create_cache("cache");
 
         let local: Arc<dyn FileWriteActionContext> = {
@@ -1874,6 +1908,7 @@ mod timestamp_builder_tests {
             output_checker: Some(Arc::new(TrustAll) as Arc<dyn OutputChecker>),
             tree: Some(Arc::new(RemoteOutputTree::new())),
             file_write: Some(forging),
+            lost_inputs_policy: None,
         };
         let (result, _events) = f.evaluate_roots_with(&actions, &cache, &[&a, &b], &remote);
         assert!(!result.has_error(), "{:?}", result.error_map());
@@ -1892,6 +1927,70 @@ mod timestamp_builder_tests {
             .unwrap();
         let metadata_a = value_a.get_existing_file_artifact_value(&a).unwrap();
         assert!(metadata_a.is_remote(), "{metadata_a:?}");
+    }
+
+    /// R6: an action that lost inputs without action rewinding. With invocation retries
+    /// (`--experimental_remote_cache_eviction_retries` > 0) the failure is
+    /// `FallbackToBuildRewindingException` (Spawn `REMOTE_CACHE_EVICTED`, exit code 39, which
+    /// `BlazeCommandDispatcher` retries) and the lost digests reach the `LostInputsEvent`
+    /// handler; without retries it is `GenericActionRewindException`
+    /// (`LOST_INPUT_REWINDING_DISABLED`). Texts from the oracle (`scripts/remote/evict-probe`):
+    /// "Linking brotli failed: Lost inputs no longer available remotely: _objs/brotli/brotli.pic.o
+    /// (0f3d…/40520)" and "... Unexpected lost inputs (pass --rewind_lost_inputs to enable
+    /// recovery): _objs/brotli/brotli.pic.o".
+    #[test]
+    fn lost_inputs_without_rewinding_fail_the_action_as_bazel_does() {
+        for retries in [true, false] {
+            let f = Fixture::new();
+            let lost = f.create_derived_artifact("lost.o");
+            let out = f.create_derived_artifact("out");
+            let actions = f.register_actions(vec![write_action(&f, &out, "content")]);
+            let cache = f.create_cache("cache");
+            let seen: Arc<parking_lot::Mutex<Vec<String>>> = Arc::default();
+            let seen_in_handler = seen.clone();
+            let remote = RemoteSetup {
+                output_checker: None,
+                tree: Some(Arc::new(RemoteOutputTree::new())),
+                file_write: Some(Arc::new(LosingFileWrite {
+                    lost: lost.clone(),
+                    digest: "0f3d/40520".to_string(),
+                })),
+                lost_inputs_policy: Some(blaze_exec::exec::executor_setup::LostInputsPolicy {
+                    rewinding_enabled: false,
+                    invocation_retries_enabled: retries,
+                    on_lost_inputs: Arc::new(move |digests: &[String]| {
+                        seen_in_handler.lock().extend(digests.iter().cloned())
+                    }),
+                }),
+            };
+            let (result, events) = f.evaluate_with(&actions, &cache, &out, &remote);
+            assert!(result.has_error());
+            let errors: Vec<String> = events
+                .get_events()
+                .iter()
+                .filter(|e| e.get_kind() == blaze_events::EventKind::Error)
+                .map(|e| e.get_message().to_string())
+                .collect();
+            let expected = if retries {
+                "Lost inputs no longer available remotely: lost.o (0f3d/40520)"
+            } else {
+                "Unexpected lost inputs (pass --rewind_lost_inputs to enable recovery): lost.o"
+            };
+            assert!(
+                errors
+                    .iter()
+                    .any(|m| m.ends_with(&format!("failed: {expected}"))),
+                "{errors:?}"
+            );
+            assert_eq!(
+                *seen.lock(),
+                if retries {
+                    vec!["0f3d/40520".to_string()]
+                } else {
+                    vec![]
+                }
+            );
+        }
     }
 
     const BUILT: BuildCounts = BuildCounts {

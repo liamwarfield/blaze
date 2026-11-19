@@ -57,7 +57,34 @@ impl ConfiguredTarget {
 
     /// Java `getLookupKey()`.
     pub fn get_lookup_key(&self) -> &ActionLookupKeyRef {
+        if let ConfiguredTarget::Merged(_) = self {
+            // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:112 MergedConfiguredTarget.getLookupKey
+            panic!(
+                "IllegalStateException: MergedConfiguredTarget is ephemeral. It does not exist in \
+                 the Skyframe graph and it does not have a key."
+            );
+        }
         &self.base().lookup_key
+    }
+
+    /// The lookup key slot of the target's common state, for every class (a merged target's slot
+    /// holds its base target's key; see `MergedConfiguredTarget`).
+    pub(crate) fn raw_lookup_key(&self) -> &ActionLookupKeyRef {
+        &self.base().lookup_key
+    }
+
+    /// The identity of this configured target object (Java reference identity, which
+    /// `StarlarkValue` equality and hashing of a `Target` use).
+    pub fn identity(&self) -> usize {
+        match self {
+            ConfiguredTarget::Rule(t) => Arc::as_ptr(t) as *const () as usize,
+            ConfiguredTarget::InputFile(t) => Arc::as_ptr(t) as *const () as usize,
+            ConfiguredTarget::OutputFile(t) => Arc::as_ptr(t) as *const () as usize,
+            ConfiguredTarget::PackageGroup(t) => Arc::as_ptr(t) as *const () as usize,
+            ConfiguredTarget::EnvironmentGroup(t) => Arc::as_ptr(t) as *const () as usize,
+            ConfiguredTarget::Alias(t) => Arc::as_ptr(t) as *const () as usize,
+            ConfiguredTarget::Merged(t) => Arc::as_ptr(t) as *const () as usize,
+        }
     }
 
     /// Java `getLabel()` (an alias reports its actual target's label).
@@ -75,6 +102,10 @@ impl ConfiguredTarget {
 
     /// Java `getConfigurationKey()` (`None` for the null configuration).
     pub fn get_configuration_key(&self) -> Option<BuildConfigurationKey> {
+        if let ConfiguredTarget::Merged(m) = self {
+            // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:125 MergedConfiguredTarget.getConfigurationKey
+            return m.base_configured_target.get_configuration_key();
+        }
         self.get_lookup_key()
             .as_any()
             .downcast_ref::<crate::configured_target_key::ConfiguredTargetKey>()
@@ -83,6 +114,10 @@ impl ConfiguredTarget {
 
     /// Java `getConfigurationChecksum()`.
     pub fn get_configuration_checksum(&self) -> Option<String> {
+        if let ConfiguredTarget::Merged(m) = self {
+            // Java: ConfiguredTarget.getConfigurationChecksum over getConfigurationKey().
+            return m.base_configured_target.get_configuration_checksum();
+        }
         self.get_lookup_key().get_configuration_checksum()
     }
 
@@ -115,9 +150,10 @@ impl ConfiguredTarget {
     }
 
     /// Java `unwrapIfMerged()`.
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:393 MergedConfiguredTarget.unwrapIfMerged
     pub fn unwrap_if_merged(&self) -> ConfiguredTarget {
         match self {
-            ConfiguredTarget::Merged(m) => m.base_configured_target.clone(),
+            ConfiguredTarget::Merged(m) => m.base_configured_target.unwrap_if_merged(),
             _ => self.clone(),
         }
     }

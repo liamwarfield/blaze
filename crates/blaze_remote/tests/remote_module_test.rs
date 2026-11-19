@@ -119,7 +119,9 @@ fn target(server: &FakeServer) -> String {
 
 /// `parseRemoteOptions(args...)`.
 fn parse_remote_options(args: &[&str]) -> RemoteOptions {
-    Options::<RemoteOptions>::parse(args).unwrap().into_options()
+    Options::<RemoteOptions>::parse(args)
+        .unwrap()
+        .into_options()
 }
 
 /// The `CommandEnvironment` of a test (`createTestCommandEnvironment`): directories in a
@@ -198,29 +200,29 @@ fn assert_circuit_breaker_instance(remote_module: &RemoteModule, remote_options:
         .get_action_context_provider()
         .expect("actionContextProvider");
 
-    let circuit_breaker: Arc<dyn CircuitBreaker> =
-        if let Some(combined_cache) = action_context_provider.get_combined_cache() {
-            combined_cache
-                .remote_cache_client()
-                .and_then(|c| c.as_any())
-                .and_then(|c| c.downcast_ref::<GrpcCacheClient>())
-                .expect("(GrpcCacheClient) combinedCache.remoteCacheClient")
-                .get_retrier()
-                .get_circuit_breaker()
-                .clone()
-        } else if let Some(remote_executor) = action_context_provider.get_remote_execution_client()
-        {
-            remote_executor
-                .as_any()
-                .and_then(|c| c.downcast_ref::<GrpcRemoteExecutor>())
-                .expect("(GrpcRemoteExecutor) remoteExecutionClient")
-                .get_retrier()
-                .get_circuit_breaker()
-                .clone()
-        } else {
-            // no remote cache or execution configured, circuitBreaker is null
-            return;
-        };
+    let circuit_breaker: Arc<dyn CircuitBreaker> = if let Some(combined_cache) =
+        action_context_provider.get_combined_cache()
+    {
+        combined_cache
+            .remote_cache_client()
+            .and_then(|c| c.as_any())
+            .and_then(|c| c.downcast_ref::<GrpcCacheClient>())
+            .expect("(GrpcCacheClient) combinedCache.remoteCacheClient")
+            .get_retrier()
+            .get_circuit_breaker()
+            .clone()
+    } else if let Some(remote_executor) = action_context_provider.get_remote_execution_client() {
+        remote_executor
+            .as_any()
+            .and_then(|c| c.downcast_ref::<GrpcRemoteExecutor>())
+            .expect("(GrpcRemoteExecutor) remoteExecutionClient")
+            .get_retrier()
+            .get_circuit_breaker()
+            .clone()
+    } else {
+        // no remote cache or execution configured, circuitBreaker is null
+        return;
+    };
 
     if remote_options.circuit_breaker_strategy == Some(CircuitBreakerStrategy::FAILURE) {
         assert!(
@@ -428,7 +430,12 @@ fn test_cache_capabilities_propagated_to_remote_cache() {
     assert!(!blaze_shell::thread_interrupt::interrupted());
     let action_context_provider = remote_module.get_action_context_provider();
     assert!(action_context_provider.is_some());
-    assert!(action_context_provider.unwrap().get_combined_cache().is_some());
+    assert!(
+        action_context_provider
+            .unwrap()
+            .get_combined_cache()
+            .is_some()
+    );
     assert_eq!(
         remote_cache_capabilities(&remote_module),
         cache_only_caps().cache_capabilities.unwrap()
@@ -449,7 +456,12 @@ fn test_cache_capabilities_propagated_to_remote_execution_cache() {
     assert!(!blaze_shell::thread_interrupt::interrupted());
     let action_context_provider = remote_module.get_action_context_provider();
     assert!(action_context_provider.is_some());
-    assert!(action_context_provider.unwrap().get_combined_cache().is_some());
+    assert!(
+        action_context_provider
+            .unwrap()
+            .get_combined_cache()
+            .is_some()
+    );
     assert_eq!(
         remote_cache_capabilities(&remote_module),
         exec_and_cache_caps().cache_capabilities.unwrap()
@@ -769,7 +781,11 @@ fn build_event_artifact_uploader_without_grpc_cache_is_local() {
         disk_cache_dir.get_path_string()
     )]);
     let remote_module = before_command(&env, remote_options).unwrap();
-    assert!(remote_module.create_build_event_artifact_uploader().is_none());
+    assert!(
+        remote_module
+            .create_build_event_artifact_uploader()
+            .is_none()
+    );
 }
 
 #[test]
@@ -782,4 +798,62 @@ fn remote_cache_lease_extension_fails_loudly() {
         "--experimental_remote_cache_lease_extension",
     ]);
     let _ = before_command(&env, remote_options);
+}
+
+/// Review 2026-11-19 R15: `getTempPathGenerator`'s failure carries Java's explicit
+/// `ExitCode.LOCAL_ENVIRONMENTAL_ERROR` (36), not the metadata of
+/// `DOWNLOADED_INPUTS_DELETION_FAILURE` (34).
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1215 RemoteModule.getTempPathGenerator
+#[test]
+fn stale_downloads_deletion_failure_exits_with_local_environmental_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let action_temps = env.root.get_relative_str("output/action_temps");
+    let stale = action_temps.get_relative_str("remote/stale");
+    stale.create_directory_and_parents().unwrap();
+    // The stale directory cannot be removed from its parent.
+    let action_temps_os = std::path::PathBuf::from(action_temps.get_path_string());
+    std::fs::set_permissions(&action_temps_os, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let mut remote_options = Options::<RemoteOptions>::get_defaults();
+    remote_options.disk_cache = Some(blaze_options::Foreign(blaze_vfs::PathFragment::create(
+        env.root.get_relative_str("disk").get_path_string(),
+    )));
+
+    let result = before_command(&env, remote_options);
+    std::fs::set_permissions(&action_temps_os, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let exception = result.err().expect("AbruptExitException");
+    assert!(
+        exception
+            .get_message()
+            .starts_with("Failed to delete stale downloads: "),
+        "{}",
+        exception.get_message()
+    );
+    assert_eq!(exception.exit_code, Some(36));
+    assert!(
+        env.reporter
+            .get_events()
+            .iter()
+            .any(|e| e.get_message() == "Found stale downloads from previous build, deleting...")
+    );
+}
+
+/// Review 2026-11-19 R15: an options failure (`createOptionsExitException`) has no explicit exit
+/// code; its exit code is the failure detail's metadata.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1370 RemoteModule.createOptionsExitException
+#[test]
+fn options_exit_exception_has_no_explicit_exit_code() {
+    let env = TestEnv::new();
+    let mut output_service_server = FakeServer::new();
+    output_service_server.start();
+    let mut remote_options = Options::<RemoteOptions>::get_defaults();
+    remote_options.remote_output_service = Some(target(&output_service_server));
+
+    let exception = before_command(&env, remote_options)
+        .err()
+        .expect("AbruptExitException");
+
+    assert_eq!(exception.exit_code, None);
+    output_service_server.shutdown_now();
 }

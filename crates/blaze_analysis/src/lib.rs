@@ -22,6 +22,7 @@
 
 // Lead-owned contract files.
 pub mod analysis_services;
+pub mod base_target_prerequisites_supplier;
 pub mod configured_rule_class_provider;
 pub mod configured_target;
 pub mod configured_target_and_data;
@@ -30,6 +31,19 @@ pub mod configured_target_value;
 pub mod dependency_kind;
 pub mod info;
 pub mod provider_map;
+
+// Aspects wave, W3 (DESIGN.md "Ownership (aspects wave)").
+pub mod aspect_aware_attribute_mapper;
+pub mod aspect_collection;
+pub mod aspect_key_creator;
+pub mod aspect_resolution_helpers;
+pub mod aspect_value;
+pub mod configured_aspect;
+pub mod configured_aspect_factory;
+pub mod inconsistent_aspect_order_exception;
+
+// Aspects wave, W4.
+pub mod aspect_context;
 
 // Agent-owned areas (DESIGN.md "Ownership").
 pub mod config;

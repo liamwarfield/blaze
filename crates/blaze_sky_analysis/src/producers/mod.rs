@@ -3,6 +3,7 @@
 //! evaluator, plus the skyframe helpers they share (agent C; crates/blaze_analysis/DESIGN.md).
 
 pub mod config_conditions_producer;
+pub mod configured_aspect_producer;
 pub mod configured_target_and_data_producer;
 pub mod dependency_context_producer;
 pub mod dependency_map_producer;

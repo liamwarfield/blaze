@@ -6,6 +6,7 @@
 //!
 //! `ToolchainTypeRequirement` is `blaze_packages::rule_class::ToolchainTypeRequirement`.
 
+pub mod aspect_base_target_resolved_toolchain_context;
 pub mod exec_group_collection;
 pub mod no_matching_platform_data;
 pub mod resolved_toolchain_context;

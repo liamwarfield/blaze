@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use blaze_cmdline::{Label, PackageIdentifier};
+use blaze_packages::aspect::{AspectClass, StarlarkAspectClass};
 use blaze_packages::attribute::{Attribute, AttributeMap, NonconfigurableAttributeMapper};
 use blaze_packages::macros::MacroInstance;
 use blaze_packages::rule_class::RuleClass;
@@ -38,29 +39,47 @@ struct VisibilityCheckState<'a> {
     consumer: Arc<Rule>,
     /// The rule class owning an implicit dependency (Java `owningRule`).
     owning_rule: Option<Arc<RuleClass>>,
+    /// The aspect that this edge is an implicit dep of (if applicable; mutually exclusive with
+    /// `owning_rule`).
+    owning_aspect: Option<StarlarkAspectClass>,
     /// Macros the dependency was delegated through, innermost first.
     delegated_through: Vec<Arc<MacroInstance>>,
     verbose_visibility_errors: bool,
 }
 
 impl VisibilityCheckState<'_> {
+    // Java: com/google/devtools/build/lib/analysis/CommonPrerequisiteValidator.java:111 VisibilityCheckState.isImplicitDep
     fn is_implicit_dep(&self) -> bool {
-        // PORT: aspect owners are not ported (no aspect contexts).
-        self.owning_rule.is_some()
+        self.owning_rule.is_some() || self.owning_aspect.is_some()
     }
 
+    // Java: com/google/devtools/build/lib/analysis/CommonPrerequisiteValidator.java:117 VisibilityCheckState.getOwnerKind
     fn get_owner_kind(&self) -> Option<&'static str> {
-        self.owning_rule.as_ref().map(|_| "rule")
+        if self.owning_rule.is_some() {
+            Some("rule")
+        } else if self.owning_aspect.is_some() {
+            Some("aspect")
+        } else {
+            None
+        }
     }
 
+    // Java: com/google/devtools/build/lib/analysis/CommonPrerequisiteValidator.java:125 VisibilityCheckState.getOwnerName
     fn get_owner_name(&self) -> Option<String> {
-        self.owning_rule.as_ref().map(|r| r.get_name().to_owned())
+        match (&self.owning_rule, &self.owning_aspect) {
+            (Some(r), _) => Some(r.get_name().to_owned()),
+            (None, Some(a)) => Some(a.get_exported_name().to_owned()),
+            (None, None) => None,
+        }
     }
 
+    // Java: com/google/devtools/build/lib/analysis/CommonPrerequisiteValidator.java:133 VisibilityCheckState.getOwnerDefinitionBzl
     fn get_owner_definition_bzl(&self) -> Option<Label> {
-        self.owning_rule
-            .as_ref()
-            .and_then(|r| r.get_rule_definition_environment_label().cloned())
+        match (&self.owning_rule, &self.owning_aspect) {
+            (Some(r), _) => r.get_rule_definition_environment_label().cloned(),
+            (None, Some(a)) => Some(a.get_extension_label().clone()),
+            (None, None) => None,
+        }
     }
 
     fn get_owner_definition_location(&self) -> Option<PackageIdentifier> {
@@ -134,12 +153,26 @@ impl BazelPrerequisiteValidator {
             return;
         }
 
-        // Only verify visibility of implicit dependencies of the current aspect. Dependencies of
-        // other aspects as well as the rule itself are checked when they are evaluated.
+        // Don't check the visibility of toolchain implementations since toolchain resolution
+        // intentionally decouples the definition of the implementation from the toolchain usage.
         if attr_name == RuleContext::TOOLCHAIN_ATTR_NAME {
             return;
         }
-        // PORT: aspect contexts are not ported (`context.getMainAspect()` is always null).
+
+        // Only verify visibility of implicit dependencies of the current aspect.
+        // Dependencies of other aspects as well as the rule itself are checked when they are
+        // evaluated.
+        let main_aspect = context.get_main_aspect();
+        if let Some(main_aspect) = main_aspect {
+            if !attribute.is_implicit()
+                || !main_aspect
+                    .get_definition()
+                    .get_attributes()
+                    .contains_key(attr_name)
+            {
+                return;
+            }
+        }
 
         let check_experimental = self.check_visibility_for_experimental(context);
 
@@ -151,26 +184,39 @@ impl BazelPrerequisiteValidator {
             prerequisite,
             consumer: rule.clone(),
             owning_rule: None,
+            owning_aspect: None,
             delegated_through: Vec::new(),
             verbose_visibility_errors: config_util::core_options(context.get_configuration())
                 .verbose_visibility_errors,
         };
 
         if is_implicit_dep {
-            // Implicit dependency of a rule: the owning rule is the topmost Starlark ancestor
-            // rule class that declares the attribute.
-            let mut owning_rule = rule.get_rule_class_object().clone();
-            while let Some(parent) = owning_rule.get_starlark_parent() {
-                if parent
-                    .get_attribute_provider()
-                    .get_attribute_by_name_maybe(attr_name)
-                    .is_none()
-                {
-                    break;
+            // Populate the state with the relevant rule or aspect's info.
+            if let Some(main_aspect) = main_aspect {
+                state.owning_aspect = match main_aspect.get_aspect_class() {
+                    AspectClass::Starlark(c) => Some(c.clone()),
+                    // Java: ((StarlarkAspectClass) mainAspect.getAspectClass())
+                    _ => panic!(
+                        "ClassCastException: native aspect class is not a StarlarkAspectClass"
+                    ),
+                };
+            } else {
+                // Rule extensions can't override private attributes, so we can just walk up the
+                // chain to find the rule class that actually introduced the attribute and thus
+                // its default.
+                let mut owning_rule = rule.get_rule_class_object().clone();
+                while let Some(parent) = owning_rule.get_starlark_parent() {
+                    if parent
+                        .get_attribute_provider()
+                        .get_attribute_by_name_maybe(attr_name)
+                        .is_none()
+                    {
+                        break;
+                    }
+                    owning_rule = parent.clone();
                 }
-                owning_rule = parent.clone();
+                state.owning_rule = Some(owning_rule);
             }
-            state.owning_rule = Some(owning_rule);
 
             let owner_location = state.get_owner_definition_location();
             if !self.is_visible_to_location(

@@ -128,6 +128,8 @@ pub struct ActionExecutionException {
     /// `Action.execute` / `discoverInputs` throw apart from `ActionExecutionException` (see
     /// [`ActionExecutionException::is_interrupted`]).
     interrupted: bool,
+    /// This is a `LostInputsActionExecutionException`: its `getLostInputs()`.
+    lost_inputs: Option<std::sync::Arc<super::LostArtifacts>>,
 }
 
 impl ActionExecutionException {
@@ -162,6 +164,7 @@ impl ActionExecutionException {
             already_reported: false,
             cause_is_test_exec_exception: false,
             interrupted: false,
+            lost_inputs: None,
         }
     }
 
@@ -198,6 +201,7 @@ impl ActionExecutionException {
             already_reported: false,
             cause_is_test_exec_exception: false,
             interrupted: false,
+            lost_inputs: None,
         }
     }
 
@@ -235,7 +239,7 @@ impl ActionExecutionException {
         );
         let code =
             exception.get_failure_detail(&format!("{} failed: {}", action.describe(), message));
-        // PORT: LostInputsExecException (rewinding) is not ported.
+        // LostInputsExecException.fromExecException: a LostInputsActionExecutionException.
         let mut e = Self::with_cause(
             message,
             &exception.get_message(),
@@ -245,7 +249,15 @@ impl ActionExecutionException {
         );
         e.cause_is_test_exec_exception = exception.is_test_exec_exception();
         e.interrupted = matches!(exception, ExecException::Interrupted);
+        // Java: com/google/devtools/build/lib/actions/LostInputsExecException.java:54 LostInputsExecException.fromExecException
+        e.lost_inputs = exception.get_lost_inputs().cloned();
         e
+    }
+
+    /// `this instanceof LostInputsActionExecutionException ? getLostInputs() : null`.
+    // Java: com/google/devtools/build/lib/actions/LostInputsActionExecutionException.java LostInputsActionExecutionException.getLostInputs
+    pub fn get_lost_inputs(&self) -> Option<&std::sync::Arc<super::LostArtifacts>> {
+        self.lost_inputs.as_ref()
     }
 
     /// The action was interrupted: this stands for the `InterruptedException` Java's

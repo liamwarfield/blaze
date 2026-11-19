@@ -378,12 +378,12 @@ fn contextualize_failure_detail_for_target(
 // RuleTransitionApplier.
 
 /// `acceptErrorMessage(message, location, exitCode)`.
-type ErrorMessage = (String, Option<Location>, Option<DetailedExitCode>);
+pub type ErrorMessage = (String, Option<Location>, Option<DetailedExitCode>);
 
 /// Applies any requested rule transition before producing the final configuration (Java
 /// `RuleTransitionApplier`).
 // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:150 RuleTransitionApplier.step
-fn apply_rule_transition(
+pub fn apply_rule_transition(
     env: &mut Environment<'_>,
     services: &AnalysisServices,
     target: &Target,

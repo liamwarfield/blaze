@@ -9,6 +9,7 @@ use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_cmdline::{Label, PackageIdentifier, RepositoryName};
 use blaze_collect::NestedSet;
 use blaze_config::transition_factories::DEFAULT_EXEC_GROUP_NAME;
+use blaze_packages::aspect::{Aspect, AspectClass, AspectDescriptor};
 use blaze_packages::attribute::{Attribute, AttributeMap};
 use blaze_packages::package::ConfigSettingVisibilityPolicy;
 use blaze_packages::package::package_args::FeatureSet;
@@ -23,6 +24,7 @@ use indexmap::{IndexMap, IndexSet};
 use parking_lot::Mutex;
 use starlark::values::OwnedFrozenValue;
 
+use crate::aspect_context::{AspectContext, to_action_aspect_descriptors};
 use crate::config::config_conditions::ConfigConditions;
 use crate::config::config_matching_provider::ConfigMatchingProvider;
 use crate::config::configured_attribute_mapper::ConfiguredAttributeMapper;
@@ -52,6 +54,7 @@ use crate::rule::rule_error_consumer::{
 use crate::rule::stringtemplate::TemplateContext;
 use crate::rule::target_context::TargetContext;
 use crate::rule::to_event_location;
+use crate::toolchains::aspect_base_target_resolved_toolchain_context::AspectBaseTargetResolvedToolchainContext;
 use crate::toolchains::exec_group_collection::{
     ExecGroupCollection, ExecGroupCollectionBuilder, InvalidExecGroupException,
 };
@@ -126,7 +129,9 @@ pub struct RuleContext {
     /// of the rule.
     prerequisites_collection: PrerequisitesCollection,
     config_conditions: Arc<IndexMap<Label, ConfigMatchingProvider>>,
-    attributes: Arc<ConfiguredAttributeMapper>,
+    /// Java `attributes`: the rule's `ConfiguredAttributeMapper`, or for aspects the
+    /// `AspectAwareAttributeMapper` over it and the aspects' attributes.
+    attributes: RuleContextAttributes,
     features: FeatureSet,
     rule_class_name_for_logging: String,
     configuration_fragment_policy: ConfigurationFragmentPolicy,
@@ -153,6 +158,10 @@ pub struct RuleContext {
     /// (agent S) when it closes; `None` while no Starlark rule context exists.
     starlark_looked_up_variables: Mutex<Option<Vec<String>>>,
     starlark_semantics: Arc<StarlarkSemantics>,
+    /// The state of Java's subclass `AspectContext` (`extends RuleContext`): `Some` iff this
+    /// context is for the evaluation of an aspect. The methods `AspectContext` overrides
+    /// dispatch on it.
+    aspect_context: Option<AspectContext>,
 }
 
 impl RuleContext {
@@ -161,9 +170,9 @@ impl RuleContext {
 
     /// The constructor is intentionally private to be only used by the builder.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:211 RuleContext.<init>
-    fn new(
+    pub(crate) fn new(
         builder: &RuleContextBuilder,
-        attributes: Arc<ConfiguredAttributeMapper>,
+        attributes: Arc<dyn AttributeMap + Send + Sync>,
         prerequisites_collection: PrerequisitesCollection,
         exec_group_collection: ExecGroupCollection,
     ) -> RuleContext {
@@ -179,6 +188,7 @@ impl RuleContext {
                 .clone(),
         );
         let features = Self::compute_features(&rule, attributes.as_ref(), &builder.configuration);
+        let attributes = RuleContextAttributes(attributes);
         RuleContext {
             target_context,
             rule,
@@ -218,7 +228,21 @@ impl RuleContext {
             configuration_make_variable_context: OnceLock::new(),
             starlark_looked_up_variables: Mutex::new(None),
             starlark_semantics: builder.env.get_starlark_semantics().clone(),
+            aspect_context: None,
         }
+    }
+
+    /// Java `AspectContext.<init>`'s own fields, set right after `super(...)` (the
+    /// `RuleContext` constructor).
+    // Java: com/google/devtools/build/lib/analysis/AspectContext.java:69 AspectContext.<init>
+    pub(crate) fn set_aspect_context(&mut self, aspect_context: AspectContext) {
+        check_state!(self.aspect_context.is_none());
+        self.aspect_context = Some(aspect_context);
+    }
+
+    /// Java `(AspectContext) ruleContext`: the aspect part of this context, `None` for a rule.
+    pub fn as_aspect_context(&self) -> Option<&AspectContext> {
+        self.aspect_context.as_ref()
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:243 RuleContext.create
@@ -241,8 +265,10 @@ impl RuleContext {
         }
         let prerequisites = PrerequisitesCollection::new(
             attr_name_to_targets,
-            rule_attributes.clone(),
-            builder.reporter.clone(),
+            crate::rule::prerequisites_collection::AttributesMapper::of_attribute_map(
+                rule_attributes.clone(),
+            ),
+            builder.get_error_consumer().clone(),
             builder.get_rule().clone(),
             builder.get_rule_class_name_for_logging(),
         );
@@ -383,12 +409,18 @@ impl RuleContext {
     }
 
     /// Prerequisite lookup methods use this method to find the `PrerequisitesCollection` owning
-    /// an attribute with the given name (aspects override it).
+    /// an attribute with the given name.
+    ///
+    /// For aspect evaluation, `AspectContext` overrides this to select the correct owning
+    /// collection: the main aspect or the underlying rule and base aspects.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:310 RuleContext.getOwningPrerequisitesCollection
-    fn get_owning_prerequisites_collection(
+    pub(crate) fn get_owning_prerequisites_collection(
         &self,
-        _attribute_name: &str,
+        attribute_name: &str,
     ) -> &PrerequisitesCollection {
+        if let Some(aspect_context) = &self.aspect_context {
+            return aspect_context.get_owning_prerequisites_collection(self, attribute_name);
+        }
         &self.prerequisites_collection
     }
 
@@ -441,6 +473,16 @@ impl RuleContext {
         &self.rule
     }
 
+    /// All aspects applied to the target (empty for a rule; the main aspect is the last one).
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:343 RuleContext.getAspects
+    // Java: com/google/devtools/build/lib/analysis/AspectContext.java:254 AspectContext.getAspects
+    pub fn get_aspects(&self) -> &[Aspect] {
+        match &self.aspect_context {
+            Some(aspect_context) => aspect_context.get_aspects(),
+            None => &[],
+        }
+    }
+
     /// If this target's configuration suppresses analysis failures, this returns the
     /// descriptions of the errors that occurred during processing this target.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:355 RuleContext.getSuppressedErrorMessages
@@ -476,19 +518,35 @@ impl RuleContext {
 
     /// All aspects applied to the rule.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:393 RuleContext.getAspectDescriptors
-    pub fn get_aspect_descriptors(&self) -> Vec<blaze_actions::AspectDescriptor> {
-        Vec::new()
+    // Java: com/google/devtools/build/lib/analysis/AspectContext.java:271 AspectContext.getAspectDescriptors
+    pub fn get_aspect_descriptors(&self) -> &[AspectDescriptor] {
+        match &self.aspect_context {
+            Some(aspect_context) => aspect_context.get_aspect_descriptors(),
+            None => &[],
+        }
     }
 
-    /// Java `getMainAspect()`: `None` for rules (aspect contexts are not ported).
+    /// If this `RuleContext` is for an aspect implementation, returns that aspect (it is the
+    /// last aspect in the list of aspects applied to a target; all other aspects are the ones
+    /// main aspect sees as specified by its "required_aspect_providers"). Otherwise returns
+    /// `None`.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:371 RuleContext.getMainAspect
-    pub fn has_main_aspect(&self) -> bool {
-        false
+    // Java: com/google/devtools/build/lib/analysis/AspectContext.java:265 AspectContext.getMainAspect
+    pub fn get_main_aspect(&self) -> Option<&Aspect> {
+        self.aspect_context
+            .as_ref()
+            .map(|aspect_context| aspect_context.get_main_aspect())
     }
 
     /// Accessor for the attributes of the rule and its aspects.
+    ///
+    /// The rule's native attributes can be queried both on their structure / existence and
+    /// values. Aspect attributes can only be queried on their structure.
+    ///
+    /// This should be the sole interface for reading rule/aspect attributes in `RuleContext`.
+    /// Don't expose other access points through new public methods.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:406 RuleContext.attributes
-    pub fn attributes(&self) -> &ConfiguredAttributeMapper {
+    pub fn attributes(&self) -> &RuleContextAttributes {
         &self.attributes
     }
 
@@ -500,6 +558,9 @@ impl RuleContext {
     /// Returns a list of all prerequisites as `ConfiguredTarget` objects.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:416 RuleContext.getAllPrerequisites
     pub fn get_all_prerequisites(&self) -> Vec<ConfiguredTarget> {
+        if let Some(aspect_context) = &self.aspect_context {
+            return aspect_context.get_all_prerequisites(self);
+        }
         self.prerequisites_collection.get_all_prerequisites()
     }
 
@@ -630,7 +691,7 @@ impl RuleContext {
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:547 RuleContext.createActionOwner
     pub fn create_action_owner(
         rule: &Rule,
-        aspect_descriptors: Vec<blaze_actions::AspectDescriptor>,
+        aspect_descriptors: &[AspectDescriptor],
         build_configuration_value: &BuildConfigurationValue,
         exec_properties: IndexMap<String, String>,
         execution_platform: Option<Arc<PlatformInfo>>,
@@ -641,7 +702,9 @@ impl RuleContext {
             blaze_packages::target::TargetData::get_target_kind(rule),
             config_util::to_build_configuration_info(build_configuration_value),
             execution_platform.map(|p| p as blaze_actions::PlatformInfoRef),
-            aspect_descriptors,
+            // PORT: the actions layer's AspectDescriptor (blaze_actions) is a converted copy of
+            // the packages one.
+            to_action_aspect_descriptors(aspect_descriptors),
             exec_properties,
         )
     }
@@ -982,7 +1045,14 @@ impl RuleContext {
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:932 RuleContext.getDefaultTemplateVariableProviders
+    // Java: com/google/devtools/build/lib/analysis/AspectContext.java:336 AspectContext.getDefaultTemplateVariableProviders
     pub fn get_default_template_variable_providers(&self) -> Vec<IndexMap<String, String>> {
+        if let Some(aspect_context) = &self.aspect_context {
+            let mut v = aspect_context
+                .get_template_variables_from_aspect_attributes(&DEFAULT_MAKE_VARIABLE_ATTRIBUTES);
+            v.extend(self.from_toolchains());
+            return v;
+        }
         let mut v = self.from_attributes(&DEFAULT_MAKE_VARIABLE_ATTRIBUTES);
         v.extend(self.from_toolchains());
         v
@@ -1025,6 +1095,8 @@ impl RuleContext {
     /// Returns a cached context that maps Make variable names (string) to values (string)
     /// without any extra `MakeVariableSupplier`.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:966 RuleContext.getConfigurationMakeVariableContext
+    // (AspectContext.getConfigurationMakeVariableContext only calls super: the context of the
+    // aspect itself, including toolchains but not the underlying target.)
     pub fn get_configuration_make_variable_context(&self) -> Arc<ConfigurationMakeVariableContext> {
         self.configuration_make_variable_context
             .get_or_init(|| {
@@ -1053,6 +1125,9 @@ impl RuleContext {
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1069 RuleContext.useAutoExecGroups
     pub fn use_auto_exec_groups(&self) -> bool {
+        if let Some(aspect_context) = &self.aspect_context {
+            return aspect_context.use_auto_exec_groups(self);
+        }
         self.rule
             .get_rule_class_object()
             .get_auto_exec_groups_mode()
@@ -1265,6 +1340,8 @@ impl RuleContext {
     /// and returns its single build artifact.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1261 RuleContext.getPrerequisiteArtifact
     pub fn get_prerequisite_artifact(&self, attribute_name: &str) -> Option<Artifact> {
+        // Java reads `prerequisitesCollection` directly (the rule and base aspects' collection
+        // for aspects), not `getOwningPrerequisitesCollection`.
         self.prerequisites_collection
             .get_prerequisite_artifact(attribute_name)
     }
@@ -1441,11 +1518,91 @@ impl RuleErrorConsumer for RuleContext {
     }
 }
 
+/// The value of `RuleContext.attributes()` (Java's `AttributeMap` field): the rule's
+/// `ConfiguredAttributeMapper`, or for an aspect the `AspectAwareAttributeMapper` over it.
+///
+/// PORT: a concrete type that implements `AttributeMap` by delegation, so callers read it
+/// through the trait like Java's `AttributeMap` interface.
+pub struct RuleContextAttributes(Arc<dyn AttributeMap + Send + Sync>);
+
+impl AttributeMap for RuleContextAttributes {
+    fn describe_rule(&self) -> String {
+        self.0.describe_rule()
+    }
+
+    fn get_label(&self) -> &Label {
+        self.0.get_label()
+    }
+
+    fn has(&self, attr_name: &str) -> bool {
+        self.0.has(attr_name)
+    }
+
+    fn has_typed(&self, attr_name: &str, type_: Type) -> bool {
+        self.0.has_typed(attr_name, type_)
+    }
+
+    fn get(&self, attribute_name: &str, type_: Type) -> Option<AttrValue> {
+        self.0.get(attribute_name, type_)
+    }
+
+    fn get_or_default(
+        &self,
+        attribute_name: &str,
+        type_: Type,
+        default_value: Option<AttrValue>,
+    ) -> Option<AttrValue> {
+        self.0.get_or_default(attribute_name, type_, default_value)
+    }
+
+    fn is_configurable(&self, attribute_name: &str) -> bool {
+        self.0.is_configurable(attribute_name)
+    }
+
+    fn get_attribute_names(&self) -> Vec<String> {
+        self.0.get_attribute_names()
+    }
+
+    fn get_attribute_type(&self, attr_name: &str) -> Option<Type> {
+        self.0.get_attribute_type(attr_name)
+    }
+
+    fn get_attribute_definition(&self, attr_name: &str) -> Option<&Attribute> {
+        self.0.get_attribute_definition(attr_name)
+    }
+
+    fn is_attribute_value_explicitly_specified(&self, attribute_name: &str) -> bool {
+        self.0
+            .is_attribute_value_explicitly_specified(attribute_name)
+    }
+
+    fn visit_all_labels(&self, consumer: &mut dyn FnMut(&Attribute, &Label)) {
+        self.0.visit_all_labels(consumer)
+    }
+
+    fn visit_labels(&self, attribute_name: &str, consumer: &mut dyn FnMut(&Label)) {
+        self.0.visit_labels(attribute_name, consumer)
+    }
+
+    fn visit_labels_with_filter(
+        &self,
+        filter: &blaze_packages::attribute::DependencyFilter,
+        consumer: &mut dyn FnMut(&Attribute, &Label),
+    ) {
+        self.0.visit_labels_with_filter(filter, consumer)
+    }
+
+    fn get_package_args(&self) -> blaze_packages::package::PackageArgs {
+        self.0.get_package_args()
+    }
+}
+
 /// Builder class for a RuleContext.
 // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1425 RuleContext.Builder
 pub struct RuleContextBuilder {
     env: Arc<CachingAnalysisEnvironment>,
     target: Target,
+    aspects: Vec<Aspect>,
     configuration: Arc<BuildConfigurationValue>,
     reporter: Arc<RuleReporter>,
     rule_class_provider: Option<Arc<ConfiguredRuleClassProvider>>,
@@ -1458,6 +1615,8 @@ pub struct RuleContextBuilder {
     visibility: Option<Visibility>,
     transitive_visibility_imposed_by_this_package: Option<Arc<PackageSpecificationProvider>>,
     toolchain_contexts: Option<Arc<ToolchainCollection<ResolvedToolchainContext>>>,
+    base_target_toolchain_contexts:
+        Option<Arc<ToolchainCollection<AspectBaseTargetResolvedToolchainContext>>>,
     exec_group_collection_builder: Option<ExecGroupCollectionBuilder>,
     raw_exec_properties: Option<IndexMap<String, String>>,
     required_config_fragments: Option<RequiredConfigFragmentsProvider>,
@@ -1469,12 +1628,13 @@ pub struct RuleContextBuilder {
 }
 
 impl RuleContextBuilder {
-    /// PORT: Java's builder also takes the aspects applied to the target; aspect contexts
-    /// (`AspectContext`) are not ported, so the list is always empty here.
+    /// `aspects` are the aspects applied to the target, the main aspect last (empty for a
+    /// rule).
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1456 RuleContext.Builder.<init>
     pub fn new(
         env: Arc<CachingAnalysisEnvironment>,
         target: Target,
+        aspects: Vec<Aspect>,
         configuration: Arc<BuildConfigurationValue>,
     ) -> RuleContextBuilder {
         let rule = target
@@ -1488,13 +1648,13 @@ impl RuleContextBuilder {
                 env.clone(),
                 rule.clone(),
                 configuration.clone(),
-                // Java: getRuleClassNameForLogging() with no aspects.
-                rule.get_rule_class().to_owned(),
+                Self::rule_class_name_for_logging(&rule, &aspects),
             ))
         };
         RuleContextBuilder {
             env,
             target,
+            aspects,
             configuration,
             reporter: Arc::new(reporter),
             rule_class_provider: None,
@@ -1507,6 +1667,7 @@ impl RuleContextBuilder {
             visibility: None,
             transitive_visibility_imposed_by_this_package: None,
             toolchain_contexts: None,
+            base_target_toolchain_contexts: None,
             exec_group_collection_builder: None,
             raw_exec_properties: None,
             required_config_fragments: None,
@@ -1551,12 +1712,22 @@ impl RuleContextBuilder {
         self.validate_extra_prerequisites(attribute_checks, &rule_attributes);
 
         let exec_group_collection = self.create_exec_group_collection(rule_attributes.as_ref())?;
-        Ok(RuleContext::create(
-            self,
-            rule_attributes,
-            target_map,
-            exec_group_collection,
-        ))
+        if self.aspects.is_empty() {
+            Ok(RuleContext::create(
+                self,
+                rule_attributes,
+                target_map,
+                exec_group_collection,
+            ))
+        } else {
+            Ok(AspectContext::create(
+                self,
+                rule_attributes,
+                target_map,
+                exec_group_collection,
+                self.base_target_toolchain_contexts.clone(),
+            ))
+        }
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1515 RuleContext.Builder.createExecGroupCollection
@@ -1719,6 +1890,23 @@ impl RuleContextBuilder {
         self
     }
 
+    /// Sets the collection of `AspectBaseTargetResolvedToolchainContext`s available to this
+    /// aspect from its base target.
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1658 RuleContext.Builder.setBaseTargetToolchainContexts
+    pub fn set_base_target_toolchain_contexts(
+        &mut self,
+        base_target_toolchain_contexts: Option<
+            Arc<ToolchainCollection<AspectBaseTargetResolvedToolchainContext>>,
+        >,
+    ) -> &mut Self {
+        check_state!(
+            self.base_target_toolchain_contexts.is_none(),
+            "baseTargetToolchainContexts has already been set for this Builder"
+        );
+        self.base_target_toolchain_contexts = base_target_toolchain_contexts;
+        self
+    }
+
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1668 RuleContext.Builder.setExecGroupCollectionBuilder
     pub fn set_exec_group_collection_builder(
         &mut self,
@@ -1777,10 +1965,15 @@ impl RuleContextBuilder {
                         .get_allowed_rule_classes_for_labels()
                         .as_predicate_of_rule_class(&configured_target.get_rule_class());
                 if passes_filter {
-                    // During aspects evaluation, only validate the dependencies of the main
-                    // aspect. Dependencies of base aspects as well as the rule itself are checked
-                    // when they are evaluated.
-                    self.validate_direct_prerequisite(attribute, configured_target);
+                    if self.aspects.is_empty()
+                        || Some(self.get_main_aspect().expect("aspects").get_aspect_class())
+                            == kind.get_owning_aspect()
+                    {
+                        // During aspects evaluation, only validate the dependencies of the main
+                        // aspect. Dependencies of base aspects as well as the rule itself are
+                        // checked when they are evaluated.
+                        self.validate_direct_prerequisite(attribute, configured_target);
+                    }
                     map.entry(kind.clone())
                         .or_default()
                         .push(configured_target.clone());
@@ -1954,7 +2147,7 @@ impl RuleContextBuilder {
     /// Returns whether the context being constructed is for the evaluation of an aspect.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1889 RuleContext.Builder.forAspect
     pub fn for_aspect(&self) -> bool {
-        false
+        !self.aspects.is_empty()
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1893 RuleContext.Builder.getRule
@@ -1974,7 +2167,32 @@ impl RuleContextBuilder {
     /// applicable.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1909 RuleContext.Builder.getRuleClassNameForLogging
     pub fn get_rule_class_name_for_logging(&self) -> String {
-        self.get_rule().get_rule_class().to_owned()
+        Self::rule_class_name_for_logging(self.get_rule(), &self.aspects)
+    }
+
+    /// The body of `getRuleClassNameForLogging` (also used by the constructor, before `self`
+    /// exists).
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1909 RuleContext.Builder.getRuleClassNameForLogging
+    fn rule_class_name_for_logging(rule: &Rule, aspects: &[Aspect]) -> String {
+        if aspects.is_empty() {
+            return rule.get_rule_class().to_owned();
+        }
+        // Java: Joiner.on(",").join(descriptors) (AspectDescriptor.toString() is
+        // getDescription()).
+        let descriptors: Vec<String> = aspects
+            .iter()
+            .map(|a| a.get_descriptor().get_description())
+            .collect();
+        format!(
+            "{} aspect on {}",
+            descriptors.join(","),
+            rule.get_rule_class()
+        )
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1919 RuleContext.Builder.getErrorConsumer
+    pub(crate) fn get_error_consumer(&self) -> &Arc<RuleReporter> {
+        &self.reporter
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1923 RuleContext.Builder.getConfiguration
@@ -1982,9 +2200,21 @@ impl RuleContextBuilder {
         &self.configuration
     }
 
-    /// Java `isStarlarkRuleOrAspect()` (no aspects: whether the rule is Starlark-defined).
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1928 RuleContext.Builder.getMainAspect
+    pub fn get_main_aspect(&self) -> Option<&Aspect> {
+        self.aspects.last()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1932 RuleContext.Builder.getAspects
+    pub fn get_aspects(&self) -> &[Aspect] {
+        &self.aspects
+    }
+
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1936 RuleContext.Builder.isStarlarkRuleOrAspect
     pub fn is_starlark_rule_or_aspect(&self) -> bool {
+        if let Some(main_aspect) = self.get_main_aspect() {
+            return matches!(main_aspect.get_aspect_class(), AspectClass::Starlark(_));
+        }
         self.get_rule()
             .get_rule_class_object()
             .get_rule_definition_environment_label()

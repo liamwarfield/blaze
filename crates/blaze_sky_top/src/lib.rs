@@ -37,4 +37,8 @@ pub mod skyframe_build_view;
 pub mod skyframe_error_processor;
 pub mod skyframe_executor;
 pub mod target_pattern_phase;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+#[cfg(test)]
+mod tests;
 pub mod toolchain_cycle_reporters;

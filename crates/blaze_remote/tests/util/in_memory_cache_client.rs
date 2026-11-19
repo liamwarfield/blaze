@@ -14,7 +14,7 @@ use blaze_remote::combined_cache::CombinedCache;
 use blaze_remote::common::errors;
 use blaze_remote::common::{
     ActionKey, Blob, CacheNotFoundException, MissingDigestsFinder, RemoteActionExecutionContext,
-    RemoteCacheClient,
+    RemoteCacheClient, RemoteCacheClientUploads,
 };
 use blaze_remote::reapi::{
     ActionCacheUpdateCapabilities, ActionResult, CacheCapabilities, Digest, ServerCapabilities,

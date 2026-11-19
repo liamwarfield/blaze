@@ -6,6 +6,7 @@
 
 pub mod action_graph_proto_output_formatter_callback;
 pub mod action_graph_query_environment;
+pub mod action_graph_summary_output_formatter_callback;
 pub mod action_graph_text_output_formatter_callback;
 pub mod aquery_action_filter;
 
@@ -15,16 +16,11 @@ use blaze_actions::skyframe::actiongraph::v2::aquery_output_handler::OutputType;
 use blaze_events::ExtendedEventHandler;
 use blaze_optdefs::command::aquery_options::AqueryOptions;
 use blaze_query::query::output::output_formatter::OutputStream;
-use blaze_query_engine::callback::{
-    IoExceptionSlot, OutputFormatterError, output_formatter_callback_process,
-};
-use blaze_query_engine::{
-    Callback, OutputFormatterCallback, QueryError, ThreadSafeOutputFormatterCallback,
-};
 
 use crate::post_analysis_query_environment::NamedThreadSafeOutputFormatterCallback;
 use action_graph_proto_output_formatter_callback::ActionGraphProtoOutputFormatterCallback;
 use action_graph_query_environment::{ActionGraphQueryEnvironment, KeyedConfiguredTargetValue};
+use action_graph_summary_output_formatter_callback::ActionGraphSummaryOutputFormatterCallback;
 use action_graph_text_output_formatter_callback::ActionGraphTextOutputFormatterCallback;
 use aquery_action_filter::AqueryActionFilter;
 
@@ -68,58 +64,12 @@ pub fn get_default_output_formatters<'a>(
         proto(OutputType::JSON),
         text(action_graph_text_output_formatter_callback::OutputType::TEXT),
         text(action_graph_text_output_formatter_callback::OutputType::COMMANDS),
-        Box::new(UnportedAqueryCallback::new(
-            "summary",
-            "ActionGraphSummaryOutputFormatterCallback",
+        Box::new(ActionGraphSummaryOutputFormatterCallback::new(
+            event_handler.clone(),
+            aquery_options,
+            Some(out.clone()),
+            env,
+            action_filters,
         )),
     ]
-}
-
-/// An aquery output formatter whose Java class is not ported
-/// (`ActionGraphSummaryOutputFormatterCallback`).
-struct UnportedAqueryCallback {
-    name: &'static str,
-    java_class: &'static str,
-    io_exception: IoExceptionSlot,
-}
-
-impl UnportedAqueryCallback {
-    fn new(name: &'static str, java_class: &'static str) -> Self {
-        UnportedAqueryCallback {
-            name,
-            java_class,
-            io_exception: IoExceptionSlot::new(),
-        }
-    }
-}
-
-impl NamedThreadSafeOutputFormatterCallback<KeyedConfiguredTargetValue> for UnportedAqueryCallback {
-    fn get_name(&self) -> String {
-        self.name.to_owned()
-    }
-}
-
-impl ThreadSafeOutputFormatterCallback<KeyedConfiguredTargetValue> for UnportedAqueryCallback {}
-
-impl Callback<KeyedConfiguredTargetValue> for UnportedAqueryCallback {
-    fn process(&self, partial_result: &[KeyedConfiguredTargetValue]) -> Result<(), QueryError> {
-        output_formatter_callback_process(self, partial_result)
-    }
-}
-
-impl OutputFormatterCallback<KeyedConfiguredTargetValue> for UnportedAqueryCallback {
-    fn start(&self) -> Result<(), blaze_query_engine::callback::IoException> {
-        blaze_util::unported!(format!("{}.start", self.java_class))
-    }
-
-    fn process_output(
-        &self,
-        _partial_result: &[KeyedConfiguredTargetValue],
-    ) -> Result<(), OutputFormatterError> {
-        blaze_util::unported!(format!("{}.processOutput", self.java_class))
-    }
-
-    fn io_exception_slot(&self) -> &IoExceptionSlot {
-        &self.io_exception
-    }
 }

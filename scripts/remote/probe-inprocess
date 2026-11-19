@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# In-process readers of remote-only files (review R5): oracle vs Blaze on
+# ~/.cache/blaze/work/remote/probe-inprocess/src, a workspace where
+#   //:tool      is ctx.actions.symlink(is_executable = True) to the genrule output tool.sh
+#                (SymlinkAction's executable check stats its input),
+#   //:expanded  is ctx.actions.expand_template of the genrule output tmpl.txt (the template is
+#                read in-process),
+#   //:final     runs :tool and reads :expanded (the only top-level target).
+#
+# usage: scripts/remote/probe-inprocess <oracle|BLAZE-BINARY> <label> [extra options...]
+#        scripts/remote/probe-inprocess help
+#
+# Seeds a disk cache once with the oracle (<W>/pi-dc-seed, `build //:final`), copies it to
+# <W>/pi-<label>-dc and runs `build //:final` with run name pi-<label> in a fresh output base,
+# --disk_cache=<copy> and the default download mode (tool.sh and tmpl.txt stay remote; the
+# symlink and the template expansion run in-process), then prints the `N processes:` line,
+# the ERROR lines, the exit code and final.txt. W = ~/.cache/blaze/work/remote.
+set -euo pipefail
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,19p' "$0"; exit 0; fi
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+W="$HOME/.cache/blaze/work/remote"
+src="$W/probe-inprocess/src"
+bin=$1; label=$2; shift 2
+if [[ ! -d $W/pi-dc-seed ]]; then
+  "$here/ws-run" pi-seed "$src" oracle --fresh -- build "--disk_cache=$W/pi-dc-seed" //:final >/dev/null
+fi
+rm -rf "$W/pi-$label-dc"; cp -a "$W/pi-dc-seed" "$W/pi-$label-dc"
+set +e
+out=$("$here/ws-run" "pi-$label" "$src" "$bin" --fresh -- build "--disk_cache=$W/pi-$label-dc" "$@" //:final)
+set -e
+step=$(sed -n 's/^step: //p' <<<"$out" | head -1)
+grep -E "^INFO: [0-9]+ process|^ERROR" "$step/stderr" || true
+echo "exit: $(cat "$step/exit")"
+ob=$(ls -d "$HOME/.cache/blaze/oracle-out/ur-remote/pi-$label"/*/ 2>/dev/null | grep -v install | head -1)
+f=$(find "$ob" -path '*bin/final.txt' 2>/dev/null | head -1)
+[[ -n $f ]] && { echo "final.txt:"; cat "$f"; } || echo "final.txt: (missing)"

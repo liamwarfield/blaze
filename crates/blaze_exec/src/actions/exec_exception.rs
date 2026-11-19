@@ -128,11 +128,17 @@ impl From<UserExecException> for ExecException {
 }
 
 /// Port of `EnvironmentalExecException`.
+///
+/// PORT: also stands for `LostInputsExecException` (see [`LostInputsExecException`]), with
+/// `lost_inputs` set: a new `ExecException` variant would change exhaustive matches in crates
+/// this port does not own.
 // Java: com/google/devtools/build/lib/actions/EnvironmentalExecException.java:30 EnvironmentalExecException
 #[derive(Debug, Clone)]
 pub struct EnvironmentalExecException {
     pub message: String,
     pub failure_detail: FailureDetail,
+    /// `this instanceof LostInputsExecException`: its `getLostInputs()`.
+    pub lost_inputs: Option<std::sync::Arc<LostArtifacts>>,
 }
 
 impl EnvironmentalExecException {
@@ -141,6 +147,7 @@ impl EnvironmentalExecException {
         EnvironmentalExecException {
             message: failure_detail.message.clone(),
             failure_detail,
+            lost_inputs: None,
         }
     }
     /// `new EnvironmentalExecException(Exception cause, FailureDetail)`.
@@ -148,6 +155,82 @@ impl EnvironmentalExecException {
         EnvironmentalExecException {
             message: message_with_cause(&failure_detail.message, Some(&cause.to_string())),
             failure_detail,
+            lost_inputs: None,
+        }
+    }
+}
+
+/// `LostInputsExecException.LostArtifacts`: the lost inputs by digest (`hash/size`), an
+/// `ImmutableSetMultimap<String, ActionInput>` (insertion order).
+// Java: com/google/devtools/build/lib/actions/LostInputsExecException.java LostInputsExecException.LostArtifacts
+#[derive(Debug, Clone, Default)]
+pub struct LostArtifacts {
+    /// `byDigest()`.
+    pub by_digest: indexmap::IndexMap<String, indexmap::IndexSet<super::ActionInputRef>>,
+}
+
+impl LostArtifacts {
+    /// `isEmpty()`.
+    pub fn is_empty(&self) -> bool {
+        self.by_digest.is_empty()
+    }
+
+    /// The `(digest, input)` entries in multimap order (`lostInputs.entries()`).
+    pub fn entries(&self) -> Vec<(&str, &super::ActionInputRef)> {
+        self.by_digest
+            .iter()
+            .flat_map(|(digest, inputs)| inputs.iter().map(move |i| (digest.as_str(), i)))
+            .collect()
+    }
+}
+
+/// `LostInputsExecException`: an action's inputs were lost (a remote cache no longer has their
+/// blobs). Built as an [`ExecException::Environmental`] whose `lost_inputs` is set.
+// Java: com/google/devtools/build/lib/actions/LostInputsExecException.java:33 LostInputsExecException
+pub struct LostInputsExecException;
+
+impl LostInputsExecException {
+    /// `new LostInputsExecException(lostInputs, cause)`: the message is `lost inputs with
+    /// digests: ` + the digests joined by `,`; the failure detail is
+    /// `Execution.ACTION_INPUT_LOST`.
+    // Java: com/google/devtools/build/lib/actions/LostInputsExecException.java:43 LostInputsExecException.<init>
+    // Java: com/google/devtools/build/lib/actions/LostInputsExecException.java:59 LostInputsExecException.getFailureDetail
+    pub fn create(lost_inputs: LostArtifacts) -> ExecException {
+        blaze_util::check_argument!(!lost_inputs.is_empty(), "No inputs were lost");
+        let message = format!(
+            "lost inputs with digests: {}",
+            lost_inputs
+                .by_digest
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let failure_detail = FailureDetail {
+            message: message.clone(),
+            category: Some(
+                blaze_protos::failure_details::failure_detail::Category::Execution(
+                    blaze_protos::failure_details::Execution {
+                        code: blaze_protos::failure_details::execution::Code::ActionInputLost
+                            as i32,
+                    },
+                ),
+            ),
+        };
+        ExecException::Environmental(EnvironmentalExecException {
+            message,
+            failure_detail,
+            lost_inputs: Some(std::sync::Arc::new(lost_inputs)),
+        })
+    }
+}
+
+impl ExecException {
+    /// `this instanceof LostInputsExecException ? getLostInputs() : null`.
+    pub fn get_lost_inputs(&self) -> Option<&std::sync::Arc<LostArtifacts>> {
+        match self {
+            ExecException::Environmental(e) => e.lost_inputs.as_ref(),
+            _ => None,
         }
     }
 }

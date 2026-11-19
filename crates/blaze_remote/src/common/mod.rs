@@ -19,7 +19,8 @@ pub use network_time::NetworkTime;
 pub use output_digest_mismatch_exception::OutputDigestMismatchException;
 pub use remote_action_execution_context::{CachePolicy, RemoteActionExecutionContext};
 pub use remote_cache_client::{
-    ActionKey, Blob, BytesBlob, FileBlob, MissingDigestsFinder, RemoteCacheClient, dedup_upload,
+    ActionKey, Blob, BytesBlob, FileBlob, MissingDigestsFinder, RemoteCacheClient,
+    RemoteCacheClientUploads, dedup_upload,
 };
 pub use remote_execution_capabilities_exception::RemoteExecutionCapabilitiesException;
 pub use remote_execution_client::{

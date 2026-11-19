@@ -610,8 +610,8 @@ impl ReferenceCountedChannel {
                 .clone()
                 .expect("start_call fails a call on a channel that could not be created"),
         )
-            .max_decoding_message_size(self.inner.max_inbound_message_size)
-            .max_encoding_message_size(usize::MAX)
+        .max_decoding_message_size(self.inner.max_inbound_message_size)
+        .max_encoding_message_size(usize::MAX)
     }
 
     fn request<T>(

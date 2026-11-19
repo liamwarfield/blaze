@@ -730,11 +730,25 @@ impl AttributeBuilder {
         Ok(self)
     }
 
+    /// Java `aspect(NativeAspectClass, Function<Rule, AspectParameters>)`.
+    // Java: com/google/devtools/build/lib/packages/Attribute.java:1015 Attribute.Builder.aspect
+    pub fn native_aspect_with_extractor(
+        &mut self,
+        aspect: Arc<dyn crate::aspect::NativeAspectClass>,
+        evaluator: crate::rule_class::AspectParametersExtractor,
+    ) -> &mut Self {
+        self.aspects_list_builder
+            .add_native_aspect_with_extractor(aspect, evaluator);
+        self
+    }
+
     /// Java `aspect(NativeAspectClass)`.
     // Java: com/google/devtools/build/lib/packages/Attribute.java:1026 Attribute.Builder.aspect
-    pub fn native_aspect(&mut self, aspect_class_name: &str) -> &mut Self {
-        self.aspects_list_builder
-            .add_native_aspect(aspect_class_name);
+    pub fn native_aspect(
+        &mut self,
+        aspect: Arc<dyn crate::aspect::NativeAspectClass>,
+    ) -> &mut Self {
+        self.aspects_list_builder.add_native_aspect(aspect);
         self
     }
 
@@ -1088,9 +1102,20 @@ impl Attribute {
         self.aspects.has_aspects()
     }
 
+    /// Returns the list of aspects required for dependencies through this attribute.
+    // Java: com/google/devtools/build/lib/packages/Attribute.java:2188 Attribute.getAspects
+    pub fn get_aspects(&self, rule: &crate::target::Rule) -> Vec<crate::aspect::Aspect> {
+        self.aspects.get_aspects(rule)
+    }
+
     // Java: com/google/devtools/build/lib/packages/Attribute.java:2192 Attribute.getAspectsList
     pub fn get_aspects_list(&self) -> &AspectsList {
         &self.aspects
+    }
+
+    // Java: com/google/devtools/build/lib/packages/Attribute.java:2196 Attribute.getAspectClasses
+    pub fn get_aspect_classes(&self) -> Vec<crate::aspect::AspectClass> {
+        self.aspects.get_aspect_classes()
     }
 
     // Java: com/google/devtools/build/lib/packages/Attribute.java:2200 Attribute.validateRulePropagatedAspectsParameters

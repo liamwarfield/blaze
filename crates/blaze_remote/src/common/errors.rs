@@ -103,7 +103,8 @@ impl From<StatusRuntimeException> for io::Error {
 /// `new IOException(new StatusRuntimeException(status))`; for the status of a call that never
 /// started ([`call_not_started`]), the `IOException` that stopped it, unchanged.
 pub fn status_to_io_error(status: tonic::Status) -> io::Error {
-    if let Some(not_started) = Error::source(&status).and_then(|s| s.downcast_ref::<CallNotStarted>())
+    if let Some(not_started) =
+        Error::source(&status).and_then(|s| s.downcast_ref::<CallNotStarted>())
     {
         return shared(&not_started.0);
     }

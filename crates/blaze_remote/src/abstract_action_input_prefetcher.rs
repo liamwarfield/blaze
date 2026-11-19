@@ -349,6 +349,14 @@ pub struct AbstractActionInputPrefetcherBase {
     // PORT: Java's `Striped.lazyWeakReadWriteLock(Integer.MAX_VALUE)` is one lock per tree root
     // fragment; the locks are kept for the lifetime of the prefetcher (one per tree root seen).
     tree_artifact_locks: Mutex<HashMap<PathFragment, Arc<RwLock<()>>>>,
+
+    /// The prefetcher that owns these fields, for the downloads of `downloadCache`.
+    ///
+    /// PORT: a download is one execution shared by every caller that waits for it and keeps
+    /// running while one of them is left (`AsyncTaskCache`), so it cannot borrow the prefetcher
+    /// from the caller that started it; it holds this handle instead. Set by
+    /// [`register_prefetcher`].
+    self_ref: std::sync::OnceLock<std::sync::Weak<dyn AbstractActionInputPrefetcher>>,
 }
 
 impl std::fmt::Debug for AbstractActionInputPrefetcherBase {
@@ -382,7 +390,16 @@ impl AbstractActionInputPrefetcherBase {
             output_directory_helper,
             directory_tracker: DirectoryTracker::default(),
             tree_artifact_locks: Mutex::new(HashMap::new()),
+            self_ref: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The prefetcher that owns these fields (see `self_ref`).
+    fn prefetcher(&self) -> Arc<dyn AbstractActionInputPrefetcher> {
+        self.self_ref
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .expect("the prefetcher was created without register_prefetcher")
     }
 
     /// `execRoot` (protected in Java).
@@ -402,6 +419,82 @@ impl AbstractActionInputPrefetcherBase {
             .entry(tree_root.clone())
             .or_insert_with(|| Arc::new(RwLock::new(())))
             .clone()
+    }
+}
+
+/// Shares a new prefetcher and lets its fields know it (see
+/// `AbstractActionInputPrefetcherBase::self_ref`). Every prefetcher is created through this.
+pub fn register_prefetcher<T: AbstractActionInputPrefetcher + 'static>(prefetcher: T) -> Arc<T> {
+    let prefetcher = Arc::new(prefetcher);
+    let as_dyn: Arc<dyn AbstractActionInputPrefetcher> = prefetcher.clone();
+    blaze_util::check_state!(
+        prefetcher
+            .base()
+            .self_ref
+            .set(Arc::downgrade(&as_dyn))
+            .is_ok(),
+        "the prefetcher is already registered"
+    );
+    prefetcher
+}
+
+/// What a download task keeps of the action it downloads for (`ActionExecutionMetadata`): the
+/// download is shared with other callers and outlives the call that started it, so it cannot
+/// borrow the action.
+#[derive(Debug)]
+struct ActionMetadataSnapshot {
+    mnemonic: String,
+    progress_message: Option<String>,
+    owner: blaze_exec::actions::action_execution_metadata::ActionOwner,
+    primary_output: ActionInputRef,
+    execution_platform: Option<blaze_exec::actions::action_execution_metadata::PlatformInfo>,
+    pretty_print: String,
+    describe: String,
+    may_modify_spawn_outputs_after_execution: bool,
+}
+
+impl ActionMetadataSnapshot {
+    fn of(action: &dyn ActionExecutionMetadata) -> ActionMetadataSnapshot {
+        ActionMetadataSnapshot {
+            mnemonic: action.get_mnemonic(),
+            progress_message: action.get_progress_message(),
+            owner: action.get_owner().clone(),
+            primary_output: action.get_primary_output(),
+            execution_platform: action.get_execution_platform().cloned(),
+            pretty_print: action.pretty_print(),
+            describe: action.describe(),
+            may_modify_spawn_outputs_after_execution: action
+                .may_modify_spawn_outputs_after_execution(),
+        }
+    }
+}
+
+impl ActionExecutionMetadata for ActionMetadataSnapshot {
+    fn get_mnemonic(&self) -> String {
+        self.mnemonic.clone()
+    }
+    fn get_progress_message(&self) -> Option<String> {
+        self.progress_message.clone()
+    }
+    fn get_owner(&self) -> &blaze_exec::actions::action_execution_metadata::ActionOwner {
+        &self.owner
+    }
+    fn get_primary_output(&self) -> ActionInputRef {
+        self.primary_output.clone()
+    }
+    fn get_execution_platform(
+        &self,
+    ) -> Option<&blaze_exec::actions::action_execution_metadata::PlatformInfo> {
+        self.execution_platform.as_ref()
+    }
+    fn pretty_print(&self) -> String {
+        self.pretty_print.clone()
+    }
+    fn describe(&self) -> String {
+        self.describe.clone()
+    }
+    fn may_modify_spawn_outputs_after_execution(&self) -> bool {
+        self.may_modify_spawn_outputs_after_execution
     }
 }
 
@@ -1150,26 +1243,41 @@ async fn download_file_no_check_rx(
     // the output path; the digest is verified by `CombinedCache.downloadFile` (called from
     // `doDownloadFile`); only then `finalize_download` sets the output permissions and moves the
     // file into place. A failed or cancelled download deletes the temporary path.
-    let download = async {
+    // The download is shared by every caller that waits for `final_path` and outlives the caller
+    // that starts it: it owns what it uses.
+    let prefetcher = base.prefetcher();
+    let action = action.map(ActionMetadataSnapshot::of);
+    let input = input.clone();
+    let metadata = metadata.clone();
+    let task_final_path = final_path.clone();
+    let download = async move {
+        let this: &dyn AbstractActionInputPrefetcher = &*prefetcher;
+        let base = this.base();
+        // `Completable.defer(...)`
+        if !should_download_file(&task_final_path, &metadata)? {
+            return Ok::<(), io::Error>(());
+        }
         let mut temp_path = TempPathGuard {
             temp_path: base.temp_path_generator.generate_temp_path(),
             already_deleted: false,
         };
         this.do_download_file(
-            action,
+            action
+                .as_ref()
+                .map(|action| action as &dyn ActionExecutionMetadata),
             &base.reporter,
-            input,
+            &input,
             &temp_path.temp_path.for_host_file_system(),
-            metadata,
+            &metadata,
             priority,
             reason,
         )
         .await?;
         finalize_download(
             this,
-            metadata,
+            &metadata,
             &temp_path.temp_path.for_host_file_system(),
-            &final_path,
+            &task_final_path,
             final_tree_root.as_ref(),
         )?;
         temp_path.already_deleted = true;
@@ -1178,17 +1286,7 @@ async fn download_file_no_check_rx(
 
     let force = this.force_refetch(&final_path);
     base.download_cache
-        .execute(
-            final_path.clone(),
-            // `Completable.defer(...)`
-            async {
-                if should_download_file(&final_path, metadata)? {
-                    return download.await;
-                }
-                Ok::<(), io::Error>(())
-            },
-            force,
-        )
+        .execute(final_path.clone(), download, force)
         .await
 }
 
@@ -1273,15 +1371,20 @@ async fn plant_symlink(
     let base = this.base();
     let link_path = symlink.link_path.for_host_file_system();
     let force = this.force_refetch(&link_path);
+    // The task is shared by every caller that waits for `link_path`: it owns what it uses.
+    let symlink = symlink.clone();
+    let exec_root = base.exec_root.clone();
+    let task_link_path = link_path.clone();
     base.download_cache
         .execute(
-            link_path.clone(),
+            link_path,
             // `Completable.defer(...)`
-            async {
+            async move {
+                let link_path = task_link_path;
                 if !symlink
                     .link_path
                     .as_fragment()
-                    .starts_with(base.exec_root.as_fragment())
+                    .starts_with(exec_root.as_fragment())
                 {
                     // If the symlink is a source file in an external repo, its parent directory
                     // may not exist yet.

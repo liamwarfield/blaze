@@ -1304,6 +1304,7 @@ impl TestRunnerAction {
                             },
                         )),
                     },
+                    lost_inputs: None,
                 });
                 Err(ActionExecutionException::from_exec_exception(
                     &e, None, self,

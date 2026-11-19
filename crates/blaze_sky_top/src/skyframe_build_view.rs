@@ -4,7 +4,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use blaze_actions::ActionLookupKeyRef;
 use blaze_actions::actions::action_lookup::ArtifactOwner;
+use blaze_analysis::aspect_key_creator::{
+    ASPECT, AspectKey, TOP_LEVEL_ASPECTS, TopLevelAspectsKey, TopLevelAspectsValue,
+};
+use blaze_analysis::aspect_value::AspectValue;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::configured_target_value::ConfiguredTargetValue;
@@ -16,7 +21,9 @@ use blaze_protos::build_event_stream::build_metrics::BuildGraphMetrics;
 use blaze_sky_analysis::platform::platform_function::PlatformFunction;
 use blaze_sky_analysis::producers::errors::configuration_id_of_key;
 use blaze_sky_loading::package_function::{PackageKey, PackageValue};
-use blaze_skyframe::{EvaluationResult, Evaluator, Interrupted, Key, SkyKey, WalkableGraph};
+use blaze_skyframe::{
+    EvaluationResult, Evaluator, Interrupted, Key, SkyKey, SkyValue, WalkableGraph,
+};
 use indexmap::{IndexMap, IndexSet};
 
 use crate::action_conflict_exception::{ActionConflictException, ActionConflicts};
@@ -34,6 +41,8 @@ pub struct SkyframeAnalysisResult {
     has_analysis_error: bool,
     has_action_conflicts: bool,
     configured_targets: Vec<ConfiguredTarget>,
+    /// `aspects`: the top-level aspects.
+    aspects: IndexMap<AspectKey, Arc<AspectValue>>,
     /// See [`SkyframeAnalysisResult::get_configured_targets_with_action_conflicts`].
     configured_targets_with_action_conflicts: Vec<ConfiguredTarget>,
     walkable_graph: Arc<dyn WalkableGraph>,
@@ -68,6 +77,11 @@ impl SkyframeAnalysisResult {
     // Java: com/google/devtools/build/lib/skyframe/SkyframeAnalysisResult.java:79 SkyframeAnalysisResult.getConfiguredTargets
     pub fn get_configured_targets(&self) -> &[ConfiguredTarget] {
         &self.configured_targets
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeAnalysisResult.java:91 SkyframeAnalysisResult.getAspects
+    pub fn get_aspects(&self) -> &IndexMap<AspectKey, Arc<AspectValue>> {
+        &self.aspects
     }
 
     /// The top-level targets of a `--keep_going` build that were analyzed but are not among
@@ -116,6 +130,7 @@ impl SkyframeAnalysisResult {
             has_analysis_error: true,
             has_action_conflicts: self.has_action_conflicts,
             configured_targets,
+            aspects: self.aspects,
             configured_targets_with_action_conflicts: self.configured_targets_with_action_conflicts,
             walkable_graph: self.walkable_graph,
             targets_with_configuration: self.targets_with_configuration,
@@ -167,13 +182,13 @@ impl From<ViewCreationFailedException> for ConfigureTargetsError {
 /// (`SkyframeExecutor::get_top_level_artifact_context_for_conflict_pruning`, set by
 /// `AnalysisPhaseRunner` from the request) because `BuildView.update`'s options do not carry it
 /// yet. `eventBus` is the event handler (`post`); `bugReporter` and `executors` have no port.
-/// Top-level aspect keys are not ported (`BuildView.createTopLevelAspectKeys` fails loudly).
 // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:400 SkyframeBuildView.configureTargets
 pub fn configure_targets(
     skyframe_executor: &SkyframeExecutor,
     event_handler: Arc<dyn ExtendedEventHandler>,
     label_to_target_map: &IndexMap<Label, Target>,
     ct_keys: &[ConfiguredTargetKey],
+    top_level_aspects_keys: &[TopLevelAspectsKey],
     keep_going: bool,
     check_for_action_conflicts: bool,
 ) -> Result<SkyframeAnalysisResult, ConfigureTargetsError> {
@@ -183,18 +198,33 @@ pub fn configure_targets(
         event_handler.clone(),
         label_to_target_map,
         ct_keys,
+        top_level_aspects_keys,
         keep_going,
     )?;
 
     let mut cts = result.configured_targets;
+    let mut aspects: IndexMap<AspectKey, Arc<AspectValue>> = result.aspects;
+    let aspect_keys: Vec<AspectKey> = aspects.keys().cloned().collect();
     let evaluation_result: EvaluationResult = result.evaluation_result;
+
+    // Iterables.concat(ctKeys, aspectKeys)
+    let ct_and_aspect_keys: Vec<ActionLookupKeyRef> = ct_keys
+        .iter()
+        .map(|k| ActionLookupKeyRef::new(k.clone()))
+        .chain(
+            aspect_keys
+                .iter()
+                .map(|k| ActionLookupKeyRef::new(k.clone())),
+        )
+        .collect();
 
     let mut inter_target_conflicts = ActionConflicts::new();
     let mut build_graph_metrics = None;
-    // Java: newKeys = ImmutableSet of the top-level configured-target (and aspect) keys.
+    // newKeys = ImmutableSet.<ActionLookupKey>builder().addAll(ctKeys).addAll(aspectKeys)
+    let new_keys_count = ct_and_aspect_keys.iter().collect::<IndexSet<_>>().len();
     if should_check_for_conflicts(
         check_for_action_conflicts,
-        ct_keys.len(),
+        new_keys_count,
         skyframe_executor.get_evaluator(),
     ) {
         // This operation is somewhat expensive, so we only do it if the graph might have changed
@@ -203,6 +233,7 @@ pub fn configure_targets(
         let analysis_traversal_result = collect_action_lookup_values_in_build(
             skyframe_executor.get_walkable_graph().as_ref(),
             ct_keys,
+            &aspect_keys,
         );
         let action_key_context = skyframe_executor
             .get_action_key_context()
@@ -227,6 +258,7 @@ pub fn configure_targets(
             has_analysis_error: false,
             has_action_conflicts: false,
             configured_targets: cts,
+            aspects,
             configured_targets_with_action_conflicts: Vec::new(),
             walkable_graph: skyframe_executor.get_walkable_graph(),
             targets_with_configuration: result.targets_with_configuration,
@@ -297,13 +329,13 @@ pub fn configure_targets(
         let top_level_action_conflict_report = skyframe_executor
             .filter_action_conflicts_for_configured_targets_and_aspects(
                 event_handler.clone(),
-                ct_keys,
+                &ct_and_aspect_keys,
                 &action_conflicts,
                 &top_level_artifact_context_for_conflict_pruning,
             )?;
         // Report an AnalysisFailureEvent to BEP for the top-level targets with discoverable
         // action conflicts, then finally throw if evaluation is --nokeep_going.
-        for action_lookup_key in ct_keys {
+        for action_lookup_key in &ct_and_aspect_keys {
             if !top_level_action_conflict_report.is_error_free(action_lookup_key) {
                 let Some(conflict_exception) =
                     top_level_action_conflict_report.get_conflict_exception(action_lookup_key)
@@ -317,30 +349,36 @@ pub fn configure_targets(
                 let mut action_lookup_key = action_lookup_key.clone();
                 // Attempt to promote any ConfiguredTargetKey to the one embedded in the
                 // ConfiguredTarget to reflect any transitions or trimming.
-                match evaluation_result.get(&action_lookup_key) {
-                    None => target_configured = false,
-                    Some(value) => {
-                        // PORT: skipped, incremental: "It's possible that the ConfiguredTarget
-                        // has been cleared" (analysis objects are not discarded here).
-                        action_lookup_key = value
-                            .get_configured_target()
-                            .get_lookup_key()
-                            .as_any()
-                            .downcast_ref::<ConfiguredTargetKey>()
-                            .unwrap_or_else(|| {
-                                panic!("ClassCastException: lookup key of a configured target")
-                            })
-                            .clone();
+                if let Some(ct_key) = action_lookup_key
+                    .as_any()
+                    .downcast_ref::<ConfiguredTargetKey>()
+                {
+                    match evaluation_result.get(ct_key) {
+                        None => target_configured = false,
+                        Some(value) => {
+                            // PORT: skipped, incremental: "It's possible that the
+                            // ConfiguredTarget has been cleared" (analysis objects are not
+                            // discarded here).
+                            action_lookup_key =
+                                value.get_configured_target().get_lookup_key().clone();
+                        }
                     }
                 }
                 if !target_configured {
+                    let ct_key = action_lookup_key
+                        .as_any()
+                        .downcast_ref::<ConfiguredTargetKey>()
+                        .unwrap_or_else(|| {
+                            panic!("ClassCastException: {action_lookup_key} is not a ConfiguredTargetKey")
+                        })
+                        .clone();
                     event_handler.post(Arc::new(AnalysisFailureEvent::while_analyzing_target(
-                        action_lookup_key,
+                        ct_key,
                         vec![failed_cause],
                     )));
                 } else {
                     event_handler.post(Arc::new(AnalysisFailureEvent::action_conflict(
-                        action_lookup_key,
+                        &action_lookup_key,
                         vec![failed_cause],
                     )));
                 }
@@ -372,10 +410,9 @@ pub fn configure_targets(
         // just action conflicts - will be observed here and lead to a key's exclusion.
         // ImmutableSet: configured targets are deduplicated.
         cts = Vec::new();
-        for k in ct_keys
-            .iter()
-            .filter(|k| top_level_action_conflict_report.is_error_free(k))
-        {
+        for k in ct_keys.iter().filter(|k| {
+            top_level_action_conflict_report.is_error_free(&ActionLookupKeyRef::new((*k).clone()))
+        }) {
             let configured_target = evaluation_result
                 .get(k)
                 .unwrap_or_else(|| panic!("NullPointerException: {:?}", k))
@@ -389,16 +426,19 @@ pub fn configure_targets(
             }
         }
 
+        aspects.retain(|k, _| {
+            top_level_action_conflict_report.is_error_free(&ActionLookupKeyRef::new(k.clone()))
+        });
+
         // PORT: the top-level targets that were analyzed but are not error-free. With Skymeld,
         // Java's BuildDriverFunction announces such a target as analyzed and then throws a
         // TopLevelConflictException for it (`checkActionConflicts`), before it requests any
         // execution. Blaze's conflict check is this one, so the result carries the targets
         // (`SkyframeAnalysisResult::get_configured_targets_with_action_conflicts`).
         // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:198 BuildDriverFunction.compute
-        for k in ct_keys
-            .iter()
-            .filter(|k| !top_level_action_conflict_report.is_error_free(k))
-        {
+        for k in ct_keys.iter().filter(|k| {
+            !top_level_action_conflict_report.is_error_free(&ActionLookupKeyRef::new((*k).clone()))
+        }) {
             let Some(value) = evaluation_result.get(k) else {
                 // The analysis of the target failed (also for a conflict inside the target).
                 continue;
@@ -418,6 +458,7 @@ pub fn configure_targets(
         has_analysis_error: evaluation_result.has_error() || found_action_conflict_in_latest_check,
         has_action_conflicts: found_action_conflict_in_latest_check,
         configured_targets: cts,
+        aspects,
         configured_targets_with_action_conflicts: cts_with_action_conflicts,
         walkable_graph: skyframe_executor.get_walkable_graph(),
         targets_with_configuration: result.targets_with_configuration,
@@ -475,6 +516,16 @@ fn should_check_for_conflicts(
     // recomputed and may introduce or resolve a conflict.
     let some_action_lookup_value_evaluated =
         evaluator.get_all_keys_for_testing().iter().any(|key| {
+            if key.function_name() == ASPECT {
+                // An AspectValue is an ActionLookupValue, except for an alias target's.
+                return evaluator
+                    .get_existing_value(key)
+                    .and_then(|v| v.downcast::<AspectValue>().ok())
+                    .is_some_and(|v| !AspectValue::is_for_alias_target(&v));
+            }
+            if key.function_name() == TOP_LEVEL_ASPECTS {
+                return evaluator.get_existing_value(key).is_some();
+            }
             key.downcast::<ConfiguredTargetKey>().is_some()
                 && evaluator
                     .get_existing_value(key)
@@ -510,9 +561,7 @@ struct ActionLookupValuesTraversal {
 }
 
 impl ActionLookupValuesTraversal {
-    /// PORT: the only `ActionLookupKey`s in Blaze's graph are `ConfiguredTargetKey`s (aspects
-    /// and the workspace status are not graph nodes), so every value is a
-    /// `ConfiguredTargetValue`; a rule's value is the `ActionLookupValue`
+    /// `accumulate` for a `ConfiguredTargetValue`: a rule's value is an `ActionLookupValue`
     /// (`RuleConfiguredTargetValue`), the others are `NonRuleConfiguredTargetValue`s.
     // Java: com/google/devtools/build/lib/skyframe/ActionLookupValuesTraversal.java:48 ActionLookupValuesTraversal.accumulate
     fn accumulate(&mut self, key: &ConfiguredTargetKey, value: Arc<ConfiguredTargetValue>) {
@@ -541,13 +590,43 @@ impl ActionLookupValuesTraversal {
         }
     }
 
-    /// `accumulate` for an `ActionLookupValue` that is not a `ConfiguredTargetValue` (the
-    /// workspace status value).
+    /// `accumulate` for an `ActionLookupValue` that is not a `ConfiguredTargetValue` (an
+    /// `AspectValue`, a `TopLevelAspectsValue`, the workspace status value).
     // Java: com/google/devtools/build/lib/skyframe/ActionLookupValuesTraversal.java:48 ActionLookupValuesTraversal.accumulate
     fn accumulate_action_lookup_value(&mut self, actions: Vec<blaze_actions::ActionRef>) {
         self.configured_object_count += 1;
         self.action_count += actions.len() as i32;
         self.action_lookup_values.push(actions);
+    }
+
+    /// `accumulate(key, value)` for any `ActionLookupKey` of the graph.
+    // Java: com/google/devtools/build/lib/skyframe/ActionLookupValuesTraversal.java:48 ActionLookupValuesTraversal.accumulate
+    fn accumulate_key(&mut self, key: &SkyKey, value: SkyValue) {
+        if let Some(ct_key) = key.downcast::<ConfiguredTargetKey>() {
+            let value = value
+                .downcast::<ConfiguredTargetValue>()
+                .unwrap_or_else(|_| panic!("CONFIGURED_TARGET value of {:?}", key));
+            self.accumulate(ct_key, value);
+        } else if key.function_name() == ASPECT {
+            let value = value
+                .downcast::<AspectValue>()
+                .unwrap_or_else(|_| panic!("ASPECT value of {:?}", key));
+            self.accumulate_action_lookup_value(value.get_actions().to_vec());
+        } else if key.function_name() == TOP_LEVEL_ASPECTS {
+            let value = value
+                .downcast::<TopLevelAspectsValue>()
+                .unwrap_or_else(|_| panic!("TOP_LEVEL_ASPECTS value of {:?}", key));
+            self.accumulate_action_lookup_value(value.get_actions().to_vec());
+        } else if key.function_name()
+            == <blaze_analysis::analysis_services::WorkspaceStatusKey as Key>::FUNCTION
+        {
+            let value = value
+                .downcast::<blaze_analysis::analysis_services::WorkspaceStatusValue>()
+                .unwrap_or_else(|_| panic!("BUILD_INFO value"));
+            self.accumulate_action_lookup_value(value.actions.clone());
+        } else {
+            panic!("IllegalStateException: not an ActionLookupKey: {:?}", key);
+        }
     }
 
     // Java: com/google/devtools/build/lib/skyframe/ActionLookupValuesTraversal.java:111 ActionLookupValuesTraversal.getMetrics
@@ -565,8 +644,19 @@ impl ActionLookupValuesTraversal {
     }
 }
 
+/// Java `dep instanceof ActionLookupKey` for the keys of Blaze's analysis graph:
+/// `ConfiguredTargetKey`, `AspectKey`, `TopLevelAspectsKey` and the workspace status key.
+fn is_action_lookup_key(key: &SkyKey) -> bool {
+    let name = key.function_name();
+    name == <ConfiguredTargetKey as Key>::FUNCTION
+        || name == ASPECT
+        || name == TOP_LEVEL_ASPECTS
+        || name == <blaze_analysis::analysis_services::WorkspaceStatusKey as Key>::FUNCTION
+}
+
 /// `SkyframeExecutor.collectActionLookupValuesInBuild` with incrementality tracked: the
-/// top-down `TransitiveActionLookupKeysCollector` over the analysis graph.
+/// top-down `TransitiveActionLookupKeysCollector` over the analysis graph, from the top-level
+/// configured targets and then the top-level aspects.
 ///
 /// PORT: Java forks one task per key on a pool, so the order in which values are accumulated
 /// (and with it which of two conflicting actions `ArtifactConflictFinder` registers first)
@@ -578,14 +668,19 @@ impl ActionLookupValuesTraversal {
 fn collect_action_lookup_values_in_build(
     walkable_graph: &dyn WalkableGraph,
     top_level_ct_keys: &[ConfiguredTargetKey],
+    aspect_keys: &[AspectKey],
 ) -> ActionLookupValuesTraversal {
     let mut alv_traversal = ActionLookupValuesTraversal::default();
     let mut seen: IndexSet<SkyKey> = IndexSet::new();
     // The pending subtasks of each key being visited (`invokeAll(subtasks)`), innermost last.
     let mut stack: Vec<std::vec::IntoIter<SkyKey>> = Vec::new();
     let mut roots: Vec<SkyKey> = Vec::new();
-    for key in top_level_ct_keys {
-        let key = SkyKey::new(key.clone());
+    // Iterables.concat(topLevelCtKeys, aspectKeys)
+    for key in top_level_ct_keys
+        .iter()
+        .map(|k| SkyKey::new(k.clone()))
+        .chain(aspect_keys.iter().map(|k| SkyKey::new(k.clone())))
+    {
         if seen.insert(key.clone()) {
             roots.push(key);
         }
@@ -601,13 +696,7 @@ fn collect_action_lookup_values_in_build(
             // The value failed to evaluate.
             continue;
         };
-        let ct_key = key
-            .downcast::<ConfiguredTargetKey>()
-            .unwrap_or_else(|| panic!("ActionLookupKey {:?} is not a ConfiguredTargetKey", key));
-        let value = value
-            .downcast::<ConfiguredTargetValue>()
-            .unwrap_or_else(|_| panic!("CONFIGURED_TARGET value of {:?}", key));
-        alv_traversal.accumulate(ct_key, value);
+        alv_traversal.accumulate_key(&key, value);
 
         let mut subtasks: Vec<SkyKey> = Vec::new();
         for dep in walkable_graph.get_direct_deps(&key) {
@@ -620,28 +709,11 @@ fn collect_action_lookup_values_in_build(
                 )),
                 None => dep,
             };
-            if dep.function_name() == <ConfiguredTargetKey as Key>::FUNCTION {
-                if seen.insert(dep.clone()) {
-                    subtasks.push(dep);
-                }
-            } else if dep.function_name()
-                == <blaze_analysis::analysis_services::WorkspaceStatusKey as Key>::FUNCTION
-            {
-                if seen.insert(dep.clone()) {
-                    // A leaf: the workspace status value has no ActionLookupKey dependencies.
-                    if let Some(value) = walkable_graph.get_value(&dep) {
-                        let value = value
-                            .downcast::<blaze_analysis::analysis_services::WorkspaceStatusValue>()
-                            .unwrap_or_else(|_| panic!("BUILD_INFO value"));
-                        alv_traversal.accumulate_action_lookup_value(value.actions.clone());
-                    }
-                }
-            } else if matches!(dep.function_name().0, "ASPECT" | "TOP_LEVEL_ASPECTS") {
-                blaze_util::unported!(
-                    "ActionLookupValuesTraversal.accumulate",
-                    "non-configured-target ActionLookupKey {:?}",
-                    dep
-                );
+            if !is_action_lookup_key(&dep) {
+                continue;
+            }
+            if seen.insert(dep.clone()) {
+                subtasks.push(dep);
             }
         }
         stack.push(subtasks.into_iter());
@@ -660,8 +732,7 @@ fn collect_action_lookup_values_in_build(
 /// nodes evaluated in this command are the done nodes of its graph: a sweep over the graph
 /// (Java's own non-incremental `collectActionLookupValuesInBuild` does the same). The
 /// by-mnemonic map is a `ConcurrentHashMap` in Java; it is filled here in sweep order (its
-/// consumer, `MetricsCollector`, orders its own map). Aspects and the workspace status are not
-/// graph nodes in Blaze, so they are not counted.
+/// consumer, `MetricsCollector`, orders its own map).
 // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1481 ActionLookupValueProgressReceiver.evaluated
 pub fn get_evaluated_counts(evaluator: &Evaluator, time_in_ms: i64) -> AnalysisPhaseCompleteStats {
     let mut configured_object_count = 0;
@@ -697,6 +768,36 @@ pub fn get_evaluated_counts(evaluator: &Evaluator, time_in_ms: i64) -> AnalysisP
                 }
                 action_count += value.actions.len() as i32;
             }
+            continue;
+        }
+        if key.function_name() == ASPECT || key.function_name() == TOP_LEVEL_ASPECTS {
+            let Some(value) = evaluator.get_existing_value(&key) else {
+                continue;
+            };
+            configured_object_count += 1;
+            let actions: Vec<blaze_actions::ActionRef> = if key.function_name() == ASPECT {
+                let value = value
+                    .downcast::<AspectValue>()
+                    .unwrap_or_else(|_| panic!("ASPECT value of {:?}", key));
+                if AspectValue::is_for_alias_target(&value) {
+                    // Created actions will be counted from {@link AspectValue} on the original
+                    // target.
+                    continue;
+                }
+                value.get_actions().to_vec()
+            } else {
+                value
+                    .downcast::<TopLevelAspectsValue>()
+                    .unwrap_or_else(|_| panic!("TOP_LEVEL_ASPECTS value of {:?}", key))
+                    .get_actions()
+                    .to_vec()
+            };
+            for action in &actions {
+                *action_count_by_mnemonic
+                    .entry(action.get_mnemonic())
+                    .or_insert(0) += 1;
+            }
+            action_count += actions.len() as i32;
             continue;
         }
         let Some(ct_key) = key.downcast::<ConfiguredTargetKey>() else {

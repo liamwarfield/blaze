@@ -10,8 +10,10 @@
 //! providers, in the order Java's `getProvidersDictForQuery` lists them, so the lead's
 //! `ConfiguredTarget::get_provider` finds them.
 
+pub mod extra_action_artifacts_provider;
 pub mod target_value;
 
+use std::any::TypeId;
 use std::sync::{Arc, OnceLock};
 
 use blaze_actions::{ActionLookupKeyRef, ActionRef, Artifact};
@@ -23,7 +25,7 @@ use blaze_packages::rule_class::{
     AdvertisedProviderSet, ProviderKey, RequiredProviders, StarlarkProviderIdentifier,
 };
 use blaze_packages::starlark_defs::builtin_providers::{
-    DEFAULT_INFO, INSTRUMENTED_FILES_INFO, OUTPUT_GROUP_INFO,
+    ANALYSIS_FAILURE_INFO, DEFAULT_INFO, INSTRUMENTED_FILES_INFO, OUTPUT_GROUP_INFO,
 };
 use blaze_packages::target::{PackageGroup, RuleOrMacroInstance};
 use blaze_util::{check_argument, check_state};
@@ -31,8 +33,10 @@ use indexmap::{IndexMap, IndexSet};
 use starlark::values::OwnedFrozenValue;
 
 use crate::config::config_matching_provider::ConfigMatchingProvider;
+use crate::configured_aspect::ConfiguredAspect;
 use crate::configured_target::{ConfiguredTarget, ConfiguredTargetBase};
 use crate::configured_target_key::ConfiguredTargetKey;
+use crate::configuredtargets::extra_action_artifacts_provider::ExtraActionArtifactsProvider;
 use crate::info::downcast_info;
 use crate::provider_map::{
     ProviderInstance, ProviderMapKey, TransitiveInfoProvider, TransitiveInfoProviderMap,
@@ -732,31 +736,397 @@ impl AliasConfiguredTarget {
     }
 }
 
+/// This exception is thrown when the providers of a configured target and the aspects applied to
+/// it cannot be merged.
+// Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:67 MergedConfiguredTarget.MergingException
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct MergingException {
+    message: String,
+}
+
+impl MergingException {
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:68 MergedConfiguredTarget.MergingException.<init>
+    pub fn new(message: impl Into<String>) -> MergingException {
+        MergingException {
+            message: message.into(),
+        }
+    }
+
+    pub fn get_message(&self) -> &str {
+        &self.message
+    }
+}
+
 /// A single dependency with its configured target and aspects merged together.
-// Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:61 MergedConfiguredTarget
+///
+/// This is an ephemeral object created only for the analysis of a single configured target.
+/// After that configured target is analyzed, this is thrown away.
+// Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:62 MergedConfiguredTarget
 #[derive(Debug)]
 pub struct MergedConfiguredTarget {
+    /// Java passes a null key and `VisibilityProvider.PRIVATE_VISIBILITY` (a placeholder because
+    /// this target isn't consumed). PORT: the lookup key slot holds the base target's key; it is
+    /// never returned (`ConfiguredTarget::get_lookup_key` fails for a merged target, as Java's).
     pub base: ConfiguredTargetBase,
+    /// Java `base`.
     pub base_configured_target: ConfiguredTarget,
-    /// The base target's providers overridden by the aspects' (Java `nonBaseProviders` first).
-    pub providers: TransitiveInfoProviderMap,
+    aspects: Vec<ConfiguredAspect>,
+    /// Providers that come from any source that isn't a pure pointer to the base rule's
+    /// providers.
+    ///
+    /// Examples include providers from aspects and merged providers that appear in both the base
+    /// rule and aspects.
+    non_base_providers: TransitiveInfoProviderMap,
+    /// The provider lookup view (`getProvider(Class)`): `non_base_providers` over the base
+    /// target's providers.
+    providers: TransitiveInfoProviderMap,
 }
 
 impl MergedConfiguredTarget {
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:89 MergedConfiguredTarget.<init>
+    fn new(
+        base: ConfiguredTarget,
+        aspects: &[ConfiguredAspect],
+        non_base_providers: TransitiveInfoProviderMap,
+    ) -> MergedConfiguredTarget {
+        // Java getProvider(Class): nonBaseProviders first, then the base target.
+        let mut providers = TransitiveInfoProviderMapBuilder::default();
+        providers.add_all(base.providers());
+        providers.add_all(&non_base_providers);
+        MergedConfiguredTarget {
+            base: base_of(base.raw_lookup_key().clone(), private_visibility()),
+            base_configured_target: base,
+            aspects: aspects.to_vec(),
+            non_base_providers,
+            providers: providers.build(),
+        }
+    }
+
     pub fn providers(&self) -> &TransitiveInfoProviderMap {
         &self.providers
     }
 
+    /// Java `nonBaseProviders`.
+    pub fn get_non_base_providers(&self) -> &TransitiveInfoProviderMap {
+        &self.non_base_providers
+    }
+
+    /// Java `aspects`.
+    pub fn get_aspects(&self) -> &[ConfiguredAspect] {
+        &self.aspects
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:105 MergedConfiguredTarget.isCreatedInSymbolicMacro
+    pub fn is_created_in_symbolic_macro(&self) -> bool {
+        // Technically, like visibility, we can return anything here because this target isn't
+        // consumed. If we wanted the correct answer we could obtain it from the base CT's
+        // visibility provider.
+        false
+    }
+
+    /// Java `rawGetStarlarkProvider(Provider.Key)`.
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:163 MergedConfiguredTarget.rawGetStarlarkProvider
+    pub fn raw_get_starlark_provider(
+        &self,
+        provider_key: &ProviderKey,
+    ) -> Option<OwnedFrozenValue> {
+        let provider = self.non_base_providers.get(provider_key).cloned();
+        if provider.is_none() {
+            return get_info(&self.base_configured_target, provider_key);
+        }
+        provider
+    }
+
+    /// Java `rawGetStarlarkProvider(String)` for every key but `actions` (the `Target` value
+    /// handles `actions`; see `target_value`).
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:172 MergedConfiguredTarget.rawGetStarlarkProvider
+    pub fn raw_get_starlark_provider_legacy(&self, provider_key: &str) -> Option<OwnedFrozenValue> {
+        let provider = self.non_base_providers.get_legacy(provider_key).cloned();
+        if provider.is_none() {
+            return get_legacy(&self.base_configured_target, provider_key);
+        }
+        provider
+    }
+
     /// Creates an instance based on a configured target and a set of aspects.
     // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:196 MergedConfiguredTarget.of
-    pub fn of(_base: ConfiguredTarget) -> ConfiguredTarget {
-        // PORT: needs ConfiguredAspect (aspects are not ported).
-        blaze_util::unported!("MergedConfiguredTarget.of")
+    pub fn of(
+        base: ConfiguredTarget,
+        aspects: &[ConfiguredAspect],
+    ) -> Result<ConfiguredTarget, MergingException> {
+        if aspects.is_empty() {
+            return Ok(base); // If there are no aspects, don't bother with creating a proxy object.
+        }
+
+        let mut non_base_providers = TransitiveInfoProviderMapBuilder::default();
+
+        // filesToBuild is special: for native aspects, it is returned in a FileProvider, for
+        // Starlark ones, in a DefaultInfo. Furthermore, DefaultInfo is not a "normal" provider on
+        // configured targets but is created on demand from FileProvider, etc. So we need to jump
+        // through some hoops here.
+        let mut files_to_build: Vec<NestedSet<Artifact>> = Vec::new();
+        files_to_build.push(
+            base.get_provider::<FileProvider>()
+                .expect("NullPointerException: FileProvider of the base target")
+                .get_files_to_build()
+                .clone(),
+        );
+        for aspect in aspects {
+            if let Some(file_provider) = aspect.get_provider::<FileProvider>() {
+                files_to_build.push(file_provider.get_files_to_build().clone());
+            } else if let Some(default_info_value) = aspect.get(&DEFAULT_INFO.key()) {
+                let default_info =
+                    default_info::DefaultInfo::from_value(default_info_value.value())
+                        .expect("ClassCastException: DefaultInfo");
+                if default_info.get_data_runfiles().is_some()
+                    || default_info.get_default_runfiles().is_some()
+                    || default_info.get_executable().is_some()
+                    || default_info.get_files_to_run().is_some()
+                {
+                    return Err(MergingException::new(
+                        "Provider 'DefaultInfo' returned by an aspect not at top level must only \
+                         have the 'files' field set",
+                    ));
+                }
+
+                if let Some(files) = default_info.get_files() {
+                    match crate::rule::depsets::depset_to_artifacts(files, "files") {
+                        Ok(set) => files_to_build.push(set),
+                        Err(_) => {
+                            return Err(MergingException::new(
+                                "'files' field of 'DefaultInfo' should contain a depset of files",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        if files_to_build.len() > 1 {
+            non_base_providers.add_native_arc(FileProvider::of(
+                NestedSetBuilder::from_nested_sets(&files_to_build).build(),
+            ));
+        }
+
+        // Merge output group providers.
+        if let Some(merged_output_group_info) =
+            Self::merge_output_group_providers(Some(&base), aspects)?
+        {
+            non_base_providers.put_info(merged_output_group_info);
+        }
+
+        // Merge analysis failures.
+        Self::get_analysis_failures(&base, aspects);
+
+        // Merge extra-actions provider.
+        let merged_extra_action_providers =
+            ExtraActionArtifactsProvider::merge(&Self::get_all_providers::<
+                ExtraActionArtifactsProvider,
+            >(&base, aspects));
+        non_base_providers.add_native(merged_extra_action_providers);
+
+        // Merge required config fragments provider.
+        let required_config_fragment_providers =
+            Self::get_all_providers::<RequiredConfigFragmentsProvider>(&base, aspects);
+        if !required_config_fragment_providers.is_empty() {
+            non_base_providers.add_native(RequiredConfigFragmentsProvider::merge(
+                &required_config_fragment_providers,
+            ));
+        }
+
+        let output_group_info_key = ProviderMapKey::Info(OUTPUT_GROUP_INFO.key());
+        let analysis_failure_info_key = ProviderMapKey::Info(ANALYSIS_FAILURE_INFO.key());
+        let file_provider_key = ProviderMapKey::Class(TypeId::of::<FileProvider>());
+        let extra_action_artifacts_provider_key =
+            ProviderMapKey::Class(TypeId::of::<ExtraActionArtifactsProvider>());
+        let required_config_fragments_provider_key =
+            ProviderMapKey::Class(TypeId::of::<RequiredConfigFragmentsProvider>());
+        let default_info_key = ProviderMapKey::Info(DEFAULT_INFO.key());
+
+        for aspect in aspects {
+            let providers = aspect.get_providers();
+            for (provider_key, instance) in providers.entries() {
+                if *provider_key == output_group_info_key
+                    || *provider_key == analysis_failure_info_key
+                    || *provider_key == file_provider_key
+                    || *provider_key == extra_action_artifacts_provider_key
+                    || *provider_key == required_config_fragments_provider_key
+                {
+                    continue;
+                }
+
+                if *provider_key == default_info_key {
+                    // This was handled when creating FileProvider above.
+                    continue;
+                }
+                match provider_key {
+                    ProviderMapKey::Class(_) => {
+                        let ProviderInstance::Native(native) = instance else {
+                            continue;
+                        };
+                        if base.providers().contains(provider_key)
+                            || non_base_providers.contains(provider_key)
+                        {
+                            // Java: "Provider " + providerKey + " provided twice", where
+                            // providerKey is the provider's Class (`class <qualified name>`).
+                            // PORT: only the simple class name is known.
+                            return Err(MergingException::new(format!(
+                                "Provider class {} provided twice",
+                                native.java_class_name()
+                            )));
+                        }
+                        non_base_providers.put_entry(provider_key.clone(), instance.clone());
+                    }
+                    ProviderMapKey::Legacy(legacy_id) => {
+                        if get_legacy(&base, legacy_id).is_some()
+                            || non_base_providers.contains(provider_key)
+                        {
+                            return Err(MergingException::new(format!(
+                                "Provider {legacy_id} provided twice"
+                            )));
+                        }
+                        non_base_providers.put_entry(provider_key.clone(), instance.clone());
+                    }
+                    ProviderMapKey::Info(key) => {
+                        // If InstrumentedFilesInfo is on both the base target and an aspect,
+                        // ignore the one from the base. Otherwise, sharing implementation between
+                        // a rule which returns InstrumentedFilesInfo (e.g. *_library) and a
+                        // related aspect (e.g. *_proto_library) can add an implicit brittle
+                        // assumption that the underlying rule (e.g. proto_library) does not
+                        // return InstrumentedFilesInfo.
+                        if (INSTRUMENTED_FILES_INFO.key() != *key && get_info(&base, key).is_some())
+                            || non_base_providers.contains(provider_key)
+                        {
+                            return Err(MergingException::new(format!(
+                                "Provider {key} provided twice"
+                            )));
+                        }
+                        non_base_providers.put_entry(provider_key.clone(), instance.clone());
+                    }
+                }
+            }
+        }
+        Ok(ConfiguredTarget::Merged(Arc::new(
+            MergedConfiguredTarget::new(base, aspects, non_base_providers.build()),
+        )))
+    }
+
+    /// Returns the merged `OutputGroupInfo` as a frozen info (the provider itself when there is
+    /// only one, as Java's `OutputGroupInfo.merge` returns it).
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:314 MergedConfiguredTarget.mergeOutputGroupProviders
+    fn merge_output_group_providers(
+        base: Option<&ConfiguredTarget>,
+        aspects: &[ConfiguredAspect],
+    ) -> Result<Option<OwnedFrozenValue>, MergingException> {
+        let mut providers: Vec<OwnedFrozenValue> = Vec::new();
+
+        if let Some(base) = base {
+            // Java: OutputGroupInfo.get(base).
+            if let Some(base_provider) = get_info(base, &OUTPUT_GROUP_INFO.key()) {
+                providers.push(base_provider);
+            }
+        }
+
+        for configured_aspect in aspects {
+            // Java: OutputGroupInfo.get(configuredAspect).
+            let Some(aspect_provider) = configured_aspect.get(&OUTPUT_GROUP_INFO.key()) else {
+                continue;
+            };
+            providers.push(aspect_provider);
+        }
+        // Java: OutputGroupInfo.merge(providers).
+        if providers.len() == 1 {
+            return Ok(providers.pop());
+        }
+        let infos: Vec<OutputGroupInfo> = providers
+            .iter()
+            .map(|p| {
+                downcast_info::<OutputGroupInfo>(p)
+                    .expect("ClassCastException: OutputGroupInfo")
+                    .clone()
+            })
+            .collect();
+        Ok(OutputGroupInfo::merge(&infos).map(output_group_info::freeze))
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:335 MergedConfiguredTarget.getAnalysisFailures
+    fn get_analysis_failures(base: &ConfiguredTarget, aspects: &[ConfiguredAspect]) {
+        let base_failure_info = get_info(base, &ANALYSIS_FAILURE_INFO.key());
+        let any_aspect_failure_info = aspects
+            .iter()
+            .any(|a| a.get(&ANALYSIS_FAILURE_INFO.key()).is_some());
+        if base_failure_info.is_some() || any_aspect_failure_info {
+            // PORT: AnalysisFailureInfo (getCausesNestedSet, forAnalysisFailureSets) is not
+            // ported; Java collects the causes and adds AnalysisFailureInfo.
+            blaze_util::unported!("AnalysisFailureInfo.forAnalysisFailureSets");
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:352 MergedConfiguredTarget.getAllProviders
+    fn get_all_providers<T: TransitiveInfoProvider + Clone>(
+        base: &ConfiguredTarget,
+        aspects: &[ConfiguredAspect],
+    ) -> Vec<T> {
+        let mut providers: Vec<T> = Vec::new();
+        if let Some(base_provider) = base.get_provider::<T>() {
+            providers.push(base_provider.clone());
+        }
+
+        for configured_aspect in aspects {
+            let Some(aspect_provider) = configured_aspect.get_provider::<T>() else {
+                continue;
+            };
+            providers.push(aspect_provider.clone());
+        }
+        providers
     }
 
     // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:388 MergedConfiguredTarget.getBaseConfiguredTarget
     pub fn get_base_configured_target(&self) -> &ConfiguredTarget {
         &self.base_configured_target
+    }
+
+    /// Java `getProvidersDictForQuery()` reads only the non-base providers.
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:376 MergedConfiguredTarget.getProvidersDictForQuery
+    pub fn get_providers_for_query(&self) -> &TransitiveInfoProviderMap {
+        &self.non_base_providers
+    }
+
+    /// Returns only the providers from the aspects.
+    // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:398 MergedConfiguredTarget.getAspectsProviders
+    pub fn get_aspects_providers(&self) -> Result<TransitiveInfoProviderMap, MergingException> {
+        let mut aspects_providers = TransitiveInfoProviderMapBuilder::default();
+
+        // Merge output group providers of aspects only. Filtering the base target output groups
+        // from `nonBaseProviders` does not work because some groups like
+        // `OutputGroupInfo#Validation` contains artifacts from both base target and aspects.
+        if let Some(output_groups) =
+            Self::merge_output_group_providers(/* base= */ None, &self.aspects)?
+        {
+            aspects_providers.put_info(output_groups);
+        }
+
+        let output_group_info_key = ProviderMapKey::Info(OUTPUT_GROUP_INFO.key());
+        let analysis_failure_info_key = ProviderMapKey::Info(ANALYSIS_FAILURE_INFO.key());
+        let extra_action_artifacts_provider_key =
+            ProviderMapKey::Class(TypeId::of::<ExtraActionArtifactsProvider>());
+        let required_config_fragments_provider_key =
+            ProviderMapKey::Class(TypeId::of::<RequiredConfigFragmentsProvider>());
+
+        // Merge other aspects providers.
+        for (provider_key, instance) in self.non_base_providers.entries() {
+            if *provider_key == output_group_info_key
+                || *provider_key == analysis_failure_info_key
+                || *provider_key == extra_action_artifacts_provider_key
+                || *provider_key == required_config_fragments_provider_key
+            {
+                continue;
+            }
+            aspects_providers.put_entry(provider_key.clone(), instance.clone());
+        }
+
+        Ok(aspects_providers.build())
     }
 }
 
@@ -790,6 +1160,18 @@ pub fn get_files_to_run_provider(ct: &ConfiguredTarget) -> Option<Arc<FilesToRun
 /// `AbstractConfiguredTarget`, or an alias's override.
 // Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:104 AbstractConfiguredTarget.getProvider
 pub fn get_visibility_provider(ct: &ConfiguredTarget) -> VisibilityProvider {
+    if let ConfiguredTarget::Merged(m) = ct {
+        // Java: MergedConfiguredTarget.getProvider: nonBaseProviders, then the base target
+        // (which is itself a VisibilityProvider).
+        // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:131 MergedConfiguredTarget.getProvider
+        if let Some(v) = m
+            .get_non_base_providers()
+            .get_provider::<VisibilityProvider>()
+        {
+            return v.clone();
+        }
+        return get_visibility_provider(&m.base_configured_target);
+    }
     if let Some(v) = get_provider::<VisibilityProvider>(ct) {
         return v.clone();
     }
@@ -816,6 +1198,9 @@ pub fn get_info(ct: &ConfiguredTarget, key: &ProviderKey) -> Option<OwnedFrozenV
     }
     if *key == DEFAULT_INFO.key() {
         return Some(get_default_info(ct));
+    }
+    if let ConfiguredTarget::Merged(m) = ct {
+        return m.raw_get_starlark_provider(key);
     }
     ct.providers().get(key).cloned()
 }
@@ -849,6 +1234,7 @@ pub fn get_default_info(ct: &ConfiguredTarget) -> OwnedFrozenValue {
 pub fn get_legacy(ct: &ConfiguredTarget, key: &str) -> Option<OwnedFrozenValue> {
     match ct {
         ConfiguredTarget::Alias(a) => get_legacy(&a.actual, key),
+        ConfiguredTarget::Merged(m) => m.raw_get_starlark_provider_legacy(key),
         _ => ct.providers().get_legacy(key).cloned(),
     }
 }

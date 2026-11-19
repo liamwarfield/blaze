@@ -32,7 +32,6 @@ use crate::package::TargetDefinitionContext;
 use crate::rule_class::AdvertisedProviderSet;
 use crate::rule_class::AdvertisedProviderSetBuilder;
 use crate::rule_class::AllowlistChecker;
-use crate::rule_class::AspectDetails;
 use crate::rule_class::BuildSetting;
 use crate::rule_class::ConfigurationFragmentPolicy;
 use crate::rule_class::ConfigurationFragmentPolicyBuilder;
@@ -634,26 +633,14 @@ impl RuleClass {
     fn check_aspect_allowed_values(rule: &Rule, event_handler: &dyn EventHandler) {
         if rule.has_aspects() {
             for attr_of_rule in rule.get_attribute_provider().get_attributes() {
-                // Java: `attrOfRule.getAspects(rule)` (AspectsList.getAspects): every aspect is
-                // instantiated with `parametersExtractor.apply(rule)`, and a Starlark aspect's
-                // definition is `StarlarkDefinedAspect.getDefinition(params)`.
-                for aspect in attr_of_rule.get_aspects_list().get_aspect_details() {
-                    let aspect_params = aspect.get_default_parameters(rule);
-                    for attr_of_aspect in aspect.get_aspect_attributes() {
+                for aspect in attr_of_rule.get_aspects(rule) {
+                    for attr_of_aspect in aspect.get_definition().get_attributes().values() {
                         // By this point the AspectDefinition has been created and values assigned.
                         if attr_of_aspect.check_allowed_values() {
                             let allowed_values = attr_of_aspect
                                 .get_allowed_values()
                                 .expect("allowed values of a checked attribute");
-                            // Java: `attrOfAspect.getDefaultValue(null)` of the definition's
-                            // attribute, whose value StarlarkDefinedAspect.buildDefinition
-                            // replaced by the parameter (addAttrValue) when there is one.
-                            let value = match aspect_params.get(attr_of_aspect.get_name()) {
-                                Some(attr_value) => {
-                                    Some(AspectDetails::add_attr_value(attr_of_aspect, attr_value))
-                                }
-                                None => attr_of_aspect.get_default_value(None),
-                            };
+                            let value = attr_of_aspect.get_default_value(None);
                             let Some(value) = value else {
                                 blaze_util::unported!(
                                     "RuleClass.checkAspectAllowedValues of a null value"
@@ -670,7 +657,7 @@ impl RuleClass {
                                              support select().",
                                             rule.get_label(),
                                             attr_of_aspect.get_name(),
-                                            aspect.get_name(),
+                                            aspect.get_definition().get_name(),
                                             rule.get_label()
                                         ),
                                         event_handler,

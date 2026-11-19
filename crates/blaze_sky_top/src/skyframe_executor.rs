@@ -15,6 +15,8 @@ use std::sync::Arc;
 use blaze_actions::ActionKeyContext;
 use blaze_actions::actions::artifact_factory::ArtifactFactory;
 use blaze_analysis::analysis_services::{AnalysisDirectories, AnalysisServices};
+use blaze_analysis::aspect_key_creator::{AspectKey, TopLevelAspectsKey};
+use blaze_analysis::aspect_value::AspectValue;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::configured_target_value::ConfiguredTargetValue;
@@ -198,6 +200,21 @@ impl SkyframeExecutor {
         inputs: SkyframeExecutorInputs,
         output_user_root: Option<&Path>,
     ) -> Result<SkyframeExecutor, SkyframeExecutorCreationError> {
+        Self::create_with_builtin_modules(inputs, output_user_root, None)
+    }
+
+    /// [`SkyframeExecutor::create_with_output_user_root`] with `ModuleFileFunction`'s built-in
+    /// modules replaced (Java tests: `AnalysisMock.getBuiltinModules`, handed to the
+    /// `ModuleFileFunction` of the test's executor). `None` keeps Bazel's (`bazel_tools` only).
+    ///
+    /// PORT: a test seam; Java constructs the test executor with the mock's SkyFunctions
+    /// (`AnalysisMock.getSkyFunctions`) instead.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:760 SkyframeExecutor.skyFunctions
+    pub fn create_with_builtin_modules(
+        inputs: SkyframeExecutorInputs,
+        output_user_root: Option<&Path>,
+        builtin_modules: Option<IndexMap<String, blaze_bzlmod_model::module::NonRegistryOverride>>,
+    ) -> Result<SkyframeExecutor, SkyframeExecutorCreationError> {
         let options = &inputs.options;
         // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1722 SkyframeExecutor.sync
         // getEffectiveStarlarkSemantics(buildLanguageOptions): the full
@@ -248,6 +265,10 @@ impl SkyframeExecutor {
             inputs.output_base.get_file_system().clone(),
         )
         .map_err(SkyframeExecutorCreationError::ExternalRepos)?;
+        let mut repository_functions = repository_functions;
+        if let Some(builtin_modules) = builtin_modules {
+            repository_functions.bzlmod_config.builtin_modules = builtin_modules;
+        }
         let lockfile_mode = repository_functions.bzlmod_config.lockfile_mode;
         let external_repos: Arc<dyn blaze_sky_loading::repos::ExternalRepos> = Arc::new(
             BzlmodExternalRepos::new(blaze_repo_rules::registration::repository_fetch_function(
@@ -348,6 +369,7 @@ impl SkyframeExecutor {
                 // NetUtil.getCachedShortHostName().
                 workspace_status_user_name: std::env::var("USER").unwrap_or_default(),
                 workspace_status_host_name: short_host_name(),
+                base_target_prerequisites_supplier: std::sync::OnceLock::new(),
             });
             let platforms: SharedPlatformValueProvider = Arc::new(
                 blaze_sky_analysis::platform::PlatformFunction::new(services.clone()),
@@ -382,6 +404,14 @@ impl SkyframeExecutor {
             );
             builder =
                 blaze_sky_analysis::configured_target_function::register(builder, services.clone());
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:858 SkyframeExecutor.skyFunctions
+            // (ASPECT, TOP_LEVEL_ASPECTS, LOAD_ASPECTS, in Java's order).
+            builder = blaze_sky_analysis::aspect_function::register(builder, services.clone());
+            builder = blaze_sky_analysis::toplevel_starlark_aspect_function::register(
+                builder,
+                services.clone(),
+            );
+            builder = blaze_sky_analysis::load_aspects_function::register(builder);
             // Java: ActionLookupConflictFindingFunction and
             // TopLevelActionLookupConflictFindingFunction.
             builder = action_lookup_conflict_finding_function::register(
@@ -418,6 +448,21 @@ impl SkyframeExecutor {
         }
 
         let evaluator = Arc::new(builder.build());
+        if let Some(services) = &analysis_services {
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4598 SkyframeExecutor.BaseTargetPrerequisitesSupplierImpl
+            // (`memoizingEvaluator.getExistingValue(key)`). The functions of the evaluator hold
+            // the services, so the services hold the evaluator weakly.
+            let weak_evaluator = Arc::downgrade(&evaluator);
+            let _ = services.base_target_prerequisites_supplier.set(
+                blaze_analysis::base_target_prerequisites_supplier::BaseTargetPrerequisitesSupplier::new(
+                    Arc::new(move |key| {
+                        weak_evaluator
+                            .upgrade()
+                            .and_then(|evaluator| evaluator.get_existing_value(key))
+                    }),
+                ),
+            );
+        }
         let package_manager = Arc::new(SkyframePackageManager::new(
             evaluator.clone(),
             SkyframePackageLocator {
@@ -624,7 +669,7 @@ impl SkyframeExecutor {
     pub fn filter_action_conflicts_for_configured_targets_and_aspects(
         &self,
         event_handler: Arc<dyn ExtendedEventHandler>,
-        keys: &[ConfiguredTargetKey],
+        keys: &[blaze_actions::ActionLookupKeyRef],
         action_conflicts: &ActionConflicts,
         top_level_artifact_context: &[String],
     ) -> Result<TopLevelActionConflictReport, Interrupted> {
@@ -1111,26 +1156,32 @@ impl SkyframeExecutor {
     // -----------------------------------------------------------------------------------------
     // Analysis.
 
-    /// Evaluates the top-level configured targets.
+    /// Configures a given set of configured targets.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2317 SkyframeExecutor.configureTargets
     pub fn configure_targets(
         &self,
         event_handler: Arc<dyn ExtendedEventHandler>,
         label_to_target_map: &IndexMap<Label, Target>,
         configured_target_keys: &[ConfiguredTargetKey],
+        top_level_aspect_keys: &[TopLevelAspectsKey],
         keep_going: bool,
     ) -> Result<ConfigureTargetsResult, Interrupted> {
         // PORT: ConfigurationPhaseStartedEvent(configuredTargetProgress) hands the UI the
         // progress receiver, which is process-wide here
-        // (blaze_sky_analysis::analysis_progress_receiver::ANALYSIS_PROGRESS). Top-level aspect
-        // keys do not exist: BuildView.createTopLevelAspectKeys fails loudly for a request that
-        // has aspects.
+        // (blaze_sky_analysis::analysis_progress_receiver::ANALYSIS_PROGRESS).
+        // Iterables.concat(configuredTargetKeys, topLevelAspectKeys)
         let keys: Vec<SkyKey> = configured_target_keys
             .iter()
             .cloned()
             .map(SkyKey::new)
+            .chain(top_level_aspect_keys.iter().cloned().map(SkyKey::new))
             .collect();
-        let result = self.evaluate(&keys, keep_going, DEFAULT_THREAD_COUNT, event_handler)?;
+        let result = self.evaluate(
+            &keys,
+            keep_going,
+            DEFAULT_THREAD_COUNT,
+            event_handler.clone(),
+        )?;
 
         let mut targets_with_configuration: Vec<TargetAndConfiguration> = Vec::new();
         let mut configured_targets: Vec<ConfiguredTarget> = Vec::new();
@@ -1162,9 +1213,53 @@ impl SkyframeExecutor {
             targets_with_configuration.push(TargetAndConfiguration::new(target, configuration));
         }
 
+        // ImmutableMap.Builder<AspectKey, ConfiguredAspect>
+        let mut aspects: IndexMap<AspectKey, Arc<AspectValue>> = IndexMap::new();
+        for key in top_level_aspect_keys {
+            let Some(value) = result.get(key) else {
+                continue; // Skip aspects that couldn't be applied to targets.
+            };
+            // The ConfiguredTargetKey in the AspectKey will vary from the TopLevelAspectKey's
+            // ConfiguredTargetKey due to rule transitions. See the implementation in
+            // ToplevelStarlarkAspectFunction#getConfiguredTargetKey().
+            // Keep this logic in-sync with BuildDriverFunction#announceTopLevelAspectAnalyzed(),
+            // which is the corresponding skymeld (merged analysis+execution) codepath.
+            let Some(first_aspect_key) = value.get_top_level_aspects_map().keys().next() else {
+                continue;
+            };
+            let transitioned_key = first_aspect_key.get_base_configured_target_key().clone();
+            let aspect_count = value.get_top_level_aspects_map().len() as i32;
+            event_handler.post(Arc::new(ToplevelAspectsIdentifiedEvent {
+                configured_target_key: transitioned_key,
+                aspect_count,
+            }));
+            for (aspect_key, aspect_value) in value.get_top_level_aspects_map() {
+                // ImmutableMap.Builder.buildOrThrow: a key may appear only once.
+                if aspects
+                    .insert(aspect_key.clone(), aspect_value.clone())
+                    .is_some()
+                {
+                    panic!(
+                        "IllegalArgumentException: Multiple entries with same key: {:?}",
+                        aspect_key
+                    );
+                }
+                let configuration =
+                    get_configuration_from_graph(&*graph, aspect_key.get_configuration_key());
+                event_handler.post(Arc::new(AspectConfiguredEvent::new(
+                    aspect_key.get_label().clone(),
+                    /* aspect_class_name= */ aspect_key.get_aspect_class().get_name(),
+                    /* aspect_description= */
+                    &aspect_key.get_aspect_descriptor().get_description(),
+                    configuration,
+                )));
+            }
+        }
+
         Ok(ConfigureTargetsResult {
             evaluation_result: result,
             configured_targets,
+            aspects,
             targets_with_configuration,
         })
     }
@@ -1205,15 +1300,12 @@ pub struct TopLevelActionConflictReport {
 }
 
 impl TopLevelActionConflictReport {
-    fn key(&self, k: &ConfiguredTargetKey) -> TopLevelActionLookupConflictFindingKey {
-        TopLevelActionLookupConflictFindingKey::create(
-            blaze_actions::ActionLookupKeyRef::new(k.clone()),
-            &self.top_level_artifact_context,
-        )
+    fn key(&self, k: &blaze_actions::ActionLookupKeyRef) -> TopLevelActionLookupConflictFindingKey {
+        TopLevelActionLookupConflictFindingKey::create(k.clone(), &self.top_level_artifact_context)
     }
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2582 SkyframeExecutor.TopLevelActionConflictReport.isErrorFree
-    pub fn is_error_free(&self, k: &ConfiguredTargetKey) -> bool {
+    pub fn is_error_free(&self, k: &blaze_actions::ActionLookupKeyRef) -> bool {
         self.result.get(&self.key(k)).is_some()
     }
 
@@ -1222,7 +1314,7 @@ impl TopLevelActionConflictReport {
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2592 SkyframeExecutor.TopLevelActionConflictReport.getConflictException
     pub fn get_conflict_exception(
         &self,
-        k: &ConfiguredTargetKey,
+        k: &blaze_actions::ActionLookupKeyRef,
     ) -> Option<ActionConflictException> {
         let error_info = self
             .result
@@ -1395,6 +1487,71 @@ fn traverse_exception_chain(
     None
 }
 
+/// Signals that the top-level aspects of a target were identified: the (transitioned) key of the
+/// target and the number of aspects applied to it.
+// Java: com/google/devtools/build/lib/skyframe/ToplevelAspectsIdentifiedEvent.java:23 ToplevelAspectsIdentifiedEvent
+#[derive(Clone, Debug)]
+pub struct ToplevelAspectsIdentifiedEvent {
+    /// `configuredTargetKey()`.
+    pub configured_target_key: ConfiguredTargetKey,
+    /// `aspectCount()`.
+    pub aspect_count: i32,
+}
+
+impl blaze_events::Postable for ToplevelAspectsIdentifiedEvent {}
+
+/// Event when an aspect is configured.
+///
+/// PORT: the build event stream conversion (`getEventId`, `asStreamProto`, `getConfigurations`)
+/// belongs to the command's BEP writer, which reads the fields.
+// Java: com/google/devtools/build/lib/analysis/AspectConfiguredEvent.java:32 AspectConfiguredEvent
+#[derive(Clone, Debug)]
+pub struct AspectConfiguredEvent {
+    target: Label,
+    aspect_class_name: String,
+    aspect_description: String,
+    configuration: Option<Arc<BuildConfigurationValue>>,
+}
+
+impl AspectConfiguredEvent {
+    // Java: com/google/devtools/build/lib/analysis/AspectConfiguredEvent.java:38 AspectConfiguredEvent.<init>
+    pub fn new(
+        target: Label,
+        aspect_class_name: &str,
+        aspect_description: &str,
+        configuration: Option<Arc<BuildConfigurationValue>>,
+    ) -> Self {
+        AspectConfiguredEvent {
+            target,
+            aspect_class_name: aspect_class_name.to_owned(),
+            aspect_description: aspect_description.to_owned(),
+            configuration,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AspectConfiguredEvent.java:66 AspectConfiguredEvent.getAspectClassName
+    pub fn get_aspect_class_name(&self) -> &str {
+        &self.aspect_class_name
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AspectConfiguredEvent.java:70 AspectConfiguredEvent.getTarget
+    pub fn get_target(&self) -> &Label {
+        &self.target
+    }
+
+    /// The aspect's description (`AspectDescriptor.getDescription()`; the BEP id's `aspect`).
+    pub fn get_aspect_description(&self) -> &str {
+        &self.aspect_description
+    }
+
+    /// The configuration of the aspect, `None` for targets without one.
+    pub fn get_configuration(&self) -> Option<&Arc<BuildConfigurationValue>> {
+        self.configuration.as_ref()
+    }
+}
+
+impl blaze_events::Postable for AspectConfiguredEvent {}
+
 /// A target and the configuration of its configured target.
 // Java: com/google/devtools/build/lib/analysis/TargetAndConfiguration.java:30 TargetAndConfiguration
 #[derive(Clone, Debug)]
@@ -1432,6 +1589,8 @@ impl TargetAndConfiguration {
 pub struct ConfigureTargetsResult {
     pub evaluation_result: EvaluationResult,
     pub configured_targets: Vec<ConfiguredTarget>,
+    /// `aspects()`: the top-level aspects, in the order of their `TopLevelAspectsKey`s.
+    pub aspects: IndexMap<AspectKey, Arc<AspectValue>>,
     pub targets_with_configuration: Vec<TargetAndConfiguration>,
     // PORT: package roots (collectPackageRoots) only matter to execution (the symlink forest);
     // see `SkyframeExecutor::get_package_roots`.

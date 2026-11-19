@@ -69,3 +69,46 @@ class; top-level classes of `lib/remote` are top-level modules). Tests are
 ## Phases, evidence, gaps
 
 (Filled in by the crate lead as phases land.)
+
+## Security posture
+
+Root ruling 2026-11-19 (docs/decisions.md): for output symlink paths, Tree node names and
+server-log keys Blaze stays identical to Bazel 9.3.2, which does not confine them; Blaze does
+not harden beyond Bazel. Each site is marked `// PORT: identical to Bazel, not hardened
+(decision 2026-11-19)` (or by the `SECURITY:` comment that describes it, in files whose owner
+has not added the marker yet). The sites:
+
+| What the server controls | Rust site | Java |
+|---|---|---|
+| `ExecuteResponse.server_logs` keys: `..` and absolute keys escape the log directory | `remote_execution_service.rs` `maybe_download_server_logs` (marked) | `RemoteExecutionService.java:2075` |
+| Tree node names (`FileNode`/`SymlinkNode`/`DirectoryNode.name`): a file can land anywhere under the exec root, not only under its tree root (outside the exec root is a crash in both) | `remote_execution_service_download.rs:378` (`SECURITY:`), checked only by `relative_to(exec_root)` at :1337/:1407/:1416 | `RemoteExecutionService.java:1086-1200` |
+| `OutputFile`/`OutputDirectory`/`OutputSymlink.path` (normalized `getRelative`) | `remote_execution_service_download.rs:463` | `RemoteExecutionService.java:1086-1200` |
+| Output symlink paths and targets (absolute, `..`, dangling targets accepted; symlink path not compared with the exec root) | `remote_execution_service_download.rs:589`, `:1139` | `RemoteExecutionService.java:950` `createSymlinks` |
+| Inlined `OutputFile.contents` and inline stdout/stderr are not compared with their digests | `remote_execution_service_download.rs:1398` | `RemoteExecutionService.java` `downloadOutputs` |
+| Symlink targets found in the output tree are re-planted verbatim by the prefetcher | `abstract_action_input_prefetcher.rs:1050`, `:1078` | `AbstractActionInputPrefetcher.java` |
+
+The digest checks Java performs are all kept (rule 7 above). The one place where Blaze is weaker
+than Bazel is the build-wide remote output tree (review R7, owned by the integration).
+
+## Not ported (loud)
+
+Each of these fails with `unported!` (a crash with `blaze: not ported yet: ...`) at the point
+where Bazel would enter it; none is silently ignored.
+
+| Feature / flag | Where it fails |
+|---|---|
+| TextFormat-dependent options: `exec_properties`/`remote_execution_properties` text protos of a platform; `--experimental_remote_scrubbing_config` | `platform_utils.rs` `PlatformUtils.getPlatformProto`; `scrubber.rs` `Scrubber.parse`, and `blaze_runtime` `build_remote.rs` before setup |
+| Credential helpers (`--credential_helper`) and Google credentials (`--google_credentials`, `--google_default_credentials`) | `authandtls/google_auth_utils.rs` |
+| HTTP/HTTPS remote cache (`--remote_cache=http(s)://`) | `combined_cache_client_factory.rs` `createHttp`, `remote_module.rs` `createCredentials` |
+| Content-defined chunking (`--experimental_remote_cache_chunking`) | `combined_cache.rs` `Chunking.*`, `uploadChunked`; `grpc_cache_client.rs` split/splice |
+| Remote output service (`--experimental_remote_output_service`); the "must be used with a cache" exit and the `--disk_cache` warning are ported | `remote_module.rs` setup, at Java's channel creation for it |
+| Remote downloader (`--experimental_remote_downloader`) | `remote_module.rs` setup |
+| Build event artifact uploader (`ByteStreamBuildEventArtifactUploader`) with a gRPC cache; `--remote_build_event_upload` (old name `--experimental_remote_build_event_upload`) other than `minimal`; `--remote_bytestream_uri_prefix` | `remote_module.rs` setup (flags), `RemoteModule::create_build_event_artifact_uploader` (to be called by the BEP integration, see the review response) |
+| `--remote_max_connections` / `--remote_max_concurrency_per_connection` other than 100 (one HTTP/2 connection per endpoint, no `DynamicConnectionPool`) | `remote_module.rs` setup, gRPC path |
+| `--experimental_remote_cache_lease_extension` (without `--rewind_lost_inputs`) | `remote_module.rs` setup (Java: `executorInit`) |
+| Disk cache garbage collection (`--experimental_disk_cache_gc_max_size` / `_max_age`, with `_idle_delay`): a server idle task, and Blaze has no server | `remote_module.rs` setup |
+| Path mapping, lost inputs and action rewinding, persistent-worker signatures | `common/remote_path_resolver.rs`, `common/bulk_transfer_exception.rs`, `remote_execution_service.rs` |
+
+Known silent deviations that cannot be made loud from this crate are listed in
+docs/reviews/2026-11-19-remote-response.md (argv[0] policy of a Windows execution platform:
+`PlatformInfo` carries no constraints).

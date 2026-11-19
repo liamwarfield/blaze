@@ -166,7 +166,9 @@ impl Fixture {
         let dirs = TestDirs::new();
         // setUp: outputRoot.getRoot().asPath().createDirectoryAndParents()
         dirs.bin_root
-            .get_root().as_path().unwrap()
+            .get_root()
+            .as_path()
+            .unwrap()
             .create_directory_and_parents()
             .unwrap();
         let fetcher = FakeInputFetcher::new(dirs.exec_root.clone());
@@ -183,8 +185,15 @@ impl Fixture {
             Some(self.fetcher.clone() as Arc<dyn ActionInputPrefetcher>),
         );
         fs.update_context(dummy_action(&self.dirs));
-        fs.create_directory_and_parents(self.dirs.bin_root.get_root().as_path().unwrap().as_fragment())
-            .unwrap();
+        fs.create_directory_and_parents(
+            self.dirs
+                .bin_root
+                .get_root()
+                .as_path()
+                .unwrap()
+                .as_fragment(),
+        )
+        .unwrap();
         fs
     }
 
@@ -196,7 +205,9 @@ impl Fixture {
     fn get_output_path(&self, output_root_relative_path: &str) -> PathFragment {
         self.dirs
             .bin_root
-            .get_root().as_path().unwrap()
+            .get_root()
+            .as_path()
+            .unwrap()
             .get_relative_str(output_root_relative_path)
             .as_fragment()
             .clone()
@@ -235,9 +246,7 @@ impl Fixture {
         inputs: &InputMap,
     ) -> Artifact {
         // ActionsTestUtil.createTreeArtifactWithGeneratingAction
-        let tree = self
-            .dirs
-            .special_artifact(path, SpecialArtifactType::TREE);
+        let tree = self.dirs.special_artifact(path, SpecialArtifactType::TREE);
         tree.set_generating_action_key(blaze_actions::ActionLookupData::create(
             blaze_actions::ActionLookupKeyRef::new(analysis_actions_common::NullArtifactOwner),
             0,
@@ -281,13 +290,7 @@ fn inject_remote_file(
     content: &str,
 ) -> FileArtifactValue {
     action_fs
-        .inject_remote_file(
-            path,
-            get_digest(content),
-            content.len() as i64,
-            None,
-            false,
-        )
+        .inject_remote_file(path, get_digest(content), content.len() as i64, None, false)
         .unwrap();
     remote_metadata(content)
 }
@@ -370,7 +373,10 @@ fn test_get_input_stream_for_remote_output_file() {
     let contents = read_content(&action_fs, artifact.get_path().as_fragment());
 
     assert_eq!(contents, "remote contents");
-    assert_eq!(f.fetcher.calls(), vec![vec![artifact.get_exec_path().clone()]]);
+    assert_eq!(
+        f.fetcher.calls(),
+        vec![vec![artifact.get_exec_path().clone()]]
+    );
 }
 
 #[test]
@@ -390,7 +396,11 @@ fn stat_and_exists_from_input_artifact_data_file() {
     assert!(st.is_file());
     // FileStatusWithDigest.getDigest()
     assert_eq!(
-        action_fs.stat_metadata(&path, true).unwrap().unwrap().get_digest(),
+        action_fs
+            .stat_metadata(&path, true)
+            .unwrap()
+            .unwrap()
+            .get_digest(),
         metadata.get_digest()
     );
 }
@@ -422,7 +432,11 @@ fn stat_and_exists_from_remote_output_tree() {
     let st = action_fs.stat(&path, true).unwrap();
     assert!(st.is_file());
     assert_eq!(
-        action_fs.stat_metadata(&path, true).unwrap().unwrap().get_digest(),
+        action_fs
+            .stat_metadata(&path, true)
+            .unwrap()
+            .unwrap()
+            .get_digest(),
         metadata.get_digest()
     );
 }
@@ -456,7 +470,12 @@ fn stat_and_exists_follow_symlinks() {
 
         assert!(action_fs.exists(&link_path, false));
         assert!(!action_fs.exists(&link_path, true));
-        assert!(action_fs.stat(&link_path, false).unwrap().is_symbolic_link());
+        assert!(
+            action_fs
+                .stat(&link_path, false)
+                .unwrap()
+                .is_symbolic_link()
+        );
         assert_eq!(
             action_fs.stat(&link_path, true).unwrap_err().kind(),
             io::ErrorKind::NotFound
@@ -469,7 +488,12 @@ fn stat_and_exists_follow_symlinks() {
         }
 
         assert!(action_fs.exists(&link_path, false));
-        assert!(action_fs.stat(&link_path, false).unwrap().is_symbolic_link());
+        assert!(
+            action_fs
+                .stat(&link_path, false)
+                .unwrap()
+                .is_symbolic_link()
+        );
         assert!(action_fs.exists(&link_path, true));
         assert!(action_fs.stat(&link_path, true).unwrap().is_file());
     }
@@ -561,7 +585,11 @@ fn readdir_from_remote_output_tree() {
     let action_fs = f.create_action_file_system();
     inject_remote_file(&action_fs, &f.get_output_path("dir/out1"), "contents1");
     inject_remote_file(&action_fs, &f.get_output_path("dir/out2"), "contents2");
-    inject_remote_file(&action_fs, &f.get_output_path("dir/subdir/out3"), "contents3");
+    inject_remote_file(
+        &action_fs,
+        &f.get_output_path("dir/subdir/out3"),
+        "contents3",
+    );
     let dir_path = f.get_output_path("dir");
 
     assert_readdir(
@@ -705,7 +733,10 @@ fn read_symbolic_link_from_local_filesystem() {
         .unwrap();
     f.write_local_file(&file_path, "contents");
 
-    assert_eq!(action_fs.read_symbolic_link(&link_path).unwrap(), target_path);
+    assert_eq!(
+        action_fs.read_symbolic_link(&link_path).unwrap(),
+        target_path
+    );
     assert!(NotASymlinkException::is(
         &action_fs.read_symbolic_link(&file_path).unwrap_err()
     ));
@@ -798,11 +829,21 @@ fn delete_remote_file_succeeds() {
     let action_fs = f.create_action_file_system();
     let path = f.get_output_path("file");
     inject_remote_file(&action_fs, &path, "remote contents");
-    assert!(action_fs.get_remote_output_tree().get_metadata(&path).is_some());
+    assert!(
+        action_fs
+            .get_remote_output_tree()
+            .get_metadata(&path)
+            .is_some()
+    );
 
     assert!(action_fs.delete(&path).unwrap());
     assert!(!action_fs.exists(&path, true));
-    assert!(action_fs.get_remote_output_tree().get_metadata(&path).is_none());
+    assert!(
+        action_fs
+            .get_remote_output_tree()
+            .get_metadata(&path)
+            .is_none()
+    );
 }
 
 #[test]
@@ -816,7 +857,12 @@ fn delete_local_and_remote_file_succeeds() {
     assert!(action_fs.delete(&path).unwrap());
     assert!(!action_fs.exists(&path, true));
     assert!(!action_fs.get_local_file_system().exists(&path, true));
-    assert!(action_fs.get_remote_output_tree().get_metadata(&path).is_none());
+    assert!(
+        action_fs
+            .get_remote_output_tree()
+            .get_metadata(&path)
+            .is_none()
+    );
 }
 
 /// `injectRemoteFile` ignores a path outside the output base (`isOutput`).
@@ -824,7 +870,12 @@ fn delete_local_and_remote_file_succeeds() {
 fn inject_remote_file_outside_the_output_base_is_ignored() {
     let f = Fixture::new();
     let action_fs = f.create_action_file_system();
-    let path = f.dirs.exec_root.get_relative_str("src/file").as_fragment().clone();
+    let path = f
+        .dirs
+        .exec_root
+        .get_relative_str("src/file")
+        .as_fragment()
+        .clone();
     inject_remote_file(&action_fs, &path, "remote contents");
     assert!(!action_fs.exists(&path, true));
 }
@@ -873,10 +924,10 @@ mod in_process_readers {
         );
 
         let mut ctx = f.dirs.context();
-        ctx.metadata
-            .metadata
-            .lock()
-            .insert(input_artifact.get_exec_path_string().to_string(), remote_metadata("#!/bin/sh\n"));
+        ctx.metadata.metadata.lock().insert(
+            input_artifact.get_exec_path_string().to_string(),
+            remote_metadata("#!/bin/sh\n"),
+        );
         // A reader that bypasses the action file system sees no file.
         let e = execute(&ctx, &action).unwrap_err();
         assert_eq!(
@@ -905,9 +956,7 @@ mod in_process_readers {
             null_action_owner(),
             template.clone(),
             output_artifact.clone(),
-            vec![
-                blaze_actions::analysis::actions::substitution::Substitution::of("%key%", "foo"),
-            ],
+            vec![blaze_actions::analysis::actions::substitution::Substitution::of("%key%", "foo")],
             false,
         );
 
@@ -939,5 +988,108 @@ mod in_process_readers {
         ctx.action_file_system = Some(action_fs);
         assert!(ctx.convert_path(&xml.get_path()).exists());
         assert!(!xml.get_path().exists());
+    }
+}
+
+/// `AbstractSpawnStrategy.SpawnExecutionContextImpl.prefetchInputs`: a `BulkTransferException`
+/// of the prefetcher whose causes are all cache misses of known inputs is a
+/// `LostInputsExecException`; any other is an `EnvironmentalExecException` "Failed to fetch
+/// blobs because of a remote cache error." with `Spawn.REMOTE_CACHE_EVICTED` (review R6).
+mod prefetch_inputs {
+    use super::*;
+    use blaze_exec::exec::action_execution_context::BulkTransferError;
+
+    struct FailingPrefetcher(Mutex<Option<BulkTransferError>>);
+
+    impl ActionInputPrefetcher for FailingPrefetcher {
+        fn prefetch_files(
+            &self,
+            _action: &dyn ActionExecutionMetadata,
+            _inputs: &[ActionInputRef],
+            _metadata_provider: &dyn InputMetadataProvider,
+        ) -> io::Result<()> {
+            Err(io::Error::other(self.0.lock().take().unwrap()))
+        }
+    }
+
+    fn prefetch(
+        f: &Fixture,
+        input: &Artifact,
+        error: BulkTransferError,
+    ) -> blaze_exec::actions::ExecException {
+        let mut ctx = f.dirs.context();
+        ctx.metadata.inputs.lock().insert(
+            input.get_exec_path_string().to_string(),
+            artifact_input(input),
+        );
+        let prefetcher: Arc<dyn ActionInputPrefetcher> =
+            Arc::new(FailingPrefetcher(Mutex::new(Some(error))));
+        ctx.contexts.insert(
+            std::any::TypeId::of::<Arc<dyn ActionInputPrefetcher>>(),
+            Arc::new(prefetcher),
+        );
+        let owner = dummy_action(&f.dirs);
+        ctx.prefetch_files(&*owner, &[artifact_input(input)], &ctx.metadata)
+            .unwrap_err()
+    }
+
+    #[test]
+    fn cache_misses_of_known_inputs_are_lost_inputs() {
+        let f = Fixture::new();
+        let input = f.dirs.bin_artifact("_objs/a.o");
+        let e = prefetch(
+            &f,
+            &input,
+            BulkTransferError {
+                message: "Missing digest: abc/3 for bazel-out/k8-fastbuild/bin/_objs/a.o".into(),
+                causes: Some(vec![("abc/3".into(), Some(input.get_exec_path().clone()))]),
+            },
+        );
+        let lost = e.get_lost_inputs().expect("a LostInputsExecException");
+        assert_eq!(lost.by_digest.keys().collect::<Vec<_>>(), vec!["abc/3"]);
+        assert_eq!(e.get_message(), "lost inputs with digests: abc/3");
+    }
+
+    #[test]
+    fn other_bulk_transfer_failures_are_remote_cache_evicted() {
+        let f = Fixture::new();
+        let input = f.dirs.bin_artifact("_objs/a.o");
+        for causes in [
+            None,
+            // An unknown input: getLostArtifacts is empty.
+            Some(vec![(
+                "abc/3".to_string(),
+                Some(PathFragment::create("bazel-out/unknown")),
+            )]),
+            // stdout/stderr: no exec path.
+            Some(vec![("abc/3".to_string(), None)]),
+        ] {
+            let e = prefetch(
+                &f,
+                &input,
+                BulkTransferError {
+                    message: "boom".into(),
+                    causes,
+                },
+            );
+            assert!(e.get_lost_inputs().is_none());
+            assert_eq!(
+                e.get_message(),
+                "Failed to fetch blobs because of a remote cache error.: boom"
+            );
+            let detail = e.get_failure_detail("m").unwrap();
+            assert_eq!(
+                detail.category,
+                Some(
+                    blaze_protos::failure_details::failure_detail::Category::Spawn(
+                        blaze_protos::failure_details::Spawn {
+                            code: blaze_protos::failure_details::spawn::Code::RemoteCacheEvicted
+                                as i32,
+                            ..Default::default()
+                        }
+                    )
+                )
+            );
+        }
     }
 }

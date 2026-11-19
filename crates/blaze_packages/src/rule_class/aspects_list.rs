@@ -1,23 +1,26 @@
-//! Port of `packages/AspectsList.java` (the loading-phase parts). Aspect classes and
-//! parameter extraction belong to analysis; the loading phase keeps each aspect's identity,
-//! name, required parameters and attributes.
+//! Port of `packages/AspectsList.java`.
+
+use std::fmt;
+use std::sync::Arc;
 
 use blaze_cmdline::EvalException;
 use indexmap::IndexMap;
+use indexmap::IndexSet;
 
+use crate::aspect::Aspect;
+use crate::aspect::AspectClass;
+use crate::aspect::AspectParameters;
+use crate::aspect::NativeAspectClass;
 use crate::attribute::Attribute;
-use crate::attribute::AttributeMap;
-use crate::attribute::RawAttributeMapper;
 use crate::rule_class::RuleClass;
 use crate::rule_class::StarlarkCallable;
+use crate::starlark_defs::aspect::AspectData;
 use crate::target::Rule;
-use crate::target::TargetData;
-use crate::types::AttrValue;
 use crate::types::Type;
 
 /// What `AspectsList` needs to know about a Starlark aspect value (Java
 /// `StarlarkDefinedAspect`): the .bzl builtins pass this for `attr.label(aspects = [...])`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct StarlarkAspectInfo {
     /// The frozen `StarlarkDefinedAspect` value.
     pub aspect: StarlarkCallable,
@@ -31,6 +34,54 @@ pub struct StarlarkAspectInfo {
     pub required_parameters: Vec<String>,
     /// Java `getAttributes()` of the aspect definition.
     pub aspect_attributes: Vec<Attribute>,
+    /// The aspect's data (shared with the Starlark value): definitions, parameter extraction.
+    pub data: Arc<AspectData>,
+}
+
+impl PartialEq for StarlarkAspectInfo {
+    fn eq(&self, other: &StarlarkAspectInfo) -> bool {
+        self.aspect == other.aspect
+            && self.name == other.name
+            && self.exported == other.exported
+            && self.required_aspects == other.required_aspects
+            && self.required_parameters == other.required_parameters
+            && self.aspect_attributes == other.aspect_attributes
+            && Arc::ptr_eq(&self.data, &other.data)
+    }
+}
+
+/// Java `Function<Rule, AspectParameters>`: extracts an aspect's parameters from the rule it is
+/// applied to (`None` is Java's null: the aspect is not applied). Equality is identity.
+#[derive(Clone)]
+pub struct AspectParametersExtractor(Arc<dyn Fn(&Rule) -> Option<AspectParameters> + Send + Sync>);
+
+impl AspectParametersExtractor {
+    pub fn new(f: impl Fn(&Rule) -> Option<AspectParameters> + Send + Sync + 'static) -> Self {
+        AspectParametersExtractor(Arc::new(f))
+    }
+
+    /// Java `Function.apply`.
+    pub fn apply(&self, rule: &Rule) -> Option<AspectParameters> {
+        (self.0)(rule)
+    }
+}
+
+impl PartialEq for AspectParametersExtractor {
+    fn eq(&self, other: &AspectParametersExtractor) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for AspectParametersExtractor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AspectParametersExtractor(..)")
+    }
+}
+
+/// Java `AspectsList.EMPTY_FUNCTION`.
+// Java: com/google/devtools/build/lib/packages/AspectsList.java:304 AspectsList.EMPTY_FUNCTION
+pub fn empty_function() -> AspectParametersExtractor {
+    AspectParametersExtractor::new(|_| Some(AspectParameters::empty()))
 }
 
 /// Java `AspectsList.AspectDetails` (its native and Starlark subclasses).
@@ -40,8 +91,11 @@ pub enum AspectDetails {
     /// Java `NativeAspectDetails`: a native aspect class, by name.
     // Java: com/google/devtools/build/lib/packages/AspectsList.java:222 AspectsList.NativeAspectDetails
     Native {
+        /// Java `aspectClass.getName()`.
         aspect_class_name: String,
         required_by_aspect: Option<String>,
+        aspect_class: Arc<dyn NativeAspectClass>,
+        parameters_extractor: AspectParametersExtractor,
     },
     /// Java `StarlarkAspectDetails`.
     // Java: com/google/devtools/build/lib/packages/AspectsList.java:250 AspectsList.StarlarkAspectDetails
@@ -82,100 +136,74 @@ impl AspectDetails {
         }
     }
 
-    /// Java `AspectDetails.parametersExtractor.apply(rule)` as the attribute name to value
-    /// map of the resulting `AspectParameters` (each extracted parameter has exactly one value).
-    ///
-    /// Native aspects: PORT: native aspect definitions (and their parameter extractors) are not
-    /// part of the loading-phase model; `get_aspect_attributes` is empty for them, so nothing
-    /// reads their parameters.
-    // Java: com/google/devtools/build/lib/packages/StarlarkDefinedAspect.java:299 StarlarkDefinedAspect.getDefaultParametersExtractor
-    pub fn get_default_parameters(&self, rule: &Rule) -> IndexMap<String, String> {
-        let AspectDetails::Starlark { info, .. } = self else {
-            return IndexMap::new();
-        };
-        let rule_attrs = RawAttributeMapper::of(rule);
-        let mut builder: IndexMap<String, String> = IndexMap::new();
-        for aspect_attr in &info.aspect_attributes {
-            let param = aspect_attr.get_name();
-            if Attribute::is_implicit_name(param) || Attribute::is_analysis_dependent(param) {
-                // These attributes are the private matters of the aspect
-                continue;
-            }
-
-            let rule_attr = rule_attrs.get_attribute_definition(param);
-            if info.required_parameters.iter().any(|p| p == param) {
-                // These are preconditions because if they are false, RuleFunction.call() should
-                // already have generated an error.
-                blaze_util::check_argument!(
-                    rule_attr.is_some(),
-                    "Cannot apply aspect {} to {} that does not define attribute '{}'.",
-                    info.name,
-                    rule.get_target_kind(),
-                    param
-                );
-                let rule_attr_type = rule_attr.expect("checked above").get_type();
-                blaze_util::check_argument!(
-                    rule_attr_type == Type::String
-                        || rule_attr_type == Type::Integer
-                        || rule_attr_type == Type::Boolean,
-                    "Cannot apply aspect {} to {} since attribute '{}' is not boolean, integer, \
-                     nor string.",
-                    info.name,
-                    rule.get_target_kind(),
-                    param
-                );
-            }
-
-            if let Some(rule_attr) = rule_attr
-                && rule_attr.get_type() == aspect_attr.get_type()
-            {
-                // If the attribute has a select() (which aspect attributes don't yet support),
-                // the error gets reported in RuleClass.checkAspectAllowedValues.
-                if !rule_attrs.is_configurable(param) {
-                    // Java: `ruleAttrs.get(param, ruleAttr.getType()).toString()`.
-                    let value = rule_attrs
-                        .get(param, rule_attr.get_type())
-                        .expect("NullPointerException: attribute value");
-                    let value = match value {
-                        AttrValue::String(s) => s,
-                        AttrValue::Int(i) => i.to_string(),
-                        AttrValue::Bool(b) => b.to_string(),
-                        other => blaze_util::unported!(
-                            "StarlarkDefinedAspect.getDefaultParametersExtractor",
-                            "toString() of {:?}",
-                            other
-                        ),
-                    };
-                    builder.insert(param.to_owned(), value);
-                }
+    // Java: com/google/devtools/build/lib/packages/AspectsList.java:217 AspectsList.AspectDetails.getAspectClass
+    pub fn get_aspect_class(&self) -> AspectClass {
+        match self {
+            AspectDetails::Native { aspect_class, .. } => AspectClass::Native(aspect_class.clone()),
+            AspectDetails::Starlark { info, .. } => {
+                AspectClass::Starlark(info.data.get_aspect_class())
             }
         }
-        builder
     }
 
-    /// The default value Java's `addAttrValue` gives the aspect definition's attribute for a
-    /// parameter value.
-    // Java: com/google/devtools/build/lib/packages/StarlarkDefinedAspect.java:265 StarlarkDefinedAspect.addAttrValue
-    pub fn add_attr_value(attr: &Attribute, attr_value: &str) -> AttrValue {
-        let attr_type = attr.get_type();
-        // Java: StarlarkDefinedAspect.java:229 (buildDefinition)
-        blaze_util::check_state!(!Attribute::is_implicit_name(attr.get_name()));
-        blaze_util::check_state!(
-            attr_type == Type::String || attr_type == Type::Integer || attr_type == Type::Boolean
-        );
-        if attr_type == Type::Integer {
-            // Java: StarlarkInt.parse(attrValue, /* base= */ 0). The value is the decimal
-            // toString() of the rule's 32-bit attribute value.
-            AttrValue::Int(
-                attr_value
-                    .parse::<i32>()
-                    .expect("the decimal form of an integer attribute value"),
-            )
-        } else if attr_type == Type::Boolean {
-            // Java: Boolean.parseBoolean(attrValue)
-            AttrValue::Bool(attr_value.eq_ignore_ascii_case("true"))
-        } else {
-            AttrValue::String(attr_value.to_owned())
+    /// Java `parametersExtractor.apply(rule)`.
+    pub fn get_parameters(&self, rule: &Rule) -> Option<AspectParameters> {
+        match self {
+            AspectDetails::Native {
+                parameters_extractor,
+                ..
+            } => parameters_extractor.apply(rule),
+            // Java: StarlarkAspectDetails gets `aspect.getDefaultParametersExtractor()`.
+            AspectDetails::Starlark { info, .. } => {
+                Some(info.data.extract_default_parameters(rule))
+            }
+        }
+    }
+
+    /// Java `getAspect(Rule)` (`None`: a native extractor returned null).
+    pub fn get_aspect(&self, rule: &Rule) -> Option<Aspect> {
+        match self {
+            // Java: com/google/devtools/build/lib/packages/AspectsList.java:237 AspectsList.NativeAspectDetails.getAspect
+            AspectDetails::Native {
+                aspect_class,
+                parameters_extractor,
+                ..
+            } => parameters_extractor
+                .apply(rule)
+                .map(|params| Aspect::for_native(aspect_class, params)),
+            // Java: com/google/devtools/build/lib/packages/AspectsList.java:269 AspectsList.StarlarkAspectDetails.getAspect
+            AspectDetails::Starlark { info, .. } => {
+                let params = info.data.extract_default_parameters(rule);
+                Some(Aspect::for_starlark(
+                    info.data.get_aspect_class(),
+                    info.data.get_definition(&params),
+                    params,
+                ))
+            }
+        }
+    }
+
+    /// Java `getTopLevelAspect(ImmutableMap<String, String>)`.
+    pub fn get_top_level_aspect(
+        &self,
+        aspect_parameters: &IndexMap<String, String>,
+    ) -> Result<Aspect, EvalException> {
+        match self {
+            // Java: com/google/devtools/build/lib/packages/AspectsList.java:243 AspectsList.NativeAspectDetails.getTopLevelAspect
+            AspectDetails::Native { aspect_class, .. } => {
+                let _ = aspect_parameters;
+                // Native aspects ignore their top-level parameters values for now.
+                Ok(Aspect::for_native(aspect_class, AspectParameters::empty()))
+            }
+            // Java: com/google/devtools/build/lib/packages/AspectsList.java:275 AspectsList.StarlarkAspectDetails.getTopLevelAspect
+            AspectDetails::Starlark { info, .. } => {
+                let params = info.data.extract_top_level_parameters(aspect_parameters)?;
+                Ok(Aspect::for_starlark(
+                    info.data.get_aspect_class(),
+                    info.data.get_definition(&params),
+                    params,
+                ))
+            }
         }
     }
 
@@ -204,6 +232,79 @@ impl AspectsList {
 
     pub fn get_aspect_details(&self) -> &[AspectDetails] {
         &self.aspects
+    }
+
+    /// Returns the list of aspects required for dependencies through this attribute.
+    // Java: com/google/devtools/build/lib/packages/AspectsList.java:50 AspectsList.getAspects
+    pub fn get_aspects(&self, rule: &Rule) -> Vec<Aspect> {
+        let mut builder = Vec::new();
+        for aspect in &self.aspects {
+            if let Some(a) = aspect.get_aspect(rule) {
+                builder.push(a);
+            }
+        }
+        builder
+    }
+
+    // Java: com/google/devtools/build/lib/packages/AspectsList.java:67 AspectsList.getAspectClasses
+    pub fn get_aspect_classes(&self) -> Vec<AspectClass> {
+        self.aspects.iter().map(|a| a.get_aspect_class()).collect()
+    }
+
+    /// Returns a list of Aspect objects for top level aspects.
+    // Java: com/google/devtools/build/lib/packages/AspectsList.java:76 AspectsList.buildAspects
+    pub fn build_aspects(
+        &self,
+        aspects_parameters: &IndexMap<String, String>,
+    ) -> Result<Vec<Aspect>, EvalException> {
+        let mut aspects_list = Vec::new();
+        for aspect in &self.aspects {
+            aspects_list.push(aspect.get_top_level_aspect(aspects_parameters)?);
+        }
+        Ok(aspects_list)
+    }
+
+    /// Validates top-level aspects parameters and reports an error if a parameter name is
+    /// specified on the command line but no aspect has a parameter with that name, or if a
+    /// mandatory aspect attribute is not given a value in the top-level parameters list.
+    // Java: com/google/devtools/build/lib/packages/AspectsList.java:125 AspectsList.validateTopLevelAspectsParameters
+    pub fn validate_top_level_aspects_parameters(
+        &self,
+        aspects_parameters: &IndexMap<String, String>,
+    ) -> Result<(), EvalException> {
+        let mut used_parameters: IndexSet<String> = IndexSet::new();
+        for aspect_details in &self.aspects {
+            if let AspectDetails::Starlark { info, .. } = aspect_details {
+                for attr in info.data.get_attributes() {
+                    if attr.is_implicit() || attr.is_late_bound() {
+                        continue;
+                    }
+                    let attr_name = attr.get_name();
+                    if aspects_parameters.contains_key(attr_name) {
+                        used_parameters.insert(attr_name.to_owned());
+                    } else if attr.is_mandatory() {
+                        return Err(EvalException::new(format!(
+                            "Missing mandatory attribute '{}' for aspect '{}'.",
+                            attr_name,
+                            aspect_details.get_name()
+                        )));
+                    }
+                }
+            }
+        }
+        let unused_parameters: Vec<&str> = aspects_parameters
+            .keys()
+            .filter(|p| !used_parameters.contains(*p))
+            .map(String::as_str)
+            .collect();
+        if !unused_parameters.is_empty() {
+            return Err(EvalException::new(format!(
+                "Parameters '[{}]' are not parameters of any of the top-level aspects but they \
+                 are specified in --aspects_parameters.",
+                unused_parameters.join(", ")
+            )));
+        }
+        Ok(())
     }
 
     // Java: com/google/devtools/build/lib/packages/AspectsList.java:87 AspectsList.validateRulePropagatedAspectsParameters
@@ -284,29 +385,47 @@ impl AspectsListBuilder {
         }
     }
 
-    /// Java `addAspect(NativeAspectClass)`.
-    // Java: com/google/devtools/build/lib/packages/AspectsList.java:338 AspectsList.Builder.addAspect
-    pub fn add_native_aspect(&mut self, aspect_class_name: &str) {
+    /// Java `addAspect(NativeAspectClass, Function<Rule, AspectParameters>)`: a native aspect
+    /// with its parameters extraction function.
+    // Java: com/google/devtools/build/lib/packages/AspectsList.java:328 AspectsList.Builder.addAspect
+    pub fn add_native_aspect_with_extractor(
+        &mut self,
+        aspect: Arc<dyn NativeAspectClass>,
+        evaluator: AspectParametersExtractor,
+    ) {
+        let native_aspect_details = AspectDetails::Native {
+            aspect_class_name: aspect.get_name().to_owned(),
+            required_by_aspect: None,
+            aspect_class: aspect,
+            parameters_extractor: evaluator,
+        };
         self.aspects.insert(
-            aspect_class_name.to_owned(),
-            AspectDetails::Native {
-                aspect_class_name: aspect_class_name.to_owned(),
-                required_by_aspect: None,
-            },
+            native_aspect_details.get_name().to_owned(),
+            native_aspect_details,
         );
     }
 
-    /// Java `addAspect(StarlarkAspect)` given only the aspect value. Use
-    /// [`AspectsListBuilder::add_starlark_aspect_info`].
+    /// Java `addAspect(NativeAspectClass)`: a native aspect that does not need a parameters
+    /// extractor.
+    // Java: com/google/devtools/build/lib/packages/AspectsList.java:338 AspectsList.Builder.addAspect
+    pub fn add_native_aspect(&mut self, aspect: Arc<dyn NativeAspectClass>) {
+        self.add_native_aspect_with_extractor(aspect, empty_function());
+    }
+
+    /// Java `addAspect(StarlarkAspect)` given the aspect value (a frozen `StarlarkDefinedAspect`,
+    /// e.g. loaded from a .bzl for a top-level aspect).
     // Java: com/google/devtools/build/lib/packages/AspectsList.java:343 AspectsList.Builder.addAspect
     pub fn add_starlark_aspect(
         &mut self,
         starlark_aspect: StarlarkCallable,
     ) -> Result<(), EvalException> {
-        let _ = starlark_aspect;
-        blaze_util::unported!(
-            "AspectsList.Builder.addAspect(StarlarkAspect) without StarlarkAspectInfo"
-        )
+        let Some(info) =
+            crate::starlark_defs::aspect::aspect_info_of_frozen(starlark_aspect.value())
+        else {
+            // Java: `throw new IllegalArgumentException()` for an unknown StarlarkAspect.
+            panic!("IllegalArgumentException: not a StarlarkDefinedAspect");
+        };
+        self.add_starlark_aspect_info(&info)
     }
 
     /// Java `addAspect(StarlarkAspect)`.
@@ -344,6 +463,9 @@ impl AspectsListBuilder {
         }
         Ok(())
     }
+
+    // PORT: Java's `addAspect(Aspect)` / `PredefinedAspectDetails`
+    // (AspectsList.java:283, :381) exist only for deserialization, which Blaze does not do.
 
     // Java: com/google/devtools/build/lib/packages/AspectsList.java:392 AspectsList.Builder.addAspects
     pub fn add_aspects(&mut self, aspects_list: &AspectsList) -> Result<(), EvalException> {

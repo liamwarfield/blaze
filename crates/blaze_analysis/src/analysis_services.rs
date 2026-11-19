@@ -57,6 +57,12 @@ pub struct AnalysisServices {
     /// user name (`StandardSystemProperty.USER_NAME`) and `NetUtil.getCachedShortHostName()`.
     pub workspace_status_user_name: String,
     pub workspace_status_host_name: String,
+    /// Java `AspectFunction.baseTargetPrerequisitesSupplier`
+    /// (`SkyframeExecutor.BaseTargetPrerequisitesSupplierImpl`): set by `blaze_sky_top` once
+    /// its evaluator exists; see [`AnalysisServices::get_base_target_prerequisites_supplier`].
+    pub base_target_prerequisites_supplier: std::sync::OnceLock<
+        crate::base_target_prerequisites_supplier::BaseTargetPrerequisitesSupplier,
+    >,
 }
 
 /// `WorkspaceStatusValue.BUILD_INFO_KEY` as a Skyframe key: the node of the workspace status
@@ -86,6 +92,17 @@ pub struct WorkspaceStatusValue {
 }
 
 impl AnalysisServices {
+    /// The supplier `AspectFunction` passes to `DependencyResolver.computeDependencies` and to
+    /// the `UnloadedToolchainContextsProducer` of the base target.
+    // Java: com/google/devtools/build/lib/skyframe/AspectFunction.java:168 AspectFunction.baseTargetPrerequisitesSupplier
+    pub fn get_base_target_prerequisites_supplier(
+        &self,
+    ) -> &crate::base_target_prerequisites_supplier::BaseTargetPrerequisitesSupplier {
+        self.base_target_prerequisites_supplier
+            .get()
+            .expect("NullPointerException: baseTargetPrerequisitesSupplier (set by blaze_sky_top)")
+    }
+
     /// `WorkspaceStatusFunction.compute`: the workspace status action over the artifacts of
     /// [`AnalysisServices::get_workspace_status_artifacts`] (which carry its generating action key).
     // Java: com/google/devtools/build/lib/skyframe/WorkspaceStatusFunction.java:38 WorkspaceStatusFunction.compute

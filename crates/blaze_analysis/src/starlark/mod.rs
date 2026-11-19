@@ -55,7 +55,7 @@
 //!   `get_expander(&mut self, ConfigurationMakeVariableContext) -> Expander` with
 //!   `Expander::expand(&mut self, attribute_name: &str, command: &str) -> String`;
 //!   `is_legal_fragment(&self, FragmentClass) -> bool`; `get_aspect_descriptors(&self) ->
-//!   Vec<blaze_actions::AspectDescriptor>`; `get_spawn_action_configuration(&self) -> Arc<dyn
+//!   &[blaze_packages::aspect::AspectDescriptor]`; `get_spawn_action_configuration(&self) -> Arc<dyn
 //!   SpawnActionConfiguration>`; `get_analysis_environment(&self) -> &AnalysisEnvironment` with
 //!   `&self` methods `get_event_handler() -> Arc<dyn blaze_events::EventHandler>`,
 //!   `get_starlark_semantics() -> &Arc<StarlarkSemantics>`, `get_main_repo_mapping() ->
@@ -133,6 +133,8 @@
 
 pub mod fragment_collection;
 pub mod starlark_action_factory;
+pub mod starlark_aspect_factory;
+pub mod starlark_aspect_propagation_context;
 pub mod starlark_attributes_collection;
 pub mod starlark_configuration;
 pub mod starlark_rule_configured_target_util;

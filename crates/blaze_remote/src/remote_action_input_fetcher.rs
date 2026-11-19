@@ -266,7 +266,50 @@ impl blaze_exec::exec::action_execution_context::ActionInputPrefetcher
             Priority::MEDIUM,
             Reason::INPUTS,
         )
+        .map_err(to_execution_bulk_transfer_error)
     }
+}
+
+/// A `BulkTransferException` of a prefetch as the execution layer reads it
+/// (`blaze_exec::exec::action_execution_context::BulkTransferError`: its message and the
+/// `CacheNotFoundException`s `getLostArtifacts` looks at); any other error is returned as it is.
+// Java: com/google/devtools/build/lib/remote/common/BulkTransferException.java:83 BulkTransferException.getLostArtifacts
+fn to_execution_bulk_transfer_error(e: io::Error) -> io::Error {
+    use crate::common::bulk_transfer_exception::BulkTransferException;
+    use crate::common::cache_not_found_exception::CacheNotFoundException;
+    let Some(bulk) = crate::common::errors::downcast_ref::<BulkTransferException>(&e) else {
+        return e;
+    };
+    let causes = if bulk.all_caused_by_cache_not_found_exception() {
+        let mut causes = Vec::new();
+        for suppressed in bulk.get_suppressed() {
+            let cache_not_found =
+                crate::common::errors::downcast_ref::<CacheNotFoundException>(suppressed)
+                    .expect("allCausedByCacheNotFoundException");
+            if cache_not_found.get_exec_path().is_none() && cache_not_found.get_filename().is_none()
+            {
+                panic!(
+                    "IllegalArgumentException: CacheNotFoundException that may represent a lost artifact should have been annotated with a filename: {cache_not_found}"
+                );
+            }
+            causes.push((
+                crate::util::digest_util::DigestUtil::to_string(
+                    cache_not_found.get_missing_digest(),
+                ),
+                cache_not_found.get_exec_path().cloned(),
+            ));
+        }
+        Some(causes)
+    } else {
+        None
+    };
+    io::Error::new(
+        e.kind(),
+        blaze_exec::exec::action_execution_context::BulkTransferError {
+            message: bulk.get_message(),
+            causes,
+        },
+    )
 }
 
 /// `RemoteOutputService.finalizeAction`: `actionInputFetcher.finalizeAction(action,

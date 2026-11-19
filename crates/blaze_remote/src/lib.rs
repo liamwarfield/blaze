@@ -17,6 +17,7 @@ pub mod grpc;
 pub mod grpc_cache_client;
 pub mod grpc_remote_executor;
 pub mod hooks;
+pub mod lease_service;
 pub mod logging;
 pub mod merkletree;
 pub mod platform_utils;

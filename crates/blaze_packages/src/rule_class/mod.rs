@@ -24,6 +24,7 @@ pub use advertised_provider_set::AdvertisedProviderSetBuilder;
 pub use allowlist_checker::AllowlistChecker;
 pub use allowlist_checker::LocationCheck;
 pub use aspects_list::AspectDetails;
+pub use aspects_list::AspectParametersExtractor;
 pub use aspects_list::AspectsList;
 pub use aspects_list::AspectsListBuilder;
 pub use aspects_list::StarlarkAspectInfo;

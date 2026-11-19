@@ -53,7 +53,12 @@ pub fn produce_config_conditions(
             transition_keys: Vec::new(),
         })
         .collect();
-    let outcomes = produce_configured_targets_and_data(env, &requests, transitive_state)?;
+    let outcomes = produce_configured_targets_and_data(
+        env,
+        &requests,
+        transitive_state,
+        /* base_target_prerequisites_supplier= */ None,
+    )?;
 
     let mut most_important_exit_code: Option<DetailedExitCode> = None;
     let mut error: Option<ConfiguredValueCreationException> = None;

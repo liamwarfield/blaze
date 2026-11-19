@@ -21,6 +21,7 @@ use indexmap::IndexMap;
 use crate::producers::errors::{
     ConfiguredTargetLookupError, TransitiveDependencyState, catch_configured_target_error,
 };
+use blaze_analysis::base_target_prerequisites_supplier::BaseTargetPrerequisitesSupplier;
 
 /// Java `ConfiguredTarget.getLabel()`: for an alias, the label of the target it points to.
 // Java: com/google/devtools/build/lib/rules/AliasConfiguredTarget.java:177 AliasConfiguredTarget.getLabel
@@ -43,23 +44,39 @@ pub type ConfiguredTargetAndDataOutcome =
 
 /// Looks up configured targets and wraps each with its `Target` and configuration (Java
 /// `ConfiguredTargetAndDataProducer` for each request).
+///
+/// With `base_target_prerequisites_supplier` (aspect evaluation), the configured target and
+/// configuration values are first taken from the graph without a dependency edge, and looked up
+/// only when the supplier has none.
 // Java: com/google/devtools/build/lib/analysis/producers/ConfiguredTargetAndDataProducer.java:103 ConfiguredTargetAndDataProducer.step
 pub fn produce_configured_targets_and_data(
     env: &mut Environment<'_>,
     requests: &[ConfiguredTargetAndDataRequest],
     transitive_state: &mut TransitiveDependencyState,
+    base_target_prerequisites_supplier: Option<&BaseTargetPrerequisitesSupplier>,
 ) -> Result<Vec<ConfiguredTargetAndDataOutcome>, Interrupted> {
+    // `baseTargetPrerequisitesSupplier.getPrerequisite(key)`; null → `tasks.lookUp(key, ...)`.
+    let cached: Vec<Option<Arc<ConfiguredTargetValue>>> = requests
+        .iter()
+        .map(|r| base_target_prerequisites_supplier.and_then(|s| s.get_prerequisite(&r.key)))
+        .collect();
     let sky_keys: Vec<SkyKey> = requests
         .iter()
-        .map(|r| SkyKey::new(r.key.clone()))
+        .zip(&cached)
+        .filter(|(_, c)| c.is_none())
+        .map(|(r, _)| SkyKey::new(r.key.clone()))
         .collect();
     let lookup = env.get_values_and_exceptions(&sky_keys)?;
 
     // Java: com/google/devtools/build/lib/analysis/producers/ConfiguredTargetAndDataProducer.java:136 ConfiguredTargetAndDataProducer.acceptValueOrException3
     let mut values: Vec<Option<Result<Arc<ConfiguredTargetValue>, ConfiguredTargetLookupError>>> =
         Vec::with_capacity(requests.len());
-    for request in requests {
-        match lookup.get_or_throw_with(&request.key, catch_configured_target_error) {
+    for (request, cached) in requests.iter().zip(cached) {
+        let value_or_error = match cached {
+            Some(v) => Ok(Some(v)),
+            None => lookup.get_or_throw_with(&request.key, catch_configured_target_error),
+        };
+        match value_or_error {
             Ok(Some(value)) => {
                 // Java: ConfiguredTargetAndDataProducer.acceptValue
                 if transitive_state.store_transitive_packages() {
@@ -92,11 +109,24 @@ pub fn produce_configured_targets_and_data(
 
     // Java: com/google/devtools/build/lib/analysis/producers/ConfiguredTargetAndDataProducer.java:158 ConfiguredTargetAndDataProducer.fetchConfigurationAndPackage
     let mut configuration_keys: IndexMap<BuildConfigurationKey, ()> = IndexMap::new();
+    let mut supplied_configurations: IndexMap<BuildConfigurationKey, Arc<BuildConfigurationValue>> =
+        IndexMap::new();
     let mut package_keys: IndexMap<PackageIdentifier, ()> = IndexMap::new();
     for value in values.iter().flatten().flatten() {
         let configured_target = value.get_configured_target();
         if let Some(configuration_key) = configured_target.get_configuration_key() {
-            configuration_keys.insert(configuration_key, ());
+            // `baseTargetPrerequisitesSupplier.getPrerequisiteConfiguration(configurationKey)`;
+            // null → `tasks.lookUp(configurationKey, this)`.
+            match base_target_prerequisites_supplier
+                .and_then(|s| s.get_prerequisite_configuration(&configuration_key))
+            {
+                Some(c) => {
+                    supplied_configurations.insert(configuration_key, c);
+                }
+                None => {
+                    configuration_keys.insert(configuration_key, ());
+                }
+            }
         }
         // An alternative to this is to optimistically fetch the package using the label of the
         // configured target key. However, the actual package may differ when this is an
@@ -147,7 +177,11 @@ pub fn produce_configured_targets_and_data(
         let configured_target = value.get_configured_target();
         let configuration_value = match configured_target.get_configuration_key() {
             None => None,
-            Some(k) => match configurations.get(&k).cloned().flatten() {
+            Some(k) => match supplied_configurations
+                .get(&k)
+                .cloned()
+                .or_else(|| configurations.get(&k).cloned().flatten())
+            {
                 Some(c) => Some(c),
                 None => {
                     outcomes.push(None);

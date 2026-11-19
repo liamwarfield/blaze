@@ -675,9 +675,18 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
         this: Value<'v>,
         #[starlark(require = named)] ctx: Value<'v>,
     ) -> starlark::Result<bool> {
-        let _ = (this, ctx);
-        // Java reads `ruleContext.getTarget().getPackageDeclarations()` (the aspect's target).
-        blaze_util::unported!("CcStarlarkInternal.isPackageHeadersCheckingModeSetForStarlarkAspect")
+        let _ = this;
+        let handle = ctx_rule_context(
+            ctx,
+            "is_package_headers_checking_mode_set_for_aspect",
+            "ctx",
+        )?;
+        let rc = handle.borrow();
+        Ok(rc
+            .get_target()
+            .get_package_declarations()
+            .get_package_args()
+            .is_default_hdrs_check_set())
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:318 CcStarlarkInternal.getPackageHeadersCheckingModeForStarlarkAspect
@@ -685,8 +694,15 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
         this: Value<'v>,
         #[starlark(require = named)] ctx: Value<'v>,
     ) -> starlark::Result<String> {
-        let _ = (this, ctx);
-        blaze_util::unported!("CcStarlarkInternal.getPackageHeadersCheckingModeForStarlarkAspect")
+        let _ = this;
+        let handle = ctx_rule_context(ctx, "package_headers_checking_mode_for_aspect", "ctx")?;
+        let rc = handle.borrow();
+        Ok(rc
+            .get_target()
+            .get_package_declarations()
+            .get_package_args()
+            .get_default_hdrs_check()
+            .to_owned())
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:343 CcStarlarkInternal.getStlComputedDefault
@@ -894,6 +910,7 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
     fn aspect_class<'v>(
         this: Value<'v>,
         #[starlark(require = pos)] ctx: Value<'v>,
+        heap: Heap<'v>,
     ) -> starlark::Result<Value<'v>> {
         let _ = this;
         let Some(c) = starlark_rule_context_from_value(ctx) else {
@@ -902,10 +919,16 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
                 ctx.get_type()
             )));
         };
-        if !c.is_for_aspect() {
+        let Some(aspect_descriptor) = c.get_aspect_descriptor() else {
             return Ok(Value::new_none());
+        };
+        let mut aspect_name = aspect_descriptor.get_aspect_class().get_name().to_owned();
+        // Starlark aspects names are of the form //my/aspect.bzl%aspect
+        if aspect_name.contains('%') {
+            // Java: aspectName.split("%", -1)[1]
+            aspect_name = aspect_name.split('%').nth(1).unwrap_or_default().to_owned();
         }
-        blaze_util::unported!("CcStarlarkInternal.getAspectClass (aspect descriptor)")
+        Ok(heap.alloc_str(&aspect_name).to_value())
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:532 CcStarlarkInternal.collectPerFileLtoBackendOpts

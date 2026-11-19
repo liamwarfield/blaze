@@ -801,6 +801,7 @@ fn environmental_exec_exception(
                 failure_details::Execution { code: code as i32 },
             )),
         },
+        lost_inputs: None,
     }
 }
 

@@ -20,12 +20,14 @@ use parking_lot::{Condvar, Mutex};
 use regex::Regex;
 
 use crate::common::cache_not_found_exception::CacheNotFoundException;
-use crate::common::errors::{downcast, downcast_ref};
+use crate::common::errors::{self, downcast, downcast_ref};
 use crate::common::lazy_file_output_stream::LazyFileOutputStream;
 use crate::common::output_digest_mismatch_exception::OutputDigestMismatchException;
 use crate::common::progress_status_listener::{ProgressStatusListener, no_action};
 use crate::common::remote_action_execution_context::RemoteActionExecutionContext;
-use crate::common::remote_cache_client::{ActionKey, Blob, BytesBlob, RemoteCacheClient};
+use crate::common::remote_cache_client::{
+    ActionKey, Blob, BytesBlob, RemoteCacheClient, RemoteCacheClientUploads,
+};
 use crate::disk::DiskCacheClient;
 use crate::reapi::{ActionResult, CacheCapabilities, Digest, ServerCapabilities};
 use crate::runtime::get_from_future;
@@ -502,7 +504,8 @@ impl CombinedCache {
         digest: &Digest,
         data: bytes::Bytes,
     ) -> io::Result<()> {
-        self.upload_blob(context, digest, &BytesBlob(data)).await
+        self.upload_blob(context, digest, Arc::new(BytesBlob(data)))
+            .await
     }
 
     /// Uploads a blob to the cache from a repeatable stream supplier.
@@ -514,7 +517,7 @@ impl CombinedCache {
         &self,
         context: &RemoteActionExecutionContext<'_>,
         digest: &Digest,
-        blob: &dyn Blob,
+        blob: Arc<dyn Blob>,
     ) -> io::Result<()> {
         self.upload_blob_with_force(context, digest, blob, /* force= */ false)
             .await
@@ -533,7 +536,7 @@ impl CombinedCache {
         &self,
         context: &RemoteActionExecutionContext<'_>,
         digest: &Digest,
-        blob: &dyn Blob,
+        blob: Arc<dyn Blob>,
         force: bool,
     ) -> io::Result<()> {
         if digest.size_bytes == 0 {
@@ -544,7 +547,7 @@ impl CombinedCache {
             if let Some(disk_cache_client) = &self.disk_cache_client
                 && context.get_write_cache_policy().allow_disk_cache()
             {
-                disk_cache_client.upload_blob(digest, blob).await
+                disk_cache_client.upload_blob(digest, &*blob).await
             } else {
                 Ok(())
             }
@@ -555,7 +558,7 @@ impl CombinedCache {
                 && context.get_write_cache_policy().allow_remote_cache()
             {
                 remote_cache_client
-                    .upload_blob(context, digest, blob, force)
+                    .upload_blob(context, digest, blob.clone(), force)
                     .await
             } else {
                 Ok(())
@@ -1028,14 +1031,29 @@ impl CombinedCache {
     }
 
     /// Waits for active network I/Os to finish.
+    ///
+    /// An interrupt of the waiting thread (`blaze_shell::thread_interrupt`) ends the wait with an
+    /// `InterruptedException`, as Java's waits do.
     // Java: com/google/devtools/build/lib/remote/CombinedCache.java:881 CombinedCache.awaitTermination
     pub fn await_termination(&self) -> io::Result<()> {
-        if let Some(remote_cache_client) = &self.remote_cache_client {
-            crate::runtime::block_on(remote_cache_client.await_upload_termination());
+        if let Some(remote_cache_client) = &self.remote_cache_client
+            && crate::runtime::block_on_interruptibly(
+                remote_cache_client.await_upload_termination(),
+            )
+            .is_none()
+        {
+            return Err(errors::interrupted());
         }
+        // closeCountDownLatch.await()
         let mut closed = self.close_count_down_latch.lock();
         while !*closed {
-            self.close_count_down_latch_released.wait(&mut closed);
+            if blaze_shell::thread_interrupt::interrupted() {
+                return Err(errors::interrupted());
+            }
+            // PORT: bounded, so that an interrupt (which cannot signal this condition variable)
+            // is seen.
+            self.close_count_down_latch_released
+                .wait_for(&mut closed, std::time::Duration::from_millis(50));
         }
         // Java: virtualThreadExecutor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
         Ok(())

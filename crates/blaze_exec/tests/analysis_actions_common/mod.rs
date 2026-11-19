@@ -160,6 +160,8 @@ pub struct TestMetadataProvider {
     pub metadata: Mutex<HashMap<String, FileArtifactValue>>,
     pub trees: Mutex<HashMap<String, Arc<TreeArtifactValue>>>,
     pub filesets: Mutex<HashMap<String, Arc<FilesetOutputTree>>>,
+    /// `getInput(execPath)`.
+    pub inputs: Mutex<HashMap<String, ActionInputRef>>,
 }
 
 impl TestMetadataProvider {
@@ -216,8 +218,8 @@ impl InputMetadataProvider for TestMetadataProvider {
     fn get_runfiles_metadata(&self, _input: &ActionInputRef) -> Option<Arc<RunfilesArtifactValue>> {
         None
     }
-    fn get_input(&self, _exec_path: &PathFragment) -> Option<ActionInputRef> {
-        None
+    fn get_input(&self, exec_path: &PathFragment) -> Option<ActionInputRef> {
+        self.inputs.lock().get(exec_path.get_path_string()).cloned()
     }
 }
 

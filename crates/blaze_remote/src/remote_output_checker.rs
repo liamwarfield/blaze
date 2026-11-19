@@ -103,7 +103,7 @@ fn is_in_memory_output(metadata: &FileArtifactValue) -> bool {
         // Java: FileArtifactValue.java:898 RemoteFileArtifactValueWithMaterializationData.isInMemoryOutput
         FileArtifactValue::RemoteFile {
             in_memory_output, ..
-        } => *in_memory_output,
+        } => in_memory_output.0,
         // Java: FileArtifactValue.java:1002 ResolvedSymlinkArtifactValue.isInMemoryOutput
         FileArtifactValue::ResolvedSymlink { delegate, .. } => is_in_memory_output(delegate),
         // Java: FileArtifactValue.java:1362 ProxyFileArtifactValue.isInMemoryOutput
@@ -123,7 +123,9 @@ fn get_expiration_time(metadata: &FileArtifactValue) -> Option<i64> {
         FileArtifactValue::RemoteFile {
             expiration_time_millis,
             ..
-        } => expiration_time_millis.filter(|expiration_time| *expiration_time >= 0),
+        } => expiration_time_millis
+            .0
+            .filter(|expiration_time| *expiration_time >= 0),
         // Java: FileArtifactValue.java:1053 ResolvedSymlinkArtifactValue.getExpirationTime
         FileArtifactValue::ResolvedSymlink { delegate, .. } => get_expiration_time(delegate),
         _ => None,

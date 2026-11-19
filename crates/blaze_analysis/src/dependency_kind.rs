@@ -6,11 +6,14 @@ use std::sync::Arc;
 
 use blaze_cmdline::Label;
 use blaze_config::transition_factories::DEFAULT_EXEC_GROUP_NAME;
+use blaze_packages::aspect::AspectClass;
 use blaze_packages::attribute::Attribute;
 
-/// The name of an aspect class (Java `AspectClass.getName()`): a native aspect's class name or
-/// a Starlark aspect's `<bzl label>%<exported name>`.
-pub type AspectClassName = String;
+/// Java `AspectClass`, the class of the aspect owning an aspect attribute.
+///
+/// PORT: an alias kept for the callers written when this field held the class name; equality of
+/// `AspectClass` is Java's.
+pub type AspectClassName = AspectClass;
 
 /// The kind of a dependency edge: an attribute (of the rule, or of an aspect), a toolchain of an
 /// exec group, or one of the non-attribute kinds.
@@ -33,7 +36,7 @@ pub enum DependencyKind {
     /// Java `AttributeDependencyKind`.
     Attribute {
         attribute: Arc<Attribute>,
-        owning_aspect: Option<AspectClassName>,
+        owning_aspect: Option<AspectClass>,
     },
 }
 
@@ -56,7 +59,7 @@ impl DependencyKind {
     }
 
     /// Java `getOwningAspect()` (panics like Java for non-attribute kinds).
-    pub fn get_owning_aspect(&self) -> Option<&AspectClassName> {
+    pub fn get_owning_aspect(&self) -> Option<&AspectClass> {
         match self {
             DependencyKind::Attribute { owning_aspect, .. } => owning_aspect.as_ref(),
             _ => panic!("IllegalStateException"),
@@ -121,7 +124,7 @@ impl DependencyKind {
     }
 
     /// Java `AttributeDependencyKind.forAspect(attribute, owningAspect)`.
-    pub fn for_aspect(attribute: Arc<Attribute>, owning_aspect: AspectClassName) -> DependencyKind {
+    pub fn for_aspect(attribute: Arc<Attribute>, owning_aspect: AspectClass) -> DependencyKind {
         DependencyKind::Attribute {
             attribute,
             owning_aspect: Some(owning_aspect),
@@ -239,7 +242,10 @@ impl fmt::Debug for DependencyKind {
                 f,
                 "AttributeDependencyKind{{attribute={}, owningAspect={}}}",
                 attribute.get_name(),
-                owning_aspect.as_deref().unwrap_or("null")
+                owning_aspect
+                    .as_ref()
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|| "null".to_owned())
             ),
         }
     }

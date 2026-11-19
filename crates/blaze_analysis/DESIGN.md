@@ -130,3 +130,115 @@ Dependency order: analysis → rules → sky_analysis → sky_top → cquery →
 | Q (top: executor, build view, cquery/aquery, commands) | `blaze_sky_top/src/**`, `blaze_cquery/src/**` (including their lib.rs), `blaze_runtime/src/commands/{query,cquery,aquery}.rs` |
 | CC (C++ natives, wave 2) | `blaze_rules/src/cpp/**` |
 | PY (python, apple, fragments, build info, wave 2) | `blaze_rules/src/{python,apple,fragments,build_info}/**` |
+
+---
+
+# Aspects wave (2026-11-18, aspects lead)
+
+Goal: `blaze cquery` / `aquery` / `build //src/workerd/server:workerd` on workerd match the oracle
+(`docs/workerd.md`); the next blocker is aspects. Scope: a literal port of Bazel's aspect
+machinery, then whatever workerd's rule sets hit next. brotli and re2 must stay identical.
+
+## Process (differs from the first wave)
+
+- Workers MAY run Cargo, only through `scripts/cargo-capped`, only for their own crate:
+  `scripts/cargo-capped check -p <crate> --all-targets`, `scripts/cargo-capped test -p <crate> <filter>`,
+  `scripts/cargo-capped clippy -p <crate> --all-targets -- -D warnings`. Builds share one target
+  directory and serialize on its lock, so block in the foreground (Bash timeout 600000 ms).
+- Several workers edit the same tree. Keep it compiling: write a new file completely, and add its
+  `mod` line last; if your crate does not compile for more than one check cycle because of your
+  files, unwire the `mod` line until it does. Errors in files you do not own: do not edit them;
+  wait and re-check, and name them in your report if they persist.
+- Edit only the files your brief lists. A need in another file is a "request" in your report
+  (exact signature, Java reference).
+- Port literally (PORTING.md): `// Java: <path>:<line> Class.method` on every item, Java error
+  text and order, `unported!("Class.method")` for anything not ported, never a guess, never a
+  corpus-specific shortcut. JUnit tests of what you port, with real bodies and Java's expected
+  strings; `#[ignore = "needs <what>"]` only for missing infrastructure.
+- `rustfmt --edition 2024` on every file you touch. No commits. No files outside the repo
+  except scratch under your scratchpad. Do not edit `scripts/oracle`, `scripts/gate`, `corpus/`,
+  `docs/state`, `docs/reviews`, AGENTS.md, PORTING.md.
+
+## Model
+
+| Java | Rust |
+| --- | --- |
+| `packages/{Aspect, AspectClass, NativeAspectClass, StarlarkAspectClass, AspectDescriptor, AspectParameters, AspectDefinition, AspectPropagationEdgesSupplier, AspectPropagationPredicate}` | `blaze_packages::aspect::*` (new module; the Starlark value stays `starlark_defs::aspect::StarlarkDefinedAspect`, which gains `get_definition(&AspectParameters)`, `get_aspect_class()`, top-level parameter extraction) |
+| `AspectsList.getAspects(Rule)`, `Attribute.getAspects(Rule)`, `Rule.getAspectLabelsSuperset` | methods on the existing types |
+| `skyframe/AspectKeyCreator` (`AspectKey`, `TopLevelAspectsKey`), `analysis/AspectValue`, `ConfiguredAspect`, `AspectCollection`, `AspectResolutionHelpers`, `AspectContext`, `AspectAwareAttributeMapper`, `AspectBaseTargetResolvedToolchainContext`, `MergedConfiguredTarget`, `ConfiguredTargetFactory.createAspect`, `RuleContext` aspect parts | `blaze_analysis` (one file per Java class, snake_case of the class name; keys next to `configured_target_key.rs`) |
+| `analysis/starlark/{StarlarkAspectFactory (skyframe/), StarlarkAspectPropagationContext}`, the aspect half of `StarlarkRuleContext` / `StarlarkAttributesCollection` (`ctx.rule`, `ctx.aspect_ids`, aspect `ctx.attr`) | `blaze_analysis::starlark` |
+| `skyframe/{AspectFunction, ToplevelStarlarkAspectFunction, LoadAspectsFunction}` (`BuildTopLevelAspectsDetailsFunction` does not exist at the pin: `LoadAspectsFunction` replaced it), the aspect parts of `DependencyResolver`, `analysis/producers/{DependencyMapProducer, DependencyProducer, PrerequisitesProducer, ConfiguredAspectProducer}`, `DependencyResolutionHelpers` | `blaze_sky_analysis` |
+| `BuildView` / `SkyframeBuildView` top-level aspects, `AspectCompletor`, cycle and error reporting for aspect keys, cquery/aquery aspect values | `blaze_sky_top`, `blaze_cquery` |
+
+Fixed points:
+
+- An `Aspect` is `Clone + Send + Sync + Eq + Hash`; equality is Java's (descriptor equality and
+  the *identity* of the definition; definitions are cached per aspect and parameters exactly as
+  Java's `definitionCache`, so identity is stable).
+- Starlark functions held by definitions (`attr_aspects` / `toolchains_aspects` functions,
+  propagation predicate, implementation) are `blaze_packages::rule_class::StarlarkCallable`
+  keep-alive handles to frozen values, as rule implementations already are.
+- `AspectKey` implements `blaze_skyframe::Key` (`FUNCTION = "ASPECT"`, value `AspectValue`) and
+  `blaze_actions::ActionLookupKey`; its `Debug` is Java's `toString`.
+- `BaseTargetPrerequisitesSupplier` (Java looks the base target's dependencies up in the graph
+  without adding edges) is ported as it is: `blaze_analysis::base_target_prerequisites_supplier`
+  over `Evaluator::get_existing_value`, reached through
+  `AnalysisServices::get_base_target_prerequisites_supplier()`. It must NOT become an ordinary
+  Skyframe request: the edges of an `ASPECT` node are what cquery walks, so extra edges would
+  change cquery's output order. (Corrected 2026-11-18; an earlier version of this section said
+  the opposite.)
+- Java's `SkyKeyComputeState` memoization is dropped as everywhere else in these crates (the
+  evaluator blocks instead of restarting); keep the order of requests.
+
+## Ownership (aspects wave)
+
+| worker | files |
+| --- | --- |
+| W1 packages model | `blaze_packages/src/aspect/**`, `starlark_defs/aspect.rs`, `rule_class/aspects_list.rs`, aspect methods of `attribute/attribute.rs` and `target/rule.rs` |
+| W2 harness | `blaze_sky_top/src/testing/**`, `blaze_sky_top/src/tests/**` |
+| W3 analysis core | `blaze_analysis/src/{aspect_key_creator, aspect_value, configured_aspect, configured_aspect_factory, aspect_collection, aspect_resolution_helpers, inconsistent_aspect_order_exception, aspect_creation_exception, aspect_aware_attribute_mapper}.rs`, `toolchains/aspect_base_target_resolved_toolchain_context.rs`, `configuredtargets/**` (`MergedConfiguredTarget`), `configured_target.rs`, `configured_target_and_data.rs`, `dependency_kind.rs`, `provider_map.rs` |
+| W4 rule context and Starlark | `blaze_analysis/src/aspect_context.rs`, `blaze_analysis/src/rule/**` (`RuleContext` aspect parts, `ConfiguredTargetFactory.createAspect`), `blaze_analysis/src/starlark/**` (`StarlarkAspectFactory`, `StarlarkAspectPropagationContext`, `ctx.rule`, aspect `ctx`), the aspect `unported!` sites in `blaze_rules/src/cpp/cc_starlark_internal.rs` |
+| W5 Skyframe | `blaze_sky_analysis/src/**` |
+| W6 top level, cquery, aquery (starts after W3) | `blaze_sky_top/src/**` except W2's directories, `blaze_cquery/src/**` |
+| lead | every `Cargo.toml`, `lib.rs`, `mod.rs` conflicts, `analysis_services.rs`, this file, `docs/workerd.md` |
+
+`lib.rs` / `mod.rs`: each worker adds its own `pub mod` lines (one line per file, alphabetical),
+re-reading the file right before the edit; nothing else in those files.
+
+## Contracts between workers
+
+Names and parameter orders are Java's (PORTING "Names", "Types"); a function that has a Rust
+neighbour mirrors the neighbour's Rust types (for example `ConfiguredTargetFactory::create_aspect`
+takes what `create_configured_target` takes for the same Java parameters). Workers draft against
+these and reconcile with the real files when their own code is written; a signature that is
+wrong against Java is reported to the lead, not patched around.
+
+- W1 → all: `blaze_packages::aspect::{Aspect, AspectClass, StarlarkAspectClass, NativeAspectClass,
+  AspectDescriptor, AspectParameters, AspectDefinition, AspectPropagationEdgesSupplier,
+  AspectPropagationPredicate}`; `Attribute::get_aspects(&Rule) -> Vec<Aspect>`;
+  `StarlarkDefinedAspect` accessors in `starlark_defs::aspect`.
+- W3 → W4, W5, W6:
+  - `aspect_key_creator::{AspectKey, TopLevelAspectsKey, AspectBaseKey?, ASPECT, TOP_LEVEL_ASPECTS}`,
+    `AspectKeyCreator::create_aspect_key(descriptor, base_keys, base_configured_target_key)`,
+    `create_top_level_aspects_key(...)`, `AspectKey::{get_base_keys, get_base_configured_target_key,
+    get_aspect_descriptor, get_aspect_class, get_parameters, get_label, get_configuration_key,
+    get_description, with_label, pretty_print}`; `impl Key for AspectKey { type Value = AspectValue }`.
+  - `aspect_value::AspectValue::{create, create_for_alias, get_aspect, get_providers, get_actions,
+    get_transitive_packages, get_key_for_transitive_package_tracking, is_for_alias_target}`.
+  - `configured_aspect::{ConfiguredAspect (providers + actions; `NonApplicableAspect`; `for_alias`),
+    ConfiguredAspectBuilder}`; `configured_aspect_factory::ConfiguredAspectFactory` (trait, Java's
+    `create(label, ct_and_data, rule_context, parameters, tools_repository)`).
+  - `aspect_collection::{AspectCollection, AspectDeps, AspectCycleOnPathException, build_aspect_key}`,
+    `aspect_resolution_helpers::{compute_propagating_aspects, compute_aspect_collection,
+    compute_aspect_collection_no_aspects_filtering, compute_attribute_aspects,
+    compute_toolchains_aspects}`, `InconsistentAspectOrderException`, `AspectCreationException`.
+  - `MergedConfiguredTarget::of(base, &[ConfiguredAspect]) -> Result<ConfiguredTarget, MergingException>`.
+  - `AspectAwareAttributeMapper`, `AspectBaseTargetResolvedToolchainContext::load`.
+- W4 → W3, W5: `starlark::starlark_aspect_propagation_context::StarlarkAspectPropagationContext::
+  {create_for_propagation_predicate, create_for_propagation_edges}` (in the shape W1's suppliers
+  take); `starlark::starlark_aspect_factory::StarlarkAspectFactory::new(aspect)`;
+  `rule::configured_target_factory::ConfiguredTargetFactory::create_aspect(...)` (Java parameter
+  order); `aspect_context::AspectContext`.
+- W5 → W6: `ASPECT` nodes with `AspectValue`s in the graph; `TOP_LEVEL_ASPECTS` and
+  `LOAD_ASPECTS` functions (`register` in each file; `AspectCreationException` lives in
+  `blaze_sky_analysis::producers::errors`, next to `Cause`).

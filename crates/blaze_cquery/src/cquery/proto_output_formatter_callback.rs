@@ -35,7 +35,9 @@ use crate::cquery::configured_target_query_environment::{
 };
 use crate::cquery::cquery_options::as_query_options;
 use crate::cquery::cquery_threadsafe_callback::CqueryThreadsafeCallback;
-use crate::post_analysis_query_environment::NamedThreadSafeOutputFormatterCallback;
+use crate::post_analysis_query_environment::{
+    NamedThreadSafeOutputFormatterCallback, as_configured_target_key,
+};
 
 /// Defines the types of proto output this class can handle.
 // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:66 ProtoOutputFormatterCallback.OutputType
@@ -431,12 +433,22 @@ impl OutputFormatterCallback<CqueryNode> for ProtoOutputFormatterCallback<'_> {
                     });
                 }
 
-                // ConfiguredTargetKey.fromConfiguredTarget(keyedConfiguredTarget)
+                // ConfiguredTargetKey.fromConfiguredTarget(keyedConfiguredTarget): the cast of
+                // the lookup key fails for an aspect node (--experimental_explicit_aspects).
+                // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:236 ConfiguredTargetKey.fromConfiguredTarget
+                let lookup_key = keyed_configured_target.unwrap_if_merged().get_lookup_key();
+                let configured_target_key =
+                    as_configured_target_key(&lookup_key).unwrap_or_else(|| {
+                        panic!(
+                            "ClassCastException: {:?} cannot be cast to ConfiguredTargetKey",
+                            lookup_key
+                        )
+                    });
                 // Some targets don't have a configuration, e.g. InputFileConfiguredTarget
-                if let Some(configuration_key) = keyed_configured_target.get_configuration_key() {
+                if let Some(configuration_key) = configured_target_key.get_configuration_key() {
                     let configuration = self
                         .base
-                        .get_configuration(Some(&configuration_key))
+                        .get_configuration(Some(configuration_key))
                         .expect("NullPointerException: configuration");
                     let id = self.configuration_cache.borrow_mut().get_id(&configuration);
                     builder.configuration_id = id;
@@ -580,4 +592,9 @@ mod tests {
         assert_eq!(OutputType::TEXT.format_name(), "textproto");
         assert_eq!(OutputType::JSON.format_name(), "jsonproto");
     }
+
+    // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallbackTest.java:425 ProtoOutputFormatterCallbackTest.configuredRuleInputsFromAspects
+    #[test]
+    #[ignore = "needs the BuildViewTestCase harness (blaze_sky_top::testing)"]
+    fn configured_rule_inputs_from_aspects() {}
 }

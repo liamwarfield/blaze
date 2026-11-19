@@ -652,7 +652,7 @@ impl UploadManifest {
         };
 
         combined_cache
-            .upload_blob_with_force(context, digest, &BytesBlob(blob.clone()), force)
+            .upload_blob_with_force(context, digest, Arc::new(BytesBlob(blob.clone())), force)
             .await
     }
 }

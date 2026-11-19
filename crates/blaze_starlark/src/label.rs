@@ -176,11 +176,22 @@ fn label_methods(builder: &mut MethodsBuilder) {
         if !cx.semantics.incompatible_enable_deprecated_label_apis {
             return Err(eval_err("'Label' value has no field or method 'relative'"));
         }
-        let mapping = cx
-            .label_repo_context
-            .as_ref()
-            .map(|c| blaze_cmdline::LabelRepoContext::repo_mapping(c).clone())
-            .ok_or_else(|| eval_err("Label.relative() requires a repository mapping"))?;
+        // Java: BazelModuleContext.ofInnermostBzlOrThrow(thread).repoMapping(): the repository
+        // mapping of the .bzl module of the innermost Starlark function, whatever thread runs
+        // it (a rule or aspect implementation calls this during analysis, where the thread has
+        // no .bzl file of its own).
+        // Java: com/google/devtools/build/lib/cmdline/Label.java:629 Label.getRelative
+        let mapping =
+            crate::defining_module::package_context_of_innermost_enclosing_starlark_function(eval)
+                .map(|c| blaze_cmdline::LabelRepoContext::repo_mapping(&c).clone())
+                .or_else(|| {
+                    // PORT: modules executed without an extra value (see `Label()` below) carry
+                    // the context on the thread.
+                    cx.label_repo_context
+                        .as_ref()
+                        .map(|c| blaze_cmdline::LabelRepoContext::repo_mapping(c).clone())
+                })
+                .ok_or_else(|| eval_err("Label.relative() requires a repository mapping"))?;
         let pkg = LabelPackageContext::of(this.0.get_package_identifier(), mapping);
         Label::parse_with_package_context(rel_name, &pkg)
             .map(LabelValue)

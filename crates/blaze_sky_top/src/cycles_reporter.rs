@@ -13,6 +13,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use blaze_analysis::aspect_key_creator::{
+    ASPECT, AspectKey, TOP_LEVEL_ASPECTS, TopLevelAspectsKey,
+};
 use blaze_analysis::configured_target_key::{CONFIGURED_TARGET, ConfiguredTargetKey};
 use blaze_cmdline::Label;
 use blaze_events::{Event, ExtendedEventHandler};
@@ -311,10 +314,6 @@ pub struct TargetCycleReporter {
     package_provider: Arc<SkyframePackageManager>,
 }
 
-/// `SkyFunctions.ASPECT`.
-const ASPECT: SkyFunctionName = SkyFunctionName("ASPECT");
-/// `SkyFunctions.TOP_LEVEL_ASPECTS`.
-const TOP_LEVEL_ASPECTS: SkyFunctionName = SkyFunctionName("TOP_LEVEL_ASPECTS");
 /// `SkyFunctions.PREPARE_ANALYSIS_PHASE`.
 const PREPARE_ANALYSIS_PHASE: SkyFunctionName = SkyFunctionName("PREPARE_ANALYSIS_PHASE");
 /// `SkyFunctions.BUILD_DRIVER`.
@@ -367,8 +366,8 @@ impl TargetCycleReporter {
     pub fn pretty_print(&self, key: &SkyKey) -> String {
         if let Some(configured_target_key) = key.downcast::<ConfiguredTargetKey>() {
             configured_target_key.pretty_print()
-        } else if key.function_name() == ASPECT {
-            blaze_util::unported!("AspectKey.prettyPrint", "{:?}", key)
+        } else if let Some(aspect_key) = key.downcast::<AspectKey>() {
+            aspect_key.pretty_print()
         } else {
             self.get_label(key).to_string()
         }
@@ -376,14 +375,16 @@ impl TargetCycleReporter {
 
     // Java: com/google/devtools/build/lib/skyframe/TargetCycleReporter.java:77 TargetCycleReporter.getLabel
     pub fn get_label(&self, key: &SkyKey) -> Label {
-        // PORT: the `ActionLookupKey`s that are graph keys are `ConfiguredTargetKey`s; aspect
-        // keys (the other `ActionLookupKey`s of this reporter) are not ported.
+        // key instanceof ActionLookupKey: the configured target and aspect keys of this
+        // reporter (Preconditions.checkNotNull: their labels are never null).
         if let Some(configured_target_key) = key.downcast::<ConfiguredTargetKey>() {
             configured_target_key.get_label().clone()
+        } else if let Some(aspect_key) = key.downcast::<AspectKey>() {
+            aspect_key.get_label().clone()
+        } else if let Some(top_level_aspects_key) = key.downcast::<TopLevelAspectsKey>() {
+            top_level_aspects_key.get_label().clone()
         } else if let Some(transitive_target_key) = key.downcast::<TransitiveTargetKey>() {
             transitive_target_key.get_label().clone()
-        } else if key.function_name() == ASPECT || key.function_name() == TOP_LEVEL_ASPECTS {
-            blaze_util::unported!("AspectKey.getLabel", "{:?}", key)
         } else {
             panic!("UnsupportedOperationException: {:?}", key)
         }

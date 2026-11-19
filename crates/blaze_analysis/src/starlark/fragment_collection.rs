@@ -279,7 +279,9 @@ impl<'v> StarlarkValue<'v> for FragmentCollection {
         attribute: &str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<bool> {
-        Ok(self.get_attr_fallible(Hashed::new(attribute), eval)?.is_some())
+        Ok(self
+            .get_attr_fallible(Hashed::new(attribute), eval)?
+            .is_some())
     }
 
     fn has_attr(&self, attribute: &str, heap: Heap<'v>) -> bool {

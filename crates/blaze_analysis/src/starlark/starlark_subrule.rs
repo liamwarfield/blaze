@@ -51,13 +51,77 @@ fn identity(view: &SubruleView) -> Option<(Label, String)> {
 // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:301 StarlarkRuleContext.getSubrules
 fn rule_subrules(ctx: &StarlarkRuleContext) -> Vec<(Label, String)> {
     if ctx.is_for_aspect() {
-        blaze_util::unported!("StarlarkRuleContext.getSubrules(aspect)");
+        return ctx
+            .get_rule_context()
+            .borrow()
+            .get_main_aspect()
+            .expect("an aspect context has a main aspect")
+            .get_definition()
+            .get_subrules()
+            .iter()
+            .filter_map(|s| subrule_view(s.value().to_value()).and_then(|v| identity(&v)))
+            .collect();
     }
     ctx.get_rule_class_under_evaluation()
         .get_subrules()
         .iter()
         .filter_map(|s| subrule_view(s.value().to_value()).and_then(|v| identity(&v)))
         .collect()
+}
+
+/// Java `StarlarkSubrule.getAttributeByName(ruleContext, attr)`.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkSubrule.java:201 StarlarkSubrule.getAttributeByName
+fn get_attribute_by_name(
+    rule_context: &StarlarkRuleContext,
+    attr: &str,
+) -> Option<blaze_packages::attribute::Attribute> {
+    let rc = rule_context.get_rule_context();
+    let rc = rc.borrow();
+    if rule_context.is_for_aspect() {
+        rc.get_main_aspect()
+            .expect("an aspect context has a main aspect")
+            .get_definition()
+            .get_attributes()
+            .get(attr)
+            .cloned()
+    } else {
+        Some(
+            rc.get_rule()
+                .get_rule_class_object()
+                .get_attribute_provider()
+                .get_attribute_by_name(attr)
+                .clone(),
+        )
+    }
+}
+
+/// Java `StarlarkSubrule.getUndeclaredSubruleError(starlarkRuleContext)`.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkSubrule.java:218 StarlarkSubrule.getUndeclaredSubruleError
+fn get_undeclared_subrule_error(
+    starlark_rule_context: &StarlarkRuleContext,
+    name: &str,
+) -> starlark::Error {
+    if starlark_rule_context.is_for_aspect() {
+        errorf(format!(
+            "aspect '{}' must declare '{}' in 'subrules'",
+            starlark_rule_context
+                .get_rule_context()
+                .borrow()
+                .get_main_aspect()
+                .expect("an aspect context has a main aspect")
+                .get_aspect_class()
+                .get_name(),
+            name
+        ))
+    } else {
+        errorf(format!(
+            "rule '{}' must declare '{}' in 'subrules'",
+            starlark_rule_context
+                .get_rule_class_under_evaluation()
+                .get_name(),
+            name
+        ))
+    }
 }
 
 /// `StarlarkSubrule.call(thread, args, kwargs)`.
@@ -90,12 +154,7 @@ pub fn call_subrule<'v>(
             )));
         }
     } else if !rule_subrules(rule_context).contains(&this_identity) {
-        // Java: getUndeclaredSubruleError(ruleContext)
-        return Err(errorf(format!(
-            "rule '{}' must declare '{}' in 'subrules'",
-            rule_context.get_rule_class_under_evaluation().get_name(),
-            name
-        )));
+        return Err(get_undeclared_subrule_error(rule_context, &name));
     }
 
     let heap = eval.heap();
@@ -115,23 +174,22 @@ pub fn call_subrule<'v>(
                  be overridden"
             )));
         }
-        let rc = handle.borrow();
         // Java: getAttributeByName(ruleContext, attr.ruleAttrName)
-        let attribute = rc
-            .get_rule()
-            .get_rule_class_object()
-            .get_attribute_provider()
-            .get_attribute_by_name(
-                rule_attr_name
-                    .as_deref()
-                    .expect("an exported subrule's attributes have rule attribute names"),
-            )
-            .clone();
-        let prerequisites = rc.get_rule_prerequisites_collection();
+        let attribute = get_attribute_by_name(
+            rule_context,
+            rule_attr_name
+                .as_deref()
+                .expect("an exported subrule's attributes have rule attribute names"),
+        )
+        .expect("NullPointerException: subrule attribute");
+        let rc = handle.borrow();
         // We need to use the underlying RuleContext because the subrule attributes are hidden
         // from the rule ctx.attr
+        // PORT: the lookups go through RuleContext like Java's (`getExecutablePrerequisite`,
+        // `getPrerequisites`, `getPrerequisite` use the owning collection, which is the main
+        // aspect's for aspect attributes).
         let value: Option<Value<'v>> = if attribute.is_executable() {
-            let runfiles = prerequisites.get_executable_prerequisite(attribute.get_name());
+            let runfiles = rc.get_executable_prerequisite(attribute.get_name());
             match runfiles {
                 Some(runfiles) => {
                     runfiles_from_deps.push(runfiles.clone());
@@ -140,7 +198,7 @@ pub fn call_subrule<'v>(
                 None => None,
             }
         } else if attribute.get_type() == Type::LabelList {
-            let targets = prerequisites.get_prerequisites(attribute.get_name());
+            let targets = rc.get_prerequisites(attribute.get_name());
             Some(
                 heap.alloc(AllocList(
                     targets
@@ -150,14 +208,11 @@ pub fn call_subrule<'v>(
             )
         } else if attribute.get_type() == Type::Label {
             if attribute.is_single_artifact() {
-                prerequisites
-                    .get_prerequisite_artifact(attribute.get_name())
+                rc.get_prerequisite_artifact(attribute.get_name())
                     .map(|a| heap.alloc(StarlarkFile::new(a)))
             } else {
-                prerequisites
-                    .get_prerequisites(attribute.get_name())
-                    .first()
-                    .map(|t| target_to_starlark(t, heap, rc.get_starlark_semantics()))
+                rc.get_prerequisite(attribute.get_name())
+                    .map(|t| target_to_starlark(&t, heap, rc.get_starlark_semantics()))
             }
         } else {
             // this should never happen, we've already validated the type while evaluating the

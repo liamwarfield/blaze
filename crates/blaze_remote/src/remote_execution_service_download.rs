@@ -40,7 +40,9 @@ use crate::common::remote_cache_client::ActionKey;
 use crate::common::remote_path_resolver::RemotePathResolver;
 use crate::reapi::{ActionResult, Digest, Directory, Tree};
 use crate::remote_action::RemoteAction;
-use crate::remote_execution_service::{RemoteActionResult, RemoteExecutionService};
+use crate::remote_execution_service::{
+    RemoteActionResult, RemoteExecutionService, internal_to_unicode, unicode_to_internal,
+};
 use crate::runtime::get_from_future;
 use crate::util::digest_util::DigestUtil;
 use crate::util::utils::{InMemoryOutput, get_in_memory_output_path, wait_for_bulk_transfer};
@@ -375,6 +377,7 @@ fn parse_directory(
     dir: &Directory,
     child_directories_map: &HashMap<Digest, &Directory>,
 ) -> DirectoryMetadata {
+    // PORT: identical to Bazel, not hardened (decision 2026-11-19)
     // SECURITY: the names of a Tree's nodes (`FileNode.name`, `SymlinkNode.name`,
     // `DirectoryNode.name`) are not validated. `Path.getRelative` normalizes `..` segments and
     // returns an absolute name as it is, so a name can resolve outside `parent` and outside the
@@ -386,8 +389,7 @@ fn parse_directory(
     let mut files_builder: Vec<FileMetadata> = Vec::new();
     for file in &dir.files {
         files_builder.push(FileMetadata::new(
-            // PORT: StringEncoding identity (`unicodeToInternal`).
-            parent.get_relative_str(&file.name),
+            parent.get_relative_str(&unicode_to_internal(&file.name)),
             file.digest.clone().unwrap_or_default(),
             file.is_executable,
             bytes::Bytes::new(),
@@ -397,15 +399,13 @@ fn parse_directory(
     let mut symlinks_builder: Vec<SymlinkMetadata> = Vec::new();
     for symlink in &dir.symlinks {
         symlinks_builder.push(SymlinkMetadata::new(
-            // PORT: StringEncoding identity (`unicodeToInternal`).
-            parent.get_relative_str(&symlink.name),
-            PathFragment::create(&symlink.target),
+            parent.get_relative_str(&unicode_to_internal(&symlink.name)),
+            PathFragment::create(&unicode_to_internal(&symlink.target)),
         ));
     }
 
     for directory_node in &dir.directories {
-        // PORT: StringEncoding identity (`unicodeToInternal`).
-        let child_path = parent.get_relative_str(&directory_node.name);
+        let child_path = parent.get_relative_str(&unicode_to_internal(&directory_node.name));
         // SECURITY: a Tree whose `children` lack a directory that a `DirectoryNode` refers to is
         // a `NullPointerException` in Java (`Preconditions.checkNotNull`), a crash; the same
         // panic here. The recursion is not bounded: a Tree in which each level refers to the
@@ -471,8 +471,8 @@ fn parse_action_result_metadata(
         JavaHashMap::with_expected_size(result.output_directories.len());
     for dir in &result.output_directories {
         let output_path = &dir.path;
-        // PORT: StringEncoding identity (`unicodeToInternal`).
-        let local_path = remote_path_resolver.output_path_to_local_path(output_path);
+        let local_path =
+            remote_path_resolver.output_path_to_local_path(&unicode_to_internal(output_path));
         // `dir.getTreeDigest()` is the default instance when the field is not set.
         let tree_digest = dir.tree_digest.clone().unwrap_or_default();
         if tree_digest.size_bytes == 2 {
@@ -562,8 +562,8 @@ fn parse_action_result_metadata(
     // The first key that `files.buildOrThrow()` below finds twice.
     let mut duplicate_file: Option<Path> = None;
     for output_file in &result.output_files {
-        // PORT: StringEncoding identity (`unicodeToInternal`).
-        let local_path = remote_path_resolver.output_path_to_local_path(&output_file.path);
+        let local_path =
+            remote_path_resolver.output_path_to_local_path(&unicode_to_internal(&output_file.path));
         let file_metadata = FileMetadata::new(
             local_path.clone(),
             output_file.digest.clone().unwrap_or_default(),
@@ -584,13 +584,14 @@ fn parse_action_result_metadata(
         .chain(&result.output_directory_symlinks)
         .chain(&result.output_symlinks);
     for symlink in output_symlinks {
-        // PORT: StringEncoding identity (`unicodeToInternal`), here and for the target.
-        let local_path = remote_path_resolver.output_path_to_local_path(&symlink.path);
+        let local_path =
+            remote_path_resolver.output_path_to_local_path(&unicode_to_internal(&symlink.path));
+        // PORT: identical to Bazel, not hardened (decision 2026-11-19)
         // SECURITY: the target of an output symlink is not validated at the pin: an absolute
         // target and a target with `..` segments are accepted (the "absolute symlink" check of
         // older Bazel versions is gone from the download path; only `UploadManifest` has one,
         // for uploads). Java relies on nothing here.
-        let target = PathFragment::create(&symlink.target);
+        let target = PathFragment::create(&unicode_to_internal(&symlink.target));
         let existing_metadata = symlink_map.get(&local_path);
         if let Some(existing_metadata) = existing_metadata {
             if &target != existing_metadata.target() {
@@ -1012,13 +1013,12 @@ impl RemoteExecutionService {
             .as_ref()
             .expect("NullPointerException: combinedCache can't be null");
 
-        // PORT: StringEncoding identity (`internalToUnicode`).
-        let output_path = remote_path_resolver.local_path_to_output_path(file.path());
+        let output_path =
+            internal_to_unicode(&remote_path_resolver.local_path_to_output_path(file.path()));
         let exec_path = remote_path_resolver.local_path_to_exec_path(file.path().as_fragment());
         let reporter = DownloadProgressReporter::new(
             progress_status_listener,
-            // PORT: StringEncoding identity (`internalToUnicode`).
-            &remote_path_resolver.local_path_to_output_path(file.path()),
+            &internal_to_unicode(&remote_path_resolver.local_path_to_output_path(file.path())),
             file.digest().size_bytes,
         );
         // SECURITY: the digest of the downloaded file is checked by `CombinedCache.downloadFile`
@@ -1136,6 +1136,7 @@ impl RemoteExecutionService {
         &self,
         symlinks: impl IntoIterator<Item = &'s SymlinkMetadata>,
     ) -> io::Result<()> {
+        // PORT: identical to Bazel, not hardened (decision 2026-11-19)
         // SECURITY: neither the path nor the target of a symlink is validated: the path is not
         // compared with the exec root (unlike the files, it does not go through
         // `relativeTo(execRoot)`) and the target may be absolute, contain `..` or dangle. Java
@@ -1699,8 +1700,7 @@ impl RemoteExecutionService {
         in_memory_output_path: &mut Option<String>,
     ) -> Result<bool, SpawnCacheError> {
         for output in output_paths_list {
-            // PORT: StringEncoding identity (`unicodeToInternal`).
-            let reencoded_output: &str = output;
+            let reencoded_output: &str = &unicode_to_internal(output);
             let source_path = previous_execution
                 .remote_path_resolver
                 .output_path_to_local_path(reencoded_output);

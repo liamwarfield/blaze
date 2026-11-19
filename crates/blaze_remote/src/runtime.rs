@@ -88,7 +88,8 @@ pub fn block_on_interruptibly<T>(f: impl Future<Output = T>) -> Option<T> {
 /// the flag).
 // Java: java/lang/Thread.java Thread.sleep
 pub fn sleep(duration: std::time::Duration) -> io::Result<()> {
-    match block_on_interruptibly(tokio::time::sleep(duration)) {
+    // The timer is created inside the runtime (a `Sleep` needs its time driver).
+    match block_on_interruptibly(async move { tokio::time::sleep(duration).await }) {
         Some(()) => Ok(()),
         None => Err(errors::interrupted()),
     }

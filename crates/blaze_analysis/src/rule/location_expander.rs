@@ -264,7 +264,7 @@ pub fn build_location_map(
         }
     }
 
-    if !rule_context.has_main_aspect() {
+    if rule_context.get_main_aspect().is_none() {
         for out in rule_context.get_rule().get_output_files() {
             let artifact = rule_context.create_output_artifact_for(&out);
             map_add(&mut location_map, out.get_label().clone(), [artifact]);

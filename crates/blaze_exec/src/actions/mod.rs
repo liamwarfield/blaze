@@ -66,7 +66,8 @@ pub use action_input::{
     ActionInput, ActionInputRef, Artifact, BasicActionInput, HierarchicalPath, InputMapping,
 };
 pub use exec_exception::{
-    EnvironmentalExecException, ExecException, SpawnExecException, UserExecException,
+    EnvironmentalExecException, ExecException, LostArtifacts, LostInputsExecException,
+    SpawnExecException, UserExecException,
 };
 pub use file_artifact_value::{FileArtifactValue, FileContentsProxy, FileStateType};
 pub use input_metadata_provider::{

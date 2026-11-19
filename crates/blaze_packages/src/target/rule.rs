@@ -17,6 +17,7 @@ use blaze_starlark::error::StackEntry;
 use indexmap::IndexMap;
 use indexmap::IndexSet;
 
+use crate::aspect::AspectDefinition;
 use crate::attribute::AggregatingAttributeMapper;
 use crate::attribute::Attribute;
 use crate::attribute::AttributeMap;
@@ -734,9 +735,25 @@ impl Rule {
         if !self.has_aspects() {
             return Vec::new();
         }
-        let _ = predicate;
-        // PORT: needs Attribute.getAspects and AspectDefinition.addAllAttributesOfAspect (A1).
-        blaze_util::unported!("Rule.getAspectLabelsSuperset")
+        // Java: a LinkedHashMultimap<Attribute, Label>: (attribute, label) pairs deduplicated,
+        // values() in insertion order.
+        let mut labels: Vec<(Attribute, Label)> = Vec::new();
+        for attribute in self.get_attributes() {
+            for candidate_class in attribute.get_aspects(self) {
+                let mut added: Vec<(Attribute, Label)> = Vec::new();
+                AspectDefinition::add_all_attributes_of_aspect(
+                    &mut added,
+                    &candidate_class,
+                    predicate,
+                );
+                for entry in added {
+                    if !labels.contains(&entry) {
+                        labels.push(entry);
+                    }
+                }
+            }
+        }
+        labels.into_iter().map(|(_, label)| label).collect()
     }
 
     // Java: com/google/devtools/build/lib/packages/Rule.java:852 Rule.useToolchainResolution

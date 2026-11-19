@@ -109,11 +109,14 @@ impl<'a> ActionGraphProtoOutputFormatterCallback<'a> {
         let actions: Vec<Arc<dyn Action>> = configured_target_value.get_actions().to_vec();
         action_graph_dump.dump_configured_target(&dumped_target, &actions)?;
         if self.options.use_aspects {
-            // Java: actionGraphDump.dumpAspect(aspectValue, configuredTargetValue) for each.
-            #[allow(clippy::never_loop)]
-            // the aspect value type is uninhabited until aspects are ported
             for aspect_value in self.accessor.get_aspect_values(configured_target_value) {
-                match aspect_value {}
+                // actionGraphDump.dumpAspect(aspectValue, configuredTargetValue)
+                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/ActionGraphDump.java:298 ActionGraphDump.dumpAspect
+                // (ConfiguredTarget configuredTarget = configuredTargetValue.getConfiguredTarget();
+                // its label and the actual target's rule class are `dumped_target`.)
+                let aspect_actions: Option<Vec<Arc<dyn Action>>> =
+                    aspect_value.as_ref().map(|v| v.get_actions().to_vec());
+                action_graph_dump.dump_aspect(aspect_actions.as_deref(), &dumped_target)?;
             }
         }
         Ok(())

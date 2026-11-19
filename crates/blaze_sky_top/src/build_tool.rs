@@ -199,6 +199,46 @@ impl BuildRequest {
         warnings
     }
 
+    /// The `--aspects_parameters` of the request as a map (a parameter given twice is an error).
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:430 BuildRequest.getAspectsParameters
+    pub fn get_aspects_parameters(
+        &self,
+    ) -> Result<
+        indexmap::IndexMap<String, String>,
+        crate::skyframe_error_processor::ViewCreationFailedException,
+    > {
+        let aspects_parameters_list = &self.build_request_options.aspects_parameters;
+        // aspectsParametersList.stream().collect(toImmutableMap(Map.Entry::getKey,
+        // Map.Entry::getValue)): IllegalArgumentException on a duplicate key.
+        let mut result: indexmap::IndexMap<String, String> = indexmap::IndexMap::new();
+        for (key, value) in aspects_parameters_list {
+            if result.contains_key(key) {
+                let error_message = "Error in top-level aspects parameters";
+                // The cause is Guava's IllegalArgumentException from ImmutableMap's
+                // builder ("Multiple entries with same key: k=v1 and k=v2"); the three-argument
+                // constructor appends its message.
+                return Err(crate::skyframe_error_processor::ViewCreationFailedException::with_cause(
+                    error_message,
+                    blaze_protos::failure_details::FailureDetail {
+                        message: error_message.to_owned(),
+                        category: Some(blaze_protos::failure_details::failure_detail::Category::Analysis(
+                            blaze_protos::failure_details::Analysis {
+                                code: blaze_protos::failure_details::analysis::Code::AspectCreationFailed
+                                    as i32,
+                            },
+                        )),
+                    },
+                    Some(&format!(
+                        "Multiple entries with same key: {}={} and {}={}",
+                        key, result[key], key, value
+                    )),
+                ));
+            }
+            result.insert(key.clone(), value.clone());
+        }
+        Ok(result)
+    }
+
     /// `getTopLevelArtifactContext().outputGroups()`: the requested output groups.
     // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:410 BuildRequest.getTopLevelArtifactContext
     pub fn get_top_level_artifact_context_output_groups(&self) -> Vec<String> {

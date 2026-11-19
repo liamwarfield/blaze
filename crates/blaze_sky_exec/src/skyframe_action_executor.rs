@@ -36,11 +36,10 @@ use blaze_exec::actions::action_output_directory_helper::ActionOutputDirectoryHe
 use blaze_exec::actions::cache::{IoOrInterruptedException, OutputMetadataStore};
 use blaze_exec::actions::exec_exception::{EnvironmentalExecException, ExecException};
 use blaze_exec::actions::{
-    FileStateType,
     ActionExecutionException, ActionExecutionMetadata, ActionInput, ActionInputRef, ActionResult,
-    CacheCheckAction, FileArtifactValue, FileContentsProxy, FilesetOutputTree,
-    InputMetadataProvider, OutputChecker, RunfilesArtifactValue, Spawn, TreeArtifactValue,
-    as_executable,
+    CacheCheckAction, FileArtifactValue, FileContentsProxy, FileStateType, FilesetOutputTree,
+    InputMetadataProvider, LostArtifacts, OutputChecker, RunfilesArtifactValue, Spawn,
+    TreeArtifactValue, as_executable,
 };
 use blaze_exec::analysis::actions::runfiles_tree_action::create_runfiles_artifact_value;
 use blaze_exec::analysis::actions::to_action_input_set;
@@ -51,6 +50,7 @@ use blaze_exec::exec::action_execution_context::{
     RemoteOutputTree, SpawnCache,
 };
 use blaze_exec::exec::evaluation_stack::on_evaluation_stack;
+use blaze_exec::exec::executor_setup::LostInputsPolicy;
 use blaze_exec::exec::remote_action_file_system::RemoteActionFileSystem;
 use blaze_exec::exec::single_build_file_cache::SingleBuildFileCache;
 use blaze_exec::exec::spawn_log_context::SpawnLogContext;
@@ -183,6 +183,10 @@ pub struct ActionCacheSetup {
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:782 SkyframeActionExecutor.checkActionCache
     pub output_checker: Option<Arc<dyn OutputChecker>>,
 }
+
+/// `ActionRewindStrategy.MAX_LOST_INPUTS_RECORDED`.
+// Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindStrategy.java:96 ActionRewindStrategy.MAX_LOST_INPUTS_RECORDED
+const MAX_LOST_INPUTS_RECORDED: usize = 5;
 
 /// An execution failure of `SkyframeActionExecutor`: Java's `ActionExecutionException` or
 /// `InterruptedException`.
@@ -330,6 +334,8 @@ pub struct SkyframeActionExecutor {
     output_filter: Option<Arc<dyn OutputFilter>>,
     /// `ExecutionOptions.showSubcommands` (`--subcommands`; `executor.reportsSubcommands()`).
     show_subcommands: ShowSubcommands,
+    /// See [`SkyframeActionExecutor::with_lost_inputs_policy`].
+    lost_inputs_policy: Option<LostInputsPolicy>,
     /// Java: `perBuildFileCache` (`getPerBuildFileCache()`), set by
     /// [`SkyframeActionExecutor::configure_file_cache`]. It also carries
     /// `directories.getRelativeOutputPath()`, which `ActionExecutionFunction` hands the
@@ -368,6 +374,7 @@ impl SkyframeActionExecutor {
             output_directory_helper: ActionOutputDirectoryHelper::new(),
             output_filter: None,
             show_subcommands: ShowSubcommands::FALSE,
+            lost_inputs_policy: None,
             per_build_file_cache: OnceLock::new(),
             build_action_map: Mutex::new(HashMap::new()),
             had_execution_error: AtomicBool::new(false),
@@ -396,6 +403,117 @@ impl SkyframeActionExecutor {
     ) -> SkyframeActionExecutor {
         self.output_filter = Some(output_filter);
         self
+    }
+
+    /// Sets `rewindingEnabled` / `invocationRetriesEnabled` and the `LostInputsEvent` handler
+    /// (`None`: a build without a remote cache, where no input can be lost).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:355 SkyframeActionExecutor.prepareForExecution
+    pub fn with_lost_inputs_policy(
+        mut self,
+        lost_inputs_policy: Option<LostInputsPolicy>,
+    ) -> SkyframeActionExecutor {
+        self.lost_inputs_policy = lost_inputs_policy;
+        self
+    }
+
+    /// `ActionExecutionFunction.handleLostInputs` →
+    /// `ActionRewindStrategy.prepareRewindPlanForLostInputs` for an action whose execution lost
+    /// inputs, with the `ActionRewindException` it throws turned into the action's failure
+    /// (`new ActionExecutionException(rewindingFailedException, action, false,
+    /// rewindingFailedException.getDetailedExitCode())`).
+    ///
+    /// PORT: Java's `SkyframeActionExecutor` rethrows a `LostInputsActionExecutionException`
+    /// unreported and `ActionExecutionFunction` handles it; here the executor handles it where
+    /// it would report the failure, with the same result. Action rewinding itself
+    /// (`--rewind_lost_inputs`, Bazel's default) is not ported and fails loudly.
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:460 ActionExecutionFunction.handleLostInputs
+    // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindStrategy.java:229 ActionRewindStrategy.prepareRewindPlanForLostInputs
+    // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindStrategy.java:307 ActionRewindStrategy.checkRewindingEnabled
+    fn handle_lost_inputs(
+        &self,
+        action: &dyn Action,
+        lost_artifacts: &LostArtifacts,
+    ) -> ActionExecutionException {
+        // LostType.INPUT
+        let (description, code_when_disabled) = (
+            "inputs",
+            blaze_protos::failure_details::action_rewinding::Code::LostInputRewindingDisabled,
+        );
+        let Some(policy) = &self.lost_inputs_policy else {
+            panic!(
+                "IllegalStateException: {} lost inputs in a build without a remote cache",
+                action.pretty_print()
+            );
+        };
+        if policy.rewinding_enabled {
+            blaze_util::unported!(
+                "ActionRewindStrategy.prepareRewindPlanForLostInputs",
+                "action rewinding (--rewind_lost_inputs, the default) for the lost inputs of {}; \
+                 --norewind_lost_inputs retries the build instead",
+                action.pretty_print()
+            );
+        }
+        let pretty_print = |input: &ActionInputRef| match as_blaze_artifact(input) {
+            Some(a) => a.pretty_print(),
+            None => input.get_exec_path().get_path_string().to_string(),
+        };
+        let (message, failure_detail) = if policy.invocation_retries_enabled {
+            // Bazel's (but not Blaze's) remote implementation needs to learn about lost digests
+            // so that the retried invocation doesn't accept the same stale action result.
+            let missing_digests: Vec<String> = lost_artifacts.by_digest.keys().cloned().collect();
+            (policy.on_lost_inputs)(&missing_digests);
+            // When action rewinding is disabled, recover by retrying the invocation in
+            // BlazeCommandDispatcher instead.
+            // FallbackToBuildRewindingException
+            let message = format!(
+                "Lost {} no longer available remotely: {}",
+                description,
+                lost_artifacts
+                    .entries()
+                    .into_iter()
+                    .take(MAX_LOST_INPUTS_RECORDED)
+                    .map(|(digest, input)| format!("{} ({})", pretty_print(input), digest))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            let failure_detail = blaze_protos::failure_details::FailureDetail {
+                message: message.clone(),
+                category: Some(
+                    blaze_protos::failure_details::failure_detail::Category::Spawn(
+                        blaze_protos::failure_details::Spawn {
+                            code: blaze_protos::failure_details::spawn::Code::RemoteCacheEvicted
+                                as i32,
+                            ..Default::default()
+                        },
+                    ),
+                ),
+            };
+            (message, failure_detail)
+        } else {
+            // GenericActionRewindException
+            let message = format!(
+                "Unexpected lost {} (pass --rewind_lost_inputs to enable recovery): {}",
+                description,
+                lost_artifacts
+                    .entries()
+                    .into_iter()
+                    .map(|(_, input)| pretty_print(input))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            let failure_detail = blaze_protos::failure_details::FailureDetail {
+                message: message.clone(),
+                category: Some(
+                    blaze_protos::failure_details::failure_detail::Category::ActionRewinding(
+                        blaze_protos::failure_details::ActionRewinding {
+                            code: code_when_disabled as i32,
+                        },
+                    ),
+                ),
+            };
+            (message, failure_detail)
+        };
+        ActionExecutionException::new(message, Some(action), false, Some(failure_detail))
     }
 
     /// Sets `--subcommands` (`BlazeExecutor.reportsSubcommands`).
@@ -547,9 +665,7 @@ impl SkyframeActionExecutor {
             .and_then(|c| c.downcast::<Arc<dyn ActionInputPrefetcher>>().ok())
             .map(|f| (*f).clone());
         // checkNotNull(actionInputFetcher, "actionInputFetcher")
-        let input_fetcher = Some(
-            input_fetcher.expect("NullPointerException: actionInputFetcher"),
-        );
+        let input_fetcher = Some(input_fetcher.expect("NullPointerException: actionInputFetcher"));
         Some(RemoteActionFileSystem::new(
             self.exec_root.get_file_system().clone(),
             self.exec_root.as_fragment().clone(),
@@ -777,6 +893,12 @@ impl SkyframeActionExecutor {
             Err(e) if e.is_interrupted() => return Err(ExecutionFailure::Interrupted),
             Err(e) => {
                 let primary_output_path = context.get_input_path(&action.get_primary_output());
+                // catch (LostInputsActionExecutionException e): handled as
+                // ActionExecutionFunction.handleLostInputs does (see handle_lost_inputs).
+                let e = match e.get_lost_inputs() {
+                    Some(lost_inputs) => self.handle_lost_inputs(action.as_ref(), lost_inputs),
+                    None => e,
+                };
                 return Err(self
                     .process_and_get_exception_to_throw(
                         listener,
@@ -1048,6 +1170,7 @@ impl SkyframeActionExecutor {
                             String::new(),
                             execution::Code::InputDirectoryCheckIoException,
                         ),
+                        lost_inputs: None,
                     }
                     .into();
                     return Err(ActionExecutionException::from_exec_exception(
@@ -1940,8 +2063,10 @@ impl ActionOutputMetadataStore {
                         /* follow_symlinks= */ false,
                     )?;
                     if stat_no_follow.is_some_and(|s| s.is_symbolic_link()) {
-                        let real_path =
-                            blaze_vfs::FileSystem::resolve_symbolic_links(&**file_system, fragment)?;
+                        let real_path = blaze_vfs::FileSystem::resolve_symbolic_links(
+                            &**file_system,
+                            fragment,
+                        )?;
                         if &real_path == fragment {
                             return Err(std::io::Error::other("symlink cycle"));
                         }

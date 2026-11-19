@@ -138,7 +138,7 @@ pub fn get_expiration_time(md: &FileArtifactValue) -> Option<i64> {
         FileArtifactValue::RemoteFile {
             expiration_time_millis,
             ..
-        } => expiration_time_millis.filter(|millis| *millis >= 0),
+        } => expiration_time_millis.0.filter(|millis| *millis >= 0),
         FileArtifactValue::ResolvedSymlink { delegate, .. } => get_expiration_time(delegate),
         _ => None,
     }
@@ -150,7 +150,7 @@ pub fn is_in_memory_output(md: &FileArtifactValue) -> bool {
     match md {
         FileArtifactValue::RemoteFile {
             in_memory_output, ..
-        } => *in_memory_output,
+        } => in_memory_output.0,
         FileArtifactValue::ResolvedSymlink { delegate, .. } => is_in_memory_output(delegate),
         FileArtifactValue::Proxy { delegate, .. } => is_in_memory_output(delegate),
         _ => false,
@@ -218,7 +218,7 @@ pub fn file_artifact_value_to_string(md: &FileArtifactValue) -> String {
             // PORT: the seam enum merges RemoteFileArtifactValue and
             // RemoteFileArtifactValueWithMaterializationData; the latter is the one that carries
             // an expiration time or the in-memory flag (as decodeRemoteMetadata creates them).
-            if expiration_time_millis.is_some() || *in_memory_output {
+            if expiration_time_millis.0.is_some() || in_memory_output.0 {
                 // Java: FileArtifactValue.java:922 RemoteFileArtifactValueWithMaterializationData.toString
                 format!(
                     "RemoteFileArtifactValueWithMaterializationData{{digest={}, size={}, locationIndex={}, expirationTime={}, proxy=null, materializedAsToplevelOutput=false, inMemoryOutput={}}}",
@@ -229,7 +229,7 @@ pub fn file_artifact_value_to_string(md: &FileArtifactValue) -> String {
                         Some(millis) => instant_to_string(millis),
                         None => "null".to_string(),
                     },
-                    in_memory_output
+                    in_memory_output.0
                 )
             } else {
                 // Java: FileArtifactValue.java:811 RemoteFileArtifactValue.toString

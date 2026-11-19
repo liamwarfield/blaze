@@ -20,17 +20,35 @@ use crate::exec::action_execution_context::ActionContextRegistry;
 use crate::exec::spawn_strategy_policy::SpawnStrategyPolicy;
 
 /// Port of `util/AbruptExitException` for the registry's errors: an exception carrying a
-/// `DetailedExitCode` (here its `FailureDetail`); the message is the failure detail's message.
+/// `DetailedExitCode` (here its `FailureDetail` and, when Java passes one explicitly, its
+/// `ExitCode`); the message is the failure detail's message.
 // Java: com/google/devtools/build/lib/util/AbruptExitException.java:22 AbruptExitException
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbruptExitException {
     pub failure_detail: FailureDetail,
+    /// The numeric `ExitCode` of `DetailedExitCode.of(exitCode, failureDetail)`; `None` for
+    /// `DetailedExitCode.of(failureDetail)`, whose exit code is the failure detail's metadata.
+    pub exit_code: Option<i32>,
 }
 
 impl AbruptExitException {
     /// `new AbruptExitException(DetailedExitCode.of(failureDetail))`.
+    // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:86 DetailedExitCode.of
     pub fn new(failure_detail: FailureDetail) -> AbruptExitException {
-        AbruptExitException { failure_detail }
+        AbruptExitException {
+            failure_detail,
+            exit_code: None,
+        }
+    }
+
+    /// `new AbruptExitException(DetailedExitCode.of(exitCode, failureDetail))`, with the numeric
+    /// value of `exitCode`.
+    // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:78 DetailedExitCode.of
+    pub fn with_exit_code(exit_code: i32, failure_detail: FailureDetail) -> AbruptExitException {
+        AbruptExitException {
+            failure_detail,
+            exit_code: Some(exit_code),
+        }
     }
 
     /// `getMessage()`.

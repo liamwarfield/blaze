@@ -2048,6 +2048,10 @@ impl RemoteExecutionService {
             for e in &resp.server_logs {
                 let value = e.value.clone().unwrap_or_default();
                 if value.human_readable {
+                    // PORT: identical to Bazel, not hardened (decision 2026-11-19). The key is
+                    // the server's; `getRelative` normalizes `..` and keeps an absolute key, so
+                    // the log can be written outside the log directory, as in Java
+                    // (RemoteExecutionService.java:2075).
                     let last_log_path = server_logs.directory.get_relative_str(&e.key);
                     server_logs.last_log_path = Some(last_log_path.clone());
                     server_logs.log_count += 1;
@@ -2162,5 +2166,43 @@ impl RemoteExecutionService {
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:2168 RemoteExecutionService.isScrubbedSpawn
     fn is_scrubbed_spawn(spawn: &dyn Spawn, scrubber: Option<&Scrubber>) -> bool {
         scrubber.is_some_and(|scrubber| scrubber.for_spawn(spawn).is_some())
+    }
+}
+
+#[cfg(test)]
+mod semaphore_tests {
+    use std::time::Duration;
+
+    use blaze_shell::thread_interrupt::{self, ThreadInterrupt};
+
+    use super::*;
+
+    #[test]
+    fn acquire_is_fair_and_released_permits_are_reused() {
+        let semaphore = Semaphore::new(1);
+        semaphore.acquire().unwrap();
+        semaphore.release();
+        semaphore.acquire().unwrap();
+    }
+
+    /// `Semaphore.acquire()` throws `InterruptedException` when the waiting thread is
+    /// interrupted (review 2026-11-19 R4), and the waiter leaves the queue.
+    #[test]
+    fn acquire_interrupted_while_waiting() {
+        let semaphore = Arc::new(Semaphore::new(0));
+        let thread = ThreadInterrupt::current();
+        let interrupter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            thread.interrupt();
+        });
+
+        let e = semaphore.acquire().unwrap_err();
+        interrupter.join().unwrap();
+
+        assert!(errors::is_interrupted(&e));
+        assert!(!thread_interrupt::is_current_interrupted());
+        // The interrupted waiter gave up its place: a later acquire gets the released permit.
+        semaphore.release();
+        semaphore.acquire().unwrap();
     }
 }

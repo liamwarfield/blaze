@@ -159,6 +159,14 @@ impl TransitiveInfoProviderMapBuilder {
         self.map.contains_key(key)
     }
 
+    /// Java `put(key, value)` with a key and instance taken from another map (Java
+    /// `put(Class, TransitiveInfoProvider)`, `put(String, Object)`, `put(Info)` on the entries of
+    /// `getProviderKeyAt(i)` / `getProviderInstanceAt(i)`).
+    pub fn put_entry(&mut self, key: ProviderMapKey, instance: ProviderInstance) -> &mut Self {
+        self.map.insert(key, instance);
+        self
+    }
+
     /// Java `contains(Class)`.
     pub fn contains_native<P: TransitiveInfoProvider>(&self) -> bool {
         self.map
