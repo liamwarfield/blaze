@@ -4,10 +4,12 @@
 import argparse
 import datetime
 import fnmatch
+import hashlib
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -21,7 +23,7 @@ import ut_common as u  # noqa: E402
 USAGE = """\
 usage: scripts/upstream-tests/run --binary <path> --label <name> [selection] [options]
        scripts/upstream-tests/run list [selection]     print the selected test targets
-       scripts/upstream-tests/run reparse --label <name>   re-read copied test.xml files
+       scripts/upstream-tests/run reparse --label <name>   re-read copied test.xml/test.log files
        scripts/upstream-tests/run help
 
 Runs upstream's sh_test/py_test targets under src/test/shell and src/test/py/bazel (pinned
@@ -39,6 +41,17 @@ run), REMOTE_NETWORK_ADDRESS=bazel.build:80, --sandbox_default_allow_network=fal
 (tests tagged requires-network keep network), plus PATH. --nocache_test_results and
 --flaky_test_attempts=1, so every run executes every test once.
 
+Concurrency: runs execute ONE AT A TIME. All runs share one outer Bazel server (one output base
+under ~/.cache/blaze/upstream-tests/outer-root), the tests' repository cache (emptied at the
+start of each run), the install bases and bazel-testlogs, so a run holds the exclusive lock
+~/.cache/blaze/upstream-tests/locks/outer.lock from before it touches any of them until its logs
+are copied out. A second run (and `prepare`) prints who holds the lock (label, pid, start time)
+and waits; it never fails and never resets anything while another run is in flight. A label's
+results directory has its own lock (taken first; `reparse` takes only that one). Short runs in
+parallel would need a second outer output root (about 7 GB, plus a rebuild of the test
+runfiles there), a private repo contents cache per run (several GB each) and a second 14G memory
+budget; the harness does not do that.
+
 Selection (combined with AND; default: every non-excluded test in the manifest):
   --suite shell|py           one suite
   --file GLOB                test source file, matched against path and basename (repeatable)
@@ -49,20 +62,51 @@ Selection (combined with AND; default: every non-excluded test in the manifest):
   --shard I/N                the I-th (1-based) of N round-robin slices of the sorted selection
   --include-excluded         also run excluded tests (manual, binary-variant, source-artifact,
                              self-build; see EXCLUDED in ut_common.py)
-  --test-filter F            pass --test_filter=F (run some functions only)
+  --test-filter F            pass --test_filter=F (run some functions only; mode "filtered")
+
+Modes (results.json "mode"; one label holds one mode, a run of another mode into it is refused):
+  suite         (default) each target runs whole, sharded as upstream has it. Target and
+                function results. Only this mode gives totals comparable with a full run.
+  filtered      --test-filter F. Only functions count (a target "passing" under a filter is
+                not a target result); results merge per function.
+  per-function  --per-function: every test function of each selected target runs as its own
+                `bazel test --test_filter=<fn> --test_sharding_strategy=disabled`
+                (unittest.bash and absltest both read the filter from TESTBRIDGE_TEST_ONLY;
+                unittest.bash matches it as a bash glob, so a plain name selects one function).
+                All invocations run in one outer job, one after another, with one server. One
+                function's very large failure log can then no longer stop the rest of its
+                script (unittest.bash's XML writer, "Argument list too long"). Functions come
+                from the sources (shell: `test_*` function definitions; py: `def test*` in
+                `class X(`), or --functions; --test-filter GLOB narrows them. A function whose
+                invocation reports no test case is recorded from the invocation's status
+                (fail, timeout, build_fail), or `not_found` if the invocation passed or
+                its log says the filter selected no test ("No tests found", "Ran 0 tests").
+  --functions A,B,...        per-function: run exactly these function names (py: Class.method)
 
 Options:
   --test-jobs N              tests run at once (default %d); --jobs N build jobs (default %d)
   --memory-max SIZE          systemd MemoryMax for the whole job (default %s)
-  --fresh                    drop earlier results for this label (default: merge, per target)
-  --dry-run                  print the outer command and exit
+  --fresh                    drop earlier results for this label (default: merge, per target in
+                             suite mode, per function otherwise)
+  --dry-run                  print the outer command (and the per-function plan) and exit; it
+                             writes nothing, not even the results directory
+
+Refused (error, nothing run): a label whose results came from another binary (use a new label
+or --fresh); a run of another mode into a label; a selection that is empty. A run whose outer
+Bazel did not finish (no BEP last message: interrupted, killed, crashed) is recorded with
+"complete": false, its unreported targets as not_run, and `run` exits 2.
 
 Output: ~/.cache/blaze/upstream-test-results/<label>/
-  results.json   {"targets": {label: {...}}, "functions": {label#fn: {...}},
-                  "results": {name: pass|fail|timeout|skip|...}}   (per test target and function)
+  results.json   {"mode", "targets": {label: {...}}, "functions": {label#fn: {...}},
+                  "results": {name: pass|fail|timeout|skip|build_fail|not_run|not_found|...}}
+                 (suite mode: targets and functions; other modes: functions only)
   logs/<package>/<target>[/shard_K_of_N]/test.log, test.xml       copied from bazel-testlogs
-  outer-<timestamp>.log, bep-<timestamp>.json                     outer Bazel output and BEP
+  logs/<package>/<target>/{filter,fn}-<name>/...                  filtered and per-function runs
+  outer-<timestamp>.log, bep-<timestamp>.json (per-function: bep-<timestamp>/<k>.json)
 Function names are <label>#<function> (shell: unittest.bash function; py: Class.method).
+A function record has "source": "xml-sanitized" when its test.xml was only readable after
+removing characters XML 1.0 forbids (terminal escape codes), or "log" when it came from the
+test.log's PASSED/FAILED lines because the XML still did not parse.
 """ % (u.DEFAULT_TEST_JOBS, u.DEFAULT_JOBS, u.MEMORY_MAX)
 
 STATUS_MAP = {
@@ -76,6 +120,7 @@ STATUS_MAP = {
     "TOOL_HALTED_BEFORE_TESTING": "not_run",
     "NO_STATUS": "not_run",
 }
+MODES = ("suite", "filtered", "per-function")
 
 
 def select(manifest, a):
@@ -112,21 +157,29 @@ def select(manifest, a):
     return out
 
 
-def stage_binary(path):
-    """Content-addressed copy of the binary, so later edits to `path` cannot change a run."""
-    sha = u.sha256_file(path)
-    d = os.path.join(u.STATE, "binaries", sha)
-    dst = os.path.join(d, "bazel")
-    if not os.path.exists(dst):
-        os.makedirs(d, exist_ok=True)
-        shutil.copy2(path, dst + ".tmp")
-        os.chmod(dst + ".tmp", 0o755)
-        os.rename(dst + ".tmp", dst)
+def binary_paths(sha):
+    """(staged binary, install base) for a binary sha256; nothing is created."""
     # The client locks "<install_base>.lock" next to the install base, so the sandbox-writable
     # directory is the parent.
-    parent = os.path.join(u.INSTALL_BASES, sha[:32])
-    os.makedirs(parent, exist_ok=True)
-    return sha, dst, os.path.join(parent, "install")
+    return (os.path.join(u.STATE, "binaries", sha, "bazel"),
+            os.path.join(u.INSTALL_BASES, sha[:32], "install"))
+
+
+def stage_binary(path, sha):
+    """Content-addressed copy of the binary, so later edits to `path` cannot change a run.
+    Call holding the outer lock."""
+    dst, install_base = binary_paths(sha)
+    if not os.path.exists(dst):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        tmp = dst + ".tmp-%d" % os.getpid()
+        shutil.copy2(path, tmp)
+        os.chmod(tmp, 0o755)
+        if u.sha256_file(tmp) != sha:
+            os.unlink(tmp)
+            sys.exit("%s changed while it was being staged; rerun" % path)
+        os.rename(tmp, dst)
+    os.makedirs(os.path.dirname(install_base), exist_ok=True)
+    return dst, install_base
 
 
 def uri_path(uri):
@@ -144,12 +197,15 @@ def duration_s(tr):
     return None
 
 
-def parse_xml(path):
-    """[(name, status, seconds, message)] from a JUnit XML written by unittest.bash or absltest."""
-    try:
-        root = ET.parse(path).getroot()
-    except (ET.ParseError, OSError):
-        return None
+# Characters XML 1.0 does not allow (section 2.2), e.g. the ESC of terminal colour codes.
+XML_FORBIDDEN = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# unittest.bash: "PASSED: test_x" / "FAILED: test_x" (coloured); absltest: "[       OK ] C.t".
+LOG_SH = re.compile(r"^(PASSED|FAILED): (test_\w+)\s*$")
+LOG_PY = re.compile(r"^\[\s*(OK|FAILED|SKIPPED)\s*\] (\w+\.\w+)\s*$")
+
+
+def _testcases(root):
     out = []
     for tc in root.iter("testcase"):
         name = tc.get("name", "")
@@ -176,28 +232,86 @@ def parse_xml(path):
     return out
 
 
-def collect(bep_path, results_dir, label_set):
-    """Reads the BEP and copies logs. Returns (targets, functions)."""
-    attempts = {}
-    summaries = {}
-    aborted = {}
-    if os.path.exists(bep_path):
-        for line in open(bep_path, errors="replace"):
-            try:
-                ev = json.loads(line)
-            except ValueError:
-                continue
-            eid = ev.get("id", {})
-            if "testResult" in eid and "testResult" in ev:
-                i = eid["testResult"]
-                attempts.setdefault(i["label"], []).append((i, ev["testResult"]))
-            elif "testSummary" in eid and "testSummary" in ev:
-                summaries[eid["testSummary"]["label"]] = ev["testSummary"]
-            elif "targetCompleted" in eid and ev.get("aborted"):
-                aborted[eid["targetCompleted"]["label"]] = ev["aborted"].get("reason", "")
-            elif "targetCompleted" in eid and ev.get("completed", {}).get("success") is False:
-                aborted.setdefault(eid["targetCompleted"]["label"], "build failed")
-    targets, functions = {}, {}
+def parse_log(path):
+    """[(name, status, None, None)] from a test.log's per-function result lines."""
+    out = {}
+    try:
+        lines = open(path, "rb").read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        line = ANSI.sub("", line)
+        m = LOG_SH.match(line)
+        if m:
+            out[m.group(2)] = "pass" if m.group(1) == "PASSED" else "fail"
+            continue
+        m = LOG_PY.match(line)
+        if m:
+            out[m.group(2)] = {"OK": "pass", "FAILED": "fail", "SKIPPED": "skip"}[m.group(1)]
+    return [(n, st, None, None) for n, st in out.items()]
+
+
+def parse_xml(path, log=None):
+    """([(name, status, seconds, message)], source) from a JUnit XML written by unittest.bash or
+    absltest. source is "xml", "xml-sanitized" (parsed after removing characters XML 1.0
+    forbids), "log" (the XML did not parse even then; read from `log`), or None (nothing)."""
+    try:
+        return _testcases(ET.parse(path).getroot()), "xml"
+    except OSError:
+        return None, None
+    except ET.ParseError:
+        pass
+    try:
+        text = open(path, "rb").read().decode("utf-8", "replace")
+        return _testcases(ET.fromstring(XML_FORBIDDEN.sub("", text).encode("utf-8"))), \
+            "xml-sanitized"
+    except (ET.ParseError, OSError, ValueError):
+        pass
+    if log:
+        found = parse_log(log)
+        if found is not None:
+            return found, "log"
+    return None, None
+
+
+def read_bep(bep_path):
+    """(attempts, summaries, aborted, complete) from one BEP JSON file."""
+    attempts, summaries, aborted = {}, {}, {}
+    complete = False
+    if not os.path.exists(bep_path):
+        return attempts, summaries, aborted, complete
+    for line in open(bep_path, errors="replace"):
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("lastMessage"):
+            complete = True
+        eid = ev.get("id", {})
+        if "testResult" in eid and "testResult" in ev:
+            i = eid["testResult"]
+            attempts.setdefault(i["label"], []).append((i, ev["testResult"]))
+        elif "testSummary" in eid and "testSummary" in ev:
+            summaries[eid["testSummary"]["label"]] = ev["testSummary"]
+        elif "targetCompleted" in eid and ev.get("aborted"):
+            aborted[eid["targetCompleted"]["label"]] = ev["aborted"].get("reason", "aborted")
+        elif "targetCompleted" in eid and "completed" in ev:
+            c = ev["completed"]
+            # proto3 leaves `success: false` out, so a failed target shows only failureDetail.
+            if c.get("success") is False or "failureDetail" in c:
+                aborted.setdefault(eid["targetCompleted"]["label"],
+                                   "build failed: " + (c.get("failureDetail", {})
+                                                       .get("message", "")[:300]))
+    return attempts, summaries, aborted, complete
+
+
+def collect(bep_path, results_dir, label_set, subdir=None):
+    """Reads the BEP and copies logs. Returns ({label: target record}, complete).
+
+    `subdir` (filtered and per-function runs) is a directory level under the target's log
+    directory, so invocations do not overwrite each other's logs."""
+    attempts, summaries, aborted, complete = read_bep(bep_path)
+    targets = {}
     logs_root = os.path.join(results_dir, "logs")
     for label in sorted(label_set):
         s = summaries.get(label)
@@ -211,12 +325,16 @@ def collect(bep_path, results_dir, label_set):
             shard = i.get("shard", 1)
             nshards = s.get("shardCount") if s else None
             files = {o["name"]: uri_path(o.get("uri", "")) for o in tr.get("testActionOutput", [])}
-            sub = name if not nshards or nshards <= 1 else os.path.join(name, "shard_%d_of_%d" % (shard, nshards))
+            sub = os.path.join(name, subdir) if subdir else name
+            if nshards and nshards > 1:
+                sub = os.path.join(sub, "shard_%d_of_%d" % (shard, nshards))
             dest = os.path.join(logs_root, pkg, sub)
             os.makedirs(dest, exist_ok=True)
             copied = {}
             for fname in ("test.log", "test.xml"):
                 src = files.get(fname)
+                if os.path.exists(os.path.join(dest, fname)):
+                    os.unlink(os.path.join(dest, fname))  # never keep an earlier run's file
                 if src and os.path.exists(src):
                     shutil.copyfile(src, os.path.join(dest, fname))
                     copied[fname] = os.path.relpath(os.path.join(dest, fname), results_dir)
@@ -229,29 +347,70 @@ def collect(bep_path, results_dir, label_set):
         if label in aborted:
             rec["error"] = aborted[label]
         targets[label] = rec
-    for label, rec in targets.items():
-        target_functions(label, rec, results_dir, functions)
-    return targets, functions
+    return targets, complete
 
 
-def target_functions(label, rec, results_dir, functions):
-    """Adds the per-function results of one target (from its shards' copied test.xml)."""
+def shard_functions(label, shards, results_dir):
+    """{label#fn: record} from the copied test.xml (or test.log) of one invocation's shards."""
     mine = {}
-    for sh in rec["shards"]:
+    for sh in shards:
         if not sh.get("xml"):
             continue
-        for fn, st, secs, msg in parse_xml(os.path.join(results_dir, sh["xml"])) or []:
+        log = os.path.join(results_dir, sh["log"]) if sh.get("log") else None
+        found, source = parse_xml(os.path.join(results_dir, sh["xml"]), log)
+        for fn, st, secs, msg in found or []:
             key = label + "#" + fn
             if key in mine and mine[key]["status"] == "fail":
                 continue
             mine[key] = {"status": st, "time_s": secs, "shard": sh["shard"], "log": sh.get("log")}
             if msg:
                 mine[key]["message"] = msg
+            if source != "xml":
+                mine[key]["source"] = source
     # When the test wrote no XML (e.g. it exited before unittest.bash/absltest ran anything, as
     # the macOS-only files do on Linux), Bazel's generate-xml.sh writes one testcase named after
     # the target. That is not a function.
     generated = {label.split(":")[-1], label, label[2:].replace(":", "/")}
-    mine = {k: v for k, v in mine.items() if k.split("#", 1)[1] not in generated}
+    return {k: v for k, v in mine.items() if k.split("#", 1)[1] not in generated}
+
+
+# unittest.bash and absltest/unittest when the filter selects nothing.
+NO_TESTS = re.compile(r"\*\* No tests found\. \*|^Ran 0 tests|NO TESTS RAN", re.M)
+
+
+def _read(results_dir, rel):
+    try:
+        return open(os.path.join(results_dir, rel), "rb").read().decode("utf-8", "replace")
+    except (OSError, TypeError):
+        return ""
+
+
+def target_functions(label, rec, results_dir, functions):
+    """Adds the per-function results of one target: from its shards (suite mode) or from its
+    invocations in run order (filtered and per-function modes; a later one wins)."""
+    if "invocations" in rec:
+        mine = {}
+        for inv in sorted(rec["invocations"], key=lambda i: (i["run"], i.get("k", 0))):
+            got = shard_functions(label, inv["shards"], results_dir)
+            fn = inv.get("function")
+            if fn is not None:
+                key = label + "#" + fn
+                got = {k: v for k, v in got.items() if k == key}
+                if key not in got:
+                    st = inv["status"]
+                    if st in ("pass", "flaky") or (not got and st == "fail" and any(
+                            NO_TESTS.search(_read(results_dir, sh.get("log")))
+                            for sh in inv["shards"])):
+                        st = "not_found"  # the filter matched no test function
+                    got[key] = {"status": st,
+                                "time_s": inv.get("duration_s"), "shard": None,
+                                "log": next((s["log"] for s in inv["shards"] if s.get("log")), None),
+                                "source": "invocation-status"}
+                    if inv.get("error"):
+                        got[key]["message"] = inv["error"][:300]
+            mine.update(got)
+    else:
+        mine = shard_functions(label, rec["shards"], results_dir)
     rec["functions"] = {"pass": 0, "fail": 0, "skip": 0}
     for f in mine.values():
         rec["functions"][f["status"] if f["status"] in ("pass", "fail", "skip") else "fail"] += 1
@@ -259,32 +418,158 @@ def target_functions(label, rec, results_dir, functions):
     functions.update(mine)
 
 
-def flat_results(targets, functions):
+def flat_results(targets, functions, mode):
     res = {}
-    for label, t in targets.items():
-        res[label] = "pass" if t["status"] in ("pass", "flaky") else t["status"]
+    if mode == "suite":
+        for label, t in targets.items():
+            res[label] = "pass" if t["status"] in ("pass", "flaky") else t["status"]
     for key, f in functions.items():
         res[key] = f["status"]
     return res
 
 
+def label_mode(d):
+    """The mode of an existing results.json (files from before modes existed: filtered when any
+    run used --test-filter)."""
+    if d.get("mode"):
+        return d["mode"]
+    if any("--test-filter" in (r.get("selection") or []) or
+           any(x.startswith("--test-filter=") for x in r.get("selection") or [])
+           for r in d.get("runs", [])):
+        return "filtered"
+    return "suite"
+
+
+def slug(s):
+    clean = re.sub(r"[^A-Za-z0-9._-]", "_", s)
+    if clean != s or len(clean) > 80:
+        clean = clean[:60] + "-" + hashlib.sha256(s.encode()).hexdigest()[:8]
+    return clean
+
+
+def status_counts(d):
+    t, f = {}, {}
+    for name, st in d.get("results", {}).items():
+        c = f if "#" in name else t
+        c[st] = c.get(st, 0) + 1
+    return t, f
+
+
+def write_json(path, d):
+    tmp = path + ".tmp-%d" % os.getpid()
+    json.dump(d, open(tmp, "w"), indent=1)
+    os.rename(tmp, path)
+
+
 def reparse(argv):
-    """Re-reads the copied test.xml files of a label's results (after a parser change)."""
+    """Re-reads the copied test.xml/test.log files of a label's results (after a parser change),
+    and re-derives build failures recorded as not_run from the runs' BEP files."""
     if len(argv) != 2 or argv[0] != "--label":
         sys.exit("usage: run reparse --label <name>")
     results_dir = os.path.join(u.RESULTS, argv[1])
     path = os.path.join(results_dir, "results.json")
-    d = json.load(open(path))
-    functions = {}
-    for label, rec in d["targets"].items():
-        target_functions(label, rec, results_dir, functions)
-    d["functions"] = dict(sorted(functions.items()))
-    d["results"] = flat_results(d["targets"], d["functions"])
-    json.dump(d, open(path + ".tmp", "w"), indent=1)
-    os.rename(path + ".tmp", path)
-    print("reparsed %d targets, %d functions -> %s" % (len(d["targets"]), len(functions), path))
+    if not os.path.exists(path):
+        sys.exit("no results for label %s (%s)" % (argv[1], path))
+    with u.label_lock(argv[1], "reparse"):
+        d = json.load(open(path))
+        before = dict(d.get("results", {}))
+        mode = label_mode(d)
+        rebuilt = []
+        for label, rec in d["targets"].items():
+            if rec.get("status") == "not_run" and not rec.get("shards") and rec.get("run") \
+                    and "invocations" not in rec:
+                _, _, aborted, _ = read_bep(os.path.join(results_dir, "bep-%s.json" % rec["run"]))
+                if label in aborted:
+                    rec["status"] = "build_fail"
+                    rec["error"] = aborted[label]
+                    rebuilt.append(label)
+        functions = {}
+        for label, rec in d["targets"].items():
+            target_functions(label, rec, results_dir, functions)
+        d["mode"] = mode
+        d["functions"] = dict(sorted(functions.items()))
+        d["results"] = flat_results(d["targets"], d["functions"], mode)
+        write_json(path, d)
+    bt, bf = status_counts({"results": before})
+    at, af = status_counts(d)
+    changed = sorted(n for n in set(before) | set(d["results"]) if before.get(n) != d["results"].get(n))
+    print("reparsed %d targets, %d functions (mode %s) -> %s" % (
+        len(d["targets"]), len(functions), mode, path))
+    print("  targets   before %s\n            after  %s" % (dict(sorted(bt.items())), dict(sorted(at.items()))))
+    print("  functions before %s\n            after  %s" % (dict(sorted(bf.items())), dict(sorted(af.items()))))
+    for label in rebuilt:
+        print("  build failure (was not_run): %s" % label)
+    print("  %d names changed" % len(changed))
+    for n in changed[:200]:
+        src = (d["functions"].get(n) or {}).get("source")
+        print("    %s: %s -> %s%s" % (n, before.get(n), d["results"].get(n),
+                                     " (%s)" % src if src else ""))
     return 0
 
+
+# --- per-function mode -----------------------------------------------------------------------
+
+SH_FN = re.compile(r"^\s*(?:function\s+(test_\w+)|(test_\w+)\s*\(\s*\))", re.M)
+PY_CLASS = re.compile(r"^class\s+(\w+)\s*[(:]")
+PY_DEF = re.compile(r"^\s+def\s+(test\w*)\s*\(")
+
+
+def source_functions(test):
+    """Test function names of one manifest target, read from its sources."""
+    names = []
+    for src in test["srcs"]:
+        pkg = test["label"][2:].split(":")[0]
+        rel = src[2:].replace(":", "/") if src.startswith("//") else os.path.join(pkg, src.split(":")[-1])
+        path = os.path.join(u.SRC, rel)
+        if not os.path.exists(path):
+            continue
+        text = open(path, errors="replace").read()
+        if path.endswith(".py"):
+            cls = None
+            for line in text.splitlines():
+                m = PY_CLASS.match(line)
+                if m:
+                    cls = m.group(1)
+                    continue
+                m = PY_DEF.match(line)
+                if m and cls:
+                    names.append(cls + "." + m.group(1))
+        else:
+            names += [a or b for a, b in SH_FN.findall(text)]
+    return list(dict.fromkeys(names))
+
+
+def inner(argv):
+    """Runs inside the job's systemd unit: one outer `bazel test` per planned function, then
+    copies that invocation's logs and appends its target record to the plan's output."""
+    plan = json.load(open(argv[0]))
+    os.makedirs(plan["bep_dir"], exist_ok=True)
+    worst = 0
+    for item in plan["items"]:
+        bep = os.path.join(plan["bep_dir"], "%d.json" % item["k"])
+        cmd = u.outer_bazel() + ["test"] + plan["flags"] + [
+            "--test_filter=" + item["function"], "--test_sharding_strategy=disabled",
+            "--build_event_json_file=" + bep, "--", item["label"]]
+        print("=== [%d/%d] %s#%s" % (item["k"] + 1, len(plan["items"]), item["label"],
+                                    item["function"]), flush=True)
+        t0 = time.time()
+        rc = subprocess.call(cmd)
+        worst = max(worst, rc)
+        targets, complete = collect(bep, plan["results_dir"], [item["label"]],
+                                    subdir="fn-" + slug(item["function"]))
+        rec = targets[item["label"]]
+        rec.pop("functions", None)
+        rec.update({"label": item["label"], "function": item["function"],
+                    "filter": item["function"], "k": item["k"],
+                    "run": plan["stamp"], "outer_exit": rc, "complete": complete,
+                    "bep": os.path.relpath(bep, plan["results_dir"]),
+                    "wall_s": round(time.time() - t0, 1)})
+        with open(plan["out"], "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    return worst  # the highest outer exit code of the invocations
+
+
+# --- main ------------------------------------------------------------------------------------
 
 def main(argv):
     if not argv or argv[0] in ("help", "--help", "-h"):
@@ -292,9 +577,22 @@ def main(argv):
         return 0
     if argv[0] == "reparse":
         return reparse(argv[1:])
+    if argv[0] == "_inner":
+        return inner(argv[1:])
     list_only = argv[0] == "list"
     if list_only:
         argv = argv[1:]
+    elif "--dry-run" not in argv:
+        # First, so a run that has just started is never taken for one that ignores the lock.
+        u.register_client()
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    try:
+        return run_main(argv, list_only)
+    finally:
+        u.unregister_client()
+
+
+def run_main(argv, list_only):
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--binary")
     p.add_argument("--label")
@@ -307,6 +605,8 @@ def main(argv):
     p.add_argument("--shard")
     p.add_argument("--include-excluded", action="store_true")
     p.add_argument("--test-filter")
+    p.add_argument("--per-function", action="store_true")
+    p.add_argument("--functions")
     p.add_argument("--test-jobs", type=int, default=u.DEFAULT_TEST_JOBS)
     p.add_argument("--jobs", type=int, default=u.DEFAULT_JOBS)
     p.add_argument("--memory-max", default=u.MEMORY_MAX)
@@ -325,23 +625,33 @@ def main(argv):
         sys.exit("--binary and --label are required (see `run help`)")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", a.label):
         sys.exit("--label must match [A-Za-z0-9._-]+")
+    if a.functions and not a.per_function:
+        sys.exit("--functions needs --per-function")
     if not sel:
         sys.exit("selection is empty")
     binary = os.path.abspath(a.binary)
     if not os.access(binary, os.X_OK):
         sys.exit("not an executable: " + binary)
-    u.ensure_dirs()
-    u.apply_patch()
-    sha, staged, install_base = stage_binary(binary)
+    mode = "per-function" if a.per_function else ("filtered" if a.test_filter else "suite")
+
+    plan_items = []
+    if a.per_function:
+        explicit = [f for f in (a.functions or "").split(",") if f]
+        for t in sel:
+            names = explicit or source_functions(t)
+            if a.test_filter:
+                globs = a.test_filter.split(":")
+                names = [n for n in names if any(fnmatch.fnmatchcase(n, g) for g in globs)]
+            if not names:
+                print("warning: no test functions found for %s; it is not run" % t["label"])
+            for n in names:
+                plan_items.append({"k": len(plan_items), "label": t["label"], "function": n})
+        if not plan_items:
+            sys.exit("per-function: no functions selected")
+
+    sha = u.sha256_file(binary)
+    staged, install_base = binary_paths(sha)
     results_dir = os.path.join(u.RESULTS, a.label)
-    if a.fresh and os.path.exists(results_dir):
-        shutil.rmtree(results_dir)
-    os.makedirs(results_dir, exist_ok=True)
-    stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
-    bep = os.path.join(results_dir, "bep-%s.json" % stamp)
-    outer_log = os.path.join(results_dir, "outer-%s.log" % stamp)
-    tfile = os.path.join(results_dir, "targets-%s.txt" % stamp)
-    open(tfile, "w").write("\n".join(t["label"] for t in sel) + "\n")
     flags = u.common_flags(a.jobs) + [
         "--repo_env=BLAZE_UNDER_TEST=" + staged,
         "--keep_going",
@@ -357,30 +667,152 @@ def main(argv):
         "--sandbox_default_allow_network=false",
         "--test_summary=terse",
         "--test_output=summary",
-        "--build_event_json_file=" + bep,
-        "--target_pattern_file=" + tfile,
     ]
-    if a.test_filter:
-        flags.append("--test_filter=" + a.test_filter)
-    events = os.path.join(results_dir, "memory-events-%s.txt" % stamp)
-    cmd = u.outer_job(["test"] + flags, outer_log, memory_max=a.memory_max, events_file=events)
     if a.dry_run:
-        print(" ".join(cmd))
+        stamp = "<timestamp>"
+        if a.per_function:
+            print("per-function plan: %d invocations, in one outer job (systemd unit):" % len(plan_items))
+            for it in plan_items:
+                print("  %s#%s" % (it["label"], it["function"]))
+            print("each: %s" % " ".join(u.outer_bazel() + ["test"] + flags + [
+                "--test_filter=<fn>", "--test_sharding_strategy=disabled",
+                "--build_event_json_file=%s/bep-%s/<k>.json" % (results_dir, stamp), "--",
+                "<label>"]))
+        else:
+            f = flags + ["--build_event_json_file=%s/bep-%s.json" % (results_dir, stamp),
+                         "--target_pattern_file=%s/targets-%s.txt" % (results_dir, stamp)]
+            if a.test_filter:
+                f.append("--test_filter=" + a.test_filter)
+            print(" ".join(u.outer_job(["test"] + f, "%s/outer-%s.log" % (results_dir, stamp),
+                                       memory_max=a.memory_max)))
+        print("(dry run: mode %s, %d targets; nothing written)" % (mode, len(sel)))
         return 0
-    u.reset_test_repo_cache()
-    print("running %d targets against %s (sha256 %s) as %s" % (len(sel), binary, sha[:16], a.label))
-    print("  outer log: %s" % outer_log)
-    t0 = time.time()
-    rc = subprocess.call(cmd)
-    wall = time.time() - t0
-    targets, functions = collect(bep, results_dir, [t["label"] for t in sel])
-    by_label = {t["label"]: t for t in manifest["tests"]}
-    for label, rec in targets.items():
-        m = by_label[label]
-        rec.update({"suite": m["suite"], "srcs": m["srcs"], "size": m["size"], "tags": m["tags"],
-                    "run": stamp})
+
+    with u.label_lock(a.label, "run"):
+        return locked_run(a, argv, sel, manifest, mode, plan_items, binary, sha, flags,
+                          results_dir)
+
+
+def locked_run(a, argv, sel, manifest, mode, plan_items, binary, sha, flags, results_dir):
     path = os.path.join(results_dir, "results.json")
-    old = json.load(open(path)) if os.path.exists(path) else {}
+    old = json.load(open(path)) if os.path.exists(path) and not a.fresh else {}
+    if old:
+        if old.get("binary_sha256") not in (None, sha):
+            sys.exit("refused: results for label %s came from another binary (sha256 %s, %s);"
+                     " this binary is %s. Use a new label, or --fresh to drop them." % (
+                         a.label, old["binary_sha256"][:16], old.get("binary"), sha[:16]))
+        if label_mode(old) != mode:
+            sys.exit("refused: label %s holds %s-mode results; this run is %s mode. Use another"
+                     " label (or --fresh)." % (a.label, label_mode(old), mode))
+    with u.outer_lock("run", a.label, {"binary_sha256": sha, "mode": mode,
+                                       "targets": len(sel)}):
+        u.wait_for_unlocked_runs()
+        u.ensure_dirs()
+        u.apply_patch()
+        staged, install_base = stage_binary(binary, sha)
+        if a.fresh and os.path.exists(results_dir):
+            shutil.rmtree(results_dir)
+        os.makedirs(results_dir, exist_ok=True)
+        while True:
+            stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+            if not any(os.path.exists(os.path.join(results_dir, x % stamp)) for x in (
+                    "bep-%s.json", "bep-%s", "outer-%s.log")):
+                break
+            time.sleep(1)
+        outer_log = os.path.join(results_dir, "outer-%s.log" % stamp)
+        events = os.path.join(results_dir, "memory-events-%s.txt" % stamp)
+        tfile = os.path.join(results_dir, "targets-%s.txt" % stamp)
+        open(tfile, "w").write("\n".join(t["label"] for t in sel) + "\n")
+        if a.per_function:
+            plan = {"items": plan_items, "flags": flags, "results_dir": results_dir,
+                    "stamp": stamp, "bep_dir": os.path.join(results_dir, "bep-%s" % stamp),
+                    "out": os.path.join(results_dir, "per-function-%s.jsonl" % stamp)}
+            plan_path = os.path.join(results_dir, "plan-%s.json" % stamp)
+            json.dump(plan, open(plan_path, "w"), indent=1)
+            cmd = u.outer_job([], outer_log, memory_max=a.memory_max, events_file=events,
+                              command=[sys.executable, os.path.abspath(__file__), "_inner",
+                                       plan_path])
+            what = "%d functions of %d targets" % (len(plan_items), len(sel))
+        else:
+            bep = os.path.join(results_dir, "bep-%s.json" % stamp)
+            f = flags + ["--build_event_json_file=" + bep, "--target_pattern_file=" + tfile]
+            if a.test_filter:
+                f.append("--test_filter=" + a.test_filter)
+            cmd = u.outer_job(["test"] + f, outer_log, memory_max=a.memory_max, events_file=events)
+            what = "%d targets" % len(sel)
+        u.reset_test_repo_cache()
+        print("running %s against %s (sha256 %s) as %s, mode %s" % (what, binary, sha[:16],
+                                                                     a.label, mode), flush=True)
+        print("  outer log: %s" % outer_log, flush=True)
+        t0 = time.time()
+        rc = subprocess.call(cmd)
+        wall = time.time() - t0
+        labels = [t["label"] for t in sel]
+        if a.per_function:
+            invs = []
+            if os.path.exists(plan["out"]):
+                invs = [json.loads(l) for l in open(plan["out"]) if l.strip()]
+            done = {i["k"] for i in invs}
+            missing = [it for it in plan_items if it["k"] not in done]
+            complete = not missing and all(i["complete"] for i in invs)
+        else:
+            new_targets, complete = collect(bep, results_dir, labels,
+                                            subdir=("filter-" + slug(a.test_filter))
+                                            if a.test_filter else None)
+    # The outer lock is released: everything below reads only this label's results directory.
+    by_label = {t["label"]: t for t in manifest["tests"]}
+    meta = lambda label: {k: by_label[label][k] for k in ("suite", "srcs", "size", "tags")}
+    all_targets = old.get("targets", {})
+    all_functions = dict(old.get("functions", {}))
+    if not complete:
+        # Do not replace an earlier measurement of a target with "not measured".
+        if mode == "suite":
+            new_targets = {l: r for l, r in new_targets.items()
+                           if not (r["status"] == "not_run" and l in all_targets)}
+        elif mode == "filtered":
+            new_targets = {l: r for l, r in new_targets.items() if r["status"] != "not_run"}
+    if mode == "suite":
+        for label, rec in new_targets.items():
+            rec.update(meta(label))
+            rec["run"] = stamp
+        all_functions = {k: v for k, v in all_functions.items()
+                         if k.split("#", 1)[0] not in new_targets}
+        all_targets.update(new_targets)
+        touched = new_targets
+    else:
+        if mode == "filtered":
+            invs = []
+            for label, rec in new_targets.items():
+                rec.pop("functions", None)
+                rec.update({"filter": a.test_filter, "run": stamp, "k": 0, "complete": complete})
+                invs.append(dict(rec, label=label))
+        else:
+            for it in missing:
+                invs.append({"label": it["label"], "function": it["function"],
+                             "filter": it["function"], "k": it["k"], "run": stamp,
+                             "status": "not_run", "bazel_status": None, "duration_s": None,
+                             "shards": [], "complete": False,
+                             "error": "the invocation did not run (the job ended before it)"})
+        touched = {}
+        for inv in invs:
+            label = inv.pop("label")
+            rec = all_targets.get(label) or dict(meta(label), shards=[], invocations=[])
+            rec.setdefault("invocations", [])
+            if inv["status"] == "not_run" and any(i.get("filter") == inv.get("filter")
+                                                  for i in rec["invocations"]):
+                continue  # keep the earlier measurement
+            rec["invocations"] = [i for i in rec["invocations"]
+                                  if i.get("filter") != inv.get("filter")] + [inv]
+            rec["status"] = inv["status"]  # latest invocation; not a target result
+            rec["run"] = stamp
+            all_targets[label] = rec
+            touched[label] = rec
+        for label in touched:
+            all_functions = {k: v for k, v in all_functions.items() if k.split("#", 1)[0] != label}
+    functions = {}
+    for label, rec in touched.items():
+        target_functions(label, rec, results_dir, functions)
+    all_functions.update(functions)
     runs = old.get("runs", [])
     oom_kills = None
     if os.path.exists(events):
@@ -391,18 +823,15 @@ def main(argv):
     if oom_kills:
         print("warning: %d processes were OOM-killed under MemoryMax=%s; affected tests fail" % (
             oom_kills, a.memory_max))
-    runs.append({"stamp": stamp, "targets": len(sel), "wall_s": round(wall, 1), "outer_exit": rc,
+    runs.append({"stamp": stamp, "mode": mode, "targets": len(sel),
+                 "invocations": len(plan_items) if a.per_function else 1,
+                 "wall_s": round(wall, 1), "outer_exit": rc, "complete": complete,
                  "oom_kills": oom_kills, "test_jobs": a.test_jobs, "memory_max": a.memory_max,
                  "selection": argv, "binary": binary, "binary_sha256": sha})
-    all_targets = old.get("targets", {})
-    all_functions = {k: v for k, v in old.get("functions", {}).items() if k.split("#", 1)[0] not in targets}
-    all_targets.update(targets)
-    all_functions.update(functions)
-    if old.get("binary_sha256") not in (None, sha):
-        print("warning: earlier results for %s came from another binary (%s)" % (a.label, old["binary_sha256"][:16]))
     out = {
         "label": a.label,
         "pin": u.PIN_VERSION,
+        "mode": mode,
         "binary": binary,
         "binary_sha256": sha,
         "runs": runs,
@@ -410,18 +839,27 @@ def main(argv):
         "targets": dict(sorted(all_targets.items())),
         "functions": dict(sorted(all_functions.items())),
     }
-    out["results"] = flat_results(out["targets"], out["functions"])
-    tmp = path + ".tmp"
-    json.dump(out, open(tmp, "w"), indent=1)
-    os.rename(tmp, path)
+    out["results"] = flat_results(out["targets"], out["functions"], mode)
+    write_json(os.path.join(results_dir, "results.json"), out)
     c = {}
-    for t in targets.values():
+    for t in touched.values():
         c[t["status"]] = c.get(t["status"], 0) + 1
     fc = {}
     for f in functions.values():
         fc[f["status"]] = fc.get(f["status"], 0) + 1
-    print("done in %.0fs (outer exit %d): targets %s; functions %s" % (wall, rc, c, fc))
-    print("  results: %s" % path)
+    srcs = {}
+    for f in functions.values():
+        if f.get("source"):
+            srcs[f["source"]] = srcs.get(f["source"], 0) + 1
+    print("done in %.0fs (outer exit %d, mode %s): targets %s; functions %s%s" % (
+        wall, rc, mode, c, fc, ("; function sources %s" % srcs) if srcs else ""))
+    print("  results: %s" % os.path.join(results_dir, "results.json"))
+    if not complete:
+        print("error: the outer Bazel did not finish (no BEP last message%s); this run is"
+              " recorded with \"complete\": false and its unreported targets as not_run" % (
+                  (", %d invocations never ran" % len(missing)) if a.per_function and missing
+                  else ""), file=sys.stderr)
+        return 2
     return 0
 
 

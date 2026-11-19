@@ -26,6 +26,8 @@ binary and writes a compact summary (default corpus/upstream-tests/<label-run1>.
 Categories come from scripts/upstream-tests/categories.py (per-target overrides first, then
 log patterns over the failing shards' test.log).
 --mark-flaky also writes the flaky names into every run's results.json, which `compare` honours.
+Refuses runs that are not full suite-mode runs (filtered or per-function mode, a target of the
+default selection not run, or an incomplete run).
 """
 
 
@@ -84,6 +86,21 @@ def main(argv):
         sys.exit("the runs used different binaries")
     manifest = u.load_manifest()
     tests = {t["label"]: t for t in manifest["tests"]}
+    # Only full suite-mode runs make a baseline: a filtered or per-function result, a partial
+    # selection or an interrupted run would be summarised as if it were a full run.
+    wanted = {l for l, t in tests.items() if not u.excluded_reason(t)}
+    for r, p in zip(R, paths):
+        mode = r.get("mode") or ("filtered" if any("--test-filter" in (x.get("selection") or [])
+                                                   for x in r.get("runs", [])) else "suite")
+        if mode != "suite":
+            sys.exit("refused: %s is %s mode; summarize needs full suite-mode runs" % (p, mode))
+        ran = {l for l, t in r["targets"].items() if t["status"] != "not_run"}
+        if not wanted <= ran:
+            sys.exit("refused: %s is partial (%d of %d default targets ran)" % (
+                p, len(wanted & ran), len(wanted)))
+        bad = [x["stamp"] for x in r.get("runs", []) if x.get("complete") is False]
+        if bad:
+            sys.exit("refused: %s has incomplete runs %s" % (p, bad))
 
     flaky_t, flaky_f = [], []
     pass_t, pass_f = [], {}

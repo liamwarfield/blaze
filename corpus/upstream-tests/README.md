@@ -30,6 +30,34 @@ to reach.
   raises `oom_score_adj` on every process except the outer Bazel. If the unit hits its memory
   cap, the kernel kills one test's inner Bazel rather than the whole run. `results.json` records
   the run's `oom_kill` count.
+- **One run at a time.** Every run shares one outer Bazel server and output base, the tests'
+  repository cache (its contents cache is emptied at the start of each run), the install bases
+  and `bazel-testlogs`. `run` (and `prepare`) therefore hold an exclusive lock,
+  `~/.cache/blaze/upstream-tests/locks/outer.lock`, from before they touch any of it until the
+  logs are copied out. A second run prints the holder (label, pid, start time) and waits. Each
+  label's results directory has its own lock. Before it resets anything, a run also waits for
+  processes that use the shared state without the lock: harness scripts started before the lock
+  existed, and outer clients or per-function drivers left running by a killed `run`.
+- **Result modes.** A label holds results of one mode, recorded as `mode` in `results.json`.
+  `run` refuses a run of another mode into it, and refuses results from another binary.
+  `suite` (the default) runs whole targets with upstream's sharding and is the only mode whose
+  totals are comparable with a full run. `filtered` (`--test-filter`) and `per-function`
+  record functions only. `per-function` (`--per-function`) runs each test function of the
+  selected targets as its own `bazel test --test_filter=<fn> --test_sharding_strategy=disabled`
+  (unittest.bash and absltest read the filter from `TESTBRIDGE_TEST_ONLY`), so that one
+  function's oversized failure log cannot stop the rest of its script through unittest.bash's
+  XML writer. The tests themselves run unmodified. `compare` prints each side's mode and
+  coverage, and marks anything but a complete suite-mode run of every target as PARTIAL.
+  `summarize` refuses such runs.
+- **Reading results.** A target whose build fails is `build_fail`. The BEP `targetCompleted`
+  event then carries only a `failureDetail`, since proto3 leaves `success: false` out.
+  `compare` counts its oracle-passing functions as lost, with reason
+  `build_fail (target did not build)`. A test.xml that is not well-formed (terminal escape codes
+  in failure text) is parsed again with the characters XML 1.0 forbids removed. If that also
+  fails, the functions are read from the test.log `PASSED:`/`FAILED:` lines. Such functions
+  carry `source: xml-sanitized` or `source: log`. `run reparse --label` applies the same rules
+  to existing results. A run whose outer Bazel did not finish (no BEP last message) is recorded
+  with `complete: false` and exits 2, and it never overwrites an earlier result with `not_run`.
 - **Selection.** `tests(//src/test/shell/... + //src/test/py/bazel/...)` gives 251 targets
   (218 shell, 33 py). 14 are excluded, 237 run.
 
@@ -99,6 +127,7 @@ scripts/upstream-tests/prepare                 # once (and after a pin bump)
 scripts/upstream-tests/run --binary <path/to/blaze> --label blaze-<rev>      # ~45 min, all
 scripts/upstream-tests/run --binary <blaze> --label blaze-<rev> --file 'bazel_query_test.sh'
 scripts/upstream-tests/run --binary <blaze> --label blaze-<rev> --tag requires-network --shard 1/4
+scripts/upstream-tests/run --binary <blaze> --label blaze-<rev>-fn --file 'build_event_stream_test.sh' --per-function
 scripts/upstream-tests/compare corpus/upstream-tests/oracle-9.3.2.json blaze-<rev>
 ```
 
@@ -107,7 +136,7 @@ scripts/upstream-tests/compare corpus/upstream-tests/oracle-9.3.2.json blaze-<re
 `~/.cache/blaze/upstream-test-results/<label>/results.json`, with one entry per target
 (`//pkg:name`) and per function (`//pkg:name#test_fn`, or `#Class.method` for py). Each entry
 has a status, duration and log path. Logs are copied under `logs/`. Partial runs into the same
-label merge per target. `compare` prints retained/lost/absent/new for targets and functions and
+label merge per target (per function in the filtered and per-function modes). `compare` prints retained/lost/absent/new for targets and functions and
 exits 1 on any loss.
 
 The binary is copied, so it has to be a single relocatable executable. The tests pass it Bazel's

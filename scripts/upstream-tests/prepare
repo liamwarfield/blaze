@@ -3,6 +3,7 @@
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -28,6 +29,9 @@ One-time setup for scripts/upstream-tests/run. Uses the pinned oracle as the out
      ~/.cache/blaze/upstream-tests/repo-cache, as upstream CI does) with the oracle as the binary
      under test. Runs under systemd-run with MemoryMax=14G. Log: ~/.cache/blaze/upstream-tests/
      prepare-build.log.
+
+Takes the same lock as `run` (~/.cache/blaze/upstream-tests/locks/outer.lock): it waits for a
+running test run to finish, and runs wait for it.
 """
 
 
@@ -83,6 +87,19 @@ def main(argv):
     jobs = u.DEFAULT_JOBS
     if "--jobs" in argv:
         jobs = int(argv[argv.index("--jobs") + 1])
+    # Everything prepare touches (source copy, outer output root, repository cache, manifest) is
+    # shared with `run`, so it runs under the same outer lock.
+    u.register_client()
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    try:
+        with u.outer_lock("prepare"):
+            u.wait_for_unlocked_runs()
+            return prepare(argv, jobs)
+    finally:
+        u.unregister_client()
+
+
+def prepare(argv, jobs):
     u.ensure_dirs()
     if "--force-copy" in argv and os.path.exists(u.SRC):
         subprocess.run(["rm", "-rf", u.SRC], check=True)

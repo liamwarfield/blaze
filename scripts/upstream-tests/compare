@@ -5,7 +5,11 @@ import json
 import os
 import sys
 
-RESULTS = os.path.expanduser("~/.cache/blaze/upstream-test-results")
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ut_common as u  # noqa: E402
+
+RESULTS = u.RESULTS
 
 USAGE = """\
 usage: scripts/upstream-tests/compare <base> <new> [--only targets|functions] [--all]
@@ -17,20 +21,54 @@ base). Names are test targets (//pkg:name) and functions (//pkg:name#function).
 
 For every name that passes in <base>:
   retained   passes in <new>
-  lost       ran in <new> and did not pass (fail, timeout, build_fail, ...)
-  absent     missing from <new>, or its target was not run (not_run)
+  lost       ran in <new> and did not pass (fail, timeout, build_fail, ...). A function whose
+             target failed to build in <new> (suite mode) is lost with reason
+             "build_fail (target did not build)".
+  absent     missing from <new>, or its target was not run (not_run), or a per-function
+             invocation found no such test case (not_found)
 Names that do not pass in <base> but pass in <new> are `new`. Names on the base's flaky list
 are reported separately and never count as lost; a summary's vacuous and excluded targets are
 ignored. Exit 1 if anything is lost or absent.
 --all prints every lost/absent/new name (default: first 50 of each).
+
+The header names each side's mode (suite, filtered, per-function; see `run help`), how many of
+the manifest's default-selection targets it ran, and whether any of its runs was incomplete.
+Only a suite-mode result that ran every target is a full-run total; anything else is printed
+as PARTIAL, and its absent names were not measured.
 """
+
+
+def default_targets():
+    try:
+        return {t["label"] for t in u.load_manifest()["tests"] if not u.excluded_reason(t)}
+    except SystemExit:
+        return None
+
+
+def describe(d, path):
+    """One header line: mode, coverage, completeness. Returns (line, target statuses)."""
+    if "passing" in d:
+        return "summary of full suite-mode runs", {}
+    mode = d.get("mode") or ("filtered" if any(
+        "--test-filter" in (r.get("selection") or []) for r in d.get("runs", [])) else "suite")
+    targets = {l: t.get("status") for l, t in d.get("targets", {}).items()}
+    full = default_targets()
+    ran = {l for l, st in targets.items() if st != "not_run"}
+    incomplete = [r["stamp"] for r in d.get("runs", []) if r.get("complete") is False]
+    partial = mode != "suite" or full is None or not full <= ran or incomplete
+    line = "mode %s, %d of %s default targets ran%s%s" % (
+        mode, len(ran & full) if full else len(ran), len(full) if full else "?",
+        ", incomplete runs %s" % incomplete if incomplete else "",
+        " -- PARTIAL: not a full-run total" if partial else "")
+    return line, (targets if mode == "suite" else {})
 
 
 def load(arg):
     path = arg if os.path.exists(arg) else os.path.join(RESULTS, arg, "results.json")
     d = json.load(open(path))
     if "results" in d:
-        return d["results"], set(d.get("flaky", [])), set(), path
+        line, targets = describe(d, path)
+        return d["results"], set(d.get("flaky", [])), set(), path, line, targets
     if "passing" in d:  # committed summary
         fns = d["passing"]["functions"]
         if isinstance(fns, dict):
@@ -38,7 +76,7 @@ def load(arg):
         res = {n: "pass" for n in d["passing"]["targets"] + fns}
         flaky = set(d.get("flaky", {}).get("targets", []) + d.get("flaky", {}).get("functions", []))
         ignored = set(d.get("vacuous", {})) | set(d.get("excluded", {}))
-        return res, flaky, ignored, path
+        return res, flaky, ignored, path, describe(d, path)[0], {}
     sys.exit("unrecognised results file: " + path)
 
 
@@ -46,8 +84,8 @@ def main(argv):
     if len(argv) < 2 or argv[0] in ("help", "--help", "-h"):
         print(USAGE)
         return 0
-    base, flaky, ignored, bpath = load(argv[0])
-    new, _, _, npath = load(argv[1])
+    base, flaky, ignored, bpath, bline, _ = load(argv[0])
+    new, _, _, npath, nline, ntargets = load(argv[1])
     only = argv[argv.index("--only") + 1] if "--only" in argv else None
     limit = None if "--all" in argv else 50
 
@@ -69,7 +107,9 @@ def main(argv):
             if cur == "pass":
                 added.append(name)
             continue
-        if cur is None or cur == "not_run":
+        if cur is None and "#" in name and ntargets.get(name.split("#", 1)[0]) == "build_fail":
+            lost.append((name, "build_fail (target did not build)"))
+        elif cur is None or cur in ("not_run", "not_found"):
             absent.append(name)
         elif cur != "pass":
             lost.append((name, cur))
@@ -80,7 +120,7 @@ def main(argv):
                 and st == "pass":
             added.append(name)
     flaky_seen = [(n, new.get(n)) for n in sorted(flaky) if keep(n)]
-    print("base %s\nnew  %s" % (bpath, npath))
+    print("base %s\n     %s\nnew  %s\n     %s" % (bpath, bline, npath, nline))
     for kind in ("targets", "functions"):
         if only and only != kind:
             continue
