@@ -5,131 +5,14 @@ UNRESOLVED: name not in file, line not in a method	crates/blaze_actions/src/anal
 UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/config/ordered_set_multimap.rs	24	// Java: com/google/devtools/build/lib/util/OrderedSetMultimap.java:56 OrderedSetMultimap.put
 UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/config/ordered_set_multimap.rs	33	// Java: com/google/devtools/build/lib/util/OrderedSetMultimap.java:64 OrderedSetMultimap.putAll
 UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/configuredtargets/target_value.rs	49	// Java: com/google/devtools/build/lib/starlarkbuildapi/core/TransitiveInfoCollectionApi.java LABEL_FIELD / FILES_FIELD
-UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/providers/starlark_runfiles.rs	1	//! The Starlark `runfiles` value (Java: `analysis/Runfiles.java` is a `StarlarkValue`
 UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/starlark/starlark_action.rs	101	// Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java getMnemonic
-UNRESOLVED: name not in file, line not in a method	crates/blaze_bep/src/buildeventstream/build_completing_event.rs	221	// Java: com/google/devtools/build/lib/buildeventstream/FetchEvent.java:29 FetchEvent.<init>
 UNRESOLVED: name not in file, line not in a method	crates/blaze_exec/src/actions/exec_exception.rs	165	// Java: com/google/devtools/build/lib/actions/LostInputsExecException.java LostInputsExecException.LostArtifacts
-UNRESOLVED: name not in file, line not in a method	crates/blaze_packages/src/bzl_context.rs	3	//! Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java and
 UNRESOLVED: name not in file, line not in a method	crates/blaze_packages/src/package/rule_visibility.rs	280	// Java: com/google/devtools/build/lib/packages/PackageGroupsRuleVisibility.java:25 PackageGroupsRuleVisibility.toString
 UNRESOLVED: name not in file, line not in a method	crates/blaze_packages/src/starlark_defs/util.rs	336	// Java: net/starlark/java/eval/BuiltinFunction.java BuiltinFunction.getArgumentVector
-UNRESOLVED: name not in file, line not in a method	crates/blaze_remote/src/logging/find_missing_blobs_handler.rs	17	// Java: com/google/devtools/build/lib/remote/logging/FindMissingBlobsHandler.java:26 FindMissingBlobsHandler.<init>
-UNRESOLVED: name not in file, line not in a method	crates/blaze_remote/src/logging/get_action_result_handler.rs	17	// Java: com/google/devtools/build/lib/remote/logging/GetActionResultHandler.java:26 GetActionResultHandler.<init>
-UNRESOLVED: name not in file, line not in a method	crates/blaze_remote/src/logging/get_capabilities_handler.rs	17	// Java: com/google/devtools/build/lib/remote/logging/GetCapabilitiesHandler.java:26 GetCapabilitiesHandler.<init>
-UNRESOLVED: name not in file, line not in a method	crates/blaze_remote/src/logging/query_write_status_handler.rs	16	// Java: com/google/devtools/build/lib/remote/logging/QueryWriteStatusHandler.java:23 QueryWriteStatusHandler.<init>
-UNRESOLVED: name not in file, line not in a method	crates/blaze_remote/src/logging/read_handler.rs	18	// Java: com/google/devtools/build/lib/remote/logging/ReadHandler.java:23 ReadHandler.<init>
-UNRESOLVED: name not in file, line not in a method	crates/blaze_remote/src/logging/splice_blob_handler.rs	17	// Java: com/google/devtools/build/lib/remote/logging/SpliceBlobHandler.java:26 SpliceBlobHandler.<init>
-UNRESOLVED: name not in file, line not in a method	crates/blaze_remote/src/logging/split_blob_handler.rs	17	// Java: com/google/devtools/build/lib/remote/logging/SplitBlobHandler.java:26 SplitBlobHandler.<init>
-UNRESOLVED: name not in file, line not in a method	crates/blaze_remote/src/logging/update_action_result_handler.rs	17	// Java: com/google/devtools/build/lib/remote/logging/UpdateActionResultHandler.java:26 UpdateActionResultHandler.<init>
-UNRESOLVED: name not in file, line not in a method	crates/blaze_remote/src/logging/wait_execution_handler.rs	17	// Java: com/google/devtools/build/lib/remote/logging/WaitExecutionHandler.java:23 WaitExecutionHandler.<init>
-UNRESOLVED: name not in file, line not in a method	crates/blaze_remote/src/logging/write_handler.rs	24	// Java: com/google/devtools/build/lib/remote/logging/WriteHandler.java:28 WriteHandler.<init>
-UNRESOLVED: name not in file, line not in a method	crates/blaze_remote/src/merkletree/merkle_tree_computer.rs	103	// PORT: MERKLE_TREE_BUILD_POOL and MERKLE_TREE_UPLOAD_POOL (Java: MerkleTreeComputer.java:150 and
-UNRESOLVED: name not in file, line not in a method	crates/blaze_repo_rules/src/bzlmod/bazel_fetch_all_function.rs	4	//! Java: com/google/devtools/build/lib/bazel/bzlmod/BazelFetchAllFunction.java and
-UNRESOLVED: name not in file, line not in a method	crates/blaze_repo_rules/src/bzlmod/starlark_bazel_module.rs	4	//! Java: com/google/devtools/build/lib/bazel/bzlmod/StarlarkBazelModule.java and
 UNRESOLVED: name not in file, line not in a method	crates/blaze_repo_rules/src/registration.rs	111	// Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java BazelRepositoryModule.getSkyFunctions
-UNRESOLVED: name not in file, line not in a method	crates/blaze_repo_rules/src/repository/attribute_utils.rs	4	//! Java: com/google/devtools/build/lib/bazel/repository/AttributeUtils.java and
-UNRESOLVED: name not in file, line not in a method	crates/blaze_repo_rules/src/repository/directory_tree_digest.rs	3	//! Java: com/google/devtools/build/lib/skyframe/DirectoryTreeDigestFunction.java and
-UNRESOLVED: name not in file, line not in a method	crates/blaze_repo_rules/src/repository/exceptions.rs	3	//! Java: com/google/devtools/build/lib/bazel/repository/RepositoryFunctionException.java and
-UNRESOLVED: name not in file, line not in a method	crates/blaze_repo_rules/src/repository/repo_definition.rs	3	//! Java: com/google/devtools/build/lib/bazel/repository/RepoDefinition.java and
 UNRESOLVED: name not in file, line not in a method	crates/blaze_repo_rules/src/repository/repo_definition.rs	34	// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java SkyFunctions.REPO_DEFINITION
 UNRESOLVED: name not in file, line not in a method	crates/blaze_sky_loading/src/transitive_target.rs	29	// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:72 SkyFunctions.TRANSITIVE_TARGET
 UNRESOLVED: name not in file, line not in a method	crates/blaze_sky_top/src/cycles_reporter.rs	399	// Java: com/google/devtools/build/lib/pkgcache/PackageProvider.java:36 TargetProvider.getTarget
-UNRESOLVED: name not in file, line not in a method	crates/blaze_starlark/src/syntax/dot_bazel.rs	1	//! Java: com/google/devtools/build/lib/packages/DotBazelFileSyntaxChecker.java and
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/actions/action_environment.rs	105	// Java: ImmutableMap.builder().putAll(base).putAll(fixedVars).buildKeepingLast().
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/actions/parameter_file.rs	186	// Java: CharEscaper.escape with escape(char) below.
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/actions/runfiles_tree_action.rs	44	// Java: Iterables.getOnlyElement(outputs)
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/analysis/actions/custom_command_line.rs	758	// Java: Integer.toString.
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/analysis/actions/custom_command_line.rs	1156	// Java: Maps.uniqueIndex(treeFileArtifacts, TreeFileArtifact::getParent).
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/analysis/actions/file_write_action.rs	583	// Java: DeflaterOutputStream.write: `while (!def.needsInput()) deflate();`
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/analysis/actions/file_write_action.rs	601	// Java: DeflaterOutputStream.finish: `def.finish(); while (!def.finished()) deflate();`
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/analysis/actions/parameter_file_write_action.rs	240	// Java: Throwable.toString().
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/analysis/actions/spawn_action.rs	925	// Java: ImmutableMap.builder().putAll(executionInfo).put(...).buildOrThrow()
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/analysis/runfiles.rs	224	// Java: Enum.toString (the constant name).
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/analysis/runfiles.rs	952	// Java: Object.equals (identity).
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/analysis/starlark/starlark_custom_command_line.rs	1622	// Java: LINE_JOINER.join("\n", FIELD_JOINER.join(location, message), causeMessage) with
-UNRESOLVED: no path, class not found	crates/blaze_actions/src/analysis/symlink_entry.rs	80	// Java: Object.equals (identity); see the class comment.
-UNRESOLVED: no path, class not found	crates/blaze_actions/tests/custom_command_line_test.rs	514	// Java: Object.toString (never reached; Foo is always mapped).
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/aspect_key_creator.rs	182	// Java: ImmutableList.sortedCopyOf (a stable sort) comparing the aspect class name, then
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/aspect_key_creator.rs	492	// Java: ImmutableMap.equals ignores entry order (as IndexMap's PartialEq does).
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/constraints/top_level_constraint_semantics.rs	421	// Java: String.format("%s", null).
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/platform/platform_utils.rs	14	// Java: Ordering.from(Comparator.comparing(Platform.Property::getName)), a stable sort by
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/platform/toolchain_info.rs	76	// Java: ImmutableSortedMap.Builder.buildOrThrow rejects duplicate keys.
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/providers/file_provider.rs	315	// Java: Object.equals (FileProvider does not override it): the provider's identity.
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/providers/output_group_info.rs	339	// Java: ImmutableList.sortedCopyOf(Map.Entry.comparingByKey(), kwargs.entrySet()).
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/rule/command_helper.rs	295	// Java: ImmutableMap.Builder.buildOrThrow.
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/rule/label_expander.rs	50	// Java: CharMatcher.anyOf(":/_.-+" + PathFragment.SEPARATOR_CHAR)
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/rule/target_context.rs	45	// Java: Multimaps.index(directPrerequisites, ConfiguredTargetAndData::getTargetLabel).
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/rule/target_context.rs	131	// Java: Objects.equal(prerequisite.getConfiguration(), config.get()).
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/starlark/starlark_action_factory.rs	2255	// Java: ImmutableMap.Builder.buildOrThrow throws IllegalArgumentException
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/starlark/starlark_aspect_propagation_context.rs	195	// Java: ImmutableMap.Builder.buildOrThrow rejects duplicate keys.
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/starlark/starlark_toolchain_context.rs	187	// Java: TOOLCHAINS_NOT_VALID.getIndex
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/toolchains/exec_group_collection.rs	235	// Java: ImmutableTable.Builder.buildOrThrow on a duplicate cell.
-UNRESOLVED: no path, class not found	crates/blaze_analysis/src/toolchains/resolved_toolchain_context.rs	70	// Java: ImmutableMap.Builder.buildOrThrow on a duplicate key.
-UNRESOLVED: no path, class not found	crates/blaze_buildtool/src/runtime/standalone_module.rs	92	// Java: Sets.SetView.toString() of the unused Class objects (Class.toString()).
-UNRESOLVED: no path, class not found	crates/blaze_collect/src/nestedset/nested_set.rs	173	/// Java: `ImmutableSet.of()`.
-UNRESOLVED: no path, class not found	crates/blaze_collect/src/nestedset/order.rs	120	/// Java: `Enum.ordinal()`.
-UNRESOLVED: no path, class not found	crates/blaze_collect/src/nestedset/order.rs	130	/// Java: `Enum.name()`.
-UNRESOLVED: no path, class not found	crates/blaze_events/src/ui.rs	67	// Java: Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).
-UNRESOLVED: no path, class not found	crates/blaze_exec/src/exec/remote_action_file_system.rs	1687	/// PORT: the node id is the inode's index (Java: `System.identityHashCode`).
-UNRESOLVED: no path, class not found	crates/blaze_exec/src/sandbox/linux_sandboxed_spawn_runner.rs	514	// Java: ImmutableMap.Builder.buildOrThrow() fails on a duplicate key.
-UNRESOLVED: no path, class not found	crates/blaze_optdefs/src/command/client_options.rs	130	// Java: Integer.valueOf.
-UNRESOLVED: no path, class not found	crates/blaze_optdefs/src/common/local_host_capacity.rs	43	// Java: Runtime.availableProcessors(), which is cgroup-aware like available_parallelism.
-UNRESOLVED: no path, class not found	crates/blaze_optdefs/src/misc/auth_and_tls_options.rs	375	// Java: IDN.isRootLabel
-UNRESOLVED: no path, class not found	crates/blaze_optdefs/src/misc/local_execution_options.rs	84	// Java: Duration.ofSeconds(long) accepts negative values; std Duration cannot hold them.
-UNRESOLVED: no path, class not found	crates/blaze_options/src/definition.rs	171	/// The Rust field name (Java: `Field.getName()`, which is camelCase there).
-UNRESOLVED: no path, class not found	crates/blaze_options/tests/options_parser_test.rs	2181	/// Dummy unsafe type (Java: BadCoreTypesOptions.Foo).
-UNRESOLVED: no path, class not found	crates/blaze_packages/src/attribute/computed_default.rs	797	// Java: Iterables.toString of a dependency tuple.
-UNRESOLVED: no path, class not found	crates/blaze_packages/src/attribute/implicit_outputs_function.rs	163	// Java: Iterables.getOnlyElement.
-UNRESOLVED: no path, class not found	crates/blaze_packages/src/attribute/implicit_outputs_function.rs	170	// Java: ImmutableMap.Builder.buildOrThrow (keys are distinct map keys).
-UNRESOLVED: no path, class not found	crates/blaze_packages/src/build/starlark_native_module.rs	300	// Java: ImmutableMap.Builder.buildKeepingLast.
-UNRESOLVED: no path, class not found	crates/blaze_packages/src/package/rule_factory.rs	121	// Java: ImmutableMap.Builder.buildKeepingLast (the key is new, see getGeneratorName).
-UNRESOLVED: no path, class not found	crates/blaze_packages/src/proto.rs	275	// Java: `Ordering.natural().sortedCopy(Starlark.dir(...))`, String.compareTo. Bazel's
-UNRESOLVED: no path, class not found	crates/blaze_packages/src/proto.rs	374	// Java: Boolean.toString
-UNRESOLVED: no path, class not found	crates/blaze_packages/src/rule_class/rule_class.rs	383	// Java: Predicates.alwaysTrue().toString()
-UNRESOLVED: no path, class not found	crates/blaze_packages/src/starlark_defs/aspect.rs	534	// Java: Boolean.parseBoolean(attrValue)
-UNRESOLVED: no path, class not found	crates/blaze_packages/src/starlark_defs/platform_common.rs	178	// Java: ImmutableSortedMap.Builder.buildOrThrow rejects duplicate keys.
-UNRESOLVED: no path, class not found	crates/blaze_packages/src/starlark_defs/provider.rs	218	// Java: ImmutableMap.Builder.buildOrThrow rejects duplicate keys.
-UNRESOLVED: no path, class not found	crates/blaze_packages/src/target/rule.rs	271	// Java: ImmutableMap.Builder.buildOrThrow.
-UNRESOLVED: no path, class not found	crates/blaze_remote/src/common/lazy_file_output_stream.rs	69	// Java: `FileDescriptor.sync()` on a closed stream.
-UNRESOLVED: no path, class not found	crates/blaze_remote/src/common/lazy_file_output_stream.rs	96	// Java: `FileOutputStream.write` on a closed stream.
-UNRESOLVED: no path, class not found	crates/blaze_remote/src/merkletree/merkle_tree_computer.rs	64	/// An entry of the sorted inputs of a (sub-)tree (Java: `Map.Entry<PathFragment, ? extends
-UNRESOLVED: no path, class not found	crates/blaze_remote/src/merkletree/merkle_tree_computer.rs	766	// PORT: no thread interruption (Java: `Thread.interrupted()`).
-UNRESOLVED: no path, class not found	crates/blaze_remote/src/merkletree/merkle_tree_computer.rs	1497	// PORT: no thread interruption (Java: `Thread.interrupted()`).
-UNRESOLVED: no path, class not found	crates/blaze_remote/src/remote_output_checker.rs	207	// Java: `ConcurrentHashMap.newKeySet()`.
-UNRESOLVED: no path, class not found	crates/blaze_remote/tests/util/grpc_server.rs	3	//! Java: `InProcessServerBuilder.forName(name).fallbackHandlerRegistry(serviceRegistry)` with a
-UNRESOLVED: no path, class not found	crates/blaze_repo_rules/src/bzlmod/single_extension_usages.rs	99	/// Java: `Hashing.sha256().hashUnencodedChars(gson.toJson(usagesValue.trimForEvaluation()))`
-UNRESOLVED: no path, class not found	crates/blaze_repo_rules/src/repository/repo_definition_function.rs	87	// Java: ImmutableMap.builder().put("", MAIN).put(repoName, MAIN).buildKeepingLast()
-UNRESOLVED: no path, class not found	crates/blaze_repo_rules/src/repository/repo_definition_function.rs	272	// Java: ImmutableMap.Builder.buildOrThrow
-UNRESOLVED: no path, class not found	crates/blaze_repo_rules/src/repository/repo_recorded_input.rs	731	// Java: String.substring with an end before the begin (or -1).
-UNRESOLVED: no path, class not found	crates/blaze_repo_rules/src/starlark/base_external_context.rs	2161	// Java: Math.round(timeout * 1000L * timeoutScaling)
-UNRESOLVED: no path, class not found	crates/blaze_rules/src/apple/apple_platform.rs	272	// Java: Object.equals of an enum constant (identity).
-UNRESOLVED: no path, class not found	crates/blaze_rules/src/config/config_setting.rs	179	// Java: MultimapBuilder.linkedHashKeys().arrayListValues(): values grouped by first key
-UNRESOLVED: no path, class not found	crates/blaze_rules/src/cpp/cpp_configuration.rs	67	// Java: Object.equals (CppConfiguration does not override it): the fragment's identity.
-UNRESOLVED: no path, class not found	crates/blaze_rules/src/fragments/mod.rs	92	// Java: Object.equals (the fragment class does not override it).
-UNRESOLVED: no path, class not found	crates/blaze_rules/src/generic/genrule.rs	581	// Java: ImmutableMap.Builder.buildOrThrow.
-UNRESOLVED: no path, class not found	crates/blaze_sky_analysis/src/toolchains/registered_execution_platforms.rs	190	// Java: ImmutableMap.Builder.buildKeepingLast.
-UNRESOLVED: no path, class not found	crates/blaze_sky_analysis/src/toolchains/registered_execution_platforms.rs	271	// Java: ImmutableMap.Builder (duplicate keys are found by buildOrThrow, below).
-UNRESOLVED: no path, class not found	crates/blaze_sky_analysis/src/toolchains/single_toolchain_resolution.rs	294	// Java: ImmutableMap.Builder.buildOrThrow on a duplicate key.
-UNRESOLVED: no path, class not found	crates/blaze_sky_analysis/src/toolchains/target_pattern_util.rs	60	// Java: ArrayList.removeAll.
-UNRESOLVED: no path, class not found	crates/blaze_sky_analysis/src/toolchains/toolchain_context_util.rs	316	// Java: ImmutableMap.Builder.buildOrThrow on a duplicate key.
-UNRESOLVED: no path, class not found	crates/blaze_sky_analysis/src/toolchains/toolchain_context_util.rs	379	// Java: ImmutableMap.Builder.buildOrThrow on a duplicate key.
-UNRESOLVED: no path, class not found	crates/blaze_sky_analysis/src/toolchains/toolchain_resolution_function.rs	185	// Java: ImmutableSet.Builder drops duplicates.
-UNRESOLVED: no path, class not found	crates/blaze_sky_analysis/src/toolchains/toolchain_resolution_function.rs	381	// Java: Stream.max keeps the first of equal elements.
-UNRESOLVED: no path, class not found	crates/blaze_sky_loading/src/actions/file_state_value.rs	390	// Java: Arrays.toString(byte[]) prints signed bytes.
-UNRESOLVED: no path, class not found	crates/blaze_sky_loading/src/tests/oracle_repos_test.rs	94	// Java: DEFAULT_VALUE_FOR_BUILTINS_REPO.withAdditionalMappings(bazel_tools mapping): the
-UNRESOLVED: no path, class not found	crates/blaze_sky_top/src/skyframe_executor.rs	372	// Java: StandardSystemProperty.USER_NAME (the server's user.name) and
-UNRESOLVED: no path, class not found	crates/blaze_sky_top/src/target_pattern_phase.rs	188	// Java: Object.toString of the key class.
-UNRESOLVED: no path, class not found	crates/blaze_sky_top/src/tests/aspect_test.rs	1761	// Java: ImmutableList.of(TestAspects.ALL_ATTRIBUTES_ASPECT.getName())
-UNRESOLVED: no path, class not found	crates/blaze_sky_top/src/tests/constraint_collection_api_test.rs	278	// Java: Collectors.toSet().
-UNRESOLVED: no path, class not found	crates/blaze_skyframe/src/environment.rs	147	/// do not request dependencies should poll this (Java: `Thread.interrupted()`).
-UNRESOLVED: no path, class not found	crates/blaze_skyframe/src/evaluator.rs	492	/// Java: `Thread.interrupt()` of the thread calling `evaluate`, which then leaves
-UNRESOLVED: no path, class not found	crates/blaze_skyframe/src/evaluator.rs	499	/// Java: `Thread.interrupted()` (clears the interrupt status).
-UNRESOLVED: no path, class not found	crates/blaze_skyframe/src/lib.rs	350	// Java: Throwable.toString of a message-less InterruptedException.
-UNRESOLVED: no path, class not found	crates/blaze_skyframe/src/tests.rs	359	/// Java: TestFunction.tag (extractTag).
-UNRESOLVED: no path, class not found	crates/blaze_skyframe/src/tests.rs	382	/// Java: TestFunction.addErrorDependency.
-UNRESOLVED: no path, class not found	crates/blaze_skyframe/src/tests.rs	400	/// Java: TestFunction.setBuilder(ChainedFunction).
-UNRESOLVED: no path, class not found	crates/blaze_skyframe/src/tests/memoizing_evaluator_test.rs	81	// Java: Thread.sleep(99999), interrupted when the evaluation fails.
-UNRESOLVED: no path, class not found	crates/blaze_skyframe/src/tests/parallel_evaluator_test.rs	96	/// Java: `Thread.sleep(duration)`: throws `InterruptedException` (and clears the status) when
-UNRESOLVED: no path, class not found	crates/blaze_starlark/src/json.rs	124	// Sort keys for determinism (Java: Arrays.sort on Strings, UTF-16 order; equal to
 UNRESOLVED: no path, member not found	crates/blaze_analysis/src/providers/package_specification_provider.rs	84	// Java: Optional.ofNullable(targetContext.getConfiguration()).
 UNRESOLVED: no path, member not found	crates/blaze_analysis/src/rule/rule_context.rs	2180	// Java: Joiner.on(",").join(descriptors) (AspectDescriptor.toString() is
 UNRESOLVED: no path, member not found	crates/blaze_cc_features/src/actions.rs	199	/// Java: `OS.valueOf(name)`; `None` where Java throws `IllegalArgumentException`.
@@ -148,3 +31,5 @@ UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/environment.rs	2
 UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/environment.rs	276	/// Java: Environment.getValueOrThrow(key, E1.class, E2.class, ...). `catch` inspects the
 UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/tests.rs	565	/// Java: TestUtils.WAIT_TIMEOUT_SECONDS.
 pathless: AMBIGUOUS (several files define it)	crates/blaze_sky_loading/src/globs.rs	671	// Java: ResultSink.acceptGlobError keeps the first error of all globs.
+stale path (file moved), by file name: UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/configured_target_value.rs	62	// Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetValue.java:34 ConfiguredTargetValue.getTransitivePackages
+stale path (file moved), by file name: UNRESOLVED: name not in file, line not in a method	crates/blaze_runtime/src/commands/run.rs	613	// Java: com/google/devtools/build/lib/exec/local/LocalOutputService.java LocalOutputService.stagesTopLevelRunfiles

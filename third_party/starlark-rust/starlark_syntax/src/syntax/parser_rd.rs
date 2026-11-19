@@ -78,6 +78,9 @@ pub(crate) struct ParserRd<'a, I: Iterator<Item = Lexeme>> {
     type_syntax: bool,
     /// BLAZE PATCH 0020: nesting depth of `def` bodies (type aliases are top-level only).
     def_depth: u32,
+    /// BLAZE PATCH 0047: Java Parser.insideTypeExpr (Parser.java:120), set while parsing a type
+    /// annotation.
+    in_type_expr: bool, // BLAZE PATCH 0047
 }
 
 impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
@@ -96,6 +99,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             state,
             type_syntax,
             def_depth: 0,
+            in_type_expr: false, // BLAZE PATCH 0047
         }
     }
 
@@ -593,7 +597,9 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
     fn parse_load_symbol(&mut self) -> Result<(AstAssignIdent, AstString), EvalException> {
         // Either "name" or ident = "name"
         match self.peek() {
-            Some(Token::Identifier(_)) => {
+            // BLAZE PATCH 0048: `cast` / `isinstance` are keywords under type syntax, not a
+            // local name (Java Parser.parseLoadStatement expects an IDENTIFIER).
+            Some(Token::Identifier(_)) if self.at_type_keyword().is_none() => { // BLAZE PATCH 0048
                 // Check if this is `ident = "string"` form
                 let (id_l, ident, id_r) = take_payload!(self, Token::Identifier);
                 if self.eat(&Token::Equal) {
@@ -1104,6 +1110,17 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
                 let l = self.pos();
                 self.advance();
                 let r = self.last_end;
+                // BLAZE PATCH 0047: Java Parser.parsePrimary (Parser.java:775-778) under type
+                // syntax: `...` only inside a type expression. (Without type syntax `validate`
+                // rejects it; with type checking, upstream rules.)
+                if self.type_syntax && !self.in_type_expr { // BLAZE PATCH 0047
+                    let err = self.error_at( // BLAZE PATCH 0047
+                        l, // BLAZE PATCH 0047
+                        r, // BLAZE PATCH 0047
+                        "ellipsis ('...') is not allowed outside type expressions".to_owned(), // BLAZE PATCH 0047
+                    ); // BLAZE PATCH 0047
+                    self.state.errors.push(err); // BLAZE PATCH 0047
+                } // BLAZE PATCH 0047
                 Ok(Expr::Literal(AstLiteral::Ellipsis).ast(l, r))
             }
             Some(Token::OpeningRound) => {
@@ -1360,8 +1377,12 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
     }
 
     fn parse_type_expr(&mut self) -> Result<AstTypeExpr, EvalException> {
-        let expr = self.parse_test()?;
-        grammar_util::dialect_check_type(&self.state, expr)
+        // BLAZE PATCH 0047: Java Parser.parseTypeExprWithFallback (Parser.java:1084-1095) sets
+        // insideTypeExpr, and clears it (not restores it) afterwards.
+        self.in_type_expr = true; // BLAZE PATCH 0047
+        let expr = self.parse_test(); // BLAZE PATCH 0047
+        self.in_type_expr = false; // BLAZE PATCH 0047
+        grammar_util::dialect_check_type(&self.state, expr?) // BLAZE PATCH 0047
     }
 
     // ==================== Parameters ====================
@@ -1523,7 +1544,10 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
                 let r = self.last_end;
                 Ok(Argument::Args(e).ast(l, r))
             }
-            Some(Token::Identifier(_)) => {
+            // BLAZE PATCH 0048: under type syntax `cast` and `isinstance` are keywords
+            // (Lexer.java:615), so `f(cast(T, x))` is a cast expression argument
+            // (Parser.parseArgument -> parseTest), not a call of a name `cast`.
+            Some(Token::Identifier(_)) if self.at_type_keyword().is_none() => { // BLAZE PATCH 0048
                 // Could be `ident = expr` (named) or just a positional expr
                 // We need to tentatively parse as identifier, then check for `=`
                 let (id_l, ident, id_r) = take_payload!(self, Token::Identifier);

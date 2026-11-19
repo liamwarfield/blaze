@@ -3,32 +3,32 @@
 ## Totals
 
 <!-- BEGIN GENERATED TOTALS -->
-By status (methods include abstract ones; an abstract method is marked when its implementation in a direct subtype is):
+By status. Methods include abstract ones. An abstract method also counts as marked when the method of the same name in a direct subtype is marked (impl), or when it is a parameterless accessor of an @AutoValue/@AutoOneOf class whose type a marker names (type).
 
 | status | files | lines | methods | methods marked |
 | --- | --- | --- | --- | --- |
-| PORTED | 1292 | 203438 | 15300 | 12738 |
-| PARTIAL | 646 | 106799 | 9315 | 2234 |
-| UNTOUCHED | 1099 | 95885 | 8964 | 0 |
-| total | 3037 | 406122 | 33579 | 14972 |
+| PORTED | 1309 | 204565 | 15509 | 12969 |
+| PARTIAL | 630 | 105754 | 9111 | 2265 |
+| UNTOUCHED | 1098 | 95803 | 8959 | 0 |
+| total | 3037 | 406122 | 33579 | 15234 |
 
 Not PORTED, by reason:
 
 | reason | status | files | lines | methods | methods unmarked | unported lines (est.) |
 | --- | --- | --- | --- | --- | --- | --- |
-| NEEDED | PARTIAL | 580 | 92864 | 8164 | 6081 | 68582 |
-| NEEDED | UNTOUCHED | 772 | 76100 | 7019 | 7019 | 76100 |
+| NEEDED | PARTIAL | 564 | 91819 | 7960 | 5858 | 67358 |
+| NEEDED | UNTOUCHED | 771 | 76018 | 7014 | 7014 | 76018 |
 | GENERATED_OR_TRIVIAL | PARTIAL | 11 | 142 | 34 | 28 | 0 |
 | GENERATED_OR_TRIVIAL | UNTOUCHED | 121 | 1137 | 162 | 162 | 0 |
 | TEST_SUPPORT | PARTIAL | 2 | 231 | 24 | 23 | 0 |
 | TEST_SUPPORT | UNTOUCHED | 27 | 1956 | 220 | 220 | 0 |
 | JVM_ONLY | PARTIAL | 4 | 478 | 34 | 27 | 0 |
 | JVM_ONLY | UNTOUCHED | 41 | 4174 | 345 | 345 | 0 |
-| OUT_OF_SCOPE_OS | PARTIAL | 5 | 527 | 37 | 35 | 0 |
+| OUT_OF_SCOPE_OS | PARTIAL | 5 | 527 | 37 | 34 | 0 |
 | OUT_OF_SCOPE_OS | UNTOUCHED | 27 | 1855 | 205 | 205 | 0 |
-| OUT_OF_SCOPE_BY_CONTRACT | PARTIAL | 6 | 987 | 67 | 59 | 0 |
+| OUT_OF_SCOPE_BY_CONTRACT | PARTIAL | 6 | 987 | 67 | 56 | 0 |
 | OUT_OF_SCOPE_BY_CONTRACT | UNTOUCHED | 54 | 5148 | 397 | 397 | 0 |
-| STARLARK_RUST_DECISION | PARTIAL | 38 | 11570 | 955 | 828 | 0 |
+| STARLARK_RUST_DECISION | PARTIAL | 38 | 11570 | 955 | 820 | 0 |
 | STARLARK_RUST_DECISION | UNTOUCHED | 57 | 5515 | 616 | 616 | 0 |
 <!-- END GENERATED TOTALS -->
 
@@ -47,21 +47,23 @@ Not PORTED, by reason:
 | test: names a src/test/java file | 522 | 2.1% |
 | pathless: method: by name (no line) | 375 | 1.5% |
 | library: JDK, protobuf, gRPC or other non-Bazel source | 313 | 1.3% |
+| library or prose: no path, not a Bazel class (JDK, Guava, ...) | 96 | 0.4% |
 | method: by name (no line) | 86 | 0.4% |
 | file-level: no member, line outside methods | 80 | 0.3% |
 | field/other: identifier in file (line inside a method) | 51 | 0.2% |
 | pathless: field/other: identifier in file | 45 | 0.2% |
 | type: names a class (line inside a method) | 45 | 0.2% |
 | method: by line (no member named) | 27 | 0.1% |
+| file-level: path followed by prose | 14 | 0.1% |
 | stale path (file moved), by file name: method: by name (no line) | 14 | 0.1% |
-| method: by line only (name not found: renamed or wrong) | 12 | 0.0% |
+| type: implicit constructor (class declares none) | 11 | 0.0% |
+| method: by line only (name not found: renamed or wrong) | 8 | 0.0% |
 | stale path (file moved), by file name: UNRESOLVED: name not in file, line not in a method | 2 | 0.0% |
 | pathless: AMBIGUOUS (several files define it) | 1 | 0.0% |
 | pathless: type: names a class | 1 | 0.0% |
 | stale path (file moved), by file name: field/other: identifier in file | 1 | 0.0% |
-| UNRESOLVED: no path, class not found | 96 | 0.4% |
-| UNRESOLVED: name not in file, line not in a method | 34 | 0.1% |
 | UNRESOLVED: no path, member not found | 17 | 0.1% |
+| UNRESOLVED: name not in file, line not in a method | 13 | 0.1% |
 | UNRESOLVED: Bazel file not found | 1 | 0.0% |
 | total | 24305 | 100% |
 
@@ -76,40 +78,40 @@ Not PORTED, by reason:
 <!-- BEGIN GENERATED PACKAGES -->
 | package | files | lines | PORTED | PARTIAL | UNTOUCHED | methods marked | NEEDED files not ported | NEEDED unported lines (est.) | lines out of scope | unported! sites |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| lib/skyframe | 501 | 65398 | 108 | 107 | 286 | 1246/5301 | 327 | 38091 | 4260 | 57 |
-| lib/analysis | 337 | 51641 | 210 | 78 | 49 | 3004/4472 | 113 | 9290 | 229 | 99 |
-| lib/runtime | 159 | 23876 | 85 | 43 | 31 | 739/1503 | 63 | 9264 | 806 | 25 |
-| lib/rules | 150 | 27461 | 85 | 23 | 42 | 1077/1974 | 60 | 8747 | 111 | 23 |
+| lib/skyframe | 501 | 65398 | 109 | 106 | 286 | 1274/5301 | 326 | 37851 | 4260 | 57 |
+| lib/runtime | 159 | 23876 | 86 | 42 | 31 | 740/1503 | 62 | 9229 | 806 | 25 |
+| lib/analysis | 337 | 51641 | 213 | 75 | 49 | 3057/4472 | 110 | 9035 | 229 | 99 |
+| lib/rules | 150 | 27461 | 85 | 23 | 42 | 1091/1974 | 60 | 8747 | 111 | 23 |
 | build/skyframe | 91 | 10545 | 11 | 28 | 52 | 170/1152 | 71 | 8080 | 123 | 7 |
-| lib/remote | 131 | 23151 | 78 | 15 | 38 | 949/1586 | 44 | 6605 | 221 | 41 |
-| lib/actions | 151 | 15528 | 72 | 44 | 35 | 950/1986 | 67 | 6016 | 123 | 30 |
-| lib/query2 | 136 | 15759 | 92 | 18 | 26 | 793/1239 | 43 | 5330 | 6 | 11 |
-| lib/bazel | 202 | 28659 | 121 | 68 | 13 | 994/1585 | 80 | 5206 | 13 | 31 |
+| lib/remote | 131 | 23151 | 78 | 15 | 38 | 951/1586 | 44 | 6605 | 221 | 41 |
+| lib/actions | 151 | 15528 | 72 | 44 | 35 | 951/1986 | 67 | 6016 | 123 | 30 |
+| lib/query2 | 136 | 15759 | 92 | 18 | 26 | 794/1239 | 43 | 5330 | 6 | 11 |
+| lib/bazel | 202 | 28659 | 130 | 59 | 13 | 1098/1585 | 71 | 4633 | 13 | 31 |
 | lib/worker | 31 | 4912 | 1 | 6 | 24 | 14/372 | 28 | 4445 | 25 | 2 |
-| lib/util | 105 | 7736 | 42 | 21 | 42 | 356/909 | 57 | 3946 | 194 | 8 |
-| lib/packages | 162 | 24699 | 110 | 30 | 22 | 1769/2589 | 48 | 3936 | 31 | 38 |
+| lib/packages | 162 | 24699 | 111 | 29 | 22 | 1784/2589 | 47 | 3916 | 31 | 38 |
+| lib/util | 105 | 7736 | 42 | 22 | 41 | 359/909 | 57 | 3912 | 194 | 8 |
 | lib/starlarkbuildapi | 116 | 13851 | 59 | 9 | 48 | 385/628 | 35 | 3636 | 312 | 0 |
 | lib/collect | 27 | 4204 | 5 | 5 | 17 | 104/465 | 21 | 3091 | 8 | 0 |
 | lib/vfs | 55 | 6793 | 16 | 16 | 23 | 408/943 | 35 | 2996 | 180 | 5 |
-| lib/profiler | 32 | 3781 | 2 | 5 | 25 | 8/303 | 22 | 2958 | 684 | 0 |
+| lib/profiler | 32 | 3781 | 2 | 5 | 25 | 12/303 | 22 | 2946 | 684 | 0 |
 | lib/buildtool | 45 | 7098 | 19 | 9 | 17 | 170/371 | 22 | 2900 | 288 | 8 |
 | lib/concurrent | 33 | 3000 | 0 | 3 | 30 | 9/326 | 29 | 2804 | 102 | 0 |
 | lib/includescanning | 14 | 2714 | 1 | 1 | 12 | 2/165 | 12 | 2623 | 6 | 0 |
 | lib/buildeventservice | 9 | 2542 | 1 | 2 | 6 | 10/164 | 8 | 2158 | 0 | 3 |
-| lib/sandbox | 42 | 5599 | 15 | 8 | 19 | 146/363 | 20 | 1695 | 552 | 4 |
+| lib/sandbox | 42 | 5599 | 15 | 8 | 19 | 147/363 | 20 | 1695 | 552 | 4 |
 | lib/server | 13 | 1423 | 1 | 2 | 10 | 5/112 | 11 | 1314 | 44 | 0 |
-| common/options | 47 | 5740 | 25 | 6 | 16 | 310/534 | 14 | 1084 | 737 | 4 |
+| common/options | 47 | 5740 | 26 | 5 | 16 | 313/534 | 13 | 1059 | 737 | 4 |
 | lib/starlarkdocextract | 8 | 1030 | 0 | 0 | 8 | 0/70 | 8 | 1030 | 0 | 0 |
 | lib/dynamic | 9 | 1455 | 2 | 1 | 6 | 13/73 | 7 | 1004 | 0 | 2 |
 | lib/starlarkdebug | 10 | 1059 | 1 | 1 | 8 | 2/81 | 9 | 991 | 0 | 1 |
-| lib/exec | 46 | 6714 | 28 | 9 | 9 | 269/422 | 15 | 834 | 250 | 6 |
-| lib/authandtls | 19 | 1658 | 5 | 8 | 6 | 48/131 | 14 | 790 | 0 | 6 |
+| lib/exec | 46 | 6714 | 28 | 9 | 9 | 270/422 | 15 | 834 | 250 | 6 |
+| lib/authandtls | 19 | 1658 | 5 | 8 | 6 | 52/131 | 14 | 777 | 0 | 6 |
 | lib/graph | 9 | 727 | 0 | 0 | 9 | 0/85 | 7 | 715 | 12 | 0 |
 | lib/metrics | 11 | 1626 | 3 | 2 | 6 | 47/144 | 6 | 674 | 253 | 2 |
 | lib/pkgcache | 24 | 1645 | 11 | 7 | 6 | 74/147 | 10 | 532 | 28 | 6 |
-| lib/bugreport | 4 | 461 | 0 | 2 | 2 | 4/58 | 4 | 421 | 0 | 2 |
-| lib/cmdline | 21 | 2992 | 13 | 6 | 2 | 241/357 | 7 | 343 | 5 | 1 |
-| lib/shell | 19 | 1804 | 12 | 5 | 2 | 125/227 | 5 | 332 | 368 | 0 |
+| lib/bugreport | 4 | 461 | 0 | 2 | 2 | 11/58 | 4 | 338 | 0 | 2 |
+| lib/cmdline | 21 | 2992 | 14 | 5 | 2 | 252/357 | 6 | 332 | 5 | 1 |
+| lib/shell | 19 | 1804 | 12 | 5 | 2 | 126/227 | 5 | 327 | 368 | 0 |
 | lib/io | 8 | 260 | 2 | 6 | 0 | 14/37 | 6 | 145 | 0 | 0 |
 | lib/unix | 6 | 616 | 3 | 0 | 3 | 41/86 | 3 | 136 | 0 | 1 |
 | lib/causes | 5 | 185 | 2 | 3 | 0 | 9/24 | 3 | 116 | 0 | 1 |
@@ -130,10 +132,10 @@ Not PORTED, by reason:
 | lib/windows | 4 | 433 | 0 | 0 | 4 | 0/53 | 0 | 0 | 433 | 0 |
 | net/starlark/annot | 6 | 587 | 0 | 0 | 6 | 0/48 | 0 | 0 | 587 | 0 |
 | net/starlark/cmd | 1 | 176 | 0 | 0 | 1 | 0/4 | 0 | 0 | 176 | 0 |
-| net/starlark/eval | 47 | 10600 | 3 | 30 | 14 | 104/923 | 0 | 0 | 10525 | 22 |
+| net/starlark/eval | 47 | 10600 | 3 | 30 | 14 | 103/923 | 0 | 0 | 10525 | 22 |
 | net/starlark/lib | 1 | 668 | 1 | 0 | 0 | 17/26 | 0 | 0 | 0 | 0 |
 | net/starlark/spelling | 1 | 56 | 1 | 0 | 0 | 3/3 | 0 | 0 | 0 | 0 |
-| net/starlark/syntax | 50 | 6202 | 2 | 8 | 40 | 75/630 | 0 | 0 | 5959 | 0 |
+| net/starlark/syntax | 50 | 6202 | 2 | 8 | 40 | 84/630 | 0 | 0 | 5959 | 0 |
 | net/starlark/types | 2 | 425 | 0 | 0 | 2 | 0/72 | 0 | 0 | 425 | 0 |
 <!-- END GENERATED PACKAGES -->
 
@@ -150,8 +152,8 @@ Not PORTED, by reason:
 | lib/runtime/BlazeRuntime.java | PARTIAL | 1534 | 25/82 | server-client-protocol | The BlazeRuntime class encapsulates the immutable configuration of the current instance |
 | lib/runtime/UiStateTracker.java | PARTIAL | 1071 | 4/75 | runtime-and-ui | Tracks state for the UI |
 | lib/skyframe/PackageFunction.java | PARTIAL | 1435 | 22/63 | packages-and-loading | A SkyFunction which computes a PackageValue if given a PackageIdentifier, or a PackagePieceValue.ForBuildFile if given a PackagePieceIdentifier.ForBuildFile |
-| lib/skyframe/SkyframeBuildView.java | PARTIAL | 1200 | 10/40 | analysis-core | Skyframe-based driver of analysis |
-| lib/profiler/Profiler.java | PARTIAL | 897 | 0/76 | profiler-and-metrics | Blaze internal profiler |
+| lib/profiler/Profiler.java | PARTIAL | 897 | 1/76 | profiler-and-metrics | Blaze internal profiler |
+| lib/skyframe/SkyframeBuildView.java | PARTIAL | 1200 | 13/40 | analysis-core | Skyframe-based driver of analysis |
 | lib/skyframe/SequencedSkyframeExecutor.java | PARTIAL | 851 | 4/53 | incremental-evaluation | A SkyframeExecutor that implicitly assumes that builds can be done incrementally from the most recent build |
 | lib/skyframe/SkyframeActionExecutor.java | PARTIAL | 1551 | 44/89 | execution-and-action-graph | Action executor: takes care of preparing an action for execution, executing it, validating that all output artifacts were created, error reporting, etc |
 | lib/analysis/starlark/StarlarkCustomCommandLine.java | PARTIAL | 1381 | 54/118 | analysis-core | Supports ctx.actions.args() from Starlark |
@@ -211,28 +213,28 @@ Not PORTED, by reason:
 <!-- BEGIN GENERATED CLUSTERS -->
 | cluster | NEEDED files not ported | of them UNTOUCHED | lines | unported lines (est.) | unmarked methods | unported! sites | depends on (import edges into other clusters' unported files) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| execution-and-action-graph | 204 | 106 | 26291 | 21053 | 2032 | 34 | incremental-evaluation (126), base-libraries (115), analysis-core (58), remote-analysis-caching-serialization (46), packages-and-loading (39), configuration-and-transitions (19) |
-| base-libraries | 157 | 103 | 15160 | 13546 | 1602 | 6 | remote-analysis-caching-serialization (40), execution-and-action-graph (14), incremental-evaluation (4), profiler-and-metrics (2), java-rules-in-core (1), runtime-and-ui (1) |
+| execution-and-action-graph | 204 | 106 | 26291 | 21005 | 2024 | 34 | incremental-evaluation (126), base-libraries (114), analysis-core (58), remote-analysis-caching-serialization (46), packages-and-loading (39), configuration-and-transitions (17) |
+| base-libraries | 156 | 103 | 15129 | 13438 | 1591 | 6 | remote-analysis-caching-serialization (40), execution-and-action-graph (14), incremental-evaluation (4), profiler-and-metrics (2), java-rules-in-core (1), runtime-and-ui (1) |
 | remote-analysis-caching-serialization | 117 | 116 | 11211 | 11211 | 1143 | 0 | execution-and-action-graph (36), base-libraries (23), packages-and-loading (16), incremental-evaluation (11), analysis-core (6), configuration-and-transitions (3) |
 | incremental-evaluation | 52 | 33 | 11466 | 10169 | 983 | 5 | execution-and-action-graph (230), base-libraries (60), packages-and-loading (33), configuration-and-transitions (15), analysis-core (13), profiler-and-metrics (11) |
-| packages-and-loading | 98 | 35 | 11410 | 8572 | 813 | 13 | execution-and-action-graph (169), base-libraries (53), symbolic-macros-and-lazy-loading (20), remote-analysis-caching-serialization (12), incremental-evaluation (9), repositories-and-bzlmod (6) |
-| analysis-core | 87 | 37 | 11240 | 8310 | 682 | 17 | execution-and-action-graph (84), base-libraries (49), packages-and-loading (34), configuration-and-transitions (28), remote-analysis-caching-serialization (16), incremental-evaluation (11) |
-| remote-execution-and-caching | 61 | 37 | 8186 | 7540 | 569 | 7 | execution-and-action-graph (22), base-libraries (15), incremental-evaluation (9), repositories-and-bzlmod (7), sandboxing-and-local-exec (5), profiler-and-metrics (4) |
-| query-output-formatters | 49 | 29 | 6965 | 6398 | 418 | 4 | execution-and-action-graph (40), base-libraries (37), packages-and-loading (24), analysis-core (15), incremental-evaluation (13), configuration-and-transitions (6) |
+| packages-and-loading | 97 | 35 | 11388 | 8561 | 811 | 13 | execution-and-action-graph (169), base-libraries (53), symbolic-macros-and-lazy-loading (18), remote-analysis-caching-serialization (12), incremental-evaluation (9), repositories-and-bzlmod (5) |
+| analysis-core | 87 | 37 | 11240 | 8203 | 676 | 17 | execution-and-action-graph (84), base-libraries (49), packages-and-loading (34), configuration-and-transitions (26), remote-analysis-caching-serialization (16), incremental-evaluation (11) |
+| remote-execution-and-caching | 61 | 37 | 8186 | 7527 | 565 | 7 | execution-and-action-graph (22), base-libraries (15), incremental-evaluation (9), repositories-and-bzlmod (7), sandboxing-and-local-exec (5), profiler-and-metrics (4) |
+| query-output-formatters | 48 | 29 | 6913 | 6363 | 416 | 4 | execution-and-action-graph (40), base-libraries (37), packages-and-loading (22), analysis-core (15), incremental-evaluation (13), configuration-and-transitions (6) |
 | java-rules-in-core | 35 | 28 | 6245 | 5884 | 522 | 1 | base-libraries (40), packages-and-loading (29), execution-and-action-graph (17), analysis-core (9), sandboxing-and-local-exec (5), cpp-rules (3) |
-| runtime-and-ui | 43 | 26 | 6491 | 5374 | 526 | 8 | execution-and-action-graph (44), base-libraries (38), build-event-service (15), server-client-protocol (15), analysis-core (11), incremental-evaluation (9) |
-| configuration-and-transitions | 70 | 14 | 6903 | 5290 | 558 | 14 | execution-and-action-graph (76), analysis-core (45), base-libraries (16), incremental-evaluation (14), packages-and-loading (4), python-and-other-native-rules (2) |
+| runtime-and-ui | 42 | 25 | 6438 | 5332 | 522 | 8 | execution-and-action-graph (44), base-libraries (38), build-event-service (15), server-client-protocol (15), analysis-core (11), incremental-evaluation (9) |
+| configuration-and-transitions | 66 | 14 | 6569 | 4950 | 492 | 14 | execution-and-action-graph (71), analysis-core (42), base-libraries (15), incremental-evaluation (14), packages-and-loading (4), python-and-other-native-rules (2) |
 | workers | 28 | 22 | 4650 | 4445 | 346 | 2 | sandboxing-and-local-exec (26), execution-and-action-graph (13), profiler-and-metrics (5), base-libraries (4), runtime-and-ui (3), build-event-service (1) |
-| server-client-protocol | 28 | 15 | 5576 | 4247 | 269 | 4 | base-libraries (43), runtime-and-ui (29), profiler-and-metrics (7), build-event-service (6), incremental-evaluation (6), sandboxing-and-local-exec (5) |
-| profiler-and-metrics | 35 | 29 | 4302 | 4167 | 359 | 2 | base-libraries (24), execution-and-action-graph (15), sandboxing-and-local-exec (8), runtime-and-ui (6), build-event-service (3), incremental-evaluation (3) |
+| server-client-protocol | 28 | 15 | 5576 | 4229 | 267 | 4 | base-libraries (43), runtime-and-ui (29), profiler-and-metrics (7), build-event-service (6), incremental-evaluation (6), sandboxing-and-local-exec (5) |
+| profiler-and-metrics | 35 | 29 | 4302 | 4155 | 358 | 2 | base-libraries (24), execution-and-action-graph (15), sandboxing-and-local-exec (8), runtime-and-ui (6), build-event-service (3), incremental-evaluation (3) |
 | cpp-rules | 29 | 21 | 5444 | 4137 | 291 | 0 | base-libraries (17), packages-and-loading (16), execution-and-action-graph (11), analysis-core (6), remote-analysis-caching-serialization (4), configuration-and-transitions (2) |
-| sandboxing-and-local-exec | 49 | 26 | 4648 | 4115 | 519 | 6 | execution-and-action-graph (20), base-libraries (11), runtime-and-ui (6), include-scanning (1), profiler-and-metrics (1), server-client-protocol (1) |
-| repositories-and-bzlmod | 68 | 11 | 4531 | 3487 | 367 | 3 | execution-and-action-graph (78), base-libraries (18), incremental-evaluation (5), profiler-and-metrics (4), packages-and-loading (2), runtime-and-ui (2) |
+| sandboxing-and-local-exec | 49 | 26 | 4648 | 4110 | 518 | 6 | execution-and-action-graph (20), base-libraries (11), runtime-and-ui (6), include-scanning (1), profiler-and-metrics (1), server-client-protocol (1) |
+| repositories-and-bzlmod | 60 | 11 | 3916 | 2940 | 251 | 3 | execution-and-action-graph (67), base-libraries (18), incremental-evaluation (5), profiler-and-metrics (4), packages-and-loading (2), runtime-and-ui (2) |
 | include-scanning | 13 | 12 | 2754 | 2738 | 177 | 0 | execution-and-action-graph (31), base-libraries (8), sandboxing-and-local-exec (5), packages-and-loading (4), incremental-evaluation (3), profiler-and-metrics (3) |
 | starlark-debugger-and-docs | 20 | 17 | 2736 | 2680 | 181 | 2 | packages-and-loading (11), base-libraries (8), runtime-and-ui (4), analysis-core (2), execution-and-action-graph (2), repositories-and-bzlmod (2) |
 | build-event-service | 27 | 20 | 2917 | 2643 | 216 | 3 | base-libraries (11), server-client-protocol (7), runtime-and-ui (5), profiler-and-metrics (3), execution-and-action-graph (2), analysis-core (1) |
 | commands | 16 | 2 | 2373 | 2092 | 94 | 0 | runtime-and-ui (24), execution-and-action-graph (13), base-libraries (12), incremental-evaluation (11), analysis-core (8), configuration-and-transitions (8) |
-| symbolic-macros-and-lazy-loading | 17 | 9 | 2137 | 1910 | 166 | 0 | execution-and-action-graph (43), packages-and-loading (20), base-libraries (13), incremental-evaluation (6) |
+| symbolic-macros-and-lazy-loading | 16 | 9 | 2117 | 1890 | 161 | 0 | execution-and-action-graph (43), packages-and-loading (20), base-libraries (12), incremental-evaluation (6) |
 | action-rewinding | 9 | 6 | 1309 | 1246 | 92 | 1 | execution-and-action-graph (24), base-libraries (4), runtime-and-ui (3), analysis-core (1), profiler-and-metrics (1), remote-analysis-caching-serialization (1) |
 | dynamic-execution | 7 | 6 | 1059 | 1004 | 54 | 2 | sandboxing-and-local-exec (10), execution-and-action-graph (7), runtime-and-ui (3), profiler-and-metrics (2), base-libraries (1) |
 | python-and-other-native-rules | 12 | 3 | 1342 | 974 | 28 | 2 | analysis-core (19), base-libraries (3), execution-and-action-graph (3), cpp-rules (2), packages-and-loading (2), runtime-and-ui (2) |
@@ -253,7 +255,7 @@ Java test classes `src/test/java/.../FooTest.java` whose production class `Foo` 
 | with a Rust #[test] of the snake_case name in a file named after the class | 3662 |
 | with a Rust #[test] of that name anywhere in crates/ | 4243 |
 | of the matched, every matching Rust test is #[ignore] | 709 |
-| Rust #[test] functions in crates/ (all) | 8338 |
+| Rust #[test] functions in crates/ (all) | 8340 |
 | Rust #[test] functions marked #[ignore] (all) | 1729 |
 
 Top 30 `#[ignore]` reasons among the matched tests:

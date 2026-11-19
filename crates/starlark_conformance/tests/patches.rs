@@ -1863,3 +1863,42 @@ fn patch_0046_strip_none_chars() {
         Ok("(\"a\", \"a \", \" a\")".into())
     );
 }
+
+/// Java Parser.parsePrimary (Parser.java:775-778) and parseTypeExprWithFallback (:1084-1095):
+/// under type syntax `...` is allowed only inside a type annotation. Expected values: the
+/// oracle on a .bzl file (`scripts/starlark/interp-diff binary`, cases lex_ellipsis and
+/// lex_ellipsis_in_type).
+#[test]
+fn patch_0047_ellipsis_only_in_type_expressions() {
+    assert_eq!(
+        eval_with_type_syntax("x = ...\nr = 1"),
+        Err("ellipsis ('...') is not allowed outside type expressions".into())
+    );
+    assert_eq!(
+        eval_with_type_syntax(
+            "def f(x: tuple[int, ...], *a: Callable[..., None]) -> list[...]:\n    return x\nr = (f(1), cast(tuple[int, ...], 2))"
+        ),
+        Ok("(1, 2)".into())
+    );
+    assert!(eval_with_type_syntax("def f(x: int = ...):\n    return x\nr = 1").is_err());
+}
+
+/// Java Lexer.java:615 (`cast`, `isinstance` are keywords under type syntax) and
+/// Parser.parseArgument / parseLoadStatement: a cast in a call argument is a cast expression,
+/// and neither word is an argument or load name. Expected values: the oracle on a .bzl file
+/// (`scripts/starlark/interp-diff binary`, cases lex_cast_argument, lex_cast_named_argument).
+#[test]
+fn patch_0048_type_keywords_in_arguments() {
+    assert_eq!(
+        eval_with_type_syntax("r = (str(cast(int, 3)), [cast(int, 4)], len(cast(list, [1])))"),
+        Ok("(\"3\", [4], 1)".into())
+    );
+    assert_eq!(
+        eval_with_type_syntax("r = str(isinstance(1, int))"),
+        Err("isinstance() is not yet supported".into())
+    );
+    assert!(eval_with_type_syntax("def f(**kw):\n    return kw\nr = f(cast = 1)").is_err());
+    let mut d = dialect::bzl_dialect();
+    d.enable_types = starlark::syntax::DialectTypes::ParseOnly;
+    assert!(AstModule::parse("t.bzl", "load(':x.bzl', cast = 'y')\n".to_owned(), &d).is_err());
+}

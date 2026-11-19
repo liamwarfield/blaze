@@ -284,3 +284,467 @@ gRPC details that must match for the C++ client: service path
 interoperates with grpc-c++ on these. I did not test that claim; the first acceptance step of
 package S3 is exactly that test.
 
+## 2. Incremental evaluation
+
+### 2.1 What Bazel's graph does between builds
+
+`J:skyframe/` is 85 files, 16,607 lines. The parts that exist only for incrementality:
+
+**Versions.** `AbstractInMemoryMemoizingEvaluator.evaluate`
+(`J:skyframe/AbstractInMemoryMemoizingEvaluator.java:118-194`) takes the next graph version:
+`Version.constant()` when edges are not kept, else `IntVersion` 0, 1, 2, ... (`:495-503`). Each
+node has a `NodeVersion` (last changed, last evaluated; `NodeVersion.java`, 55 lines).
+
+**Two node entry classes.** `IncrementalInMemoryNodeEntry` (539 lines) keeps compressed
+`GroupedDeps`, reverse deps and the version; `NonIncrementalInMemoryNodeEntry` (304 lines) keeps
+none and is used when `keepEdges` is false (`--notrack_incremental_state`, or `--batch` with
+`--discard_analysis_cache`: `J:lib/skyframe/SequencedSkyframeExecutor.java:410-413`). Blaze's
+`DoneEntry` (`crates/blaze_skyframe/src/evaluator.rs:83-94`) is in between: it keeps deps and
+reverse deps but no version.
+
+**Start of every evaluation** (`AbstractInMemoryMemoizingEvaluator.java:134-152`):
+
+1. keys still in flight when the previous evaluation ended, and unsuccessfully rewound keys,
+   are queued for deletion (`:134-135`, from `DirtyAndInflightTrackingProgressReceiver`);
+2. `differencer.getDiff(graph, lastVersion, thisVersion)` returns keys changed without a new
+   value and keys with a new value (`Differencer.java`, `RecordingDifferencer`,
+   `SequencedRecordingDifferencer`: the lists `invalidate(keys)` and `inject(map)` filled since
+   the last evaluation);
+3. `pruneInjectedValues` (`:432-465`): an injected value equal (`equals`) to the dep-less value
+   already in the graph is dropped; an injected key that has deps is dirtied instead;
+4. `performInvalidation` (`:481-493`): `EagerInvalidator.delete` then
+   `EagerInvalidator.invalidate`;
+5. `injectValues` (`:468-479`, `ParallelEvaluator.injectValues :599-632`).
+
+**Invalidation** (`InvalidatingNodeVisitor.java`, 570 lines). `DirtyingNodeVisitor`
+(`:402-570`) marks the given keys `CHANGE` and walks reverse deps marking them `DIRTY`.
+`NodeEntry.markDirty` (`IncrementalInMemoryNodeEntry.java:287-333`) moves the value and the
+deps into a `DirtyBuildingState` ("last build value", "last build direct deps") and returns the
+reverse deps so the visitor goes on. `DeletingNodeVisitor` (`:229-400`) removes nodes and, when
+edges are kept, their whole reverse transitive closure, and removes the reverse-dep edge from
+each surviving dep (`:362-376`). `MemoizingEvaluator.delete(predicate)`
+(`AbstractInMemoryMemoizingEvaluator.java:212-225`) queues every dirty node and every node the
+predicate matches; `deleteDirty(window)` (`:243-255`) queues dirty nodes older than
+`--version_window_for_dirty_node_gc`.
+
+**Evaluating a dirty node** (`AbstractParallelEvaluator.Evaluate.maybeHandleDirtyNode`,
+`AbstractParallelEvaluator.java:233-380`; states in `NodeEntry.java:60-91`, `DirtyType :95-135`,
+`DirtyBuildingState.java`, 306 lines). While the node is in `CHECK_DEPENDENCIES`:
+
+- take the next dep group of the last build (`getNextDirtyDirectDeps`,
+  `DirtyBuildingState.java:244`); groups are checked in order so that a dep that is no longer
+  needed is never evaluated (the comment at `:238-246` gives the BUILD-file example);
+- if the group is the error-transience dep and that node is newer, force a rebuild
+  (`:254-262`);
+- without keep_going, a done dep in error stops the evaluation here (`:264-299`);
+- re-add the group as temporary deps, register for the deps, wait for their signals
+  (`:307-339`). `signalDep` (`DirtyBuildingState.java:178-200`) compares the child's version
+  with this node's last-evaluated version: a newer child means `NEEDS_REBUILDING`; when every
+  dep of every group signalled without being newer the node is `VERIFIED_CLEAN`.
+
+Then: `VERIFIED_CLEAN` → `markClean` (value kept, `IncrementalInMemoryNodeEntry.java:336-348`),
+the stored events are replayed (`:354`), the receiver is told `evaluated(..., versionChanged =
+false)`, parents are signalled with the unchanged version; `NEEDS_REBUILDING` → the function
+runs from scratch (`:373-377`).
+
+**Change pruning.** When a rebuilt node commits, `setValue`
+(`IncrementalInMemoryNodeEntry.java:139-163`) asks
+`dirtyBuildingState.unchangedFromLastBuild(value)` (`DirtyBuildingState.java:214-219`): the new
+value is not a `NotComparableSkyValue` and `lastBuildValue.equals(newValue)`. If so the node
+keeps its old value object and its old last-changed version, so its parents are verified clean.
+Deps of the last build that the rebuild did not request again lose their reverse-dep edge at
+commit (`SkyFunctionEnvironment.java:84-96` `oldDeps`; the commit code itself I did not read
+line by line).
+
+**Errors.** `ErrorTransienceValue` is injected again at every evaluation that does work
+(`ParallelEvaluator.java:197-198`), so every node with a transient error is dirty in the next
+one; `SkyframeExecutor.invalidateTransientErrors` is called from `sync`
+(`J:lib/skyframe/SkyframeExecutor.java:3064`). Blaze has this already
+(`evaluator.rs:661-671`). Error bubbling handles a dirty parent by forcing it to rebuild
+(`ParallelEvaluator.java:395-403`).
+
+**Events.** A node's value is stored with its events (`ValueWithMetadata.java`, 253 lines): a
+`NestedSet<Reportable>` of the events the function reported plus the event sets of its deps,
+subject to `EventFilter.shouldPropagate` (`SkyFunctionEnvironment.java:300-331`). They are
+replayed when a node is found done or clean (`AbstractParallelEvaluator.replay :833`, callers
+`:354` and `ParallelEvaluator.java:115, 338, 445, 485`), each event once per command:
+`EmittedEventState` is cleared by `SkyframeExecutor` at `:1178`, `:1733` and `:4467`. This is
+why a warning from analysis appears again on the next build of the same target. Blaze reports
+events once when the node commits and stores nothing (`crates/blaze_skyframe/src/lib.rs:124`).
+
+**Progress receiver** (`EvaluationProgressReceiver.java`, 146 lines: `dirtied`, `deleted`,
+`enqueueing`, `stateStarting`, `stateEnding`, `evaluated`, `changePruned`). Users at the pin
+that matter for output: the in-flight tracking above; `InMemoryMemoizingEvaluator.ProgressReceiver`
+(`InMemoryMemoizingEvaluator.java:44-136`, evaluation statistics); the
+`SkyframeProgressReceiver` of `SkyframeExecutor` (counts behind "N packages loaded, M targets
+configured" and the build metrics; `SequencedSkyframeExecutor.java:244-258` feeds the
+incremental build monitor from dirtied `FileKey`s); `SkyframeBuildView`'s
+`ActionLookupValueProgressReceiver` (`J:lib/skyframe/SkyframeBuildView.java:149-156, 1262-1268`:
+whether any action lookup value was evaluated or dirtied decides whether the action conflict
+check runs again).
+
+**Rewinding** (`SkyFunction.Reset`, `DirtyType.REWIND`,
+`AbstractParallelEvaluator.java:569-575, 872-910`, `resetEvaluationFromScratch`
+`IncrementalInMemoryNodeEntry.java:390-411`, `J:lib/skyframe/rewinding/`, 1,708 lines): not
+ported and not planned here (decision 2026-11-19, "Lost remote inputs").
+
+### 2.2 How file-system and option changes become invalidations
+
+All in `J:lib/skyframe/SkyframeExecutor.java` (4,910 lines) and
+`SequencedSkyframeExecutor.java` (1,026 lines) unless noted. Per command,
+`CommandEnvironment.syncPackageLoading` (`J:lib/runtime/CommandEnvironment.java:851`) calls
+`SequencedSkyframeExecutor.sync` (`:261-319`):
+
+1. reset the evaluator if `decideKeepIncrementalState` said so (`:274-293`);
+2. `SkyframeExecutor.sync` (`:3040-3066`): `preparePackageLoading` (`:1693`) injects the
+   precomputed values (`PrecomputedValue.X.set(injectable(), v)` at `:1518-1540`, `:1600`
+   `BUILD_ID`, `:1766` `PATH_PACKAGE_LOCATOR`, `:1826`, `:3089` `ACTION_ENV`; an injection of an
+   equal value is pruned, see 2.1 step 3), `setDeletedPackages`
+   (`SequencedSkyframeExecutor.java:373-397`: invalidates the `PACKAGE_LOOKUP` nodes of packages
+   whose deleted state changed), a changed package path invalidates the package-locator
+   dependent functions (`onPkgLocatorChange :362`), `invalidateTransientErrors`;
+3. `handleDiffs` (`SkyframeExecutor.java:3774-3865`): for each package path entry ask
+   `DiffAwarenessManager.getDiff` (`DiffAwarenessManager.java`, 240 lines). Diff awareness
+   strategies at the pin: `LocalDiffAwareness` (221 lines) with `WatchServiceDiffAwareness`
+   (337 lines), only with `--watchfs`; otherwise there is no diff information.
+   - With a diff (`handleDiffsWithCompleteDiffInformation :3923-3939`):
+     `FileSystemValueCheckerInferringAncestors` (496 lines) checks only the modified paths.
+   - Without (`handleDiffsWithMissingDiffInformation :3950-4086`): apply pending invalidation
+     (`applyInvalidation :4098`, an evaluation of no keys), then `FilesystemValueChecker`
+     (804 lines) `getDirtyKeys` over **every done value in the graph** (`:4027-4030`) with a
+     `MissingDiffDirtinessChecker` for the package roots and an `ExternalDirtinessChecker` for
+     the file types chosen by `--experimental_check_output_files`,
+     `--experimental_check_external_repository_files`,
+     `--experimental_check_external_other_files` and by what `ExternalFilesHelper` saw
+     (`ExternalFilesKnowledge`, `:3960-3965`). A checker makes the new `FileStateValue` or
+     `DirectoryListingStateValue` from the file system and compares it with the old one
+     (`SkyValueDirtinessChecker.check :56-70`, `DirtinessCheckerUtils.java:45-75`). This is the
+     default path: with no `--watchfs`, every command stats every file the graph knows.
+   - `handleChangedFiles` (`:4121`) hands the result to the differencer (keys to invalidate,
+     and new values to inject where the checker already computed them).
+   - `handleClientEnvironmentChanges` and `handleRepositoryEnvironmentChanges`
+     (`:3874-3916`): one injected `EnvironmentVariableValue` per variable, removed variables
+     invalidated.
+4. Analysis: `SkyframeBuildView.setConfiguration` (`J:lib/skyframe/SkyframeBuildView.java:350-369`)
+   diffs the top-level `BuildOptions` with the previous command's (`OptionsDiff`), prints
+   "Build option --x has changed, discarding analysis cache" (`:230-340`) and calls
+   `handleAnalysisInvalidatingChange` (`SkyframeExecutor.java:1218`,
+   `SequencedSkyframeExecutor.java:672-721`: deletes configured nodes by the predicate
+   `shouldDeleteOnAnalysisInvalidatingChange`). `--discard_analysis_cache` and
+   `clearAnalysisCache` (`:1476`, `SequencedSkyframeExecutor.java:466`) drop analysis nodes
+   after the build.
+5. Execution: `detectModifiedOutputFiles` (`SequencedSkyframeExecutor.java:481-520`) runs
+   `FilesystemValueChecker.getDirtyActionValues` (`FilesystemValueChecker.java:213-300`) over
+   every `ACTION_EXECUTION` value: stat each output and compare with the stored
+   `FileArtifactValue` (`couldBeModifiedSince`, `:399`); dirty actions are invalidated. Then the
+   action cache decides whether a re-evaluated action really runs (`ActionCacheChecker`,
+   `J:lib/actions/ActionCacheChecker.java`, 880 lines; ported:
+   `crates/blaze_exec/src/actions/action_cache_checker.rs`, with the persistent cache in
+   `crates/blaze_exec/src/actions/cache/compact_persistent_action_cache.rs`). Also:
+   `setSaltAndDeleteActionsIfChanged` (`SkyframeExecutor.java:2063-2071`); the `BUILD_ID`
+   dependency of actions that depend on the build id; `TimestampGranularityMonitor`
+   (`J:lib/util/io/TimestampGranularityMonitor.java`, 206 lines), which makes the command wait
+   at its end so that a later edit cannot share a timestamp with a file it read;
+   `BlazeWorkspace.recordLastExecutionTime` (`J:lib/runtime/BlazeWorkspace.java:283-295`).
+   `ActionExecutionValue` equality lets unchanged outputs prune everything above an action.
+6. Cleanups between phases that exist only because the graph is kept: deleting the conflict
+   finding nodes (`SkyframeExecutor.java:2560`, `:2612`), `clearLoadedPackages` (`:1680`),
+   `deleteOldNodes` (`SequencedSkyframeExecutor.java:779`).
+
+`PACKAGE_LOOKUP` and `CONTAINING_PACKAGE_LOOKUP` need no special invalidation beyond step 2:
+they depend on the `FILE` nodes of BUILD files, which step 3 dirties.
+
+### 2.3 What has to change in `blaze_skyframe`
+
+The crate is 4,796 lines without tests. The model in `src/lib.rs:1-136` stays. Changes, each a
+literal port of the Java named:
+
+| # | Change | Java | Rust site today |
+| --- | --- | --- | --- |
+| E1 | Graph version counter; `NodeVersion` on done entries; `keep_edges` switch | `AbstractInMemoryMemoizingEvaluator.java:495-503`, `NodeVersion.java`, `IntVersion.java` | `evaluator.rs:83-94`, `527-546` |
+| E2 | `Differencer` API: `invalidate(keys)`, `inject(map)`, applied at the next `evaluate`; `delete(pred)`, `delete_dirty(window)` | `RecordingDifferencer`, `AbstractInMemoryMemoizingEvaluator.java:134-152, 212-255, 424-493` | `inject` applies at once by deleting the closure (`evaluator.rs:646-713`) |
+| E3 | Node state `Dirty` with `DirtyBuildingState` (last value, last deps, lifecycle) and `mark_dirty`; `DirtyingNodeVisitor`, `DeletingNodeVisitor` | `IncrementalInMemoryNodeEntry.java:287-348`, `DirtyBuildingState.java`, `InvalidatingNodeVisitor.java` | `NodeState` has `InProgress` and `Done` only (`evaluator.rs:140-143`) |
+| E4 | Dirty check when a dirty node is claimed: per group of the last build, evaluate the group (blocking), compare each dep's last-changed version with this node's last-evaluated version; clean → keep value; else run the function | `AbstractParallelEvaluator.java:233-380`, `DirtyBuildingState.java:178-200` | `compute_claimed` (`evaluator.rs:1150`) |
+| E5 | Change pruning at commit; drop reverse-dep edges of deps not requested again | `IncrementalInMemoryNodeEntry.java:139-163`, `DirtyBuildingState.java:214-219` | `committed` / `finish` (`evaluator.rs:1398-1487`) |
+| E6 | Value equality hook (below) | `SkyValue.equals`, `NotComparableSkyValue` | `Key::Value: Send + Sync + 'static` (`lib.rs:192-197`) |
+| E7 | Dirty parent in error bubbling; `isDirty` in the cycle detector | `ParallelEvaluator.java:395-403`, `SimpleCycleDetector.java` | `evaluator.rs:1921`, `simple_cycle_detector.rs:184` |
+| E8 | Events stored with the value and replayed; `EventFilter`; `EmittedEventState` cleared per command | `ValueWithMetadata.java`, `SkyFunctionEnvironment.java:300-331`, `EventFilter.java` | `lib.rs:124`, `evaluator.rs:292-311`, `1880` |
+| E9 | `EvaluationProgressReceiver` (`dirtied`, `deleted`, `evaluated` with `versionChanged`, `changePruned`) and the in-flight tracking receiver | `EvaluationProgressReceiver.java`, `DirtyAndInflightTrackingProgressReceiver.java` | absent (`lib.rs:115-116`) |
+| E10 | `pruneInjectedValues` | `AbstractInMemoryMemoizingEvaluator.java:432-465` | "values here have no equality" (`evaluator.rs:643-645`) |
+| E11 | `FunctionHermeticity` on `SkyFunctionName` (only `NONHERMETIC` functions may see the file system; used by `SkyFunctionEnvironment.java:176` for the max transitive source version, which Bazel OSS does not use for pruning; port the enum, skip the version) | `FunctionHermeticity.java`, `SkyFunctionName.java` | `crates/blaze_sky_loading/src/sky_functions.rs:4-6` |
+
+Not in this list on purpose: `getState`, `registerDependencies`, `dependOnFuture`, partial
+reevaluation, `SkyFunction.Reset`. None is needed for incrementality in a blocking evaluator.
+
+**E4 in the blocking model.** Java registers the node with a dep group, returns, and is
+re-enqueued when the last dep signals. Blaze evaluates the group with the code path that
+`get_values_and_exceptions` already uses (`Run::eval_keys`, `evaluator.rs:1600`) and then reads
+the versions. The observable order is Java's: groups in last-build order, nothing of group n+1
+touched before group n is known clean. The differences to mark `// PORT:` are the same two the
+crate already documents for normal evaluation (requests are evaluated when made; a dep in
+error under no-keep-going is seen as "not done"). The deps recorded per group are the requests
+of the one blocking run instead of the union over Java's restarts; each engine is consistent
+with what its own function read, and the cycle detector already relies on this.
+
+**Nodes dropped after a failed evaluation.** `Run::cleanup` (`evaluator.rs:2105`) drops what
+Java would not have committed. With E3 it must do what Java does at the next `evaluate`: delete
+the in-flight keys and their reverse transitive closure (`:134`, `EagerInvalidator.delete` with
+`traverseGraph = keepEdges`). A dirty node that was being checked is therefore deleted, not put
+back as dirty.
+
+**E6, the equality hook.** Values are `Arc<dyn Any + Send + Sync>` and 91 `Key` impls exist.
+Recommended form: a provided method on `Key`,
+
+```rust
+/// Java: SkyValue.equals as used by DirtyBuildingState.unchangedFromLastBuild.
+/// Default: not comparable (Java identity equality or NotComparableSkyValue).
+fn values_equal(_old: &Self::Value, _new: &Self::Value) -> bool { false }
+```
+
+captured by `EvaluatorBuilder::typed_function::<K, _>` into the function table (functions
+registered through the raw `SkyFunction` trait register a comparator explicitly or stay "not
+comparable"). The default never prunes, which is always correct, so all 91 impls keep compiling
+and each key opts in with `a == b` exactly where the Java value class has value equality. A
+wrong opt-in in the direction "Rust says equal, Java says different" is still a correct build
+as long as the Rust equality covers everything a parent can observe, but it changes the counts
+Bazel prints; in the other direction it only costs time. Either way the reviewer checks each
+opt-in against the Java `equals`.
+
+### 2.4 Does two-phase bubbling survive?
+
+Yes. Bubbling runs after every evaluator thread has stopped, over nodes that are in progress
+or done; it computes nothing new. Kept graphs add three cases, all in Java already: a parent on
+the bubbling path that is dirty is forced to rebuild before its function is re-run
+(`ParallelEvaluator.java:395-403`); a done top-level node replays its stored events (E8);
+errors built on the way up are still never written to the graph, so the next command
+re-evaluates the failed path, which is what Java does through the in-flight deletion. The
+restarting design would not make any of this simpler, and every ported SkyFunction (and the
+rule that Starlark evaluation cannot suspend, PORTING.md "Skyframe") is written against the
+blocking environment. Recommendation D5: keep one evaluator and port the node-entry state
+machine into it.
+
+@@SECTION-2-5@@
+
+### 2.6 The `PORT: skipped, incremental` sites
+
+`grep -rn "PORT: skipped, incremental" crates --include=*.rs` gives 28 lines; the looser
+`grep -rniE "PORT:[^\n]*incremental"` gives 35 (it adds comments worded differently). All 35,
+by crate, with the package (section 5) that owns each:
+
+| Crate | Sites | What each needs |
+| --- | ---: | --- |
+| blaze_skyframe | 4 | `lib.rs:48` (statement of the model), `evaluator.rs:545` (versions, diffs, in-flight deletion), `evaluator.rs:1921` (dirty parent in bubbling), `simple_cycle_detector.rs:184` (`isDirty`): all I1 |
+| blaze_sky_loading | 6 | `sky_functions.rs:6` (function hermeticity: I1 E11); `actions/file_state_value.rs:6-7` (`compareContents`, timestamp granularity notifications: I3); `file_state.rs:133` and the type comment at `:98` (external files knowledge: I3); `skyframe_executor.rs:202` (`PACKAGE_LOOKUP` invalidation on deleted packages: I3) |
+| blaze_runtime | 8 | `dispatcher.rs:82`, `runtime.rs:116` (idle tasks: S4); `dispatcher.rs:629` (TSGM, client env and package path synced into the server's executor: I3); `command_environment.rs:574` (`decideKeepIncrementalState` bookkeeping: I3, the reset switch; `heuristicallyDropNodes` stays out); `bazel_modules.rs:164` (credential cache reset in `beforeCommand`: S2); `:315` (`--watchfs` diff awareness registration: I7); `:553` (digest cache sizing in `executorInit`/`commandComplete`: S2); `:827` (`workspaceInit`, `commandComplete`: S2) |
+| blaze_sky_top | 5 | `skyframe_executor.rs:668` (delete conflict-finding nodes), `skyframe_build_view.rs:195` (`enableAnalysis`), `:359`, `:402` (`resetActionConflictsStoredInSkyframe`), `build_view.rs:297` (`ArtifactFactory.noteAnalysisStarting`): all I5 |
+| blaze_build_config | 3 | `skyframe.rs:216`: Java requests the `FILE` node of the platform mappings file and Blaze does not. With a kept graph this is a missing dependency edge, so an edit of that file would not invalidate: I2 (and the feature is unported anyway). `fragments/test_configuration.rs:4` (`SHOULD_INVALIDATE_FOR_OPTION_DIFF`: I5). `transitions.rs:47` (`BuildOptionsCache`: a cache, performance only; optional) |
+| blaze_sky_exec | 3 | `action_execution_function.rs:368` (`BUILD_ID` dependency: I6); `skyframe_action_executor.rs:2615` (`notifyDependenceOnFileTime`: I3/I6); `action_execution_function.rs:347` (remote analysis caching: not planned) |
+| blaze_cquery | 3 | `buildtool/post_analysis_query_processor.rs:233` (`deleteOldNodes`/`applyInvalidation`: I5); `commands/cquery_command.rs:162`, `commands/aquery_command.rs:105` (remote analysis cache keys: not planned) |
+| blaze_query | 1 | `common/query_transitive_package_preloader.rs:162` (the empty evaluation that leaves the graph consistent: I4) |
+| blaze_remote | 1 | `lease_service.rs:82` (delete `ACTION_EXECUTION` values with expired remote outputs: I6) |
+| blaze_optdefs | 1 | `fragment/platform_mapping_key.rs:9` (`SkyKeyInterner`): nothing; keys compare by value |
+
+So 30 of the 35 need work, 3 are out of scope (remote analysis caching), 1 is optional and 1
+needs nothing. The marked sites are the small part: the per-command construction of the
+executor (section 2.5, G1) is not marked anywhere because it was a design choice
+(`docs/decisions.md` 2026-11-18, "one evaluator per command").
+
+@@SECTION-3@@
+
+## 4. Verification
+
+### 4.1 Three references
+
+1. **Real Bazel, default flags** (kept graph). The reference for Track I: which actions ran,
+   the "N processes" line, "(P packages loaded, T targets configured)", the analysis-cache
+   warnings, per command of a sequence.
+2. **Real Bazel with `--notrack_incremental_state --nokeep_state_after_build`.** The evaluator
+   is reset before each command (`SequencedSkyframeExecutor.java:448-453, 274-278`). This is the
+   reference for the first server release (decision D2): a sequence recorded this way should
+   show cold counts on every command while the server, the lock, `command.log` and the on-disk
+   action cache behave as in a normal server. Expected, not verified: I did not record such a
+   sequence. The first step of package S5 is to record one and read it. (Both flags are given
+   because `--notrack_incremental_state` alone prints a warning,
+   `SequencedSkyframeExecutor.java:423-430`.)
+3. **Blaze against itself.** A long-lived server with a kept graph must produce, after any
+   sequence, what a fresh server on a copy of the same workspace state produces (4.5). This
+   needs no oracle run per step and isolates Track I bugs from porting gaps.
+
+### 4.2 What the referee records today, and what it needs (sub-agent, files read)
+
+- `scripts/oracle/record` runs, per project, on one output user root and **one server**, with
+  startup flags `--output_user_root=<root> --nohome_rc --nosystem_rc` only (`record:344`): `mod
+  graph`, the build or test with exec log and BEP, the queries, cquery, aquery, `info`, then
+  `shutdown` (`record:346-401`). So the recorded build is the second command of a warm server.
+  `scripts/oracle/README.md` ("Recording") says the build runs on a fresh server; that sentence
+  and the script disagree. Not a defect for today's scores, but root should know before a
+  Blaze server is compared: from then on Blaze's side is a warm sequence too.
+- `kill_servers` (`record:128-150`) finds servers through `<root>/*/server/server.pid.txt`. A
+  Blaze server that writes the pid file is handled with no change.
+- There is no surface that is a sequence with edits. `build_stderr` keeps "INFO: N processes:
+  ..." and "INFO: Analyzed ... (P packages loaded, T targets configured)" verbatim
+  (`normalise.py:119-157`); `bep` compares `buildMetrics` except the allow-listed
+  `buildGraphMetrics.{evaluated,built,changed,cleaned,dirtied}Values` and two more counters
+  (`allow.json`, "build-metrics-volatile-counters"); `execlog` has one item per spawn
+  (`surfaces.py:378-401`).
+- `scripts/w4/probe` (not a protected path) runs each scenario's `COMMANDS` on one output base
+  and one oracle server, with `shutdown` only at the end (`probe:163-183, 283`). Step kinds are
+  `run`, `aquery`, `cat`, `stat` (`probe:30-40`); **no step can write, touch or delete a
+  file.** 41 scenarios, 765 steps (630 `run`). Its masked view hides exactly the things a
+  server changes: "server start", "warm-server counts", "warm-server analysis cache",
+  "failed-build process count" (`probe:115-143`). `ORACLE.txt` files already contain warm
+  behaviour (for example `exec-tree` step 12: "(0 packages loaded, 0 targets configured)",
+  "INFO: 1 process: 1 internal.").
+- `scripts/upstream-tests` adds no startup options and does nothing about inner servers.
+  Bazel's own harness does: `src/test/shell/testenv.sh` uses one output user root and one
+  workspace per shard, tears down with `bazel clean` and shuts the server down once at suite
+  exit (`testenv.sh:656-705`), so **one server serves every test function of a shard**; the
+  Python base class shuts down after every method (`src/test/py/bazel/test_base.py:170-171`).
+  With `$TEST_TMPDIR` set the server's idle limit is 15 s.
+
+Needed, in order of use:
+
+| Tool | Change | Protected? |
+| --- | --- | --- |
+| `scripts/w4/probe` | New step kinds: `write <path>` (content from a sibling file), `append`, `touch`, `rm`, `mv`, `env NAME=VALUE` (client environment of later steps), `bg <name> run ...` / `wait <name>` / `signal <name> INT` (lock and cancel scenarios), `sleep`. A third oracle column recorded with reference 2. Un-mask the four warm-server masks once the Blaze side is a server (keep them selectable so old counts can be re-derived). | no |
+| new `scripts/server/` | `interop` (the two wire tests of 1.4), `seq` (record and compare sequences on the corpus projects: per step the exit code, normalised stderr, the spawn set from `--execution_log_json_file`, BEP `buildMetrics` action, package and target counts, output hashes; reuses `scripts/oracle` normalisers by import, does not edit them), `stress` (4.5). | no (new); moves under the gate when accepted, by the auditor |
+| `scripts/oracle` | Nothing in wave 1. Later, a `sequence` surface per project, and a ruling on whether the allow-listed `buildGraphMetrics` counters become compared (D9). | yes: root names it |
+
+### 4.3 Upstream integration tests that need a server (sub-agent)
+
+Method: every `test_*` shell function and `def test*` method in the files behind the 251
+in-scope targets of `corpus/upstream-tests/oracle-9.3.2.json` (2,671 functions in 248 files;
+2,491 in the pass list by this extraction) was classified by regular expressions on the
+function body only. Helpers are not followed, so the counts are lower bounds; the scripts are in
+the session scratchpad and the patterns are in the sub-agent's report. Each function counted
+once, under its strongest label:
+
+| Label | Files | Functions | In oracle pass list |
+| --- | ---: | ---: | ---: |
+| S1 server lifecycle (shutdown, pid, startup options, batch, lock, signals) | 43 | 157 | 154 |
+| S2 `command.log`, server log | 8 | 14 | 13 |
+| S3 asserts in-memory reuse (process counts after an edit, "packages loaded", `--watchfs`, `--skyframe_state`, discard flags) | 20 | 71 | 62 |
+| S4 other server-only (`dump`, `config`, idle GC, concurrent commands, memory flags) | 12 | 21 | 19 |
+| M at least two commands with an edit between (incremental correctness) | 59 | 185 | 176 |
+
+S1 to S4 together: 263 functions, about 248 passing on the oracle. Of the 157 S1 functions, 82
+only call `bazel shutdown` as a reset and pass on a server-less Blaze; the other 75 (72
+passing) assert lifecycle. 971 functions (910 passing) run at least two Bazel commands.
+
+Files that are mostly about this plan (functions / passing on the oracle):
+
+| File | Count | Closes with |
+| --- | --- | --- |
+| `src/test/shell/integration/client_test.sh` | 47 / 47 (S1 30, S4 5) | S1, S3 |
+| `src/test/shell/bazel/client_test.sh` | 7 / 7 (install base and action cache GC) | S3, S4 |
+| `src/test/shell/integration/startup_options_test.sh` | 6 / 6 | S1 |
+| `src/test/shell/integration/bazel_command_log_test.sh` | 5 / 5 | S2 |
+| `src/test/shell/integration/client_sigint_test.sh` | 2 / 2 | S1, S3 |
+| `src/test/shell/integration/server_logging_test.sh` | 1 / 1 | S2 |
+| `src/test/py/bazel/bazel_server_mode_test.py` | 2 / 2 | S3 |
+| `src/test/shell/integration/run_test.sh` | 29 / 29 (3 on the `--batch` ExecRequest path) | S1 |
+| `src/test/shell/integration/discard_graph_edges_test.sh` | 25 / 25 | I5, I6 |
+| `src/test/shell/integration/discard_analysis_cache_test.sh` | 5 / 5 | I5 |
+| `src/test/shell/integration/nonincremental_builds_test.sh` | 4 / 4 (two use `jmap`: JVM only) | I5 |
+| `src/test/shell/integration/watchfs_test.sh` | 4 / 4 | I7 |
+| `src/test/shell/bazel/check_external_files_test.sh` | 10 / 10 | I3, I7 |
+| `src/test/shell/bazel/external_correctness_test.sh` | 12 / 12 | I3, I4 |
+| `src/test/shell/integration/aquery_test.sh` | 52 / 52 (10 use `--skyframe_state`) | I7 |
+| `src/test/shell/integration/dump_test.sh` | 7 / 6 | I7 (memory dumps: not planned) |
+| `src/test/shell/integration/info_test.sh` | 7, target fails on the oracle here | S2 |
+| `src/test/py/bazel/bzlmod/bazel_lockfile_test.py` | 36 multi-command with edits, 29 use shutdown | I3, I4 |
+| `src/test/shell/bazel/starlark_repository_test.sh` | 20 multi-command with edits | I3, I4 |
+
+No file named `incremental*`, `skyframe*` or `analysis_cache*` exists at the pin.
+`thread_dump_test.sh`, `output_filter_test.sh` and `profiler_test.sh` exist but have no test
+target. `docs/upstream-tests.md` (the ranked causes of the v0.1.0 run) did not exist when this
+was written; the run's log ends "Executed 236 out of 237 tests: 76 tests pass, 1 fails to
+build, and 160 fail locally", unclassified.
+
+The M functions run today, because a server-less Blaze is trivially correct after an edit. They
+become the regression suite of Track I: every one must stay green at I4, I5 and I6, and because
+of the shared server per shard a wrong kept graph also shows up as a failure in an unrelated
+later function of the same file.
+
+### 4.4 Java and C++ unit tests to port with each package (sub-agent, `grep -c "@Test"`)
+
+- `lib/server`: `GrpcServerTest` 17, `InstallBaseGarbageCollectorTest` 7, `PidFileWatcherTest`
+  6, `IdleTaskManagerTest` 5, `ServerWatcherRunnableTest` 5, `CommandManagerTest` 4,
+  `ShutdownHooksTest` 2: 46 (S3, S4).
+- `lib/runtime`: `BlazeCommandDispatcherTest` 21, `CommandInterruptionTest` 9,
+  `BlazeRuntimeTest` 14 (S2).
+- `src/test/cpp`: `blaze_util_test.cc` 28, `blaze_util_posix_test.cc` 3 and the option tests
+  (S1; whether the option tests are already ported I did not check).
+- Evaluator: `crates/blaze_skyframe/src/tests/not_ported.rs` holds 122 ignored stubs. By
+  reason: 58 dirty nodes, versions, change pruning; 7 `delete`/`deleteDirty`; 6 progress
+  receiver; 6 stored events; 2 value equality; 1 inject-replaces-node: **80 that I1 must turn
+  green**. The other 42 stay ignored (14 rewinding, 5 partial reevaluation, 4 `dependOnFuture`,
+  4 `SkyKeyComputeState`, and smaller groups). New ports for I1:
+  `IncrementalInMemoryNodeEntryTest` 32, `EagerInvalidatorTest` 14, `ReverseDepsUtilityTest` 7.
+- Invalidation (I3): `FilesystemValueCheckerTest` 52,
+  `FileSystemValueCheckerInferringAncestorsTest` 21, `DirtinessCheckerUtilsTest` 10,
+  `SequencedSkyframeExecutorTest` 35, `pkgcache/IncrementalLoadingTest` 19; with `--watchfs`
+  (I7) `DiffAwarenessManagerTest` 11, `LocalDiffAwarenessTest` 15.
+- Execution (I6): `TimestampBuilderTest` 11, `OutputsInvalidationIntegrationTest` 9;
+  `ActionCacheCheckerTest` 44 belongs to the existing port.
+
+### 4.5 Stress design: incremental equals clean
+
+**Evaluator level** (package I1, inside `crates/blaze_skyframe` tests, no Bazel involved). A
+seeded generator builds a random graph of functions over integer leaves (the `GraphTester`
+harness in `src/tests.rs` already expresses this), including functions that fail, fail
+transiently, form cycles under some leaf values, and request different deps depending on a
+dep's value. A random sequence of operations follows: change leaves, inject, `invalidate`,
+`delete(pred)`, evaluate with or without keep_going, interrupt at a random point. After every
+evaluation, for every requested root: value, error and cycle info equal those of a fresh
+evaluator given the same leaves; the set of reported events is equal; and no function ran
+whose transitive leaves are unchanged since its last successful run (minimality, a weaker
+statement than Java's exact counts, which the 80 ported tests pin).
+
+**Build level** (`scripts/server/stress`, packages I4 to I6). Workspaces: a generated one that
+contains every construct with its own invalidation path (sources, globs, subpackages,
+`.bzl` loads and macros, a Starlark rule with an aspect, `select` on a `config_setting`, a
+genrule tree artifact, a test, a `local_repository`/`local_path_override`, a module
+extension reading a file and an environment variable, a symlinked source), plus copies of
+brotli and re2. A seed gives a sequence of 30 steps; each step is one mutation and one
+command.
+
+Mutations: edit a source (semantic; comment only; `touch` only); edit a BUILD file (comment
+only; add or remove a dep; add, remove or rename a target); edit a `.bzl` (used function;
+unused function); add or delete a file matched by a glob; create or delete a BUILD file inside
+a package (changes package boundaries); retarget a symlink; turn a file into a directory; edit
+`MODULE.bazel`; change a flag (`-c opt`, `--copt`, `--define`, a Starlark flag, `--action_env`,
+`--keep_going`); change a client environment variable a repository rule reads; delete or
+overwrite an output under `bazel-bin`; introduce a syntax error and repair it at a later step;
+revert an earlier mutation exactly. Commands: `build`, `test`, `query`, `cquery`, `aquery`,
+occasionally `clean`, `shutdown`, a build interrupted by SIGINT after a random delay, two
+commands at once.
+
+Checks after each step, with the incremental server A and a fresh server B (new output base,
+copy of the workspace as it is at that step, same Blaze binary):
+
+| Item | Compared how |
+| --- | --- |
+| exit code | equal |
+| `query`, `cquery`, `aquery` output | equal as normalised items (the oracle surfaces' normalisers) |
+| output tree | sha256 and exec bit of every file under `bazel-bin`; existence under `bazel-testlogs` |
+| action keys | equal (from `aquery`) |
+| error and warning messages | equal as a set per command (this catches lost replayed events) |
+| test results | equal statuses |
+| lockfile | byte equal |
+| not compared between A and B | process counts, cache hits, "packages loaded": these legitimately differ and go to the oracle comparison |
+
+And the same sequence on real Bazel (reference 1) gives the comparison that B cannot: the spawn
+set per step from the execution log, the "N processes" line, the analysis counts and the
+analysis-cache messages. A third run with Blaze under `--notrack_incremental_state` separates
+"kept graph is wrong" from "this command is wrong anyway".
+
+A failing seed is reduced by removing steps while the failure stays (delta debugging on the
+step list) and stored as a `scripts/w4/scenarios` directory, which is why 4.2 adds edit steps
+to the probe. Runs go under `systemd-run --user --collect --wait -p MemoryMax=12G -p
+MemorySwapMax=0` (AGENTS.md). Gate for switching a phase on (I4, I5, I6): N seeds green on the
+generated workspace and on both corpus projects, N chosen by root; I suggest 200 seeds of 30
+steps per phase as a first bar, and a standing nightly run afterwards.
+
+@@SECTION-5@@
+

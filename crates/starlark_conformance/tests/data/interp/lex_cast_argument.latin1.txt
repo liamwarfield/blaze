@@ -1,0 +1,3 @@
+SYNTAX lex_cast_argument.star:1:7: name 'cast' is not defined
+SYNTAX lex_cast_argument.star:1:25: name 'cast' is not defined
+SYNTAX lex_cast_argument.star:1:49: name 'cast' is not defined

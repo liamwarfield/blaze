@@ -96,7 +96,7 @@ com/google/devtools/build/lib/bazel/bzlmod/BazelModuleResolutionFunctionTest.jav
 com/google/devtools/build/lib/bazel/bzlmod/CompiledModuleFileTest.java	com/google/devtools/build/lib/bazel/bzlmod/CompiledModuleFile.java	PORTED	blaze_bzlmod	13	13	13	0
 com/google/devtools/build/lib/bazel/bzlmod/DiscoveryTest.java	com/google/devtools/build/lib/bazel/bzlmod/Discovery.java	PORTED	blaze_bzlmod_model	13	13	13	4
 com/google/devtools/build/lib/bazel/bzlmod/IndexRegistryTest.java	com/google/devtools/build/lib/bazel/bzlmod/IndexRegistry.java	PORTED	blaze_bzlmod_model	16	16	16	1
-com/google/devtools/build/lib/bazel/bzlmod/InterimModuleTest.java	com/google/devtools/build/lib/bazel/bzlmod/InterimModule.java	PARTIAL	blaze_bzlmod_model	1	0	1	0
+com/google/devtools/build/lib/bazel/bzlmod/InterimModuleTest.java	com/google/devtools/build/lib/bazel/bzlmod/InterimModule.java	PORTED	blaze_bzlmod_model	1	0	1	0
 com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunctionTest.java	com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunction.java	PORTED	blaze_bzlmod	72	72	72	17
 com/google/devtools/build/lib/bazel/bzlmod/ModuleTest.java	com/google/devtools/build/lib/bazel/bzlmod/Module.java	PARTIAL	blaze_bzlmod_model	3	3	3	1
 com/google/devtools/build/lib/bazel/bzlmod/RegistryFactoryTest.java	com/google/devtools/build/lib/bazel/bzlmod/RegistryFactory.java	PORTED	blaze_bzlmod_model	2	0	2	0
@@ -336,7 +336,7 @@ com/google/devtools/build/lib/runtime/UiStateTrackerTest.java	com/google/devtool
 com/google/devtools/build/lib/runtime/commands/ConfigCommandTest.java	com/google/devtools/build/lib/runtime/commands/ConfigCommand.java	PARTIAL	blaze_optdefs	10	0	0	0
 com/google/devtools/build/lib/runtime/commands/DumpCommandTest.java	com/google/devtools/build/lib/runtime/commands/DumpCommand.java	PARTIAL	blaze_optdefs	2	0	0	0
 com/google/devtools/build/lib/runtime/commands/QueryCommandTest.java	com/google/devtools/build/lib/runtime/commands/QueryCommand.java	PORTED	blaze_query	1	0	0	0
-com/google/devtools/build/lib/runtime/commands/QueryCommandUtilsTest.java	com/google/devtools/build/lib/runtime/commands/QueryCommandUtils.java	PARTIAL	blaze_cquery	1	0	0	0
+com/google/devtools/build/lib/runtime/commands/QueryCommandUtilsTest.java	com/google/devtools/build/lib/runtime/commands/QueryCommandUtils.java	PORTED	blaze_cquery	1	0	0	0
 com/google/devtools/build/lib/runtime/commands/RunCommandLineTest.java	com/google/devtools/build/lib/runtime/commands/RunCommandLine.java	PORTED	blaze_runtime	10	0	10	5
 com/google/devtools/build/lib/runtime/commands/TargetPatternsHelperTest.java	com/google/devtools/build/lib/runtime/commands/TargetPatternsHelper.java	PORTED	blaze_runtime	5	5	5	0
 com/google/devtools/build/lib/runtime/commands/VersionCommandTest.java	com/google/devtools/build/lib/runtime/commands/VersionCommand.java	PORTED	blaze_runtime	5	0	5	0

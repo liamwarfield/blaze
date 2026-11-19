@@ -69,6 +69,8 @@ SCOPE_RULES = [
     ("OUT_OF_SCOPE_BY_CONTRACT", r"com/google/devtools/build/docgen/", "doc generator, not part of the bazel binary"),
     ("OUT_OF_SCOPE_BY_CONTRACT", L + r"profiler/memory/", "memory instrumentation (PORTING.md Skip only)"),
     ("OUT_OF_SCOPE_BY_CONTRACT", L + r"(profiler/MemoryProfiler|buildtool/SkyframeMemoryDumper)\.java$", "memory instrumentation (--memory_profile, dump --memory)"),
+    ("OUT_OF_SCOPE_BY_CONTRACT", L + r"(util/(ObjectGraphTraverser|ShallowObjectSizeComputer|MemoryAccountant)|buildtool/(BuildObjectTraverser|CollectionObjectTraverser))\.java$", "memory instrumentation (object-size accounting for dump --memory)"),
+    ("JVM_ONLY", L + r"(collect/(compacthashmap/|compacthashset/|ImmutableSharedKeyMap|CompactImmutableMap|ImmutableSortedKeyListMultimap|ConcurrentIdentitySet)|util/LongArrayList|concurrent/(BlazeInterners|PooledInterner))", "memory-compact Java collections and interners; PORTING.md Types maps them to Rust collections"),
     ("OUT_OF_SCOPE_BY_CONTRACT", L + r"metrics/(PostGCMemoryUseRecorder|MemoryUseRecorder|GarbageCollectionMetricsUtils)\w*\.java$", "memory instrumentation"),
     ("OUT_OF_SCOPE_BY_CONTRACT", r"/[Gg]oogle(?!Auth)\w*\.java$", "Google-internal (name says Google; GoogleAuth* kept)"),
     ("TEST_SUPPORT", r"/(testing|testutil|testutils)/", "test-support package"),
@@ -80,34 +82,39 @@ TRIVIAL_MAX_LOC = 30   # GENERATED_OR_TRIVIAL: package-info, or no method bodies
 # Feature clusters for NEEDED files that are not PORTED. First match wins; path regexes like
 # SCOPE_RULES, or "class:" + regex on the file's simple name.
 CLUSTER_RULES = [
-    ("server-client-protocol", [L + r"server/", L + r"runtime/(BlazeCommandDispatcher|CommandDispatcher|BlazeServerStartupOptions|ServerCapabilities|BlockWaitingModule|IdleTask|InstrumentationOutput\w*|CommandLinePathFactory|CommandLog|ClientOptions|ConfigFlagDefinitions|UiOptions|LockingMode|RemoteServer\w*|GrpcServer\w*)", L + r"runtime/(BlazeRuntime|BlazeWorkspace|WorkspaceBuilder)\.java$", L + r"runtime/commands/(Shutdown|Clean)Command", L + r"util/(ProcessUtils|ThreadUtils|DebugLoggerConfigurator|LoggingUtil|InterruptedFailureDetails)", L + r"platform/"]),
-    ("incremental-evaluation", [r"com/google/devtools/build/skyframe/(InMemoryGraph|InMemoryNodeEntry|IncrementalInMemoryNodeEntry|NodeEntry|DirtyBuildingState|InvalidatingNodeVisitor|DirtyTrackingProgressReceiver|Differencer|RecordingDifferencer|SequencedRecordingDifferencer|Version|IntVersion|Delta|EvaluationVersion|ThinNodeEntry|DeletingInvalidationState|DirtinessCheckingState|ChangePruning|DelegatingNodeEntry|EmptyNodeEntry|NodeBatch|QueryableGraph|ProcessableGraph|NotifyingHelper|InMemoryMemoizingEvaluator|AbstractInMemoryMemoizingEvaluator|MemoizingEvaluator|SkyValueDirtinessChecker|GroupedDeps|InvalidationState|ReverseDepsUtility|DirtyType|LifecycleState|EvaluationContext|IncrementalityIntent|InMemoryGraphImpl|AbstractIncrementalInMemoryMemoizingEvaluator|EdgeType|PartialReevaluationMailbox)", L + r"skyframe/(DiffAwareness\w*|LocalDiffAwareness|FileSystemValueChecker\w*|FilesystemValueChecker\w*|DirtinessChecker\w*|ExternalFilesHelper|SkyValueDirtinessChecker|SequencedSkyframeExecutor\w*|SkyframeIncrementalBuildMonitor|PackageRootsNoSymlinkCreation|DiffAwarenessManager|ExternalDirtinessChecker|ModifiedOutputsReceiver|TopDownActionCache|BasicFilesystemDirtinessChecker|MissingDiffDirtinessChecker|UnionDirtinessChecker|DirectoryListingStateValue|PrecomputedValue|ActionExecutionInactivityWatchdog)", r"com/google/devtools/build/skyframe/state/", L + r"skyframe/(SkyframeExecutor|SkyframeExecutorWrappingWalkableGraph|SkyFocus\w*)\.java$", L + r"skyframe/skyfocus/", L + r"vfs/(BatchStat|ModifiedFileSet|DigestUtils|SyscallCache|BulkDeleter|OutputService|DelegateFileSystem|FileStateKey)"]),
-    ("symbolic-macros-and-lazy-loading", [r"/(MacroClass|MacroInstance|MacroFrame|MacroInstanceFunction|MacroInstanceValue|EvalMacroFunction|MacroFunctionApi|StarlarkMacro\w*|LazyMacro\w*|PackagePiece\w*|PackagePieceIdentifier|Materializer\w*|TargetRecorder|MacroVisibility\w*|Subrule\w*|StarlarkSubrule\w*)\.java$", L + r"packages/producers/", L + r"skyframe/(PackagePiece|EvalMacro|MacroInstance|PackageFunctionWithMultipleGlobDeps|PackageFunctionWithSingleGlobDep|PackageFunctionWithoutGlobDeps|GlobsFunction|GlobsValue)"]),
-    ("native-aspects", [L + r"analysis/(NativeAspectClass|ConfiguredAspectFactory|AspectCollection|AspectResolver|DependencyResolutionHelpers)", L + r"packages/(NativeAspectClass|AspectParameters|AspectDescriptor)", L + r"query2/query/aspectresolvers/"]),
+    ("server-client-protocol", [L + r"server/", L + r"runtime/(BlazeCommandDispatcher|CommandDispatcher|BlazeServerStartupOptions|ServerCapabilities|BlockWaitingModule|IdleTask\w*|CommandLog\w*|ClientOptions|LockingMode|RemoteServer\w*|GrpcServer\w*|ShutdownCommandHandler|SafeRequestLogging|CommandNameCache\w*)", L + r"runtime/(BlazeRuntime|BlazeWorkspace|WorkspaceBuilder|BlazeModule|ServerBuilder|StartupOptionsHandler)\.java$", L + r"runtime/commands/(Shutdown|Clean)Command", L + r"util/(ProcessUtils|ThreadUtils|DebugLoggerConfigurator|LoggingUtil|InterruptedFailureDetails|SimpleLogHandler|LogHandlerQuerier|FileHandlerQuerier|SingleLineFormatter|CustomExitCodePublisher|CustomFailureDetailPublisher|FileSystemLock|Classpath)\.java$", L + r"bugreport/"]),
+    ("invocation-policy-and-options", [r"com/google/devtools/common/options/", L + r"runtime/(InvocationPolicy\w*|ConfigFlagDefinitions)"]),
+    ("incremental-evaluation", [r"com/google/devtools/build/skyframe/(InMemoryGraph|InMemoryNodeEntry|IncrementalInMemoryNodeEntry|AbstractInMemoryNodeEntry|NodeEntry|DirtyBuildingState|InvalidatingNodeVisitor|DirtyTrackingProgressReceiver|DirtyAndInflightTrackingProgressReceiver|InflightOnlyTrackingProgressReceiver|Differencer|RecordingDifferencer|SequencedRecordingDifferencer|SequentialBuildDriver|Version|IntVersion|MinimalVersion|Delta|ThinNodeEntry|DeletingInvalidationState|ChangePruning\w*|DelegatingNodeEntry|EmptyNodeEntry|NodeBatch|QueryableGraph|ProcessableGraph|NotifyingHelper|NotifyingGraph|InMemoryMemoizingEvaluator|AbstractInMemoryMemoizingEvaluator|AbstractIncrementalInMemoryMemoizingEvaluator|MemoizingEvaluator|DirtyType|LifecycleState|InMemoryGraphImpl|EdgeType|PartialReevaluationMailbox|EagerInvalidator|ImmutableDiff|InvalidationProgressReceiver|IncrementalityIntent|NodeVersion|ReverseDepsUtility|InitialBuildingState|DirtyBuildingState|KeyToConsolidate|GraphInconsistencyReceiver|DelegatingGraphInconsistencyReceiver|ErrorTransienceValue|EmittedEventState|EvaluationProgressReceiver|CompoundEvaluationProgressReceiverBase|NonIncrementalInMemoryNodeEntry)\.java$", r"com/google/devtools/build/skyframe/state/", L + r"skyframe/(DiffAwareness\w*|LocalDiffAwareness|WatchServiceDiffAwareness|MacOSXFsEventsDiffAwareness|FileSystemValueChecker\w*|FilesystemValueChecker\w*|DirtinessChecker\w*|ExternalFilesHelper|SkyValueDirtinessChecker|SequencedSkyframeExecutor\w*|SkyframeIncrementalBuildMonitor|DiffAwarenessManager|ExternalDirtinessChecker|ModifiedOutputsReceiver|BasicFilesystemDirtinessChecker|MissingDiffDirtinessChecker|UnionDirtinessChecker|DirectoryListingStateValue|ActionExecutionInactivityWatchdog|NodeDroppingInconsistencyReceiver|HighWaterMarkLimiter|Skyfocus\w*|SkyframeFocuser|SkyFocus\w*|SkyframeExecutor|SkyframeExecutorWrappingWalkableGraph|PackageProgressReceiver|DefaultSyscallCache|ConsumedArtifactsTracker|TopDownActionCache\w*|BazelSkyframeExecutorConstants|SkyframeExecutorFactory|BazelSkyframeExecutorFactory|DirtinessCheckerUtils)\.java$", L + r"skyframe/skyfocus/", L + r"vfs/(BatchStat|ModifiedFileSet|SyscallCache|DelegatingSyscallCache|SingleFileSystemSyscallCache|XattrProvider|FileStatusWithDigestAdapter)\w*\.java$"]),
+    ("symbolic-macros-and-lazy-loading", [r"/(MacroClass|MacroInstance|MacroFrame|MacroInstanceFunction|MacroInstanceValue|EvalMacroFunction|MacroFunctionApi|StarlarkMacro\w*|LazyMacro\w*|PackagePiece\w*|PackagePieceIdentifier|Materializer\w*|TargetRecorder|MacroVisibility\w*|Subrule\w*|StarlarkSubrule\w*|NonFinalizerPackagePieces\w*|MacroOutputsCalculator)\.java$", L + r"packages/producers/", L + r"skyframe/(EvalMacro|MacroInstance|PackageFunctionWithMultipleGlobDeps|PackageFunctionWithSingleGlobDep|PackageFunctionWithoutGlobDeps|GlobsFunction|GlobsValue)"]),
+    ("remote-analysis-caching-serialization", [L + r"skyframe/serialization/", r"/\w*(Codec|Codecs|Serializ\w*|NestedSetStore|DeserializedKeys\w*)\.java$", L + r"skyframe/(RemoteConfiguredTargetValue|SkyValueRetrieverUtils|AbstractNestedFileOpNodes|FileOpNode\w*|MetadataConsumerForMetrics)\.java$", L + r"collect/nestedset/(NestedSetSerializationCache|DeferredNestedSetCodec|NestedSetCodecTestUtils|ArtifactNestedSetKey)"]),
+    ("native-aspects", [L + r"analysis/(NativeAspectClass|ConfiguredAspectFactory|AspectCollection|AspectResolver)", L + r"packages/(NativeAspectClass|AspectParameters|AspectDescriptor)", L + r"query2/query/aspectresolvers/"]),
     ("coverage", [r"/(Coverage\w*|InstrumentedFiles\w*|LcovMerger\w*|BaselineCoverage\w*|InstrumentationFilter\w*|CoverageReport\w*)\.java$", L + r"bazel/coverage/", L + r"runtime/commands/CoverageCommand"]),
     ("workers", [L + r"worker/", L + r"sandbox/\w*Worker"]),
     ("dynamic-execution", [L + r"dynamic/"]),
-    ("action-rewinding", [L + r"skyframe/rewinding/", r"/(LostInputs\w*|ActionRewind\w*|RewindingStrategy\w*|LostInputsExecException|ImportantOutputHandler\w*)\.java$"]),
-    ("include-scanning", [L + r"includescanning/", L + r"rules/cpp/(IncludeScann\w*|IncludeParser|IncludeProblems|SwigIncludeScanner|CppIncludeScanningContext\w*|ScanningIncludeHelper)"]),
-    ("java-rules-in-core", [L + r"rules/java/", L + r"bazel/rules/java/", L + r"starlarkbuildapi/java/", r"/(Java\w*|Jvm\w*)\.java$"]),
+    ("action-rewinding", [L + r"skyframe/rewinding/", r"/(LostInputs\w*|ActionRewind\w*|RewindingStrategy\w*|ImportantOutputHandler\w*)\.java$"]),
+    ("include-scanning", [L + r"includescanning/", L + r"rules/cpp/(IncludeScann\w*|IncludeParser|IncludeProblems|SwigIncludeScanner|CppIncludeScanningContext\w*|ScanningIncludeHelper)", L + r"standalone/DummyCppIncludeScanningContext"]),
+    ("java-rules-in-core", [L + r"rules/java/", L + r"bazel/rules/java/", L + r"starlarkbuildapi/java/", L + r"[\w/]*/(Java\w*|Jvm\w*)\.java$"]),
     ("android-apple-objc-proto", [L + r"rules/(android|apple|objc|proto)/", L + r"starlarkbuildapi/(android|apple|objc|proto)/", r"/(Android|Apple|Objc|J2Objc|XcodeConfig)\w*\.java$"]),
-    ("query-output-formatters", [L + r"query2/query/output/", L + r"query2/(aquery|cquery|common)/", L + r"query2/\w+\.java$", L + r"query2/compat/", L + r"rules/genquery/", L + r"runtime/commands/(Query|CQuery|AQuery)\w*", L + r"buildtool/(QueryProcessor|AqueryProcessor|CqueryProcessor|PostAnalysisQueryProcessor)", L + r"query2/engine/", L + r"query2/query/"]),
-    ("profiler-and-metrics", [L + r"profiler/", L + r"metrics/", L + r"runtime/(MemoryProfiler|BuildSummaryStatsModule|CriticalPath\w*|CommandProfilerModule|ProfilerStartedEvent|BugReportingExceptionHandler|ActionExecutionStatusReporter)", L + r"packages/metrics/", L + r"buildtool/buildevent/BuildMetrics"]),
-    ("remote-execution-and-caching", [L + r"remote/", L + r"authandtls/", L + r"runtime/(CommandLinePathFactory|RemoteRepository\w*)", L + r"bazel/repository/downloader/(GrpcRemoteDownloader|Http\w*|DelegatingDownloader)", L + r"exec/(SpawnCache|RemoteLocalFallbackRegistry)"]),
-    ("build-event-service", [L + r"buildeventservice/", L + r"buildeventstream/", L + r"runtime/(BuildEvent\w*|BuildEventStreamer\w*|BuildEventArtifactUploader\w*|CountingArtifactGroupNamer|SynchronizedOutputStream)", L + r"buildtool/buildevent/"]),
-    ("remote-analysis-caching-serialization", [L + r"skyframe/serialization/"]),
-    ("starlark-debugger-and-docs", [L + r"starlarkdebug/", L + r"starlarkdocextract/", L + r"rules/starlarkdocextract/", L + r"bazel/debug/"]),
-    ("commands", [L + r"runtime/commands/", L + r"bazel/commands/", L + r"runtime/mobileinstall/", L + r"bazel/bzlmod/modcommand/", L + r"runtime/(ProjectFile|Project\w*)"]),
-    ("sandboxing-and-local-exec", [L + r"sandbox/", L + r"exec/", L + r"shell/", L + r"standalone/", L + r"unix/", L + r"actions/(Spawn|Resource|Local)\w*"]),
-    ("repositories-and-bzlmod", [L + r"bazel/bzlmod/", L + r"bazel/repository/", L + r"rules/repository/", L + r"repository/", L + r"skyframe/(Repository\w*|\w*RepositoryDirectory\w*|ClientEnvironment\w*|RepoFile\w*|Bzlmod\w*)", L + r"bazel/(BazelRepositoryModule|BazelRepositoryModule\w*)"]),
-    ("configuration-and-transitions", [L + r"analysis/config/", L + r"skyframe/config/", L + r"rules/config/", L + r"analysis/platform/", L + r"rules/platform/", L + r"skyframe/toolchains/", L + r"analysis/constraints/", L + r"analysis/producers/"]),
+    ("query-and-genquery", [L + r"query2/", L + r"rules/genquery/", L + r"runtime/commands/(Query|CQuery|AQuery)\w*", L + r"buildtool/(QueryProcessor|AqueryProcessor|CqueryProcessor|PostAnalysisQueryProcessor)", L + r"graph/", L + r"skyframe/(TraversalInfoRootPackageExtractor|TransitiveTraversal\w*|TransitiveBaseTraversalFunction|CollectTargetsInPackage\w*|PrepareDepsOfTargetsUnderDirectory\w*|RecursivePackageProviderBackedTargetPatternResolver|TargetExcludingFilteringPolicy|SimplePackageIdentifierBatchingCallback)", L + r"skyframe/actiongraph/v2/", L + r"pkgcache/"]),
+    ("profiler-and-metrics", [L + r"profiler/", L + r"metrics/", L + r"runtime/(BuildSummaryStatsModule|CriticalPath\w*|CommandProfilerModule|ProfilerStartedEvent|ActionExecutionStatusReporter|ExecutionGraphModule|MemoryPressure\w*|InstrumentationOutput\w*|LocalInstrumentationOutput|BlazeOptionHandler)", L + r"packages/metrics/", L + r"buildtool/buildevent/BuildMetrics", L + r"actions/(ActionExecutionStatusReporter|ActionConcurrencyMeter|AggregatedSpawnMetrics|FullSpawnMetrics)", L + r"util/(ResourceUsage|ConcurrencyMeter|LatestObjectMetricExporter)\.java$", L + r"skyframe/SkyKeyStats"]),
+    ("remote-execution-and-caching", [L + r"remote/", L + r"authandtls/", L + r"bazel/repository/downloader/(GrpcRemoteDownloader|Http\w*|DelegatingDownloader)", L + r"exec/(SpawnCache|RemoteLocalFallbackRegistry)", L + r"vfs/(PathTransformingDelegateFileSystem|DiskBackedFileSystem|LocalOutputService|OutputService|BulkDeleter)\w*\.java$", L + r"network/"]),
+    ("build-event-service", [L + r"buildeventservice/", L + r"buildeventstream/", L + r"runtime/(BuildEvent\w*|BuildEventStreamer\w*|BuildEventArtifactUploader\w*|CountingArtifactGroupNamer|SynchronizedOutputStream)", L + r"buildtool/buildevent/", L + r"causes/"]),
+    ("starlark-debugger-and-docs", [L + r"starlarkdebug/", L + r"starlarkdocextract/", L + r"rules/starlarkdocextract/", L + r"bazel/debug/", L + r"bazel/repository/starlark/StarlarkRepositoryDebugModule"]),
+    ("commands", [L + r"runtime/commands/", L + r"bazel/commands/", L + r"runtime/mobileinstall/", L + r"bazel/bzlmod/modcommand/", L + r"runtime/(ProjectFile\w*|Project\w*)"]),
+    ("standalone-package-loader", [L + r"skyframe/packages/"]),
+    ("sandboxing-and-local-exec", [L + r"sandbox/", L + r"exec/", L + r"shell/", L + r"standalone/", L + r"unix/", L + r"actions/(Spawn\w*|Resource\w*|Local\w*|SimpleSpawn|BaseSpawn|ExecutionRequirements)\.java$", L + r"runtime/ProcessWrapper"]),
+    ("repositories-and-bzlmod", [L + r"bazel/bzlmod/", L + r"bazel/repository/", L + r"rules/repository/", L + r"repository/", L + r"skyframe/(Repository\w*|\w*RepositoryDirectory\w*|ClientEnvironment\w*|RepoFile\w*|Bzlmod\w*|LocalRepositoryLookup\w*|RepoEnvironment\w*|ActionEnvironmentFunction)", L + r"bazel/(BazelRepositoryModule\w*)"]),
+    ("configuration-and-transitions", [L + r"analysis/config/", L + r"skyframe/config/", L + r"rules/config/", L + r"analysis/platform/", L + r"rules/platform/", L + r"skyframe/toolchains/", L + r"analysis/constraints/", L + r"analysis/producers/", L + r"skyframe/(BuildOptionsScope\w*|PlatformMapping\w*|Project\w*|BuildConfiguration\w*|StarlarkBuildSettings\w*)"]),
     ("cpp-rules", [L + r"rules/cpp/", L + r"bazel/rules/cpp/", L + r"starlarkbuildapi/cpp/"]),
     ("python-and-other-native-rules", [L + r"rules/", L + r"bazel/rules/"]),
-    ("analysis-core", [L + r"analysis/", L + r"starlarkbuildapi/", L + r"skyframe/(ConfiguredTarget\w*|Aspect\w*|\w*Analysis\w*|SkyframeBuildView|BuildConfiguration\w*|StarlarkAspect\w*|TargetCompletor|ConfiguredValueCreation\w*|PlatformMapping\w*)"]),
-    ("packages-and-loading", [L + r"packages/", L + r"pkgcache/", L + r"skyframe/(Package\w*|Bzl\w*|Glob\w*|TargetPattern\w*|\w*Recursive\w*|StarlarkBuiltins\w*|Ignored\w*|ContainingPackage\w*|CollectPackages\w*|PrepareDepsOfPattern\w*|BuildFile\w*|ProcessPackageDirectory\w*|TargetMarker\w*|TransitiveTarget\w*|TargetLoading\w*|LoadedPackage\w*|SkyframePackage\w*|BzlCompile\w*|StarlarkFile\w*|CompiledBuildFile\w*|DirectoryListing\w*|File\w*|DirectoryTree\w*|RepositoryMapping\w*|ProjectFiles\w*|WorkspaceName\w*|ToplevelStarlarkAspect\w*)", L + r"cmdline/"]),
-    ("execution-and-action-graph", [L + r"actions/", L + r"skyframe/", L + r"buildtool/", r"com/google/devtools/build/skyframe/"]),
-    ("runtime-and-ui", [L + r"runtime/", L + r"bazel/", L + r"events/", L + r"outputfilter/", L + r"util/io/", L + r"buildeventstream/"]),
-    ("base-libraries", [L + r"util/", L + r"concurrent/", L + r"vfs/", L + r"collect/", L + r"io/", L + r"clock/", L + r"graph/", L + r"supplier/", L + r"versioning/", L + r"bugreport/", L + r"network/", L + r"causes/", r"com/google/devtools/common/options/"]),
+    ("analysis-core", [L + r"analysis/", L + r"starlarkbuildapi/", L + r"skyframe/(ConfiguredTarget\w*|Aspect\w*|\w*Analysis\w*|SkyframeBuildView|StarlarkAspect\w*|ConfiguredValueCreation\w*|AbstractConfiguredTargetValue|ActionLookupConflict\w*|ToplevelStarlarkAspect\w*|ArtifactConflict\w*|BuildTopLevelAspects\w*)"]),
+    ("packages-and-loading", [L + r"packages/", L + r"skyframe/(Package\w*|Bzl\w*|CachedBzlLoadData|Glob\w*|TargetPattern\w*|\w*Recursive\w*|StarlarkBuiltins\w*|Ignored\w*|ContainingPackage\w*|CollectPackages\w*|PrepareDepsOfPattern\w*|BuildFile\w*|ProcessPackageDirectory\w*|TargetMarker\w*|TargetLoading\w*|LoadedPackage\w*|SkyframePackage\w*|BzlCompile\w*|StarlarkFile\w*|CompiledBuildFile\w*|DirectoryListing\w*|File\w*|DirectoryTree\w*|RepositoryMapping\w*|WorkspaceName\w*|CompactSortedDirents|TestsForTargetPattern\w*|TestExpansion\w*|CycleUtils)", L + r"cmdline/", L + r"io/"]),
+    ("skyframe-engine", [r"com/google/devtools/build/skyframe/"]),
+    ("execution-and-action-graph", [L + r"actions/", L + r"skyframe/", L + r"buildtool/"]),
+    ("runtime-and-ui", [L + r"runtime/", L + r"bazel/", L + r"events/", L + r"outputfilter/", L + r"util/io/"]),
+    ("concurrency", [L + r"concurrent/", L + r"supplier/"]),
+    ("vfs-and-hashing", [L + r"vfs/"]),
+    ("base-libraries", [L + r"util/", L + r"collect/", L + r"clock/", L + r"versioning/"]),
     ("other", [r"."]),
 ]
 
@@ -622,6 +629,7 @@ def build_model():
 
     # method marks: (file, idx) -> set of kinds ("name","line")
     M.marks = collections.defaultdict(set)
+    M.type_marked = set()
     M.file_markers = collections.Counter()
     M.file_marker_crates = collections.defaultdict(collections.Counter)
     M.marker_cat = collections.Counter()
@@ -652,6 +660,8 @@ def build_model():
                 return cps[-len(clsc):] == clsc or cps[-1] == clsc[-1]
             if ctor:
                 named = [i for i, m in enumerate(meths) if m[4] == "ctor" and cpmatch(m[0])]
+                if not named and any(cpmatch(cp) for cp, k, a, b in P.types):
+                    return "type: implicit constructor (class declares none)", []
             else:
                 named = [i for i, m in enumerate(meths) if m[1] == last and cpmatch(m[0])]
                 if not named:
@@ -663,6 +673,8 @@ def build_model():
                     return "method: by name (no line)", named
                 return "method: by name (line elsewhere)", named
             is_type = any(cp.split(".")[-1] == last for cp, k, a, b in P.types)
+            if is_type:
+                M.type_marked.add((f, last))
             if is_type or (not clsc and last in by_type):
                 if in_range is not None:
                     return "type: names a class (line inside a method)", []
@@ -671,6 +683,8 @@ def build_model():
                 if in_range is not None:
                     return "field/other: identifier in file (line inside a method)", [in_range]
                 return "field/other: identifier in file", []
+            if len(comps) == 1 and last.islower() and last not in P.idents:
+                return "file-level: path followed by prose", []
             if in_range is not None:
                 return "method: by line only (name not found: renamed or wrong)", [in_range]
             return "UNRESOLVED: name not in file, line not in a method", []
@@ -717,6 +731,8 @@ def build_model():
                         c2, idxs = resolve_member(target, member, None)
                         cat = "stale path (file moved), by file name: " + c2
                         M.marker_cat[cat] += 1
+                        if "UNRESOLVED" in c2:
+                            unresolved.append((mk, cat))
                         M.file_markers[target] += 1
                         M.file_marker_crates[target][mk["crate"]] += 1
                         for i in idxs:
@@ -737,10 +753,8 @@ def build_model():
                 cands = set(by_type[comps[0]])
             if not cands:
                 tcand = [t for t in M.test_files if os.path.basename(t)[:-5] == comps[0]]
-                cat = "test: names a src/test/java class (no path)" if tcand else "UNRESOLVED: no path, class not found"
+                cat = "test: names a src/test/java class (no path)" if tcand else "library or prose: no path, not a Bazel class (JDK, Guava, ...)"
                 M.marker_cat[cat] += 1
-                if not tcand:
-                    unresolved.append((mk, cat))
                 continue
             res = []
             for f in sorted(cands):
@@ -786,6 +800,20 @@ def build_model():
     for (f, i) in list(M.marks):
         marked_names[f].add(M.parsed[f].methods[i][1])
     M.impl_marked = 0
+    # Parameterless abstract accessors of an @AutoValue / @AutoOneOf class or a record whose
+    # type is named by a marker count as marked ("type"): they become fields or variants.
+    M.auto_marked = 0
+    for f in M.files:
+        if not any(tf == f for tf, _ in M.type_marked):
+            continue
+        src = open(os.path.join(MAIN, f), encoding="utf-8", errors="replace").read().split("\n")
+        if not re.search(r"@AutoValue|@AutoOneOf|\brecord\s", "\n".join(src)):
+            continue
+        for i, (cp, nm, a, b, k, t) in enumerate(M.parsed[f].methods):
+            if k == "abstract" and (f, i) not in M.marks and (f, cp.split(".")[-1]) in M.type_marked \
+                    and re.search(r"\b" + re.escape(nm) + r"\s*\(\s*\)", " ".join(src[a - 1:b])):
+                M.marks[(f, i)].add("type")
+                M.auto_marked += 1
     for f in M.files:
         meths = M.parsed[f].methods
         for i, (cp, nm, a, b, k, t) in enumerate(meths):
@@ -825,6 +853,7 @@ def build_model():
             M.unported_ambiguous += 1
         M.unported_sites[fs[0]] += 1
     M.skipped_sites = collections.Counter()
+    M.skip_marked = 0
     M.skipped_reasons = collections.defaultdict(list)
     for rel, no, cr, reason, near, ctx in M.rust.skipped:
         f = None
@@ -839,6 +868,13 @@ def build_model():
         if f:
             M.skipped_sites[f] += 1
             M.skipped_reasons[f].append(reason)
+        # `// PORT: skipped, <why>: Class.method` marks that method as handled ("skipped").
+        for cm in re.finditer(r"\b([A-Z][\w$]*)\.([a-z][\w$]*)\b", reason):
+            for g in by_name.get(cm.group(1), ()):
+                for i, m in enumerate(M.parsed[g].methods):
+                    if m[1] == cm.group(2) and (g, i) not in M.marks:
+                        M.marks[(g, i)].add("skipped")
+                        M.skip_marked += 1
     M.ignore_by_class = collections.Counter()
     for rel, no, cr, fn, ign, reason in M.rust.tests:
         if ign and reason:
@@ -961,7 +997,7 @@ def test_map(M):
 def norm_reason(r):
     if r is None:
         return "(no reason)"
-    r = re.sub(r"\s+", " ", r).strip()
+    r = re.sub(r"\s+", " ", re.sub(r"\\\s*", " ", r)).strip()
     return r[:110]
 
 
@@ -1037,7 +1073,7 @@ def gen_totals(M):
                   sum(r["eff_marked"] for r in rs)))
     t.append(("total", len(rows), sum(r["loc"] for r in rows), sum(r["eff"] for r in rows),
               sum(r["eff_marked"] for r in rows)))
-    out.append("By status (methods include abstract ones; an abstract method is marked when its implementation in a direct subtype is):\n")
+    out.append("By status. Methods include abstract ones. An abstract method also counts as marked when the method of the same name in a direct subtype is marked (impl), or when it is a parameterless accessor of an @AutoValue/@AutoOneOf class whose type a marker names (type).\n")
     out.append(md_table(["status", "files", "lines", "methods", "methods marked"], t))
     t = []
     for rsn in REASONS:

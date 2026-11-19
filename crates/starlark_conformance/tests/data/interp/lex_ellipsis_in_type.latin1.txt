@@ -1,0 +1,4 @@
+SYNTAX lex_ellipsis_in_type.star:1:8: syntax error at ':': type annotations are disallowed
+SYNTAX lex_ellipsis_in_type.star:2:4: indentation error
+SYNTAX lex_ellipsis_in_type.star:1:27: contains syntax errors
+SYNTAX lex_ellipsis_in_type.star:2:4: contains syntax errors

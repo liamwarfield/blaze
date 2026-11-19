@@ -142,7 +142,7 @@ pub fn register_repo_rules_functions(
             crate::bzlmod::bazel_mod_tidy_function::compute(key, env)
         });
     builder.typed_function::<crate::bzlmod::bazel_fetch_all_function::BazelFetchAllKey, _>(
-        |key, env| crate::bzlmod::bazel_fetch_all_function::compute(key, env),
+        crate::bzlmod::bazel_fetch_all_function::compute,
     )
 }
 

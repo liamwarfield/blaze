@@ -54,7 +54,7 @@ com/google/devtools/build/lib/actions/AbstractCommandLine.java	com.google.devtoo
 com/google/devtools/build/lib/actions/Action.java	com.google.devtools.build.lib.actions	35	12	10	PORTED	-	0	blaze_exec	markers	12	10	5	0	0	-	-	lib/actions
 com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java	com.google.devtools.build.lib.actions	50	21	3	PARTIAL	NEEDED	2	blaze_actions	markers	21	3	4	0	0	execution-and-action-graph	-	lib/actions
 com/google/devtools/build/lib/actions/ActionCacheAwareAction.java	com.google.devtools.build.lib.actions	4	1	1	PORTED	-	0	blaze_exec	markers	1	1	2	0	0	-	-	lib/actions
-com/google/devtools/build/lib/actions/ActionCacheChecker.java	com.google.devtools.build.lib.actions	666	38	35	PORTED	-	2	blaze_exec	markers	38	35	40	0	0	-	-	lib/actions
+com/google/devtools/build/lib/actions/ActionCacheChecker.java	com.google.devtools.build.lib.actions	666	38	36	PORTED	-	2	blaze_exec	markers	38	36	40	0	0	-	-	lib/actions
 com/google/devtools/build/lib/actions/ActionCacheUtils.java	com.google.devtools.build.lib.actions	34	4	4	PORTED	-	0	blaze_exec	markers	4	4	4	0	0	-	-	lib/actions
 com/google/devtools/build/lib/actions/ActionChangePrunedEvent.java	com.google.devtools.build.lib.actions	2	0	0	UNTOUCHED	GENERATED_OR_TRIVIAL	0	blaze_actions	package	0	0	0	0	0	-	no method bodies, loc <= 30	lib/actions
 com/google/devtools/build/lib/actions/ActionCompletionEvent.java	com.google.devtools.build.lib.actions	46	7	1	PARTIAL	NEEDED	0	blaze_sky_exec	markers	7	1	1	0	0	execution-and-action-graph	-	lib/actions
@@ -244,11 +244,11 @@ com/google/devtools/build/lib/analysis/ConfiguredTarget.java	com.google.devtools
 com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java	com.google.devtools.build.lib.analysis	682	18	18	PORTED	-	5	blaze_analysis	markers	18	18	20	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/ConfiguredTargetValue.java	com.google.devtools.build.lib.analysis	16	4	1	PARTIAL	NEEDED	0	blaze_analysis	markers	4	1	2	0	0	analysis-core	-	lib/analysis
 com/google/devtools/build/lib/analysis/DefaultInfo.java	com.google.devtools.build.lib.analysis	167	27	13	PARTIAL	NEEDED	0	blaze_analysis	markers	27	13	16	0	0	analysis-core	-	lib/analysis
-com/google/devtools/build/lib/analysis/DependencyKind.java	com.google.devtools.build.lib.analysis	97	21	7	PARTIAL	NEEDED	0	blaze_analysis	markers	21	7	11	0	0	analysis-core	-	lib/analysis
-com/google/devtools/build/lib/analysis/DependencyResolutionHelpers.java	com.google.devtools.build.lib.analysis	437	32	19	PORTED	-	0	blaze_sky_analysis	markers	32	19	20	0	0	-	-	lib/analysis
+com/google/devtools/build/lib/analysis/DependencyKind.java	com.google.devtools.build.lib.analysis	97	21	9	PARTIAL	NEEDED	0	blaze_analysis	markers	21	9	11	0	0	analysis-core	-	lib/analysis
+com/google/devtools/build/lib/analysis/DependencyResolutionHelpers.java	com.google.devtools.build.lib.analysis	437	32	24	PORTED	-	0	blaze_sky_analysis	markers	32	24	20	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/DormantDependency.java	com.google.devtools.build.lib.analysis	58	7	0	PARTIAL	NEEDED	2	blaze_packages	markers	7	0	1	0	0	analysis-core	-	lib/analysis
 com/google/devtools/build/lib/analysis/EventHandlingErrorReporter.java	com.google.devtools.build.lib.analysis	64	15	14	PORTED	-	0	blaze_analysis	markers	15	14	11	0	0	-	-	lib/analysis
-com/google/devtools/build/lib/analysis/ExecGroupCollection.java	com.google.devtools.build.lib.analysis	183	12	9	PORTED	-	1	blaze_analysis	markers	12	9	13	0	0	-	-	lib/analysis
+com/google/devtools/build/lib/analysis/ExecGroupCollection.java	com.google.devtools.build.lib.analysis	183	12	12	PORTED	-	1	blaze_analysis	markers	12	12	13	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/Expander.java	com.google.devtools.build.lib.analysis	136	19	19	PORTED	-	0	blaze_analysis	markers	19	19	21	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/ExtraActionArtifactsProvider.java	com.google.devtools.build.lib.analysis	49	5	5	PORTED	-	0	blaze_analysis	markers	5	5	6	0	1	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/ExtraActionUtils.java	com.google.devtools.build.lib.analysis	68	2	0	UNTOUCHED	NEEDED	0	blaze_analysis	package	2	0	0	0	0	analysis-core	-	lib/analysis
@@ -357,8 +357,8 @@ com/google/devtools/build/lib/analysis/actions/TemplateExpansionContext.java	com
 com/google/devtools/build/lib/analysis/actions/TemplateExpansionException.java	com.google.devtools.build.lib.analysis.actions	7	1	1	PORTED	-	0	blaze_actions	markers	1	1	2	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/AdditionalConfigurationChangeEvent.java	com.google.devtools.build.lib.analysis.config	12	2	0	UNTOUCHED	NEEDED	0	blaze_build_config	package	2	0	0	0	0	configuration-and-transitions	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/AutoCpuConverter.java	com.google.devtools.build.lib.analysis.config	46	2	1	PARTIAL	NEEDED	1	blaze_optdefs	markers	2	1	2	0	0	configuration-and-transitions	-	lib/analysis
-com/google/devtools/build/lib/analysis/config/BuildConfigurationInfo.java	com.google.devtools.build.lib.analysis.config	28	7	6	PORTED	-	0	blaze_actions	markers	7	6	4	0	0	-	-	lib/analysis
-com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java	com.google.devtools.build.lib.analysis.config	664	106	80	PORTED	-	2	blaze_build_config	markers	106	80	104	0	2	-	-	lib/analysis
+com/google/devtools/build/lib/analysis/config/BuildConfigurationInfo.java	com.google.devtools.build.lib.analysis.config	28	7	7	PORTED	-	0	blaze_actions	markers	7	7	4	0	0	-	-	lib/analysis
+com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java	com.google.devtools.build.lib.analysis.config	664	106	82	PORTED	-	2	blaze_build_config	markers	106	82	104	0	2	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/BuildOptionDetails.java	com.google.devtools.build.lib.analysis.config	102	10	9	PORTED	-	0	blaze_analysis	markers	10	9	9	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/BuildOptions.java	com.google.devtools.build.lib.analysis.config	427	53	33	PORTED	-	1	blaze_build_config	markers	53	33	36	0	3	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/BuildOptionsCache.java	com.google.devtools.build.lib.analysis.config	49	5	0	UNTOUCHED	NEEDED	0	blaze_build_config	package	5	0	0	0	0	configuration-and-transitions	-	lib/analysis
@@ -367,13 +367,13 @@ com/google/devtools/build/lib/analysis/config/CommonOptions.java	com.google.devt
 com/google/devtools/build/lib/analysis/config/CompilationMode.java	com.google.devtools.build.lib.analysis.config	26	4	2	PARTIAL	NEEDED	0	blaze_optdefs	markers	4	2	2	0	0	configuration-and-transitions	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/ConfigAwareAspectBuilder.java	com.google.devtools.build.lib.analysis.config	14	3	0	UNTOUCHED	NEEDED	0	blaze_build_config	package	3	0	0	0	0	configuration-and-transitions	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/ConfigConditions.java	com.google.devtools.build.lib.analysis.config	38	3	3	PORTED	-	0	blaze_analysis	markers	3	3	5	0	0	-	-	lib/analysis
-com/google/devtools/build/lib/analysis/config/ConfigMatchingProvider.java	com.google.devtools.build.lib.analysis.config	127	18	7	PARTIAL	NEEDED	0	blaze_analysis	markers	18	7	12	0	0	configuration-and-transitions	-	lib/analysis
+com/google/devtools/build/lib/analysis/config/ConfigMatchingProvider.java	com.google.devtools.build.lib.analysis.config	127	18	12	PORTED	-	0	blaze_analysis	markers	18	12	12	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/ConfigurationTransitionEvent.java	com.google.devtools.build.lib.analysis.config	21	3	2	PORTED	-	0	blaze_analysis	markers	3	2	2	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/ConfigurationValueEvent.java	com.google.devtools.build.lib.analysis.config	11	2	2	PORTED	-	0	blaze_build_config	markers	2	2	2	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/CoreOptionConverters.java	com.google.devtools.build.lib.analysis.config	291	24	14	PORTED	-	0	blaze_optdefs	markers	24	14	28	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/CoreOptions.java	com.google.devtools.build.lib.analysis.config	1055	15	14	PORTED	-	0	blaze_optdefs	markers	15	14	22	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java	com.google.devtools.build.lib.analysis.config	47	8	4	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	8	4	4	0	0	configuration-and-transitions	-	lib/analysis
-com/google/devtools/build/lib/analysis/config/ExecutionInfoModifier.java	com.google.devtools.build.lib.analysis.config	136	15	8	PORTED	-	0	blaze_optdefs	markers	15	8	12	0	0	-	-	lib/analysis
+com/google/devtools/build/lib/analysis/config/ExecutionInfoModifier.java	com.google.devtools.build.lib.analysis.config	136	15	13	PORTED	-	0	blaze_optdefs	markers	15	13	12	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java	com.google.devtools.build.lib.analysis.config	156	12	10	PORTED	-	3	blaze_analysis	markers	12	10	13	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/FeatureSet.java	com.google.devtools.build.lib.analysis.config	67	8	8	PORTED	-	0	blaze_packages	markers	8	8	17	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/config/Fragment.java	com.google.devtools.build.lib.analysis.config	49	10	10	PORTED	-	0	blaze_build_config	markers	10	10	11	0	1	-	-	lib/analysis
@@ -448,17 +448,17 @@ com/google/devtools/build/lib/analysis/platform/PlatformUtils.java	com.google.de
 com/google/devtools/build/lib/analysis/platform/PlatformValue.java	com.google.devtools.build.lib.analysis.platform	44	7	0	PARTIAL	NEEDED	1	blaze_build_config	markers	7	0	2	0	0	configuration-and-transitions	-	lib/analysis
 com/google/devtools/build/lib/analysis/platform/ToolchainInfo.java	com.google.devtools.build.lib.analysis.platform	61	8	5	PORTED	-	0	blaze_analysis	markers	8	5	15	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/platform/ToolchainTypeInfo.java	com.google.devtools.build.lib.analysis.platform	58	9	8	PORTED	-	0	blaze_analysis	markers	9	8	11	0	0	-	-	lib/analysis
-com/google/devtools/build/lib/analysis/producers/AttributeConfiguration.java	com.google.devtools.build.lib.analysis.producers	39	10	0	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	10	0	1	0	0	configuration-and-transitions	-	lib/analysis
+com/google/devtools/build/lib/analysis/producers/AttributeConfiguration.java	com.google.devtools.build.lib.analysis.producers	39	10	5	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	10	5	1	0	0	configuration-and-transitions	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyMapProducer.java	com.google.devtools.build.lib.analysis.producers	83	13	3	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	13	3	3	0	0	configuration-and-transitions	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java	com.google.devtools.build.lib.analysis.producers	251	21	12	PORTED	-	0	blaze_build_config	markers	21	12	14	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java	com.google.devtools.build.lib.analysis.producers	158	11	4	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	11	4	4	0	0	configuration-and-transitions	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/ConfiguredAspectProducer.java	com.google.devtools.build.lib.analysis.producers	95	7	6	PORTED	-	0	blaze_sky_analysis	markers	7	6	4	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/ConfiguredTargetAndDataProducer.java	com.google.devtools.build.lib.analysis.producers	171	11	8	PORTED	-	0	blaze_sky_analysis	markers	11	8	7	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/DependencyContext.java	com.google.devtools.build.lib.analysis.producers	26	3	2	PORTED	-	0	blaze_sky_analysis	markers	3	2	2	0	0	-	-	lib/analysis
-com/google/devtools/build/lib/analysis/producers/DependencyContextError.java	com.google.devtools.build.lib.analysis.producers	32	9	0	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	9	0	1	0	0	configuration-and-transitions	-	lib/analysis
+com/google/devtools/build/lib/analysis/producers/DependencyContextError.java	com.google.devtools.build.lib.analysis.producers	32	9	5	PORTED	-	0	blaze_sky_analysis	markers	9	5	1	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java	com.google.devtools.build.lib.analysis.producers	90	10	2	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	10	2	2	0	0	configuration-and-transitions	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java	com.google.devtools.build.lib.analysis.producers	168	15	6	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	15	6	6	0	0	configuration-and-transitions	-	lib/analysis
-com/google/devtools/build/lib/analysis/producers/DependencyError.java	com.google.devtools.build.lib.analysis.producers	85	23	1	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	23	1	2	0	0	configuration-and-transitions	-	lib/analysis
+com/google/devtools/build/lib/analysis/producers/DependencyError.java	com.google.devtools.build.lib.analysis.producers	85	23	12	PORTED	-	0	blaze_sky_analysis	markers	23	12	2	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java	com.google.devtools.build.lib.analysis.producers	344	29	5	PARTIAL	NEEDED	1	blaze_sky_analysis	markers	29	5	5	0	0	configuration-and-transitions	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/DependencyProducer.java	com.google.devtools.build.lib.analysis.producers	449	34	16	PARTIAL	NEEDED	1	blaze_sky_analysis	markers	34	16	15	0	0	configuration-and-transitions	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/MissingEdgeError.java	com.google.devtools.build.lib.analysis.producers	88	3	3	PORTED	-	0	blaze_sky_analysis	markers	3	3	3	0	0	-	-	lib/analysis
@@ -467,7 +467,7 @@ com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java	com
 com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java	com.google.devtools.build.lib.analysis.producers	313	22	16	PORTED	-	0	blaze_sky_analysis	markers	22	16	12	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java	com.google.devtools.build.lib.analysis.producers	283	26	7	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	26	7	8	0	0	configuration-and-transitions	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationData.java	com.google.devtools.build.lib.analysis.producers	16	5	0	UNTOUCHED	GENERATED_OR_TRIVIAL	0	blaze_sky_analysis	package	5	0	0	0	0	-	no method bodies, loc <= 30	lib/analysis
-com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java	com.google.devtools.build.lib.analysis.producers	266	31	11	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	31	11	12	0	0	configuration-and-transitions	-	lib/analysis
+com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java	com.google.devtools.build.lib.analysis.producers	266	31	15	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	31	15	12	0	0	configuration-and-transitions	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/TargetProducer.java	com.google.devtools.build.lib.analysis.producers	77	7	4	PORTED	-	0	blaze_sky_analysis	markers	7	4	2	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/TransitionApplier.java	com.google.devtools.build.lib.analysis.producers	106	5	3	PORTED	-	0	blaze_sky_analysis	markers	5	3	3	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/producers/UnloadedToolchainContextsInputs.java	com.google.devtools.build.lib.analysis.producers	22	3	3	PORTED	-	0	blaze_analysis	markers	3	3	4	0	0	-	-	lib/analysis
@@ -476,7 +476,7 @@ com/google/devtools/build/lib/analysis/starlark/Args.java	com.google.devtools.bu
 com/google/devtools/build/lib/analysis/starlark/BazelBuildApiGlobals.java	com.google.devtools.build.lib.analysis.starlark	73	2	2	PORTED	-	0	blaze_packages	markers	2	2	2	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/ComposedTransitionMaterializer.java	com.google.devtools.build.lib.analysis.starlark	44	3	0	UNTOUCHED	NEEDED	0	blaze_analysis	package	3	0	0	0	0	analysis-core	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java	com.google.devtools.build.lib.analysis.starlark	572	18	17	PORTED	-	4	blaze_build_config	markers	18	17	17	0	0	-	-	lib/analysis
-com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java	com.google.devtools.build.lib.analysis.starlark	1129	55	43	PORTED	-	5	blaze_analysis	markers	55	43	49	0	0	-	-	lib/analysis
+com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java	com.google.devtools.build.lib.analysis.starlark	1129	55	44	PORTED	-	5	blaze_analysis	markers	55	44	49	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/StarlarkApiProvider.java	com.google.devtools.build.lib.analysis.starlark	15	2	0	UNTOUCHED	NEEDED	0	blaze_analysis	package	2	0	0	0	0	analysis-core	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/StarlarkAspectPropagationContext.java	com.google.devtools.build.lib.analysis.starlark	119	13	3	PARTIAL	NEEDED	0	blaze_analysis	markers	13	3	8	0	0	analysis-core	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/StarlarkAttrModule.java	com.google.devtools.build.lib.analysis.starlark	1057	48	36	PORTED	-	1	blaze_packages	markers	48	36	40	0	3	-	-	lib/analysis
@@ -486,7 +486,7 @@ com/google/devtools/build/lib/analysis/starlark/StarlarkBuildSettingsDetailsValu
 com/google/devtools/build/lib/analysis/starlark/StarlarkConfig.java	com.google.devtools.build.lib.analysis.starlark	61	9	9	PORTED	-	0	blaze_packages	markers	9	9	10	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/StarlarkCustomCommandLine.java	com.google.devtools.build.lib.analysis.starlark	1381	118	54	PARTIAL	NEEDED	1	blaze_actions	markers	118	54	67	0	0	analysis-core	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/StarlarkErrorReporter.java	com.google.devtools.build.lib.analysis.starlark	42	8	0	UNTOUCHED	NEEDED	0	blaze_analysis	package	8	0	0	0	0	analysis-core	-	lib/analysis
-com/google/devtools/build/lib/analysis/starlark/StarlarkExecGroupCollection.java	com.google.devtools.build.lib.analysis.starlark	108	11	10	PORTED	-	1	blaze_analysis	markers	11	10	15	0	0	-	-	lib/analysis
+com/google/devtools/build/lib/analysis/starlark/StarlarkExecGroupCollection.java	com.google.devtools.build.lib.analysis.starlark	108	11	11	PORTED	-	1	blaze_analysis	markers	11	11	15	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/StarlarkGlobalsImpl.java	com.google.devtools.build.lib.analysis.starlark	96	11	8	PORTED	-	0	blaze_packages	markers	11	8	13	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/StarlarkLateBoundDefault.java	com.google.devtools.build.lib.analysis.starlark	167	12	8	PORTED	-	1	blaze_packages	markers	12	8	7	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java	com.google.devtools.build.lib.analysis.starlark	1863	57	44	PORTED	-	0	blaze_packages	markers	57	44	67	0	1	-	-	lib/analysis
@@ -495,7 +495,7 @@ com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java	com.goo
 com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java	com.google.devtools.build.lib.analysis.starlark	195	16	8	PARTIAL	NEEDED	0	blaze_analysis	markers	16	8	8	0	0	analysis-core	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/StarlarkSubrule.java	com.google.devtools.build.lib.analysis.starlark	473	43	32	PORTED	-	1	blaze_analysis	markers	43	32	35	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/StarlarkTemplateContext.java	com.google.devtools.build.lib.analysis.starlark	128	7	0	UNTOUCHED	NEEDED	0	blaze_analysis	package	7	0	0	0	0	analysis-core	-	lib/analysis
-com/google/devtools/build/lib/analysis/starlark/StarlarkToolchainContext.java	com.google.devtools.build.lib.analysis.starlark	109	10	6	PORTED	-	1	blaze_analysis	markers	10	6	9	0	0	-	-	lib/analysis
+com/google/devtools/build/lib/analysis/starlark/StarlarkToolchainContext.java	com.google.devtools.build.lib.analysis.starlark	109	10	9	PORTED	-	1	blaze_analysis	markers	10	9	9	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java	com.google.devtools.build.lib.analysis.starlark	264	19	14	PORTED	-	1	blaze_analysis	markers	19	14	11	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/TemplateDict.java	com.google.devtools.build.lib.analysis.starlark	153	7	6	PORTED	-	0	blaze_actions	markers	7	6	7	0	0	-	-	lib/analysis
 com/google/devtools/build/lib/analysis/starlark/UnresolvedSymlinkAction.java	com.google.devtools.build.lib.analysis.starlark	100	10	9	PORTED	-	0	blaze_actions	markers	10	9	12	0	0	-	-	lib/analysis
@@ -542,7 +542,7 @@ com/google/devtools/build/lib/authandtls/BasicHttpAuthenticationEncoder.java	com
 com/google/devtools/build/lib/authandtls/CallCredentialsProvider.java	com.google.devtools.build.lib.authandtls	19	4	4	PORTED	-	0	blaze_remote	markers	4	4	7	0	0	-	-	lib/authandtls
 com/google/devtools/build/lib/authandtls/GoogleAuthCallCredentialsProvider.java	com.google.devtools.build.lib.authandtls	34	3	3	PORTED	-	0	blaze_remote	markers	3	3	4	0	0	-	-	lib/authandtls
 com/google/devtools/build/lib/authandtls/GoogleAuthUtils.java	com.google.devtools.build.lib.authandtls	325	14	12	PORTED	-	6	blaze_remote	markers	14	12	15	0	0	-	-	lib/authandtls
-com/google/devtools/build/lib/authandtls/Netrc.java	com.google.devtools.build.lib.authandtls	60	19	3	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	19	3	4	0	0	remote-execution-and-caching	-	lib/authandtls
+com/google/devtools/build/lib/authandtls/Netrc.java	com.google.devtools.build.lib.authandtls	60	19	7	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	19	7	4	0	0	remote-execution-and-caching	-	lib/authandtls
 com/google/devtools/build/lib/authandtls/NetrcCredentials.java	com.google.devtools.build.lib.authandtls	40	6	3	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	6	3	3	0	0	remote-execution-and-caching	-	lib/authandtls
 com/google/devtools/build/lib/authandtls/NetrcParser.java	com.google.devtools.build.lib.authandtls	175	16	6	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	16	6	6	0	0	remote-execution-and-caching	-	lib/authandtls
 com/google/devtools/build/lib/authandtls/StaticCredentials.java	com.google.devtools.build.lib.authandtls	35	6	3	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	6	3	3	0	0	remote-execution-and-caching	-	lib/authandtls
@@ -562,54 +562,54 @@ com/google/devtools/build/lib/bazel/BazelDiffAwarenessModule.java	com.google.dev
 com/google/devtools/build/lib/bazel/BazelFileSystemModule.java	com.google.devtools.build.lib.bazel	71	1	1	PORTED	-	0	blaze_runtime	markers	1	1	2	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/BazelRepositoryModule.java	com.google.devtools.build.lib.bazel	655	16	14	PORTED	-	0	blaze_repo_rules	markers	16	14	42	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/BazelStartupOptionsModule.java	com.google.devtools.build.lib.bazel	59	1	1	PORTED	-	0	blaze_runtime	markers	1	1	3	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/BazelVersion.java	com.google.devtools.build.lib.bazel	53	6	3	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	6	3	4	0	0	runtime-and-ui	-	lib/bazel
+com/google/devtools/build/lib/bazel/BazelVersion.java	com.google.devtools.build.lib.bazel	53	6	6	PORTED	-	0	blaze_bzlmod_model	markers	6	6	4	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java	com.google.devtools.build.lib.bazel	277	22	21	PORTED	-	1	blaze_actions	markers	22	21	31	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/CacheHitReportingModule.java	com.google.devtools.build.lib.bazel	58	4	0	PARTIAL	NEEDED	0	blaze_runtime	markers	4	0	1	0	0	runtime-and-ui	-	lib/bazel
 com/google/devtools/build/lib/bazel/SpawnLogModule.java	com.google.devtools.build.lib.bazel	191	9	8	PORTED	-	0	blaze_exec	markers	9	8	11	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/AbridgedModule.java	com.google.devtools.build.lib.bazel.bzlmod	13	4	1	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	4	1	2	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/AbridgedModule.java	com.google.devtools.build.lib.bazel.bzlmod	13	4	4	PORTED	-	0	blaze_bzlmod_model	markers	4	4	2	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ArchiveRepoSpecBuilder.java	com.google.devtools.build.lib.bazel.bzlmod	75	11	11	PORTED	-	0	blaze_bzlmod_model	markers	11	11	13	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/AttributeValues.java	com.google.devtools.build.lib.bazel.bzlmod	12	2	2	PORTED	-	2	blaze_bzlmod	markers	2	2	6	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/AttributeValuesAdapter.java	com.google.devtools.build.lib.bazel.bzlmod	134	6	6	PORTED	-	0	blaze_bzlmod_model	markers	6	6	12	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/BazelDepGraphFunction.java	com.google.devtools.build.lib.bazel.bzlmod	196	8	7	PORTED	-	0	blaze_bzlmod_model	markers	8	7	8	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/BazelDepGraphValue.java	com.google.devtools.build.lib.bazel.bzlmod	101	10	3	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	10	3	5	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/BazelDepGraphValue.java	com.google.devtools.build.lib.bazel.bzlmod	101	10	9	PORTED	-	0	blaze_bzlmod_model	markers	10	9	5	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/BazelFetchAllFunction.java	com.google.devtools.build.lib.bazel.bzlmod	77	1	1	PORTED	-	0	blaze_repo_rules	markers	1	1	2	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/BazelFetchAllValue.java	com.google.devtools.build.lib.bazel.bzlmod	46	8	4	PARTIAL	NEEDED	0	blaze_repo_rules	markers	8	4	4	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileFunction.java	com.google.devtools.build.lib.bazel.bzlmod	147	5	4	PORTED	-	0	blaze_bzlmod_model	markers	5	4	8	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileModule.java	com.google.devtools.build.lib.bazel.bzlmod	257	6	5	PORTED	-	0	blaze_bzlmod_model	markers	6	5	12	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileValue.java	com.google.devtools.build.lib.bazel.bzlmod	73	15	0	PARTIAL	NEEDED	0	blaze_bzlmod	markers	15	0	6	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileValue.java	com.google.devtools.build.lib.bazel.bzlmod	73	15	7	PARTIAL	NEEDED	0	blaze_bzlmod	markers	15	7	6	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/BazelModTidyFunction.java	com.google.devtools.build.lib.bazel.bzlmod	85	1	1	PORTED	-	0	blaze_repo_rules	markers	1	1	2	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/BazelModTidyValue.java	com.google.devtools.build.lib.bazel.bzlmod	32	2	2	PORTED	-	0	blaze_bzlmod	markers	2	2	3	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/BazelModuleInspectorFunction.java	com.google.devtools.build.lib.bazel.bzlmod	163	3	3	PORTED	-	0	blaze_bzlmod	markers	3	3	6	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/BazelModuleInspectorValue.java	com.google.devtools.build.lib.bazel.bzlmod	140	24	14	PORTED	-	0	blaze_bzlmod	markers	24	14	17	0	0	-	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/BazelModuleInspectorValue.java	com.google.devtools.build.lib.bazel.bzlmod	140	24	19	PORTED	-	0	blaze_bzlmod	markers	24	19	17	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/BazelModuleResolutionFunction.java	com.google.devtools.build.lib.bazel.bzlmod	335	9	8	PORTED	-	0	blaze_bzlmod_model	markers	9	8	14	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/BazelModuleResolutionValue.java	com.google.devtools.build.lib.bazel.bzlmod	26	5	0	PARTIAL	NEEDED	0	blaze_bzlmod	markers	5	0	2	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/BazelModuleResolutionValue.java	com.google.devtools.build.lib.bazel.bzlmod	26	5	4	PORTED	-	0	blaze_bzlmod	markers	5	4	2	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/CompiledModuleFile.java	com.google.devtools.build.lib.bazel.bzlmod	142	7	7	PORTED	-	0	blaze_bzlmod	markers	7	7	10	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/DelegateTypeAdapterFactory.java	com.google.devtools.build.lib.bazel.bzlmod	117	2	0	UNTOUCHED	NEEDED	0	blaze_bzlmod_model	package	2	0	0	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/Discovery.java	com.google.devtools.build.lib.bazel.bzlmod	176	7	6	PORTED	-	0	blaze_bzlmod_model	markers	7	6	8	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ExternalDepsException.java	com.google.devtools.build.lib.bazel.bzlmod	53	6	6	PORTED	-	0	blaze_bzlmod_model	markers	6	6	6	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/Facts.java	com.google.devtools.build.lib.bazel.bzlmod	141	13	8	PORTED	-	1	blaze_repo_rules	markers	13	8	16	0	0	-	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/Facts.java	com.google.devtools.build.lib.bazel.bzlmod	141	13	9	PORTED	-	1	blaze_repo_rules	markers	13	9	16	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/FactsAdapter.java	com.google.devtools.build.lib.bazel.bzlmod	46	2	2	PORTED	-	0	blaze_bzlmod_model	markers	2	2	3	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/GitRepoSpecBuilder.java	com.google.devtools.build.lib.bazel.bzlmod	95	17	17	PORTED	-	0	blaze_bzlmod_model	markers	17	17	18	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java	com.google.devtools.build.lib.bazel.bzlmod	373	8	0	PARTIAL	NEEDED	2	blaze_bzlmod_model	markers	8	0	20	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/IndexRegistry.java	com.google.devtools.build.lib.bazel.bzlmod	511	18	18	PORTED	-	2	blaze_bzlmod_model	markers	18	18	21	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/InnateRunnableExtension.java	com.google.devtools.build.lib.bazel.bzlmod	175	6	6	PORTED	-	0	blaze_repo_rules	markers	6	6	7	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/InterimModule.java	com.google.devtools.build.lib.bazel.bzlmod	152	43	13	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	43	13	17	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/InterimModule.java	com.google.devtools.build.lib.bazel.bzlmod	152	43	30	PORTED	-	0	blaze_bzlmod_model	markers	43	30	17	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/LocalPathRepoSpecs.java	com.google.devtools.build.lib.bazel.bzlmod	16	2	1	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	2	1	3	0	0	repositories-and-bzlmod	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/LockFileModuleExtension.java	com.google.devtools.build.lib.bazel.bzlmod	41	13	1	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	13	1	3	0	0	repositories-and-bzlmod	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/LockfileModuleExtensionMetadata.java	com.google.devtools.build.lib.bazel.bzlmod	228	10	6	PORTED	-	0	blaze_repo_rules	markers	10	6	7	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/Module.java	com.google.devtools.build.lib.bazel.bzlmod	59	19	1	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	19	1	2	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/LockFileModuleExtension.java	com.google.devtools.build.lib.bazel.bzlmod	41	13	6	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	13	6	3	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/LockfileModuleExtensionMetadata.java	com.google.devtools.build.lib.bazel.bzlmod	228	10	10	PORTED	-	0	blaze_repo_rules	markers	10	10	7	0	0	-	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/Module.java	com.google.devtools.build.lib.bazel.bzlmod	59	19	3	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	19	3	2	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ModuleBase.java	com.google.devtools.build.lib.bazel.bzlmod	13	8	0	UNTOUCHED	GENERATED_OR_TRIVIAL	0	blaze_bzlmod_model	package	8	0	0	0	0	-	no method bodies, loc <= 30	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ModuleExtension.java	com.google.devtools.build.lib.bazel.bzlmod	46	12	1	PARTIAL	NEEDED	0	blaze_repo_rules	markers	12	1	3	0	3	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionContext.java	com.google.devtools.build.lib.bazel.bzlmod	288	11	11	PORTED	-	0	blaze_repo_rules	markers	11	11	14	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionEvalFactors.java	com.google.devtools.build.lib.bazel.bzlmod	59	8	6	PORTED	-	0	blaze_bzlmod_model	markers	8	6	9	0	0	-	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionEvalFactors.java	com.google.devtools.build.lib.bazel.bzlmod	59	8	8	PORTED	-	0	blaze_bzlmod_model	markers	8	8	9	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionEvalStarlarkThreadContext.java	com.google.devtools.build.lib.bazel.bzlmod	139	6	4	PORTED	-	0	blaze_repo_rules	markers	6	4	7	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionEvaluationProgress.java	com.google.devtools.build.lib.bazel.bzlmod	35	7	7	PORTED	-	0	blaze_repo_rules	markers	7	7	7	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionId.java	com.google.devtools.build.lib.bazel.bzlmod	60	8	8	PORTED	-	0	blaze_bzlmod_model	markers	8	8	10	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionMetadata.java	com.google.devtools.build.lib.bazel.bzlmod	143	7	2	PARTIAL	NEEDED	0	blaze_repo_rules	markers	7	2	7	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionMetadata.java	com.google.devtools.build.lib.bazel.bzlmod	143	7	7	PORTED	-	0	blaze_repo_rules	markers	7	7	7	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionRepoMappingEntriesFunction.java	com.google.devtools.build.lib.bazel.bzlmod	42	2	2	PORTED	-	0	blaze_repo_rules	markers	2	2	3	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionRepoMappingEntriesValue.java	com.google.devtools.build.lib.bazel.bzlmod	52	8	4	PARTIAL	NEEDED	0	blaze_repo_rules	markers	8	4	4	0	0	repositories-and-bzlmod	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionUsage.java	com.google.devtools.build.lib.bazel.bzlmod	94	38	7	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	38	7	10	0	4	repositories-and-bzlmod	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/ModuleFile.java	com.google.devtools.build.lib.bazel.bzlmod	11	3	1	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	3	1	2	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionUsage.java	com.google.devtools.build.lib.bazel.bzlmod	94	38	24	PORTED	-	0	blaze_bzlmod_model	markers	38	24	10	0	4	-	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/ModuleFile.java	com.google.devtools.build.lib.bazel.bzlmod	11	3	3	PORTED	-	0	blaze_bzlmod_model	markers	3	3	2	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunction.java	com.google.devtools.build.lib.bazel.bzlmod	876	20	15	PORTED	-	0	blaze_bzlmod	markers	20	15	32	0	16	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ModuleFileGlobals.java	com.google.devtools.build.lib.bazel.bzlmod	1124	33	32	PORTED	-	0	blaze_bzlmod	markers	33	32	39	0	15	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/ModuleFileValue.java	com.google.devtools.build.lib.bazel.bzlmod	53	7	3	PARTIAL	NEEDED	0	blaze_bzlmod	markers	7	3	9	0	0	repositories-and-bzlmod	-	lib/bazel
@@ -637,11 +637,11 @@ com/google/devtools/build/lib/bazel/bzlmod/Selection.java	com.google.devtools.bu
 com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionEvalFunction.java	com.google.devtools.build.lib.bazel.bzlmod	423	15	11	PORTED	-	0	blaze_repo_rules	markers	15	11	15	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionFunction.java	com.google.devtools.build.lib.bazel.bzlmod	84	2	1	PARTIAL	NEEDED	0	blaze_bzlmod	markers	2	1	1	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionUsagesFunction.java	com.google.devtools.build.lib.bazel.bzlmod	31	1	1	PORTED	-	0	blaze_repo_rules	markers	1	1	1	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionUsagesValue.java	com.google.devtools.build.lib.bazel.bzlmod	75	14	5	PARTIAL	NEEDED	0	blaze_repo_rules	markers	14	5	7	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionUsagesValue.java	com.google.devtools.build.lib.bazel.bzlmod	75	14	10	PORTED	-	0	blaze_repo_rules	markers	14	10	7	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionValue.java	com.google.devtools.build.lib.bazel.bzlmod	86	14	6	PARTIAL	NEEDED	0	blaze_bzlmod	markers	14	6	7	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/SingleVersionOverride.java	com.google.devtools.build.lib.bazel.bzlmod	32	3	1	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	3	1	1	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/StarlarkBazelModule.java	com.google.devtools.build.lib.bazel.bzlmod	152	12	10	PORTED	-	0	blaze_repo_rules	markers	12	10	11	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/Tag.java	com.google.devtools.build.lib.bazel.bzlmod	29	12	1	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	12	1	2	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/Tag.java	com.google.devtools.build.lib.bazel.bzlmod	29	12	6	PARTIAL	NEEDED	0	blaze_bzlmod_model	markers	12	6	2	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/TagClass.java	com.google.devtools.build.lib.bazel.bzlmod	26	2	2	PORTED	-	0	blaze_repo_rules	markers	2	2	4	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/TypeCheckedTag.java	com.google.devtools.build.lib.bazel.bzlmod	121	13	11	PORTED	-	0	blaze_repo_rules	markers	13	11	12	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/VendorFileFunction.java	com.google.devtools.build.lib.bazel.bzlmod	163	7	0	UNTOUCHED	NEEDED	0	blaze_bzlmod_model	package	7	0	0	0	0	repositories-and-bzlmod	-	lib/bazel
@@ -655,7 +655,7 @@ com/google/devtools/build/lib/bazel/bzlmod/modcommand/ExtensionArg.java	com.goog
 com/google/devtools/build/lib/bazel/bzlmod/modcommand/GraphvizOutputFormatter.java	com.google.devtools.build.lib.bazel.bzlmod.modcommand	136	6	6	PORTED	-	0	blaze_bzlmod	markers	6	6	6	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/modcommand/InvalidArgumentException.java	com.google.devtools.build.lib.bazel.bzlmod.modcommand	19	4	4	PORTED	-	0	blaze_bzlmod	markers	4	4	5	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/modcommand/JsonOutputFormatter.java	com.google.devtools.build.lib.bazel.bzlmod.modcommand	137	4	4	PORTED	-	0	blaze_bzlmod	markers	4	4	5	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bazel/bzlmod/modcommand/ModExecutor.java	com.google.devtools.build.lib.bazel.bzlmod.modcommand	583	38	33	PORTED	-	0	blaze_bzlmod	markers	38	33	36	0	0	-	-	lib/bazel
+com/google/devtools/build/lib/bazel/bzlmod/modcommand/ModExecutor.java	com.google.devtools.build.lib.bazel.bzlmod.modcommand	583	38	37	PORTED	-	0	blaze_bzlmod	markers	38	37	36	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/modcommand/ModOptions.java	com.google.devtools.build.lib.bazel.bzlmod.modcommand	248	10	8	PORTED	-	1	blaze_optdefs	markers	10	8	12	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/modcommand/ModuleArg.java	com.google.devtools.build.lib.bazel.bzlmod.modcommand	346	28	24	PORTED	-	0	blaze_bzlmod	markers	28	24	37	0	10	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/bzlmod/modcommand/OutputFormatters.java	com.google.devtools.build.lib.bazel.bzlmod.modcommand	117	9	8	PORTED	-	0	blaze_bzlmod	markers	9	8	8	0	0	-	-	lib/bazel
@@ -680,7 +680,7 @@ com/google/devtools/build/lib/bazel/repository/RepoDefinition.java	com.google.de
 com/google/devtools/build/lib/bazel/repository/RepoDefinitionFunction.java	com.google.devtools.build.lib.bazel.repository	263	9	8	PORTED	-	0	blaze_repo_rules	markers	9	8	9	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/RepoDefinitionValue.java	com.google.devtools.build.lib.bazel.repository	42	5	2	PARTIAL	NEEDED	0	blaze_repo_rules	markers	5	2	3	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/RepoMetadataRequirements.java	com.google.devtools.build.lib.bazel.repository	9	1	0	PARTIAL	NEEDED	0	blaze_repo_rules	markers	1	0	1	0	0	repositories-and-bzlmod	-	lib/bazel
-com/google/devtools/build/lib/bazel/repository/RepoRule.java	com.google.devtools.build.lib.bazel.repository	110	17	3	PARTIAL	NEEDED	0	blaze_repo_rules	markers	17	3	7	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/repository/RepoRule.java	com.google.devtools.build.lib.bazel.repository	110	17	7	PARTIAL	NEEDED	0	blaze_repo_rules	markers	17	7	7	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/RepositoryFetchFunction.java	com.google.devtools.build.lib.bazel.repository	692	19	12	PORTED	-	6	blaze_repo_rules	markers	19	12	22	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/RepositoryFunctionException.java	com.google.devtools.build.lib.bazel.repository	31	4	4	PORTED	-	0	blaze_repo_rules	markers	4	4	10	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/RepositoryOptions.java	com.google.devtools.build.lib.bazel.repository	474	11	10	PORTED	-	0	blaze_optdefs	markers	11	10	22	0	0	-	-	lib/bazel
@@ -694,7 +694,7 @@ com/google/devtools/build/lib/bazel/repository/decompressor/ArFunction.java	com.
 com/google/devtools/build/lib/bazel/repository/decompressor/Bz2Function.java	com.google.devtools.build.lib.bazel.repository.decompressor	19	2	1	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	2	1	1	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/decompressor/CompressedFunction.java	com.google.devtools.build.lib.bazel.repository.decompressor	41	4	2	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	4	2	1	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/decompressor/CompressedTarFunction.java	com.google.devtools.build.lib.bazel.repository.decompressor	180	10	2	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	10	2	1	0	0	repositories-and-bzlmod	-	lib/bazel
-com/google/devtools/build/lib/bazel/repository/decompressor/DecompressorDescriptor.java	com.google.devtools.build.lib.bazel.repository.decompressor	49	10	3	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	10	3	4	0	0	repositories-and-bzlmod	-	lib/bazel
+com/google/devtools/build/lib/bazel/repository/decompressor/DecompressorDescriptor.java	com.google.devtools.build.lib.bazel.repository.decompressor	49	10	4	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	10	4	4	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/decompressor/DecompressorValue.java	com.google.devtools.build.lib.bazel.repository.decompressor	172	13	9	PORTED	-	0	blaze_repo_fetch	markers	13	9	11	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/decompressor/GzFunction.java	com.google.devtools.build.lib.bazel.repository.decompressor	31	3	2	PORTED	-	0	blaze_repo_fetch	markers	3	2	2	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/decompressor/PatchUtil.java	com.google.devtools.build.lib.bazel.repository.decompressor	534	21	15	PORTED	-	0	blaze_repo_fetch	markers	21	15	16	0	0	-	-	lib/bazel
@@ -728,7 +728,7 @@ com/google/devtools/build/lib/bazel/repository/downloader/ProxyHelper.java	com.g
 com/google/devtools/build/lib/bazel/repository/downloader/ProxyInfo.java	com.google.devtools.build.lib.bazel.repository.downloader	28	4	2	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	4	2	2	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/downloader/RetryingInputStream.java	com.google.devtools.build.lib.bazel.repository.downloader	110	9	3	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	9	3	3	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/downloader/UnrecoverableHttpException.java	com.google.devtools.build.lib.bazel.repository.downloader	7	1	0	UNTOUCHED	NEEDED	0	blaze_repo_fetch	package	1	0	0	0	0	repositories-and-bzlmod	-	lib/bazel
-com/google/devtools/build/lib/bazel/repository/downloader/UrlRewriter.java	com.google.devtools.build.lib.bazel.repository.downloader	246	15	9	PORTED	-	0	blaze_repo_fetch	markers	15	9	11	0	0	-	-	lib/bazel
+com/google/devtools/build/lib/bazel/repository/downloader/UrlRewriter.java	com.google.devtools.build.lib.bazel.repository.downloader	246	15	11	PORTED	-	0	blaze_repo_fetch	markers	15	11	11	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/downloader/UrlRewriterConfig.java	com.google.devtools.build.lib.bazel.repository.downloader	137	7	3	PARTIAL	NEEDED	0	blaze_repo_fetch	markers	7	3	3	0	0	repositories-and-bzlmod	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/downloader/UrlRewriterParseException.java	com.google.devtools.build.lib.bazel.repository.downloader	17	3	2	PORTED	-	0	blaze_repo_fetch	markers	3	2	1	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/repository/starlark/NeedsSkyframeRestartException.java	com.google.devtools.build.lib.bazel.repository.starlark	7	1	0	UNTOUCHED	NEEDED	0	blaze_repo_rules	package	1	0	0	0	0	repositories-and-bzlmod	-	lib/bazel
@@ -758,7 +758,7 @@ com/google/devtools/build/lib/bazel/rules/genrule/BazelGenRuleRule.java	com.goog
 com/google/devtools/build/lib/bazel/rules/java/BazelJavaSemantics.java	com.google.devtools.build.lib.bazel.rules.java	48	5	0	UNTOUCHED	NEEDED	0	blaze_rules	plan	5	0	0	0	0	java-rules-in-core	-	lib/bazel
 com/google/devtools/build/lib/bazel/rules/python/BazelPyBuiltins.java	com.google.devtools.build.lib.bazel.rules.python	15	1	1	PORTED	-	0	blaze_rules	markers	1	1	3	0	0	-	-	lib/bazel
 com/google/devtools/build/lib/bazel/rules/python/BazelPythonConfiguration.java	com.google.devtools.build.lib.bazel.rules.python	105	5	5	PORTED	-	0	blaze_build_config	markers	5	5	13	0	0	-	-	lib/bazel
-com/google/devtools/build/lib/bugreport/BugReport.java	com.google.devtools.build.lib.bugreport	310	26	3	PARTIAL	NEEDED	2	blaze_bep	markers	26	3	2	6	0	base-libraries	-	lib/bugreport
+com/google/devtools/build/lib/bugreport/BugReport.java	com.google.devtools.build.lib.bugreport	310	26	10	PARTIAL	NEEDED	2	blaze_bep	markers	26	10	2	6	0	base-libraries	-	lib/bugreport
 com/google/devtools/build/lib/bugreport/BugReporter.java	com.google.devtools.build.lib.bugreport	28	8	1	PARTIAL	NEEDED	0	blaze_bep	package	8	1	0	0	1	base-libraries	-	lib/bugreport
 com/google/devtools/build/lib/bugreport/Crash.java	com.google.devtools.build.lib.bugreport	32	6	0	UNTOUCHED	NEEDED	0	blaze_bep	package	6	0	0	0	0	base-libraries	-	lib/bugreport
 com/google/devtools/build/lib/bugreport/CrashContext.java	com.google.devtools.build.lib.bugreport	91	18	0	UNTOUCHED	NEEDED	0	blaze_bep	package	18	0	0	0	0	base-libraries	-	lib/bugreport
@@ -860,9 +860,9 @@ com/google/devtools/build/lib/cmdline/BazelCompileContext.java	com.google.devtoo
 com/google/devtools/build/lib/cmdline/BazelModuleContext.java	com.google.devtools.build.lib.cmdline	93	16	7	PARTIAL	NEEDED	0	blaze_packages	markers	16	7	20	0	2	packages-and-loading	-	lib/cmdline
 com/google/devtools/build/lib/cmdline/BazelModuleKey.java	com.google.devtools.build.lib.cmdline	28	6	1	PARTIAL	NEEDED	0	blaze_cmdline	package	6	1	0	0	0	packages-and-loading	-	lib/cmdline
 com/google/devtools/build/lib/cmdline/IgnoredSubdirectories.java	com.google.devtools.build.lib.cmdline	150	16	12	PORTED	-	0	blaze_sky_loading	markers	16	12	14	0	0	-	-	lib/cmdline
-com/google/devtools/build/lib/cmdline/Label.java	com.google.devtools.build.lib.cmdline	558	69	48	PORTED	-	0	blaze_cmdline	markers	69	48	82	0	5	-	-	lib/cmdline
+com/google/devtools/build/lib/cmdline/Label.java	com.google.devtools.build.lib.cmdline	558	69	50	PORTED	-	0	blaze_cmdline	markers	69	50	82	0	5	-	-	lib/cmdline
 com/google/devtools/build/lib/cmdline/LabelConstants.java	com.google.devtools.build.lib.cmdline	23	0	0	PORTED	-	0	blaze_cmdline	markers	0	0	15	0	0	-	-	lib/cmdline
-com/google/devtools/build/lib/cmdline/LabelParser.java	com.google.devtools.build.lib.cmdline	146	18	10	PORTED	-	0	blaze_cmdline	markers	18	10	11	0	0	-	-	lib/cmdline
+com/google/devtools/build/lib/cmdline/LabelParser.java	com.google.devtools.build.lib.cmdline	146	18	17	PORTED	-	0	blaze_cmdline	markers	18	17	11	0	0	-	-	lib/cmdline
 com/google/devtools/build/lib/cmdline/LabelSyntaxException.java	com.google.devtools.build.lib.cmdline	6	1	1	PORTED	-	0	blaze_cmdline	markers	1	1	2	0	0	-	-	lib/cmdline
 com/google/devtools/build/lib/cmdline/LabelValidator.java	com.google.devtools.build.lib.cmdline	205	13	11	PORTED	-	0	blaze_cmdline	markers	13	11	18	0	0	-	-	lib/cmdline
 com/google/devtools/build/lib/cmdline/PackageIdentifier.java	com.google.devtools.build.lib.cmdline	222	34	23	PORTED	-	0	blaze_cmdline	markers	34	23	30	0	0	-	-	lib/cmdline
@@ -871,7 +871,7 @@ com/google/devtools/build/lib/cmdline/QueryExceptionMarkerInterface.java	com.goo
 com/google/devtools/build/lib/cmdline/RepositoryMapping.java	com.google.devtools.build.lib.cmdline	98	13	13	PORTED	-	0	blaze_cmdline	markers	13	13	16	0	1	-	-	lib/cmdline
 com/google/devtools/build/lib/cmdline/RepositoryName.java	com.google.devtools.build.lib.cmdline	253	28	24	PORTED	-	1	blaze_cmdline	markers	28	24	32	0	0	-	-	lib/cmdline
 com/google/devtools/build/lib/cmdline/ResolvedTargets.java	com.google.devtools.build.lib.cmdline	134	23	19	PORTED	-	0	blaze_cmdline	markers	23	19	19	0	0	-	-	lib/cmdline
-com/google/devtools/build/lib/cmdline/SignedTargetPattern.java	com.google.devtools.build.lib.cmdline	22	4	2	PARTIAL	NEEDED	0	blaze_cmdline	markers	4	2	4	0	0	packages-and-loading	-	lib/cmdline
+com/google/devtools/build/lib/cmdline/SignedTargetPattern.java	com.google.devtools.build.lib.cmdline	22	4	4	PORTED	-	0	blaze_cmdline	markers	4	4	4	0	0	-	-	lib/cmdline
 com/google/devtools/build/lib/cmdline/StarlarkThreadContext.java	com.google.devtools.build.lib.cmdline	20	3	1	PARTIAL	NEEDED	0	blaze_starlark	markers	3	1	1	0	0	packages-and-loading	-	lib/cmdline
 com/google/devtools/build/lib/cmdline/TargetParsingException.java	com.google.devtools.build.lib.cmdline	51	7	7	PORTED	-	0	blaze_cmdline	markers	7	7	9	0	0	-	-	lib/cmdline
 com/google/devtools/build/lib/cmdline/TargetPattern.java	com.google.devtools.build.lib.cmdline	644	67	53	PORTED	-	0	blaze_cmdline	markers	67	53	66	0	0	-	-	lib/cmdline
@@ -982,7 +982,7 @@ com/google/devtools/build/lib/exec/SpawnExecException.java	com.google.devtools.b
 com/google/devtools/build/lib/exec/SpawnExecutingEvent.java	com.google.devtools.build.lib.exec	18	3	0	UNTOUCHED	NEEDED	0	blaze_exec	package	3	0	0	0	0	sandboxing-and-local-exec	-	lib/exec
 com/google/devtools/build/lib/exec/SpawnInputExpander.java	com.google.devtools.build.lib.exec	187	10	10	PORTED	-	0	blaze_exec	markers	10	10	11	0	33	-	-	lib/exec
 com/google/devtools/build/lib/exec/SpawnLogContext.java	com.google.devtools.build.lib.exec	201	11	10	PORTED	-	0	blaze_exec	markers	11	10	12	0	0	-	-	lib/exec
-com/google/devtools/build/lib/exec/SpawnLogReconstructor.java	com.google.devtools.build.lib.exec	446	25	22	PORTED	-	0	blaze_exec	markers	25	22	29	0	0	-	-	lib/exec
+com/google/devtools/build/lib/exec/SpawnLogReconstructor.java	com.google.devtools.build.lib.exec	446	25	23	PORTED	-	0	blaze_exec	markers	25	23	29	0	0	-	-	lib/exec
 com/google/devtools/build/lib/exec/SpawnProgressEvent.java	com.google.devtools.build.lib.exec	20	3	3	PORTED	-	1	blaze_remote	markers	3	3	3	0	0	-	-	lib/exec
 com/google/devtools/build/lib/exec/SpawnRunner.java	com.google.devtools.build.lib.exec	86	25	16	PORTED	-	0	blaze_exec	markers	25	16	12	0	0	-	-	lib/exec
 com/google/devtools/build/lib/exec/SpawnSchedulingEvent.java	com.google.devtools.build.lib.exec	18	3	0	UNTOUCHED	NEEDED	0	blaze_exec	package	3	0	0	0	0	sandboxing-and-local-exec	-	lib/exec
@@ -1082,14 +1082,14 @@ com/google/devtools/build/lib/packages/BuildSetting.java	com.google.devtools.bui
 com/google/devtools/build/lib/packages/BuildType.java	com.google.devtools.build.lib.packages	601	62	38	PORTED	-	0	blaze_packages	markers	62	38	59	0	0	-	-	lib/packages
 com/google/devtools/build/lib/packages/BuilderFactoryForTesting.java	com.google.devtools.build.lib.packages	7	1	0	UNTOUCHED	TEST_SUPPORT	0	blaze_packages	package	1	0	0	0	0	-	test-support class	lib/packages
 com/google/devtools/build/lib/packages/BuiltinProvider.java	com.google.devtools.build.lib.packages	90	19	9	PARTIAL	NEEDED	0	blaze_packages	markers	19	9	13	0	0	packages-and-loading	-	lib/packages
-com/google/devtools/build/lib/packages/BuiltinRestriction.java	com.google.devtools.build.lib.packages	108	13	9	PORTED	-	0	blaze_packages	markers	13	9	38	0	0	-	-	lib/packages
+com/google/devtools/build/lib/packages/BuiltinRestriction.java	com.google.devtools.build.lib.packages	108	13	11	PORTED	-	0	blaze_packages	markers	13	11	38	0	0	-	-	lib/packages
 com/google/devtools/build/lib/packages/BuiltinsInternalModule.java	com.google.devtools.build.lib.packages	100	7	6	PORTED	-	0	blaze_packages	markers	7	6	8	0	0	-	-	lib/packages
 com/google/devtools/build/lib/packages/BzlInitThreadContext.java	com.google.devtools.build.lib.packages	76	10	2	PARTIAL	NEEDED	0	blaze_packages	markers	10	2	3	0	0	packages-and-loading	-	lib/packages
 com/google/devtools/build/lib/packages/BzlVisibility.java	com.google.devtools.build.lib.packages	49	5	4	PORTED	-	0	blaze_packages	markers	5	4	4	0	0	-	-	lib/packages
 com/google/devtools/build/lib/packages/CachingPackageLocator.java	com.google.devtools.build.lib.packages	12	2	2	PORTED	-	0	blaze_sky_loading	markers	2	2	6	0	0	-	-	lib/packages
 com/google/devtools/build/lib/packages/CallStack.java	com.google.devtools.build.lib.packages	108	13	9	PORTED	-	0	blaze_packages	markers	13	9	9	0	1	-	-	lib/packages
 com/google/devtools/build/lib/packages/ConfigurationFragmentPolicy.java	com.google.devtools.build.lib.packages	88	11	11	PORTED	-	0	blaze_packages	markers	11	11	13	0	0	-	-	lib/packages
-com/google/devtools/build/lib/packages/ConfiguredAttributeMapper.java	com.google.devtools.build.lib.packages	305	25	15	PORTED	-	0	blaze_analysis	markers	25	15	17	0	1	-	-	lib/packages
+com/google/devtools/build/lib/packages/ConfiguredAttributeMapper.java	com.google.devtools.build.lib.packages	305	25	21	PORTED	-	0	blaze_analysis	markers	25	21	17	0	1	-	-	lib/packages
 com/google/devtools/build/lib/packages/DeclaredExecGroup.java	com.google.devtools.build.lib.packages	121	13	5	PARTIAL	NEEDED	0	blaze_packages	markers	13	5	9	0	0	packages-and-loading	-	lib/packages
 com/google/devtools/build/lib/packages/DefaultSetting.java	com.google.devtools.build.lib.packages	5	2	0	UNTOUCHED	GENERATED_OR_TRIVIAL	0	blaze_packages	package	2	0	0	0	0	-	no method bodies, loc <= 30	lib/packages
 com/google/devtools/build/lib/packages/DelegatingAttributeMapper.java	com.google.devtools.build.lib.packages	66	14	12	PORTED	-	0	blaze_packages	markers	14	12	12	0	0	-	-	lib/packages
@@ -1126,7 +1126,7 @@ com/google/devtools/build/lib/packages/NonconfigurableAttributeMapper.java	com.g
 com/google/devtools/build/lib/packages/NonconfiguredAttributeMapper.java	com.google.devtools.build.lib.packages	26	3	3	PORTED	-	0	blaze_packages	markers	3	3	3	0	0	-	-	lib/packages
 com/google/devtools/build/lib/packages/OutputFile.java	com.google.devtools.build.lib.packages	200	44	25	PORTED	-	0	blaze_packages	markers	44	25	30	0	0	-	-	lib/packages
 com/google/devtools/build/lib/packages/Package.java	com.google.devtools.build.lib.packages	1101	120	87	PORTED	-	1	blaze_packages	markers	120	87	95	0	16	-	-	lib/packages
-com/google/devtools/build/lib/packages/PackageArgs.java	com.google.devtools.build.lib.packages	159	31	17	PORTED	-	0	blaze_packages	markers	31	17	21	0	0	-	-	lib/packages
+com/google/devtools/build/lib/packages/PackageArgs.java	com.google.devtools.build.lib.packages	159	31	21	PORTED	-	0	blaze_packages	markers	31	21	21	0	0	-	-	lib/packages
 com/google/devtools/build/lib/packages/PackageCallable.java	com.google.devtools.build.lib.packages	64	3	2	PORTED	-	0	blaze_packages	markers	3	2	2	0	0	-	-	lib/packages
 com/google/devtools/build/lib/packages/PackageCodecDependencies.java	com.google.devtools.build.lib.packages	14	3	0	UNTOUCHED	NEEDED	0	blaze_packages	package	3	0	0	0	0	packages-and-loading	-	lib/packages
 com/google/devtools/build/lib/packages/PackageFactory.java	com.google.devtools.build.lib.packages	516	22	10	PARTIAL	NEEDED	1	blaze_packages	markers	22	10	14	0	3	packages-and-loading	-	lib/packages
@@ -1210,7 +1210,7 @@ com/google/devtools/build/lib/packages/metrics/PackageMetricsRecorder.java	com.g
 com/google/devtools/build/lib/packages/producers/DirectoryDirentProducer.java	com.google.devtools.build.lib.packages.producers	105	7	4	PORTED	-	0	blaze_sky_loading	markers	7	4	5	0	0	-	-	lib/packages
 com/google/devtools/build/lib/packages/producers/FragmentProducer.java	com.google.devtools.build.lib.packages.producers	78	6	3	PARTIAL	NEEDED	0	blaze_sky_loading	markers	6	3	4	0	0	symbolic-macros-and-lazy-loading	-	lib/packages
 com/google/devtools/build/lib/packages/producers/GlobComputationProducer.java	com.google.devtools.build.lib.packages.producers	121	9	2	PARTIAL	NEEDED	0	blaze_sky_loading	markers	9	2	2	0	0	symbolic-macros-and-lazy-loading	-	lib/packages
-com/google/devtools/build/lib/packages/producers/GlobError.java	com.google.devtools.build.lib.packages.producers	20	5	0	PARTIAL	NEEDED	0	blaze_sky_loading	markers	5	0	1	0	0	symbolic-macros-and-lazy-loading	-	lib/packages
+com/google/devtools/build/lib/packages/producers/GlobError.java	com.google.devtools.build.lib.packages.producers	20	5	3	PORTED	-	0	blaze_sky_loading	markers	5	3	1	0	0	-	-	lib/packages
 com/google/devtools/build/lib/packages/producers/PatternWithWildcardProducer.java	com.google.devtools.build.lib.packages.producers	138	7	2	PARTIAL	NEEDED	0	blaze_sky_loading	markers	7	2	2	0	0	symbolic-macros-and-lazy-loading	-	lib/packages
 com/google/devtools/build/lib/packages/producers/PatternWithoutWildcardProducer.java	com.google.devtools.build.lib.packages.producers	57	4	1	PARTIAL	NEEDED	0	blaze_sky_loading	markers	4	1	1	0	0	symbolic-macros-and-lazy-loading	-	lib/packages
 com/google/devtools/build/lib/packages/producers/SymlinkProducer.java	com.google.devtools.build.lib.packages.producers	39	5	1	PARTIAL	NEEDED	0	blaze_sky_loading	markers	5	1	1	0	0	symbolic-macros-and-lazy-loading	-	lib/packages
@@ -1259,7 +1259,7 @@ com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java	com.google
 com/google/devtools/build/lib/profiler/CommandProfilerModule.java	com.google.devtools.build.lib.profiler	118	8	2	PARTIAL	NEEDED	0	blaze_optdefs	markers	8	2	5	0	0	profiler-and-metrics	-	lib/profiler
 com/google/devtools/build/lib/profiler/CounterSeriesTask.java	com.google.devtools.build.lib.profiler	47	2	0	UNTOUCHED	NEEDED	0	blaze_optdefs	package	2	0	0	0	0	profiler-and-metrics	-	lib/profiler
 com/google/devtools/build/lib/profiler/CounterSeriesTraceData.java	com.google.devtools.build.lib.profiler	71	2	0	UNTOUCHED	NEEDED	0	blaze_optdefs	package	2	0	0	0	0	profiler-and-metrics	-	lib/profiler
-com/google/devtools/build/lib/profiler/GoogleAutoProfilerUtils.java	com.google.devtools.build.lib.profiler	96	14	0	PARTIAL	OUT_OF_SCOPE_BY_CONTRACT	0	blaze_optdefs	package	14	0	0	2	0	-	Google-internal (name says Google; GoogleAuth* kept)	lib/profiler
+com/google/devtools/build/lib/profiler/GoogleAutoProfilerUtils.java	com.google.devtools.build.lib.profiler	96	14	3	PARTIAL	OUT_OF_SCOPE_BY_CONTRACT	0	blaze_optdefs	package	14	3	0	2	0	-	Google-internal (name says Google; GoogleAuth* kept)	lib/profiler
 com/google/devtools/build/lib/profiler/JsonProfile.java	com.google.devtools.build.lib.profiler	111	8	0	UNTOUCHED	NEEDED	0	blaze_optdefs	package	8	0	0	0	0	profiler-and-metrics	-	lib/profiler
 com/google/devtools/build/lib/profiler/JsonTraceFileWriter.java	com.google.devtools.build.lib.profiler	239	10	0	UNTOUCHED	NEEDED	0	blaze_optdefs	package	10	0	0	0	0	profiler-and-metrics	-	lib/profiler
 com/google/devtools/build/lib/profiler/LocalResourceCollector.java	com.google.devtools.build.lib.profiler	7	3	0	UNTOUCHED	GENERATED_OR_TRIVIAL	0	blaze_optdefs	package	3	0	0	0	0	-	no method bodies, loc <= 30	lib/profiler
@@ -1268,7 +1268,7 @@ com/google/devtools/build/lib/profiler/MetricData.java	com.google.devtools.build
 com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java	com.google.devtools.build.lib.profiler	136	11	0	UNTOUCHED	NEEDED	0	blaze_optdefs	package	11	0	0	0	0	profiler-and-metrics	-	lib/profiler
 com/google/devtools/build/lib/profiler/PredicateBasedStatRecorder.java	com.google.devtools.build.lib.profiler	56	5	0	UNTOUCHED	NEEDED	0	blaze_optdefs	package	5	0	0	0	0	profiler-and-metrics	-	lib/profiler
 com/google/devtools/build/lib/profiler/ProfilePhase.java	com.google.devtools.build.lib.profiler	29	2	0	UNTOUCHED	NEEDED	0	blaze_optdefs	package	2	0	0	0	0	profiler-and-metrics	-	lib/profiler
-com/google/devtools/build/lib/profiler/Profiler.java	com.google.devtools.build.lib.profiler	897	76	0	PARTIAL	NEEDED	0	blaze_optdefs	package	76	0	0	2	2	profiler-and-metrics	-	lib/profiler
+com/google/devtools/build/lib/profiler/Profiler.java	com.google.devtools.build.lib.profiler	897	76	1	PARTIAL	NEEDED	0	blaze_optdefs	package	76	1	0	2	2	profiler-and-metrics	-	lib/profiler
 com/google/devtools/build/lib/profiler/ProfilerTask.java	com.google.devtools.build.lib.profiler	104	5	3	PORTED	-	0	blaze_optdefs	markers	5	3	1	3	0	-	-	lib/profiler
 com/google/devtools/build/lib/profiler/SilentCloseable.java	com.google.devtools.build.lib.profiler	5	1	1	PORTED	-	0	blaze_optdefs	package	1	1	0	0	0	-	-	lib/profiler
 com/google/devtools/build/lib/profiler/SingleStatRecorder.java	com.google.devtools.build.lib.profiler	64	5	0	UNTOUCHED	NEEDED	0	blaze_optdefs	package	5	0	0	0	0	profiler-and-metrics	-	lib/profiler
@@ -1368,7 +1368,7 @@ com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java	com.googl
 com/google/devtools/build/lib/query2/engine/QueryExpressionVisitor.java	com.google.devtools.build.lib.query2.engine	8	5	5	PORTED	-	0	blaze_query_engine	markers	5	5	1	0	0	-	-	lib/query2
 com/google/devtools/build/lib/query2/engine/QueryParser.java	com.google.devtools.build.lib.query2.engine	233	16	16	PORTED	-	0	blaze_query_engine	markers	16	16	17	0	0	-	-	lib/query2
 com/google/devtools/build/lib/query2/engine/QuerySyntaxException.java	com.google.devtools.build.lib.query2.engine	6	1	1	PORTED	-	0	blaze_query_engine	markers	1	1	2	0	0	-	-	lib/query2
-com/google/devtools/build/lib/query2/engine/QueryUtil.java	com.google.devtools.build.lib.query2.engine	274	40	35	PORTED	-	0	blaze_query_engine	markers	40	35	50	0	0	-	-	lib/query2
+com/google/devtools/build/lib/query2/engine/QueryUtil.java	com.google.devtools.build.lib.query2.engine	274	40	36	PORTED	-	0	blaze_query_engine	markers	40	36	50	0	0	-	-	lib/query2
 com/google/devtools/build/lib/query2/engine/QueryVisibility.java	com.google.devtools.build.lib.query2.engine	48	6	6	PORTED	-	0	blaze_query_engine	markers	6	6	9	0	0	-	-	lib/query2
 com/google/devtools/build/lib/query2/engine/RdepsFunction.java	com.google.devtools.build.lib.query2.engine	94	6	6	PORTED	-	0	blaze_query_engine	markers	6	6	7	0	0	-	-	lib/query2
 com/google/devtools/build/lib/query2/engine/RegexFilterExpression.java	com.google.devtools.build.lib.query2.engine	112	11	7	PORTED	-	0	blaze_query_engine	markers	11	7	7	0	0	-	-	lib/query2
@@ -1498,7 +1498,7 @@ com/google/devtools/build/lib/remote/common/OperationObserver.java	com.google.de
 com/google/devtools/build/lib/remote/common/OutputDigestMismatchException.java	com.google.devtools.build.lib.remote.common	50	7	3	PARTIAL	NEEDED	0	blaze_remote	markers	7	3	4	0	0	remote-execution-and-caching	-	lib/remote
 com/google/devtools/build/lib/remote/common/ProgressStatusListener.java	com.google.devtools.build.lib.remote.common	10	1	0	PARTIAL	GENERATED_OR_TRIVIAL	0	blaze_remote	markers	1	0	2	0	0	-	no method bodies, loc <= 30	lib/remote
 com/google/devtools/build/lib/remote/common/RemoteActionExecutionContext.java	com.google.devtools.build.lib.remote.common	143	19	10	PORTED	-	0	blaze_remote	markers	19	10	10	0	0	-	-	lib/remote
-com/google/devtools/build/lib/remote/common/RemoteCacheClient.java	com.google.devtools.build.lib.remote.common	113	21	18	PORTED	-	0	blaze_remote	markers	21	18	19	0	0	-	-	lib/remote
+com/google/devtools/build/lib/remote/common/RemoteCacheClient.java	com.google.devtools.build.lib.remote.common	113	21	19	PORTED	-	0	blaze_remote	markers	21	19	19	0	0	-	-	lib/remote
 com/google/devtools/build/lib/remote/common/RemoteExecutionCapabilitiesException.java	com.google.devtools.build.lib.remote.common	7	1	1	PORTED	-	0	blaze_remote	markers	1	1	2	0	0	-	-	lib/remote
 com/google/devtools/build/lib/remote/common/RemoteExecutionClient.java	com.google.devtools.build.lib.remote.common	12	3	3	PORTED	-	0	blaze_remote	markers	3	3	1	0	0	-	-	lib/remote
 com/google/devtools/build/lib/remote/common/RemotePathResolver.java	com.google.devtools.build.lib.remote.common	135	22	8	PARTIAL	NEEDED	1	blaze_remote	markers	22	8	8	0	2	remote-execution-and-caching	-	lib/remote
@@ -1537,7 +1537,7 @@ com/google/devtools/build/lib/remote/logging/UpdateActionResultHandler.java	com.
 com/google/devtools/build/lib/remote/logging/WaitExecutionHandler.java	com.google.devtools.build.lib.remote.logging	20	3	3	PORTED	-	0	blaze_remote	markers	3	3	5	0	0	-	-	lib/remote
 com/google/devtools/build/lib/remote/logging/WriteHandler.java	com.google.devtools.build.lib.remote.logging	48	3	3	PORTED	-	0	blaze_remote	markers	3	3	5	0	0	-	-	lib/remote
 com/google/devtools/build/lib/remote/merkletree/MerkleTree.java	com.google.devtools.build.lib.remote.merkletree	129	14	14	PORTED	-	0	blaze_remote	markers	14	14	21	0	0	-	-	lib/remote
-com/google/devtools/build/lib/remote/merkletree/MerkleTreeComputer.java	com.google.devtools.build.lib.remote.merkletree	900	35	20	PORTED	-	0	blaze_remote	markers	35	20	33	2	0	-	-	lib/remote
+com/google/devtools/build/lib/remote/merkletree/MerkleTreeComputer.java	com.google.devtools.build.lib.remote.merkletree	900	35	21	PORTED	-	0	blaze_remote	markers	35	21	33	2	0	-	-	lib/remote
 com/google/devtools/build/lib/remote/merkletree/MerkleTreeUploader.java	com.google.devtools.build.lib.remote.merkletree	29	4	4	PORTED	-	0	blaze_remote	markers	4	4	5	0	0	-	-	lib/remote
 com/google/devtools/build/lib/remote/options/CommonRemoteOptions.java	com.google.devtools.build.lib.remote.options	56	2	2	PORTED	-	0	blaze_optdefs	markers	2	2	4	0	0	-	-	lib/remote
 com/google/devtools/build/lib/remote/options/RemoteBuildEventUploadMode.java	com.google.devtools.build.lib.remote.options	5	0	0	PORTED	-	0	blaze_optdefs	markers	0	0	1	0	0	-	-	lib/remote
@@ -1568,7 +1568,7 @@ com/google/devtools/build/lib/rules/android/AndroidStarlarkCommon.java	com.googl
 com/google/devtools/build/lib/rules/android/BazelAndroidConfiguration.java	com.google.devtools.build.lib.rules.android	46	3	2	PORTED	-	0	blaze_build_config	markers	3	2	5	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/android/WriteAdbArgsAction.java	com.google.devtools.build.lib.rules.android	86	2	1	PARTIAL	NEEDED	0	blaze_optdefs	markers	2	1	3	0	0	android-apple-objc-proto	-	lib/rules
 com/google/devtools/build/lib/rules/apple/AppleCommandLineOptions.java	com.google.devtools.build.lib.rules.apple	330	5	4	PORTED	-	0	blaze_optdefs	markers	5	4	18	0	0	-	-	lib/rules
-com/google/devtools/build/lib/rules/apple/AppleConfiguration.java	com.google.devtools.build.lib.rules.apple	280	33	26	PORTED	-	0	blaze_build_config	markers	33	26	54	0	0	-	-	lib/rules
+com/google/devtools/build/lib/rules/apple/AppleConfiguration.java	com.google.devtools.build.lib.rules.apple	280	33	33	PORTED	-	0	blaze_build_config	markers	33	33	54	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/apple/ApplePlatform.java	com.google.devtools.build.lib.rules.apple	154	15	14	PORTED	-	1	blaze_rules	markers	15	14	26	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/apple/DottedVersion.java	com.google.devtools.build.lib.rules.apple	277	34	29	PORTED	-	0	blaze_optdefs	markers	34	29	34	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/apple/DottedVersionConverter.java	com.google.devtools.build.lib.rules.apple	17	2	1	PARTIAL	NEEDED	0	blaze_optdefs	markers	2	1	2	0	0	android-apple-objc-proto	-	lib/rules
@@ -1595,10 +1595,10 @@ com/google/devtools/build/lib/rules/cpp/CcModule.java	com.google.devtools.build.
 com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java	com.google.devtools.build.lib.rules.cpp	1200	45	44	PORTED	-	5	blaze_rules	markers	45	44	67	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/cpp/CcToolchainAliasRule.java	com.google.devtools.build.lib.rules.cpp	20	2	2	PORTED	-	0	blaze_packages	markers	2	2	3	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/cpp/CcToolchainConfigInfo.java	com.google.devtools.build.lib.rules.cpp	92	9	6	PORTED	-	0	blaze_cc_features	markers	9	6	6	0	0	-	-	lib/rules
-com/google/devtools/build/lib/rules/cpp/CcToolchainFeatures.java	com.google.devtools.build.lib.rules.cpp	971	81	70	PORTED	-	0	blaze_cc_features	markers	81	70	93	0	0	-	-	lib/rules
+com/google/devtools/build/lib/rules/cpp/CcToolchainFeatures.java	com.google.devtools.build.lib.rules.cpp	971	81	71	PORTED	-	0	blaze_cc_features	markers	81	71	93	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/cpp/CcToolchainFeaturesLib.java	com.google.devtools.build.lib.rules.cpp	461	23	21	PORTED	-	0	blaze_cc_features	markers	23	21	21	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/cpp/CcToolchainProvider.java	com.google.devtools.build.lib.rules.cpp	345	57	19	PARTIAL	NEEDED	0	blaze_rules	markers	57	19	21	0	0	cpp-rules	-	lib/rules
-com/google/devtools/build/lib/rules/cpp/CcToolchainVariables.java	com.google.devtools.build.lib.rules.cpp	721	80	70	PORTED	-	0	blaze_cc_features	markers	80	70	97	0	0	-	-	lib/rules
+com/google/devtools/build/lib/rules/cpp/CcToolchainVariables.java	com.google.devtools.build.lib.rules.cpp	721	80	74	PORTED	-	0	blaze_cc_features	markers	80	74	97	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/cpp/CompileBuildVariables.java	com.google.devtools.build.lib.rules.cpp	46	2	2	PORTED	-	0	blaze_cc_features	markers	2	2	2	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/cpp/CompileCommandLine.java	com.google.devtools.build.lib.rules.cpp	163	15	15	PORTED	-	0	blaze_cc_features	markers	15	15	17	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/cpp/CppActionNames.java	com.google.devtools.build.lib.rules.cpp	33	0	0	PORTED	-	0	blaze_cc_features	markers	0	0	30	0	0	-	-	lib/rules
@@ -1697,7 +1697,7 @@ com/google/devtools/build/lib/rules/python/PythonConfiguration.java	com.google.d
 com/google/devtools/build/lib/rules/python/PythonOptions.java	com.google.devtools.build.lib.rules.python	77	1	1	PORTED	-	0	blaze_optdefs	markers	1	1	3	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/python/PythonUtils.java	com.google.devtools.build.lib.rules.python	58	5	4	PORTED	-	0	blaze_rules	markers	5	4	9	0	4	-	-	lib/rules
 com/google/devtools/build/lib/rules/python/PythonVersion.java	com.google.devtools.build.lib.rules.python	56	5	0	PARTIAL	NEEDED	0	blaze_optdefs	markers	5	0	1	0	0	python-and-other-native-rules	-	lib/rules
-com/google/devtools/build/lib/rules/repository/RepoRecordedInput.java	com.google.devtools.build.lib.rules.repository	655	85	59	PORTED	-	0	blaze_repo_rules	markers	85	59	73	0	0	-	-	lib/rules
+com/google/devtools/build/lib/rules/repository/RepoRecordedInput.java	com.google.devtools.build.lib.rules.repository	655	85	61	PORTED	-	0	blaze_repo_rules	markers	85	61	73	0	0	-	-	lib/rules
 com/google/devtools/build/lib/rules/repository/RepositoryDirectoryValue.java	com.google.devtools.build.lib.rules.repository	53	6	2	PARTIAL	NEEDED	0	blaze_repo_rules	markers	6	2	11	0	0	repositories-and-bzlmod	-	lib/rules
 com/google/devtools/build/lib/rules/starlarkdocextract/StarlarkDocExtract.java	com.google.devtools.build.lib.rules.starlarkdocextract	276	11	0	PARTIAL	NEEDED	0	blaze_packages	markers	11	0	1	0	0	starlark-debugger-and-docs	-	lib/rules
 com/google/devtools/build/lib/rules/starlarkdocextract/StarlarkDocExtractRule.java	com.google.devtools.build.lib.rules.starlarkdocextract	45	2	2	PORTED	-	0	blaze_packages	markers	2	2	3	0	0	-	-	lib/rules
@@ -1817,7 +1817,7 @@ com/google/devtools/build/lib/runtime/commands/NoTestsFound.java	com.google.devt
 com/google/devtools/build/lib/runtime/commands/PathToReplaceUtils.java	com.google.devtools.build.lib.runtime.commands	27	3	2	PORTED	-	0	blaze_runtime	markers	3	2	2	0	0	-	-	lib/runtime
 com/google/devtools/build/lib/runtime/commands/PrintActionCommand.java	com.google.devtools.build.lib.runtime.commands	334	12	0	PARTIAL	NEEDED	0	blaze_runtime	markers	12	0	3	0	0	commands	-	lib/runtime
 com/google/devtools/build/lib/runtime/commands/QueryCommand.java	com.google.devtools.build.lib.runtime.commands	209	6	5	PORTED	-	0	blaze_query	markers	6	5	7	0	0	-	-	lib/runtime
-com/google/devtools/build/lib/runtime/commands/QueryCommandUtils.java	com.google.devtools.build.lib.runtime.commands	52	3	1	PARTIAL	NEEDED	0	blaze_cquery	markers	3	1	1	2	0	query-output-formatters	-	lib/runtime
+com/google/devtools/build/lib/runtime/commands/QueryCommandUtils.java	com.google.devtools.build.lib.runtime.commands	52	3	2	PORTED	-	0	blaze_cquery	markers	3	2	1	2	0	-	-	lib/runtime
 com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java	com.google.devtools.build.lib.runtime.commands	260	8	3	PARTIAL	NEEDED	0	blaze_query	markers	8	3	5	0	0	query-output-formatters	-	lib/runtime
 com/google/devtools/build/lib/runtime/commands/QueryOptionHelper.java	com.google.devtools.build.lib.runtime.commands	51	2	1	PARTIAL	NEEDED	1	blaze_cquery	markers	2	1	2	0	0	query-output-formatters	-	lib/runtime
 com/google/devtools/build/lib/runtime/commands/RunCommand.java	com.google.devtools.build.lib.runtime.commands	1047	34	32	PORTED	-	0	blaze_runtime	markers	34	32	40	0	0	-	-	lib/runtime
@@ -1874,7 +1874,7 @@ com/google/devtools/build/lib/sandbox/CgroupsInfo.java	com.google.devtools.build
 com/google/devtools/build/lib/sandbox/CgroupsInfoV1.java	com.google.devtools.build.lib.sandbox	72	5	0	UNTOUCHED	NEEDED	0	blaze_exec	package	5	0	0	0	0	sandboxing-and-local-exec	-	lib/sandbox
 com/google/devtools/build/lib/sandbox/CgroupsInfoV2.java	com.google.devtools.build.lib.sandbox	92	6	0	UNTOUCHED	NEEDED	0	blaze_exec	package	6	0	0	0	0	sandboxing-and-local-exec	-	lib/sandbox
 com/google/devtools/build/lib/sandbox/CopyingSandboxedSpawn.java	com.google.devtools.build.lib.sandbox	58	3	0	UNTOUCHED	NEEDED	0	blaze_exec	package	3	0	0	0	0	sandboxing-and-local-exec	-	lib/sandbox
-com/google/devtools/build/lib/sandbox/DarwinSandboxedSpawnRunner.java	com.google.devtools.build.lib.sandbox	224	10	0	PARTIAL	OUT_OF_SCOPE_OS	0	blaze_exec	package	10	0	0	2	0	-	macOS class	lib/sandbox
+com/google/devtools/build/lib/sandbox/DarwinSandboxedSpawnRunner.java	com.google.devtools.build.lib.sandbox	224	10	1	PARTIAL	OUT_OF_SCOPE_OS	0	blaze_exec	package	10	1	0	2	0	-	macOS class	lib/sandbox
 com/google/devtools/build/lib/sandbox/DarwinSandboxedStrategy.java	com.google.devtools.build.lib.sandbox	13	2	0	UNTOUCHED	OUT_OF_SCOPE_OS	0	blaze_exec	package	2	0	0	0	0	-	macOS class	lib/sandbox
 com/google/devtools/build/lib/sandbox/DockerCommandLineBuilder.java	com.google.devtools.build.lib.sandbox	154	15	0	UNTOUCHED	NEEDED	0	blaze_exec	package	15	0	0	0	0	sandboxing-and-local-exec	-	lib/sandbox
 com/google/devtools/build/lib/sandbox/DockerSandboxedSpawnRunner.java	com.google.devtools.build.lib.sandbox	370	9	0	PARTIAL	NEEDED	1	blaze_exec	package	9	0	0	0	0	sandboxing-and-local-exec	-	lib/sandbox
@@ -1925,7 +1925,7 @@ com/google/devtools/build/lib/shell/AbnormalTerminationException.java	com.google
 com/google/devtools/build/lib/shell/BadExitStatusException.java	com.google.devtools.build.lib.shell	15	2	2	PORTED	-	0	blaze_shell	markers	2	2	3	0	0	-	-	lib/shell
 com/google/devtools/build/lib/shell/Command.java	com.google.devtools.build.lib.shell	160	20	18	PORTED	-	0	blaze_shell	markers	20	18	20	1	0	-	-	lib/shell
 com/google/devtools/build/lib/shell/CommandException.java	com.google.devtools.build.lib.shell	21	4	4	PORTED	-	0	blaze_shell	markers	4	4	2	0	0	-	-	lib/shell
-com/google/devtools/build/lib/shell/CommandResult.java	com.google.devtools.build.lib.shell	83	15	5	PARTIAL	NEEDED	0	blaze_shell	markers	15	5	7	1	0	sandboxing-and-local-exec	-	lib/shell
+com/google/devtools/build/lib/shell/CommandResult.java	com.google.devtools.build.lib.shell	83	15	6	PARTIAL	NEEDED	0	blaze_shell	markers	15	6	7	1	0	sandboxing-and-local-exec	-	lib/shell
 com/google/devtools/build/lib/shell/Consumers.java	com.google.devtools.build.lib.shell	183	32	16	PARTIAL	NEEDED	0	blaze_shell	markers	32	16	15	0	0	sandboxing-and-local-exec	-	lib/shell
 com/google/devtools/build/lib/shell/ExecFailedException.java	com.google.devtools.build.lib.shell	7	1	1	PORTED	-	0	blaze_shell	markers	1	1	2	0	0	-	-	lib/shell
 com/google/devtools/build/lib/shell/ExecutionStatistics.java	com.google.devtools.build.lib.shell	81	18	2	PARTIAL	NEEDED	0	blaze_shell	markers	18	2	3	0	0	sandboxing-and-local-exec	-	lib/shell
@@ -1967,7 +1967,7 @@ com/google/devtools/build/lib/skyframe/ArtifactConflictFinder.java	com.google.de
 com/google/devtools/build/lib/skyframe/ArtifactFunction.java	com.google.devtools.build.lib.skyframe	514	37	19	PORTED	-	1	blaze_sky_exec	markers	37	19	20	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/ArtifactNestedSetFunction.java	com.google.devtools.build.lib.skyframe	111	7	5	PORTED	-	0	blaze_sky_exec	markers	7	5	6	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/ArtifactNestedSetValue.java	com.google.devtools.build.lib.skyframe	10	0	0	PORTED	-	0	blaze_sky_exec	markers	0	0	1	0	0	-	-	lib/skyframe
-com/google/devtools/build/lib/skyframe/AspectCompletionValue.java	com.google.devtools.build.lib.skyframe	37	6	2	PARTIAL	NEEDED	0	blaze_sky_exec	markers	6	2	3	0	0	analysis-core	-	lib/skyframe
+com/google/devtools/build/lib/skyframe/AspectCompletionValue.java	com.google.devtools.build.lib.skyframe	37	6	3	PARTIAL	NEEDED	0	blaze_sky_exec	markers	6	3	3	0	0	analysis-core	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/AspectCompletor.java	com.google.devtools.build.lib.skyframe	87	6	5	PORTED	-	0	blaze_sky_exec	markers	6	5	7	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/AspectCreationException.java	com.google.devtools.build.lib.skyframe	74	9	7	PORTED	-	0	blaze_sky_analysis	markers	9	7	8	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/AspectFunction.java	com.google.devtools.build.lib.skyframe	856	28	24	PORTED	-	0	blaze_sky_analysis	markers	28	24	22	0	0	-	-	lib/skyframe
@@ -2143,7 +2143,7 @@ com/google/devtools/build/lib/skyframe/SkyfocusState.java	com.google.devtools.bu
 com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java	com.google.devtools.build.lib.skyframe	1551	89	44	PARTIAL	NEEDED	2	blaze_sky_exec	markers	89	44	62	1	0	execution-and-action-graph	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/SkyframeAnalysisAndExecutionResult.java	com.google.devtools.build.lib.skyframe	78	4	0	UNTOUCHED	NEEDED	0	blaze_sky_loading	package	4	0	0	0	0	analysis-core	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/SkyframeAnalysisResult.java	com.google.devtools.build.lib.skyframe	75	10	9	PORTED	-	0	blaze_sky_top	markers	10	9	10	0	0	-	-	lib/skyframe
-com/google/devtools/build/lib/skyframe/SkyframeBuildView.java	com.google.devtools.build.lib.skyframe	1200	40	10	PARTIAL	NEEDED	1	blaze_sky_top	markers	40	10	21	0	0	analysis-core	-	lib/skyframe
+com/google/devtools/build/lib/skyframe/SkyframeBuildView.java	com.google.devtools.build.lib.skyframe	1200	40	13	PARTIAL	NEEDED	1	blaze_sky_top	markers	40	13	21	0	0	analysis-core	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java	com.google.devtools.build.lib.skyframe	786	41	22	PORTED	-	4	blaze_sky_top	markers	41	22	28	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/SkyframeExecutor.java	com.google.devtools.build.lib.skyframe	3687	250	52	PARTIAL	NEEDED	5	blaze_sky_top	markers	250	52	95	1	54	incremental-evaluation	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/SkyframeExecutorFactory.java	com.google.devtools.build.lib.skyframe	30	1	0	UNTOUCHED	GENERATED_OR_TRIVIAL	0	blaze_sky_loading	package	1	0	0	0	0	-	no method bodies, loc <= 30	lib/skyframe
@@ -2162,7 +2162,7 @@ com/google/devtools/build/lib/skyframe/StarlarkBuiltinsFunction.java	com.google.
 com/google/devtools/build/lib/skyframe/StarlarkBuiltinsValue.java	com.google.devtools.build.lib.skyframe	89	12	8	PORTED	-	0	blaze_sky_loading	markers	12	8	7	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/StarlarkUtil.java	com.google.devtools.build.lib.skyframe	45	3	2	PORTED	-	0	blaze_sky_loading	markers	3	2	7	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/StateInformingSkyFunctionEnvironment.java	com.google.devtools.build.lib.skyframe	144	18	0	UNTOUCHED	NEEDED	0	blaze_sky_loading	package	18	0	0	0	0	execution-and-action-graph	-	lib/skyframe
-com/google/devtools/build/lib/skyframe/TargetCompletionValue.java	com.google.devtools.build.lib.skyframe	53	8	1	PARTIAL	NEEDED	0	blaze_sky_exec	markers	8	1	2	0	0	execution-and-action-graph	-	lib/skyframe
+com/google/devtools/build/lib/skyframe/TargetCompletionValue.java	com.google.devtools.build.lib.skyframe	53	8	3	PARTIAL	NEEDED	0	blaze_sky_exec	markers	8	3	2	0	0	execution-and-action-graph	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TargetCompletor.java	com.google.devtools.build.lib.skyframe	112	7	5	PORTED	-	0	blaze_sky_exec	markers	7	5	9	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TargetCycleReporter.java	com.google.devtools.build.lib.skyframe	92	6	6	PORTED	-	0	blaze_sky_top	markers	6	6	8	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TargetExcludingFilteringPolicy.java	com.google.devtools.build.lib.skyframe	34	5	0	UNTOUCHED	NEEDED	0	blaze_sky_loading	package	5	0	0	0	0	execution-and-action-graph	-	lib/skyframe
@@ -2175,7 +2175,7 @@ com/google/devtools/build/lib/skyframe/TargetPatternUtil.java	com.google.devtool
 com/google/devtools/build/lib/skyframe/TargetPatternValue.java	com.google.devtools.build.lib.skyframe	202	20	7	PARTIAL	NEEDED	0	blaze_sky_loading	markers	20	7	6	0	0	packages-and-loading	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TargetPatternsResultBuilder.java	com.google.devtools.build.lib.skyframe	63	7	1	PARTIAL	NEEDED	0	blaze_sky_loading	markers	7	1	1	0	0	packages-and-loading	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TestCompletionFunction.java	com.google.devtools.build.lib.skyframe	105	3	2	PORTED	-	0	blaze_sky_exec	markers	3	2	2	0	0	-	-	lib/skyframe
-com/google/devtools/build/lib/skyframe/TestCompletionValue.java	com.google.devtools.build.lib.skyframe	63	10	1	PARTIAL	NEEDED	0	blaze_sky_exec	markers	10	1	2	0	0	execution-and-action-graph	-	lib/skyframe
+com/google/devtools/build/lib/skyframe/TestCompletionValue.java	com.google.devtools.build.lib.skyframe	63	10	4	PARTIAL	NEEDED	0	blaze_sky_exec	markers	10	4	2	0	0	execution-and-action-graph	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TestExpansionCycleReporter.java	com.google.devtools.build.lib.skyframe	23	4	0	UNTOUCHED	NEEDED	0	blaze_sky_loading	package	4	0	0	0	0	execution-and-action-graph	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TestExpansionFunction.java	com.google.devtools.build.lib.skyframe	147	4	3	PORTED	-	0	blaze_sky_top	markers	4	3	3	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TestExpansionValue.java	com.google.devtools.build.lib.skyframe	65	10	4	PARTIAL	NEEDED	0	blaze_sky_top	markers	10	4	4	0	0	execution-and-action-graph	-	lib/skyframe
@@ -2186,7 +2186,7 @@ com/google/devtools/build/lib/skyframe/TopLevelActionLookupKeyWrapper.java	com.g
 com/google/devtools/build/lib/skyframe/TopLevelAspectsDetailsBuildFailedException.java	com.google.devtools.build.lib.skyframe	22	2	2	PORTED	-	0	blaze_sky_analysis	markers	2	2	3	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TopLevelAspectsValue.java	com.google.devtools.build.lib.skyframe	21	3	3	PORTED	-	0	blaze_analysis	markers	3	3	6	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TopLevelConflictException.java	com.google.devtools.build.lib.skyframe	17	2	0	UNTOUCHED	NEEDED	0	blaze_sky_loading	package	2	0	0	0	0	execution-and-action-graph	-	lib/skyframe
-com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java	com.google.devtools.build.lib.skyframe	167	33	7	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	33	7	10	0	0	execution-and-action-graph	-	lib/skyframe
+com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java	com.google.devtools.build.lib.skyframe	167	33	10	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	33	10	10	0	0	execution-and-action-graph	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/ToplevelAspectsIdentifiedEvent.java	com.google.devtools.build.lib.skyframe	4	0	0	PORTED	-	0	blaze_sky_top	markers	0	0	1	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/ToplevelStarlarkAspectFunction.java	com.google.devtools.build.lib.skyframe	373	21	14	PORTED	-	0	blaze_sky_analysis	markers	21	14	14	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TrackSourceDirectoriesFlag.java	com.google.devtools.build.lib.skyframe	14	2	2	PORTED	-	0	blaze_sky_exec	markers	2	2	5	0	0	-	-	lib/skyframe
@@ -2197,7 +2197,7 @@ com/google/devtools/build/lib/skyframe/TransitiveTargetValue.java	com.google.dev
 com/google/devtools/build/lib/skyframe/TransitiveTraversalFunction.java	com.google.devtools.build.lib.skyframe	138	13	0	UNTOUCHED	NEEDED	0	blaze_sky_loading	package	13	0	0	0	0	execution-and-action-graph	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TransitiveTraversalValue.java	com.google.devtools.build.lib.skyframe	140	18	0	UNTOUCHED	NEEDED	0	blaze_sky_loading	package	18	0	0	0	0	execution-and-action-graph	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TraversalInfoRootPackageExtractor.java	com.google.devtools.build.lib.skyframe	205	9	0	UNTOUCHED	NEEDED	0	blaze_sky_loading	package	9	0	0	0	0	execution-and-action-graph	-	lib/skyframe
-com/google/devtools/build/lib/skyframe/TraversalRequest.java	com.google.devtools.build.lib.skyframe	101	22	14	PORTED	-	0	blaze_sky_exec	markers	22	14	9	0	0	-	-	lib/skyframe
+com/google/devtools/build/lib/skyframe/TraversalRequest.java	com.google.devtools.build.lib.skyframe	101	22	18	PORTED	-	0	blaze_sky_exec	markers	22	18	9	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TreeArtifactValue.java	com.google.devtools.build.lib.skyframe	485	51	16	PARTIAL	NEEDED	2	blaze_exec	markers	51	16	20	0	12	execution-and-action-graph	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/TreeArtifactValueCodec.java	com.google.devtools.build.lib.skyframe	54	4	0	UNTOUCHED	NEEDED	0	blaze_sky_loading	package	4	0	0	0	0	execution-and-action-graph	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/WatchServiceDiffAwareness.java	com.google.devtools.build.lib.skyframe	202	11	0	UNTOUCHED	NEEDED	0	blaze_sky_loading	package	11	0	0	0	0	execution-and-action-graph	-	lib/skyframe
@@ -2420,7 +2420,7 @@ com/google/devtools/build/lib/skyframe/serialization/testutils/SerializationTest
 com/google/devtools/build/lib/skyframe/serialization/testutils/TestUtils.java	com.google.devtools.build.lib.skyframe.serialization.testutils	24	3	0	UNTOUCHED	TEST_SUPPORT	0	blaze_sky_top	plan	3	0	0	0	0	-	test-support package	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/ConfigMatchingUtil.java	com.google.devtools.build.lib.skyframe.toolchains	48	2	1	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	2	1	1	0	0	configuration-and-transitions	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/ConstraintValueLookupUtil.java	com.google.devtools.build.lib.skyframe.toolchains	89	8	7	PORTED	-	0	blaze_sky_analysis	markers	8	7	7	0	3	-	-	lib/skyframe
-com/google/devtools/build/lib/skyframe/toolchains/NoMatchingPlatformData.java	com.google.devtools.build.lib.skyframe.toolchains	47	9	1	PARTIAL	NEEDED	0	blaze_analysis	markers	9	1	2	0	0	configuration-and-transitions	-	lib/skyframe
+com/google/devtools/build/lib/skyframe/toolchains/NoMatchingPlatformData.java	com.google.devtools.build.lib.skyframe.toolchains	47	9	4	PARTIAL	NEEDED	0	blaze_analysis	markers	9	4	2	0	0	configuration-and-transitions	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/NoMatchingPlatformException.java	com.google.devtools.build.lib.skyframe.toolchains	11	2	2	PORTED	-	0	blaze_analysis	markers	2	2	2	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/PlatformKeys.java	com.google.devtools.build.lib.skyframe.toolchains	236	12	12	PORTED	-	0	blaze_sky_analysis	markers	12	12	14	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/PlatformLookupUtil.java	com.google.devtools.build.lib.skyframe.toolchains	156	10	10	PORTED	-	0	blaze_sky_analysis	markers	10	10	10	0	3	-	-	lib/skyframe
@@ -2432,15 +2432,15 @@ com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsFunction.j
 com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java	com.google.devtools.build.lib.skyframe.toolchains	85	13	4	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	13	4	4	0	0	configuration-and-transitions	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java	com.google.devtools.build.lib.skyframe.toolchains	232	36	0	PARTIAL	NEEDED	1	blaze_sky_analysis	package	36	0	0	0	0	configuration-and-transitions	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionFunction.java	com.google.devtools.build.lib.skyframe.toolchains	214	8	5	PORTED	-	0	blaze_sky_analysis	markers	8	5	5	0	0	-	-	lib/skyframe
-com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionValue.java	com.google.devtools.build.lib.skyframe.toolchains	90	12	3	PARTIAL	NEEDED	0	blaze_sky_analysis	markers	12	3	4	0	0	configuration-and-transitions	-	lib/skyframe
-com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java	com.google.devtools.build.lib.skyframe.toolchains	47	17	7	PARTIAL	NEEDED	0	blaze_analysis	markers	17	7	10	0	0	configuration-and-transitions	-	lib/skyframe
+com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionValue.java	com.google.devtools.build.lib.skyframe.toolchains	90	12	9	PORTED	-	0	blaze_sky_analysis	markers	12	9	4	0	0	-	-	lib/skyframe
+com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java	com.google.devtools.build.lib.skyframe.toolchains	47	17	8	PARTIAL	NEEDED	0	blaze_analysis	markers	17	8	10	0	0	configuration-and-transitions	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextUtil.java	com.google.devtools.build.lib.skyframe.toolchains	200	6	5	PORTED	-	0	blaze_sky_analysis	markers	6	5	5	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/ToolchainException.java	com.google.devtools.build.lib.skyframe.toolchains	80	8	6	PORTED	-	0	blaze_analysis	markers	8	6	8	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java	com.google.devtools.build.lib.skyframe.toolchains	99	16	0	PARTIAL	NEEDED	1	blaze_sky_analysis	package	16	0	0	0	0	configuration-and-transitions	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionFunction.java	com.google.devtools.build.lib.skyframe.toolchains	332	14	12	PORTED	-	0	blaze_sky_analysis	markers	14	12	12	0	0	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/ToolchainTypeLookupUtil.java	com.google.devtools.build.lib.skyframe.toolchains	134	9	9	PORTED	-	0	blaze_sky_analysis	markers	9	9	9	0	5	-	-	lib/skyframe
 com/google/devtools/build/lib/skyframe/toolchains/UnloadedToolchainContext.java	com.google.devtools.build.lib.skyframe.toolchains	17	4	4	PORTED	-	0	blaze_analysis	markers	4	4	3	0	0	-	-	lib/skyframe
-com/google/devtools/build/lib/skyframe/toolchains/UnloadedToolchainContextImpl.java	com.google.devtools.build.lib.skyframe.toolchains	40	11	2	PARTIAL	NEEDED	0	blaze_analysis	markers	11	2	4	0	0	configuration-and-transitions	-	lib/skyframe
+com/google/devtools/build/lib/skyframe/toolchains/UnloadedToolchainContextImpl.java	com.google.devtools.build.lib.skyframe.toolchains	40	11	4	PARTIAL	NEEDED	0	blaze_analysis	markers	11	4	4	0	0	configuration-and-transitions	-	lib/skyframe
 com/google/devtools/build/lib/standalone/DummyCppIncludeExtractionContext.java	com.google.devtools.build.lib.standalone	14	2	2	PORTED	-	0	blaze_rules	markers	2	2	3	0	0	-	-	lib/standalone
 com/google/devtools/build/lib/standalone/DummyCppIncludeScanningContext.java	com.google.devtools.build.lib.standalone	16	1	0	UNTOUCHED	NEEDED	0	blaze_exec	package	1	0	0	0	0	sandboxing-and-local-exec	-	lib/standalone
 com/google/devtools/build/lib/standalone/StandaloneModule.java	com.google.devtools.build.lib.standalone	71	2	2	PORTED	-	0	blaze_exec	markers	2	2	5	0	0	-	-	lib/standalone
@@ -2631,7 +2631,7 @@ com/google/devtools/build/lib/util/InterruptedFailureDetails.java	com.google.dev
 com/google/devtools/build/lib/util/JavaSleeper.java	com.google.devtools.build.lib.util	10	1	0	UNTOUCHED	NEEDED	0	blaze_exec	package	1	0	0	0	0	java-rules-in-core	-	lib/util
 com/google/devtools/build/lib/util/LatestObjectMetricExporter.java	com.google.devtools.build.lib.util	49	4	0	UNTOUCHED	NEEDED	0	blaze_exec	package	4	0	0	0	0	base-libraries	-	lib/util
 com/google/devtools/build/lib/util/LogHandlerQuerier.java	com.google.devtools.build.lib.util	58	6	0	UNTOUCHED	NEEDED	0	blaze_exec	package	6	0	0	0	0	base-libraries	-	lib/util
-com/google/devtools/build/lib/util/LoggingUtil.java	com.google.devtools.build.lib.util	44	5	0	PARTIAL	NEEDED	0	blaze_exec	package	5	0	0	1	0	server-client-protocol	-	lib/util
+com/google/devtools/build/lib/util/LoggingUtil.java	com.google.devtools.build.lib.util	44	5	2	PARTIAL	NEEDED	0	blaze_exec	package	5	2	0	1	0	server-client-protocol	-	lib/util
 com/google/devtools/build/lib/util/LongArrayList.java	com.google.devtools.build.lib.util	129	23	0	UNTOUCHED	NEEDED	0	blaze_exec	package	23	0	0	0	0	base-libraries	-	lib/util
 com/google/devtools/build/lib/util/MapCodec.java	com.google.devtools.build.lib.util	111	14	13	PORTED	-	0	blaze_exec	markers	14	13	20	0	0	-	-	lib/util
 com/google/devtools/build/lib/util/Markdown.java	com.google.devtools.build.lib.util	10	1	1	PORTED	-	3	blaze_options	markers	1	1	2	0	0	-	-	lib/util
@@ -2697,7 +2697,7 @@ com/google/devtools/build/lib/util/io/RecordOutputStream.java	com.google.devtool
 com/google/devtools/build/lib/util/io/RecordingOutErr.java	com.google.devtools.build.lib.util.io	47	9	7	PORTED	-	0	blaze_events	markers	9	7	8	0	0	-	-	lib/util
 com/google/devtools/build/lib/util/io/StreamDemultiplexer.java	com.google.devtools.build.lib.util.io	80	7	0	UNTOUCHED	NEEDED	0	blaze_events	package	7	0	0	0	0	runtime-and-ui	-	lib/util
 com/google/devtools/build/lib/util/io/StreamMultiplexer.java	com.google.devtools.build.lib.util.io	47	6	0	UNTOUCHED	NEEDED	0	blaze_events	package	6	0	0	0	0	runtime-and-ui	-	lib/util
-com/google/devtools/build/lib/util/io/TimestampGranularityMonitor.java	com.google.devtools.build.lib.util.io	82	5	0	UNTOUCHED	NEEDED	0	blaze_events	package	5	0	0	0	0	runtime-and-ui	-	lib/util
+com/google/devtools/build/lib/util/io/TimestampGranularityMonitor.java	com.google.devtools.build.lib.util.io	82	5	1	PARTIAL	NEEDED	0	blaze_events	package	5	1	0	0	0	runtime-and-ui	-	lib/util
 com/google/devtools/build/lib/util/regex/RegexUtil.java	com.google.devtools.build.lib.util.regex	36	2	1	PARTIAL	NEEDED	0	blaze_options	markers	2	1	3	0	0	base-libraries	-	lib/util
 com/google/devtools/build/lib/versioning/LongVersionGetter.java	com.google.devtools.build.lib.versioning	10	3	0	UNTOUCHED	GENERATED_OR_TRIVIAL	0	blaze_util	plan	3	0	0	0	0	-	no method bodies, loc <= 30	lib/versioning
 com/google/devtools/build/lib/vfs/BatchStat.java	com.google.devtools.build.lib.vfs	7	1	0	UNTOUCHED	GENERATED_OR_TRIVIAL	0	blaze_vfs	package	1	0	0	0	0	-	no method bodies, loc <= 30	lib/vfs
@@ -2885,7 +2885,7 @@ com/google/devtools/common/options/ArgsPreProcessor.java	com.google.devtools.com
 com/google/devtools/common/options/BoolOrEnumConverter.java	com.google.devtools.common.options	25	2	2	PORTED	-	0	blaze_options	markers	2	2	2	0	0	-	-	common/options
 com/google/devtools/common/options/CommandNameCache.java	com.google.devtools.common.options	18	4	0	UNTOUCHED	NEEDED	0	blaze_options	package	4	0	0	0	0	base-libraries	-	common/options
 com/google/devtools/common/options/Converter.java	com.google.devtools.common.options	20	6	5	PORTED	-	0	blaze_options	markers	6	5	5	0	0	-	-	common/options
-com/google/devtools/common/options/Converters.java	com.google.devtools.common.options	563	59	37	PORTED	-	1	blaze_options	markers	59	37	62	0	0	-	-	common/options
+com/google/devtools/common/options/Converters.java	com.google.devtools.common.options	563	59	38	PORTED	-	1	blaze_options	markers	59	38	62	0	0	-	-	common/options
 com/google/devtools/common/options/DuplicateOptionDeclarationException.java	com.google.devtools.common.options	6	1	0	UNTOUCHED	NEEDED	0	blaze_options	package	1	0	0	0	0	base-libraries	-	common/options
 com/google/devtools/common/options/EnumConverter.java	com.google.devtools.common.options	45	6	5	PORTED	-	0	blaze_options	markers	6	5	5	0	0	-	-	common/options
 com/google/devtools/common/options/FieldOptionDefinition.java	com.google.devtools.common.options	252	35	26	PORTED	-	0	blaze_options	markers	35	26	27	0	0	-	-	common/options
@@ -2917,7 +2917,7 @@ com/google/devtools/common/options/OptionsProvider.java	com.google.devtools.comm
 com/google/devtools/common/options/OptionsUsage.java	com.google.devtools.common.options	162	8	8	PORTED	-	0	blaze_options	markers	8	8	9	0	0	-	-	common/options
 com/google/devtools/common/options/ParamsFilePreProcessor.java	com.google.devtools.common.options	40	3	0	UNTOUCHED	NEEDED	0	blaze_options	package	3	0	0	0	6	base-libraries	-	common/options
 com/google/devtools/common/options/ParsedOptionDescription.java	com.google.devtools.common.options	162	23	11	PARTIAL	NEEDED	0	blaze_options	markers	23	11	11	0	0	base-libraries	-	common/options
-com/google/devtools/common/options/RegexPatternOption.java	com.google.devtools.common.options	31	5	1	PARTIAL	NEEDED	0	blaze_options	markers	5	1	2	0	0	base-libraries	-	common/options
+com/google/devtools/common/options/RegexPatternOption.java	com.google.devtools.common.options	31	5	3	PORTED	-	0	blaze_options	markers	5	3	2	0	0	-	-	common/options
 com/google/devtools/common/options/ShellQuotedParamsFilePreProcessor.java	com.google.devtools.common.options	105	8	0	UNTOUCHED	NEEDED	0	blaze_options	package	8	0	0	0	10	base-libraries	-	common/options
 com/google/devtools/common/options/TriState.java	com.google.devtools.common.options	7	0	0	PORTED	-	0	blaze_options	markers	0	0	1	0	0	-	-	common/options
 com/google/devtools/common/options/UnquotedParamsFilePreProcessor.java	com.google.devtools.common.options	16	2	0	UNTOUCHED	NEEDED	0	blaze_options	package	2	0	0	0	1	base-libraries	-	common/options
@@ -2977,7 +2977,7 @@ net/starlark/java/eval/StarlarkSemantics.java	net.starlark.java.eval	143	18	0	PA
 net/starlark/java/eval/StarlarkSet.java	net.starlark.java.eval	696	50	2	PARTIAL	STARLARK_RUST_DECISION	1	blaze_starlark	markers	50	2	5	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/eval
 net/starlark/java/eval/StarlarkThread.java	net.starlark.java.eval	359	58	7	PARTIAL	STARLARK_RUST_DECISION	0	blaze_packages	markers	58	7	10	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/eval
 net/starlark/java/eval/StarlarkValue.java	net.starlark.java.eval	32	8	4	PARTIAL	STARLARK_RUST_DECISION	1	blaze_rules	markers	8	4	49	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/eval
-net/starlark/java/eval/StringModule.java	net.starlark.java.eval	958	52	1	PARTIAL	STARLARK_RUST_DECISION	0	blaze_analysis	markers	52	1	4	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/eval
+net/starlark/java/eval/StringModule.java	net.starlark.java.eval	958	52	0	PARTIAL	STARLARK_RUST_DECISION	0	blaze_analysis	markers	52	0	4	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/eval
 net/starlark/java/eval/Structure.java	net.starlark.java.eval	17	5	4	PORTED	-	0	blaze_cc_features	markers	5	4	2	0	0	-	-	net/starlark/eval
 net/starlark/java/eval/SymbolGenerator.java	net.starlark.java.eval	85	17	0	UNTOUCHED	STARLARK_RUST_DECISION	0	blaze_packages	package	17	0	0	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/eval
 net/starlark/java/eval/Tuple.java	net.starlark.java.eval	116	14	1	PARTIAL	STARLARK_RUST_DECISION	1	blaze_actions	markers	14	1	5	0	1	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/eval
@@ -3000,7 +3000,7 @@ net/starlark/java/syntax/Ellipsis.java	net.starlark.java.syntax	24	5	0	UNTOUCHED
 net/starlark/java/syntax/Expression.java	net.starlark.java.syntax	46	6	0	UNTOUCHED	STARLARK_RUST_DECISION	0	blaze_starlark	package	6	0	0	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/syntax
 net/starlark/java/syntax/ExpressionStatement.java	net.starlark.java.syntax	23	5	0	UNTOUCHED	STARLARK_RUST_DECISION	0	blaze_starlark	package	5	0	0	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/syntax
 net/starlark/java/syntax/FileLocations.java	net.starlark.java.syntax	83	9	0	UNTOUCHED	STARLARK_RUST_DECISION	0	blaze_starlark	package	9	0	0	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/syntax
-net/starlark/java/syntax/FileOptions.java	net.starlark.java.syntax	38	19	0	PARTIAL	STARLARK_RUST_DECISION	0	blaze_starlark	markers	19	0	3	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/syntax
+net/starlark/java/syntax/FileOptions.java	net.starlark.java.syntax	38	19	9	PARTIAL	STARLARK_RUST_DECISION	0	blaze_starlark	markers	19	9	3	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/syntax
 net/starlark/java/syntax/FloatLiteral.java	net.starlark.java.syntax	30	6	0	UNTOUCHED	STARLARK_RUST_DECISION	0	blaze_starlark	package	6	0	0	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/syntax
 net/starlark/java/syntax/FlowStatement.java	net.starlark.java.syntax	29	6	0	UNTOUCHED	STARLARK_RUST_DECISION	0	blaze_starlark	package	6	0	0	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/syntax
 net/starlark/java/syntax/ForStatement.java	net.starlark.java.syntax	48	8	0	UNTOUCHED	STARLARK_RUST_DECISION	0	blaze_starlark	package	8	0	0	0	0	-	replaced by starlark-rust (decisions.md 2026-11-17)	net/starlark/syntax

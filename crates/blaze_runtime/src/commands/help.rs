@@ -593,9 +593,8 @@ fn capitalize(s: &str) -> String {
 // Java: com/google/devtools/build/lib/util/StringUtil.java:44 StringUtil.joinEnglishList
 fn join_english_list(choices: &[String], last_separator: &str) -> String {
     let mut buf = String::new();
-    let mut num_choices_seen = 0;
-    for (i, choice) in choices.iter().enumerate() {
-        let has_next = i + 1 < choices.len();
+    for (num_choices_seen, choice) in choices.iter().enumerate() {
+        let has_next = num_choices_seen + 1 < choices.len();
         if !buf.is_empty() {
             if has_next || num_choices_seen >= 2 {
                 buf.push(',');
@@ -607,7 +606,6 @@ fn join_english_list(choices: &[String], last_separator: &str) -> String {
             buf.push(' ');
         }
         buf.push_str(choice);
-        num_choices_seen += 1;
     }
     if buf.is_empty() {
         "nothing".to_string()
