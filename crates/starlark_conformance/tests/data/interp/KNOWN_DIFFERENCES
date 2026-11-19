@@ -4,87 +4,20 @@
 # in printed output and the kind of its first error (`text`), or may differ in kind (`kind`), and
 # must be removed from this list once it matches. Reasons (third_party/starlark-rust/PATCHES.md,
 # 0049-0055 and docs/starlark-errors.tsv):
-#   more-syntax-errors  Java's parser recovers and reports every syntax error of the file;
-#                       starlark-rust's stops at the first (its line is equal to Java's first).
 #   location            same message, different file:line:column in the traceback.
 #   text                different error text.
 #   kind                different outcome (the probe runs no Blaze static checks and has no loader).
 # Format: NAME text|kind REASON
 
-err_call_print_sep_type.star text text
-err_call_sorted_key_noncallable.star text text
+err_call_range_type_before_arity.star text text
+err_call_startswith_type_before_arity.star text text
 err_ev_kwargs_key_not_str.star text location
 err_ev_kwargs_not_dict.star text location
 err_ev_not_callable.star text location
+err_ev_not_callable_after_call.star text location
+err_ev_not_callable_in_def.star text location
 err_ev_not_callable_str.star text location
 err_ev_star_builtin_not_iterable.star text location
 err_ev_star_not_iterable.star text location
-err_lex_indent_paren.star text more-syntax-errors
-err_lex_invalid_char.star text more-syntax-errors
-err_lex_invalid_hex.star text more-syntax-errors
-err_lex_invalid_int_big_hex.star text more-syntax-errors
-err_lex_multi_errors.star text more-syntax-errors
 err_misc_bool_none_call.star text location
 err_misc_dict_kwargs_key.star text location
-err_misc_type_annotation_bzl.star text more-syntax-errors
-err_op_augassign_str.star kind kind
-err_parse_colon_missing.star text more-syntax-errors
-err_parse_comprehension_close.star text more-syntax-errors
-err_parse_dict_entry.star text more-syntax-errors
-err_parse_dict_missing_value.star text more-syntax-errors
-err_parse_dot_ident.star text more-syntax-errors
-err_parse_double_star_expr.star text more-syntax-errors
-err_parse_else_alone.star text more-syntax-errors
-err_parse_eof_in_call.star text more-syntax-errors
-err_parse_expected_expr.star text more-syntax-errors
-err_parse_expected_in.star text more-syntax-errors
-err_parse_expected_rbracket.star text more-syntax-errors
-err_parse_for_no_in.star text more-syntax-errors
-err_parse_generator.star text more-syntax-errors
-err_parse_generator_paren.star text more-syntax-errors
-err_parse_if_no_colon.star text more-syntax-errors
-err_parse_implicit_concat.star text more-syntax-errors
-err_parse_keyword_class.star text more-syntax-errors
-err_parse_keyword_reserved.star text more-syntax-errors
-err_parse_keyword_while.star text more-syntax-errors
-err_parse_lambda_bad.star text more-syntax-errors
-err_parse_list_maker.star text more-syntax-errors
-err_parse_multi_errors.star text more-syntax-errors
-err_parse_semicolon.star text more-syntax-errors
-err_parse_slice_bad.star text more-syntax-errors
-err_parse_star_expr.star text more-syntax-errors
-err_parse_type_annotation_disallowed.star text more-syntax-errors
-err_parse_unexpected_indent.star text more-syntax-errors
-err_res_conflict_load_global.star kind kind
-err_res_dup_kw.star text more-syntax-errors
-err_res_kw_after_kwargs.star text more-syntax-errors
-err_res_load_after_stmt.star kind kind
-err_res_load_twice.star kind kind
-err_res_multi_kwargs.star text more-syntax-errors
-err_res_multi_star.star text more-syntax-errors
-err_res_pos_after_kw.star text more-syntax-errors
-err_res_pos_after_kwargs.star text more-syntax-errors
-err_res_pos_after_star.star text more-syntax-errors
-err_res_private_load.star kind kind
-err_res_redeclared.star kind kind
-err_res_redeclared_def.star kind kind
-err_res_star_after_kwargs.star text more-syntax-errors
-lex_at_sign.star text more-syntax-errors
-lex_backslash_space.star text text
-lex_backtick.star text more-syntax-errors
-lex_bytes_br.star text more-syntax-errors
-lex_bytes_literal.star text more-syntax-errors
-lex_bytes_rb.star text more-syntax-errors
-lex_continuation_eof.star text text
-lex_dedent_mismatch.star text more-syntax-errors
-lex_dollar.star text more-syntax-errors
-lex_ellipsis_default.star text more-syntax-errors
-lex_ellipsis_in_type.star text more-syntax-errors
-lex_fstring.star text text
-lex_hex_empty.star text more-syntax-errors
-lex_int_underscore_literal.star text more-syntax-errors
-lex_nonascii_ident.star text more-syntax-errors
-lex_question.star text more-syntax-errors
-lex_tab_first_line.star text more-syntax-errors
-lex_two_char_eof.star text text
-lex_upper_r_prefix.star text more-syntax-errors

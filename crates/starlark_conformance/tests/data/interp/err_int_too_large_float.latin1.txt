@@ -1,0 +1,5 @@
+EVAL int too large to convert to float
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_int_too_large_float.star", line 1, column 6, in <toplevel>
+TRACE \x09\x09float(int("1" + "0" * 400))
+TRACE Error in float: int too large to convert to float

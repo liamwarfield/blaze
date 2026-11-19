@@ -1,0 +1,2 @@
+SYNTAX err_lex_binary_invalid2.star:1:5: invalid octal literal: 0b1 (use '0ob1')
+SYNTAX err_lex_binary_invalid2.star:1:8: syntax error at '2': expected newline

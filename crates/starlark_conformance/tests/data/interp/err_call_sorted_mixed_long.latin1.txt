@@ -1,0 +1,5 @@
+EVAL unsupported comparison: string <=> int
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_sorted_mixed_long.star", line 1, column 7, in <toplevel>
+TRACE \x09\x09sorted([i for i in range(40)] + ["a"] + [i for i in range(40, 0, -1)])
+TRACE Error in sorted: unsupported comparison: string <=> int

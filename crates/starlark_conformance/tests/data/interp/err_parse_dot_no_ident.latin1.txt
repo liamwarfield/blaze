@@ -1,0 +1,1 @@
+SYNTAX err_parse_dot_no_ident.star:1:9: syntax error at '(': expected identifier after dot

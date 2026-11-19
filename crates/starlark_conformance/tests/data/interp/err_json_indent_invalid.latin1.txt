@@ -1,0 +1,5 @@
+EVAL unexpected end of file
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_json_indent_invalid.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09json.indent("{")
+TRACE Error in indent: unexpected end of file

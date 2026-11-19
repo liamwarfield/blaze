@@ -1,0 +1,5 @@
+EVAL split() got multiple values for argument 'sep'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_split_dup_arg.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09"a b".split(" ", sep = " ")
+TRACE Error in split: split() got multiple values for argument 'sep'

@@ -969,3 +969,28 @@ and users read them).
   assignment at the operator, trailing comma at the next token, "syntax error at ':': type
   annotations are disallowed" at the `:`/`->`).
 - Test: `patch_0055_static_errors`; interp cases err_res_*, err_parse_*.
+
+## 0056 — sorted, min, max, range slices, duplicate keywords
+
+- Gap: `sorted` used Rust's `sort_by`, which compares other pairs than Java's TimSort (the first
+  pair that cannot be compared names the error: Bazel says "string <=> int" where Blaze said
+  "int <=> string") and panics on the inconsistent order a failed comparison leaves
+  (`sorted` of 80 mixed values crashed the probe); `min(..., key=)` compared the kept key with
+  the new one (Java's `Stream.max` with `ORDERING.reverse()` compares the new one first);
+  `key=` of sorted/min/max accepted any value and failed late ("'int' object is not
+  callable"); a range slice whose step times the range's step leaves 32 bits failed with
+  "Integer overflow" (Java: one element); a name given twice to a builtin's `**kwargs` said
+  "Argument `a` occurs more than once".
+- Fix: `stdlib/funcs/java_timsort.rs` (new: java.util.TimSort, stopping at the comparator's first
+  error) used by `sorted` with Java's reversed comparator for `reverse=True`
+  (MethodLibrary.java:277); `min_max.rs` (MethodLibrary.java:119 findExtreme);
+  `values/unpack.rs` `java_check_callable_or_none` ("in call to sorted(), parameter 'key' got
+  value of type 'int', want 'callable or NoneType'", BuiltinFunction.java:404 checkParamValue);
+  `range_type.rs` slice (RangeList.java:182 getSlice: 64-bit step, clamped, 32-bit `at`);
+  `arguments.rs` `FunctionError::RepeatedKwarg`, named by the builtin in
+  `BazelParamTypeError::with_function` (BuiltinFunction.java:343 addNamedArg).
+- Test: interp cases err_call_sorted_mixed*, err_call_sorted_key_mixed_long,
+  err_call_sorted_reverse_mixed, err_call_min_*, err_call_max_key_mixed,
+  err_call_sorted_key_noncallable, err_call_dict_dup_*, range_slice_overflow,
+  sorted_large_stable (recorded on Bazel). The unit test `java_timsort::tests::sorts_stably`
+  does not run in the workspace (vendored crate).

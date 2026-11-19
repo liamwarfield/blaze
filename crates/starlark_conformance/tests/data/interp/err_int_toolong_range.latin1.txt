@@ -1,0 +1,5 @@
+EVAL got 1180591620717411303424 for stop, want value in signed 32-bit range
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_int_toolong_range.star", line 1, column 6, in <toplevel>
+TRACE \x09\x09range(1 << 70)
+TRACE Error in range: got 1180591620717411303424 for stop, want value in signed 32-bit range

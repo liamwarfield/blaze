@@ -1,0 +1,5 @@
+EVAL got 1180591620717411303424 for string index, want value in signed 32-bit range
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_int_toolong_index.star", line 1, column 6, in <toplevel>
+TRACE \x09\x09"abc"[1 << 70]
+TRACE Error: got 1180591620717411303424 for string index, want value in signed 32-bit range

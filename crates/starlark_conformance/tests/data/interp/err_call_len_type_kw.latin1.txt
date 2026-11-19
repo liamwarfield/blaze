@@ -1,0 +1,5 @@
+EVAL len() got named argument for positional-only parameter 'x'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_len_type_kw.star", line 1, column 4, in <toplevel>
+TRACE \x09\x09len(x = 1, y = 2)
+TRACE Error in len: len() got named argument for positional-only parameter 'x'

@@ -1,0 +1,2 @@
+SYNTAX err_parse_not_no_in.star:1:11: syntax error at '2': expected 'in'
+SYNTAX err_parse_not_no_in.star:1:12: contains syntax errors

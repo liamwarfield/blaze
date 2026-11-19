@@ -1,0 +1,7 @@
+EVAL unsupported comparison: int <=> string
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_sorted_mixed_long_runs.star", line 7, column 2, in <toplevel>
+TRACE \x09\x09f()
+TRACE \x09File "err_call_sorted_mixed_long_runs.star", line 6, column 18, in f
+TRACE \x09\x09return sorted(l)
+TRACE Error in sorted: unsupported comparison: int <=> string

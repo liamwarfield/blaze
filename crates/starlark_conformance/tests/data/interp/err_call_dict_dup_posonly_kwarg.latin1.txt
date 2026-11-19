@@ -1,0 +1,5 @@
+EVAL dict() got multiple values for keyword argument 'pairs'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_dict_dup_posonly_kwarg.star", line 1, column 5, in <toplevel>
+TRACE \x09\x09dict(pairs = 1, **{"pairs": 2})
+TRACE Error in dict: dict() got multiple values for keyword argument 'pairs'
