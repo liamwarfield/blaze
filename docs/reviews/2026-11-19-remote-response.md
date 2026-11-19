@@ -541,3 +541,582 @@
 
 - `isRemoteFile` on a `RemoteActionFileSystem` path (needs `FileSystem::as_any` in `blaze_vfs`).
 - Bazel's `command.profile.gz` (no profiler in Blaze) is the only BEP file Blaze does not upload.
+
+# Round 2 response
+
+- Reviewer's verdict: STOP at `d294400` (docs/reviews/2026-11-19-remote.md, "# Round 2"): N1 to N4
+  (S1), R9 open, N5 as the condition on R6.
+- Lead of this round: a new remote lead (the previous one finished), with six Opus workers:
+  A (overlay), B (trees, exec root, executor), C (internals), D (platform), E (lost inputs),
+  F (triage of Bazel's own shell tests, read-only).
+- Method, as before: literal ports with `// Java:` markers; expected values from the Java tests
+  or from the oracle (Bazel 9.3.2); every behaviour finding shown through the real binary
+  against Bazel's own worker with a tool under `scripts/remote/` that the reviewer can rerun
+  (`<tool> help`). New tools: `probe-trees2`, `shard-probe`, `attempts-probe`, `platform-probe`,
+  `pathcheck-probe`, `recreate-probe`, `outpath-symlink-probe`, `bep-interrupt-probe`;
+  extended: `evict-probe` (`ws-seed`, `ws`, `disk`), `caps-matrix`, `stale-probe`.
+- Rulings taken this round (docs/decisions.md): lost inputs without rewinding (N5); the disk
+  cache's action-result integrity check stays on while rewinding is unported; X.509 v1
+  certificates stay rejected (no hand-written verifier).
+- Tree, binaries and test counts: see "Numbers" at the end of this section.
+
+| Finding | State |
+|---|---|
+| N1 tree values through the action file system (S1) | fixed |
+| N2 exec root through the action file system (S1) | fixed |
+| N3 capabilities failure with NOT_FOUND (S1) | fixed |
+| N4 platform `remote_execution_properties` (S1) | fixed: the TextFormat reader is ported |
+| R9 `argv[0]` policy | fixed: keyed on the OS constraint; loud for a Windows execution platform |
+| N5 / R6 lost inputs | fixed for every source without rewinding (ruling); rewinding stays loud; purge before failing |
+| N6 `-DBAZEL_TRACK_SOURCE_DIRECTORIES` | fixed (by the workerd lead's worker) |
+| N7 BEP upload failure text | fixed |
+| N8 interrupt and BEP uploads | fixed (the transport's `close` blocked) |
+| N9 overlay deviations | fixed: literal port with an in-memory remote tree |
+| N10 tests | fixed: 124 of 124 `RemoteActionFileSystemTest(Base)` methods; traversal test assertions |
+| N11 non-build commands | fixed for query, cquery, aquery, info; run and coverage stay loud (commands not ported) |
+| N12 (S4) `hashString(.., ISO_8859_1)` | fixed in `file_artifact_value.rs` (the traversal site is not in my files) |
+| R1, R2, R5 residuals | fixed (N1, N2, interrupt during finalize) |
+| R3 transport texts | fixed as suggested; residue listed |
+| R4 residuals | fixed |
+| R13 partials | fixed (warning; disk cache with non-default max connections); the connection pool is not ported |
+| S3/S4 lists | see "S3 and S4" |
+
+## N1 (S1). Tree values through the action file system: FIXED
+
+- `blaze_sky_exec/src/skyframe_action_executor.rs`: `construct_tree_artifact_value_from_filesystem`
+  is `ActionOutputMetadataStore.java:236-320` line by line: `tree_dir = to_path(parent)` (new
+  `to_path` / `artifact_path_resolver_to_path`, `ArtifactPathResolver.java:75,107`), `statIfFound(FOLLOW)`
+  and `visitTree` on the action file system, chmod as Java, `setResolvedPath` (:309-317). The
+  `get_files_under` merge is deleted (and the flat `RemoteOutputTree` copy behind it is gone from
+  the overlay). `file_artifact_value_from_artifact` (:478-545) and `file_artifact_value_from_stat`
+  (:566) are literal again (`pathNoFollow`/`realPath` on the resolver's file system,
+  `createFromExistingWithResolvedPath`). `TreeArtifactValue::visit_tree` needed no change (it
+  only uses `Path` methods).
+- PORT: `stat instanceof FileStatusWithMetadata` is `RemoteActionFileSystem::stat_metadata` on
+  the same path (`blaze_vfs::FileStatus` carries no metadata).
+- `FileArtifactValue::create_from_existing_with_resolved_path` now has Java's three
+  `checkArgument`s and unwraps a `ResolvedSymlink` delegate (`FileArtifactValue.java:444,951-962`).
+- Tests (ports of `ActionOutputMetadataStoreTest`, module `action_output_metadata_store_tests`):
+  `file_artifact_materialized_as_symlink_to_non_artifact`,
+  `file_artifact_materialized_as_symlink_to_file_artifact` (4 parameter combinations),
+  `tree_artifact_materialized_as_symlink_to_non_artifact`,
+  `tree_artifact_materialized_as_symlink_to_another_tree_artifact` (both depths); Blaze-only
+  `tree_with_relative_symlink_to_remote_child` (children from the oracle run below). In the
+  overlay's test file: `tree_with_local_relative_symlink_to_remote_only_file`,
+  `symlink_to_remote_only_input_tree_lists_its_children`.
+- Oracle (`scripts/remote/probe-trees2`, disk cache seeded by the oracle, fresh output base,
+  default flags):
+
+| step | oracle | Blaze after | Blaze before (`ru-blaze-0`) |
+|---|---|---|---|
+| (i) `build //:libcons //:liblocal`: cached tree with `lib/libfoo.so -> libfoo.so.1`, not top-level | `4 processes: 2 disk cache hit, 1 internal, 1 linux-sandbox`, exit 0 | same | `child lib/libfoo.so is a dangling symbolic link`, exit 1 |
+| (ii) `build //:symcons //:symlocal`: `ctx.actions.symlink` of a declared directory to a remote-only tree | `5 processes: 2 disk cache hit, 2 internal, 1 linux-sandbox`, exit 0 | same | consumers see zero children, exit 1 |
+| `build //:libtree //:sym` | `1 process: 3 action cache hit, 1 internal`, exit 0 | same | |
+
+  `bazel-bin` (sha256 of files and symlink targets) identical in all three steps; the consumers
+  list `lib/libfoo.so`, `lib/libfoo.so.1` and `sym/a.txt`, `sym/sub/b.txt` on both sides.
+- Found while fixing (not in the review): Java creates each action's output directories through
+  the action file system, in the remote output tree as well (`SkyframeActionExecutor.java:1128-1158,
+  1453-1509`, `ActionOutputDirectoryHelper.java:79-105`). Ported: `create_action_fs_output_directories`
+  (blaze_exec `action_output_directory_helper.rs`, with Java's fallback), `setup_action_fs_file_out_err`,
+  the messages and codes `ACTION_FS_OUTPUT_DIRECTORY_CREATION_FAILURE` /
+  `ACTION_FS_OUT_ERR_DIRECTORY_CREATION_FAILURE`, `prepare` on the context's exec root. Without
+  an action file system the old path is unchanged. And Java's `SymlinkTreeHelper` moves its paths
+  to the host file system (`SymlinkTreeHelper.java:70-72`, `Path.forHostFileSystem`,
+  `RemoteActionFileSystem.getHostFileSystem` :257): `blaze_vfs` got `FileSystem::get_host_file_system`
+  and a real `Path::for_host_file_system`.
+
+## N2 (S1). The action's exec root through the action file system: FIXED
+
+- `ActionExecutionContextImpl` owns `exec_root`, computed as `ActionExecutionContext.java:369-373`
+  (`actionFileSystem.getPath(execRoot.asFragment())`, else the executor's root). Callers checked
+  against Java: `abstract_spawn_strategy.rs` (same result), `symlink_action.rs`, blaze_rules
+  `cpp_compile_action.rs` (`createSpawn(ctx.getExecRoot())`, the `.d` file read) now on the
+  action file system as Java; spawn runners keep the executor's local exec root.
+- `standalone_test_strategy.rs`: premature-exit file and shard status file through
+  `convertPath` (`StandaloneTestStrategy.java:687,706`); `runfilesDir`/`tmpDir` converted
+  (:532-537, :142-145); the path resolver passed to `processTestAttempt` (:250); the
+  `test.xml`/`test.log` check literal (:857). `test_runner_action.rs`:
+  `get_test_outputs_mapping(resolver, exec_root)` (`TestRunnerAction.java:429`); the false
+  "always the identity" comment is gone.
+- Oracle (`scripts/remote/shard-probe`; Starlark test rules with `shard_count = 2` that touch
+  `$TEST_SHARD_STATUS_FILE`, one also writing its own `$XML_OUTPUT_FILE` and a file in
+  `$TEST_UNDECLARED_OUTPUTS_DIR`; oracle-seeded disk cache; `--remote_download_outputs=minimal`
+  and, separately, `--remote_download_minimal`): oracle and Blaze both
+  `15 processes: 6 disk cache hit, 11 internal`, `//:t (cached) PASSED`, `//:u (cached) PASSED`,
+  `Executed 0 out of 2 tests: 2 tests pass.`, exit 0; same `bazel-testlogs` listing per shard
+  (`test.cache_status`, `test.log`); same BEP `TestResult` files per shard (`test.log`,
+  `test.xml`, for `u` also `test.outputs/u<N>.txt` and the manifest). Before: "Sharding
+  requested, but the test runner did not advertise support for it...", `NO STATUS`, exit 3.
+- Bazel's own tests, through `scripts/upstream-tests/run`:
+  `test_shard_status_file_checked_remote_download_minimal`,
+  `test_premature_exit_file_checked_remote_download_minimal` (`remote_execution_test.sh`) and
+  `test_multiple_test_attempts` (`build_without_the_bytes_test.sh`; before: panic "Files are on
+  different filesystems" in `rename_outputs`) pass. `scripts/remote/attempts-probe`
+  (`--remote_executor --remote_download_minimal --flaky_test_attempts=2` on a failing test):
+  both `//:f FAILED in 2 out of 2`, `7 processes: 1 remote cache hit, 6 internal, 3 remote`,
+  exit 3, same testlogs and BEP. Left: the oracle prints a `FAILED: //:f (Summary)` block
+  (`UiEventHandler.testSummary`), which Blaze's UI lacks (not remote).
+
+## N3 (S1). Capabilities failure with NOT_FOUND: FIXED
+
+- `common/errors.rs` `is_call_not_started`; `grpc_cache_client.rs` `handle_status` and
+  `request_read` let the `RemoteExecutionCapabilitiesException` of a call that never started
+  through instead of reading its cause's code (`GrpcCacheClient.java:377-386` catches only
+  `StatusRuntimeException`); `upload_blob_impl` reads `e.getCause()` as Java;
+  `byte_stream_uploader.rs` `Writer.on_error` skips the ALREADY_EXISTS mapping for such a call.
+  Checked and left: `remote_retrier.rs`, `execute_retrier.rs`, `grpc_remote_executor.rs`
+  (`Status.fromThrowable` walks the cause chain in Java too).
+- Tests (`remote_module_test.rs`): `verify_capabilities_not_found_fails_download_action_result`,
+  `verify_capabilities_not_found_fails_download_blob`,
+  `verify_capabilities_already_exists_fails_upload_blob`,
+  `verify_capabilities_invalid_argument_upload_names_the_blob`.
+- Oracle: Bazel's worker cannot answer GetCapabilities with NOT_FOUND, so
+  `blaze-remote-fake-caps` (new bin: GetCapabilities answers a given status, everything else
+  UNIMPLEMENTED) serves both sides in new `caps-matrix` rows: `--remote_cache` and
+  `--remote_executor`: oracle and Blaze `Failed to query remote execution capabilities:
+  NOT_FOUND: instance not found`, exit 34; with the local-fallback flags both exit 0. Before:
+  Blaze exit 0 (every lookup a miss).
+
+## N4 (S1). Platform `remote_execution_properties`: FIXED (ported)
+
+- The string is carried: `blaze_actions::PlatformInfo::remote_execution_properties()`
+  (`PlatformInfo.java:130`), `convert_platform` passes it. Blaze's `PlatformInfo.Builder` was
+  compared with `PlatformInfo.java:372-452` (parent merge, `{PARENT_REMOTE_EXECUTION_PROPERTIES}`):
+  equal; the oracle agrees (a child with `parents` and no attribute sends no platform).
+- The reader: `text_format.rs`, a literal port of protobuf-java 33.4 `TextFormat.java` (the
+  version Bazel 9.3.2 pins): `Tokenizer` (UTF-16 line/column as Java), `Parser.merge` →
+  `mergeField`, `consumeFieldValues`, unknown-field skipping (`guessFieldTypeAndSkip`, `skipField*`),
+  `checkUnknownFields`, `unescapeBytes`/`unescapeText`, `parseInteger`; driven by descriptors for
+  `Platform`/`Property`. `PlatformUtils.getPlatformProto` (`PlatformUtils.java:102-150`) is
+  complete; a `ParseException` is the `UserExecException` with `INVALID_REMOTE_EXECUTION_PROPERTIES`.
+  Two facts the review's fix text did not expect, both from Java and confirmed by the oracle: an
+  unknown field is skipped and reported at the end ("Input contains unknown fields and/or
+  extensions: ..."), and a repeated singular field overwrites (ALLOW_SINGULAR_OVERWRITES). The
+  only `unported!` is `mergeAnyFieldValue` (no `Any` is parsed).
+- The reader lives in `blaze_protos::text_format` (re-exported by `blaze_remote::text_format`),
+  because the execution log needs it too: `blaze_exec` `spawn_log_context.rs` had a private
+  `unported!` for the same parse, which became reachable once the string was carried. It now
+  parses (`PlatformUtils.java:128-148`). `platform-probe --execlog` (default path, no remote
+  flag): 7 cases identical to the oracle, including the two error cases (`Probe t.out failed:
+  Failed to parse remote_execution_properties from platform //:p: 1:19: Expected ":".`, exit 1).
+- Tests: `platform_utils_test.rs`: all 6 `PlatformUtilsTest` methods, 0 ignored
+  (`test_parse_platform_legacy_options` un-ignored) + 7 oracle-derived; `text_format_test.rs`: 4
+  ports of `TextFormatTest` + 16 oracle cases (the ~90 other `TextFormatTest` methods test the
+  printer, `TestAllTypes`, maps and `Any`, none of which is ported; said in the file header).
+- Oracle (`scripts/remote/platform-probe`: fresh worker per case, the Action and Command read
+  back from the worker's CAS): 30 cases; 28 identical in platform properties, exit code, error
+  text and processes line: parsing (one, unsorted, colon form, escapes, comment, `<>`, list,
+  duplicate name), errors (unknown field, nested unknown, `1:19: Expected ":".`, broken string,
+  EOF, identifier, unterminated, invalid value, bad unicode), inheritance (parent, substitution),
+  every branch of `getPlatformProto` (`exec_properties` on the platform and on the target,
+  `--remote_default_exec_properties` alone and with each of the others, empty text), OS linux
+  and macos, and the sequence of upstream's
+  `test_platform_default_properties_invalidation_with_platform_remote_execution_properties`
+  (both send `foo=baz`; second build `2 processes: 1 remote cache hit, 1 internal`). The two
+  that differ: `os-windows` (R9, intended) and `escapes` (the platforms are byte-identical; only
+  the relayed server error prints non-Latin-1 characters differently: the strings seam).
+
+## R9. `argv[0]` policy on the execution platform's OS: FIXED (loud for Windows)
+
+- `blaze_exec::actions::PlatformInfo.os_constraint` from
+  `blaze_actions::PlatformInfo::constraint_value(@platforms//os:os)`;
+  `get_os_from_constraints_or_host` and the constraint table port `ConstraintConstants.java:39-94`;
+  the argv[0] block (`RemoteExecutionService.java:312-316`, `OsPathPolicy.java:66`) applies the
+  Unix policy for every OS but Windows and calls
+  `unported!("WindowsOsPathPolicy.postProcessPathStringForExecution (Windows execution platform <label>)")`
+  there.
+- Tests: `build_remote_action_executable_path_conforms_to_platform` is one test per
+  `@TestParameter OS` value (darwin, freebsd, openbsd, linux, unknown unchanged; windows
+  `#[should_panic]` on the unported text).
+- Oracle (`platform-probe os-windows`): Bazel sends argv[0] `tools\run.sh`; Blaze exits with
+  `blaze: not ported yet: WindowsOsPathPolicy.postProcessPathStringForExecution (Windows
+  execution platform //:p)` and sends no Action.
+
+## N5 (S2) and R6. Lost inputs: FIXED for every source without rewinding; rewinding stays loud
+
+Root ruling (docs/decisions.md): while action rewinding is unported, every lost-input source
+ends in Bazel's `--norewind_lost_inputs` handling; the default path stays a loud `unported!`
+that names the flag; stale entries are purged first.
+
+- Sources. `LostArtifacts` has one definition (blaze_exec, as `ImportantOutputHandler.LostArtifacts`);
+  `throw_if_not_empty` returns `LostInputsExecException` (`ImportantOutputHandler.java:155`); no
+  `unported!` is left at the four sites: `remote_spawn_runner.rs` upload (through the retrier,
+  not retried; `RemoteSpawnRunner.java:278-284`) and `exec_locally_and_upload_or_fail` (:580),
+  `merkle_tree_computer.rs` (`MerkleTreeComputer.java:390-393`), `finalize_action`
+  (`AbstractActionInputPrefetcher.java:886-896`; `ActionFinalizer` now returns
+  `Result<(), SpawnCacheError>`).
+- In-process reads. The overlay records lost inputs in `get_input_stream`
+  (`RemoteActionFileSystem.java:380-393`) and merges them in `check_for_lost_inputs` (:914-923).
+  The executor asks after a successful `Action.execute` (`SkyframeActionExecutor.java:1265`), in
+  `maybe_signal_lost_inputs` (:1220-1250) at both catches, and in the finalize catch (:1344-1350);
+  the `LostInputsCheck` of the context (:1614) is wired. Template expansion reads through the
+  action file system's `getInputStream` (`Template.java:103`). PORT, marked: the discovery
+  context has no action file system (:967, :976); `enrichLostInputsException` only feeds
+  rewinding.
+- Purge. With `--norewind_lost_inputs`: `LeaseService.finalizeExecution` → `handleMissingInputs`
+  runs before the action cache is saved, also for a failed build (verified end to end). On the
+  default path: `LostInputsPolicy.purge_before_unported_rewinding` applies the same predicate
+  (`LeaseService.java:56-106`) to the persistent action cache and saves it, right before the
+  `unported!` (PORT: Java rewinds here).
+- Ruling on the disk cache: `checkDiskCacheActionResultIntegrity` is always true (Java:
+  `!rewindLostInputs`, `RemoteModule.java:700-706`); listed as a deviation in docs/remote.md.
+  `evict-probe disk` (one disk CAS blob and the consumer's AC entry deleted), default flags:
+  oracle `3 processes: 1 disk cache hit, 1 internal, 1 linux-sandbox` (rewinds); Blaze
+  `3 processes: 1 internal, 2 linux-sandbox`, exit 0 (before the ruling: the loud `unported!`
+  on every run); with `--norewind_lost_inputs` both `3 processes: 1 internal, 2 linux-sandbox`.
+- Tests: `remote_spawn_runner_test::lost_input_during_upload_fails_without_retries_or_execution`
+  (`RemoteSpawnRunnerTest.java:1004`) un-ignored; blaze_sky_exec
+  `lost_inputs_without_rewinding_fail_the_action_as_bazel_does`,
+  `lost_inputs_with_rewinding_purge_the_action_cache_before_failing_loudly`; overlay
+  `get_input_stream_records_lost_inputs`. Neither `ActionRewindStrategyTest` nor
+  `LeaseServiceTest` exists at the pin.
+- Oracle (`scripts/remote/evict-probe ws`, worker with `--noaction_cache_integrity_check`, one
+  CAS blob deleted per scenario):
+
+| source | `--norewind_lost_inputs` | `... --experimental_remote_cache_eviction_retries=0` | default flags |
+|---|---|---|---|
+| local spawn prefetch | identical: `Executing genrule //:b1 failed: Lost inputs no longer available remotely: a1.txt (0111f755…/3)`, `Found transient remote cache error, retrying the build...`, `3 processes: 1 internal, 2 linux-sandbox`, exit 0 | identical: `Unexpected lost inputs (pass --rewind_lost_inputs to enable recovery): a1.txt`, exit 1 | oracle exit 0 (rewinds); Blaze `unported!` naming `--norewind_lost_inputs` |
+| remote execution (upload, Merkle tree) | identical lines, then `3 processes: 1 internal, 2 remote`, exit 0 | identical, exit 1 | as above |
+| in-process read (template expansion) | identical: `Expanding template expanded.txt failed: Lost inputs no longer available remotely: tmpl.txt (bcfd0ecb…/13)`, retry, exit 0 | identical, exit 1 | as above |
+| finalize (top-level symlink to an evicted blob) | identical: `Creating symlink l.txt failed: Lost inputs no longer available remotely: l.txt (16691bb6…/3)`, retry, exit 0 | identical, exit 1 | as above |
+
+  Exit code 39 after exhausted retries (never reproduced before): two evicted blobs needed by
+  two actions in sequence, `--experimental_remote_cache_eviction_retries=1`: oracle and Blaze
+  print the same two "Lost inputs" errors and one retry line and exit 39. Not sticky: after the
+  loud default-path failure, a default-flags rerun against a validating worker prints
+  `3 processes: 1 internal, 2 linux-sandbox`, exit 0 (the binary before this round crashed
+  again).
+- Still not ported (S3, listed in docs/remote.md): action rewinding itself; `RemoteLeaseExtension`;
+  `RemoteImportantOutputHandler` (`LostType.OUTPUT`, "Lost outputs no longer available
+  remotely": Java registers it for a target that becomes top-level after it was executed, which
+  needs the server's memory between commands; upstream's
+  `test_remote_cache_eviction_retries_toplevel_artifacts` fails for that reason).
+
+## N6. `-DBAZEL_TRACK_SOURCE_DIRECTORIES`: FIXED (by the workerd lead's worker)
+
+`blaze_client/src/startup_options.rs` `unported_host_jvm_arg_error` refuses the property
+(exit 2, "blaze: not ported yet: --host_jvm_args=-DBAZEL_TRACK_SOURCE_DIRECTORIES: ..."), test in
+`startup_options_test.rs`. Verified by reading; not my change.
+
+## N7. BEP upload failure text: FIXED
+
+`errors::JavaException` / `errors::java_to_string` give the Java class of each error the remote
+crate creates (`<class>: <cause.toString()>` for the capabilities exception;
+`io.netty.channel.AbstractChannel$AnnotatedConnectException` for a refused connection); blaze_bep
+`JavaThrowable` carries it to `UploadFailure::get_message` (`FileTransport.java:156-166`). Oracle
+and Blaze, unreachable cache with `--build_event_json_file`: identical line, exit 38: `ERROR:
+Unable to write all BEP events to file due to 'com.google.devtools.build.lib.remote.common.RemoteExecutionCapabilitiesException:
+io.netty.channel.AbstractChannel$AnnotatedConnectException: finishConnect(..) failed: Connection
+refused: localhost/127.0.0.1:9499'`.
+
+## N8. Interrupt and BEP uploads: FIXED (the defect was in the transport, not in the order)
+
+- The order in `blaze_runtime` `build.rs` is Java's (module order `Bazel.java:60,89,92`:
+  RemoteModule, BlockWaitingModule, BuildEventServiceModule; now cited there, and the two exit
+  codes are combined as `BlazeRuntime.java:780,795`). The defect: Blaze's `FileTransport::close`
+  joined the writer thread, which waits for every upload, and the streamer closes its transports
+  when the last event is posted, before `RemoteModule.afterCommand` can run `shutdownNow`. Java's
+  `FileTransport.close()` returns the close future without waiting (`FileTransport.java:225-254,274`);
+  only `BuildEventServiceModule.waitForBuildEventTransportsToClose` waits, after the remote module.
+- Fix (blaze_bep): `BuildEventTransport::close` returns a `CloseFuture`; the streamer keeps the
+  futures and `get_close_futures_map()` does the wait. `reportUploadError` returns early for a
+  cancelled upload (`ByteStreamBuildEventArtifactUploader.java:326-328`).
+- Oracle (`scripts/remote/bep-interrupt-probe`: three 400 MB outputs,
+  `--remote_build_event_upload=all`, SIGINT during a slow action; 3 runs each):
+
+| | exit | BEP artifact URIs | ByteStream/Write | SIGINT to exit |
+|---|---|---|---|---|
+| oracle | 8 | all `file://` | 1 to 4 calls, all CANCELLED | 0.4 to 0.6 s |
+| Blaze before | 8 | 3 `bytestream://` | 3 OK | 1.5 s (after the uploads) |
+| Blaze after | 8 | all `file://` | 0 to 3 calls, all CANCELLED | 0.0 to 0.1 s |
+
+  ERROR and summary lines identical. Left: Bazel also lists `command.profile.gz` (no profiler in
+  Blaze).
+
+## N9. Overlay deviations: FIXED (the overlay is a literal port)
+
+- `RemoteActionFileSystem.java` compared method by method, with `PathCanonicalizer.java` and the
+  parts of `InMemoryFileSystem`/`InMemoryContentInfo`/`InMemoryDirectoryInfo`/`InMemoryLinkInfo`
+  the remote tree uses. New `RemoteInMemoryFileSystem` (Java :925-1006, `InMemoryFileSystem.java:62-787`):
+  an inode tree with directories, symlinks, file metadata, permissions and a clock;
+  `pathWalkErrno` (ELOOP after 256), `renameTo` moving subtrees, `delete` with ENOTEMPTY,
+  `readSymbolicLink` "is not a symlink". New `PathCanonicalizer` behind `resolve_symbolic_links`
+  (`clear_prefix` on delete and rename, Java :363/369/782-783).
+- The reviewer's four: `create_symbolic_link` and `create_directory(_and_parents)` write both
+  trees; `read_symbolic_link` checks the remote tree first (:585-593); `rename_to` and `delete`
+  work on subtrees and keep Java's exception pairing; `stat_from_metadata` no longer invents
+  0555 (PORT: Java returns -1 and the caller asks `isExecutable()`; `blaze_vfs::FileStatus`
+  has no -1, so the bits are what this file system's `isReadable/isWritable/isExecutable`
+  answer). `get_host_file_system` is `localFs.getHostFileSystem()` (:257).
+- Remaining PORT deviations, each marked in the code: `getDigest` errors where the metadata
+  digest is null; prefetch priority MEDIUM instead of CRITICAL (the blocking prefetch seam
+  carries no priority); suppressed exceptions are appended to the message; `getxattr`,
+  `createReadWriteByteChannel`, `getFileSystemType` are not in Blaze's `FileSystem` trait.
+
+## N10. Tests: FIXED
+
+- `RemoteActionFileSystemTest(Base)`: 124 Java methods, 124 Rust tests of the same names,
+  0 ignored, no catch-all stub (`@TestParameter` methods loop over the Java values); a table is
+  at the top of `blaze_exec/tests/remote_action_file_system_test.rs`. The local file system sits
+  behind a spy so that `getDigest_fromInputArtifactData_*` verify, as Java does, that
+  `getDigest` is not called. `statAndExists_isNotDirectory` needed a `blaze_vfs` fix
+  (`is_not_found` for ENOTDIR, `unix_jni.cc:659`).
+- `ActionOutputDirectoryHelperTest`: all 8 Java methods have a counterpart in the new
+  `blaze_exec/tests/action_output_directory_helper_test.rs`: 6 pass, 2 ignored (they need an
+  exception-injecting `FileSystem`).
+- `recursive_filesystem_traversal_function_test.rs`: `unbounded_symlink_expansion_error` and
+  `symlink_chain_error` are Java's setups (:917, :932) and assert Java's texts ("Infinite
+  symlink expansion", "Symlink cycle"); the digest of
+  `source_directory_artifact_value_is_hash_of_contents` (no Java test asserts a value) is
+  computed from Java's byte layout without Blaze's `Fingerprint` (`ArtifactFunction.java:364-369`,
+  `Fingerprint.java:159,235`); `testTraversalOfSymlinkToFile` and
+  `testTraversalOfTransitiveSymlinkToFile` (:509, :538) are ported and pass (the review's S3
+  note on `SymlinkToFile` roots).
+
+## N11. Non-build commands and `RemoteModule.setup`: FIXED for commands that do not execute actions
+
+`build_remote.rs`: `before_command` is split into `set_up_module` (`RemoteModule.beforeCommand`,
+any command) and the build-only part (`executorInit`); `dispatcher_before_command` runs the real
+setup for `query`, `cquery`, `aquery`, `info` when a remote option is set, and
+`dispatcher_after_command` returns the module's `AbruptExitException`. Oracle
+(`scripts/remote/stale-probe remote-variants`: 4 commands × `--disk_cache` / unreachable
+`--remote_cache` / both): all 12 rows equal: exit 0, `WARNING: Found stale downloads from
+previous build, deleting...` before `INFO: Invocation ID`, the directory gone. Commands that
+execute actions and are not ported themselves (`run`, `coverage`) keep the loud refusal
+(`unported_options.rs`).
+
+## Round-1 partials
+
+- R1: closed by N1. R5: closed by N2 (and the template read, N5). R6: see N5.
+- R2 residual: an interrupt during `finalizeAction` leaves as `ExecutionFailure::Interrupted`,
+  unreported (`SkyframeActionExecutor.java:1340`).
+- R3 transport texts: FIXED as the reviewer suggested, with a listed residue.
+  `grpc/channel.rs` `transport_status` ports grpc-netty `Utils.statusFromThrowable`
+  (`io/grpc/netty/Utils.java:327`) and `DnsNameResolver.java:285`, applied to every call error:
+  refused connection and other I/O → `UNAVAILABLE: io exception` (cause rebuilt in Netty's form,
+  `finishConnect(..) failed: Connection refused: <host>/<ip>:<port>`), h2 protocol error →
+  `INTERNAL: http2 exception`, TLS alert → `UNAVAILABLE: ssl exception`, unresolvable host →
+  `UNAVAILABLE: Unable to resolve host <host>`. `caps-matrix` (20 rows, 11 new): exit codes
+  equal in all 20; lines identical in 17, including the HTTP/1 row and the per-action warning
+  (`WARNING: Remote Cache: UNAVAILABLE: io exception`; before: `tcp connect error`). The three
+  rows that differ: two where Bazel itself varies between `localhost/127.0.0.1` and
+  `localhost/[0:0:0:0:0:0:0:1]` from run to run, one where a certificate is rejected locally
+  (JDK/OpenSSL text vs rustls text). PORT: hyper and h2 are not dependencies of the crate, so
+  their errors are recognised by their fixed texts.
+- R4 residuals: `wait_for_bulk_transfer` restores an interrupt that was set on entry
+  (`Utils.java:560,574-577`; test `wait_for_bulk_transfer_restores_the_interrupt_of_the_caller`);
+  BEP uploads are cancelled (N8).
+- R13: (a) `RemoteModule::executor_init` ports `RemoteModule.java:1241-1274`: the
+  warning "--experimental_remote_cache_lease_extension has no effect since --rewind_lost_inputs
+  is enabled, ..." (oracle and Blaze print the same line), `unported!("RemoteLeaseExtension")`
+  only without rewinding. (b) The max-connections check moved into `create_channel`:
+  `--disk_cache=... --remote_max_connections=200` builds on both (`2 processes: 1 internal,
+  1 linux-sandbox`). Not done: `DynamicConnectionPool` (non-default values stay loud on the gRPC
+  path).
+- R7 doc: the stale "Blaze is weaker here" sentence is removed from docs/remote.md.
+
+## Found by Bazel's own shell tests, not by the review
+
+The remote shell and Python tests of the pinned source were run unmodified against Blaze
+(`scripts/upstream-tests/run`; classification of every failure in docs/remote.md, "Bazel's own
+remote tests"). Remote defects they showed and this round fixed:
+
+- `RemotePathChecker` was a stub (`RemoteExecutionCache.java:99-127`): ported, and the Merkle
+  tree now resolves paths with the spawn's path resolver (`MerkleTreeComputer.java:386`,
+  `MerkleTree.java:171-195`, `TransformResolver`). `scripts/remote/pathcheck-probe`: oracle and
+  Blaze `3 processes: 1 disk cache hit, 1 internal, 1 remote`; before: Exit 34. Upstream
+  `test_combined_disk_remote_exec_with_flag_combinations` passes.
+- `OutputService.startBuild` (`RemoteOutputService.java:125-150`, `LocalOutputService.java:59-85`,
+  called at `ExecutionTool.java:291`): ported for both services. `scripts/remote/outpath-symlink-probe`
+  (remote, local, local-moved): identical to the oracle; before: "Couldn't create action output
+  directory: ... (File exists)", exit 36. Upstream `test_output_path_is_symlink` passes.
+- Test attempts under `--remote_download_minimal` (N2 above).
+- A regular file where a tree directory must be re-created (`test_prefetcher_recreate_tree_dir`):
+  the cause was `blaze_vfs` (`statIfFound` must return null for ENOTDIR); fixed there.
+  `scripts/remote/recreate-probe`: all four steps as the oracle; the upstream function passes.
+- `actionInputFetcher.shutdown()` in `RemoteActionContextProvider.afterCommand`
+  (`RemoteActionContextProvider.java:244-247`) had no caller; `AbstractActionInputPrefetcher.shutdown`
+  ports :837-847 with the interrupt loop. Both ported; test `after_command_shuts_the_action_input_fetcher_down`.
+- mTLS handshake failure downgraded to a warning: with a client certificate that rustls
+  rejects when the TLS config is built, Blaze reported "Failed to init TLS infrastructure" per
+  action and built locally with exit 0. Now the channel is created and every connection fails
+  (a transport error), so the capabilities check fails the build as without a client certificate
+  (test `new_channel_rejected_client_certificate_fails_connections_not_channel_creation`).
+  `scripts/remote/tls-probe` with fresh X.509 v3 certificates: mTLS hit (both `1 remote cache
+  hit`), client without its certificate (both 34), untrusted server with and without client
+  certificate (both 34), with the fallback flags (both 0).
+- `--experimental_remote_repo_contents_cache` silently ignored: now a loud
+  `unported!("RemoteRepoContentsCacheImpl ...")` under Java's condition (startup flag set and a
+  cache configured; the flag's default is false, `RemoteStartupOptions.java:28`).
+- Remote flags on `run`: not done: `RunCommand` itself is not ported
+  (`command_registry.rs`), so the loud refusal stays.
+
+## Byte strings (the switch of 2026-11-19, commit 051c8c7)
+
+The workspace moved to Bazel's internal string form during this round; the remote files were
+converted by this round's workers (site list: docs/research/07-byte-strings-exec-sites.md).
+
+- blaze_remote: the local seam wrappers are gone (`internal_to_unicode`/`unicode_to_internal`
+  are the `blaze_util` functions, at the Java call sites only); `JavaHashMap::hash` runs over
+  chars; `printErr` of a server message and `writeContentAsLatin1` use `latin1_encode_lossy`;
+  OS paths go through `internal_to_platform`; `RemoteGrpcServiceConfig` is read as UTF-8
+  (`RemoteGrpcServiceConfig.java:86`). `scrubber.rs` `translate_java_regex` keeps
+  `java.util.regex.Pattern`'s ASCII semantics for `\w \d \s \b`, `.` and `(?i)` on Latin-1
+  chars (28 rows of expectations produced by running Java's `Pattern`); the BEP uploader's log
+  patterns got the same treatment. The Java inconsistency is kept: `Execute` converts with
+  `internalToUnicode` where `lookupCache`'s `inline_output_files` does not
+  (`RemoteExecutionService.java:788-789,2043`).
+- blaze_exec: template content is read and written as ISO-8859-1 (`Template.java:107`,
+  `LocalTemplateExpansionStrategy.java:51`; the `unported!` for a template that is not UTF-8 is
+  gone); the execution logs convert exactly the fields Java converts (`CompactSpawnLogContext`
+  every path except `empty_files`, `ExpandedSpawnLogContext` only the environment); the
+  in-memory link size counts chars (`InMemoryLinkInfo.java:60`).
+- Tests: the six `remote_execution_service_test` fixtures wrap their Unicode literals where
+  Java's tests call `StringEncoding.unicodeToInternal`; the two "both sides of the seam" tests
+  keep the internal side.
+- Oracle: `scripts/remote/nonascii-probe` (non-ASCII source, output, argument, environment, tree
+  child, symlink target): cold disk cache; each binary reading the other's disk cache (`4 disk
+  cache hit, 1 internal` both ways, so the action digests are equal); remote execution with
+  `compare-grpc-log` 39 of 39 RPCs MATCH; minimal mode and a local consumer;
+  `--remote_header=x=aé` received as `a??` from both. `scripts/remote/strings-probe`: template
+  bytes (valid and invalid UTF-8) identical; `readlink` of non-ASCII symlinks identical; JSON,
+  binary and compact execution logs equal after normalisation, with the same converted and raw
+  fields on both sides.
+
+## S3 and S4
+
+- Fixed: `wait_for_bulk_transfer` flag (R4); `await_in_progress_tasks` waits for a snapshot;
+  `sync_file` reports the open error; `inline_output_files` is not sorted; `DigestOutputStream`
+  hashes before writing; `--remote_header` values are sent as US-ASCII with `?`;
+  `channel::testing` is behind `cfg(test)` or the `testing` feature; the omitted `DigestUtil`
+  overloads carry PORT markers; stale `NEEDS(...)` and PORT comments are rewritten;
+  `UnresolvedSymlinkAction` prints the raw target (oracle: `with target 'a//b/../xxx…'`);
+  `is_remote_file` downcasts the file system; `FileSystem::get_host_file_system`; the missing
+  marker at `OutputFile`/`OutputDirectory.path`; docs/remote.md (stale R7 and R9 sentences, the
+  security table by function instead of line, the not-ported table).
+- Ignore reasons: every `#[ignore]` in the modules touched was re-read; two were false after
+  this round's ports and are un-ignored (`create_output_directories_after_missing_parent_delete`,
+  `stat_and_exists_is_not_directory`), as are `test_parse_platform_legacy_options`,
+  `lost_input_during_upload_fails_without_retries_or_execution` and the two `SymlinkToFile`
+  traversal tests.
+- Not done: the stale-downloads warning is still printed later than Java's replayed event for
+  `build`/`test` (for query, cquery, aquery and info it now comes before `INFO: Invocation ID`,
+  as the oracle); `SubTreeCache::INITIAL_PURGE_AT`; an invalid `--remote_header` name panics
+  (the oracle crashes with exit 37); the second N12 site
+  (`recursive_filesystem_traversal_function.rs`) belongs to another owner.
+
+## Rulings and known deviations after this round
+
+1. Action rewinding is not ported: the default path is loud and names `--norewind_lost_inputs`.
+2. Disk cache action-result integrity check always on (Bazel: off under the default
+   `--rewind_lost_inputs`).
+3. X.509 v1 certificates are rejected (rustls/webpki); Bazel accepts them. Upstream's own test
+   certificates are v1, so `remote_execution_tls_test` (2 functions) and the 4 functions of
+   `remote_execution_mtls_test` fail on Blaze for this reason.
+4. Windows execution platform: loud.
+5. Transport error cause texts (Netty's address choice, TLS library texts): docs/remote.md,
+   "Known deviations".
+
+## Open after this round
+
+1. Action rewinding, `RemoteLeaseExtension`, `RemoteImportantOutputHandler` (S3; rulings above).
+2. `DynamicConnectionPool` (one HTTP/2 connection per endpoint; non-default values loud).
+3. HTTP cache, credential helpers, remote downloader, remote repo contents cache, scrubbing
+   config, disk cache GC, path mapping, CDC chunking, output service: loud, unchanged.
+4. `run` and `coverage` with remote flags: the commands are not ported.
+5. Lost inputs during input discovery are not checked (no action file system in the discovery
+   context; marked in the code).
+6. `Action::prepare` takes only the exec root (Java also passes the path resolver and the bulk
+   deleter); cquery now runs `start_build` through the shared preparation path, which Java's
+   cquery does not.
+7. The unresolved-symlink digest (`hashString`) of a non-ASCII target has a unit test only: the
+   oracle comparison needs `dump --action_cache`, which is not ported.
+8. `ExecuteResponse.message` printing has no oracle probe (Bazel's worker never sets it).
+9. Seen twice and not reproduced: a build that failed its capabilities check printed "Build
+   did NOT complete successfully" and the recorded exit code was 0 (see "Numbers").
+10. The `(Summary)` block of failed test attempts and `command.profile.gz` in the BEP are
+    missing (UI and profiler, not remote).
+11. `TextFormatTest`: 4 of about 95 methods ported (the rest test the printer and message types
+    the reader does not handle); `ActionOutputDirectoryHelperTest`: 2 of 8 ignored (need an
+    exception-injecting file system).
+
+## Numbers
+
+- Evidence binary: `~/.cache/blaze/work/remote/tl-blaze-1`, sha256 `43db45a1caf91dff…`, built
+  from the working tree at `5a4e4a0` plus three then-uncommitted `blaze_remote` files
+  (`byte_stream_build_event_artifact_uploader.rs`, `grpc/channel.rs`, `tests/scrubber_test.rs`;
+  all committed since). One whitespace-only `rustfmt` change to `remote_spawn_runner.rs` was
+  made after the binary was built. The per-finding tables above quote the workers' runs with
+  their own binaries (`tb-`, `ta-`, `tc-`, `td-`, `te-`, `tg-`, `th-blaze-N`); every probe was
+  then run again, oracle first, with the evidence binary by two workers who changed nothing
+  (labels `p1-…`, `p2-…`, `tl-na-…`), and the statements below are from those runs.
+- Probes on the evidence binary. Same as the oracle in the lines each tool compares, exit codes
+  and outputs: `probe-trees` (3 steps), `probe-trees2` (3), `probe-inprocess`, `shard-probe`
+  (2 cases), `symlink-probe` (7), `second-build` brotli toplevel and minimal (6),
+  `pathcheck-probe`, `recreate-probe` (tree and non-tree, 8), `outpath-symlink-probe` (3),
+  `nonascii-probe` (6 steps, `ALL SAME`), `strings-probe` (json, binary, compact, disk cache
+  both ways), `stale-probe` (query, build, clean, and 12 remote variants), `srcdir-probe` (5),
+  `cplookup-probe` (6), `evict-probe` (4 sources × `--norewind_lost_inputs` and × retries=0;
+  `exit39`: exit 39 on both; `disk --norewind_lost_inputs`), `caps-matrix` (18 of 20 rows),
+  `tls-probe` (mtls-ok, untrusted-mtls-fb), `platform-probe` (28 of 30 remote cases; 7 of 7
+  execution-log cases), `attempts-probe` (processes line, exit code, testlogs, BEP).
+- Differences on the evidence binary, all of them:
+  - expected by the rulings: the four default-flags lost-input rows (oracle rewinds, exit 0;
+    Blaze `blaze: not ported yet: ActionRewindStrategy.prepareRewindPlanForLostInputs: action
+    rewinding (--rewind_lost_inputs, the default) for the lost inputs of action '…';
+    --norewind_lost_inputs retries the build instead`, exit 101; the sticky sequence then
+    rebuilds: `3 processes: 1 internal, 2 linux-sandbox`, exit 0); `evict-probe disk` with
+    default flags (oracle `3 processes: 1 disk cache hit, 1 internal, 1 linux-sandbox`, Blaze
+    `3 processes: 1 internal, 2 linux-sandbox`, both exit 0); `platform-probe os-windows`
+    (loud);
+  - transport texts, exit codes equal: `caps-matrix unreach-exec` (the oracle named
+    `localhost/[0:0:0:0:0:0:0:1]:9499` in this run, Blaze `localhost/127.0.0.1:9499`),
+    `tls-http-cache` (`not an SSL/TLS record: …` vs `received corrupt message of type
+    InvalidContentType`), `tls-probe untrusted-*` (`General OpenSslEngine problem` vs `invalid
+    peer certificate: UnknownIssuer`), and `tls-probe mtls-noclient`: oracle `UNAVAILABLE: ssl
+    exception`, Blaze `received fatal alert: CertificateRequired` (the mapping to "ssl
+    exception" covers an alert during the connect, not this one, which arrives after the TLS 1.3
+    handshake; exit 34 on both);
+  - not remote: Blaze prints no `Critical Path` in the elapsed-time line, no progress lines
+    (`Loading:`, `Analyzing:`, ` no actions running`, which is also the only difference in the
+    `platform-probe escapes` error line), no `FAILED: //:f (Summary)` block and no final
+    `FAILED: ` / `INFO: ` line; it prints `INFO: Found 1 target...` in failing builds where
+    Bazel does not; `dump --action_cache` and `info` (`CommittedHeapSizeInfoItem`) are not
+    ported; the BEP lacks `command.profile.gz`.
+  - OPEN, not explained: `tls-probe mtls-noclient`, first Blaze run: stderr ends with "ERROR:
+    Build did NOT complete successfully" and the recorded exit code is 0
+    (`~/.cache/blaze/work/remote/tls-p2-b-mtls-noclient/run1/{stderr,exit}`); two immediate
+    reruns and ten later ones: exit 34, identical stderr. A worker saw the same once before, on
+    the HTTP/1 row of `caps-matrix`. Both happened while other heavy jobs were running. 46
+    targeted reruns (22 sequential, 24 in parallel against a closed port) all exited 34. The
+    reviewer should treat it as an unresolved suspicion of a wrong exit code after a failed
+    capabilities check.
+- Default path: recording `blaze-remote-1` (brotli `build //...`, re2 `test //:all
+  //python:all`; `scripts/oracle/record` with the evidence binary; score
+  `~/.cache/blaze/work/remote/tl-score-1.json`): `scripts/gate/compare-scores
+  corpus/scores/blaze-ef66f55e904e.referee2.json` prints `rows 39  gained 0  regressed 0`,
+  `result: PASS (no surface lost ground)`; matching 13850 of 158988 on both sides (workerd is
+  in the denominator and not recorded under either label).
+- `scripts/remote/matrix` with the evidence binary: brotli `verdict: PASS` (D1 to D4, C1 to C5,
+  E1, E2 as before: `43 disk cache hit` / `43 remote cache hit` / `43 remote`; C3 51 of 51, C4
+  295 of 295, E2 1274 of 1274 items MATCH); re2 `verdict: PASS` (`550 disk cache hit`, `550
+  remote cache hit`, `529 remote`; C3 600 of 600 MATCH; E2 15202 of 15202 items MATCH; C4 vs C1
+  DIFFERENT under the allow-file entry `re2-cold-test-actions`, as in round 1).
+- Bazel's own remote tests (`blaze-remote-1`): 115 of 253 oracle-passing functions (baseline
+  binary: 110); 7 gained, 2 false passes now fail honestly; the 138 failures by cause: 39 remote
+  (35 loud `unported!`, 4 the X.509 v1 ruling), 99 not remote. docs/remote.md, "Bazel's own
+  remote tests".
+- Rust tests, whole workspace (`scripts/gate/run-tests`, working tree at `cc7373c`, dirty with
+  other agents' files): 6615 passed, 0 failed, 2021 ignored, 400 test executables, no problems.
+  `scripts/gate/compare-tests` against the baseline: retained 5476, recovered 12, new 1127, lost
+  0, absent 11; the 11 absent names are seam tests of the byte-strings switch in `blaze_actions`
+  (7), `blaze_cc_features` (2), `blaze_repo_rules` (1) and `starlark_conformance` (1), none in a
+  remote file. Per crate (passed / ignored): blaze_remote 630 / 62, blaze_exec 569 / 76,
+  blaze_sky_exec 85 / 21, blaze_runtime 97 / 53, blaze_bep 99 / 26, blaze_buildtool 77 / 44,
+  blaze_vfs 91 / 8, blaze_protos 26 / 0.
+- `clippy --all-targets --no-deps -D warnings` at `780fceb`: clean for blaze_remote, blaze_exec,
+  blaze_sky_exec, blaze_bep, blaze_buildtool, blaze_vfs; blaze_runtime fails on two lines of
+  `commands/mod_command.rs` (another implementer's file in progress). `rustfmt --edition 2024
+  --check` clean on the remote files.
+
