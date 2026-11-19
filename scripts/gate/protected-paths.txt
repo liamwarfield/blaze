@@ -52,3 +52,16 @@ crates/blaze_repo_fetch/tests/data/proxy/
 crates/blaze_protos/tests/data/text/
 crates/starlark_conformance/tests/data/interp/
 crates/blaze_options/tests/data/line_breaks.tsv
+
+# Audit round 4: the shared comparison module and further tools whose numbers are cited.
+scripts/lib/
+scripts/bytes/
+scripts/mod/
+scripts/macros/
+scripts/exec2/
+scripts/java/
+scripts/config/
+scripts/bep-matrix
+scripts/w1/
+scripts/w4/
+scripts/workerd/

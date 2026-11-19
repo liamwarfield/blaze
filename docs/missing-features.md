@@ -33,13 +33,13 @@ Partly ported:
 
 | Command | Missing |
 | --- | --- |
-| `mod` | `dump_repo_mapping`, `show_repo` and `tidy` ported after v0.1.0 (exit code and stdout equal to Bazel's in 133 of 133 cases by `scripts/mod/compare`, a tool not yet hardened; stderr differs in 98, mostly Bazel's progress line; upstream tests not run yet); missing: `show_repo` proto output for three attribute types |
-| `help`, `fetch`, `canonicalize-flags`, `license` | ported after v0.1.0 (132 of 137 oracle invocations byte-identical by `scripts/cmds/compare`, which the auditor found can record a signal death as exit 0; upstream test counts to be re-measured under the fixed harness); missing: `fetch --force` with target patterns |
+| `mod` | `dump_repo_mapping`, `show_repo` and `tidy` ported after v0.1.0 (exit code and stdout equal to Bazel's in 133 of 133 cases, 44 of them equal failures; stderr differs in 96; upstream tests not run yet); missing: `show_repo` proto output for three attribute types |
+| `help`, `fetch`, `canonicalize-flags`, `license` | ported after v0.1.0 (137 invocations, equal after normalisation: 120 identical, 13 of them by declared exit code, 16 fail identically on both sides, 1 different; binary sha256 `315c2147…`; upstream test counts to be re-measured); missing: `fetch --force` with target patterns |
 | `info` | 15 of 57 compared cases: `info` with no key, JVM-only keys (heap sizes, `java-home`), `build-language`, `peak-heap-size`, `starlark-semantics` |
 | `query` | `--output=graph` and other formatters that need the dependency graph, `--query_file`, SkyQuery (`--universe_scope`), definition and instantiation stacks in proto output, rule class info, native aspects |
 | `cquery` | `--show_config_fragments`, some output formats' start/process hooks |
 | `aquery` | `--skyframe_state`, the dump after a build (`--experimental_aquery_dump_after_build_format`) |
-| `run` | ported after v0.1.0 (exit code and program output equal to Bazel's in 20 of 20 comparison cases; 15 of 20 equal in every field, the others differ in stderr summary lines; upstream test counts to be re-measured under the fixed harness); missing: remote flags with `run` |
+| `run` | ported after v0.1.0 (exit code and program output equal to Bazel's in 20 of 20 cases; a filtered set of summary lines equal in 15, 7 of them declared failures; other stderr is not compared and differs; upstream test counts to be re-measured); missing: remote flags with `run` |
 | `shutdown` | there is no server to stop |
 
 ## Server and client
@@ -48,8 +48,8 @@ Partly ported:
   Incremental speed comes only from the on-disk action cache and repository cache.
 - Waiting for the command lock (Blaze behaves as `--noblock_for_lock`).
 - `command.log` (`--write_command_log`).
-- Invocation policy: ported after v0.1.0 (parser and enforcer; 63 oracle invocations
-  byte-identical by `scripts/cmds/compare`, before that tool's hardening); a non-default
+- Invocation policy: ported after v0.1.0 (parser and enforcer; 63 invocations: 55 identical,
+  14 of them by declared exit code, 8 fail identically on both sides); a non-default
   strategy policy still fails loudly.
 - Server idle tasks (disk cache garbage collection).
 - Thread dumps, memory options that need a JVM (`--iff_heap_size_greater_than`).
@@ -57,8 +57,8 @@ Partly ported:
 ## Loading and Starlark
 
 - Symbolic macros, lazy macro expansion, subrule errors, and the loading side of materializer
-  rules and dormant dependencies: ported after v0.1.0 (45 of 52 oracle comparison cases match
-  by `scripts/macros/compare`, a tool not yet hardened; brotli and re2 score unchanged; workerd
+  rules and dormant dependencies: ported after v0.1.0 (45 of 52 comparison cases match by the
+  tool before hardening: 22 where Bazel succeeds, 23 equal failures; brotli and re2 score unchanged; workerd
   cquery 38,892 of 38,892). Open: sibling macros evaluate in order where Bazel evaluates them
   in parallel (the order of `print()` lines differs under lazy expansion); the analysis side of
   materializers (`MaterializingDefault.resolve`).
@@ -109,8 +109,8 @@ Partly ported:
 - Action rewinding (Bazel's default for lost remote inputs; Blaze supports the
   `--norewind_lost_inputs` path).
 - `unused_inputs_list` and C++ compile action templates for tree artifacts: ported after
-  v0.1.0 (probe steps match Bazel by `scripts/exec2/compare`, a tool not yet hardened; brotli
-  and re2 score unchanged). Still missing: `SpawnActionTemplate` / `ctx.actions.map_directory`,
+  v0.1.0 (11 of 12 probe steps equal; the twelfth differs in two runfiles action keys and
+  the tool has no allow list; brotli and re2 score unchanged). Still missing: `SpawnActionTemplate` / `ctx.actions.map_directory`,
   a shadowed action that discovers inputs.
 - Exclusive tests (`tags = ["exclusive"]`; 3 upstream tests).
 - `--test_output=streamed`; cancelling concurrent test attempts.
@@ -142,7 +142,8 @@ in, not re-reviewed). Missing:
 - Critical-path line and `Elapsed time` details; `--profile` / `command.profile.gz`.
 - The cursor-control progress bar (`--curses=yes`).
 - Text-format output: `--build_event_text_file` and `cquery --output=textproto` ported after
-  v0.1.0 (printer byte-identical on brotli and re2); `aquery --output=proto` / `textproto` /
+  v0.1.0 (on Bazel's own brotli and re2 outputs: build events identical per record, cquery
+  byte-identical, aquery by reprint only); `aquery --output=proto` / `textproto` /
   `streamed_proto` still missing (only `jsonproto` works).
 - Build event stream: `run`, `fetch`, `query`, a command that stops before it runs, target
   summaries, aspect events, failed patterns and analysis failures, and progress stdout/stderr

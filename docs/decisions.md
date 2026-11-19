@@ -265,3 +265,16 @@ Each entry: date, decision, why, who decided.
   under `src/test/java`) are not ported; the coverage map gets a reason class for dead
   interfaces in its next audited change. Java comparisons hold under
   `--spawn_strategy=linux-sandbox` until persistent workers are ported. Root.
+- 2026-11-19. Audit round 4 (`docs/reviews/2026-11-19-audit-4.md`): STOP on the hardening of
+  the comparison tools. The shared launcher, oracle pin, result classes and exit rule work;
+  blocking: `run` and `java` compare stderr through an include filter and report IDENTICAL
+  while other stderr differs (F1); `repo-gaps` never compares stdout and its selftest was bent
+  to hide that (F2); reuse paths judge unanchored captures (F3); two launches bypass the shared
+  module (F4); most selftests cannot see a bypass (F5); three corrected numbers were quoted
+  wrongly (F6). Seven files the auditor cleared are committed as an interim state. README and
+  docs/missing-features.md now carry the auditor's wording for every row. Process findings
+  against root, accepted: checkpoints 24-27 committed in-progress versions of the shared module
+  and of several tools before review, and root put the fixer's numbers into README before the
+  verdict. Remedy: those directories are protected paths now (so `git add -A` checkpoints leave
+  them out), and a number from a comparison tool enters README or STATUS only after the
+  auditor's verdict on the tool. Root.

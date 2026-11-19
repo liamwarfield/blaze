@@ -45,7 +45,8 @@ Updated 2026-11-19. Three columns, three different claims:
 - **Ported**: the code exists and runs.
 - **Compared with Bazel**: outputs were compared with real Bazel 9.3.2 by a script; the
   comparison is named. "Referee" is the audited `scripts/oracle` on brotli and re2; the other
-  tools were written by the implementers of each feature (hardened today, audit in progress).
+  tools were written by the implementers of each feature; an audit of their hardening returned
+  STOP (`docs/reviews/2026-11-19-audit-4.md`), so those rows say exactly what was compared.
 - **Reviewed and accepted**: an independent reviewer compared the Rust with Bazel's Java and
   returned PASS (`docs/reviews/`), and the feature is in the accepted baseline (`ef66f55`).
   Nothing ported after that commit is accepted yet.
@@ -71,19 +72,19 @@ Updated 2026-11-19. Three columns, three different claims:
 | Feature | Ported | Compared with Bazel | Reviewed and accepted |
 | --- | --- | --- | --- |
 | Starlark aspects; full workerd build | yes | output binary sha256 equal to Bazel's; query 46,371 and cquery 38,892 lines identical | no |
-| Bazel's byte-string semantics for non-ASCII text | yes | `scripts/bytes`: 114 of 115 | review PASS; not in the baseline |
+| Bazel's byte-string semantics for non-ASCII text | yes | `scripts/bytes`: 114 identical, 1 different of 115; neither recording names its binary, so not a pass | review PASS; not in the baseline |
 | Disk cache, gRPC remote cache, remote execution, build without the bytes | yes | lead-measured against Bazel's own remote worker on brotli and re2 | review STOP in round 3; the blocking fix is in, re-review pending |
-| `run` | yes | 20 cases: exit code and program output equal in 20, every field in 15 | no |
-| `help` topics, `fetch`, `canonicalize-flags`, `license` | yes | 137 invocations: 120 identical, 16 fail identically on both sides, 1 different | no |
-| `mod dump_repo_mapping`, `show_repo`, `tidy` | yes | 133 cases: exit code and stdout equal in all; stderr differs in 98 (progress line) | no |
-| Text-format output (`--build_event_text_file`, `cquery --output=textproto`) | yes | printer byte-identical on Bazel's own outputs | no |
-| Invocation policy | yes | 63 invocations identical | no |
-| Symbolic macros, lazy macro expansion | yes | 45 of 52 cases; referee unchanged | no |
-| `unused_inputs_list`, C++ compile action templates | yes | every probe step equal except two allow-listed keys; referee unchanged | no |
-| Java rules (library, binary, test, plugins, deploy jars, toolchains) | yes | 18 of 18 steps, under `--spawn_strategy=linux-sandbox` only | no |
-| Platform mappings, platform flags, `--toolchain_resolution_debug`, `--target_environment`, project flag scoping | yes | 26 of 31 cases; referee unchanged | no |
+| `run` | yes | 20 cases: exit code and program output equal in 20; a filtered set of summary lines equal in 15 (7 of them declared failures); the rest of stderr is not compared and differs | no |
+| `help` topics, `fetch`, `canonicalize-flags`, `license` | yes | 137 invocations, equal after normalisation: 120 identical (13 by declared exit code), 16 fail identically on both sides, 1 different; binary sha256 `315c2147…` | no |
+| `mod dump_repo_mapping`, `show_repo`, `tidy` | yes | 133 cases: exit code and stdout equal in all (44 of them equal failures); stderr differs in 96 | no |
+| Text-format output (`--build_event_text_file`, `cquery --output=textproto`) | yes | on Bazel's own outputs: build events identical per record, cquery byte-identical, aquery by reprint only; Blaze's own aquery text output crashes | no |
+| Invocation policy | yes | 63 invocations: 55 identical (14 by declared exit code), 8 fail identically on both sides | no |
+| Symbolic macros, lazy macro expansion | yes | 45 of 52 cases by the tool before hardening (22 where Bazel succeeds, 23 equal failures); referee unchanged | no |
+| `unused_inputs_list`, C++ compile action templates | yes | 11 of 12 probe steps equal; the twelfth differs in two runfiles action keys (the tool has no allow list); referee unchanged | no |
+| Java rules (library, binary, test, plugins, deploy jars, toolchains) | yes | 18 of 18 steps equal in termination, stdout, actions, output hashes and a filtered set of stderr lines; other stderr differs; under `--spawn_strategy=linux-sandbox` only | no |
+| Platform mappings, platform flags, `--toolchain_resolution_debug`, `--target_environment`, project flag scoping | yes | 26 of 31 cases by the tool before hardening (15 where Bazel succeeds, 11 equal failures); referee unchanged | no |
 | Build events for `run`, `fetch`, `query`; target summaries, aspect events | yes | scenario matrix; score rows unchanged | no |
-| Starlark core error texts | mostly | 456 of 533 cases equal to Bazel's interpreter | no |
+| Starlark core error texts | mostly | implementer's probe (`starlark_conformance probe-diff`, cases recorded from Bazel's interpreter; dirty tree, no label): 456 of 533 equal | no |
 | Bazel-style crash handling (exit 37) | yes | one crash case compared | no |
 
 ### In progress
