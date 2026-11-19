@@ -1,0 +1,236 @@
+# Error texts of third_party/starlark-rust that are none of Bazel's (see tests/error_text_guard.rs).
+# FILE<TAB>LITERAL (escaped \\n \\t \\\\)<TAB>REASON. REVIEW rows are open work: classify them as
+# internal/unreachable with a reason, or port the text to Bazel's.
+starlark/src/analysis/dubious.rs	Duplicate dictionary key `{0}`, also used at {1}	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/dubious.rs	Variable `{0}` will either do nothing or fail if uninitialised	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/flow.rs	A `load` statement not at the top of the file	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/flow.rs	No `return` at the end, but function `{0}` seems to want one due to {1}	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/flow.rs	Redundant `continue` at the end of a loop	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/flow.rs	Redundant `return` at the end of a function	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/flow.rs	Statement at has no effect	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/flow.rs	Unreachable statement `{0}`	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/flow.rs	`return` lacks expression, but function `{0}` at {1} seems to want one due to {2}	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/incompatible.rs	Duplicate top-level assignment of `{0}`, first defined at {1}	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/incompatible.rs	Type check `{0}` should be written `{1}`	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/names.rs	Unused `load` of `{0}`	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/names.rs	Unused argument `{0}`	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/names.rs	Unused assignment of `{0}`	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/names.rs	Use of potentially undefined variable `{0}`	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/names.rs	Use of unassigned variable `{0}`	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/names.rs	Use of undefined variable `{0}`	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/performance.rs	Dict copy `{0}` is more efficient as `{1}`	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/performance.rs	`{0}` allocates a new {1} for the results. Prefer using a for-loop.	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/performance.rs	`{0}` eagerly evaluates all items in the iterable, and allocates an array for the results. Prefer using a for-loop.	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/underscore.rs	Underscore definitions should be simple `{0}`	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/underscore.rs	Used ignored variable `{0}`	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/unused_loads/find.rs	ident is not resolved (internal error)	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/analysis/unused_loads/find.rs	payload is not set	lint: starlark-rust analysis, Blaze does not run it
+starlark/src/assert/assert.rs	assert.contains: expected {} to be in {}	internal: starlark::assert test harness
+starlark/src/assert/assert.rs	assert.fails: didn't fail	internal: starlark::assert test harness
+starlark/src/assert/assert.rs	assert_eq: expected {}, got {}	internal: starlark::assert test harness
+starlark/src/assert/assert.rs	assert_lt: but {} >= {}	internal: starlark::assert test harness
+starlark/src/assert/assert.rs	assert_ne: but {} == {}	internal: starlark::assert test harness
+starlark/src/assert/assert.rs	assertion failed	internal: starlark::assert test harness
+starlark/src/debug/adapter/implementation.rs	Expression evaluation is only supported in the top-level frame	internal: starlark-rust debugger, not in Bazel
+starlark/src/debug/adapter/implementation.rs	Starlark debug session ended before responding (eval loop dropped without invoking command)	internal: starlark-rust debugger, not in Bazel
+starlark/src/debug/adapter/implementation.rs	Starlark debug session is no longer active (eval loop ended)	internal: starlark-rust debugger, not in Bazel
+starlark/src/environment.rs	Cannot import private symbol `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/environment.rs	Module has no symbol `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/environment.rs	Module has no symbol `{0}`, did you mean `{1}`?	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/environment.rs	Module symbol `{0}` is not exported	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/environment/modules.rs	Extra value already set to a value of type `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/environment/modules.rs	Retained memory profiling is not enabled	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/compiler/def.rs	Function has no type, while function was compiled with return type (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/compiler/expr.rs	{message}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/compiler/module.rs	No imports are available, you tried `{0}` (no call to `Evaluator.set_loader`)	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/compiler/module.rs	Top level stmt count mismatch (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/compiler/module.rs	Unexpected statement (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/compiler/scope.rs	Identifiers in type expressions can only refer globals or builtins: `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/compiler/scope.rs	Variable `{0}` not found	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/compiler/scope.rs	Variable `{0}` not found, did you mean `{1}`?	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/compiler/stmt.rs	Unpacked {1} values but expected {0}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/compiler/types.rs	Identifier is not resolved (internal error)	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/eval/compiler/types.rs	Identifier is resolve as local variable (internal error)	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/eval/compiler/types.rs	Module variable is not set: `{0}`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/eval/compiler/types.rs	Type payload not set (internal error)	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/eval/compiler/types.rs	[,] can only be applied to dict or tuple functions in type expression	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/eval/runtime/arguments.rs	Argument `{name}` occurs more than once	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/arguments.rs	Argument `{}` occurs more than once	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/arguments.rs	Found `{}` extra named parameter(s) for call to {function}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/arguments.rs	Found {count} extra positional argument(s) for call to {function}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/arguments.rs	The argument provided for **kwargs is not a dictionary	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/arguments.rs	The argument provided for *args is not an identifier	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/arguments.rs	The argument provided for *args is not iterable	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/arguments.rs	Wrong number of positional arguments, expected {}, got {got}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/arguments.rs	{0}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/cheap_call_stack.rs	Requested {0}-th top frame, but stack size is {1} (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/cheap_call_stack.rs	Starlark call stack is already allocated	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/cheap_call_stack.rs	Starlark call stack overflow	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Coverage not enabled	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Evaluation cancelled	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Execution duration limit of {0} ticks has been exceeded	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Heap memory limit of {0} bytes exceeded.\nThis error is usually emitted some time after the limit is actually exceeded, so the span may not be informative.	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Local variable `{0}` referenced before assignment	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Max callstack size cannot be zero	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Max callstack size is already set	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Max heap size cannot be zero	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Max heap size is already set	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Max tick count cannot be zero	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Max tick count is already set	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Profile data already collected	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Profile or instrumentation already enabled	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Profiling was not enabled	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Retained memory profiling can be only obtained from `FrozenModule`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/evaluator.rs	Top frame is not def (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/file_loader.rs	ReturnFileLoader does not know the module `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/file_loader.rs	ReturnOwnedFileLoader does not know the module `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/profile/bc.rs	Can't call `write_bc_profile` unless you first call `enable_bc_profile`.	internal: starlark-rust profiler
+starlark/src/eval/runtime/profile/data.rs	Different profile modes in profile	internal: starlark-rust profiler
+starlark/src/eval/runtime/profile/data.rs	Empty profile list cannot be merged	internal: starlark-rust profiler
+starlark/src/eval/runtime/profile/heap.rs	heap profile not enabled	internal: starlark-rust profiler
+starlark/src/eval/runtime/profile/mode.rs	Invalid ProfileMode: `{}`	internal: starlark-rust profiler
+starlark/src/eval/runtime/profile/profiler_type.rs	Inconsistent profile type, expected `{0}`, got `{1}`	internal: starlark-rust profiler
+starlark/src/eval/runtime/profile/stmt.rs	Statement or coverage profiling is not enabled	internal: starlark-rust profiler
+starlark/src/eval/runtime/profile/time_flame.rs	Flame profile not enabled	internal: starlark-rust profiler
+starlark/src/eval/runtime/profile/typecheck.rs	Typecheck profile not enabled	internal: starlark-rust profiler
+starlark/src/pagable/error.rs	Corrupted data: {count} values consumed {actual_bytes} bytes but expected {expected_bytes}	internal: starlark-rust serialization
+starlark/src/pagable/error.rs	Heap bases not registered for heap {heap_id:?}	internal: starlark-rust serialization
+starlark/src/pagable/error.rs	Invalid `{enum_name}` variant tag: {tag}	internal: starlark-rust serialization
+starlark/src/pagable/error.rs	Type `{type_id}` was not registered for deserialization.	internal: starlark-rust serialization
+starlark/src/pagable/serialized_frozen_value.rs	Invalid SerializedFrozenValue tag: {}	internal: starlark-rust serialization
+starlark/src/pagable/starlark_deserialize_context.rs	Integer {} does not fit in InlineInt	internal: starlark-rust serialization
+starlark/src/pagable/starlark_deserialize_context.rs	Static value ID {:?} not found in inventory registry	internal: starlark-rust serialization
+starlark/src/pagable/starlark_deserialize_context.rs	value_index {} out of range for heap {:?} (size {})	internal: starlark-rust serialization
+starlark/src/pagable/starlark_pagable_impls.rs	expected non-zero i32, got 0	internal: starlark-rust serialization
+starlark/src/pagable/starlark_pagable_impls.rs	invalid Either tag: {}	internal: starlark-rust serialization
+starlark/src/pagable/vtable_registry.rs	Type `{}` was not registered for serialization	internal: starlark-rust serialization
+starlark/src/pagable/vtable_registry.rs	Type index `{index}` is out of range ({} types registered for deserialization)	internal: starlark-rust serialization
+starlark/src/read_line.rs	Rustyline is not supported on wasm32	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/stdlib/breakpoint.rs	Breakpoint handler is not enabled for current Evaluator	internal: starlark-rust debugger, not in Bazel
+starlark/src/stdlib/breakpoint.rs	Selected :fail at breakpoint()	internal: starlark-rust debugger, not in Bazel
+starlark/src/stdlib/funcs/other.rs	{message}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/stdlib/partial.rs	partial() got multiple values for argument `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/typing/oracle/ctx.rs	Binary operator `{bin_op}` is not available on the types `{left}` and `{right}`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/oracle/ctx.rs	Call arguments incompatible, fn type is `{fun}`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/oracle/ctx.rs	Call to a non-callable type `{ty}`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/oracle/ctx.rs	Expected type `{require}` but got `{got}`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/oracle/ctx.rs	Missing required parameter `{name}`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/oracle/ctx.rs	The attribute `{attr}` is not available on the type `{ty}`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/oracle/ctx.rs	Too many positional arguments	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/oracle/ctx.rs	Type `{ty}` does not have [::] operator	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/oracle/ctx.rs	Type `{ty}` does not have [] operator or [] cannot accept `{index}`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/oracle/ctx.rs	Type `{ty}` is not iterable	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/oracle/ctx.rs	Unary operator `{un_op}` is not available on the type `{ty}`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/oracle/ctx.rs	Unexpected parameter named `{name}`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/starlark_value.rs	Type `{0}` is not callable	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/user.rs	Type `{0}` specifies custom callable, but underlying `StarlarkValue` is not callable	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/user.rs	Type `{0}` specifies custom indexable, but underlying `StarlarkValue` is not indexable	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/typing/user.rs	Type `{0}` specifies custom iterable, but underlying `StarlarkValue` is not iterable	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/values/error.rs	Cannot divide by zero	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Immutable	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Index `{0}` is out of bound	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Integer overflow	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Key `{0}` was not found	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Missing required parameter `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Missing this parameter	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Negative shift count	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Object of type `{0}` has no attribute `{1}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Object of type `{0}` has no attribute `{1}`, did you mean `{2}`?	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Operation `{op}` not supported for types `{left}` and `{right}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Operation `{op}` not supported on type `{typ}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	This operation mutates an iterable for an iterator while iterating.	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Too many recursion levels	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Type of parameter `{0}` doesn't match	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Type of parameters mismatch	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	{0}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/layout/avalue.rs	Type `{}` does not support starlark deserialization	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/layout/avalue.rs	Type `{}` does not support starlark serialization	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/layout/avalues/complex.rs	Value of type `{0}` cannot be frozen	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/layout/complex.rs	Expected value of type `{}`, got: `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/layout/heap/arena.rs	Invalid BumpKind tag: {}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/layout/typed.rs	Expected frozen value of type `{expected}`, got unfrozen: `{value}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/layout/value.rs	Cycle detected when serializing value of type `{0}` to JSON	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/layout/value.rs	Expected value of type `{0}` but got `{1}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/layout/value.rs	Integer value is too big to fit in {integer_type}: {value}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/layout/value.rs	Value `{}` is not compatible with the signature `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/layout/value.rs	Value is not callable: {}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/layout/value.rs	{message}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/owned.rs	Expected value of type `{0}` but got `{1}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/owned.rs	OwnedFrozenValueTyped deserialization: expected type `{}`, got `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/bytes/globals.rs	bytes() argument must be bytes, str, or iterable of int, not '{}'	unreachable: bytes type, not in Bazel universe
+starlark/src/values/types/bytes/globals.rs	bytes() integer {} is out of range 0..=255	unreachable: bytes type, not in Bazel universe
+starlark/src/values/types/bytes/globals.rs	bytes() iterable must contain integers, not '{}'	unreachable: bytes type, not in Bazel universe
+starlark/src/values/types/bytes/value.rs	argument to 'in bytes' must be an int or bytes, not '{}'	unreachable: bytes type, not in Bazel universe
+starlark/src/values/types/bytes/value.rs	byte value must be in range 0..=255, got {}	unreachable: bytes type, not in Bazel universe
+starlark/src/values/types/dict/globals.rs	Found a non-pair element in the positional argument of dict(): {}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/dict/refs.rs	Value is not dict, value type: `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/dict/value.rs	trying to mutate a frozen dict value	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/enumeration/enum_type.rs	Unknown enum element `{0}`, given to `{1}`	unreachable: enum/record types, not in Bazel
+starlark/src/values/types/enumeration/enum_type.rs	enum values must all be distinct, but repeated `{0}`	unreachable: enum/record types, not in Bazel
+starlark/src/values/types/function.rs	`tuple[]` is implemented only for `tuple[T, ...]`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/int/int_or_big.rs	Integer overflow computing left shift	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/int/int_or_big.rs	Negative left shift	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/int/int_or_big.rs	Negative right shift	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/int/int_or_big.rs	got {0} for shift count, want value in signed 32-bit range	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/int/int_or_big.rs	{}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/list/value.rs	Value is not list, value type: `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/list/value.rs	trying to mutate a frozen list value	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/record/record_type.rs	Record instance cannot be created if record type is not assigned to a global variable	unreachable: enum/record types, not in Bazel
+starlark/src/values/types/set/refs.rs	Value is not set, value type: `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/set/value.rs	trying to mutate a frozen set value	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/starlark_value_as_type.rs	Type `{}` does not support type parameters	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/dot_format.rs	Cannot mix manual and automatic numbering of positional fields	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/dot_format.rs	Cannot mix manual field specification and automatic field numbering in format string	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/dot_format.rs	Not enough parameters in format string	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/globals.rs	chr() parameter value is 0x{:x} which is not a valid UTF-8 codepoint	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/globals.rs	chr() parameter value negative integer {i}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/globals.rs	ord(): bytes argument must have length 1, not {}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/globals.rs	ord(): expected string or bytes, got '{}'	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/globals.rs	ord(): {} is not a single character string	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/interpolation.rs	Expecting format character (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/interpolation.rs	Incomplete format	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/interpolation.rs	Not enough arguments for format string	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/interpolation.rs	Too many arguments for format string	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/interpolation.rs	Unsupported format character: {0:?}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/interpolation.rs	{m}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/methods.rs	at index {i} of sub, got element of type {}, want string	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/string/methods.rs	in call to {function}(), parameter 'sub' got value of type '{}', want 'string or tuple'	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/typing/macro_refs.rs	LHS is not a type: `{0}`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/values/typing/type_compiled/compiled.rs	Found `{0}` instead of a valid type annotation. Perhaps you meant `"{1}"`?	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/values/typing/type_compiled/compiled.rs	Not TypeCompiledImpl (internal error)	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/values/typing/type_compiled/compiled.rs	String literals are not allowed in type expressions: `{0}`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/values/typing/type_compiled/compiled.rs	Type `{0}` is not a valid type annotation	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/values/typing/type_compiled/compiled.rs	Value `{0}` of type `{1}` does not match the type annotation `{2}` for {3}	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/values/typing/type_compiled/compiled.rs	Value of type `{1}` does not match type `{2}`: {0}	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/values/typing/type_compiled/compiled.rs	`[X]` cannot be used as type, perhaps you meant `list[X]`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/values/typing/type_compiled/compiled.rs	`{{A: B}}` cannot be used as type, perhaps you meant `dict[A, B]`	type checker: starlark-rust static typing, not run by Blaze
+starlark/src/values/unpack.rs	Expected `{0}`, but got `{1}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/unpack.rs	Type of parameters mismatch, expected `{0}`, actual `{1}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/unpack.rs	in call to {function}(), parameter '{param}' got value of type '{}', want 'callable or NoneType'	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/unpack.rs	in call to {function}(), parameter '{param}' got value of type '{}', want 'iterable'	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/dot_format_parser.rs	Invalid conversion in format string `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/dot_format_parser.rs	Missing conversion character in format string `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/dot_format_parser.rs	Standalone '}}' in format string `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/dot_format_parser.rs	Unmatched '{{' in format string `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/error.rs	{}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/eval_exception.rs	{error}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/lexer.rs	Cannot parse `{0}` as an integer in base {1}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/lexer.rs	Comment span is computed incorrectly (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/lexer.rs	Parse error: f-string expression is missing closing `}}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/lexer.rs	Parse error: failed to parse integer: `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/lexer.rs	Parse error: integer cannot have leading 0, got `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/lexer.rs	Parse error: invalid string escape sequence `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/lexer.rs	Parse error: missing string escape sequence, only saw `\\`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/lexer.rs	{0}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/lexer.rs	{}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/syntax/grammar_util.rs	`load` statement requires at least two arguments	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/syntax/grammar_util.rs	left-hand-side of assignment must take the form `a`, `a.b` or `a[b]`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/syntax/grammar_util.rs	syntax error at '{tok}': type annotations are disallowed	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/syntax/grammar_util.rs	type annotations are not allowed in this dialect	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/syntax/grammar_util.rs	type annotations not allowed on augmented assignments	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/syntax/grammar_util.rs	type annotations not allowed on multiple assignments	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark_syntax/src/syntax/type_expr.rs	Empty list is not allowed in type expression	type checker: starlark-rust static typing, not run by Blaze
+starlark_syntax/src/syntax/type_expr.rs	Expecting path like `a.b.c`	type checker: starlark-rust static typing, not run by Blaze
+starlark_syntax/src/syntax/type_expr.rs	Only dot expression of form `ident.ident` is allowed in type expression	type checker: starlark-rust static typing, not run by Blaze
+starlark_syntax/src/syntax/type_expr.rs	`{0}.type` is not allowed in type expression, use `{0}` instead	type checker: starlark-rust static typing, not run by Blaze
+starlark_syntax/src/syntax/type_expr.rs	{0} expression is not allowed in type expression	type checker: starlark-rust static typing, not run by Blaze

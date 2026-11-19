@@ -1170,18 +1170,26 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                      node: StmtCompiled::Assign(lhs, ty, rhs),
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/arguments.rs starlark/src/eval/runtime/arguments.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/arguments.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/arguments.rs	2026-11-19 13:29:09.477516609 -0700
-@@ -63,6 +63,9 @@
++++ starlark/src/eval/runtime/arguments.rs	2026-11-19 16:23:55.119408119 -0700
+@@ -63,6 +63,17 @@
      #[error("Wrong number of positional arguments, expected {}, got {got}",
          if min == max {min.to_string()} else {format!("between {min} and {max}")})]
      WrongNumberOfArgs { min: usize, max: usize, got: usize },
 +    /// BLAZE PATCH 0052: an argument error with Java's text.
 +    #[error("{0}")]
 +    Bazel(String),
++    /// BLAZE PATCH 0056: a name given twice to a builtin's `**kwargs` (Java
++    /// BuiltinFunction.java:343 addNamedArg); the call names the builtin
++    /// (`BazelParamTypeError::with_function`).
++    #[error("{}() got multiple values for keyword argument '{name}'", .function.as_deref().unwrap_or("function"))]
++    RepeatedKwarg {
++        function: Option<String>,
++        name: String,
++    },
  }
  
  impl From<FunctionError> for crate::Error {
-@@ -294,7 +297,12 @@
+@@ -294,7 +305,12 @@
                  if self.0.names().names().is_empty() {
                      match kwargs.downcast_ref_key_string() {
                          Some(kwargs) => Ok(kwargs.clone()),
@@ -1195,7 +1203,17 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                      }
                  } else {
                      // We have to insert the names before the kwargs since the iteration order is observable
-@@ -352,7 +360,13 @@
+@@ -311,7 +327,8 @@
+                         let k = Hashed::new_unchecked(k.hash(), s);
+                         let old = result.insert_hashed(k, v);
+                         if unlikely(old.is_some()) {
+-                            return Err(FunctionError::RepeatedArg {
++                            return Err(FunctionError::RepeatedKwarg { // BLAZE PATCH 0056
++                                function: None, // BLAZE PATCH 0056
+                                 name: s.as_str().to_owned(),
+                             }
+                             .into());
+@@ -352,7 +369,13 @@
      ) -> crate::Result<impl Iterator<Item = Value<'v>> + 'b> {
          let tail = match self.0.args {
              None => Either::Left(iter::empty()),
@@ -1210,7 +1228,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          };
          Ok(self.0.pos.iter().copied().chain(tail))
      }
-@@ -366,7 +380,8 @@
+@@ -366,7 +389,8 @@
          match self.0.kwargs {
              None => Ok(None),
              Some(kwargs) => match DictRef::from_value(kwargs) {
@@ -1220,7 +1238,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                  Some(x) => Ok(Some(x)),
              },
          }
-@@ -376,7 +391,8 @@
+@@ -376,7 +400,8 @@
      #[inline(always)]
      pub(crate) fn unpack_kwargs_key_as_value(k: Value<'v>) -> crate::Result<StringValue<'v>> {
          match StringValue::new(k) {
@@ -1230,7 +1248,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              Some(k) => Ok(k),
          }
      }
-@@ -452,7 +468,13 @@
+@@ -452,7 +477,13 @@
              // with a *args is very rare.
              let args = match x.0.args {
                  None => StarlarkIterator::empty(heap),
@@ -1957,9 +1975,10 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  impl<'v, 'a, 'e> Evaluator<'v, 'a, 'e> {
      /// Evaluate an [`AstModule`] with this [`Evaluator`], modifying the in-scope
      /// [`Module`](crate::environment::Module) as appropriate.
+Only in starlark/src/stdlib/funcs: java_timsort.rs
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/stdlib/funcs/min_max.rs starlark/src/stdlib/funcs/min_max.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/stdlib/funcs/min_max.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/stdlib/funcs/min_max.rs	2026-11-19 13:29:44.384582286 -0700
++++ starlark/src/stdlib/funcs/min_max.rs	2026-11-19 16:22:33.726944781 -0700
 @@ -35,10 +35,8 @@
      let mut max = match it.next() {
          Some(x) => x,
@@ -1973,26 +1992,52 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      };
      let update_max_ordering = if min {
-@@ -111,6 +109,7 @@
+@@ -58,7 +56,16 @@
+             let mut cached = key.invoke_pos(&[max], eval)?;
+             for i in it {
+                 let keyi = key.invoke_pos(&[i], eval)?;
+-                if cached.compare(keyi)? == update_max_ordering {
++                // BLAZE PATCH 0056: with a key, Java's min is `Stream.max` with
++                // `Starlark.ORDERING.reverse()`, which compares the new key with the kept one
++                // (MethodLibrary.java:119 findExtreme); max and min without key compare the
++                // kept one with the new one (Guava Ordering.max / Ordering.min).
++                let update = if min {
++                    keyi.compare(cached)? == Ordering::Less
++                } else {
++                    cached.compare(keyi)? == update_max_ordering
++                };
++                if update {
+                     max = i;
+                     cached = keyi;
+                 }
+@@ -111,6 +118,7 @@
          key: Option<Value<'v>>,
          eval: &mut Evaluator<'v, '_, '_>,
      ) -> starlark::Result<Value<'v>> {
-+        let key = key.filter(|k| !k.is_none()); // BLAZE PATCH 0052: Java's `key` is callable or NoneType
++        let key = crate::values::unpack::java_check_callable_or_none("max", "key", key)?; // BLAZE PATCH 0056
          min_max(args, key, eval, false)
      }
  
-@@ -136,6 +135,7 @@
+@@ -136,6 +144,7 @@
          key: Option<Value<'v>>,
          eval: &mut Evaluator<'v, '_, '_>,
      ) -> starlark::Result<Value<'v>> {
-+        let key = key.filter(|k| !k.is_none()); // BLAZE PATCH 0052: Java's `key` is callable or NoneType
++        let key = crate::values::unpack::java_check_callable_or_none("min", "key", key)?; // BLAZE PATCH 0056
          min_max(args, key, eval, true)
      }
  }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/stdlib/funcs/other.rs starlark/src/stdlib/funcs/other.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/stdlib/funcs/other.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/stdlib/funcs/other.rs	2026-11-19 13:29:44.383017617 -0700
-@@ -80,9 +80,11 @@
++++ starlark/src/stdlib/funcs/other.rs	2026-11-19 16:24:52.761356429 -0700
+@@ -18,7 +18,6 @@
+ //! A module with the standard function and constants that are by default in all
+ //! dialect of Starlark
+ 
+-use std::cmp::Ordering;
+ 
+ use starlark_derive::starlark_module;
+ 
+@@ -80,9 +79,11 @@
      /// ```
      #[starlark(speculative_exec_safe)]
      fn any<'v>(
@@ -2005,7 +2050,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          for i in x.get().iterate(heap)? {
              if i.to_bool() {
                  return Ok(true);
-@@ -110,9 +112,11 @@
+@@ -110,9 +111,11 @@
      /// ```
      #[starlark(speculative_exec_safe)]
      fn all<'v>(
@@ -2018,7 +2063,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          for i in x.get().iterate(heap)? {
              if !i.to_bool() {
                  return Ok(false);
-@@ -158,10 +162,11 @@
+@@ -158,10 +161,11 @@
      /// ```
      #[starlark(speculative_exec_safe)]
      fn enumerate<'v>(
@@ -2031,7 +2076,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let v = it
              .get()
              .iterate(heap)?
-@@ -187,19 +192,27 @@
+@@ -187,19 +191,27 @@
      /// getattr("banana", "split")("a") == ["b", "n", "n", ""] # equivalent to "banana".split("a")
      /// # "#);
      /// ```
@@ -2066,7 +2111,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              },
          }
      }
-@@ -210,13 +223,16 @@
+@@ -210,13 +222,16 @@
      ///
      /// `hasattr(x, name)` reports whether x has an attribute (field or method)
      /// named `name`.
@@ -2089,7 +2134,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// [hash](
-@@ -235,7 +251,8 @@
+@@ -235,7 +250,8 @@
      /// # "#);
      /// ```
      #[starlark(speculative_exec_safe)]
@@ -2099,7 +2144,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          // From the starlark spec:
          // > the hash function for strings is the same as that implemented by java.lang.String.hashCode,
          // > a simple polynomial accumulator over the UTF-16 transcoding of the string:
-@@ -283,7 +300,8 @@
+@@ -283,7 +299,8 @@
      /// # "#, "not supported");
      /// ```
      #[starlark(speculative_exec_safe)]
@@ -2109,7 +2154,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          a.length()
      }
  
-@@ -304,9 +322,11 @@
+@@ -304,9 +321,11 @@
      /// ```
      #[starlark(speculative_exec_safe)]
      fn reversed<'v>(
@@ -2122,7 +2167,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let mut v: Vec<Value> = a.get().iterate(heap)?.collect();
          v.reverse();
          Ok(v)
-@@ -337,11 +357,14 @@
+@@ -337,11 +356,14 @@
      // This function is not spec-safe, because it may call `key` function
      // which might be not spec-safe.
      fn sorted<'v>(
@@ -2134,11 +2179,48 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      ) -> starlark::Result<AllocList<impl IntoIterator<Item = Value<'v>> + use<'v>>> {
 +        let x = iterable; // BLAZE PATCH 0052: Java parameter name `iterable`
 +        crate::values::unpack::java_check_iterable("sorted", "iterable", x.get(), eval.heap())?; // BLAZE PATCH 0052
-+        let key = key.filter(|k| !k.is_none()); // BLAZE PATCH 0052: Java's `key` is callable or NoneType
++        let key = crate::values::unpack::java_check_callable_or_none("sorted", "key", key)?; // BLAZE PATCH 0056
          let it = x.get().iterate(eval.heap())?;
          let mut it = match key {
              None => it.map(|x| (x, x)).collect(),
-@@ -390,7 +413,8 @@
+@@ -354,24 +376,19 @@
+             }
+         };
+ 
+-        let mut compare_ok = Ok(());
+-
+-        it.sort_by(|x: &(Value, Value), y: &(Value, Value)| {
+-            let ord_or_err = if reverse {
+-                x.1.compare(y.1).map(Ordering::reverse)
+-            } else {
+-                x.1.compare(y.1)
+-            };
+-            match ord_or_err {
+-                Ok(r) => r,
+-                Err(e) => {
+-                    compare_ok = Err(e);
+-                    Ordering::Equal // does not matter
++        // BLAZE PATCH 0056: Java's Arrays.sort (TimSort) with Starlark.ORDERING, or its
++        // `reversed()` (which compares the pair the other way round); the first comparison
++        // that fails is the error (MethodLibrary.java:277 sorted).
++        crate::stdlib::funcs::java_timsort::sort(
++            &mut it,
++            &mut |x: (Value<'v>, Value<'v>), y: (Value<'v>, Value<'v>)| {
++                if reverse {
++                    y.1.compare(x.1)
++                } else {
++                    x.1.compare(y.1)
+                 }
+-            }
+-        });
+-
+-        compare_ok?;
++            },
++        )?;
+ 
+         Ok(AllocList(it.into_iter().map(|x| x.0)))
+     }
+@@ -390,7 +407,8 @@
      /// # "#);
      /// ```
      #[starlark(speculative_exec_safe, as_type = AbstractType)]
@@ -2148,6 +2230,17 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          Ok(a.get_type_value())
      }
  }
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/stdlib/funcs.rs starlark/src/stdlib/funcs.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/stdlib/funcs.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/stdlib/funcs.rs	2026-11-19 16:22:33.723208254 -0700
+@@ -16,6 +16,7 @@
+  */
+ 
+ pub(crate) mod globals;
++pub(crate) mod java_timsort; // BLAZE PATCH 0056
+ pub(crate) mod min_max;
+ pub(crate) mod other;
+ pub(crate) mod zip;
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/tests/uncategorized.rs starlark/src/tests/uncategorized.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/tests/uncategorized.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/tests/uncategorized.rs	2026-11-19 12:31:13.018750465 -0700
@@ -4708,7 +4801,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/range/range_type.rs starlark/src/values/types/range/range_type.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/range/range_type.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/range/range_type.rs	2026-11-19 13:38:36.435686154 -0700
++++ starlark/src/values/types/range/range_type.rs	2026-11-19 16:23:01.230482334 -0700
 @@ -120,33 +120,22 @@
      }
  
@@ -4759,6 +4852,56 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      fn at(&self, index: Value, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+@@ -170,28 +159,28 @@
+         stride: Option<Value>,
+         heap: Heap<'v>,
+     ) -> crate::Result<Value<'v>> {
+-        let (start, stop, step) = convert_slice_indices(self.length()?, start, stop, stride)?;
++        let (start, mut stop, step) = convert_slice_indices(self.length()?, start, stop, stride)?;
++        // BLAZE PATCH 0056: Java's RangeList.getSlice (RangeList.java:182): 64-bit slice step,
++        // clamped to one element when it leaves the 32-bit range; `at(i)` is 32-bit arithmetic
++        // (a clamped `stop` may wrap; the range then still has its one element).
++        let mut slice_step = step as i64 * self.step.get() as i64;
++        if slice_step != slice_step as i32 as i64 {
++            slice_step = if slice_step > 0 {
++                i32::MAX as i64
++            } else {
++                i32::MIN as i64
++            };
++            if stop > start {
++                stop = start + 1;
++            } else if stop < start {
++                stop = start - 1;
++            }
++        }
++        let at = |i: i32| self.start.wrapping_add(self.step.get().wrapping_mul(i));
+         return Ok(heap.alloc(Range {
+-            start: self
+-                .start
+-                .checked_add(
+-                    start
+-                        .checked_mul(self.step.get())
+-                        .ok_or(ValueError::IntegerOverflow)?,
+-                )
+-                .ok_or(ValueError::IntegerOverflow)?,
+-            stop: self
+-                .start
+-                .checked_add(
+-                    stop.checked_mul(self.step.get())
+-                        .ok_or(ValueError::IntegerOverflow)?,
+-                )
+-                .ok_or(ValueError::IntegerOverflow)?,
+-            step: NonZeroI32::new(
+-                step.checked_mul(self.step.get())
+-                    .ok_or(ValueError::IntegerOverflow)?,
+-            )
+-            .unwrap(),
++            start: at(start),
++            stop: at(stop),
++            step: NonZeroI32::new(slice_step as i32).unwrap(),
+         }));
+     }
+ 
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/methods.rs starlark/src/values/types/set/methods.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/set/methods.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/set/methods.rs	2026-11-18 16:00:00.495343469 -0700
@@ -7602,7 +7745,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              result.extend(self.content().iter().map(|e| e.to_value()));
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/unpack.rs starlark/src/values/unpack.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/unpack.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/unpack.rs	2026-11-19 13:25:14.119723071 -0700
++++ starlark/src/values/unpack.rs	2026-11-19 16:23:55.120113265 -0700
 @@ -226,17 +226,26 @@
      fn unpack_named_param(value: Value<'v>, param_name: &str) -> crate::Result<Self> {
          #[cold]
@@ -7639,7 +7782,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          Self::unpack_value(value)
              .into_anyhow_result()
              .with_context(|| {
-@@ -273,3 +282,140 @@
+@@ -273,3 +282,174 @@
          }
      }
  }
@@ -7683,6 +7826,20 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +                    p.function = Some(function.to_owned());
 +                    return crate::Error::new_value(p);
 +                }
++            }
++        }
++        // BLAZE PATCH 0056: the builtin's name in its duplicate keyword error.
++        if let crate::ErrorKind::Function(a) = e.kind() {
++            if let Some(crate::eval::runtime::arguments::FunctionError::RepeatedKwarg {
++                function: None,
++                name,
++            }) = a.downcast_ref()
++            {
++                return crate::eval::runtime::arguments::FunctionError::RepeatedKwarg {
++                    function: Some(function.to_owned()),
++                    name: name.clone(),
++                }
++                .into();
 +            }
 +        }
 +        e
@@ -7779,6 +7936,26 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        "in call to {function}(), parameter '{param}' got value of type '{}', want 'iterable'",
 +        value.get_type()
 +    )))
++}
++
++/// BLAZE PATCH 0056: Java's check of a builtin parameter declared
++/// `allowedTypes = {StarlarkCallable, NoneType}` (`key` of sorted, min, max):
++/// "in call to F(), parameter 'P' got value of type 'T', want 'callable or NoneType'"
++/// (BuiltinFunction.java:404 checkParamValue). Returns the callable, `None` for `None`.
++pub(crate) fn java_check_callable_or_none<'v>(
++    function: &str,
++    param: &str,
++    value: Option<Value<'v>>,
++) -> crate::Result<Option<Value<'v>>> {
++    match value {
++        None => Ok(None),
++        Some(v) if v.is_none() => Ok(None),
++        Some(v) if v.vtable().starlark_value.HAS_invoke => Ok(Some(v)),
++        Some(v) => Err(crate::Error::new_other(anyhow::anyhow!(
++            "in call to {function}(), parameter '{param}' got value of type '{}', want 'callable or NoneType'",
++            v.get_type()
++        ))),
++    }
 +}
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values.rs starlark/src/values.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values.rs	2006-07-23 19:21:28.000000000 -0600
