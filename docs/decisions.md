@@ -305,3 +305,11 @@ Each entry: date, decision, why, who decided.
   `~/.cache/blaze/work/root-runs/v010-r3.log`) behind six other agents' runs. Harness gaps for
   the auditor's next round: a killed `run` leaves its outer job running and its results
   uncollected (A-6), and there is no way to adopt a finished outer job. Root.
+- 2026-11-19. Machine overload: load average 40 to 250 on 16 cores, swap full, 6 GB of memory
+  available, with about nineteen agents and their sub-workers. Root's error: too many agents
+  were started at once; implementers report several retries per build, test suites that take
+  ten times longer, and any upstream-test total taken under this load would carry load-induced
+  timeouts. Ruling: no new agents until fewer than ten are active; an agent that hands back is
+  not continued while the count is above ten, except where its hand-back leaves the shared
+  tree broken or another agent blocked; the full-suite run that counts as the outer measure is
+  taken only when the load average is under 16. Root.
