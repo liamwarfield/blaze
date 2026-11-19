@@ -88,7 +88,6 @@ Partly ported:
 - Coverage: `--collect_code_coverage`, instrumented-files providers, baseline coverage,
   the coverage report action, the instrumentation filter.
 - `--compile_one_dependency`.
-- `--test_size_filters`, `--test_timeout_filters`, `--test_lang_filters`.
 - `--toolchain_resolution_debug`.
 - Path mapping (`--experimental_output_paths=strip`).
 - Remote analysis caching (`--experimental_remote_analysis_cache_mode`).
@@ -112,8 +111,13 @@ Partly ported:
   v0.1.0 (11 of 12 probe steps equal; the twelfth differs in two runfiles action keys and
   the tool has no allow list; brotli and re2 score unchanged). Still missing: `SpawnActionTemplate` / `ctx.actions.map_directory`,
   a shadowed action that discovers inputs.
-- Exclusive tests (`tags = ["exclusive"]`; 3 upstream tests).
-- `--test_output=streamed`; cancelling concurrent test attempts.
+- Exclusive tests (`exclusive`, `exclusive-if-local`, `--test_strategy=exclusive`),
+  `--test_output=streamed`, `--experimental_cancel_concurrent_tests`, the test size, timeout
+  and language filters and the test.xml parser: ported after v0.1.0. Exit code and run order
+  equal Bazel's in 21 of 21 probe cases (15 of them deliberate failures on both sides); the
+  comparison tool is not audited yet and Bazel's own tests have not been run on it. The run
+  order of exclusive tests reproduces a Java HashMap's iteration order, checked against the
+  oracle with a debugger.
 - Filesets; archived tree artifacts.
 - CPU-load-based scheduling; `resource_set` overrides in some forms.
 - `linux-sandbox`, `process-wrapper` and `@bazel_tools` are taken from Bazel 9.3.2's install
